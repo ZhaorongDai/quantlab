@@ -201,6 +201,11 @@ class _NoOpDataset:
     def _raw_data_to_xr(self) -> xr.Dataset:
         return self._data
 
+    def _clean(self, data: xr.Dataset) -> xr.Dataset:
+        from base.data import Dataset
+
+        return Dataset._clean(self, data)  # type: ignore[arg-type]
+
     def from_raw_data(self) -> Self:
         from base.data import Dataset
 

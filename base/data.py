@@ -115,9 +115,20 @@ class Dataset(ABC):
 
     def from_raw_data(self) -> Self:
         data = self._raw_data_to_xr()
-        data = clean_market_data(data)
+        data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
         return self
+
+    def _clean(self, data: xr.Dataset) -> xr.Dataset:
+        """Cleaning hook run after raw-to-xarray conversion, before persistence.
+
+        Defaults to the shared market-data cleaning pipeline (anomaly-flagging,
+        schema validation — see dataset/cleaning.py). Overridable so a future
+        Dataset subclass whose data isn't OHLCV-shaped tabular market data
+        (e.g. unstructured sources like news) is not forced through
+        market-specific validation it doesn't apply to.
+        """
+        return clean_market_data(data)
 
     def _write_catalog(self, data: list):
         catalog = ParquetDataCatalog(
