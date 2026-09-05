@@ -1,0 +1,233 @@
+---
+phase: 03-factor-computation-kunquant-polars
+verified: 2026-09-05T16:10:00Z
+status: gaps_found
+score: 3/4 must-haves verified
+behavior_unverified: 0
+overrides_applied: 0
+gaps:
+  - truth: "User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract (ROADMAP SC3 / FACTOR-03 / D-03 interchangeability)"
+    status: partial
+    reason: >-
+      The `cal()` path is fully verified — `Momentum.cal().get_features()` returns an
+      `xr.Dataset`. But the `read()` half of the shared contract is backend-dependent,
+      which is exactly what D-03 exists to eliminate. Verified empirically by the
+      verifier (not taken from 03-REVIEW.md): after `Momentum(...).cal().save()`, a
+      FRESH `Momentum` instance driven through `read()` returns data but leaves
+      `config.factor_names is None`, so `_get_factor_names()` raises
+      `RuntimeError: Momentum: factor names are not resolved yet.` The identical
+      sequence on `Alpha158SpotKline` succeeds and returns `('KMID',)`. Since
+      `DLConfig.factor_data_strategy` is a first-class, config-selectable
+      `Literal["read", "cal"]`, a `DLConfig` with `factor_data_strategy="read"` works
+      for every KunQuant factor and raises for every Polars factor at
+      `base/model.py:187`. This independently CONFIRMS 03-REVIEW.md CR-01.
+    artifacts:
+      - path: "base/factor_polars.py"
+        issue: >-
+          `_maybe_resolve_factor_names()` (L55-61) is a deliberate no-op and `cal()`
+          (L110) is the ONLY assignment to `config.factor_names`. The class docstring
+          (L45-46) and the `RuntimeError` message (L65-70) both assert the precondition
+          is satisfied by "`cal()` **or `read()`**" — the `read()` half of that claim is
+          false in code.
+      - path: "base/factor.py"
+        issue: >-
+          `Factor.read()` (L126-129) calls only `data_backend.read()` + `_auto_filter()`;
+          it never resolves `config.factor_names`. There is no `FactorPolars.read()`
+          override.
+      - path: "tests/test_factor_hierarchy.py"
+        issue: >-
+          `test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig`
+          (L430-522) — the phase's live D-03 proof — pins `factor_data_strategy="cal"`
+          and hand-calls `factor.cal()`. The `read()` branch of `base/model.py`'s call
+          surface is never driven for EITHER backend, so the asymmetry is invisible to
+          a green suite.
+      - path: "tests/test_factor_polars.py"
+        issue: >-
+          `test_factor_names_resolve_dynamically_from_the_lazyframe_schema` (L95-117)
+          restates the false precondition in its own docstring ("only valid after
+          `cal()`/`read()` … `base/model.py` always calls `.cal()`/`.read()` before
+          asking a factor for its names") while asserting only the `cal()` path. The
+          test encodes the defect rather than catching it.
+      - path: "README.md"
+        issue: >-
+          L34-40 claims "nothing downstream can tell which one produced a given factor
+          store" and lists `read()` among the shared-contract methods the model layer
+          calls. Empirically false — shipped documentation contradicted by the code.
+    missing:
+      - "A `FactorPolars.read()` override that resolves `config.factor_names` from the persisted store's non-index data_vars, symmetrically with `cal()`."
+      - "A regression test driving BOTH backends through save() -> fresh instance -> read() -> _get_factor_names(), with factor_data_strategy='read'."
+      - "Correction of the false `read()` precondition in base/factor_polars.py's docstring, its RuntimeError message, tests/test_factor_polars.py:103-105 and README.md:34-40."
+  - truth: "`Alpha158Stock`/`Alpha101Stock` compute the Alpha158/101 factor set correctly for US equities (phase must-have from 03-03; the D-01 extension of ROADMAP SC1)"
+    status: partial
+    reason: >-
+      `.cal()` returns a correctly shaped `xr.Dataset`, so the must-have as literally
+      worded passes — but the values are silently corrupted. Verified empirically by
+      the verifier: `dataset/stock.py:73-74` synthesizes `amount = volume * close`,
+      and KunQuant's `AllData` derives `vwap = amount / volume`, so `vwap` is
+      IDENTICALLY `close`. Probing `Alpha158Stock` with `factor_names=["VWAP0","VWAP1","CLOSE1"]`
+      over the `stock_zarr` fixture produced `VWAP0` unique finite values `[1.0]`
+      (std 5.2e-08 — a zero-variance feature) and `VWAP1` allclose-identical to
+      `CLOSE1`. This independently CONFIRMS 03-REVIEW.md CR-02. Five of Alpha158's
+      emitted price-block features carry zero incremental information for US equities,
+      and every `Alpha101Stock` alpha referencing `vwap` (alpha025, alpha028, alpha041,
+      alpha050, alpha083, …) degenerates into a close-price variant. Nothing fails
+      loudly — this is worse than the graph-construction crash it replaced, because the
+      crash was visible.
+    artifacts:
+      - path: "dataset/stock.py"
+        issue: "L73-74: `data.assign(amount=data['volume'] * data['close'])` makes the derived vwap algebraically equal to close."
+      - path: "tests/test_factor_kunquant.py"
+        issue: >-
+          `test_alpha158_stock_batch_cal_returns_xarray_dataset` (L222-247) asserts only
+          on KMID/VOLUME0/STD5 and `test_stock_to_kunquant_synthesizes_amount_as_adjusted_dollar_volume`
+          (L144) locks the defective formula in as expected behaviour. No test in the
+          suite touches a VWAP-derived feature, which is why 66/66 green says nothing here.
+    missing:
+      - "A dollar-volume proxy whose implied vwap is not the close price (e.g. typical price `(high+low+close)/3 * volume`)."
+      - "A test asserting `input_dict['amount'] / input_dict['volume']` is NOT allclose to `input_dict['close']`."
+      - "A test asserting `Alpha158Stock`'s `VWAP0` output is not constant."
+human_verification:
+  - test: "Decide whether the D-02 `amount` proxy should be the typical-price dollar volume, or whether a real vendor dollar-volume column should be sourced from Tiingo instead."
+    expected: "A US-equity `amount` series whose implied `vwap = amount/volume` is not identically `close`, restoring the informational content of the VWAP price block."
+    why_human: "Choosing between a synthesized proxy and a vendor column is a data-sourcing decision with cost/coverage tradeoffs, not a programmatic determination."
+---
+
+# Phase 3: Factor Computation (KunQuant + Polars) Verification Report
+
+**Phase Goal:** Users can compute the existing Alpha158 factor set (batch and streaming) via KunQuant, and can add new factors via a new Polars batch backend, with `xarray.Dataset` as the sole exchange format.
+**Verified:** 2026-09-05T16:10:00Z
+**Status:** gaps_found
+**Re-verification:** No — initial verification
+
+## Goal Achievement
+
+### Observable Truths (ROADMAP Success Criteria)
+
+| # | Truth | Status | Evidence |
+|---|-------|--------|----------|
+| 1 | User can compute the Alpha158 factor set in batch mode from stored market data and get back an `xarray.Dataset` | ✓ VERIFIED | `tests/test_factor_kunquant.py::test_alpha158_spot_batch_cal_returns_xarray_dataset` run individually — PASS. Asserts `isinstance(result, xr.Dataset)`, `sizes == {"timestamp": 60, "symbol": 8}`, `data_vars == ["KMID","STD5","VOLUME0"]`, and `np.isfinite(KMID).sum() > 0`. Real compiled-graph execution against a synthetic Zarr store, not a mock. The enabling fix is real: `my_ops/preprocess.py:12,36` now carry `def decompose(self, options: dict)`, matching installed KunQuant 0.1.11's `CompositiveOp.decompose` contract. **Caveat:** verified for crypto spot. The D-01 US-equity extension (`Alpha158Stock`) returns a correctly shaped Dataset but with corrupted VWAP values — see gap 2. |
+| 2 | User can invoke KunQuant's streaming (`cal_stream`) factor computation path and get incremental factor updates without error | ✓ VERIFIED | `tests/test_factor_stream.py::test_cal_stream_replay_produces_incremental_factor_updates` run individually — PASS. A genuine behavioural test, not a presence check: replays all 60 timestamps one bar at a time through `factor.cal_stream(bar, step, symbol_list)`, asserts the result is an `xr.Dataset` of shape `{"timestamp": 1, "symbol": 8}`, and — critically — asserts `not np.array_equal(previous_kmid, last_kmid)`, so a stale or constant buffer fails. Per-bar inputs come from the real `Dataset.to_kunquant()` adapter. `init_stream()` is separately proven to bind a buffer handle for all six declared names. The enabling fix (`0a61d8e`, removal of the hardcoded x86-only SIMD block width) is what makes this runnable on this aarch64 machine at all. |
+| 3 | User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract | ✗ FAILED (partial) | `cal()` half VERIFIED: `tests/test_factor_polars.py::test_momentum_cal_returns_xarray_dataset_with_only_factor_columns` — PASS; `data_vars == ["momentum_5"]` exactly (no raw-column leakage), `sizes == {timestamp, symbol}`, finite values > 0. `read()` half FAILED: verifier probe proved a fresh `Momentum` after `read()` raises `RuntimeError` from `_get_factor_names()` while `Alpha158SpotKline` returns `('KMID',)` on the identical sequence. "the same contract" does not hold across both halves of the model layer's call surface. See gap 1. |
+| 4 | No factor-pipeline code path passes a plain DataFrame between modules — inputs/outputs are `xarray.Dataset` only | ✓ VERIFIED (coincidental-reliance) | Grep over `base/ factor/ label/ dataset/ my_ops/` finds no `pd.DataFrame`/`pl.DataFrame` in any signature outside comments. The only frame-typed methods in the factor layer are the private hooks `Factor._get_lazyframe` and `FactorPolars._get_factor_lazyframe`. Both backends convert to `xr.Dataset` before anything leaves the class: `FactorKunQuant` from raw arrays, `FactorPolars.cal()` at L110-121 via `collect().to_pandas().set_index().Dataset.from_dataframe()`. `get_features`/`get_labels` return-annotated `xr.Dataset` on both classes, asserted by `test_public_factor_api_exchanges_only_xarray_datasets`. Flagged advisory — see below. |
+
+**Score:** 3/4 truths verified (0 present, behavior-unverified)
+
+#### Note on truth 4's advisory flag
+
+`test_public_factor_api_exchanges_only_xarray_datasets` is a **weak lock** on a property that does happen to hold. It asserts `"DataFrame" not in str(inspect.signature(...))` — a substring match that would not catch `pl.LazyFrame`, `pl.Series`, or an aliased import — and it iterates only `(Factor, FactorKunQuant)`, never `FactorPolars`, the one backend that actually handles frames. The property holds today because `FactorPolars.cal()` returns `Self` and its frame-handling hook is private, not because the test enforces it. Additionally `FactorPolars.cal()` receives a `pl.LazyFrame` across the Dataset→Factor module boundary via `self.config.dataset.read().get_lazyframe()`; `03-CONTEXT.md` D-06 explicitly sanctions this ("Polars is used internally for the computation, but the module boundary contract … is unchanged"), and it mirrors the pre-existing `to_kunquant()` numpy-dict adapter, so it is a decision, not a violation. Recorded as advisory only — it does not change the status or the score.
+
+### Required Artifacts
+
+| Artifact | Expected | Status | Details |
+|----------|----------|--------|---------|
+| `my_ops/preprocess.py` | `decompose(self, options: dict)` matching KunQuant 0.1.11 | ✓ VERIFIED | L12 and L36 both carry the corrected signature; both alpha families compile and run |
+| `tests/conftest.py` | `spot_kline_zarr` / `stock_zarr` synthetic-Zarr factories | ✓ VERIFIED | L346, L486; consumed by every Phase-3 factor test with zero network access |
+| `base/factor.py` | `Factor(ABC)` + `FactorKunQuant(Factor)` | ✓ VERIFIED | `class Factor(ABC)` L21, `class FactorKunQuant(Factor)` L169; `__init__` assigns `self.config` before `self.data_backend` (L36-40, Hazard 1 preserved); `mode` reads confined to `FactorKunQuant` overrides |
+| `base/config.py` | `BaseFactorConfig` / `FactorConfig` / `PolarsFactorConfig` split + type widening | ✓ VERIFIED | L67, L91, L107; `DLConfig.factors`/`labels` and `MLConfig.factors` typed `list["Factor"]` (L120-121, L155) |
+| `base/factor_polars.py` | `FactorPolars(Factor)` batch-only backend | ⚠️ HOLLOW | Exists, substantive, wired, and correct on `cal()` — but the `read()` path never resolves `factor_names`, breaking the contract it documents (gap 1) |
+| `factor/momentum.py` | `Momentum(FactorPolars)` worked example | ✓ VERIFIED | Genuine Polars window expressions (`close.shift(n).over("symbol")`), config-driven horizon via `config.kwargs["n"]`, terminal `.select([timestamp, symbol, factor])` |
+| `factor/alpha158.py` | `Alpha158Stock` US-equity sibling | ⚠️ HOLLOW | `class Alpha158Stock(FactorKunQuant)` L107 exists and computes — but its VWAP price block is degenerate (gap 2) |
+| `factor/alpha101.py` | `Alpha101Stock` with `amount` wired into `AllData` | ⚠️ HOLLOW | Construction crash genuinely fixed; every vwap-referencing alpha silently degenerates (gap 2) |
+| `dataset/stock.py` | `_to_kunquant()` with D-02 dollar-volume proxy | ✗ DEFECTIVE | L73-74 present and double-guarded as designed, but the chosen formula collapses vwap onto close (gap 2) |
+| `config/__init__.py` | `stock_alpha101_config` / `stock_alpha158_config` / `momentum_config` | ✓ VERIFIED | L154, L225, L271; all derive from `_data_root()`, no absolute paths |
+| `tests/test_extensibility_contract.py` | `CORE_LAYER_FILES` covers `base/factor_polars.py` | ✓ VERIFIED | L33; passes the core-layer purity check |
+| `README.md` | Documents both backends + how to add a factor to each | ⚠️ PARTIAL | Sections present and useful, but L34-40's interchangeability claim is contradicted by the code (gap 1) |
+
+### Key Link Verification
+
+| From | To | Via | Status | Details |
+|------|-----|-----|--------|---------|
+| `my_ops/preprocess.py:decompose` | KunQuant `Decompose.decompose_impl` | one-positional-arg call | ✓ WIRED | Both alpha families compile and execute end to end |
+| `base/factor.py:FactorKunQuant` | `base/factor.py:Factor` | class inheritance | ✓ WIRED | `class FactorKunQuant(Factor)` |
+| `base/factor_polars.py:FactorPolars` | `base/factor.py:Factor` | class inheritance | ✓ WIRED | `class FactorPolars(Factor)` |
+| `base/config.py:DLConfig.factors` | `base/factor.py:Factor` | `TYPE_CHECKING` forward ref | ✓ WIRED | `list["Factor"]` on both DLConfig and MLConfig |
+| `base/factor_polars.py:cal` | `base/data.py:Dataset.get_lazyframe` | `self.config.dataset.read().get_lazyframe()` | ✓ WIRED | L104 |
+| `factor/alpha101.py:Alpha101Stock` | `dataset/stock.py:_to_kunquant` | `data_columns` includes `amount` | ⚠️ WIRED, WRONG VALUE | Link exists and carries data; the synthesized value is algebraically degenerate |
+| `base/model.py` (`strategy="cal"`) | both backends | `factor.cal().get_features()` | ✓ WIRED | Live two-backend test merges both outputs into one `xr.Dataset` |
+| `base/model.py` (`strategy="read"`) | `FactorPolars` | `factor.read()` then `_get_factor_names()` | ✗ NOT_WIRED | Raises `RuntimeError` for Polars, succeeds for KunQuant — verified empirically |
+| `base/factor.py:_get_lazyframe` | (any caller) | — | ⚠️ ORPHANED | Zero call sites repo-wide; dead code carried through the refactor |
+
+### Data-Flow Trace (Level 4)
+
+| Artifact | Data Variable | Source | Produces Real Data | Status |
+|----------|---------------|--------|--------------------|--------|
+| `Alpha158SpotKline` | `KMID`, `VOLUME0`, `STD5` | `kr.runGraph` over `to_kunquant()` arrays | Yes — finite, varying | ✓ FLOWING |
+| `FactorKunQuant` (stream) | `KMID` per bar | `cal_stream` StreamContext buffers | Yes — values change between consecutive bars | ✓ FLOWING |
+| `Momentum` | `momentum_5` | `collect()` of a real Polars window chain | Yes — finite values > 0 | ✓ FLOWING |
+| `Alpha158Stock` | `KMID`, `STD5`, `VOLUME0` | `kr.runGraph` over adjusted stock arrays | Yes | ✓ FLOWING |
+| `Alpha158Stock` | `VWAP0` | `vwap = amount/volume` where `amount = volume*close` | **No — constant 1.0, std 5.2e-08** | ✗ DEGENERATE |
+| `Alpha158Stock` | `VWAP1..VWAP4` | same | **No — bit-identical to `CLOSE1..CLOSE4`** | ✗ DEGENERATE |
+| `Momentum` after `read()` | `config.factor_names` | nothing populates it | **No — stays `None`** | ✗ DISCONNECTED |
+
+### Behavioral Spot-Checks
+
+| Behavior | Command | Result | Status |
+|----------|---------|--------|--------|
+| Full suite baseline (run once) | `uv run pytest tests/ -q` | `66 passed, 21 warnings in 8.73s` | ✓ PASS |
+| SC1 batch Alpha158 | `pytest tests/test_factor_kunquant.py::test_alpha158_spot_batch_cal_returns_xarray_dataset` | pass | ✓ PASS |
+| SC2 streaming replay | `pytest tests/test_factor_stream.py::test_cal_stream_replay_produces_incremental_factor_updates` | pass | ✓ PASS |
+| SC3 Polars `cal()` | `pytest tests/test_factor_polars.py::test_momentum_cal_returns_xarray_dataset_with_only_factor_columns` | pass | ✓ PASS |
+| SC4 boundary contract | `pytest tests/test_factor_hierarchy.py::test_public_factor_api_exchanges_only_xarray_datasets` | pass | ✓ PASS |
+| D-03 live interchangeability (`cal` path only) | `pytest tests/test_factor_hierarchy.py::test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig` | pass | ✓ PASS |
+| **Verifier probe:** Polars `read()` -> `_get_factor_names()` | temporary probe, `save()` -> fresh instance -> `read()` | `RuntimeError: Momentum: factor names are not resolved yet.` (KunQuant sibling returned `('KMID',)`) | ✗ FAIL |
+| **Verifier probe:** `Alpha158Stock` VWAP degeneracy | temporary probe, `factor_names=["VWAP0","VWAP1","CLOSE1"]` | `VWAP0 unique finite = [1.]`, `std = 5.1976368e-08`, `VWAP1 allclose CLOSE1 = True` | ✗ FAIL |
+
+Both probe files were deleted after execution; `git status --porcelain` confirms no source or test file was modified by verification.
+
+### Probe Execution
+
+| Probe | Command | Result | Status |
+|-------|---------|--------|--------|
+| — | — | No `scripts/*/tests/probe-*.sh` exist and no PLAN/SUMMARY declares one | ? SKIP (no project probes) |
+
+### Requirements Coverage
+
+| Requirement | Source Plan | Description | Status | Evidence |
+|-------------|-------------|-------------|--------|----------|
+| FACTOR-01 | 03-01, 03-02, 03-03 | KunQuant 后端支持批量计算 Alpha158 因子集，输出 `xarray.Dataset` | ✓ SATISFIED (crypto) / ⚠️ PARTIAL (US equities) | Crypto batch path fully proven. `Alpha158Stock`/`Alpha101Stock` return correct-shaped Datasets but with degenerate VWAP-derived features |
+| FACTOR-02 | 03-05 | KunQuant 后端保留流式（`cal_stream`）计算能力 | ✓ SATISFIED | First-ever execution of `init_stream()`/`cal_stream()` in this repo; 60-bar replay with a genuine incrementality assertion |
+| FACTOR-03 | 03-04, 03-05 | 新增 Polars 批量因子计算后端接口 | ⚠️ PARTIAL | Backend, contract and worked example all real and proven on `cal()`; the `read()` path is not contract-conformant |
+| FACTOR-04 | 03-02, 03-04, 03-05 | 因子计算模块间数据传输统一使用 `xarray.Dataset` | ✓ SATISFIED | No public factor method exchanges a DataFrame; both backends emit `xr.Dataset`. Lock is weaker than it appears (see truth 4 note) |
+
+No orphaned requirements: `REQUIREMENTS.md` maps exactly FACTOR-01..04 to Phase 3, and all four are claimed by at least one plan's `requirements` frontmatter.
+
+**Note:** `REQUIREMENTS.md` L28-31 and L106-109 already mark all four as `[x]` / `Complete`. Given the gaps above, FACTOR-01 and FACTOR-03 are marked complete prematurely.
+
+### Anti-Patterns Found
+
+| File | Line | Pattern | Severity | Impact |
+|------|------|---------|----------|--------|
+| — | — | `TBD` / `FIXME` / `XXX` / `TODO` / `HACK` / `PLACEHOLDER` | — | **None found** across all 17 phase-modified files. Debt-marker gate passes. |
+| `base/factor_polars.py` | 45-46, 65-70 | Docstring/error message asserts a precondition the code does not satisfy | 🛑 Blocker | Misleads every future reader into believing `read()` resolves names |
+| `base/factor.py` | 141-144 | `_get_lazyframe()` — zero call sites repo-wide | ⚠️ Warning | Dead code carried through the refactor; `xr.Dataset.to_pandas()` on a 2-D-per-variable Dataset is also of doubtful correctness |
+| `base/factor.py` | 111-112, 161-162 | `get_factor_names()` returns `self.config.factor_names` directly, bypassing `_get_factor_names()` | ⚠️ Warning | The `FactorPolars` `RuntimeError` guard is unreachable from the public surface: `num_factors` on an unresolved Polars factor gives `TypeError: object of type 'NoneType' has no len()`, and `get_factor_names()` silently returns `None`. Confirms 03-REVIEW.md WR-01 |
+| `tests/test_factor_kunquant.py` | 144-167 | `test_stock_to_kunquant_synthesizes_amount_as_adjusted_dollar_volume` | ⚠️ Warning | Locks the defective `volume * close` formula in as expected behaviour, so fixing gap 2 requires editing this test |
+| `factor/momentum.py` / `config/__init__.py` | 9 / 276 | `_DEFAULT_HORIZON = 20` and `n: int = 20` are two independent defaults | ℹ️ Info | Divergence would be silent |
+| `tests/test_factor_hierarchy.py` | 389-414 | `"DataFrame" not in signature` substring match, `FactorPolars` not in the checked class tuple | ⚠️ Warning | The FACTOR-04 lock is weaker than the property it guards |
+
+### Human Verification Required
+
+#### 1. Choose the US-equity `amount` data source
+
+**Test:** Decide whether `dataset/stock.py`'s D-02 proxy should become the typical-price dollar volume (`(high+low+close)/3 * volume`), or whether a real vendor dollar-volume column should be sourced from Tiingo instead.
+**Expected:** A US-equity `amount` series whose implied `vwap = amount / volume` is not identically `close`, restoring the informational content of the five VWAP price-block features and every vwap-referencing Alpha101 formula.
+**Why human:** Choosing between a synthesized proxy and a vendor column is a data-sourcing decision with cost, coverage and adjustment-consistency tradeoffs — not something the verifier can settle programmatically. The *presence* of the defect is already proven.
+
+### Gaps Summary
+
+The phase's headline deliverables are real, and three of the four ROADMAP success criteria hold under genuine behavioural tests. The `WindowedZScore.decompose` signature fix genuinely unblocks batch Alpha158/Alpha101; `cal_stream()` genuinely runs for the first time in this repository, on this machine, with a real incrementality assertion rather than a smoke test; `FactorPolars` is a real sibling backend with a real lazy-expression worked example; and `xr.Dataset` really is the only type crossing the factor layer's public boundary. The `Factor`/`FactorKunQuant`/`FactorPolars` hierarchy, the `BaseFactorConfig` split, and the `mode`-isolation and `__init__`-ordering hazards are all correctly executed.
+
+Two defects block the goal, and I confirmed both independently against the code rather than accepting 03-REVIEW.md's claims.
+
+**CR-01 is confirmed, and it is a real goal-level gap, not a documentation nit.** D-03's entire purpose — the user's own words, "我需要这两个因子类可以无缝替换" — is that `base/model.py` cannot tell the two backends apart. It can. `factor_data_strategy` is a first-class `Literal["read", "cal"]` config field, and selecting `"read"` makes every KunQuant factor work and every Polars factor raise. The phase's own live interchangeability test cannot see this because it pins `"cal"` and hand-calls `cal()`; `tests/test_factor_polars.py` cannot see it because it restates the false precondition in prose while asserting only the `cal()` path; and `README.md` ships the claim that this is impossible. The fix is small — resolve `factor_names` from the persisted store's data_vars on `read()` — but the missing *test* matters more than the missing line, because the whole D-03 contract currently rests on a test that exercises half of it.
+
+**CR-02 is confirmed, and it is silent corruption rather than an approximation.** `amount = volume * close` makes `vwap = amount/volume` exactly `close`, which I measured: `VWAP0` is a constant 1.0 with std 5.2e-08, and `VWAP1` is allclose-identical to `CLOSE1`. Five Alpha158 features become zero-information for US equities and every vwap-referencing Alpha101 alpha degenerates into a close-price variant. The arrays are finite and the shapes are right, so nothing fails — and `test_stock_to_kunquant_synthesizes_amount_as_adjusted_dollar_volume` actively locks the defective formula in as intended behaviour. This is strictly worse than the graph-construction crash it replaced, because the crash was visible. Phase 4 consumes exactly these features to train a model.
+
+**On the green suite.** 66/66 passing is necessary but not sufficient here, and this phase is a clean illustration of why: the suite is genuinely strong on the paths it covers (the streaming incrementality assertion and the D-04 monkeypatched-`collect` laziness proof are both better than typical), but neither defect is reachable from any assertion in it. Both were found by driving code paths the tests deliberately do not drive.
+
+Neither gap is deferrable. No later phase's goal or success criteria specifically address the Polars `read()` path or the US-equity dollar-volume proxy; Phase 6 SC4 (stage swapping) and Phase 7 (test coverage) are too general to carry them, and per the conservative matching rule both stay as actionable gaps.
+
+---
+
+_Verified: 2026-09-05T16:10:00Z_
+_Verifier: Claude (gsd-verifier)_
