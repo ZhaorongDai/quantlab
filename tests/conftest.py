@@ -14,11 +14,13 @@ test, never at module import time.
 
 import io
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import pytest
 import xarray as xr
 
@@ -402,6 +404,144 @@ def spot_kline_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
             zarr_file_path=str(zarr_path),
             catalog_path=str(spot_dir / "catalog"),
             market="crypto_spot",
+            frequency="1d",
+        )
+
+    return _build
+
+
+_STOCK_PQT_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "adjOpen",
+    "adjHigh",
+    "adjLow",
+    "adjClose",
+    "adjVolume",
+    "divCash",
+    "splitFactor",
+]
+
+
+@pytest.fixture
+def stock_pqt_row() -> Callable[..., dict]:
+    """Return a row-builder callable `(date_str, symbol, close=100.0) -> dict`.
+
+    Mirrors the exact field set/dtypes `acquisition/tiingo.py:TiingoAcquisition`
+    writes (Tiingo's EOD columns + divCash/splitFactor + renamed
+    timestamp/symbol) so synthetic fixtures schema-match real vendor output
+    when `pl.concat()`'d together in `StockDataset._raw_data_to_xr()`.
+
+    Promoted out of `tests/test_stock_dataset.py`'s private `_row()` helper
+    (03-VALIDATION.md Wave-0 gap) so Phase-3 stock factor tests reuse it
+    instead of duplicating it a third time.
+    """
+
+    def _row(date_str: str, symbol: str, close: float = 100.0) -> dict:
+        return {
+            "timestamp": datetime.fromisoformat(date_str),
+            "symbol": symbol,
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1_000,
+            "adjOpen": close,
+            "adjHigh": close,
+            "adjLow": close,
+            "adjClose": close,
+            "adjVolume": 1_000,
+            "divCash": 0.0,
+            "splitFactor": 1.0,
+        }
+
+    return _row
+
+
+@pytest.fixture
+def write_stock_pqt() -> Callable[..., Path]:
+    """Factory fixture. Call as `write_stock_pqt(path, rows)` to write a raw
+    Tiingo-shaped parquet file (creating parent directories as needed) and get
+    the written `Path` back.
+
+    Promoted out of `tests/test_stock_dataset.py`'s private
+    `_write_stock_pqt()` helper (03-VALIDATION.md Wave-0 gap).
+    """
+
+    def _write(path: Path, rows: list[dict]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df = pl.DataFrame(rows).select(_STOCK_PQT_COLUMNS)
+        df.write_parquet(path)
+        return path
+
+    return _write
+
+
+@pytest.fixture
+def stock_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
+    """Factory fixture. Call as
+    `stock_zarr(symbols=None, periods=60, seed=0)` to write a synthetic
+    Tiingo-shaped Zarr store at `{tmp_path}/stock/stock.zarr` and get back a
+    `DatasetConfig` pointing at it.
+
+    Emits BOTH the raw lowercase group (`open`/`high`/`low`/`close`/`volume`)
+    AND the adjusted group (`adjOpen`/`adjHigh`/`adjLow`/`adjClose`/
+    `adjVolume`): `dataset/stock.py:StockDataset._to_kunquant()` drops the
+    former and renames the latter onto those names, so a store missing either
+    group raises.
+
+    Same seeded, strictly-positive random-walk generator as
+    `spot_kline_zarr`, and the same write-before-config ordering rule.
+    """
+
+    def _build(
+        symbols: Optional[list[str]] = None,
+        periods: int = 60,
+        seed: int = 0,
+    ) -> DatasetConfig:
+        symbol_list = list(symbols) if symbols is not None else ["AAPL", "MSFT"]
+        timestamps = pd.date_range("2024-01-01", periods=periods, freq="D")
+        rng = np.random.default_rng(seed)
+
+        base = _positive_random_walk(rng, periods, len(symbol_list))
+        volume = _positive_random_walk(rng, periods, len(symbol_list)) * 10.0
+
+        variables = {
+            "open": base * 0.99,
+            "high": base * 1.02,
+            "low": base * 0.98,
+            "close": base,
+            "volume": volume,
+            "adjOpen": base * 0.99,
+            "adjHigh": base * 1.02,
+            "adjLow": base * 0.98,
+            "adjClose": base,
+            "adjVolume": volume,
+        }
+
+        dataset = xr.Dataset(
+            {
+                name: (["timestamp", "symbol"], values)
+                for name, values in variables.items()
+            },
+            coords={"timestamp": timestamps, "symbol": symbol_list},
+        )
+
+        stock_dir = tmp_path / "stock"
+        stock_dir.mkdir(parents=True, exist_ok=True)
+        zarr_path = stock_dir / "stock.zarr"
+        dataset.to_zarr(zarr_path, mode="w")
+
+        return DatasetConfig(
+            raw_data_dir_path=str(stock_dir / "raw"),
+            zarr_file_path=str(zarr_path),
+            catalog_path=str(stock_dir / "catalog"),
+            market="us_equity",
             frequency="1d",
         )
 

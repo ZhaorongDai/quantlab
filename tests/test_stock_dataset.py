@@ -7,60 +7,15 @@ Test 3 is a full mocked-network integration test proving the
 TiingoAcquisition -> StockDataset -> Zarr round trip end-to-end (Task 2).
 """
 
-from datetime import datetime
 from pathlib import Path
-
-import polars as pl
+from typing import Callable
 
 from base.config import AcquisitionConfig, DatasetConfig
 from dataset.stock import StockDataset
 
-_COLUMNS = [
-    "timestamp",
-    "symbol",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "adjOpen",
-    "adjHigh",
-    "adjLow",
-    "adjClose",
-    "adjVolume",
-    "divCash",
-    "splitFactor",
-]
-
-
-def _row(date_str: str, symbol: str, close: float = 100.0) -> dict:
-    # Mirrors the exact field set/dtypes acquisition/tiingo.py:TiingoAcquisition
-    # writes (Tiingo's EOD columns + divCash/splitFactor + renamed
-    # timestamp/symbol) so synthetic fixtures schema-match real vendor
-    # output when pl.concat()'d together in StockDataset._raw_data_to_xr().
-    return {
-        "timestamp": datetime.fromisoformat(date_str),
-        "symbol": symbol,
-        "open": close,
-        "high": close,
-        "low": close,
-        "close": close,
-        "volume": 1_000,
-        "adjOpen": close,
-        "adjHigh": close,
-        "adjLow": close,
-        "adjClose": close,
-        "adjVolume": 1_000,
-        "divCash": 0.0,
-        "splitFactor": 1.0,
-    }
-
-
-def _write_stock_pqt(path: Path, rows: list[dict]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df = pl.DataFrame(rows).select(_COLUMNS)
-    df.write_parquet(path)
-    return path
+# The `stock_pqt_row` / `write_stock_pqt` helpers these tests use live in
+# tests/conftest.py (promoted there by 03-01 Task 2, 03-VALIDATION.md Wave-0
+# gap) so Phase-3 stock factor tests reuse them rather than duplicating them.
 
 
 def _make_dataset_config(raw_data_dir_path: str, zarr_file_path: str) -> DatasetConfig:
@@ -73,7 +28,11 @@ def _make_dataset_config(raw_data_dir_path: str, zarr_file_path: str) -> Dataset
     )
 
 
-def test_overlapping_pqt_files_dedup_before_to_xarray(tmp_path: Path) -> None:
+def test_overlapping_pqt_files_dedup_before_to_xarray(
+    stock_pqt_row: Callable[..., dict],
+    write_stock_pqt: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
     """Test 1: two raw parquet files for the same symbol, sharing one
     overlapping (timestamp, symbol) row (simulating an overlapping
     download()+refresh() range), convert successfully via
@@ -81,13 +40,13 @@ def test_overlapping_pqt_files_dedup_before_to_xarray(tmp_path: Path) -> None:
     non-unique-MultiIndex crash), and the resulting dataset has exactly one
     row for the overlapping timestamp."""
     symbol_dir = tmp_path / "raw" / "AAPL"
-    _write_stock_pqt(
+    write_stock_pqt(
         symbol_dir / "data_1.pqt",
-        [_row("2024-01-02", "AAPL"), _row("2024-01-03", "AAPL")],
+        [stock_pqt_row("2024-01-02", "AAPL"), stock_pqt_row("2024-01-03", "AAPL")],
     )
-    _write_stock_pqt(
+    write_stock_pqt(
         symbol_dir / "data_2.pqt",
-        [_row("2024-01-03", "AAPL"), _row("2024-01-04", "AAPL")],
+        [stock_pqt_row("2024-01-03", "AAPL"), stock_pqt_row("2024-01-04", "AAPL")],
     )
 
     config = _make_dataset_config(
@@ -104,19 +63,21 @@ def test_overlapping_pqt_files_dedup_before_to_xarray(tmp_path: Path) -> None:
 
 
 def test_dedup_noop_on_non_overlapping_pqt_files(
+    stock_pqt_row: Callable[..., dict],
+    write_stock_pqt: Callable[..., Path],
     tmp_path: Path,
 ) -> None:
     """Test 2: a StockDataset built from non-overlapping parquet files
     converts unchanged (same row count) -- regression proving the dedup
     insertion doesn't alter clean data."""
     symbol_dir = tmp_path / "raw" / "AAPL"
-    _write_stock_pqt(
+    write_stock_pqt(
         symbol_dir / "data_1.pqt",
-        [_row("2024-01-02", "AAPL"), _row("2024-01-03", "AAPL")],
+        [stock_pqt_row("2024-01-02", "AAPL"), stock_pqt_row("2024-01-03", "AAPL")],
     )
-    _write_stock_pqt(
+    write_stock_pqt(
         symbol_dir / "data_2.pqt",
-        [_row("2024-01-04", "AAPL"), _row("2024-01-05", "AAPL")],
+        [stock_pqt_row("2024-01-04", "AAPL"), stock_pqt_row("2024-01-05", "AAPL")],
     )
 
     config = _make_dataset_config(
@@ -132,7 +93,11 @@ def test_dedup_noop_on_non_overlapping_pqt_files(
 
 
 def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
-    mock_tiingo_client, tiingo_json_response: list[dict], tmp_path: Path
+    mock_tiingo_client,
+    tiingo_json_response: list[dict],
+    stock_pqt_row: Callable[..., dict],
+    write_stock_pqt: Callable[..., Path],
+    tmp_path: Path,
 ) -> None:
     """Test 3: TiingoAcquisition.download() (mocked network) ->
     StockDataset.from_raw_data().save() -> StockDataset(...).read() round
@@ -186,9 +151,9 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     # Write a second symbol's raw data covering a disjoint date so a gap
     # exists for AAPL on that date once both symbols share the same
     # [timestamp, symbol] grid.
-    _write_stock_pqt(
+    write_stock_pqt(
         Path(raw_data_dir_path) / "MSFT" / "data_1.pqt",
-        [_row("2024-02-01", "MSFT")],
+        [stock_pqt_row("2024-02-01", "MSFT")],
     )
     multi_symbol_dataset.from_raw_data().save()
     read_back_multi = StockDataset(other_config).read()
