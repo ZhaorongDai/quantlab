@@ -698,14 +698,14 @@ def test_cal_stream_replays_batch_data_without_error():
 
 **If this table is empty:** N/A — see above; both entries are low-risk, narrowly-scoped extrapolations of already-locked/verified findings, not load-bearing unverified claims.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **`utils/module.py:load_factor_from_config()` hardcodes `FactorConfig(**config)`, which will break for a persisted `FactorPolars`/`PolarsFactorConfig`-based factor.**
+1. **`utils/module.py:load_factor_from_config()` hardcodes `FactorConfig(**config)`, which will break for a persisted `FactorPolars`/`PolarsFactorConfig`-based factor.** — RESOLVED: deferred to Phase 4
    - What we know: This function is only reachable from `load_model_from_config()`, used by Phase 4's model-checkpoint reload flow — not exercised by any of this phase's FACTOR-01..04 success criteria.
    - What's unclear: Whether Phase 4's planner wants a `Factor.config_cls: ClassVar[type]` pattern (each subclass declares which config dataclass it needs) or a different reload mechanism.
    - Recommendation: Do not fix in this phase (out of scope — no success criterion touches checkpoint reload of a Polars-backed factor). Flag explicitly for Phase 4 planning.
 
-2. **Should `Dataset.get_lazyframe()` eventually gain a market-agnostic column-normalization contract** (mirroring what `_to_kunquant()` already does per-subclass), so future Polars factors can be written once and reused across `SpotKlineDataset`/`StockDataset` without per-market column-name branching?
+2. **Should `Dataset.get_lazyframe()` eventually gain a market-agnostic column-normalization contract** (mirroring what `_to_kunquant()` already does per-subclass), so future Polars factors can be written once and reused across `SpotKlineDataset`/`StockDataset` without per-market column-name branching? — RESOLVED: deferred, out of scope per D-08
    - What we know: Today it returns raw, un-renamed columns (Pattern 4).
    - What's unclear: Whether this is worth the added abstraction for a single example factor in this phase.
    - Recommendation: Out of scope for this phase (D-08 only requires *one* example factor, and CONTEXT.md's Polars discussion never mentions this). Worth a one-line mention to the user/planner as a natural extension if more Polars factors are added in a future phase.
