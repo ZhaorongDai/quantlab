@@ -12,6 +12,8 @@ landed. `mock_tiingo_client` only references it as a dotted string inside
 test, never at module import time.
 """
 
+import io
+import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -153,3 +155,149 @@ def mock_tiingo_client(monkeypatch, tiingo_json_response: list[dict]) -> type:
     monkeypatch.setenv("TIINGO_API_KEY", "test-key-not-real")
 
     return FakeTiingoClient
+
+
+@pytest.fixture
+def sp500_anchor_csv_rows() -> str:
+    """CSV text mimicking datasets/s-and-p-500-companies's `constituents.csv`
+    real columns. Includes AAPL (long-standing, early `Date added`), MSFT,
+    TSLA with `Date added = "2020-12-21"` (Tesla's real, publicly documented
+    S&P 500 inclusion date), and `ADDED1` (matches the `sp500_changes_html_
+    fixture`'s earliest, 1976-07-01-dated row so it round-trips as a still-
+    current, open-ended member).
+    """
+    header = (
+        "Symbol,Security,GICS Sector,GICS Sub-Industry,"
+        "Headquarters Location,Date added,CIK,Founded"
+    )
+    rows = [
+        header,
+        'AAPL,Apple Inc.,Information Technology,Technology Hardware,'
+        '"Cupertino, California",1982-11-30,0000320193,1976',
+        'MSFT,Microsoft Corp.,Information Technology,Systems Software,'
+        '"Redmond, Washington",1994-06-01,0000789019,1975',
+        'TSLA,Tesla Inc.,Consumer Discretionary,Automobile Manufacturers,'
+        '"Austin, Texas",2020-12-21,0001318605,2003',
+        'ADDED1,Added1 Co,Industrials,Diversified Industrials,'
+        '"New York, New York",1976-07-01,0000000001,1970',
+    ]
+    return "\n".join(rows) + "\n"
+
+
+@pytest.fixture
+def sp500_changes_html_fixture() -> str:
+    """Synthetic HTML with `<table id="changes">` mirroring the real
+    Wikipedia "Historical components of the S&P 500" page's 2-level-header,
+    7-column shape (Effective Date | Added Ticker | Added Security |
+    Removed Ticker | Removed Security | Reason | Refs).
+
+    Rows, in original (non-sorted) order:
+    1. July 1, 1976 -- aligns with `SP500MembershipFetcher.PIT_COVERAGE_
+       START`; `ADDED1` added (never removed -- matches the anchor CSV).
+    2. January 1, 1980 -- `REENTRY` added (first membership span).
+    3. January 1, 1985 -- `ZZZZ` removed with NO matching prior "added" row
+       anywhere in this fixture (exercises the left-censored path).
+    4. January 1, 1990 -- `REENTRY` removed (closes the first span).
+    5. January 1, 2000 -- `REENTRY` re-added (second membership span,
+       exercises the re-entry path).
+    6. December 21, 2020 -- `TSLA` added / `AIV` removed. Tesla's real,
+       publicly documented S&P 500 addition date.
+    """
+    rows = [
+        ("July 1, 1976", "ADDED1", "Added1 Co", "", "", "Initial", ""),
+        ("January 1, 1980", "REENTRY", "Reentry Co", "", "", "Initial addition", ""),
+        ("January 1, 1985", "", "", "ZZZZ", "ZZZZ Co", "Removed (left-censored)", ""),
+        ("January 1, 1990", "", "", "REENTRY", "Reentry Co", "Removed", ""),
+        ("January 1, 2000", "REENTRY", "Reentry Co", "", "", "Re-added", ""),
+        (
+            "December 21, 2020",
+            "TSLA",
+            "Tesla, Inc.",
+            "AIV",
+            "Apartment Investment & Management Co",
+            "Market cap change",
+            "",
+        ),
+    ]
+    body_rows = "\n".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return f"""
+<html><body>
+<table id="changes">
+<thead>
+<tr>
+<th rowspan="2">Effective Date</th>
+<th colspan="2">Added</th>
+<th colspan="2">Removed</th>
+<th rowspan="2">Reason</th>
+<th rowspan="2">Refs</th>
+</tr>
+<tr>
+<th>Ticker</th><th>Security</th><th>Ticker</th><th>Security</th>
+</tr>
+</thead>
+<tbody>
+{body_rows}
+</tbody>
+</table>
+</body></html>
+"""
+
+
+@pytest.fixture
+def mock_universe_fetchers(
+    monkeypatch,
+    sp500_anchor_csv_rows: str,
+    sp500_changes_html_fixture: str,
+) -> Callable[..., object]:
+    """Patch `acquisition.universe.requests.get` to return a `FakeResponse`
+    (with `.status_code`, `.text`, `.content`, `.raise_for_status()`) keyed
+    by requested URL, matching each fetcher's real class-constant URL:
+
+    - `NasdaqUniverseFetcher.SOURCE_URL` -> an in-memory zip wrapping a
+      synthetic `supported_tickers.csv` with rows spanning NASDAQ/NYSE,
+      Stock/ETF, USD/EUR (and one NASDAQ/Stock/USD row with a real
+      `endDate` to exercise the delisted-exclusion path).
+    - `SP500MembershipFetcher.ANCHOR_URL` -> `sp500_anchor_csv_rows`.
+    - `SP500MembershipFetcher.CHANGES_URL` -> `sp500_changes_html_fixture`.
+
+    No test in this suite makes a real network call.
+    """
+    from acquisition.universe import NasdaqUniverseFetcher, SP500MembershipFetcher
+
+    nasdaq_csv = (
+        "ticker,exchange,assetType,priceCurrency,startDate,endDate\n"
+        "AAPL,NASDAQ,Stock,USD,1980-12-12,\n"
+        "MSFT,NASDAQ,Stock,USD,1986-03-13,\n"
+        "NYSE1,NYSE,Stock,USD,1990-01-01,\n"
+        "ETF1,NASDAQ,ETF,USD,2000-01-01,\n"
+        "EURO1,NASDAQ,Stock,EUR,2000-01-01,\n"
+        "DELISTED1,NASDAQ,Stock,USD,1990-01-01,2020-01-01\n"
+    )
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("supported_tickers.csv", nasdaq_csv)
+    zip_bytes = zip_buffer.getvalue()
+
+    class FakeResponse:
+        def __init__(self, content: bytes = b"", text: str = ""):
+            self.status_code = 200
+            self.content = content
+            self.text = text
+
+        def raise_for_status(self) -> None:
+            pass
+
+    def fake_get(url, *args, **kwargs):
+        if url == NasdaqUniverseFetcher.SOURCE_URL:
+            return FakeResponse(content=zip_bytes)
+        if url == SP500MembershipFetcher.ANCHOR_URL:
+            return FakeResponse(text=sp500_anchor_csv_rows)
+        if url == SP500MembershipFetcher.CHANGES_URL:
+            return FakeResponse(text=sp500_changes_html_fixture)
+        raise AssertionError(f"Unexpected URL requested in test: {url}")
+
+    monkeypatch.setattr("acquisition.universe.requests.get", fake_get)
+    return fake_get
