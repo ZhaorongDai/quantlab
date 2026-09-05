@@ -359,7 +359,7 @@ def get_symbols_as_of(
 
 **Confirm A1 and A4 explicitly with the user during planning/discuss-phase** — both are reasoned interpretations of scope/constraint boundaries the user has not directly confirmed for this specific supplement, even though both are well-supported by existing precedent in the codebase (A1) and the objective's literal wording (A4).
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does the planner need a `general_market` interval table at all, or is a static "currently on Nasdaq" label sufficient for that category?**
    - What we know: `sp500_constituent` clearly needs full point-in-time reconstruction (the user's explicit ask). `general_market` (D-12's second category) is "everything Nasdaq-ever-listed that isn't S&P 500" — Tiingo's `supported_tickers.csv` already gives every such symbol its own `start_date`/`end_date`, so no separate reconstruction algorithm is needed for it; it literally falls out of the Tiingo filter for free.
