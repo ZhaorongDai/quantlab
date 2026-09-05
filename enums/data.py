@@ -26,6 +26,15 @@ class BinanceCSVHeaders:
 Market = Literal["us_equity", "crypto_spot"]
 Frequency = Literal["1d", "1m", "tick"]
 
+# US-equity universe reference categories (02-08-PLAN.md / 02-CONTEXT.md D-12).
+# "nasdaq_all" = every symbol ever listed on NASDAQ as Common Stock priced in
+# USD per Tiingo's supported_tickers.csv (current + delisted, via
+# start_date/end_date). "sp500_constituent" = point-in-time S&P 500
+# membership reconstructed from Wikipedia's historical-components table.
+# Exchange scope is locked per Locked Decision A4 (02-08-PLAN.md) -- NASDAQ
+# only, no OTC/Expert-Market tiers.
+UniverseCategory = Literal["nasdaq_all", "sp500_constituent"]
+
 
 @dataclass
 class TiingoColumns:

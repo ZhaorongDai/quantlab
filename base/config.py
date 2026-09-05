@@ -43,6 +43,27 @@ class AcquisitionConfig:
 
 
 @dataclass
+class UniverseConfig:
+    """Config for the survivorship-bias-free, point-in-time US-equity
+    universe reference table (02-08-PLAN.md / 02-CONTEXT.md D-12).
+
+    This is reference/metadata, not xarray/Zarr pipeline data (Locked
+    Decision A1, 02-08-PLAN.md) -- persisted via PlBackend/parquet, same
+    footing as config/instruments.yaml. Deliberately carries no
+    credential/API-key field: acquisition/universe.py makes zero
+    authenticated requests.
+    """
+
+    output_path: str
+    cache_dir: str
+    kwargs: dict | None = None
+    name: str | None = None
+
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass
 class FactorConfig:
     window: int
     dataset: "Dataset"
