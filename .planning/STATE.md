@@ -5,14 +5,14 @@ current_phase: 03
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: verifying
 stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-09-05T19:04:47.719Z"
+last_updated: "2026-09-05T22:05:39.641Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03 execution started
-state_head: 76475682eb9ca0322abe270dc41c942aec667983
+state_head: 74431bb5378c3bdb60ba2f5ed33b27ba2276769c
 progress:
-  total_phases: 7
+  total_phases: 8
   completed_phases: 0
-  total_plans: 18
+  total_plans: 20
   completed_plans: 18
 milestone_name: milestone
 ---
@@ -94,6 +94,10 @@ Recent decisions affecting current work:
 ### Blockers/Concerns
 
 - Tiingo API key currently leaked in `scripts/download_stock_data_from_tiingo.py` and pushed to `origin/main` — user should revoke/rotate the key in the Tiingo dashboard independent of the git-history reset planned in Phase 1.
+
+### Roadmap Evolution
+
+- Phase 03.1 inserted after Phase 3: Index Historical Constituents Data Layer — daily point-in-time S&P 500 / Nasdaq-100 membership panels as xarray (URGENT)
 
 ## Deferred Items
 
