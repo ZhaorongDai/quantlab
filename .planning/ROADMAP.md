@@ -106,7 +106,7 @@ Plans:
   3. User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract
   4. No factor-pipeline code path passes a plain DataFrame between modules — inputs/outputs are `xarray.Dataset` only
 
-**Plans:** 5/5 plans executed
+**Plans:** 7 plans (5 executed; 2 gap-closure plans pending after the `gaps_found` verdict)
 
 Plans:
 **Wave 1**
@@ -125,6 +125,11 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 
 - [x] 03-05-PLAN.md — Streaming smoke test (fixes the arch-dependent SIMD-width crash), live two-backend interchangeability proof, README coverage
+
+**Gap closure — Wave 1** *(added after 03-VERIFICATION.md returned `gaps_found`; the two plans below touch disjoint files and run in parallel)*
+
+- [ ] 03-06-PLAN.md — Close CR-01: resolve Polars factor names on the `read()` path so `factor_data_strategy="read"` is backend-independent (D-03), plus the two-backend read-strategy lock
+- [ ] 03-07-PLAN.md — Close CR-02: US-equity `amount` becomes typical-price dollar volume (GAP-D-01) so `vwap` is no longer identically `close`, plus the VWAP non-degeneracy lock
 
 ### Phase 4: Baseline Return Prediction Model
 
