@@ -30,6 +30,7 @@ from base.data import Dataset
 
 CORE_LAYER_FILES = (
     "base/factor.py",
+    "base/factor_polars.py",
     "base/model.py",
     "base/backend.py",
 )
