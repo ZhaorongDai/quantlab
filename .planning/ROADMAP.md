@@ -67,7 +67,7 @@ Plans:
   3. Both data sources pass through a shared cleaning/preprocessing module (`dataset/cleaning.py` — planner discretion per 02-CONTEXT.md, not `my_ops` which is KunQuant-graph-op style and the wrong fit for tabular/xarray cleaning) before being persisted, producing a valid `xarray.Dataset`
   4. A design/code review confirms adding a new market or frequency only requires a new `Dataset` subclass + config — no changes needed in factor/model/backtest code
 
-**Plans:** 7/7 plans complete
+**Plans:** 7/8 plans complete (02-08 is a post-completion supplement, see below)
 
 Plans:
 **Wave 1**
@@ -88,6 +88,10 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 
 - [x] 02-07-PLAN.md — StockDataset Tiingo integration + ingest_tiingo.py (completes US-equities slice end-to-end)
+
+**Supplement** *(added after original 7 plans completed, per D-12/D-12a — independent, wave 1, no dependency on the above)*
+
+- [ ] 02-08-PLAN.md — Survivorship-bias-free, point-in-time US equity universe (NASDAQ-listed incl. delisted + point-in-time S&P 500 membership via acquisition/universe.py, wired into ingest_tiingo.py --universe/--as-of-date)
 
 ### Phase 3: Factor Computation (KunQuant + Polars)
 
@@ -171,7 +175,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
-| 2. Multi-Market Data Foundation | 7/7 | Complete   | 2026-09-05 |
+| 2. Multi-Market Data Foundation | 7/8 | Complete (supplement pending) | 2026-09-05 |
 | 3. Factor Computation (KunQuant + Polars) | 0/TBD | Not started | - |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
