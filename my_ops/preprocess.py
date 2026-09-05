@@ -8,7 +8,8 @@ class WindowedZScore(WindowedCompositiveOp):
     Z-score = (value - rolling_mean) / rolling_std
     """
 
-    def decompose(self) -> list[OpBase]:
+    # `options` matches KunQuant CompositiveOp (passes/Decompose.py:15).
+    def decompose(self, options: dict) -> list[OpBase]:
         window: int = self.attrs["window"]  # type: ignore
         b = Builder(self.get_parent())
         with b:
@@ -31,7 +32,8 @@ class WindowedRobustStandardization(WindowedCompositiveOp):
     对异常值更加鲁棒，适用于包含噪声的金融数据
     """
 
-    def decompose(self) -> List[OpBase]:
+    # `options` matches KunQuant CompositiveOp (passes/Decompose.py:15).
+    def decompose(self, options: dict) -> List[OpBase]:
         window: int = self.attrs["window"]  # type: ignore
         b = Builder(self.get_parent())
         with b:

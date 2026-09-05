@@ -17,7 +17,12 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
+import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
+
+from base.config import DatasetConfig
 
 
 @pytest.fixture
@@ -301,3 +306,103 @@ def mock_universe_fetchers(
 
     monkeypatch.setattr("acquisition.universe.requests.get", fake_get)
     return fake_get
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 synthetic-Zarr fixtures (03-01-PLAN.md, FACTOR-01)
+#
+# Factor computation needs a much larger input than Phase 2's
+# `write_binance_csv` fixture provides (2 rows / 1 symbol): rolling factor
+# windows need ~60 timestamps and the streaming replay needs 8 symbols. These
+# factories synthesise a seeded, strictly-positive market-data panel and write
+# it straight to a Zarr store, skipping raw CSV/parquet ingestion entirely.
+#
+# Import-safety rule (see module docstring): these fixtures import only
+# numpy/pandas/xarray and `base.config` -- never a `dataset.*` or `factor.*`
+# module -- so `pytest --collect-only` stays green.
+# ---------------------------------------------------------------------------
+
+
+def _positive_random_walk(
+    rng: np.random.Generator, periods: int, num_symbols: int
+) -> np.ndarray:
+    """Return a `[periods, num_symbols]` float array that is strictly greater
+    than 1.0 everywhere.
+
+    KunQuant factor graphs divide by price and volume columns, so a zero or
+    negative entry would poison every downstream factor with inf/NaN. Starting
+    at 100.0, cumulatively summing normal increments and then taking
+    `abs(...) + 1.0` guarantees positivity without destroying the
+    walk's time-series structure.
+    """
+    increments = rng.normal(loc=0.0, scale=1.0, size=(periods, num_symbols))
+    walk = 100.0 + np.cumsum(increments, axis=0)
+    return np.abs(walk) + 1.0
+
+
+@pytest.fixture
+def spot_kline_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
+    """Factory fixture. Call as
+    `spot_kline_zarr(symbols=None, periods=60, seed=0)` to write a synthetic
+    Binance-shaped Zarr store at `{tmp_path}/spot/klines.zarr` and get back a
+    `DatasetConfig` pointing at it.
+
+    Variables are the raw Binance Title-Case names `SpotKlineDataset` persists
+    (`Open`, `High`, `Low`, `Close`, `Volume`, `Quote asset volume`) over dims
+    `["timestamp", "symbol"]` -- `SpotKlineDataset._to_kunquant()` renames them
+    to KunQuant's lowercase `open/high/low/close/volume/amount` at the
+    boundary.
+
+    The store is written to disk BEFORE the `DatasetConfig` is constructed:
+    `base/data.py:Dataset.config`'s setter calls `_reset_symbols()` (which
+    calls `read()`) whenever `DatasetConfig.symbols` is not None, so the file
+    must already exist by the time a caller hands the config to a `Dataset`.
+    """
+
+    def _build(
+        symbols: Optional[list[str]] = None,
+        periods: int = 60,
+        seed: int = 0,
+    ) -> DatasetConfig:
+        symbol_list = (
+            list(symbols)
+            if symbols is not None
+            else [f"S{i}USDT" for i in range(8)]
+        )
+        timestamps = pd.date_range("2024-01-01", periods=periods, freq="D")
+        rng = np.random.default_rng(seed)
+
+        base = _positive_random_walk(rng, periods, len(symbol_list))
+        volume = _positive_random_walk(rng, periods, len(symbol_list)) * 10.0
+
+        variables = {
+            "Open": base * 0.99,
+            "High": base * 1.02,
+            "Low": base * 0.98,
+            "Close": base,
+            "Volume": volume,
+            "Quote asset volume": volume * base,
+        }
+
+        dataset = xr.Dataset(
+            {
+                name: (["timestamp", "symbol"], values)
+                for name, values in variables.items()
+            },
+            coords={"timestamp": timestamps, "symbol": symbol_list},
+        )
+
+        spot_dir = tmp_path / "spot"
+        spot_dir.mkdir(parents=True, exist_ok=True)
+        zarr_path = spot_dir / "klines.zarr"
+        dataset.to_zarr(zarr_path, mode="w")
+
+        return DatasetConfig(
+            raw_data_dir_path=str(spot_dir / "raw"),
+            zarr_file_path=str(zarr_path),
+            catalog_path=str(spot_dir / "catalog"),
+            market="crypto_spot",
+            frequency="1d",
+        )
+
+    return _build
