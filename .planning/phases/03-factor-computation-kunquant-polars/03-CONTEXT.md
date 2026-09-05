@@ -27,6 +27,22 @@ Users can compute the existing Alpha158 factor set (batch and streaming) via Kun
 - **D-07 (batch-only, no streaming):** Reaffirms the original project-level decision — the Polars backend has no streaming/`cal_stream()` equivalent; it is batch-only.
 - **D-08 (example factor):** Ship one simple example factor in `factor/` demonstrating the new `FactorPolars` pattern end-to-end (not a factor already covered by Alpha101/158). Exact formula is Claude's/the planner's discretion — the user's own answer focused entirely on the architecture/contract, not a specific factor formula, so a simple, well-understood factor (e.g. N-day price momentum, or a simple turnover/volume-based signal) is an acceptable default as long as it's genuinely computed via Polars lazyframe operations, not a trivial pass-through.
 
+### Factor normalization axis (D-09 — added 2026-09-05, supersedes part of D-01)
+
+- **D-09 (LOCKED, user's direct ruling):** `WindowedZScore`/`WindowedRobustStandardization` (`my_ops/preprocess.py`, both `WindowedCompositiveOp`) are **time-series-strategy** (时序策略) normalization — they standardize each symbol against its own rolling window. **Cross-sectional strategies** (截面策略) instead need a cross-sectional Z-score (standardize across symbols at each timestamp). The presence or absence of `WindowedZScore` in a factor class is therefore a **strategy-type design choice, never a scale bug to "fix" by aligning two classes.**
+- **US equities use cross-sectional strategies.** The user's words: "美股都用截面策略，Alpha158Stock 也不要时序标准化". Both US-equity factor classes emit **raw, un-normalized** factor values:
+
+  | Factor class | Market | Normalization |
+  |---|---|---|
+  | `Alpha101SpotKline` | crypto spot | `WindowedZScore` (time-series) |
+  | `Alpha158SpotKline` | crypto spot | `WindowedZScore` (time-series) |
+  | `Alpha101Stock` | US equities | none — raw (cross-sectional strategy) |
+  | `Alpha158Stock` (new) | US equities | none — raw (cross-sectional strategy) |
+
+- **This supersedes part of D-01.** D-01's "mirror `Alpha158SpotKline`" applies to the `AllData` wiring and factor-set construction only — NOT to the normalization wrapper. `Alpha158Stock` must emit `Output(v, k)` directly, not `Output(WindowedZScore(v, window), k)`.
+- **`Alpha101Stock`'s only genuine defect** remains the missing `amount` input causing the verified `RuntimeError: Bad inputs` crash (D-02's `volume * close` proxy fixes it). Its lack of `WindowedZScore` is correct-by-design, not a bug.
+- **Cross-sectional Z-score op is deferred, not forgotten.** `my_ops/` currently has only time-series ops; KunQuant upstream supplies `CrossSectionalOp`, `SimpleCrossSectionalOp`, `Rank`, `Scale` as building blocks. Building an actual cross-sectional normalization op belongs with the ARCH-01/ARCH-02 work in Phase 6 ("架构同时兼容单标的时序策略与多标的截面多因子策略"), not this phase — this phase emits raw US-equity factor values and leaves normalization to the downstream consumer.
+
 ### Claude's Discretion
 - Exact naming of the new shared `Factor` ABC and the new `FactorPolars`/`_get_factor_lazyframe()` method names (the user described the shape and contract, not literal identifiers).
 - Whether/how Alpha158's cross-sectional-normalized factors need per-market handling differences (D-01's note).
