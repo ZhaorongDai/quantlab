@@ -7,6 +7,7 @@ Tests 3-4 cover ingest_binance_spot.py:_build_dataset_config()'s
 --raw-data-dir override behavior (Task 2).
 """
 
+from argparse import Namespace
 from typing import Callable
 
 from base.config import DatasetConfig
@@ -76,3 +77,45 @@ def test_non_duplicate_csvs_convert_with_unchanged_row_count(
     assert xr_data.sizes["timestamp"] == 2
     assert xr_data.sizes["symbol"] == 1
     assert set(["timestamp", "symbol"]).issubset(set(xr_data.dims))
+
+
+def test_build_dataset_config_raw_data_dir_none_is_noop() -> None:
+    """Test 3: _build_dataset_config(args) with raw_data_dir=None returns a
+    DatasetConfig whose raw_data_dir_path equals spot_kline_config()'s own
+    default -- the override is a no-op when not passed."""
+    from config import spot_kline_config
+    from ingest_binance_spot import _build_dataset_config
+
+    args = Namespace(
+        symbols=None, start_date=None, end_date=None, raw_data_dir=None
+    )
+
+    config = _build_dataset_config(args)
+    default_config = spot_kline_config()
+
+    assert config.raw_data_dir_path == default_config.raw_data_dir_path
+
+
+def test_build_dataset_config_raw_data_dir_override_applies() -> None:
+    """Test 4: _build_dataset_config(args) with raw_data_dir set returns a
+    DatasetConfig whose raw_data_dir_path equals that override exactly, with
+    no other field (market, frequency, zarr_file_path, catalog_path)
+    altered."""
+    from config import spot_kline_config
+    from ingest_binance_spot import _build_dataset_config
+
+    args = Namespace(
+        symbols=None,
+        start_date=None,
+        end_date=None,
+        raw_data_dir="/custom/existing/csvs",
+    )
+
+    config = _build_dataset_config(args)
+    default_config = spot_kline_config()
+
+    assert config.raw_data_dir_path == "/custom/existing/csvs"
+    assert config.market == default_config.market
+    assert config.frequency == default_config.frequency
+    assert config.zarr_file_path == default_config.zarr_file_path
+    assert config.catalog_path == default_config.catalog_path
