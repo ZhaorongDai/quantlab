@@ -141,3 +141,18 @@ None - no external service configuration required. Universe-table construction n
 ---
 *Phase: 02-multi-market-data-foundation*
 *Completed: 2026-09-05*
+
+## Self-Check: PASSED
+
+All claimed files verified present on disk:
+- FOUND: acquisition/universe.py
+- FOUND: refresh_us_equity_universe.py
+- FOUND: tests/test_universe.py
+- FOUND: tests/test_ingest_tiingo_universe_wiring.py
+- FOUND: .planning/phases/02-multi-market-data-foundation/02-08-REAL-DATA-CHECK.md
+- FOUND: .planning/phases/02-multi-market-data-foundation/02-08-SUMMARY.md
+
+All claimed commits verified present in `git log`:
+- FOUND: 331fa1b, 60099a8, 7502379, 5f25f51, 3d6b981, e5710e2
+
+No missing items.
