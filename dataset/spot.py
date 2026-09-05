@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 from base.config import DatasetConfig
 from base.data import Dataset
+from dataset.cleaning import dedup_raw_frame, flag_anomalies, validate_schema
 from enums.data import BinanceCSVHeaders
 from utils.file import file_date_filter, get_csv_files
 from utils.nautilus import (
@@ -34,8 +35,27 @@ from utils.timer import Timer
 
 
 class SpotKlineDataset(Dataset):
+    # Binance raw columns are Title-Case (Open/High/Low/Close/Volume), unlike
+    # the shared dataset/cleaning.py module's lowercase convention (D-06..D-08
+    # default, tuned for StockDataset's already-lowercase Tiingo columns).
+    # `_clean()` below overrides validate_schema()'s required-column names to
+    # match, rather than renaming columns pipeline-wide (out of this plan's
+    # D-04 scope boundary -- see 02-05 deviation notes).
+    _RAW_REQUIRED_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+
     def __init__(self, dataset_config: DatasetConfig):
         super().__init__(dataset_config)
+
+    def _clean(self, data: xr.Dataset) -> xr.Dataset:
+        """Override base/data.py:Dataset._clean()'s default (lowercase-column)
+        schema check with Binance's actual Title-Case OHLCV column names.
+        flag_anomalies() still runs for schema/shape consistency with other
+        Dataset subclasses; its price-like-column list is lowercase-only, so
+        it is a documented no-op for spot data (no regression -- spot had no
+        anomaly-flagging integration prior to 02-03/this plan)."""
+        data = validate_schema(data, required_columns=self._RAW_REQUIRED_COLUMNS)
+        data = flag_anomalies(data)
+        return data
 
     @staticmethod
     def _spot_kline_to_df(csv_file: Path, before_2025: bool) -> pl.LazyFrame:
@@ -90,6 +110,7 @@ class SpotKlineDataset(Dataset):
             res = pl.concat(dfs)
             res = res.rename({"Open time": "timestamp"})
             res = res.sort(by=["timestamp", "symbol"])
+            res = dedup_raw_frame(res, keep="last")
             res = res.collect().to_pandas().set_index(["timestamp", "symbol"])
             return res.to_xarray()
 

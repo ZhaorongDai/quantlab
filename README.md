@@ -64,6 +64,11 @@ imports the layers it needs:
   parquet data (meant to be run cell-by-cell, e.g. in VS Code/Jupyter).
 - `get_binance_instruments.py` -- CLI to refresh `config/instruments.yaml` from the live
   Binance API.
+- `ingest_binance_spot.py` -- rebuilds the Binance spot-kline Zarr store from locally-dropped
+  monthly CSVs via `SpotKlineDataset`/`spot_kline_config()`. Does not download anything (Binance
+  keeps its manual-CSV-drop workflow). Use `--raw-data-dir` to point at CSVs stored outside the
+  default `data/{market}/{frequency}/...` convention path (e.g. a pre-existing download
+  directory) with no filesystem migration required.
 - `read_mock_data_sink.py` -- memory-profiling scratch script for reading a parquet hive
   dataset.
 - `scripts/download_stock_data_from_tiingo.py` -- parallel Tiingo downloader for NASDAQ
