@@ -67,12 +67,12 @@ Plans:
   3. Both data sources pass through a shared cleaning/preprocessing module (`dataset/cleaning.py` — planner discretion per 02-CONTEXT.md, not `my_ops` which is KunQuant-graph-op style and the wrong fit for tabular/xarray cleaning) before being persisted, producing a valid `xarray.Dataset`
   4. A design/code review confirms adding a new market or frequency only requires a new `Dataset` subclass + config — no changes needed in factor/model/backtest code
 
-**Plans:** 7 plans
+**Plans:** 1/7 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Test infrastructure (pytest + fixtures) + Zarr overwrite fix (Pitfall 1)
+- [x] 02-01-PLAN.md — Test infrastructure (pytest + fixtures) + Zarr overwrite fix (Pitfall 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -171,7 +171,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
-| 2. Multi-Market Data Foundation | 0/7 | Not started | - |
+| 2. Multi-Market Data Foundation | 1/7 | In Progress|  |
 | 3. Factor Computation (KunQuant + Polars) | 0/TBD | Not started | - |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
