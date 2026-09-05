@@ -119,3 +119,7 @@ None - no external service configuration required. `TIINGO_API_KEY` must be expo
 ---
 *Phase: 02-multi-market-data-foundation*
 *Completed: 2026-09-05*
+
+## Self-Check: PASSED
+
+All claimed files verified present on disk (`base/acquisition.py`, `acquisition/__init__.py`, `acquisition/tiingo.py`, `enums/data.py`, `tests/test_tiingo_acquisition.py`, this SUMMARY.md) and all claimed commit hashes (`2f86164`, `32cc929`, `a679073`) verified present in `git log --oneline --all`. Full verification suite (`tests/test_tiingo_acquisition.py tests/test_cleaning.py tests/test_config_paths.py tests/test_backend_overwrite.py`) re-run: 20 passed, 0 failed.
