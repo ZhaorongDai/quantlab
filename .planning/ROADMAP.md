@@ -106,12 +106,12 @@ Plans:
   3. User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract
   4. No factor-pipeline code path passes a plain DataFrame between modules — inputs/outputs are `xarray.Dataset` only
 
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 03-01-PLAN.md — Unblock FACTOR-01: fix the `my_ops` decompose() signature drift that breaks every batch `cal()`, prove Alpha158/Alpha101 end-to-end, build the Wave-0 test fixtures
+- [x] 03-01-PLAN.md — Unblock FACTOR-01: fix the `my_ops` decompose() signature drift that breaks every batch `cal()`, prove Alpha158/Alpha101 end-to-end, build the Wave-0 test fixtures
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -194,7 +194,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
 | 2. Multi-Market Data Foundation | 8/8 | Complete   | 2026-09-05 |
-| 3. Factor Computation (KunQuant + Polars) | 0/TBD | Not started | - |
+| 3. Factor Computation (KunQuant + Polars) | 1/5 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |
