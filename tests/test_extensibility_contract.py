@@ -21,6 +21,13 @@ separate `checkpoint:human-verify` design/code review (see
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+from base.config import DatasetConfig
+from base.data import Dataset
+
 CORE_LAYER_FILES = (
     "base/factor.py",
     "base/model.py",
@@ -70,3 +77,72 @@ def test_core_layer_purity_no_market_specific_logic() -> None:
         "Core layers must not reference concrete Dataset subclasses or "
         "market-specific literals (DATA-03):\n" + "\n".join(violations)
     )
+
+
+class FakeDataset(Dataset):
+    """A genuinely novel, test-only `Dataset` subclass for a fake market and
+    frequency that exists nowhere else in the codebase. Proves the
+    `Dataset` ABC's contract (`from_raw_data()` -> `save()` -> `read()`) is
+    sufficient by construction, with zero modification to any file outside
+    this test module.
+
+    `_to_kunquant`/`_to_nautilus` are not exercised by the lifecycle under
+    test (`from_raw_data`/`save`/`read`), so they simply raise
+    `NotImplementedError`.
+    """
+
+    def _raw_data_to_xr(self) -> xr.Dataset:
+        timestamps = pd.date_range("2024-01-01", periods=3, freq="D")
+        symbols = ["FAKE_A", "FAKE_B"]
+        shape = (len(timestamps), len(symbols))
+        close_values = np.arange(shape[0] * shape[1], dtype=float).reshape(
+            shape
+        )
+
+        return xr.Dataset(
+            {"close": (["timestamp", "symbol"], close_values)},
+            coords={"timestamp": timestamps, "symbol": symbols},
+        )
+
+    def _to_kunquant(self, data: xr.Dataset, data_columns: tuple[str, ...]):
+        raise NotImplementedError
+
+    def _to_nautilus(self, data: xr.Dataset, venue: str, n_jobs: int):
+        raise NotImplementedError
+
+
+def _fake_dataset_config(tmp_path: Path) -> DatasetConfig:
+    return DatasetConfig(
+        market="fake_market",  # type: ignore[arg-type]
+        frequency="1d",
+        raw_data_dir_path=str(tmp_path),
+        zarr_file_path=str(tmp_path / "fake.zarr"),
+        catalog_path=str(tmp_path / "catalog"),
+    )
+
+
+def test_fake_dataset_lifecycle(tmp_path: Path) -> None:
+    """A brand-new, test-only Dataset subclass with a novel market/frequency
+    combination ("fake_market"/"1d") must run the full
+    `from_raw_data()` -> `save()` -> `read()` lifecycle successfully without
+    any change to base/factor.py, base/model.py, or base/backend.py.
+    """
+    config = _fake_dataset_config(tmp_path)
+
+    original = FakeDataset(config).from_raw_data()
+    original_data = original.get_xarray_dataset()
+    original_close = original_data["close"].values.copy()
+
+    original.save()
+
+    reloaded = FakeDataset(config).read()
+    reloaded_data = reloaded.get_xarray_dataset()
+
+    # clean_market_data() (run inside from_raw_data()) may add an
+    # `anomaly_flag` variable -- assert the original `close` values survive
+    # the round-trip unchanged, not that the dataset is byte-identical.
+    np.testing.assert_array_equal(
+        original_close, reloaded_data["close"].values
+    )
+    assert reloaded_data.sizes["timestamp"] == 3
+    assert reloaded_data.sizes["symbol"] == 2
