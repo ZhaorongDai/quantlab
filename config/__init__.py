@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from base.config import AcquisitionConfig, DatasetConfig, FactorConfig
+from base.config import AcquisitionConfig, DatasetConfig, FactorConfig, UniverseConfig
 from dataset.backend import PlBackend, XrBackend
 from dataset.spot import SpotKlineDataset
 from enums.data import Frequency, Market
@@ -95,6 +95,23 @@ def stock_acquisition_config(
         symbols=symbols,
         start_date=start_date,
         end_date=end_date,
+        kwargs=kwargs,
+    )
+
+
+def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
+    """Config for the US-equity universe reference table (02-CONTEXT.md D-12).
+
+    Deliberately lives under `data/reference/`, separate from the
+    `data/{market}/{frequency}/` convention used by spot_kline_config()/
+    stock_kline_config() -- this reflects Locked Decision A1 (02-08-PLAN.md):
+    the universe table is reference/metadata (same footing as
+    config/instruments.yaml), not xarray/Zarr pipeline data, hence
+    PlBackend/parquet, not XrBackend/Zarr.
+    """
+    return UniverseConfig(
+        output_path=str(_data_root() / "data" / "reference" / "universe.parquet"),
+        cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
         kwargs=kwargs,
     )
 
