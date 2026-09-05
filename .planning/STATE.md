@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-09-05T18:33:32.662Z"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-09-05T18:45:07.005Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03 execution started
-state_head: 94342301c5f361f40434dca0979df81758202629
+state_head: 2575f13aa3bc87245baae5ed7d6777dcbcba5129
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 18
-  completed_plans: 15
+  completed_plans: 16
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03 (Factor Computation (KunQuant + Polars)) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 03 execution started
 
@@ -61,6 +61,7 @@ Progress: [██████████] 100%
 |------|----------|-------|-------|
 | Phase 03 P01 | 31 min | 2 tasks | 7 files |
 | Phase 03 P02 | 6 min | 3 tasks | 3 files |
+| Phase 03 P03 | 7 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Factor mode-divergent members (_auto_filter/num_symbols/symbols) carry the batch-shaped body on the shared base, with FactorKunQuant restoring exact behaviour via super()-delegating overrides — A naive hoist would be invisible today and fatal for 03-04: config.mode lives only on FactorConfig, so PolarsFactorConfig would raise AttributeError at runtime, only on the path someone happens to call. Test-time source-introspection enforcement replaces that runtime surprise.
 - [Phase 03]: Factor._maybe_resolve_factor_names() ships now with the pre-refactor eager body as its default, even though nothing overrides it yet — Introducing the seam and preserving behaviour are the same edit; 03-04 FactorPolars overrides it to a no-op for D-05 dynamic schema resolution. Adding it later would mean re-touching the config setter in a plan with other things to prove.
 - [Phase 03]: No Factor.config_cls ClassVar was added - utils/module.py hardcoded FactorConfig(**config) checkpoint reload is deferred to Phase 4 — The path is only reachable from Phase 4 model-checkpoint reload and no Phase-3 success criterion touches it; an unused attribute violates QUAL-02 and would pre-decide a mechanism Phase 4 should choose for itself.
+- [Phase 03]: amount = volume * close is synthesized once centrally in StockDataset._to_kunquant(), double-guarded, not per factor class — The boundary method is the one place every KunQuant consumer of US-equity data passes through; per-class fixes would need one edit per factor class forever and each is a place to get adjusted-vs-raw wrong. The double guard (requested AND absent) keeps it inert and stops it overwriting a real vendor column if one ever appears (T-03-03-01).
+- [Phase 03]: Alpha158Stock replicates Alpha158SpotKline verbatim (double-AllData build, six unused Input nodes); the normalization wrapper is the single deliberate divergence — D-01 fixes the invocation shape across markets, so tidying one class alone would silently diverge them and tidying both would edit working code for cosmetics. A vars() method-set equality assertion is the mechanical guard.
+- [Phase 03]: The D-09 four-class normalization matrix is locked by one equality assertion against a literal, with docstrings on all four classes — Raw vs normalized factor values are indistinguishable to a downstream consumer at runtime (T-03-03-02). A per-market strategy choice that looks like an inconsistency must be impossible to 'align' silently; the assertion message routes a would-be changer to D-09 in 03-CONTEXT.md before the test literal.
 
 ### Pending Todos
 
@@ -100,7 +104,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-05T18:33:07.072Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-09-05T18:45:06.980Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
 </content>
