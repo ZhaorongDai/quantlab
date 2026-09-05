@@ -95,12 +95,24 @@ class FakeDataset(Dataset):
         timestamps = pd.date_range("2024-01-01", periods=3, freq="D")
         symbols = ["FAKE_A", "FAKE_B"]
         shape = (len(timestamps), len(symbols))
-        close_values = np.arange(shape[0] * shape[1], dtype=float).reshape(
+
+        # dataset/cleaning.py:validate_schema() requires the full OHLCV
+        # column set (D-08) -- distinct offsets per column so a round-trip
+        # mismatch on any single variable would be caught by an equality
+        # assertion.
+        base_values = np.arange(shape[0] * shape[1], dtype=float).reshape(
             shape
         )
+        data_vars = {
+            "open": (["timestamp", "symbol"], base_values + 0.0),
+            "high": (["timestamp", "symbol"], base_values + 1.0),
+            "low": (["timestamp", "symbol"], base_values + 2.0),
+            "close": (["timestamp", "symbol"], base_values + 3.0),
+            "volume": (["timestamp", "symbol"], base_values + 4.0),
+        }
 
         return xr.Dataset(
-            {"close": (["timestamp", "symbol"], close_values)},
+            data_vars,
             coords={"timestamp": timestamps, "symbol": symbols},
         )
 
