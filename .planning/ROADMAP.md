@@ -1,0 +1,160 @@
+# Roadmap: quantlab
+
+## Overview
+
+quantlab starts as a ~6000-line personal prototype (layered `DataBackend → Dataset → Factor/Label → Model → Backtest` architecture, KunQuant factor engine, xarray/Zarr storage, torch models, vectorbt/nautilus_trader backtesting) that is functionally rich but operationally broken: it has a leaked API key in git history, an unresolvable dependency lockfile, hardcoded per-developer paths, and a stale README. The roadmap first makes the repository clean, secure, and runnable (Phase 1), then builds a full config-driven vertical MVP pipeline — data → factor → return model → portfolio optimization → target holdings → backtest — one pipeline stage at a time, each stage delivering a simple/baseline but fully working, independently swappable capability that the next stage builds on. The data layer is designed from the start to support multiple markets and frequencies. The pipeline closes with an end-to-end, config-reproducible run and a final pass that adds unit tests and a code-quality cleanup across all core modules.
+
+## Phases
+
+**Phase Numbering:**
+
+- Integer phases (1, 2, 3): Planned milestone work
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+
+Decimal phases appear between their surrounding integers in numeric order.
+
+- [x] **Phase 1: Codebase Cleanup & Security Hardening** - Repo is clean, secure, dependency-resolvable, and documented accurately (completed 2026-09-05)
+- [ ] **Phase 2: Multi-Market Data Foundation** - Users can ingest US equities and Binance spot data into unified, extensible xarray/Zarr storage
+- [ ] **Phase 3: Factor Computation (KunQuant + Polars)** - Users can compute Alpha158 factors (batch + streaming) via KunQuant and new factors via Polars
+- [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
+- [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
+- [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
+- [ ] **Phase 7: Testing & Code Quality** - Core modules have unit tests and a Zen-of-Python-consistent code style
+
+## Phase Details
+
+### Phase 1: Codebase Cleanup & Security Hardening
+
+**Goal**: The repository is a clean, secure, working foundation — no leaked credentials, a working dependency environment, accurate docs, and no dead/broken/duplicate code — ready for new development.
+**Mode:** mvp
+**Depends on**: Nothing (first phase)
+**Requirements**: CLEAN-01, CLEAN-02, CLEAN-03, CLEAN-04, SEC-01
+**Success Criteria** (what must be TRUE):
+
+  1. `git log` on the repo shows a fresh history with no commit containing the Tiingo API key (verified by searching full history)
+  2. Running `uv sync` from a clean clone produces an environment where all actually-imported third-party packages (torch, xarray, polars, KunQuant, vectorbt, nautilus_trader, etc.) import successfully
+  3. No API keys or other secrets are hardcoded anywhere in the codebase; the Tiingo key is read from a `TIINGO_API_KEY` environment variable
+  4. `README.md` accurately describes the current module layout and how to run the pipeline (no references to non-existent files)
+  5. Known broken/duplicate code found during codebase review is fixed or removed (`vecbt/bt.py:backtest_from_signals` runs without error when called with valid arguments; duplicate Binance instrument-parsing logic is consolidated into one implementation)
+
+**Plans:** 5/5 plans complete
+
+Plans:
+**Wave 1**
+
+- [x] 01-01-PLAN.md — Secrets & config hardening (Tiingo key -> env var, config/__init__.py paths -> QUANTLAB_DATA_DIR)
+- [x] 01-02-PLAN.md — Dependency reconciliation (pyproject.toml/uv.lock -> working uv sync)
+- [x] 01-03-PLAN.md — Dead/duplicate code cleanup (vecbt/bt.py fix, Binance parsing dedup)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 01-04-PLAN.md — README accuracy pass
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 01-05-PLAN.md — Git history reset (checkpoint-gated, runs last)
+
+### Phase 2: Multi-Market Data Foundation
+
+**Goal**: Users can ingest and store market data for multiple markets/frequencies through one extensible Dataset/DataBackend abstraction, with all data landing in canonical xarray/Zarr storage.
+**Mode:** mvp
+**Depends on**: Phase 1
+**Requirements**: DATA-01, DATA-02, DATA-03, DATA-04
+**Success Criteria** (what must be TRUE):
+
+  1. User can run a documented command/script to pull US equities daily data from Tiingo (auth via env var) and see it persisted as a `[timestamp, symbol]` xarray.Dataset in Zarr
+  2. User can run a documented command/script to pull/refresh Binance spot kline data through the same Dataset/DataBackend abstraction into the same Zarr storage format
+  3. Both data sources pass through a shared cleaning/preprocessing module (reusing `my_ops`) before being persisted, producing a valid `xarray.Dataset`
+  4. A design/code review confirms adding a new market or frequency only requires a new `Dataset` subclass + config — no changes needed in factor/model/backtest code
+
+**Plans**: TBD
+
+### Phase 3: Factor Computation (KunQuant + Polars)
+
+**Goal**: Users can compute the existing Alpha158 factor set (batch and streaming) via KunQuant, and can add new factors via a new Polars batch backend, with xarray.Dataset as the sole exchange format.
+**Mode:** mvp
+**Depends on**: Phase 2
+**Requirements**: FACTOR-01, FACTOR-02, FACTOR-03, FACTOR-04
+**Success Criteria** (what must be TRUE):
+
+  1. User can compute the Alpha158 factor set in batch mode from stored market data and get back an `xarray.Dataset`
+  2. User can invoke KunQuant's streaming (`cal_stream`) factor computation path and get incremental factor updates without error
+  3. User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract
+  4. No factor-pipeline code path passes a plain DataFrame between modules — inputs/outputs are `xarray.Dataset` only
+
+**Plans**: TBD
+
+### Phase 4: Baseline Return Prediction Model
+
+**Goal**: Users can train a simple baseline model that consumes factor data directly as xarray and produces return/rank predictions.
+**Mode:** mvp
+**Depends on**: Phase 3
+**Requirements**: MODEL-01, MODEL-02
+**Success Criteria** (what must be TRUE):
+
+  1. User can train a baseline linear-regression-style model on stored factor + label xarray data
+  2. Model training and inference read directly from `xarray.Dataset` with no DataFrame conversion step in between
+  3. User can retrieve, per symbol/timestamp, a future-return or return-rank prediction from the trained model
+
+**Plans**: TBD
+
+### Phase 5: Portfolio Optimization & Target Holdings
+
+**Goal**: Users can turn model predictions into a long-short, unlevered target holdings vector per symbol, persisted to disk.
+**Mode:** mvp
+**Depends on**: Phase 4
+**Requirements**: PORT-01, PORT-02
+**Success Criteria** (what must be TRUE):
+
+  1. User can run a baseline portfolio optimizer (e.g. mean-variance or equal-weight long-short) that consumes return/rank predictions and outputs a target % holding per symbol
+  2. For any generated allocation, net exposure and gross exposure are both ≤100%, verifiable by summing the output
+  3. Target holdings for a given run are persisted to disk and reloadable
+
+**Plans**: TBD
+
+### Phase 6: End-to-End Backtest & Reproducible Pipeline
+
+**Goal**: The full data→factor→model→portfolio→backtest pipeline runs end-to-end from a single config file with reproducible results, verified via vectorbt, with module contracts and dual-use architecture (time-series + cross-sectional) demonstrated, and the event-driven backtest path kept runnable.
+**Mode:** mvp
+**Depends on**: Phase 5
+**Requirements**: BT-01, BT-02, CFG-01, ARCH-01, ARCH-02
+**Success Criteria** (what must be TRUE):
+
+  1. User can feed target holdings into a vectorbt-based backtest and get back an equity curve plus key performance metrics
+  2. User can run the entire data→factor→model→portfolio→backtest pipeline end-to-end driven by a single config file, and re-running with the same config reproduces the same result
+  3. User can run `backtest/test_strategy.py`'s NautilusTrader strategy without runtime errors (functional, not production-hardened)
+  4. At least one pipeline stage (e.g. the model) can be swapped for an alternate implementation without modifying the code of any other stage, demonstrating the input/output contract holds
+  5. The same architecture is demonstrated to support both a single-symbol time-series use case and a multi-symbol cross-sectional multi-factor use case
+
+**Plans**: TBD
+
+### Phase 7: Testing & Code Quality
+
+**Goal**: Core pipeline modules have unit tests in the project's style, and the codebase reads as clean, well-documented Python consistent with the Zen of Python.
+**Mode:** mvp
+**Depends on**: Phase 6
+**Requirements**: QUAL-01, QUAL-02
+**Success Criteria** (what must be TRUE):
+
+  1. Each core module (data, factor, model, portfolio, backtest) has at least one passing unit test runnable via a single test command (e.g. `uv run pytest`)
+  2. The test suite passes cleanly with no import/config errors
+  3. A code review pass confirms public functions/classes across core modules have docstrings and parameter/return type annotations
+  4. No leftover test/temp/redundant code remains outside the established `tests/` structure
+
+**Plans**: TBD
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
+| 2. Multi-Market Data Foundation | 0/TBD | Not started | - |
+| 3. Factor Computation (KunQuant + Polars) | 0/TBD | Not started | - |
+| 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
+| 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
+| 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |
+| 7. Testing & Code Quality | 0/TBD | Not started | - |
+</content>

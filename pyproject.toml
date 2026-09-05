@@ -1,0 +1,28 @@
+[project]
+name = "quantlab"
+version = "0.1.0"
+description = "End-to-end config-driven quant research backend: data -> factors -> return model -> portfolio optimization -> target positions -> backtest."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "bottleneck>=1.5.0",
+    "joblib>=1.6.0",
+    "kunquant>=0.1.11",
+    "loguru>=0.7.3",
+    "nautilus-trader>=1.231.0",
+    "numpy>=2.3.2",
+    "pandas>=3.0.5",
+    "plotly<6",
+    "polars>=1.44.1",
+    "psutil>=7.2.2",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "scikit-learn>=1.9.0",
+    "tiingo>=0.16.1",
+    "torch>=2.14.0",
+    "tqdm>=4.70.0",
+    "vectorbt>=0.28.2",
+    "wandb>=0.29.0",
+    "xarray>=2026.7.0",
+    "zarr>=3.3.0",
+]
