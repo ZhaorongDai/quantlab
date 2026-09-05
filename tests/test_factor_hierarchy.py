@@ -1,8 +1,8 @@
 """Factor-hierarchy boundary-contract tests (FACTOR-04 + D-03).
 
 Scaffolded by 03-01 Task 2 (Nyquist Wave 0); the `Factor` ABC extraction
-assertions were added by **03-02**. The KunQuant/Polars interchangeability
-integration test lands in **03-05**.
+assertions were added by **03-02**, and the live KunQuant/Polars
+interchangeability integration test by **03-05**.
 
 `test_base_model_does_not_dispatch_on_concrete_factor_types` is the cheap,
 permanent regression lock on D-03's "seamless interchangeability" claim. It
@@ -24,9 +24,10 @@ Written in the established grep-style purity idiom of
 specific_logic`, including its comment-line exclusion so an architecture note
 mentioning these names in prose is not a false positive.
 
-Import-safety rule (tests/conftest.py module docstring): nothing here may
-import `base.factor_polars` or `factor.momentum` at module level -- neither
-exists yet.
+Import-safety rule (tests/conftest.py module docstring): a module may only be
+imported at module level once it exists. `base.factor_polars` and
+`factor.momentum` landed in 03-04, so 03-05's interchangeability test imports
+them normally.
 """
 
 import dataclasses
@@ -36,9 +37,19 @@ from typing import Callable
 
 import xarray as xr
 
-from base.config import DatasetConfig, DLConfig, FactorConfig, MLConfig
+from itertools import chain
+
+from base.config import (
+    DatasetConfig,
+    DLConfig,
+    FactorConfig,
+    MLConfig,
+    PolarsFactorConfig,
+)
 from base.factor import Factor, FactorKunQuant
 from dataset.spot import SpotKlineDataset
+from factor.alpha158 import Alpha158SpotKline
+from factor.momentum import Momentum
 from label.spot import SpotBinaryReturn, SpotReturn
 
 CONSUMER_FILE = "base/model.py"
@@ -401,3 +412,111 @@ def test_public_factor_api_exchanges_only_xarray_datasets() -> None:
                 f"{cls.__name__}.{name} must return an xr.Dataset, not "
                 f"{annotation!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 03-05: the LIVE interchangeability proof (D-03, FACTOR-03, FACTOR-04)
+#
+# Everything above this line is static -- source introspection, class-hierarchy
+# assertions, type-hint checks. Those prove the SHAPE is right. The test below
+# proves the shape actually holds up when two real objects from two different
+# backends are driven through `base/model.py`'s real call sequence.
+# ---------------------------------------------------------------------------
+
+_KUNQUANT_FACTOR_NAME = "KMID"
+_MOMENTUM_HORIZON = 5
+
+
+def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
+    spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path
+) -> None:
+    """D-03, live: one `DLConfig` holds an `Alpha158SpotKline` (KunQuant
+    backend) and a `Momentum` (Polars backend), and every interaction
+    `base/model.py` performs on a factor object works uniformly across both.
+
+    The user's requirement in their own words: "我需要这两个因子类可以无缝替换"
+    (I need these two factor classes to be seamlessly substitutable).
+
+    **The single most important property of this test is what it does NOT
+    contain: no runtime type check of any form -- no built-in type predicate,
+    no attribute probe -- and no per-backend branch anywhere in its body.**
+    (The names of those two built-ins are deliberately not spelled anywhere in
+    this function, docstring included: Task 3's acceptance grep runs over the
+    whole of `inspect.getsource(...)`, so writing them here would defeat the
+    very check that enforces this paragraph.) If a branch were ever needed
+    here, interchangeability would be dead -- the test would be documenting the
+    coupling D-03 exists to remove. `test_factor_base_carries_the_full_base_
+    model_call_surface` (03-02) covers the static half of this claim; this
+    covers the live half.
+
+    The four interactions replicated below, in `base/model.py:115-201`'s own
+    order, are `_reset_factors_config`, `_get_features_batch`,
+    `get_factor_names` and `get_config`. `BaseModel` itself is deliberately NOT
+    instantiated: it is abstract and would drag torch and wandb into a test
+    that has no business requiring either.
+    """
+    dataset_config = spot_kline_zarr(periods=60, seed=0)
+
+    kunquant_factor = Alpha158SpotKline(
+        FactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            mode="batch",
+            data_columns=["open", "close", "volume"],
+            factor_names=[_KUNQUANT_FACTOR_NAME],
+            file_path=str(tmp_path / "factors" / "kunquant.zarr"),
+            njobs=4,
+        )
+    )
+    polars_factor = Momentum(
+        PolarsFactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            file_path=str(tmp_path / "factors" / "polars.zarr"),
+            kwargs={"n": _MOMENTUM_HORIZON},
+        )
+    )
+
+    dl = DLConfig(
+        factors=[kunquant_factor, polars_factor],
+        labels=[],
+        model_save_dir=str(tmp_path),
+        factor_data_strategy="cal",
+        label_data_strategy="cal",
+        start_date="2024-01-01",
+        end_date="2024-02-29",
+    )
+
+    # (1) base/model.py:_reset_factors_config
+    for factor in dl.factors:
+        factor.config.start_date = dl.start_date
+        factor.config.end_date = dl.end_date
+        factor._reset_dataset_config()
+
+    # (2) base/model.py:_get_features_batch
+    all_ds = [factor.cal().get_features() for factor in dl.factors]
+    data = xr.combine_by_coords(all_ds)
+
+    # Reading `.dims` and `.data_vars` off the combined result is itself the
+    # proof that `xr.combine_by_coords` returned an `xr.Dataset` -- no runtime
+    # type check needed, and none permitted here (see the docstring).
+    assert set(data.dims) == {"timestamp", "symbol"}
+    assert _KUNQUANT_FACTOR_NAME in data.data_vars
+    assert f"momentum_{_MOMENTUM_HORIZON}" in data.data_vars
+
+    # (3) base/model.py:get_factor_names
+    names = list(
+        chain.from_iterable(
+            factor._get_factor_names() for factor in dl.factors
+        )
+    )
+    assert _KUNQUANT_FACTOR_NAME in names
+    assert f"momentum_{_MOMENTUM_HORIZON}" in names
+
+    # (4) base/model.py:get_config
+    configs = [factor.get_config() for factor in dl.factors]
+    assert len(configs) == 2
+    for cfg in configs:
+        # `in` on a non-mapping would raise; no type check needed.
+        assert "dataset" in cfg
+        assert "factor_names" in cfg

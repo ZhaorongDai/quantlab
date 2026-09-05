@@ -21,17 +21,88 @@ in-memory and on-disk representation used between pipeline layers (dataset -> fa
 model). Model training consumes `xarray` data directly rather than converting through a
 `pandas.DataFrame`.
 
+## Factor Backends
+
+Factor computation has **two interchangeable backends**, both subclasses of the single
+abstract `Factor` base in `base/factor.py`:
+
+| Backend | Class | Config | Modes | Write factors as |
+|---------|-------|--------|-------|------------------|
+| KunQuant | `base/factor.py:FactorKunQuant` | `FactorConfig` | batch **and** streaming | a compiled `KunQuant.Stage.Function` graph |
+| Polars | `base/factor_polars.py:FactorPolars` | `PolarsFactorConfig` | batch only (by decision) | a `polars` lazy-expression chain |
+
+They are siblings, not parent and child, and nothing downstream can tell which one produced
+a given factor store. A factor object from either backend drops into `DLConfig.factors` /
+`MLConfig.factors` with zero changes to `base/model.py` — the model layer only ever calls the
+shared contract (`cal()` / `read()` / `get_features()` / `_get_factor_names()` /
+`get_config()` / `_reset_dataset_config()`) and never branches on a factor's runtime type.
+`tests/test_factor_hierarchy.py` locks that property, including a live test that drives one
+KunQuant factor and one Polars factor through the same loop and merges their outputs.
+
+**`xarray.Dataset` is the only exchange format at the factor layer's boundary, regardless of
+backend.** Polars is an internal implementation detail of one backend: `FactorPolars.cal()`
+converts to `xr.Dataset` before anything leaves the class, exactly as the KunQuant backend
+does with its raw output arrays. No public factor method accepts or returns a bare
+`pandas`/`polars` DataFrame.
+
+**Prefer the KunQuant backend.** Use Polars for a new factor only when the logic is awkward
+to express as a KunQuant graph — and never when `xarray`/KunQuant can already do the job.
+
+### Adding a KunQuant factor
+
+1. Subclass `FactorKunQuant` (see `factor/alpha158.py`, the dual-market example: the same
+   factor set is exposed as `Alpha158SpotKline` for crypto spot and `Alpha158Stock` for US
+   equities).
+2. Implement `_get_factor_func()`, returning the `KunQuant.Stage.Function` built from
+   `Input(...)`/`Output(...)` nodes, and `_get_factor_names()`, returning the factor names the
+   graph emits.
+3. Add a config factory in `config/__init__.py` that builds a `FactorConfig` with paths
+   derived from `_data_root()` — never a hardcoded absolute path.
+
+The inherited `cal()` compiles and runs the graph in batch mode; `init_stream()` /
+`cal_stream()` drive the same graph incrementally, one bar at a time, for live data.
+
+Note on streaming: `init_stream()` binds a buffer handle for every name in
+`config.data_columns` *and* every name in `config.factor_names`. KunQuant prunes declared
+inputs that no selected output consumes, so a `data_columns` list wider than the chosen
+factor subset actually needs raises `RuntimeError: Cannot find the buffer name`. Full factor
+sets consume every input and are unaffected.
+
+### Adding a Polars factor
+
+1. Subclass `FactorPolars` (see `factor/momentum.py`, the worked example — an N-day per-symbol
+   momentum signal in about a dozen lines).
+2. Implement the single hook `_get_factor_lazyframe(lf) -> pl.LazyFrame`. It receives the
+   dataset's already-read lazyframe and must return a lazyframe carrying **only** `timestamp`,
+   `symbol` and the computed factor column(s) — whatever non-index columns come back *are* the
+   factors, and are persisted as such. Nothing in the hook may materialize (no `.collect()`);
+   `cal()` is what triggers computation.
+3. Add a config factory in `config/__init__.py` that builds a `PolarsFactorConfig`.
+
+There is no `_get_factor_names()` to write: names are read from the computed frame's own
+schema inside `cal()`. There is likewise no streaming counterpart — the Polars backend is
+batch-only by design, and adding a dormant streaming surface to it would be an unused member
+rather than an extension point.
+
+Because `Dataset.get_lazyframe()` performs no per-market column normalization (unlike
+`_to_kunquant()`, which each `Dataset` subclass overrides to rename its columns), a Polars
+factor is written against one market's raw column names — `factor/momentum.py` targets the
+crypto-spot store's Title-Case `Close`.
+
 ## Project Structure
 
 - `base/` -- Abstract base classes that define the layer contracts: `DataBackend`/`ModelBackend`
-  (`backend.py`), `Dataset` (`data.py`), `FactorKunQuant` (`factor.py`), `BaseModel`
-  (`model.py`), plus the dataclass configs (`config.py`: `DatasetConfig`, `FactorConfig`,
-  `DLConfig`, `MLConfig`).
+  (`backend.py`), `Dataset` (`data.py`), the shared `Factor` base and its `FactorKunQuant`
+  backend (`factor.py`), the `FactorPolars` backend (`factor_polars.py`), `BaseModel`
+  (`model.py`), plus the dataclass configs (`config.py`: `DatasetConfig`, `BaseFactorConfig`,
+  `FactorConfig`, `PolarsFactorConfig`, `DLConfig`, `MLConfig`).
 - `dataset/` -- Concrete `Dataset`/`DataBackend` implementations: `SpotKlineDataset` (Binance
   spot klines), `StockDataset` (NASDAQ/Tiingo, partially implemented), `XrBackend`
   (Zarr-backed), `PlBackend` (Parquet/Polars-backed).
-- `factor/` -- Concrete factor sets computed via KunQuant: `Alpha101SpotKline`, `Alpha101Stock`,
-  `Alpha158SpotKline`.
+- `factor/` -- Concrete factor sets. Computed via KunQuant: `Alpha101SpotKline`,
+  `Alpha101Stock`, `Alpha158SpotKline`, `Alpha158Stock`. Computed via Polars: `Momentum`
+  (`momentum.py`, the worked example of the Polars backend). See
+  [Factor Backends](#factor-backends).
 - `label/` -- Forward-return prediction targets: `SpotReturn` (regression), `SpotBinaryReturn`
   (classification).
 - `my_ops/` -- Custom KunQuant composite ops used inside factor/label graphs (e.g.
@@ -107,8 +178,12 @@ Config objects are dataclasses defined in `base/config.py`, threaded through eve
 constructor:
 
 - `DatasetConfig` -- raw data paths, Zarr/catalog paths, date range, symbols.
-- `FactorConfig` -- factor computation window, mode (`batch`/`stream`), symbols, data columns,
-  embeds a `Dataset`.
+- `BaseFactorConfig` -- the fields both factor backends share: window, symbols, date range,
+  output path; embeds a `Dataset`.
+- `FactorConfig` -- `BaseFactorConfig` plus the KunQuant-only fields: mode (`batch`/`stream`),
+  data columns, executor thread count.
+- `PolarsFactorConfig` -- `BaseFactorConfig` with nothing added; the Polars backend is
+  batch-only, so it deliberately has no `mode`.
 - `DLConfig` -- deep-learning training config (factors, labels, model hyperparameters).
 - `MLConfig` -- non-torch model config (persistence via `ml_model/backend.py`; no concrete
   model implementation yet).
