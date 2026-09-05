@@ -38,14 +38,22 @@ created: 2026-09-05
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 02-0X-0Y | TBD | 0 | Wave 0 | — | N/A | scaffold | `uv add --dev pytest` | ❌ W0 | ⬜ pending |
-| 02-0X-0Y | TBD | TBD | DATA-01 | T-02-01 | `TIINGO_API_KEY` never serialized into `AcquisitionConfig`/checkpoint JSON | unit (mocked `TiingoClient`) + integration (real Zarr roundtrip on tmp path) | `uv run pytest tests/test_tiingo_acquisition.py tests/test_stock_dataset.py -x` | ❌ W0 | ⬜ pending |
-| 02-0X-0Y | TBD | TBD | DATA-02 | — | N/A | unit (synthetic CSV fixtures matching `BinanceCSVHeaders.SPOT`) | `uv run pytest tests/test_spot_dataset.py -x` | ❌ W0 | ⬜ pending |
-| 02-0X-0Y | TBD | TBD | DATA-03 | — | N/A | automated proof (`FakeDataset` subclass exercising full lifecycle) + manual design review | `uv run pytest tests/test_extensibility_contract.py -x` | ❌ W0 | ⬜ pending |
-| 02-0X-0Y | TBD | TBD | DATA-04 | T-02-02 | Anomalies flagged not deleted/corrected; schema validation rejects malformed input before persistence | unit (crafted DataFrames/xr.Datasets per rule: dedup, NaN-gap, anomaly-flag, schema) | `uv run pytest tests/test_cleaning.py -x` | ❌ W0 | ⬜ pending |
-| 02-0X-0Y | TBD | TBD | Pitfall regression | — | N/A | regression (reproduces `save()` called twice against same Zarr path) | `uv run pytest tests/test_backend_overwrite.py -x` | ❌ W0 | ⬜ pending |
-
-*Exact Task IDs are filled in by the planner once PLAN.md files exist — this table's rows are the required coverage set, not final IDs.*
+| 02-01-01 | 02-01 | 1 | Wave 0 | T-02-01-SC | N/A | scaffold | `uv add --dev pytest` | ❌ W0 | ⬜ pending |
+| 02-01-02 | 02-01 | 1 | Pitfall regression | T-02-01-01 | `XrBackend.write()` idempotent-by-overwrite via `kwargs.setdefault("mode", "w")` | regression (reproduces `save()` called twice against same Zarr path) | `uv run pytest tests/test_backend_overwrite.py -x` | ❌ W0 | ⬜ pending |
+| 02-02-01 | 02-02 | 2 | DATA-01, DATA-02, DATA-03 | T-02-02-01 | `AcquisitionConfig` has no credential field | unit (dataclass field introspection) | `uv run python -c "from base.config import DatasetConfig, AcquisitionConfig; ..."` | ❌ W0 | ⬜ pending |
+| 02-02-02 | 02-02 | 2 | DATA-01, DATA-02, DATA-03 | T-02-02-02 | Config factories derive paths only via `_data_root()`/`_market_data_root()`/`_market_downloads_root()` | unit + regression smoke-check (ast.parse on cal.py/train_model.py/backtest/test_strategy.py, JSON/cell-parse on test_nt.ipynb) | `uv run pytest tests/test_config_paths.py -x` | ❌ W0 | ⬜ pending |
+| 02-03-01 | 02-03 | 2 | DATA-04 | — | `dedup_raw_frame()` deterministic keep="last" dedup | unit | `uv run pytest tests/test_cleaning.py -k dedup -x` | ❌ W0 | ⬜ pending |
+| 02-03-02 | 02-03 | 2 | DATA-04 | T-02-03-01, T-02-03-02, T-02-03-03 | Anomalies flagged not deleted/corrected; schema validation rejects malformed input before persistence; no forward-fill anywhere | unit (crafted DataFrames/xr.Datasets per rule: NaN-gap, anomaly-flag, schema) | `uv run pytest tests/test_cleaning.py -x` | ❌ W0 | ⬜ pending |
+| 02-04-01 | 02-04 | 3 | DATA-01 | — | `Acquisition(ABC)` config lifecycle + watermark I/O, decoupled from Dataset/Zarr | unit (abstractness check) | `uv run python -c "from base.acquisition import Acquisition; ..."` | ❌ W0 | ⬜ pending |
+| 02-04-02 | 02-04 | 3 | DATA-01 | T-02-04-01, T-02-04-02, T-02-04-03, T-02-04-SC | `TIINGO_API_KEY` never serialized into `AcquisitionConfig`/checkpoint JSON; explicit `columns=` always passed; incremental refresh from watermark | unit (mocked `TiingoClient`) | `uv run pytest tests/test_tiingo_acquisition.py -x` | ❌ W0 | ⬜ pending |
+| 02-05-01 | 02-05 | 3 | DATA-02 | T-02-05-01 | `dedup_raw_frame()` inserted before `SpotKlineDataset.to_xarray()` | unit (synthetic CSV fixtures matching `BinanceCSVHeaders.SPOT`) | `uv run pytest tests/test_spot_dataset.py -x` | ❌ W0 | ⬜ pending |
+| 02-05-02 | 02-05 | 3 | DATA-02 | T-02-05-02 | `--raw-data-dir` override lets a user point at their real, already-downloaded CSV location with no filesystem migration; no new network call (D-03) | unit (`_build_dataset_config` override behavior) + manual (`--help` output) | `uv run pytest tests/test_spot_dataset.py -x` | ❌ W0 | ⬜ pending |
+| 02-06-01 | 02-06 | 3 | DATA-03 | — | Core layers contain no literal reference to a concrete `Dataset` subclass or market-specific literal | automated grep-style check | `uv run pytest tests/test_extensibility_contract.py -k purity -x` | ❌ W0 | ⬜ pending |
+| 02-06-02 | 02-06 | 3 | DATA-03 | — | A genuinely novel `Dataset` subclass runs the full lifecycle with zero core-layer changes | automated proof (`FakeDataset` subclass exercising full lifecycle) | `uv run pytest tests/test_extensibility_contract.py -x` | ❌ W0 | ⬜ pending |
+| 02-06-03 | 02-06 | 3 | DATA-03 | T-02-06-01 | No structural coupling (isinstance/hasattr dispatch, market/frequency-value branching) in `base/factor.py`/`base/model.py`/`base/backend.py` beyond what the automated grep catches | manual design/code review (`checkpoint:human-verify`, ROADMAP Success Criterion 4's literal requirement) | N/A (human review) | ❌ W0 | ⬜ pending |
+| 02-07-01 | 02-07 | 4 | DATA-01 | T-02-07-01 | `dedup_raw_frame()` inserted before `StockDataset.to_xarray()` | unit | `uv run pytest tests/test_stock_dataset.py -k dedup -x` | ❌ W0 | ⬜ pending |
+| 02-07-02 | 02-07 | 4 | DATA-01 | — | Full `TiingoAcquisition` -> `StockDataset` -> Zarr round trip, `anomaly_flag` present, no forward-fill | integration (mocked `TiingoClient`, real tmp-path Zarr roundtrip) | `uv run pytest tests/test_stock_dataset.py -x` | ❌ W0 | ⬜ pending |
+| 02-07-03 | 02-07 | 4 | DATA-01 | T-02-07-02 | `ingest_tiingo.py` never prints/logs the raw `TIINGO_API_KEY` value | manual (`--help` output) + grep | `TIINGO_API_KEY=test uv run python ingest_tiingo.py --help` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -64,18 +72,18 @@ created: 2026-09-05
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Adding a new market/frequency requires only a new `Dataset` subclass + config, no changes to factor/model/backtest code | DATA-03 / ROADMAP Success Criterion 4 | The automated `FakeDataset` proof (above) covers the mechanical contract, but confirming "no changes needed in factor/model/backtest code" for a *real* hypothetical third source is a design/code-review judgment call, not something a single automated test can fully prove | Reviewer reads `base/factor.py`, `base/model.py`, `base/backend.py` and confirms none of them reference `SpotKlineDataset`/`StockDataset` by name or by market-specific branching logic — only through the `Dataset`/`DataBackend` ABC interface |
-| Tiingo EOD API's actual default JSON field set (with vs. without explicit `columns=`) | DATA-01 | RESEARCH.md Open Question 2 — requires a live API call against the real Tiingo API with a real key; cannot be resolved by static analysis or unit tests with mocked responses | During Wave 0 or the first acquisition task, make one live `client.get_ticker_price(<symbol>, fmt="json", columns=None)` call (using the user's own rotated/active `TIINGO_API_KEY`) and diff the returned field set against the explicit `columns=` list assumed by `StockDataset._to_kunquant`; document the result in the plan's SUMMARY.md |
+| Adding a new market/frequency requires only a new `Dataset` subclass + config, no changes to factor/model/backtest code | DATA-03 / ROADMAP Success Criterion 4 | The automated `FakeDataset` proof (above) covers the mechanical contract, but confirming "no changes needed in factor/model/backtest code" for a *real* hypothetical third source is a design/code-review judgment call, not something a single automated test can fully prove | Covered by 02-06 Task 3 (`checkpoint:human-verify`, task ID `02-06-03`): reviewer reads `base/factor.py`, `base/model.py`, `base/backend.py` and confirms none of them reference `SpotKlineDataset`/`StockDataset` by name or by market-specific branching logic, and no `isinstance`/`hasattr` dispatch on a concrete `Dataset` subclass or on `config.market`/`config.frequency` values exists — only interaction through the `Dataset`/`DataBackend` ABC interface |
+| Tiingo EOD API's actual default JSON field set (with vs. without explicit `columns=`) | DATA-01 | ~~RESEARCH.md Open Question 2 — requires a live API call against the real Tiingo API with a real key; cannot be resolved by static analysis or unit tests with mocked responses~~ **Mitigated by design, no manual verification required.** `TiingoAcquisition` (02-04) always passes an explicit `columns=` parameter (`TiingoColumns.EOD`) to `get_ticker_price()`, listing every field `StockDataset` needs — this sidesteps the ambiguity of Tiingo's undocumented default field set entirely, regardless of what that default actually is. See 02-RESEARCH.md's Open Question 2 (updated) and Pitfall 3 for the full rationale. | None — no live-API smoke test is required for this phase. If a future phase wants to confirm the assumption empirically anyway (e.g. before removing the explicit `columns=` for some reason), that would require a live `TIINGO_API_KEY` and is out of scope here. |
 
 ---
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies (the sole exception, 02-06's Task 3, is a `checkpoint:human-verify` task per ROADMAP Success Criterion 4's explicit design/code-review requirement — not an automation gap)
+- [x] Sampling continuity: no 3 consecutive `type="auto"` tasks without automated verify
+- [x] Wave 0 covers all MISSING references (02-01 stands up pytest + fixtures + the Zarr overwrite fix every later plan's `<verify><automated>` depends on)
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s (estimated ~10s full-suite runtime on small synthetic fixtures, no network calls)
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** pending (execution not yet started — sign-off above reflects plan-set completeness, not a post-execution green suite)
