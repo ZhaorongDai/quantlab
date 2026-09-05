@@ -106,7 +106,7 @@ Plans:
   3. User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract
   4. No factor-pipeline code path passes a plain DataFrame between modules — inputs/outputs are `xarray.Dataset` only
 
-**Plans:** 1/5 plans executed
+**Plans:** 2/5 plans executed
 
 Plans:
 **Wave 1**
@@ -115,7 +115,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-PLAN.md — Extract the shared `Factor` ABC from `FactorKunQuant`, split `FactorConfig` into base/KunQuant/Polars siblings, widen `DLConfig`/`MLConfig` (D-03)
+- [x] 03-02-PLAN.md — Extract the shared `Factor` ABC from `FactorKunQuant`, split `FactorConfig` into base/KunQuant/Polars siblings, widen `DLConfig`/`MLConfig` (D-03)
 
 **Wave 3** *(blocked on Wave 2 completion — the two plans below are independent and run in parallel)*
 
@@ -194,7 +194,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
 | 2. Multi-Market Data Foundation | 8/8 | Complete   | 2026-09-05 |
-| 3. Factor Computation (KunQuant + Polars) | 1/5 | In Progress|  |
+| 3. Factor Computation (KunQuant + Polars) | 2/5 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

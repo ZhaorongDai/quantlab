@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-09-05T18:19:52.764Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-09-05T18:33:32.662Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03 execution started
-state_head: 53ab3d9271319cf4f2479eff7f74b873efaf3fb2
+state_head: 94342301c5f361f40434dca0979df81758202629
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 18
-  completed_plans: 13
+  completed_plans: 15
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03 (Factor Computation (KunQuant + Polars)) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 03 execution started
 
@@ -60,6 +60,7 @@ Progress: [██████████] 100%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 03 P01 | 31 min | 2 tasks | 7 files |
+| Phase 03 P02 | 6 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,9 @@ Recent decisions affecting current work:
 - [Phase 03]: my_ops composite ops accept and ignore `options` rather than reading it — Neither WindowedZScore nor WindowedRobustStandardization needs decomposition options; accepting-and-ignoring is a strict superset of prior behaviour and matches the KunQuant-shipped ops in KunQuant/ops/CompOp.py that do the same. Reading options would have been unverifiable new behaviour on a bug-fix commit.
 - [Phase 03]: Phase-3 test fixtures write Zarr stores directly, bypassing raw CSV/parquet ingestion — Factor windows need ~60 timestamps x 8 symbols; driving that through SpotKlineDataset._raw_data_to_xr() would make every factor test also a CSV-parsing test. Writing the synthetic panel straight to Zarr keeps factor tests testing factors, at ~0.5s each.
 - [Phase 03]: Each Wave-0 scaffold test file ships one real infrastructure self-test, never a placeholder — A file with zero tests makes its per-file pytest command exit 5 ("no tests ran"), which reads as green. Each scaffold instead asserts the exact fixture contract the plan that fills it depends on, so it has value alone and fails loudly if that contract drifts.
+- [Phase 03]: Factor mode-divergent members (_auto_filter/num_symbols/symbols) carry the batch-shaped body on the shared base, with FactorKunQuant restoring exact behaviour via super()-delegating overrides — A naive hoist would be invisible today and fatal for 03-04: config.mode lives only on FactorConfig, so PolarsFactorConfig would raise AttributeError at runtime, only on the path someone happens to call. Test-time source-introspection enforcement replaces that runtime surprise.
+- [Phase 03]: Factor._maybe_resolve_factor_names() ships now with the pre-refactor eager body as its default, even though nothing overrides it yet — Introducing the seam and preserving behaviour are the same edit; 03-04 FactorPolars overrides it to a no-op for D-05 dynamic schema resolution. Adding it later would mean re-touching the config setter in a plan with other things to prove.
+- [Phase 03]: No Factor.config_cls ClassVar was added - utils/module.py hardcoded FactorConfig(**config) checkpoint reload is deferred to Phase 4 — The path is only reachable from Phase 4 model-checkpoint reload and no Phase-3 success criterion touches it; an unused attribute violates QUAL-02 and would pre-decide a mechanism Phase 4 should choose for itself.
 
 ### Pending Todos
 
@@ -96,7 +100,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-05T18:17:17.255Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-09-05T18:33:07.072Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
 </content>
