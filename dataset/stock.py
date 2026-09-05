@@ -25,7 +25,14 @@ class StockDataset(Dataset):
             stock_dfs = []
             for file in tqdm(files):
                 stock_dfs.append(pl.scan_parquet(file))
-            data = pl.concat(stock_dfs)
+            # diagonal_relaxed: raw parquet files may come from different
+            # acquisition sources/vendors with columns in a different order
+            # (or a differing but compatible column set) -- pl.concat's
+            # default ("vertical") requires exact column order across every
+            # input and raises polars.exceptions.InvalidOperationError
+            # otherwise, which would crash ingestion whenever raw files
+            # under the same raw_data_dir_path don't share one exact writer.
+            data = pl.concat(stock_dfs, how="diagonal_relaxed")
             # data = data.rename({"date": "timestamp", "ticker": "symbol"})
             data = data.filter(
                 pl.col("timestamp")

@@ -28,10 +28,16 @@ _COLUMNS = [
     "adjLow",
     "adjClose",
     "adjVolume",
+    "divCash",
+    "splitFactor",
 ]
 
 
 def _row(date_str: str, symbol: str, close: float = 100.0) -> dict:
+    # Mirrors the exact field set/dtypes acquisition/tiingo.py:TiingoAcquisition
+    # writes (Tiingo's EOD columns + divCash/splitFactor + renamed
+    # timestamp/symbol) so synthetic fixtures schema-match real vendor
+    # output when pl.concat()'d together in StockDataset._raw_data_to_xr().
     return {
         "timestamp": datetime.fromisoformat(date_str),
         "symbol": symbol,
@@ -39,12 +45,14 @@ def _row(date_str: str, symbol: str, close: float = 100.0) -> dict:
         "high": close,
         "low": close,
         "close": close,
-        "volume": 1_000.0,
+        "volume": 1_000,
         "adjOpen": close,
         "adjHigh": close,
         "adjLow": close,
         "adjClose": close,
-        "adjVolume": 1_000.0,
+        "adjVolume": 1_000,
+        "divCash": 0.0,
+        "splitFactor": 1.0,
     }
 
 
