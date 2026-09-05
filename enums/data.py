@@ -25,3 +25,19 @@ class BinanceCSVHeaders:
 # without revisiting that decision.
 Market = Literal["us_equity", "crypto_spot"]
 Frequency = Literal["1d", "1m", "tick"]
+
+
+@dataclass
+class TiingoColumns:
+    """Explicit `columns=` value passed to `TiingoClient.get_ticker_price()`.
+
+    Always pass this explicitly -- never rely on the client's undocumented
+    default field set (02-RESEARCH.md Pitfall 3): StockDataset._to_kunquant()
+    unconditionally expects the `adj*` columns to be present, which fails
+    downstream (not at acquisition time) if they are silently omitted.
+    """
+
+    EOD = (
+        "open,high,low,close,volume,adjOpen,adjHigh,adjLow,adjClose,"
+        "adjVolume,divCash,splitFactor"
+    )
