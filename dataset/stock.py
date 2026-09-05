@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from base.config import DatasetConfig
 from base.data import Dataset
+from dataset.cleaning import dedup_raw_frame
 from enums.data import BinanceCSVHeaders
 from utils.file import file_date_filter, get_pqt_files
 from utils.timer import Timer
@@ -33,6 +34,7 @@ class StockDataset(Dataset):
                 <= pl.lit(self.config.end_date).str.to_datetime(),
             )
             data = data.sort(by=["timestamp", "symbol"])
+            data = dedup_raw_frame(data, keep="last")
             data = data.collect().to_pandas().set_index(["timestamp", "symbol"])
             return data.to_xarray()
 
