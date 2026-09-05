@@ -116,3 +116,11 @@ None - no external service configuration required. Running `ingest_tiingo.py` fo
 ---
 *Phase: 02-multi-market-data-foundation*
 *Completed: 2026-09-05*
+
+## Self-Check: PASSED
+
+All created/modified files verified present on disk:
+- `dataset/stock.py`, `tests/test_stock_dataset.py`, `ingest_tiingo.py`, `README.md`, this SUMMARY.md
+
+All task commits verified present in `git log`:
+- `c0b3720` (test), `54da1c5` (feat), `4c93790` (feat), `0a84662` (feat), `5774b86` (docs: this summary)
