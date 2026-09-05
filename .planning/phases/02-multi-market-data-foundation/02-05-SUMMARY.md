@@ -110,3 +110,9 @@ None - no external service configuration required. `binance-data-downloader` is 
 ---
 *Phase: 02-multi-market-data-foundation*
 *Completed: 2026-09-05*
+
+## Self-Check: PASSED
+
+All created/modified files verified present on disk (`dataset/spot.py`, `ingest_binance_spot.py`,
+`tests/test_spot_dataset.py`, `README.md`, `02-05-REAL-DATA-CHECK.md`, this `02-05-SUMMARY.md`).
+All 4 commit hashes (`4e4cc23`, `1c18d89`, `44211b2`, `311cca0`) verified present in `git log`.
