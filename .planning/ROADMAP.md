@@ -106,7 +106,25 @@ Plans:
   3. User can compute at least one new factor via the Polars batch backend and get output conforming to the same `xarray.Dataset` contract
   4. No factor-pipeline code path passes a plain DataFrame between modules — inputs/outputs are `xarray.Dataset` only
 
-**Plans**: TBD
+**Plans:** 5 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 03-01-PLAN.md — Unblock FACTOR-01: fix the `my_ops` decompose() signature drift that breaks every batch `cal()`, prove Alpha158/Alpha101 end-to-end, build the Wave-0 test fixtures
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03-02-PLAN.md — Extract the shared `Factor` ABC from `FactorKunQuant`, split `FactorConfig` into base/KunQuant/Polars siblings, widen `DLConfig`/`MLConfig` (D-03)
+
+**Wave 3** *(blocked on Wave 2 completion — the two plans below are independent and run in parallel)*
+
+- [ ] 03-03-PLAN.md — US-equity KunQuant coverage: central `amount = volume * close` proxy, `Alpha101Stock` crash fix, new `Alpha158Stock`, config factories, NORM-01 normalization matrix (D-01/D-02)
+- [ ] 03-04-PLAN.md — `FactorPolars(Factor)` batch backend + the `Momentum` example factor (D-04..D-08)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 03-05-PLAN.md — Streaming smoke test (fixes the arch-dependent SIMD-width crash), live two-backend interchangeability proof, README coverage
 
 ### Phase 4: Baseline Return Prediction Model
 
