@@ -12,41 +12,51 @@ from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Stage import Function
 
-from base.config import FactorConfig
+from base.config import BaseFactorConfig, FactorConfig
 from dataset.backend import XrBackend
 from enums.constant import Date
 from utils.timer import Timer
 
 
-class FactorKunQuant(ABC):
-    def __init__(self, config: FactorConfig):
+class Factor(ABC):
+    """The shared, backend-agnostic factor contract (D-03).
+
+    Everything the model layer needs from a factor lives here: the `config`
+    lifecycle, the `XrBackend` storage round-trip (`read`/`save`), the
+    `xr.Dataset` feature/label accessors, and the two abstract members
+    (`cal`, `_get_factor_names`) each backend implements for itself.
+
+    The base is deliberately free of any KunQuant concept -- no streaming, no
+    compiled graph, and no read of the KunQuant-only `mode`/`data_columns`/
+    `njobs` config fields. That is what makes a non-KunQuant factor backend
+    droppable into `DLConfig.factors` with zero edits to `base/model.py`.
+    """
+
+    def __init__(self, config: BaseFactorConfig):
+        # Ordering is load-bearing: assigning `self.config` fires the property
+        # setter below, which runs before `self.data_backend` exists. No
+        # setter-reachable method may read the storage backend.
         self.config = config
         self.data_backend = XrBackend()
-        self._stream_context: kr.StreamContext = None
-        self._lib = None
-        self._buffer_name_to_id = dict()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(config={self.config})"
 
     def _auto_filter(self):
-        if self.config.mode == "batch":
-            self.data_backend.filter_by_date(
-                col="timestamp",
-                start_date=self.config.start_date,
-                end_date=self.config.end_date,
-            )
-            if self.config.symbols is not None:
-                self.data_backend.filter_by_symbol(
-                    "symbol", self.config.symbols
-                )
+        self.data_backend.filter_by_date(
+            col="timestamp",
+            start_date=self.config.start_date,
+            end_date=self.config.end_date,
+        )
+        if self.config.symbols is not None:
+            self.data_backend.filter_by_symbol("symbol", self.config.symbols)
 
     @property
-    def config(self) -> FactorConfig:
+    def config(self) -> BaseFactorConfig:
         return self._config
 
     @config.setter
-    def config(self, config: FactorConfig):
+    def config(self, config: BaseFactorConfig):
         """设置因子配置文件 使用因子配置覆盖数据集配置
 
         Args:
@@ -62,12 +72,25 @@ class FactorKunQuant(ABC):
             self._config.end_date = Date.END_DATE
 
         # 初始化因子名
-        if self._config.factor_names is None:
-            self._config.factor_names = self._get_factor_names()
+        self._maybe_resolve_factor_names()
 
         # 重置数据集配置
         # batch模式下, 数据集实例化时会初始化数据集文件(若不存在), 存在则会读取
         self._reset_dataset_config()
+
+    def _maybe_resolve_factor_names(self) -> None:
+        """Resolve `config.factor_names` eagerly, at config-assignment time.
+
+        The default is exactly the behaviour every KunQuant factor and label
+        class has always had: if the caller did not pin an explicit list, ask
+        the subclass to enumerate its factor names now.
+
+        Overridable seam: a backend whose factor names can only be known after
+        the data is read (a lazyframe schema, say) overrides this to a no-op
+        and resolves them inside its own `cal()`.
+        """
+        if self._config.factor_names is None:
+            self._config.factor_names = self._get_factor_names()
 
     def _reset_dataset_config(self):
         # 时间
@@ -82,12 +105,7 @@ class FactorKunQuant(ABC):
 
     @property
     def num_symbols(self) -> int:
-        if self.config.mode == "batch":
-            return self.config.dataset.num_symbols
-        elif self.config.mode == "stream":
-            return len(self.config.dataset.config.symbols)
-        else:
-            raise ValueError(f"mode {self.config.mode} is not supported")
+        return self.config.dataset.num_symbols
 
     @property
     def num_factors(self) -> int:
@@ -99,34 +117,11 @@ class FactorKunQuant(ABC):
 
     @property
     def symbols(self) -> list[str]:
-        if self.config.mode == "batch":
-            return self.config.dataset.symbols
-        elif self.config.mode == "stream":
-            return list(self.config.dataset.config.symbols)
-        else:
-            raise ValueError(f"mode {self.config.mode} is not supported")
+        return self.config.dataset.symbols
 
     @property
     def class_name(self) -> str:
         return self.__class__.__name__
-
-    def init_stream(self) -> Self:
-        with Timer(f"{self.__class__.__name__}: init stream"):
-            lib = self._make_stream()
-            modu = lib.getModule(f"{self.__class__.__name__}_stream")  # type: ignore
-
-            executor = kr.createMultiThreadExecutor(self.config.njobs)
-            stream = kr.StreamContext(executor, modu, self.num_symbols)
-
-            buffer_name_to_id = {}
-            for name in self.config.data_columns:
-                buffer_name_to_id[name] = stream.queryBufferHandle(name)
-            for name in self.config.factor_names:
-                buffer_name_to_id[name] = stream.queryBufferHandle(name)
-
-            self._stream_context = stream
-            self._buffer_name_to_id = buffer_name_to_id
-            return self
 
     def read(self) -> Self:
         self.data_backend.read(self.config.file_path)
@@ -151,23 +146,6 @@ class FactorKunQuant(ABC):
     def _get_xarray_dataset(self) -> xr.Dataset:
         return self.data_backend.get_xarray_dataset()  # type: ignore
 
-    def _to_xarray_dataset(
-        self,
-        raw_factor: dict[str, np.ndarray],
-        timestamps: np.ndarray,
-        symbols: np.ndarray,
-    ):
-        ds = xr.Dataset(
-            {k: (["timestamp", "symbol"], v) for k, v in raw_factor.items()},
-            coords={
-                "timestamp": timestamps,
-                "symbol": symbols,
-            },
-        )
-        self.data_backend.to_internal(ds)
-        self._auto_filter()
-        return self
-
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
         raise NotImplementedError
 
@@ -190,10 +168,86 @@ class FactorKunQuant(ABC):
         return cfg  # type: ignore
 
     @abstractmethod
-    def _get_factor_func(self) -> Function: ...
+    def _get_factor_names(self) -> tuple[str, ...]: ...
 
     @abstractmethod
-    def _get_factor_names(self) -> tuple[str, ...]: ...
+    def cal(self) -> Self: ...
+
+
+class FactorKunQuant(Factor):
+    """The KunQuant factor backend.
+
+    Owns everything compiled-graph- and streaming-specific: `cal()` over
+    `kr.runGraph`, the `init_stream()`/`cal_stream()` incremental path, the
+    two `cfake.compileit` wrappers, and the three `mode`-branching overrides
+    that keep the batch/stream distinction off the shared base (D-07).
+    """
+
+    def __init__(self, config: FactorConfig):
+        super().__init__(config)
+        self._stream_context: kr.StreamContext = None
+        self._lib = None
+        self._buffer_name_to_id = dict()
+
+    def _auto_filter(self):
+        if self.config.mode == "batch":
+            super()._auto_filter()
+
+    @property
+    def num_symbols(self) -> int:
+        if self.config.mode == "batch":
+            return super().num_symbols
+        elif self.config.mode == "stream":
+            return len(self.config.dataset.config.symbols)
+        else:
+            raise ValueError(f"mode {self.config.mode} is not supported")
+
+    @property
+    def symbols(self) -> list[str]:
+        if self.config.mode == "batch":
+            return super().symbols
+        elif self.config.mode == "stream":
+            return list(self.config.dataset.config.symbols)
+        else:
+            raise ValueError(f"mode {self.config.mode} is not supported")
+
+    def init_stream(self) -> Self:
+        with Timer(f"{self.__class__.__name__}: init stream"):
+            lib = self._make_stream()
+            modu = lib.getModule(f"{self.__class__.__name__}_stream")  # type: ignore
+
+            executor = kr.createMultiThreadExecutor(self.config.njobs)
+            stream = kr.StreamContext(executor, modu, self.num_symbols)
+
+            buffer_name_to_id = {}
+            for name in self.config.data_columns:
+                buffer_name_to_id[name] = stream.queryBufferHandle(name)
+            for name in self.config.factor_names:
+                buffer_name_to_id[name] = stream.queryBufferHandle(name)
+
+            self._stream_context = stream
+            self._buffer_name_to_id = buffer_name_to_id
+            return self
+
+    def _to_xarray_dataset(
+        self,
+        raw_factor: dict[str, np.ndarray],
+        timestamps: np.ndarray,
+        symbols: np.ndarray,
+    ):
+        ds = xr.Dataset(
+            {k: (["timestamp", "symbol"], v) for k, v in raw_factor.items()},
+            coords={
+                "timestamp": timestamps,
+                "symbol": symbols,
+            },
+        )
+        self.data_backend.to_internal(ds)
+        self._auto_filter()
+        return self
+
+    @abstractmethod
+    def _get_factor_func(self) -> Function: ...
 
     def cal(self) -> Self:
         input_dict, symbols, timestamp = self.config.dataset.to_kunquant(

@@ -1,8 +1,8 @@
 """Factor-hierarchy boundary-contract tests (FACTOR-04 + D-03).
 
-Scaffolded by 03-01 Task 2 (Nyquist Wave 0). The rest of the content -- the
-`Factor` ABC extraction assertions and the KunQuant/Polars interchangeability
-integration test -- lands in **03-02** and **03-05**.
+Scaffolded by 03-01 Task 2 (Nyquist Wave 0); the `Factor` ABC extraction
+assertions were added by **03-02**. The KunQuant/Polars interchangeability
+integration test lands in **03-05**.
 
 The single test below is not a placeholder: it is the cheap, permanent
 regression lock on D-03's "seamless interchangeability" claim. It passes today
@@ -23,8 +23,29 @@ exists yet.
 """
 
 from pathlib import Path
+from typing import Callable
+
+from base.config import DatasetConfig, FactorConfig
+from base.factor import Factor, FactorKunQuant
+from dataset.spot import SpotKlineDataset
+from label.spot import SpotBinaryReturn, SpotReturn
 
 CONSUMER_FILE = "base/model.py"
+
+# The exhaustive set of members `base/model.py:115-201` invokes on a factor or
+# a label object (03-PATTERNS.md section 7). Every one must resolve on the
+# shared `Factor` base, or a non-KunQuant backend could not be dropped into
+# `DLConfig.factors` unchanged.
+BASE_MODEL_CALL_SURFACE = (
+    "config",
+    "_reset_dataset_config",
+    "cal",
+    "read",
+    "get_features",
+    "get_labels",
+    "_get_factor_names",
+    "get_config",
+)
 
 # A live reference to either concrete factor backend in the model layer would
 # mean the model knows which backend computed its features -- exactly the
@@ -74,3 +95,61 @@ def test_base_model_does_not_dispatch_on_concrete_factor_types() -> None:
         "base/model.py must stay agnostic of which factor backend computed "
         "its features (FACTOR-04 / D-03):\n" + "\n".join(violations)
     )
+
+
+def _label_factor_config(
+    dataset_config: DatasetConfig, tmp_path: Path
+) -> FactorConfig:
+    """A `FactorConfig` for a label class with `factor_names` left as `None`.
+
+    Leaving it `None` is the whole point: it forces the `Factor.config` setter
+    to go through `_maybe_resolve_factor_names()`, which is the code path
+    03-02 rewrote.
+    """
+    return FactorConfig(
+        window=10,
+        dataset=SpotKlineDataset(dataset_config),
+        mode="batch",
+        data_columns=["close"],
+        factor_names=None,
+        file_path=str(tmp_path / "labels" / "out.zarr"),
+        njobs=4,
+        kwargs={"n_forward_periods": 1},
+    )
+
+
+def test_label_classes_construct_through_the_refactored_hierarchy(
+    spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path
+) -> None:
+    """`SpotReturn` / `SpotBinaryReturn` still construct with their factor
+    names resolved eagerly (03-02 Hazard 3).
+
+    This is the ONLY coverage `label/spot.py` has anywhere in the repository.
+    It exists because 03-02 rewrote exactly the code path label construction
+    runs: both classes are direct `FactorKunQuant` subclasses, so building one
+    fires the hoisted `Factor.config` setter and the brand-new
+    `_maybe_resolve_factor_names()` hook. If that hook's default stopped
+    resolving names eagerly, every label class would silently start carrying
+    `factor_names=None` into `cal()`.
+
+    Construction only -- `.cal()` is deliberately not called: label
+    computation is out of 03-02's scope and would add a KunQuant compile to
+    the test run.
+    """
+    dataset_config = spot_kline_zarr(periods=30, seed=0)
+
+    label = SpotReturn(_label_factor_config(dataset_config, tmp_path))
+
+    resolved = label.config.factor_names
+    assert isinstance(resolved, (tuple, list))
+    assert len(resolved) > 0
+    assert resolved[0] == "ret_1"
+
+    for label_cls in (SpotReturn, SpotBinaryReturn):
+        assert issubclass(label_cls, FactorKunQuant)
+        assert issubclass(label_cls, Factor)
+        for member in BASE_MODEL_CALL_SURFACE:
+            assert member in dir(label_cls), (
+                f"{label_cls.__name__} is missing '{member}' from the "
+                "base/model.py call surface"
+            )
