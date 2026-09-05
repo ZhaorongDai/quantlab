@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-09-05T18:45:07.005Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-09-05T18:53:53.026Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03 execution started
-state_head: 2575f13aa3bc87245baae5ed7d6777dcbcba5129
+state_head: c2db142141861358382b90ba45892b16783d8fd8
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 18
-  completed_plans: 16
+  completed_plans: 17
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03 (Factor Computation (KunQuant + Polars)) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 03 execution started
 
@@ -62,6 +62,7 @@ Progress: [██████████] 100%
 | Phase 03 P01 | 31 min | 2 tasks | 7 files |
 | Phase 03 P02 | 6 min | 3 tasks | 3 files |
 | Phase 03 P03 | 7 min | 3 tasks | 5 files |
+| Phase 03 P04 | 8 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,8 @@ Recent decisions affecting current work:
 - [Phase 03]: amount = volume * close is synthesized once centrally in StockDataset._to_kunquant(), double-guarded, not per factor class — The boundary method is the one place every KunQuant consumer of US-equity data passes through; per-class fixes would need one edit per factor class forever and each is a place to get adjusted-vs-raw wrong. The double guard (requested AND absent) keeps it inert and stops it overwriting a real vendor column if one ever appears (T-03-03-01).
 - [Phase 03]: Alpha158Stock replicates Alpha158SpotKline verbatim (double-AllData build, six unused Input nodes); the normalization wrapper is the single deliberate divergence — D-01 fixes the invocation shape across markets, so tidying one class alone would silently diverge them and tidying both would edit working code for cosmetics. A vars() method-set equality assertion is the mechanical guard.
 - [Phase 03]: The D-09 four-class normalization matrix is locked by one equality assertion against a literal, with docstrings on all four classes — Raw vs normalized factor values are indistinguishable to a downstream consumer at runtime (T-03-03-02). A per-market strategy choice that looks like an inconsistency must be impossible to 'align' silently; the assertion message routes a would-be changer to D-09 in 03-CONTEXT.md before the test literal.
+- [Phase 03]: FactorPolars resolves factor names inside cal() from collect_schema().names(), never at construction time — Keeping the inherited eager _maybe_resolve_factor_names() would make merely constructing a Polars factor trigger a disk read, contradicting D-04's computation-starts-at-cal() contract. The documented cost is that _get_factor_names()/num_factors raise until cal()/read() has run - a gap base/model.py never hits.
+- [Phase 03]: Polars factors are not portable across markets: Dataset.get_lazyframe() applies no per-market column normalization (03-RESEARCH.md Open Question 2), so factor/momentum.py is written against crypto-spot Title-Case Close — D-08 requires only one example factor and adding a get_lazyframe()-side rename layer was explicitly out of Phase 3 scope. Recorded in both docstrings a new factor author reads; revisit when a second Polars factor must span both markets.
 
 ### Pending Todos
 
@@ -104,7 +107,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-05T18:45:06.980Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-09-05T18:53:41.699Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
 </content>
