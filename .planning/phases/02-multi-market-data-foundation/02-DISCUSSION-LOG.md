@@ -55,6 +55,18 @@
 
 ---
 
+## Real-data verification for Binance ingestion (second follow-up correction)
+
+**User's message:** "这个机器上还没有币安的数据，先忽略这一部分。代码注意加单元测试" (this machine doesn't have Binance data yet — for now, ignore this part. Make sure the code includes unit tests)
+
+**Claude's clarifying question:** asked whether "ignore this part" meant (a) proceed with 02-05's code+tests as planned (they use synthetic fixtures, no real data needed) and just skip the manual verification step that assumed real pre-existing CSVs, or (b) skip 02-05 entirely this round.
+
+**User's answer (free text, "Other"):** "使用binance-data-downloader python cli 包下载少量真实数据" (use the `binance-data-downloader` Python CLI package to download a small amount of real data)
+
+**Notes:** This revealed the earlier RESEARCH.md assumption (that real Binance CSVs already existed somewhere on this machine, just outside the repo convention) was based on finding a *sibling project* (`~/projects/binance-data-downloader`), not actual downloaded kline data. The user clarified they want to use that sibling tool (an existing, already-built, separate CLI, installable via `uvx binance-data-downloader`) to fetch a small real sample directly into the new convention path, rather than relying only on synthetic fixtures or a hand-wavy "point at wherever your data lives" instruction. Captured as CONTEXT.md D-11. The `--raw-data-dir` override from the prior blocker fix remains as a general-purpose feature but is no longer the phase's primary real-data verification path.
+
+On unit tests: confirmed (not a new decision) that every task across all 7 plans already has a real `pytest`-based `<verify><automated>` command per 02-VALIDATION.md's Nyquist enforcement — no plan lacks test coverage.
+
 ## Claude's Discretion
 
 - Exact `Literal` value sets for the new `market`/`frequency` config fields.
