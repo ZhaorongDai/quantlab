@@ -17,6 +17,8 @@ dscfg = DatasetConfig(
         _data_root / "scripts" / "downloads" / "nasdaq_data" / "stock.zarr"
     ),
     catalog_path="none",
+    market="us_equity",
+    frequency="1d",
 )
 
 

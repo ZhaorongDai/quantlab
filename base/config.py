@@ -1,6 +1,8 @@
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from enums.data import Frequency, Market
+
 if TYPE_CHECKING:
     from .data import Dataset
     from .factor import FactorKunQuant
@@ -11,11 +13,29 @@ class DatasetConfig:
     raw_data_dir_path: str
     zarr_file_path: str
     catalog_path: str
+    market: Market
+    frequency: Frequency
     start_date: str | None = None
     end_date: str | None = None
     symbols: tuple | None = None
     kwargs: dict | None = None
 
+    name: str | None = None
+
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass
+class AcquisitionConfig:
+    market: Market
+    frequency: Frequency
+    raw_data_dir_path: str
+    watermark_path: str
+    symbols: tuple[str, ...]
+    start_date: str | None = None
+    end_date: str | None = None
+    kwargs: dict | None = None
     name: str | None = None
 
     def to_dict(self):
