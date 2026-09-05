@@ -5,7 +5,7 @@ from enums.data import Frequency, Market
 
 if TYPE_CHECKING:
     from .data import Dataset
-    from .factor import FactorKunQuant
+    from .factor import Factor
 
 
 @dataclass
@@ -63,18 +63,22 @@ class UniverseConfig:
         return asdict(self)
 
 
-@dataclass
-class FactorConfig:
+@dataclass(kw_only=True)
+class BaseFactorConfig:
+    """Every field shared by both factor backends (KunQuant and Polars).
+
+    Backend-agnostic: the shared `base/factor.py:Factor` base reads only these
+    fields, so a config carrying nothing beyond them is enough to construct and
+    drive any factor implementation (D-03).
+    """
+
     window: int
     dataset: "Dataset"
-    mode: Literal["stream", "batch"]
-    data_columns: list
     file_path: str | None = None
     factor_names: list | None = None
     start_date: str | None = None
     end_date: str | None = None
     symbols: list | None = None
-    njobs: int = 128
     kwargs: dict | None = None
 
     name: str | None = None
@@ -83,11 +87,38 @@ class FactorConfig:
         return asdict(self)
 
 
+@dataclass(kw_only=True)
+class FactorConfig(BaseFactorConfig):
+    """KunQuant-backend factor configuration.
+
+    The three fields added here are KunQuant-specific: `mode` drives the
+    batch/stream branch in the KunQuant factor class, `data_columns` names the
+    inputs of the compiled KunQuant graph, and `njobs` sizes
+    `kr.createMultiThreadExecutor`. None of them exist on the Polars sibling,
+    which is why no method of the shared `Factor` base may read them.
+    """
+
+    mode: Literal["stream", "batch"]
+    data_columns: list
+    njobs: int = 128
+
+
+@dataclass(kw_only=True)
+class PolarsFactorConfig(BaseFactorConfig):
+    """Polars-backend factor configuration.
+
+    Adds no fields to `BaseFactorConfig`. The Polars backend is batch-only
+    (D-07), so it deliberately has no `mode`; factor names are resolved
+    dynamically from the lazyframe schema (D-05), so `factor_names` is expected
+    to stay `None` until `cal()` runs.
+    """
+
+
 @dataclass
 class DLConfig:
     # 数据相关
-    factors: list["FactorKunQuant"]
-    labels: list["FactorKunQuant"]
+    factors: list["Factor"]
+    labels: list["Factor"]
     model_save_dir: str
     factor_data_strategy: Literal["read", "cal"]
     label_data_strategy: Literal["read", "cal"]
@@ -121,8 +152,8 @@ class DLConfig:
 @dataclass
 class MLConfig:
     # 数据相关
-    factors: list["FactorKunQuant"]
-    labels: list["FactorKunQuant"]
+    factors: list["Factor"]
+    labels: list["Factor"]
     model_save_dir: str
     factor_data_strategy: Literal["read", "cal"]
     label_data_strategy: Literal["read", "cal"]
