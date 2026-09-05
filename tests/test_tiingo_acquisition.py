@@ -84,9 +84,12 @@ def test_credential_never_exposed_on_config_surface(mock_tiingo_client, tmp_path
     config = _make_config(tmp_path)
     acq = TiingoAcquisition(config)
 
-    serialized = json.dumps(config.to_dict())
+    # Check dict *keys*, not the full serialized string -- pytest's tmp_path
+    # embeds the test function name in its path, which can coincidentally
+    # contain one of these substrings and produce a false positive.
+    keys = set(config.to_dict().keys())
     for forbidden in ("api_key", "credential", "token", "secret"):
-        assert forbidden not in serialized.lower()
+        assert forbidden not in keys
 
     for attr_name, attr_value in vars(acq).items():
         if attr_name == "_client":
