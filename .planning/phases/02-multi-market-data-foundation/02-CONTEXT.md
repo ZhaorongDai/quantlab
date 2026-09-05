@@ -33,13 +33,19 @@ The module must handle, for v1:
 
 ### US equities (Tiingo) ingestion — priority path for this phase
 - **D-09:** No `stock_kline_config()`-equivalent factory function currently exists in `config/__init__.py` (only spot/alpha101/alpha158/label factories exist) — Phase 2 must add one, following the `market`/`frequency` schema (D-01/D-02), analogous to `spot_kline_config()`.
-- **D-10 (temp-vs-core-code guardrail — see [[feedback-temp-vs-core-code]] memory):** The existing `scripts/download_stock_data_from_tiingo.py` is throwaway/exploratory code (per-`# %%`-cell, writes to a cwd-relative `downloads/nasdaq_data/` path unrelated to `QUANTLAB_DATA_DIR`/the new `market`/`frequency` convention). Phase 2 must NOT extend or model new code on this script. Any new Tiingo acquisition code should be a proper top-level script (following the existing convention of `get_binance_instruments.py`/`cal.py` — proper structure, env-var config, logging, no notebook-style cell markers) that writes raw data into the new `data/{market}/{frequency}/raw/...` path convention so `StockDataset` can consume it via the existing `Dataset` abstraction. Whether download logic becomes a standalone script (matching the existing pattern where `Dataset` subclasses only convert already-local raw files, never fetch remotely) or something else is the planner's call, informed by this constraint.
+- **D-10 (revised — see below and [[feedback-encapsulate-new-components]] memory):** New Tiingo acquisition code must be a **properly encapsulated component following the codebase's established OOP/layered style** — a class (or small set of classes) analogous in spirit to `Dataset`/`FactorKunQuant` (ABC + concrete implementation, config-driven, single-responsibility methods) — NOT a flat procedural top-level script.
+  - **User's explicit correction:** do NOT model it on `get_binance_instruments.py` or `cal.py` either — those are flat, single-purpose, run-once scripts. Even though they're "real" top-level entry points (not `scripts/` throwaways), their procedural style is still the wrong reference for this component. The correct reference is the codebase's class-based layered pattern (`base/data.py:Dataset`, `dataset/stock.py:StockDataset`, `dataset/spot.py:SpotKlineDataset`), not any existing script regardless of location.
+  - **Must be designed for, from the start (even though only daily-US-equity is implemented in v1):**
+    - **Multi-frequency support:** the acquisition component must be parameterized by frequency (not hardcode `frequency="daily"` deep in a function body the way `scripts/download_stock_data_from_tiingo.py` does today) so adding minute/intraday frequency later is a parameter/config change, not a rewrite.
+    - **Incremental / daily-refresh updates:** must support fetching only new data since the last successful download per symbol (a "resume from last watermark" refresh), not just one-shot full-history backfill. Exact mechanism (a small state/metadata file recording last-downloaded date per symbol+frequency, or deriving it from the existing Zarr store's max timestamp) is the planner/researcher's call — but the capability itself is a locked requirement, not optional/future.
+  - The existing `scripts/download_stock_data_from_tiingo.py` remains a reference for WHAT it does (Tiingo API call shape, JSON→columns mapping) but not HOW it's structured (per the original temp-vs-core-code guardrail, [[feedback-temp-vs-core-code]]) — this now also explicitly rules out copying the flat-script *style* even from non-`scripts/` files.
+  - Output still lands via the existing `Dataset`/`DataBackend` abstraction into the `data/{market}/{frequency}/...` path convention (D-01/D-02) — this component handles acquisition (remote fetch → local raw files or direct hand-off), `StockDataset` still handles raw-files → xarray conversion, keeping the existing separation of concerns.
 
 ### Claude's Discretion
 - Exact `Literal` value sets for `market`/`frequency` fields.
 - Whether cleaning logic lives in `my_ops/` (extending the existing package) or a new sibling package (e.g. `dataset/cleaning.py`) — planner picks based on where it best fits the existing layered architecture.
 - Exact dedup tie-breaking rule (first vs. last duplicate wins) as long as it's deterministic and documented.
-- Whether the Tiingo acquisition step is a new standalone script or reuses/rewrites the existing one in place — as long as it does not inherit the existing script's throwaway patterns (hardcoded relative paths, notebook-cell style) per D-10.
+- Exact class/module design for the encapsulated Tiingo acquisition component (e.g. new `acquisition/` package, a method added to `StockDataset`, or a standalone class elsewhere) and exact incremental-refresh watermark mechanism — as long as it satisfies D-10's encapsulation + multi-frequency + incremental-update requirements and does not copy any existing script's flat/procedural style.
 
 </decisions>
 
@@ -60,8 +66,8 @@ The module must handle, for v1:
 - `dataset/stock.py` — `StockDataset` (Tiingo/NASDAQ parquet ingestion — currently has 3 unimplemented Nautilus methods, out of scope for this phase unless blocking)
 - `dataset/spot.py` — `SpotKlineDataset` (Binance CSV ingestion — reference for the retrofit in D-04)
 - `config/__init__.py` — existing factory function pattern (`spot_kline_config`, `alpha101_config`, `alpha158_config`, `spot_label_config`, `_data_root()` helper) to follow for the new `stock_kline_config()`-equivalent (D-09)
-- `scripts/download_stock_data_from_tiingo.py` — reference for WHAT it does (Tiingo API usage), explicitly NOT for HOW it's structured (see D-10)
-- `get_binance_instruments.py`, `cal.py` — reference for "proper top-level script" conventions per D-10
+- `scripts/download_stock_data_from_tiingo.py` — reference for WHAT it does (Tiingo API usage, JSON→column mapping), explicitly NOT for HOW it's structured (see D-10)
+- `base/data.py:Dataset`, `dataset/stock.py:StockDataset`, `dataset/spot.py:SpotKlineDataset` — reference for the class-based, encapsulated, config-driven style the new Tiingo acquisition component must follow (see D-10; `get_binance_instruments.py`/`cal.py` are explicitly NOT the right style reference despite being non-throwaway top-level scripts)
 
 </canonical_refs>
 
@@ -74,7 +80,7 @@ The module must handle, for v1:
 - `utils/file.py:get_csv_files`/`get_pqt_files`/`file_date_filter` — generic file-discovery helpers already reusable across both sources
 
 ### Established Patterns
-- Every `Dataset` subclass only converts **already-local raw files** into xarray — none of them fetch remote data themselves. Acquisition (downloading) is handled by separate top-level scripts (`get_binance_instruments.py` is the closest analog, though it refreshes YAML metadata rather than bulk market data). This pattern should hold for any new Tiingo acquisition work (D-10).
+- Every `Dataset` subclass only converts **already-local raw files** into xarray — none of them fetch remote data themselves today. This separation of concerns (acquisition vs. conversion) should hold, but per the user's correction, the acquisition side itself must still be built as an encapsulated, class-based component (D-10) — not a flat script like `get_binance_instruments.py` (which only refreshes YAML metadata, and is procedural style regardless).
 - Config objects are dataclasses with factory functions in `config/__init__.py`, not inline construction at call sites — new sources should add a factory function, matching existing style.
 
 ### Integration Points

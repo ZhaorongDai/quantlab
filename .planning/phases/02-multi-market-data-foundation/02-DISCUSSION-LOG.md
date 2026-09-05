@@ -47,6 +47,14 @@
 
 ---
 
+## Tiingo acquisition component design (follow-up correction)
+
+**User's correction (free text):** "tinngo 数据采集逻辑不要沿用get_binance_instruments.py/cal.py的风格，要参考代码库的风格，做好封装，为未来多频率数据、数据每日更新做准备" (the Tiingo data-acquisition logic should not follow the style of `get_binance_instruments.py`/`cal.py` — it should follow the codebase's [layered/OOP] style, be properly encapsulated, and be prepared for future multi-frequency data and daily data updates)
+
+**Notes:** This arrived after the initial CONTEXT.md draft, which had (incorrectly) suggested `get_binance_instruments.py`/`cal.py` as the style reference for D-10. Corrected D-10 to require a class-based, encapsulated component (in the spirit of `base/data.py:Dataset`/`dataset/stock.py:StockDataset`) rather than any flat procedural script — and made multi-frequency parameterization + incremental/daily-refresh capability explicit, locked requirements rather than "nice to have later."
+
+---
+
 ## Claude's Discretion
 
 - Exact `Literal` value sets for the new `market`/`frequency` config fields.
