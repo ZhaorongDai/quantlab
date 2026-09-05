@@ -16,18 +16,20 @@ the compiled graph stays tiny (~1.5 s per compilation) and `njobs=4` so the
 KunQuant executor does not spawn `FactorConfig`'s default 128 threads.
 """
 
+import inspect
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import xarray as xr
 
-from base.config import DatasetConfig, FactorConfig
+from base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
 from base.data import Dataset
 from dataset.spot import SpotKlineDataset
 from dataset.stock import StockDataset
+from config import momentum_config, stock_alpha158_config
 from factor.alpha101 import Alpha101SpotKline, Alpha101Stock
-from factor.alpha158 import Alpha158SpotKline
+from factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 
 
 def _factor_config(
@@ -215,3 +217,130 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     assert isinstance(result, xr.Dataset)
     assert "alpha001" in result.data_vars
     assert np.isfinite(result["alpha001"].to_numpy()).sum() > 0
+
+
+def test_alpha158_stock_batch_cal_returns_xarray_dataset(
+    stock_zarr: Callable[..., DatasetConfig], tmp_path: Path
+) -> None:
+    """D-01 / FACTOR-01 across both markets: the Alpha158 factor set now
+    computes in batch mode against US equities, not only crypto spot.
+    `Alpha158Stock` mirrors `Alpha158SpotKline`'s `AllData` wiring including
+    `amount`, which `StockDataset._to_kunquant()` supplies via the D-02
+    `volume * close` proxy.
+    """
+    dataset_config = stock_zarr(symbols=_STOCK_SYMBOLS, periods=60, seed=0)
+    factor = Alpha158Stock(
+        _factor_config(
+            dataset_config,
+            factor_names=["KMID", "VOLUME0", "STD5"],
+            data_columns=["open", "high", "low", "close", "volume", "amount"],
+            tmp_path=tmp_path,
+            dataset_cls=StockDataset,
+        )
+    )
+
+    result = factor.cal().get_features()
+
+    assert isinstance(result, xr.Dataset)
+    assert dict(result.sizes) == {"timestamp": 60, "symbol": 8}
+    assert sorted(result.data_vars) == ["KMID", "STD5", "VOLUME0"]
+    assert np.isfinite(result["KMID"].to_numpy()).sum() > 0
+
+
+# The method that actually emits each class's `Output(...)` calls. For the
+# Alpha101 classes that is `_get_factor_func`; the Alpha158 classes delegate
+# `_get_factor_func` to `_get_func_stream`, so the emission lives there.
+_EMITTING_METHOD = {
+    Alpha101SpotKline: "_get_factor_func",
+    Alpha101Stock: "_get_factor_func",
+    Alpha158SpotKline: "_get_func_stream",
+    Alpha158Stock: "_get_func_stream",
+}
+
+# NORM-01 / D-09, verbatim: time-series z-score on both crypto-spot classes,
+# raw output on both US-equity classes. True == the rolling z-score op wraps
+# every `Output(...)` in that class.
+_EXPECTED_NORMALIZATION_MATRIX = {
+    Alpha101SpotKline: True,
+    Alpha101Stock: False,
+    Alpha158SpotKline: True,
+    Alpha158Stock: False,
+}
+
+_NORMALIZATION_MISMATCH_MESSAGE = """
+NORM-01 / D-09 violation: the normalization applied by one or more factor
+classes no longer matches the locked matrix.
+
+That matrix is NOT an implementation detail. `WindowedZScore` is a 时序 /
+time-series normalization (each symbol against its own rolling window). Crypto
+spot is traded with time-series strategies and gets it; US equities are traded
+with 截面 / cross-sectional strategies (normalize across symbols at each
+timestamp) and deliberately emit RAW values, with the downstream consumer
+applying its own cross-sectional normalization. The split is per market, not
+per factor family.
+
+So a mismatch here almost always means someone "aligned" a US-equity class with
+its crypto-spot sibling, silently imposing the wrong normalization on a
+cross-sectional factor set. If the change really is intended, it is a change to
+a LOCKED USER DECISION: update D-09 in
+`.planning/phases/03-factor-computation-kunquant-polars/03-CONTEXT.md` first,
+then the four class docstrings, and only then this literal.
+""".strip()
+
+
+def test_normalization_matrix_matches_recorded_strategy_types() -> None:
+    """NORM-01 / D-09: lock the four-class normalization matrix -- rolling
+    time-series z-score on `Alpha101SpotKline`/`Alpha158SpotKline` (crypto
+    spot, 时序 strategies), raw un-normalized output on
+    `Alpha101Stock`/`Alpha158Stock` (US equities, 截面 strategies).
+
+    An actual cross-sectional Z-score op is NOT built in this phase; it is
+    deferred to the ARCH-01/ARCH-02 work in Phase 6 ("架构同时兼容单标的时序
+    策略与多标的截面多因子策略"). D-09 asks Phase 3 to emit raw US-equity values
+    and leave normalization to the consumer, so this test asserts the ABSENCE
+    of time-series normalization on the stock classes, not the presence of a
+    cross-sectional one.
+    """
+    actual = {
+        cls: "WindowedZScore"
+        in inspect.getsource(getattr(cls, method_name))
+        for cls, method_name in _EMITTING_METHOD.items()
+    }
+
+    assert actual == _EXPECTED_NORMALIZATION_MATRIX, (
+        f"{_NORMALIZATION_MISMATCH_MESSAGE}\n\n"
+        f"expected: { {c.__name__: v for c, v in _EXPECTED_NORMALIZATION_MATRIX.items()} }\n"
+        f"actual:   { {c.__name__: v for c, v in actual.items()} }"
+    )
+
+
+def test_stock_alpha158_config_wires_amount_and_a_derived_path() -> None:
+    """The US-equity Alpha158 factory is reachable, carries `"amount"` (without
+    which the D-02 synthesis never fires and the graph crashes), and writes to
+    a `_data_root()`-derived path rather than a hardcoded absolute one.
+    """
+    cfg = stock_alpha158_config()
+
+    assert isinstance(cfg, FactorConfig)
+    assert "amount" in cfg.data_columns
+    assert cfg.file_path is not None
+    assert cfg.file_path.endswith("alpha158_stock.zarr")
+
+
+def test_momentum_config_returns_a_polars_factor_config() -> None:
+    """`momentum_config()` lives in `config/__init__.py` because 03-03 owns
+    that file for the whole of wave 3, while the `Momentum` class it configures
+    is delivered by the parallel plan 03-04. It therefore returns a
+    `PolarsFactorConfig` without importing anything from `factor/momentum.py` --
+    no runtime coupling between the two wave-3 plans.
+
+    `window == n` so the dataset lookback is extended by exactly the momentum
+    horizon; `kwargs == {"n": n}` so the factor reads its horizon from config.
+    """
+    cfg = momentum_config(n=5)
+
+    assert isinstance(cfg, PolarsFactorConfig)
+    assert cfg.window == 5
+    assert cfg.kwargs == {"n": 5}
+    assert cfg.file_path is not None
+    assert cfg.file_path.endswith("momentum.zarr")

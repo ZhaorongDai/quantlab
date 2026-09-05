@@ -2,7 +2,13 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from base.config import AcquisitionConfig, DatasetConfig, FactorConfig, UniverseConfig
+from base.config import (
+    AcquisitionConfig,
+    DatasetConfig,
+    FactorConfig,
+    PolarsFactorConfig,
+    UniverseConfig,
+)
 from dataset.backend import PlBackend, XrBackend
 from dataset.spot import SpotKlineDataset
 from dataset.stock import StockDataset
@@ -213,6 +219,89 @@ def alpha158_config(
         window=128,
         start_date=start_date,
         end_date=end_date,
+    )
+
+
+def stock_alpha158_config(
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    factor_names: list | None = None,
+    symbols: list | None = None,
+    mode: Literal["batch", "stream"] = "batch",
+    market: Market = "us_equity",
+    frequency: Frequency = "1d",
+):
+    """US-equity sibling of `alpha158_config()` (D-01, FACTOR-01).
+
+    Identical in shape to the crypto-spot factory apart from the dataset it
+    wires (`StockDataset`) and the zarr output name. `"amount"` MUST stay in
+    `data_columns`: `Alpha158.AllData` derives `vwap` from it, and it is what
+    triggers the D-02 `volume * close` synthesis in
+    `StockDataset._to_kunquant()`.
+
+    The `Alpha158Stock` class this configures emits raw, un-normalized factor
+    values (NORM-01 / D-09) -- the market split lives in the factor class, not
+    here; this factory only chooses the dataset.
+    """
+    return FactorConfig(
+        file_path=str(_data_root() / "data" / "factor" / "alpha158_stock.zarr"),
+        dataset=StockDataset(
+            stock_kline_config(
+                symbols=symbols, market=market, frequency=frequency
+            )
+        ),
+        data_columns=[
+            "high",
+            "low",
+            "close",
+            "open",
+            "volume",
+            "amount",
+        ],
+        symbols=symbols,
+        mode=mode,
+        factor_names=factor_names,
+        window=128,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def momentum_config(
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    symbols: list | None = None,
+    n: int = 20,
+    market: Market = "crypto_spot",
+    frequency: Frequency = "1d",
+):
+    """Config for the Polars-backend `Momentum` factor (FACTOR-03, D-08).
+
+    Lives here purely for `config/__init__.py` file ownership: 03-03 owns this
+    file for the whole of wave 3, while the `Momentum` class itself is
+    delivered by the parallel plan 03-04. This factory therefore imports
+    NOTHING from `factor/momentum.py` -- it only builds and returns a
+    `PolarsFactorConfig`, so there is no runtime coupling between the two
+    wave-3 plans.
+
+    `window=n` so `Factor._reset_dataset_config()` extends the dataset lookback
+    by exactly the momentum horizon, and `kwargs={"n": n}` so the factor reads
+    its horizon from config rather than from a literal in its own source.
+    """
+    return PolarsFactorConfig(
+        file_path=str(_data_root() / "data" / "factor" / "momentum.zarr"),
+        dataset=SpotKlineDataset(
+            spot_kline_config(
+                symbols=symbols, market=market, frequency=frequency
+            )
+        ),
+        symbols=symbols,
+        window=n,
+        start_date=start_date,
+        end_date=end_date,
+        kwargs={"n": n},
     )
 
 
