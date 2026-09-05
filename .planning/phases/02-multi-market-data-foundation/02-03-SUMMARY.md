@@ -98,3 +98,16 @@ None - no external service configuration required.
 ---
 *Phase: 02-multi-market-data-foundation*
 *Completed: 2026-09-05*
+
+## Self-Check: PASSED
+
+- FOUND: dataset/cleaning.py
+- FOUND: tests/test_cleaning.py
+- FOUND: base/data.py contains `clean_market_data(data)`
+- FOUND commit: ac82ac7 (test: dedup RED)
+- FOUND commit: 4b34d17 (feat: dedup GREEN)
+- FOUND commit: f798d62 (test: flag/validate/clean RED)
+- FOUND commit: 56b6eb1 (feat: flag/validate/clean GREEN)
+- FOUND commit: 35bafaa (docs: SUMMARY.md)
+- Verified: `uv run pytest tests/test_cleaning.py tests/test_backend_overwrite.py -v` — 12 passed
+- Verified: no import cycle (`dataset.stock`, `dataset.spot`, `base.data` import cleanly together)
