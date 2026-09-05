@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from base.config import DatasetConfig
 from dataset.backend import XrBackend
+from dataset.cleaning import clean_market_data
 from enums.constant import Date
 from utils.timer import Timer
 
@@ -114,6 +115,7 @@ class Dataset(ABC):
 
     def from_raw_data(self) -> Self:
         data = self._raw_data_to_xr()
+        data = clean_market_data(data)
         self.data_backend.to_internal(data)  # type: ignore
         return self
 
