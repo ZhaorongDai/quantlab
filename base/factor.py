@@ -317,13 +317,22 @@ class FactorKunQuant(Factor):
 
     def _make_stream(self):
         with Timer(f"{self.__class__.__name__}: make stream"):
+            # The SIMD block width is deliberately left unset so KunQuant picks
+            # it per architecture. It is architecture-dependent -- KunQuant's
+            # own defaults for float are 8 on x86_64 and 4 on aarch64
+            # (`KunQuant/Driver.py`) -- so pinning the x86 value here raised
+            # `RuntimeError: Blocking length 8 is not supported for float on
+            # aarch64` on Apple Silicon, i.e. on this project's own dev
+            # machine. Leaving it unset preserves the previous x86_64 behaviour
+            # exactly, because 8 is what KunQuant selects there anyway.
+            # `partition_factor` below is unrelated: it controls graph
+            # partitioning, not SIMD width.
             return cfake.compileit(
                 [
                     (
                         f"{self.__class__.__name__}_stream",
                         self._get_factor_func(),
                         KunCompilerConfig(
-                            blocking_len=8,
                             partition_factor=8,
                             input_layout="STREAM",
                             output_layout="STREAM",
