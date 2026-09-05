@@ -64,10 +64,30 @@ Plans:
 
   1. User can run a documented command/script to pull US equities daily data from Tiingo (auth via env var) and see it persisted as a `[timestamp, symbol]` xarray.Dataset in Zarr
   2. User can run a documented command/script to pull/refresh Binance spot kline data through the same Dataset/DataBackend abstraction into the same Zarr storage format
-  3. Both data sources pass through a shared cleaning/preprocessing module (reusing `my_ops`) before being persisted, producing a valid `xarray.Dataset`
+  3. Both data sources pass through a shared cleaning/preprocessing module (`dataset/cleaning.py` — planner discretion per 02-CONTEXT.md, not `my_ops` which is KunQuant-graph-op style and the wrong fit for tabular/xarray cleaning) before being persisted, producing a valid `xarray.Dataset`
   4. A design/code review confirms adding a new market or frequency only requires a new `Dataset` subclass + config — no changes needed in factor/model/backtest code
 
-**Plans**: TBD
+**Plans:** 7 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — Test infrastructure (pytest + fixtures) + Zarr overwrite fix (Pitfall 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-02-PLAN.md — Config schema foundation: DatasetConfig market/frequency, AcquisitionConfig, path convention retrofit, stock_kline_config()
+- [ ] 02-03-PLAN.md — Shared cleaning module (dataset/cleaning.py) wired into Dataset.from_raw_data()
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-04-PLAN.md — Acquisition(ABC) + TiingoAcquisition (encapsulated fetch + incremental refresh)
+- [ ] 02-05-PLAN.md — Binance retrofit vertical slice (SpotKlineDataset dedup + ingest_binance_spot.py)
+- [ ] 02-06-PLAN.md — Extensibility contract proof (FakeDataset lifecycle + core-layer purity check)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 02-07-PLAN.md — StockDataset Tiingo integration + ingest_tiingo.py (completes US-equities slice end-to-end)
 
 ### Phase 3: Factor Computation (KunQuant + Polars)
 
@@ -151,7 +171,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
-| 2. Multi-Market Data Foundation | 0/TBD | Not started | - |
+| 2. Multi-Market Data Foundation | 0/7 | Not started | - |
 | 3. Factor Computation (KunQuant + Polars) | 0/TBD | Not started | - |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
