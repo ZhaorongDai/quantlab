@@ -69,6 +69,10 @@ imports the layers it needs:
   keeps its manual-CSV-drop workflow). Use `--raw-data-dir` to point at CSVs stored outside the
   default `data/{market}/{frequency}/...` convention path (e.g. a pre-existing download
   directory) with no filesystem migration required.
+- `ingest_tiingo.py` -- full Tiingo-to-Zarr pipeline for US equities: fetches raw EOD data via
+  `TiingoAcquisition`, then converts/cleans/persists it through `StockDataset` into a Zarr
+  store. Requires `TIINGO_API_KEY`. Pass `--refresh` to incrementally update from each symbol's
+  last recorded watermark instead of a full backfill.
 - `read_mock_data_sink.py` -- memory-profiling scratch script for reading a parquet hive
   dataset.
 - `scripts/download_stock_data_from_tiingo.py` -- parallel Tiingo downloader for NASDAQ
@@ -88,8 +92,9 @@ falling back to `cpu`).
 
 ## Environment Variables
 
-- `TIINGO_API_KEY` -- required to run `scripts/download_stock_data_from_tiingo.py`. Never
-  hardcode this key; the script reads it from the environment and raises if it is unset.
+- `TIINGO_API_KEY` -- required to run `ingest_tiingo.py` (the current, documented entry point)
+  and `scripts/download_stock_data_from_tiingo.py`. Never hardcode this key; both read it from
+  the environment and raise if it is unset.
 - `WANDB_API_KEY` -- required for Weights & Biases experiment tracking during model training
   (`base/model.py:_init_wandb`).
 - `QUANTLAB_DATA_DIR` -- optional. Overrides the default data root used by `config/__init__.py`'s

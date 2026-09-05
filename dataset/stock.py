@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from base.config import DatasetConfig
 from base.data import Dataset
+from dataset.cleaning import dedup_raw_frame
 from enums.data import BinanceCSVHeaders
 from utils.file import file_date_filter, get_pqt_files
 from utils.timer import Timer
@@ -24,7 +25,14 @@ class StockDataset(Dataset):
             stock_dfs = []
             for file in tqdm(files):
                 stock_dfs.append(pl.scan_parquet(file))
-            data = pl.concat(stock_dfs)
+            # diagonal_relaxed: raw parquet files may come from different
+            # acquisition sources/vendors with columns in a different order
+            # (or a differing but compatible column set) -- pl.concat's
+            # default ("vertical") requires exact column order across every
+            # input and raises polars.exceptions.InvalidOperationError
+            # otherwise, which would crash ingestion whenever raw files
+            # under the same raw_data_dir_path don't share one exact writer.
+            data = pl.concat(stock_dfs, how="diagonal_relaxed")
             # data = data.rename({"date": "timestamp", "ticker": "symbol"})
             data = data.filter(
                 pl.col("timestamp")
@@ -33,6 +41,7 @@ class StockDataset(Dataset):
                 <= pl.lit(self.config.end_date).str.to_datetime(),
             )
             data = data.sort(by=["timestamp", "symbol"])
+            data = dedup_raw_frame(data, keep="last")
             data = data.collect().to_pandas().set_index(["timestamp", "symbol"])
             return data.to_xarray()
 
