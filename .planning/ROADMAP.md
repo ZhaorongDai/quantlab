@@ -135,7 +135,7 @@ Plans:
 
 **Goal**: Users can obtain daily point-in-time membership panels for the S&P 500 and the Nasdaq-100 as `xarray.Dataset`, so any downstream layer can mask its universe per day without survivorship bias.
 **Mode:** mvp
-**Requirements**: TBD (assign at /gsd-plan-phase 03.1)
+**Requirements**: DATA-05, DATA-06
 **Depends on:** Phase 3
 **Plans:** 0 plans
 

@@ -22,6 +22,8 @@
 - [ ] **DATA-02**: 用户可以复用/整理现有币安现货数据接入，写入同一套存储抽象
 - [ ] **DATA-03**: 数据层抽象（`Dataset`/`DataBackend`）在设计上支持按市场（美股/加密...）与频率（日频/分钟频/tick）扩展——新增一种市场或频率不需要改动上层因子/模型/回测代码；v1 至少用两种不同的市场或频率组合验证该扩展性（如美股日频 + 币安现货）
 - [ ] **DATA-04**: 提供数据清洗/预处理模块（复用现有 `my_ops` 标准化算子），输出统一的 `xarray.Dataset`
+- [ ] **DATA-05**: 用户可以获得标普 500 与纳斯达克 100 的日频 point-in-time 成分面板（`xarray.Dataset`，dims `timestamp`/`symbol`，布尔变量 `is_member`），在各自可回溯区间内无幸存者偏差；超出可回溯起点的查询必须显式报错而非静默返回不完整名单
+- [ ] **DATA-06**: 成分股数据类与行情数据类共享同一 `BaseDataset` 抽象——成分股类不继承任何 OHLCV 专用成员（`_to_kunquant`/`_to_nautilus`），新增一类指数不需要改动上层代码
 
 ### Factor（因子计算）
 
@@ -103,6 +105,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-02 | Phase 2 | Pending |
 | DATA-03 | Phase 2 | Pending |
 | DATA-04 | Phase 2 | Pending |
+| DATA-05 | Phase 03.1 | Pending |
+| DATA-06 | Phase 03.1 | Pending |
 | FACTOR-01 | Phase 3 | Gaps Found |
 | FACTOR-02 | Phase 3 | Gaps Found |
 | FACTOR-03 | Phase 3 | Gaps Found |
