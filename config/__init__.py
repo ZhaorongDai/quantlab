@@ -5,6 +5,7 @@ from typing import Literal
 from base.config import AcquisitionConfig, DatasetConfig, FactorConfig, UniverseConfig
 from dataset.backend import PlBackend, XrBackend
 from dataset.spot import SpotKlineDataset
+from dataset.stock import StockDataset
 from enums.data import Frequency, Market
 
 
@@ -127,6 +128,50 @@ def alpha101_config(
     return FactorConfig(
         file_path=str(_data_root() / "data" / "factor" / "alpha101.zarr"),
         dataset=SpotKlineDataset(spot_kline_config(symbols=symbols)),
+        data_columns=[
+            "high",
+            "low",
+            "close",
+            "open",
+            "volume",
+            "amount",
+        ],
+        symbols=symbols,
+        factor_names=factor_names,
+        mode=mode,
+        window=window,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def stock_alpha101_config(
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    window: int = 128,
+    factor_names: list | None = None,
+    symbols: list | None = None,
+    mode: Literal["batch", "stream"] = "batch",
+    market: Market = "us_equity",
+    frequency: Frequency = "1d",
+):
+    """US-equity sibling of `alpha101_config()` (D-01, FACTOR-01).
+
+    Identical in shape to the crypto-spot factory apart from the dataset it
+    wires (`StockDataset`) and the zarr output name. `"amount"` MUST stay in
+    `data_columns`: `Alpha101.AllData` derives `vwap` from it, and it is what
+    triggers the D-02 `volume * close` synthesis in
+    `StockDataset._to_kunquant()`. Drop it and the factor graph raises
+    `RuntimeError: Bad inputs, given <class 'NoneType'>` at construction time.
+    """
+    return FactorConfig(
+        file_path=str(_data_root() / "data" / "factor" / "alpha101_stock.zarr"),
+        dataset=StockDataset(
+            stock_kline_config(
+                symbols=symbols, market=market, frequency=frequency
+            )
+        ),
         data_columns=[
             "high",
             "low",

@@ -60,6 +60,18 @@ class StockDataset(Dataset):
                 }
             )
             data = data.sortby(["timestamp", "symbol"])
+            # D-02: Tiingo supplies no native dollar-volume ("amount") column,
+            # while KunQuant's Alpha101/Alpha158 AllData graphs derive vwap
+            # from it. Synthesize the standard `volume * close` proxy here,
+            # once and centrally, so every KunQuant factor class reading
+            # US-equity data gets it without per-class duplication. The rename
+            # above has already run, so `volume`/`close` are the ADJUSTED
+            # series -- the proxy is adjusted dollar-volume, consistent with
+            # the rest of the adjusted-price pipeline. Double-guarded: only
+            # when the caller actually asks for `amount` and only when the
+            # dataset does not already carry a real vendor column of that name.
+            if "amount" in data_columns and "amount" not in data.data_vars:
+                data = data.assign(amount=data["volume"] * data["close"])
             timestamp = data["timestamp"].values
             symbols = data["symbol"].values
             input_dict = {}
