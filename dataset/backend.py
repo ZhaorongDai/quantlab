@@ -24,6 +24,7 @@ class XrBackend(DataBackend):
     def write(self, path: str, **kwargs) -> Self:
         if not Path(path).exists():
             Path(path).parent.mkdir(parents=True, exist_ok=True)
+        kwargs.setdefault("mode", "w")
         self.data.to_zarr(path, **kwargs)
         return self
 
