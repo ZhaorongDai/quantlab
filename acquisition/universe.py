@@ -85,6 +85,14 @@ class NasdaqUniverseFetcher:
         return data.select(["symbol", "start_date", "end_date"])
 
 
+#: Cell values that mean "no ticker on this side of the change row". Kept
+#: explicit because `pd.read_html` is now told NOT to infer NA at all (see
+#: `IndexMembershipFetcher._parse_changes_table`): its default NA vocabulary
+#: overlaps the ticker namespace, and `NA` is a real US equity ticker. The
+#: dash variants are the em/en/hyphen glyphs Wikipedia uses for "none".
+_BLANK_TICKER_CELLS = frozenset({"", "-", "–", "—"})
+
+
 class IndexMembershipFetcher(ABC):
     """Shared machinery for reconstructing point-in-time index membership
     intervals from a current-constituent anchor plus a dated change log.
@@ -200,7 +208,19 @@ class IndexMembershipFetcher(ABC):
         position. A subclass supplies the header constants, not a parse body,
         so no index can ship a parse that skips the validation.
         """
-        read_kwargs: dict = {"flavor": "lxml"}
+        # `keep_default_na=False, na_values=[]` is load-bearing, not tidiness.
+        # pandas' default NA vocabulary (`NA`, `N/A`, `NULL`, `NaN`, `None`,
+        # `nan`, `-`, `1.#IND`, ...) OVERLAPS the ticker namespace -- `NA` is a
+        # real, historically-listed US equity ticker. Coerced to NaN it becomes
+        # the exact sentinel `reconstruct_intervals()` reads as "no change on
+        # this side", so the add/remove event for such a ticker was silently
+        # discarded from the change log entirely. Blank cells are recovered
+        # explicitly below instead.
+        read_kwargs: dict = {
+            "flavor": "lxml",
+            "keep_default_na": False,
+            "na_values": [],
+        }
         if self.CHANGES_TABLE_ATTRS is not None:
             read_kwargs["attrs"] = self.CHANGES_TABLE_ATTRS
         tables = pd.read_html(io.StringIO(html_text), **read_kwargs)
@@ -247,6 +267,25 @@ class IndexMembershipFetcher(ABC):
                 "removed_ticker": changes[self.REMOVED_TICKER_HEADER],
             }
         )
+        # Re-derive the "no change on this side" sentinel EXPLICITLY, now that
+        # pandas is no longer allowed to guess it. `reconstruct_intervals()`
+        # tests `is not None`, so a blank must be a real `None` and every other
+        # cell -- including the ticker `NA` -- must survive as itself.
+        for column in ("added_ticker", "removed_ticker"):
+            stripped = parsed[column].astype(str).str.strip().tolist()
+            # `dtype=object` keeps the sentinel a real `None`; a plain list
+            # assignment lets pandas re-infer a string dtype and turn it back
+            # into `nan`. Both survive `pl.from_pandas` as null, but only the
+            # explicit form says so at the layer a reader is looking at.
+            parsed[column] = pd.Series(
+                [
+                    None if value in _BLANK_TICKER_CELLS else value
+                    for value in stripped
+                ],
+                dtype=object,
+                index=parsed.index,
+            )
+
         parsed["effective_date"] = pd.to_datetime(
             parsed["effective_date"]
         ).dt.strftime("%Y-%m-%d")
@@ -556,7 +595,20 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
         response = requests.get(self.ANCHOR_URL, timeout=30)
         response.raise_for_status()
 
-        tables = pd.read_html(io.StringIO(response.text), flavor="lxml")
+        # `keep_default_na=False, na_values=[]` for the same reason as the
+        # change-log parse: pandas' default NA vocabulary overlaps the ticker
+        # namespace. Here the corruption ran the other way -- the old
+        # `str(sym)` turned a coerced NaN into the literal string "nan", which
+        # entered the anchor as a FABRICATED permanent constituent (and hence
+        # an always-True column in the densified panel) while the real ticker
+        # `NA` vanished from a table whose whole purpose is to contain every
+        # symbol that was ever a member.
+        tables = pd.read_html(
+            io.StringIO(response.text),
+            flavor="lxml",
+            keep_default_na=False,
+            na_values=[],
+        )
         anchor = next(
             (table for table in tables if "Symbol" in table.columns), None
         )
@@ -568,20 +620,34 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
                 f"Refusing to continue rather than reconstructing membership "
                 f"from a structurally wrong anchor."
             )
-        if len(anchor) < self.MIN_ANCHOR_ROWS:
+
+        # Drop genuinely-absent cells (ragged rows are padded with real NaN by
+        # `read_html` whatever `na_values` says) and blanks, by NULLNESS rather
+        # than by comparing against the string "nan" -- the latter would drop a
+        # ticker literally named `NAN`, reintroducing this very bug.
+        raw = anchor["Symbol"]
+        symbols = [
+            symbol
+            for symbol in raw[raw.notna()].astype(str).str.strip().tolist()
+            if symbol
+        ]
+
+        # Counted AFTER cleaning: a page that renders 102 rows of which only
+        # three carry a ticker is exactly as drifted as one rendering 3 rows.
+        if len(symbols) < self.MIN_ANCHOR_ROWS:
             raise ValueError(
-                f"Parsed {self.INDEX_LABEL} anchor has only {len(anchor)} rows "
-                f"({self.ANCHOR_URL}), fewer than the minimum "
-                f"{self.MIN_ANCHOR_ROWS} -- the anchor source is a commercial "
-                f"scraped page whose markup has drifted. Refusing to continue: "
-                f"a truncated anchor closes every unmentioned membership and "
-                f"silently reintroduces survivorship bias."
+                f"Parsed {self.INDEX_LABEL} anchor yielded only "
+                f"{len(symbols)} symbols ({self.ANCHOR_URL}), fewer than the "
+                f"minimum {self.MIN_ANCHOR_ROWS} -- the anchor source is a "
+                f"commercial scraped page whose markup has drifted. Refusing "
+                f"to continue: a truncated anchor closes every unmentioned "
+                f"membership and silently reintroduces survivorship bias."
             )
 
         return pl.DataFrame(
             {
-                "symbol": [str(sym) for sym in anchor["Symbol"].tolist()],
-                "date_added": [None] * len(anchor),
+                "symbol": symbols,
+                "date_added": [None] * len(symbols),
             },
             schema={"symbol": pl.String, "date_added": pl.String},
         )

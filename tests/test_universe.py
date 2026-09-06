@@ -421,6 +421,52 @@ def test_nasdaq100_row_count_monotonicity_guard_rejects_a_shrunken_table(
     assert fetcher._cache_path.read_bytes() == cache_bytes_before
 
 
+def test_na_tickered_change_rows_survive_parsing(tmp_path):
+    """CR-02. `NA` is a real, historically-listed US equity ticker and is also
+    in pandas' default NA vocabulary. Under `read_html`'s default coercion it
+    became NaN -- the exact sentinel `reconstruct_intervals()` reads as "no
+    change on this side" -- so the add/remove event was silently DISCARDED.
+
+    Both directions are asserted: the `NA` ticker survives as itself, and a
+    genuinely blank cell still becomes a real `None`.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    html = _ndx_changes_html(
+        [
+            ("February 1, 2007", "NA", "Nabors Industries", "CMVT", "Comverse", "R"),
+            ("March 2, 2018", "", "", "NA", "Nabors Industries", "R"),
+        ]
+    )
+
+    # Asserted after `pl.from_pandas`, which is the shape
+    # `reconstruct_intervals()` actually consumes and where "no change on this
+    # side" must be a genuine null.
+    parsed = pl.from_pandas(fetcher._parse_changes_table(html))
+
+    assert parsed["added_ticker"].to_list() == ["NA", None]
+    assert parsed["removed_ticker"].to_list() == ["CMVT", "NA"]
+
+
+def test_na_tickered_anchor_row_is_not_turned_into_a_nan_symbol(monkeypatch, tmp_path):
+    """CR-02, anchor half. `str(sym)` on a coerced NaN produced the literal
+    string `"nan"`, which entered the anchor as a fabricated permanent
+    constituent -- an always-True column in the densified panel -- while the
+    real ticker `NA` disappeared.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    page = _ndx_anchor_html(["NA"] + [f"NDX{i:03d}" for i in range(1, 60)])
+
+    monkeypatch.setattr(
+        "acquisition.universe.requests.get",
+        lambda url, *a, **k: _FakeResponse(page),
+    )
+
+    symbols = set(fetcher.fetch_anchor()["symbol"].to_list())
+
+    assert "NA" in symbols
+    assert "nan" not in symbols
+
+
 def _ndx_changes_html_with_swapped_groups(
     rows: list[tuple[str, str, str, str, str, str]],
 ) -> str:
