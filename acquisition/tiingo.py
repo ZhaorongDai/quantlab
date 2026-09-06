@@ -49,6 +49,20 @@ class TiingoAcquisition(Acquisition):
     set would abort every Alpaca run within seconds while logging an
     allocation message for a vendor that has no allocation concept
     (03.2-RESEARCH.md Pitfall 1).
+
+    Every knob the orchestration reads -- `resume`, `max_workers`, `progress`,
+    `batch_size`, `legacy_watermarks`, `wait_for_quota`, `quota_wait_seconds`,
+    `quota_max_waits` -- comes from `config.kwargs`, the escape hatch
+    `AcquisitionConfig` documents, rather than becoming constructor arguments
+    no config file could reach (CLAUDE.md 可复现性).
+
+    **On the retired `ConcurrentTiingoAcquisition`.** Until 03.2-03 the
+    orchestration lived on a separate subclass whose docstring argued that "a
+    shared seam is not worth introducing for one subclass". That claim was
+    conditioned on there being ONE subclass; Alpaca made two, so the condition
+    no longer holds and the seam now lives on `Acquisition` (D-02). The name
+    was retired outright rather than kept as an alias -- two live names for one
+    class is exactly the ambiguity a later reader resolves wrongly (03.1 D-03).
     """
 
     VENDOR = "tiingo"
@@ -248,22 +262,3 @@ class TiingoAcquisition(Acquisition):
         if not frames:
             return self._empty_frame(), None
         return pl.concat(frames, how="vertical"), None
-
-
-class ConcurrentTiingoAcquisition(TiingoAcquisition):
-    """TRANSITIONAL: `TiingoAcquisition` under its pre-03.2-03 name.
-
-    Everything this class used to own -- the threaded fan-out, the
-    resume/skip partition, the per-unit failure isolation, the failure
-    manifest, the global abort event and the bounded wait/resume loop -- was
-    hoisted onto `Acquisition` by 03.2-03, so that ONE implementation drives
-    every vendor rather than each vendor carrying a copy that could drift
-    (D-02). What stayed vendor-specific is the CLASSIFICATION of a Tiingo
-    exception, and that lives on `TiingoAcquisition` above.
-
-    Nothing of substance is left here. The name survives for exactly one
-    commit so every existing import keeps resolving while the lift is
-    verified; it is deleted, along with every reference to it, in the next
-    commit of this plan (03.1 D-03 precedent: the retired name is retired,
-    never kept as a permanent alias).
-    """

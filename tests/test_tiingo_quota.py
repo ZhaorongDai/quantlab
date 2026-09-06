@@ -129,9 +129,9 @@ def _acquisition_class(on_sleep=None):
     """A subclass substituting the `_sleep` seam, so wait/resume is asserted by
     COUNTING waits rather than by actually waiting an hour.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    class _Recording(ConcurrentTiingoAcquisition):
+    class _Recording(TiingoAcquisition):
         def __init__(self, config):
             super().__init__(config)
             self.sleeps: list[float] = []
@@ -152,9 +152,9 @@ def _acquisition_class(on_sleep=None):
 def test_a_429_is_classified_as_global_quota_exhaustion(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    acq = ConcurrentTiingoAcquisition(_make_config(tmp_path))
+    acq = TiingoAcquisition(_make_config(tmp_path))
     error = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
 
     # The obvious one-liner does NOT work, which is why the helper walks args.
@@ -166,9 +166,9 @@ def test_the_allocation_wording_alone_is_enough(mock_tiingo_client, tmp_path):
     """The textual signal must stand on its own, because a vendor that stops
     setting 429 must not silently turn this back into a 10,000-request burn.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    acq = ConcurrentTiingoAcquisition(_make_config(tmp_path))
+    acq = TiingoAcquisition(_make_config(tmp_path))
     # No status code anywhere -- only the wording.
     assert acq._is_quota_error(RuntimeError(_ALLOCATION_BODY))
 
@@ -180,18 +180,18 @@ def test_the_token_survives_the_vendor_rewording_the_period(
     full-string match would break the moment the vendor says "daily" instead
     of "hourly", or edits its support address.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    acq = ConcurrentTiingoAcquisition(_make_config(tmp_path))
+    acq = TiingoAcquisition(_make_config(tmp_path))
     assert acq._is_quota_error(
         RuntimeError("Error: You have run over your DAILY REQUEST ALLOCATION.")
     )
 
 
 def test_a_404_is_not_quota_exhaustion(mock_tiingo_client, tmp_path):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    acq = ConcurrentTiingoAcquisition(_make_config(tmp_path))
+    acq = TiingoAcquisition(_make_config(tmp_path))
     error = _rest_client_error(404, "Not found", "Not Found")
     assert not acq._is_quota_error(error)
 
@@ -205,9 +205,9 @@ def test_a_plan_restricted_403_is_not_quota_exhaustion(
     run. A 403 whose body carries the wording is still caught textually, so
     the stricter status set costs nothing.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    acq = ConcurrentTiingoAcquisition(_make_config(tmp_path))
+    acq = TiingoAcquisition(_make_config(tmp_path))
     restricted = _rest_client_error(
         403, "Error: This ticker is not available on your plan.", "Forbidden"
     )
@@ -225,12 +225,12 @@ def test_a_404_still_isolates_per_symbol_and_the_run_completes(
     """The property this change must NOT break: one delisted ticker's 404
     still lands in the manifest and the other symbols still complete.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     _fail_one(
         mock_tiingo_client, "GOOG", _rest_client_error(404, "Not found", "Not Found")
     )
-    ConcurrentTiingoAcquisition(_make_config(tmp_path)).download()
+    TiingoAcquisition(_make_config(tmp_path)).download()
 
     for symbol in ("AAPL", "MSFT", "AMZN", "META"):
         assert (tmp_path / "watermark" / f"{symbol}.json").exists()
@@ -254,7 +254,7 @@ def test_quota_exhaustion_stops_dispatch_far_short_of_the_pending_list(
     Asserted by COUNTING vendor calls against a 200-symbol pending list, so
     "stopped early" and "ground through everything" cannot look the same.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -262,7 +262,7 @@ def test_quota_exhaustion_stops_dispatch_far_short_of_the_pending_list(
     )
 
     config = _make_config(tmp_path, symbols=_MANY)
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
 
     # A handful of in-flight workers may already have been dispatched; the
     # point is that the other ~190 never reached the vendor at all.
@@ -273,14 +273,14 @@ def test_quota_exhaustion_stops_dispatch_far_short_of_the_pending_list(
 def test_un_attempted_symbols_get_no_watermark_so_a_re_run_resumes_them(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
         _Vendor(_rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")),
     )
     config = _make_config(tmp_path, symbols=_MANY)
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
 
     written = list((tmp_path / "watermark").glob("SYM*.json"))
     assert written == []
@@ -293,13 +293,13 @@ def test_the_quota_condition_never_lands_in_the_failure_manifest(
     perfectly good symbol and make the manifest lie about what the last run
     did -- and the next run would "retry" a symbol that never failed.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
         _Vendor(_rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")),
     )
-    ConcurrentTiingoAcquisition(_make_config(tmp_path)).download()
+    TiingoAcquisition(_make_config(tmp_path)).download()
 
     failures = json.loads((tmp_path / "watermark" / "_failures.json").read_text())
     assert failures == {}
@@ -308,7 +308,7 @@ def test_the_quota_condition_never_lands_in_the_failure_manifest(
 def test_the_abort_reports_completed_remaining_and_watermark_preservation(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -317,7 +317,7 @@ def test_the_abort_reports_completed_remaining_and_watermark_preservation(
 
     messages, sink_id = _captured()
     try:
-        ConcurrentTiingoAcquisition(_make_config(tmp_path)).download()
+        TiingoAcquisition(_make_config(tmp_path)).download()
     finally:
         logger.remove(sink_id)
 
@@ -397,12 +397,12 @@ def test_wait_for_quota_gives_up_after_the_configured_maximum(
 
 
 def test_the_defaults_are_the_documented_ones(mock_tiingo_client, tmp_path):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    assert ConcurrentTiingoAcquisition.QUOTA_STATUS_CODES == frozenset({429})
-    assert ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS == 3600
-    assert ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS == 3
-    assert ConcurrentTiingoAcquisition.DEFAULT_WAIT_FOR_QUOTA is False
+    assert TiingoAcquisition.QUOTA_STATUS_CODES == frozenset({429})
+    assert TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS == 3600
+    assert TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS == 3
+    assert TiingoAcquisition.DEFAULT_WAIT_FOR_QUOTA is False
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +416,7 @@ def test_no_credential_appears_on_any_quota_path(
     """This repo has already leaked one real Tiingo key. Every new path that
     captures or logs vendor text goes through `_scrub()`.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     key = os.environ["TIINGO_API_KEY"]
     body = (
@@ -430,7 +430,7 @@ def test_no_credential_appears_on_any_quota_path(
 
     messages, sink_id = _captured(level="DEBUG")
     try:
-        ConcurrentTiingoAcquisition(_make_config(tmp_path)).download()
+        TiingoAcquisition(_make_config(tmp_path)).download()
     finally:
         logger.remove(sink_id)
 
@@ -447,10 +447,10 @@ def test_is_quota_error_scrubs_the_text_it_inspects(mock_tiingo_client, tmp_path
     must already be scrubbed. Proven by asserting the classifier still works
     on a body carrying the key -- i.e. scrubbing does not destroy the signal.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     key = os.environ["TIINGO_API_KEY"]
-    acq = ConcurrentTiingoAcquisition(_make_config(tmp_path))
+    acq = TiingoAcquisition(_make_config(tmp_path))
     error = _rest_client_error(
         429, f"{_ALLOCATION_BODY} token={key}", "Too Many Requests"
     )
@@ -459,8 +459,8 @@ def test_is_quota_error_scrubs_the_text_it_inspects(mock_tiingo_client, tmp_path
 
 @pytest.mark.parametrize("status", [429, 403])
 def test_quota_status_set_is_429_only(mock_tiingo_client, tmp_path, status):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    assert (status in ConcurrentTiingoAcquisition.QUOTA_STATUS_CODES) == (
+    assert (status in TiingoAcquisition.QUOTA_STATUS_CODES) == (
         status == 429
     )

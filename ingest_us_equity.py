@@ -3,7 +3,7 @@
 Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
 `acquisition.universe.UniverseCatalog` resolves the roster,
-`acquisition.tiingo.ConcurrentTiingoAcquisition` fetches it, and
+`acquisition.tiingo.TiingoAcquisition` fetches it, and
 `dataset.stock.StockDataset` converts it. Nothing here should grow a
 behaviour that a component could own instead.
 
@@ -88,7 +88,7 @@ import argparse
 import datetime
 import os
 
-from acquisition.tiingo import ConcurrentTiingoAcquisition
+from acquisition.tiingo import TiingoAcquisition
 from acquisition.universe import UniverseCatalog
 from base.chunking import TimeChunkPlanner
 from config import stock_acquisition_config, stock_kline_config, universe_config
@@ -177,7 +177,7 @@ def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
         )
         return
 
-    report = ConcurrentTiingoAcquisition(acq_config).coverage_report(list(symbols))
+    report = TiingoAcquisition(acq_config).coverage_report(list(symbols))
     print(f"  already covered:   {report['covered']} (would be skipped)")
     print(
         f"  re-fetch, widened: {report['widened']} "
@@ -255,10 +255,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=ConcurrentTiingoAcquisition.DEFAULT_MAX_WORKERS,
+        default=TiingoAcquisition.DEFAULT_MAX_WORKERS,
         help=(
             "Concurrent in-flight symbol fetches (default "
-            f"{ConcurrentTiingoAcquisition.DEFAULT_MAX_WORKERS}). Passed "
+            f"{TiingoAcquisition.DEFAULT_MAX_WORKERS}). Passed "
             "through config.kwargs, so it stays config-driven."
         ),
     )
@@ -282,12 +282,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--legacy-watermarks",
         type=str,
-        choices=list(ConcurrentTiingoAcquisition.LEGACY_WATERMARK_POLICIES),
-        default=ConcurrentTiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY,
+        choices=list(TiingoAcquisition.LEGACY_WATERMARK_POLICIES),
+        default=TiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY,
         help=(
             "What to do with a watermark that records no covered start "
             "(default "
-            f"'{ConcurrentTiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
+            f"'{TiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
             "'warn' skips it but reports the count and the stamping command "
             "on every run; 'refetch' treats unknown coverage as uncovered and "
             "re-downloads it. Passed through config.kwargs, so it stays "
@@ -309,10 +309,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quota-wait-seconds",
         type=int,
-        default=ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS,
+        default=TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS,
         help=(
             "Delay between resume attempts (default "
-            f"{ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS}). "
+            f"{TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS}). "
             "Tiingo's reset semantics -- fixed top-of-hour bucket vs. rolling "
             "window -- are not published, so this is a configured INTERVAL, "
             "not a computed reset time; one hour from the moment of detection "
@@ -322,10 +322,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quota-max-waits",
         type=int,
-        default=ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS,
+        default=TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS,
         help=(
             "How many times to wait and resume before giving up (default "
-            f"{ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
+            f"{TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
             "on purpose: an unbounded loop against a lockout is a worse "
             "version of the problem. The default comes from the observed "
             "arithmetic -- ~4,600 requests per window against ~14.7k symbols "
@@ -413,7 +413,7 @@ if __name__ == "__main__":
         # mode: this is a pure local-file migration that issues zero price
         # requests, and it must be impossible to trigger a download by
         # mistyping it alongside another flag.
-        stamped = ConcurrentTiingoAcquisition(acq_config).stamp_watermarks(
+        stamped = TiingoAcquisition(acq_config).stamp_watermarks(
             args.stamp_legacy_watermarks
         )
         print(
@@ -460,9 +460,9 @@ if __name__ == "__main__":
         f"max_workers={args.max_workers}). Already-complete symbols are "
         f"skipped; per-symbol failures land in "
         f"{acq_config.watermark_path}/"
-        f"{ConcurrentTiingoAcquisition.FAILURE_MANIFEST_NAME}."
+        f"{TiingoAcquisition.FAILURE_MANIFEST_NAME}."
     )
-    acquisition = ConcurrentTiingoAcquisition(acq_config)
+    acquisition = TiingoAcquisition(acq_config)
     if args.refresh:
         acquisition.refresh()
     else:

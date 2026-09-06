@@ -139,7 +139,12 @@ def test_credential_never_exposed_on_config_surface(mock_tiingo_client, tmp_path
 
 
 # ---------------------------------------------------------------------------
-# ConcurrentTiingoAcquisition (260906-0iy Task 2, D-03)
+# Concurrent, resumable, failure-isolated bulk acquisition
+# (260906-0iy Task 2, D-03)
+#
+# These behaviours belonged to a separate `ConcurrentTiingoAcquisition` until
+# 03.2-03 hoisted the orchestration onto `Acquisition` and retired that name
+# (D-02, 03.1 D-03). They are unchanged; only the class that carries them is.
 #
 # A ~15k-symbol, multi-hour backfill makes resumability and per-symbol failure
 # isolation mandatory: one delisted ticker returning a 404 must not abort the
@@ -174,10 +179,10 @@ def _make_concurrent_config(
 def test_concurrent_download_writes_every_parquet_and_watermark(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path)
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
 
     assert _shard_symbols(tmp_path) == set(_FIVE)
     for symbol in _FIVE:
@@ -194,14 +199,14 @@ def test_second_download_skips_symbols_already_at_the_watermark(
     than by timing -- a job killed at ticker 20,000 and restarted must issue
     zero requests for the 20,000 already at the target watermark.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path)
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
     assert len(mock_tiingo_client.calls) == len(_FIVE)
 
     mock_tiingo_client.calls.clear()
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
 
     assert mock_tiingo_client.calls == []
 
@@ -213,15 +218,15 @@ def test_resume_false_re_fetches_symbols_already_at_the_watermark(
     `AcquisitionConfig` already documents -- so it stays config-driven rather
     than becoming a constructor argument no config file can reach.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     mock_tiingo_client.calls.clear()
 
     no_resume = _make_concurrent_config(
         tmp_path, kwargs={"max_workers": 3, "resume": False}
     )
-    ConcurrentTiingoAcquisition(no_resume).download()
+    TiingoAcquisition(no_resume).download()
 
     assert len(mock_tiingo_client.calls) == len(_FIVE)
 
@@ -245,12 +250,12 @@ def test_one_symbol_failure_does_not_abort_the_others(
 
     The failed symbol gets NO watermark, so the next run retries it.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     _fail_one(mock_tiingo_client, "GOOG", "404 Not Found")
 
     config = _make_concurrent_config(tmp_path)
-    result = ConcurrentTiingoAcquisition(config).download()
+    result = TiingoAcquisition(config).download()
 
     assert result is not None  # the run returns normally, it does not raise
 
@@ -282,7 +287,7 @@ def test_failure_manifest_never_contains_the_api_key(
     vendor client embeds the token in the request URL it echoes back on an
     auth error.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     key = os.environ["TIINGO_API_KEY"]
     _fail_one(
@@ -292,7 +297,7 @@ def test_failure_manifest_never_contains_the_api_key(
     )
 
     config = _make_concurrent_config(tmp_path)
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
 
     manifest_text = (tmp_path / "watermark" / "_failures.json").read_text()
     assert key not in manifest_text
@@ -306,7 +311,7 @@ def test_failure_manifest_never_contains_the_api_key(
 def test_concurrent_refresh_starts_each_symbol_from_its_own_watermark(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path, symbols=("AAPL", "MSFT"))
 
@@ -317,7 +322,7 @@ def test_concurrent_refresh_starts_each_symbol_from_its_own_watermark(
     with open(watermark_dir / "MSFT.json", "w") as f:
         json.dump({"last_date": "2024-01-20"}, f)
 
-    ConcurrentTiingoAcquisition(config).refresh()
+    TiingoAcquisition(config).refresh()
 
     starts = {
         call["ticker"]: call["startDate"] for call in mock_tiingo_client.calls
@@ -508,15 +513,15 @@ def test_second_download_with_an_earlier_start_re_fetches(
     calls, because a call count is the only evidence a passing write cannot
     fake.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     assert len(mock_tiingo_client.calls) == len(_FIVE)
     mock_tiingo_client.calls.clear()
 
     widened = _make_concurrent_config(tmp_path)
     widened.start_date = "2020-01-01"
-    ConcurrentTiingoAcquisition(widened).download()
+    TiingoAcquisition(widened).download()
 
     assert len(mock_tiingo_client.calls) == len(_FIVE)
     # The WIDENED start is what actually reaches the vendor -- re-fetching the
@@ -533,13 +538,13 @@ def test_second_download_with_the_same_start_issues_zero_vendor_calls(
     """D-01. The 4,621 already-downloaded symbols must not be re-fetched by
     default -- re-downloading them costs an entire hourly window for nothing.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path)
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
     mock_tiingo_client.calls.clear()
 
-    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     assert mock_tiingo_client.calls == []
 
 
@@ -547,14 +552,14 @@ def test_second_download_with_a_later_start_issues_zero_vendor_calls(
     mock_tiingo_client, tmp_path
 ):
     """A narrower request inside proven coverage is not work."""
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     mock_tiingo_client.calls.clear()
 
     narrowed = _make_concurrent_config(tmp_path)
     narrowed.start_date = "2024-01-10"
-    ConcurrentTiingoAcquisition(narrowed).download()
+    TiingoAcquisition(narrowed).download()
 
     assert mock_tiingo_client.calls == []
 
@@ -566,14 +571,14 @@ def test_legacy_watermarks_are_skipped_by_default_and_reported_loudly(
     not the skip. A run that skips these while printing their exact count and
     the one command that resolves it is a REPORTED gap with a named cure.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     for symbol in _FIVE:
         _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
 
     messages, sink_id = _captured_warnings()
     try:
-        ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+        TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     finally:
         logger.remove(sink_id)
 
@@ -590,7 +595,7 @@ def test_legacy_watermarks_are_re_fetched_under_the_refetch_policy(
     """The opt-in escape hatch. Making it a knob is what turns "unknown
     coverage is treated as covered" from an accident into a choice.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     for symbol in _FIVE:
         _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
@@ -598,7 +603,7 @@ def test_legacy_watermarks_are_re_fetched_under_the_refetch_policy(
     config = _make_concurrent_config(
         tmp_path, kwargs={"max_workers": 3, "legacy_watermarks": "refetch"}
     )
-    ConcurrentTiingoAcquisition(config).download()
+    TiingoAcquisition(config).download()
 
     assert len(mock_tiingo_client.calls) == len(_FIVE)
 
@@ -637,20 +642,20 @@ def test_stamping_then_widening_re_fetches_the_stamped_symbols(
     """The end-to-end shape of Task 3's checkpoint, proved offline: stamp, and
     a same-window run still skips while a widened run now re-fetches.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
     for symbol in _FIVE:
         _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
 
-    acq = ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path))
+    acq = TiingoAcquisition(_make_concurrent_config(tmp_path))
     assert acq.stamp_watermarks("2024-01-01") == len(_FIVE)
 
-    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     assert mock_tiingo_client.calls == []
 
     widened = _make_concurrent_config(tmp_path)
     widened.start_date = "2010-01-01"
-    ConcurrentTiingoAcquisition(widened).download()
+    TiingoAcquisition(widened).download()
     assert len(mock_tiingo_client.calls) == len(_FIVE)
 
 
@@ -663,14 +668,14 @@ def test_concurrent_refresh_is_not_forced_to_re_fetch_by_a_widened_start(
     re-fetch could not close the gap -- an endless, silent quota burn. Refresh
     keeps the end-date-only rule; widening is `download()`'s job.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     mock_tiingo_client.calls.clear()
 
     widened = _make_concurrent_config(tmp_path)
     widened.start_date = "2010-01-01"
-    ConcurrentTiingoAcquisition(widened).refresh()
+    TiingoAcquisition(widened).refresh()
 
     assert mock_tiingo_client.calls == []
 
@@ -684,9 +689,9 @@ def test_coverage_report_counts_without_issuing_a_single_vendor_call(
     It shares `_partition_by_coverage` with the real run, so the dry run and
     the run it predicts can never disagree.
     """
-    from acquisition.tiingo import ConcurrentTiingoAcquisition
+    from acquisition.tiingo import TiingoAcquisition
 
-    acq = ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path))
+    acq = TiingoAcquisition(_make_concurrent_config(tmp_path))
     acq._write_watermark("AAPL", "2024-01-31", start_date="2020-01-01")
     acq._write_watermark("MSFT", "2024-01-31", start_date="2024-01-15")
     _write_legacy_watermark(tmp_path, "GOOG", "2024-01-31")
