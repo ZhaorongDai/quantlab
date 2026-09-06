@@ -15,6 +15,7 @@ import pytest
 from loguru import logger
 
 from acquisition.universe import (
+    IndexMembershipFetcher,
     Nasdaq100MembershipFetcher,
     NasdaqUniverseFetcher,
     SP500MembershipFetcher,
@@ -1283,3 +1284,131 @@ def test_chunked_guard_validates_its_inputs(mock_universe_fetchers, tmp_path):
         catalog.assert_chunked_panel_fits(
             "us_all", *_FULL_WINDOW, granularity="fortnight"
         )
+
+
+# ---------------------------------------------------------------------------
+# Wikipedia change-log ticker normalization + validation (260906-eme Task 1)
+#
+# Measured live, 2026-09-06, by pushing both change logs through the
+# then-current `_parse_changes_table`: the S&P 500 log carries 772 non-null
+# ticker cells of which THREE are malformed -- `ALLE |`, `ITT |`, `JCP |`, a
+# trailing wikitable delimiter left by an editor -- and the Nasdaq-100 log
+# carries 418, all clean. The persisted consequence was that `JCP` and `ITT`
+# existed in the S&P membership panel ONLY as phantom `JCP |` / `ITT |`
+# symbols matching no market data, while `ALLE` was double-counted.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_ticker_cell_strips_the_real_observed_delimiter_residue():
+    """The three literals are the REAL live values, not invented ones."""
+    normalize = IndexMembershipFetcher._normalize_ticker_cell
+
+    assert normalize("ALLE |") == "ALLE"
+    assert normalize("JCP |") == "JCP"
+    assert normalize("ITT |") == "ITT"
+    # A cell that is nothing BUT residue normalizes to blank, which the
+    # `_BLANK_TICKER_CELLS` sentinel then turns into `None` rather than
+    # feeding to the validator.
+    assert normalize(" | ") == ""
+    # A clean cell is returned untouched -- no correction, hence no warning.
+    assert normalize("AAPL") == "AAPL"
+
+
+def test_residue_bearing_ticker_cells_parse_clean_and_announce_themselves(tmp_path):
+    """The phantom-ticker fix, end to end through `_parse_changes_table`.
+
+    Silent correction is explicitly rejected: the warning is what keeps a
+    systematic parser regression (which would show up as a huge correction
+    list) distinguishable from the ongoing three-cell upstream typo.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    html = _ndx_changes_html(
+        [
+            ("February 1, 2007", "ALLE |", "Allegion", "JCP |", "J.C. Penney", "R"),
+            ("March 2, 2018", "TEMP1", "Temp One", "ITT |", "ITT Corp", "R"),
+        ]
+    )
+
+    # loguru does not propagate to stdlib `logging` (pytest's `caplog`) --
+    # attach a temporary in-memory sink instead.
+    captured: list[str] = []
+    sink_id = logger.add(captured.append, level="WARNING", format="{message}")
+    try:
+        parsed = pl.from_pandas(fetcher._parse_changes_table(html))
+    finally:
+        logger.remove(sink_id)
+
+    assert parsed["added_ticker"].to_list() == ["ALLE", "TEMP1"]
+    assert parsed["removed_ticker"].to_list() == ["JCP", "ITT"]
+
+    joined = "\n".join(captured)
+    assert "Nasdaq-100" in joined
+    assert "added_ticker" in joined and "removed_ticker" in joined
+    for raw, clean in (("ALLE |", "ALLE"), ("JCP |", "JCP"), ("ITT |", "ITT")):
+        assert raw in joined and clean in joined
+
+    # ONE aggregated line per column, not one per cell: a systematic regression
+    # must not flood a cron log into unreadability.
+    assert len(captured) == 2
+
+
+def test_a_clean_change_log_emits_no_normalization_warning(tmp_path):
+    """The Nasdaq-100 log's 418 live cells are all clean; a clean parse must
+    stay silent, or the warning stops meaning anything.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    html = _ndx_changes_html(
+        [
+            ("February 1, 2007", "LOGI", "Logitech", "CMVT", "Comverse", "R"),
+            ("March 2, 2018", "TEMP1", "Temp One", "", "", "R"),
+        ]
+    )
+
+    captured: list[str] = []
+    sink_id = logger.add(captured.append, level="WARNING", format="{message}")
+    try:
+        fetcher._parse_changes_table(html)
+    finally:
+        logger.remove(sink_id)
+
+    assert not any("normaliz" in message.lower() for message in captured)
+
+
+def test_a_residue_only_ticker_cell_becomes_the_no_change_sentinel(tmp_path):
+    """KEY LINK: normalization runs BEFORE the `_BLANK_TICKER_CELLS` test, so
+    a cell whose whole content is delimiter residue lands on the existing
+    `None` "no change on this side" sentinel instead of reaching the
+    validator and raising.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    html = _ndx_changes_html(
+        [("February 1, 2007", "LOGI", "Logitech", " | ", "", "R")]
+    )
+
+    parsed = pl.from_pandas(fetcher._parse_changes_table(html))
+
+    assert parsed["added_ticker"].to_list() == ["LOGI"]
+    assert parsed["removed_ticker"].to_list() == [None]
+
+
+def test_a_cell_still_malformed_after_normalization_names_every_offending_cell(
+    tmp_path,
+):
+    """An INTERIOR delimiter is not the observed upstream shape -- it means two
+    cells were merged, i.e. a real parser regression -- so it must raise
+    rather than be tidied. Both columns' failures are accumulated so one run
+    reports all of them.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    html = _ndx_changes_html(
+        [("February 1, 2007", "AL|LE", "Allegion", "logi", "Logitech", "R")]
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        fetcher._parse_changes_table(html)
+
+    message = str(excinfo.value)
+    assert "AL|LE" in message
+    assert "logi" in message
+    assert "Nasdaq-100" in message
+    assert Nasdaq100MembershipFetcher.CHANGES_URL in message
