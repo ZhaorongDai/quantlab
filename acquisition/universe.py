@@ -28,7 +28,7 @@ Two independent reference-data problems are solved here:
   the base.
 
 `UniverseCatalog` merges both into one `(symbol, category, start_date,
-end_date)` reference table, persisted via the existing `PlBackend` as
+end_date, end_date_is_inferred)` reference table, persisted via the existing `PlBackend` as
 parquet -- per Locked Decision A1 (02-08-PLAN.md), this table is
 reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 `config/instruments.yaml`.
@@ -455,8 +455,9 @@ class IndexMembershipFetcher(ABC):
         is indistinguishable downstream from a correct one:
 
         1. **Open interval, symbol absent from the anchor.** The log is
-           missing a removal. Closed at `last_eff` and flagged
-           `end_date_is_inferred` (see the column's note below).
+           missing a removal. Closed at `last_eff` -- the last date the change
+           log covers at all, which is NOT an observation about this symbol --
+           and flagged `end_date_is_inferred=True`.
         2. **The log's last event for the symbol was a REMOVAL, yet the
            anchor still lists it as a current constituent.** The log is
            missing a re-addition -- the live Nasdaq-100 log is known to be
@@ -468,13 +469,26 @@ class IndexMembershipFetcher(ABC):
         3. **Anchor member with no event anywhere in the log.** Either an
            original constituent or added before `PIT_COVERAGE_START`; opened
            at `date_added or PIT_COVERAGE_START`.
+
+        **`end_date_is_inferred`.** Carried through to the persisted table so a
+        FABRICATED interval end is distinguishable from an observed one. Only
+        case 1 sets it: that `end_date` is the change log's own right edge, an
+        unrelated event's date, chosen because the anchor proves the symbol is
+        no longer a member while the log never says when it stopped. Writing
+        that as though it were observed -- with only a `logger.warning` to
+        distinguish it -- is the same silent-plausible-answer failure the rest
+        of this module exists to prevent. Consumers that care about exact
+        removal dates must filter on this column; the point-in-time queries in
+        `UniverseCatalog.get_symbols_as_of` deliberately do not, because a
+        bounded end is still much closer to the truth than an open one.
         """
         anchor_symbols = set(anchor["symbol"])
         anchor_date_added = dict(zip(anchor["symbol"], anchor["date_added"]))
 
         changes_sorted = changes.sort("effective_date")
         open_intervals: dict[str, str] = {}
-        closed: list[tuple[str, str, str | None]] = []
+        # 4-tuples: (symbol, start_date, end_date, end_date_is_inferred).
+        closed: list[tuple[str, str, str | None, bool]] = []
 
         last_eff = self.PIT_COVERAGE_START
         for row in changes_sorted.iter_rows(named=True):
@@ -483,7 +497,7 @@ class IndexMembershipFetcher(ABC):
             if row["removed_ticker"] is not None:
                 sym = row["removed_ticker"]
                 if sym in open_intervals:
-                    closed.append((sym, open_intervals.pop(sym), eff))
+                    closed.append((sym, open_intervals.pop(sym), eff, False))
                 else:
                     logger.warning(
                         f"{sym}: removal at {eff} has no matching prior "
@@ -491,7 +505,7 @@ class IndexMembershipFetcher(ABC):
                         f"PIT_COVERAGE_START ({self.PIT_COVERAGE_START}) as "
                         f"start_date"
                     )
-                    closed.append((sym, self.PIT_COVERAGE_START, eff))
+                    closed.append((sym, self.PIT_COVERAGE_START, eff, False))
             if row["added_ticker"] is not None:
                 sym = row["added_ticker"]
                 if sym in open_intervals:
@@ -512,9 +526,9 @@ class IndexMembershipFetcher(ABC):
                     f"anchor set -- anchor CSV may be stale relative to the "
                     f"Wikipedia change log"
                 )
-                closed.append((sym, start, last_eff))
+                closed.append((sym, start, last_eff, True))
             else:
-                closed.append((sym, start, None))
+                closed.append((sym, start, None, False))
 
         # Third reconciliation direction: the change log's LAST event for a
         # symbol is a REMOVAL, yet the anchor still lists it as a current
@@ -527,7 +541,7 @@ class IndexMembershipFetcher(ABC):
         # membership is re-opened rather than left closed.
         symbols_still_open = set(open_intervals)
         closed_by_symbol: dict[str, list[int]] = {}
-        for position, (sym, _start, _end) in enumerate(closed):
+        for position, (sym, _start, _end, _inferred) in enumerate(closed):
             closed_by_symbol.setdefault(sym, []).append(position)
 
         for sym in sorted(anchor_symbols - symbols_still_open):
@@ -545,7 +559,7 @@ class IndexMembershipFetcher(ABC):
                 f"Re-opening membership from that removal date rather than "
                 f"silently recording a current constituent as a former one."
             )
-            closed.append((sym, last_removal, None))
+            closed.append((sym, last_removal, None, False))
 
         # Anchor members with NO 'added'/'removed' event anywhere in the
         # change log are either original constituents or were added before
@@ -553,9 +567,18 @@ class IndexMembershipFetcher(ABC):
         seen_symbols = {c[0] for c in closed}
         for sym in anchor_symbols - seen_symbols:
             start = anchor_date_added.get(sym) or self.PIT_COVERAGE_START
-            closed.append((sym, start, None))
+            closed.append((sym, start, None, False))
 
-        return pl.DataFrame(closed, schema=["symbol", "start_date", "end_date"], orient="row")
+        return pl.DataFrame(
+            closed,
+            schema=[
+                "symbol",
+                "start_date",
+                "end_date",
+                "end_date_is_inferred",
+            ],
+            orient="row",
+        )
 
     def build_intervals(self) -> pl.DataFrame:
         anchor = self.fetch_anchor()
@@ -792,17 +815,28 @@ class UniverseCatalog:
         record it. Refusing by default makes the degradation a decision.
         """
         frames = [
-            NasdaqUniverseFetcher().fetch().with_columns(
-                pl.lit(self.ROSTER_CATEGORY).alias("category")
+            NasdaqUniverseFetcher()
+            .fetch()
+            .with_columns(
+                pl.lit(self.ROSTER_CATEGORY).alias("category"),
+                # Tiingo reports real listing/delisting dates, so no end here
+                # is ever inferred. Stated explicitly rather than left null so
+                # the column means the same thing in every category.
+                pl.lit(False).alias("end_date_is_inferred"),
             )
+            # `vertical_relaxed` concat matches on column ORDER, not name, so
+            # every frame is projected onto the canonical order before it is
+            # appended -- otherwise adding a column to one producer silently
+            # transposes values into the wrong columns of another.
+            .select(self.CATALOG_COLUMNS)
         ]
         stale: list[str] = []
         for fetcher_cls in self.MEMBERSHIP_FETCHERS:
             fetcher = fetcher_cls(cache_dir=self.config.cache_dir)
             frames.append(
-                fetcher.build_intervals().with_columns(
-                    pl.lit(fetcher_cls.CATEGORY).alias("category")
-                )
+                fetcher.build_intervals()
+                .with_columns(pl.lit(fetcher_cls.CATEGORY).alias("category"))
+                .select(self.CATALOG_COLUMNS)
             )
             if fetcher.changes_are_stale:
                 stale.append(
@@ -825,9 +859,7 @@ class UniverseCatalog:
                 f"(allow_stale=True): {stale}."
             )
 
-        combined = pl.concat(frames, how="vertical_relaxed").select(
-            ["symbol", "category", "start_date", "end_date"]
-        )
+        combined = pl.concat(frames, how="vertical_relaxed")
         self._backend.to_internal(combined.lazy())
         return self
 
@@ -879,6 +911,18 @@ class UniverseCatalog:
     #: boundary (D-02). Named once here because both `build()` and
     #: `get_symbols_as_of()`'s validation need it.
     ROSTER_CATEGORY: UniverseCategory = "nasdaq_all"
+
+    #: Canonical column order of the persisted reference table. `end_date_is_
+    #: inferred` marks a FABRICATED interval end (see
+    #: `IndexMembershipFetcher.reconstruct_intervals`) so a consumer can tell
+    #: it from an observed one instead of trusting a log line.
+    CATALOG_COLUMNS = (
+        "symbol",
+        "category",
+        "start_date",
+        "end_date",
+        "end_date_is_inferred",
+    )
 
     def known_categories(self) -> set[str]:
         """Every category this catalog can answer for."""

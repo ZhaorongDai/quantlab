@@ -119,6 +119,56 @@ def test_reconstruct_intervals_reentry(mock_universe_fetchers, tmp_path):
         assert earlier["end_date"] <= later["start_date"]
 
 
+def test_orphaned_open_interval_is_flagged_as_an_inferred_end(
+    mock_universe_fetchers, tmp_path
+):
+    """WR-08. When a symbol has an open interval but is absent from the anchor,
+    its end_date is set to `last_eff` -- the effective date of the last row
+    ANYWHERE in the change log, which is not an observation about that symbol.
+    The end is fabricated, and it was written into the persisted table exactly
+    like an observed one, with only a logger.warning to distinguish it.
+
+    `REENTRY` is re-added in 2000 by the fixture and never appears in the
+    anchor CSV, so it takes that path.
+    """
+    fetcher = SP500MembershipFetcher(cache_dir=str(tmp_path))
+    intervals = fetcher.reconstruct_intervals(
+        fetcher.fetch_anchor(), fetcher.fetch_changes()
+    )
+
+    orphaned = (
+        intervals.filter(pl.col("symbol") == "REENTRY")
+        .sort("start_date")
+        .to_dicts()[-1]
+    )
+    assert orphaned["end_date"] is not None
+    assert orphaned["end_date_is_inferred"] is True
+
+    # An end that really was observed is not flagged.
+    observed = intervals.filter(pl.col("symbol") == "AIV").to_dicts()[0]
+    assert observed["end_date"] == "2020-12-21"
+    assert observed["end_date_is_inferred"] is False
+
+
+def test_inferred_end_flag_survives_the_parquet_round_trip(
+    mock_universe_fetchers, tmp_path
+):
+    """WR-08. The flag is only useful if it reaches the PERSISTED table -- that
+    is the artefact a downstream consumer reads.
+    """
+    config = _make_config(tmp_path)
+    UniverseCatalog(config).build().save()
+
+    reloaded = (
+        UniverseCatalog.load(config)
+        ._backend.get_lazyframe()
+        .filter(pl.col("end_date_is_inferred"))
+        .collect()
+    )
+
+    assert "REENTRY" in reloaded["symbol"].to_list()
+
+
 def test_reconstruct_intervals_left_censored(mock_universe_fetchers, tmp_path):
     fetcher = SP500MembershipFetcher(cache_dir=str(tmp_path))
     anchor = fetcher.fetch_anchor()
@@ -290,7 +340,14 @@ def test_nasdaq100_build_intervals_reconstructs_membership(
     fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
     intervals = fetcher.build_intervals()
 
-    assert intervals.columns == ["symbol", "start_date", "end_date"]
+    assert intervals.columns == [
+        "symbol",
+        "start_date",
+        "end_date",
+        # WR-08: marks an interval end this reconstruction FABRICATED rather
+        # than observed, so a consumer can tell the two apart.
+        "end_date_is_inferred",
+    ]
 
     logi = intervals.filter(pl.col("symbol") == "LOGI").to_dicts()
     assert len(logi) == 1
