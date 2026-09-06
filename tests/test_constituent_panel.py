@@ -100,6 +100,22 @@ class _ClosedOnlyPanelFixture(_PanelFixture):
         return _closed_only_intervals()
 
 
+class _NullStartDatePanelFixture(_PanelFixture):
+    """Same no-I/O fixture, with one interval carrying a null `start_date` --
+    the shape a change-log row without a date produces.
+    """
+
+    def _build_intervals(self) -> pl.DataFrame:
+        return pl.DataFrame(
+            [
+                ("OPEN1", "2000-01-03", None),
+                ("NODATE1", None, "2010-06-15"),
+            ],
+            schema=["symbol", "start_date", "end_date"],
+            orient="row",
+        )
+
+
 def _panel(dataset: IndexConstituentDataset) -> xr.Dataset:
     return dataset.from_raw_data().get_xarray_dataset()
 
@@ -382,6 +398,22 @@ def test_construction_performs_no_network_call_and_no_store_read(
     dataset = SP500ConstituentDataset(cfg)
 
     assert dataset.config.symbols == ("AAPL", "MSFT")
+
+
+def test_null_start_date_is_rejected_rather_than_silently_densified(tmp_path):
+    """WR-13. `max(pd.Timestamp(row["start_date"]) for row in rows)` does not
+    raise on a null: `pd.Timestamp(None)` is NaT and every comparison against
+    NaT is False, so `max()` returns whichever value it happened to hold first
+    rather than the true maximum -- silently corrupting the horizon. The same
+    null then reaches the fill loop and yields an all-False column
+    indistinguishable from "never a member".
+
+    `start_date` can legitimately be null: it comes from `effective_date`.
+    """
+    dataset = _NullStartDatePanelFixture(_make_config(tmp_path))
+
+    with pytest.raises(ValueError, match="null start_date"):
+        dataset.from_raw_data()
 
 
 def test_membership_panel_cleaning_replaces_market_data_cleaning():

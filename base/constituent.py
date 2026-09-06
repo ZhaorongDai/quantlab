@@ -190,6 +190,27 @@ class IndexConstituentDataset(BaseDataset):
                 f"there is no membership history to densify."
             )
 
+        # A null `start_date` must be rejected, not tolerated. `max()` over
+        # `pd.Timestamp(row["start_date"])` would not raise on one:
+        # `pd.Timestamp(None)` is NaT and EVERY comparison against NaT is
+        # False, so `max()` silently returns whichever value it happened to
+        # hold first rather than the true maximum -- corrupting the horizon
+        # for every symbol. The same null then reaches the fill loop below and
+        # produces a silently all-False mask row. `start_date` can legitimately
+        # be null today: it comes from `effective_date`, which is null if a
+        # change-log row lacks a date.
+        undated = sorted(
+            {str(row["symbol"]) for row in rows if row["start_date"] is None}
+        )
+        if undated:
+            raise ValueError(
+                f"{self.class_name}: interval rows with a null start_date "
+                f"cannot be densified: {undated}. A membership with no start "
+                f"date is not a membership -- silently treating it as one "
+                f"corrupts the panel's horizon and yields an all-False column "
+                f"indistinguishable from 'never a member'."
+            )
+
         symbols = sorted({str(row["symbol"]) for row in rows})
         column_of = {symbol: i for i, symbol in enumerate(symbols)}
 
