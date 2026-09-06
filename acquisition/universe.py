@@ -49,6 +49,7 @@ from loguru import logger
 
 from base.config import UniverseConfig
 from dataset.backend import PlBackend
+from enums.data import UniverseCategory
 
 #: Contact string sent in the outbound `User-Agent` when scraping Wikipedia,
 #: whose bot policy asks for one. Read from the environment per CLAUDE.md's
@@ -182,7 +183,11 @@ class IndexMembershipFetcher(ABC):
     PIT_COVERAGE_START: str
     CACHE_FILENAME: str
     INDEX_LABEL: str
-    CATEGORY: str
+    #: Typed as the literal, not `str`: a fetcher registered with a token
+    #: absent from `enums.data.UniverseCategory` is then a type error rather
+    #: than something only `test_catalog_build_emits_all_three_categories`
+    #: notices, at test time, and only because it compares sets.
+    CATEGORY: UniverseCategory
 
     #: The exact flattened change-log header (see `_flatten_header`). Both the
     #: table SELECTOR and the column contract -- a source whose header drifts
@@ -824,7 +829,7 @@ class UniverseCatalog:
     #: The category with no membership-interval semantics and so no coverage
     #: boundary (D-02). Named once here because both `build()` and
     #: `get_symbols_as_of()`'s validation need it.
-    ROSTER_CATEGORY = "nasdaq_all"
+    ROSTER_CATEGORY: UniverseCategory = "nasdaq_all"
 
     def known_categories(self) -> set[str]:
         """Every category this catalog can answer for."""
