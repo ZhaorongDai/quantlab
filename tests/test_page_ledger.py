@@ -133,8 +133,6 @@ def test_mock_alpaca_client_records_calls_without_consuming_a_failed_page(
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _five_page_chain(alpaca_bars_page):
     """A five-page symbol-major chain, last page terminating with None.
@@ -183,6 +181,14 @@ def test_an_interrupted_batch_resumes_at_the_failed_page(
     The first run records pages 0-2 and dies inside page 3. The second run's
     FIRST request must carry the token page 2 recorded -- not `None`, which
     would silently restart the batch and re-burn every page already paid for.
+
+    Since the 03.2-03 orchestration lift, `download()` ISOLATES a batch
+    failure instead of propagating it (D-02): the exception still leaves
+    `_fetch_batch` -- that contract is unchanged, and it is what flushes the
+    ledger -- but `_attempt_batch` captures it, records the batch in the
+    failure manifest and writes no watermark. So the first run's death is
+    asserted through the manifest rather than through `pytest.raises`, which
+    pins BOTH the ledger flush and the isolation.
     """
     from acquisition.alpaca import AlpacaAcquisition
 
@@ -195,8 +201,16 @@ def test_an_interrupted_batch_resumes_at_the_failed_page(
     mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)
     mock_alpaca_client.raise_on = {3: RuntimeError("simulated page-3 failure")}
 
-    with pytest.raises(RuntimeError, match="simulated page-3 failure"):
-        AlpacaAcquisition(cfg).download()
+    AlpacaAcquisition(cfg).download()
+
+    manifest = json.loads(
+        (Path(cfg.watermark_path) / "_failures.json").read_text()
+    )
+    assert set(manifest) == {"AAPL", "MSFT"}
+    assert "simulated page-3 failure" in manifest["AAPL"]
+    # No watermark for a failed batch => the next run retries it rather than
+    # skipping past the hole.
+    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
 
     # Pages 0-2 landed and were recorded; the ledger was FLUSHED for every page
     # that completed. Losing it on failure is what turns a resume into a
@@ -245,8 +259,9 @@ def test_a_resumed_run_does_not_re_request_page_zero(
 
     mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)
     mock_alpaca_client.raise_on = {3: RuntimeError("boom")}
-    with pytest.raises(RuntimeError):
-        AlpacaAcquisition(cfg).download()
+    # Isolated, not raised, since the 03.2-03 lift -- see the previous test.
+    AlpacaAcquisition(cfg).download()
+    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
 
     mock_alpaca_client.calls.clear()
     mock_alpaca_client.raise_on = None
@@ -319,6 +334,15 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
     produce a batch that is silently short, with nothing failing at the time
     and nothing detectable afterwards -- so `assert_consistent` refuses, with a
     numbered error that names the cure.
+
+    Since the 03.2-03 lift the refusal is REPORTED rather than raised out of
+    `download()`: `_attempt_batch` captures it, so one corrupt ledger no
+    longer aborts a 15,000-symbol run. That is a change of blast radius, not
+    of guarantee -- the refusal still happens, the batch still gets no
+    watermark, and the numbered message with its cure still reaches the user
+    verbatim through the failure manifest. Asserted below on the manifest
+    text, so a regression that downgraded the refusal to a silent skip would
+    still fail this test.
     """
     from acquisition.alpaca import AlpacaAcquisition
 
@@ -327,8 +351,7 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
     )
     mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)
     mock_alpaca_client.raise_on = {3: RuntimeError("boom")}
-    with pytest.raises(RuntimeError):
-        AlpacaAcquisition(cfg).download()
+    AlpacaAcquisition(cfg).download()
 
     # Delete a shard the ledger still records.
     victim = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))[0]
@@ -336,15 +359,22 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
 
     mock_alpaca_client.raise_on = None
     mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)[3:]
-    with pytest.raises(ValueError) as excinfo:
-        AlpacaAcquisition(cfg).download()
+    calls_before = len(mock_alpaca_client.calls)
+    AlpacaAcquisition(cfg).download()
 
-    message = str(excinfo.value)
+    message = json.loads(
+        (Path(cfg.watermark_path) / "_failures.json").read_text()
+    )["AAPL"]
     assert "refusing to resume" in message
     assert victim.name in message or str(victim) in message
     # Numbered and cure-naming, the ChunkLedger.assert_consistent shape.
     assert "error 2 of 2" in message
     assert "CURE:" in message
+
+    # The refusal happens BEFORE any request, so nothing was fetched past the
+    # hole, and no watermark was written to mark the short batch complete.
+    assert len(mock_alpaca_client.calls) == calls_before
+    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
 
 
 def test_a_ledger_whose_roster_fingerprint_differs_is_not_resumed_onto(

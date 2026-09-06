@@ -78,3 +78,141 @@ def test_acquisition_config_fixture_isolates_vendors_from_each_other(
     assert tiingo_raw.parent == alpaca_raw.parent
     assert not tiingo_raw.is_relative_to(alpaca_raw)
     assert not alpaca_raw.is_relative_to(tiingo_raw)
+
+
+# ---------------------------------------------------------------------------
+# 03.2-03 Task 1 -- batch construction on the hoisted base class.
+#
+# `_batches` chunks a roster; `_refresh_batches` first GROUPS by recorded
+# watermark, because one request carries exactly one `start`. Both are pure
+# functions of the roster and the sidecars on disk: no vendor call, no
+# credential, no network.
+# ---------------------------------------------------------------------------
+
+#: Far larger than any batch size under test, and deliberately not a round
+#: multiple of every one of them. Borrowed from `tests/test_tiingo_quota.py`'s
+#: `_MANY` idiom: "chunked correctly" and "silently collapsed to one batch"
+#: must not be able to produce the same count.
+_MANY = tuple(f"SYM{i:04d}" for i in range(250))
+
+
+def _acquisition(acquisition_config, **config_kwargs):
+    """A minimal CONCRETE `Acquisition` whose `_fetch_page` is never called.
+
+    Deliberately not `TiingoAcquisition` or `AlpacaAcquisition`: the batching
+    rules under test belong to the base class, and instantiating a vendor here
+    would let a vendor override silently satisfy the assertion.
+    """
+    from base.acquisition import Acquisition
+
+    class _Batching(Acquisition):
+        VENDOR = "tiingo"
+        RAW_COLUMNS = ("timestamp", "symbol", "vendor")
+
+        def _fetch_page(self, symbols, start_date, end_date, page_token=None):
+            raise AssertionError(
+                "batch construction must not issue a vendor request"
+            )
+
+    return _Batching(acquisition_config(**config_kwargs))
+
+
+def test_batches_chunk_the_roster_by_batch_size(acquisition_config):
+    """250 symbols is 3 batches at 100 and 250 batches at 1.
+
+    Both directions matter. The 100 case proves chunking happens at all; the 1
+    case proves the DEGENERATE vendor (Tiingo) still gets one symbol per
+    request, which is what makes its quota-abort check run once per symbol
+    rather than once per hundred.
+    """
+    acq = _acquisition(
+        acquisition_config, symbols=_MANY, kwargs={"batch_size": 100}
+    )
+    batches = list(acq._batches(_MANY))
+
+    assert len(batches) == 3, len(batches)
+    assert [len(batch) for batch in batches] == [100, 100, 50]
+    # Every symbol appears exactly once, in order -- chunking, not sampling.
+    assert [symbol for batch in batches for symbol in batch] == list(_MANY)
+
+    degenerate = _acquisition(
+        acquisition_config, symbols=_MANY, kwargs={"batch_size": 1}
+    )
+    single = list(degenerate._batches(_MANY))
+    assert len(single) == len(_MANY) == 250
+    assert all(len(batch) == 1 for batch in single)
+
+
+def test_refresh_batches_group_symbols_sharing_a_watermark(acquisition_config):
+    """Two symbols at the same recorded `last_date` travel together; a third
+    at a different one does not.
+
+    One request carries exactly one `start`, so a mixed batch would have to
+    either re-fetch history for some symbols or under-fetch for others.
+    Grouping is REQUEST PACKING only -- D-06's window rule is untouched, which
+    is why the derived starts are asserted here too.
+    """
+    acq = _acquisition(
+        acquisition_config,
+        symbols=("AAPL", "MSFT", "GOOG"),
+        kwargs={"batch_size": 100},
+    )
+    acq._write_watermark("AAPL", "2024-01-15", start_date="2024-01-01")
+    acq._write_watermark("MSFT", "2024-01-15", start_date="2020-01-01")
+    acq._write_watermark("GOOG", "2024-01-20", start_date="2024-01-01")
+
+    batches = list(acq._refresh_batches(["AAPL", "MSFT", "GOOG"]))
+
+    assert sorted(sorted(batch) for batch in batches) == [
+        ["AAPL", "MSFT"],
+        ["GOOG"],
+    ], batches
+
+    # The grouping key is the WATERMARK, not the covered start -- AAPL and
+    # MSFT share a `last_date` while recording different `start_date`s, and
+    # they still batch together because only `last_date` decides the request.
+    by_symbol = {tuple(sorted(batch)): batch for batch in batches}
+    assert ("AAPL", "MSFT") in by_symbol
+
+
+def test_refresh_batches_bucket_un_watermarked_symbols_under_the_config_start(
+    acquisition_config,
+):
+    """A symbol with no sidecar has no watermark to group on, so it buckets
+    under `config.start_date` -- which is exactly the start `_attempt_batch`
+    would derive for it. Grouping it with a watermarked symbol would request
+    the wrong window for one of the two.
+    """
+    acq = _acquisition(
+        acquisition_config,
+        symbols=("AAPL", "MSFT"),
+        kwargs={"batch_size": 100},
+    )
+    acq._write_watermark("AAPL", "2024-01-15", start_date="2024-01-01")
+    # MSFT has no sidecar at all.
+
+    batches = list(acq._refresh_batches(["AAPL", "MSFT"]))
+
+    assert sorted(sorted(batch) for batch in batches) == [["AAPL"], ["MSFT"]]
+
+
+def test_refresh_batches_still_chunk_a_large_shared_watermark_group(
+    acquisition_config,
+):
+    """The common case: a routine refresh where every symbol shares one
+    watermark. Grouping must not defeat chunking and hand the vendor a
+    250-symbol request.
+    """
+    acq = _acquisition(
+        acquisition_config, symbols=_MANY, kwargs={"batch_size": 100}
+    )
+    for symbol in _MANY:
+        acq._write_watermark(symbol, "2024-01-15", start_date="2024-01-01")
+
+    batches = list(acq._refresh_batches(list(_MANY)))
+
+    assert len(batches) == 3, len(batches)
+    assert [len(batch) for batch in batches] == [100, 100, 50]
+    assert sorted(symbol for batch in batches for symbol in batch) == sorted(
+        _MANY
+    )

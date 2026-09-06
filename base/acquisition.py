@@ -1,12 +1,17 @@
 import json
+import os
 import re
+import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Self, Sequence
 
 import polars as pl
+from joblib import Parallel, delayed
 from loguru import logger
+from tqdm import tqdm
 
 from base.config import AcquisitionConfig
 from base.pageledger import PageLedger
@@ -130,9 +135,8 @@ class Acquisition(ABC):
         """The LAST covered date for `symbol`, or None.
 
         Signature and meaning are deliberately unchanged by the range-aware
-        schema: both loops below and
-        `ConcurrentTiingoAcquisition._attempt` use this to compute an
-        incremental start, and none of them wants the covered start.
+        schema: both `_refresh_batches` and `_attempt_batch` use this to
+        compute an incremental start, and neither wants the covered start.
         """
         payload = self._read_sidecar(symbol)
         return None if payload is None else payload.get("last_date")
@@ -250,6 +254,73 @@ class Acquisition(ABC):
     #: merge while looking like a bug fix.
     RAW_COLUMNS: tuple[str, ...]
 
+    # -- orchestration constants (hoisted from ConcurrentTiingoAcquisition
+    #    by 03.2-03 / D-02: ONE implementation drives every vendor) ---------
+
+    #: Concurrent in-flight batch fetches. Overridable per run via
+    #: `config.kwargs["max_workers"]`.
+    DEFAULT_MAX_WORKERS = 8
+
+    #: Written under `config.watermark_path` alongside the per-symbol
+    #: watermark sidecars, because "what did and did not land" is exactly the
+    #: same question those sidecars answer (T-0iy-07).
+    FAILURE_MANIFEST_NAME = "_failures.json"
+
+    #: What a credential value is replaced with in any captured message.
+    #: Subclasses override it with vendor-specific wording; the base value is
+    #: what a vendor that names no credentials would use.
+    REDACTION = "<CREDENTIAL REDACTED>"
+
+    #: The environment variables whose VALUES `_scrub` redacts, per vendor.
+    #:
+    #: The per-vendor hook of the one shared scrubbing choke point: adding a
+    #: vendor cannot forget to redact, because forgetting means declaring an
+    #: empty tuple rather than silently inheriting a Tiingo-shaped rule that
+    #: does not apply (T-03.2-01).
+    #:
+    #: A subclass MUST populate this from module-level constants, never by
+    #: reaching through its transport/client class. A test double replaces the
+    #: transport wholesale, so a security control routed through it could be
+    #: silently disabled by substituting a stub that happens not to define the
+    #: names (03.2-02 deviation #2).
+    CREDENTIAL_ENV_VARS: tuple[str, ...] = ()
+
+    #: How many failed units are named in the summary log line. The full set
+    #: always lands in the manifest; the log is a pointer, not a dump.
+    _FAILURE_LOG_SAMPLE = 5
+
+    #: What `config.kwargs["legacy_watermarks"]` may be set to (260906-26o
+    #: D-04). `"warn"` skips a sidecar with no recorded covered start but
+    #: reports it on every run; `"refetch"` treats unknown coverage as
+    #: uncovered. See `_coverage_status` for why `"warn"` is the default.
+    LEGACY_WATERMARK_POLICIES = ("warn", "refetch")
+    DEFAULT_LEGACY_WATERMARK_POLICY = "warn"
+
+    #: The one command that resolves an un-stamped legacy watermark. Named
+    #: verbatim in the warning, because a reported gap with no named cure is
+    #: only marginally better than a silent one.
+    STAMP_COMMAND_HINT = (
+        "uv run python ingest_us_equity.py --stamp-legacy-watermarks <START_DATE>"
+    )
+
+    #: Wait-and-resume is OFF unless asked for, so no run silently holds a
+    #: vendor's allocation window open (D-06).
+    DEFAULT_WAIT_FOR_QUOTA = False
+
+    #: Delay between resume attempts. Tiingo's reset semantics -- fixed
+    #: top-of-hour bucket vs. rolling window -- are NOT established, so this
+    #: is a configurable INTERVAL, not a computed resume instant. One hour
+    #: measured from the moment of detection covers a rolling one-hour window
+    #: exactly and a fixed top-of-hour bucket strictly. Assumption, not a
+    #: vendor fact.
+    DEFAULT_QUOTA_WAIT_SECONDS = 3600
+
+    #: Bounded, because an unbounded loop against a lockout is a worse version
+    #: of the problem this mechanism is fixing. 3 comes from the observed
+    #: arithmetic: ~4,600 requests per window against 14,674 symbols is
+    #: roughly three windows.
+    DEFAULT_QUOTA_MAX_WAITS = 3
+
     def _knob(self, name: str, default=None):
         """Read a per-run tuning parameter from `config.kwargs`.
 
@@ -258,6 +329,69 @@ class Acquisition(ABC):
         is what keeps the whole pipeline config-driven per CLAUDE.md.
         """
         return (self.config.kwargs or {}).get(name, default)
+
+    # -- global abort, backoff seam and credential scrubbing ----------------
+
+    @property
+    def _abort(self) -> threading.Event:
+        """The global stop flag, shared across every worker thread.
+
+        `threading.Event` is thread-safe by construction, so no surrounding
+        lock is needed, and its `wait(timeout)` is exactly the primitive the
+        resume delay wants. Created lazily so `_attempt_batch` is safe to call
+        directly (tests do) without a `_run` having set one up.
+        """
+        event = getattr(self, "_abort_event", None)
+        if event is None:
+            event = self._abort_event = threading.Event()
+        return event
+
+    def _reset_abort(self) -> threading.Event:
+        """A FRESH event per resume pass, so a previous pass's trip cannot
+        poison the next one.
+        """
+        self._abort_event = threading.Event()
+        return self._abort_event
+
+    def _sleep(self, seconds: float) -> None:
+        """Overridable seam: tests substitute it and assert call counts
+        instead of waiting an hour.
+        """
+        time.sleep(seconds)
+
+    def _scrub(self, message: str) -> str:
+        """Remove every declared credential VALUE from a message before it is
+        logged or written.
+
+        This repo has already leaked one real Tiingo key. A vendor exception
+        string is a path a credential travels that nobody audits -- an HTTP
+        error commonly echoes back the full request URL, and Tiingo's carries
+        the token as a query parameter. Scrubbing at the single choke point
+        every captured message passes through is what makes the manifest safe
+        to commit, paste into an issue, or ship to a log aggregator
+        (T-0iy-01, T-03.2-01).
+
+        The per-vendor part is DATA (`CREDENTIAL_ENV_VARS`), not code, so a
+        new vendor inherits the control rather than reimplementing it -- and
+        cannot reimplement it subtly differently.
+        """
+        for name in self.CREDENTIAL_ENV_VARS:
+            value = os.environ.get(name)
+            if value:
+                message = message.replace(value, self.REDACTION)
+        return message
+
+    def _is_quota_error(self, exc: BaseException) -> bool:
+        """Whether `exc` means a GLOBAL, vendor-wide condition that should
+        stop the whole run rather than fail one batch.
+
+        The base answer is the CONSERVATIVE one -- no, this vendor has no
+        global condition -- because treating a per-unit failure as global
+        aborts a 15,000-symbol run over one bad ticker. A vendor that really
+        does have such a condition says so by overriding; see
+        `TiingoAcquisition._is_quota_error`.
+        """
+        return False
 
     # -- symbol validation --------------------------------------------------
 
@@ -395,6 +529,37 @@ class Acquisition(ABC):
         for index in range(0, len(symbols), size):
             yield symbols[index : index + size]
 
+    def _refresh_batches(self, pending: Sequence[str]) -> Iterator[list[str]]:
+        """Batches for a `refresh()`: symbols GROUPED by identical recorded
+        `last_date`, then chunked by `batch_size` within each group.
+
+        This is REQUEST PACKING and nothing else. D-06's window rule is
+        untouched: a refresh still fetches `[symbol watermark, config.end_date]`
+        and still ignores a widened `config.start_date`. Grouping only decides
+        which symbols may legally travel in the SAME request, given that one
+        request carries exactly one `start`.
+
+        Grouping rather than taking `min(watermark)` over a mixed batch: most
+        symbols in a routine refresh share one watermark, so the grouping is
+        near-free, and the alternative -- issue the earliest start for the
+        whole batch and let deduplication absorb the overlap -- is correct but
+        re-fetches history nobody asked for and makes the volume guard's
+        estimate systematically wrong.
+
+        Symbols with no watermark at all bucket under `config.start_date`,
+        which is exactly the start `_attempt_batch` would derive for them.
+        Insertion order is preserved within and across buckets so a run is
+        reproducible.
+        """
+        buckets: dict[str, list[str]] = {}
+        for symbol in pending:
+            coverage = self._read_coverage(symbol) or {}
+            start = coverage.get("last_date") or self.config.start_date
+            buckets.setdefault(start, []).append(symbol)
+
+        for group in buckets.values():
+            yield from self._batches(group)
+
     def _ledger_for(
         self, symbols: Sequence[str], start_date: str, end_date: str
     ) -> tuple[PageLedger, str]:
@@ -518,57 +683,483 @@ class Acquisition(ABC):
     # -- entry points -------------------------------------------------------
 
     def download(self, symbols: list[str] | None = None) -> Self:
-        """Full backfill over `[config.start_date, config.end_date]`.
-
-        SEQUENTIAL by design at this layer: a handful of symbols needs no
-        fan-out, and the concurrency plus quota-abort lift is 03.2-03's job.
-
-        Watermark semantics are UNCHANGED from the pre-batch loop: a full
-        backfill overwrites the batch's shards wholesale for the requested
-        range, so recording `config.start_date` as the covered start is a TRUE
-        statement about what is on disk -- including when the window was
-        narrowed (260906-26o D-03).
-        """
-        requested = list(symbols or self.config.symbols)
-        for batch in self._batches(requested):
-            self._fetch_batch(
-                batch,
-                start_date=self.config.start_date,
-                end_date=self.config.end_date,
-            )
-            for symbol in batch:
-                self._write_watermark(
-                    symbol,
-                    self.config.end_date,
-                    start_date=self.config.start_date,
-                )
-        return self
+        """Full backfill over `[config.start_date, config.end_date]`."""
+        return self._run(symbols, from_watermark=False)
 
     def refresh(self, symbols: list[str] | None = None) -> Self:
         """Incremental fetch, each symbol starting at its OWN watermark.
 
-        Batching is per-symbol here regardless of `DEFAULT_BATCH_SIZE`, because
-        every symbol has a different start date and one request carries one
-        `start`. Grouping symbols with unequal starts into one request would
-        silently re-fetch history for some and under-fetch for others.
-
         Refresh fetches from each symbol's last covered date FORWARD, so the
         covered start is whatever it already was -- and if it was unknown it
-        STAYS unknown. Refresh never invents coverage it did not fetch (D-06 /
-        260906-26o D-04).
+        STAYS unknown. Refresh never invents coverage it did not fetch, and it
+        does NOT honour a widened `config.start_date`; widening the covered
+        range is `download()`'s job (D-06 / 260906-26o D-04).
         """
-        for symbol in symbols or list(self.config.symbols):
-            coverage = self._read_coverage(symbol) or {}
-            start = coverage.get("last_date") or self.config.start_date
+        return self._run(symbols, from_watermark=True)
+
+    # -- concurrent, resumable, failure-isolated orchestration --------------
+    #
+    # Hoisted verbatim from `ConcurrentTiingoAcquisition` by 03.2-03 (D-02).
+    # A full-US-market backfill is ~15.4k symbols and several hours; at that
+    # scale three properties stop being niceties and none of them is
+    # vendor-specific, which is why they live here once rather than once per
+    # vendor:
+    #
+    # - **Concurrency.** The work is network-bound and each vendor client is
+    #   shared, so THREADS are right and processes are not --
+    #   `joblib.Parallel(backend="threading")`, matching what
+    #   `base/model.py:train_cv` already uses for its CV folds.
+    # - **Resumability.** A job killed at ticker 20,000 must resume near
+    #   ticker 20,000. Symbols already covering the requested window are
+    #   skipped ENTIRELY rather than re-requested for a one-day sliver.
+    # - **Failure isolation, WITH a global exception.** One delisted ticker's
+    #   404 must not abort the other 15,000, so exceptions are captured per
+    #   BATCH and the watermark is written only on success. But a vendor-wide
+    #   condition is not one ticker's fault: treating it as an ordinary
+    #   per-symbol failure is what burned ~10,000 symbols as fast-failing
+    #   requests in the observed 2026-09-06 incident. It therefore trips a
+    #   global abort instead (D-05); see `_is_quota_error` and `_run_once`.
+    #
+    # What does NOT live here is which exception means which of those things.
+    # Tiingo's 429 is hourly ALLOCATION exhaustion (global, ~an hour to
+    # clear); Alpaca's 429 is a per-MINUTE rate limit a healthy run is
+    # expected to hit and recover from in seconds. Same status code, opposite
+    # correct response -- so classification stays per-vendor and no
+    # `QUOTA_STATUS_CODES` exists at this level (03.2-RESEARCH.md Pitfall 1).
+
+    def _run(self, symbols: list[str] | None, from_watermark: bool) -> Self:
+        """The single concurrent runner both entry points delegate to.
+
+        `download()` and `refresh()` differ ONLY in how each batch's start
+        date is resolved, so they share this body rather than each carrying
+        its own fan-out/resume/failure-capture copy that could drift.
+
+        A bounded RESUME LOOP wraps the fan-out (D-06). Each pass recomputes
+        `pending` from the watermarks ON DISK, which makes the resume logic
+        and the skip logic literally the same code -- there is no parallel
+        bookkeeping that could drift from what actually landed.
+
+        **What is assumed and what is not.** A vendor's allocation reset
+        semantics -- a fixed top-of-hour bucket versus a rolling window -- are
+        NOT established, and nothing here claims to know them. That is why
+        this is a configurable INTERVAL with a bounded attempt count rather
+        than a computed resume-at instant. See `DEFAULT_QUOTA_WAIT_SECONDS`
+        and `DEFAULT_QUOTA_MAX_WAITS` for what each default is grounded in.
+        All three knobs are read from `config.kwargs` via `_knob`, never as
+        constructor arguments, and waiting is OFF by default.
+        """
+        requested = list(symbols or self.config.symbols)
+        wait_for_quota = bool(
+            self._knob("wait_for_quota", self.DEFAULT_WAIT_FOR_QUOTA)
+        )
+        wait_seconds = float(
+            self._knob("quota_wait_seconds", self.DEFAULT_QUOTA_WAIT_SECONDS)
+        )
+        max_waits = int(
+            self._knob("quota_max_waits", self.DEFAULT_QUOTA_MAX_WAITS)
+        )
+
+        failures: dict[str, str] = {}
+        waits = 0
+        while True:
+            pending = requested
+            if self._knob("resume", True):
+                pending, counts = self._partition_by_coverage(
+                    requested, from_watermark
+                )
+                self._report_coverage(requested, pending, counts)
+            if not pending:
+                break
+
+            aborted, failures = self._run_once(pending, from_watermark)
+            if not aborted:
+                break
+            if not wait_for_quota:
+                logger.warning(
+                    "Not waiting for the allocation to reset "
+                    "(wait_for_quota is off). Re-run when the window has "
+                    "reset, or set wait_for_quota=True to sit through it."
+                )
+                break
+            if waits >= max_waits:
+                logger.warning(
+                    f"Gave up after {waits} wait(s) (quota_max_waits="
+                    f"{max_waits}); the allocation had still not reset. "
+                    f"Every watermark is preserved -- re-run later to resume."
+                )
+                break
+
+            waits += 1
+            logger.warning(
+                f"Waiting {wait_seconds:.0f}s for the request allocation to "
+                f"reset, then resuming (attempt {waits}/{max_waits}). The "
+                f"vendor's reset semantics are not published, so this is a "
+                f"configured interval, not a computed reset time."
+            )
+            self._sleep(wait_seconds)
+
+        self._write_failure_manifest(failures)
+        return self
+
+    def _run_once(
+        self, pending: list[str], from_watermark: bool
+    ) -> tuple[bool, dict[str, str]]:
+        """One concurrent pass over `pending`, returning
+        `(quota_aborted, per_symbol_failures)`.
+
+        The unit of work is a BATCH, not a symbol. For a vendor whose
+        `DEFAULT_BATCH_SIZE` is 1 the batch count equals the symbol count and
+        this is behaviourally identical to the per-symbol fan-out it replaces
+        -- same request count, same failure granularity, same resume
+        granularity.
+        """
+        abort = self._reset_abort()
+        max_workers = int(self._knob("max_workers", self.DEFAULT_MAX_WORKERS))
+
+        # Materialised so the progress bar has a real total. Refresh groups by
+        # recorded watermark first, because one request carries exactly one
+        # `start` (see `_refresh_batches`).
+        batches = list(
+            self._refresh_batches(pending)
+            if from_watermark
+            else self._batches(pending)
+        )
+
+        def inputs():
+            for batch in batches:
+                # OPTIMISATION ONLY -- not where the guarantee lives. It stops
+                # joblib queueing new batches, but with pre-dispatch batching
+                # it cannot be relied on alone. The first-statement check in
+                # `_attempt_batch` is what actually stops the vendor requests.
+                if abort.is_set():
+                    break
+                yield batch
+
+        # `return_as="generator_unordered"` is load-bearing, not a style
+        # choice. The default eager `Parallel(...)` call returns only once
+        # every batch is done, so a `tqdm` around it would render nothing
+        # for hours and then a full bar; wrapping the DISPATCH generator
+        # instead fills the bar instantly, because `Parallel` consumes that
+        # generator up front to queue the work. Streaming the RESULTS is the
+        # only form where one tick means one batch actually landed on disk.
+        stream = Parallel(
+            n_jobs=max_workers, backend="threading", return_as="generator_unordered"
+        )(delayed(self._attempt_batch)(batch, from_watermark) for batch in inputs())
+
+        bar = tqdm(
+            total=len(batches),
+            desc=f"{self.VENDOR} {self.config.start_date}..{self.config.end_date}",
+            unit="batch",
+            disable=not self._knob("progress", True),
+        )
+        results = []
+        switched = False
+        with bar:
+            # DRAINED to completion, never broken out of. Abandoning a joblib
+            # result generator mid-iteration leaves worker teardown to garbage
+            # collection; draining is deterministic, and it is nearly free
+            # because every remaining task is now a microsecond no-op. The bar
+            # therefore terminates by FINISHING rather than by being killed --
+            # and its description is switched so a racing bar cannot read as
+            # "all this work succeeded".
+            for result in stream:
+                results.append(result)
+                bar.update(1)
+                if abort.is_set() and not switched:
+                    switched = True
+                    bar.set_description("QUOTA EXHAUSTED -- draining, not fetching")
+
+        failures = {}
+        for batch_symbols, status, message in results:
+            if status == "failed":
+                for symbol in batch_symbols:
+                    failures[symbol] = message
+        quota_messages = [
+            message for _, status, message in results if status == "quota"
+        ]
+
+        if not abort.is_set():
+            return False, failures
+
+        completed = sum(
+            len(batch_symbols)
+            for batch_symbols, status, _ in results
+            if status == "ok"
+        )
+        remaining = len(pending) - completed
+        detail = quota_messages[0] if quota_messages else "request allocation"
+        logger.warning(
+            f"Vendor request allocation exhausted -- STOPPED dispatching "
+            f"rather than burning the remainder as fast-failing requests. "
+            f"{completed} symbol(s) completed this pass, {remaining} remain. "
+            f"Every watermark is preserved, so a re-run resumes exactly here "
+            f"and re-downloads nothing. This is a global condition, so it is "
+            f"NOT recorded in the per-symbol failure manifest. Vendor said: "
+            f"{detail}"
+        )
+        return True, failures
+
+    def coverage_report(self, symbols: list[str] | None = None) -> dict:
+        """Classify the roster against the requested window and return the
+        counts, issuing ZERO vendor requests.
+
+        The read-only form of `_run`'s pending computation, so a dry run can
+        answer "would widening the window actually re-fetch anything?" before
+        committing to a multi-hour job -- and can show that the un-stamped
+        legacy count really did fall to zero after stamping. It shares
+        `_partition_by_coverage` with the real run rather than reimplementing
+        the rule, so the two can never disagree.
+        """
+        requested = list(symbols if symbols is not None else self.config.symbols)
+        pending, counts = self._partition_by_coverage(
+            requested, from_watermark=False
+        )
+        return {
+            "requested": len(requested),
+            "pending": len(pending),
+            "skipped": len(requested) - len(pending),
+            **counts,
+        }
+
+    def _legacy_policy(self) -> str:
+        policy = self._knob(
+            "legacy_watermarks", self.DEFAULT_LEGACY_WATERMARK_POLICY
+        )
+        if policy not in self.LEGACY_WATERMARK_POLICIES:
+            raise ValueError(
+                f"legacy_watermarks={policy!r} is not one of "
+                f"{list(self.LEGACY_WATERMARK_POLICIES)}."
+            )
+        return policy
+
+    def _coverage_status(self, symbol: str, from_watermark: bool = False) -> str:
+        """Classify `symbol` against the REQUESTED window, returning one of
+        `"uncovered"`, `"covered"`, `"widened"` or `"legacy"`.
+
+        A symbol is `"covered"` iff its recorded `last_date` equals
+        `config.end_date` AND its recorded covered start is known and is
+        `<=` `config.start_date`. ISO-8601 `YYYY-MM-DD` orders correctly under
+        plain string comparison, so no date parsing happens here and no time
+        zone can creep in.
+
+        `"widened"` is the 260906-26o defect (D-03): the end date matches but
+        the recorded coverage starts LATER than what is being asked for, so
+        the symbol's history is shallower than the request and it must be
+        re-fetched. Before this predicate existed it was skipped in silence,
+        and the dataset shipped with inconsistent per-symbol history depth.
+
+        `"legacy"` is a sidecar written before this schema: the end date
+        matches but the covered start is UNKNOWN. Three responses exist and
+        two are wrong. Assuming a start is forbidden outright (D-04) -- an
+        assumed range that is wrong reproduces the silent gap invisibly.
+        Treating unknown as uncovered is correct for integrity but re-fetches
+        every already-downloaded symbol and burns a whole quota window (D-01).
+        So the default is the third: treat it as covered for SKIP purposes and
+        say so LOUDLY on every run until stamped. What made the D-03 failure
+        dangerous was the silence, not the skip -- a run that skips these
+        while printing their count and the exact command that fixes them is a
+        REPORTED gap with a named cure, and only the user knows what window
+        those files were fetched over. `legacy_watermarks="refetch"` is the
+        opt-in escape hatch that makes this a choice rather than an accident.
+
+        `from_watermark` (i.e. `refresh()`) short-circuits to the END-DATE
+        rule alone, deliberately. Refresh requests `[watermark, end_date]` per
+        symbol and never `config.start_date`, so judging it against a widened
+        `config.start_date` would mark every symbol pending on every run while
+        the re-fetch it triggers could not close the gap -- an endless, silent
+        quota burn. Widening the covered range is `download()`'s job.
+        """
+        coverage = self._read_coverage(symbol)
+        if coverage is None or coverage["last_date"] != self.config.end_date:
+            return "uncovered"
+        if from_watermark:
+            return "covered"
+        if coverage["start_date"] is None:
+            return "legacy"
+        if coverage["start_date"] <= self.config.start_date:
+            return "covered"
+        return "widened"
+
+    def _covers(self, symbol: str, from_watermark: bool = False) -> bool:
+        """Whether `symbol` may be skipped for the requested window.
+
+        The skip predicate `_run` filters on. See `_coverage_status` for the
+        rule and for the D-04 argument behind the `"legacy"` branch.
+        """
+        status = self._coverage_status(symbol, from_watermark)
+        if status == "legacy":
+            return self._legacy_policy() == "warn"
+        return status == "covered"
+
+    def _partition_by_coverage(
+        self, requested: list[str], from_watermark: bool
+    ) -> tuple[list[str], dict[str, int]]:
+        """Split `requested` into what still needs fetching, plus the counts
+        the run reports. One pass, so each sidecar is read exactly once.
+        """
+        legacy_is_skipped = self._legacy_policy() == "warn"
+        pending: list[str] = []
+        counts = {"covered": 0, "widened": 0, "legacy": 0}
+
+        for symbol in requested:
+            status = self._coverage_status(symbol, from_watermark)
+            if status == "covered":
+                counts["covered"] += 1
+                continue
+            if status == "legacy":
+                counts["legacy"] += 1
+                if legacy_is_skipped:
+                    continue
+            elif status == "widened":
+                counts["widened"] += 1
+            pending.append(symbol)
+
+        return pending, counts
+
+    def _report_coverage(
+        self, requested: list[str], pending: list[str], counts: dict[str, int]
+    ) -> None:
+        """Report the three outcomes separately, so widening the window has a
+        visible, countable consequence instead of a silent one.
+        """
+        skipped = len(requested) - len(pending)
+        if skipped:
+            logger.info(
+                f"Resume: skipping {skipped}/{len(requested)} symbols already "
+                f"covering {self.config.start_date}..{self.config.end_date}; "
+                f"{len(pending)} remaining."
+            )
+        if counts["widened"]:
+            logger.info(
+                f"Re-fetching {counts['widened']} symbol(s) whose recorded "
+                f"coverage starts AFTER the requested "
+                f"{self.config.start_date} -- their history is shallower than "
+                f"this run asks for."
+            )
+        if counts["legacy"]:
+            if self._legacy_policy() == "warn":
+                logger.warning(
+                    f"{counts['legacy']} symbol(s) carry a legacy watermark "
+                    f"with NO recorded covered start. They were SKIPPED, and "
+                    f"whether they actually cover {self.config.start_date} "
+                    f"cannot be known from disk -- only you know what window "
+                    f"they were fetched over, which is why this is not "
+                    f"guessed. Stamp them once with: "
+                    f"{self.STAMP_COMMAND_HINT}  (or set "
+                    f"legacy_watermarks='refetch' to re-download them "
+                    f"instead)."
+                )
+            else:
+                logger.info(
+                    f"legacy_watermarks='refetch': re-fetching "
+                    f"{counts['legacy']} symbol(s) whose covered start is "
+                    f"unknown."
+                )
+
+    def _attempt_batch(
+        self, symbols: Sequence[str], from_watermark: bool
+    ) -> tuple[list[str], str, str | None]:
+        """Fetch one BATCH, returning `(symbols, status, message_or_None)`.
+
+        `status` is one of:
+
+        - `"ok"` -- fetched, and one watermark written per symbol.
+        - `"failed"` -- a per-batch problem (a delisted ticker's 404, say).
+          Every symbol in the batch lands in the manifest, none gets a
+          watermark, and all are retried next run. Unchanged from before
+          quota handling existed.
+        - `"quota"` -- the account's allocation is gone. Trips the global
+          abort and is EXCLUDED from the manifest: recording a global
+          condition as one ticker's fault would defame a perfectly good
+          symbol and make the manifest lie about what the last run did.
+        - `"skipped"` -- never attempted, because the abort was already set.
+          No watermark, not a failure, counted for the report only.
+
+        Never raises: a propagated exception would tear down the whole
+        `Parallel` fan-out and abort every other batch, which is precisely
+        the failure mode this orchestration exists to prevent. The watermark
+        is written only after a successful fetch, so a failed batch is
+        retried by the next run instead of being silently marked complete.
+        """
+        # FIRST statement, and that is the whole point. joblib cannot cancel
+        # work it has already queued, so this check -- not the input generator
+        # -- is what actually stops the ~260 sym/s burn observed in the field.
+        # Every remaining batch becomes a no-op returning in microseconds,
+        # having issued zero vendor requests.
+        if self._abort.is_set():
+            return list(symbols), "skipped", None
+
+        symbols = list(symbols)
+        coverages = {
+            symbol: (self._read_coverage(symbol) or {}) for symbol in symbols
+        }
+
+        # The start to REQUEST. A full backfill asks for `config.start_date`;
+        # a refresh asks from the batch's recorded watermark forward.
+        # `_refresh_batches` groups by identical `last_date`, so the batch has
+        # a single well-defined start -- `min` is the defensive reading of
+        # that invariant, because over-fetching a shared window is harmless
+        # (deterministic shard names make it an overwrite) while
+        # under-fetching would silently lose rows.
+        start_date = self.config.start_date
+        if from_watermark:
+            start_date = min(
+                (
+                    coverages[symbol].get("last_date") or self.config.start_date
+                    for symbol in symbols
+                ),
+                default=self.config.start_date,
+            )
+
+        try:
             self._fetch_batch(
-                [symbol], start_date=start, end_date=self.config.end_date
+                symbols, start_date=start_date, end_date=self.config.end_date
+            )
+        except Exception as exc:  # noqa: BLE001 -- isolation is the point
+            message = self._scrub(f"{type(exc).__name__}: {exc}")
+            if self._is_quota_error(exc):
+                self._abort.set()
+                return symbols, "quota", message
+            return symbols, "failed", message
+
+        for symbol in symbols:
+            # The covered start to RECORD, per symbol. A full backfill
+            # overwrites the shards wholesale, so the requested start is a
+            # true statement about them; a refresh only extends forward, so it
+            # carries each symbol's EXISTING start through -- and if that was
+            # unknown it stays unknown (D-04).
+            covered_start = (
+                coverages[symbol].get("start_date")
+                if from_watermark
+                else self.config.start_date
             )
             self._write_watermark(
-                symbol,
-                self.config.end_date,
-                start_date=coverage.get("start_date"),
+                symbol, self.config.end_date, start_date=covered_start
             )
-        return self
+        return symbols, "ok", None
+
+    def _write_failure_manifest(self, failures: dict[str, str]) -> None:
+        """Persist `{symbol: message}` for this run, overwriting the previous
+        manifest.
+
+        Overwriting is correct rather than lossy: a failed symbol never got a
+        watermark, so the next run puts it back in `pending` and it reappears
+        here if it fails again. The manifest therefore always describes the
+        LATEST run, and an empty one is a meaningful statement that the last
+        run was clean (T-0iy-07).
+        """
+        path = Path(self.config.watermark_path) / self.FAILURE_MANIFEST_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(failures, f, indent=2, sort_keys=True)
+
+        if failures:
+            sample = sorted(failures)[: self._FAILURE_LOG_SAMPLE]
+            logger.warning(
+                f"{len(failures)} symbol(s) failed and were skipped; first "
+                f"{len(sample)}: {sample}. Full manifest: {path}. They have "
+                f"no watermark, so the next run retries them."
+            )
 
     @abstractmethod
     def _fetch_page(
