@@ -153,6 +153,17 @@ Plans:
 - [x] 03.1-03-PLAN.md — `IndexConstituentDataset` + `SP500ConstituentDataset`: interval-to-daily-panel densification with all six correctness locks (wave 2)
 - [x] 03.1-04-PLAN.md — `Nasdaq100ConstituentDataset`, registry-driven `UniverseCatalog` coverage guards, README (wave 3)
 
+### Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca) (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.2 to break down)
+
 ### Phase 4: Baseline Return Prediction Model
 
 **Goal**: Users can train a simple baseline model that consumes factor data directly as xarray and produces return/rank predictions.

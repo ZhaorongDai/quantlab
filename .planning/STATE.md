@@ -5,12 +5,12 @@ current_phase: 03.1
 current_phase_name: Index Historical Constituents Data Layer (INSERTED)
 status: verifying
 stopped_at: Completed quick task 260906-eme (user must re-run refresh_us_equity_universe.py and rebuild the Zarr stores); quick task 260906-26o Task 3 checkpoint STILL OPEN (stamp legacy Tiingo watermarks)
-last_updated: "2026-09-06T14:52:26.707Z"
+last_updated: "2026-09-06T15:21:32.019Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03.1 execution started
-state_head: 3604ff1862bac8b9fcf714bf25efb50d805dfdbd
+state_head: fe8779fc2b19bf784720ede6afd35336e6443432
 progress:
-  total_phases: 8
+  total_phases: 9
   completed_phases: 0
   total_plans: 24
   completed_plans: 22
@@ -128,6 +128,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 03.1 inserted after Phase 3: Index Historical Constituents Data Layer — daily point-in-time S&P 500 / Nasdaq-100 membership panels as xarray (URGENT)
+- Phase 03.2 inserted after Phase 3: Multi-source acquisition abstraction: batched multi-symbol fetching + pagination in the Acquisition base, plus Alpaca source classes (daily bars, minute bars, corporate actions, high-frequency quotes/trades with a volume guard) (URGENT)
 
 ## Deferred Items
 
