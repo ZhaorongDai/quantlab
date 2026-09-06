@@ -1317,3 +1317,185 @@ def test_a_field_map_that_stops_matching_the_envelope_raises_not_nulls(
     assert frame.height == 1
     assert frame.schema["conditions"] == pl.List(pl.String)
     assert frame["conditions"].to_list() == [None]
+
+
+# ---------------------------------------------------------------------------
+# 03.2-06 Task 3 -- the vendor contract, written where a maintainer meets it
+# and locked by test rather than by prose alone.
+#
+# D-12 asks for the tier limitation "documented on the class itself, not just
+# in research". A docstring nothing checks rots into a comment that contradicts
+# the code, so each of the three claims below has a mechanical guard.
+# ---------------------------------------------------------------------------
+
+
+def test_the_class_docstring_carries_the_tier_numbers_and_the_open_question():
+    """D-12, checked mechanically rather than by reading.
+
+    The concrete numbers are what make the tier a decision rather than a
+    recommendation, and the SIP question must read as UNRESOLVED -- naming
+    both readings and asserting neither.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    # Whitespace-normalised: the docstring is line-wrapped, and a phrase
+    # straddling a wrap is still present in the prose a reader sees.
+    doc = " ".join((AlpacaAcquisition.__doc__ or "").split())
+    for fact in ("200", "10,000", "2016", "15 minutes", "2.5%", "feed", "corporate"):
+        assert fact.lower() in doc.lower(), f"missing from the class docstring: {fact}"
+
+    assert "UNRESOLVED" in doc, "the SIP question must read as open"
+    assert "IEX only" in doc and "older than 15 minutes" in doc, (
+        "both readings must be named; the docstring may not assert either"
+    )
+    assert "vote count, not evidence" in doc, (
+        "the three-to-one source count must not be presented as evidence"
+    )
+    assert "NO in-code default" in doc
+
+
+def test_the_class_exposes_no_corporate_actions_surface():
+    """D-07 / the no-meaningless-stub rule, as a mechanical guard.
+
+    Corporate actions are accommodated by the ABSENCE of an obstacle, which
+    requires no code. This is what stops a later "placeholder for now" method
+    or an unused `corporate_actions` endpoint constant from being added, and
+    it is cheap precisely because the correct implementation is nothing.
+    """
+    from acquisition.alpaca import AlpacaAcquisition as A
+
+    names = [name for name in dir(A) if "corporate" in name.lower()]
+    assert not names, names
+    assert not [key for key in A.ENDPOINT_MAP if "corporate" in str(key).lower()], (
+        A.ENDPOINT_MAP
+    )
+    assert not [
+        value for value in A.ENDPOINT_MAP.values() if "corporate" in str(value).lower()
+    ], A.ENDPOINT_MAP
+
+
+def test_no_request_carries_a_feed_key_when_feed_is_unset(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """D-12 / O-1: `feed` is ABSENT, not null.
+
+    The distinction is the whole point. A key present with a null value is
+    still a claim about the parameter, and some clients serialise it as an
+    empty string -- which the vendor would read as a feed name. Absence is the
+    only shape that says nothing at all, and it is asserted across every data
+    type because a per-endpoint branch could reintroduce a default in one.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    for frequency, data_type, page in (
+        ("1d", None, None),
+        ("1m", None, None),
+        ("tick", "quotes", _tick_page("quotes", {"AAPL": ["2024-01-02T14:31:00Z"]})),
+        ("tick", "trades", _tick_page("trades", {"AAPL": ["2024-01-02T14:31:00Z"]})),
+    ):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            page
+            or alpaca_bars_page(
+                {"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None
+            )
+        ]
+        if data_type is None:
+            cfg = acquisition_config(
+                vendor="alpaca", symbols=("AAPL",), frequency=frequency
+            )
+        else:
+            cfg = _tick_config(acquisition_config, data_type=data_type)
+        AlpacaAcquisition(cfg).download()
+
+        (call,) = mock_alpaca_client.calls
+        assert "feed" not in call, (
+            f"{frequency}/{data_type}: an unset feed must be OMITTED, not sent "
+            f"as {call.get('feed')!r}"
+        )
+
+    # And a feed that IS set is forwarded verbatim -- the omission is about
+    # having no default, not about refusing to send one.
+    mock_alpaca_client.calls = []
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None)
+    ]
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        frequency="1d",
+        # Its own subdir: the loop above already backfilled `1d` under the
+        # default one, and a resume would skip this run and record no call.
+        subdir="feed_set",
+        kwargs={"feed": "iex"},
+    )
+    AlpacaAcquisition(cfg).download()
+    (call,) = mock_alpaca_client.calls
+    assert call["feed"] == "iex"
+
+
+def test_every_request_carries_asof_explicitly_including_when_it_is_none(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """RESEARCH Pitfall 5, on every data type.
+
+    Alpaca defaults `asof` to the CURRENT DAY, which maps each symbol onto
+    whatever entity holds that ticker now -- so a delisted ticker silently
+    returns the current occupant's history. That is precisely the survivorship
+    bias the point-in-time roster exists to remove, and it would arrive
+    looking like clean data.
+
+    The key must therefore be PRESENT on every request, including when its
+    value is `None`, so the vendor's default can never apply.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    for frequency, data_type, page in (
+        ("1d", None, None),
+        ("1m", None, None),
+        ("tick", "quotes", _tick_page("quotes", {"AAPL": ["2024-01-02T14:31:00Z"]})),
+        ("tick", "trades", _tick_page("trades", {"AAPL": ["2024-01-02T14:31:00Z"]})),
+    ):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            page
+            or alpaca_bars_page(
+                {"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None
+            )
+        ]
+        if data_type is None:
+            cfg = acquisition_config(
+                vendor="alpaca", symbols=("AAPL",), frequency=frequency
+            )
+        else:
+            cfg = _tick_config(acquisition_config, data_type=data_type)
+        AlpacaAcquisition(cfg).download()
+
+        (call,) = mock_alpaca_client.calls
+        assert "asof" in call, f"{frequency}/{data_type}: asof must be explicit"
+        assert call["asof"] is None
+        assert call["sort"] == "asc"
+
+
+def test_an_out_of_set_feed_or_adjustment_raises_before_any_request(
+    mock_alpaca_client, acquisition_config
+):
+    """ASVS V5. An unrecognised knob value is refused, not forwarded.
+
+    The vendor rejects some out-of-set values and silently ignores others, and
+    "silently ignored" is the dangerous half: a run asking for split-adjusted
+    bars would store raw ones and nothing would say so.
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    for knob, value in (("feed", "sipp"), ("adjustment", "adjusted")):
+        mock_alpaca_client.calls = []
+        cfg = acquisition_config(
+            vendor="alpaca", symbols=("AAPL",), frequency="1d", kwargs={knob: value}
+        )
+        with pytest.raises(ValueError) as excinfo:
+            AlpacaAcquisition(cfg)
+        assert value in str(excinfo.value)
+        assert mock_alpaca_client.calls == []

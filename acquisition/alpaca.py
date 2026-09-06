@@ -104,16 +104,93 @@ class AlpacaAcquisition(Acquisition):
     hands back `(rows, next_page_token)`, and the base's `_fetch_batch` owns the
     page loop, the shard writes and the ledger.
 
-    **Subscription tier is UNRESOLVED (D-12).** The feed level is a
-    `config.kwargs["feed"]` parameter with NO in-code default, and this
-    docstring deliberately makes no claim about whether the free (Basic) tier
-    reaches historical SIP data. When `feed` is unset the parameter is OMITTED
-    from the request entirely and the vendor picks the best feed the account's
-    subscription allows -- which is the only honest behaviour until the tier
-    question is settled empirically against a real credential (03.2-07).
+    Data types
+    ----------
+    Three, selected by ONE token (see `_data_type`): daily and minute `bars`
+    from `frequency`, and `quotes` or `trades` from `kwargs["data_type"]` under
+    `frequency="tick"`. Tick rows are written at FULL resolution -- there is no
+    resampling, bucketing or dedup anywhere between `_fetch_page` and the shard
+    (D-16).
 
-    **Credentials never touch this object's config.** See
-    `_AlpacaMarketDataClient`.
+    Subscription tier -- the numbers
+    -------------------------------
+    Quoted from the vendor's equities plan comparison
+    (docs.alpaca.markets/us/docs/about-market-data-api), read against THIS
+    phase's use case, which is a historical backfill whose `end` is by
+    definition days or years in the past:
+
+    - **Historical data timeframe: since 2016 on BOTH tiers.** No difference.
+      (It happens to equal `ingest_us_equity.py`'s existing default start date.)
+    - **Available fields: identical on both tiers.** No difference.
+    - **Recency floor: the latest 15 minutes are unavailable on the free
+      (Basic) tier, unrestricted on Algo Trader Plus.** Never binds a backfill,
+      because a backfill's `end` is never inside the last 15 minutes.
+    - **Historical API rate limit: 200/min free versus 10,000/min paid.** A 50x
+      factor, and the ONLY difference that matters here. It is the dominant
+      cost driver: at 200/min a full-market DAILY backfill is ~8 minutes and a
+      full-market MINUTE backfill is ~50 hours and ~358 GB.
+
+    So the tier question is not "can I get the data" but "how much data am I
+    asking for" -- which is exactly the question the pre-flight volume guard
+    (D-09, `acquisition/universe.py`) forces the user to answer before a run
+    starts.
+
+    Subscription tier -- the SIP question is UNRESOLVED
+    --------------------------------------------------
+    Whether the free (Basic) tier can request historical SIP data at all is
+    **not settled**, and this class takes no position on it. Two vendor pages
+    disagree:
+
+    - *Reading 1 -- yes, if older than 15 minutes.* "For historical queries,
+      the `end` parameter must be at least 15 minutes old to query SIP data
+      without a subscription" (market-data-faq), which frames the restriction
+      as recency-only. The plan table's "Historical data limitation: latest 15
+      minutes" and the bars reference's `end` default both read the same way.
+    - *Reading 2 -- no, IEX only.* The `iex` row of the data-sources table
+      states flatly "This is the only feed that can be used without a
+      subscription" (historical-stock-data-1).
+
+    Three sources support reading 1 and one contradicts it. **That is a vote
+    count, not evidence**, and it is not presented here as one. The difference
+    is material: if reading 2 holds, free-tier quotes and trades are IEX-only
+    -- roughly 2.5% of consolidated volume -- which would make free-tier tick
+    data unusable for research.
+
+    Consequently `feed` is a `config.kwargs` parameter with **NO in-code
+    default**, in either direction. When it is unset the parameter is OMITTED
+    from the request entirely and the vendor picks the best feed the account's
+    subscription allows; sending an unset feed as any concrete value would be a
+    claim this project has not earned. The resolution path is a single
+    one-request probe against a real credential, planned in 03.2-07 -- not more
+    documentation reading, which is what produced the conflict.
+
+    Corporate actions
+    -----------------
+    The abstraction does not preclude them, and that accommodation required no
+    code: **there is no corporate-actions method, no unreachable branch and no
+    unused constant here**, and a test asserts the class exposes no such
+    surface. D-07 scopes corporate actions out of this phase, and the codebase
+    has twice refused the "add a placeholder now" fork.
+
+    When it IS implemented, it must never be described as a replacement for
+    the Tiingo `supported_tickers.csv` delisting signal: Alpaca's Corporate
+    Actions API explicitly EXCLUDES delistings and reorganizations
+    (02-08-RESEARCH.md:11). The two answer different questions, and conflating
+    them would silently reintroduce the survivorship bias the point-in-time
+    roster exists to remove.
+
+    Credentials
+    -----------
+    Market-data endpoints ONLY. No trading API, no broker API, and no
+    paper/live switch -- the market-data API does not distinguish the two, so a
+    switch here would be a knob with no effect pretending to be a safety
+    control (D-15).
+
+    `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` are read from `os.environ` in
+    `_AlpacaMarketDataClient.__init__` and are never assigned to a config
+    dataclass: `AcquisitionConfig.to_dict()` is `asdict(self)` and lands in
+    persisted configs and in the JSON saved beside model checkpoints, and this
+    repo has already leaked one real vendor key exactly that way.
     """
 
     VENDOR = "alpaca"
