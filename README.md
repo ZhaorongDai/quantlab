@@ -89,16 +89,90 @@ Because `Dataset.get_lazyframe()` performs no per-market column normalization (u
 factor is written against one market's raw column names — `factor/momentum.py` targets the
 crypto-spot store's Title-Case `Close`.
 
+## Index Constituent Panels
+
+Point-in-time index membership, as pipeline data. A panel is an `xarray.Dataset` with dims
+`timestamp` x `symbol` and exactly one `bool` variable, `is_member`, persisted to Zarr under
+`data/us_equity/1d/` -- **one store per index**, never a shared one.
+
+| Index | Class | Config factory | Store | Coverage starts |
+|-------|-------|----------------|-------|-----------------|
+| S&P 500 | `dataset/constituent.py:SP500ConstituentDataset` | `sp500_constituent_config()` | `sp500_constituent.zarr` | `1976-07-01` |
+| Nasdaq-100 (NDX) | `dataset/constituent.py:Nasdaq100ConstituentDataset` | `nasdaq100_constituent_config()` | `nasdaq100_constituent.zarr` | `2007-02-01` |
+
+The coverage start is the earliest date the underlying change log actually covers, and it is
+enforced in both directions: a panel's left edge is clamped up to it (so the panel never
+contains an all-False region where the truth is *unknown*), and
+`UniverseCatalog.get_symbols_as_of(category, date)` **raises** for an earlier date rather than
+answering with an incomplete roster. The two indices' starts are ~31 years apart, which is why
+they get two stores: unioning them onto one timestamp axis would imply 1976 Nasdaq-100 coverage
+that does not exist. A consumer that wants both opens both and joins on the intersection of
+their timestamp axes.
+
+Two axis conventions matter to anyone consuming a panel:
+
+- **Membership intervals are CLOSED on both ends.** A symbol removed with effective date `D`
+  reads `True` on `D` and `False` on `D+1`. This matches `get_symbols_as_of()`'s
+  `start_date <= as_of_date` / `end_date >= as_of_date` comparison exactly, so the panel and
+  that query never disagree by a day at a removal.
+- **The `timestamp` axis is CALENDAR days, not trading days.** It is a contiguous daily range
+  including weekends and holidays, whose values carry the last trading day's membership
+  forward. A join against OHLCV data, which only has trading days, must reindex or `.sel()`
+  the panel onto the price panel's timestamps rather than assuming the axes align.
+
+**Survivorship bias.** The symbol axis is the ALL-TIME union of every symbol that was ever a
+member, computed before any date filtering. A delisted former member is therefore a real,
+mostly-False column rather than an absent one -- an absent column is indistinguishable from a
+symbol that was never a member, which is exactly how survivorship bias re-enters.
+
+Building and reloading a panel:
+
+```python
+from config import nasdaq100_constituent_config, sp500_constituent_config
+from dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
+
+# Build from source and persist (one Zarr store per index).
+SP500ConstituentDataset(sp500_constituent_config()).from_raw_data().save()
+Nasdaq100ConstituentDataset(nasdaq100_constituent_config()).from_raw_data().save()
+
+# Reload later, with no network access.
+panel = (
+    Nasdaq100ConstituentDataset(nasdaq100_constituent_config())
+    .read()
+    .get_xarray_dataset()
+)
+members_on_a_day = panel["is_member"].sel(timestamp="2020-06-15")
+```
+
+`from_raw_data()` performs live HTTP requests to public, unauthenticated sources (Wikipedia
+change logs plus a current-constituent anchor per index); no API key is involved. If a change-log
+fetch or parse fails, the fetcher falls back to its cached snapshot under
+`data/reference/_cache/` and does **not** overwrite that cache, so one bad parse cannot poison
+future runs. `read()` touches only the local Zarr store.
+
+**Adding a third index** costs two methods plus a fetcher and requires no change under `base/`:
+add a data-only `IndexMembershipFetcher` subclass in `acquisition/universe.py` (six class
+constants + `fetch_anchor()` + `_parse_changes_table()`), register it in
+`UniverseCatalog.MEMBERSHIP_FETCHERS` so it inherits the coverage guard, subclass
+`IndexConstituentDataset` with `_pit_coverage_start()` and `_build_intervals()`, and add a
+config factory in `config/__init__.py`.
+
 ## Project Structure
 
 - `base/` -- Abstract base classes that define the layer contracts: `DataBackend`/`ModelBackend`
-  (`backend.py`), `Dataset` (`data.py`), the shared `Factor` base and its `FactorKunQuant`
+  (`backend.py`), `BaseDataset` and its market-data specialization `MarketDataset` (`data.py`),
+  `IndexConstituentDataset` (`constituent.py`), the shared `Factor` base and its `FactorKunQuant`
   backend (`factor.py`), the `FactorPolars` backend (`factor_polars.py`), `BaseModel`
-  (`model.py`), plus the dataclass configs (`config.py`: `DatasetConfig`, `BaseFactorConfig`,
-  `FactorConfig`, `PolarsFactorConfig`, `DLConfig`, `MLConfig`).
-- `dataset/` -- Concrete `Dataset`/`DataBackend` implementations: `SpotKlineDataset` (Binance
-  spot klines), `StockDataset` (NASDAQ/Tiingo, partially implemented), `XrBackend`
-  (Zarr-backed), `PlBackend` (Parquet/Polars-backed).
+  (`model.py`), plus the dataclass configs (`config.py`: `BaseDatasetConfig`, `DatasetConfig`,
+  `ConstituentDatasetConfig`, `BaseFactorConfig`, `FactorConfig`, `PolarsFactorConfig`,
+  `DLConfig`, `MLConfig`).
+- `dataset/` -- Concrete dataset/`DataBackend` implementations. `MarketDataset` subclasses:
+  `SpotKlineDataset` (Binance spot klines), `StockDataset` (NASDAQ/Tiingo, partially
+  implemented). `BaseDataset` subclasses that are deliberately *not* `MarketDataset`s --
+  a membership panel has no bar or KunQuant representation -- `SP500ConstituentDataset` and
+  `Nasdaq100ConstituentDataset` (`constituent.py`), see
+  [Index Constituent Panels](#index-constituent-panels). Backends: `XrBackend` (Zarr-backed),
+  `PlBackend` (Parquet/Polars-backed).
 - `factor/` -- Concrete factor sets. Computed via KunQuant: `Alpha101SpotKline`,
   `Alpha101Stock`, `Alpha158SpotKline`, `Alpha158Stock`. Computed via Polars: `Momentum`
   (`momentum.py`, the worked example of the Polars backend). See
@@ -188,7 +262,8 @@ constructor:
 - `MLConfig` -- non-torch model config (persistence via `ml_model/backend.py`; no concrete
   model implementation yet).
 
-`config/__init__.py` provides factory functions (`spot_kline_config`, `alpha101_config`,
+`config/__init__.py` provides factory functions (`spot_kline_config`, `stock_kline_config`,
+`sp500_constituent_config`, `nasdaq100_constituent_config`, `alpha101_config`,
 `alpha158_config`, `spot_label_config`) that build these configs using paths derived from
 `QUANTLAB_DATA_DIR` (or the repo-root `data/` default), so a fresh clone works without manual
 path edits.
