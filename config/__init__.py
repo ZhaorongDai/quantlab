@@ -127,7 +127,7 @@ def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
 def sp500_constituent_config(
     start_date: str | None = None,
     end_date: str | None = None,
-    symbols: list | None = None,
+    symbols: list[str] | tuple[str, ...] | None = None,
     as_of: str | None = None,
     kwargs: dict = None,  # type: ignore
 ) -> ConstituentDatasetConfig:
@@ -156,7 +156,12 @@ def sp500_constituent_config(
         cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
         start_date=start_date,
         end_date=end_date,
-        symbols=symbols,  # type: ignore[arg-type]
+        # Converted here rather than passed through: `BaseDatasetConfig`
+        # declares `tuple | None`, and `IndexConstituentDataset` overrides the
+        # `_reset_symbols()` seam that used to do the normalising. Making the
+        # conversion explicit at the boundary is what removes the
+        # `# type: ignore[arg-type]` that was papering over the mismatch.
+        symbols=tuple(symbols) if symbols is not None else None,
         as_of=as_of,
         kwargs=kwargs,
     )
@@ -165,7 +170,7 @@ def sp500_constituent_config(
 def nasdaq100_constituent_config(
     start_date: str | None = None,
     end_date: str | None = None,
-    symbols: list | None = None,
+    symbols: list[str] | tuple[str, ...] | None = None,
     as_of: str | None = None,
     kwargs: dict = None,  # type: ignore
 ) -> ConstituentDatasetConfig:
@@ -195,7 +200,12 @@ def nasdaq100_constituent_config(
         cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
         start_date=start_date,
         end_date=end_date,
-        symbols=symbols,  # type: ignore[arg-type]
+        # Converted here rather than passed through: `BaseDatasetConfig`
+        # declares `tuple | None`, and `IndexConstituentDataset` overrides the
+        # `_reset_symbols()` seam that used to do the normalising. Making the
+        # conversion explicit at the boundary is what removes the
+        # `# type: ignore[arg-type]` that was papering over the mismatch.
+        symbols=tuple(symbols) if symbols is not None else None,
         as_of=as_of,
         kwargs=kwargs,
     )

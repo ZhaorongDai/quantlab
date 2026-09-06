@@ -116,7 +116,16 @@ class BaseDataset(ABC):
             self._config.end_date, "end_date"
         )
 
+        # Normalise `symbols` to the declared `tuple | None` HERE rather than
+        # inside `_reset_symbols()`. `_reset_symbols()` is an overridable seam
+        # -- `IndexConstituentDataset` correctly makes it a no-op -- so
+        # normalising there left the declared contract false for that whole
+        # branch of the hierarchy: whatever the caller passed (a list, from the
+        # constituent config factories) survived unchanged and reached
+        # `filter_by_symbol(col, symbols: tuple[str, ...])`. It worked by
+        # accident because `.sel` accepts both.
         if self._config.symbols is not None:
+            self._config.symbols = tuple(self._config.symbols)
             self._reset_symbols()
 
     def _normalize_date(self, value: str, field_name: str) -> str:
