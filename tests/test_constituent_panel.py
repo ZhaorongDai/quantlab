@@ -10,9 +10,13 @@ hand-written frame and which therefore perform no I/O at all.
 """
 
 import numpy as np
+import pandas as pd
+import polars as pl
 import xarray as xr
+from loguru import logger
 
 from base.config import ConstituentDatasetConfig
+from base.constituent import IndexConstituentDataset
 from dataset.constituent import SP500ConstituentDataset
 
 _COVERAGE_START = "1976-07-01"
@@ -27,6 +31,85 @@ def _make_config(tmp_path, **overrides) -> ConstituentDatasetConfig:
     )
     params.update(overrides)
     return ConstituentDatasetConfig(**params)  # type: ignore[arg-type]
+
+
+def _hand_built_intervals() -> pl.DataFrame:
+    """Four membership intervals chosen so every assertion in this module is
+    arithmetic a reader can check by hand.
+
+    - `OPEN1`   2000-01-03 -> open        (still a member)
+    - `CLOSED1` 2000-01-03 -> 2010-06-15  (a removal on a known date)
+    - `DELISTED1` 1980-01-02 -> 1985-03-04 (ends decades before the right edge)
+    - `LATE1`   2015-09-01 -> open        (joins after the panel's left edge)
+    """
+    return pl.DataFrame(
+        [
+            ("OPEN1", "2000-01-03", None),
+            ("CLOSED1", "2000-01-03", "2010-06-15"),
+            ("DELISTED1", "1980-01-02", "1985-03-04"),
+            ("LATE1", "2015-09-01", None),
+        ],
+        schema=["symbol", "start_date", "end_date"],
+        orient="row",
+    )
+
+
+def _closed_only_intervals() -> pl.DataFrame:
+    """The two CLOSED rows only, maximum observed date 2010-06-15.
+
+    Exists so the no-open-membership branch of the right-edge rule is testable
+    without any dependence on what today's date happens to be.
+    """
+    return pl.DataFrame(
+        [
+            ("CLOSED1", "2000-01-03", "2010-06-15"),
+            ("DELISTED1", "1980-01-02", "1985-03-04"),
+        ],
+        schema=["symbol", "start_date", "end_date"],
+        orient="row",
+    )
+
+
+class _PanelFixture(IndexConstituentDataset):
+    """Densification-only fixture: performs NO I/O of any kind.
+
+    `_build_intervals()` returns a hand-written frame instead of reaching a
+    fetcher, so these tests exercise `_densify()` in isolation from the
+    network, the cache and the Zarr store.
+    """
+
+    def _pit_coverage_start(self) -> str:
+        return _COVERAGE_START
+
+    def _build_intervals(self) -> pl.DataFrame:
+        return _hand_built_intervals()
+
+
+class _ClosedOnlyPanelFixture(_PanelFixture):
+    """Same no-I/O fixture, but with every membership closed.
+
+    Performs no network, cache or store access either -- it exists purely so
+    the `horizon = observed` branch of the right-edge rule can be asserted
+    against a fixed date rather than against `today`.
+    """
+
+    def _build_intervals(self) -> pl.DataFrame:
+        return _closed_only_intervals()
+
+
+def _panel(dataset: IndexConstituentDataset) -> xr.Dataset:
+    return dataset.from_raw_data().get_xarray_dataset()
+
+
+def _captured_warnings():
+    """Attach a temporary in-memory loguru sink.
+
+    loguru does not propagate to stdlib `logging`, so pytest's `caplog` sees
+    nothing (`tests/test_universe.py:60-73` records the same constraint).
+    """
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    return messages, sink_id
 
 
 def test_sp500_panel_round_trips_through_zarr(mock_universe_fetchers, tmp_path):
@@ -52,3 +135,216 @@ def test_sp500_panel_round_trips_through_zarr(mock_universe_fetchers, tmp_path):
     # and must still be a column, not an absent symbol.
     assert "ADDED1" in symbols
     assert "ZZZZ" in symbols
+
+
+def test_removal_effective_date_is_still_a_membership_day(tmp_path):
+    """RESEARCH Finding 6 bullet 1 -- interval half-openness.
+
+    A removal's `effective_date` IS a membership day. This matches
+    `acquisition/universe.py:UniverseCatalog.get_symbols_as_of`'s
+    `end_date >= as_of_date` comparison exactly. An off-by-one here is
+    invisible unless a fixture pins a known removal date and asserts the
+    boolean on exactly that day.
+    """
+    panel = _panel(
+        _PanelFixture(
+            _make_config(
+                tmp_path, start_date="2000-01-01", end_date="2020-12-31"
+            )
+        )
+    )
+    closed1 = panel["is_member"].sel(symbol="CLOSED1")
+
+    assert bool(closed1.sel(timestamp="2010-06-14").item()) is True
+    assert bool(closed1.sel(timestamp="2010-06-15").item()) is True
+    assert bool(closed1.sel(timestamp="2010-06-16").item()) is False
+
+
+def test_open_interval_densifies_true_to_the_right_edge(tmp_path):
+    """RESEARCH Finding 6 bullet 2 -- `end_date is None` means "still a
+    member" and must densify True through the panel's right edge rather than
+    being dropped as null. A null-dropping implementation still produces a
+    plausible-looking panel, so the right edge is asserted specifically.
+    """
+    panel = _panel(
+        _PanelFixture(
+            _make_config(
+                tmp_path, start_date="2000-01-01", end_date="2020-12-31"
+            )
+        )
+    )
+    open1 = panel["is_member"].sel(symbol="OPEN1")
+
+    assert bool(open1.isel(timestamp=-1).item()) is True
+    assert bool(open1.sel(timestamp="2012-07-04").item()) is True
+
+    after_start = open1.sel(timestamp=slice("2000-01-03", None))
+    assert bool(after_start.all().item()) is True
+
+
+def test_left_edge_is_clamped_to_the_index_coverage_start(tmp_path):
+    """RESEARCH Finding 6 bullet 4 / CONFLICT 5 -- the panel never starts
+    before the index's own `PIT_COVERAGE_START`, even though the inherited
+    default is 1900-01-01. Without the clamp the panel gains a 76-year
+    all-False region that reads as "nobody was a member" rather than
+    "unknown".
+
+    This construction leaves BOTH dates at their inherited sentinels
+    (`Date.START_DATE` and `Date.END_DATE`), and the announcement rule exempts
+    both -- the caller requested nothing on either edge -- so a correct
+    implementation is completely silent here. That is what makes the
+    unqualified "no warning at all" assertion safe.
+
+    If this test ever goes red, the fix is NEVER to delete a warning: tests
+    `..._pre_coverage_start_date_is_clamped_with_a_warning` and
+    `test_right_edge_is_clamped_to_the_observed_horizon...` are the two that
+    require the warnings to exist, and the announcement rule in 03.1-03-PLAN's
+    `<interfaces>` is the arbiter.
+    """
+    messages, sink_id = _captured_warnings()
+    try:
+        dataset = _PanelFixture(_make_config(tmp_path, start_date=None))
+        panel = _panel(dataset)
+    finally:
+        logger.remove(sink_id)
+
+    assert dataset.config.start_date == _COVERAGE_START
+    assert pd.Timestamp(
+        panel["timestamp"].values[0]
+    ) == pd.Timestamp(_COVERAGE_START)
+    assert messages == []
+
+
+def test_explicitly_requested_pre_coverage_start_date_is_clamped_with_a_warning(
+    tmp_path,
+):
+    """An EXPLICITLY requested window narrowed without a signal is the same
+    class of silent narrowing this phase exists to eliminate: a caller who
+    asks for 1950 and silently receives 1976 has been given less than they
+    requested with no way to notice.
+
+    This is the asymmetry fix that pairs with the right-edge truncation
+    warning -- one announcement rule, applied to both edges, exempting only
+    each edge's inherited sentinel.
+    """
+    messages, sink_id = _captured_warnings()
+    try:
+        dataset = _PanelFixture(
+            _make_config(tmp_path, start_date="1950-01-01")
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert dataset.config.start_date == _COVERAGE_START
+    assert any(
+        "1950-01-01" in message and _COVERAGE_START in message
+        for message in messages
+    )
+
+
+def test_delisted_symbol_is_a_real_mostly_false_column(tmp_path):
+    """RESEARCH Finding 6 bullet 5 -- the symbol axis is the ALL-TIME union.
+
+    Survivorship bias re-enters exactly here: an absent column is
+    indistinguishable from a symbol that was never a member. `DELISTED1`'s
+    membership ended in 1985, entirely before this window, so it must be
+    present as a real, fully-False column.
+    """
+    panel = _panel(
+        _PanelFixture(_make_config(tmp_path, start_date="2000-01-01"))
+    )
+
+    assert "DELISTED1" in panel["symbol"].values.tolist()
+    delisted = panel["is_member"].sel(symbol="DELISTED1")
+    assert bool(delisted.any().item()) is False
+
+
+def test_right_edge_reaches_today_when_a_membership_is_still_open(tmp_path):
+    """An open membership is by definition CURRENT, so the last observed
+    change event is only a lower bound on the right edge. Stopping there would
+    end the panel weeks or months short of the present -- precisely the live
+    edge where a universe mask gets used.
+
+    `end_date` is left at the inherited `Date.END_DATE` sentinel here, so the
+    announcement rule exempts it and no truncation warning may be emitted.
+    This assertion is what locks that exemption: re-introducing an
+    unconditional truncation warning fails here rather than passing unnoticed.
+    """
+    today = pd.Timestamp.today().normalize()
+
+    messages, sink_id = _captured_warnings()
+    try:
+        panel = _panel(
+            _PanelFixture(
+                _make_config(tmp_path, start_date="2000-01-01", end_date=None)
+            )
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert pd.Timestamp(panel["timestamp"].values[-1]) == today
+    assert bool(
+        panel["is_member"].sel(symbol="OPEN1").isel(timestamp=-1).item()
+    ) is True
+    assert messages == []
+
+
+def test_right_edge_is_clamped_to_the_observed_horizon_when_every_membership_is_closed(
+    tmp_path,
+):
+    """With NO open membership there is no basis for extending to today, so
+    the maximum observed date is the honest right edge -- extending past it
+    would fabricate membership the source never reported.
+
+    This is also the ONE test that forces the right-edge truncation warning to
+    exist at all: every other construction in this module leaves `end_date` at
+    its exempt `Date.END_DATE` sentinel. The `end_date="2030-01-01"` here is
+    deliberately explicit for that reason.
+
+    The warning is captured with a temporary in-memory loguru sink rather than
+    `caplog` -- loguru does not propagate to stdlib logging
+    (`tests/test_universe.py:60-73`).
+    """
+    messages, sink_id = _captured_warnings()
+    try:
+        panel = _panel(
+            _ClosedOnlyPanelFixture(
+                _make_config(tmp_path, end_date="2030-01-01")
+            )
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert pd.Timestamp(
+        panel["timestamp"].values[-1]
+    ) == pd.Timestamp("2010-06-15")
+    assert any(
+        "2030-01-01" in message and "2010-06-15" in message
+        for message in messages
+    )
+
+
+def test_calendar_day_axis_is_contiguous_and_sorted(tmp_path):
+    """RESEARCH Finding 6 bullet 3 -- the axis is CALENDAR days, not trading
+    days: contiguous, strictly increasing, weekends included.
+
+    The downstream consequence a consumer must know: a join against OHLCV
+    data, which only carries trading days, must reindex or `.sel()` this panel
+    onto the price panel's timestamps. The weekend rows carry the last trading
+    day's membership forward.
+    """
+    panel = _panel(
+        _PanelFixture(
+            _make_config(
+                tmp_path, start_date="2000-01-01", end_date="2000-01-31"
+            )
+        )
+    )
+    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
+
+    deltas = np.diff(timestamps.values)
+    assert np.all(deltas == np.timedelta64(1, "D"))
+    assert timestamps.is_monotonic_increasing
+    # 2000-01-08 was a Saturday.
+    assert pd.Timestamp("2000-01-08") in timestamps
+    assert pd.Timestamp("2000-01-08").dayofweek == 5
