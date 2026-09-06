@@ -159,7 +159,7 @@ Plans:
 **Requirements**: TBD (no existing REQ-ID covers vendor-level source extensibility; closest sibling is DATA-03's market/frequency extensibility)
 **Depends on:** Phase 3
 **Canonical refs:** `.planning/phases/03.2-multi-source-data-acquisition-abstraction-alpaca/03.2-CONTEXT.md`
-**Plans:** 7 plans
+**Plans:** 1/7 plans executed
 
 **Success Criteria** (what must be TRUE):
 
@@ -176,7 +176,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 03.2-01-PLAN.md — Wave-0 validation scaffolding: paginating/hive/config fixtures plus the five new test files, each with a real self-test
+- [x] 03.2-01-PLAN.md — Wave-0 validation scaffolding: paginating/hive/config fixtures plus the five new test files, each with a real self-test
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

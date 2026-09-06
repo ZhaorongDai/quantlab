@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 current_phase: 03.2
-current_phase_name: multi-source-data-acquisition-abstraction-alpaca
+current_phase_name: Multi-Source Data Acquisition Abstraction (Alpaca)
 status: executing
-stopped_at: Phase 03.2 context gathered (18 decisions locked; ROADMAP goal filled in)
-last_updated: "2026-09-06T18:55:19.387Z"
-last_activity: 2026-09-05
-last_activity_desc: Phase 03.1 execution started
-state_head: 0954a74ca4acaea1ae5e3cad63c2a0df76d096b4
+stopped_at: "Completed 03.2-01-PLAN.md (Wave-0 scaffolding: 4 conftest fixtures + 5 test files, suite 226 -> 237)"
+last_updated: "2026-09-06T19:47:03.803Z"
+last_activity: 2026-09-06
+last_activity_desc: Phase 03.2 execution started
+state_head: 5029db3fc0b38cbdb7e6f1b696528d71f109d769
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 31
-  completed_plans: 22
+  completed_plans: 23
 milestone_name: milestone
 ---
 
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.1 — Index Historical Constituents Data Layer (INSERTED)
+**Current focus:** Phase 03.2 — Multi-Source Data Acquisition Abstraction (Alpaca)
 
 ## Current Position
 
-Phase: 03.2 (multi-source-data-acquisition-abstraction-alpaca) — READY TO EXECUTE
-Plan: 4 of 4
+Phase: 03.2 (Multi-Source Data Acquisition Abstraction (Alpaca)) — EXECUTING
+Plan: 2 of 7
 Status: Ready to execute
-Last activity: 2026-09-05 — Phase 03.1 execution started
+Last activity: 2026-09-06 — Phase 03.2 execution started
 
 Progress: [██████████] 100%
 
@@ -72,6 +72,7 @@ Progress: [██████████] 100%
 | Phase quick-260906-13w P01 | 18 min | 3 tasks | 10 files |
 | Phase quick-260906-26o P01 | 42 min | 2 tasks | 5 files |
 | Phase quick-260906-eme P01 | 9 min | 2 tasks | 3 files |
+| Phase 03.2 P01 | 12 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -116,6 +117,10 @@ Recent decisions affecting current work:
 - [quick-260906-eme]: _WELL_FORMED_TICKER admits digits ([A-Z0-9]) though zero live cells carry one -- the plan's literal [A-Z] would have raised on the repo's own ADDED1/TEMP1/GONE1 synthetic fixture symbols (28 refs across 4 test files). A false positive here raises, falls back to the stale cache and blocks every refresh until someone edits Wikipedia; the malformations the guard exists to catch are all still rejected.
 - [quick-260906-eme]: Wikipedia ticker cells are normalized -> logged -> validated -> raised-on, never bare-raised and never silently corrected. Only LEADING/TRAILING delimiters are stripped; an interior one raises because it means two cells were merged by a parser regression, not an editor typo.
 - [quick-260906-eme]: EXCLUDE_NON_COMMON_SECURITY_TYPES defaults to False on TiingoRosterFetcher and is opted into by USEquityUniverseFetcher alone -- that default is the entire mechanism freezing nasdaq_all's semantics (Locked Decision A4/D-02). us_all is therefore NO LONGER a strict superset of nasdaq_all, documented as intentional rather than left as an inconsistency to 'fix'.
+- [Phase 03.2]: mock_alpaca_client probes acquisition.alpaca with importlib.util.find_spec before monkeypatch.setattr, rather than relying on raising=False — monkeypatch.setattr on a dotted string IMPORTS the module; raising=False only tolerates a missing ATTRIBUTE, so the mock_tiingo_client pattern raised ImportError the moment the fixture was used. While acquisition/alpaca.py is absent there is nothing to patch AND nothing that could issue a real request, since _AlpacaMarketDataClient does not exist for any caller to construct. The guard is deliberately narrow (find_spec is not None, never except Exception) so a genuine ImportError from a broken module still surfaces instead of leaving the fixture silently unpatched.
+- [Phase 03.2]: acquisition_config expresses the vendor purely through its paths; AcquisitionConfig.vendor is deferred to 03.2-02 Task 1 — The raw root terminates at the vendor segment and the watermark root is its sibling, which is everything a Wave-0 assertion needs. Introducing the dataclass field in the same commit that uses it beats faking it here behind a guarded dict splat that would have to be unwound one plan later.
+- [Phase 03.2]: alpaca_bars_page RAISES on a project column name instead of passing it through, and test_raw_hive_layout.py ships a test asserting the BUG (the silent two-vendor merge), not only the fix — A fixture that accepted `close` would let a test be written against a shape Alpaca never emits, hiding the vendor-to-project field mapping where a swapped o/c reads as plausible data forever. Symmetrically, reproducing the measured merge offline is what keeps SC-7's basename assertion load-bearing rather than decorative -- if polars ever stops merging, that test fails and routes the reader to re-derive SC-7 rather than delete it.
+- [Phase 03.2]: Wave-0 self-test names match a phase -k selector only where the self-test honestly covers that ground (vendor_isolation, resume); abort_is_first / no_data / rate_limit / idempotent / fingerprint / prun were deliberately NOT forced onto a name — A test name that matches a selector without testing that behaviour is the same green-but-empty lie the exit-5 trap produces -- it would make a later task's -k command pass before the behaviour exists. Those six selectors match zero tests today and their exit-5 must not be read as green.
 
 ### Pending Todos
 
@@ -143,9 +148,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T16:12:03.682Z
-Stopped at: Phase 03.2 context gathered (18 decisions locked; ROADMAP goal filled in)
+Last session: 2026-09-06T19:46:44.958Z
+Stopped at: Completed 03.2-01-PLAN.md (Wave-0 scaffolding: 4 conftest fixtures + 5 test files, suite 226 -> 237)
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: .planning/phases/03.2-multi-source-data-acquisition-abstraction-alpaca/03.2-CONTEXT.md
+Resume file: None
 </content>
