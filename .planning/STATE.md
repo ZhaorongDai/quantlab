@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 03.1
 current_phase_name: Index Historical Constituents Data Layer (INSERTED)
 status: verifying
-stopped_at: Quick task 260906-26o awaiting user checkpoint (stamp legacy Tiingo watermarks)
-last_updated: "2026-09-06T06:00:06.000Z"
+stopped_at: Completed quick task 260906-eme (user must re-run refresh_us_equity_universe.py and rebuild the Zarr stores); quick task 260906-26o Task 3 checkpoint STILL OPEN (stamp legacy Tiingo watermarks)
+last_updated: "2026-09-06T14:52:26.707Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03.1 execution started
-state_head: ad30f55a77e6f348a399f1f4cdd5b681636bd675
+state_head: 3604ff1862bac8b9fcf714bf25efb50d805dfdbd
 progress:
   total_phases: 8
   completed_phases: 0
@@ -71,6 +71,7 @@ Progress: [██████████] 100%
 | Phase quick-260906-0iy P01 | 15 min | 3 tasks | 10 files |
 | Phase quick-260906-13w P01 | 18 min | 3 tasks | 10 files |
 | Phase quick-260906-26o P01 | 42 min | 2 tasks | 5 files |
+| Phase quick-260906-eme P01 | 9 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -112,6 +113,9 @@ Recent decisions affecting current work:
 - [quick-260906-26o]: QUOTA_STATUS_CODES is frozenset({429}) only; 403 is deliberately excluded because Tiingo also returns it for a plan-restricted single ticker, and treating that as global would let one restricted ticker abort a 15k-symbol run.
 - [quick-260906-26o]: The quota abort is a threading.Event checked as _attempt FIRST statement -- joblib cannot cancel already-queued work, so the input-generator check is an optimisation, not the guarantee. The result generator is drained, never abandoned.
 - [quick-260906-26o]: refresh() keeps the end-date-only coverage rule; only download() honours a widened --start-date, because refresh requests [watermark, end_date] per symbol and judging it against a widened config.start_date would re-fetch endlessly without ever closing the gap.
+- [quick-260906-eme]: _WELL_FORMED_TICKER admits digits ([A-Z0-9]) though zero live cells carry one -- the plan's literal [A-Z] would have raised on the repo's own ADDED1/TEMP1/GONE1 synthetic fixture symbols (28 refs across 4 test files). A false positive here raises, falls back to the stale cache and blocks every refresh until someone edits Wikipedia; the malformations the guard exists to catch are all still rejected.
+- [quick-260906-eme]: Wikipedia ticker cells are normalized -> logged -> validated -> raised-on, never bare-raised and never silently corrected. Only LEADING/TRAILING delimiters are stripped; an interior one raises because it means two cells were merged by a parser regression, not an editor typo.
+- [quick-260906-eme]: EXCLUDE_NON_COMMON_SECURITY_TYPES defaults to False on TiingoRosterFetcher and is opted into by USEquityUniverseFetcher alone -- that default is the entire mechanism freezing nasdaq_all's semantics (Locked Decision A4/D-02). us_all is therefore NO LONGER a strict superset of nasdaq_all, documented as intentional rather than left as an inconsistency to 'fix'.
 
 ### Pending Todos
 
@@ -138,7 +142,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T06:00:06.000Z
-Stopped at: Quick task 260906-26o Tasks 1-2 complete; Task 3 is a blocking human checkpoint (stamp legacy Tiingo watermarks)
-Resume file: .planning/quick/260906-26o-tiingo-watermark/260906-26o-SUMMARY.md
+Last session: 2026-09-06T14:52:26.680Z
+Stopped at: Completed quick task 260906-eme (user must re-run refresh_us_equity_universe.py and
+rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
+checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
+Resume file: .planning/quick/260906-eme-roster-ticker-wikipedia-ticker-us-all/260906-eme-SUMMARY.md
 </content>
