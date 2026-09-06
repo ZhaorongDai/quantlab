@@ -6,6 +6,7 @@ are patched by the `mock_universe_fetchers` fixture in `tests/conftest.py`.
 """
 
 import io
+import re
 import typing
 import zipfile
 from pathlib import Path
@@ -1412,3 +1413,209 @@ def test_a_cell_still_malformed_after_normalization_names_every_offending_cell(
     assert "logi" in message
     assert "Nasdaq-100" in message
     assert Nasdaq100MembershipFetcher.CHANGES_URL in message
+
+
+# ---------------------------------------------------------------------------
+# `us_all` preferred-share / baby-bond exclusion (260906-eme Task 2)
+#
+# Measured 2026-09-06 against Tiingo's live `supported_tickers.csv`: the
+# existing `USEquityUniverseFetcher` filter yields 16,138 rows / 15,425
+# distinct tickers, of which 940 distinct (965 rows) are preferred shares
+# (932) or baby bonds (8). Excluding them leaves 15,173 rows -- 1.90x the
+# `MIN_ROSTER_ROWS` floor of 8,000.
+#
+# Every literal below is a REAL ticker from that directory.
+# ---------------------------------------------------------------------------
+
+#: The 12 measured non-common-stock literals -- one per distinct shape the
+#: live directory actually contains, including the four malformed ones.
+_MEASURED_NON_COMMON = (
+    "AAM-P-A",
+    "ZB-P-F-CL",
+    "MTB-P",
+    "BC/PA",
+    "SCE--P-D",
+    "IMH-P--B",
+    "NYCB- PR-U",
+    "-P-HIZ",
+    "ASRV 8.45 06-30-28",
+    "SO 6.75 08-01-22",
+    "NEE 6.219",
+    "CHNG 6",
+)
+
+#: Real common stock that MUST survive. The class shares are the trap: they
+#: are common stock carrying a hyphen, and a preferred pattern loose enough
+#: to eat them would silently delete Berkshire Hathaway from the roster.
+_MEASURED_COMMON = (
+    "AAPL",
+    "MSFT",
+    "BRK-A",
+    "BRK-B",
+    "BF-A",
+    "BF-B",
+    "PBR-A",
+    "HEI-A",
+    "MOG-A",
+    "LEN-B",
+    "CWEN-A",
+    "UA-C",
+    "MKC-V",
+    "AGM-A",
+    "CRD-A",
+    "LGF-A",
+    "GEF-B",
+    "STZ-B",
+    "UHAL-B",
+    # Warrants / units / rights -- deliberately out of scope, kept.
+    "C-WS-A",
+    "GM-WS-B",
+    "MIMO-W-A",
+    "ACP-R-W",
+    "DGAC-UN",
+)
+
+
+def _roster_zip(csv_text: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("supported_tickers.csv", csv_text)
+    return buffer.getvalue()
+
+
+def _patch_roster_download(monkeypatch, payload: bytes) -> None:
+    class _ZipResponse:
+        status_code = 200
+        content = payload
+
+        def raise_for_status(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "acquisition.universe.requests.get", lambda url, *a, **k: _ZipResponse()
+    )
+
+
+def test_the_exclusion_criterion_matches_the_measured_directory():
+    """The two patterns are pinned directly, against the literals they were
+    measured on, so a future edit to either regex has to confront all 36
+    cases rather than only whatever the fixture happens to carry.
+    """
+    from acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
+
+    def excluded(ticker: str) -> bool:
+        return bool(
+            re.search(_PREFERRED_SHARE_PATTERN, ticker)
+            or re.search(_BABY_BOND_PATTERN, ticker)
+        )
+
+    assert [t for t in _MEASURED_NON_COMMON if not excluded(t)] == []
+    assert [t for t in _MEASURED_COMMON if excluded(t)] == []
+
+
+def test_us_equity_fetcher_drops_preferred_shares_and_baby_bonds(
+    mock_universe_fetchers,
+):
+    """Every distinct preferred shape in the live directory, plus both
+    baby-bond shapes, leaves `us_all`.
+    """
+    symbols = set(USEquityUniverseFetcher().fetch()["symbol"].to_list())
+
+    assert not symbols & {
+        "AAM-P-A",
+        "ZB-P-F-CL",
+        "MTB-P",
+        "BC/PA",
+        "SCE--P-D",
+        "IMH-P--B",
+        "NYCB- PR-U",
+        "-P-HIZ",
+        "ASRV 8.45 06-30-28",
+        "NEE 6.219",
+    }
+
+    # The ordinary common-stock rows are untouched by the exclusion.
+    assert {"AAPL", "MSFT", "NYSE1", "NYSE2", "AMEX1", "MKT1", "DUAL1"} <= symbols
+
+
+def test_us_equity_fetcher_keeps_class_shares_and_warrants(mock_universe_fetchers):
+    """THE trap. `BRK-A` / `BRK-B` / `BF-B` / `PBR-A` / `LEN-B` / `UA-C` are
+    common stock that merely carry a hyphen; a preferred pattern loose enough
+    to eat them would silently delete Berkshire Hathaway from the roster.
+
+    Warrants and units (`C-WS-A`, `DGAC-UN`) are a DIFFERENT statement: they
+    are deliberately out of scope (1,124 live lines), and asserting their
+    retention makes a later widening of the criterion a deliberate edit.
+    """
+    symbols = set(USEquityUniverseFetcher().fetch()["symbol"].to_list())
+
+    assert {"BRK-A", "BRK-B", "BF-B", "PBR-A", "LEN-B", "UA-C"} <= symbols
+    assert {"C-WS-A", "DGAC-UN"} <= symbols
+
+
+def test_one_payload_yields_kept_in_nasdaq_all_and_dropped_from_us_all(
+    monkeypatch, tmp_path
+):
+    """Locked Decision 1 / A4 / D-02, proved on ONE payload so the difference
+    cannot be an artefact of two different inputs.
+
+    Deliberately does NOT use `mock_universe_fetchers`: that fixture's roster
+    CSV is append-only and may carry no NASDAQ/Stock/USD row, which is exactly
+    what this test needs.
+    """
+    payload = _roster_zip(
+        "ticker,exchange,assetType,priceCurrency,startDate,endDate\n"
+        "AAPL,NASDAQ,Stock,USD,1980-12-12,\n"
+        "ONB-P-A,NASDAQ,Stock,USD,2019-01-01,\n"
+        "SBFG-P,NASDAQ,Stock,USD,2015-01-01,\n"
+    )
+    _patch_roster_download(monkeypatch, payload)
+    monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+    monkeypatch.setattr(USEquityUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+
+    nasdaq_all = set(NasdaqUniverseFetcher().fetch()["symbol"].to_list())
+    us_all = set(USEquityUniverseFetcher().fetch()["symbol"].to_list())
+
+    # `nasdaq_all`'s semantics are FROZEN: it keeps what it always kept.
+    assert nasdaq_all == {"AAPL", "ONB-P-A", "SBFG-P"}
+    assert us_all == {"AAPL"}
+
+    # The single mechanism that keeps the two apart. A shared unconditional
+    # filter would have silently changed `nasdaq_all`.
+    assert NasdaqUniverseFetcher.EXCLUDE_NON_COMMON_SECURITY_TYPES is False
+    assert USEquityUniverseFetcher.EXCLUDE_NON_COMMON_SECURITY_TYPES is True
+    assert TiingoRosterFetcher.EXCLUDE_NON_COMMON_SECURITY_TYPES is False
+    # And the frozen exchange filter it rests on.
+    assert NasdaqUniverseFetcher.EXCHANGE_FILTER == ("NASDAQ",)
+
+
+def test_min_roster_rows_is_evaluated_on_the_post_exclusion_count(
+    monkeypatch, tmp_path
+):
+    """KEY LINK: the exclusion runs BEFORE the guard, so the guard validates
+    the count that actually gets PERSISTED. Evaluated pre-exclusion it would
+    bless a roster it never saw.
+
+    Six rows in, four of them preferred. A floor of 5 is cleared by the
+    pre-exclusion count and violated by the post-exclusion one.
+    """
+    payload = _roster_zip(
+        "ticker,exchange,assetType,priceCurrency,startDate,endDate\n"
+        "AAPL,NASDAQ,Stock,USD,1980-12-12,\n"
+        "GE,NYSE,Stock,USD,1962-01-02,\n"
+        "AAM-P-A,NYSE,Stock,USD,2019-01-01,\n"
+        "MTB-P,NYSE,Stock,USD,2008-01-01,\n"
+        "BC/PA,NYSE,Stock,USD,2013-01-01,\n"
+        "NEE 6.219,NYSE,Stock,USD,2012-01-01,\n"
+    )
+    _patch_roster_download(monkeypatch, payload)
+    monkeypatch.setattr(USEquityUniverseFetcher, "MIN_ROSTER_ROWS", 5)
+
+    with pytest.raises(ValueError, match="token vocabulary has drifted"):
+        USEquityUniverseFetcher().fetch()
+
+    # The SAME payload and floor pass for the roster that does not opt in --
+    # which is what proves the guard saw the post-exclusion count and not
+    # merely a small payload.
+    monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+    assert set(NasdaqUniverseFetcher().fetch()["symbol"].to_list()) == {"AAPL"}

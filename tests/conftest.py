@@ -435,6 +435,43 @@ def mock_universe_fetchers(
         # Ended before the 2006-01-01 backfill window -- the ONE thing the
         # D-05 interval-overlap cut is allowed to drop.
         "OLD1,NYSE,Stock,USD,1980-01-01,1997-06-30\n"
+        # --- Preferred shares / baby bonds and their class-share controls
+        # (260906-eme Task 2). The SAME APPEND-ONLY rule as above applies and
+        # is the easiest thing to get wrong here: not one of these may be
+        # NASDAQ/Stock/USD, or the exact NASDAQ symbol-set assertion in
+        # `test_nasdaq_roster_exchange_filter_and_symbol_set_are_unchanged`
+        # breaks. All the literals below are REAL tickers measured in Tiingo's
+        # live `supported_tickers.csv` on 2026-09-06; only the exchange column
+        # is fixture-assigned.
+        #
+        # Dropped by `USEquityUniverseFetcher` -- every distinct preferred
+        # shape the live directory actually contains:
+        "AAM-P-A,NYSE,Stock,USD,2019-01-01,\n"  # ROOT-P-SERIES (823 distinct)
+        "ZB-P-F-CL,NYSE,Stock,USD,2017-01-01,\n"  # 4-segment (84)
+        "MTB-P,NYSE,Stock,USD,2008-01-01,\n"  # no series letter (20)
+        "BC/PA,NYSE,Stock,USD,2013-01-01,\n"  # slash notation (3)
+        "SCE--P-D,NYSE,Stock,USD,1993-01-01,\n"  # doubled delimiter (3)
+        "IMH-P--B,NYSE,Stock,USD,2004-01-01,\n"
+        "NYCB- PR-U,NYSE,Stock,USD,2018-01-01,\n"  # `PR` spelling + stray space (1)
+        "-P-HIZ,NYSE,Stock,USD,2010-01-01,\n"  # leading-hyphen malformation (1)
+        # ... and both baby-bond shapes (8 distinct live):
+        "ASRV 8.45 06-30-28,NYSE,Stock,USD,2018-01-01,\n"
+        "NEE 6.219,NYSE,Stock,USD,2012-01-01,\n"
+        # KEPT: class shares are COMMON STOCK that merely carry a hyphen.
+        # This is the precise trap the exclusion is shaped around -- a naive
+        # preferred pattern that also ate these would silently delete
+        # Berkshire Hathaway from the full-market roster.
+        "BRK-A,NYSE,Stock,USD,1980-01-01,\n"
+        "BRK-B,NYSE,Stock,USD,1996-05-09,\n"
+        "BF-B,NYSE,Stock,USD,1980-01-01,\n"
+        "PBR-A,NYSE,Stock,USD,2000-08-10,\n"
+        "LEN-B,NYSE,Stock,USD,2003-04-01,\n"
+        "UA-C,NYSE,Stock,USD,2016-04-08,\n"
+        # KEPT: warrants / units / rights are DELIBERATELY out of scope
+        # (1,124 live lines). Their retention is asserted so a later widening
+        # of the criterion has to be a deliberate edit, not a silent one.
+        "C-WS-A,NYSE,Stock,USD,2011-01-01,\n"
+        "DGAC-UN,AMEX,Stock,USD,2021-01-01,\n"
     )
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zf:
