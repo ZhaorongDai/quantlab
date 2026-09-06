@@ -777,3 +777,261 @@ def test_stamping_a_legacy_sidecar_carries_its_no_data_marker_through(
     # Re-stamping leaves both alone -- a recorded start is never overwritten.
     assert acq.stamp_watermarks("2015-01-01") == 0
     assert _sidecar_json(acq, "MARKED")["start_date"] == "2020-01-01"
+
+
+# ---------------------------------------------------------------------------
+# 03.2-05 Task 2 -- the marker is a statement about a COMPLETED BATCH.
+#
+# RESEARCH Pitfall 4 in one sentence: Alpaca sorts symbol-major, so page 0 of a
+# 100-symbol batch legitimately holds one symbol. Computing
+# `requested - seen_on_this_page` would stamp the other 99 "queried, no data",
+# advance their watermarks and skip them forever -- a silent 99% loss that
+# looks like a successful run.
+#
+# So these tests drive the real page loop through `mock_alpaca_client` rather
+# than calling `_write_watermark` directly. The property under test is an
+# ORDERING, and a test that pokes the writer proves nothing about it.
+#
+# `mock_alpaca_client`'s pre-loaded default sequence is exactly the shape the
+# pitfall needs: page 0 is AAPL only, page 1 is AAPL's tail plus MSFT's head,
+# page 2 is the rest of MSFT with `next_page_token: None`.
+# ---------------------------------------------------------------------------
+
+
+def _marked_symbols(acq) -> set[str]:
+    """Every symbol whose sidecar on disk carries the marker.
+
+    Read back from the FILES, not from any in-memory bookkeeping: the defect
+    this guards against is a marker that reaches disk, and an assertion
+    against a variable would not see it.
+    """
+    directory = Path(acq.config.watermark_path)
+    if not directory.exists():
+        return set()
+    marked = set()
+    for path in sorted(directory.glob("*.json")):
+        if path.name == acq.FAILURE_MANIFEST_NAME:
+            continue
+        coverage = acq._read_coverage(path.stem)
+        if coverage is not None and coverage["no_data"]:
+            marked.add(path.stem)
+    return marked
+
+
+def _alpaca(acquisition_config, symbols, **kwargs):
+    """A real `AlpacaAcquisition` over the mocked transport.
+
+    Alpaca is the multi-symbol, genuinely paginated vendor -- the only one for
+    which "absent from this page" and "absent from this batch" can differ at
+    all, which is what makes Pitfall 4 expressible.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    knobs = {"progress": False, "batch_size": 100}
+    knobs.update(kwargs)
+    return AlpacaAcquisition(
+        acquisition_config(vendor="alpaca", symbols=tuple(symbols), kwargs=knobs)
+    )
+
+
+def test_absence_from_page_zero_never_marks_a_symbol_no_data(
+    mock_alpaca_client, acquisition_config
+):
+    """MSFT is absent from page 0 and present on pages 1-2. It must not be
+    marked -- and no watermark may be written at all until the last page.
+
+    Both halves matter. The membership assertion catches the marker being
+    computed from the wrong SET; the ordering assertion catches it being
+    computed at the wrong TIME, which is the same defect one refactor earlier.
+    """
+    acq = _alpaca(acquisition_config, ("AAPL", "MSFT", "GOOG"))
+
+    events: list[str] = []
+    real_page = acq._fetch_page
+    real_write = acq._write_watermark
+
+    def page_spy(*args, **kwargs):
+        events.append("page")
+        return real_page(*args, **kwargs)
+
+    def write_spy(symbol, *args, **kwargs):
+        events.append(f"write:{symbol}")
+        return real_write(symbol, *args, **kwargs)
+
+    acq._fetch_page = page_spy
+    acq._write_watermark = write_spy
+
+    acq.download()
+
+    assert events.count("page") == 3, events
+    # Every watermark write happens AFTER the last page -- no interleaving,
+    # so no per-page decision could have been recorded.
+    last_page = max(i for i, event in enumerate(events) if event == "page")
+    first_write = min(i for i, event in enumerate(events) if event.startswith("write:"))
+    assert first_write > last_page, events
+
+    assert "MSFT" not in _marked_symbols(acq), (
+        "MSFT is absent from page 0 and present on pages 1-2; marking it "
+        "would be RESEARCH Pitfall 4 exactly"
+    )
+
+
+def test_a_completed_batch_marks_only_the_symbol_absent_from_every_page_no_data(
+    mock_alpaca_client, acquisition_config
+):
+    """The positive direction: GOOG appears on no page of a batch that ran to
+    completion, so it -- and only it -- is marked.
+
+    Without this, the previous test is satisfiable by never marking anything.
+    """
+    acq = _alpaca(acquisition_config, ("AAPL", "MSFT", "GOOG"))
+
+    acq.download()
+
+    assert _marked_symbols(acq) == {"GOOG"}
+    # ...and the marked symbol's watermark still advanced, which is what makes
+    # it `covered` and skippable rather than retried forever.
+    coverage = acq._read_coverage("GOOG")
+    assert coverage == {
+        "start_date": acq.config.start_date,
+        "last_date": acq.config.end_date,
+        "no_data": True,
+    }
+    for symbol in ("AAPL", "MSFT"):
+        assert acq._read_coverage(symbol)["no_data"] is False
+
+
+def test_an_interrupted_batch_writes_zero_no_data_markers(
+    mock_alpaca_client, acquisition_config
+):
+    """A batch that raised on page 1 of 3 has NO opinion about absence.
+
+    Asserted as EXACTLY zero, not "fewer than the batch size": a gate that
+    merely narrows the marker set would still permanently mis-mark whatever
+    survived it, and absence-means-unknown is the house rule (260906-26o D-04).
+    """
+    acq = _alpaca(acquisition_config, ("AAPL", "MSFT", "GOOG"))
+    mock_alpaca_client.raise_on = {1: RuntimeError("connection reset")}
+
+    acq.download()
+
+    assert _marked_symbols(acq) == set()
+    # The whole batch failed, so nothing got a watermark either -- the next
+    # run retries it rather than resuming from a half-truth.
+    for symbol in ("AAPL", "MSFT", "GOOG"):
+        assert acq._read_coverage(symbol) is None, symbol
+
+
+def test_a_quota_aborted_run_writes_zero_no_data_markers(
+    mock_alpaca_client, acquisition_config
+):
+    """Two aborts, one assertion each, because they reach the gate differently.
+
+    1. The batch that TRIPS the abort never reaches the watermark loop at all.
+    2. A batch that COMPLETES while another thread has already tripped the
+       abort reaches the loop with a full page chain -- and must still write no
+       markers. A global stop is not the moment to start recording new claims
+       about what a vendor does not have.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    class _QuotaAlpaca(AlpacaAcquisition):
+        def _classify_error(self, exc: BaseException) -> str:
+            return "quota"
+
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL", "MSFT"),
+        kwargs={"progress": False, "batch_size": 1, "max_workers": 1},
+    )
+    acq = _QuotaAlpaca(cfg)
+    mock_alpaca_client.raise_on = {0: RuntimeError("allocation exhausted")}
+
+    acq.download()
+
+    assert _marked_symbols(acq) == set()
+
+    # Scenario 2 -- the abort trips DURING the last page of a batch that then
+    # completes normally.
+    tripping = _alpaca(acquisition_config, ("AAPL", "MSFT", "GOOG"))
+    real_page = tripping._fetch_page
+
+    def trip_on_last_page(*args, **kwargs):
+        frame, token = real_page(*args, **kwargs)
+        if token is None:
+            tripping._abort.set()
+        return frame, token
+
+    tripping._fetch_page = trip_on_last_page
+    tripping._attempt_batch(["AAPL", "MSFT", "GOOG"], from_watermark=False)
+
+    assert _marked_symbols(tripping) == set(), (
+        "a batch that completed while the global abort was already set must "
+        "record no new absence claims"
+    )
+
+
+def test_the_no_data_count_does_not_scale_with_batch_size(
+    mock_alpaca_client, acquisition_config, alpaca_bars_page
+):
+    """The warning sign RESEARCH names for this defect, turned into a test.
+
+    Parameterised over two batch sizes so "independent of batch size" is
+    actually measurable: at size 1 a per-page bug marks nothing (one symbol per
+    request), and only a multi-symbol batch exposes it. A single size cannot
+    tell the two apart.
+    """
+    roster = tuple(f"SYM{i:03d}" for i in range(12))
+
+    counts = {}
+    for batch_size in (2, 12):
+        acq = _alpaca(acquisition_config, roster, batch_size=batch_size)
+        # Every symbol returns data, one symbol per page, symbol-major -- the
+        # real vendor's shape, and the shape in which a per-page marker
+        # computation marks (batch_size - 1) symbols on every page.
+        mock_alpaca_client.pages = [
+            alpaca_bars_page(
+                {symbol: ["2024-01-02T00:00:00Z"]},
+                next_page_token=None
+                if index == len(roster) - 1
+                or (index + 1) % batch_size == 0
+                else f"token-{index}",
+            )
+            for index, symbol in enumerate(roster)
+        ]
+        acq.download()
+        counts[batch_size] = len(_marked_symbols(acq))
+
+    assert counts == {2: 0, 12: 0}, (
+        f"no symbol was absent from its completed batch, so the marker count "
+        f"must be zero at every batch size; got {counts}"
+    )
+
+
+def test_a_resume_cannot_mark_a_symbol_found_before_the_interruption_no_data(
+    mock_alpaca_client, acquisition_config
+):
+    """`symbols_with_data` is read back from the LEDGER, not recomputed from
+    the final run's pages.
+
+    Run 1 sees AAPL on pages 0-1 and dies on page 2. Run 2 resumes at page 2,
+    which carries MSFT only -- so a marker computed from run 2's pages alone
+    would stamp AAPL "queried, no data" and skip it forever, even though run 1
+    had already written its rows to disk.
+    """
+    acq = _alpaca(acquisition_config, ("AAPL", "MSFT"))
+    mock_alpaca_client.raise_on = {2: RuntimeError("connection reset")}
+
+    acq.download()
+    assert acq._read_coverage("AAPL") is None  # run 1 failed outright
+
+    # Run 2: the same batch, resuming at the page that was interrupted.
+    mock_alpaca_client.raise_on = None
+    acq.download()
+
+    assert _marked_symbols(acq) == set(), (
+        "AAPL carried rows on run 1's pages; a resume that recomputed "
+        "`symbols_with_data` from its own pages alone would mark it"
+    )
+    for symbol in ("AAPL", "MSFT"):
+        assert acq._read_coverage(symbol)["last_date"] == acq.config.end_date
