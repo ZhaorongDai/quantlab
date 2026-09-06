@@ -174,14 +174,34 @@ Plans:
 **Scope fences:** raw → xarray/Zarr conversion for tick is deferred to a follow-up phase; Alpaca's trading/broker API and corporate actions are out of scope; this delivers acquisition capability, not a full-market minute/tick backfill (DATA-V2-01/02 remain v2).
 
 Plans:
+**Wave 1**
 
 - [ ] 03.2-01-PLAN.md — Wave-0 validation scaffolding: paginating/hive/config fixtures plus the five new test files, each with a real self-test
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 03.2-02-PLAN.md — TRACER: one Alpaca daily batch end to end through the batched `_fetch_page` primitive to a vendor-namespaced hive shard, then page-level resume and structural cross-vendor isolation (SC-1, SC-3, SC-5, SC-7)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 03.2-03-PLAN.md — D-02 orchestration lift: concurrency, resume, failure isolation and the global abort hoisted onto `Acquisition`; `ConcurrentTiingoAcquisition` retired; per-vendor `_classify_error` (SC-1, SC-2)
 - [ ] 03.2-04-PLAN.md — Pre-flight volume guard on `UniverseCatalog`: estimate then refuse on bytes, requests and wall clock, with an explicit override (SC-6)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 03.2-05-PLAN.md — D-04 "queried, no data" third state, additive on disk and gated on batch completion (SC-4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 03.2-06-PLAN.md — Alpaca minute bars and quotes/trades at full resolution, US/Eastern session-date hive key, tier limitation documented on the class (SC-5, SC-7)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
 - [ ] 03.2-07-PLAN.md — `utils/cli.py` shared argument groups, `ingest_alpaca.py`, the guard wired into every entry point, and the three credential-dependent verifications (SC-5, SC-6)
+
+**Cross-cutting constraints:**
+
+- All 43 tests in `tests/test_tiingo_acquisition.py` + `tests/test_tiingo_quota.py` are green at every commit (D-02 hard constraint — this plan modifies `base/acquisition.py`)
 
 ### Phase 4: Baseline Return Prediction Model
 
