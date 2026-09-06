@@ -70,3 +70,44 @@ def test_nasdaq100_constituent_config_uses_market_frequency_path_convention() ->
         nasdaq100_constituent_config().zarr_file_path
         != sp500_constituent_config().zarr_file_path
     )
+
+
+def test_stock_config_defaults_are_byte_identical_without_the_new_arguments() -> None:
+    """260906-0iy Task 3. The full-market roster needs its own raw-data
+    subdirectory and Zarr store, but every existing call site passes neither
+    argument -- so the defaults must reproduce today's paths exactly, not
+    merely "something under data/us_equity/1d/".
+    """
+    acq = stock_acquisition_config(symbols=("AAPL",))
+    ds = stock_kline_config()
+
+    assert acq.raw_data_dir_path.replace("\\", "/").endswith(
+        "downloads/us_equity/1d/nasdaq_data"
+    )
+    assert acq.watermark_path.replace("\\", "/").endswith(
+        "downloads/us_equity/1d/nasdaq_data/_watermarks"
+    )
+    assert ds.raw_data_dir_path == acq.raw_data_dir_path
+    assert ds.zarr_file_path.replace("\\", "/").endswith(
+        "data/us_equity/1d/stock.zarr"
+    )
+
+
+def test_stock_config_subdir_and_store_name_redirect_under_the_same_root() -> None:
+    """D-04: `QUANTLAB_DATA_DIR` stays the ONLY path knob. The new arguments
+    select a subdirectory/filename BENEATH the existing
+    `data/{market}/{frequency}/` convention -- they are not a second root and
+    they never hardcode a volume.
+    """
+    acq = stock_acquisition_config(symbols=("AAPL",), subdir="us_all")
+    ds = stock_kline_config(subdir="us_all", store_name="us_all.zarr")
+
+    assert acq.raw_data_dir_path.replace("\\", "/").endswith(
+        "downloads/us_equity/1d/us_all"
+    )
+    assert acq.watermark_path.replace("\\", "/").endswith(
+        "downloads/us_equity/1d/us_all/_watermarks"
+    )
+    assert ds.raw_data_dir_path == acq.raw_data_dir_path
+    assert "data/us_equity/1d/" in ds.zarr_file_path.replace("\\", "/")
+    assert ds.zarr_file_path.replace("\\", "/").endswith("us_all.zarr")

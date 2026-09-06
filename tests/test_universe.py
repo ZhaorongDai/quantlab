@@ -1070,3 +1070,66 @@ def test_us_all_has_no_coverage_boundary(mock_universe_fetchers, tmp_path):
 
     assert catalog.get_symbols_as_of("us_all", "1970-01-01") == []
     assert "AMEX1" in catalog.get_symbols_as_of("us_all", "2000-01-01")
+
+
+# ---------------------------------------------------------------------------
+# Dense-panel storage sizing + guard (260906-0iy Task 3, T-0iy-03)
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_dense_panel_reports_a_coherent_density(
+    mock_universe_fetchers, tmp_path
+):
+    """The estimate must be internally consistent: `dense_cells` is exactly
+    `symbols * trading_days`, and `density` is `observed / dense` and lands in
+    `(0, 1]` -- a density above 1 would mean more observations than grid
+    cells, which is the arithmetic bug this pins.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    est = catalog.estimate_dense_panel("us_all", "2006-01-01", "2026-09-06")
+
+    assert est["symbols"] == len(
+        catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
+    )
+    assert est["trading_days"] > 0
+    assert est["dense_cells"] == est["symbols"] * est["trading_days"]
+    assert 0 < est["observed_cells"] <= est["dense_cells"]
+    assert est["density"] == est["observed_cells"] / est["dense_cells"]
+    assert 0 < est["density"] <= 1
+
+    # 12 == len(enums.data.TiingoColumns.EOD), float64 by default.
+    assert est["dense_bytes"] == est["dense_cells"] * 12 * 8
+    assert est["observed_bytes"] == est["observed_cells"] * 12 * 8
+
+
+def test_assert_dense_panel_fits_raises_with_the_numbers(
+    mock_universe_fetchers, tmp_path, monkeypatch
+):
+    """T-0iy-03. Disk is not the binding constraint -- RAM is.
+    `StockDataset._raw_data_to_xr()` holds the row frame, the dense array and
+    conversion scratch simultaneously, so the full-market window OOMs a 16 GiB
+    machine. The guard must surface that as a LEGIBLE error naming the
+    numbers, not as an OOM three hours into a backfill.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    # The real budget, asserted at its real value so it cannot drift silently.
+    assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3
+
+    monkeypatch.setattr(UniverseCatalog, "MAX_DENSE_PANEL_BYTES", 8)
+    with pytest.raises(ValueError) as excinfo:
+        catalog.assert_dense_panel_fits("us_all", "2006-01-01", "2026-09-06")
+
+    message = str(excinfo.value)
+    assert "GiB" in message  # the estimate and the budget, both sized
+    assert "symbol" in message  # the symbol count
+    assert "narrow" in message  # what the caller should do about it
+
+
+def test_assert_dense_panel_fits_returns_for_a_small_window(
+    mock_universe_fetchers, tmp_path
+):
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    assert catalog.assert_dense_panel_fits("us_all", "2024-01-01", "2024-01-31") is None
