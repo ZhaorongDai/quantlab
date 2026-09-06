@@ -91,9 +91,18 @@ class ConstituentDatasetConfig(BaseDatasetConfig):
     Forcing those four onto a membership panel would mean supplying meaningless
     values for all of them -- the "meaningless stub" anti-pattern D-03 exists to
     eliminate.
+
+    `as_of` pins the panel's right edge when a membership is still open. It
+    defaults to `None`, meaning "today", which is convenient but makes the
+    artefact NON-REPRODUCIBLE: rebuilding the same config on two days produces
+    two differently-shaped Zarr stores, and `save()` overwrites with
+    `mode="w"`. Setting it makes the single most influential parameter of the
+    output shape come from the config rather than the clock, per CLAUDE.md's
+    可复现性 constraint.
     """
 
     cache_dir: str
+    as_of: str | None = None
 
 
 @dataclass

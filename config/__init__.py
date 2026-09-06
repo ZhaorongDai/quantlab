@@ -128,6 +128,7 @@ def sp500_constituent_config(
     start_date: str | None = None,
     end_date: str | None = None,
     symbols: list | None = None,
+    as_of: str | None = None,
     kwargs: dict = None,  # type: ignore
 ) -> ConstituentDatasetConfig:
     """Config for the daily point-in-time S&P 500 membership panel (DATA-05,
@@ -156,6 +157,7 @@ def sp500_constituent_config(
         start_date=start_date,
         end_date=end_date,
         symbols=symbols,  # type: ignore[arg-type]
+        as_of=as_of,
         kwargs=kwargs,
     )
 
@@ -164,6 +166,7 @@ def nasdaq100_constituent_config(
     start_date: str | None = None,
     end_date: str | None = None,
     symbols: list | None = None,
+    as_of: str | None = None,
     kwargs: dict = None,  # type: ignore
 ) -> ConstituentDatasetConfig:
     """Config for the daily point-in-time Nasdaq-100 membership panel
@@ -193,6 +196,7 @@ def nasdaq100_constituent_config(
         start_date=start_date,
         end_date=end_date,
         symbols=symbols,  # type: ignore[arg-type]
+        as_of=as_of,
         kwargs=kwargs,
     )
 

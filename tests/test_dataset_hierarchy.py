@@ -53,9 +53,14 @@ MARKET_ONLY_CONFIG_FIELDS = {
     "frequency",
 }
 
-# The one field `ConstituentDatasetConfig` adds -- the cached source snapshot
-# directory an index-membership fetcher writes to.
-CONSTITUENT_ONLY_CONFIG_FIELDS = {"cache_dir"}
+# The two fields `ConstituentDatasetConfig` adds: `cache_dir`, the cached
+# source snapshot directory an index-membership fetcher writes to, and
+# `as_of`, which pins the panel's right edge so a rebuild is a function of the
+# config rather than of the wall clock (WR-07).
+#
+# Both are deliberately NOT on `BaseDatasetConfig`: neither means anything to
+# a market dataset, whose right edge comes from its bars.
+CONSTITUENT_ONLY_CONFIG_FIELDS = {"cache_dir", "as_of"}
 
 _PANEL_SYMBOLS = ("PANEL_A", "PANEL_B")
 _PANEL_PERIODS = 4

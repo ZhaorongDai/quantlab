@@ -400,6 +400,23 @@ def test_construction_performs_no_network_call_and_no_store_read(
     assert dataset.config.symbols == ("AAPL", "MSFT")
 
 
+def test_as_of_pins_the_right_edge_making_the_panel_reproducible(tmp_path):
+    """WR-07. With an open membership the right edge was
+    `max(observed, pd.Timestamp.today())`, so rebuilding the same config on two
+    days produced two differently-shaped Zarr stores while `save()` overwrites
+    with mode="w" -- the single most influential parameter of the output shape
+    came from the clock, not the config (CLAUDE.md 可复现性).
+
+    Pinning `as_of` makes the panel a function of the config alone.
+    """
+    pinned = _panel(_PanelFixture(_make_config(tmp_path, as_of="2020-06-15")))
+
+    assert pd.Timestamp(pinned["timestamp"].values[-1]) == pd.Timestamp("2020-06-15")
+    # And it is stable across rebuilds, which `today` by construction is not.
+    again = _panel(_PanelFixture(_make_config(tmp_path, as_of="2020-06-15")))
+    assert pinned["timestamp"].equals(again["timestamp"])
+
+
 def test_null_start_date_is_rejected_rather_than_silently_densified(tmp_path):
     """WR-13. `max(pd.Timestamp(row["start_date"]) for row in rows)` does not
     raise on a null: `pd.Timestamp(None)` is NaT and every comparison against

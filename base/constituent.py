@@ -164,8 +164,11 @@ class IndexConstituentDataset(BaseDataset):
           correct even if a caller mutates the config afterwards.
         - **Right edge**: `min(config.end_date, horizon)`. Let `observed` be
           the latest date appearing anywhere in the interval table. If ANY
-          interval is still open, `horizon = max(observed, today)`; otherwise
-          `horizon = observed`. The today-branch is load-bearing: an open
+          interval is still open, `horizon = max(observed, today)`, where
+          `today` is `config.as_of` when set and the wall clock otherwise;
+          otherwise `horizon = observed`. Pin `as_of` when the panel must be
+          reproducible -- with the clock, two rebuilds of one config produce
+          two differently-shaped stores. The today-branch is load-bearing: an open
           membership is by definition current, so the last change event is only
           a LOWER BOUND on the right edge, and a panel stopping at `observed`
           would end weeks or months short of the present — exactly the live
@@ -230,7 +233,18 @@ class IndexConstituentDataset(BaseDataset):
             observed = max(observed, max(closed_ends))
         has_open_membership = any(row["end_date"] is None for row in rows)
         if has_open_membership:
-            horizon = max(observed, pd.Timestamp.today().normalize())
+            # `config.as_of` pins this edge; `None` means "today". The default
+            # is convenient but NON-REPRODUCIBLE -- rebuilding the same config
+            # on two days yields two differently-shaped stores, and `save()`
+            # overwrites with mode="w" -- so a pinned rebuild is available for
+            # anyone who needs the artefact to be a function of the config
+            # alone (CLAUDE.md 可复现性).
+            today = (
+                pd.Timestamp(self.config.as_of)
+                if self.config.as_of is not None
+                else pd.Timestamp.today().normalize()
+            )
+            horizon = max(observed, today)
         else:
             horizon = observed
 
