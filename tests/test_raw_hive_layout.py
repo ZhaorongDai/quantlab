@@ -448,3 +448,136 @@ def test_vendor_isolation_an_unset_vendor_raises_rather_than_scanning(
     message = str(excinfo.value)
     assert "vendor" in message
     assert "D-11" in message
+
+
+# ---------------------------------------------------------------------------
+# 03.2-06 Task 1 -- the INTRADAY (`1m`) hive key prunes exactly as `month=`
+# does, and the reader's window predicate is expressed over that key.
+#
+# The `-k prun` selector reaches the test below as well as the `1d` one above.
+# ---------------------------------------------------------------------------
+
+
+def _five_session_date_rows(stock_pqt_row) -> list[dict]:
+    """One 09:31-ET (14:31-UTC) bar on each of five well-separated days.
+
+    14:31 UTC is chosen so the naive-UTC date and the US/Eastern SESSION date
+    coincide -- the tree here is built by the `hive_raw_tree` fixture, whose job
+    is to model an already-written tree, not to re-derive the writer's session
+    conversion. The session conversion itself is asserted on the WRITER, in
+    tests/test_alpaca_acquisition.py's A8 boundary pair.
+
+    Five well-separated days rather than five consecutive ones, because the
+    reader's hive predicate deliberately widens the window by one day at each
+    edge (the hive key is a session date and the window edges are naive UTC),
+    and consecutive days would let that widening mask the pruning being
+    measured.
+    """
+    return [
+        stock_pqt_row(f"2024-0{month}-15T14:31:00", "AAPL", close=float(month))
+        for month in range(1, 6)
+    ]
+
+
+def test_scan_raw_prunes_minute_directories_on_the_date_hive_key(
+    tmp_path: Path, hive_raw_tree, stock_pqt_row
+):
+    """RESEARCH Pitfall 2 again, for the `1m` tier, asserted against the PLAN.
+
+    The `1m` layout swaps `month=` for `date=` and nothing else, so the failure
+    mode is identical: a reader that filters only on `timestamp` delivers the
+    new directory tree with none of its benefit and nothing fails -- every query
+    simply keeps opening every file.
+
+    The negative control is in this same test for the same reason it is in the
+    `1d` one: without it the assertion could rot into a tautology the day
+    something else starts narrowing the plan.
+    """
+    parent = tmp_path / "downloads" / "us_equity" / "1m" / "nasdaq_data"
+    root = hive_raw_tree(
+        parent, "alpaca", _five_session_date_rows(stock_pqt_row), hive_key="date"
+    )
+
+    assert len(list(root.rglob("*.pqt"))) == 5, "five partitions, five shards"
+    assert sorted(p.name for p in root.iterdir() if p.is_dir()) == [
+        f"date=2024-0{month}-15" for month in range(1, 6)
+    ]
+
+    dataset = StockDataset(
+        _make_config(root, vendor="alpaca", frequency="1m")
+    )
+
+    whole = _scan_source_count(dataset._scan_raw().explain())
+    narrowed = _scan_source_count(
+        dataset._scan_raw("2024-04-01", "2024-05-31").explain()
+    )
+
+    assert whole == 5, f"the unnarrowed scan should open every shard, got {whole}"
+    assert narrowed < whole, (
+        f"narrowing the window must open strictly fewer files; opened "
+        f"{narrowed} of {whole}"
+    )
+    assert narrowed == 2, narrowed
+
+    # NEGATIVE CONTROL: the same window expressed ONLY as a timestamp predicate
+    # prunes nothing, on `date=` exactly as on `month=`.
+    raw = pl.scan_parquet(
+        root, hive_partitioning=True, hive_schema={"date": pl.Date}
+    )
+    timestamp_only = raw.filter(
+        pl.col("timestamp") >= pl.lit(datetime.fromisoformat("2024-04-01"))
+    )
+    assert _scan_source_count(timestamp_only.explain()) == whole, (
+        "a timestamp-only predicate is expected to prune NOTHING"
+    )
+
+
+def test_the_minute_window_predicate_keeps_the_tail_of_its_first_session(
+    tmp_path: Path, stock_pqt_row
+):
+    """The one-day widening at the low edge, and why it is not slack.
+
+    The hive key is a US/Eastern SESSION date; the window edges are naive-UTC
+    datetimes. A row at 2024-04-01T00:30Z is 2024-03-31 20:30 ET and therefore
+    lives under `date=2024-03-31`, yet its timestamp is INSIDE a window that
+    starts at 2024-04-01T00:00. A predicate comparing the session key directly
+    against `start.date()` prunes that partition away and drops the row --
+    silently, and in the shape that reads as sparse data.
+
+    The `timestamp` predicate applied alongside trims the over-included rows
+    exactly, so the widening costs at most two extra partitions and buys
+    correctness at both edges.
+
+    The tree is written directly rather than through `hive_raw_tree`, because
+    the whole point is a row whose SESSION partition differs from its UTC date
+    -- which is exactly the derivation the fixture does not do.
+    """
+    root = tmp_path / "downloads" / "us_equity" / "1m" / "nasdaq_data" / "alpaca"
+    for session_date, row in (
+        # 2024-03-31 20:30 ET, after hours, previous session.
+        ("2024-03-31", stock_pqt_row("2024-04-01T00:30:00", "AAPL", close=1.0)),
+        # 2024-04-01 09:31 ET, regular session.
+        ("2024-04-01", stock_pqt_row("2024-04-01T14:31:00", "AAPL", close=2.0)),
+    ):
+        part = root / f"date={session_date}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame([row]).with_columns(
+            pl.lit("alpaca").alias("vendor")
+        ).write_parquet(part / "part-batch0000-00000.pqt")
+
+    dataset = StockDataset(
+        _make_config(
+            root,
+            vendor="alpaca",
+            frequency="1m",
+            start_date="2024-04-01",
+            end_date="2024-04-30",
+        )
+    )
+    frame = dataset._scan_raw().collect()
+
+    assert sorted(frame["close"].to_list()) == [1.0, 2.0], (
+        "the 00:30-UTC row belongs to the 2024-03-31 session partition but its "
+        "timestamp is inside the window; a non-widened hive predicate prunes "
+        "that directory away and loses it"
+    )

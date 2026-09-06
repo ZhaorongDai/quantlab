@@ -538,3 +538,237 @@ def test_an_alpaca_500_classifies_failed_and_isolates_to_its_batch(
     assert set(manifest) == {"AAPL"}, manifest
     assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
     assert (Path(cfg.watermark_path) / "MSFT.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# 03.2-06 Task 1 -- minute bars, and the US/Eastern SESSION-date hive key.
+#
+# RESEARCH Assumption A8, decided here rather than left open: the intraday
+# `date=` partition key is derived from the US/Eastern SESSION date, not from
+# the naive-UTC date. Timestamp VALUES stay naive UTC -- unchanged, and
+# consistent with Tiingo's and with every other timestamp in this codebase --
+# and ONLY the derived key converts.
+#
+# A UTC-derived key files the last ~4 hours of every US session (20:00-24:00
+# UTC) under the FOLLOWING day. A "give me one trading day" query is then wrong
+# at BOTH edges, and it is wrong in the shape that reads as sparse data rather
+# than as a bug: the close is missing and the previous session's tail is
+# present. The boundary test and its negative control below are what make the
+# conversion un-deletable -- a plain `dt.date()` truncation turns both red.
+# ---------------------------------------------------------------------------
+
+
+def _minute_config(acquisition_config, **overrides):
+    """An `AcquisitionConfig` for the minute tier, one symbol, January 2024."""
+    kwargs = dict(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        frequency="1m",
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+    )
+    kwargs.update(overrides)
+    return acquisition_config(**kwargs)
+
+
+def _partition_dirs(raw_root: str) -> set[str]:
+    """Every hive partition directory name directly beneath the raw root."""
+    return {p.name for p in Path(raw_root).iterdir() if p.is_dir()}
+
+
+def test_a_minute_config_requests_the_vendors_minute_timeframe_token(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """`frequency="1m"` reaches the wire as the vendor's `1Min` token.
+
+    Asserted from the RECORDED request rather than from the mapping alone: a
+    `TIMEFRAME_MAP` entry that no request-building code reads is a constant, not
+    a behaviour (the Wave-3 "proved as a function is not proved to be wired"
+    finding). Both directions are pinned so a future edit cannot swap them.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None)
+    ]
+
+    AlpacaAcquisition(_minute_config(acquisition_config)).download()
+
+    (call,) = mock_alpaca_client.calls
+    assert call["path"] == "/stocks/bars", "minute bars are the SAME endpoint"
+    assert call["timeframe"] == "1Min"
+    assert AlpacaAcquisition.TIMEFRAME_MAP["1m"] == "1Min"
+    assert AlpacaAcquisition.TIMEFRAME_MAP["1d"] == "1Day"
+
+
+def test_a_minute_fetch_lands_one_date_partition_per_session_date(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """Shards land under `date=YYYY-MM-DD/`, one directory per session date,
+    with the deterministic `part-{batch_key}-{page:05d}.pqt` filename.
+
+    The filename determinism is what makes the crash window between the shard
+    write and the ledger record cost a re-fetch and an OVERWRITE rather than a
+    duplicated row (D-19 contract 4), so it is asserted here for the minute
+    tier exactly as the daily tracer asserts it for `month=`.
+    """
+    from base.pageledger import PageLedger
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        alpaca_bars_page(
+            {
+                "AAPL": [
+                    "2024-01-02T14:31:00Z",  # 09:31 ET, session 2024-01-02
+                    "2024-01-02T15:00:00Z",  # 10:00 ET, same session
+                    "2024-01-03T14:31:00Z",  # 09:31 ET, session 2024-01-03
+                ]
+            },
+            next_page_token=None,
+        )
+    ]
+
+    cfg = _minute_config(acquisition_config)
+    AlpacaAcquisition(cfg).download()
+
+    assert _partition_dirs(cfg.raw_data_dir_path) == {
+        "date=2024-01-02",
+        "date=2024-01-03",
+    }
+
+    batch_key = PageLedger.batch_key(
+        "alpaca", "1m", cfg.start_date, cfg.end_date, ("AAPL",)
+    )
+    for day in ("2024-01-02", "2024-01-03"):
+        shard = (
+            Path(cfg.raw_data_dir_path)
+            / f"date={day}"
+            / f"part-{batch_key}-00000.pqt"
+        )
+        assert shard.exists(), sorted(
+            str(p) for p in Path(cfg.raw_data_dir_path).rglob("*")
+        )
+
+
+def test_a_2030_utc_bar_lands_in_that_days_session_partition_not_the_next(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """Assumption A8's boundary case, asserted on the DIRECTORY NAME.
+
+    20:30 UTC is 15:30 ET -- inside the 2024-01-02 regular session, half an
+    hour before its close -- but it is also after 20:00 UTC, so a naive-UTC day
+    key would still file it under 2024-01-02. This case alone therefore does
+    NOT distinguish the two conversions; it pins the ordinary, in-session
+    behaviour. The distinguishing case is the negative control below, and the
+    two are only meaningful together.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T20:30:00Z"]}, next_page_token=None)
+    ]
+
+    cfg = _minute_config(acquisition_config)
+    AlpacaAcquisition(cfg).download()
+
+    assert _partition_dirs(cfg.raw_data_dir_path) == {"date=2024-01-02"}
+    assert not (Path(cfg.raw_data_dir_path) / "date=2024-01-03").exists()
+
+
+def test_an_0200_utc_bar_lands_in_the_previous_days_session_partition(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """A8's NEGATIVE CONTROL -- the case a plain date truncation gets wrong.
+
+    02:00 UTC on 2024-01-03 is 21:00 ET on 2024-01-02: extended-hours activity
+    belonging to the 2024-01-02 session. A naive `dt.date()` truncation files
+    it under `date=2024-01-03`, which is the silent misfiling A8 exists to
+    prevent. This test is the one that turns red if the session conversion is
+    ever replaced by a truncation "because the timestamps are UTC anyway".
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-03T02:00:00Z"]}, next_page_token=None)
+    ]
+
+    cfg = _minute_config(acquisition_config)
+    AlpacaAcquisition(cfg).download()
+
+    assert _partition_dirs(cfg.raw_data_dir_path) == {"date=2024-01-02"}, (
+        "02:00 UTC on 2024-01-03 is 21:00 ET on 2024-01-02 and belongs to that "
+        "session; a plain UTC date truncation would file it under 2024-01-03"
+    )
+    assert AlpacaAcquisition.SESSION_TIME_ZONE == "America/New_York"
+
+
+def test_the_minute_path_paginates_through_the_same_base_class_loop_as_daily(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """Nothing vendor-specific is patched, and nothing minute-specific is
+    forked: the base class's `_fetch_batch` drives the page loop and
+    `_write_shard` writes each page, exactly as for daily bars.
+
+    A second page whose `page_token` is the first page's token, two shards with
+    consecutive deterministic page indices, and a ledger recording both -- that
+    is the whole mechanism, and it is inherited rather than reimplemented.
+    """
+    import json
+
+    from base.pageledger import PageLedger
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    token = "opaque-minute-token"
+    mock_alpaca_client.pages = [
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=token
+        ),
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-02T14:32:00Z"]}, next_page_token=None
+        ),
+    ]
+
+    cfg = _minute_config(acquisition_config)
+    AlpacaAcquisition(cfg).download()
+
+    first, second = mock_alpaca_client.calls
+    assert "page_token" not in first
+    assert second["page_token"] == token, (
+        "the vendor's token must be replayed VERBATIM on the next request"
+    )
+
+    batch_key = PageLedger.batch_key(
+        "alpaca", "1m", cfg.start_date, cfg.end_date, ("AAPL",)
+    )
+    partition = Path(cfg.raw_data_dir_path) / "date=2024-01-02"
+    assert (partition / f"part-{batch_key}-00000.pqt").exists()
+    assert (partition / f"part-{batch_key}-00001.pqt").exists()
+
+    payload = json.loads(
+        Path(PageLedger.default_path(cfg.watermark_path, batch_key)).read_text()
+    )
+    assert [page["index"] for page in payload["pages"]] == [0, 1]
+    assert payload["complete"] is True
+
+
+def test_minute_bars_reuse_the_daily_bars_projection_with_no_second_column_set(
+    mock_alpaca_client, acquisition_config
+):
+    """Same endpoint, same envelope, therefore the same `RAW_COLUMNS`.
+
+    Introducing a second bar projection for the minute tier would make the two
+    frequencies' shards structurally different for no vendor reason, and a
+    directory scan enforces ONE schema across everything it opens
+    (RESEARCH Pitfall 6).
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    daily = AlpacaAcquisition(
+        acquisition_config(vendor="alpaca", symbols=("AAPL",), frequency="1d")
+    ).RAW_COLUMNS
+    minute = AlpacaAcquisition(_minute_config(acquisition_config)).RAW_COLUMNS
+
+    assert tuple(minute) == tuple(daily)
+    assert tuple(daily)[:3] == ("timestamp", "symbol", "vendor")
