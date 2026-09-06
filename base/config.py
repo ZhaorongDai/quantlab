@@ -4,17 +4,33 @@ from typing import TYPE_CHECKING, Literal
 from enums.data import Frequency, Market
 
 if TYPE_CHECKING:
-    from .data import Dataset
+    from .data import MarketDataset
     from .factor import Factor
 
 
-@dataclass
-class DatasetConfig:
-    raw_data_dir_path: str
+@dataclass(kw_only=True)
+class BaseDatasetConfig:
+    """Every field the shared `base/data.py:BaseDataset` contract reads (D-03).
+
+    Storage-medium-agnostic and market-agnostic: each field is here because a
+    method on the shared base actually consumes it, and for no other reason.
+
+    - `zarr_file_path` is the store `read()` opens and `save()` writes.
+    - `start_date` / `end_date` / `symbols` are the window `_filter()` slices
+      the backend down to; the config setter fills the two dates from
+      `enums.constant.Date` when the caller leaves them `None`.
+    - `kwargs` is the per-subclass escape hatch `_raw_data_to_xr()`
+      implementations read.
+    - `name` is written by the config setter itself, to the dataset's
+      `import_path`, so a saved config can be reconstructed by
+      `utils/module.py:get_cls_from_path`.
+
+    A dataset carrying nothing beyond these fields is enough to construct and
+    drive any `BaseDataset` subclass, which is what lets a non-OHLCV dataset
+    (an index-membership panel, say) reuse the whole storage lifecycle.
+    """
+
     zarr_file_path: str
-    catalog_path: str
-    market: Market
-    frequency: Frequency
     start_date: str | None = None
     end_date: str | None = None
     symbols: tuple | None = None
@@ -24,6 +40,60 @@ class DatasetConfig:
 
     def to_dict(self):
         return asdict(self)
+
+
+@dataclass(kw_only=True)
+class DatasetConfig(BaseDatasetConfig):
+    """Market-dataset configuration -- the config `MarketDataset` takes.
+
+    The four fields added here are market-dataset-specific. `raw_data_dir_path`
+    is the local raw-ingestion directory a market dataset parses its CSV/parquet
+    source out of, and `catalog_path` is the destination
+    `MarketDataset._write_catalog()` hands to nautilus's `ParquetDataCatalog`.
+    Neither has any meaning for a dataset whose source is not local raw market
+    files and which is never written to a nautilus catalog, which is exactly why
+    no method of the shared `BaseDataset` may read them. `market` and
+    `frequency` are the locked `enums/data.py` tokens that select the
+    `data/{market}/{frequency}/` layout; a dataset whose calendar axis is a
+    property of its own densification rather than a configured bar size does not
+    have them either.
+
+    The class name stays `DatasetConfig`: every existing call site and
+    `utils/module.py`'s `DatasetConfig(**config)` checkpoint reload reference it
+    by that name.
+    """
+
+    raw_data_dir_path: str
+    catalog_path: str
+    market: Market
+    frequency: Frequency
+
+
+@dataclass(kw_only=True)
+class ConstituentDatasetConfig(BaseDatasetConfig):
+    """Index-membership-panel dataset configuration (DATA-06, D-03).
+
+    Adds exactly one field: `cache_dir`, the directory an index membership
+    fetcher keeps its cached source snapshot in.
+
+    What it deliberately does NOT carry, and why:
+
+    - no `catalog_path` -- a membership panel has no bar representation and is
+      never written to a nautilus `ParquetDataCatalog`;
+    - no `raw_data_dir_path` -- its raw source is a remote fetch, whose only
+      local footprint is the snapshot under `cache_dir`; there is no directory
+      of raw market files to ingest;
+    - no `market` / `frequency` -- the panel's daily calendar axis is a
+      property of the interval-to-grid densification, not a configured bar
+      frequency, and its index scope is chosen by the concrete dataset class
+      rather than by a market token.
+
+    Forcing those four onto a membership panel would mean supplying meaningless
+    values for all of them -- the "meaningless stub" anti-pattern D-03 exists to
+    eliminate.
+    """
+
+    cache_dir: str
 
 
 @dataclass
@@ -73,7 +143,7 @@ class BaseFactorConfig:
     """
 
     window: int
-    dataset: "Dataset"
+    dataset: "MarketDataset"
     file_path: str | None = None
     factor_names: list | None = None
     start_date: str | None = None
