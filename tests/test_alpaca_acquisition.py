@@ -15,11 +15,15 @@ else catches:
   implying it does (verified by grep over the 0.44.0 sdist), so this project
   reads `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` itself and keeps them off
   every config surface and out of every log line and failure manifest.
-- **`asof` is threaded explicitly, never defaulted.** Alpaca defaults it to the
-  current day and maps each symbol to the entity holding it TODAY, so a
-  delisted ticker silently returns the current occupant's history -- exactly
-  the survivorship bias the point-in-time roster exists to remove
-  (RESEARCH Pitfall 5).
+- **`asof` is sent as a real value that survives URL encoding.** Alpaca
+  defaults it to the current day and maps each symbol to the entity holding it
+  TODAY, so a delisted ticker silently returns the current occupant's history
+  -- exactly the survivorship bias the point-in-time roster exists to remove
+  (RESEARCH Pitfall 5). It is NOT enough to put the key in the params dict:
+  `requests` drops None-valued params before the query string is built, so a
+  dict-level assertion passes while the wire carries nothing. Every claim about
+  `asof` here is therefore asserted at the PREPARED URL -- see
+  `test_asof_survives_query_string_encoding_at_the_transport`.
 
 Every test here is offline. The vendor transport is `mock_alpaca_client`, which
 patches `acquisition.alpaca._AlpacaMarketDataClient` by dotted string. No test
@@ -250,11 +254,14 @@ def test_tracer_alpaca_request_pins_sort_asc_and_threads_asof_explicitly(
     "furthest position reached" means anything. A `desc` request inverts the
     resume semantics silently.
 
-    `asof` must be threaded EXPLICITLY -- including as `None` -- and never left
-    to the vendor's default of today, which maps each symbol onto whatever
-    entity holds that ticker now and so returns the current occupant's history
-    for a delisted ticker (RESEARCH Pitfall 5). That is precisely the
-    survivorship bias the point-in-time roster exists to remove.
+    `asof` must carry the no-mapping SENTINEL and never the `None` that
+    `requests` would drop before the query string is built. The vendor's
+    default of today maps each symbol onto whatever entity holds that ticker
+    now, so a delisted ticker returns the current occupant's history (RESEARCH
+    Pitfall 5) -- precisely the survivorship bias the point-in-time roster
+    exists to remove. This test asserts the params DICT; the wire itself is
+    asserted by `test_asof_survives_query_string_encoding_at_the_transport`,
+    because a dict is not a request.
 
     `feed` is the opposite case: it is OMITTED when unset, because whether the
     free tier reaches historical SIP data is unresolved (D-12) and no in-code
@@ -274,7 +281,11 @@ def test_tracer_alpaca_request_pins_sort_asc_and_threads_asof_explicitly(
     assert call["symbols"] == "AAPL"
     assert call["timeframe"] == "1Day"
     assert call["sort"] == "asc"
-    assert "asof" in call and call["asof"] is None
+    assert call["asof"] == AlpacaAcquisition.ASOF_NO_MAPPING
+    assert call["asof"] is not None, (
+        "requests drops None-valued params before the wire, so a None asof "
+        "sends nothing and the vendor's current-day default applies"
+    )
     assert "feed" not in call
     assert call["limit"] == 10_000
     assert call["adjustment"] == "raw"
@@ -1434,7 +1445,7 @@ def test_no_request_carries_a_feed_key_when_feed_is_unset(
     assert call["feed"] == "iex"
 
 
-def test_every_request_carries_asof_explicitly_including_when_it_is_none(
+def test_every_request_carries_an_encodable_asof_on_every_data_type(
     mock_alpaca_client, alpaca_bars_page, acquisition_config
 ):
     """RESEARCH Pitfall 5, on every data type.
@@ -1445,9 +1456,13 @@ def test_every_request_carries_asof_explicitly_including_when_it_is_none(
     bias the point-in-time roster exists to remove, and it would arrive
     looking like clean data.
 
-    The key must therefore be PRESENT on every request, including when its
-    value is `None`, so the vendor's default can never apply.
+    The key must therefore be present on every request AND carry a value that
+    survives query-string encoding. A `None` does not: `requests` drops
+    None-valued params, so `"asof": None` reaches the wire as nothing and the
+    vendor's default applies anyway. Each recorded params dict is run through
+    `requests`' own encoder here for exactly that reason.
     """
+    import requests
     from acquisition.alpaca import AlpacaAcquisition
 
     for frequency, data_type, page in (
@@ -1473,8 +1488,121 @@ def test_every_request_carries_asof_explicitly_including_when_it_is_none(
 
         (call,) = mock_alpaca_client.calls
         assert "asof" in call, f"{frequency}/{data_type}: asof must be explicit"
-        assert call["asof"] is None
+        assert call["asof"] == AlpacaAcquisition.ASOF_NO_MAPPING
         assert call["sort"] == "asc"
+        # The boundary the dict cannot speak for: `requests`' own encoder.
+        params = {key: value for key, value in call.items() if key != "path"}
+        prepared = requests.Request(
+            "GET", "https://data.alpaca.markets/v2/stocks/bars", params=params
+        ).prepare()
+        assert "asof=" in prepared.url, (
+            f"{frequency}/{data_type}: asof must survive query-string "
+            f"encoding; got {prepared.url}"
+        )
+
+
+def test_asof_survives_query_string_encoding_at_the_transport(
+    monkeypatch, acquisition_config
+):
+    """CR-01. The ONE boundary at which the `asof` claim is falsifiable.
+
+    Every other `asof` assertion in this file reads the params **dict** handed
+    to a mocked `get_page`. A dict is not a request: `requests` omits any param
+    whose value is `None` when it builds the query string, so the previous
+    `"asof": None` was documented, threaded and asserted -- and never sent.
+    Alpaca then applied its current-day default and mapped every delisted
+    ticker onto its current occupant, which is the survivorship bias the
+    point-in-time roster exists to remove, arriving as clean data.
+
+    So this test does NOT patch `_AlpacaMarketDataClient`. It uses the real
+    transport and patches `requests.Session.send`, which receives the fully
+    PREPARED request -- the same bytes the vendor would see. Mutating
+    `acquisition/alpaca.py` back to `params["asof"] = None` turns this red and
+    leaves every dict-level assertion green, which is the whole point.
+    """
+    import requests
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    # Obviously fake, and set here rather than inherited: this test constructs
+    # the REAL client, which demands both variables in `__init__`.
+    monkeypatch.setenv("APCA_API_KEY_ID", "fake-key-id-not-a-credential")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "fake-secret-not-a-credential")
+
+    prepared_urls: list[str] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"bars": {}, "next_page_token": None, "currency": "USD"}
+
+    def _send(self, request, **kwargs):
+        prepared_urls.append(request.url)
+        return _Response()
+
+    monkeypatch.setattr(requests.Session, "send", _send)
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL",), frequency="1d", subdir="wire_asof"
+    )
+    AlpacaAcquisition(cfg).download()
+
+    assert prepared_urls, "the transport issued no request at all"
+    url = prepared_urls[0]
+    assert "asof=" in url, (
+        f"`asof` never reached the wire: {url}. requests drops None-valued "
+        f"params, so the survivorship-bias guard must send a real, encodable "
+        f"value (AlpacaAcquisition.ASOF_NO_MAPPING), not None."
+    )
+    assert f"asof={AlpacaAcquisition.ASOF_NO_MAPPING}" in url or "asof=-" in url
+
+
+def test_an_explicit_none_asof_is_the_only_way_to_reach_the_vendor_default(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """The escape hatch has to be TYPED, never inherited.
+
+    `kwargs={"asof": None}` is a caller deliberately asking for the vendor's
+    current-day entity mapping, and it is the only path that omits the key.
+    Distinguishing it from "unset" is why `_ASOF_UNSET` exists: `_knob` alone
+    cannot tell them apart, and collapsing the two is exactly how the harmful
+    default became the effective default.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)
+    ]
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        frequency="1d",
+        subdir="asof_explicit_none",
+        kwargs={"asof": None},
+    )
+    AlpacaAcquisition(cfg).download()
+    (call,) = mock_alpaca_client.calls
+    assert "asof" not in call
+
+    # And a concrete value is forwarded verbatim.
+    mock_alpaca_client.calls = []
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)
+    ]
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        frequency="1d",
+        subdir="asof_explicit_date",
+        kwargs={"asof": "2015-06-30"},
+    )
+    AlpacaAcquisition(cfg).download()
+    (call,) = mock_alpaca_client.calls
+    assert call["asof"] == "2015-06-30"
 
 
 def test_an_out_of_set_feed_or_adjustment_raises_before_any_request(

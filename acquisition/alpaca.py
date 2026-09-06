@@ -22,6 +22,39 @@ from base.config import AcquisitionConfig
 KEY_ENV = "APCA_API_KEY_ID"
 SECRET_ENV = "APCA_API_SECRET_KEY"
 
+#: What is sent as `asof` to mean "do NOT map this symbol onto whatever entity
+#: holds the ticker today".
+#:
+#: **A `None` value is not this, and cannot be made to be.** `requests` DROPS
+#: any param whose value is `None` before it builds the query string, so an
+#: `"asof": None` entry in the params dict reaches the wire as nothing at all
+#: and the vendor's current-day default applies -- which maps a delisted ticker
+#: onto its current occupant and reintroduces exactly the survivorship bias the
+#: point-in-time roster exists to remove. Measured:
+#:
+#:     >>> requests.Request("GET", url, params={"symbols": "AAPL",
+#:     ...     "asof": None}).prepare().url
+#:     'https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL'
+#:
+#: So a real, encodable value has to be sent, and this is it.
+#:
+#: **UNVERIFIED against a live request, and deliberately named rather than
+#: inlined so it stays that way visibly.** `"-"` is the vendor's documented
+#: no-mapping sentinel; this project has no credential with which to prove it,
+#: and the same one-request probe that settles the `feed` question (03.2-07
+#: human-check A) settles this one. The failure mode if it is wrong is a 4xx on
+#: every request -- LOUD, refused per batch, and recorded in the failure
+#: manifest -- which is the direction to be wrong in. The failure mode of the
+#: `None` it replaces was silent, plausible-looking, biased data.
+ASOF_NO_MAPPING = "-"
+
+#: Sentinel distinguishing "`asof` was never set" from "`asof` was explicitly
+#: set to `None`". `_knob` cannot tell them apart on its own, and they must
+#: mean different things: unset sends `ASOF_NO_MAPPING`, while an explicit
+#: `None` is the ONE way a caller deliberately asks for the vendor's
+#: current-day mapping and is the only path on which the key is omitted.
+_ASOF_UNSET = object()
+
 
 class _AlpacaMarketDataClient:
     """Thin, single-page Alpaca Market Data transport built on `requests`.
@@ -427,6 +460,10 @@ class AlpacaAcquisition(Acquisition):
     #: PINNED to `asc`, never read from a knob -- see `_fetch_page`.
     SORT = "asc"
 
+    #: Re-exposed from the module-level constant; see its comment for why a
+    #: `None` `asof` is not an option and why this value is still unverified.
+    ASOF_NO_MAPPING = ASOF_NO_MAPPING
+
     #: What a credential value is replaced with in any captured message.
     REDACTION = "<APCA CREDENTIAL REDACTED>"
 
@@ -612,14 +649,31 @@ class AlpacaAcquisition(Acquisition):
             # recorded position meaningless -- a resumed run would re-fetch what
             # it had and skip what it had not.
             "sort": self.SORT,
-            # Passed EXPLICITLY, including as None, and never left to the
-            # vendor's default of "today". That default maps each symbol onto
-            # whatever entity holds that ticker NOW, so a delisted ticker
-            # silently returns the current occupant's history -- exactly the
-            # survivorship bias the point-in-time roster exists to remove
-            # (03.2-RESEARCH.md Pitfall 5).
-            "asof": self._knob("asof", None),
         }
+
+        # Sent as a real, ENCODABLE value and never as `None`. `requests` drops
+        # None-valued params before the query string is built, so the previous
+        # `"asof": None` entry reached the wire as nothing and the vendor's
+        # current-day default applied -- mapping each symbol onto whatever
+        # entity holds that ticker NOW, so a delisted ticker silently returned
+        # the current occupant's history. That is exactly the survivorship bias
+        # the point-in-time roster exists to remove (03.2-RESEARCH.md
+        # Pitfall 5), and it arrived looking like clean data.
+        #
+        # `test_asof_survives_query_string_encoding_at_the_transport` asserts
+        # this at the PREPARED URL rather than on this dict: the dict is not the
+        # request, and asserting on it is what let the defect live behind two
+        # green tests.
+        asof = self._knob("asof", _ASOF_UNSET)
+        if asof is _ASOF_UNSET:
+            params["asof"] = self.ASOF_NO_MAPPING
+        elif asof is not None:
+            params["asof"] = asof
+        # An EXPLICIT `kwargs={"asof": None}` is the only path that omits the
+        # key, and it means "I want the vendor's current-day mapping". It is
+        # reachable on purpose (a caller may genuinely want today's entity map)
+        # and it is the one setting that reintroduces the bias above, so it has
+        # to be typed deliberately rather than inherited from a default.
 
         if data_type == "bars":
             # BAR-ONLY parameters. The quotes and trades endpoints have no
