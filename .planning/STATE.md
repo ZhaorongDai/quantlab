@@ -1,18 +1,18 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-current_phase: 03
-current_phase_name: Factor Computation (KunQuant + Polars)
-status: verifying
+current_phase: 03.1
+current_phase_name: Index Historical Constituents Data Layer
+status: executing
 stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-09-05T22:05:39.641Z"
+last_updated: "2026-09-06T02:43:22.160Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03 execution started
-state_head: 74431bb5378c3bdb60ba2f5ed33b27ba2276769c
+state_head: bdcbdcdd2b09abc3b17d08ea4ecce6baa8004d4f
 progress:
   total_phases: 8
   completed_phases: 0
-  total_plans: 20
+  total_plans: 24
   completed_plans: 18
 milestone_name: milestone
 ---
@@ -24,13 +24,13 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03 — Factor Computation (KunQuant + Polars)
+**Current focus:** Phase 03.1 — Index Historical Constituents Data Layer (planned, ready to execute)
 
 ## Current Position
 
-Phase: 03 (Factor Computation (KunQuant + Polars)) — EXECUTING
+Phase: 03.1 (Index Historical Constituents Data Layer) — READY TO EXECUTE
 Plan: 5 of 5
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-09-05 — Phase 03 execution started
 
 Progress: [██████████] 100%
