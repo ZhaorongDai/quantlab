@@ -19,6 +19,7 @@ break collection of the ENTIRE suite until that module lands.
 """
 
 import base64
+import importlib.util
 import io
 import zipfile
 from datetime import datetime
@@ -945,11 +946,22 @@ def mock_alpaca_client(monkeypatch, alpaca_bars_page) -> type:
         ),
     ]
 
-    monkeypatch.setattr(
-        "acquisition.alpaca._AlpacaMarketDataClient",
-        FakeAlpacaClient,
-        raising=False,
-    )
+    # `monkeypatch.setattr` with a dotted string still IMPORTS the module --
+    # `raising=False` only tolerates a missing ATTRIBUTE, not a missing module
+    # (measured: it raises `ImportError: No module named acquisition.alpaca`).
+    # So the target's existence is probed first, without importing it. While
+    # `acquisition/alpaca.py` is absent there is nothing to patch AND nothing
+    # that could issue a real request, because `_AlpacaMarketDataClient` does
+    # not exist for any caller to construct; the moment 03.2-06 lands it, the
+    # patch becomes real with no change here. Never widen this to a blanket
+    # `except Exception` -- a genuine ImportError from a broken
+    # `acquisition/alpaca.py` must surface, not be silently unpatched.
+    if importlib.util.find_spec("acquisition.alpaca") is not None:
+        monkeypatch.setattr(
+            "acquisition.alpaca._AlpacaMarketDataClient",
+            FakeAlpacaClient,
+            raising=False,
+        )
     monkeypatch.setenv("APCA_API_KEY_ID", "test-key-id-not-real")
     monkeypatch.setenv("APCA_API_SECRET_KEY", "test-secret-key-not-real")
 
