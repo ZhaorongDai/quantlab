@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -115,12 +115,44 @@ class StockDataset(MarketDataset):
             return (pl.col("month") >= pl.lit(start.strftime("%Y-%m"))) & (
                 pl.col("month") <= pl.lit(end.strftime("%Y-%m"))
             )
+        if keys == ("date",):
+            return self._session_date_window_predicate(start, end)
         raise NotImplementedError(
             f"{self.__class__.__name__}: no hive window predicate for "
-            f"frequency {self.config.frequency!r} (keys {keys}). The `1m` and "
-            f"`tick` readers land in 03.2-06; only `1d` (`month=`) is wired "
-            f"today."
+            f"frequency {self.config.frequency!r} (keys {keys}). The `tick` "
+            f"reader lands with the tick writer; `1d` (`month=`) and `1m` "
+            f"(`date=`) are wired today."
         )
+
+    #: How far the intraday hive predicate widens the window at each edge.
+    #:
+    #: The hive `date=` key is a SESSION date (see
+    #: `base/acquisition.py:Acquisition._session_date` and
+    #: `acquisition/alpaca.py:AlpacaAcquisition.SESSION_TIME_ZONE`), while the
+    #: window edges arriving here are naive-UTC datetimes. Those two disagree by
+    #: up to a day in either direction, and the reader deliberately does NOT
+    #: know the writer's session time zone -- encoding it here would put the
+    #: same fact in two places and let them drift.
+    #:
+    #: One day of slack covers every session time zone within +/-24h of UTC. It
+    #: over-includes at most two partitions, and the `timestamp` predicate
+    #: applied alongside trims them exactly, so the cost is bounded and the
+    #: alternative is not. Comparing the session key directly against
+    #: `start.date()` drops the tail of the window's first session -- a row at
+    #: 2024-04-01T00:30Z is 2024-03-31 20:30 ET, lives under `date=2024-03-31`,
+    #: and is inside a window starting 2024-04-01T00:00. That loss is silent
+    #: and reads as sparse data.
+    SESSION_DATE_SLACK = timedelta(days=1)
+
+    def _session_date_window_predicate(self, start, end) -> pl.Expr:
+        """The `date=` predicate, widened by `SESSION_DATE_SLACK` at each edge.
+
+        `date` is typed `pl.Date` by `HIVE_SCHEMA_BY_FREQUENCY`, so both sides
+        of the comparison are dates and no time zone can creep in here either.
+        """
+        return (
+            pl.col("date") >= pl.lit((start - self.SESSION_DATE_SLACK).date())
+        ) & (pl.col("date") <= pl.lit((end + self.SESSION_DATE_SLACK).date()))
 
     def _assert_single_vendor_and_drop(self, data: pl.LazyFrame) -> pl.LazyFrame:
         """Assert the scanned frame holds exactly ONE vendor, then drop the

@@ -127,9 +127,38 @@ class AlpacaAcquisition(Acquisition):
     DEFAULT_BATCH_SIZE = 100
 
     #: Project frequency token -> Alpaca `timeframe` parameter. A mapping rather
-    #: than an inline literal inside `_fetch_page`, so adding `1m` in 03.2-06 is
-    #: a one-line data change rather than an edit to request-building logic.
-    TIMEFRAME_MAP = {"1d": "1Day"}
+    #: than an inline literal inside `_fetch_page`, so adding a bar size is a
+    #: one-line data change rather than an edit to request-building logic.
+    #:
+    #: `1Min` and `1Day` are both from the vendor's documented grammar
+    #: (`[1-59]Min`, `[1-23]Hour`, `1Day`, `1Week`, `[1,2,3,4,6,12]Month`).
+    TIMEFRAME_MAP = {"1d": "1Day", "1m": "1Min"}
+
+    #: The trading session whose calendar day the intraday `date=` hive key is
+    #: derived from -- RESEARCH Assumption A8, decided at plan time and stated
+    #: here rather than only in research.
+    #:
+    #: Alpaca DAILY bars are date-stamped, but MINUTE bars carry true intraday
+    #: UTC instants. Parsing them as UTC and dropping the zone (the convention
+    #: `acquisition/tiingo.py` established and `_fetch_page` below follows)
+    #: yields naive UTC, which is self-consistent but is NOT US/Eastern market
+    #: time: a 09:30 ET bar reads as 14:30.
+    #:
+    #: That is fine for the timestamp VALUES -- they stay naive UTC, unchanged,
+    #: matching every other timestamp in this codebase -- but it is NOT fine for
+    #: a day-boundary key. The US regular session runs 14:30-21:00 UTC and
+    #: extended hours run past 01:00 UTC of the following calendar day, so a
+    #: UTC-derived `date=` key files the last ~4 hours of EVERY session under
+    #: the FOLLOWING day. A "give me one trading day" query is then wrong at
+    #: both edges, and wrong in the shape that reads as sparse data rather than
+    #: as a bug: the close missing, the previous session's tail present.
+    #:
+    #: So ONLY the derived partition key converts. Do not "simplify" this to a
+    #: plain `dt.date()` truncation on the grounds that the timestamps are UTC
+    #: anyway -- that is precisely the mistake, and
+    #: `test_an_0200_utc_bar_lands_in_the_previous_days_session_partition` is
+    #: the test that catches it.
+    SESSION_TIME_ZONE = "America/New_York"
 
     #: Data type -> endpoint path. `quotes` and `trades` land in 03.2-06.
     ENDPOINT_MAP = {"bars": "/stocks/bars"}

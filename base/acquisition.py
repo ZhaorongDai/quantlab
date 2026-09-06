@@ -310,6 +310,18 @@ class Acquisition(ABC):
     #: merge while looking like a bug fix.
     RAW_COLUMNS: tuple[str, ...]
 
+    #: The IANA time zone whose calendar day the INTRADAY `date=` hive key is
+    #: derived from -- the trading session's own day boundary (D-19 contract 7).
+    #:
+    #: `None` means "not declared", and `_session_date` RAISES on it rather
+    #: than falling back to a plain date truncation. Only intraday frequencies
+    #: read it, so a daily-only vendor never has to set it.
+    #:
+    #: Timestamp VALUES are unaffected: every raw shard keeps naive UTC, the
+    #: same convention every other timestamp in this codebase follows. ONLY the
+    #: derived partition key converts.
+    SESSION_TIME_ZONE: str | None = None
+
     # -- orchestration constants (hoisted from ConcurrentTiingoAcquisition
     #    by 03.2-03 / D-02: ONE implementation drives every vendor) ---------
 
@@ -621,31 +633,91 @@ class Acquisition(ABC):
         """
         return RAW_HIVE_KEYS[self.config.frequency]
 
-    def _hive_partition_values(self, frame: pl.DataFrame) -> pl.DataFrame:
-        """Add the hive key column(s) this frequency partitions on.
+    def _session_date(self, expr: pl.Expr) -> pl.Expr:
+        """The OVERRIDABLE seam: a naive timestamp expression -> the SESSION
+        date its intraday `date=` hive key is derived from (D-19 contract 7).
 
-        For `1d` the single key is `month`, formatted `YYYY-MM` as a STRING --
-        which is what the reader's `hive_schema` pins. ISO ordering makes a
-        plain string comparison of `month` against the window edges correct, so
-        the reader needs no date parsing and no time zone can creep in
-        (03.2-RESEARCH.md Pitfall 8: an unpinned numeric-looking hive value is
-        inferred as an integer and a string comparison against it silently
-        matches nothing).
+        This is a hook rather than a vendor `isinstance` branch on purpose. The
+        base class must keep no knowledge of any concrete vendor, and the
+        question this answers -- "in which calendar day's trading session does
+        this instant fall?" -- is a property of the vendor's timestamp
+        convention, not of the frequency.
 
-        `1m` and `tick` derivation -- including the US/Eastern SESSION-date
-        conversion for their `date=` key (D-19 contract 7) -- lands in 03.2-06
-        with the writers that consume them.
+        The default implementation converts from UTC into `SESSION_TIME_ZONE`
+        and truncates. A vendor whose timestamps are ALREADY session-local
+        overrides this method with a plain `expr.dt.date()` truncation, which
+        is then a deliberate statement rather than a silent default.
+
+        Declaring nothing RAISES. That is the whole point: a vendor whose
+        timestamps are naive UTC and which never thought about the day boundary
+        would, under a truncating default, file the last ~4 hours of every US
+        session (20:00-24:00 UTC) under the FOLLOWING day. A one-trading-day
+        query is then wrong at both edges, and it is wrong in the shape that
+        reads as sparse data rather than as a bug -- the close missing, the
+        previous session's tail present. Failing loudly at the first intraday
+        write is enormously cheaper than discovering that after a backfill.
         """
-        keys = self._hive_keys
-        if keys == ("month",):
-            return frame.with_columns(
-                pl.col("timestamp").dt.strftime("%Y-%m").alias("month")
+        if self.SESSION_TIME_ZONE is None:
+            raise NotImplementedError(
+                f"{self.class_name}: SESSION_TIME_ZONE is unset, so there is no "
+                f"way to derive the intraday `date=` hive key for frequency "
+                f"{self.config.frequency!r}. The key is a SESSION date "
+                f"(D-19 contract 7), not a UTC date: a UTC-derived key files "
+                f"the last ~4 hours of every US session under the following "
+                f"day and makes a one-trading-day query silently wrong at both "
+                f"edges. Set SESSION_TIME_ZONE to this vendor's session time "
+                f"zone, or -- if its timestamps are already session-local -- "
+                f"override _session_date() with a plain date truncation."
             )
+        return (
+            expr.dt.replace_time_zone("UTC")
+            .dt.convert_time_zone(self.SESSION_TIME_ZONE)
+            .dt.date()
+        )
+
+    def _hive_key_expr(self, key: str) -> pl.Expr:
+        """The expression that derives ONE hive key's value from a raw frame.
+
+        Keyed by the key NAME rather than by frequency, so `enums.data`'s
+        `RAW_HIVE_KEYS` stays the only place the per-frequency key TUPLES are
+        declared and this method only has to know how each individual key is
+        computed. Adding a frequency that reuses existing keys then needs no
+        change here at all.
+        """
+        if key == "month":
+            # `YYYY-MM` as a STRING, which is what the reader's `hive_schema`
+            # pins. ISO ordering makes a plain string comparison against the
+            # window edges correct, so the reader needs no date parsing and no
+            # time zone can creep in (03.2-RESEARCH.md Pitfall 8: an unpinned
+            # numeric-looking hive value is inferred as an integer and a string
+            # comparison against it silently matches nothing).
+            return pl.col("timestamp").dt.strftime("%Y-%m")
+        if key == "date":
+            # The intraday key, through the session-date seam above.
+            return self._session_date(pl.col("timestamp"))
+        if key == "symbol":
+            # Already a real column on every raw frame; the hive key restates
+            # it as a path segment. `_validate_symbols` has run before any
+            # frame reaches here, so the value cannot escape the raw root
+            # (T-03.2-03).
+            return pl.col("symbol")
         raise NotImplementedError(
-            f"{self.class_name}: hive key derivation for frequency "
-            f"{self.config.frequency!r} (keys {keys}) is not implemented yet. "
-            f"The `1m` and `tick` writers land in 03.2-06; only `1d` "
-            f"(`month=`) is wired today."
+            f"{self.class_name}: no derivation for hive key {key!r} "
+            f"(frequency {self.config.frequency!r}, keys {self._hive_keys}). "
+            f"Every key in enums.data.RAW_HIVE_KEYS must have one here, or the "
+            f"writer and the reader would disagree about the tree's shape."
+        )
+
+    def _hive_partition_values(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """Add the hive key column(s) this frequency partitions on, in the
+        order `enums.data.RAW_HIVE_KEYS` declares them.
+
+        The ORDER is load-bearing: it is the directory nesting order, and
+        `_shard_path` zips it against the `group_by` tuple, so a reordering
+        here silently relabels every path segment.
+        """
+        return frame.with_columns(
+            self._hive_key_expr(key).alias(key) for key in self._hive_keys
         )
 
     def _shard_path(
