@@ -3,17 +3,17 @@ gsd_state_version: 1.0
 milestone: v1.0
 current_phase: 03.1
 current_phase_name: Index Historical Constituents Data Layer (INSERTED)
-status: executing
-stopped_at: Completed 03.1-03-PLAN.md
-last_updated: "2026-09-06T03:18:01.656Z"
+status: verifying
+stopped_at: Completed 03.1-04-PLAN.md
+last_updated: "2026-09-06T03:27:44.840Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03.1 execution started
-state_head: 922218bfde0b68b43ca8540a172492d0988a3dff
+state_head: 685f63fc3766cbfe7e73b74a2ba772c39e8656c8
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 24
-  completed_plans: 21
+  completed_plans: 22
 milestone_name: milestone
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 Phase: 03.1 (Index Historical Constituents Data Layer (INSERTED)) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-09-05 — Phase 03.1 execution started
 
 Progress: [██████████] 100%
@@ -67,6 +67,7 @@ Progress: [██████████] 100%
 | Phase 03.1 P01 | 6 min | 3 tasks | 8 files |
 | Phase 03.1 P02 | 7 min | 2 tasks | 4 files |
 | Phase 03.1 P03 | 15 min | 3 tasks | 7 files |
+| Phase 03.1 P04 | 18 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -96,6 +97,9 @@ Recent decisions affecting current work:
 - [Phase 03.1]: Nasdaq-100 anchor comes from stockanalysis.com with slickcharts.com documented in the class docstring as the fallback, deliberately not implemented as a second code path — Wikipedia's Nasdaq-100 page renders components through a navbox template with no parseable constituents table, so a commercial scraped source was unavoidable. Implementing both sources doubles the untested surface for a failure mode that has not happened; naming the alternative in the docstring is what a maintainer actually needs the day the primary dies.
 - [Phase 03.1]: The Nasdaq-100 anchor is asserted at 102 rows, not 100, and fetch_anchor() carries its own MIN_ANCHOR_ROWS=50 structural-drift guard — The index carries multiple share classes for some issuers (GOOGL/GOOG, FOX/FOXA), so an ==100 assertion fails against correct data. Unlike the S&P anchor's hosted CSV, this scraped page has no cache-fallback path, so a truncated parse would close every unmentioned membership and silently reintroduce the survivorship bias the layer exists to remove (T-03.1-02-02).
 - [Phase 03.1]: Only two message strings were parameterised via INDEX_LABEL/CATEGORY when hoisting fetch_changes(); both ValueError guard messages stayed word-for-word — The fallback logger.error and _load_cache's RuntimeError are the only index-specific text. Keeping the missing-columns and row-count-monotonicity messages verbatim means the S&P path renders byte-identical output post-extraction, so the refactor is provably behaviour-preserving rather than merely test-passing.
+- [Phase 03.1]: The Nasdaq-100 panel gets its own nasdaq100_constituent.zarr store rather than sharing the S&P panel's — The two coverage starts are ~31 years apart (1976-07-01 vs 2007-02-01), and in a boolean panel a fabricated pre-coverage region is indistinguishable at read time from a genuine 'nobody was a member'. A consumer wanting both opens both and joins on the intersection of their timestamp axes -- a deliberate, visible step rather than an implicit and wrong union.
+- [Phase 03.1]: UniverseCatalog's category list and coverage guard are driven by a MEMBERSHIP_FETCHERS registry, with NasdaqUniverseFetcher deliberately outside it — The pre-existing guard hardcoded sp500_constituent, so the newly-added nasdaq100_constituent category would have answered pre-2007 queries with a silently incomplete roster -- the exact failure DATA-05 exists to prevent. Deriving each boundary from the fetcher's own PIT_COVERAGE_START makes a boundary-less category impossible to create by omission. nasdaq_all stays out because it is a full-exchange roster with no membership-interval semantics and no coverage start (D-02); test_nasdaq_all_has_no_coverage_boundary makes that absence a tested property.
+- [Phase 03.1]: DATA-06 was proved with a baseline SHA pinned before any edit, not a working-tree check — GSD commits per task, so 'git status --porcelain -- base/' alone prints nothing in exactly the world where base/ was edited and committed -- a proof that cannot fail. Pinning BASE_SHA into the git dir before Task 1 and gating on 'git diff BASE_SHA..HEAD -- base/' PLUS the working tree keeps the claim red after each task commit. Final result for 8be0adb: both halves empty.
 
 ### Pending Todos
 
@@ -122,7 +126,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T03:18:01.618Z
-Stopped at: Completed 03.1-03-PLAN.md
+Last session: 2026-09-06T03:27:15.622Z
+Stopped at: Completed 03.1-04-PLAN.md
 Resume file: None
 </content>
