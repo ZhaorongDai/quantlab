@@ -101,8 +101,8 @@ def test_save_refuses_to_overwrite_with_a_degenerate_table(
     assert not Path(config.output_path).exists()
 
 
-def test_reconstruct_intervals_reentry(mock_universe_fetchers):
-    fetcher = SP500MembershipFetcher(cache_dir="unused")
+def test_reconstruct_intervals_reentry(mock_universe_fetchers, tmp_path):
+    fetcher = SP500MembershipFetcher(cache_dir=str(tmp_path))
     anchor = fetcher.fetch_anchor()
     changes = fetcher.fetch_changes()
 
@@ -119,8 +119,8 @@ def test_reconstruct_intervals_reentry(mock_universe_fetchers):
         assert earlier["end_date"] <= later["start_date"]
 
 
-def test_reconstruct_intervals_left_censored(mock_universe_fetchers):
-    fetcher = SP500MembershipFetcher(cache_dir="unused")
+def test_reconstruct_intervals_left_censored(mock_universe_fetchers, tmp_path):
+    fetcher = SP500MembershipFetcher(cache_dir=str(tmp_path))
     anchor = fetcher.fetch_anchor()
     changes = fetcher.fetch_changes()
 
