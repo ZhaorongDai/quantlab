@@ -483,3 +483,261 @@ def test_refresh_actually_dispatches_the_watermark_grouped_batches(
     )
     assert dispatched[("AAPL", "MSFT")] == "2024-01-15"
     assert dispatched[("GOOG",)] == "2024-01-20"
+
+
+# ---------------------------------------------------------------------------
+# 03.2-05 Task 1 -- the "queried, no data" third state (D-04, SC-4).
+#
+# ONE additive boolean on the existing watermark sidecar, written only when
+# TRUE. That asymmetry is the whole design: absence is the default, so every
+# sidecar written before this phase reads back as not-no-data -- which is
+# correct, because the pre-change code only ever wrote a watermark after a
+# successful fetch. Writing `false` would instead make those older files
+# ambiguous (RESEARCH Pattern 4, 260906-26o D-04).
+#
+# Four read-time states out of three storage facts:
+#
+#   never fetched        -> no sidecar, no manifest entry
+#   fetch failed         -> no sidecar, PLUS a `_failures.json` entry
+#   fetched, data landed -> sidecar, marker ABSENT
+#   queried, no data     -> sidecar, marker present and true
+#
+# Every test below is offline: no vendor call, no credential, no network.
+# ---------------------------------------------------------------------------
+
+#: The exact key set `_write_watermark` produced BEFORE this task, for a call
+#: that passes a covered start. Written as a literal rather than derived, so
+#: the additive-schema assertion is anchored to the old contract and not to
+#: whatever the current implementation happens to emit.
+_PRE_CHANGE_SIDECAR_KEYS = {"last_date", "start_date"}
+
+
+def _sidecar_json(acq, symbol: str) -> dict:
+    """The raw sidecar bytes as parsed JSON, bypassing every reader.
+
+    Deliberately not `_read_coverage`: a test about what is ON DISK must not
+    be satisfiable by a reader that invents the key.
+    """
+    import json
+
+    with open(Path(acq.config.watermark_path) / f"{symbol}.json") as f:
+        return json.load(f)
+
+
+def _observed_state(acq, symbol: str) -> str:
+    """Which of the four read-time states `symbol` is in, from disk only.
+
+    ONE helper, used for all four assertions, so the four states are proved
+    distinguishable by a single reading procedure rather than by four bespoke
+    lookups that could each be reading a different thing.
+    """
+    import json
+
+    coverage = acq._read_coverage(symbol)
+    manifest_path = Path(acq.config.watermark_path) / acq.FAILURE_MANIFEST_NAME
+    manifest: dict = {}
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+    if coverage is None:
+        return "failed" if symbol in manifest else "never_fetched"
+    return "no_data" if coverage["no_data"] else "has_data"
+
+
+def test_write_watermark_omits_the_no_data_key_unless_it_is_true(
+    acquisition_config,
+):
+    """The marker is written ONLY when true; false omits it entirely.
+
+    Both directions are asserted on the raw JSON, because this is a statement
+    about the on-disk contract and not about the reader. The false case is
+    additionally compared against the PRE-CHANGE key set: a sidecar written
+    with the flag false must be byte-comparable in its key structure to what
+    the old code wrote, which is what makes the extension additive rather than
+    a new format wearing the old name.
+    """
+    acq = _acquisition(acquisition_config)
+
+    acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01", no_data=True)
+    marked = _sidecar_json(acq, "AAPL")
+    assert marked["no_data"] is True, marked
+    assert marked["last_date"] == "2024-01-31"
+    assert marked["start_date"] == "2024-01-01"
+
+    acq._write_watermark("MSFT", "2024-01-31", start_date="2024-01-01", no_data=False)
+    plain = _sidecar_json(acq, "MSFT")
+    assert "no_data" not in plain, (
+        f"the marker must be OMITTED when false, never written as false -- "
+        f"got {plain}"
+    )
+    assert set(plain) == _PRE_CHANGE_SIDECAR_KEYS, (
+        f"a sidecar written with the flag false must carry exactly the "
+        f"pre-change key set {sorted(_PRE_CHANGE_SIDECAR_KEYS)}; got "
+        f"{sorted(plain)}"
+    )
+
+    # ...and the default is false, so no existing caller starts marking.
+    acq._write_watermark("GOOG", "2024-01-31", start_date="2024-01-01")
+    assert set(_sidecar_json(acq, "GOOG")) == _PRE_CHANGE_SIDECAR_KEYS
+
+
+def test_a_pre_change_sidecar_reads_back_as_not_no_data(acquisition_config):
+    """Additive direction 1: an OLD file is valid input to the NEW reader.
+
+    The sidecar is hand-written in the pre-change shape rather than produced by
+    the current writer, so the assertion cannot be satisfied by a writer that
+    silently started stamping the key.
+    """
+    import json
+
+    acq = _acquisition(acquisition_config)
+    directory = Path(acq.config.watermark_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    with open(directory / "AAPL.json", "w") as f:
+        json.dump({"start_date": "2024-01-01", "last_date": "2024-01-31"}, f)
+
+    coverage = acq._read_coverage("AAPL")
+    assert coverage is not None
+    assert coverage["no_data"] is False
+    assert coverage["start_date"] == "2024-01-01"
+    assert coverage["last_date"] == "2024-01-31"
+
+    # And a LEGACY sidecar -- the pre-26o shape, end date only -- likewise.
+    with open(directory / "MSFT.json", "w") as f:
+        json.dump({"last_date": "2024-01-31"}, f)
+    legacy = acq._read_coverage("MSFT")
+    assert legacy is not None
+    assert legacy["no_data"] is False
+    assert legacy["start_date"] is None
+
+
+def test_a_no_data_sidecar_is_still_read_by_the_unchanged_read_watermark(
+    acquisition_config,
+):
+    """Additive direction 2: a NEW file is valid input to an OLD reader.
+
+    `_read_watermark` is deliberately untouched by this task, so it returns the
+    same `last_date` for a marked sidecar as for an unmarked one. That is the
+    property that makes the marker safe to write onto a volume that older code
+    may still read.
+    """
+    acq = _acquisition(acquisition_config)
+
+    acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01", no_data=True)
+    acq._write_watermark("MSFT", "2024-01-31", start_date="2024-01-01")
+
+    assert acq._read_watermark("AAPL") == "2024-01-31"
+    assert acq._read_watermark("MSFT") == acq._read_watermark("AAPL")
+
+
+def test_the_four_no_data_states_are_distinguishable_on_disk(acquisition_config):
+    """SC-4's actual claim: FOUR states, not two, from three storage facts.
+
+    A design that collapses "fetch failed" into "queried, no data" has missed
+    the point -- one is a fault to retry, the other is a confirmed absence to
+    skip, and reading them as the same thing either loses data or burns quota
+    forever.
+    """
+    acq = _acquisition(
+        acquisition_config, symbols=("NEVER", "FAILED", "HASDATA", "NODATA")
+    )
+
+    # 1. never fetched -- nothing written for NEVER at all.
+    # 2. fetch failed  -- no sidecar, plus a manifest entry.
+    acq._write_failure_manifest({"FAILED": "HTTPError: 500"})
+    # 3. fetched, data landed.
+    acq._write_watermark("HASDATA", "2024-01-31", start_date="2024-01-01")
+    # 4. queried, vendor returned nothing.
+    acq._write_watermark(
+        "NODATA", "2024-01-31", start_date="2024-01-01", no_data=True
+    )
+
+    observed = {
+        symbol: _observed_state(acq, symbol)
+        for symbol in ("NEVER", "FAILED", "HASDATA", "NODATA")
+    }
+
+    assert observed == {
+        "NEVER": "never_fetched",
+        "FAILED": "failed",
+        "HASDATA": "has_data",
+        "NODATA": "no_data",
+    }, observed
+    assert len(set(observed.values())) == 4, observed
+
+
+def test_a_covered_no_data_symbol_is_skipped_and_issues_no_data_request(
+    acquisition_config,
+):
+    """The re-fetch storm D-04 exists to prevent, asserted end to end.
+
+    `_coverage_status` gets NO new branch: a marked symbol whose recorded
+    window still covers the request already classifies `covered` through the
+    existing rule. This test is what keeps someone from adding one -- and what
+    proves the skip actually reaches `download()`, where the helper's
+    `_fetch_page` raises if a vendor request is ever issued.
+    """
+    acq = _acquisition(acquisition_config, symbols=("AAPL",), kwargs={"progress": False})
+    acq._write_watermark(
+        "AAPL", acq.config.end_date, start_date=acq.config.start_date, no_data=True
+    )
+
+    assert acq._coverage_status("AAPL") == "covered"
+
+    pending, counts = acq._partition_by_coverage(["AAPL"], from_watermark=False)
+    assert pending == []
+    assert counts["covered"] == 1
+    assert counts["no_data"] == 1
+
+    # `_fetch_page` raises on any call, so reaching the vendor fails the test.
+    acq.download()
+
+
+def test_a_no_data_symbol_with_narrower_coverage_is_still_re_fetched(
+    acquisition_config,
+):
+    """The marker records what the vendor said about a WINDOW, never a
+    permanent verdict about the symbol.
+
+    A marked symbol whose recorded coverage starts after the requested start is
+    `widened` exactly as an unmarked one is -- otherwise the marker would turn
+    into a tombstone and a later, deeper request could never reach the vendor.
+    """
+    acq = _acquisition(acquisition_config, symbols=("AAPL",))
+    assert acq.config.start_date == "2024-01-01"
+    acq._write_watermark(
+        "AAPL", acq.config.end_date, start_date="2024-01-15", no_data=True
+    )
+
+    assert acq._coverage_status("AAPL") == "widened"
+
+    pending, counts = acq._partition_by_coverage(["AAPL"], from_watermark=False)
+    assert pending == ["AAPL"]
+    assert counts["widened"] == 1
+
+
+def test_a_corrupt_no_data_sidecar_takes_the_same_tolerant_path(
+    acquisition_config,
+):
+    """ONE corrupt-sidecar policy, not two.
+
+    `_read_sidecar` is the single tolerant read both `_read_watermark` and
+    `_read_coverage` share. A second read path added for the marker could
+    drift from it, and the drift would show up as a crash in a 15k-symbol run
+    rather than as a wider-than-necessary re-fetch.
+    """
+    acq = _acquisition(acquisition_config)
+    directory = Path(acq.config.watermark_path)
+    directory.mkdir(parents=True, exist_ok=True)
+
+    # Truncated mid-marker: the bytes mention the key, so a substring-matching
+    # reader would "find" it.
+    (directory / "AAPL.json").write_text('{"last_date": "2024-01-31", "no_data": tr')
+    assert acq._read_coverage("AAPL") is None
+    assert acq._read_watermark("AAPL") is None
+
+    # ...identical to a corrupt sidecar that never mentions the marker.
+    (directory / "MSFT.json").write_text("{not json at all")
+    assert acq._read_coverage("MSFT") is None
+    assert acq._read_watermark("MSFT") is None
