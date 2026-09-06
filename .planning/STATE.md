@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03.2
 current_phase_name: Multi-Source Data Acquisition Abstraction (Alpaca)
 status: executing
-stopped_at: Completed 03.2-02-PLAN.md
-last_updated: "2026-09-06T20:21:42.497Z"
+stopped_at: Completed 03.2-03-PLAN.md
+last_updated: "2026-09-06T21:02:20.166Z"
 last_activity: 2026-09-06
 last_activity_desc: Phase 03.2 execution started
-state_head: 74ccfd380700cf1ebe1048699ef1cbce39829e7f
+state_head: 657f4986d4d7482df9b116b89758fccfebc9416b
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 31
-  completed_plans: 24
+  completed_plans: 25
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.2 (Multi-Source Data Acquisition Abstraction (Alpaca)) — EXECUTING
-Plan: 3 of 7
+Plan: 4 of 7
 Status: Ready to execute
 Last activity: 2026-09-06 — Phase 03.2 execution started
 
@@ -74,6 +74,7 @@ Progress: [██████████] 100%
 | Phase quick-260906-eme P01 | 9 min | 2 tasks | 3 files |
 | Phase 03.2 P01 | 12 min | 2 tasks | 6 files |
 | Phase 03.2 P02 | 47 min | 4 tasks | 19 files |
+| Phase 03.2 P03 | 37 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -127,6 +128,10 @@ Recent decisions affecting current work:
 - [Phase 03.2]: Alpaca credential env-var NAMES live in module-level constants, never on the patchable transport class — AlpacaAcquisition._scrub read them off _AlpacaMarketDataClient, which tests/conftest.py replaces wholesale. A security control reachable through an indirection whose entire purpose is to be swapped out can be silently disabled by a test double.
 - [Phase 03.2]: polars abbreviates long scan source lists, so a naive .pqt count in an .explain() pruning assertion reads exactly backwards — The plan called the pruning test the easiest to write wrongly. explain() renders '[first.pqt, ... 4 other sources]', so count('.pqt') returns 1 for an unpruned five-file scan and 2 for a pruned two-file one. _scan_source_count parses both forms and carries its own self-test.
 - [Phase 03.2]: A -k selector that does not reach the one test covering a mechanism is a weaker guarantee than it appears — Deleting PageLedger._load's fingerprint check left -k fingerprint green, because the only covering test was named ..._for_a_different_roster_... Found by mutation testing; fixed by renaming the test into the selector and recording why the name is load-bearing.
+- [Phase 03.2]: Orchestration hoisted to `Acquisition`, classification kept per-vendor: `QUOTA_STATUS_CODES` is asserted ABSENT from the base, because Tiingo's 429 is hourly allocation exhaustion while Alpaca's is a per-minute rate limit (D-02) — Hoisting the status set would abort every Alpaca run within seconds while logging an allocation message for a vendor that has no allocation concept. Mutation confirmed the mirror harm too: downgrading Tiingo's quota to `rate_limited` makes a 200-symbol run back off for ~50 minutes instead of stopping.
+- [Phase 03.2]: `ConcurrentTiingoAcquisition` retired outright, with all 85 references rewritten in the same commit as the deletion and no transitional alias — The 03.1 D-03 precedent: two live names for one class is exactly the ambiguity a later reader resolves wrongly. The class docstring's "a shared seam is not worth introducing for one subclass" claim was conditioned on there being one subclass; Alpaca made two.
+- [Phase 03.2]: `refresh()` packs requests by GROUPING pending symbols on identical recorded `last_date`, then chunking each group — request packing only, with D-06's window rule untouched — Most symbols in a routine refresh share one watermark, so grouping is near-free. The alternative — issue the earliest start for a mixed batch and let dedup absorb the overlap — is correct but re-fetches history nobody asked for and would make 03.2-04's volume guard systematically wrong.
+- [Phase 03.2]: A lock that passes on arrival is mutation-verified rather than accepted, and a `-k` selector is verified by what it MATCHES rather than by its exit code — Twelve mutations were run against this plan's locks; one escaped. Replacing `_refresh_batches` with `_batches` inside `_run_once` deleted the whole grouping mechanism and left the entire suite green, because the grouping was proved as a function but never proved to be wired, and the only vendor whose refresh is covered end to end has batch_size 1 where grouping cannot fail.
 
 ### Pending Todos
 
@@ -154,8 +159,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T20:20:10.568Z
-Stopped at: Completed 03.2-02-PLAN.md
+Last session: 2026-09-06T21:01:53.251Z
+Stopped at: Completed 03.2-03-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
