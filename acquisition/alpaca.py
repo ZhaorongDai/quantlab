@@ -182,31 +182,71 @@ class AlpacaAcquisition(Acquisition):
     #: What a credential value is replaced with in any captured message.
     REDACTION = "<APCA CREDENTIAL REDACTED>"
 
+    #: The two credentials the shared `Acquisition._scrub` redacts before any
+    #: message reaches a log line or the failure manifest (T-03.2-01).
+    #:
+    #: Built from the MODULE-LEVEL constants, never from
+    #: `_AlpacaMarketDataClient` -- that class is a patch target and a security
+    #: control must not be reachable through an indirection whose whole purpose
+    #: is to be replaced (03.2-02 deviation #2). Alpaca sends credentials in
+    #: HEADERS rather than in the URL, so the Tiingo query-parameter leak shape
+    #: does not apply here directly; scrubbed anyway, because a `requests`
+    #: exception chain can reach `exc.request.headers` and a manifest is not a
+    #: place to rely on a vendor's choice of auth transport staying the same.
+    CREDENTIAL_ENV_VARS = (KEY_ENV, SECRET_ENV)
+
+    #: HTTP statuses that mean "slow down", NOT "you are out of allocation".
+    #:
+    #: 429 here is a per-MINUTE ceiling -- 200 requests/min on the free
+    #: (Basic) tier -- that a healthy full-market run is EXPECTED to hit
+    #: repeatedly and that clears in under a minute. Alpaca publishes no
+    #: request-allocation concept at all, so this class has no quota state and
+    #: deliberately declares no `QUOTA_STATUS_CODES`: reading this 429 as
+    #: global would abort every Alpaca run within seconds of starting while
+    #: logging an allocation message for a vendor that has no allocation
+    #: (T-03.2-16, 03.2-RESEARCH.md Pitfall 1).
+    RATE_LIMIT_STATUS_CODES = frozenset({429})
+
+    #: Response headers the vendor MAY send alongside a 429. Read defensively
+    #: for logging only: a missing header is NO INFORMATION, never a default,
+    #: and never a computed reset instant -- Alpaca does not guarantee these on
+    #: every response, so the backoff interval stays a configured constant.
+    RATE_LIMIT_HEADERS = (
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Reset",
+    )
+
     def __init__(self, config: AcquisitionConfig):
         super().__init__(config)
         self._client = _AlpacaMarketDataClient()
 
-    def _scrub(self, message: str) -> str:
-        """Redact both Alpaca credential values before `message` is logged or
-        written to the failure manifest (T-03.2-01).
+    def _rate_limit_headers(self, exc: BaseException) -> dict[str, str]:
+        """Whatever `X-RateLimit-*` the vendor happened to send, or `{}`.
 
-        Alpaca sends credentials in HEADERS rather than in the URL, so the
-        Tiingo `?token=` leak shape does not apply here directly. Scrub anyway:
-        a `requests` exception chain can reach `exc.request.headers`, and a
-        message travelling into a log aggregator or a committed manifest is not
-        a place to be relying on a vendor's choice of auth transport staying
-        the same.
-
-        This is the single choke point every captured vendor message passes
-        through. The base-class `_scrub` seam is hoisted in 03.2-03; the method
-        exists on this class from the first commit that can produce an Alpaca
-        exception, so the control is never absent while the risk is present.
+        Purely informational. An ABSENT header contributes no entry rather
+        than a default one, so a caller can distinguish "the vendor said
+        nothing" from "the vendor said zero" -- the two mean opposite things
+        and a default would silently merge them.
         """
-        for name in (KEY_ENV, SECRET_ENV):
-            value = os.environ.get(name)
-            if value:
-                message = message.replace(value, self.REDACTION)
-        return message
+        response = self._vendor_response(exc)
+        headers = getattr(response, "headers", None) or {}
+        return {
+            name: str(headers[name])
+            for name in self.RATE_LIMIT_HEADERS
+            if name in headers
+        }
+
+    def _classify_error(self, exc: BaseException) -> str:
+        """Alpaca reads 429 as TRANSIENT -- the opposite of Tiingo's reading.
+
+        See `RATE_LIMIT_STATUS_CODES`. Everything else is per-unit: this
+        vendor has no global condition to report, so nothing here can ever
+        return `"quota"`.
+        """
+        if self._status_of(exc) in self.RATE_LIMIT_STATUS_CODES:
+            return "rate_limited"
+        return "failed"
 
     def _fetch_page(
         self,

@@ -464,3 +464,89 @@ def test_quota_status_set_is_429_only(mock_tiingo_client, tmp_path, status):
     assert (status in TiingoAcquisition.QUOTA_STATUS_CODES) == (
         status == 429
     )
+
+
+# ---------------------------------------------------------------------------
+# 03.2-03 Task 3 -- the same status code through the `_classify_error` seam.
+#
+# The seam is new; the BEHAVIOUR asserted here is not. These tests exist so a
+# future edit to the shared orchestration cannot quietly convert Tiingo's
+# global condition into Alpaca's transient one, and they are the mirror image
+# of `tests/test_alpaca_acquisition.py`'s rate-limit tests: same 429, opposite
+# verdict, asserted per vendor.
+# ---------------------------------------------------------------------------
+
+
+def test_a_tiingo_429_classifies_quota_through_the_seam(
+    mock_tiingo_client, tmp_path
+):
+    """Behaviourally identical to before the seam existed, now expressed
+    through the method both vendors override.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    error = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
+
+    assert acq._classify_error(error) == "quota"
+    # Never the Alpaca reading. Backing off inside the worker instead of
+    # stopping the world is what burned ~10,000 fast-failing requests.
+    assert acq._classify_error(error) != "rate_limited"
+
+
+def test_a_tiingo_429_still_aborts_globally_and_stays_out_of_the_manifest(
+    mock_tiingo_client, tmp_path
+):
+    """The end-to-end consequence of the classification above, re-asserted
+    against the seam rather than against `_is_quota_error` directly.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    _install_vendor(
+        mock_tiingo_client,
+        _Vendor(_rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")),
+    )
+
+    acq = TiingoAcquisition(_make_config(tmp_path, symbols=_MANY))
+    acq.download()
+
+    assert acq._abort.is_set(), (
+        "a Tiingo 429 is a GLOBAL condition and must trip the shared abort"
+    )
+    assert len(mock_tiingo_client.calls) < 20
+    failures = json.loads(
+        (tmp_path / "watermark" / "_failures.json").read_text()
+    )
+    assert failures == {}
+
+
+def test_a_tiingo_403_classifies_failed_not_quota(mock_tiingo_client, tmp_path):
+    """403 is a plan-restricted single ticker -- a PER-SYMBOL condition.
+
+    Classifying it as global would let one restricted ticker abort a
+    15,000-symbol run. (A 403 whose BODY carries the allocation wording is a
+    different thing and is still caught textually; see
+    `test_a_plan_restricted_403_is_not_quota_exhaustion`.)
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    restricted = _rest_client_error(
+        403, "Error: This ticker is not available on your plan.", "Forbidden"
+    )
+
+    assert acq._classify_error(restricted) == "failed"
+
+
+def test_tiingo_declares_no_rate_limit_status_set(mock_tiingo_client, tmp_path):
+    """The negative half of the asymmetry, asserted explicitly.
+
+    Tiingo has no per-minute ceiling this project models, so it declares no
+    `RATE_LIMIT_STATUS_CODES`. Adding 429 to one would silently downgrade the
+    global abort to a worker-local backoff -- the exact 2026-09-06 incident.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    assert TiingoAcquisition.RATE_LIMIT_STATUS_CODES == frozenset(), (
+        "Tiingo must classify 429 as `quota`, never as `rate_limited`"
+    )

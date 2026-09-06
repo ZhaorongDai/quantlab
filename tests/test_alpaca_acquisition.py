@@ -510,7 +510,14 @@ def test_an_alpaca_500_classifies_failed_and_isolates_to_its_batch(
     from acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
-        vendor="alpaca", symbols=("AAPL", "MSFT"), kwargs={"batch_size": 1}
+        vendor="alpaca",
+        symbols=("AAPL", "MSFT"),
+        # `raise_on` keys on the client's CALL INDEX, and the result generator
+        # is `generator_unordered`, so a single worker is what ties call 0 to
+        # the FIRST batch. Isolation itself does not depend on the worker
+        # count -- the concurrent case is covered by the Tiingo 404 test --
+        # but the assertion about WHICH symbol failed does.
+        kwargs={"batch_size": 1, "max_workers": 1},
     )
     acq = AlpacaAcquisition(cfg)
 

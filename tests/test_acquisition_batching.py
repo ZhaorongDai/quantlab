@@ -422,3 +422,64 @@ def test_every_concrete_acquisition_subclass_reaches_the_vendor_via_fetch_batch(
         assert sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt")), (
             f"{cls.__qualname__} wrote no raw shard"
         )
+
+
+def test_refresh_actually_dispatches_the_watermark_grouped_batches(
+    acquisition_config,
+):
+    """The grouping must be WIRED, not merely available.
+
+    Found by mutation: replacing `_refresh_batches` with `_batches` inside
+    `_run_once` left the entire suite green. The unit tests above prove the
+    grouping FUNCTION is right; nothing proved `refresh()` calls it, and the
+    one vendor whose refresh is covered end to end has
+    `DEFAULT_BATCH_SIZE = 1`, which makes grouping a no-op that cannot fail.
+
+    The consequence of the un-wired version is silent and expensive: symbols
+    with unequal watermarks share one request, so one `start` is used for all
+    of them -- re-fetching history for some and, if the earliest start is not
+    chosen, under-fetching for others.
+
+    Asserted on a batch-size-100 subclass rather than on a named vendor, so
+    this covers whichever vendor is multi-symbol rather than the one that
+    happens to be today.
+    """
+    from base.acquisition import Acquisition
+
+    requests_made: list[tuple[tuple[str, ...], str]] = []
+
+    class _Recording(Acquisition):
+        VENDOR = "alpaca"
+        RAW_COLUMNS = ("timestamp", "symbol", "vendor")
+        DEFAULT_BATCH_SIZE = 100
+
+        def _fetch_page(self, symbols, start_date, end_date, page_token=None):
+            import polars as pl
+
+            requests_made.append((tuple(symbols), start_date))
+            frame = pl.DataFrame(
+                schema={
+                    "timestamp": pl.Datetime,
+                    "symbol": pl.String,
+                    "vendor": pl.String,
+                }
+            )
+            return frame.select(self.RAW_COLUMNS), None
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL", "MSFT", "GOOG"), kwargs={"progress": False}
+    )
+    acq = _Recording(cfg)
+    acq._write_watermark("AAPL", "2024-01-15", start_date="2024-01-01")
+    acq._write_watermark("MSFT", "2024-01-15", start_date="2024-01-01")
+    acq._write_watermark("GOOG", "2024-01-20", start_date="2024-01-01")
+
+    acq.refresh()
+
+    dispatched = {symbols: start for symbols, start in requests_made}
+    assert len(requests_made) == 2, (
+        f"three symbols across TWO distinct watermarks must become two "
+        f"requests, not one and not three; got {requests_made}"
+    )
+    assert dispatched[("AAPL", "MSFT")] == "2024-01-15"
+    assert dispatched[("GOOG",)] == "2024-01-20"

@@ -133,22 +133,17 @@ class TiingoAcquisition(Acquisition):
             {"session": True, "api_key": os.environ[KEY_ENV]}
         )
 
-    @staticmethod
-    def _vendor_response(exc: BaseException):
-        """The vendor `requests.Response` reachable from `exc`, or None.
+    def _classify_error(self, exc: BaseException) -> str:
+        """Tiingo reads 429 as a GLOBAL condition -- see `QUOTA_STATUS_CODES`.
 
-        Measured, not assumed: `tiingo/restclient.py:_request` catches the
-        `requests.exceptions.HTTPError` and re-raises `RestClientError(e)`, so
-        `RestClientError` has NO `.response` of its own -- the obvious
-        `getattr(exc, "response", None)` one-liner returns None every time.
-        The status lives at `exc.args[0].response.status_code`. Hence the walk
-        over the exception AND its args.
+        Behaviourally identical to what `_attempt_batch` did before the seam
+        existed; it is only expressed through the method both vendors now
+        override. `"rate_limited"` is unreachable here on purpose: this vendor
+        declares no `RATE_LIMIT_STATUS_CODES`, because backing off inside a
+        worker against an exhausted HOURLY allocation is exactly the
+        ~10,000-fast-failing-request burn observed on 2026-09-06.
         """
-        for candidate in (exc, *getattr(exc, "args", ())):
-            response = getattr(candidate, "response", None)
-            if response is not None and getattr(response, "status_code", None):
-                return response
-        return None
+        return "quota" if self._is_quota_error(exc) else "failed"
 
     def _is_quota_error(self, exc: BaseException) -> bool:
         """Whether `exc` means the account's request allocation is exhausted

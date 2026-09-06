@@ -321,6 +321,41 @@ class Acquisition(ABC):
     #: roughly three windows.
     DEFAULT_QUOTA_MAX_WAITS = 3
 
+    #: HTTP statuses this vendor treats as a TRANSIENT rate limit -- back off
+    #: inside the worker, retry the same batch, never touch the global abort.
+    #:
+    #: Empty by default: the base makes no claim about any vendor's status
+    #: codes, and a vendor with no per-minute ceiling says so by leaving this
+    #: empty rather than by inheriting someone else's numbers. The asymmetry
+    #: this exists for: Alpaca's 429 is a 200-per-MINUTE ceiling a healthy
+    #: full-market run is expected to hit and that clears in under a minute,
+    #: while Tiingo's 429 is HOURLY allocation exhaustion whose correct
+    #: response is to stop the world (03.2-RESEARCH.md Pitfall 1).
+    RATE_LIMIT_STATUS_CODES: frozenset[int] = frozenset()
+
+    #: How long a `rate_limited` batch waits before retrying.
+    #:
+    #: Alpaca's ceiling is expressed per MINUTE, so a wait comfortably inside
+    #: one minute is enough for the window to roll over, and a full minute
+    #: would idle every worker far longer than the limit actually lasts. 5s is
+    #: a working value rather than a vendor fact: Alpaca publishes
+    #: `X-RateLimit-Reset` but does not guarantee it on every response, so this
+    #: is the floor the code falls back to and never a computed reset instant.
+    #: Overridable per run via `config.kwargs["rate_limit_backoff_seconds"]`.
+    DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = 5.0
+
+    #: How many consecutive backoffs one batch gets before it degrades to
+    #: `failed` (T-03.2-17).
+    #:
+    #: Bounded because an unbounded retry loop against a rate limit is a worse
+    #: version of the problem the backoff solves -- a run that never finishes
+    #: and never reports. At the 5s default this is ~30s of patience, which
+    #: covers a per-minute window rolling over at least twice; anything
+    #: surviving that is not a transient and belongs in the manifest where the
+    #: next run will retry it. Overridable via
+    #: `config.kwargs["rate_limit_max_retries"]`.
+    DEFAULT_RATE_LIMIT_MAX_RETRIES = 6
+
     def _knob(self, name: str, default=None):
         """Read a per-run tuning parameter from `config.kwargs`.
 
@@ -381,17 +416,74 @@ class Acquisition(ABC):
                 message = message.replace(value, self.REDACTION)
         return message
 
-    def _is_quota_error(self, exc: BaseException) -> bool:
-        """Whether `exc` means a GLOBAL, vendor-wide condition that should
-        stop the whole run rather than fail one batch.
+    # -- error classification: the ONE per-vendor policy seam ---------------
 
-        The base answer is the CONSERVATIVE one -- no, this vendor has no
-        global condition -- because treating a per-unit failure as global
-        aborts a 15,000-symbol run over one bad ticker. A vendor that really
-        does have such a condition says so by overriding; see
-        `TiingoAcquisition._is_quota_error`.
+    @staticmethod
+    def _vendor_response(exc: BaseException):
+        """The vendor `requests.Response` reachable from `exc`, or None.
+
+        Measured, not assumed. Two `requests`-based vendor clients wrap their
+        errors differently and the obvious one-liner is wrong for one of them:
+        `tiingo/restclient.py:_request` catches the
+        `requests.exceptions.HTTPError` and re-raises `RestClientError(e)`, so
+        `RestClientError` has NO `.response` of its own and
+        `getattr(exc, "response", None)` returns None every time -- the status
+        lives at `exc.args[0].response.status_code`. Hence the walk over the
+        exception AND its args, which also covers the direct `HTTPError` a
+        plain `raise_for_status()` produces.
+
+        Shared rather than duplicated per vendor: two independent walks of the
+        same exception shape would eventually disagree, and the failure mode of
+        the disagreement is a misclassified status, which is the single most
+        expensive bug in this module.
         """
-        return False
+        for candidate in (exc, *getattr(exc, "args", ())):
+            response = getattr(candidate, "response", None)
+            if response is not None and getattr(response, "status_code", None):
+                return response
+        return None
+
+    def _status_of(self, exc: BaseException) -> int | None:
+        """The HTTP status reachable from `exc`, or None when there is none.
+
+        DEFENSIVE by contract: an exception carrying no status is not an
+        error here, it is the absence of information, and it must read as
+        `None` rather than as a default. A status invented for an exception
+        that has none would be classified with full confidence and be wrong.
+        """
+        response = self._vendor_response(exc)
+        if response is None:
+            return None
+        status = getattr(response, "status_code", None)
+        return int(status) if status else None
+
+    def _classify_error(self, exc: BaseException) -> str:
+        """How THIS vendor's failures map onto the shared orchestration.
+
+        Returns one of:
+
+        - `"failed"` -- PER-UNIT. Lands in the failure manifest, gets no
+          watermark, is retried by the next run. Every other batch continues.
+        - `"quota"` -- GLOBAL and SLOW to clear. Trips the shared abort Event,
+          stopping dispatch for the whole run, and is deliberately EXCLUDED
+          from the manifest: recording a global condition as one ticker's
+          fault would defame a perfectly good symbol.
+        - `"rate_limited"` -- TRANSIENT and FAST to clear. Backs off inside
+          the worker and retries the same batch, without touching the global
+          abort and without a manifest entry.
+
+        The base default is the CONSERVATIVE one -- everything is per-unit --
+        because a vendor whose failures were wrongly read as global would
+        abort a 15,000-symbol run over one bad ticker. A vendor that really
+        has a global or a transient condition says so by overriding, and the
+        two vendors here read the SAME status code oppositely: Tiingo's 429 is
+        hourly allocation exhaustion (`quota`), Alpaca's is a per-minute
+        ceiling (`rate_limited`). That is why this method, and not the
+        orchestration around it, is what varies (D-02, RESEARCH Pattern 2).
+        """
+        if self._status_of(exc) in self.RATE_LIMIT_STATUS_CODES:
+            return "rate_limited"
+        return "failed"
 
     # -- symbol validation --------------------------------------------------
 
@@ -1111,16 +1203,45 @@ class Acquisition(ABC):
                 default=self.config.start_date,
             )
 
-        try:
-            self._fetch_batch(
-                symbols, start_date=start_date, end_date=self.config.end_date
+        backoff = float(
+            self._knob(
+                "rate_limit_backoff_seconds",
+                self.DEFAULT_RATE_LIMIT_BACKOFF_SECONDS,
             )
-        except Exception as exc:  # noqa: BLE001 -- isolation is the point
-            message = self._scrub(f"{type(exc).__name__}: {exc}")
-            if self._is_quota_error(exc):
-                self._abort.set()
-                return symbols, "quota", message
-            return symbols, "failed", message
+        )
+        max_retries = int(
+            self._knob(
+                "rate_limit_max_retries", self.DEFAULT_RATE_LIMIT_MAX_RETRIES
+            )
+        )
+
+        retries = 0
+        while True:
+            try:
+                self._fetch_batch(
+                    symbols, start_date=start_date, end_date=self.config.end_date
+                )
+            except Exception as exc:  # noqa: BLE001 -- isolation is the point
+                message = self._scrub(f"{type(exc).__name__}: {exc}")
+                verdict = self._classify_error(exc)
+                if verdict == "quota":
+                    self._abort.set()
+                    return symbols, "quota", message
+                if verdict == "rate_limited" and retries < max_retries:
+                    # Transient and vendor-wide but FAST: back off in this
+                    # worker only. Setting the global abort here would stop
+                    # every other batch over a condition that has usually
+                    # cleared by the time the log line is written, which is
+                    # the T-03.2-16 failure in miniature.
+                    retries += 1
+                    self._sleep(backoff)
+                    continue
+                # A `rate_limited` verdict that has exhausted its retries
+                # degrades to `failed` rather than spinning (T-03.2-17): it
+                # goes to the manifest with no watermark, so the NEXT run
+                # retries it instead of this one never finishing.
+                return symbols, "failed", message
+            break
 
         for symbol in symbols:
             # The covered start to RECORD, per symbol. A full backfill
