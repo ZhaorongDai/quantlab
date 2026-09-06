@@ -728,6 +728,35 @@ def test_catalog_round_trips_through_parquet(mock_universe_fetchers, tmp_path):
     assert "AAPL" in reloaded.get_symbols_as_of("nasdaq_all", "2021-01-01")
 
 
+def test_build_refuses_stale_snapshots_unless_explicitly_allowed(
+    monkeypatch, mock_universe_fetchers, tmp_path
+):
+    """WR-01. The cached-snapshot fallback is deliberate, but build()/save()
+    persisted it into universe.parquet indistinguishably from a fresh
+    reconstruction -- so a permanently-broken source froze the universe at the
+    cache date with only a logger.error to record it.
+    """
+    config = _make_config(tmp_path)
+    # Seed both caches through the working mocks.
+    UniverseCatalog(config).build()
+
+    real_get = mock_universe_fetchers
+
+    def broken_changes(url, *args, **kwargs):
+        if url == SP500MembershipFetcher.CHANGES_URL:
+            return _FakeResponse("<html><body><p>no table here</p></body></html>")
+        return real_get(url, *args, **kwargs)
+
+    monkeypatch.setattr("acquisition.universe.requests.get", broken_changes)
+
+    with pytest.raises(ValueError, match="stale cached snapshots"):
+        UniverseCatalog(config).build()
+
+    # The degradation stays available, but only as an explicit decision.
+    catalog = UniverseCatalog(config).build(allow_stale=True)
+    assert "TSLA" in catalog.get_symbols_as_of("sp500_constituent", "2020-12-21")
+
+
 def test_get_symbols_as_of_rejects_pre_2007_nasdaq100_dates(
     mock_universe_fetchers, tmp_path
 ):

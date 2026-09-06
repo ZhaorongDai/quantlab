@@ -207,6 +207,14 @@ class IndexMembershipFetcher(ABC):
 
     def __init__(self, cache_dir: str):
         self._cache_path = Path(cache_dir) / self.CACHE_FILENAME
+        #: Provenance of the frame `fetch_changes()` last returned. The
+        #: cached-snapshot fallback is correct and deliberate, but it must not
+        #: be INDISTINGUISHABLE from a fresh fetch once persisted: a
+        #: permanently-broken source would otherwise freeze the universe at
+        #: the cache date with only a logger.error line -- easily lost in a
+        #: cron log -- to record it. `UniverseCatalog.build()` reads these.
+        self.changes_are_stale = False
+        self.changes_source_asof: str | None = None
 
     @abstractmethod
     def fetch_anchor(self) -> pl.DataFrame:
@@ -408,7 +416,12 @@ class IndexMembershipFetcher(ABC):
                 f"({self.CHANGES_URL}): {exc}. Falling back to cached "
                 f"snapshot; NOT overwriting the cache file."
             )
-            return self._load_cache()
+            cached = self._load_cache()
+            self.changes_are_stale = True
+            self.changes_source_asof = datetime.datetime.fromtimestamp(
+                self._cache_path.stat().st_mtime
+            ).isoformat(timespec="seconds")
+            return cached
 
         # Write atomically. A plain in-place `write_parquet` leaves a
         # TRUNCATED parquet if the run is interrupted mid-write, which is
@@ -418,6 +431,8 @@ class IndexMembershipFetcher(ABC):
         tmp_path = self._cache_path.with_suffix(".parquet.tmp")
         parsed.write_parquet(tmp_path)
         tmp_path.replace(self._cache_path)
+        self.changes_are_stale = False
+        self.changes_source_asof = datetime.date.today().isoformat()
         return parsed
 
     def _load_cache(self) -> pl.DataFrame:
@@ -764,18 +779,52 @@ class UniverseCatalog:
         self.config = config
         self._backend = PlBackend()
 
-    def build(self) -> Self:
+    def build(self, allow_stale: bool = False) -> Self:
+        """Fetch every category and stage the combined reference table.
+
+        `allow_stale` must be set explicitly to build from a fetcher that fell
+        back to its cached snapshot. The fallback itself is correct and
+        deliberate -- one bad parse must not poison every future run -- but
+        `save()` would otherwise persist that stale reconstruction into
+        `universe.parquet` INDISTINGUISHABLY from a fresh one, so a
+        permanently-broken source silently freezes the universe at the cache
+        date with only a `logger.error` line, easily lost in a cron log, to
+        record it. Refusing by default makes the degradation a decision.
+        """
         frames = [
             NasdaqUniverseFetcher().fetch().with_columns(
                 pl.lit(self.ROSTER_CATEGORY).alias("category")
             )
         ]
+        stale: list[str] = []
         for fetcher_cls in self.MEMBERSHIP_FETCHERS:
+            fetcher = fetcher_cls(cache_dir=self.config.cache_dir)
             frames.append(
-                fetcher_cls(cache_dir=self.config.cache_dir)
-                .build_intervals()
-                .with_columns(pl.lit(fetcher_cls.CATEGORY).alias("category"))
+                fetcher.build_intervals().with_columns(
+                    pl.lit(fetcher_cls.CATEGORY).alias("category")
+                )
             )
+            if fetcher.changes_are_stale:
+                stale.append(
+                    f"{fetcher_cls.CATEGORY} (cached snapshot from "
+                    f"{fetcher.changes_source_asof})"
+                )
+
+        if stale and not allow_stale:
+            raise ValueError(
+                f"Refusing to build the universe table from stale cached "
+                f"snapshots: {stale}. The live change-log fetch/parse failed "
+                f"for those categories, so persisting this would freeze the "
+                f"universe at the cache date while looking exactly like a "
+                f"fresh build. Fix the source, or pass allow_stale=True to "
+                f"accept a knowingly-frozen table."
+            )
+        if stale:
+            logger.warning(
+                f"Building the universe table from STALE cached snapshots "
+                f"(allow_stale=True): {stale}."
+            )
+
         combined = pl.concat(frames, how="vertical_relaxed").select(
             ["symbol", "category", "start_date", "end_date"]
         )
