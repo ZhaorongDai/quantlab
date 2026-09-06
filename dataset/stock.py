@@ -8,14 +8,14 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from base.config import DatasetConfig
-from base.data import Dataset
+from base.data import MarketDataset
 from dataset.cleaning import dedup_raw_frame
 from enums.data import BinanceCSVHeaders
 from utils.file import file_date_filter, get_pqt_files
 from utils.timer import Timer
 
 
-class StockDataset(Dataset):
+class StockDataset(MarketDataset):
     def __init__(self, dataset_config: DatasetConfig):
         super().__init__(dataset_config)
 

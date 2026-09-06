@@ -202,14 +202,14 @@ class _NoOpDataset:
         return self._data
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
-        from base.data import Dataset
+        from base.data import BaseDataset
 
-        return Dataset._clean(self, data)  # type: ignore[arg-type]
+        return BaseDataset._clean(self, data)  # type: ignore[arg-type]
 
     def from_raw_data(self) -> Self:
-        from base.data import Dataset
+        from base.data import BaseDataset
 
-        return Dataset.from_raw_data(self)  # type: ignore[arg-type]
+        return BaseDataset.from_raw_data(self)  # type: ignore[arg-type]
 
 
 def test_from_raw_data_calls_clean_market_data(monkeypatch) -> None:

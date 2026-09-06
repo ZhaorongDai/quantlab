@@ -263,3 +263,25 @@ def test_non_market_dataset_round_trips_through_base_dataset(
     np.testing.assert_array_equal(
         result["is_member"].values, _PANEL_IS_MEMBER
     )
+
+
+def test_base_data_module_exposes_only_the_two_split_classes() -> None:
+    """The pre-split `Dataset` name was RETIRED, not kept as an alias.
+
+    03.1-01 introduced `Dataset = MarketDataset` as a transitional alias so
+    the split could land with a green suite, and removed it in the same plan
+    once every call site was re-pointed. Two live names for one class is
+    exactly the ambiguity a later reader "fixes" in the wrong direction, and
+    an unused alias is dead code (QUAL-02). This test exists so nobody
+    reintroduces it out of caution: if you are here because an import of
+    `base.data.Dataset` failed, the answer is `MarketDataset` for a dataset
+    with bars and a catalog, `BaseDataset` for anything else.
+    """
+    import base.data as base_data_module
+
+    assert hasattr(base_data_module, "BaseDataset")
+    assert hasattr(base_data_module, "MarketDataset")
+    assert not hasattr(base_data_module, "Dataset"), (
+        "base.data.Dataset is back; the pre-split name was retired rather "
+        "than aliased (03.1-01 Task 3)"
+    )

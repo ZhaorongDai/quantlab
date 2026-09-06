@@ -24,7 +24,7 @@ import numpy as np
 import xarray as xr
 
 from base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
-from base.data import Dataset
+from base.data import MarketDataset
 from dataset.spot import SpotKlineDataset
 from dataset.stock import StockDataset
 from config import momentum_config, stock_alpha158_config
@@ -38,7 +38,7 @@ def _factor_config(
     data_columns: list[str],
     tmp_path: Path,
     window: int = 10,
-    dataset_cls: type[Dataset] = SpotKlineDataset,
+    dataset_cls: type[MarketDataset] = SpotKlineDataset,
 ) -> FactorConfig:
     """Build a `FactorConfig` over the given synthetic Zarr store.
 

@@ -26,7 +26,7 @@ import pandas as pd
 import xarray as xr
 
 from base.config import DatasetConfig
-from base.data import Dataset
+from base.data import MarketDataset
 
 CORE_LAYER_FILES = (
     "base/factor.py",
@@ -80,7 +80,7 @@ def test_core_layer_purity_no_market_specific_logic() -> None:
     )
 
 
-class FakeDataset(Dataset):
+class FakeDataset(MarketDataset):
     """A genuinely novel, test-only `Dataset` subclass for a fake market and
     frequency that exists nowhere else in the codebase. Proves the
     `Dataset` ABC's contract (`from_raw_data()` -> `save()` -> `read()`) is

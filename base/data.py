@@ -227,8 +227,3 @@ class MarketDataset(BaseDataset):
         self, data: xr.Dataset, venue: str, n_jobs: int
     ) -> tuple[list[list], list[Instrument]]: ...
 
-
-# Transitional alias, removed in Task 3 of 03.1-01: keeps dataset/spot.py,
-# dataset/stock.py and the existing tests importing `Dataset` green across
-# this one commit, until they are re-pointed onto MarketDataset/BaseDataset.
-Dataset = MarketDataset

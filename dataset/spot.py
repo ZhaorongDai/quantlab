@@ -21,7 +21,7 @@ from nautilus_trader.persistence.wranglers import BarDataWrangler
 from tqdm import tqdm
 
 from base.config import DatasetConfig
-from base.data import Dataset
+from base.data import MarketDataset
 from dataset.cleaning import dedup_raw_frame, flag_anomalies, validate_schema
 from enums.data import BinanceCSVHeaders
 from utils.file import file_date_filter, get_csv_files
@@ -34,7 +34,7 @@ from utils.nautilus import (
 from utils.timer import Timer
 
 
-class SpotKlineDataset(Dataset):
+class SpotKlineDataset(MarketDataset):
     # Binance raw columns are Title-Case (Open/High/Low/Close/Volume), unlike
     # the shared dataset/cleaning.py module's lowercase convention (D-06..D-08
     # default, tuned for StockDataset's already-lowercase Tiingo columns).
