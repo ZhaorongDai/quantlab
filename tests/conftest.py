@@ -254,10 +254,124 @@ def sp500_changes_html_fixture() -> str:
 
 
 @pytest.fixture
+def ndx_anchor_html_fixture() -> str:
+    """Synthetic HTML mimicking `https://stockanalysis.com/list/nasdaq-100-stocks/`,
+    the Nasdaq-100 current-constituent anchor source: one table whose header is
+    `No. | Symbol | Company Name | Market Cap | Stock Price | % Change | Revenue`.
+
+    **102 body rows, not 100** -- that is the real row count observed against
+    the live source (03.1-RESEARCH.md Finding 5). The Nasdaq-100 carries
+    multiple share classes for some issuers (GOOGL/GOOG, FOX/FOXA), so an
+    equality assertion against 100 fails against correct data.
+
+    Named rows: `GOOGL`/`GOOG` and `FOX`/`FOXA` (the two share-class pairs
+    that push the count past 100), `LOGI` (the change log's earliest added
+    ticker, later removed in 2018 -- present here so the fixture mirrors a
+    real anchor that still lists historically-churned names), and `NEWMEM`
+    (added by an add-only change-log row and never removed, so it must be an
+    anchor member for its interval to stay open-ended). The remaining 96 rows
+    are generated `NDX001`..`NDX096` in a loop so the arithmetic
+    6 + 96 = 102 is visible in the source.
+
+    The table carries NO `date_added` column -- neither real anchor source
+    does -- which is what forces `Nasdaq100MembershipFetcher.fetch_anchor()`
+    to synthesise an explicit all-null one.
+    """
+    named = ["GOOGL", "GOOG", "FOX", "FOXA", "LOGI", "NEWMEM"]
+    generated = [f"NDX{i:03d}" for i in range(1, 97)]
+    symbols = named + generated
+    assert len(symbols) == 102, "anchor fixture must mirror the real 102-row shape"
+
+    body_rows = "\n".join(
+        "<tr>"
+        f"<td>{index}</td><td>{symbol}</td><td>{symbol} Inc.</td>"
+        f"<td>1.00B</td><td>10.00</td><td>0.10%</td><td>500.00M</td>"
+        "</tr>"
+        for index, symbol in enumerate(symbols, start=1)
+    )
+    return f"""
+<html><body>
+<table>
+<thead>
+<tr>
+<th>No.</th><th>Symbol</th><th>Company Name</th><th>Market Cap</th>
+<th>Stock Price</th><th>% Change</th><th>Revenue</th>
+</tr>
+</thead>
+<tbody>
+{body_rows}
+</tbody>
+</table>
+</body></html>
+"""
+
+
+@pytest.fixture
+def ndx_changes_html_fixture() -> str:
+    """Synthetic HTML mirroring the real
+    `https://en.wikipedia.org/wiki/Historical_components_of_the_Nasdaq-100`
+    page's two-level, **six**-column header (`Date` spanning two rows; `Added`
+    and `Removed` each spanning `Ticker`/`Security`; `Reason` spanning two
+    rows). One fewer column than the S&P 500 page, which also carries `Refs`.
+
+    Unlike the S&P 500 page there is no `id="changes"` to select on, so
+    `Nasdaq100MembershipFetcher._parse_changes_table()` takes the single table
+    and lets the base class's required-column check reject anything else.
+
+    Rows, deliberately in non-sorted order so the reconstruction's own
+    `sort("effective_date")` is exercised:
+
+    1. `March 2, 2018` -- `TEMP1` added / `LOGI` removed. Closes LOGI's
+       interval, so LOGI is a former member with a real `end_date`.
+    2. `February 1, 2007` -- `LOGI` added / `CMVT` removed. This is the REAL
+       earliest row on the live page and is what makes
+       `PIT_COVERAGE_START = "2007-02-01"` (RESEARCH Finding 2). `CMVT` is
+       itself left-censored here.
+    3. `January 3, 2011` -- `NEWMEM` added, blank removed cells. An **add-only**
+       row (18 of the live page's 226 rows are add-only, RESEARCH Finding 3).
+    4. `June 15, 2015` -- blank added cells, `GONE1` removed. A **drop-only**
+       row AND left-censored: `GONE1` is never added anywhere in this fixture,
+       so it must start at `PIT_COVERAGE_START` with a WARNING.
+    """
+    rows = [
+        ("March 2, 2018", "TEMP1", "Temp One Inc.", "LOGI", "Logitech", "Annual reconstitution"),
+        ("February 1, 2007", "LOGI", "Logitech", "CMVT", "Comverse Technology", "Minimum weighting"),
+        ("January 3, 2011", "NEWMEM", "New Member Corp.", "", "", "Annual reconstitution"),
+        ("June 15, 2015", "", "", "GONE1", "Gone One Inc.", "Acquisition"),
+    ]
+    body_rows = "\n".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return f"""
+<html><body>
+<table>
+<thead>
+<tr>
+<th rowspan="2">Date</th>
+<th colspan="2">Added</th>
+<th colspan="2">Removed</th>
+<th rowspan="2">Reason</th>
+</tr>
+<tr>
+<th>Ticker</th><th>Security</th><th>Ticker</th><th>Security</th>
+</tr>
+</thead>
+<tbody>
+{body_rows}
+</tbody>
+</table>
+</body></html>
+"""
+
+
+@pytest.fixture
 def mock_universe_fetchers(
     monkeypatch,
     sp500_anchor_csv_rows: str,
     sp500_changes_html_fixture: str,
+    ndx_anchor_html_fixture: str,
+    ndx_changes_html_fixture: str,
 ) -> Callable[..., object]:
     """Patch `acquisition.universe.requests.get` to return a `FakeResponse`
     (with `.status_code`, `.text`, `.content`, `.raise_for_status()`) keyed
@@ -269,10 +383,16 @@ def mock_universe_fetchers(
       `endDate` to exercise the delisted-exclusion path).
     - `SP500MembershipFetcher.ANCHOR_URL` -> `sp500_anchor_csv_rows`.
     - `SP500MembershipFetcher.CHANGES_URL` -> `sp500_changes_html_fixture`.
+    - `Nasdaq100MembershipFetcher.ANCHOR_URL` -> `ndx_anchor_html_fixture`.
+    - `Nasdaq100MembershipFetcher.CHANGES_URL` -> `ndx_changes_html_fixture`.
 
     No test in this suite makes a real network call.
     """
-    from acquisition.universe import NasdaqUniverseFetcher, SP500MembershipFetcher
+    from acquisition.universe import (
+        Nasdaq100MembershipFetcher,
+        NasdaqUniverseFetcher,
+        SP500MembershipFetcher,
+    )
 
     nasdaq_csv = (
         "ticker,exchange,assetType,priceCurrency,startDate,endDate\n"
@@ -304,6 +424,10 @@ def mock_universe_fetchers(
             return FakeResponse(text=sp500_anchor_csv_rows)
         if url == SP500MembershipFetcher.CHANGES_URL:
             return FakeResponse(text=sp500_changes_html_fixture)
+        if url == Nasdaq100MembershipFetcher.ANCHOR_URL:
+            return FakeResponse(text=ndx_anchor_html_fixture)
+        if url == Nasdaq100MembershipFetcher.CHANGES_URL:
+            return FakeResponse(text=ndx_changes_html_fixture)
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
     monkeypatch.setattr("acquisition.universe.requests.get", fake_get)

@@ -10,6 +10,7 @@ import pytest
 from loguru import logger
 
 from acquisition.universe import (
+    Nasdaq100MembershipFetcher,
     NasdaqUniverseFetcher,
     SP500MembershipFetcher,
     UniverseCatalog,
@@ -141,3 +142,27 @@ def test_wikipedia_parse_failure_falls_back_to_cache(
     assert result.shape[0] == good_snapshot.shape[0]
     assert fetcher._cache_path.stat().st_mtime_ns == cache_mtime_before
     assert fetcher._cache_path.read_bytes() == cache_bytes_before
+
+
+def test_nasdaq100_build_intervals_reconstructs_membership(
+    mock_universe_fetchers, tmp_path
+):
+    """End-to-end Nasdaq-100 interval reconstruction through the shared
+    `IndexMembershipFetcher` base: mocked anchor HTML + mocked change-log HTML
+    -> `[symbol, start_date, end_date]`, with the S&P 500 path unchanged.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    intervals = fetcher.build_intervals()
+
+    assert intervals.columns == ["symbol", "start_date", "end_date"]
+
+    logi = intervals.filter(pl.col("symbol") == "LOGI").to_dicts()
+    assert len(logi) == 1
+    assert logi[0]["start_date"] == "2007-02-01"
+    assert logi[0]["end_date"] == "2018-03-02"
+
+    newmem = intervals.filter(pl.col("symbol") == "NEWMEM").to_dicts()
+    assert len(newmem) == 1
+    assert newmem[0]["end_date"] is None
+
+    assert intervals["start_date"].min() >= Nasdaq100MembershipFetcher.PIT_COVERAGE_START

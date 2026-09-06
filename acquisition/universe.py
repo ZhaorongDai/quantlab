@@ -17,10 +17,14 @@ Two independent reference-data problems are solved here:
   including historically delisted symbols, sourced from Tiingo's own
   `supported_tickers.csv` (NOT `nasdaqlisted.txt`, which only lists
   currently-active tickers and cannot represent delisted history at all).
-- `SP500MembershipFetcher`: point-in-time S&P 500 constituent membership,
-  reconstructed via forward-chronological event simulation over Wikipedia's
-  "Historical components of the S&P 500" change log, anchored against a
-  known-correct current snapshot.
+- `IndexMembershipFetcher` and its two data-only subclasses,
+  `SP500MembershipFetcher` and `Nasdaq100MembershipFetcher`: point-in-time
+  index constituent membership, reconstructed via forward-chronological
+  event simulation over Wikipedia's "Historical components of ..." change
+  log, anchored against a known-correct current snapshot. Adding a third
+  index is a data change -- six class constants plus two parse methods --
+  not a code change; the reconstruction algorithm and the whole fetch/cache
+  safety envelope live once, on the base.
 
 `UniverseCatalog` merges both into one `(symbol, category, start_date,
 end_date)` reference table, persisted via the existing `PlBackend` as
@@ -31,6 +35,7 @@ reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 
 import io
 import zipfile
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Self
 
@@ -79,35 +84,68 @@ class NasdaqUniverseFetcher:
         return data.select(["symbol", "start_date", "end_date"])
 
 
-class SP500MembershipFetcher:
-    """Reconstructs point-in-time S&P 500 membership intervals from a
-    current-anchor snapshot plus a dated historical change log.
+class IndexMembershipFetcher(ABC):
+    """Shared machinery for reconstructing point-in-time index membership
+    intervals from a current-constituent anchor plus a dated change log.
 
-    `PIT_COVERAGE_START` ("1976-07-01") is the verified earliest row in the
-    Wikipedia `id="changes"` table -- NOT the same as the page's own prose
-    claim of 1963 coverage (02-08-RESEARCH.md Pitfall 1). Point-in-time
-    queries before this date cannot be correctly answered and must be
-    explicitly rejected, never silently answered with an incomplete history.
+    An index is DATA here, not code: a subclass supplies six class constants
+    and two parse methods, and inherits the whole reconstruction algorithm
+    plus the whole fetch/cache safety envelope unchanged.
+
+    Subclass-bound class constants:
+
+    - ``ANCHOR_URL`` -- current-constituent snapshot source.
+    - ``CHANGES_URL`` -- dated add/remove change-log source.
+    - ``PIT_COVERAGE_START`` -- the earliest date the change log actually
+      covers. Point-in-time queries before it cannot be correctly answered
+      and must be rejected, never silently answered with a partial history.
+    - ``CACHE_FILENAME`` -- per-index snapshot filename under ``cache_dir``.
+      Two indices must never share one cache file.
+    - ``INDEX_LABEL`` -- human-readable index name, used in log/error text.
+    - ``CATEGORY`` -- the ``enums.data.UniverseCategory`` token.
+
+    Two behaviours inside `fetch_changes()` are load-bearing SAFETY
+    properties, not incidental implementation. They live on this base
+    precisely so every subclass gets them BY CONSTRUCTION -- only the parse
+    step is overridable, so no subclass can accidentally ship without them:
+
+    1. **Row-count monotonicity.** A live table with fewer rows than the
+       cached snapshot is treated as a parse failure / schema drift, because
+       memberships only close, they don't retroactively vanish.
+    2. **Non-destructive fallback.** On any fetch/parse failure the cached
+       snapshot is returned and the cache file is NOT overwritten, so a
+       single bad parse cannot poison every future run.
     """
 
-    ANCHOR_URL = (
-        "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/"
-        "main/data/constituents.csv"
-    )
-    CHANGES_URL = (
-        "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"
-    )
-    PIT_COVERAGE_START = "1976-07-01"
+    ANCHOR_URL: str
+    CHANGES_URL: str
+    PIT_COVERAGE_START: str
+    CACHE_FILENAME: str
+    INDEX_LABEL: str
+    CATEGORY: str
 
     def __init__(self, cache_dir: str):
-        self._cache_path = Path(cache_dir) / "sp500_changes_snapshot.parquet"
+        self._cache_path = Path(cache_dir) / self.CACHE_FILENAME
 
+    @abstractmethod
     def fetch_anchor(self) -> pl.DataFrame:
-        response = requests.get(self.ANCHOR_URL, timeout=30)
-        response.raise_for_status()
-        data = pl.read_csv(io.StringIO(response.text))
-        data = data.rename({"Symbol": "symbol", "Date added": "date_added"})
-        return data.select(["symbol", "date_added"])
+        """Return the current-constituent anchor as a `[symbol, date_added]`
+        frame. `date_added` may be entirely null when the source carries no
+        such column -- `reconstruct_intervals()` falls back to
+        `PIT_COVERAGE_START` for those symbols.
+        """
+
+    @abstractmethod
+    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
+        """Parse this index's change-log HTML into a pandas frame carrying
+        at least `effective_date` / `added_ticker` / `removed_ticker`, with
+        `effective_date` normalised to `YYYY-MM-DD` strings.
+
+        This is the ONLY index-specific step of `fetch_changes()`: the
+        required-column check, the row-count monotonicity guard, the
+        cached-snapshot fallback and the write-on-success all stay on the
+        base around it.
+        """
 
     def fetch_changes(self) -> pl.DataFrame:
         cached_row_count = 0
@@ -125,21 +163,7 @@ class SP500MembershipFetcher:
             )
             response.raise_for_status()
 
-            tables = pd.read_html(io.StringIO(response.text), attrs={"id": "changes"})
-            changes = tables[0]
-            changes.columns = [
-                "effective_date",
-                "added_ticker",
-                "added_security",
-                "removed_ticker",
-                "removed_security",
-                "reason",
-                "refs",
-            ]
-            changes["effective_date"] = pd.to_datetime(
-                changes["effective_date"]
-            ).dt.strftime("%Y-%m-%d")
-            changes = changes[["effective_date", "added_ticker", "removed_ticker"]]
+            changes = self._parse_changes_table(response.text)
 
             required_columns = {"effective_date", "added_ticker", "removed_ticker"}
             if not required_columns.issubset(set(changes.columns)):
@@ -159,7 +183,7 @@ class SP500MembershipFetcher:
             parsed = pl.from_pandas(changes)
         except Exception as exc:
             logger.error(
-                f"Failed to fetch/parse S&P 500 changes from Wikipedia "
+                f"Failed to fetch/parse {self.INDEX_LABEL} changes from Wikipedia "
                 f"({self.CHANGES_URL}): {exc}. Falling back to cached "
                 f"snapshot; NOT overwriting the cache file."
             )
@@ -173,8 +197,8 @@ class SP500MembershipFetcher:
         if self._cache_path.exists():
             return pl.read_parquet(self._cache_path)
         raise RuntimeError(
-            "No cached S&P 500 changes snapshot available and live fetch "
-            "failed -- cannot build sp500_constituent intervals."
+            f"No cached {self.INDEX_LABEL} changes snapshot available and live "
+            f"fetch failed -- cannot build {self.CATEGORY} intervals."
         )
 
     def reconstruct_intervals(
@@ -241,6 +265,162 @@ class SP500MembershipFetcher:
         anchor = self.fetch_anchor()
         changes = self.fetch_changes()
         return self.reconstruct_intervals(anchor, changes)
+
+
+class SP500MembershipFetcher(IndexMembershipFetcher):
+    """Reconstructs point-in-time S&P 500 membership intervals from a
+    current-anchor snapshot plus a dated historical change log.
+
+    `PIT_COVERAGE_START` ("1976-07-01") is the verified earliest row in the
+    Wikipedia `id="changes"` table -- NOT the same as the page's own prose
+    claim of 1963 coverage (02-08-RESEARCH.md Pitfall 1). Point-in-time
+    queries before this date cannot be correctly answered and must be
+    explicitly rejected, never silently answered with an incomplete history.
+    """
+
+    ANCHOR_URL = (
+        "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/"
+        "main/data/constituents.csv"
+    )
+    CHANGES_URL = (
+        "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"
+    )
+    PIT_COVERAGE_START = "1976-07-01"
+    CACHE_FILENAME = "sp500_changes_snapshot.parquet"
+    INDEX_LABEL = "S&P 500"
+    CATEGORY = "sp500_constituent"
+
+    def fetch_anchor(self) -> pl.DataFrame:
+        response = requests.get(self.ANCHOR_URL, timeout=30)
+        response.raise_for_status()
+        data = pl.read_csv(io.StringIO(response.text))
+        data = data.rename({"Symbol": "symbol", "Date added": "date_added"})
+        return data.select(["symbol", "date_added"])
+
+    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
+        tables = pd.read_html(
+            io.StringIO(html_text), attrs={"id": "changes"}, flavor="lxml"
+        )
+        changes = tables[0]
+        changes.columns = [
+            "effective_date",
+            "added_ticker",
+            "added_security",
+            "removed_ticker",
+            "removed_security",
+            "reason",
+            "refs",
+        ]
+        changes["effective_date"] = pd.to_datetime(
+            changes["effective_date"]
+        ).dt.strftime("%Y-%m-%d")
+        return changes[["effective_date", "added_ticker", "removed_ticker"]]
+
+
+class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
+    """Reconstructs point-in-time Nasdaq-100 (NDX) membership intervals from
+    a current-constituent anchor snapshot plus a dated historical change log.
+
+    `PIT_COVERAGE_START` ("2007-02-01") is the verified earliest row the
+    Wikipedia "Historical components of the Nasdaq-100" table actually
+    contains (`LOGI` added / `CMVT` removed, 03.1-RESEARCH.md Finding 2).
+    Point-in-time NDX queries before that date cannot be correctly answered
+    and must be explicitly rejected, never silently answered with an
+    incomplete roster. Note this left edge is ~31 years later than the S&P
+    500's -- the two categories must not be silently unioned onto one axis
+    that implies coverage neither has.
+
+    **The anchor is the least stable input in this data layer.** Unlike the
+    S&P 500, whose anchor is a GitHub-hosted CSV, the NDX has no such
+    analogue: Wikipedia's `Nasdaq-100` page renders its components through a
+    navbox template with no parseable constituents table (RESEARCH Finding
+    5), so the anchor is scraped from the commercial page
+    `https://stockanalysis.com/list/nasdaq-100-stocks/`. If that source dies,
+    the documented alternative is `https://www.slickcharts.com/nasdaq100`
+    (also 102 rows, columns `# / Company / Symbol / Weight / Price / Chg /
+    % Chg`) -- switch `ANCHOR_URL` and `fetch_anchor()`'s column handling to
+    it rather than implementing both. This is exactly why the base class's
+    cached-snapshot fallback matters MORE here than for the S&P 500, and why
+    `fetch_anchor()` carries an explicit shape guard of its own.
+
+    **102 rows, not 100.** The live anchor probed at 102 constituents because
+    the index carries multiple share classes for some issuers (GOOGL/GOOG,
+    FOX/FOXA). A `== 100` expectation is wrong against correct data.
+
+    Neither anchor source carries a `date_added` column, so `fetch_anchor()`
+    synthesises an explicit all-null one; the base's
+    `anchor_date_added.get(sym) or self.PIT_COVERAGE_START` fallback then
+    fires as written instead of raising `KeyError`.
+    """
+
+    ANCHOR_URL = "https://stockanalysis.com/list/nasdaq-100-stocks/"
+    CHANGES_URL = (
+        "https://en.wikipedia.org/wiki/Historical_components_of_the_Nasdaq-100"
+    )
+    PIT_COVERAGE_START = "2007-02-01"
+    CACHE_FILENAME = "nasdaq100_changes_snapshot.parquet"
+    INDEX_LABEL = "Nasdaq-100"
+    CATEGORY = "nasdaq100_constituent"
+
+    # A structurally-drifted commercial page must fail loudly rather than
+    # yield a three-symbol "index": a silently truncated anchor closes every
+    # unmentioned membership and quietly reintroduces the survivorship bias
+    # this whole data layer exists to remove. 50 is deliberately far below
+    # the real 102 so a legitimate index resize never trips it.
+    MIN_ANCHOR_ROWS = 50
+
+    def fetch_anchor(self) -> pl.DataFrame:
+        response = requests.get(self.ANCHOR_URL, timeout=30)
+        response.raise_for_status()
+
+        tables = pd.read_html(io.StringIO(response.text), flavor="lxml")
+        anchor = next(
+            (table for table in tables if "Symbol" in table.columns), None
+        )
+        if anchor is None:
+            raise ValueError(
+                f"Parsed {self.INDEX_LABEL} anchor has no table carrying a "
+                f"'Symbol' column ({self.ANCHOR_URL}) -- the anchor source is "
+                f"a commercial scraped page whose markup has drifted. "
+                f"Refusing to continue rather than reconstructing membership "
+                f"from a structurally wrong anchor."
+            )
+        if len(anchor) < self.MIN_ANCHOR_ROWS:
+            raise ValueError(
+                f"Parsed {self.INDEX_LABEL} anchor has only {len(anchor)} rows "
+                f"({self.ANCHOR_URL}), fewer than the minimum "
+                f"{self.MIN_ANCHOR_ROWS} -- the anchor source is a commercial "
+                f"scraped page whose markup has drifted. Refusing to continue: "
+                f"a truncated anchor closes every unmentioned membership and "
+                f"silently reintroduces survivorship bias."
+            )
+
+        return pl.DataFrame(
+            {
+                "symbol": [str(sym) for sym in anchor["Symbol"].tolist()],
+                "date_added": [None] * len(anchor),
+            },
+            schema={"symbol": pl.String, "date_added": pl.String},
+        )
+
+    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
+        tables = pd.read_html(io.StringIO(html_text), flavor="lxml")
+        changes = tables[0]
+        # Six flat columns after `pd.read_html` flattens the page's two-level
+        # `Date | Added(Ticker, Security) | Removed(Ticker, Security) | Reason`
+        # header -- one fewer than the S&P 500 table, which also has `Refs`.
+        changes.columns = [
+            "effective_date",
+            "added_ticker",
+            "added_security",
+            "removed_ticker",
+            "removed_security",
+            "reason",
+        ]
+        changes["effective_date"] = pd.to_datetime(
+            changes["effective_date"]
+        ).dt.strftime("%Y-%m-%d")
+        return changes[["effective_date", "added_ticker", "removed_ticker"]]
 
 
 class UniverseCatalog:
