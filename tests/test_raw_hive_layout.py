@@ -581,3 +581,216 @@ def test_the_minute_window_predicate_keeps_the_tail_of_its_first_session(
         "timestamp is inside the window; a non-widened hive predicate prunes "
         "that directory away and loses it"
     )
+
+
+# ---------------------------------------------------------------------------
+# 03.2-06 Task 2 -- the three-key `tick` layout, and why `data_type=` leads.
+#
+# Quotes and trades carry DIFFERENT column sets. A directory scan derives ONE
+# schema from the first file it opens and enforces it across all of them
+# (RESEARCH Pitfall 6), so an unfiltered scan of a tick root holding both must
+# RAISE rather than return a blended frame. That strictness is the structural
+# guarantee, not a bug: `extra_columns` / `missing_columns` stay at their
+# raising defaults.
+# ---------------------------------------------------------------------------
+
+_TICK_HIVE_SCHEMA = {"data_type": pl.String, "date": pl.Date, "symbol": pl.String}
+
+
+def _write_tick_shard(
+    root: Path, data_type: str, session_date: str, symbol: str, rows: list[dict]
+) -> Path:
+    """One tick shard at `data_type=/date=/symbol=`, in that nesting order.
+
+    `symbol` is carried by the path segment rather than duplicated into the
+    rows, exactly as `Acquisition._write_shard` writes it.
+    """
+    part = root / f"data_type={data_type}" / f"date={session_date}" / f"symbol={symbol}"
+    part.mkdir(parents=True, exist_ok=True)
+    path = part / "part-batch0000-00000.pqt"
+    pl.DataFrame(rows).with_columns(pl.lit("alpaca").alias("vendor")).write_parquet(
+        path
+    )
+    return path
+
+
+def _quote_row(timestamp: str, bid: float = 1.0) -> dict:
+    return {
+        "timestamp": datetime.fromisoformat(timestamp),
+        "bid_price": bid,
+        "ask_price": bid + 0.1,
+    }
+
+
+def _trade_row(timestamp: str, price: float = 1.0) -> dict:
+    return {
+        "timestamp": datetime.fromisoformat(timestamp),
+        "price": price,
+        "trade_id": 7,
+    }
+
+
+def _tick_tree(tmp_path: Path, dates=("2024-01-02",), both_types: bool = True) -> Path:
+    """A tick root with one `AAPL` shard per (data type, date)."""
+    root = tmp_path / "downloads" / "us_equity" / "tick" / "nasdaq_data" / "alpaca"
+    for session_date in dates:
+        _write_tick_shard(
+            root, "quotes", session_date, "AAPL", [_quote_row(f"{session_date}T14:31:00")]
+        )
+        if both_types:
+            _write_tick_shard(
+                root,
+                "trades",
+                session_date,
+                "AAPL",
+                [_trade_row(f"{session_date}T14:31:00")],
+            )
+    return root
+
+
+def _tick_config(root: Path, data_type=None, **overrides) -> DatasetConfig:
+    kwargs = dict(
+        vendor="alpaca",
+        frequency="tick",
+        start_date="2024-01-01",
+        end_date="2024-05-31",
+    )
+    kwargs.update(overrides)
+    if data_type is not None:
+        kwargs["kwargs"] = {"data_type": data_type}
+    return _make_config(root, **kwargs)
+
+
+def test_an_unfiltered_tick_scan_of_a_mixed_root_raises_rather_than_blending(
+    tmp_path: Path
+):
+    """RESEARCH Pitfall 6, in the one place this phase deliberately provokes it.
+
+    Quotes and trades under one root are two schemas, and polars refuses. The
+    assertion is on the REFUSAL, not on the message -- a polars upgrade may
+    reword it, and rewording is not a behaviour change.
+
+    Do NOT "fix" this by passing `extra_columns='ignore'`. That silences the
+    error, reopens the silent merge, and looks like a bug fix while doing it.
+    """
+    root = _tick_tree(tmp_path)
+
+    unfiltered = pl.scan_parquet(
+        root, hive_partitioning=True, hive_schema=_TICK_HIVE_SCHEMA
+    )
+    with pytest.raises(Exception):
+        unfiltered.collect()
+
+    # And filtering to ONE data type makes the same root readable, which is
+    # what the leading `data_type=` key buys.
+    quotes = unfiltered.filter(pl.col("data_type") == "quotes").collect()
+    assert quotes.height == 1
+    assert "bid_price" in quotes.columns and "price" not in quotes.columns
+    assert quotes["symbol"].to_list() == ["AAPL"], (
+        "the `symbol=` path segment restores the column the writer dropped"
+    )
+
+
+def test_a_tick_scan_with_no_data_type_raises_legibly_rather_than_guessing(
+    tmp_path: Path
+):
+    """The reader must not guess either.
+
+    Without a `data_type` the scan has no way to know which of the two schemas
+    under this root the caller meant, and picking one would be a silent answer
+    to an ambiguous question.
+    """
+    root = _tick_tree(tmp_path)
+    dataset = StockDataset(_tick_config(root))
+
+    with pytest.raises(ValueError) as excinfo:
+        dataset._scan_raw().collect()
+
+    message = str(excinfo.value)
+    assert "data_type" in message
+    assert "quotes" in message and "trades" in message
+
+
+def test_scan_raw_prunes_tick_directories_on_the_data_type_and_date_keys(
+    tmp_path: Path
+):
+    """Both tick keys prune, and the negative control shows `timestamp` does
+    not.
+
+    Ten shards (two data types x five session dates); a scan narrowed to
+    `quotes` over two of the five dates must name strictly fewer sources than
+    the tree contains.
+    """
+    dates = ("2024-01-15", "2024-02-15", "2024-03-15", "2024-04-15", "2024-05-15")
+    root = _tick_tree(tmp_path, dates=dates)
+    assert len(list(root.rglob("*.pqt"))) == 10
+
+    dataset = StockDataset(_tick_config(root, data_type="quotes"))
+
+    whole = _scan_source_count(dataset._scan_raw().explain())
+    narrowed = _scan_source_count(
+        dataset._scan_raw("2024-04-01", "2024-05-31").explain()
+    )
+
+    assert whole == 5, (
+        f"the `data_type=quotes` filter alone must halve the tree, got {whole}"
+    )
+    assert narrowed == 2, narrowed
+    assert narrowed < whole
+
+    # NEGATIVE CONTROL: a timestamp-only predicate prunes nothing -- and on a
+    # mixed root it cannot even be collected.
+    timestamp_only = pl.scan_parquet(
+        root, hive_partitioning=True, hive_schema=_TICK_HIVE_SCHEMA
+    ).filter(pl.col("timestamp") >= pl.lit(datetime.fromisoformat("2024-04-01")))
+    assert _scan_source_count(timestamp_only.explain()) == 10
+
+
+def test_a_tick_scan_filtered_to_one_data_type_reads_only_that_data_type(
+    tmp_path: Path
+):
+    """The rows, not just the plan. Filtering to `trades` returns the trades
+    projection and nothing from the quotes one."""
+    root = _tick_tree(tmp_path)
+
+    frame = StockDataset(_tick_config(root, data_type="trades"))._scan_raw().collect()
+
+    assert frame.height == 1
+    assert "price" in frame.columns and "trade_id" in frame.columns
+    assert "bid_price" not in frame.columns and "ask_price" not in frame.columns
+    # `symbol` survives -- it is a real data column that the tick layout also
+    # expresses as a path segment; the two purely derived keys are dropped.
+    assert frame["symbol"].to_list() == ["AAPL"]
+    assert "data_type" not in frame.columns and "date" not in frame.columns
+    assert "vendor" not in frame.columns
+
+
+def test_a_tick_scan_does_not_dedup_rows_sharing_a_timestamp_and_symbol(
+    tmp_path: Path
+):
+    """D-16 on the READ side.
+
+    `dedup_raw_frame` exists so `.to_xarray()` gets a unique
+    `[timestamp, symbol]` MultiIndex. Tick has no such path this phase (D-18),
+    and applying that dedup here would collapse every quote sharing a
+    microsecond to one -- silently destroying exactly what D-16 says must be
+    preserved.
+    """
+    root = tmp_path / "downloads" / "us_equity" / "tick" / "nasdaq_data" / "alpaca"
+    _write_tick_shard(
+        root,
+        "quotes",
+        "2024-01-02",
+        "AAPL",
+        [
+            _quote_row("2024-01-02T14:31:00", bid=1.0),
+            _quote_row("2024-01-02T14:31:00", bid=1.2),
+        ],
+    )
+
+    frame = StockDataset(_tick_config(root, data_type="quotes"))._scan_raw().collect()
+
+    assert frame.height == 2, (
+        "two quotes sharing one (timestamp, symbol) are two quotes, not one"
+    )
+    assert sorted(frame["bid_price"].to_list()) == [1.0, 1.2]

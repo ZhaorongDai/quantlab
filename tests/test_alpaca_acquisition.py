@@ -772,3 +772,339 @@ def test_minute_bars_reuse_the_daily_bars_projection_with_no_second_column_set(
 
     assert tuple(minute) == tuple(daily)
     assert tuple(daily)[:3] == ("timestamp", "symbol", "vendor")
+
+
+# ---------------------------------------------------------------------------
+# 03.2-06 Task 2 -- quotes and trades, at FULL resolution, structurally
+# separated on disk by the leading `data_type=` hive key.
+#
+# Quotes and trades have DIFFERENT column sets. A directory scan derives ONE
+# schema from the first file it opens and enforces it across all of them, so
+# without that leading key a scan of one tick root meets two schemas and the
+# whole tier becomes unreadable (RESEARCH Pitfall 6). Expressing the
+# distinction as a hive KEY rather than as two new `Frequency` tokens leaves
+# `enums/data.py`'s locked literal set untouched and keeps both prunable.
+#
+# D-16: rows go from the envelope to the shard UNAGGREGATED. No resampling, no
+# bucketing, no dedup anywhere between `_fetch_page` and the parquet file. The
+# one-for-one row-count test below is the guard, because a future "just
+# resample to 1s to save space" edit is exactly the kind of change that looks
+# like an optimisation.
+# ---------------------------------------------------------------------------
+
+#: The vendor's own quote field set (`t,bx,bp,bs,ax,ap,as,c,z`) and trade field
+#: set (`t,x,p,s,i,c,z`). Single letters ON PURPOSE, for the same reason the
+#: bar fixture keeps them: mapping them onto the project's names is the job of
+#: the code under test. Note `c` means CLOSE on a bar and CONDITIONS on a quote
+#: or a trade -- which is precisely why the field map must be per data type.
+_VENDOR_QUOTE_FIELDS = ("t", "bx", "bp", "bs", "ax", "ap", "as", "c", "z")
+_VENDOR_TRADE_FIELDS = ("t", "x", "p", "s", "i", "c", "z")
+
+
+def _vendor_quote(t: str, bp: float = 1.0, ap: float = 1.1) -> dict:
+    return {
+        "t": t,
+        "bx": "V",
+        "bp": bp,
+        "bs": 100,
+        "ax": "P",
+        "ap": ap,
+        "as": 200,
+        "c": ["R"],
+        "z": "C",
+    }
+
+
+def _vendor_trade(t: str, p: float = 1.0, i: int = 1) -> dict:
+    return {"t": t, "x": "V", "p": p, "s": 100, "i": i, "c": ["@", "T"], "z": "C"}
+
+
+def _tick_page(data_type: str, symbol_to_rows: dict, next_page_token=None) -> dict:
+    """One `GET /v2/stocks/{quotes,trades}` envelope in the VENDOR's shape.
+
+    Built here rather than in `tests/conftest.py` because this plan's file
+    fence does not include conftest; the shape is the one 03.2-RESEARCH.md
+    § "Endpoints and base URL" pins for both endpoints.
+    """
+    build = _vendor_quote if data_type == "quotes" else _vendor_trade
+    return {
+        data_type: {
+            symbol: [row if isinstance(row, dict) else build(row) for row in rows]
+            for symbol, rows in symbol_to_rows.items()
+        },
+        "next_page_token": next_page_token,
+        "currency": "USD",
+    }
+
+
+def _tick_config(acquisition_config, data_type="quotes", **overrides):
+    """An `AcquisitionConfig` for the tick tier. `data_type=None` omits the
+    knob entirely, which is the "no default" case, not a null-valued one."""
+    kwargs = dict(overrides.pop("kwargs", None) or {})
+    if data_type is not None:
+        kwargs["data_type"] = data_type
+    built = dict(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        frequency="tick",
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        kwargs=kwargs or None,
+    )
+    built.update(overrides)
+    return acquisition_config(**built)
+
+
+def test_the_data_type_knob_selects_the_endpoint_and_an_unknown_value_raises(
+    mock_alpaca_client, acquisition_config
+):
+    """One knob drives the endpoint; an unrecognised value raises before any
+    request is issued, naming what IS accepted.
+
+    Quotes and trades land under ONE vendor root. A silent default -- or a
+    typo forwarded to the vendor -- would file one data type's rows under the
+    other's name, which is unrecoverable without knowing which run wrote which
+    shard (T-03.2-26).
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    for data_type, path in (
+        ("quotes", "/stocks/quotes"),
+        ("trades", "/stocks/trades"),
+    ):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            _tick_page(data_type, {"AAPL": ["2024-01-02T14:31:00Z"]})
+        ]
+        cfg = _tick_config(acquisition_config, data_type=data_type, subdir=data_type)
+        AlpacaAcquisition(cfg).download()
+
+        (call,) = mock_alpaca_client.calls
+        assert call["path"] == path
+        assert AlpacaAcquisition.ENDPOINT_MAP[data_type] == path
+        # `timeframe` and `adjustment` are BAR parameters and must not be sent
+        # to an endpoint that has no concept of either.
+        assert "timeframe" not in call
+        assert "adjustment" not in call
+
+    mock_alpaca_client.calls = []
+    with pytest.raises(ValueError) as excinfo:
+        AlpacaAcquisition(_tick_config(acquisition_config, data_type="ticks"))
+
+    message = str(excinfo.value)
+    assert "ticks" in message, "the rejected value"
+    assert "quotes" in message and "trades" in message, "what IS accepted"
+    assert mock_alpaca_client.calls == [], "no request may be issued first"
+
+
+def test_a_tick_config_with_no_data_type_raises_rather_than_defaulting(
+    mock_alpaca_client, acquisition_config
+):
+    """No in-code default, in either direction.
+
+    Defaulting to `quotes` would file trades as quotes for anyone who forgot
+    the knob, under a shared vendor root, with the wrong projection applied on
+    the way in. The request list is asserted EMPTY so the raise is proved to
+    happen before the transport is touched.
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.calls = []
+    with pytest.raises(ValueError) as excinfo:
+        AlpacaAcquisition(_tick_config(acquisition_config, data_type=None))
+
+    message = str(excinfo.value)
+    assert "data_type" in message
+    assert "quotes" in message and "trades" in message
+    assert mock_alpaca_client.calls == []
+
+
+def test_quotes_and_trades_are_written_through_disjoint_projections(
+    mock_alpaca_client, acquisition_config
+):
+    """Each data type declares its OWN `RAW_COLUMNS`, and the two neither match
+    nor contain one another.
+
+    A shared projection would force one endpoint's rows to carry the other's
+    columns as nulls, which is a schema that describes neither -- and the
+    `bid_*`/`ask_*` pairs have no meaning on a trade at all.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    columns = {}
+    for data_type in ("quotes", "trades"):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            _tick_page(data_type, {"AAPL": ["2024-01-02T14:31:00Z"]})
+        ]
+        cfg = _tick_config(acquisition_config, data_type=data_type, subdir=data_type)
+        acq = AlpacaAcquisition(cfg)
+        acq.download()
+        columns[data_type] = tuple(acq.RAW_COLUMNS)
+
+        (shard,) = list(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+        on_disk = pl.read_parquet(shard).columns
+        # `symbol` is carried by the `symbol=` hive path segment rather than
+        # duplicated into every row; everything else in the projection is on
+        # disk, in order.
+        assert on_disk == [c for c in columns[data_type] if c != "symbol"]
+
+    quotes, trades = set(columns["quotes"]), set(columns["trades"])
+    assert quotes != trades
+    assert not quotes <= trades and not trades <= quotes
+    for data_type in ("quotes", "trades"):
+        assert columns[data_type][:3] == ("timestamp", "symbol", "vendor")
+    assert {"bid_price", "ask_price"} <= quotes
+    assert {"price", "trade_id"} <= trades
+    assert not ({"bid_price", "ask_price"} & trades)
+
+
+def test_tick_shards_land_under_data_type_then_session_date_then_symbol(
+    mock_alpaca_client, acquisition_config
+):
+    """The three-key tick layout, in the order `enums.data.RAW_HIVE_KEYS`
+    declares it, with both data types under the same vendor root.
+
+    The ORDER is the directory nesting order. `data_type=` must lead: it is
+    what keeps two different column sets from meeting inside one scan.
+    """
+    from base.pageledger import PageLedger
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    root = None
+    for data_type in ("quotes", "trades"):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            _tick_page(
+                data_type,
+                {
+                    "AAPL": ["2024-01-02T14:31:00Z"],
+                    "MSFT": ["2024-01-03T02:00:00Z"],  # 2024-01-02 session
+                },
+            )
+        ]
+        cfg = _tick_config(acquisition_config, data_type=data_type)
+        AlpacaAcquisition(cfg).download()
+        root = Path(cfg.raw_data_dir_path)
+
+        batch_key = PageLedger.batch_key(
+            "alpaca", "tick", cfg.start_date, cfg.end_date, ("AAPL",)
+        )
+        for symbol in ("AAPL", "MSFT"):
+            shard = (
+                root
+                / f"data_type={data_type}"
+                / "date=2024-01-02"
+                / f"symbol={symbol}"
+                / f"part-{batch_key}-00000.pqt"
+            )
+            assert shard.exists(), sorted(str(p) for p in root.rglob("*"))
+
+    assert sorted(p.name for p in root.iterdir() if p.is_dir()) == [
+        "data_type=quotes",
+        "data_type=trades",
+    ]
+
+
+def test_every_vendor_row_reaches_a_shard_one_for_one_with_no_aggregation(
+    mock_alpaca_client, acquisition_config
+):
+    """D-16, asserted by counting.
+
+    Two symbols across two pages, and -- deliberately -- two quotes sharing one
+    timestamp for one symbol, which is ordinary in a real quote stream. Any
+    resampling, bucketing or `(timestamp, symbol)` dedup between `_fetch_page`
+    and the shard collapses that pair and turns this red.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        _tick_page(
+            "quotes",
+            {
+                "AAPL": [
+                    _vendor_quote("2024-01-02T14:31:00.100000Z", bp=1.0),
+                    # SAME timestamp, different price -- two genuine quotes.
+                    _vendor_quote("2024-01-02T14:31:00.100000Z", bp=1.2),
+                    _vendor_quote("2024-01-02T14:31:00.200000Z", bp=1.3),
+                ]
+            },
+            next_page_token="page-1",
+        ),
+        _tick_page(
+            "quotes",
+            {
+                "AAPL": [_vendor_quote("2024-01-02T14:31:00.300000Z")],
+                "MSFT": [
+                    _vendor_quote("2024-01-02T14:31:00.100000Z"),
+                    _vendor_quote("2024-01-02T14:31:00.200000Z"),
+                ],
+            },
+            next_page_token=None,
+        ),
+    ]
+    envelope_rows = 6
+
+    cfg = _tick_config(acquisition_config, symbols=("AAPL", "MSFT"))
+    AlpacaAcquisition(cfg).download()
+
+    root = Path(cfg.raw_data_dir_path)
+    shards = sorted(root.rglob("*.pqt"))
+    written = sum(pl.read_parquet(shard).height for shard in shards)
+    assert written == envelope_rows, (
+        f"{envelope_rows} rows came back from the vendor and {written} landed "
+        f"on disk; the acquisition layer must not aggregate, resample or dedup "
+        f"(D-16). Shards: {[str(s) for s in shards]}"
+    )
+
+    aapl = pl.concat(
+        [
+            pl.read_parquet(shard)
+            for shard in shards
+            if "symbol=AAPL" in str(shard)
+        ]
+    )
+    assert aapl.height == 4
+    duplicated = aapl.filter(
+        pl.col("timestamp")
+        == pl.col("timestamp").filter(pl.col("bid_price") == 1.0).first()
+    )
+    assert duplicated.height == 2, (
+        "the two quotes sharing one timestamp must both survive"
+    )
+    assert sorted(duplicated["bid_price"].to_list()) == [1.0, 1.2]
+
+
+def test_a_malformed_symbol_raises_before_any_symbol_path_segment_is_built(
+    mock_alpaca_client, acquisition_config
+):
+    """T-03.2-03. Tick is the only layout where a symbol becomes a DIRECTORY
+    NAME, so `_validate_symbols` running first is what keeps a path separator
+    or a parent reference from escaping the raw root.
+
+    Asserted by absence: the raw root must not exist at all afterwards, so the
+    ordering (validate, then build the path) is proved rather than assumed.
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = _tick_config(acquisition_config)
+    acq = AlpacaAcquisition(cfg)
+
+    mock_alpaca_client.calls = []
+    with pytest.raises(ValueError) as excinfo:
+        acq._fetch_batch(["../../etc"], cfg.start_date, cfg.end_date)
+
+    assert "well-formed ticker" in str(excinfo.value)
+    assert mock_alpaca_client.calls == []
+    assert not Path(cfg.raw_data_dir_path).exists()
