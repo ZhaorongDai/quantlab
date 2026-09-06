@@ -287,6 +287,11 @@ class BaseDataset(ABC):
             append_dim=append_dim,
         )
 
+        # Before the first irreversible append, not after: the ledger and the
+        # store are two independent records of the same truth and a resume
+        # trusts neither alone (D-04 / T-13w-02).
+        ledger.assert_consistent(symbols, self.config.zarr_file_path)
+
         logger.info(
             f"{self.class_name}: chunked ingestion over {len(windows)} "
             f"{granularity} window(s), {len(symbols)} pinned symbol(s), "

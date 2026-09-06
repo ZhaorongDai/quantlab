@@ -52,6 +52,10 @@ import polars as pl
 import requests
 from loguru import logger
 
+# `base.chunking` is a LEAF (stdlib + pandas/xarray, zero project-internal
+# imports), so importing it here cannot create a cycle -- this module
+# already reaches into `base.config` and `dataset.backend`.
+from base.chunking import TimeChunkPlanner
 from base.config import UniverseConfig
 from dataset.backend import PlBackend
 from enums.data import UniverseCategory
@@ -1290,6 +1294,108 @@ class UniverseCatalog:
             f"the date window or the symbol set, or raise "
             f"MAX_DENSE_PANEL_BYTES deliberately if this machine has the RAM."
         )
+
+    def assert_chunked_panel_fits(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+        granularity: str = "year",
+        num_variables: int = 12,
+        bytes_per_value: int = 8,
+    ) -> dict:
+        """Size a CHUNKED densification: refuse per chunk, advise on the total.
+
+        The sibling of `assert_dense_panel_fits()`, not its replacement. That
+        one answers "does this whole window fit in RAM at once", which is the
+        right question for `from_raw_data()`. This one answers "does one
+        `granularity` window fit", which is the right question for
+        `from_raw_data_chunked()` -- and it deliberately does NOT raise merely
+        because the whole-range total is over budget, because making that
+        total achievable is precisely what chunking is for (D-05). The total
+        is still returned and printed, as a non-raising advisory, so a caller
+        sees what they are committing to.
+
+        **Each chunk is sized on the PINNED WHOLE-RANGE symbol count**, never
+        on the roster that overlaps that chunk. `from_raw_data_chunked()`
+        resolves the symbol axis once over the entire range and materialises
+        EVERY window on it (D-02), so a 2025 window still allocates a column
+        for a ticker that delisted in 2009. Calling `estimate_dense_panel()`
+        scoped to one chunk would count only the symbols listed during it,
+        understate the real allocation, and let the OOM back in -- which is
+        the single easiest thing to get subtly wrong here.
+
+        **Why calendar windows are correct in this method and nowhere else.**
+        Sizing runs BEFORE the download, when no timestamp axis exists to
+        plan against, so `TimeChunkPlanner.plan_calendar()` is the only
+        option; and the whole estimator is already a 252/365.25
+        approximation, so calendar edges cost nothing here. They must never
+        be handed to a densifier -- the write loop uses
+        `plan_from_timestamps()` against the real observed axis.
+
+        Returns `{"granularity", "advisory", "chunks", "max_chunk",
+        "max_chunk_bytes"}`, so the caller can print without recomputing.
+        """
+        self._validate_category(category)
+        self._validate_iso_date(start_date, "start_date")
+        self._validate_iso_date(end_date, "end_date")
+
+        planner = TimeChunkPlanner(granularity)
+        advisory = self.estimate_dense_panel(
+            category, start_date, end_date, num_variables, bytes_per_value
+        )
+        pinned_symbols = advisory["symbols"]
+
+        gib = 1024**3
+        chunks: list[dict] = []
+        for window_start, window_end in planner.plan_calendar(start_date, end_date):
+            window_days = (
+                datetime.date.fromisoformat(window_end)
+                - datetime.date.fromisoformat(window_start)
+            ).days + 1
+            trading_days = max(
+                round(
+                    window_days
+                    * self.TRADING_DAYS_PER_YEAR
+                    / self.CALENDAR_DAYS_PER_YEAR
+                ),
+                1,
+            )
+            dense_cells = pinned_symbols * trading_days
+            dense_bytes = dense_cells * num_variables * bytes_per_value
+            chunk = {
+                "start": window_start,
+                "end": window_end,
+                "symbols": pinned_symbols,
+                "trading_days": trading_days,
+                "dense_cells": dense_cells,
+                "dense_bytes": dense_bytes,
+            }
+            if dense_bytes > self.MAX_DENSE_PANEL_BYTES:
+                raise ValueError(
+                    f"Refusing to densify {category} in {granularity} chunks: "
+                    f"the window {window_start}..{window_end} alone is "
+                    f"{pinned_symbols} pinned symbol(s) x {trading_days} "
+                    f"trading days x {num_variables} variables = "
+                    f"{dense_bytes / gib:.2f} GiB, over the "
+                    f"{self.MAX_DENSE_PANEL_BYTES / gib:.2f} GiB budget. Every "
+                    f"window is materialised on the whole-range symbol axis, "
+                    f"so a chunk does not get smaller by containing fewer "
+                    f"listed tickers -- only by covering less time. Pass a "
+                    f"finer --chunk (year -> quarter -> month), or raise "
+                    f"MAX_DENSE_PANEL_BYTES deliberately if this machine has "
+                    f"the RAM."
+                )
+            chunks.append(chunk)
+
+        max_chunk = max(chunks, key=lambda c: c["dense_bytes"]) if chunks else None
+        return {
+            "granularity": granularity,
+            "advisory": advisory,
+            "chunks": chunks,
+            "max_chunk": max_chunk,
+            "max_chunk_bytes": max_chunk["dense_bytes"] if max_chunk else 0,
+        }
 
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
         # `category` and `as_of_date` arrive unvalidated -- `as_of_date` comes

@@ -10,10 +10,11 @@ Two pure collaborators for the chunked densify-and-append ingestion path:
   first unwritten window instead of at the top.
 
 Neither depends on a Dataset, a backend or a config -- they are functions of a
-timestamp axis and a file path -- so this module is a LEAF: stdlib + pandas
-only, zero project-internal imports. That is the same rule `dataset/cleaning.py`
-follows, and it is what keeps this module unit-testable without touching a
-store and structurally incapable of introducing an import cycle.
+timestamp axis and a file path -- so this module is a LEAF: stdlib plus
+pandas/xarray, and ZERO project-internal imports. That is the same rule
+`dataset/cleaning.py` follows, and it is what keeps this module unit-testable
+without touching a Dataset and structurally incapable of introducing an
+import cycle. (`base.data` imports it, never the other way round.)
 """
 
 import hashlib
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import pandas as pd
+import xarray as xr
 
 
 class TimeChunkPlanner:
@@ -268,6 +270,94 @@ class ChunkLedger:
             }
         )
         self._flush()
+
+    def assert_consistent(self, symbols: Sequence[str], store_path: str) -> None:
+        """Cross-check the ledger against the store before the first append.
+
+        The two are independent records of the same truth, written at
+        different instants, and an append is irreversible: it cannot be
+        validated after the fact from the store alone (T-13w-02). So a resume
+        trusts neither on its own and refuses on any disagreement rather than
+        appending a window that would misalign the whole store.
+
+        Four cases, in order:
+
+        - store absent, ledger empty -> the normal first run;
+        - a recorded fingerprint that differs from the current pinned symbol
+          list -> the roster changed between runs, so every stored column is
+          on a different axis than the next window would be;
+        - a store with no ledger -> there is no record of WHICH windows are
+          already in it, so appending would blindly duplicate or skip;
+        - a store whose last append-dim value differs from the last recorded
+          window's end -> a crash landed between a successful `to_zarr` and
+          the ledger write, and re-running the window would duplicate it.
+
+        Only the append-dim COORDINATE is read from the store; the data
+        variables are never loaded.
+        """
+        store_exists = Path(store_path).exists()
+        recorded = self._payload["windows"]
+
+        if self.symbol_fingerprint is not None:
+            current = self.fingerprint(symbols)
+            if current != self.symbol_fingerprint:
+                raise ValueError(
+                    f"ChunkLedger: refusing to resume {store_path} -- the "
+                    f"pinned symbol axis has {len(symbols)} symbol(s) but the "
+                    f"ledger at {self.path} was written against "
+                    f"{self.symbol_count}. A roster refresh between runs is "
+                    f"the usual cause. Every window in the store is "
+                    f"materialised on the OLD axis, so appending one on the "
+                    f"new axis would silently misalign every column. Delete "
+                    f"the store and the ledger to rebuild from scratch."
+                )
+
+        if store_exists and not recorded:
+            raise ValueError(
+                f"ChunkLedger: a store exists at {store_path} but there is no "
+                f"chunk ledger at {self.path}, so there is no record of which "
+                f"windows it already holds. Appending blind would duplicate "
+                f"or skip windows with no way to tell afterwards. Delete the "
+                f"store to rebuild it, or restore the ledger."
+            )
+
+        if not store_exists and recorded:
+            raise ValueError(
+                f"ChunkLedger: the ledger at {self.path} records "
+                f"{len(recorded)} written window(s) but no store exists at "
+                f"{store_path}. Delete the ledger to start over."
+            )
+
+        if store_exists and recorded:
+            tail = self._store_tail(store_path)
+            expected = recorded[-1]["end"]
+            if tail is not None and self._key(tail) != expected:
+                raise ValueError(
+                    f"ChunkLedger: refusing to resume {store_path} -- the "
+                    f"store's last {self.append_dim} is "
+                    f"{pd.Timestamp(tail).date()} but the ledger's last "
+                    f"recorded window ends "
+                    f"{pd.Timestamp(expected).date()}. The two disagree, "
+                    f"which means a crash landed between a successful write "
+                    f"and the ledger update; re-running would duplicate or "
+                    f"skip a window rather than resume cleanly."
+                )
+
+    def _store_tail(self, store_path: str):
+        """The store's last append-dim coordinate value, or None.
+
+        Opened lazily and only the coordinate is touched -- reading the data
+        variables to answer a one-value question would defeat the whole point
+        of chunking.
+        """
+        store = xr.open_zarr(store_path)
+        try:
+            if self.append_dim not in store.coords:
+                return None
+            values = store[self.append_dim].values
+            return values[-1] if len(values) else None
+        finally:
+            store.close()
 
     def _flush(self) -> None:
         directory = Path(self.path).parent
