@@ -408,9 +408,16 @@ def test_read_coverage_on_a_new_format_watermark_returns_both_components(
     acq = TiingoAcquisition(_make_config(tmp_path))
     acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01")
 
+    # `no_data` joined this dict in 03.2-05 as the fourth read-time state
+    # (D-04/SC-4). It is asserted here as an EQUALITY rather than dropped from
+    # the comparison, because the point of this test is that `_read_coverage`
+    # returns the whole recorded coverage and nothing invented -- a `False`
+    # here is the correct reading of a sidecar whose marker key is absent,
+    # which is exactly what `_write_watermark` wrote above.
     assert acq._read_coverage("AAPL") == {
         "start_date": "2024-01-01",
         "last_date": "2024-01-31",
+        "no_data": False,
     }
 
 

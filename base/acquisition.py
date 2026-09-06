@@ -72,10 +72,30 @@ class Acquisition(ABC):
     D-03). Recording only the end date made a widened `start_date` silently
     skip every already-fetched symbol, shipping a dataset whose per-symbol
     history depth was inconsistent with no warning at all. The schema is
-    additive -- `{"start_date": ..., "last_date": ...}`, with `last_date`
-    keeping its original name -- so old and new readers each tolerate the
-    other's files. An unknown covered start is represented by the key being
-    ABSENT and is never guessed; see `_read_coverage` and `stamp_watermarks`.
+    additive -- `{"start_date": ..., "last_date": ..., "no_data": ...}`, with
+    `last_date` keeping its original name -- so old and new readers each
+    tolerate the other's files. An unknown covered start is represented by the
+    key being ABSENT and is never guessed; see `_read_coverage` and
+    `stamp_watermarks`.
+
+    **`no_data` is the third key and the fourth read-time state** (03.2 D-04,
+    SC-4). It means "the vendor was ASKED about this symbol over the recorded
+    window and returned nothing", which is a different fact from "the fetch
+    failed" and from "this symbol was never fetched". Three storage facts
+    yield four states::
+
+        never fetched         no sidecar, no manifest entry
+        fetch failed          no sidecar, PLUS an entry in `_failures.json`
+        fetched, data landed  sidecar, `no_data` ABSENT
+        queried, no data      sidecar, `no_data` present and true
+
+    Like `start_date`, the key is OMITTED when false rather than written as
+    `false`, so absence is the default and every sidecar written before this
+    phase reads back correctly as not-no-data -- true because the old code
+    only ever wrote a watermark after a successful fetch. The guarantee runs
+    in BOTH directions: an old reader ignores the key (`_read_watermark` is
+    untouched and still returns the same `last_date`), and a new reader
+    tolerates its absence.
     """
 
     def __init__(self, config: AcquisitionConfig):
@@ -142,10 +162,11 @@ class Acquisition(ABC):
         return None if payload is None else payload.get("last_date")
 
     def _read_coverage(self, symbol: str) -> dict | None:
-        """The covered RANGE for `symbol` as `{"start_date", "last_date"}`,
-        or None when no readable sidecar exists.
+        """The covered RANGE for `symbol` as
+        `{"start_date", "last_date", "no_data"}`, or None when no readable
+        sidecar exists.
 
-        Either component may be None. In particular a LEGACY sidecar --
+        Either date component may be None. In particular a LEGACY sidecar --
         `{"last_date": ...}`, the only format written before 260906-26o --
         reads back with `start_date=None`, and nothing anywhere fills that in
         from `config.start_date` or any other fallback.
@@ -156,6 +177,13 @@ class Acquisition(ABC):
         gap this schema exists to eliminate, and reproduces it invisibly.
         Stamping is therefore an explicit, user-supplied step --
         `stamp_watermarks()` below.
+
+        `no_data` follows the SAME discipline from the other side: it defaults
+        to `False` when the key is absent, which is the correct reading of
+        every sidecar written before 03.2 because the old code only wrote a
+        watermark after a successful fetch. It is read through `_read_sidecar`
+        like everything else -- adding a second tolerant read for the marker
+        would give a corrupt sidecar two failure policies that could drift.
         """
         payload = self._read_sidecar(symbol)
         if payload is None:
@@ -163,10 +191,15 @@ class Acquisition(ABC):
         return {
             "start_date": payload.get("start_date"),
             "last_date": payload.get("last_date"),
+            "no_data": bool(payload.get("no_data", False)),
         }
 
     def _write_watermark(
-        self, symbol: str, last_date: str, start_date: str | None = None
+        self,
+        symbol: str,
+        last_date: str,
+        start_date: str | None = None,
+        no_data: bool = False,
     ) -> None:
         """Record coverage for `symbol`.
 
@@ -177,12 +210,26 @@ class Acquisition(ABC):
         `start_date=None` omits the key ENTIRELY rather than writing a null --
         an unknown covered start is represented by absence, so it cannot be
         mistaken at read time for a recorded value.
+
+        `no_data=False` omits its key for the same reason, and the reasoning
+        matters more here because the default is what OLD files inherit.
+        Omitting makes absence the default, so every sidecar written before
+        this phase reads back correctly as not-no-data -- true because the old
+        code only ever wrote a watermark after a successful fetch. Writing
+        `false` would instead put a positive claim in new files that older
+        files cannot make, leaving those older files ambiguous between "had
+        data" and "never said" (D-04, RESEARCH Pattern 4).
+
+        Callers must have earned the `True`: see `_attempt_batch`, where the
+        marker is computed once per COMPLETED batch and never per page.
         """
         path = self._watermark_path(symbol)
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, str] = {"last_date": last_date}
+        payload: dict[str, str | bool] = {"last_date": last_date}
         if start_date is not None:
             payload["start_date"] = start_date
+        if no_data:
+            payload["no_data"] = True
         with open(path, "w") as f:
             json.dump(payload, f)
 
@@ -196,6 +243,12 @@ class Acquisition(ABC):
         records a start is left untouched, because overwriting a recorded
         range with a guessed one is the same silent-wrong-data failure in a
         different costume (T-26o-04).
+
+        It fills the START and nothing else. An existing `no_data` marker is
+        CARRIED THROUGH verbatim: stamping is a statement about which window a
+        file covers, and it has no evidence at all about whether the vendor
+        had rows in it. Dropping the marker here would silently downgrade a
+        confirmed absence to "fetched, data landed".
 
         Issues zero network requests.
         """
@@ -214,7 +267,10 @@ class Acquisition(ABC):
             if coverage["start_date"] is not None:
                 continue
             self._write_watermark(
-                symbol, coverage["last_date"], start_date=start_date
+                symbol,
+                coverage["last_date"],
+                start_date=start_date,
+                no_data=coverage["no_data"],
             )
             changed += 1
 
@@ -1060,8 +1116,32 @@ class Acquisition(ABC):
         `config.start_date` would mark every symbol pending on every run while
         the re-fetch it triggers could not close the gap -- an endless, silent
         quota burn. Widening the covered range is `download()`'s job.
+
+        The rule itself lives in `_classify_coverage`, over an ALREADY-READ
+        coverage dict, so `_partition_by_coverage` can classify and count the
+        `no_data` marker from a single read per sidecar. That is a split of
+        read from rule, not a second read path -- `_read_sidecar` remains the
+        only place a sidecar is opened.
         """
-        coverage = self._read_coverage(symbol)
+        return self._classify_coverage(
+            self._read_coverage(symbol), from_watermark
+        )
+
+    def _classify_coverage(
+        self, coverage: dict | None, from_watermark: bool = False
+    ) -> str:
+        """`_coverage_status`'s rule, applied to an already-read coverage dict.
+
+        Deliberately blind to `coverage["no_data"]`. A marked symbol whose
+        recorded window still covers the request is `covered` by the ordinary
+        rule and is skipped; a marked symbol whose recorded window is narrower
+        is `widened` and is re-fetched. The ABSENCE of a special case here is
+        the design (D-04): the marker records what the vendor said about a
+        WINDOW, and a branch that turned it into a permanent verdict about the
+        symbol would make a later, deeper request unable to reach the vendor
+        at all. Tests pin both directions so the branch cannot be added later
+        as a plausible-looking "optimisation".
+        """
         if coverage is None or coverage["last_date"] != self.config.end_date:
             return "uncovered"
         if from_watermark:
@@ -1091,10 +1171,20 @@ class Acquisition(ABC):
         """
         legacy_is_skipped = self._legacy_policy() == "warn"
         pending: list[str] = []
-        counts = {"covered": 0, "widened": 0, "legacy": 0}
+        counts = {"covered": 0, "widened": 0, "legacy": 0, "no_data": 0}
 
         for symbol in requested:
-            status = self._coverage_status(symbol, from_watermark)
+            coverage = self._read_coverage(symbol)
+            status = self._classify_coverage(coverage, from_watermark)
+            # Counted ALONGSIDE the status rather than as a fourth status: a
+            # marked symbol is `covered`/`widened`/`legacy` by exactly the same
+            # rule as an unmarked one (the marker records what the vendor said
+            # about a window, not a verdict about the symbol), and the count
+            # exists so a run can REPORT how many symbols the vendor had
+            # nothing for -- distinguishably from how many failed. What made
+            # the 260906-26o defect dangerous was the silence, not the skip.
+            if coverage is not None and coverage["no_data"]:
+                counts["no_data"] += 1
             if status == "covered":
                 counts["covered"] += 1
                 continue
@@ -1111,8 +1201,9 @@ class Acquisition(ABC):
     def _report_coverage(
         self, requested: list[str], pending: list[str], counts: dict[str, int]
     ) -> None:
-        """Report the three outcomes separately, so widening the window has a
-        visible, countable consequence instead of a silent one.
+        """Report the outcomes separately, so widening the window -- or a
+        vendor having nothing to give -- has a visible, countable consequence
+        instead of a silent one.
         """
         skipped = len(requested) - len(pending)
         if skipped:
@@ -1120,6 +1211,16 @@ class Acquisition(ABC):
                 f"Resume: skipping {skipped}/{len(requested)} symbols already "
                 f"covering {self.config.start_date}..{self.config.end_date}; "
                 f"{len(pending)} remaining."
+            )
+        if counts.get("no_data"):
+            logger.info(
+                f"{counts['no_data']} symbol(s) carry a recorded "
+                f"'queried, no data' marker -- the vendor was ASKED and "
+                f"returned nothing for the window on their sidecar. They are "
+                f"distinct from the failures in "
+                f"{self.FAILURE_MANIFEST_NAME}, which were never successfully "
+                f"queried at all, and they are skipped rather than re-asked "
+                f"every run."
             )
         if counts["widened"]:
             logger.info(

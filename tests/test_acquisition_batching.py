@@ -741,3 +741,39 @@ def test_a_corrupt_no_data_sidecar_takes_the_same_tolerant_path(
     (directory / "MSFT.json").write_text("{not json at all")
     assert acq._read_coverage("MSFT") is None
     assert acq._read_watermark("MSFT") is None
+
+
+def test_stamping_a_legacy_sidecar_carries_its_no_data_marker_through(
+    acquisition_config,
+):
+    """`stamp_watermarks` fills the covered START and touches nothing else.
+
+    Stamping rewrites the whole sidecar, so the marker has to be carried
+    through explicitly -- and dropping it is invisible: the file still parses,
+    the start is now recorded, and a confirmed absence has silently become
+    "fetched, data landed". Only the user knows what window these files cover;
+    nobody knows whether the vendor had rows in it, which is precisely why
+    stamping may not have an opinion.
+    """
+    acq = _acquisition(acquisition_config, symbols=("MARKED", "PLAIN"))
+
+    # Both are LEGACY in the stamping sense -- no recorded start -- but one
+    # carries the marker.
+    acq._write_watermark("MARKED", "2024-01-31", no_data=True)
+    acq._write_watermark("PLAIN", "2024-01-31")
+    assert "start_date" not in _sidecar_json(acq, "MARKED")
+
+    assert acq.stamp_watermarks("2020-01-01") == 2
+
+    marked = _sidecar_json(acq, "MARKED")
+    assert marked["start_date"] == "2020-01-01"
+    assert marked["no_data"] is True, (
+        f"stamping dropped the no_data marker: {marked}"
+    )
+    plain = _sidecar_json(acq, "PLAIN")
+    assert plain["start_date"] == "2020-01-01"
+    assert "no_data" not in plain, plain
+
+    # Re-stamping leaves both alone -- a recorded start is never overwritten.
+    assert acq.stamp_watermarks("2015-01-01") == 0
+    assert _sidecar_json(acq, "MARKED")["start_date"] == "2020-01-01"
