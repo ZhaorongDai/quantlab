@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Self
 
 import numpy as np
+import pandas as pd
 import polars as pl
 import xarray as xr
 from loguru import logger
@@ -195,6 +196,175 @@ class BaseDataset(ABC):
         data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
         return self
+
+    def _raw_axes_in_range(self) -> tuple[list[str], "pd.DatetimeIndex"]:
+        """Return `(pinned_symbols, observed_timestamps)` for the config's
+        whole date range, from ONE scan of the raw source.
+
+        Overridable seam. **This default is correct but NOT memory-bounded:**
+        it derives both axes from `_raw_data_to_xr()`, so it materialises the
+        entire dense whole-range panel -- exactly the allocation
+        `from_raw_data_chunked()` exists to avoid. It is the historical
+        behaviour rather than a `raise NotImplementedError` stub, following
+        `_reset_symbols()`'s idiom, so every existing subclass keeps working
+        unchanged.
+
+        A subclass whose raw source can push a date/column filter DOWN before
+        materialisation (a `pl.LazyFrame` over parquet, say) overrides this
+        and gets the memory bound; one that cannot inherits a working, slower
+        default and is warned about it at run time.
+        """
+        data = self._raw_data_to_xr()
+        symbols = [str(symbol) for symbol in data["symbol"].values.tolist()]
+        return symbols, pd.DatetimeIndex(data["timestamp"].values)
+
+    def _raw_data_to_xr_window(
+        self,
+        start_date,
+        end_date,
+        symbols: list[str] | None = None,
+    ) -> xr.Dataset:
+        """Densify ONE time window, onto `symbols` when a pinned axis is given.
+
+        Overridable seam, and the same caveat as `_raw_axes_in_range()`
+        applies: **this default is correct but NOT memory-bounded**, because
+        it densifies the whole range and slices afterwards. Overriding it is
+        what turns chunking from a bounded WRITE into a bounded DENSIFY.
+
+        When `symbols` is supplied the returned panel's `symbol` coordinate
+        equals it exactly, including symbols with no row in this window --
+        those become all-NaN columns, which is the same value the whole-range
+        densification already produces for an untraded cell.
+        """
+        data = self._raw_data_to_xr()
+        data = data.sel(timestamp=slice(start_date, end_date))
+        if symbols is not None:
+            data = data.reindex(symbol=list(symbols))
+        return data
+
+    def from_raw_data_chunked(
+        self,
+        granularity: str = "year",
+        ledger_path: str | None = None,
+        append_dim: str = "timestamp",
+    ) -> Self:
+        """Densify and append ONE time window at a time (D-01).
+
+        Peak memory scales with the WINDOW rather than the range, which is
+        what makes the full multi-decade, full-market panel materialisable on
+        a machine that cannot hold it whole.
+
+        The ordering is load-bearing:
+
+        1. The symbol axis is resolved ONCE over the whole range, BEFORE any
+           window exists (D-02) -- the same all-time-union rule
+           `base/constituent.py:_densify` follows. If each window derived its
+           own axis, the chunks would carry inconsistent coordinates and the
+           append would silently misalign, so every window is materialised on
+           this one pinned axis and checked against it element-for-element.
+        2. Windows come from the OBSERVED timestamp axis, never from calendar
+           arithmetic: trading days are not calendar days.
+        3. Completed windows are recorded in a sidecar ledger, so an
+           interrupted run resumes at the first unwritten window (D-04).
+        """
+        from base.chunking import ChunkLedger, TimeChunkPlanner
+
+        if type(self)._raw_data_to_xr_window is BaseDataset._raw_data_to_xr_window:
+            logger.warning(
+                f"{self.class_name}: _raw_data_to_xr_window has not been "
+                f"overridden, so each window is produced by densifying the "
+                f"WHOLE range and slicing. Chunking still bounds the write "
+                f"and still gives a resumable run, but the memory win is "
+                f"absent -- override the seam for a source that can push the "
+                f"date filter down before materialising."
+            )
+
+        symbols, timestamps = self._raw_axes_in_range()
+        planner = TimeChunkPlanner(granularity)
+        windows = planner.plan_from_timestamps(timestamps)
+        ledger = ChunkLedger(
+            ledger_path or ChunkLedger.default_path(self.config.zarr_file_path),
+            append_dim=append_dim,
+        )
+
+        logger.info(
+            f"{self.class_name}: chunked ingestion over {len(windows)} "
+            f"{granularity} window(s), {len(symbols)} pinned symbol(s), "
+            f"{len(timestamps)} observed timestamp(s)."
+        )
+
+        first_timestamp = timestamps.min() if len(timestamps) else None
+        boundaries = 0
+        for start, end in windows:
+            if ledger.is_written(start, end):
+                logger.info(
+                    f"{self.class_name}: window {start.date()}..{end.date()} "
+                    f"already recorded in the ledger, skipping."
+                )
+                continue
+
+            window = self._raw_data_to_xr_window(start, end, symbols)
+            actual = [str(symbol) for symbol in window["symbol"].values.tolist()]
+            if actual != symbols:
+                raise ValueError(
+                    f"{self.class_name}: window {start.date()}..{end.date()} "
+                    f"came back on a symbol axis of {len(actual)} label(s), "
+                    f"but the pinned whole-range axis has {len(symbols)}. "
+                    f"Every window must be materialised on the pinned axis "
+                    f"(D-02); appending this one would silently misalign "
+                    f"every column in the store."
+                )
+
+            window = self._clean(window)
+            window = self._pin_append_dtypes(window)
+            if start != first_timestamp:
+                boundaries += 1
+
+            self.data_backend.to_internal(window)
+            self.data_backend.append(
+                self.config.zarr_file_path, append_dim=append_dim
+            )
+            ledger.record(start, end, int(window.sizes[append_dim]), symbols)
+            logger.info(
+                f"{self.class_name}: appended window "
+                f"{start.date()}..{end.date()} "
+                f"({int(window.sizes[append_dim])} row(s))."
+            )
+
+        if boundaries:
+            logger.warning(
+                f"{self.class_name}: cleaning ran per window, so at "
+                f"{boundaries} chunk-boundary timestamp(s) `flag_anomalies` "
+                f"had no prior sample to diff against and a single-step jump "
+                f"across that boundary is not flagged. A bounded, documented "
+                f"consequence of chunking -- finer --chunk granularity "
+                f"produces more such boundaries, not fewer."
+            )
+        return self
+
+    @staticmethod
+    def _pin_append_dtypes(data: xr.Dataset) -> xr.Dataset:
+        """Promote integer data variables to float64 before an append.
+
+        The dtype of a window is a function of its own DENSITY: a window in
+        which every pinned symbol traded on every timestamp keeps pandas'
+        int64 for `volume`, while any window with a gap upcasts to float64
+        for the NaN. Left alone, the store's dtype would therefore be decided
+        by whichever window happened to be written first, and a later
+        float64 NaN appended into an int64 variable is silently cast to 0 --
+        a fabricated observation where data was missing.
+        `XrBackend.append` refuses that append; this makes the refusal
+        unreachable by pinning the dtype to what the dense panel is anyway
+        (`estimate_dense_panel` sizes it at 8 bytes per value).
+
+        Booleans are left alone: `anomaly_flag` is a flag, not a measurement.
+        """
+        promoted = {
+            name: variable.astype("float64")
+            for name, variable in data.data_vars.items()
+            if np.issubdtype(variable.dtype, np.integer)
+        }
+        return data.assign(**promoted) if promoted else data
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
         """Cleaning hook run after raw-to-xarray conversion, before persistence.

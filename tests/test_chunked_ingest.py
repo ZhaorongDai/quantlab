@@ -31,7 +31,7 @@ import xarray as xr
 from loguru import logger
 
 from base.chunking import ChunkLedger, TimeChunkPlanner
-from base.config import DatasetConfig
+from base.config import BaseDatasetConfig, DatasetConfig
 from base.data import BaseDataset
 from dataset.backend import XrBackend
 from dataset.stock import StockDataset
@@ -438,30 +438,56 @@ def test_chunked_run_warns_about_the_cleaning_boundaries(
     assert "2" in boundary_warnings[0]
 
 
+class _UnboundedDataset(BaseDataset):
+    """A dataset kind whose raw source cannot push a date filter down.
+
+    It implements only the one abstract member and inherits BOTH default
+    seams, which is exactly the shape `BaseDataset`'s
+    correct-but-unbounded defaults exist to serve: it must still work, and
+    it must be told that chunking is bounding its write and not its
+    densification.
+    """
+
+    def __init__(self, config: BaseDatasetConfig, panel: xr.Dataset):
+        self._panel = panel
+        super().__init__(config)
+
+    def _raw_data_to_xr(self) -> xr.Dataset:
+        return self._panel.copy(deep=True)
+
+
+def _ohlcv_panel() -> xr.Dataset:
+    dates = pd.to_datetime(
+        [f"{year}-{day}" for year in _YEARS for day in _DAYS_PER_YEAR]
+    )
+    values = np.full((len(dates), 2), 100.0)
+    return xr.Dataset(
+        {
+            name: (["timestamp", "symbol"], values.copy())
+            for name in ("open", "high", "low", "close", "volume")
+        },
+        coords={"timestamp": dates, "symbol": ["A", "B"]},
+    )
+
+
 def test_default_windowed_seam_warns_that_chunking_bounds_only_the_write(
-    three_year_stock_config: Callable[..., DatasetConfig],
+    tmp_path: Path,
 ) -> None:
     """A class that has NOT overridden `_raw_data_to_xr_window` still works --
     the default is correct -- but chunking then bounds the WRITE and not the
     DENSIFY, and the memory win is absent. Say so.
     """
-
-    class _InheritsTheDefault(StockDataset):
-        # Explicitly fall back to `BaseDataset`'s correct-but-unbounded
-        # defaults, the way a future dataset kind whose source cannot push a
-        # date filter down would.
-        _raw_axes_in_range = BaseDataset._raw_axes_in_range
-        _raw_data_to_xr_window = BaseDataset._raw_data_to_xr_window
+    config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "unbounded.zarr"))
 
     messages, sink_id = _captured_warnings()
     try:
-        _InheritsTheDefault(three_year_stock_config()).from_raw_data_chunked()
+        _UnboundedDataset(config, _ohlcv_panel()).from_raw_data_chunked()
     finally:
         logger.remove(sink_id)
 
-    assert any("not been overridden" in m or "not overridden" in m for m in messages), (
-        messages
-    )
+    assert any("not been overridden" in m for m in messages), messages
+    # The default is correct, not merely tolerated: the store is complete.
+    assert _panel(config.zarr_file_path).sizes["timestamp"] == 9
 
 
 def test_second_run_against_a_complete_store_densifies_zero_windows(

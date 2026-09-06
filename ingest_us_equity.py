@@ -17,17 +17,26 @@ Storage is rooted at `QUANTLAB_DATA_DIR` (see `config/__init__.py:_data_root`),
 which is the ONLY path knob: this script hardcodes no volume and adds no
 competing setting.
 
-**Why the default run stops at raw parquet.** Raw acquisition parquet is an
-acquisition-layer implementation detail (CLAUDE.md); the pipeline-facing
-artifact is the Zarr store. But at full-market scale that conversion is the
-expensive step, not the download: 15,424 symbols x ~5,215 trading days
-densifies to a ~7.2 GiB float64 grid, and `StockDataset._raw_data_to_xr()`
-holds that grid, the ~29.6M-row pandas frame and conversion scratch at once.
-On a 16 GiB machine that OOMs. Disk is not the constraint -- 120 GiB is free
-on the target volume -- RAM is. So `--to-zarr` is opt-in and is gated by
-`UniverseCatalog.assert_dense_panel_fits()`, which raises with the numbers
-BEFORE anything allocates. Narrowing `--start-date` or `--limit` for
-the Zarr step is then a one-flag decision rather than a rewrite.
+**Why the default run stops at raw parquet -- and it is no longer memory.**
+Raw acquisition parquet is an acquisition-layer implementation detail
+(CLAUDE.md); the pipeline-facing artifact is the Zarr store. The full window
+used to be REFUSED: 15,424 symbols x ~5,215 trading days densifies to a
+~7.2 GiB float64 grid, and the old whole-range `_raw_data_to_xr()` held that
+grid, the ~29.6M-row pandas frame and conversion scratch at once, which OOMs a
+16 GiB machine.
+
+That is fixed. `--to-zarr` now runs `BaseDataset.from_raw_data_chunked()`,
+which densifies and appends ONE time window at a time onto a symbol axis
+pinned once over the whole range, so peak RAM scales with the WINDOW rather
+than the range (D-01/D-02). `--chunk` selects the granularity (year by
+default) and a run interrupted at window 12 of 21 resumes at window 12.
+
+So the reason `--to-zarr` stays opt-in is TIME, not memory: the conversion is
+still the long pole after a multi-hour download, and most runs want the raw
+parquet first. The sizing guard remains, ahead of the download, but it is now
+`assert_chunked_panel_fits()` -- it refuses a `--chunk` whose individual
+windows would not fit and names the finer granularity that would, rather than
+refusing the window outright.
 
 Build/refresh the universe table first (`refresh_us_equity_universe.py`), then:
 
@@ -49,8 +58,12 @@ Usage:
     #    own watermark instead of --start-date.
     uv run python ingest_us_equity.py --refresh
 
-    # 5. Convert a NARROWED window to Zarr (the guard rejects the full one).
-    uv run python ingest_us_equity.py --start-date 2020-01-01 --to-zarr
+    # 5. Convert to Zarr, one year at a time (resumable, memory-bounded).
+    uv run python ingest_us_equity.py --to-zarr
+
+    # 6. Same, in monthly windows -- for a machine tighter than 16 GiB, or a
+    #    roster dense enough that a single year does not fit.
+    uv run python ingest_us_equity.py --to-zarr --chunk month
 """
 
 import argparse
@@ -58,6 +71,7 @@ import datetime
 
 from acquisition.tiingo import ConcurrentTiingoAcquisition
 from acquisition.universe import UniverseCatalog
+from base.chunking import TimeChunkPlanner
 from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
 
@@ -176,10 +190,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "After acquisition, convert the raw parquet into the Zarr store. "
-            "OFF by default: at full-market scale the densification needs more "
-            "RAM than this machine has, so it is gated by "
-            "UniverseCatalog.assert_dense_panel_fits(), which raises with the "
-            "numbers BEFORE allocating. Narrow --start-date or --limit first."
+            "The full window is no longer refused: the conversion densifies "
+            "and appends ONE --chunk window at a time, so peak RAM scales "
+            "with the window rather than the range, and an interrupted run "
+            "resumes at the first unwritten window. OFF by default because "
+            "it is slow, not because it is impossible."
+        ),
+    )
+    parser.add_argument(
+        "--chunk",
+        type=str,
+        choices=list(TimeChunkPlanner.GRANULARITIES),
+        default="year",
+        help=(
+            "Time granularity of one --to-zarr conversion window (default "
+            "year). Finer windows use less peak RAM and give a finer resume "
+            "granularity, at the cost of more append round trips. Pass "
+            "'month' for a dense year the per-chunk sizing guard refuses."
         ),
     )
     return parser
@@ -210,8 +237,17 @@ if __name__ == "__main__":
         subdir=DEFAULT_SUBDIR,
         kwargs={"max_workers": args.max_workers, "resume": True},
     )
+    # `symbols=None`, NOT the resolved roster, and this is load-bearing.
+    # `BaseDataset`'s config setter calls `_reset_symbols()` for any non-None
+    # symbol list, which calls `read()`, catches the FileNotFoundError a
+    # not-yet-written store raises, and falls back to `from_raw_data()` -- a
+    # FULL-RANGE densification, at StockDataset CONSTRUCTION time, before the
+    # chunked loop is ever entered. That is precisely the OOM this path
+    # exists to remove, and on a first run (no store yet) it fires every
+    # single time. The symbol axis is resolved from the raw data by
+    # `_raw_axes_in_range()` inside the chunked loop instead.
     ds_config = stock_kline_config(
-        symbols=list(symbols),
+        symbols=None,
         start_date=args.start_date,
         end_date=args.end_date,
         subdir=DEFAULT_SUBDIR,
@@ -259,11 +295,14 @@ if __name__ == "__main__":
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.to_zarr:
-        print(f"Converting/persisting {len(symbols)} symbols to Zarr")
-        StockDataset(ds_config).from_raw_data().save()
+        print(
+            f"Converting/persisting {len(symbols)} symbols to Zarr in "
+            f"{args.chunk} windows (resumable; completed windows are skipped)"
+        )
+        StockDataset(ds_config).from_raw_data_chunked(granularity=args.chunk)
         print(f"Zarr store written at: {ds_config.zarr_file_path}")
     else:
         print(
             "Skipping Zarr conversion (default). Pass --to-zarr to convert; "
-            "narrow --start-date or --limit first if the sizing guard refuses."
+            "--chunk selects the window granularity."
         )
