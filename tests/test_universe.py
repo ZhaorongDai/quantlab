@@ -1124,7 +1124,7 @@ def test_assert_dense_panel_fits_raises_with_the_numbers(
     message = str(excinfo.value)
     assert "GiB" in message  # the estimate and the budget, both sized
     assert "symbol" in message  # the symbol count
-    assert "narrow" in message  # what the caller should do about it
+    assert "narrow" in message.lower()  # what the caller should do about it
 
 
 def test_assert_dense_panel_fits_returns_for_a_small_window(

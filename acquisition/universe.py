@@ -1127,6 +1127,170 @@ class UniverseCatalog:
         )
         return matched.select("symbol").unique().collect()["symbol"].to_list()
 
+    #: Trading days per calendar year, and the calendar year they are scaled
+    #: against. A deliberate APPROXIMATION: `estimate_dense_panel()` produces
+    #: a SIZING figure, and taking an exchange-calendar dependency (holidays,
+    #: half-days, the 1968 paperwork crisis) to sharpen a "how many GiB is
+    #: this" answer by a couple of percent would buy nothing and cost a
+    #: package.
+    TRADING_DAYS_PER_YEAR = 252
+    CALENDAR_DAYS_PER_YEAR = 365.25
+
+    #: Ceiling on the DENSE `[timestamp, symbol]` grid a caller may ask
+    #: `StockDataset` to materialise, enforced by `assert_dense_panel_fits()`.
+    #:
+    #: Justified from measurements taken on the target machine (2026-09-06):
+    #: the full `us_all` roster over 2006-01-01..today is 15,424 symbols x
+    #: ~5,215 trading days = 80.4M dense cells, of which only ~29.6M are real
+    #: observations (density 0.368). At 12 Tiingo EOD variables that dense
+    #: grid is ~7.2 GiB of float64. `StockDataset._raw_data_to_xr()` reaches
+    #: it through `.collect().to_pandas().set_index([...]).to_xarray()`,
+    #: holding the 29.6M-row frame, the dense array AND conversion scratch
+    #: simultaneously -- on a 16 GiB box.
+    #:
+    #: **Disk is not the binding constraint: 120 GiB is free on the target
+    #: volume. RAM is.** 4 GiB sits below the ~7.2 GiB that OOMs and above
+    #: the windows that comfortably fit, so the guard fires as a legible
+    #: error naming the numbers rather than as an OOM three hours into a
+    #: backfill. Same safety-envelope idiom as `MIN_ROSTER_ROWS`,
+    #: `MIN_ANCHOR_ROWS` and `_assert_every_category_is_populated()`.
+    MAX_DENSE_PANEL_BYTES = 4 * 1024**3
+
+    def estimate_dense_panel(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+        num_variables: int = 12,
+        bytes_per_value: int = 8,
+    ) -> dict:
+        """Size the dense `[timestamp, symbol]` panel a window would produce.
+
+        Returns `symbols`, `trading_days`, `dense_cells`, `observed_cells`,
+        `density`, `dense_bytes` and `observed_bytes`.
+
+        Everything is derived from this catalog's own interval table clipped
+        to the window, because the catalog is the ONLY object that knows when
+        each symbol was actually listed -- which is exactly what makes the
+        dense grid so much larger than the real observation count. `density`
+        below 1 is not an error: it is the survivorship-bias-free roster's
+        defining property, ~0.368 for the full US market since 2006.
+
+        `num_variables` defaults to 12 to match `enums.data.TiingoColumns.EOD`
+        and `bytes_per_value` to 8 for float64, the dtype
+        `StockDataset._raw_data_to_xr()` produces.
+        """
+        self._validate_category(category)
+        self._validate_iso_date(start_date, "start_date")
+        self._validate_iso_date(end_date, "end_date")
+
+        window_days = (
+            datetime.date.fromisoformat(end_date)
+            - datetime.date.fromisoformat(start_date)
+        ).days + 1
+        trading_days = max(
+            round(
+                window_days
+                * self.TRADING_DAYS_PER_YEAR
+                / self.CALENDAR_DAYS_PER_YEAR
+            ),
+            1,
+        )
+
+        # Clip each interval to the window, then reduce to ONE span per
+        # symbol. Reducing first is what keeps a dual-listed ticker (~700 of
+        # them carry two exchange rows) from being counted twice.
+        overlapping = self._backend.get_lazyframe().filter(
+            (pl.col("category") == category)
+            & (pl.col("start_date") <= end_date)
+            & (pl.col("end_date").is_null() | (pl.col("end_date") >= start_date))
+        )
+        spans = (
+            overlapping.with_columns(
+                pl.max_horizontal(
+                    pl.col("start_date"), pl.lit(start_date)
+                ).alias("clip_start"),
+                pl.min_horizontal(
+                    pl.col("end_date").fill_null(end_date), pl.lit(end_date)
+                ).alias("clip_end"),
+            )
+            .group_by("symbol")
+            .agg(
+                pl.col("clip_start").min().alias("clip_start"),
+                pl.col("clip_end").max().alias("clip_end"),
+            )
+            .with_columns(
+                (
+                    pl.col("clip_end").str.to_date()
+                    - pl.col("clip_start").str.to_date()
+                )
+                .dt.total_days()
+                .add(1)
+                .alias("span_days")
+            )
+            .collect()
+        )
+
+        symbols = spans.height
+        dense_cells = symbols * trading_days
+        observed_cells = min(
+            round(
+                float(spans["span_days"].sum() or 0)
+                * self.TRADING_DAYS_PER_YEAR
+                / self.CALENDAR_DAYS_PER_YEAR
+            ),
+            dense_cells,
+        )
+        density = observed_cells / dense_cells if dense_cells else 0.0
+
+        return {
+            "symbols": symbols,
+            "trading_days": trading_days,
+            "dense_cells": dense_cells,
+            "observed_cells": observed_cells,
+            "density": density,
+            "dense_bytes": dense_cells * num_variables * bytes_per_value,
+            "observed_bytes": observed_cells * num_variables * bytes_per_value,
+        }
+
+    def assert_dense_panel_fits(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+        num_variables: int = 12,
+        bytes_per_value: int = 8,
+    ) -> None:
+        """Raise if densifying this window would exceed
+        `MAX_DENSE_PANEL_BYTES`.
+
+        Call this BEFORE `StockDataset.from_raw_data()`, never after: the
+        whole point is to fail before the pandas densification allocates
+        (T-0iy-03). See `MAX_DENSE_PANEL_BYTES` for why RAM rather than disk
+        sets the ceiling.
+        """
+        estimate = self.estimate_dense_panel(
+            category, start_date, end_date, num_variables, bytes_per_value
+        )
+        if estimate["dense_bytes"] <= self.MAX_DENSE_PANEL_BYTES:
+            return
+
+        gib = 1024**3
+        raise ValueError(
+            f"Refusing to densify {category} over {start_date}..{end_date}: "
+            f"the dense [timestamp, symbol] grid is "
+            f"{estimate['symbols']} symbol(s) x {estimate['trading_days']} "
+            f"trading days x {num_variables} variables = "
+            f"{estimate['dense_bytes'] / gib:.2f} GiB, over the "
+            f"{self.MAX_DENSE_PANEL_BYTES / gib:.2f} GiB budget. Only "
+            f"{estimate['density']:.1%} of that grid is real observations, "
+            f"but StockDataset._raw_data_to_xr() materialises ALL of it -- "
+            f"plus the row frame and conversion scratch -- at once, so this "
+            f"would exhaust memory rather than merely be wasteful. Narrow "
+            f"the date window or the symbol set, or raise "
+            f"MAX_DENSE_PANEL_BYTES deliberately if this machine has the RAM."
+        )
+
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
         # `category` and `as_of_date` arrive unvalidated -- `as_of_date` comes
         # straight off `ingest_tiingo.py`'s `--as-of-date` CLI argument. Both

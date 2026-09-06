@@ -71,10 +71,23 @@ def stock_kline_config(
     kwargs: dict = None,  # type: ignore
     market: Market = "us_equity",
     frequency: Frequency = "1d",
+    subdir: str = "nasdaq_data",
+    store_name: str = "stock.zarr",
 ):
+    """US-equity daily Zarr config.
+
+    `subdir` selects the raw-data subdirectory and `store_name` the Zarr store
+    filename, both BENEATH the existing `data/{market}/{frequency}/`
+    convention (02-CONTEXT.md D-02). They exist so a second roster -- the
+    full-market `us_all` backfill -- can land beside the NASDAQ-only one
+    instead of overwriting it, WITHOUT introducing a second path root: per
+    260906-0iy D-04, `QUANTLAB_DATA_DIR` remains the only path knob and no
+    volume is ever hardcoded. The defaults reproduce the pre-existing paths
+    byte-for-byte, so every existing call site is untouched.
+    """
     return DatasetConfig(
-        raw_data_dir_path=str(_market_downloads_root(market, frequency) / "nasdaq_data"),
-        zarr_file_path=str(_market_data_root(market, frequency) / "stock.zarr"),
+        raw_data_dir_path=str(_market_downloads_root(market, frequency) / subdir),
+        zarr_file_path=str(_market_data_root(market, frequency) / store_name),
         catalog_path=str(_data_root() / "data" / "catalog"),
         market=market,
         frequency=frequency,
@@ -92,13 +105,24 @@ def stock_acquisition_config(
     kwargs: dict = None,  # type: ignore
     market: Market = "us_equity",
     frequency: Frequency = "1d",
+    subdir: str = "nasdaq_data",
 ):
+    """US-equity daily acquisition config.
+
+    `subdir` selects the raw-data subdirectory (and, beneath it, the watermark
+    directory) so a second roster's raw parquet and watermarks stay separate
+    from the NASDAQ-only ones -- separate watermarks are what make the two
+    backfills independently resumable. It is a subdirectory BENEATH
+    `downloads/{market}/{frequency}/`, not a second root: per 260906-0iy D-04
+    `QUANTLAB_DATA_DIR` remains the only path knob. The default reproduces the
+    pre-existing paths byte-for-byte.
+    """
     return AcquisitionConfig(
         market=market,
         frequency=frequency,
-        raw_data_dir_path=str(_market_downloads_root(market, frequency) / "nasdaq_data"),
+        raw_data_dir_path=str(_market_downloads_root(market, frequency) / subdir),
         watermark_path=str(
-            _market_downloads_root(market, frequency) / "nasdaq_data" / "_watermarks"
+            _market_downloads_root(market, frequency) / subdir / "_watermarks"
         ),
         symbols=symbols,
         start_date=start_date,
