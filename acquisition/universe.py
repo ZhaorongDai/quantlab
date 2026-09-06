@@ -41,6 +41,7 @@ reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 
 import datetime
 import io
+import math
 import os
 import re
 import zipfile
@@ -1640,6 +1641,193 @@ class UniverseCatalog:
             "chunks": chunks,
             "max_chunk": max_chunk,
             "max_chunk_bytes": max_chunk["dense_bytes"] if max_chunk else 0,
+        }
+
+    #: Rows a single symbol-day yields at each `enums.data.Frequency` token.
+    #:
+    #: `1d` is one bar per trading day by definition. `1m` is **390** -- the
+    #: regular 09:30-16:00 ET session, 6.5 hours x 60 minutes. This is an
+    #: ASSUMPTION, not a measurement: including extended hours (04:00-20:00 ET)
+    #: would raise it to ~960, a 2.5x error in every minute estimate. It is
+    #: stated rather than hidden because the conservative ceilings below absorb
+    #: a 2.5x understatement -- the full-market minute scenario is refused ~17x
+    #: over at 390 and would merely be refused ~41x over at 960 -- while a
+    #: reader who needs the exact figure must be able to see which one is
+    #: encoded (03.2-RESEARCH.md Pattern 6, row-count input provenance).
+    #:
+    #: `tick` is deliberately ABSENT: see `estimate_acquisition_volume`'s
+    #: `rows_per_symbol_day`. A number here would be a guess, and a guess here
+    #: is what makes a guard confidently wrong in the one regime it exists for.
+    BARS_PER_DAY_BY_FREQUENCY: dict[str, int] = {"1d": 1, "1m": 390}
+
+    #: Bytes one RAW row occupies on disk, before any densification.
+    #:
+    #: DERIVED, not invented. 03.2-RESEARCH.md Pattern 6's Volume Arithmetic
+    #: sizes ~15.3M daily rows at ~0.9 GB and ~6.0B minute rows at ~358 GB;
+    #: both land at ~60 bytes per raw parquet row, which is what a handful of
+    #: f64 OHLCV columns plus a timestamp compress to in practice. It is a
+    #: SIZING figure in the same deliberate-approximation spirit as
+    #: `TRADING_DAYS_PER_YEAR`: sharpening it by measuring a real shard would
+    #: move a 20 GiB ceiling by a fraction of a GiB and change no decision.
+    BYTES_PER_RAW_ROW = 60
+
+    #: Requests per minute assumed when the caller names none: the free
+    #: (Basic) tier's documented historical-API ceiling.
+    #:
+    #: The paid tier is 10,000/min -- 50x -- and **the rate limit is the
+    #: dominant cost driver for this phase**, because historical depth,
+    #: available fields and the recency floor are all IDENTICAL between the
+    #: tiers for a backfill. That is why wall clock is a ceiling of its own
+    #: rather than a derived note: the same fetch that takes ~50 hours on
+    #: Basic takes ~1 hour paid, and nothing else about it differs.
+    DEFAULT_RATE_LIMIT_PER_MIN = 200
+
+    def _resolve_volume_knobs(
+        self,
+        frequency: str,
+        batch_size: int,
+        page_limit: int,
+        rate_limit_per_min: int | None,
+    ) -> int:
+        """Validate the four knobs and return the resolved rate limit.
+
+        Every one of these arrives off a CLI flag or `config.kwargs`, so each
+        is checked where it is consumed. A `batch_size` of 0 would otherwise
+        surface as `ZeroDivisionError` from inside a sizing method -- a guard
+        that crashes on a typo'd flag has failed at being a guard.
+        """
+        if frequency not in self.BARS_PER_DAY_BY_FREQUENCY and frequency != "tick":
+            raise ValueError(
+                f"Unknown frequency {frequency!r}; this estimator prices "
+                f"{sorted(self.BARS_PER_DAY_BY_FREQUENCY) + ['tick']}. A "
+                f"frequency with no bars-per-day figure cannot be sized, and "
+                f"defaulting one would invent the number the guard exists to "
+                f"defend."
+            )
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size!r}.")
+        if page_limit < 1:
+            raise ValueError(f"page_limit must be >= 1, got {page_limit!r}.")
+        resolved = (
+            self.DEFAULT_RATE_LIMIT_PER_MIN
+            if rate_limit_per_min is None
+            else rate_limit_per_min
+        )
+        if resolved < 1:
+            raise ValueError(
+                f"rate_limit_per_min must be >= 1, got {rate_limit_per_min!r}."
+            )
+        return resolved
+
+    def estimate_acquisition_volume(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+        *,
+        frequency: str,
+        batch_size: int,
+        page_limit: int = 10_000,
+        rate_limit_per_min: int | None = None,
+        rows_per_symbol_day: int | None = None,
+    ) -> dict:
+        """Price a fetch before it starts: rows, raw bytes, requests, hours.
+
+        **Issues zero vendor requests and constructs no acquisition client.**
+        It is arithmetic over this catalog's own listing intervals, which is
+        the entire point: an estimate that costs a vendor request has defeated
+        itself. Call it BEFORE the client is constructed and before a single
+        request -- the 03.2 analogue of `assert_dense_panel_fits`'s "call this
+        BEFORE `StockDataset.from_raw_data()`, never after".
+
+        The SIBLING of `estimate_dense_panel`, not its replacement. That one
+        bounds RAM for a dense `[timestamp, symbol]` panel; this phase never
+        densifies (D-18 fences the conversion out), so the binding constraints
+        here are disk, request count and wall clock. Both are SIZING figures
+        in the same deliberate-approximation spirit as the 252/365.25 calendar:
+        precise enough to separate an 8-minute fetch from a 50-hour one, and
+        not pretending to be more.
+
+        Returns `symbols`, `trading_days`, `rows`, `raw_bytes`, `requests`,
+        `wall_clock_hours`, plus the resolved knobs (`frequency`,
+        `batch_size`, `page_limit`, `rate_limit_per_min`, `bars_per_day`,
+        `density`) so a caller can print a refusal without recomputing.
+
+        `rows_per_symbol_day` is REQUIRED for `frequency="tick"` and ignored
+        otherwise: tick volume is not derivable from a calendar, so this method
+        refuses rather than guessing (T-03.2-20).
+        """
+        rate_limit_per_min = self._resolve_volume_knobs(
+            frequency, batch_size, page_limit, rate_limit_per_min
+        )
+
+        # Delegated rather than recomputed: the roster, the trading-day count
+        # and the measured 0.368 density all come from the one estimator that
+        # already derives them, so the two cannot disagree about the window
+        # they are both sizing.
+        panel = self.estimate_dense_panel(category, start_date, end_date)
+        symbols = panel["symbols"]
+        trading_days = panel["trading_days"]
+
+        if frequency == "tick":
+            if rows_per_symbol_day is None:
+                raise ValueError(
+                    f"rows_per_symbol_day is REQUIRED for frequency='tick' "
+                    f"and has no default. Tick volume is not derivable from a "
+                    f"calendar the way a bar count is -- it depends on the "
+                    f"symbol's liquidity and the day's activity, and the "
+                    f"order-of-magnitude figures available (~100k trades and "
+                    f"10-20x that in quotes per liquid symbol-day) are "
+                    f"unmeasured against this vendor. Guessing here would make "
+                    f"this guard confidently wrong in exactly the regime it "
+                    f"exists for, so it refuses instead. Pass a measured "
+                    f"rows_per_symbol_day (sample one symbol-day and count)."
+                )
+            if rows_per_symbol_day < 1:
+                raise ValueError(
+                    f"rows_per_symbol_day must be >= 1, got "
+                    f"{rows_per_symbol_day!r}."
+                )
+            bars_per_day = rows_per_symbol_day
+            # Dense, not density-adjusted: a tick estimate is asked for a
+            # narrow window over liquid names, where the roster is listed
+            # throughout and the observed/dense distinction that matters over
+            # a decade of full-market history does not apply.
+            rows = symbols * trading_days * rows_per_symbol_day
+        else:
+            bars_per_day = self.BARS_PER_DAY_BY_FREQUENCY[frequency]
+            # `observed_cells`, never `dense_cells`: over 2016-2026 the full
+            # US roster is only 36.8% listed on average, so a dense count
+            # overstates a daily backfill by ~2.7x. A guard that overstates
+            # refuses fetches that would have been fine, which is how a guard
+            # gets deleted.
+            rows = panel["observed_cells"] * bars_per_day
+
+        raw_bytes = rows * self.BYTES_PER_RAW_ROW
+        # Two independent floors. Pages, because a response cannot carry more
+        # than `page_limit` rows; batches, because a fetch issues at least one
+        # request per batch even when every row would fit on one page. Taking
+        # only the page term understates a wide, short daily fetch by orders
+        # of magnitude.
+        requests_needed = max(
+            math.ceil(rows / page_limit), math.ceil(symbols / batch_size)
+        )
+        return {
+            "category": category,
+            "start_date": start_date,
+            "end_date": end_date,
+            "frequency": frequency,
+            "symbols": symbols,
+            "trading_days": trading_days,
+            "density": panel["density"],
+            "bars_per_day": bars_per_day,
+            "rows": rows,
+            "raw_bytes": raw_bytes,
+            "requests": requests_needed,
+            "wall_clock_hours": requests_needed / rate_limit_per_min / 60,
+            "batch_size": batch_size,
+            "page_limit": page_limit,
+            "rate_limit_per_min": rate_limit_per_min,
         }
 
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:

@@ -310,6 +310,8 @@ def test_wall_clock_is_requests_over_the_rate_limit_and_the_paid_tier_is_50x(tmp
     tiers for a backfill; the rate limit is the whole difference, and 200 ->
     10,000 per minute turns ~50 hours into ~1.
     """
+    import pytest
+
     from acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
@@ -326,7 +328,7 @@ def test_wall_clock_is_requests_over_the_rate_limit_and_the_paid_tier_is_50x(tmp
     assert free["wall_clock_hours"] == free["requests"] / 200 / 60
     assert paid["wall_clock_hours"] == paid["requests"] / 10_000 / 60
     assert free["requests"] == paid["requests"]
-    assert free["wall_clock_hours"] / paid["wall_clock_hours"] == 50
+    assert free["wall_clock_hours"] / paid["wall_clock_hours"] == pytest.approx(50)
     # RESEARCH Pattern 6: ~50 hours on the Basic tier, ~60 minutes paid.
     assert 45 < free["wall_clock_hours"] < 55
     assert 0.8 < paid["wall_clock_hours"] < 1.2
