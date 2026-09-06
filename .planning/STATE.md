@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03.2
 current_phase_name: Multi-Source Data Acquisition Abstraction (Alpaca)
 status: executing
-stopped_at: Completed 03.2-04-PLAN.md
-last_updated: "2026-09-06T21:21:09.092Z"
+stopped_at: Completed 03.2-05-PLAN.md
+last_updated: "2026-09-06T21:41:19.274Z"
 last_activity: 2026-09-06
 last_activity_desc: Phase 03.2 execution started
-state_head: 16fd7ce1c6c2ba0c55470abcbb8d8e962ab230db
+state_head: c47ec25e146db6ba84f1a07ea9662bc5667887e5
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 31
-  completed_plans: 26
+  completed_plans: 27
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.2 (Multi-Source Data Acquisition Abstraction (Alpaca)) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
 Status: Ready to execute
 Last activity: 2026-09-06 — Phase 03.2 execution started
 
@@ -76,6 +76,7 @@ Progress: [██████████] 100%
 | Phase 03.2 P02 | 47 min | 4 tasks | 19 files |
 | Phase 03.2 P03 | 37 min | 3 tasks | 9 files |
 | Phase 03.2 P04 | 16 min | 2 tasks | 2 files |
+| Phase 03.2 P05 | 25 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -136,6 +137,10 @@ Recent decisions affecting current work:
 - [Phase 03.2]: The volume guard's "refuse before the client is constructed" ordering is STRUCTURAL, not procedural: it lives on UniverseCatalog, in a module that imports no acquisition module and binds no Acquisition subclass — Relying on call order lets a later refactor silently invert it while every test still passes. Asserting that acquisition/universe.py cannot reach a client class means there is nothing here that COULD be constructed, whatever the order -- proved alongside a socket tripwire and the removal of every vendor credential from the environment.
 - [Phase 03.2]: Volume rows come from estimate_dense_panel's observed_cells, never dense_cells; and tick REFUSES without an explicit rows_per_symbol_day rather than defaulting one — Over 2016-2026 the full US roster is only 36.8% listed, so a dense count overstates a daily backfill by ~2.7x -- a guard that overstates refuses fetches that would have been fine, which is how a guard gets deleted rather than obeyed. Symmetrically, the available ~100k-trades-per-symbol-day figure is unmeasured against Alpaca (RESEARCH A4), so encoding it as a default would make the guard confidently wrong in exactly the regime it exists for.
 - [Phase 03.2]: A refusal names EVERY crossed ceiling and offers a narrowing that is RE-ESTIMATED for the shorter window, not scaled from the original figures — requests carries a ceil and a batch floor, so a figure divided by the overshoot ratio is a plausible-looking lie about what the narrowed fetch costs. And reporting only the first crossed ceiling ESCAPED the whole suite under mutation -- the three isolating scenarios each cross exactly one ceiling by construction, so the multi-crossing case was the only one that could catch it and was asserting on arithmetic instead. A caller who raises the one ceiling they were told about, only to hit the next, learns to distrust the message and reaches for force.
+- [Phase 03.2]: 03.2-05 D-A: the no_data marker is OMITTED when false, never written as false — Absence becomes the default, so all pre-existing sidecars read back correctly as not-no-data (the old code only wrote a watermark after a successful fetch). Writing false would leave older files ambiguous between 'had data' and 'never said'.
+- [Phase 03.2]: 03.2-05 D-B: the coverage classification rule stays blind to the no_data marker — A marked symbol is covered/widened/legacy by the ordinary rule, so a marked symbol whose recorded window is narrower than a later request is still re-fetched. The marker records what the vendor said about a WINDOW, never a permanent verdict about the symbol; the absence of a special case is the design and two tests keep one from being added.
+- [Phase 03.2]: 03.2-05 D-C: a refresh may CLEAR a no_data marker but never assert a new one — A refresh queries [watermark, end_date] while stamping a sidecar that records [covered_start, end_date] -- a strictly wider window -- so it has no evidence about the earlier part of the range. Asserting absence there would launder 'no new rows this week' into 'nothing since 2020'. Same carry-through asymmetry start_date already follows (D-04).
+- [Phase 03.2]: 03.2-05 D-D: the marker set is computed once per COMPLETED batch, gated on outcome.complete and a clear abort — Alpaca is symbol-major, so page 0 of a 100-symbol batch legitimately carries one symbol; a per-page difference would stamp the other 99 'no data' and skip them forever (RESEARCH Pitfall 4). The completion gate is locked by an injected incomplete BatchOutcome because no end-to-end test can move the flag today -- the mutation survived without it.
 
 ### Pending Todos
 
@@ -163,8 +168,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T21:20:53.068Z
-Stopped at: Completed 03.2-04-PLAN.md
+Last session: 2026-09-06T21:40:54.561Z
+Stopped at: Completed 03.2-05-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

@@ -159,7 +159,7 @@ Plans:
 **Requirements**: TBD (no existing REQ-ID covers vendor-level source extensibility; closest sibling is DATA-03's market/frequency extensibility)
 **Depends on:** Phase 3
 **Canonical refs:** `.planning/phases/03.2-multi-source-data-acquisition-abstraction-alpaca/03.2-CONTEXT.md`
-**Plans:** 4/7 plans executed
+**Plans:** 5/7 plans executed
 
 **Success Criteria** (what must be TRUE):
 
@@ -189,7 +189,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 03.2-05-PLAN.md — D-04 "queried, no data" third state, additive on disk and gated on batch completion (SC-4)
+- [x] 03.2-05-PLAN.md — D-04 "queried, no data" third state, additive on disk and gated on batch completion (SC-4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
