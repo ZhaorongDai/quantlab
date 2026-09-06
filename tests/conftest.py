@@ -1,17 +1,24 @@
 """Shared pytest fixtures for the quantlab test suite.
 
 These fixtures provide synthetic market-data inputs (Binance CSV rows, Tiingo
-JSON responses) and a mocked Tiingo client so downstream tests never need a
-real network call or a real API credential.
+JSON responses, Alpaca bars-envelope pages, hive-partitioned raw parquet
+trees) and mocked vendor clients so downstream tests never need a real network
+call or a real API credential.
 
 IMPORTANT: this module must have zero import-time dependency on
-`acquisition.tiingo` (it does not exist yet as of Phase 2 Wave 1) so that
+`acquisition.tiingo`, `acquisition.alpaca`, `base.pageledger` or `utils.cli`.
+None of those existed when the fixtures that reference them were written
+(`acquisition.tiingo` as of Phase 2 Wave 1; `acquisition.alpaca`,
+`base.pageledger` and `utils.cli` as of Phase 03.2 Wave 1), so that
 `pytest --collect-only` succeeds today regardless of which feature plans have
-landed. `mock_tiingo_client` only references it as a dotted string inside
-`monkeypatch.setattr(...)`, evaluated lazily when the fixture is used by a
-test, never at module import time.
+landed. `mock_tiingo_client` and `mock_alpaca_client` reference their targets
+only as dotted strings inside `monkeypatch.setattr(..., raising=False)`,
+evaluated lazily when the fixture is used by a test, never at module import
+time. Keep it that way: a top-level `import acquisition.alpaca` here would
+break collection of the ENTIRE suite until that module lands.
 """
 
+import base64
 import io
 import zipfile
 from datetime import datetime
@@ -24,7 +31,7 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from base.config import DatasetConfig
+from base.config import AcquisitionConfig, DatasetConfig
 
 
 @pytest.fixture
@@ -754,6 +761,330 @@ def stock_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
             catalog_path=str(stock_dir / "catalog"),
             market="us_equity",
             frequency="1d",
+        )
+
+    return _build
+
+
+# ---------------------------------------------------------------------------
+# Phase 03.2 -- multi-source acquisition (Alpaca) fixtures.
+#
+# All four fixtures below obey this module's import-safety rule: none of them
+# imports `acquisition.alpaca`, `base.pageledger` or `utils.cli` at module
+# scope. `mock_alpaca_client` patches by dotted string with `raising=False`,
+# exactly as `mock_tiingo_client` does for `acquisition.tiingo`.
+# ---------------------------------------------------------------------------
+
+#: The Alpaca bars payload's field set, verbatim from the vendor contract
+#: (03.2-RESEARCH.md "Alpaca Market Data API -- Verified Contract"):
+#: t=timestamp, o/h/l/c=OHLC, v=volume, n=trade count, vw=VWAP. These stay the
+#: vendor's single letters ON PURPOSE -- mapping them onto the project's
+#: `timestamp/open/high/low/close/volume/trade_count/vwap` names is the job of
+#: the code under test, never of the fixture.
+_ALPACA_BAR_FIELDS = ("t", "o", "h", "l", "c", "v", "n", "vw")
+
+
+def _alpaca_bar(t: str, close: float = 100.0, **overrides) -> dict:
+    """One Alpaca bar in the vendor's own field shape.
+
+    `t` is RFC-3339 with a trailing `Z`, as the vendor emits it.
+    """
+    bar = {
+        "t": t,
+        "o": close,
+        "h": close,
+        "l": close,
+        "c": close,
+        "v": 1_000,
+        "n": 10,
+        "vw": close,
+    }
+    bar.update(overrides)
+    return bar
+
+
+def _alpaca_page_token(symbol: str, timestamp: str, timeframe: str = "D") -> str:
+    """Build a realistic-looking page token the way Alpaca's own published
+    example decodes -- base64 of `SYMBOL|TIMEFRAME|TIMESTAMP`
+    (03.2-RESEARCH.md "Pagination -- the D-03 answer").
+
+    Fixtures build tokens this way only so failures print something that looks
+    like the real thing. Production code must record the vendor's token
+    VERBATIM and must never re-derive one: the encoding is undocumented and
+    can change without notice.
+    """
+    return base64.b64encode(f"{symbol}|{timeframe}|{timestamp}".encode()).decode()
+
+
+@pytest.fixture
+def alpaca_bars_page() -> Callable[..., dict]:
+    """Factory fixture. Call as
+    `alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)`
+    to get back one verified Alpaca `GET /v2/stocks/bars` envelope::
+
+        {"bars": {SYMBOL: [{t,o,h,l,c,v,n,vw}]},
+         "next_page_token": str | None,
+         "currency": "USD"}
+
+    Each element of a symbol's list is either an RFC-3339 timestamp string
+    (the rest of the bar is defaulted) or a full vendor-shaped dict, which is
+    merged over that default. Unknown keys raise rather than being silently
+    written -- a fixture that accepted `close` would quietly hide the very
+    vendor-to-project field mapping the tests exist to pin.
+
+    `alpaca_bars_page.bar` exposes the single-bar builder for tests that need
+    to override one field (e.g. a zero-volume bar).
+    """
+
+    def _build(
+        symbol_to_bars: dict[str, list],
+        next_page_token: Optional[str] = None,
+    ) -> dict:
+        bars: dict[str, list[dict]] = {}
+        for symbol, rows in symbol_to_bars.items():
+            built: list[dict] = []
+            for row in rows:
+                if isinstance(row, str):
+                    built.append(_alpaca_bar(row))
+                elif isinstance(row, dict):
+                    unknown = set(row) - set(_ALPACA_BAR_FIELDS)
+                    if unknown:
+                        raise ValueError(
+                            f"unknown Alpaca bar field(s) {sorted(unknown)}; the "
+                            f"vendor emits exactly {_ALPACA_BAR_FIELDS}"
+                        )
+                    if "t" not in row:
+                        raise ValueError("an Alpaca bar dict must carry 't'")
+                    built.append({**_alpaca_bar(row["t"]), **row})
+                else:
+                    raise TypeError(
+                        "each bar must be an RFC-3339 string or a vendor-shaped "
+                        f"dict, got {type(row).__name__}"
+                    )
+            bars[symbol] = built
+        return {
+            "bars": bars,
+            "next_page_token": next_page_token,
+            "currency": "USD",
+        }
+
+    _build.bar = _alpaca_bar  # type: ignore[attr-defined]
+    return _build
+
+
+@pytest.fixture
+def mock_alpaca_client(monkeypatch, alpaca_bars_page) -> type:
+    """Return a `FakeAlpacaClient` class and, as a side effect, patch
+    `acquisition.alpaca._AlpacaMarketDataClient` to it so `AlpacaAcquisition`
+    (once it exists) never makes a real network call. Also sets
+    `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` to obviously fake values via
+    `monkeypatch.setenv`, so no real credential is ever required -- and, just
+    as importantly, so a developer who has real Alpaca keys exported cannot
+    have them captured into a test artefact (T-03.2-11).
+
+    Class-level state, reset at every fixture setup exactly as
+    `mock_tiingo_client` resets `FakeTiingoClient.calls` (T-03.2-12):
+
+    - `pages: list[dict]` -- the queue of envelopes `get_page` pops from. A
+      test that wants its own sequence assigns to it before acting. When the
+      queue is exhausted `get_page` returns a terminal empty envelope
+      (`next_page_token: None`), never raises.
+    - `calls: list[dict]` -- every `get_page(path, params)` recorded as
+      `{"path": path, **params}`, so tests can assert on `symbols`,
+      `timeframe`, `start`, `end`, `limit`, `sort`, `asof`, `feed` and
+      `page_token`.
+    - `raise_on: dict[int, BaseException] | None` -- call index to exception.
+      Making page 3 of 5 fail is what proves SC-3's resume. The failing call
+      IS recorded (so its `page_token` is assertable) and does NOT consume a
+      page: the request never succeeded, so the queue must not advance.
+
+    The pre-loaded default sequence is THREE pages over two symbols in Alpaca's
+    documented symbol-major order: page 0 is AAPL only, page 1 is the tail of
+    AAPL plus the head of MSFT, page 2 is the rest of MSFT and carries
+    `next_page_token: None`. MSFT being legitimately absent from page 0 is what
+    makes RESEARCH Pitfall 4 ("absent from this page" is not "absent from the
+    batch") testable at all.
+    """
+
+    class FakeAlpacaClient:
+        pages: list[dict] = []
+        calls: list[dict] = []
+        raise_on: Optional[dict] = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get_page(self, path: str, params: Optional[dict] = None) -> dict:
+            params = dict(params or {})
+            index = len(FakeAlpacaClient.calls)
+            FakeAlpacaClient.calls.append({"path": path, **params})
+            if FakeAlpacaClient.raise_on and index in FakeAlpacaClient.raise_on:
+                raise FakeAlpacaClient.raise_on[index]
+            if FakeAlpacaClient.pages:
+                return FakeAlpacaClient.pages.pop(0)
+            return {"bars": {}, "next_page_token": None, "currency": "USD"}
+
+    # Reset every piece of class-level state per-test so nothing leaks.
+    FakeAlpacaClient.calls = []
+    FakeAlpacaClient.raise_on = None
+    FakeAlpacaClient.pages = [
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-02T00:00:00Z", "2024-01-03T00:00:00Z"]},
+            next_page_token=_alpaca_page_token("AAPL", "2024-01-04T00:00:00Z"),
+        ),
+        alpaca_bars_page(
+            {
+                "AAPL": ["2024-01-04T00:00:00Z"],
+                "MSFT": ["2024-01-02T00:00:00Z"],
+            },
+            next_page_token=_alpaca_page_token("MSFT", "2024-01-03T00:00:00Z"),
+        ),
+        alpaca_bars_page(
+            {"MSFT": ["2024-01-03T00:00:00Z", "2024-01-04T00:00:00Z"]},
+            next_page_token=None,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "acquisition.alpaca._AlpacaMarketDataClient",
+        FakeAlpacaClient,
+        raising=False,
+    )
+    monkeypatch.setenv("APCA_API_KEY_ID", "test-key-id-not-real")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test-secret-key-not-real")
+
+    return FakeAlpacaClient
+
+
+def _hive_partition_value(row: dict, hive_key: str) -> str:
+    """Derive one hive partition value from a raw row.
+
+    `month` -> `YYYY-MM`, `date` -> `YYYY-MM-DD` (both off `timestamp`),
+    `symbol` -> the row's symbol. These are the three keys 03.2-RESEARCH.md
+    Pattern 5 assigns to the `1d` / `1m` / `tick` frequencies.
+    """
+    if hive_key == "symbol":
+        return str(row["symbol"])
+    timestamp = row["timestamp"]
+    if isinstance(timestamp, str):
+        timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if hive_key == "month":
+        return timestamp.strftime("%Y-%m")
+    if hive_key == "date":
+        return timestamp.strftime("%Y-%m-%d")
+    raise ValueError(f"unsupported hive key {hive_key!r}")
+
+
+@pytest.fixture
+def hive_raw_tree() -> Callable[..., Path]:
+    """Factory fixture. Call as
+    `hive_raw_tree(root, vendor, rows, hive_key="month")` to write one
+    hive-partitioned raw parquet shard set beneath `{root}/{vendor}/` and get
+    `{root}/{vendor}` back.
+
+    One directory per distinct partition value (`{hive_key}={value}`), and one
+    file per call per directory named `part-{batch_key}-{page_index:05d}.pqt`,
+    matching the shard naming 03.2-RESEARCH.md Pattern 5 specifies. Every
+    written row gains a literal `vendor` column, the provenance measure that
+    makes a cross-vendor merge DETECTABLE as well as prevented (SC-7 / D-11).
+
+    Call it TWICE under one shared parent with two different vendor names to
+    build the exact two-vendor tree RESEARCH measured a silent merge on: a
+    `pl.scan_parquet` rooted above both returns their union with no error, so a
+    test asserting isolation has a real merge to prevent rather than a
+    hypothetical one.
+
+    Deliberately imports neither `dataset.stock` nor `acquisition.alpaca` --
+    the reader under test must be free to not exist yet.
+    """
+
+    def _write(
+        root: Path,
+        vendor: str,
+        rows: list[dict],
+        hive_key: str = "month",
+        batch_key: str = "batch0000",
+        page_index: int = 0,
+    ) -> Path:
+        vendor_root = Path(root) / vendor
+        by_partition: dict[str, list[dict]] = {}
+        for row in rows:
+            by_partition.setdefault(
+                _hive_partition_value(row, hive_key), []
+            ).append(row)
+
+        for value, part_rows in by_partition.items():
+            part_dir = vendor_root / f"{hive_key}={value}"
+            part_dir.mkdir(parents=True, exist_ok=True)
+            frame = pl.DataFrame(part_rows).with_columns(
+                pl.lit(vendor).alias("vendor")
+            )
+            frame.write_parquet(
+                part_dir / f"part-{batch_key}-{page_index:05d}.pqt"
+            )
+
+        return vendor_root
+
+    return _write
+
+
+#: Two symbols is enough for every batching assertion that is not a
+#: sentinel-count test; `tests/test_tiingo_quota.py:_MANY` remains the idiom
+#: for "stopped early must not look like ground through all of them".
+_ACQUISITION_FIXTURE_SYMBOLS = ("AAPL", "MSFT")
+
+
+@pytest.fixture
+def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
+    """Factory fixture. Call as
+    `acquisition_config(vendor="alpaca", symbols=..., frequency="1d")` to get
+    an `AcquisitionConfig` whose paths already carry this phase's D-11 vendor
+    segment. Generalises `tests/test_tiingo_quota.py:_make_config`.
+
+    Two path invariants, both load-bearing:
+
+    - `raw_data_dir_path` TERMINATES at the vendor segment
+      (`.../{subdir}/{vendor}`), so `Path(raw_data_dir_path).name == vendor`.
+      That equality is the one `StockDataset._scan_raw` asserts to make the
+      cross-vendor silent merge unreachable by accident (SC-7).
+    - `watermark_path` is a SIBLING of the raw root
+      (`.../{subdir}/_watermarks/{vendor}`), never inside it. A polars
+      directory scan of the raw root walks every file beneath it, so a `.json`
+      sidecar in that tree would break the scan outright.
+
+    `AcquisitionConfig.vendor` does not exist yet -- 03.2-02 Task 1 introduces
+    the dataclass field and threads `vendor=` through this fixture in the same
+    commit. Until then the vendor is expressed purely through the paths, which
+    is what every Wave-0 assertion needs.
+    """
+
+    def _build(
+        vendor: str = "tiingo",
+        symbols: tuple[str, ...] = _ACQUISITION_FIXTURE_SYMBOLS,
+        frequency: str = "1d",
+        kwargs: Optional[dict] = None,
+        market: str = "us_equity",
+        subdir: str = "nasdaq_data",
+        root: Optional[Path] = None,
+        start_date: str = "2024-01-01",
+        end_date: str = "2024-01-31",
+    ) -> AcquisitionConfig:
+        downloads = (
+            (Path(root) if root is not None else tmp_path)
+            / "downloads"
+            / market
+            / frequency
+            / subdir
+        )
+        return AcquisitionConfig(
+            market=market,  # type: ignore[arg-type]
+            frequency=frequency,  # type: ignore[arg-type]
+            raw_data_dir_path=str(downloads / vendor),
+            watermark_path=str(downloads / "_watermarks" / vendor),
+            symbols=tuple(symbols),
+            start_date=start_date,
+            end_date=end_date,
+            kwargs=kwargs,
         )
 
     return _build
