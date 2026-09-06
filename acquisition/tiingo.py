@@ -7,6 +7,7 @@ import polars as pl
 from joblib import Parallel, delayed
 from loguru import logger
 from tiingo import TiingoClient
+from tqdm import tqdm
 
 from base.acquisition import Acquisition
 from base.config import AcquisitionConfig
@@ -94,10 +95,10 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
       watermark is written ONLY on success (so the next run retries the
       failure), and the run reports a count.
 
-    Both knobs are read from `config.kwargs` -- the escape hatch
-    `AcquisitionConfig` already documents -- rather than becoming constructor
-    arguments no config file could reach, keeping the whole thing
-    config-driven per CLAUDE.md.
+    Every knob (`resume`, `max_workers`, `progress`) is read from
+    `config.kwargs` -- the escape hatch `AcquisitionConfig` already documents
+    -- rather than becoming constructor arguments no config file could reach,
+    keeping the whole thing config-driven per CLAUDE.md.
 
     This deliberately does NOT touch `base/acquisition.py`. The sequential
     `download()`/`refresh()` loops there remain the correct default for a
@@ -171,8 +172,25 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
                 )
 
         max_workers = int(self._knob("max_workers", self.DEFAULT_MAX_WORKERS))
-        results = Parallel(n_jobs=max_workers, backend="threading")(
-            delayed(self._attempt)(symbol, from_watermark) for symbol in pending
+        # `return_as="generator_unordered"` is load-bearing, not a style
+        # choice. The default eager `Parallel(...)` call returns only once
+        # every symbol is done, so a `tqdm` around it would render nothing
+        # for hours and then a full bar; wrapping the DISPATCH generator
+        # instead fills the bar instantly, because `Parallel` consumes that
+        # generator up front to queue the work. Streaming the RESULTS is the
+        # only form where one tick means one symbol actually landed on disk.
+        stream = Parallel(
+            n_jobs=max_workers, backend="threading", return_as="generator_unordered"
+        )(delayed(self._attempt)(symbol, from_watermark) for symbol in pending)
+
+        results = list(
+            tqdm(
+                stream,
+                total=len(pending),
+                desc=f"Tiingo {self.config.start_date}..{self.config.end_date}",
+                unit="sym",
+                disable=not self._knob("progress", True),
+            )
         )
 
         failures = {symbol: message for symbol, message in results if message}
