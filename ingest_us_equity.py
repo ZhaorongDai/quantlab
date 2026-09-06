@@ -90,9 +90,14 @@ import os
 
 from acquisition.tiingo import TiingoAcquisition
 from acquisition.universe import UniverseCatalog
-from base.chunking import TimeChunkPlanner
 from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
+from utils.cli import (
+    add_chunk_args,
+    add_concurrency_args,
+    add_window_args,
+    resolve_symbols,
+)
 
 #: D-05. The backfill window's default start. Applied as an interval-OVERLAP
 #: bound, not as a listing-date cut -- see `get_symbols_in_range`.
@@ -208,22 +213,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Build/refresh the table first via refresh_us_equity_universe.py."
         ),
     )
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        default=DEFAULT_START_DATE,
-        help=(
-            f"Window start (inclusive), default {DEFAULT_START_DATE}. Applied "
-            f"as interval OVERLAP: every symbol that traded at ANY point in "
-            f"the window is kept, INCLUDING those that delisted inside it. "
-            f"Only symbols whose listing ended before this date are dropped."
-        ),
-    )
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        default=None,
-        help="Window end (inclusive), default today.",
+    add_window_args(
+        parser,
+        default_start_date=DEFAULT_START_DATE,
+        semantics="interval-overlap",
     )
     parser.add_argument(
         "--dry-run",
@@ -234,14 +227,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "request. Answers 'how big will this be' before a multi-hour job."
         ),
     )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help=(
-            "Process only the first N resolved symbols. For smoke-testing the "
-            "pipeline end to end before committing to the full roster."
-        ),
+    add_concurrency_args(
+        parser, default_max_workers=TiingoAcquisition.DEFAULT_MAX_WORKERS
     )
     parser.add_argument(
         "--refresh",
@@ -250,16 +237,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Start each symbol from its own watermark instead of --start-date. "
             "Both modes are resumable; --refresh additionally narrows the "
             "per-symbol request window to what is actually missing."
-        ),
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=TiingoAcquisition.DEFAULT_MAX_WORKERS,
-        help=(
-            "Concurrent in-flight symbol fetches (default "
-            f"{TiingoAcquisition.DEFAULT_MAX_WORKERS}). Passed "
-            "through config.kwargs, so it stays config-driven."
         ),
     )
     parser.add_argument(
@@ -344,18 +321,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "it is slow, not because it is impossible."
         ),
     )
-    parser.add_argument(
-        "--chunk",
-        type=str,
-        choices=list(TimeChunkPlanner.GRANULARITIES),
-        default="year",
-        help=(
-            "Time granularity of one --to-zarr conversion window (default "
-            "year). Finer windows use less peak RAM and give a finer resume "
-            "granularity, at the cost of more append round trips. Pass "
-            "'month' for a dense year the per-chunk sizing guard refuses."
-        ),
-    )
+    add_chunk_args(parser)
     return parser
 
 
@@ -371,11 +337,9 @@ if __name__ == "__main__":
     # every symbol that traded at ANY point in the window, including the ~6.9k
     # that delisted inside it. Resolving membership on a single day here would
     # reintroduce exactly the survivorship bias this roster exists to remove.
-    symbols = tuple(
-        catalog.get_symbols_in_range(args.category, args.start_date, args.end_date)
-    )
-    if args.limit is not None:
-        symbols = symbols[: args.limit]
+    # `mode` is stated because `utils.cli.resolve_symbols` refuses to have a
+    # default -- the wrong choice here would be silent.
+    symbols = resolve_symbols(args, catalog, mode="in_range")
 
     acq_config = stock_acquisition_config(
         symbols=symbols,

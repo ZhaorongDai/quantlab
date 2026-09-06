@@ -32,29 +32,25 @@ from acquisition.universe import UniverseCatalog
 from base.config import AcquisitionConfig, DatasetConfig
 from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
-
-# Maps the CLI-facing --universe choice to enums.data.UniverseCategory.
-# The --universe `choices` are DERIVED from this map rather than repeated as a
-# second hardcoded list: when they were two separate literals, adding the
-# nasdaq100_constituent category produced it into universe.parquet while
-# leaving it unselectable from the only CLI that consumes the table.
-_UNIVERSE_CATEGORY_MAP = {
-    "sp500": "sp500_constituent",
-    "nasdaq100": "nasdaq100_constituent",
-    "nasdaq_all": "nasdaq_all",
-    "us_all": "us_all",
-}
+from utils.cli import (
+    add_universe_args,
+    add_window_args,
+    resolve_symbols,
+    validate_roster_args,
+)
 
 
 def _build_configs(
     args: argparse.Namespace,
 ) -> tuple[AcquisitionConfig, DatasetConfig]:
-    if args.universe:
-        category = _UNIVERSE_CATEGORY_MAP[args.universe]
-        catalog = UniverseCatalog.load(universe_config())
-        symbols = tuple(catalog.get_symbols_as_of(category, args.as_of_date))
-    else:
-        symbols = tuple(args.symbols.split(","))
+    # The catalog is loaded ONLY when a universe category has to be resolved:
+    # an explicit --symbols list needs no reference table, and loading one
+    # would make this script fail on a machine that has never built it.
+    catalog = UniverseCatalog.load(universe_config()) if args.universe else None
+    # `mode="as_of"` is stated, never defaulted: this script resolves
+    # point-in-time membership on ONE day. `ingest_us_equity.py` deliberately
+    # asks the same helper for `"in_range"` instead.
+    symbols = resolve_symbols(args, catalog, mode="as_of")
 
     acq_config = stock_acquisition_config(
         symbols=symbols,
@@ -76,54 +72,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "xr.Dataset/Zarr. Requires TIINGO_API_KEY."
         )
     )
-    parser.add_argument(
-        "--symbols",
-        type=str,
-        required=False,
-        default=None,
-        help="Comma-separated symbols (e.g. AAPL,MSFT). Mutually exclusive with --universe.",
-    )
-    parser.add_argument(
-        "--universe",
-        type=str,
-        choices=sorted(_UNIVERSE_CATEGORY_MAP),
-        default=None,
-        help=(
-            "Resolve a symbol list from the persisted universe table "
-            "(02-08-PLAN.md) instead of --symbols. 'sp500' resolves "
-            "point-in-time S&P 500 constituent membership; 'nasdaq100' "
-            "resolves point-in-time Nasdaq-100 (NDX) index membership; "
-            "'nasdaq_all' resolves the full NASDAQ-listed Common Stock roster "
-            "(current + delisted); 'us_all' resolves the full US listed-equity "
-            "roster -- NYSE + NASDAQ + AMEX common stock, delisted included "
-            "(~15.4k tickers). Note 'nasdaq100' and 'nasdaq_all' are "
-            "DIFFERENT universes that merely share the word Nasdaq -- the "
-            "former is the ~100-name index, the latter every symbol ever "
-            "listed on the exchange. 'us_all' is a strict superset of "
-            "'nasdaq_all'; both are kept deliberately. Requires --as-of-date. "
-            "For a full-window BACKFILL of every symbol that traded at any "
-            "point in a date range (rather than membership on one day), use "
-            "ingest_us_equity.py, which queries by interval overlap instead."
-        ),
-    )
-    parser.add_argument(
-        "--as-of-date",
-        type=str,
-        default=None,
-        help="Required with --universe; point-in-time date (YYYY-MM-DD) to resolve membership as of.",
-    )
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        default=None,
-        help="Start date (inclusive), e.g. 2024-01-01.",
-    )
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        default=None,
-        help="End date (inclusive), e.g. 2024-12-31.",
-    )
+    add_universe_args(parser)
+    add_window_args(parser)
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -139,10 +89,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    if bool(args.symbols) == bool(args.universe):
-        parser.error("Exactly one of --symbols or --universe must be set.")
-    if args.universe and not args.as_of_date:
-        parser.error("--as-of-date is required when --universe is set.")
+    validate_roster_args(parser, args)
 
     acq_config, ds_config = _build_configs(args)
 
