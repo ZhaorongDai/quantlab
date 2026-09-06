@@ -386,3 +386,83 @@ def test_universe_category_literal_has_exactly_three_values():
         "sp500_constituent",
         "nasdaq100_constituent",
     }
+
+
+# ---------------------------------------------------------------------------
+# Registry-driven catalog (03.1-04-PLAN.md Task 2, DATA-05/DATA-06)
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_build_emits_all_three_categories(mock_universe_fetchers, tmp_path):
+    """`build()` loops `UniverseCatalog.MEMBERSHIP_FETCHERS` and derives each
+    category token from `cls.CATEGORY`, so registering an index is the whole
+    cost of adding it to the reference table.
+
+    Pinning the distinct set against `UniverseCategory` means a fetcher
+    registered without its enum token -- or an enum token with no fetcher --
+    fails here rather than producing a table that silently omits a category.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    categories = (
+        catalog._backend.get_lazyframe()
+        .select("category")
+        .unique()
+        .collect()["category"]
+        .to_list()
+    )
+
+    assert set(categories) == set(typing.get_args(UniverseCategory))
+
+
+def test_get_symbols_as_of_rejects_pre_2007_nasdaq100_dates(
+    mock_universe_fetchers, tmp_path
+):
+    """The explicit-error half of DATA-05, and the Nasdaq-100 counterpart of
+    `test_get_symbols_as_of_rejects_pre_1976_dates`.
+
+    Before the registry the coverage guard hardcoded `sp500_constituent`, so
+    this exact query would have returned an INCOMPLETE ROSTER with no error --
+    and an incomplete roster is indistinguishable from a correct one to the
+    backtest consuming it (T-03.1-04-01). Driving the guard from each
+    fetcher's own `PIT_COVERAGE_START` means a category cannot exist without
+    a boundary.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError):
+        catalog.get_symbols_as_of("nasdaq100_constituent", "2005-01-01")
+
+
+def test_get_symbols_as_of_nasdaq100_point_in_time_correctness(
+    mock_universe_fetchers, tmp_path
+):
+    """Point-in-time correctness for the second index, mirroring the S&P 500
+    test above: `NEWMEM` is added by the fixture's add-only 2011-01-03 row, so
+    it must be absent the day before and present on the day itself.
+
+    The closed-interval convention is what makes the effective date itself a
+    membership day -- the same convention the daily panel densifies to.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    before = catalog.get_symbols_as_of("nasdaq100_constituent", "2011-01-02")
+    on_date = catalog.get_symbols_as_of("nasdaq100_constituent", "2011-01-03")
+
+    assert "NEWMEM" not in before
+    assert "NEWMEM" in on_date
+
+
+def test_nasdaq_all_has_no_coverage_boundary(mock_universe_fetchers, tmp_path):
+    """03.1-CONTEXT.md D-02: `nasdaq_all` semantics are unchanged.
+
+    `NasdaqUniverseFetcher` is deliberately NOT in `MEMBERSHIP_FETCHERS`: it
+    is a full-exchange roster sourced from Tiingo's `supported_tickers.csv`,
+    with per-symbol listing dates but no index-membership concept and so no
+    point-in-time coverage start. The registry must therefore leave it
+    boundary-free -- a 1970 query answers from the roster's own dates rather
+    than raising.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    assert catalog.get_symbols_as_of("nasdaq_all", "1970-01-01") == []

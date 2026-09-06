@@ -426,8 +426,8 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
 class UniverseCatalog:
     """Point-in-time US-equity universe reference table.
 
-    Combines `NasdaqUniverseFetcher` (category="nasdaq_all") and
-    `SP500MembershipFetcher` (category="sp500_constituent") into one
+    Combines `NasdaqUniverseFetcher` (category="nasdaq_all") with every
+    membership fetcher in `MEMBERSHIP_FETCHERS` into one
     `(symbol, category, start_date, end_date)` table, persisted via
     `PlBackend`/parquet (Locked Decision A1, 02-08-PLAN.md).
 
@@ -436,20 +436,43 @@ class UniverseCatalog:
     time, to avoid look-ahead bias (02-08-RESEARCH.md Open Question 2).
     """
 
+    #: The index-membership fetchers this catalog carries. **Membership of
+    #: this tuple is what gives a category its point-in-time coverage
+    #: boundary**: `build()` derives each category token from `cls.CATEGORY`
+    #: and `get_symbols_as_of()` derives each boundary from
+    #: `cls.PIT_COVERAGE_START`, so a fourth index inherits the guard by
+    #: being registered here rather than by someone remembering to add an
+    #: `if` branch. The previous hardcoded single-category guard meant any
+    #: second index silently answered pre-coverage queries with an
+    #: incomplete roster -- precisely the failure DATA-05 exists to prevent
+    #: (RESEARCH Finding 6 bullet 4).
+    #:
+    #: `NasdaqUniverseFetcher` is deliberately ABSENT: it is a full-exchange
+    #: roster with no membership-interval semantics and no coverage start,
+    #: and D-02 locks its `nasdaq_all` semantics exactly as they are. Adding
+    #: it here would impose a boundary it must not have.
+    MEMBERSHIP_FETCHERS: tuple[type[IndexMembershipFetcher], ...] = (
+        SP500MembershipFetcher,
+        Nasdaq100MembershipFetcher,
+    )
+
     def __init__(self, config: UniverseConfig):
         self.config = config
         self._backend = PlBackend()
 
     def build(self) -> Self:
-        nasdaq = NasdaqUniverseFetcher().fetch().with_columns(
-            pl.lit("nasdaq_all").alias("category")
-        )
-        sp500 = SP500MembershipFetcher(
-            cache_dir=self.config.cache_dir
-        ).build_intervals().with_columns(
-            pl.lit("sp500_constituent").alias("category")
-        )
-        combined = pl.concat([nasdaq, sp500], how="vertical_relaxed").select(
+        frames = [
+            NasdaqUniverseFetcher().fetch().with_columns(
+                pl.lit("nasdaq_all").alias("category")
+            )
+        ]
+        for fetcher_cls in self.MEMBERSHIP_FETCHERS:
+            frames.append(
+                fetcher_cls(cache_dir=self.config.cache_dir)
+                .build_intervals()
+                .with_columns(pl.lit(fetcher_cls.CATEGORY).alias("category"))
+            )
+        combined = pl.concat(frames, how="vertical_relaxed").select(
             ["symbol", "category", "start_date", "end_date"]
         )
         self._backend.to_internal(combined.lazy())
@@ -467,13 +490,18 @@ class UniverseCatalog:
         return catalog
 
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
-        if (
-            category == "sp500_constituent"
-            and as_of_date < SP500MembershipFetcher.PIT_COVERAGE_START
-        ):
+        # Every registered membership category carries its own boundary; a
+        # category absent from the map (i.e. `nasdaq_all`) is boundary-free
+        # by design (D-02).
+        coverage_starts = {
+            fetcher_cls.CATEGORY: fetcher_cls.PIT_COVERAGE_START
+            for fetcher_cls in self.MEMBERSHIP_FETCHERS
+        }
+        coverage_start = coverage_starts.get(category)
+        if coverage_start is not None and as_of_date < coverage_start:
             raise ValueError(
-                f"Cannot answer sp500_constituent membership before "
-                f"{SP500MembershipFetcher.PIT_COVERAGE_START} -- the "
+                f"Cannot answer {category} membership before "
+                f"{coverage_start} -- the "
                 f"Wikipedia-sourced change log is left-censored at that "
                 f"date and this query cannot be answered correctly, rather "
                 f"than silently defaulting to an incomplete/wrong answer."
