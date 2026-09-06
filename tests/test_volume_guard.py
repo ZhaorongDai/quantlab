@@ -523,6 +523,19 @@ def test_full_market_minute_backfill_is_refused_by_the_default_ceilings(
     assert "GiB" in message, message  # the byte figure
     assert re.search(r"\d+(\.\d+)? h\b", message), message  # the wall clock
     assert "200 req/min" in message, message  # the rate limit assumed
+    # ALL THREE crossings named, not merely the first. Found by mutation:
+    # truncating the crossed list to its first entry left the whole suite
+    # green, because the isolating scenarios each cross exactly one ceiling
+    # and this is the only scenario that crosses more than one. A caller who
+    # raises the single ceiling they were told about, only to hit the next one
+    # on the retry, learns to distrust the message and reaches for `force`.
+    for ceiling, constant in (
+        ("raw-bytes", "MAX_RAW_BYTES"),
+        ("request", "MAX_ACQUISITION_REQUESTS"),
+        ("wall-clock", "MAX_ACQUISITION_WALL_CLOCK_HOURS"),
+    ):
+        assert f"{ceiling} ceiling" in message, (ceiling, message)
+        assert constant in message, (constant, message)
     # A concrete narrowing computed from the estimate, with its own numbers --
     # not "narrow the window".
     assert re.search(r"<= [\d,]+ symbol", message), message
@@ -764,10 +777,12 @@ def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
     assert UniverseCatalog.MAX_RAW_BYTES == 20 * 1024**3
     assert UniverseCatalog.MAX_ACQUISITION_REQUESTS == 50_000
     assert UniverseCatalog.MAX_ACQUISITION_WALL_CLOCK_HOURS == 4.0
-    # Derived, and asserted as derived: the wall-clock ceiling IS the request
-    # ceiling at the free tier's rate, so raising one without the other is a
-    # visible choice rather than an accident.
-    assert UniverseCatalog.MAX_ACQUISITION_WALL_CLOCK_HOURS == (
+    # Derived, and asserted as derived: 50,000 requests at the free tier's
+    # 200/min is 4.17 h, rounded to the round number a user actually feels.
+    # Pinned to the ROUNDING rather than to the exact quotient so the two
+    # cannot silently decouple -- raising the request ceiling without the
+    # wall-clock one has to be a visible choice.
+    assert UniverseCatalog.MAX_ACQUISITION_WALL_CLOCK_HOURS == round(
         UniverseCatalog.MAX_ACQUISITION_REQUESTS
         / UniverseCatalog.DEFAULT_RATE_LIMIT_PER_MIN
         / 60
