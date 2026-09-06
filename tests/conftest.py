@@ -265,20 +265,30 @@ def ndx_anchor_html_fixture() -> str:
     equality assertion against 100 fails against correct data.
 
     Named rows: `GOOGL`/`GOOG` and `FOX`/`FOXA` (the two share-class pairs
-    that push the count past 100), `LOGI` (the change log's earliest added
-    ticker, later removed in 2018 -- present here so the fixture mirrors a
-    real anchor that still lists historically-churned names), and `NEWMEM`
-    (added by an add-only change-log row and never removed, so it must be an
-    anchor member for its interval to stay open-ended). The remaining 96 rows
-    are generated `NDX001`..`NDX096` in a loop so the arithmetic
-    6 + 96 = 102 is visible in the source.
+    that push the count past 100), and `NEWMEM` (added by an add-only
+    change-log row and never removed, so it must be an anchor member for its
+    interval to stay open-ended). The remaining 97 rows are generated
+    `NDX001`..`NDX097` in a loop so the arithmetic 5 + 97 = 102 is visible in
+    the source.
+
+    **`LOGI` is deliberately ABSENT.** This table is a CURRENT-constituent
+    snapshot, and the change log removes `LOGI` in 2018 -- so listing it here
+    would assert "LOGI is a member today" and "LOGI stopped being a member in
+    2018" simultaneously. That contradiction is precisely the third
+    anchor/log disagreement `reconstruct_intervals()` now reconciles (CR-01):
+    the anchor is authoritative for "is a member today", so an anchor row
+    would correctly re-open LOGI's membership and it would no longer be the
+    former member `test_nasdaq100_build_intervals_reconstructs_membership`
+    asserts it is. `LOGI` still reaches the densified panel's symbol axis
+    through its closed 2007-2018 interval -- that is the survivorship-bias
+    guarantee, and it does not require an anchor row.
 
     The table carries NO `date_added` column -- neither real anchor source
     does -- which is what forces `Nasdaq100MembershipFetcher.fetch_anchor()`
     to synthesise an explicit all-null one.
     """
-    named = ["GOOGL", "GOOG", "FOX", "FOXA", "LOGI", "NEWMEM"]
-    generated = [f"NDX{i:03d}" for i in range(1, 97)]
+    named = ["GOOGL", "GOOG", "FOX", "FOXA", "NEWMEM"]
+    generated = [f"NDX{i:03d}" for i in range(1, 98)]
     symbols = named + generated
     assert len(symbols) == 102, "anchor fixture must mirror the real 102-row shape"
 

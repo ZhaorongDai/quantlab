@@ -77,6 +77,51 @@ def test_reconstruct_intervals_left_censored(mock_universe_fetchers):
     assert any("ZZZZ" in message for message in captured_messages)
 
 
+def test_reconstruct_intervals_reopens_a_current_member_whose_last_event_was_a_removal(
+    tmp_path,
+):
+    """CR-01. The change log and the anchor disagree in three directions, not
+    two. This is the third: the log's LAST event for a symbol is a removal,
+    but the anchor still lists it as a current constituent -- i.e. the log is
+    missing a re-addition. The live Nasdaq-100 log is known to be asymmetric
+    (16 drop-only rows), so this is a real shape.
+
+    Before the fix the symbol was in `seen_symbols` (from the closed removal)
+    and so was skipped by the anchor-only loop, leaving it persisted as a
+    FORMER member with no warning -- the mirror-image inconsistency warns. The
+    consequence is a `get_symbols_as_of(category, today)` that omits a current
+    constituent, undetectable downstream.
+    """
+    fetcher = SP500MembershipFetcher(cache_dir=str(tmp_path))
+    anchor = pl.DataFrame(
+        {"symbol": ["CURR"], "date_added": [None]},
+        schema={"symbol": pl.String, "date_added": pl.String},
+    )
+    changes = pl.DataFrame(
+        {
+            "effective_date": ["1990-01-01", "2005-01-01"],
+            "added_ticker": ["CURR", None],
+            "removed_ticker": [None, "CURR"],
+        }
+    )
+
+    captured_messages: list[str] = []
+    sink_id = logger.add(captured_messages.append, level="WARNING", format="{message}")
+    try:
+        intervals = fetcher.reconstruct_intervals(anchor, changes)
+    finally:
+        logger.remove(sink_id)
+
+    rows = intervals.filter(pl.col("symbol") == "CURR").sort("start_date").to_dicts()
+    assert [row["end_date"] for row in rows][-1] is None, (
+        "the anchor is authoritative for 'is a member today'; CURR must end "
+        f"with an OPEN interval, got {rows}"
+    )
+    assert any("CURR" in message for message in captured_messages), (
+        "re-opening a membership the change log never re-added must not be silent"
+    )
+
+
 def test_get_symbols_as_of_point_in_time_correctness(mock_universe_fetchers, tmp_path):
     config = _make_config(tmp_path)
     catalog = UniverseCatalog(config).build()

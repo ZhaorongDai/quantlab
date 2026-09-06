@@ -204,6 +204,29 @@ class IndexMembershipFetcher(ABC):
     def reconstruct_intervals(
         self, anchor: pl.DataFrame, changes: pl.DataFrame
     ) -> pl.DataFrame:
+        """Replay the change log forward and reconcile it against the anchor.
+
+        The anchor is AUTHORITATIVE for "is this symbol a member today"; the
+        change log is authoritative for "when did that change". Those two
+        sources disagree in exactly three ways, and all three are reconciled
+        here -- none may pass silently, because a wrong-but-plausible roster
+        is indistinguishable downstream from a correct one:
+
+        1. **Open interval, symbol absent from the anchor.** The log is
+           missing a removal. Closed at `last_eff` and flagged
+           `end_date_is_inferred` (see the column's note below).
+        2. **The log's last event for the symbol was a REMOVAL, yet the
+           anchor still lists it as a current constituent.** The log is
+           missing a re-addition -- the live Nasdaq-100 log is known to be
+           asymmetric (16 drop-only rows), so this is a real shape, not a
+           hypothetical. Membership is re-opened from that removal date with
+           a warning. Without this branch the symbol is silently recorded as
+           a FORMER member and `get_symbols_as_of(category, today)` omits a
+           current constituent.
+        3. **Anchor member with no event anywhere in the log.** Either an
+           original constituent or added before `PIT_COVERAGE_START`; opened
+           at `date_added or PIT_COVERAGE_START`.
+        """
         anchor_symbols = set(anchor["symbol"])
         anchor_date_added = dict(zip(anchor["symbol"], anchor["date_added"]))
 
@@ -250,6 +273,37 @@ class IndexMembershipFetcher(ABC):
                 closed.append((sym, start, last_eff))
             else:
                 closed.append((sym, start, None))
+
+        # Third reconciliation direction: the change log's LAST event for a
+        # symbol is a REMOVAL, yet the anchor still lists it as a current
+        # constituent -- the log is missing a re-addition. Without this branch
+        # the symbol falls through both loops (it is in `seen_symbols`, so the
+        # anchor-only loop below skips it) and is silently persisted as a
+        # FORMER member, which makes `get_symbols_as_of(category, today)` omit
+        # a current constituent and the densified panel read `is_member=False`
+        # at the live edge. The anchor is authoritative for "member today", so
+        # membership is re-opened rather than left closed.
+        symbols_still_open = set(open_intervals)
+        closed_by_symbol: dict[str, list[int]] = {}
+        for position, (sym, _start, _end) in enumerate(closed):
+            closed_by_symbol.setdefault(sym, []).append(position)
+
+        for sym in sorted(anchor_symbols - symbols_still_open):
+            positions = closed_by_symbol.get(sym)
+            if not positions:
+                continue  # never seen in the log -- handled by the loop below
+            latest = max(positions, key=lambda i: closed[i][2] or "")
+            last_removal = closed[latest][2]
+            if last_removal is None:
+                continue  # already open-ended; nothing to reconcile
+            logger.warning(
+                f"{sym}: the change log's last event is a removal at "
+                f"{last_removal}, but the current anchor still lists it as a "
+                f"constituent -- the change log is missing a re-addition. "
+                f"Re-opening membership from that removal date rather than "
+                f"silently recording a current constituent as a former one."
+            )
+            closed.append((sym, last_removal, None))
 
         # Anchor members with NO 'added'/'removed' event anywhere in the
         # change log are either original constituents or were added before
