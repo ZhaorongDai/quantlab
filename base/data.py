@@ -9,15 +9,39 @@ from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from tqdm import tqdm
 
-from base.config import DatasetConfig
+from base.config import BaseDatasetConfig, DatasetConfig
 from dataset.backend import XrBackend
 from dataset.cleaning import clean_market_data
 from enums.constant import Date
 from utils.timer import Timer
 
 
-class Dataset(ABC):
-    def __init__(self, config: DatasetConfig):
+class BaseDataset(ABC):
+    """The shared, storage-medium-agnostic dataset contract (D-03, DATA-06).
+
+    Everything the pipeline needs from a dataset lives here: the `config`
+    lifecycle, the `XrBackend` storage round-trip (`read`/`save`), the
+    `xr.Dataset` / `pl.LazyFrame` accessors, the `from_raw_data()` ingestion
+    pipeline with its overridable `_clean()` hook, and the single abstract
+    member `_raw_data_to_xr()` that every dataset kind implements for itself.
+
+    The base is deliberately free of any nautilus or KunQuant concept -- no
+    bar conversion, no `ParquetDataCatalog`, no compiled-graph input arrays,
+    and no read of the market-only `raw_data_dir_path`/`catalog_path`/
+    `market`/`frequency` config fields. That is what lets a dataset with no
+    OHLCV shape at all -- an index-membership panel, say -- complete the whole
+    persistence lifecycle by implementing exactly one abstract method, instead
+    of carrying two meaningless `raise NotImplementedError` stubs.
+    """
+
+    def __init__(self, config: BaseDatasetConfig):
+        # Ordering is load-bearing, and it is deliberately the OPPOSITE of
+        # `base/factor.py:Factor.__init__`, which assigns its config first.
+        # Here the config property setter below DOES reach the storage
+        # backend -- through `_reset_symbols()` -> `read()` -- so the backend
+        # must already exist by the time the setter fires. Do not "harmonize"
+        # the two hierarchies: reversing these two lines raises
+        # `AttributeError` on every dataset construction.
         self.data_backend = XrBackend()
         self.config = config
 
@@ -62,11 +86,11 @@ class Dataset(ABC):
             self.data_backend.filter_by_symbol("symbol", self.config.symbols)
 
     @property
-    def config(self) -> DatasetConfig:
+    def config(self) -> BaseDatasetConfig:
         return self._config
 
     @config.setter
-    def config(self, config: DatasetConfig):
+    def config(self, config: BaseDatasetConfig):
         self._config = config
         self._config.name = self.import_path
 
@@ -79,6 +103,22 @@ class Dataset(ABC):
             self._reset_symbols()
 
     def _reset_symbols(self):
+        """Resolve `config.symbols` eagerly from the store, at
+        config-assignment time.
+
+        The default is exactly the behaviour every dataset class has always
+        had: when the caller pinned a symbol subset, read the store (falling
+        back to `from_raw_data()` if it does not exist yet) and overwrite
+        `config.symbols` with whatever the store actually holds.
+
+        Overridable seam: a dataset whose symbol axis is derived from its own
+        source rather than from a store -- or one whose `from_raw_data()`
+        fallback would perform a remote fetch merely to construct the object
+        -- overrides this to a no-op and resolves its symbols inside
+        `_raw_data_to_xr()` instead. Note the fallback only catches
+        `FileNotFoundError`, so for such a dataset any network or parse error
+        would otherwise escape `__init__`.
+        """
         try:
             self.read()
         except FileNotFoundError:
@@ -130,6 +170,29 @@ class Dataset(ABC):
         """
         return clean_market_data(data)
 
+    @abstractmethod
+    def _raw_data_to_xr(self) -> xr.Dataset: ...
+
+
+class MarketDataset(BaseDataset):
+    """The market-data dataset backend.
+
+    Owns everything nautilus- and KunQuant-specific: the
+    `ParquetDataCatalog` write (`_write_catalog`), the bar-conversion path
+    (`to_nautilus` / `_to_nautilus`), and the compiled-graph input path
+    (`to_kunquant` / `_to_kunquant`). Keeping all five off `BaseDataset` is
+    what lets a dataset with no bar, no catalog and no KunQuant
+    representation subclass the shared base directly instead of carrying two
+    meaningless `raise NotImplementedError` stubs (D-03).
+    """
+
+    # Narrowed for readers and type checkers only -- this is a bare
+    # annotation, so it does not shadow `BaseDataset.config`. It records that
+    # the three methods below legitimately read the market-only
+    # `catalog_path` field, which lives on `DatasetConfig` and not on the
+    # shared `BaseDatasetConfig`.
+    config: DatasetConfig
+
     def _write_catalog(self, data: list):
         catalog = ParquetDataCatalog(
             self.config.catalog_path, fs_protocol="file"
@@ -160,9 +223,12 @@ class Dataset(ABC):
     ) -> tuple[dict, np.ndarray, np.ndarray]: ...
 
     @abstractmethod
-    def _raw_data_to_xr(self) -> xr.Dataset: ...
-
-    @abstractmethod
     def _to_nautilus(
         self, data: xr.Dataset, venue: str, n_jobs: int
     ) -> tuple[list[list], list[Instrument]]: ...
+
+
+# Transitional alias, removed in Task 3 of 03.1-01: keeps dataset/spot.py,
+# dataset/stock.py and the existing tests importing `Dataset` green across
+# this one commit, until they are re-pointed onto MarketDataset/BaseDataset.
+Dataset = MarketDataset
