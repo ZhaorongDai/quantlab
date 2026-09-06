@@ -319,9 +319,26 @@ class IndexMembershipFetcher(ABC):
                 index=parsed.index,
             )
 
-        parsed["effective_date"] = pd.to_datetime(
-            parsed["effective_date"]
-        ).dt.strftime("%Y-%m-%d")
+        # `format="mixed"` silences the `Could not infer format ... falling
+        # back to dateutil` warning both pages provoked, and `errors="coerce"`
+        # turns an unparseable cell into NaT instead of raising. That
+        # distinction matters: Wikipedia routinely carries footnote markers and
+        # date ranges in date columns, and a raised DateParseError is caught by
+        # fetch_changes()'s broad `except Exception`, which converts one bad
+        # cell into a PERMANENT, near-silent fallback to the stale cache.
+        # Surfacing the offending rows instead keeps the failure legible.
+        parsed_dates = pd.to_datetime(
+            parsed["effective_date"], format="mixed", errors="coerce"
+        )
+        unparseable = parsed["effective_date"][parsed_dates.isna()]
+        if len(unparseable):
+            raise ValueError(
+                f"{self.INDEX_LABEL}: unparseable effective_date cells in the "
+                f"change log at {self.CHANGES_URL}: "
+                f"{unparseable.tolist()}. Refusing to reconstruct membership "
+                f"from a table whose dates were silently dropped."
+            )
+        parsed["effective_date"] = parsed_dates.dt.strftime("%Y-%m-%d")
         return parsed
 
     def fetch_changes(self) -> pl.DataFrame:

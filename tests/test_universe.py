@@ -555,6 +555,28 @@ def test_na_tickered_anchor_row_is_not_turned_into_a_nan_symbol(monkeypatch, tmp
     assert "nan" not in symbols
 
 
+def test_unparseable_effective_date_names_the_offending_rows(tmp_path):
+    """WR-11. `pd.to_datetime` was called with no `format=` and no `errors=`,
+    so a single unparseable cell -- Wikipedia routinely carries footnote
+    markers and date ranges in date columns -- raised DateParseError, which
+    `fetch_changes()`'s broad `except Exception` converted into a permanent,
+    near-silent fallback to the stale cache.
+
+    The bad cell must now be named in the error rather than silently dropped
+    or laundered into a cache fallback.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    html = _ndx_changes_html(
+        [
+            ("February 1, 2007", "LOGI", "Logitech", "CMVT", "Comverse", "R"),
+            ("not a date[1]", "TEMP1", "Temp One", "", "", "R"),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="unparseable effective_date"):
+        fetcher._parse_changes_table(html)
+
+
 def _ndx_changes_html_with_swapped_groups(
     rows: list[tuple[str, str, str, str, str, str]],
 ) -> str:
