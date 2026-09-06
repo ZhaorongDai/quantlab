@@ -73,6 +73,15 @@ Usage:
     #    over. Until they are stamped, every run reports them and skips them.
     export TIINGO_API_KEY=your-key-here
     uv run python ingest_us_equity.py --stamp-legacy-watermarks 2016-01-01
+
+    # 8. Quota-aware backfill (D-05/D-06). The account's allocation is
+    #    empirically ~4,600 requests per hour, so ~14.7k symbols needs roughly
+    #    three windows. On exhaustion the run STOPS dispatching -- always,
+    #    even without the flag -- instead of burning the remainder as
+    #    fast-failing requests, which is what happened on 2026-09-06 and may
+    #    itself have deepened the lockout. --wait-for-quota additionally sits
+    #    through the reset and resumes, bounded by --quota-max-waits.
+    uv run python ingest_us_equity.py --wait-for-quota
 """
 
 import argparse
@@ -286,6 +295,44 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--wait-for-quota",
+        action="store_true",
+        help=(
+            "When the vendor reports the request allocation is exhausted, "
+            "wait --quota-wait-seconds and resume, up to --quota-max-waits "
+            "times. OFF by default, so no run silently holds an hourly window "
+            "open. Either way the run STOPS dispatching on exhaustion rather "
+            "than burning the remainder as fast-failing requests, and every "
+            "watermark is preserved so a later re-run resumes exactly there."
+        ),
+    )
+    parser.add_argument(
+        "--quota-wait-seconds",
+        type=int,
+        default=ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS,
+        help=(
+            "Delay between resume attempts (default "
+            f"{ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS}). "
+            "Tiingo's reset semantics -- fixed top-of-hour bucket vs. rolling "
+            "window -- are not published, so this is a configured INTERVAL, "
+            "not a computed reset time; one hour from the moment of detection "
+            "covers a rolling hour exactly and a fixed bucket strictly."
+        ),
+    )
+    parser.add_argument(
+        "--quota-max-waits",
+        type=int,
+        default=ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS,
+        help=(
+            "How many times to wait and resume before giving up (default "
+            f"{ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
+            "on purpose: an unbounded loop against a lockout is a worse "
+            "version of the problem. The default comes from the observed "
+            "arithmetic -- ~4,600 requests per window against ~14.7k symbols "
+            "is roughly three windows."
+        ),
+    )
+    parser.add_argument(
         "--to-zarr",
         action="store_true",
         help=(
@@ -339,6 +386,9 @@ if __name__ == "__main__":
             "max_workers": args.max_workers,
             "resume": True,
             "legacy_watermarks": args.legacy_watermarks,
+            "wait_for_quota": args.wait_for_quota,
+            "quota_wait_seconds": args.quota_wait_seconds,
+            "quota_max_waits": args.quota_max_waits,
         },
     )
     # `symbols=None`, NOT the resolved roster, and this is load-bearing.
