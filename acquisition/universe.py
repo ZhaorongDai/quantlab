@@ -22,9 +22,10 @@ Two independent reference-data problems are solved here:
   index constituent membership, reconstructed via forward-chronological
   event simulation over Wikipedia's "Historical components of ..." change
   log, anchored against a known-correct current snapshot. Adding a third
-  index is a data change -- six class constants plus two parse methods --
-  not a code change; the reconstruction algorithm and the whole fetch/cache
-  safety envelope live once, on the base.
+  index is a data change -- nine class constants plus one parse method
+  (`fetch_anchor()`) -- not a code change; the reconstruction algorithm, the
+  change-log parse and the whole fetch/cache safety envelope live once, on
+  the base.
 
 `UniverseCatalog` merges both into one `(symbol, category, start_date,
 end_date)` reference table, persisted via the existing `PlBackend` as
@@ -88,9 +89,10 @@ class IndexMembershipFetcher(ABC):
     """Shared machinery for reconstructing point-in-time index membership
     intervals from a current-constituent anchor plus a dated change log.
 
-    An index is DATA here, not code: a subclass supplies six class constants
-    and two parse methods, and inherits the whole reconstruction algorithm
-    plus the whole fetch/cache safety envelope unchanged.
+    An index is DATA here, not code: a subclass supplies nine class constants
+    and ONE parse method (`fetch_anchor()`), and inherits the whole
+    reconstruction algorithm, the change-log parse and the whole fetch/cache
+    safety envelope unchanged.
 
     Subclass-bound class constants:
 
@@ -103,16 +105,33 @@ class IndexMembershipFetcher(ABC):
       Two indices must never share one cache file.
     - ``INDEX_LABEL`` -- human-readable index name, used in log/error text.
     - ``CATEGORY`` -- the ``enums.data.UniverseCategory`` token.
+    - ``EXPECTED_SOURCE_HEADER`` -- the exact flattened header the change-log
+      table must have. This is the identity the table is SELECTED by and the
+      contract its columns are read against.
+    - ``DATE_HEADER`` -- which ``EXPECTED_SOURCE_HEADER`` entry carries the
+      effective date (the two pages word it differently).
+    - ``CHANGES_TABLE_ATTRS`` -- optional ``pd.read_html(attrs=...)``
+      pre-filter when the page marks its change log with an id/class.
 
-    Two behaviours inside `fetch_changes()` are load-bearing SAFETY
-    properties, not incidental implementation. They live on this base
-    precisely so every subclass gets them BY CONSTRUCTION -- only the parse
-    step is overridable, so no subclass can accidentally ship without them:
+    Three behaviours are load-bearing SAFETY properties, not incidental
+    implementation. They live on this base precisely so every subclass gets
+    them BY CONSTRUCTION:
 
-    1. **Row-count monotonicity.** A live table with fewer rows than the
+    1. **Source-header validation.** `_parse_changes_table()` SELECTS the
+       change-log table by matching its flattened header against
+       ``EXPECTED_SOURCE_HEADER``, and reads the ticker columns BY NAME off
+       that verified header. Previously each subclass assigned column names
+       positionally and the base then checked that the names it had just
+       assigned were present -- an unconditionally-true check, while the one
+       drift a scraped source most easily produces (a header REORDER, same
+       column count) was accepted and silently inverted add/remove. Selecting
+       by header identity also removes the old `tables[0]` positional pick,
+       so a table inserted ahead of the change log is no longer parsed as the
+       change log.
+    2. **Row-count monotonicity.** A live table with fewer rows than the
        cached snapshot is treated as a parse failure / schema drift, because
        memberships only close, they don't retroactively vanish.
-    2. **Non-destructive fallback.** On any fetch/parse failure the cached
+    3. **Non-destructive fallback.** On any fetch/parse failure the cached
        snapshot is returned and the cache file is NOT overwritten, so a
        single bad parse cannot poison every future run.
     """
@@ -123,6 +142,22 @@ class IndexMembershipFetcher(ABC):
     CACHE_FILENAME: str
     INDEX_LABEL: str
     CATEGORY: str
+
+    #: The exact flattened change-log header (see `_flatten_header`). Both the
+    #: table SELECTOR and the column contract -- a source whose header drifts
+    #: raises instead of being parsed against assumptions that no longer hold.
+    EXPECTED_SOURCE_HEADER: tuple[str, ...]
+    #: Which `EXPECTED_SOURCE_HEADER` entry carries the effective date.
+    DATE_HEADER: str
+    #: The two ticker columns actually consumed. Defaulted because both live
+    #: sources word them identically; still validated against
+    #: `EXPECTED_SOURCE_HEADER` so an inconsistent subclass fails loudly.
+    ADDED_TICKER_HEADER: str = "Added Ticker"
+    REMOVED_TICKER_HEADER: str = "Removed Ticker"
+    #: Optional `pd.read_html(attrs=...)` pre-filter, when the page marks its
+    #: change log (the S&P 500 page has `id="changes"`; the Nasdaq-100 page
+    #: has no such marker and relies on header identity alone).
+    CHANGES_TABLE_ATTRS: dict[str, str] | None = None
 
     def __init__(self, cache_dir: str):
         self._cache_path = Path(cache_dir) / self.CACHE_FILENAME
@@ -135,17 +170,87 @@ class IndexMembershipFetcher(ABC):
         `PIT_COVERAGE_START` for those symbols.
         """
 
-    @abstractmethod
-    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
-        """Parse this index's change-log HTML into a pandas frame carrying
-        at least `effective_date` / `added_ticker` / `removed_ticker`, with
-        `effective_date` normalised to `YYYY-MM-DD` strings.
-
-        This is the ONLY index-specific step of `fetch_changes()`: the
-        required-column check, the row-count monotonicity guard, the
-        cached-snapshot fallback and the write-on-success all stay on the
-        base around it.
+    @staticmethod
+    def _flatten_header(columns) -> tuple[str, ...]:
+        """Flatten a (possibly two-level) `pd.read_html` header to plain
+        strings: `("Added", "Ticker")` -> `"Added Ticker"`, and a label
+        repeated across both header rows (`("Reason", "Reason")`) -> `"Reason"`.
+        Whitespace is collapsed so a stray NBSP or line break in the source
+        markup does not read as a different header.
         """
+        flattened: list[str] = []
+        for column in columns:
+            parts = column if isinstance(column, tuple) else (column,)
+            cleaned: list[str] = []
+            for part in parts:
+                text = " ".join(str(part).split())
+                if text and (not cleaned or cleaned[-1] != text):
+                    cleaned.append(text)
+            flattened.append(" ".join(cleaned))
+        return tuple(flattened)
+
+    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
+        """Parse this index's change-log HTML into an `effective_date` /
+        `added_ticker` / `removed_ticker` frame.
+
+        Concrete and SHARED, deliberately (see safety property 1 on the class
+        docstring). The change-log table is selected by matching its flattened
+        header against `EXPECTED_SOURCE_HEADER`, and the three consumed
+        columns are then read BY NAME off that verified header rather than by
+        position. A subclass supplies the header constants, not a parse body,
+        so no index can ship a parse that skips the validation.
+        """
+        read_kwargs: dict = {"flavor": "lxml"}
+        if self.CHANGES_TABLE_ATTRS is not None:
+            read_kwargs["attrs"] = self.CHANGES_TABLE_ATTRS
+        tables = pd.read_html(io.StringIO(html_text), **read_kwargs)
+
+        for header in (
+            self.DATE_HEADER,
+            self.ADDED_TICKER_HEADER,
+            self.REMOVED_TICKER_HEADER,
+        ):
+            if header not in self.EXPECTED_SOURCE_HEADER:
+                raise ValueError(
+                    f"{self.INDEX_LABEL}: {header!r} is not one of "
+                    f"EXPECTED_SOURCE_HEADER {self.EXPECTED_SOURCE_HEADER} -- "
+                    f"this class's header constants contradict each other."
+                )
+
+        matched = next(
+            (
+                table
+                for table in tables
+                if self._flatten_header(table.columns)
+                == self.EXPECTED_SOURCE_HEADER
+            ),
+            None,
+        )
+        if matched is None:
+            raise ValueError(
+                f"{self.INDEX_LABEL}: no table at {self.CHANGES_URL} carries "
+                f"the expected change-log header "
+                f"{self.EXPECTED_SOURCE_HEADER}; saw "
+                f"{[self._flatten_header(t.columns) for t in tables]}. "
+                f"Refusing to parse a table whose header was not verified -- "
+                f"a reordered header has the same column count as a correct "
+                f"one, so accepting it would silently invert add/remove."
+            )
+
+        changes = matched.copy()
+        changes.columns = self._flatten_header(changes.columns)
+
+        parsed = pd.DataFrame(
+            {
+                "effective_date": changes[self.DATE_HEADER],
+                "added_ticker": changes[self.ADDED_TICKER_HEADER],
+                "removed_ticker": changes[self.REMOVED_TICKER_HEADER],
+            }
+        )
+        parsed["effective_date"] = pd.to_datetime(
+            parsed["effective_date"]
+        ).dt.strftime("%Y-%m-%d")
+        return parsed
 
     def fetch_changes(self) -> pl.DataFrame:
         cached_row_count = 0
@@ -165,11 +270,20 @@ class IndexMembershipFetcher(ABC):
 
             changes = self._parse_changes_table(response.text)
 
+            # Post-condition backstop, NOT the source-header guard. The real
+            # validation is `_parse_changes_table`'s `EXPECTED_SOURCE_HEADER`
+            # match against the SOURCE's own header; this only catches a
+            # subclass that overrides the (concrete) base parse and returns
+            # the wrong shape. It is deliberately no longer described as
+            # validating the source: when each subclass assigned these very
+            # names positionally, this check was unconditionally true while
+            # nothing looked at the source header at all.
             required_columns = {"effective_date", "added_ticker", "removed_ticker"}
             if not required_columns.issubset(set(changes.columns)):
                 raise ValueError(
-                    f"Parsed Wikipedia changes table missing expected columns: "
-                    f"expected {required_columns}, got {set(changes.columns)}"
+                    f"{self.INDEX_LABEL}: _parse_changes_table() returned a "
+                    f"frame missing required columns: expected "
+                    f"{required_columns}, got {set(changes.columns)}"
                 )
             if len(changes) < cached_row_count:
                 raise ValueError(
@@ -344,31 +458,27 @@ class SP500MembershipFetcher(IndexMembershipFetcher):
     INDEX_LABEL = "S&P 500"
     CATEGORY = "sp500_constituent"
 
+    # Seven columns: this page also carries `Refs`, which the Nasdaq-100 page
+    # does not. The `id="changes"` marker narrows `read_html` before the
+    # header identity check does the real work.
+    EXPECTED_SOURCE_HEADER = (
+        "Effective Date",
+        "Added Ticker",
+        "Added Security",
+        "Removed Ticker",
+        "Removed Security",
+        "Reason",
+        "Refs",
+    )
+    DATE_HEADER = "Effective Date"
+    CHANGES_TABLE_ATTRS = {"id": "changes"}
+
     def fetch_anchor(self) -> pl.DataFrame:
         response = requests.get(self.ANCHOR_URL, timeout=30)
         response.raise_for_status()
         data = pl.read_csv(io.StringIO(response.text))
         data = data.rename({"Symbol": "symbol", "Date added": "date_added"})
         return data.select(["symbol", "date_added"])
-
-    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
-        tables = pd.read_html(
-            io.StringIO(html_text), attrs={"id": "changes"}, flavor="lxml"
-        )
-        changes = tables[0]
-        changes.columns = [
-            "effective_date",
-            "added_ticker",
-            "added_security",
-            "removed_ticker",
-            "removed_security",
-            "reason",
-            "refs",
-        ]
-        changes["effective_date"] = pd.to_datetime(
-            changes["effective_date"]
-        ).dt.strftime("%Y-%m-%d")
-        return changes[["effective_date", "added_ticker", "removed_ticker"]]
 
 
 class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
@@ -416,6 +526,25 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
     INDEX_LABEL = "Nasdaq-100"
     CATEGORY = "nasdaq100_constituent"
 
+    # Six columns after `pd.read_html` flattens the page's two-level
+    # `Date | Added(Ticker, Security) | Removed(Ticker, Security) | Reason`
+    # header -- one fewer than the S&P 500 table, which also has `Refs`, and
+    # the date column is worded `Date` rather than `Effective Date`.
+    #
+    # This page carries no id/class on its change log, so there is no
+    # `CHANGES_TABLE_ATTRS` pre-filter: the header identity IS the selector.
+    # That replaces the previous `tables[0]` positional pick, under which any
+    # table Wikipedia inserted ahead of the change log became the change log.
+    EXPECTED_SOURCE_HEADER = (
+        "Date",
+        "Added Ticker",
+        "Added Security",
+        "Removed Ticker",
+        "Removed Security",
+        "Reason",
+    )
+    DATE_HEADER = "Date"
+
     # A structurally-drifted commercial page must fail loudly rather than
     # yield a three-symbol "index": a silently truncated anchor closes every
     # unmentioned membership and quietly reintroduces the survivorship bias
@@ -456,25 +585,6 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
             },
             schema={"symbol": pl.String, "date_added": pl.String},
         )
-
-    def _parse_changes_table(self, html_text: str) -> pd.DataFrame:
-        tables = pd.read_html(io.StringIO(html_text), flavor="lxml")
-        changes = tables[0]
-        # Six flat columns after `pd.read_html` flattens the page's two-level
-        # `Date | Added(Ticker, Security) | Removed(Ticker, Security) | Reason`
-        # header -- one fewer than the S&P 500 table, which also has `Refs`.
-        changes.columns = [
-            "effective_date",
-            "added_ticker",
-            "added_security",
-            "removed_ticker",
-            "removed_security",
-            "reason",
-        ]
-        changes["effective_date"] = pd.to_datetime(
-            changes["effective_date"]
-        ).dt.strftime("%Y-%m-%d")
-        return changes[["effective_date", "added_ticker", "removed_ticker"]]
 
 
 class UniverseCatalog:

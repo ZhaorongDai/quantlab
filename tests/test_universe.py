@@ -421,6 +421,75 @@ def test_nasdaq100_row_count_monotonicity_guard_rejects_a_shrunken_table(
     assert fetcher._cache_path.read_bytes() == cache_bytes_before
 
 
+def _ndx_changes_html_with_swapped_groups(
+    rows: list[tuple[str, str, str, str, str, str]],
+) -> str:
+    """A Nasdaq-100 change-log page whose `Added`/`Removed` header GROUPS are
+    swapped -- same six columns, same column count, only the order differs.
+    """
+    body_rows = "\n".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return (
+        "<html><body><table><thead>"
+        '<tr><th rowspan="2">Date</th><th colspan="2">Removed</th>'
+        '<th colspan="2">Added</th><th rowspan="2">Reason</th></tr>'
+        "<tr><th>Ticker</th><th>Security</th><th>Ticker</th><th>Security</th></tr>"
+        f"</thead><tbody>{body_rows}</tbody></table></body></html>"
+    )
+
+
+def test_changes_parse_rejects_a_reordered_source_header(monkeypatch, tmp_path):
+    """CR-03. A header REORDER has the same column count as a correct header,
+    so the old implicit `Length mismatch` guard never fired on it -- and the
+    base's `required_columns` check could not either, because each subclass
+    ASSIGNED those very names positionally before returning. The result was
+    that a swapped `Added`/`Removed` group was accepted and every event
+    recorded exactly inverted, with no error and no warning.
+
+    The table is now SELECTED by matching its flattened source header, and the
+    ticker columns are read by name off that verified header, so a reorder
+    must raise instead of silently inverting add/remove.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    swapped = _ndx_changes_html_with_swapped_groups(
+        [("February 1, 2007", "CMVT", "Comverse", "LOGI", "Logitech", "Reason")]
+    )
+
+    monkeypatch.setattr(
+        "acquisition.universe.requests.get",
+        lambda url, *a, **k: _FakeResponse(swapped),
+    )
+
+    with pytest.raises(ValueError, match="expected change-log header"):
+        fetcher._parse_changes_table(swapped)
+
+
+def test_changes_table_is_selected_by_header_not_by_position(monkeypatch, tmp_path):
+    """CR-03, aggravating factor. `Nasdaq100MembershipFetcher` used to take
+    `tables[0]` with no selector at all, so any table Wikipedia inserted ahead
+    of the change log became the change log. Selecting by header identity
+    makes the decoy inert.
+    """
+    fetcher = Nasdaq100MembershipFetcher(cache_dir=str(tmp_path))
+    decoy = (
+        "<html><body>"
+        "<table><thead><tr><th>Rank</th><th>Company</th><th>Weight</th></tr>"
+        "</thead><tbody><tr><td>1</td><td>Apple</td><td>8%</td></tr></tbody>"
+        "</table>"
+    )
+    real = _ndx_changes_html(
+        [("February 1, 2007", "LOGI", "Logitech", "CMVT", "Comverse", "Reason")]
+    )
+    combined = decoy + real[len("<html><body>") :]
+
+    parsed = fetcher._parse_changes_table(combined)
+
+    assert parsed["added_ticker"].tolist() == ["LOGI"]
+    assert parsed["removed_ticker"].tolist() == ["CMVT"]
+
+
 def test_universe_category_literal_has_exactly_three_values():
     """03.1-CONTEXT.md D-02: `nasdaq100_constituent` is a THIRD category
     alongside `nasdaq_all`, never a replacement for it. Pinning the literal

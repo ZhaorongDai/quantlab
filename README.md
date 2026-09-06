@@ -150,12 +150,25 @@ fetch or parse fails, the fetcher falls back to its cached snapshot under
 `data/reference/_cache/` and does **not** overwrite that cache, so one bad parse cannot poison
 future runs. `read()` touches only the local Zarr store.
 
-**Adding a third index** costs two methods plus a fetcher and requires no change under `base/`:
-add a data-only `IndexMembershipFetcher` subclass in `acquisition/universe.py` (six class
-constants + `fetch_anchor()` + `_parse_changes_table()`), register it in
-`UniverseCatalog.MEMBERSHIP_FETCHERS` so it inherits the coverage guard, subclass
-`IndexConstituentDataset` with `_pit_coverage_start()` and `_build_intervals()`, and add a
-config factory in `config/__init__.py`.
+**Adding a third index** requires no change under `base/`:
+
+1. Add a data-only `IndexMembershipFetcher` subclass in `acquisition/universe.py` (nine class
+   constants + `fetch_anchor()`). The change-log parse is inherited: you declare the source's
+   `EXPECTED_SOURCE_HEADER`/`DATE_HEADER` rather than writing a `_parse_changes_table()`, which
+   is what makes header validation apply to every index by construction.
+2. Add the category token to `UniverseCategory` in `enums/data.py`.
+3. Register the fetcher in `UniverseCatalog.MEMBERSHIP_FETCHERS` so it inherits the coverage
+   guard.
+4. Add the CLI token to `ingest_tiingo.py`'s `_UNIVERSE_CATEGORY_MAP` (the `--universe` choices
+   are derived from that map), or the category is unreachable from the only CLI consumer.
+5. Subclass `IndexConstituentDataset` with `_pit_coverage_start()` and `_build_intervals()`.
+6. Add a config factory in `config/__init__.py`.
+
+Steps 2 and 3 are enforced together by `tests/test_universe.py`:
+`test_catalog_build_emits_all_three_categories` asserts the built categories equal
+`get_args(UniverseCategory)` exactly, so a fetcher registered without its enum token -- or an
+enum token with no fetcher -- fails there;
+`test_universe_category_literal_has_exactly_three_values` pins the literal itself.
 
 ## Project Structure
 
