@@ -6,6 +6,7 @@ path convention (02-CONTEXT.md D-01/D-02) that every config factory in
 
 from config import (
     alpha101_config,
+    sp500_constituent_config,
     spot_kline_config,
     stock_acquisition_config,
     stock_kline_config,
@@ -43,3 +44,12 @@ def test_alpha101_config_still_constructs_successfully() -> None:
     fc = alpha101_config()
 
     assert fc is not None
+
+
+def test_sp500_constituent_config_uses_market_frequency_path_convention() -> None:
+    cfg = sp500_constituent_config()
+
+    assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
+    # CONFLICT 4's user-visible consequence: a membership panel is never handed
+    # a nautilus catalog destination, because it has no bar representation.
+    assert "catalog_path" not in cfg.to_dict()

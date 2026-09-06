@@ -12,11 +12,14 @@ hand-written frame and which therefore perform no I/O at all.
 import numpy as np
 import pandas as pd
 import polars as pl
+import pytest
 import xarray as xr
 from loguru import logger
 
 from base.config import ConstituentDatasetConfig
 from base.constituent import IndexConstituentDataset
+from base.data import BaseDataset
+from dataset.cleaning import clean_membership_panel
 from dataset.constituent import SP500ConstituentDataset
 
 _COVERAGE_START = "1976-07-01"
@@ -348,3 +351,62 @@ def test_calendar_day_axis_is_contiguous_and_sorted(tmp_path):
     # 2000-01-08 was a Saturday.
     assert pd.Timestamp("2000-01-08") in timestamps
     assert pd.Timestamp("2000-01-08").dayofweek == 5
+
+
+def test_construction_performs_no_network_call_and_no_store_read(
+    monkeypatch, tmp_path
+):
+    """CONFLICT 1 -- `_reset_symbols()` is overridden to a no-op.
+
+    The inherited body is wrong three times over for this class: (1) the
+    symbol axis is derived from the membership-interval table rather than from
+    a store, so overwriting `config.symbols` with the store's symbols is
+    meaningless; (2) its `FileNotFoundError` fallback calls `from_raw_data()`,
+    which here reaches a REMOTE FETCH, so merely constructing the object on a
+    fresh clone would perform an unannounced HTTP request; (3) only
+    `FileNotFoundError` is caught, so any network or parse error would escape
+    `__init__` and the object could not be constructed offline at all.
+
+    Without the override, every test in this file would need the network mock
+    active merely to construct the object.
+    """
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("network reached during construction")
+
+    monkeypatch.setattr("acquisition.universe.requests.get", _explode)
+
+    cfg = _make_config(
+        tmp_path / "does-not-exist", symbols=("AAPL", "MSFT")
+    )
+    dataset = SP500ConstituentDataset(cfg)
+
+    assert dataset.config.symbols == ("AAPL", "MSFT")
+
+
+def test_membership_panel_cleaning_replaces_market_data_cleaning():
+    """`clean_market_data()` is not merely unnecessary here, it is unusable:
+    `validate_schema()` hard-raises on the five missing OHLCV columns, and
+    even past that `flag_anomalies()` would append a second, meaningless
+    all-False `anomaly_flag` variable to a panel whose only variable is
+    already a boolean.
+    """
+    assert IndexConstituentDataset._clean is not BaseDataset._clean
+
+    timestamps = pd.date_range("2020-01-01", periods=3, freq="D")
+    values = np.array(
+        [[True, False], [True, True], [False, True]], dtype=bool
+    )
+    panel = xr.Dataset(
+        {"is_member": (["timestamp", "symbol"], values)},
+        coords={"timestamp": timestamps, "symbol": ["A", "B"]},
+    )
+
+    assert clean_membership_panel(panel) is panel
+
+    float_panel = xr.Dataset(
+        {"is_member": (["timestamp", "symbol"], values.astype(float))},
+        coords={"timestamp": timestamps, "symbol": ["A", "B"]},
+    )
+    with pytest.raises(ValueError):
+        clean_membership_panel(float_panel)

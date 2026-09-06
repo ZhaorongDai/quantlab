@@ -4,6 +4,7 @@ from typing import Literal
 
 from base.config import (
     AcquisitionConfig,
+    ConstituentDatasetConfig,
     DatasetConfig,
     FactorConfig,
     PolarsFactorConfig,
@@ -119,6 +120,42 @@ def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
     return UniverseConfig(
         output_path=str(_data_root() / "data" / "reference" / "universe.parquet"),
         cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
+        kwargs=kwargs,
+    )
+
+
+def sp500_constituent_config(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    symbols: list | None = None,
+    kwargs: dict = None,  # type: ignore
+) -> ConstituentDatasetConfig:
+    """Config for the daily point-in-time S&P 500 membership panel (DATA-05,
+    03.1-CONTEXT.md D-04).
+
+    The two paths deliberately live in DIFFERENT roots, and the split is not
+    an oversight:
+
+    - `zarr_file_path` takes the `data/{market}/{frequency}/` branch, same as
+      `stock_kline_config()`, because the daily `is_member` panel is PIPELINE
+      data -- it exists to be consumed by the factor and model layers as a
+      per-day universe mask, so CLAUDE.md's xarray/Zarr constraint governs it
+      (D-04). This is the deliberate, scoped divergence from Locked Decision
+      A1 of 02-08-PLAN.md.
+    - `cache_dir` shares `universe_config()`'s `data/reference/_cache`
+      directory because the fetcher's cached source snapshot is the very same
+      reference/metadata artefact that factory already owns; giving the panel
+      a second, private cache directory would mean two copies of one snapshot
+      drifting apart.
+    """
+    return ConstituentDatasetConfig(
+        zarr_file_path=str(
+            _market_data_root("us_equity", "1d") / "sp500_constituent.zarr"
+        ),
+        cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
+        start_date=start_date,
+        end_date=end_date,
+        symbols=symbols,  # type: ignore[arg-type]
         kwargs=kwargs,
     )
 
