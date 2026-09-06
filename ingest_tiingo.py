@@ -34,19 +34,32 @@ from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
 from utils.cli import (
     add_universe_args,
+    add_volume_guard_args,
     add_window_args,
+    print_volume_estimate,
     resolve_symbols,
     validate_roster_args,
+    volume_pricing,
 )
+
+#: Tiingo's EOD endpoint is ONE symbol per request -- there is no multi-symbol
+#: batch to amortise over -- so the volume guard is told a batch size of 1.
+#: Telling it anything larger would understate the request count by exactly
+#: that factor, which is the number the request ceiling is denominated in.
+TIINGO_BATCH_SIZE = 1
 
 
 def _build_configs(
     args: argparse.Namespace,
+    catalog=None,
 ) -> tuple[AcquisitionConfig, DatasetConfig]:
     # The catalog is loaded ONLY when a universe category has to be resolved:
     # an explicit --symbols list needs no reference table, and loading one
     # would make this script fail on a machine that has never built it.
-    catalog = UniverseCatalog.load(universe_config()) if args.universe else None
+    # `catalog` is accepted so `__main__` can load it ONCE and hand the same
+    # instance to the volume guard rather than re-reading the parquet table.
+    if catalog is None and args.universe:
+        catalog = UniverseCatalog.load(universe_config())
     # `mode="as_of"` is stated, never defaulted: this script resolves
     # point-in-time membership on ONE day. `ingest_us_equity.py` deliberately
     # asks the same helper for `"in_range"` instead.
@@ -74,6 +87,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     add_universe_args(parser)
     add_window_args(parser)
+    add_volume_guard_args(parser)
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -91,7 +105,31 @@ if __name__ == "__main__":
 
     validate_roster_args(parser, args)
 
-    acq_config, ds_config = _build_configs(args)
+    catalog = UniverseCatalog.load(universe_config()) if args.universe else None
+    acq_config, ds_config = _build_configs(args, catalog)
+
+    # BEFORE the client is constructed and before a single request (D-09).
+    # `_build_configs` above builds paths and resolves a roster; it opens no
+    # connection, so this is still the pre-flight position.
+    pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
+        args, catalog, symbols=acq_config.symbols
+    )
+    print_volume_estimate(
+        pricing.assert_acquisition_volume_fits(
+            category,
+            guard_start,
+            guard_end,
+            frequency="1d",
+            batch_size=TIINGO_BATCH_SIZE,
+            rows_per_symbol_day=args.rows_per_symbol_day,
+            force=args.force_volume,
+        ),
+        category=category,
+        start_date=guard_start,
+        end_date=guard_end,
+        window_assumed=window_assumed,
+        forced=args.force_volume,
+    )
 
     print(f"Acquiring symbols={acq_config.symbols} via Tiingo (refresh={args.refresh})")
     acquisition = TiingoAcquisition(acq_config)

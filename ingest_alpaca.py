@@ -105,8 +105,10 @@ from utils.cli import (
     add_universe_args,
     add_volume_guard_args,
     add_window_args,
+    print_volume_estimate,
     resolve_symbols,
     validate_roster_args,
+    volume_pricing,
 )
 
 #: The frequencies this script offers, DERIVED from the locked `Frequency`
@@ -129,6 +131,7 @@ DEFAULT_STORE_NAME = "stock_alpaca.zarr"
 
 def _build_configs(
     args: argparse.Namespace,
+    catalog=None,
 ) -> tuple[AcquisitionConfig, DatasetConfig]:
     """`(AcquisitionConfig, DatasetConfig)` from the `config/` factories.
 
@@ -138,8 +141,11 @@ def _build_configs(
     call site, where the next script would get them subtly wrong.
     """
     # The catalog is loaded ONLY to resolve a universe category; an explicit
-    # --symbols list needs no reference table.
-    catalog = UniverseCatalog.load(universe_config()) if args.universe else None
+    # --symbols list needs no reference table. `catalog` is accepted so
+    # `__main__` can load it once and hand the same instance to the volume
+    # guard rather than re-reading the parquet table.
+    if catalog is None and args.universe:
+        catalog = UniverseCatalog.load(universe_config())
     # `mode="as_of"` stated, never defaulted: this script resolves
     # point-in-time membership on ONE day. A full-window backfill wants
     # interval overlap instead -- see `utils.cli.resolve_symbols`.
@@ -261,7 +267,33 @@ if __name__ == "__main__":
     validate_roster_args(parser, args)
     _validate_data_type(parser, args)
 
-    acq_config, ds_config = _build_configs(args)
+    catalog = UniverseCatalog.load(universe_config()) if args.universe else None
+    acq_config, ds_config = _build_configs(args, catalog)
+
+    # BEFORE the client is constructed and before a single request (D-09).
+    # The batch size handed over is the EFFECTIVE one -- what the base class
+    # will actually use -- because the request ceiling is priced partly by the
+    # per-batch floor, and pricing a different batch size than the run uses
+    # would make the estimate describe a fetch nobody is about to issue.
+    pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
+        args, catalog, symbols=acq_config.symbols
+    )
+    print_volume_estimate(
+        pricing.assert_acquisition_volume_fits(
+            category,
+            guard_start,
+            guard_end,
+            frequency=args.frequency,
+            batch_size=args.batch_size or AlpacaAcquisition.DEFAULT_BATCH_SIZE,
+            rows_per_symbol_day=args.rows_per_symbol_day,
+            force=args.force_volume,
+        ),
+        category=category,
+        start_date=guard_start,
+        end_date=guard_end,
+        window_assumed=window_assumed,
+        forced=args.force_volume,
+    )
 
     print(
         f"Acquiring {len(acq_config.symbols)} symbol(s) from Alpaca "

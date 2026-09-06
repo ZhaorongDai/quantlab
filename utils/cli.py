@@ -335,3 +335,215 @@ def add_volume_guard_args(
         ),
     )
     return parser
+
+
+# ---------------------------------------------------------------------------
+# The pre-flight volume guard's call-site helper (D-09 / SC-6)
+#
+# `UniverseCatalog.assert_acquisition_volume_fits` is the guard. It lives in a
+# module that imports no acquisition module and binds no `Acquisition`
+# subclass, which is what makes "refuses before the client is constructed" a
+# STRUCTURAL property rather than a matter of call order. Nothing below may
+# undo that: this helper is imported BY the ingest scripts, never the reverse,
+# and it constructs no client either.
+# ---------------------------------------------------------------------------
+
+#: The category name a refusal reports when the roster came from an explicit
+#: `--symbols` list rather than a universe category. It is not a real category
+#: and is never validated against one -- see `_ExplicitSymbolCatalog`.
+EXPLICIT_SYMBOLS_CATEGORY = "(explicit --symbols list)"
+
+#: Window start assumed for SIZING ONLY when a script is invoked with no
+#: `--start-date`. `ingest_tiingo.py` has no default window, and an unbounded
+#: Tiingo EOD request returns a symbol's whole history -- which cannot be
+#: priced without a start.
+#:
+#: This is a STATED assumption, not a hidden default: `run_volume_guard` prints
+#: the assumed window on the line above the estimate whenever it applies, and
+#: it is never written back onto `args` or into any config. The value is the
+#: project's own documented backfill floor (`ingest_us_equity.DEFAULT_START_DATE`,
+#: D-05), and assuming it errs toward a LONGER window than most such runs
+#: actually fetch, which is the safe direction for a guard.
+UNBOUNDED_WINDOW_START = "2016-01-01"
+
+_GIB = 1024**3
+
+#: Built once, on first use, by `_explicit_symbol_catalog`.
+_EXPLICIT_CATALOG_CLASS = None
+
+
+def _explicit_symbol_catalog(symbol_count: int):
+    """A pricing view that sizes an explicitly named symbol list.
+
+    An explicit 15,000-symbol list is exactly as expensive as the same roster
+    resolved from a category, so the guard must price it rather than skip it.
+    But `estimate_dense_panel` derives its symbol count and its listing spans
+    from the catalog's interval table, and an explicit list has neither.
+
+    So this SUBCLASSES `UniverseCatalog` and overrides exactly one method --
+    the single step that resolves a roster from a category. Every ceiling,
+    every crossed-ceiling report, the refusal message and the re-estimated
+    narrowing search stay the catalog's own, which is the point: the explicit
+    path cannot drift away from the category path, because it is the same code.
+
+    The import is deferred to call time so this module keeps its module-scope
+    dependency surface to `base.chunking`; the class is built once and cached.
+    """
+    global _EXPLICIT_CATALOG_CLASS
+    if _EXPLICIT_CATALOG_CLASS is None:
+        import datetime
+
+        from acquisition.universe import UniverseCatalog
+
+        class _ExplicitSymbolCatalog(UniverseCatalog):
+            def __init__(self, symbols: int):  # noqa: D107 - see factory
+                # No `super().__init__`: this view never reads the reference
+                # table, so it needs no backend and no config, and requiring
+                # one would make `--symbols AAPL` fail on a machine that has
+                # never built universe.parquet.
+                self._explicit_symbols = symbols
+
+            def estimate_dense_panel(
+                self,
+                category: str,
+                start_date: str,
+                end_date: str,
+                num_variables: int = 12,
+                bytes_per_value: int = 8,
+            ) -> dict:
+                self._validate_iso_date(start_date, "start_date")
+                self._validate_iso_date(end_date, "end_date")
+                window_days = (
+                    datetime.date.fromisoformat(end_date)
+                    - datetime.date.fromisoformat(start_date)
+                ).days + 1
+                trading_days = max(
+                    round(
+                        window_days
+                        * self.TRADING_DAYS_PER_YEAR
+                        / self.CALENDAR_DAYS_PER_YEAR
+                    ),
+                    1,
+                )
+                symbols = self._explicit_symbols
+                dense_cells = symbols * trading_days
+                # `observed_cells == dense_cells`, density 1.0. The catalog's
+                # 0.368 density is a property of a survivorship-bias-free
+                # ROSTER over a decade -- most of it delisted for most of the
+                # window. A hand-named symbol list carries no such structure,
+                # and assuming it does would UNDERSTATE the fetch by ~2.7x,
+                # which is the wrong direction for a guard.
+                return {
+                    "symbols": symbols,
+                    "trading_days": trading_days,
+                    "dense_cells": dense_cells,
+                    "observed_cells": dense_cells,
+                    "density": 1.0,
+                    "dense_bytes": dense_cells * num_variables * bytes_per_value,
+                    "observed_bytes": dense_cells * num_variables * bytes_per_value,
+                }
+
+        _EXPLICIT_CATALOG_CLASS = _ExplicitSymbolCatalog
+    return _EXPLICIT_CATALOG_CLASS(symbol_count)
+
+
+def _sizing_window(args: argparse.Namespace) -> tuple[str, str, bool]:
+    """`(start, end, assumed)` for the estimate. Never written back onto
+    `args` -- an assumption made to size a fetch must not silently become the
+    window that fetch actually requests."""
+    import datetime
+
+    start = getattr(args, "start_date", None)
+    end = getattr(args, "end_date", None)
+    assumed = start is None or end is None
+    return (
+        start or UNBOUNDED_WINDOW_START,
+        end or datetime.date.today().isoformat(),
+        assumed,
+    )
+
+
+def volume_pricing(
+    args: argparse.Namespace,
+    catalog,
+    *,
+    symbols,
+) -> tuple[object, str, str, str, bool]:
+    """`(pricing, category, start_date, end_date, window_assumed)` for the
+    guard call the CALLER makes.
+
+    This helper deliberately does NOT call the guard. Each ingest script names
+    `assert_acquisition_volume_fits` at its own call site, so a reader of the
+    script -- and a grep across the entry points -- sees the guard where the
+    decision to fetch is made, rather than one level of indirection away. What
+    IS shared is the part that would otherwise be copied three times and drift:
+    which object prices the fetch, and over which window.
+
+    Prices the ACTUAL roster. An explicit `--symbols` list, or a category
+    truncated by `--limit`, is sized from its real symbol count rather than
+    exempted -- an explicit 15,000-symbol list costs exactly what the same
+    roster resolved from a category costs. Only a whole, untruncated category
+    is priced through the catalog's own density-adjusted estimate.
+    """
+    category = roster_category(args)
+    truncated = getattr(args, "limit", None) is not None
+    if category is None or truncated:
+        pricing = _explicit_symbol_catalog(len(symbols))
+        reported_category = category or EXPLICIT_SYMBOLS_CATEGORY
+    else:
+        pricing = catalog
+        reported_category = category
+
+    start_date, end_date, assumed = _sizing_window(args)
+    return pricing, reported_category, start_date, end_date, assumed
+
+
+def print_volume_estimate(
+    estimate: dict,
+    *,
+    category: str,
+    start_date: str,
+    end_date: str,
+    window_assumed: bool = False,
+    forced: bool = False,
+    print_fn=print,
+) -> dict:
+    """Print what the user just committed to.
+
+    Printed whether or not the guard refused, the way `ingest_us_equity.py`'s
+    chunked panel report already is: a user who proceeds should see the numbers
+    they proceeded with, not only the ones that would have stopped them.
+    """
+    if window_assumed:
+        print_fn(
+            f"No complete --start-date/--end-date given; this fetch was sized "
+            f"against the ASSUMED window {start_date}..{end_date} "
+            f"(utils.cli.UNBOUNDED_WINDOW_START). The assumption is used for "
+            f"the estimate only and is never sent to the vendor."
+        )
+    print_fn("Pre-flight volume estimate (zero vendor requests issued):")
+    print_fn(f"  roster:            {category}")
+    print_fn(f"  window:            {start_date} .. {end_date}")
+    print_fn(f"  symbols:           {estimate['symbols']:,}")
+    print_fn(f"  trading days (~):  {estimate['trading_days']:,}")
+    print_fn(
+        f"  rows (~):          {estimate['rows']:,} "
+        f"({estimate['bars_per_day']:,}/symbol-day, density "
+        f"{estimate['density']:.3f})"
+    )
+    print_fn(f"  raw on disk (~):   {estimate['raw_bytes'] / _GIB:.2f} GiB")
+    print_fn(
+        f"  requests (~):      {estimate['requests']:,} "
+        f"(batch_size={estimate['batch_size']:,}, "
+        f"page_limit={estimate['page_limit']:,})"
+    )
+    print_fn(
+        f"  wall clock (~):    {estimate['wall_clock_hours']:.1f} h at "
+        f"{estimate['rate_limit_per_min']:,} req/min"
+    )
+    if forced:
+        print_fn(
+            "  --force-volume:    ON -- any ceiling crossed above was NOT "
+            "enforced. The arithmetic still ran; only the refusal was skipped."
+        )
+    return estimate

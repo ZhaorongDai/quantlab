@@ -95,8 +95,11 @@ from dataset.stock import StockDataset
 from utils.cli import (
     add_chunk_args,
     add_concurrency_args,
+    add_volume_guard_args,
     add_window_args,
+    print_volume_estimate,
     resolve_symbols,
+    volume_pricing,
 )
 
 #: D-05. The backfill window's default start. Applied as an interval-OVERLAP
@@ -109,6 +112,12 @@ DEFAULT_START_DATE = "2016-01-01"
 #: BENEATH `QUANTLAB_DATA_DIR` (D-04).
 DEFAULT_SUBDIR = "us_all"
 DEFAULT_STORE_NAME = "us_all.zarr"
+
+#: Tiingo's EOD endpoint is ONE symbol per request, so the volume guard is told
+#: a batch size of 1. Anything larger would understate the request count by
+#: exactly that factor -- and requests are the unit the request ceiling and the
+#: quota that ran out on 2026-09-06 are both denominated in.
+TIINGO_BATCH_SIZE = 1
 
 #: How many resolved symbols to echo in the dry run. The point is to prove the
 #: roster resolved, not to page 15,000 tickers through a terminal.
@@ -322,6 +331,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     add_chunk_args(parser)
+    add_volume_guard_args(parser)
     return parser
 
 
@@ -403,6 +413,36 @@ if __name__ == "__main__":
             f"{args.start_date}..{args.end_date}. Build/refresh the universe "
             f"table first: uv run python refresh_us_equity_universe.py"
         )
+
+    # BEFORE `TiingoAcquisition(...)` and before a single request (D-09).
+    # Deliberately AFTER the --stamp-legacy-watermarks and --dry-run exits
+    # above: both issue zero price requests and terminate, and refusing a
+    # local sidecar migration -- or refusing the very dry run whose job is to
+    # tell you how big this is -- would be the guard firing at the one thing it
+    # has no quarrel with.
+    #
+    # A SIBLING of assert_chunked_panel_fits below, not a replacement: that one
+    # bounds RAM for a dense panel, this one bounds disk, request count and
+    # wall clock, and either alone lets a real scenario through.
+    pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
+        args, catalog, symbols=symbols
+    )
+    print_volume_estimate(
+        pricing.assert_acquisition_volume_fits(
+            category,
+            guard_start,
+            guard_end,
+            frequency="1d",
+            batch_size=TIINGO_BATCH_SIZE,
+            rows_per_symbol_day=args.rows_per_symbol_day,
+            force=args.force_volume,
+        ),
+        category=category,
+        start_date=guard_start,
+        end_date=guard_end,
+        window_assumed=window_assumed,
+        forced=args.force_volume,
+    )
 
     if args.to_zarr:
         # Checked HERE, before a single byte is downloaded, rather than only

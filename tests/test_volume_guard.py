@@ -790,3 +790,356 @@ def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
 
     # The RAM guard still refuses the window it always refused, unchanged.
     assert catalog.assert_dense_panel_fits("us_all", "2024-01-01", "2024-01-31") is None
+
+
+# ---------------------------------------------------------------------------
+# 03.2-07 Task 3 -- the guard is WIRED, not merely correct
+#
+# The mechanism above was proved as a function. That is a different claim from
+# "something calls it": through 03.2-04 and 03.2-05 this guard had NO call site
+# at all, and every test in this file passed. So the tests below assert
+# placement and reachability at the three entry points, by parsing their
+# source. They construct no client, resolve no roster and issue no request.
+# ---------------------------------------------------------------------------
+
+INGEST_SCRIPTS = ("ingest_tiingo.py", "ingest_us_equity.py", "ingest_alpaca.py")
+
+#: The guard's own name and the name of the helper that selects what prices the
+#: fetch. A call site must name the FORMER -- the helper alone would be
+#: indirection that a reader of the script cannot see the guard through.
+_GUARD_NAMES = frozenset({"assert_acquisition_volume_fits"})
+
+
+def _main_body(path: str):
+    """The statements under `if __name__ == "__main__":`."""
+    import ast
+
+    tree = ast.parse(open(path).read())
+    for node in tree.body:
+        if isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
+            return node.body
+    raise AssertionError(f"{path} has no __main__ block")
+
+
+def _call_linenos(statements, predicate) -> list[int]:
+    import ast
+
+    return sorted(
+        node.lineno
+        for statement in statements
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call) and predicate(node)
+    )
+
+
+def _is_guard_call(node) -> bool:
+    import ast
+
+    return isinstance(node.func, ast.Attribute) and node.func.attr in _GUARD_NAMES
+
+
+def _is_acquisition_construction(node) -> bool:
+    import ast
+
+    return isinstance(node.func, ast.Name) and node.func.id.endswith("Acquisition")
+
+
+def test_every_ingest_entry_point_calls_the_guard_by_name():
+    """A guard wired into one of three doors is a guard that does not exist.
+
+    Asserted against the guard's OWN name at each `__main__`, not against a
+    shared wrapper: the ingest scripts share the pricing-view selection and the
+    printing (D-14), but each names `assert_acquisition_volume_fits` itself, so
+    a reader of any one script sees the refusal where the decision to fetch is
+    made.
+    """
+    for path in INGEST_SCRIPTS:
+        assert _call_linenos(_main_body(path), _is_guard_call), path
+
+
+def test_the_guard_precedes_the_client_that_fetches_in_every_entry_point():
+    """SC-6's ordering claim, made structural at the call site.
+
+    The client that FETCHES is the one bound to `acquisition` and then sent
+    `download()`/`refresh()`. `ingest_us_equity.py` additionally constructs a
+    client EARLIER, inside its `--stamp-legacy-watermarks` branch -- that path
+    issues zero price requests and exits, so the guard sitting after it is
+    correct, and this test states that exception by name rather than silently
+    tolerating any construction it happens to find.
+    """
+    import ast
+
+    for path in INGEST_SCRIPTS:
+        body = _main_body(path)
+        guard = min(_call_linenos(body, _is_guard_call))
+
+        fetching = [
+            statement.lineno
+            for statement in ast.walk(ast.Module(body=body, type_ignores=[]))
+            if isinstance(statement, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "acquisition"
+                for t in statement.targets
+            )
+        ]
+        assert fetching, f"{path}: no `acquisition = ...` binding in __main__"
+        assert guard < min(fetching), (
+            f"{path}: the volume guard runs at line {guard}, AFTER the client "
+            f"is constructed at line {min(fetching)}. A guard that runs after "
+            f"the client exists has already spent what it was meant to save."
+        )
+
+        for construction in _call_linenos(body, _is_acquisition_construction):
+            if construction >= guard:
+                continue
+            enclosing = [
+                ast.unparse(statement)
+                for statement in body
+                if statement.lineno <= construction
+                <= (statement.end_lineno or statement.lineno)
+            ]
+            assert any("stamp_watermarks" in text for text in enclosing), (
+                f"{path}: a client is constructed at line {construction}, "
+                f"before the guard at line {guard}, and it is not the "
+                f"zero-request watermark-stamping migration."
+            )
+
+
+def test_force_volume_is_an_explicit_flag_on_every_entry_point():
+    """The override is a flag a user types. There is deliberately no
+    environment variable and no config key that disables the guard wholesale
+    (T-03.2-21), so a source scan for one must come up empty."""
+    import argparse
+
+    from utils.cli import add_volume_guard_args
+
+    parser = argparse.ArgumentParser()
+    add_volume_guard_args(parser)
+    assert parser.parse_args([]).force_volume is False
+    assert parser.parse_args(["--force-volume"]).force_volume is True
+
+    for path in INGEST_SCRIPTS:
+        source = open(path).read()
+        assert "force=args.force_volume" in source, path
+        assert "add_volume_guard_args" in source, path
+        for escape in ("FORCE_VOLUME", "getenv", "environ.get(\"FORCE"):
+            assert escape not in source, (path, escape)
+
+
+def test_the_flag_and_its_help_text_are_defined_once():
+    """D-14. `--force-volume` is DEFINED in utils/cli.py and only called from
+    the scripts; a per-script `add_argument("--force-volume", ...)` would be
+    the third copy this phase exists to prevent."""
+    import ast
+
+    for path in INGEST_SCRIPTS:
+        tree = ast.parse(open(path).read())
+        registered = {
+            node.args[0].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        }
+        assert "--force-volume" not in registered, path
+        assert "--rows-per-symbol-day" not in registered, path
+
+
+def test_an_explicit_symbol_list_is_priced_rather_than_exempted(monkeypatch):
+    """An explicit 15,424-symbol list is exactly as expensive as the same
+    roster resolved from a category, and no catalog is loaded to price it.
+
+    The count matters, not merely that something was priced: a view that
+    ignored the list and priced ONE symbol would still 'run the guard'.
+    """
+    import argparse
+
+    import pytest
+
+    _no_network(monkeypatch)
+
+    from utils.cli import volume_pricing
+
+    symbols = tuple(f"SYM{index:05d}" for index in range(US_ALL_SYMBOLS))
+    args = argparse.Namespace(
+        symbols=",".join(symbols),
+        universe=None,
+        as_of_date=None,
+        start_date=FULL_WINDOW[0],
+        end_date=FULL_WINDOW[1],
+        limit=None,
+        force_volume=False,
+        rows_per_symbol_day=None,
+    )
+
+    # `catalog=None`: an explicit list needs no reference table, so this path
+    # must work on a machine that has never built universe.parquet.
+    pricing, category, start, end, assumed = volume_pricing(
+        args, None, symbols=symbols
+    )
+    assert not assumed
+    assert category == "(explicit --symbols list)"
+
+    with pytest.raises(ValueError, match="Refusing to fetch"):
+        pricing.assert_acquisition_volume_fits(
+            category, start, end, frequency="1m", batch_size=100
+        )
+
+    admitted = pricing.assert_acquisition_volume_fits(
+        category, start, end, frequency="1m", batch_size=100, force=True
+    )
+    assert admitted["symbols"] == US_ALL_SYMBOLS
+    # Dense, not density-adjusted: a hand-named list carries none of the
+    # roster's delisting structure, and assuming it does would UNDERSTATE the
+    # fetch by ~2.7x -- the wrong direction for a guard.
+    assert admitted["density"] == 1.0
+
+
+def test_a_limited_run_is_priced_at_its_truncated_size(tmp_path, monkeypatch):
+    """`--limit 10` fetches ten symbols, so the guard must price ten. Pricing
+    the whole category there would refuse a smoke test that costs nothing."""
+    import argparse
+
+    _no_network(monkeypatch)
+
+    from utils.cli import volume_pricing
+
+    args = argparse.Namespace(
+        symbols=None,
+        universe=None,
+        category="us_all",
+        as_of_date=None,
+        start_date=FULL_WINDOW[0],
+        end_date=FULL_WINDOW[1],
+        limit=10,
+        force_volume=False,
+        rows_per_symbol_day=None,
+    )
+    catalog = _catalog(tmp_path)
+
+    pricing, category, start, end, _assumed = volume_pricing(
+        args, catalog, symbols=tuple(f"SYM{i:05d}" for i in range(10))
+    )
+    estimate = pricing.assert_acquisition_volume_fits(
+        category, start, end, frequency="1d", batch_size=1
+    )
+    assert estimate["symbols"] == 10
+
+    # The same window WITHOUT --limit prices the whole roster: the two must not
+    # be able to produce the same number.
+    args.limit = None
+    whole, whole_category, w_start, w_end, _ = volume_pricing(
+        args, catalog, symbols=()
+    )
+    assert whole is catalog
+    assert whole.assert_acquisition_volume_fits(
+        whole_category, w_start, w_end, frequency="1d", batch_size=1
+    )["symbols"] == US_ALL_SYMBOLS
+
+
+def test_an_absent_window_is_sized_against_a_STATED_assumption():
+    """`ingest_tiingo.py` has no default window. Sizing needs one, so the
+    helper supplies a named constant AND reports that it did -- an assumption a
+    user is told about is not the silent default the house rule forbids."""
+    import argparse
+
+    from utils.cli import UNBOUNDED_WINDOW_START, volume_pricing
+
+    args = argparse.Namespace(
+        symbols="AAPL,MSFT",
+        universe=None,
+        as_of_date=None,
+        start_date=None,
+        end_date=None,
+        limit=None,
+        force_volume=False,
+        rows_per_symbol_day=None,
+    )
+    _pricing, _category, start, end, assumed = volume_pricing(
+        args, None, symbols=("AAPL", "MSFT")
+    )
+
+    assert assumed is True
+    assert start == UNBOUNDED_WINDOW_START
+    # And it is NOT written back onto args: an assumption made to size a fetch
+    # must not become the window that fetch actually requests.
+    assert args.start_date is None and args.end_date is None
+    assert end > start
+
+
+def test_the_estimate_is_printed_whether_or_not_it_refused():
+    """A user who proceeds should see the numbers they proceeded with. The
+    forced line is what distinguishes 'under every ceiling' from 'over one and
+    overridden', which the estimate alone cannot say."""
+    from utils.cli import print_volume_estimate
+
+    lines: list[str] = []
+    estimate = {
+        "symbols": 500,
+        "trading_days": 252,
+        "rows": 126_000,
+        "bars_per_day": 1,
+        "density": 1.0,
+        "raw_bytes": 7_560_000,
+        "requests": 500,
+        "batch_size": 1,
+        "page_limit": 10_000,
+        "wall_clock_hours": 0.04,
+        "rate_limit_per_min": 200,
+    }
+    print_volume_estimate(
+        estimate,
+        category="sp500_constituent",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        forced=True,
+        print_fn=lines.append,
+    )
+    rendered = "\n".join(lines)
+    assert "sp500_constituent" in rendered
+    assert "500" in rendered
+    assert "--force-volume:    ON" in rendered
+
+    lines.clear()
+    print_volume_estimate(
+        estimate,
+        category="sp500_constituent",
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        forced=False,
+        print_fn=lines.append,
+    )
+    assert "--force-volume" not in "\n".join(lines)
+
+
+def test_the_chunked_panel_guard_keeps_both_of_its_call_sites():
+    """The two guards are SIBLINGS. That one bounds RAM for a dense panel;
+    this one bounds disk, request count and wall clock. Adding the second must
+    not have quietly replaced the first."""
+    body = _main_body("ingest_us_equity.py")
+
+    def _is_chunked(node) -> bool:
+        import ast
+
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "assert_chunked_panel_fits"
+        )
+
+    import ast
+
+    # Counted as CALLS in the parsed module, never as substrings: the module
+    # docstring names the guard too, and a substring count would report a
+    # deleted call site as present because prose mentioned it.
+    tree = ast.parse(open("ingest_us_equity.py").read())
+    call_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "assert_chunked_panel_fits"
+    ]
+    assert len(call_sites) == 2, [node.lineno for node in call_sites]
+    assert _call_linenos(body, _is_chunked), "the --to-zarr sizing guard is gone"
