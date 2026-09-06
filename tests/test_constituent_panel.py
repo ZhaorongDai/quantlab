@@ -400,6 +400,32 @@ def test_construction_performs_no_network_call_and_no_store_read(
     assert dataset.config.symbols == ("AAPL", "MSFT")
 
 
+@pytest.mark.parametrize("bad_date", ["2000-1-3", "01/01/2005", "not-a-date"])
+def test_non_iso_date_is_rejected_at_the_config_boundary(tmp_path, bad_date):
+    """WR-12. Every date comparison in this pipeline is LEXICOGRAPHIC on
+    strings, and nothing validated the format. A non-padded or non-ISO value
+    therefore did not fail to match -- it compared WRONG and silently skipped
+    the coverage clamp or the coverage guard: `"2007-2-1" >= "1976-07-01"` is
+    True by string order, and `"1980-12-12" <= "01/01/2024"` is False.
+
+    Note `"2000-1-3"` is REJECTED rather than repaired: a value that is nearly
+    ISO is exactly the one a lexicographic comparison mishandles quietly, so
+    guessing at it would preserve the ambiguity this guard exists to remove.
+    """
+    with pytest.raises(ValueError, match="ISO YYYY-MM-DD"):
+        _PanelFixture(_make_config(tmp_path, start_date=bad_date))
+
+
+def test_dates_are_normalized_to_canonical_iso_at_the_config_boundary(tmp_path):
+    """WR-12, positive half. An accepted alternate ISO spelling is rewritten to
+    canonical zero-padded YYYY-MM-DD, so every downstream comparison can stay a
+    plain string comparison.
+    """
+    dataset = _PanelFixture(_make_config(tmp_path, start_date="20000103"))
+
+    assert dataset.config.start_date == "2000-01-03"
+
+
 def test_as_of_pins_the_right_edge_making_the_panel_reproducible(tmp_path):
     """WR-07. With an open membership the right edge was
     `max(observed, pd.Timestamp.today())`, so rebuilding the same config on two

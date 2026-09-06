@@ -1,3 +1,4 @@
+import datetime
 from abc import ABC, abstractmethod
 from typing import Self
 
@@ -99,8 +100,35 @@ class BaseDataset(ABC):
         if self._config.end_date is None:
             self._config.end_date = Date.END_DATE
 
+        # Normalise both dates to zero-padded ISO ONCE, here at the boundary.
+        # Every downstream date comparison in this codebase is LEXICOGRAPHIC on
+        # these strings -- `_clamp_coverage_start`'s `requested >=
+        # coverage_start`, `_densify`'s `max(start_date, coverage_start)`,
+        # `get_symbols_as_of`'s `as_of_date < coverage_start` -- so a non-padded
+        # or non-ISO value ("2007-2-1", "01/01/2005") does not fail to match, it
+        # compares WRONG and silently skips the clamp or the coverage guard.
+        # Normalising once keeps every comparison downstream a plain string
+        # comparison, which is why they are written that way.
+        self._config.start_date = self._normalize_date(
+            self._config.start_date, "start_date"
+        )
+        self._config.end_date = self._normalize_date(
+            self._config.end_date, "end_date"
+        )
+
         if self._config.symbols is not None:
             self._reset_symbols()
+
+    def _normalize_date(self, value: str, field_name: str) -> str:
+        try:
+            return datetime.date.fromisoformat(str(value)).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{self.class_name}: {field_name} must be an ISO YYYY-MM-DD "
+                f"date string, got {value!r}. Dates are compared "
+                f"lexicographically throughout this pipeline, so a non-ISO "
+                f"value compares wrong rather than failing to match."
+            ) from exc
 
     def _reset_symbols(self):
         """Resolve `config.symbols` eagerly from the store, at
