@@ -144,11 +144,11 @@ Plans:
   3. A membership query before an index's coverage start raises rather than returning a silently incomplete roster
   4. The constituent dataset classes and the market dataset classes share one `BaseDataset` abstraction, with no OHLCV-only member (`_to_kunquant`/`_to_nautilus`) reachable from the constituent side, and adding a further index requires zero edits under `base/`
 
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 
-- [ ] 03.1-01-PLAN.md — Split `base/data.py` into `BaseDataset`/`MarketDataset` and `DatasetConfig` into a three-way config split (wave 1)
+- [x] 03.1-01-PLAN.md — Split `base/data.py` into `BaseDataset`/`MarketDataset` and `DatasetConfig` into a three-way config split (wave 1)
 - [ ] 03.1-02-PLAN.md — Extract `IndexMembershipFetcher`, add `Nasdaq100MembershipFetcher` and the third universe category (wave 1)
 - [ ] 03.1-03-PLAN.md — `IndexConstituentDataset` + `SP500ConstituentDataset`: interval-to-daily-panel densification with all six correctness locks (wave 2)
 - [ ] 03.1-04-PLAN.md — `Nasdaq100ConstituentDataset`, registry-driven `UniverseCatalog` coverage guards, README (wave 3)

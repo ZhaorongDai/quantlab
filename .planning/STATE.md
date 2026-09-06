@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 current_phase: 03.1
-current_phase_name: Index Historical Constituents Data Layer
+current_phase_name: Index Historical Constituents Data Layer (INSERTED)
 status: executing
-stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-09-06T02:43:22.160Z"
+stopped_at: Completed 03.1-01-PLAN.md
+last_updated: "2026-09-06T02:57:20.395Z"
 last_activity: 2026-09-05
-last_activity_desc: Phase 03 execution started
-state_head: bdcbdcdd2b09abc3b17d08ea4ecce6baa8004d4f
+last_activity_desc: Phase 03.1 execution started
+state_head: 2e75175ff013716e7f42ee6306735ba6af448b86
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 24
-  completed_plans: 18
+  completed_plans: 19
 milestone_name: milestone
 ---
 
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.1 — Index Historical Constituents Data Layer (planned, ready to execute)
+**Current focus:** Phase 03.1 — Index Historical Constituents Data Layer (INSERTED)
 
 ## Current Position
 
-Phase: 03.1 (Index Historical Constituents Data Layer) — READY TO EXECUTE
-Plan: 5 of 5
+Phase: 03.1 (Index Historical Constituents Data Layer (INSERTED)) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-09-05 — Phase 03 execution started
+Last activity: 2026-09-05 — Phase 03.1 execution started
 
 Progress: [██████████] 100%
 
@@ -64,6 +64,7 @@ Progress: [██████████] 100%
 | Phase 03 P03 | 7 min | 3 tasks | 5 files |
 | Phase 03 P04 | 8 min | 3 tasks | 4 files |
 | Phase 03 P05 | 15 min | 3 tasks | 4 files |
+| Phase 03.1 P01 | 6 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,10 @@ Recent decisions affecting current work:
 - [Phase 03]: The D-09 four-class normalization matrix is locked by one equality assertion against a literal, with docstrings on all four classes — Raw vs normalized factor values are indistinguishable to a downstream consumer at runtime (T-03-03-02). A per-market strategy choice that looks like an inconsistency must be impossible to 'align' silently; the assertion message routes a would-be changer to D-09 in 03-CONTEXT.md before the test literal.
 - [Phase 03]: FactorPolars resolves factor names inside cal() from collect_schema().names(), never at construction time — Keeping the inherited eager _maybe_resolve_factor_names() would make merely constructing a Polars factor trigger a disk read, contradicting D-04's computation-starts-at-cal() contract. The documented cost is that _get_factor_names()/num_factors raise until cal()/read() has run - a gap base/model.py never hits.
 - [Phase 03]: Polars factors are not portable across markets: Dataset.get_lazyframe() applies no per-market column normalization (03-RESEARCH.md Open Question 2), so factor/momentum.py is written against crypto-spot Title-Case Close — D-08 requires only one example factor and adding a get_lazyframe()-side rename layer was explicitly out of Phase 3 scope. Recorded in both docstrings a new factor author reads; revisit when a second Polars factor must span both markets.
+- [Phase 03.1]: BaseFactorConfig.dataset is annotated "MarketDataset", not "BaseDataset" — FactorKunQuant calls dataset.to_kunquant(), a MarketDataset-only member, so widening the annotation would be a lie that type-checks. A future constituent-masking consumer takes a BaseDataset of its own; do not pre-widen.
+- [Phase 03.1]: The pre-split name base.data.Dataset was retired, not kept as a permanent alias — Two live names for one class is exactly the ambiguity a later reader 'fixes' wrongly, and an unused alias violates QUAL-02. A transitional alias existed for exactly one commit so the split could land with a green suite; test 7 makes reintroducing it a test failure.
+- [Phase 03.1]: _reset_symbols() became a named overridable seam on BaseDataset rather than an isinstance branch or a config boolean flag — It is called from the shared config setter, so pushing it down to MarketDataset would force the setter to split too. Overriding it to a no-op is proven to suppress both the store read and the from_raw_data() network fallback, which is what lets 03.1-02 construct a constituent dataset offline.
+- [Phase 03.1]: BaseDataset.__init__ keeps its data_backend-first order, the deliberate inverse of base/factor.py:Factor.__init__ — The dataset config setter DOES reach the storage backend via _reset_symbols() -> read(), whereas no method reachable from the factor setter may. Both invariants are now locked by their own inverse guard tests so neither hierarchy can be silently harmonized onto the other.
 
 ### Pending Todos
 
@@ -112,7 +117,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-05T19:04:47.693Z
-Stopped at: Completed 03-05-PLAN.md
+Last session: 2026-09-06T02:57:07.967Z
+Stopped at: Completed 03.1-01-PLAN.md
 Resume file: None
 </content>
