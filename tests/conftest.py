@@ -480,9 +480,10 @@ def spot_kline_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
     boundary.
 
     The store is written to disk BEFORE the `DatasetConfig` is constructed:
-    `base/data.py:Dataset.config`'s setter calls `_reset_symbols()` (which
+    `base/data.py:BaseDataset.config`'s setter calls `_reset_symbols()` (which
     calls `read()`) whenever `DatasetConfig.symbols` is not None, so the file
-    must already exist by the time a caller hands the config to a `Dataset`.
+    must already exist by the time a caller hands the config to a
+    `MarketDataset`.
     """
 
     def _build(

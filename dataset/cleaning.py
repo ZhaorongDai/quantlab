@@ -1,6 +1,7 @@
 """Shared raw-market-data cleaning, reused by every Dataset subclass.
 
-Two entry points, called at two different pipeline stages:
+Three entry points. Two are called at two different pipeline stages of the
+raw-market-data path:
 - dedup_raw_frame(): tabular (polars), called by each subclass's
   _raw_data_to_xr() BEFORE the final .to_xarray() conversion — required
   because a non-unique (timestamp, symbol) index crashes to_xarray()
@@ -13,6 +14,11 @@ Two entry points, called at two different pipeline stages:
   produces the full (timestamp, symbol) cartesian product with NaN for
   absent combinations, given a unique index (verified empirically, see
   02-RESEARCH.md Pattern 3).
+
+The third, clean_membership_panel(), is the non-OHLCV counterpart of
+clean_market_data(): it is the `_clean()` route for an index-membership
+boolean panel, which has none of the five required OHLCV columns and for
+which anomaly-flagging would be meaningless.
 
 Do NOT add forward-fill/interpolate/fillna anywhere in this module — that
 would fabricate data the pipeline never actually observed (D-06).
@@ -176,4 +182,63 @@ def clean_market_data(data: xr.Dataset) -> xr.Dataset:
     """
     data = validate_schema(data)
     data = flag_anomalies(data)
+    return data
+
+
+def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
+    """Membership-panel counterpart to `clean_market_data()`, called from
+    `base/constituent.py:IndexConstituentDataset._clean()`.
+
+    Validates the panel's shape and returns it unchanged. It never modifies,
+    fills or re-sorts anything -- a panel that violates the contract is a bug
+    in the densification, and silently repairing it here would hide that.
+
+    Raises `ValueError` naming the specific violation for each of:
+
+    - `data_vars` is not exactly `{"is_member"}`;
+    - `is_member.dtype` is not `bool`;
+    - `is_member.dims` is not exactly `("timestamp", "symbol")`;
+    - the `timestamp` coordinate is not strictly increasing (which includes
+      duplicates) -- `XrBackend.filter_by_date` slices with
+      `.sel(timestamp=slice(...))`, which silently returns wrong results on an
+      unsorted index rather than raising.
+
+    **Why the inherited default is unusable here, not merely unnecessary.**
+    `clean_market_data()` calls `validate_schema()`, which hard-raises on the
+    five missing OHLCV columns (`open`/`high`/`low`/`close`/`volume`) that a
+    membership panel does not and cannot have. Even past that,
+    `flag_anomalies()` would append a second, meaningless all-False
+    `anomaly_flag` variable to a panel whose only variable is already a
+    boolean -- doubling its on-disk size to record nothing.
+    """
+    variables = set(data.data_vars)
+    if variables != {"is_member"}:
+        raise ValueError(
+            f"clean_membership_panel: expected exactly one data variable "
+            f"'is_member', got {sorted(variables)}"
+        )
+
+    is_member = data["is_member"]
+    if is_member.dtype != np.dtype(bool):
+        raise ValueError(
+            f"clean_membership_panel: 'is_member' must have dtype bool, got "
+            f"{is_member.dtype}"
+        )
+    if tuple(is_member.dims) != ("timestamp", "symbol"):
+        raise ValueError(
+            f"clean_membership_panel: 'is_member' must have dims "
+            f"('timestamp', 'symbol'), got {tuple(is_member.dims)}"
+        )
+
+    timestamps = data["timestamp"].values
+    # Compared elementwise rather than via `np.diff(...) > 0` so the check
+    # stays dtype-agnostic (a bare `0` against a timedelta64 is deprecated).
+    if timestamps.size > 1 and not np.all(timestamps[:-1] < timestamps[1:]):
+        raise ValueError(
+            "clean_membership_panel: the 'timestamp' coordinate must be "
+            "strictly increasing (no duplicates, no out-of-order rows) -- "
+            "XrBackend.filter_by_date slices it with .sel(slice(...)), which "
+            "returns wrong results silently on an unsorted index."
+        )
+
     return data
