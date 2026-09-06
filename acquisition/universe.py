@@ -36,6 +36,7 @@ reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 
 import datetime
 import io
+import os
 import zipfile
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -48,6 +49,17 @@ from loguru import logger
 
 from base.config import UniverseConfig
 from dataset.backend import PlBackend
+
+#: Contact string sent in the outbound `User-Agent` when scraping Wikipedia,
+#: whose bot policy asks for one. Read from the environment per CLAUDE.md's
+#: env-vars-for-anything-sensitive convention: the previous value hardcoded a
+#: developer's PERSONAL email address into source, transmitted it to Wikipedia
+#: on every fetch, and followed the repo to every future contributor and any
+#: public fork. The default is a neutral project URL, so an unset variable is
+#: still a polite User-Agent.
+_CONTACT = os.environ.get(
+    "QUANTLAB_CONTACT", "https://github.com/quantlab/quantlab"
+)
 
 
 class NasdaqUniverseFetcher:
@@ -336,7 +348,7 @@ class IndexMembershipFetcher(ABC):
         try:
             response = requests.get(
                 self.CHANGES_URL,
-                headers={"User-Agent": "quantlab (contact: dzr233@gmail.com)"},
+                headers={"User-Agent": f"quantlab (contact: {_CONTACT})"},
                 timeout=30,
             )
             response.raise_for_status()
