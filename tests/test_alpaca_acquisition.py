@@ -1096,6 +1096,85 @@ def test_every_vendor_row_reaches_a_shard_one_for_one_with_no_aggregation(
     assert sorted(duplicated["bid_price"].to_list()) == [1.0, 1.2]
 
 
+def test_a_field_first_appearing_after_row_100_is_not_dropped_by_inference(
+    mock_alpaca_client, acquisition_config
+):
+    """CR-02. `pl.DataFrame(list_of_dicts)` infers its schema from the first
+    `infer_schema_length` rows -- 100 by default -- and SILENTLY discards keys
+    that first appear later:
+
+        >>> pl.DataFrame([{"a": 1}] * 150 + [{"a": 2, "b": 9}]).columns
+        ['a']
+
+    A page carries up to 10,000 rows in symbol-major order and the vendor omits
+    an absent field from a row rather than nulling it, so this is reachable on
+    an ordinary page. Both outcomes are wrong and both are documented on
+    `OPTIONAL_COLUMNS_BY_DATA_TYPE`:
+
+    - `conditions` is optional, so the missing-column branch would NULL-FILL it
+      -- discarding the conditions rows 101..N actually carried, which is the
+      silent data loss that constant exists to prevent, firing on the wrong
+      side because inference removed the column rather than the vendor.
+    - `price` is not optional, so the whole 100-symbol batch would fail every
+      run with a message accusing the field map of being stale.
+
+    Both halves are asserted here, with the sparse field appearing only after
+    row 100.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    # 120 trades: the first 110 carry NO `c` (conditions) and no `i`
+    # (trade_id); the last 10 carry both. Under the default inference window
+    # neither column would exist in the frame at all.
+    def _row(minute: int, sparse: bool) -> dict:
+        row = {
+            "t": f"2024-01-02T14:{minute // 60 + 30:02d}:{minute % 60:02d}Z",
+            "x": "V",
+            "p": 1.0 + minute,
+            "s": 100,
+            "z": "C",
+        }
+        if sparse:
+            row["c"] = ["@", "T"]
+            row["i"] = 900 + minute
+        return row
+
+    rows = [_row(index, sparse=index >= 110) for index in range(120)]
+    mock_alpaca_client.pages = [
+        {
+            "trades": {"AAPL": rows},
+            "next_page_token": None,
+            "currency": "USD",
+        }
+    ]
+
+    cfg = _tick_config(
+        acquisition_config, data_type="trades", subdir="late_field"
+    )
+    AlpacaAcquisition(cfg).download()
+
+    shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    assert shards, "the page produced no shard at all"
+    frame = pl.concat([pl.read_parquet(shard) for shard in shards])
+    assert frame.height == 120
+
+    # The REQUIRED late field survived rather than raising the batch away.
+    assert frame["trade_id"].null_count() == 110
+    assert sorted(
+        value for value in frame["trade_id"].to_list() if value is not None
+    ) == [900 + index for index in range(110, 120)]
+    # The OPTIONAL late field survived with its real values rather than being
+    # null-filled wholesale.
+    assert frame["conditions"].null_count() == 110
+    non_null = [
+        value for value in frame["conditions"].to_list() if value is not None
+    ]
+    assert len(non_null) == 10
+    assert all(list(value) == ["@", "T"] for value in non_null)
+
+
 def test_a_malformed_symbol_raises_before_any_symbol_path_segment_is_built(
     mock_alpaca_client, acquisition_config
 ):

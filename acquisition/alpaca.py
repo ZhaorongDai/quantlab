@@ -719,7 +719,24 @@ class AlpacaAcquisition(Acquisition):
             frame = pl.DataFrame(schema=schema)
             return frame.select(self.RAW_COLUMNS), payload.get("next_page_token")
 
-        frame = pl.DataFrame(rows)
+        # `infer_schema_length=None` means "infer over the WHOLE page", never
+        # the default 100 rows. A page carries up to `limit` (10,000) rows in
+        # symbol-major order and the vendor OMITS an absent field from a row
+        # rather than nulling it, so a field first appearing at row 101 would be
+        # dropped from the frame with no error and no warning:
+        #
+        #     >>> pl.DataFrame([{"a": 1}] * 150 + [{"a": 2, "b": 9}]).columns
+        #     ['a']
+        #
+        # Both outcomes of that are wrong. An OPTIONAL column (`conditions`)
+        # would be null-filled by the branch below -- discarding the conditions
+        # data rows 101..N actually carried, which is the exact silent data loss
+        # `OPTIONAL_COLUMNS_BY_DATA_TYPE` exists to prevent, firing on the wrong
+        # side because inference removed the column rather than the vendor. A
+        # required one (`vwap`, `price`, `bid_price`) would raise and fail all
+        # 100 symbols of the batch every run, with a message accusing the field
+        # map of being stale.
+        frame = pl.DataFrame(rows, infer_schema_length=None)
 
         # A field the vendor omitted from EVERY row of this page is filled as a
         # TYPED null column, so the shard's schema is identical either way --
