@@ -1064,10 +1064,11 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
       directory scan of the raw root walks every file beneath it, so a `.json`
       sidecar in that tree would break the scan outright.
 
-    `AcquisitionConfig.vendor` does not exist yet -- 03.2-02 Task 1 introduces
-    the dataclass field and threads `vendor=` through this fixture in the same
-    commit. Until then the vendor is expressed purely through the paths, which
-    is what every Wave-0 assertion needs.
+    `vendor` is threaded onto `AcquisitionConfig.vendor` as well as into both
+    paths, because a path the reader cannot check against a RECORDED
+    expectation checks nothing -- the basename assertion above is only
+    expressible because the config also says what the basename is supposed to
+    be.
     """
 
     def _build(
@@ -1091,6 +1092,7 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
         return AcquisitionConfig(
             market=market,  # type: ignore[arg-type]
             frequency=frequency,  # type: ignore[arg-type]
+            vendor=vendor,  # type: ignore[arg-type]
             raw_data_dir_path=str(downloads / vendor),
             watermark_path=str(downloads / "_watermarks" / vendor),
             symbols=tuple(symbols),

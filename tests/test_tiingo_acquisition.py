@@ -12,12 +12,46 @@ def _make_config(tmp_path: Path) -> AcquisitionConfig:
     return AcquisitionConfig(
         market="us_equity",
         frequency="1d",
-        raw_data_dir_path=str(tmp_path / "raw"),
+        vendor="tiingo",
+        raw_data_dir_path=str(tmp_path / "raw" / "tiingo"),
         watermark_path=str(tmp_path / "watermark"),
         symbols=("AAPL",),
         start_date="2024-01-01",
         end_date="2024-01-31",
     )
+
+
+#: The hive partition every row of `tiingo_json_response` lands in -- the
+#: fixture's dates are all in January 2024 and `RAW_HIVE_KEYS["1d"]` is
+#: `("month",)`, so `month=2024-01` is the one leaf directory a download here
+#: produces.
+_SHARD_PARTITION = "month=2024-01"
+
+
+def _raw_root(tmp_path: Path) -> Path:
+    """The vendor-terminated raw root every config in this module points at."""
+    return tmp_path / "raw" / "tiingo"
+
+
+def _shard_symbols(tmp_path: Path) -> set[str]:
+    """Every symbol present in the raw hive tree.
+
+    03.2 D-08 replaced the pre-existing `{raw}/{symbol}/data.pqt` layout with a
+    hive-partitioned one whose shard filenames carry a content-derived batch
+    key (`part-{batch_key}-{page:05d}.pqt`). Asserting on a hardcoded filename
+    would pin the hash rather than the behaviour, so these tests assert on what
+    actually landed: the symbols readable back out of the tree.
+    """
+    import polars as pl
+
+    root = _raw_root(tmp_path)
+    files = sorted(root.rglob("*.pqt"))
+    if not files:
+        return set()
+    frame = pl.concat(
+        [pl.read_parquet(path) for path in files], how="vertical_relaxed"
+    )
+    return set(frame.get_column("symbol").unique().to_list())
 
 
 def test_missing_api_key_raises_before_network_call(
@@ -42,8 +76,13 @@ def test_download_writes_parquet_and_watermark(mock_tiingo_client, tmp_path):
     acq = TiingoAcquisition(config)
     acq.download(["AAPL"])
 
-    data_file = tmp_path / "raw" / "AAPL" / "data.pqt"
-    assert data_file.exists()
+    # D-08: one hive-partitioned shard per (partition, page), at a
+    # deterministic `part-{batch_key}-{page:05d}.pqt` name under the
+    # vendor-terminated raw root -- not the pre-03.2 `{symbol}/data.pqt`.
+    partition = _raw_root(tmp_path) / _SHARD_PARTITION
+    shards = sorted(partition.glob("part-*-00000.pqt"))
+    assert len(shards) == 1, sorted(_raw_root(tmp_path).rglob("*"))
+    assert _shard_symbols(tmp_path) == {"AAPL"}
 
     assert len(mock_tiingo_client.calls) == 1
     call = mock_tiingo_client.calls[0]
@@ -122,7 +161,8 @@ def _make_concurrent_config(
     return AcquisitionConfig(
         market="us_equity",
         frequency="1d",
-        raw_data_dir_path=str(tmp_path / "raw"),
+        vendor="tiingo",
+        raw_data_dir_path=str(tmp_path / "raw" / "tiingo"),
         watermark_path=str(tmp_path / "watermark"),
         symbols=symbols,
         start_date="2024-01-01",
@@ -139,8 +179,8 @@ def test_concurrent_download_writes_every_parquet_and_watermark(
     config = _make_concurrent_config(tmp_path)
     ConcurrentTiingoAcquisition(config).download()
 
+    assert _shard_symbols(tmp_path) == set(_FIVE)
     for symbol in _FIVE:
-        assert (tmp_path / "raw" / symbol / "data.pqt").exists()
         assert (tmp_path / "watermark" / f"{symbol}.json").exists()
 
     assert len(mock_tiingo_client.calls) == len(_FIVE)
@@ -214,9 +254,14 @@ def test_one_symbol_failure_does_not_abort_the_others(
 
     assert result is not None  # the run returns normally, it does not raise
 
+    landed = _shard_symbols(tmp_path)
     for symbol in ("AAPL", "MSFT", "AMZN", "META"):
-        assert (tmp_path / "raw" / symbol / "data.pqt").exists()
+        assert symbol in landed
         assert (tmp_path / "watermark" / f"{symbol}.json").exists()
+
+    # The failed symbol wrote no shard at all -- `_fetch_batch` raises before
+    # any write when `_fetch_page` does.
+    assert "GOOG" not in landed
 
     # No watermark for the failure => the next run retries it.
     assert not (tmp_path / "watermark" / "GOOG.json").exists()

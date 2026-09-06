@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from enums.data import Frequency, Market
+from enums.data import Frequency, Market, Vendor
 
 if TYPE_CHECKING:
     from .data import MarketDataset
@@ -68,6 +68,19 @@ class DatasetConfig(BaseDatasetConfig):
     market: Market
     frequency: Frequency
 
+    #: Which vendor's raw tier `raw_data_dir_path` points at (03.2 D-11).
+    #:
+    #: Defaults to `None` -- the class is `kw_only=True`, so every existing
+    #: construction stays valid. Only `StockDataset._scan_raw` reads it, and it
+    #: RAISES when it is unset rather than guessing: a scan is meaningless
+    #: without knowing whose data it is reading. Two vendors writing the SAME
+    #: schema under one root merge with no error, no warning and no provenance
+    #: (measured, 03.2-RESEARCH.md Pattern 5), so `_scan_raw` asserts
+    #: `Path(raw_data_dir_path).name == vendor` before scanning. That assertion
+    #: is only expressible because the path TERMINATES at the vendor segment
+    #: and because this field records what it is supposed to terminate at.
+    vendor: Vendor | None = None
+
 
 @dataclass(kw_only=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
@@ -107,8 +120,36 @@ class ConstituentDatasetConfig(BaseDatasetConfig):
 
 @dataclass
 class AcquisitionConfig:
+    """Config for a network-fetching `base/acquisition.py:Acquisition`.
+
+    `vendor` is REQUIRED and positioned immediately after `frequency` because
+    it is not decoration: it is the terminal segment of `raw_data_dir_path`,
+    the sibling segment of `watermark_path`, a literal column written into
+    every raw shard, and one of the five components hashed into a batch's
+    `PageLedger.batch_key`. A vendor that is implicit in the paths but absent
+    from the config cannot be asserted against them (03.2 D-11, SC-7).
+
+    **Deliberately carries NO credential field, and must never gain one.**
+    `to_dict()` returns `asdict(self)`, and that dict lands in persisted
+    configs and in the JSON metadata saved beside model checkpoints
+    (`base/model.py:_save_model`). A credential assigned here is therefore a
+    credential committed to disk in an artefact nobody audits -- and this repo
+    has already leaked one real Tiingo key exactly that way. Every vendor
+    credential is read from `os.environ` inside the client's `__init__` and
+    passed only into an in-memory client object: see
+    `acquisition/tiingo.py:TiingoAcquisition.__init__` for `TIINGO_API_KEY` and
+    `acquisition/alpaca.py:_AlpacaMarketDataClient.__init__` for
+    `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` (D-15, T-03.2-02, CLAUDE.md
+    凭证安全).
+
+    `kwargs` is the per-run escape hatch every knob is read through
+    (`Acquisition._knob`), so a new tuning parameter never becomes a
+    constructor argument no config file could reach.
+    """
+
     market: Market
     frequency: Frequency
+    vendor: Vendor
     raw_data_dir_path: str
     watermark_path: str
     symbols: tuple[str, ...]

@@ -13,7 +13,7 @@ from base.config import (
 from dataset.backend import PlBackend, XrBackend
 from dataset.spot import SpotKlineDataset
 from dataset.stock import StockDataset
-from enums.data import Frequency, Market
+from enums.data import Frequency, Market, Vendor
 
 
 def _data_root() -> Path:
@@ -73,6 +73,7 @@ def stock_kline_config(
     frequency: Frequency = "1d",
     subdir: str = "nasdaq_data",
     store_name: str = "stock.zarr",
+    vendor: Vendor = "tiingo",
 ):
     """US-equity daily Zarr config.
 
@@ -82,15 +83,29 @@ def stock_kline_config(
     full-market `us_all` backfill -- can land beside the NASDAQ-only one
     instead of overwriting it, WITHOUT introducing a second path root: per
     260906-0iy D-04, `QUANTLAB_DATA_DIR` remains the only path knob and no
-    volume is ever hardcoded. The defaults reproduce the pre-existing paths
-    byte-for-byte, so every existing call site is untouched.
+    volume is ever hardcoded.
+
+    `vendor` appends the D-11 vendor segment so `raw_data_dir_path`
+    TERMINATES at it -- `Path(raw_data_dir_path).name == vendor` is the
+    equality `StockDataset._scan_raw` asserts before scanning, which is what
+    makes a scan rooted one level up (and therefore a silent two-vendor merge)
+    unreachable by accident rather than merely unlikely. The vendor is also
+    threaded onto `DatasetConfig.vendor`, because a path the reader cannot
+    check against a recorded expectation checks nothing.
+
+    `"tiingo"` is the documented INCUMBENT, not a guess: every existing caller
+    of this factory reads raw data that `TiingoAcquisition` fetched, so the
+    default names what is already on disk.
     """
     return DatasetConfig(
-        raw_data_dir_path=str(_market_downloads_root(market, frequency) / subdir),
+        raw_data_dir_path=str(
+            _market_downloads_root(market, frequency) / subdir / vendor
+        ),
         zarr_file_path=str(_market_data_root(market, frequency) / store_name),
         catalog_path=str(_data_root() / "data" / "catalog"),
         market=market,
         frequency=frequency,
+        vendor=vendor,
         start_date=start_date,
         end_date=end_date,
         symbols=symbols,
@@ -106,24 +121,42 @@ def stock_acquisition_config(
     market: Market = "us_equity",
     frequency: Frequency = "1d",
     subdir: str = "nasdaq_data",
+    vendor: Vendor = "tiingo",
 ):
     """US-equity daily acquisition config.
 
-    `subdir` selects the raw-data subdirectory (and, beneath it, the watermark
+    `subdir` selects the raw-data subdirectory (and, beside it, the watermark
     directory) so a second roster's raw parquet and watermarks stay separate
     from the NASDAQ-only ones -- separate watermarks are what make the two
     backfills independently resumable. It is a subdirectory BENEATH
     `downloads/{market}/{frequency}/`, not a second root: per 260906-0iy D-04
-    `QUANTLAB_DATA_DIR` remains the only path knob. The default reproduces the
-    pre-existing paths byte-for-byte.
+    `QUANTLAB_DATA_DIR` remains the only path knob.
+
+    `vendor` is DERIVED into both paths rather than accepted pre-built, so the
+    two placements below cannot drift apart at a call site (D-11, D-19):
+
+    - `raw_data_dir_path` TERMINATES at the vendor segment
+      (`.../{subdir}/{vendor}`). The basename IS the vendor, which is what
+      makes `StockDataset._scan_raw`'s basename assertion expressible at all.
+    - `watermark_path` is a SIBLING of that raw root
+      (`.../{subdir}/_watermarks/{vendor}`), deliberately NOT inside it. A
+      polars directory scan walks EVERY file beneath the root it is given, so
+      a `.json` sidecar living in the raw tree breaks `pl.scan_parquet`
+      outright. This is a change from the pre-03.2 `{subdir}/_watermarks/`
+      placement; D-13 already discards those legacy sidecars rather than
+      migrating them.
+
+    `"tiingo"` is the documented INCUMBENT, not a guess: every existing caller
+    of this factory fetched from Tiingo, so the default names the vendor whose
+    data the pre-03.2 paths actually hold.
     """
+    downloads = _market_downloads_root(market, frequency) / subdir
     return AcquisitionConfig(
         market=market,
         frequency=frequency,
-        raw_data_dir_path=str(_market_downloads_root(market, frequency) / subdir),
-        watermark_path=str(
-            _market_downloads_root(market, frequency) / subdir / "_watermarks"
-        ),
+        vendor=vendor,
+        raw_data_dir_path=str(downloads / vendor),
+        watermark_path=str(downloads / "_watermarks" / vendor),
         symbols=symbols,
         start_date=start_date,
         end_date=end_date,

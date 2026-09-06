@@ -13,24 +13,35 @@ from typing import Callable
 from base.config import AcquisitionConfig, DatasetConfig
 from dataset.stock import StockDataset
 
-# The `stock_pqt_row` / `write_stock_pqt` helpers these tests use live in
-# tests/conftest.py (promoted there by 03-01 Task 2, 03-VALIDATION.md Wave-0
-# gap) so Phase-3 stock factor tests reuse them rather than duplicating them.
+# The `stock_pqt_row` / `hive_raw_tree` helpers these tests use live in
+# tests/conftest.py (promoted there by 03-01 Task 2 and extended by 03.2-01)
+# so Phase-3 stock factor tests reuse them rather than duplicating them.
+#
+# 03.2 D-08/D-11 changed the raw tier's SHAPE, not these tests' claims. Raw
+# parquet now lives in a hive-partitioned tree under a vendor-terminated root
+# (`{raw}/{vendor}/month=YYYY-MM/part-*.pqt`) with a literal `vendor` column,
+# so the fixtures below build that tree via `hive_raw_tree` instead of writing
+# `{raw}/{symbol}/data.pqt` directly. Every ASSERTION is unchanged, which is
+# the point: `_scan_raw`'s output column set is identical before and after the
+# rework, so the xr-shape expectations here are exactly the proof of that.
 
 
-def _make_dataset_config(raw_data_dir_path: str, zarr_file_path: str) -> DatasetConfig:
+def _make_dataset_config(
+    raw_data_dir_path: str, zarr_file_path: str, vendor: str = "tiingo"
+) -> DatasetConfig:
     return DatasetConfig(
         raw_data_dir_path=raw_data_dir_path,
         zarr_file_path=zarr_file_path,
         catalog_path=raw_data_dir_path,
         market="us_equity",
         frequency="1d",
+        vendor=vendor,  # type: ignore[arg-type]
     )
 
 
 def test_overlapping_pqt_files_dedup_before_to_xarray(
     stock_pqt_row: Callable[..., dict],
-    write_stock_pqt: Callable[..., Path],
+    hive_raw_tree: Callable[..., Path],
     tmp_path: Path,
 ) -> None:
     """Test 1: two raw parquet files for the same symbol, sharing one
@@ -39,18 +50,23 @@ def test_overlapping_pqt_files_dedup_before_to_xarray(
     StockDataset.from_raw_data() without raising ValueError (the
     non-unique-MultiIndex crash), and the resulting dataset has exactly one
     row for the overlapping timestamp."""
-    symbol_dir = tmp_path / "raw" / "AAPL"
-    write_stock_pqt(
-        symbol_dir / "data_1.pqt",
+    # Two shards in the SAME hive partition, distinguished by batch key --
+    # which is exactly what an overlapping download()+refresh() produces.
+    hive_raw_tree(
+        tmp_path / "raw",
+        "tiingo",
         [stock_pqt_row("2024-01-02", "AAPL"), stock_pqt_row("2024-01-03", "AAPL")],
+        batch_key="batch0001",
     )
-    write_stock_pqt(
-        symbol_dir / "data_2.pqt",
+    hive_raw_tree(
+        tmp_path / "raw",
+        "tiingo",
         [stock_pqt_row("2024-01-03", "AAPL"), stock_pqt_row("2024-01-04", "AAPL")],
+        batch_key="batch0002",
     )
 
     config = _make_dataset_config(
-        str(tmp_path / "raw"), str(tmp_path / "out.zarr")
+        str(tmp_path / "raw" / "tiingo"), str(tmp_path / "out.zarr")
     )
     dataset = StockDataset(config)
     dataset.from_raw_data()
@@ -64,24 +80,27 @@ def test_overlapping_pqt_files_dedup_before_to_xarray(
 
 def test_dedup_noop_on_non_overlapping_pqt_files(
     stock_pqt_row: Callable[..., dict],
-    write_stock_pqt: Callable[..., Path],
+    hive_raw_tree: Callable[..., Path],
     tmp_path: Path,
 ) -> None:
     """Test 2: a StockDataset built from non-overlapping parquet files
     converts unchanged (same row count) -- regression proving the dedup
     insertion doesn't alter clean data."""
-    symbol_dir = tmp_path / "raw" / "AAPL"
-    write_stock_pqt(
-        symbol_dir / "data_1.pqt",
+    hive_raw_tree(
+        tmp_path / "raw",
+        "tiingo",
         [stock_pqt_row("2024-01-02", "AAPL"), stock_pqt_row("2024-01-03", "AAPL")],
+        batch_key="batch0001",
     )
-    write_stock_pqt(
-        symbol_dir / "data_2.pqt",
+    hive_raw_tree(
+        tmp_path / "raw",
+        "tiingo",
         [stock_pqt_row("2024-01-04", "AAPL"), stock_pqt_row("2024-01-05", "AAPL")],
+        batch_key="batch0002",
     )
 
     config = _make_dataset_config(
-        str(tmp_path / "raw"), str(tmp_path / "out.zarr")
+        str(tmp_path / "raw" / "tiingo"), str(tmp_path / "out.zarr")
     )
     dataset = StockDataset(config)
     dataset.from_raw_data()
@@ -96,7 +115,7 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     mock_tiingo_client,
     tiingo_json_response: list[dict],
     stock_pqt_row: Callable[..., dict],
-    write_stock_pqt: Callable[..., Path],
+    hive_raw_tree: Callable[..., Path],
     tmp_path: Path,
 ) -> None:
     """Test 3: TiingoAcquisition.download() (mocked network) ->
@@ -108,12 +127,13 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     Zarr write/read) runs for real."""
     from acquisition.tiingo import TiingoAcquisition
 
-    raw_data_dir_path = str(tmp_path / "raw")
+    raw_data_dir_path = str(tmp_path / "raw" / "tiingo")
     zarr_file_path = str(tmp_path / "stock.zarr")
 
     acq_config = AcquisitionConfig(
         market="us_equity",
         frequency="1d",
+        vendor="tiingo",
         raw_data_dir_path=raw_data_dir_path,
         watermark_path=str(tmp_path / "watermark"),
         symbols=("AAPL",),
@@ -151,9 +171,11 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     # Write a second symbol's raw data covering a disjoint date so a gap
     # exists for AAPL on that date once both symbols share the same
     # [timestamp, symbol] grid.
-    write_stock_pqt(
-        Path(raw_data_dir_path) / "MSFT" / "data_1.pqt",
+    hive_raw_tree(
+        Path(raw_data_dir_path).parent,
+        "tiingo",
         [stock_pqt_row("2024-02-01", "MSFT")],
+        batch_key="msftbatch",
     )
     multi_symbol_dataset.from_raw_data().save()
     read_back_multi = StockDataset(other_config).read()

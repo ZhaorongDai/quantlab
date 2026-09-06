@@ -16,8 +16,14 @@ from base.config import AcquisitionConfig
 from enums.data import TiingoColumns
 
 # Extend when intraday frequencies are added -- never hardcode "daily" inline
-# in _fetch_and_write.
+# in _fetch_one.
 _FREQUENCY_MAP = {"1d": "daily"}
+
+#: Tiingo's EOD field names, in the order `TiingoColumns.EOD` requests them.
+#: Named here so `RAW_COLUMNS` below is derived from one list rather than being
+#: a second hand-maintained copy that could drift from what is actually asked
+#: for.
+_TIINGO_EOD_COLUMNS = tuple(TiingoColumns.EOD.split(","))
 
 
 class TiingoAcquisition(Acquisition):
@@ -26,7 +32,40 @@ class TiingoAcquisition(Acquisition):
     `TIINGO_API_KEY` is read directly from `os.environ` in `__init__` and
     passed only into the in-memory `TiingoClient` constructor argument --
     never assigned to `self.config` or any other dataclass-facing attribute.
+
+    Tiingo's EOD endpoint takes ONE symbol per call and returns a whole date
+    range in one response, so this class is the batched primitive's DEGENERATE
+    case: `DEFAULT_BATCH_SIZE = 1` and `_fetch_page` never returns a token.
+    Both are complete implementations of the base contract, not placeholders.
     """
+
+    VENDOR = "tiingo"
+
+    #: One symbol per request, and that number is LOAD-BEARING rather than a
+    #: conservative default.
+    #:
+    #: Tiingo's price endpoint is single-symbol, so any other value would mean
+    #: looping inside `_fetch_page` while presenting the batch as atomic. Three
+    #: concrete consequences follow from that pretence:
+    #:
+    #: - ONE failure would fail N symbols instead of one, because the batch is
+    #:   the unit of success;
+    #: - the quota abort check runs once per batch, so an exhausted allocation
+    #:   would let N-1 further requests through before it was noticed -- the
+    #:   exact fast-failing burn 260906-26o D-05 exists to stop;
+    #: - resume granularity would coarsen from one symbol to N.
+    #:
+    #: At 1 the batched path is behaviourally identical to the per-symbol path
+    #: it replaces, which is what makes this a real implementation of
+    #: `_fetch_page` rather than a multi-symbol interface being faked.
+    DEFAULT_BATCH_SIZE = 1
+
+    #: The pinned shard projection and order: the identity columns first, then
+    #: Tiingo's EOD fields in the order `TiingoColumns.EOD` requests them --
+    #: which is also the order `tests/conftest.py:_STOCK_PQT_COLUMNS` records.
+    #: `vendor` is new in 03.2 and is what keeps a cross-vendor merge
+    #: DETECTABLE as well as prevented (D-11).
+    RAW_COLUMNS = ("timestamp", "symbol", "vendor", *_TIINGO_EOD_COLUMNS)
 
     def __init__(self, config: AcquisitionConfig):
         super().__init__(config)
@@ -41,9 +80,16 @@ class TiingoAcquisition(Acquisition):
             {"session": True, "api_key": os.environ["TIINGO_API_KEY"]}
         )
 
-    def _fetch_and_write(
+    def _fetch_one(
         self, symbol: str, start_date: str, end_date: str
-    ) -> None:
+    ) -> pl.DataFrame | None:
+        """One symbol's whole range in one vendor call, or None if empty.
+
+        The pre-03.2 `_fetch_and_write` body verbatim MINUS the write: the REST
+        call, the timestamp normalisation with its reasoning, and the literal
+        `symbol` provenance column, plus the new literal `vendor` column that
+        makes provenance survive even a merged read.
+        """
         frequency = _FREQUENCY_MAP[self.config.frequency]
         response = self._client.get_ticker_price(
             symbol,
@@ -55,7 +101,7 @@ class TiingoAcquisition(Acquisition):
         )
         data = pl.DataFrame(response)
         if data.is_empty():
-            return
+            return None
 
         # Tiingo's `date` field is an ISO-8601 string with a trailing `Z`
         # (UTC) offset (e.g. "2024-01-02T00:00:00.000Z"). Parse it as UTC
@@ -69,20 +115,64 @@ class TiingoAcquisition(Acquisition):
             .dt.replace_time_zone(None)
         )
         data = data.rename({"date": "timestamp"})
-        data = data.with_columns(pl.lit(symbol).alias("symbol"))
+        data = data.with_columns(
+            pl.lit(symbol).alias("symbol"),
+            pl.lit(self.VENDOR).alias("vendor"),
+        )
+        return data.select(self.RAW_COLUMNS)
 
-        out_dir = Path(self.config.raw_data_dir_path) / symbol
-        out_dir.mkdir(parents=True, exist_ok=True)
-        data.write_parquet(out_dir / "data.pqt")
+    def _empty_frame(self) -> pl.DataFrame:
+        """An empty frame carrying the RAW_COLUMNS schema.
+
+        Returned when a batch produced no rows at all. It must carry the schema
+        rather than being a bare `pl.DataFrame()`, because `_fetch_batch` reads
+        `symbol` off it and a schemaless empty frame would raise there instead
+        of reporting "no rows".
+        """
+        return pl.DataFrame(
+            schema={
+                "timestamp": pl.Datetime,
+                "symbol": pl.String,
+                "vendor": pl.String,
+                **{name: pl.Float64 for name in _TIINGO_EOD_COLUMNS},
+            }
+        ).select(self.RAW_COLUMNS)
+
+    def _fetch_page(
+        self,
+        symbols: list[str],
+        start_date: str,
+        end_date: str,
+        page_token: str | None = None,
+    ) -> tuple[pl.DataFrame, str | None]:
+        """One page for `symbols` -- which for Tiingo is always the WHOLE range.
+
+        Returns `(frame, None)` unconditionally: the EOD endpoint returns the
+        full requested range in one response and publishes no pagination
+        cursor, so there is never a next page. `page_token` is accepted to
+        satisfy the base contract and is ignored, because a token this vendor
+        never issues can never be handed back.
+
+        `symbols` is looped rather than joined because the endpoint is
+        single-symbol; at `DEFAULT_BATCH_SIZE = 1` that loop has one iteration.
+        """
+        frames = []
+        for symbol in symbols:
+            frame = self._fetch_one(symbol, start_date, end_date)
+            if frame is not None and not frame.is_empty():
+                frames.append(frame)
+        if not frames:
+            return self._empty_frame(), None
+        return pl.concat(frames, how="vertical"), None
 
 
 class ConcurrentTiingoAcquisition(TiingoAcquisition):
     """Resumable, concurrent, failure-isolated bulk Tiingo acquisition.
 
-    Inherits `_fetch_and_write` UNTOUCHED -- the per-symbol vendor call and
-    raw-parquet write are already correct -- and overrides only the
-    ORCHESTRATION. A full-US-market backfill is ~15.4k symbols and several
-    hours; at that scale three properties stop being niceties:
+    Inherits `_fetch_page` and `_fetch_batch` UNTOUCHED -- the per-symbol
+    vendor call and the raw-shard write are already correct -- and overrides
+    only the ORCHESTRATION. A full-US-market backfill is ~15.4k symbols and
+    several hours; at that scale three properties stop being niceties:
 
     - **Concurrency.** The work is network-bound and the
       `TiingoClient(session=True)` is shared, so THREADS are right and
@@ -635,8 +725,14 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
             covered_start = coverage.get("start_date")
 
         try:
-            self._fetch_and_write(
-                symbol, start_date=start_date, end_date=self.config.end_date
+            # A ONE-SYMBOL batch, which at DEFAULT_BATCH_SIZE = 1 is exactly
+            # what `download()` would issue for this symbol anyway. Going
+            # through `_fetch_batch` rather than around it means this class
+            # inherits the page ledger and the shard-before-ledger ordering
+            # for free, instead of carrying a second write path that could
+            # drift from the base one.
+            self._fetch_batch(
+                [symbol], start_date=start_date, end_date=self.config.end_date
             )
         except Exception as exc:  # noqa: BLE001 -- isolation is the point
             message = self._scrub(f"{type(exc).__name__}: {exc}")

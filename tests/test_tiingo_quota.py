@@ -54,7 +54,8 @@ def _make_config(
     return AcquisitionConfig(
         market="us_equity",
         frequency="1d",
-        raw_data_dir_path=str(tmp_path / "raw"),
+        vendor="tiingo",
+        raw_data_dir_path=str(tmp_path / "raw" / "tiingo"),
         watermark_path=str(tmp_path / "watermark"),
         symbols=symbols,
         start_date="2024-01-01",
