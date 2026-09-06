@@ -724,13 +724,14 @@ def test_every_universe_category_is_reachable_from_the_cli():
     Asserted against EVERY such parser rather than one, so a second script that
     stopped deriving its choices fails here.
     """
+    import ingest_alpaca
     import ingest_tiingo
     from utils.cli import UNIVERSE_CATEGORY_MAP
 
     assert set(UNIVERSE_CATEGORY_MAP.values()) == set(
         typing.get_args(UniverseCategory)
     )
-    for module in (ingest_tiingo,):
+    for module in (ingest_tiingo, ingest_alpaca):
         choices = module._build_arg_parser()._option_string_actions[
             "--universe"
         ].choices

@@ -292,3 +292,46 @@ def resolve_symbols(
     if limit is not None:
         symbols = symbols[:limit]
     return symbols
+
+
+def add_volume_guard_args(
+    parser: argparse.ArgumentParser,
+) -> argparse.ArgumentParser:
+    """Add the pre-flight volume guard's two flags: `--force-volume` and
+    `--rows-per-symbol-day`.
+
+    Defined HERE rather than in each script so the flag name and the help text
+    exist once (D-14). `--force-volume` is an EXPLICIT, visible opt-out: it is
+    a flag a user types, never an environment variable and never a config key
+    that could turn the guard off for a whole machine without anyone noticing.
+
+    `--rows-per-symbol-day` has no default on purpose. Tick volume is not
+    derivable from a calendar the way a bar count is, so
+    `assert_acquisition_volume_fits` REFUSES a tick estimate without a measured
+    figure rather than inventing one -- an invented row count would make the
+    guard confidently wrong in exactly the regime it exists for.
+    """
+    parser.add_argument(
+        "--force-volume",
+        action="store_true",
+        help=(
+            "Proceed even when the pre-flight volume estimate is over a "
+            "ceiling. The arithmetic still runs and is still printed -- only "
+            "the refusal is skipped. Explicit and per-run on purpose: there is "
+            "no environment variable and no config key that disables the guard "
+            "wholesale."
+        ),
+    )
+    parser.add_argument(
+        "--rows-per-symbol-day",
+        type=int,
+        default=None,
+        help=(
+            "Measured rows per symbol per session, REQUIRED to size a "
+            "--frequency tick fetch and ignored otherwise. No default: sample "
+            "one symbol-day and count. A guessed figure produces a guessed "
+            "budget, and the guard's whole value is that its number is "
+            "defensible."
+        ),
+    )
+    return parser
