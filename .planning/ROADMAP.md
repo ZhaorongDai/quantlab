@@ -155,10 +155,23 @@ Plans:
 
 ### Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca) (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Users can acquire market data from a second vendor (Alpaca) through the same `Acquisition` abstraction as Tiingo, where that abstraction now natively supports batched multi-symbol requests, page-level resumable pagination, and a pre-flight volume guard — with both vendors' raw data coexisting under a vendor-namespaced, hive-partitioned layout.
+**Requirements**: TBD (no existing REQ-ID covers vendor-level source extensibility; closest sibling is DATA-03's market/frequency extensibility)
 **Depends on:** Phase 3
+**Canonical refs:** `.planning/phases/03.2-multi-source-data-acquisition-abstraction-alpaca/03.2-CONTEXT.md`
 **Plans:** 0 plans
+
+**Success Criteria** (what must be TRUE):
+
+  1. `Acquisition`'s fetch primitive is batched (multi-symbol per call); a single-symbol vendor is expressed as the degenerate case, with no `NotImplementedError` stub anywhere in the hierarchy
+  2. Concurrency, resume, failure isolation and the global quota abort live once in the base class and drive both Tiingo and Alpaca; every behaviour locked by quick task 260906-26o still holds
+  3. An interrupted paginated fetch resumes at the failed page rather than at the start of the batch
+  4. A symbol absent from a batch response is recorded as "queried, no data" — distinguishable at read time from both a fetch failure and a never-fetched symbol
+  5. User can fetch Alpaca daily bars, minute bars, and quotes/trades to raw storage, selecting the vendor by config
+  6. A fetch whose estimated volume exceeds the guard threshold refuses before issuing requests, and can be overridden explicitly
+  7. Tiingo and Alpaca raw data land under separate vendor path segments and cannot be silently merged into one xarray
+
+**Scope fences:** raw → xarray/Zarr conversion for tick is deferred to a follow-up phase; Alpaca's trading/broker API and corporate actions are out of scope; this delivers acquisition capability, not a full-market minute/tick backfill (DATA-V2-01/02 remain v2).
 
 Plans:
 
