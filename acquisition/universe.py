@@ -42,6 +42,7 @@ reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 import datetime
 import io
 import os
+import re
 import zipfile
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -227,6 +228,33 @@ class USEquityUniverseFetcher(TiingoRosterFetcher):
 #: dash variants are the em/en/hyphen glyphs Wikipedia uses for "none".
 _BLANK_TICKER_CELLS = frozenset({"", "-", "–", "—"})
 
+#: What a change-log ticker cell must look like AFTER
+#: `IndexMembershipFetcher._normalize_ticker_cell()` has run. Pinned against a
+#: live measurement (2026-09-06) of BOTH change logs pushed through
+#: `_parse_changes_table`: 1,190 non-null ticker cells (S&P 500 772,
+#: Nasdaq-100 418), observed lengths 1-6, character vocabulary `A-Z` plus --
+#: in exactly THREE S&P cells -- a space and a trailing `|`. After
+#: normalization all 1,190 match this pattern.
+#:
+#: The optional `[.-][A-Z0-9]{1,2}` tail is deliberate headroom for the
+#: `BRK.B` / `BRK-B` class-share notations: neither table carries one today,
+#: but it is the one shape a future row could legitimately hold, and a
+#: validator that rejected it would break every refresh on the day it
+#: appeared.
+#:
+#: Digits are admitted even though ZERO live cells carry one. Two reasons,
+#: both deliberate: (1) a false positive here is expensive in exactly the way
+#: hard-won by the normalization design -- it raises, `fetch_changes()` falls
+#: back to the stale cache, and `build()` then refuses until a human edits
+#: Wikipedia; (2) this repo's synthetic change-log fixtures name their
+#: symbols `ADDED1` / `TEMP1` / `GONE1` precisely so a synthetic symbol is
+#: never mistakable for a real ticker, and that convention is worth more than
+#: a character class narrowed to a vocabulary that could widen upstream at
+#: any time. The malformations this guard actually exists to catch -- an
+#: interior delimiter, an embedded space, lowercase, an over-long cell --
+#: are all still rejected.
+_WELL_FORMED_TICKER = re.compile(r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2})?$")
+
 
 class IndexMembershipFetcher(ABC):
     """Shared machinery for reconstructing point-in-time index membership
@@ -326,6 +354,34 @@ class IndexMembershipFetcher(ABC):
         """
 
     @staticmethod
+    def _normalize_ticker_cell(value: str) -> str:
+        """Strip upstream wikitable delimiter residue off one ticker cell.
+
+        Applied in order: whitespace strip, leading/trailing `|` strip,
+        whitespace strip again -- so the real observed `"ALLE |"` becomes
+        `"ALLE"` and a cell that is nothing but residue (`" | "`) becomes the
+        empty string, which the `_BLANK_TICKER_CELLS` sentinel then reads as
+        "no change on this side".
+
+        **On this base, deliberately -- not on either subclass.**
+        `_parse_changes_table` is already concrete and shared precisely so no
+        index can ship a parse that skips the base's validation (safety
+        property 1 on the class docstring), and that property exists because
+        the previous per-subclass parse meant nothing looked at the source
+        header at all. The Nasdaq-100 change log has zero malformed cells
+        today, but it is the SAME publicly-editable MediaWiki surface, and the
+        S&P 500 table's three cells arrived by editor typo alone. Putting the
+        normalization on one subclass would reintroduce exactly the shape that
+        refactor removed.
+
+        Only LEADING/TRAILING delimiters are stripped. An interior one is not
+        the observed upstream shape and much more likely means two cells were
+        merged by a parser regression, so it is left in place to fail
+        `_WELL_FORMED_TICKER` loudly.
+        """
+        return value.strip().strip("|").strip()
+
+    @staticmethod
     def _flatten_header(columns) -> tuple[str, ...]:
         """Flatten a (possibly two-level) `pd.read_html` header to plain
         strings: `("Added", "Ticker")` -> `"Added Ticker"`, and a label
@@ -418,19 +474,84 @@ class IndexMembershipFetcher(ABC):
         # pandas is no longer allowed to guess it. `reconstruct_intervals()`
         # tests `is not None`, so a blank must be a real `None` and every other
         # cell -- including the ticker `NA` -- must survive as itself.
+        malformed: list[tuple[str, str]] = []
         for column in ("added_ticker", "removed_ticker"):
             stripped = parsed[column].astype(str).str.strip().tolist()
-            # `dtype=object` keeps the sentinel a real `None`; a plain list
-            # assignment lets pandas re-infer a string dtype and turn it back
-            # into `nan`. Both survive `pl.from_pandas` as null, but only the
-            # explicit form says so at the layer a reader is looking at.
-            parsed[column] = pd.Series(
-                [
-                    None if value in _BLANK_TICKER_CELLS else value
-                    for value in stripped
-                ],
-                dtype=object,
-                index=parsed.index,
+
+            # 1. Normalization runs FIRST, on the whitespace-stripped raw
+            #    values. Wikipedia is publicly editable and its change logs
+            #    carry ongoing delimiter typos (measured 2026-09-06: three
+            #    live S&P 500 cells, `ALLE |` / `ITT |` / `JCP |`). A bare
+            #    raise on those would break every refresh until somebody
+            #    edited Wikipedia; passing them through wrote phantom symbols
+            #    that match NO market data, so `JCP` and `ITT` -- two
+            #    multi-decade members -- were simply absent from the panel
+            #    while `ALLE` was double-counted.
+            normalized = [self._normalize_ticker_cell(v) for v in stripped]
+
+            # 2. Every cell the normalization CHANGED is announced. ONE
+            #    aggregated line per column, not one per cell: the ongoing
+            #    three-cell upstream typo stays a single readable line, while
+            #    a systematic parser regression shows up as one huge list
+            #    rather than flooding a cron log. The logging is load-bearing
+            #    -- silent correction would swallow that regression, which is
+            #    the whole reason this module's other guards are loud.
+            corrections = [
+                (raw, clean)
+                for raw, clean in zip(stripped, normalized)
+                if raw != clean
+            ]
+            if corrections:
+                logger.warning(
+                    f"{self.INDEX_LABEL}: normalized {len(corrections)} "
+                    f"{column} cell(s) carrying delimiter residue from "
+                    f"{self.CHANGES_URL}: "
+                    + ", ".join(f"{raw!r} -> {clean!r}" for raw, clean in corrections)
+                )
+
+            # 3. KEY LINK: the `_BLANK_TICKER_CELLS` sentinel test runs on the
+            #    NORMALIZED value, never the raw one. A cell whose whole
+            #    content is residue (`" | "`) must become the `None`
+            #    "no change on this side" sentinel; testing the raw value
+            #    first would send it to the validator below and raise.
+            #
+            #    `dtype=object` keeps the sentinel a real `None`; a plain list
+            #    assignment lets pandas re-infer a string dtype and turn it
+            #    back into `nan`. Both survive `pl.from_pandas` as null, but
+            #    only the explicit form says so at the layer a reader is
+            #    looking at.
+            cleaned = [
+                None if value in _BLANK_TICKER_CELLS else value
+                for value in normalized
+            ]
+
+            # 4. Anything non-blank that is STILL not a well-formed ticker is
+            #    accumulated across BOTH columns, so one run reports all of
+            #    them rather than one per re-run.
+            malformed.extend(
+                (column, value)
+                for value in cleaned
+                if value is not None and not _WELL_FORMED_TICKER.match(value)
+            )
+
+            parsed[column] = pd.Series(cleaned, dtype=object, index=parsed.index)
+
+        if malformed:
+            # Same shape, and same reasoning, as the `unparseable
+            # effective_date` guard immediately below: `fetch_changes()`
+            # catches this, falls back to the cached snapshot WITHOUT
+            # overwriting it, and `build()` then refuses unless
+            # `allow_stale=True`. Raising is therefore loud-but-non-
+            # destructive, which is what makes it safe to raise on a shape
+            # that has not been observed.
+            raise ValueError(
+                f"{self.INDEX_LABEL}: change-log ticker cells at "
+                f"{self.CHANGES_URL} are still malformed after delimiter "
+                f"normalization: {malformed}. Refusing to reconstruct "
+                f"membership from cells that would enter the panel as "
+                f"phantom symbols matching no market data. An INTERIOR "
+                f"delimiter is not the observed upstream typo -- it means two "
+                f"cells were merged, i.e. a parser regression."
             )
 
         # `format="mixed"` silences the `Could not infer format ... falling
