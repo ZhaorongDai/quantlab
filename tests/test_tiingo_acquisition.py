@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+from loguru import logger
 
 from base.config import AcquisitionConfig
 
@@ -277,3 +278,353 @@ def test_concurrent_refresh_starts_each_symbol_from_its_own_watermark(
         call["ticker"]: call["startDate"] for call in mock_tiingo_client.calls
     }
     assert starts == {"AAPL": "2024-01-15", "MSFT": "2024-01-20"}
+
+
+# ---------------------------------------------------------------------------
+# Range-aware watermarks (260906-26o Task 1, D-01/D-03/D-04)
+#
+# The defect: watermarks recorded only the END date, so `_run` skipped a symbol
+# whenever `_read_watermark(symbol) == config.end_date`. Widening
+# `--start-date` on a later run therefore silently skipped every
+# already-fetched symbol and shipped a dataset whose per-symbol history depth
+# was inconsistent, with no warning at all.
+#
+# The fix records the covered RANGE. The migration deliberately does NOT
+# guess: a legacy `{"last_date": ...}` sidecar reads back with an ABSENT start,
+# and no code path anywhere fills it in from `config.start_date` or any other
+# fallback (D-04). `test_read_coverage_on_a_legacy_watermark_never_invents_a_start`
+# exists to make adding such a "helpful" default turn this suite red.
+#
+# Every test here is offline via `mock_tiingo_client`, writes only under
+# `tmp_path`, and touches nothing on any real data volume.
+# ---------------------------------------------------------------------------
+
+
+def _captured_warnings():
+    """Attach a temporary in-memory loguru sink.
+
+    loguru does not propagate to stdlib `logging`, so pytest's `caplog` sees
+    nothing (the same constraint recorded in tests/test_universe.py and
+    tests/test_chunked_ingest.py).
+    """
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    return messages, sink_id
+
+
+def _write_legacy_watermark(tmp_path: Path, symbol: str, last_date: str) -> None:
+    """Write a sidecar in the pre-26o on-disk format: END DATE ONLY.
+
+    This is the exact shape of all 4,638 files observed on the user's volume
+    at planning time -- key set `('last_date',)`, nothing else.
+    """
+    watermark_dir = tmp_path / "watermark"
+    watermark_dir.mkdir(parents=True, exist_ok=True)
+    with open(watermark_dir / f"{symbol}.json", "w") as f:
+        json.dump({"last_date": last_date}, f)
+
+
+def _read_sidecar(tmp_path: Path, symbol: str) -> dict:
+    with open(tmp_path / "watermark" / f"{symbol}.json") as f:
+        return json.load(f)
+
+
+def test_read_coverage_on_a_legacy_watermark_never_invents_a_start(
+    mock_tiingo_client, tmp_path
+):
+    """D-04, pinned. An assumed covered start that is WRONG reproduces exactly
+    the silent gap this change exists to eliminate -- and reproduces it
+    invisibly. Only the user knows what window those files were fetched over,
+    which is why stamping is an explicit, user-supplied step.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    _write_legacy_watermark(tmp_path, "AAPL", "2024-01-31")
+    acq = TiingoAcquisition(_make_config(tmp_path))
+
+    coverage = acq._read_coverage("AAPL")
+    assert coverage is not None
+    assert coverage["last_date"] == "2024-01-31"
+    assert coverage["start_date"] is None
+    # Not merely falsy -- explicitly not the config value, not a default.
+    assert coverage["start_date"] != acq.config.start_date
+
+
+def test_read_coverage_on_a_new_format_watermark_returns_both_components(
+    mock_tiingo_client, tmp_path
+):
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01")
+
+    assert acq._read_coverage("AAPL") == {
+        "start_date": "2024-01-01",
+        "last_date": "2024-01-31",
+    }
+
+
+def test_read_coverage_returns_none_for_an_absent_or_corrupt_sidecar(
+    mock_tiingo_client, tmp_path
+):
+    """Matches `_read_watermark`'s existing tolerant fallback rather than
+    introducing a second failure policy: a corrupt sidecar must never crash a
+    15k-symbol run, and the worst case is a wider-than-necessary re-fetch.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    assert acq._read_coverage("AAPL") is None
+
+    watermark_dir = tmp_path / "watermark"
+    watermark_dir.mkdir(parents=True, exist_ok=True)
+    (watermark_dir / "MSFT.json").write_text("{not json at all")
+    assert acq._read_coverage("MSFT") is None
+
+
+def test_write_watermark_stays_readable_by_the_unchanged_read_watermark(
+    mock_tiingo_client, tmp_path
+):
+    """The schema is purely ADDITIVE: `last_date` is deliberately not renamed,
+    so new code reads old files and old code reads new files.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+
+    acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01")
+    assert acq._read_watermark("AAPL") == "2024-01-31"
+
+    # Omitting the start writes NO key at all -- an unknown start is
+    # represented by absence, never by a null that a reader could mistake for
+    # a recorded value.
+    acq._write_watermark("MSFT", "2024-01-31")
+    assert acq._read_watermark("MSFT") == "2024-01-31"
+    assert "start_date" not in _read_sidecar(tmp_path, "MSFT")
+
+
+def test_sequential_download_records_the_requested_start(
+    mock_tiingo_client, tmp_path
+):
+    """`_fetch_and_write` overwrites the parquet wholesale, so after a
+    successful fetch the file contains exactly the requested range -- recording
+    `config.start_date` as the covered start is a true statement about it.
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    TiingoAcquisition(_make_config(tmp_path)).download(["AAPL"])
+
+    assert _read_sidecar(tmp_path, "AAPL") == {
+        "start_date": "2024-01-01",
+        "last_date": "2024-01-31",
+    }
+
+
+def test_sequential_refresh_against_a_legacy_watermark_leaves_the_start_absent(
+    mock_tiingo_client, tmp_path
+):
+    """`refresh()` fetches from the symbol's own `last_date` forward, so the
+    covered start is whatever it already was. If it was unknown it STAYS
+    unknown -- refresh does not invent coverage it did not fetch (D-04).
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    _write_legacy_watermark(tmp_path, "AAPL", "2024-01-15")
+    TiingoAcquisition(_make_config(tmp_path)).refresh(["AAPL"])
+
+    sidecar = _read_sidecar(tmp_path, "AAPL")
+    assert sidecar["last_date"] == "2024-01-31"
+    assert "start_date" not in sidecar
+
+
+def test_sequential_refresh_carries_forward_a_known_start(
+    mock_tiingo_client, tmp_path
+):
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    acq._write_watermark("AAPL", "2024-01-15", start_date="2020-01-01")
+    acq.refresh(["AAPL"])
+
+    assert _read_sidecar(tmp_path, "AAPL") == {
+        "start_date": "2020-01-01",
+        "last_date": "2024-01-31",
+    }
+
+
+def test_second_download_with_an_earlier_start_re_fetches(
+    mock_tiingo_client, tmp_path
+):
+    """THE regression test for the reported defect (D-03).
+
+    Before this change, widening the window silently skipped every symbol
+    already at the end-date watermark and shipped a dataset with inconsistent
+    per-symbol history depth. Asserted by COUNTING and INSPECTING vendor
+    calls, because a call count is the only evidence a passing write cannot
+    fake.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    assert len(mock_tiingo_client.calls) == len(_FIVE)
+    mock_tiingo_client.calls.clear()
+
+    widened = _make_concurrent_config(tmp_path)
+    widened.start_date = "2020-01-01"
+    ConcurrentTiingoAcquisition(widened).download()
+
+    assert len(mock_tiingo_client.calls) == len(_FIVE)
+    # The WIDENED start is what actually reaches the vendor -- re-fetching the
+    # same narrow window would leave the gap in place while looking busy.
+    assert {call["startDate"] for call in mock_tiingo_client.calls} == {
+        "2020-01-01"
+    }
+    assert _read_sidecar(tmp_path, "AAPL")["start_date"] == "2020-01-01"
+
+
+def test_second_download_with_the_same_start_issues_zero_vendor_calls(
+    mock_tiingo_client, tmp_path
+):
+    """D-01. The 4,621 already-downloaded symbols must not be re-fetched by
+    default -- re-downloading them costs an entire hourly window for nothing.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    config = _make_concurrent_config(tmp_path)
+    ConcurrentTiingoAcquisition(config).download()
+    mock_tiingo_client.calls.clear()
+
+    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    assert mock_tiingo_client.calls == []
+
+
+def test_second_download_with_a_later_start_issues_zero_vendor_calls(
+    mock_tiingo_client, tmp_path
+):
+    """A narrower request inside proven coverage is not work."""
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    mock_tiingo_client.calls.clear()
+
+    narrowed = _make_concurrent_config(tmp_path)
+    narrowed.start_date = "2024-01-10"
+    ConcurrentTiingoAcquisition(narrowed).download()
+
+    assert mock_tiingo_client.calls == []
+
+
+def test_legacy_watermarks_are_skipped_by_default_and_reported_loudly(
+    mock_tiingo_client, tmp_path
+):
+    """D-04 option (c). What makes the D-03 failure mode dangerous is SILENCE,
+    not the skip. A run that skips these while printing their exact count and
+    the one command that resolves it is a REPORTED gap with a named cure.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    for symbol in _FIVE:
+        _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
+
+    messages, sink_id = _captured_warnings()
+    try:
+        ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    finally:
+        logger.remove(sink_id)
+
+    assert mock_tiingo_client.calls == []
+
+    text = "\n".join(messages)
+    assert str(len(_FIVE)) in text
+    assert "--stamp-legacy-watermarks" in text
+
+
+def test_legacy_watermarks_are_re_fetched_under_the_refetch_policy(
+    mock_tiingo_client, tmp_path
+):
+    """The opt-in escape hatch. Making it a knob is what turns "unknown
+    coverage is treated as covered" from an accident into a choice.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    for symbol in _FIVE:
+        _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
+
+    config = _make_concurrent_config(
+        tmp_path, kwargs={"max_workers": 3, "legacy_watermarks": "refetch"}
+    )
+    ConcurrentTiingoAcquisition(config).download()
+
+    assert len(mock_tiingo_client.calls) == len(_FIVE)
+
+
+def test_stamp_watermarks_fills_only_absent_starts_and_returns_the_count(
+    mock_tiingo_client, tmp_path
+):
+    """Takes the start from its CALLER and derives it from nothing (D-04), and
+    refuses to overwrite a start that is already recorded (T-26o-04).
+    """
+    from acquisition.tiingo import TiingoAcquisition
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    _write_legacy_watermark(tmp_path, "AAPL", "2024-01-31")
+    _write_legacy_watermark(tmp_path, "MSFT", "2024-01-31")
+    acq._write_watermark("GOOG", "2024-01-31", start_date="2010-01-01")
+    # The failure manifest lives in the same directory and is not a watermark.
+    (tmp_path / "watermark" / "_failures.json").write_text("{}")
+    (tmp_path / "watermark" / "BROKEN.json").write_text("{not json")
+
+    changed = acq.stamp_watermarks("2016-01-01")
+
+    assert changed == 2
+    assert _read_sidecar(tmp_path, "AAPL")["start_date"] == "2016-01-01"
+    assert _read_sidecar(tmp_path, "MSFT")["start_date"] == "2016-01-01"
+    assert _read_sidecar(tmp_path, "GOOG")["start_date"] == "2010-01-01"
+    assert json.loads((tmp_path / "watermark" / "_failures.json").read_text()) == {}
+
+    # Idempotent: a second stamp changes nothing, because every start is known.
+    assert acq.stamp_watermarks("2016-01-01") == 0
+
+
+def test_stamping_then_widening_re_fetches_the_stamped_symbols(
+    mock_tiingo_client, tmp_path
+):
+    """The end-to-end shape of Task 3's checkpoint, proved offline: stamp, and
+    a same-window run still skips while a widened run now re-fetches.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    for symbol in _FIVE:
+        _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
+
+    acq = ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path))
+    assert acq.stamp_watermarks("2024-01-01") == len(_FIVE)
+
+    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    assert mock_tiingo_client.calls == []
+
+    widened = _make_concurrent_config(tmp_path)
+    widened.start_date = "2010-01-01"
+    ConcurrentTiingoAcquisition(widened).download()
+    assert len(mock_tiingo_client.calls) == len(_FIVE)
+
+
+def test_concurrent_refresh_is_not_forced_to_re_fetch_by_a_widened_start(
+    mock_tiingo_client, tmp_path
+):
+    """`refresh()` requests `[watermark, end_date]` per symbol, NOT
+    `config.start_date`, so judging its coverage against a widened
+    `config.start_date` would mark every symbol pending on every run while the
+    re-fetch could not close the gap -- an endless, silent quota burn. Refresh
+    keeps the end-date-only rule; widening is `download()`'s job.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path)).download()
+    mock_tiingo_client.calls.clear()
+
+    widened = _make_concurrent_config(tmp_path)
+    widened.start_date = "2010-01-01"
+    ConcurrentTiingoAcquisition(widened).refresh()
+
+    assert mock_tiingo_client.calls == []
