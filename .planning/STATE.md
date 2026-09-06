@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03.2
 current_phase_name: Multi-Source Data Acquisition Abstraction (Alpaca)
 status: executing
-stopped_at: Completed 03.2-05-PLAN.md
-last_updated: "2026-09-06T21:41:19.274Z"
+stopped_at: Completed 03.2-06-PLAN.md
+last_updated: "2026-09-06T22:11:22.384Z"
 last_activity: 2026-09-06
 last_activity_desc: Phase 03.2 execution started
-state_head: c47ec25e146db6ba84f1a07ea9662bc5667887e5
+state_head: e5a967f54086184cb4571a11f948c5ad8b2651e1
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 31
-  completed_plans: 27
+  completed_plans: 28
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.2 (Multi-Source Data Acquisition Abstraction (Alpaca)) — EXECUTING
-Plan: 6 of 7
+Plan: 7 of 7
 Status: Ready to execute
 Last activity: 2026-09-06 — Phase 03.2 execution started
 
@@ -77,6 +77,7 @@ Progress: [██████████] 100%
 | Phase 03.2 P03 | 37 min | 3 tasks | 9 files |
 | Phase 03.2 P04 | 16 min | 2 tasks | 2 files |
 | Phase 03.2 P05 | 25 min | 2 tasks | 3 files |
+| Phase 03.2 P06 | 17 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -141,6 +142,9 @@ Recent decisions affecting current work:
 - [Phase 03.2]: 03.2-05 D-B: the coverage classification rule stays blind to the no_data marker — A marked symbol is covered/widened/legacy by the ordinary rule, so a marked symbol whose recorded window is narrower than a later request is still re-fetched. The marker records what the vendor said about a WINDOW, never a permanent verdict about the symbol; the absence of a special case is the design and two tests keep one from being added.
 - [Phase 03.2]: 03.2-05 D-C: a refresh may CLEAR a no_data marker but never assert a new one — A refresh queries [watermark, end_date] while stamping a sidecar that records [covered_start, end_date] -- a strictly wider window -- so it has no evidence about the earlier part of the range. Asserting absence there would launder 'no new rows this week' into 'nothing since 2020'. Same carry-through asymmetry start_date already follows (D-04).
 - [Phase 03.2]: 03.2-05 D-D: the marker set is computed once per COMPLETED batch, gated on outcome.complete and a clear abort — Alpaca is symbol-major, so page 0 of a 100-symbol batch legitimately carries one symbol; a per-page difference would stamp the other 99 'no data' and skip them forever (RESEARCH Pitfall 4). The completion gate is locked by an injected incomplete BatchOutcome because no end-to-end test can move the flag today -- the mutation survived without it.
+- [Phase 03.2]: Intraday `date=` hive key is the US/Eastern SESSION date (RESEARCH A8 resolved); timestamp values stay naive UTC and only the derived key converts — A UTC-derived key files the last ~4 hours of every US session (20:00-24:00 UTC) under the following day, making a one-trading-day query wrong at both edges in the shape that reads as sparse data rather than as a bug. `Acquisition._session_date` is an overridable seam that RAISES when SESSION_TIME_ZONE is undeclared, so a vendor that never considered the boundary fails at the first intraday write.
+- [Phase 03.2]: A tick scan is ROOT-SCOPED to `data_type={quotes|trades}` rather than filtered on the hive key — Measured on polars 1.44.1: a `data_type` predicate prunes the query plan correctly and `.collect()` still raises SchemaError, because the expected schema is fixed from the first file discovered. Filtering to `quotes` appears to work only because it sorts before `trades`, so the bug is filename-ordering dependent. This is D-11's vendor-segment lesson one level deeper: a distinction only a predicate enforces is not isolation.
+- [Phase 03.2]: Watermark/ledger/failure-manifest sidecars are namespaced by data type where the frequency partitions on one — Quotes and trades share one vendor raw root but their sidecars are `{symbol}.json` with no data_type key, so a completed quotes backfill told the trades run every symbol was covered; it skipped the whole roster and reported success. `1d`/`1m` sidecar paths are unchanged.
 
 ### Pending Todos
 
@@ -168,8 +172,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T21:40:54.561Z
-Stopped at: Completed 03.2-05-PLAN.md
+Last session: 2026-09-06T22:11:14.459Z
+Stopped at: Completed 03.2-06-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
