@@ -13,10 +13,15 @@ Pattern 1).
 
 Two independent reference-data problems are solved here:
 
-- `NasdaqUniverseFetcher`: the full NASDAQ-listed Common Stock roster,
-  including historically delisted symbols, sourced from Tiingo's own
+- `TiingoRosterFetcher` and its two data-only subclasses,
+  `NasdaqUniverseFetcher` (NASDAQ-listed only) and `USEquityUniverseFetcher`
+  (the full NYSE + NASDAQ + AMEX listed market): exchange-scoped Common Stock
+  rosters including historically delisted symbols, sourced from Tiingo's own
   `supported_tickers.csv` (NOT `nasdaqlisted.txt`, which only lists
   currently-active tickers and cannot represent delisted history at all).
+  Adding a roster is a data change -- three class constants -- not a code
+  change. The two are SIBLINGS: `us_all` is a superset of `nasdaq_all` and
+  neither replaces the other (260906-0iy D-01/D-02).
 - `IndexMembershipFetcher` and its two data-only subclasses,
   `SP500MembershipFetcher` and `Nasdaq100MembershipFetcher`: point-in-time
   index constituent membership, reconstructed via forward-chronological
@@ -63,31 +68,48 @@ _CONTACT = os.environ.get(
 )
 
 
-class NasdaqUniverseFetcher:
-    """Fetches Tiingo's full historical ticker directory and filters it to
-    the NASDAQ-listed Common Stock universe (current + delisted).
+class TiingoRosterFetcher:
+    """Shared machinery for filtering Tiingo's full historical ticker
+    directory down to one exchange-scoped common-stock roster.
+
+    A roster is DATA here, not code -- exactly the `IndexMembershipFetcher`
+    precedent already in this module. A subclass supplies a tuple of exchange
+    tokens, a row-count floor and a category token, and inherits the whole
+    download/unzip/filter/rename/guard body unchanged.
 
     Source: Tiingo's own `supported_tickers.csv` -- NOT `nasdaqlisted.txt`,
     which only lists currently-listed securities and cannot represent
-    delisted history at all (02-08-RESEARCH.md finding #2).
+    delisted history at all (02-08-RESEARCH.md finding #2). This is the
+    property that makes the resulting rosters survivorship-bias free.
+
+    Subclass-bound class constants:
+
+    - ``EXCHANGE_FILTER`` -- exact-match exchange tokens to keep.
+    - ``MIN_ROSTER_ROWS`` -- the structural-drift floor, sized to the
+      subclass's own observed magnitude.
+    - ``CATEGORY`` -- the ``enums.data.UniverseCategory`` token.
+
+    `fetch()` filters on exact-match string literals, so a casing/spelling
+    change or a renamed column value in Tiingo's feed yields ZERO rows
+    WITHOUT raising -- and `UniverseCatalog.build()` would concatenate that
+    empty frame happily, after which `save()` overwrites the previous good
+    reference table. `MIN_ROSTER_ROWS` is the guard that turns that silent
+    corruption into a loud failure, and it lives on this base so every roster
+    gets it BY CONSTRUCTION.
     """
 
     SOURCE_URL = "https://apimedia.tiingo.com/docs/tiingo/daily/supported_tickers.zip"
-    # Locked Decision A4 (02-08-PLAN.md): NASDAQ-listed common stock only, no
-    # OTC/Expert-Market tiers. Matches the objective's literal "Nasdaq
-    # market" framing.
-    EXCHANGE_FILTER = ("NASDAQ",)
     ASSET_TYPE = "Stock"
     PRICE_CURRENCY = "USD"
 
-    # The same safety envelope the index anchors already have, applied to the
-    # LARGEST category in the table. `fetch()` filters on exact-match string
-    # literals, so a casing/spelling change or a renamed column value in
-    # Tiingo's feed yields ZERO rows without raising -- and `build()` would
-    # concatenate that empty frame happily, after which `save()` overwrites
-    # the previous good 10,000+-symbol `universe.parquet`. 1000 is far below
-    # the real ~10k so a legitimate shrink never trips it.
-    MIN_ROSTER_ROWS = 1000
+    #: Exact-match `exchange` tokens kept by `fetch()`.
+    EXCHANGE_FILTER: tuple[str, ...]
+    #: Structural-drift floor -- see the class docstring.
+    MIN_ROSTER_ROWS: int
+    #: Typed as the literal, not `str`: a fetcher registered with a token
+    #: absent from `enums.data.UniverseCategory` is then a type error rather
+    #: than something only a set-comparing test notices at test time.
+    CATEGORY: UniverseCategory
 
     def fetch(self) -> pl.DataFrame:
         response = requests.get(self.SOURCE_URL, timeout=30)
@@ -117,6 +139,81 @@ class NasdaqUniverseFetcher:
                 f"overwriting the reference table with a truncated roster."
             )
         return data
+
+
+class NasdaqUniverseFetcher(TiingoRosterFetcher):
+    """The full NASDAQ-listed Common Stock roster, including historically
+    delisted symbols.
+
+    Data-only subclass: every constant below is byte-for-byte what it was
+    before the shared body was extracted onto `TiingoRosterFetcher`, and
+    `test_nasdaq_roster_exchange_filter_and_symbol_set_are_unchanged` pins
+    that by direct equality rather than by grep.
+    """
+
+    # Locked Decision A4 (02-08-PLAN.md): NASDAQ-listed common stock only, no
+    # OTC/Expert-Market tiers. Matches the objective's literal "Nasdaq
+    # market" framing. 260906-0iy D-02 re-locks it: the full-US-market roster
+    # is a NEW SIBLING (`USEquityUniverseFetcher`), never a widening of this.
+    EXCHANGE_FILTER = ("NASDAQ",)
+
+    # The same safety envelope the index anchors already have, applied to what
+    # was the LARGEST category in the table. 1000 is far below the real ~10k so
+    # a legitimate shrink never trips it. See `TiingoRosterFetcher` for why an
+    # unguarded zero-row filter would destroy `universe.parquet`.
+    MIN_ROSTER_ROWS = 1000
+
+    CATEGORY: UniverseCategory = "nasdaq_all"
+
+
+class USEquityUniverseFetcher(TiingoRosterFetcher):
+    """The full US listed-equity roster -- NYSE + NASDAQ + AMEX common stock
+    priced in USD, delisted names included (260906-0iy D-01).
+
+    A NEW SIBLING of `NasdaqUniverseFetcher`, not a replacement: `nasdaq_all`
+    keeps its exact prior semantics per D-02, and `us_all` is a strict
+    SUPERSET of it. Both are deliberately retained.
+
+    **Why the AMEX needs two tokens.** Tiingo's `exchange` column carries the
+    following distinct values over the 108,561-row directory (measured
+    2026-09-06)::
+
+        NMFQS 49827 | PINK 20695 | NASDAQ 10969 | NYSE 9296 | SHE 3808
+        SHG 3429 | BATS 2016 | OTCMKTS 1992 | NYSE ARCA 1532 | OTCGREY 1518
+        EXPM 931 | OTCBB 602 | OTCQB 447 | OTCCE 389 | AMEX 386
+        NYSE MKT 224 | OTCQX 204 | (empty) 135 | OTCD 61 | SHGB 44
+        SHEB 42 | LSE 11 | NYSE NAT 3
+
+    The American Stock Exchange appears under BOTH `AMEX` (386) and
+    `NYSE MKT` (224), because Tiingo never re-labelled its historical rows
+    across the exchange's AMEX -> NYSE Amex -> NYSE MKT -> NYSE American
+    rename history. There is no `NYSE American` token at all. Omitting either
+    silently drops ~224 real tickers.
+
+    **Why some NYSE-prefixed tokens are excluded.** `NYSE ARCA` (1532) and
+    `NYSE NAT` (3) are DIFFERENT exchanges that merely share the brand --
+    ARCA is predominantly ETFs -- and `BATS` (2016) is a different exchange
+    outright. D-01 scopes this roster to NYSE, NASDAQ and AMEX, so all three
+    are deliberately out. The empty-string exchange is excluded for free by
+    exact-match `is_in`.
+
+    Observed yield of this exact filter: 16,138 rows / 15,425 distinct
+    tickers (NASDAQ 9318, NYSE 6284, AMEX 336, NYSE MKT 200). Rows exceed
+    tickers because ~700 tickers carry more than one exchange row, which is
+    why `UniverseCatalog`'s interval queries de-duplicate on symbol.
+    """
+
+    EXCHANGE_FILTER = ("NASDAQ", "NYSE", "AMEX", "NYSE MKT")
+
+    # Roughly half the observed 16,138 rows: low enough that a legitimate
+    # market contraction never trips it, high enough that a token-vocabulary
+    # drift which silently zeroes the filter always does. Same safety-envelope
+    # idiom as `NasdaqUniverseFetcher.MIN_ROSTER_ROWS` (1000 vs ~10k) and
+    # `Nasdaq100MembershipFetcher.MIN_ANCHOR_ROWS` (50 vs ~102), sized to its
+    # own magnitude rather than shared as one number across all three.
+    MIN_ROSTER_ROWS = 8000
+
+    CATEGORY: UniverseCategory = "us_all"
 
 
 #: Cell values that mean "no ticker on this side of the change row". Kept
@@ -768,7 +865,7 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
 class UniverseCatalog:
     """Point-in-time US-equity universe reference table.
 
-    Combines `NasdaqUniverseFetcher` (category="nasdaq_all") with every
+    Combines every exchange roster in `ROSTER_FETCHERS` with every index
     membership fetcher in `MEMBERSHIP_FETCHERS` into one
     `(symbol, category, start_date, end_date)` table, persisted via
     `PlBackend`/parquet (Locked Decision A1, 02-08-PLAN.md).
@@ -789,13 +886,35 @@ class UniverseCatalog:
     #: incomplete roster -- precisely the failure DATA-05 exists to prevent
     #: (RESEARCH Finding 6 bullet 4).
     #:
-    #: `NasdaqUniverseFetcher` is deliberately ABSENT: it is a full-exchange
-    #: roster with no membership-interval semantics and no coverage start,
-    #: and D-02 locks its `nasdaq_all` semantics exactly as they are. Adding
-    #: it here would impose a boundary it must not have.
+    #: Both roster fetchers are deliberately ABSENT: they are full-exchange
+    #: rosters with no membership-interval semantics and no coverage start,
+    #: and D-02 locks `nasdaq_all` semantics exactly as they are. Adding
+    #: either here would impose a boundary it must not have.
     MEMBERSHIP_FETCHERS: tuple[type[IndexMembershipFetcher], ...] = (
         SP500MembershipFetcher,
         Nasdaq100MembershipFetcher,
+    )
+
+    #: The exchange-roster fetchers this catalog carries, looped in `build()`
+    #: exactly the way `MEMBERSHIP_FETCHERS` is, with each category token
+    #: derived from `cls.CATEGORY`. Adding a roster is a registration, not an
+    #: `if` branch.
+    #:
+    #: **Kept in its OWN registry, separate from `MEMBERSHIP_FETCHERS`, on
+    #: purpose.** A roster has per-symbol listing dates but no index-membership
+    #: concept and therefore no `PIT_COVERAGE_START`; registering one in
+    #: `MEMBERSHIP_FETCHERS` would impose a point-in-time coverage boundary
+    #: neither roster may have, making pre-boundary queries raise instead of
+    #: answering correctly from the roster's own dates (D-02).
+    #:
+    #: The two roster fetchers each download `supported_tickers.zip`
+    #: independently. That is deliberate: two 794 KB downloads per build cost
+    #: a couple of seconds, whereas a shared cache would either leak mocked
+    #: bytes across tests or change `NasdaqUniverseFetcher.fetch()`'s
+    #: observable behaviour -- which D-02 forbids.
+    ROSTER_FETCHERS: tuple[type[TiingoRosterFetcher], ...] = (
+        NasdaqUniverseFetcher,
+        USEquityUniverseFetcher,
     )
 
     def __init__(self, config: UniverseConfig):
@@ -815,10 +934,10 @@ class UniverseCatalog:
         record it. Refusing by default makes the degradation a decision.
         """
         frames = [
-            NasdaqUniverseFetcher()
+            roster_cls()
             .fetch()
             .with_columns(
-                pl.lit(self.ROSTER_CATEGORY).alias("category"),
+                pl.lit(roster_cls.CATEGORY).alias("category"),
                 # Tiingo reports real listing/delisting dates, so no end here
                 # is ever inferred. Stated explicitly rather than left null so
                 # the column means the same thing in every category.
@@ -829,6 +948,7 @@ class UniverseCatalog:
             # appended -- otherwise adding a column to one producer silently
             # transposes values into the wrong columns of another.
             .select(self.CATALOG_COLUMNS)
+            for roster_cls in self.ROSTER_FETCHERS
         ]
         stale: list[str] = []
         for fetcher_cls in self.MEMBERSHIP_FETCHERS:
@@ -907,11 +1027,6 @@ class UniverseCatalog:
         catalog._backend.read(config.output_path)
         return catalog
 
-    #: The category with no membership-interval semantics and so no coverage
-    #: boundary (D-02). Named once here because both `build()` and
-    #: `get_symbols_as_of()`'s validation need it.
-    ROSTER_CATEGORY: UniverseCategory = "nasdaq_all"
-
     #: Canonical column order of the persisted reference table. `end_date_is_
     #: inferred` marks a FABRICATED interval end (see
     #: `IndexMembershipFetcher.reconstruct_intervals`) so a consumer can tell
@@ -925,10 +1040,92 @@ class UniverseCatalog:
     )
 
     def known_categories(self) -> set[str]:
-        """Every category this catalog can answer for."""
-        return {self.ROSTER_CATEGORY} | {
+        """Every category this catalog can answer for.
+
+        The UNION of both registries, so a category cannot exist without a
+        fetcher and a fetcher cannot be registered without becoming a known
+        category. `_assert_every_category_is_populated()` derives its check
+        from this, which is what makes a newly-registered roster covered by
+        registration rather than by someone remembering to add a guard.
+        """
+        return {roster_cls.CATEGORY for roster_cls in self.ROSTER_FETCHERS} | {
             fetcher_cls.CATEGORY for fetcher_cls in self.MEMBERSHIP_FETCHERS
         }
+
+    def _validate_category(self, category: str) -> None:
+        """Reject an unknown category token.
+
+        Shared by both query methods because every wrong input otherwise
+        produces `[]`, which is a LEGITIMATE return value (a pre-listing
+        roster query returns it), so the caller cannot distinguish "no
+        members" from "you asked wrong" -- a typo'd category would silently
+        ingest nothing instead of the requested universe.
+        """
+        known = self.known_categories()
+        if category not in known:
+            raise ValueError(
+                f"Unknown universe category {category!r}; known categories "
+                f"are {sorted(known)}."
+            )
+
+    @staticmethod
+    def _validate_iso_date(value: str, field: str) -> None:
+        """Reject a non-ISO date string.
+
+        The table stores ISO date strings and compares them
+        LEXICOGRAPHICALLY, so a non-ISO value does not merely fail to match --
+        it compares wrong and returns a plausible, silently incorrect roster.
+        """
+        try:
+            datetime.date.fromisoformat(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{field} must be an ISO YYYY-MM-DD string, got {value!r}. "
+                f"The table stores ISO date strings and compares them "
+                f"LEXICOGRAPHICALLY, so a non-ISO value does not merely fail "
+                f"to match -- it compares wrong and returns a plausible, "
+                f"silently incorrect roster."
+            ) from exc
+
+    def get_symbols_in_range(
+        self, category: str, start_date: str, end_date: str
+    ) -> list[str]:
+        """Every symbol whose listing interval OVERLAPS `[start_date,
+        end_date]`, de-duplicated.
+
+        This is the query a full-window BACKFILL wants;
+        `get_symbols_as_of()` is the query a walk-forward backtest wants,
+        per-rebalance. The overlap predicate is
+        `start_date <= end AND (end_date IS NULL OR end_date >= start)`.
+
+        **This is the D-05 filter's home.** Dropping tickers whose Tiingo
+        `endDate` precedes the window start falls out of interval overlap, so
+        no `MIN_END_DATE` constant is baked into any fetcher: baking a window
+        into the reference table would make that table unusable for any other
+        window and would break the config-driven reproducibility constraint
+        (CLAUDE.md). Equally important is what overlap KEEPS -- every ticker
+        that delisted INSIDE the window. Roughly 6.9k of the 15.4k US-equity
+        tickers ended before today; excluding them is precisely the
+        survivorship bias this layer exists to remove.
+
+        Both dates and the category are validated for the same reason
+        `get_symbols_as_of()` validates them: `[]` is a legitimate answer, so
+        a typo must raise rather than silently ingest nothing.
+        """
+        self._validate_category(category)
+        self._validate_iso_date(start_date, "start_date")
+        self._validate_iso_date(end_date, "end_date")
+
+        matched = self._backend.get_lazyframe().filter(
+            (pl.col("category") == category)
+            & (pl.col("start_date") <= end_date)
+            # Null-tolerant even though Tiingo always populates `endDate` in
+            # this subset (currently-listed names carry the last trading day):
+            # the membership categories DO produce real nulls for open
+            # intervals, and this query answers for those too.
+            & (pl.col("end_date").is_null() | (pl.col("end_date") >= start_date))
+        )
+        return matched.select("symbol").unique().collect()["symbol"].to_list()
 
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
         # `category` and `as_of_date` arrive unvalidated -- `as_of_date` comes
@@ -939,26 +1136,12 @@ class UniverseCatalog:
         # asked wrong". A typo'd category or a non-ISO date would silently
         # ingest nothing instead of the requested index -- the same class of
         # silent-wrong-answer the coverage-start guard below raises to prevent.
-        known = self.known_categories()
-        if category not in known:
-            raise ValueError(
-                f"Unknown universe category {category!r}; known categories "
-                f"are {sorted(known)}."
-            )
-        try:
-            datetime.date.fromisoformat(as_of_date)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"as_of_date must be an ISO YYYY-MM-DD string, got "
-                f"{as_of_date!r}. The table stores ISO date strings and "
-                f"compares them LEXICOGRAPHICALLY, so a non-ISO value does "
-                f"not merely fail to match -- it compares wrong and returns a "
-                f"plausible, silently incorrect roster."
-            ) from exc
+        self._validate_category(category)
+        self._validate_iso_date(as_of_date, "as_of_date")
 
         # Every registered membership category carries its own boundary; a
-        # category absent from the map (i.e. `nasdaq_all`) is boundary-free
-        # by design (D-02).
+        # category absent from the map (i.e. either exchange roster,
+        # `nasdaq_all` and `us_all`) is boundary-free by design (D-02).
         coverage_starts = {
             fetcher_cls.CATEGORY: fetcher_cls.PIT_COVERAGE_START
             for fetcher_cls in self.MEMBERSHIP_FETCHERS

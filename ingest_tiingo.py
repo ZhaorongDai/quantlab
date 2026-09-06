@@ -22,6 +22,7 @@ instead of passing --symbols explicitly:
     uv run python ingest_tiingo.py --universe sp500 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq100 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq_all --as-of-date 2020-01-01
+    uv run python ingest_tiingo.py --universe us_all --as-of-date 2020-01-01
 """
 
 import argparse
@@ -41,6 +42,7 @@ _UNIVERSE_CATEGORY_MAP = {
     "sp500": "sp500_constituent",
     "nasdaq100": "nasdaq100_constituent",
     "nasdaq_all": "nasdaq_all",
+    "us_all": "us_all",
 }
 
 
@@ -92,10 +94,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "point-in-time S&P 500 constituent membership; 'nasdaq100' "
             "resolves point-in-time Nasdaq-100 (NDX) index membership; "
             "'nasdaq_all' resolves the full NASDAQ-listed Common Stock roster "
-            "(current + delisted). Note 'nasdaq100' and 'nasdaq_all' are "
+            "(current + delisted); 'us_all' resolves the full US listed-equity "
+            "roster -- NYSE + NASDAQ + AMEX common stock, delisted included "
+            "(~15.4k tickers). Note 'nasdaq100' and 'nasdaq_all' are "
             "DIFFERENT universes that merely share the word Nasdaq -- the "
             "former is the ~100-name index, the latter every symbol ever "
-            "listed on the exchange. Requires --as-of-date."
+            "listed on the exchange. 'us_all' is a strict superset of "
+            "'nasdaq_all'; both are kept deliberately. Requires --as-of-date. "
+            "For a full-window BACKFILL of every symbol that traded at any "
+            "point in a date range (rather than membership on one day), use "
+            "ingest_us_equity.py, which queries by interval overlap instead."
         ),
     )
     parser.add_argument(

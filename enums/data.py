@@ -44,10 +44,26 @@ Frequency = Literal["1d", "1m", "tick"]
 # "unify" the two, and do not answer an index-membership question with
 # "nasdaq_all".
 #
-# Exchange scope is locked per Locked Decision A4 (02-08-PLAN.md) -- NASDAQ
-# only, no OTC/Expert-Market tiers.
+# "us_all" = every symbol ever listed on NYSE, NASDAQ or the AMEX as Common
+# Stock priced in USD per Tiingo's supported_tickers.csv (current + delisted),
+# ~15.4k distinct tickers (260906-0iy D-01).
+#
+# WARNING: "us_all" is a strict SUPERSET of "nasdaq_all", and both are
+# DELIBERATELY retained (260906-0iy D-01/D-02). "nasdaq_all" must NOT be
+# redefined as an alias of "us_all" and its NASDAQ-only semantics must not be
+# widened: `NasdaqUniverseFetcher.EXCHANGE_FILTER == ("NASDAQ",)` is pinned by
+# direct equality in tests/test_universe.py. The full-market roster is a NEW
+# SIBLING fetcher, never a widening of the existing one -- code already
+# written against "nasdaq_all" keeps resolving the exact symbol set it
+# always did.
+#
+# NASDAQ exchange scope for "nasdaq_all" is locked per Locked Decision A4
+# (02-08-PLAN.md) -- NASDAQ only, no OTC/Expert-Market tiers. "us_all" adds
+# NYSE and the AMEX (which Tiingo spells under BOTH "AMEX" and "NYSE MKT",
+# unmigrated across the exchange's rename history) but still excludes every
+# OTC tier, plus "NYSE ARCA"/"NYSE NAT"/"BATS", which are different exchanges.
 UniverseCategory = Literal[
-    "nasdaq_all", "sp500_constituent", "nasdaq100_constituent"
+    "nasdaq_all", "us_all", "sp500_constituent", "nasdaq100_constituent"
 ]
 
 
