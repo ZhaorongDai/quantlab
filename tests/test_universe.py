@@ -18,7 +18,9 @@ from acquisition.universe import (
     Nasdaq100MembershipFetcher,
     NasdaqUniverseFetcher,
     SP500MembershipFetcher,
+    TiingoRosterFetcher,
     UniverseCatalog,
+    USEquityUniverseFetcher,
 )
 from base.config import UniverseConfig
 from enums.data import UniverseCategory
@@ -725,13 +727,16 @@ def test_every_universe_category_is_reachable_from_the_cli():
     assert set(choices) == set(ingest_tiingo._UNIVERSE_CATEGORY_MAP)
 
 
-def test_universe_category_literal_has_exactly_three_values():
-    """03.1-CONTEXT.md D-02: `nasdaq100_constituent` is a THIRD category
-    alongside `nasdaq_all`, never a replacement for it. Pinning the literal
-    means neither value can drift away without a test noticing.
+def test_universe_category_literal_has_exactly_four_values():
+    """03.1-CONTEXT.md D-02: `nasdaq100_constituent` is a category alongside
+    `nasdaq_all`, never a replacement for it. 260906-0iy D-01/D-02 adds
+    `us_all` on the same footing: it is a SUPERSET of `nasdaq_all` and both
+    are deliberately retained. Pinning the literal means no value can drift
+    away -- or be quietly redefined as an alias of another -- unnoticed.
     """
     assert set(typing.get_args(UniverseCategory)) == {
         "nasdaq_all",
+        "us_all",
         "sp500_constituent",
         "nasdaq100_constituent",
     }
@@ -865,3 +870,203 @@ def test_nasdaq_all_has_no_coverage_boundary(mock_universe_fetchers, tmp_path):
     catalog = UniverseCatalog(_make_config(tmp_path)).build()
 
     assert catalog.get_symbols_as_of("nasdaq_all", "1970-01-01") == []
+
+
+# ---------------------------------------------------------------------------
+# Full-US-market roster: `us_all` (260906-0iy Task 1, D-01/D-02/D-05)
+# ---------------------------------------------------------------------------
+
+
+def test_us_equity_fetcher_filters_nyse_nasdaq_amex_and_excludes_others(
+    mock_universe_fetchers,
+):
+    """D-01: NYSE + NASDAQ + AMEX common stock priced in USD.
+
+    The AMEX arrives under TWO tokens (`AMEX` and `NYSE MKT`) because Tiingo
+    never re-labelled its historical rows across the exchange's rename
+    history; omitting either silently drops ~224 real tickers. `NYSE ARCA`
+    shares a prefix but is a DIFFERENT exchange (predominantly ETFs) and is
+    deliberately out of scope.
+    """
+    result = USEquityUniverseFetcher().fetch()
+
+    symbols = set(result["symbol"].to_list())
+
+    assert {"AAPL", "MSFT", "DELISTED1"} <= symbols  # NASDAQ
+    assert {"NYSE1", "NYSE2"} <= symbols  # NYSE
+    assert "AMEX1" in symbols  # AMEX token
+    assert "MKT1" in symbols  # NYSE MKT token -- same exchange, renamed
+    assert "DUAL1" in symbols  # dual-listed
+    assert "OLD1" in symbols  # pre-2006 delisting is a ROSTER member...
+
+    assert "ARCA1" not in symbols  # different exchange
+    assert "ETF1" not in symbols  # wrong assetType
+    assert "EURO1" not in symbols  # wrong priceCurrency
+
+
+def test_nasdaq_roster_exchange_filter_and_symbol_set_are_unchanged(
+    mock_universe_fetchers,
+):
+    """D-02, machine-checked by direct equality rather than by grep.
+
+    `USEquityUniverseFetcher` is a NEW SIBLING of the NASDAQ-only roster, not
+    a widening of it. Extracting the shared body onto `TiingoRosterFetcher`
+    must be behaviour-preserving: the constant is byte-for-byte what it was,
+    and `fetch()` still returns exactly the NASDAQ subset.
+    """
+    assert NasdaqUniverseFetcher.EXCHANGE_FILTER == ("NASDAQ",)
+    assert NasdaqUniverseFetcher.CATEGORY == "nasdaq_all"
+    assert issubclass(NasdaqUniverseFetcher, TiingoRosterFetcher)
+
+    symbols = set(NasdaqUniverseFetcher().fetch()["symbol"].to_list())
+    assert symbols == {"AAPL", "MSFT", "DELISTED1"}
+
+
+def test_us_equity_roster_guard_rejects_a_drifted_filter(monkeypatch, tmp_path):
+    """The same safety envelope as `NasdaqUniverseFetcher.MIN_ROSTER_ROWS`,
+    sized to its own magnitude (8000 vs the observed ~16,138 rows).
+
+    Exercised at the guard's REAL value -- `mock_universe_fetchers` lowers it,
+    so this test deliberately does not use that fixture. A token-vocabulary
+    drift that silently zeroes the filter must raise rather than let `save()`
+    overwrite a good 15,000-symbol reference table with a truncated roster.
+    """
+    drifted_csv = (
+        "ticker,exchange,assetType,priceCurrency,startDate,endDate\n"
+        # "Nyse"/"Nasdaq" rather than the real tokens -- one casing change.
+        "AAPL,Nasdaq,Stock,USD,1980-12-12,\n"
+        "GE,Nyse,Stock,USD,1962-01-02,\n"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("supported_tickers.csv", drifted_csv)
+    payload = buffer.getvalue()
+
+    class _ZipResponse:
+        status_code = 200
+        content = payload
+
+        def raise_for_status(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "acquisition.universe.requests.get", lambda url, *a, **k: _ZipResponse()
+    )
+
+    assert USEquityUniverseFetcher.MIN_ROSTER_ROWS == 8000
+    with pytest.raises(ValueError, match="token vocabulary has drifted"):
+        USEquityUniverseFetcher().fetch()
+
+
+def test_roster_fetchers_registry_is_disjoint_from_membership_fetchers():
+    """Roster fetchers live in their OWN registry precisely because they have
+    no membership-interval semantics and no coverage start.
+
+    Registering either in `MEMBERSHIP_FETCHERS` would impose a
+    `PIT_COVERAGE_START` boundary neither roster may have (D-02).
+    """
+    assert set(UniverseCatalog.ROSTER_FETCHERS) == {
+        NasdaqUniverseFetcher,
+        USEquityUniverseFetcher,
+    }
+    assert not set(UniverseCatalog.ROSTER_FETCHERS) & set(
+        UniverseCatalog.MEMBERSHIP_FETCHERS
+    )
+
+
+def test_catalog_build_emits_all_four_categories(mock_universe_fetchers, tmp_path):
+    """Both registries are looped, so every `UniverseCategory` token has a
+    fetcher and every fetcher has a token -- a fetcher registered without its
+    enum token (or vice versa) fails here rather than producing a table that
+    silently omits a category.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    categories = set(
+        catalog._backend.get_lazyframe()
+        .select("category")
+        .unique()
+        .collect()["category"]
+        .to_list()
+    )
+
+    assert categories == set(typing.get_args(UniverseCategory))
+    assert catalog.known_categories() == set(typing.get_args(UniverseCategory))
+    assert "us_all" in categories
+
+
+def test_get_symbols_in_range_keeps_post_2006_delistings(
+    mock_universe_fetchers, tmp_path
+):
+    """D-05, the whole point of the layer: interval OVERLAP, not
+    point-in-time membership.
+
+    A backfill over 2006-01-01..today must keep every ticker that traded at
+    ANY point in the window -- including the ~6.9k that delisted inside it.
+    Dropping them reintroduces exactly the survivorship bias this exists to
+    avoid. Only a ticker whose `endDate` precedes the window start may go.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    symbols = catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
+
+    assert "DELISTED1" in symbols  # ended 2020-01-01, INSIDE the window
+    assert "AAPL" in symbols  # still listed
+    assert "OLD1" not in symbols  # ended 1997-06-30, before the window
+
+
+def test_get_symbols_in_range_deduplicates_a_dual_listed_ticker(
+    mock_universe_fetchers, tmp_path
+):
+    """~700 real tickers carry more than one exchange row (re-use / venue
+    migration), so the query must `.unique()` on symbol exactly as
+    `get_symbols_as_of` already does -- otherwise the roster handed to the
+    acquisition layer would fetch those symbols twice.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    symbols = catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
+
+    assert symbols.count("DUAL1") == 1
+    assert len(symbols) == len(set(symbols))
+
+
+def test_get_symbols_in_range_rejects_an_unknown_category(
+    mock_universe_fetchers, tmp_path
+):
+    """Same reasoning `get_symbols_as_of` already applies: `[]` is a
+    LEGITIMATE return value, so a typo'd category must raise rather than
+    silently ingest nothing.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError, match="Unknown universe category"):
+        catalog.get_symbols_in_range("us_alll", "2006-01-01", "2026-09-06")
+
+
+def test_get_symbols_in_range_rejects_a_non_iso_date(
+    mock_universe_fetchers, tmp_path
+):
+    """Dates are compared LEXICOGRAPHICALLY against ISO strings, so a non-ISO
+    value does not merely fail to match -- it compares wrong and returns a
+    plausible, silently incorrect roster. Both ends are validated.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError, match="ISO YYYY-MM-DD"):
+        catalog.get_symbols_in_range("us_all", "01/01/2006", "2026-09-06")
+    with pytest.raises(ValueError, match="ISO YYYY-MM-DD"):
+        catalog.get_symbols_in_range("us_all", "2006-01-01", "09/06/2026")
+
+
+def test_us_all_has_no_coverage_boundary(mock_universe_fetchers, tmp_path):
+    """`us_all` is boundary-free for the same reason `nasdaq_all` is (D-02):
+    it is a full-market ROSTER with per-symbol listing dates, not index
+    membership, so it has no left-censored change log and no coverage start.
+    A pre-listing query answers from the roster's own dates rather than
+    raising.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    assert catalog.get_symbols_as_of("us_all", "1970-01-01") == []
+    assert "AMEX1" in catalog.get_symbols_as_of("us_all", "2000-01-01")

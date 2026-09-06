@@ -387,10 +387,12 @@ def mock_universe_fetchers(
     (with `.status_code`, `.text`, `.content`, `.raise_for_status()`) keyed
     by requested URL, matching each fetcher's real class-constant URL:
 
-    - `NasdaqUniverseFetcher.SOURCE_URL` -> an in-memory zip wrapping a
-      synthetic `supported_tickers.csv` with rows spanning NASDAQ/NYSE,
-      Stock/ETF, USD/EUR (and one NASDAQ/Stock/USD row with a real
-      `endDate` to exercise the delisted-exclusion path).
+    - `NasdaqUniverseFetcher.SOURCE_URL` (shared with
+      `USEquityUniverseFetcher`, which inherits the same URL) -> an in-memory
+      zip wrapping a synthetic `supported_tickers.csv` with rows spanning
+      NASDAQ/NYSE/AMEX/NYSE MKT/NYSE ARCA, Stock/ETF, USD/EUR, one
+      NASDAQ/Stock/USD row with a real `endDate` (delisted-exclusion path),
+      one dual-listed ticker, and one pre-2006 delisting.
     - `SP500MembershipFetcher.ANCHOR_URL` -> `sp500_anchor_csv_rows`.
     - `SP500MembershipFetcher.CHANGES_URL` -> `sp500_changes_html_fixture`.
     - `Nasdaq100MembershipFetcher.ANCHOR_URL` -> `ndx_anchor_html_fixture`.
@@ -402,6 +404,7 @@ def mock_universe_fetchers(
         Nasdaq100MembershipFetcher,
         NasdaqUniverseFetcher,
         SP500MembershipFetcher,
+        USEquityUniverseFetcher,
     )
 
     nasdaq_csv = (
@@ -412,6 +415,26 @@ def mock_universe_fetchers(
         "ETF1,NASDAQ,ETF,USD,2000-01-01,\n"
         "EURO1,NASDAQ,Stock,EUR,2000-01-01,\n"
         "DELISTED1,NASDAQ,Stock,USD,1990-01-01,2020-01-01\n"
+        # --- Full-US-market roster rows (260906-0iy Task 1). APPEND-ONLY: the
+        # NASDAQ-only assertions above pin an exact symbol SET, so not one of
+        # these may be NASDAQ/Stock/USD or `USEquityUniverseFetcher`'s wider
+        # filter could not be told apart from `NasdaqUniverseFetcher`'s.
+        "NYSE2,NYSE,Stock,USD,1995-01-01,\n"
+        # The AMEX appears under TWO tokens because Tiingo never re-labelled
+        # its historical rows across the AMEX -> NYSE Amex -> NYSE MKT ->
+        # NYSE American renames. Both must survive the filter.
+        "AMEX1,AMEX,Stock,USD,1992-01-01,\n"
+        "MKT1,NYSE MKT,Stock,USD,1998-01-01,\n"
+        # A DIFFERENT exchange that merely shares the "NYSE" prefix
+        # (predominantly ETFs) -- must be excluded.
+        "ARCA1,NYSE ARCA,Stock,USD,2005-01-01,\n"
+        # One ticker carrying two exchange rows (venue migration). ~700 real
+        # tickers do this, so interval queries must de-duplicate on symbol.
+        "DUAL1,NYSE,Stock,USD,1993-01-01,2010-01-01\n"
+        "DUAL1,AMEX,Stock,USD,2010-01-02,\n"
+        # Ended before the 2006-01-01 backfill window -- the ONE thing the
+        # D-05 interval-overlap cut is allowed to drop.
+        "OLD1,NYSE,Stock,USD,1980-01-01,1997-06-30\n"
     )
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zf:
@@ -452,6 +475,10 @@ def mock_universe_fetchers(
     # itself is exercised against its real value in
     # `test_nasdaq_roster_guard_rejects_a_drifted_filter`.
     monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+    # Same reasoning for the full-market roster: its real guard is 8000
+    # (~half the observed 16,138 rows) and is exercised at that real value in
+    # `test_us_equity_roster_guard_rejects_a_drifted_filter`.
+    monkeypatch.setattr(USEquityUniverseFetcher, "MIN_ROSTER_ROWS", 1)
 
     return fake_get
 
