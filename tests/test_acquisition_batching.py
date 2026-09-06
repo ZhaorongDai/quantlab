@@ -977,29 +977,52 @@ def test_the_no_data_count_does_not_scale_with_batch_size(
     """The warning sign RESEARCH names for this defect, turned into a test.
 
     Parameterised over two batch sizes so "independent of batch size" is
-    actually measurable: at size 1 a per-page bug marks nothing (one symbol per
-    request), and only a multi-symbol batch exposes it. A single size cannot
-    tell the two apart.
+    actually measurable. A per-page marker computation marks `batch_size - 1`
+    symbols per page, so its count RISES with the size; at size 1 it marks
+    nothing at all, which is why one size can never tell the two apart.
+
+    Each size gets its OWN raw root and watermark root (`subdir`), because the
+    two runs would otherwise share `tmp_path` and the second would skip every
+    symbol the first had already covered -- reporting zero for the wrong
+    reason. `max_workers=1` makes the shared page queue deterministic: the
+    fixture's queue is global, so concurrent batches would pop each other's
+    pages and every batch would "see" symbols it never asked for.
     """
+    from acquisition.alpaca import AlpacaAcquisition
+
     roster = tuple(f"SYM{i:03d}" for i in range(12))
 
     counts = {}
     for batch_size in (2, 12):
-        acq = _alpaca(acquisition_config, roster, batch_size=batch_size)
+        acq = AlpacaAcquisition(
+            acquisition_config(
+                vendor="alpaca",
+                symbols=roster,
+                subdir=f"scale_{batch_size}",
+                kwargs={
+                    "progress": False,
+                    "batch_size": batch_size,
+                    "max_workers": 1,
+                },
+            )
+        )
         # Every symbol returns data, one symbol per page, symbol-major -- the
-        # real vendor's shape, and the shape in which a per-page marker
-        # computation marks (batch_size - 1) symbols on every page.
+        # real vendor's shape. The last page of each BATCH carries a null
+        # token, which is what ends that batch's page chain.
         mock_alpaca_client.pages = [
             alpaca_bars_page(
                 {symbol: ["2024-01-02T00:00:00Z"]},
                 next_page_token=None
-                if index == len(roster) - 1
-                or (index + 1) % batch_size == 0
+                if (index + 1) % batch_size == 0 or index == len(roster) - 1
                 else f"token-{index}",
             )
             for index, symbol in enumerate(roster)
         ]
         acq.download()
+        assert not mock_alpaca_client.pages, (
+            f"batch_size={batch_size} left pages unconsumed, so the run did "
+            f"not fetch what this test assumes"
+        )
         counts[batch_size] = len(_marked_symbols(acq))
 
     assert counts == {2: 0, 12: 0}, (
@@ -1035,3 +1058,96 @@ def test_a_resume_cannot_mark_a_symbol_found_before_the_interruption_no_data(
     )
     for symbol in ("AAPL", "MSFT"):
         assert acq._read_coverage(symbol)["last_date"] == acq.config.end_date
+
+
+def test_an_incomplete_batch_outcome_writes_zero_no_data_markers(
+    mock_alpaca_client, acquisition_config
+):
+    """`_attempt_batch` must honour `BatchOutcome.complete`, not merely the
+    absence of an exception.
+
+    Found by mutation: dropping `outcome.complete` from the marker gate left
+    the whole suite green, because today `_fetch_batch` only ever returns
+    normally after the vendor hands back a null page token -- so the flag is
+    always true where the gate reads it and no end-to-end test can move it.
+    That makes the gate look like dead code a refactor may delete, and the
+    first `_fetch_batch` that CAN return early (a page budget, the token-free
+    degradation D-03 sketches) would then mark every symbol whose rows were
+    simply on a page it never fetched.
+
+    So the outcome is injected directly. This is the one place a seam-level
+    substitution is the honest test: the property is `_attempt_batch`'s
+    contract WITH `_fetch_batch`, not the page loop's behaviour.
+    """
+    from base.acquisition import BatchOutcome
+
+    acq = _alpaca(acquisition_config, ("AAPL", "MSFT", "GOOG"))
+    symbols = ["AAPL", "MSFT", "GOOG"]
+
+    def partial(fetch_symbols, *args, **kwargs):
+        # Ran out of pages having seen only AAPL, and said so.
+        return BatchOutcome(
+            symbols=tuple(fetch_symbols),
+            symbols_with_data={"AAPL"},
+            pages=1,
+            complete=False,
+        )
+
+    acq._fetch_batch = partial
+    _, status, _ = acq._attempt_batch(symbols, from_watermark=False)
+
+    assert status == "ok"
+    assert _marked_symbols(acq) == set(), (
+        "an INCOMPLETE batch has no opinion about absence -- MSFT and GOOG "
+        "may simply be on a page that was never fetched"
+    )
+
+
+def test_a_refresh_may_clear_a_no_data_marker_but_never_assert_a_new_one(
+    mock_alpaca_client, acquisition_config
+):
+    """A refresh queries `[watermark, end_date]` while the sidecar it stamps
+    records `[covered_start, end_date]` -- a strictly WIDER window.
+
+    So a refresh that returns nothing has no evidence about the earlier part
+    of the range it is about to stamp, and asserting absence there would
+    launder "no new rows this week" into "this symbol has no data since 2020".
+    It may still CLEAR a marker, because rows arriving anywhere in the window
+    do prove the symbol has data in it. Same asymmetry `start_date` already
+    follows on this path: carried through, never invented (D-04).
+    """
+    acq = _alpaca(acquisition_config, ("AAPL", "MSFT"))
+
+    # AAPL has real history; MSFT was already recorded as empty. Neither will
+    # get any rows from this refresh -- the queue is exhausted, so the mock
+    # returns a terminal empty envelope.
+    acq._write_watermark("AAPL", "2024-01-15", start_date="2020-01-01")
+    acq._write_watermark(
+        "MSFT", "2024-01-15", start_date="2020-01-01", no_data=True
+    )
+    mock_alpaca_client.pages = []
+
+    acq.refresh()
+
+    assert _marked_symbols(acq) == {"MSFT"}, (
+        "the refresh must not newly mark AAPL, whose recorded window it did "
+        "not query, and must not silently drop MSFT's existing marker"
+    )
+
+    # ...and rows arriving for MSFT DO clear it: the vendor demonstrably has
+    # data inside the recorded window.
+    acq._write_watermark(
+        "MSFT", "2024-01-15", start_date="2020-01-01", no_data=True
+    )
+    mock_alpaca_client.pages = [
+        {
+            "bars": {"MSFT": [{"t": "2024-01-20T00:00:00Z", "o": 1.0, "h": 1.0,
+                               "l": 1.0, "c": 1.0, "v": 1, "n": 1, "vw": 1.0}]},
+            "next_page_token": None,
+            "currency": "USD",
+        }
+    ]
+    acq._attempt_batch(["MSFT"], from_watermark=True)
+
+    assert _marked_symbols(acq) == set()
+    assert acq._read_coverage("MSFT")["start_date"] == "2020-01-01"

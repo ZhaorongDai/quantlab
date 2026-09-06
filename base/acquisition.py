@@ -450,6 +450,32 @@ class Acquisition(ABC):
         """
         time.sleep(seconds)
 
+    def _reset_no_data_marks(self) -> None:
+        """Zero this pass's `no_data` tally, and give it a fresh lock.
+
+        Per PASS, like `_reset_abort`, so a resumed pass reports the markers
+        IT wrote rather than inheriting the previous pass's number.
+        """
+        self._no_data_marks = 0
+        self._no_data_lock = threading.Lock()
+
+    def _record_no_data_marks(self, count: int) -> None:
+        """Accumulate `count` markers written by one batch.
+
+        Reporting only -- nothing branches on this. The lock exists because
+        `_attempt_batch` runs on `max_workers` threads; when it is absent the
+        method was reached without a `_run_once` (tests call `_attempt_batch`
+        directly), and there is no fan-out to race with.
+        """
+        if not count:
+            return
+        lock = getattr(self, "_no_data_lock", None)
+        if lock is None:
+            self._no_data_marks = getattr(self, "_no_data_marks", 0) + count
+            return
+        with lock:
+            self._no_data_marks = getattr(self, "_no_data_marks", 0) + count
+
     def _scrub(self, message: str) -> str:
         """Remove every declared credential VALUE from a message before it is
         logged or written.
@@ -962,6 +988,7 @@ class Acquisition(ABC):
         granularity.
         """
         abort = self._reset_abort()
+        self._reset_no_data_marks()
         max_workers = int(self._knob("max_workers", self.DEFAULT_MAX_WORKERS))
 
         # Materialised so the progress bar has a real total. Refresh groups by
@@ -1025,6 +1052,22 @@ class Acquisition(ABC):
         quota_messages = [
             message for _, status, message in results if status == "quota"
         ]
+
+        # Reported from THIS pass rather than only from disk, so a run that
+        # just discovered 400 empty symbols says so while it is fresh instead
+        # of leaving the number discoverable only by reading sidecars. The
+        # on-disk total is reported separately by `_report_coverage` at the
+        # top of every pass.
+        if getattr(self, "_no_data_marks", 0):
+            logger.info(
+                f"{self._no_data_marks} symbol(s) were queried successfully "
+                f"this pass and the vendor returned NO rows for them over "
+                f"{self.config.start_date}..{self.config.end_date}. Their "
+                f"watermarks advanced with a 'no data' marker, so the next "
+                f"run skips them instead of re-asking -- this is a recorded "
+                f"absence, not a failure, and it is deliberately not in "
+                f"{self.FAILURE_MANIFEST_NAME}."
+            )
 
         if not abort.is_set():
             return False, failures
@@ -1319,7 +1362,7 @@ class Acquisition(ABC):
         retries = 0
         while True:
             try:
-                self._fetch_batch(
+                outcome = self._fetch_batch(
                     symbols, start_date=start_date, end_date=self.config.end_date
                 )
             except Exception as exc:  # noqa: BLE001 -- isolation is the point
@@ -1344,6 +1387,31 @@ class Acquisition(ABC):
                 return symbols, "failed", message
             break
 
+        # -- the "queried, no data" marker set, computed ONCE for the whole
+        #    batch and never per page (D-04, RESEARCH Pitfall 4).
+        #
+        # The vendor sorts symbol-major and only then by timestamp, so page 0
+        # of a 100-symbol batch legitimately carries ONE symbol. Computing
+        # `requested - seen` per page would stamp the other 99 "queried, no
+        # data", advance their watermarks and skip them forever -- a silent
+        # 99% loss that looks like a successful run. `_fetch_batch` therefore
+        # accumulates `symbols_with_data` across every page (seeded from the
+        # ledger, so a resumed run inherits what earlier pages already found)
+        # and this is the only place the difference is taken.
+        #
+        # Two gates, and neither is redundant. `outcome.complete` means the
+        # vendor handed back a null page token: an incomplete batch has no
+        # opinion at all about absence, and absence-means-unknown is the house
+        # rule (260906-26o D-04). The abort check covers the other shape --
+        # this batch finished, but another thread has already stopped the
+        # world -- because a global stop is not the moment to start recording
+        # new claims about what a vendor does not have. A batch that RAISED
+        # never reaches here at all; it returned `failed` or `quota` above.
+        marked: set[str] = set()
+        if outcome.complete and not self._abort.is_set():
+            marked = set(symbols) - outcome.symbols_with_data
+
+        recorded = 0
         for symbol in symbols:
             # The covered start to RECORD, per symbol. A full backfill
             # overwrites the shards wholesale, so the requested start is a
@@ -1355,9 +1423,26 @@ class Acquisition(ABC):
                 if from_watermark
                 else self.config.start_date
             )
+            # The marker to RECORD, per symbol, and the same asymmetry applies
+            # to it. A full backfill queried exactly the window it is about to
+            # record, so its answer is a true statement about that window. A
+            # refresh queried only `[watermark, end_date]` while the sidecar
+            # records `[covered_start, end_date]`, so it may CLEAR a marker
+            # (rows arrived, so the symbol demonstrably has data in the
+            # recorded window) but may never assert a new one -- it has no
+            # evidence about the earlier part of the range it is stamping.
+            no_data = symbol in marked
+            if from_watermark:
+                no_data = no_data and bool(coverages[symbol].get("no_data"))
             self._write_watermark(
-                symbol, self.config.end_date, start_date=covered_start
+                symbol,
+                self.config.end_date,
+                start_date=covered_start,
+                no_data=no_data,
             )
+            recorded += int(no_data)
+
+        self._record_no_data_marks(recorded)
         return symbols, "ok", None
 
     def _write_failure_manifest(self, failures: dict[str, str]) -> None:
