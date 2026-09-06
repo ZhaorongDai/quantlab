@@ -121,3 +121,352 @@ def test_mock_alpaca_client_records_calls_without_consuming_a_failed_page(
         "a failed call must not consume a page -- the queue position is the "
         "resume position"
     )
+
+
+# ---------------------------------------------------------------------------
+# 03.2-02 Task 3 -- resume, idempotency and roster-fingerprint invalidation.
+#
+# The three properties SC-3 is about, each named so the plan's `-k` selectors
+# (`resume`, `idempotent`, `fingerprint`) select at least one real test.
+# ---------------------------------------------------------------------------
+
+import json
+from pathlib import Path
+
+import pytest
+
+
+def _five_page_chain(alpaca_bars_page):
+    """A five-page symbol-major chain, last page terminating with None.
+
+    Two symbols across five pages so a failure at page 3 leaves a resume point
+    strictly inside the batch and strictly after the first symbol.
+    """
+    return [
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token="tok-after-0"
+        ),
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-03T00:00:00Z"]}, next_page_token="tok-after-1"
+        ),
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-04T00:00:00Z"]}, next_page_token="tok-after-2"
+        ),
+        alpaca_bars_page(
+            {"MSFT": ["2024-01-02T00:00:00Z"]}, next_page_token="tok-after-3"
+        ),
+        alpaca_bars_page(
+            {"MSFT": ["2024-01-03T00:00:00Z"]}, next_page_token=None
+        ),
+    ]
+
+
+def _batch_key_for(cfg):
+    from base.pageledger import PageLedger
+
+    return PageLedger.batch_key(
+        cfg.vendor, cfg.frequency, cfg.start_date, cfg.end_date, cfg.symbols
+    )
+
+
+def _ledger_path_for(cfg):
+    from base.pageledger import PageLedger
+
+    return Path(PageLedger.default_path(cfg.watermark_path, _batch_key_for(cfg)))
+
+
+def test_an_interrupted_batch_resumes_at_the_failed_page(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """SC-3 in one test: page 3 of 5 fails, the second run resumes THERE.
+
+    The first run records pages 0-2 and dies inside page 3. The second run's
+    FIRST request must carry the token page 2 recorded -- not `None`, which
+    would silently restart the batch and re-burn every page already paid for.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL", "MSFT"),
+        kwargs={"batch_size": 2},
+    )
+
+    mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)
+    mock_alpaca_client.raise_on = {3: RuntimeError("simulated page-3 failure")}
+
+    with pytest.raises(RuntimeError, match="simulated page-3 failure"):
+        AlpacaAcquisition(cfg).download()
+
+    # Pages 0-2 landed and were recorded; the ledger was FLUSHED for every page
+    # that completed. Losing it on failure is what turns a resume into a
+    # restart.
+    payload = json.loads(_ledger_path_for(cfg).read_text())
+    assert [page["index"] for page in payload["pages"]] == [0, 1, 2]
+    assert payload["complete"] is False
+    assert payload["pages"][-1]["next_token"] == "tok-after-2"
+
+    # Second run: the failure is cleared, the remaining pages are queued.
+    mock_alpaca_client.calls.clear()
+    mock_alpaca_client.raise_on = None
+    mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)[3:]
+
+    AlpacaAcquisition(cfg).download()
+
+    first_call = mock_alpaca_client.calls[0]
+    assert first_call["page_token"] == "tok-after-2", (
+        "the resumed run's FIRST request must carry the token the ledger "
+        "recorded for the last completed page"
+    )
+    assert first_call["page_token"] is not None
+
+    payload = json.loads(_ledger_path_for(cfg).read_text())
+    assert [page["index"] for page in payload["pages"]] == [0, 1, 2, 3, 4]
+    assert payload["complete"] is True
+
+    shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    assert len(shards) == 5, [str(p) for p in shards]
+
+
+def test_a_resumed_run_does_not_re_request_page_zero(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """The negative direction of the same property (SC-3's exact wording).
+
+    Asserting "the run completed" would pass even for an implementation that
+    restarted the batch from scratch. What distinguishes resume from restart is
+    that page 0 is never requested a second time.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL", "MSFT"), kwargs={"batch_size": 2}
+    )
+
+    mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)
+    mock_alpaca_client.raise_on = {3: RuntimeError("boom")}
+    with pytest.raises(RuntimeError):
+        AlpacaAcquisition(cfg).download()
+
+    mock_alpaca_client.calls.clear()
+    mock_alpaca_client.raise_on = None
+    mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)[3:]
+    AlpacaAcquisition(cfg).download()
+
+    tokens = [call.get("page_token") for call in mock_alpaca_client.calls]
+    assert None not in tokens, (
+        f"a request with page_token=None is a restart at page 0, not a "
+        f"resume; got {tokens}"
+    )
+    assert len(mock_alpaca_client.calls) == 2, (
+        f"only pages 3 and 4 remained; a longer call list means the batch "
+        f"restarted. Tokens: {tokens}"
+    )
+
+
+def test_a_re_fetched_page_is_idempotent_and_overwrites_its_shard(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """The crash window between the shard write and the ledger record.
+
+    Shard N lands, the process dies before the record. The next run re-fetches
+    page N and must OVERWRITE the same deterministic path -- not add a second
+    file, and not leave a duplicated row behind after dedup. That determinism
+    is exactly what makes the ordering (shard first, ledger second) cheap.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL",), kwargs={"batch_size": 1}
+    )
+    page = alpaca_bars_page(
+        {"AAPL": ["2024-01-02T00:00:00Z", "2024-01-03T00:00:00Z"]},
+        next_page_token=None,
+    )
+
+    mock_alpaca_client.pages = [page]
+    AlpacaAcquisition(cfg).download()
+
+    shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    assert len(shards) == 1
+    before = pl.read_parquet(shards[0])
+
+    # Simulate the crash: the shard is on disk, the ledger never learned about
+    # it. Deleting the ledger is the strongest form of that state.
+    _ledger_path_for(cfg).unlink()
+
+    mock_alpaca_client.pages = [page]
+    AlpacaAcquisition(cfg).download()
+
+    after_shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    assert [p.name for p in after_shards] == [p.name for p in shards], (
+        "a re-fetched page must reuse its deterministic filename; a second "
+        "file means the name carried a timestamp, uuid or counter"
+    )
+    after = pl.read_parquet(after_shards[0])
+    assert after.height == before.height == 2
+    assert after.equals(before)
+
+
+def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """The opposite disagreement: the ledger is AHEAD of the disk.
+
+    A recorded page whose shard is gone is a hole. Resuming past it would
+    produce a batch that is silently short, with nothing failing at the time
+    and nothing detectable afterwards -- so `assert_consistent` refuses, with a
+    numbered error that names the cure.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL", "MSFT"), kwargs={"batch_size": 2}
+    )
+    mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)
+    mock_alpaca_client.raise_on = {3: RuntimeError("boom")}
+    with pytest.raises(RuntimeError):
+        AlpacaAcquisition(cfg).download()
+
+    # Delete a shard the ledger still records.
+    victim = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))[0]
+    victim.unlink()
+
+    mock_alpaca_client.raise_on = None
+    mock_alpaca_client.pages = _five_page_chain(alpaca_bars_page)[3:]
+    with pytest.raises(ValueError) as excinfo:
+        AlpacaAcquisition(cfg).download()
+
+    message = str(excinfo.value)
+    assert "refusing to resume" in message
+    assert victim.name in message or str(victim) in message
+    # Numbered and cure-naming, the ChunkLedger.assert_consistent shape.
+    assert "error 2 of 2" in message
+    assert "CURE:" in message
+
+
+def test_a_ledger_whose_roster_fingerprint_differs_is_not_resumed_onto(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config, tmp_path
+):
+    """A roster refresh between runs invalidates the ledger (D-05).
+
+    Named to match `-k fingerprint`, deliberately. The `symbol_fingerprint`
+    check in `_load` is the mechanism under test here, and this is the ONLY
+    test that exercises it -- verified by mutation: deleting that check leaves
+    every other test in this file green. A selector that does not reach the
+    one test covering a mechanism reports a weaker guarantee than it appears
+    to.
+
+    `{A,B,C}` and `{A,B,D}` are different batches: resuming the second onto the
+    first's ledger would skip pages that were never fetched for `D`. Two
+    independent mechanisms prevent it -- `batch_key` is a function of the
+    sorted roster (so they address different FILES), and `symbol_fingerprint`
+    is checked on load (so even a shared file would read back empty).
+    """
+    from base.pageledger import PageLedger
+
+    path = str(tmp_path / "roster.pages.json")
+
+    original = PageLedger(path, symbols=("A", "B", "C"))
+    original.describe("k", "alpaca", "1d", "2024-01-01", "2024-01-31",
+                      ("A", "B", "C"))
+    original.record_page(0, "tok-0", 10, ["A"], [], "A", "2024-01-02T00:00:00Z")
+    assert original.resume_point() == (1, "tok-0")
+
+    # Same FILE, different roster -- the fingerprint check must empty it.
+    changed = PageLedger(path, symbols=("A", "B", "D"))
+    assert changed.pages == []
+    assert changed.resume_point() == (0, None), (
+        "a ledger written for a different roster must restart at page 0 with "
+        "no token, not resume onto pages fetched for symbols that are no "
+        "longer in the batch"
+    )
+    assert changed.symbols_seen() == set()
+
+    # And the same roster still resumes, so the check is not simply always-empty.
+    same = PageLedger(path, symbols=("A", "B", "C"))
+    assert same.resume_point() == (1, "tok-0")
+
+
+def test_the_batch_key_fingerprint_is_a_function_of_the_set_not_the_order():
+    """A batch is a SET -- unlike `ChunkLedger`'s ordered symbol AXIS.
+
+    Requesting `["B","A"]` and `["A","B"]` issues the same vendor request and
+    returns the same rows, so treating them as different batches would
+    re-fetch data already on disk. A different MEMBER, however, is a different
+    batch.
+    """
+    from base.chunking import ChunkLedger
+    from base.pageledger import PageLedger
+
+    args = ("alpaca", "1d", "2024-01-01", "2024-01-31")
+
+    assert PageLedger.batch_key(*args, ("B", "A")) == PageLedger.batch_key(
+        *args, ("A", "B")
+    )
+    assert PageLedger.batch_key(*args, ("A", "B")) != PageLedger.batch_key(
+        *args, ("A", "C")
+    )
+    assert PageLedger.fingerprint(("B", "A")) == PageLedger.fingerprint(("A", "B"))
+    assert PageLedger.fingerprint(("A", "B")) != PageLedger.fingerprint(("A", "C"))
+
+    # The contrast that makes the difference deliberate rather than accidental:
+    # ChunkLedger's fingerprint IS order-sensitive, because two orderings of a
+    # pinned axis produce two differently-aligned Zarr stores.
+    assert ChunkLedger.fingerprint(["B", "A"]) != ChunkLedger.fingerprint(
+        ["A", "B"]
+    )
+
+    # Every other component is part of the identity too.
+    assert PageLedger.batch_key(*args, ("A",)) != PageLedger.batch_key(
+        "tiingo", "1d", "2024-01-01", "2024-01-31", ("A",)
+    )
+    assert PageLedger.batch_key(*args, ("A",)) != PageLedger.batch_key(
+        "alpaca", "1m", "2024-01-01", "2024-01-31", ("A",)
+    )
+
+
+def test_the_token_is_recorded_verbatim_beside_a_token_free_fallback(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """D-03: record the vendor's token BYTE-IDENTICALLY, and record enough to
+    resume without one.
+
+    Alpaca's own published example token decodes to `SYMBOL|TIMEFRAME|TIMESTAMP`,
+    but that encoding is undocumented and can change without notice. A
+    re-derived token that stops matching resumes at a position the vendor never
+    agreed to -- so the token is stored verbatim, and `last_symbol` /
+    `last_timestamp` are stored alongside it as the fallback.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    weird_token = "Ω/not-base64/{}|<>"  # deliberately un-re-derivable
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL",), kwargs={"batch_size": 1}
+    )
+    mock_alpaca_client.pages = [
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-02T00:00:00Z", "2024-01-03T00:00:00Z"]},
+            next_page_token=weird_token,
+        ),
+        alpaca_bars_page(
+            {"AAPL": ["2024-01-04T00:00:00Z"]}, next_page_token=None
+        ),
+    ]
+
+    AlpacaAcquisition(cfg).download()
+
+    payload = json.loads(_ledger_path_for(cfg).read_text())
+    first = payload["pages"][0]
+    assert first["next_token"] == weird_token, (
+        "the token must survive a write/read round trip byte-identically"
+    )
+    # The token-free fallback: the furthest (symbol, timestamp) position.
+    assert first["last_symbol"] == "AAPL"
+    assert first["last_timestamp"].startswith("2024-01-03")
+    assert first["rows"] == 2
+
+    # And it was actually SENT back verbatim on the next request.
+    assert mock_alpaca_client.calls[1]["page_token"] == weird_token
