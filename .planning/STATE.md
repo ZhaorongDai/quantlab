@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03.2
 current_phase_name: Multi-Source Data Acquisition Abstraction (Alpaca)
 status: executing
-stopped_at: "Completed 03.2-01-PLAN.md (Wave-0 scaffolding: 4 conftest fixtures + 5 test files, suite 226 -> 237)"
-last_updated: "2026-09-06T19:47:03.803Z"
+stopped_at: Completed 03.2-02-PLAN.md
+last_updated: "2026-09-06T20:21:42.497Z"
 last_activity: 2026-09-06
 last_activity_desc: Phase 03.2 execution started
-state_head: 5029db3fc0b38cbdb7e6f1b696528d71f109d769
+state_head: 74ccfd380700cf1ebe1048699ef1cbce39829e7f
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 31
-  completed_plans: 23
+  completed_plans: 24
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.2 (Multi-Source Data Acquisition Abstraction (Alpaca)) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
 Status: Ready to execute
 Last activity: 2026-09-06 — Phase 03.2 execution started
 
@@ -73,6 +73,7 @@ Progress: [██████████] 100%
 | Phase quick-260906-26o P01 | 42 min | 2 tasks | 5 files |
 | Phase quick-260906-eme P01 | 9 min | 2 tasks | 3 files |
 | Phase 03.2 P01 | 12 min | 2 tasks | 6 files |
+| Phase 03.2 P02 | 47 min | 4 tasks | 19 files |
 
 ## Accumulated Context
 
@@ -121,6 +122,11 @@ Recent decisions affecting current work:
 - [Phase 03.2]: acquisition_config expresses the vendor purely through its paths; AcquisitionConfig.vendor is deferred to 03.2-02 Task 1 — The raw root terminates at the vendor segment and the watermark root is its sibling, which is everything a Wave-0 assertion needs. Introducing the dataclass field in the same commit that uses it beats faking it here behind a guarded dict splat that would have to be unwound one plan later.
 - [Phase 03.2]: alpaca_bars_page RAISES on a project column name instead of passing it through, and test_raw_hive_layout.py ships a test asserting the BUG (the silent two-vendor merge), not only the fix — A fixture that accepted `close` would let a test be written against a shape Alpaca never emits, hiding the vendor-to-project field mapping where a swapped o/c reads as plausible data forever. Symmetrically, reproducing the measured merge offline is what keeps SC-7's basename assertion load-bearing rather than decorative -- if polars ever stops merging, that test fails and routes the reader to re-derive SC-7 rather than delete it.
 - [Phase 03.2]: Wave-0 self-test names match a phase -k selector only where the self-test honestly covers that ground (vendor_isolation, resume); abort_is_first / no_data / rate_limit / idempotent / fingerprint / prun were deliberately NOT forced onto a name — A test name that matches a selector without testing that behaviour is the same green-but-empty lie the exit-5 trap produces -- it would make a later task's -k command pass before the behaviour exists. Those six selectors match zero tests today and their exit-5 must not be read as green.
+- [Phase 03.2]: D-19 confirmed as-proposed: all nine one-way raw-tier on-disk contracts are locked — Raw hive root terminates at the vendor segment; the watermark root is its SIBLING (a .json inside the raw tree breaks pl.scan_parquet); shard names are fully deterministic; RAW_HIVE_KEYS is declared once in enums/data.py; tick's data_type= is a hive key rather than a new Frequency token; the intraday date= key is the US/Eastern SESSION date. date-key-for-daily, utc-day-key and watermarks-inside-vendor-dir were rejected on the record.
+- [Phase 03.2]: A completed page ledger must NOT veto a re-fetch the symbol layer already decided on — download(resume=False) issued zero vendor requests because _fetch_batch returned early on ledger.is_complete(). The ledger answers 'where within this batch do I resume', never 'should this batch run' -- those are D-05's two separate layers. It now resets instead, which is safe because deterministic shard names make a redo an overwrite.
+- [Phase 03.2]: Alpaca credential env-var NAMES live in module-level constants, never on the patchable transport class — AlpacaAcquisition._scrub read them off _AlpacaMarketDataClient, which tests/conftest.py replaces wholesale. A security control reachable through an indirection whose entire purpose is to be swapped out can be silently disabled by a test double.
+- [Phase 03.2]: polars abbreviates long scan source lists, so a naive .pqt count in an .explain() pruning assertion reads exactly backwards — The plan called the pruning test the easiest to write wrongly. explain() renders '[first.pqt, ... 4 other sources]', so count('.pqt') returns 1 for an unpruned five-file scan and 2 for a pruned two-file one. _scan_source_count parses both forms and carries its own self-test.
+- [Phase 03.2]: A -k selector that does not reach the one test covering a mechanism is a weaker guarantee than it appears — Deleting PageLedger._load's fingerprint check left -k fingerprint green, because the only covering test was named ..._for_a_different_roster_... Found by mutation testing; fixed by renaming the test into the selector and recording why the name is load-bearing.
 
 ### Pending Todos
 
@@ -148,8 +154,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T19:46:44.958Z
-Stopped at: Completed 03.2-01-PLAN.md (Wave-0 scaffolding: 4 conftest fixtures + 5 test files, suite 226 -> 237)
+Last session: 2026-09-06T20:20:10.568Z
+Stopped at: Completed 03.2-02-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
