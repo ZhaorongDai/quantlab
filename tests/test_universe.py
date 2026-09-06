@@ -5,7 +5,10 @@ No test in this module makes a real network call: all `requests.get` calls
 are patched by the `mock_universe_fetchers` fixture in `tests/conftest.py`.
 """
 
+import io
 import typing
+import zipfile
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -36,6 +39,66 @@ def test_nasdaq_fetcher_filters_exchange_assettype_currency(mock_universe_fetche
     assert "NYSE1" not in symbols  # wrong exchange
     assert "ETF1" not in symbols  # wrong assetType
     assert "EURO1" not in symbols  # wrong priceCurrency
+
+
+def test_nasdaq_roster_guard_rejects_a_drifted_filter(monkeypatch, tmp_path):
+    """CR-05. `fetch()` filters on exact-match string literals, so a casing or
+    spelling change in Tiingo's feed yields ZERO rows without raising --
+    `build()` then concatenates the empty frame happily and `save()` overwrites
+    the previous good 10,000+-symbol table.
+
+    Exercised at the guard's REAL value (`mock_universe_fetchers` lowers it, so
+    this test deliberately does not use that fixture): a roster that survives
+    the filter with fewer than MIN_ROSTER_ROWS rows must raise.
+    """
+    drifted_csv = (
+        "ticker,exchange,assetType,priceCurrency,startDate,endDate\n"
+        # "Nasdaq" rather than "NASDAQ" -- one casing change, whole roster gone.
+        "AAPL,Nasdaq,Stock,USD,1980-12-12,\n"
+        "MSFT,Nasdaq,Stock,USD,1986-03-13,\n"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("supported_tickers.csv", drifted_csv)
+    payload = buffer.getvalue()
+
+    class _ZipResponse:
+        status_code = 200
+        content = payload
+
+        def raise_for_status(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "acquisition.universe.requests.get", lambda url, *a, **k: _ZipResponse()
+    )
+
+    with pytest.raises(ValueError, match="token vocabulary has drifted"):
+        NasdaqUniverseFetcher().fetch()
+
+
+def test_save_refuses_to_overwrite_with_a_degenerate_table(
+    mock_universe_fetchers, tmp_path
+):
+    """CR-05, second half. `save()` overwrites `universe.parquet` in place, so
+    a category that silently came back empty would destroy the previous good
+    roster with no error anywhere in the pipeline -- the only symptom being
+    downstream ingestion quietly resolving an empty symbol list.
+    """
+    config = _make_config(tmp_path)
+    catalog = UniverseCatalog(config).build()
+
+    # Drop one category, simulating a fetcher that silently returned nothing.
+    surviving = (
+        catalog._backend.get_lazyframe()
+        .filter(pl.col("category") != "nasdaq100_constituent")
+    )
+    catalog._backend.to_internal(surviving)
+
+    with pytest.raises(ValueError, match="have no rows"):
+        catalog.save()
+
+    assert not Path(config.output_path).exists()
 
 
 def test_reconstruct_intervals_reentry(mock_universe_fetchers):

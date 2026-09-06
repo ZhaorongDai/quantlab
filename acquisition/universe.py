@@ -67,6 +67,15 @@ class NasdaqUniverseFetcher:
     ASSET_TYPE = "Stock"
     PRICE_CURRENCY = "USD"
 
+    # The same safety envelope the index anchors already have, applied to the
+    # LARGEST category in the table. `fetch()` filters on exact-match string
+    # literals, so a casing/spelling change or a renamed column value in
+    # Tiingo's feed yields ZERO rows without raising -- and `build()` would
+    # concatenate that empty frame happily, after which `save()` overwrites
+    # the previous good 10,000+-symbol `universe.parquet`. 1000 is far below
+    # the real ~10k so a legitimate shrink never trips it.
+    MIN_ROSTER_ROWS = 1000
+
     def fetch(self) -> pl.DataFrame:
         response = requests.get(self.SOURCE_URL, timeout=30)
         response.raise_for_status()
@@ -83,7 +92,18 @@ class NasdaqUniverseFetcher:
         data = data.rename(
             {"ticker": "symbol", "startDate": "start_date", "endDate": "end_date"}
         )
-        return data.select(["symbol", "start_date", "end_date"])
+        data = data.select(["symbol", "start_date", "end_date"])
+        if len(data) < self.MIN_ROSTER_ROWS:
+            raise ValueError(
+                f"Tiingo supported_tickers filtered down to only {len(data)} "
+                f"rows (exchange={self.EXCHANGE_FILTER}, "
+                f"assetType={self.ASSET_TYPE!r}, "
+                f"priceCurrency={self.PRICE_CURRENCY!r}), fewer than the "
+                f"minimum {self.MIN_ROSTER_ROWS} -- the source's token "
+                f"vocabulary has drifted. Refusing to continue rather than "
+                f"overwriting the reference table with a truncated roster."
+            )
+        return data
 
 
 #: Cell values that mean "no ticker on this side of the change row". Kept
@@ -709,7 +729,40 @@ class UniverseCatalog:
         self._backend.to_internal(combined.lazy())
         return self
 
+    def _assert_every_category_is_populated(self) -> None:
+        """Refuse to persist a table missing any category's rows.
+
+        `save()` overwrites `universe.parquet` in place (that is what
+        `refresh_us_equity_universe.py` calls), so a category that silently
+        came back empty would DESTROY the previous good roster and the only
+        symptom would be downstream ingestion quietly doing nothing. Checked
+        against the registry so a fourth index is covered by registration.
+        """
+        counts = (
+            self._backend.get_lazyframe()
+            .group_by("category")
+            .agg(pl.len().alias("row_count"))
+            .collect()
+        )
+        populated = {
+            category
+            for category, row_count in zip(
+                counts["category"].to_list(), counts["row_count"].to_list()
+            )
+            if row_count > 0
+        }
+        missing = sorted(self.known_categories() - populated)
+        if missing:
+            raise ValueError(
+                f"Refusing to write {self.config.output_path}: categories "
+                f"{missing} have no rows. save() overwrites the reference "
+                f"table in place, so persisting this would destroy the "
+                f"previous good roster and leave downstream ingestion "
+                f"silently resolving an empty symbol list."
+            )
+
     def save(self) -> Self:
+        self._assert_every_category_is_populated()
         Path(self.config.output_path).parent.mkdir(parents=True, exist_ok=True)
         self._backend.write(self.config.output_path)
         return self

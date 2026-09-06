@@ -441,6 +441,18 @@ def mock_universe_fetchers(
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
     monkeypatch.setattr("acquisition.universe.requests.get", fake_get)
+
+    # `NasdaqUniverseFetcher.MIN_ROSTER_ROWS` (1000) guards the REAL ~10k-row
+    # Tiingo roster against a silent filter drift that would overwrite
+    # `universe.parquet` with an empty table. This fixture's roster is
+    # deliberately six rows -- three of which survive the filter -- because it
+    # exists to prove the exchange/assetType/priceCurrency filtering, not the
+    # volume guard. Lowering the threshold here keeps that guard live in
+    # production while letting the filtering tests stay legible; the guard
+    # itself is exercised against its real value in
+    # `test_nasdaq_roster_guard_rejects_a_drifted_filter`.
+    monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+
     return fake_get
 
 
