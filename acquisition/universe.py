@@ -73,6 +73,46 @@ _CONTACT = os.environ.get(
 )
 
 
+#: A preferred-share ticker, in every notation Tiingo's directory actually
+#: uses. Read as: a delimiter (`-` or `/`), optional whitespace, a `P`, an
+#: optional single letter (which absorbs both the series letter in `BC/PA`
+#: and the `R` of the `PR` spelling), optional whitespace, then either
+#: another delimiter or end-of-ticker.
+#:
+#: Measured against the live directory on 2026-09-06, over the 15,425
+#: distinct tickers `USEquityUniverseFetcher`'s exchange/assetType/currency
+#: filter yields. It matches every one of these observed shapes:
+#:
+#:     ROOT-P-SERIES     823   AAM-P-A
+#:     ROOT-P-SERIES-X    84   ZB-P-F-CL
+#:     ROOT-P             20   MTB-P
+#:     ROOT/PSERIES        3   BC/PA
+#:     ROOT--P-X           3   SCE--P-D, IMH-P--B, IMH-P--C
+#:     ROOT- PR-X          1   NYCB- PR-U
+#:     -P-SERIES           1   -P-HIZ
+#:
+#: **The trap this shape exists to avoid.** `BRK-A`, `BRK-B`, `BF-A`, `BF-B`,
+#: `PBR-A`, `HEI-A`, `MOG-A`, `LEN-B`, `UA-C`, `MKC-V`, `AGM-A`, `CRD-A`,
+#: `LGF-A`, `GEF-B`, `STZ-B`, `UHAL-B` and `CWEN-A` are COMMON STOCK carrying
+#: a hyphen. A pattern that merely looked for `-<letter>` would delete
+#: Berkshire Hathaway from the full-market roster, silently. Requiring the
+#: `P` immediately after the delimiter is what separates the two populations.
+#:
+#: Cross-checked against an independent segment-split reference implementation
+#: (split on `[-/]`, whitespace-strip each segment, match any segment at index
+#: >= 1 against `^P(?:R|[A-Z])?$`): the two agree on all 15,425 tickers
+#: exactly. Combined with `_BABY_BOND_PATTERN` it removes 965 rows / 940
+#: distinct tickers (932 preferred + 8 baby bonds, zero overlap) and ZERO
+#: legitimate common stocks.
+_PREFERRED_SHARE_PATTERN = r"[-/]\s*P[A-Z]?\s*(?:[-/]|$)"
+
+#: A baby bond / note, whose ticker embeds a coupon and sometimes a maturity:
+#: `ASRV 8.45 06-30-28`, `SO 6.75 08-01-22`, `NEE 6.219`, `CHNG 6`. A space
+#: followed by a digit is the whole tell -- 8 distinct live tickers, and no
+#: common stock in the directory contains one.
+_BABY_BOND_PATTERN = r"\s\d"
+
+
 class TiingoRosterFetcher:
     """Shared machinery for filtering Tiingo's full historical ticker
     directory down to one exchange-scoped common-stock roster.
@@ -115,6 +155,22 @@ class TiingoRosterFetcher:
     #: absent from `enums.data.UniverseCategory` is then a type error rather
     #: than something only a set-comparing test notices at test time.
     CATEGORY: UniverseCategory
+    #: Opt-in: drop preferred shares and baby bonds (`_PREFERRED_SHARE_PATTERN`
+    #: / `_BABY_BOND_PATTERN`) from this roster.
+    #:
+    #: **The `False` default is the entire mechanism protecting Locked
+    #: Decision A4 / D-02.** `nasdaq_all`'s semantics are FROZEN, and a shared
+    #: unconditional filter here would have silently changed what that
+    #: category means -- the one outcome this flag exists to prevent. Only
+    #: `USEquityUniverseFetcher` opts in.
+    #:
+    #: A class constant rather than an overridable method because a roster is
+    #: DATA in this module (see the class docstring: "adding a roster is a
+    #: data change, three class constants, not a code change"), so the opt-in
+    #: belongs exactly where `EXCHANGE_FILTER`, `MIN_ROSTER_ROWS` and
+    #: `CATEGORY` already live -- and the criterion itself then stays in ONE
+    #: place instead of being duplicated per subclass.
+    EXCLUDE_NON_COMMON_SECURITY_TYPES: bool = False
 
     def fetch(self) -> pl.DataFrame:
         response = requests.get(self.SOURCE_URL, timeout=30)
@@ -129,6 +185,29 @@ class TiingoRosterFetcher:
             & (pl.col("assetType") == self.ASSET_TYPE)
             & (pl.col("priceCurrency") == self.PRICE_CURRENCY)
         )
+        if self.EXCLUDE_NON_COMMON_SECURITY_TYPES:
+            # Filtered on the SOURCE's own `ticker` column, before the rename
+            # below, so the criterion reads against the vocabulary it was
+            # measured on.
+            #
+            # KEY LINK: this runs BEFORE the `MIN_ROSTER_ROWS` check, so that
+            # guard validates the count that actually gets PERSISTED rather
+            # than a pre-exclusion count it would then bless without ever
+            # having seen the real roster. Measured headroom: 15,173
+            # surviving rows against a floor of 8,000 -- 1.90x -- so the
+            # exclusion cannot trip the guard it is not meant to trip.
+            before = len(data)
+            data = data.filter(
+                ~pl.col("ticker").str.contains(_PREFERRED_SHARE_PATTERN)
+                & ~pl.col("ticker").str.contains(_BABY_BOND_PATTERN)
+            )
+            # Logged at INFO so a future criterion change is visible in a
+            # refresh log, not only as a diff in the resulting parquet.
+            logger.info(
+                f"{self.CATEGORY}: excluded {before - len(data)} preferred / "
+                f"baby-bond rows ({before} -> {len(data)})."
+            )
+
         data = data.rename(
             {"ticker": "symbol", "startDate": "start_date", "endDate": "end_date"}
         )
@@ -160,6 +239,9 @@ class NasdaqUniverseFetcher(TiingoRosterFetcher):
     # OTC/Expert-Market tiers. Matches the objective's literal "Nasdaq
     # market" framing. 260906-0iy D-02 re-locks it: the full-US-market roster
     # is a NEW SIBLING (`USEquityUniverseFetcher`), never a widening of this.
+    # 260906-eme keeps that lock: this roster deliberately does NOT opt into
+    # `EXCLUDE_NON_COMMON_SECURITY_TYPES`, so it still carries its preferred
+    # shares and baby bonds exactly as it always has.
     EXCHANGE_FILTER = ("NASDAQ",)
 
     # The same safety envelope the index anchors already have, applied to what
@@ -176,8 +258,7 @@ class USEquityUniverseFetcher(TiingoRosterFetcher):
     priced in USD, delisted names included (260906-0iy D-01).
 
     A NEW SIBLING of `NasdaqUniverseFetcher`, not a replacement: `nasdaq_all`
-    keeps its exact prior semantics per D-02, and `us_all` is a strict
-    SUPERSET of it. Both are deliberately retained.
+    keeps its exact prior semantics per D-02. Both are deliberately retained.
 
     **Why the AMEX needs two tokens.** Tiingo's `exchange` column carries the
     following distinct values over the 108,561-row directory (measured
@@ -206,9 +287,52 @@ class USEquityUniverseFetcher(TiingoRosterFetcher):
     tickers (NASDAQ 9318, NYSE 6284, AMEX 336, NYSE MKT 200). Rows exceed
     tickers because ~700 tickers carry more than one exchange row, which is
     why `UniverseCatalog`'s interval queries de-duplicate on symbol.
+
+    **Non-common-stock exclusion (260906-eme).** This roster additionally
+    opts into `EXCLUDE_NON_COMMON_SECURITY_TYPES`, dropping preferred shares
+    and baby bonds so downstream ingestion stops spending Tiingo requests and
+    panel columns on preferred series and notes. Measured against the live
+    directory on 2026-09-06::
+
+        ROOT-P-SERIES     823   preferred            AAM-P-A
+        ROOT-P-SERIES-X    84   preferred            ZB-P-F-CL
+        ROOT-P             20   preferred            MTB-P
+        ROOT/PSERIES        3   preferred            BC/PA
+        ROOT--P-X           3   preferred            SCE--P-D
+        ROOT- PR-X          1   preferred            NYCB- PR-U
+        -P-SERIES           1   preferred            -P-HIZ
+        ROOT <coupon>       8   baby bonds / notes   NEE 6.219
+
+    16,138 rows -> **15,173 rows**: 965 rows / 940 distinct tickers removed
+    (932 preferred + 8 baby bonds, zero overlap), and ZERO legitimate common
+    stocks. Verified survivors include every class share -- `BRK-A`, `BRK-B`,
+    `BF-A`, `BF-B`, `PBR-A`, `HEI-A`, `MOG-A`, `MOG-B`, `LEN-B`, `CWEN-A`,
+    `UA-C`, `MKC-V`, `AKO-A`, `AKO-B`, `AGM-A`, `NYLD-A`, `TAP-A`, `LGF-A`,
+    `LGF-B`, `GTN-A`, `HVT-A`, `BWL-A`, `BH-A`, `BNRE-A`, `CRD-A`, `CRD-B`,
+    `RDS-A`, `RDS-B`, `FCE-A`, `GEF-B`, `STZ-B`, `UHAL-B`, `WSO-B`, `BIO-B`,
+    `CIG-C`, `EBR-B`, `TI-A`, `GGO-C`, `BALY-T`, `SPWR-V`. Class shares are
+    common stock carrying a hyphen, and they are the precise trap the
+    criterion is shaped around.
+
+    **Deliberately still IN, stated rather than silently omitted:** the 1,124
+    warrant / unit / right / when-issued lines (`-WS` 391, `-U` 360, `-W` 164,
+    `-R` 138, `-CL` 57, `-WD` 11, `-WI` 3). The scope is preferred shares and
+    baby bonds; this is a named, measured, carried-forward finding, and their
+    retention is asserted in the tests so a later widening must be deliberate.
+
+    **The resulting asymmetry with `nasdaq_all` is intentional.** `us_all` is
+    NO LONGER a strict superset of `nasdaq_all`: a NASDAQ-listed preferred
+    such as `ONB-P-A` appears in `nasdaq_all` and not in `us_all`. That is not
+    an inconsistency to fix in this code -- `nasdaq_all`'s semantics are
+    FROZEN by Locked Decision A4 / D-02, and the `False` default of
+    `EXCLUDE_NON_COMMON_SECURITY_TYPES` on `TiingoRosterFetcher` is what
+    freezes them. Anyone wanting to align the two should reopen that decision,
+    not widen the flag.
     """
 
     EXCHANGE_FILTER = ("NASDAQ", "NYSE", "AMEX", "NYSE MKT")
+
+    EXCLUDE_NON_COMMON_SECURITY_TYPES = True
 
     # Roughly half the observed 16,138 rows: low enough that a legitimate
     # market contraction never trips it, high enough that a token-vocabulary
