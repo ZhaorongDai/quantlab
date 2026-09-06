@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 03.1
 current_phase_name: Index Historical Constituents Data Layer (INSERTED)
 status: verifying
-stopped_at: Completed quick task 260906-0iy (us_all roster + Tiingo bulk ingest)
-last_updated: "2026-09-06T04:46:38.487Z"
+stopped_at: Completed quick task 260906-13w (chunked Zarr ingest + UniverseMask)
+last_updated: "2026-09-06T05:17:03.633Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03.1 execution started
-state_head: 767b33f49fc11e4d6224b1bbecdee0f1afaa4be3
+state_head: ad30f55a77e6f348a399f1f4cdd5b681636bd675
 progress:
   total_phases: 8
   completed_phases: 0
@@ -69,6 +69,7 @@ Progress: [██████████] 100%
 | Phase 03.1 P03 | 15 min | 3 tasks | 7 files |
 | Phase 03.1 P04 | 18 min | 3 tasks | 7 files |
 | Phase quick-260906-0iy P01 | 15 min | 3 tasks | 10 files |
+| Phase quick-260906-13w P01 | 18 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,11 @@ Recent decisions affecting current work:
 - [Phase 03.1]: The Nasdaq-100 panel gets its own nasdaq100_constituent.zarr store rather than sharing the S&P panel's — The two coverage starts are ~31 years apart (1976-07-01 vs 2007-02-01), and in a boolean panel a fabricated pre-coverage region is indistinguishable at read time from a genuine 'nobody was a member'. A consumer wanting both opens both and joins on the intersection of their timestamp axes -- a deliberate, visible step rather than an implicit and wrong union.
 - [Phase 03.1]: UniverseCatalog's category list and coverage guard are driven by a MEMBERSHIP_FETCHERS registry, with NasdaqUniverseFetcher deliberately outside it — The pre-existing guard hardcoded sp500_constituent, so the newly-added nasdaq100_constituent category would have answered pre-2007 queries with a silently incomplete roster -- the exact failure DATA-05 exists to prevent. Deriving each boundary from the fetcher's own PIT_COVERAGE_START makes a boundary-less category impossible to create by omission. nasdaq_all stays out because it is a full-exchange roster with no membership-interval semantics and no coverage start (D-02); test_nasdaq_all_has_no_coverage_boundary makes that absence a tested property.
 - [Phase 03.1]: DATA-06 was proved with a baseline SHA pinned before any edit, not a working-tree check — GSD commits per task, so 'git status --porcelain -- base/' alone prints nothing in exactly the world where base/ was edited and committed -- a proof that cannot fail. Pinning BASE_SHA into the git dir before Task 1 and gating on 'git diff BASE_SHA..HEAD -- base/' PLUS the working tree keeps the claim red after each task commit. Final result for 8be0adb: both halves empty.
+- [Phase 03.1]: Chunked ingest: the symbol axis is pinned once whole-range before any window and every window is reindexed onto it (D-02), following base/constituent.py:_densify
+- [Phase 03.1]: Per-chunk sizing uses the PINNED whole-range symbol count, never the chunk's own roster -- a chunk-scoped estimate understates the allocation and reopens the OOM
+- [Phase 03.1]: assert_dense_panel_fits/MAX_DENSE_PANEL_BYTES kept unchanged; assert_chunked_panel_fits is a sibling that lifts the whole-range refusal and reports the total as a non-raising advisory
+- [Phase 03.1]: XrBackend.append raises on a changed non-append coordinate or dtype -- both were measured to corrupt silently in raw zarr
+- [Phase 03.1]: UniverseMask lives in dataset/ not base/: hook-free concrete composition, per the dataset/cleaning.py precedent
 
 ### Pending Todos
 
@@ -127,7 +133,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T04:46:38.252Z
-Stopped at: Completed quick task 260906-0iy (us_all roster + Tiingo bulk ingest)
+Last session: 2026-09-06T05:17:02.600Z
+Stopped at: Completed quick task 260906-13w (chunked Zarr ingest + UniverseMask)
 Resume file: None
 </content>
