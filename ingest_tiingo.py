@@ -20,6 +20,7 @@ Or resolve a symbol list from the point-in-time US-equity universe table
 (02-08-PLAN.md; build/refresh it first via `refresh_us_equity_universe.py`)
 instead of passing --symbols explicitly:
     uv run python ingest_tiingo.py --universe sp500 --as-of-date 2015-06-01
+    uv run python ingest_tiingo.py --universe nasdaq100 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq_all --as-of-date 2020-01-01
 """
 
@@ -32,7 +33,15 @@ from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
 
 # Maps the CLI-facing --universe choice to enums.data.UniverseCategory.
-_UNIVERSE_CATEGORY_MAP = {"sp500": "sp500_constituent", "nasdaq_all": "nasdaq_all"}
+# The --universe `choices` are DERIVED from this map rather than repeated as a
+# second hardcoded list: when they were two separate literals, adding the
+# nasdaq100_constituent category produced it into universe.parquet while
+# leaving it unselectable from the only CLI that consumes the table.
+_UNIVERSE_CATEGORY_MAP = {
+    "sp500": "sp500_constituent",
+    "nasdaq100": "nasdaq100_constituent",
+    "nasdaq_all": "nasdaq_all",
+}
 
 
 def _build_configs(
@@ -75,14 +84,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--universe",
         type=str,
-        choices=["sp500", "nasdaq_all"],
+        choices=sorted(_UNIVERSE_CATEGORY_MAP),
         default=None,
         help=(
             "Resolve a symbol list from the persisted universe table "
             "(02-08-PLAN.md) instead of --symbols. 'sp500' resolves "
-            "point-in-time S&P 500 constituent membership; 'nasdaq_all' "
-            "resolves the full NASDAQ-listed Common Stock roster (current + "
-            "delisted). Requires --as-of-date."
+            "point-in-time S&P 500 constituent membership; 'nasdaq100' "
+            "resolves point-in-time Nasdaq-100 (NDX) index membership; "
+            "'nasdaq_all' resolves the full NASDAQ-listed Common Stock roster "
+            "(current + delisted). Note 'nasdaq100' and 'nasdaq_all' are "
+            "DIFFERENT universes that merely share the word Nasdaq -- the "
+            "former is the ~100-name index, the latter every symbol ever "
+            "listed on the exchange. Requires --as-of-date."
         ),
     )
     parser.add_argument(
