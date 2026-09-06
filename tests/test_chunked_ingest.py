@@ -544,3 +544,87 @@ def test_the_ledger_lives_beside_the_store_not_inside_it(
     assert sum(w["rows"] for w in ledger.windows) == 9
     assert ledger.symbol_count == 3
     assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
+
+
+# ---------------------------------------------------------------------------
+# Ledger integrity on resume (260906-13w Task 2, D-04 / T-13w-02)
+#
+# The ledger and the store are two independent records of the same truth,
+# written at two different instants. A resume trusts NEITHER alone: it
+# cross-checks them and raises on disagreement, because an append is
+# irreversible and cannot be validated after the fact from the store alone.
+# ---------------------------------------------------------------------------
+
+
+def test_resume_with_a_changed_roster_raises_naming_both_symbol_counts(
+    three_year_stock_config: Callable[..., DatasetConfig],
+    stock_pqt_row: Callable[..., dict],
+    write_stock_pqt: Callable[..., Path],
+) -> None:
+    config = three_year_stock_config()
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    # A roster refresh between two runs: a fourth symbol appears, so the
+    # pinned axis is no longer the axis the store was written on.
+    write_stock_pqt(
+        Path(config.raw_data_dir_path) / "extra" / "data_1.pqt",
+        [stock_pqt_row("2024-06-15", "D", close=100.0)],
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    message = str(excinfo.value)
+    assert "3" in message and "4" in message  # both symbol counts
+    assert "roster" in message.lower()
+
+
+def test_resume_with_a_store_ledger_tail_mismatch_raises_naming_both_dates(
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    """A crash BETWEEN a successful `to_zarr` and the ledger write leaves the
+    store one window ahead. Re-running would duplicate that window; refuse.
+    """
+    import json
+
+    config = three_year_stock_config()
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    ledger_path = ChunkLedger.default_path(config.zarr_file_path)
+    with open(ledger_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    payload["windows"] = payload["windows"][:-1]
+    with open(ledger_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+    with pytest.raises(ValueError) as excinfo:
+        StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    message = str(excinfo.value)
+    assert "2024-12-28" in message  # the store's tail
+    assert "2023-12-28" in message  # the ledger's last recorded end
+
+
+def test_a_store_with_no_ledger_raises_rather_than_appending_blind(
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    config = three_year_stock_config()
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+    Path(ChunkLedger.default_path(config.zarr_file_path)).unlink()
+
+    with pytest.raises(ValueError) as excinfo:
+        StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    message = str(excinfo.value)
+    assert "ledger" in message.lower()
+
+
+def test_an_absent_store_with_an_empty_ledger_is_the_normal_first_run(
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    config = three_year_stock_config()
+    assert not Path(config.zarr_file_path).exists()
+
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    assert _panel(config.zarr_file_path).sizes["timestamp"] == 9
