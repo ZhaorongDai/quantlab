@@ -628,3 +628,31 @@ def test_concurrent_refresh_is_not_forced_to_re_fetch_by_a_widened_start(
     ConcurrentTiingoAcquisition(widened).refresh()
 
     assert mock_tiingo_client.calls == []
+
+
+def test_coverage_report_counts_without_issuing_a_single_vendor_call(
+    mock_tiingo_client, tmp_path
+):
+    """The read-only form `--dry-run` prints, so "would widening --start-date
+    re-fetch anything?" is answerable BEFORE committing to a multi-hour job.
+
+    It shares `_partition_by_coverage` with the real run, so the dry run and
+    the run it predicts can never disagree.
+    """
+    from acquisition.tiingo import ConcurrentTiingoAcquisition
+
+    acq = ConcurrentTiingoAcquisition(_make_concurrent_config(tmp_path))
+    acq._write_watermark("AAPL", "2024-01-31", start_date="2020-01-01")
+    acq._write_watermark("MSFT", "2024-01-31", start_date="2024-01-15")
+    _write_legacy_watermark(tmp_path, "GOOG", "2024-01-31")
+    # AMZN and META have no watermark at all.
+
+    report = acq.coverage_report()
+
+    assert report["requested"] == len(_FIVE)
+    assert report["covered"] == 1  # AAPL covers 2024-01-01
+    assert report["widened"] == 1  # MSFT's coverage starts after it
+    assert report["legacy"] == 1  # GOOG's start is unknown
+    assert report["pending"] == 3  # MSFT + AMZN + META
+    assert report["skipped"] == 2  # AAPL + the skipped legacy GOOG
+    assert mock_tiingo_client.calls == []

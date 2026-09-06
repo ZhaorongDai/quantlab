@@ -64,10 +64,20 @@ Usage:
     # 6. Same, in monthly windows -- for a machine tighter than 16 GiB, or a
     #    roster dense enough that a single year does not fit.
     uv run python ingest_us_equity.py --to-zarr --chunk month
+
+    # 7. One-off migration for watermarks written before coverage ranges were
+    #    recorded (260906-26o D-04). Fills the covered start YOU supply into
+    #    every sidecar that lacks one, issues ZERO price requests, and exits.
+    #    Never overwrites a start that is already recorded, and the value is
+    #    never guessed -- only you know what window those files were fetched
+    #    over. Until they are stamped, every run reports them and skips them.
+    export TIINGO_API_KEY=your-key-here
+    uv run python ingest_us_equity.py --stamp-legacy-watermarks 2016-01-01
 """
 
 import argparse
 import datetime
+import os
 
 from acquisition.tiingo import ConcurrentTiingoAcquisition
 from acquisition.universe import UniverseCatalog
@@ -77,7 +87,7 @@ from dataset.stock import StockDataset
 
 #: D-05. The backfill window's default start. Applied as an interval-OVERLAP
 #: bound, not as a listing-date cut -- see `get_symbols_in_range`.
-DEFAULT_START_DATE = "2006-01-01"
+DEFAULT_START_DATE = "2016-01-01"
 
 #: Raw-data subdirectory and Zarr store name for this roster, kept separate
 #: from `stock_kline_config`'s NASDAQ-only defaults so the two backfills have
@@ -139,6 +149,36 @@ def _print_estimate(catalog: UniverseCatalog, args, symbols: tuple[str, ...]) ->
             args.category, args.start_date, args.end_date, granularity=args.chunk
         )
     )
+
+
+def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
+    """Print how the existing watermarks classify against the requested
+    window, so a dry run answers "would widening --start-date actually
+    re-fetch anything?" before a multi-hour job commits to it.
+
+    Skipped without an API key rather than failing: `--dry-run` is documented
+    as needing no credential, and `TiingoAcquisition.__init__` demands one at
+    CONSTRUCTION -- before it could know that this path fetches nothing. All
+    the counting itself is local file reads.
+    """
+    if not os.environ.get("TIINGO_API_KEY"):
+        print(
+            "  coverage report:   skipped (export TIINGO_API_KEY to see it; "
+            "it still issues zero price requests)"
+        )
+        return
+
+    report = ConcurrentTiingoAcquisition(acq_config).coverage_report(list(symbols))
+    print(f"  already covered:   {report['covered']} (would be skipped)")
+    print(
+        f"  re-fetch, widened: {report['widened']} "
+        f"(recorded coverage starts after --start-date)"
+    )
+    print(
+        f"  legacy, no start:  {report['legacy']} "
+        f"(stamp via --stamp-legacy-watermarks)"
+    )
+    print(f"  would fetch:       {report['pending']}/{report['requested']}")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -214,6 +254,38 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--stamp-legacy-watermarks",
+        type=str,
+        metavar="START_DATE",
+        default=None,
+        help=(
+            "One-off migration: record START_DATE as the covered start in "
+            "every watermark sidecar that has none, then exit WITHOUT issuing "
+            "a single price request. Watermarks written before coverage "
+            "ranges existed carry only an end date; the value is never "
+            "guessed, because only you know what window they were fetched "
+            "over (D-04). Already-recorded starts are left untouched. "
+            "TIINGO_API_KEY must still be exported -- the acquisition object "
+            "demands it at construction, before it knows nothing will be "
+            "fetched."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-watermarks",
+        type=str,
+        choices=list(ConcurrentTiingoAcquisition.LEGACY_WATERMARK_POLICIES),
+        default=ConcurrentTiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY,
+        help=(
+            "What to do with a watermark that records no covered start "
+            "(default "
+            f"'{ConcurrentTiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
+            "'warn' skips it but reports the count and the stamping command "
+            "on every run; 'refetch' treats unknown coverage as uncovered and "
+            "re-downloads it. Passed through config.kwargs, so it stays "
+            "config-driven."
+        ),
+    )
+    parser.add_argument(
         "--to-zarr",
         action="store_true",
         help=(
@@ -263,7 +335,11 @@ if __name__ == "__main__":
         start_date=args.start_date,
         end_date=args.end_date,
         subdir=DEFAULT_SUBDIR,
-        kwargs={"max_workers": args.max_workers, "resume": True},
+        kwargs={
+            "max_workers": args.max_workers,
+            "resume": True,
+            "legacy_watermarks": args.legacy_watermarks,
+        },
     )
     # `symbols=None`, NOT the resolved roster, and this is load-bearing.
     # `BaseDataset`'s config setter calls `_reset_symbols()` for any non-None
@@ -282,12 +358,29 @@ if __name__ == "__main__":
         store_name=DEFAULT_STORE_NAME,
     )
 
+    if args.stamp_legacy_watermarks is not None:
+        # Deliberately BEFORE the roster/estimate work and before any other
+        # mode: this is a pure local-file migration that issues zero price
+        # requests, and it must be impossible to trigger a download by
+        # mistyping it alongside another flag.
+        stamped = ConcurrentTiingoAcquisition(acq_config).stamp_watermarks(
+            args.stamp_legacy_watermarks
+        )
+        print(
+            f"Stamped covered start {args.stamp_legacy_watermarks} onto "
+            f"{stamped} watermark(s) under {acq_config.watermark_path}. "
+            f"Sidecars already recording a start were left untouched. "
+            f"No price requests were issued."
+        )
+        raise SystemExit(0)
+
     if args.dry_run:
         print(f"DRY RUN -- category={args.category}, no price requests issued")
         _print_estimate(catalog, args, symbols)
         print(f"  raw-data path:     {acq_config.raw_data_dir_path}")
         print(f"  watermark path:    {acq_config.watermark_path}")
         print(f"  zarr path:         {ds_config.zarr_file_path}")
+        _print_coverage(acq_config, symbols)
         raise SystemExit(0)
 
     if not symbols:

@@ -122,6 +122,20 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
     #: set always lands in the manifest; the log is a pointer, not a dump.
     _FAILURE_LOG_SAMPLE = 5
 
+    #: What `config.kwargs["legacy_watermarks"]` may be set to (260906-26o
+    #: D-04). `"warn"` skips a sidecar with no recorded covered start but
+    #: reports it on every run; `"refetch"` treats unknown coverage as
+    #: uncovered. See `_coverage_status` for why `"warn"` is the default.
+    LEGACY_WATERMARK_POLICIES = ("warn", "refetch")
+    DEFAULT_LEGACY_WATERMARK_POLICY = "warn"
+
+    #: The one command that resolves an un-stamped legacy watermark. Named
+    #: verbatim in the warning, because a reported gap with no named cure is
+    #: only marginally better than a silent one.
+    STAMP_COMMAND_HINT = (
+        "uv run python ingest_us_equity.py --stamp-legacy-watermarks <START_DATE>"
+    )
+
     def _knob(self, name: str, default):
         return (self.config.kwargs or {}).get(name, default)
 
@@ -158,18 +172,8 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
         requested = list(symbols or self.config.symbols)
         pending = requested
         if self._knob("resume", True):
-            pending = [
-                symbol
-                for symbol in requested
-                if self._read_watermark(symbol) != self.config.end_date
-            ]
-            skipped = len(requested) - len(pending)
-            if skipped:
-                logger.info(
-                    f"Resume: skipping {skipped}/{len(requested)} symbols "
-                    f"already at watermark {self.config.end_date}; "
-                    f"{len(pending)} remaining."
-                )
+            pending, counts = self._partition_by_coverage(requested, from_watermark)
+            self._report_coverage(requested, pending, counts)
 
         max_workers = int(self._knob("max_workers", self.DEFAULT_MAX_WORKERS))
         # `return_as="generator_unordered"` is load-bearing, not a style
@@ -197,6 +201,163 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
         self._write_failure_manifest(failures)
         return self
 
+    def coverage_report(self, symbols: list[str] | None = None) -> dict:
+        """Classify the roster against the requested window and return the
+        counts, issuing ZERO vendor requests.
+
+        The read-only form of `_run`'s pending computation, so a dry run can
+        answer "would widening the window actually re-fetch anything?" before
+        committing to a multi-hour job -- and can show that the un-stamped
+        legacy count really did fall to zero after stamping. It shares
+        `_partition_by_coverage` with the real run rather than reimplementing
+        the rule, so the two can never disagree.
+        """
+        requested = list(symbols if symbols is not None else self.config.symbols)
+        pending, counts = self._partition_by_coverage(
+            requested, from_watermark=False
+        )
+        return {
+            "requested": len(requested),
+            "pending": len(pending),
+            "skipped": len(requested) - len(pending),
+            **counts,
+        }
+
+    def _legacy_policy(self) -> str:
+        policy = self._knob(
+            "legacy_watermarks", self.DEFAULT_LEGACY_WATERMARK_POLICY
+        )
+        if policy not in self.LEGACY_WATERMARK_POLICIES:
+            raise ValueError(
+                f"legacy_watermarks={policy!r} is not one of "
+                f"{list(self.LEGACY_WATERMARK_POLICIES)}."
+            )
+        return policy
+
+    def _coverage_status(self, symbol: str, from_watermark: bool = False) -> str:
+        """Classify `symbol` against the REQUESTED window, returning one of
+        `"uncovered"`, `"covered"`, `"widened"` or `"legacy"`.
+
+        A symbol is `"covered"` iff its recorded `last_date` equals
+        `config.end_date` AND its recorded covered start is known and is
+        `<=` `config.start_date`. ISO-8601 `YYYY-MM-DD` orders correctly under
+        plain string comparison, so no date parsing happens here and no time
+        zone can creep in.
+
+        `"widened"` is the 260906-26o defect (D-03): the end date matches but
+        the recorded coverage starts LATER than what is being asked for, so
+        the symbol's history is shallower than the request and it must be
+        re-fetched. Before this predicate existed it was skipped in silence,
+        and the dataset shipped with inconsistent per-symbol history depth.
+
+        `"legacy"` is a sidecar written before this schema: the end date
+        matches but the covered start is UNKNOWN. Three responses exist and
+        two are wrong. Assuming a start is forbidden outright (D-04) -- an
+        assumed range that is wrong reproduces the silent gap invisibly.
+        Treating unknown as uncovered is correct for integrity but re-fetches
+        every already-downloaded symbol and burns a whole quota window (D-01).
+        So the default is the third: treat it as covered for SKIP purposes and
+        say so LOUDLY on every run until stamped. What made the D-03 failure
+        dangerous was the silence, not the skip -- a run that skips these
+        while printing their count and the exact command that fixes them is a
+        REPORTED gap with a named cure, and only the user knows what window
+        those files were fetched over. `legacy_watermarks="refetch"` is the
+        opt-in escape hatch that makes this a choice rather than an accident.
+
+        `from_watermark` (i.e. `refresh()`) short-circuits to the END-DATE
+        rule alone, deliberately. Refresh requests `[watermark, end_date]` per
+        symbol and never `config.start_date`, so judging it against a widened
+        `config.start_date` would mark every symbol pending on every run while
+        the re-fetch it triggers could not close the gap -- an endless, silent
+        quota burn. Widening the covered range is `download()`'s job.
+        """
+        coverage = self._read_coverage(symbol)
+        if coverage is None or coverage["last_date"] != self.config.end_date:
+            return "uncovered"
+        if from_watermark:
+            return "covered"
+        if coverage["start_date"] is None:
+            return "legacy"
+        if coverage["start_date"] <= self.config.start_date:
+            return "covered"
+        return "widened"
+
+    def _covers(self, symbol: str, from_watermark: bool = False) -> bool:
+        """Whether `symbol` may be skipped for the requested window.
+
+        The skip predicate `_run` filters on. See `_coverage_status` for the
+        rule and for the D-04 argument behind the `"legacy"` branch.
+        """
+        status = self._coverage_status(symbol, from_watermark)
+        if status == "legacy":
+            return self._legacy_policy() == "warn"
+        return status == "covered"
+
+    def _partition_by_coverage(
+        self, requested: list[str], from_watermark: bool
+    ) -> tuple[list[str], dict[str, int]]:
+        """Split `requested` into what still needs fetching, plus the counts
+        the run reports. One pass, so each sidecar is read exactly once.
+        """
+        legacy_is_skipped = self._legacy_policy() == "warn"
+        pending: list[str] = []
+        counts = {"covered": 0, "widened": 0, "legacy": 0}
+
+        for symbol in requested:
+            status = self._coverage_status(symbol, from_watermark)
+            if status == "covered":
+                counts["covered"] += 1
+                continue
+            if status == "legacy":
+                counts["legacy"] += 1
+                if legacy_is_skipped:
+                    continue
+            elif status == "widened":
+                counts["widened"] += 1
+            pending.append(symbol)
+
+        return pending, counts
+
+    def _report_coverage(
+        self, requested: list[str], pending: list[str], counts: dict[str, int]
+    ) -> None:
+        """Report the three outcomes separately, so widening the window has a
+        visible, countable consequence instead of a silent one.
+        """
+        skipped = len(requested) - len(pending)
+        if skipped:
+            logger.info(
+                f"Resume: skipping {skipped}/{len(requested)} symbols already "
+                f"covering {self.config.start_date}..{self.config.end_date}; "
+                f"{len(pending)} remaining."
+            )
+        if counts["widened"]:
+            logger.info(
+                f"Re-fetching {counts['widened']} symbol(s) whose recorded "
+                f"coverage starts AFTER the requested "
+                f"{self.config.start_date} -- their history is shallower than "
+                f"this run asks for."
+            )
+        if counts["legacy"]:
+            if self._legacy_policy() == "warn":
+                logger.warning(
+                    f"{counts['legacy']} symbol(s) carry a legacy watermark "
+                    f"with NO recorded covered start. They were SKIPPED, and "
+                    f"whether they actually cover {self.config.start_date} "
+                    f"cannot be known from disk -- only you know what window "
+                    f"they were fetched over, which is why this is not "
+                    f"guessed. Stamp them once with: "
+                    f"{self.STAMP_COMMAND_HINT}  (or set "
+                    f"legacy_watermarks='refetch' to re-download them "
+                    f"instead)."
+                )
+            else:
+                logger.info(
+                    f"legacy_watermarks='refetch': re-fetching "
+                    f"{counts['legacy']} symbol(s) whose covered start is "
+                    f"unknown."
+                )
+
     def _attempt(self, symbol: str, from_watermark: bool) -> tuple[str, str | None]:
         """Fetch one symbol, returning `(symbol, error_message_or_None)`.
 
@@ -206,9 +367,16 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
         written only after a successful write, so a failed symbol is retried
         by the next run instead of being silently marked complete.
         """
+        coverage = self._read_coverage(symbol) or {}
         start_date = self.config.start_date
+        # The covered start to RECORD. A full backfill overwrites the raw file
+        # wholesale, so the requested start is a true statement about it; a
+        # refresh only extends forward, so it carries the existing start
+        # through -- and if that was unknown it stays unknown (D-04).
+        covered_start = self.config.start_date
         if from_watermark:
-            start_date = self._read_watermark(symbol) or self.config.start_date
+            start_date = coverage.get("last_date") or self.config.start_date
+            covered_start = coverage.get("start_date")
 
         try:
             self._fetch_and_write(
@@ -217,7 +385,9 @@ class ConcurrentTiingoAcquisition(TiingoAcquisition):
         except Exception as exc:  # noqa: BLE001 -- isolation is the point
             return symbol, self._scrub(f"{type(exc).__name__}: {exc}")
 
-        self._write_watermark(symbol, self.config.end_date)
+        self._write_watermark(
+            symbol, self.config.end_date, start_date=covered_start
+        )
         return symbol, None
 
     def _write_failure_manifest(self, failures: dict[str, str]) -> None:
