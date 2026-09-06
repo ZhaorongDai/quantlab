@@ -34,6 +34,7 @@ reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 `config/instruments.yaml`.
 """
 
+import datetime
 import io
 import zipfile
 from abc import ABC, abstractmethod
@@ -693,7 +694,7 @@ class UniverseCatalog:
     def build(self) -> Self:
         frames = [
             NasdaqUniverseFetcher().fetch().with_columns(
-                pl.lit("nasdaq_all").alias("category")
+                pl.lit(self.ROSTER_CATEGORY).alias("category")
             )
         ]
         for fetcher_cls in self.MEMBERSHIP_FETCHERS:
@@ -719,7 +720,43 @@ class UniverseCatalog:
         catalog._backend.read(config.output_path)
         return catalog
 
+    #: The category with no membership-interval semantics and so no coverage
+    #: boundary (D-02). Named once here because both `build()` and
+    #: `get_symbols_as_of()`'s validation need it.
+    ROSTER_CATEGORY = "nasdaq_all"
+
+    def known_categories(self) -> set[str]:
+        """Every category this catalog can answer for."""
+        return {self.ROSTER_CATEGORY} | {
+            fetcher_cls.CATEGORY for fetcher_cls in self.MEMBERSHIP_FETCHERS
+        }
+
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
+        # `category` and `as_of_date` arrive unvalidated -- `as_of_date` comes
+        # straight off `ingest_tiingo.py`'s `--as-of-date` CLI argument. Both
+        # are validated HERE because every wrong input otherwise produces `[]`,
+        # which is a LEGITIMATE return value (a pre-listing `nasdaq_all` query
+        # returns it), so the caller cannot distinguish "no members" from "you
+        # asked wrong". A typo'd category or a non-ISO date would silently
+        # ingest nothing instead of the requested index -- the same class of
+        # silent-wrong-answer the coverage-start guard below raises to prevent.
+        known = self.known_categories()
+        if category not in known:
+            raise ValueError(
+                f"Unknown universe category {category!r}; known categories "
+                f"are {sorted(known)}."
+            )
+        try:
+            datetime.date.fromisoformat(as_of_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"as_of_date must be an ISO YYYY-MM-DD string, got "
+                f"{as_of_date!r}. The table stores ISO date strings and "
+                f"compares them LEXICOGRAPHICALLY, so a non-ISO value does "
+                f"not merely fail to match -- it compares wrong and returns a "
+                f"plausible, silently incorrect roster."
+            ) from exc
+
         # Every registered membership category carries its own boundary; a
         # category absent from the map (i.e. `nasdaq_all`) is boundary-free
         # by design (D-02).

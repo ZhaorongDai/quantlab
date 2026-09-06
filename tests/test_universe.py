@@ -141,6 +141,31 @@ def test_get_symbols_as_of_rejects_pre_1976_dates(mock_universe_fetchers, tmp_pa
         catalog.get_symbols_as_of("sp500_constituent", "1970-01-01")
 
 
+def test_get_symbols_as_of_rejects_an_unknown_category(mock_universe_fetchers, tmp_path):
+    """CR-04. An unknown category returned `[]` -- a LEGITIMATE value that
+    `test_nasdaq_all_has_no_coverage_boundary` asserts for a real query -- so
+    a typo was indistinguishable from "no members" and silently ingested
+    nothing.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError, match="Unknown universe category"):
+        catalog.get_symbols_as_of("sp500", "2020-01-01")  # correct token is sp500_constituent
+
+
+def test_get_symbols_as_of_rejects_a_non_iso_date(mock_universe_fetchers, tmp_path):
+    """CR-04. `as_of_date` reaches this function straight off
+    `ingest_tiingo.py`'s `--as-of-date` CLI argument. Dates are compared
+    LEXICOGRAPHICALLY against ISO strings, so `"01/01/2024"` does not merely
+    fail to match -- `"1980-12-12" <= "01/01/2024"` is False -- and a mistyped
+    date silently ingested nothing instead of the requested index.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError, match="ISO YYYY-MM-DD"):
+        catalog.get_symbols_as_of("nasdaq_all", "01/01/2024")
+
+
 def test_get_symbols_as_of_nasdaq_all_uses_tiingo_dates(mock_universe_fetchers, tmp_path):
     config = _make_config(tmp_path)
     catalog = UniverseCatalog(config).build()
