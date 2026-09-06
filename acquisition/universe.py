@@ -317,7 +317,20 @@ class IndexMembershipFetcher(ABC):
         if self._cache_path.exists():
             try:
                 cached_row_count = len(pl.read_parquet(self._cache_path))
-            except Exception:
+            except Exception as exc:
+                # Swallowing this silently DISABLES the row-count monotonicity
+                # guard below (`len(changes) < 0` can never be true) -- the
+                # very property the class docstring calls load-bearing. The
+                # fallback is still 0 (a corrupt cache must not block a fresh
+                # fetch), but it must be loud: this is the one state in which
+                # a shrunken table would be accepted as new truth.
+                logger.error(
+                    f"{self.INDEX_LABEL}: could not read the cached changes "
+                    f"snapshot at {self._cache_path}: {exc}. The row-count "
+                    f"monotonicity guard is DISABLED for this run -- a "
+                    f"shrunken live table will not be rejected. Delete the "
+                    f"file to re-seed it from a good fetch."
+                )
                 cached_row_count = 0
 
         try:
@@ -363,8 +376,14 @@ class IndexMembershipFetcher(ABC):
             )
             return self._load_cache()
 
+        # Write atomically. A plain in-place `write_parquet` leaves a
+        # TRUNCATED parquet if the run is interrupted mid-write, which is
+        # exactly the corrupt-cache state that disables the monotonicity guard
+        # above -- the cache write could manufacture its own blind spot.
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-        parsed.write_parquet(self._cache_path)
+        tmp_path = self._cache_path.with_suffix(".parquet.tmp")
+        parsed.write_parquet(tmp_path)
+        tmp_path.replace(self._cache_path)
         return parsed
 
     def _load_cache(self) -> pl.DataFrame:
