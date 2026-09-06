@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: 03.1
 current_phase_name: Index Historical Constituents Data Layer (INSERTED)
 status: executing
-stopped_at: Completed 03.1-01-PLAN.md
-last_updated: "2026-09-06T02:57:20.395Z"
+stopped_at: Completed 03.1-02-PLAN.md
+last_updated: "2026-09-06T03:06:34.003Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 03.1 execution started
-state_head: 2e75175ff013716e7f42ee6306735ba6af448b86
+state_head: 3669d7d2b8a41b0939eb6f451cae29a840d1dbe5
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 24
-  completed_plans: 19
+  completed_plans: 20
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.1 (Index Historical Constituents Data Layer (INSERTED)) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 03.1 execution started
 
@@ -65,6 +65,7 @@ Progress: [██████████] 100%
 | Phase 03 P04 | 8 min | 3 tasks | 4 files |
 | Phase 03 P05 | 15 min | 3 tasks | 4 files |
 | Phase 03.1 P01 | 6 min | 3 tasks | 8 files |
+| Phase 03.1 P02 | 7 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,9 @@ Recent decisions affecting current work:
 - [Phase 03.1]: The pre-split name base.data.Dataset was retired, not kept as a permanent alias — Two live names for one class is exactly the ambiguity a later reader 'fixes' wrongly, and an unused alias violates QUAL-02. A transitional alias existed for exactly one commit so the split could land with a green suite; test 7 makes reintroducing it a test failure.
 - [Phase 03.1]: _reset_symbols() became a named overridable seam on BaseDataset rather than an isinstance branch or a config boolean flag — It is called from the shared config setter, so pushing it down to MarketDataset would force the setter to split too. Overriding it to a no-op is proven to suppress both the store read and the from_raw_data() network fallback, which is what lets 03.1-02 construct a constituent dataset offline.
 - [Phase 03.1]: BaseDataset.__init__ keeps its data_backend-first order, the deliberate inverse of base/factor.py:Factor.__init__ — The dataset config setter DOES reach the storage backend via _reset_symbols() -> read(), whereas no method reachable from the factor setter may. Both invariants are now locked by their own inverse guard tests so neither hierarchy can be silently harmonized onto the other.
+- [Phase 03.1]: Nasdaq-100 anchor comes from stockanalysis.com with slickcharts.com documented in the class docstring as the fallback, deliberately not implemented as a second code path — Wikipedia's Nasdaq-100 page renders components through a navbox template with no parseable constituents table, so a commercial scraped source was unavoidable. Implementing both sources doubles the untested surface for a failure mode that has not happened; naming the alternative in the docstring is what a maintainer actually needs the day the primary dies.
+- [Phase 03.1]: The Nasdaq-100 anchor is asserted at 102 rows, not 100, and fetch_anchor() carries its own MIN_ANCHOR_ROWS=50 structural-drift guard — The index carries multiple share classes for some issuers (GOOGL/GOOG, FOX/FOXA), so an ==100 assertion fails against correct data. Unlike the S&P anchor's hosted CSV, this scraped page has no cache-fallback path, so a truncated parse would close every unmentioned membership and silently reintroduce the survivorship bias the layer exists to remove (T-03.1-02-02).
+- [Phase 03.1]: Only two message strings were parameterised via INDEX_LABEL/CATEGORY when hoisting fetch_changes(); both ValueError guard messages stayed word-for-word — The fallback logger.error and _load_cache's RuntimeError are the only index-specific text. Keeping the missing-columns and row-count-monotonicity messages verbatim means the S&P path renders byte-identical output post-extraction, so the refactor is provably behaviour-preserving rather than merely test-passing.
 
 ### Pending Todos
 
@@ -117,7 +121,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T02:57:07.967Z
-Stopped at: Completed 03.1-01-PLAN.md
+Last session: 2026-09-06T03:06:17.047Z
+Stopped at: Completed 03.1-02-PLAN.md
 Resume file: None
 </content>
