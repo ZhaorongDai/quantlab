@@ -160,6 +160,43 @@ def sp500_constituent_config(
     )
 
 
+def nasdaq100_constituent_config(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    symbols: list | None = None,
+    kwargs: dict = None,  # type: ignore
+) -> ConstituentDatasetConfig:
+    """Config for the daily point-in-time Nasdaq-100 membership panel
+    (DATA-05, 03.1-CONTEXT.md D-02/D-04).
+
+    Identical in shape to `sp500_constituent_config()` apart from the store
+    filename, and the difference is deliberate: **the Nasdaq-100 panel gets
+    its OWN Zarr store rather than sharing the S&P 500 panel's.** The two
+    indices have different point-in-time coverage starts (1976-07-01 versus
+    2007-02-01), so unioning them onto one timestamp axis would imply 1976
+    Nasdaq-100 coverage that does not exist -- and in a boolean panel the
+    fabricated region is indistinguishable at read time from a genuine
+    "nobody was a member" answer. A consumer that wants both opens both and
+    joins on the intersection of their timestamp axes; that is a deliberate,
+    visible step rather than an implicit and wrong union.
+
+    `cache_dir` is shared with `sp500_constituent_config()` and
+    `universe_config()` on purpose -- each fetcher writes its own
+    `CACHE_FILENAME` inside it, so one directory holds one snapshot per index
+    with no chance of two copies of one snapshot drifting apart.
+    """
+    return ConstituentDatasetConfig(
+        zarr_file_path=str(
+            _market_data_root("us_equity", "1d") / "nasdaq100_constituent.zarr"
+        ),
+        cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
+        start_date=start_date,
+        end_date=end_date,
+        symbols=symbols,  # type: ignore[arg-type]
+        kwargs=kwargs,
+    )
+
+
 def alpha101_config(
     start_date: str | None = None,
     end_date: str | None = None,

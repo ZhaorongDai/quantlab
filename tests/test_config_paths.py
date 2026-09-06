@@ -6,6 +6,7 @@ path convention (02-CONTEXT.md D-01/D-02) that every config factory in
 
 from config import (
     alpha101_config,
+    nasdaq100_constituent_config,
     sp500_constituent_config,
     spot_kline_config,
     stock_acquisition_config,
@@ -53,3 +54,19 @@ def test_sp500_constituent_config_uses_market_frequency_path_convention() -> Non
     # CONFLICT 4's user-visible consequence: a membership panel is never handed
     # a nautilus catalog destination, because it has no bar representation.
     assert "catalog_path" not in cfg.to_dict()
+
+
+def test_nasdaq100_constituent_config_uses_market_frequency_path_convention() -> None:
+    cfg = nasdaq100_constituent_config()
+
+    assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
+    assert cfg.zarr_file_path.replace("\\", "/").endswith(
+        "nasdaq100_constituent.zarr"
+    )
+    # RESEARCH Finding 6 bullet 4: two indices, two stores. Their coverage
+    # starts differ by ~31 years, so a shared store would imply 1976
+    # Nasdaq-100 coverage that does not exist.
+    assert (
+        nasdaq100_constituent_config().zarr_file_path
+        != sp500_constituent_config().zarr_file_path
+    )
