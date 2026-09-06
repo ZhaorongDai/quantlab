@@ -334,3 +334,200 @@ def test_tracer_field_map_covers_the_whole_vendor_bar_and_maps_nothing_twice():
     assert len(set(AlpacaAcquisition.FIELD_MAP.values())) == len(
         AlpacaAcquisition.FIELD_MAP
     )
+
+
+# ---------------------------------------------------------------------------
+# 03.2-03 Task 3 -- the `_classify_error` policy seam (SC-2, D-02).
+#
+# The same HTTP 429 means opposite things to the two vendors, and getting it
+# backwards is invisible until it costs a whole run:
+#
+# - reading Alpaca's 429 as `quota` aborts every Alpaca run within seconds of
+#   starting, while logging a message about an allocation ceiling for a vendor
+#   that publishes no allocation concept at all (RESEARCH Pitfall 1, T-03.2-16);
+# - reading Tiingo's 429 as `rate_limited` grinds through ~10,000 fast-failing
+#   requests, which is the observed 2026-09-06 incident.
+#
+# Both directions are asserted below, per vendor, so neither can regress into
+# the other silently. The failing responses are built the way
+# `tests/test_tiingo_quota.py` builds them -- from a real `requests.Response`
+# raised through `raise_for_status()` -- so the exception CHAIN under test is
+# the real one rather than a hand-rolled stand-in that would let a naive
+# `getattr(exc, "response")` pass.
+#
+# Nothing here sleeps for real: `_sleep` is substituted and the waits are
+# COUNTED.
+# ---------------------------------------------------------------------------
+
+
+def _http_error(status_code: int, body: str = "", reason: str = "Error"):
+    """The exception a `requests`-based transport actually raises.
+
+    `_AlpacaMarketDataClient.get_page` calls `response.raise_for_status()`, so
+    what reaches `_classify_error` is a `requests.exceptions.HTTPError` whose
+    `.response` carries the status.
+    """
+    import requests
+
+    response = requests.Response()
+    response.status_code = status_code
+    response.reason = reason
+    response.url = "https://data.alpaca.markets/v2/stocks/bars"
+    response._content = body.encode()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as error:
+        return error
+    raise AssertionError(f"status {status_code} did not raise")  # pragma: no cover
+
+
+def _recording_alpaca(config, on_sleep=None):
+    """An `AlpacaAcquisition` whose `_sleep` seam is substituted, so backoff is
+    asserted by COUNTING waits rather than by waiting.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    class _Recording(AlpacaAcquisition):
+        def __init__(self, cfg):
+            super().__init__(cfg)
+            self.sleeps: list[float] = []
+
+        def _sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            if on_sleep is not None:
+                on_sleep(self)
+
+    return _Recording(config)
+
+
+def test_an_alpaca_429_classifies_rate_limited_and_never_trips_the_global_abort(
+    mock_alpaca_client, acquisition_config
+):
+    """T-03.2-16, the phase's single most expensive misclassification.
+
+    Alpaca's 429 is a per-MINUTE ceiling (200/min on the free tier) that a
+    healthy full-market run is EXPECTED to hit and that clears in under a
+    minute. It must back off inside the worker and leave the shared abort
+    Event alone -- setting it would stop the world over a condition that has
+    already cleared by the time the log line is written.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(vendor="alpaca", symbols=("AAPL",))
+    acq = AlpacaAcquisition(cfg)
+
+    assert acq._classify_error(_http_error(429, reason="Too Many Requests")) == (
+        "rate_limited"
+    )
+    # Classification alone must not touch shared state.
+    assert not acq._abort.is_set()
+
+    # And the vendor has NO quota concept at all -- there is nothing on this
+    # class that could ever classify a status as global.
+    assert not hasattr(AlpacaAcquisition, "QUOTA_STATUS_CODES")
+    assert AlpacaAcquisition.RATE_LIMIT_STATUS_CODES == frozenset({429})
+
+
+def test_a_rate_limited_alpaca_batch_backs_off_retries_and_stays_out_of_the_manifest(
+    mock_alpaca_client, acquisition_config
+):
+    """The whole `rate_limited` outcome, end to end.
+
+    A 429 on the first request must: sleep through the substituted seam, retry
+    the SAME batch, succeed, leave the global abort unset, write the watermark,
+    and leave the failure manifest EMPTY. A rate limit that lands in the
+    manifest would tell the next run to retry a symbol that never failed.
+    """
+    cfg = acquisition_config(vendor="alpaca", symbols=("AAPL",))
+
+    mock_alpaca_client.raise_on = {0: _http_error(429, reason="Too Many Requests")}
+
+    def clear_the_limit(_acq):
+        # The per-minute window has rolled over by the time we wake up.
+        mock_alpaca_client.raise_on = None
+
+    acq = _recording_alpaca(cfg, on_sleep=clear_the_limit)
+    acq.download()
+
+    assert acq.sleeps, "a 429 must back off before retrying, not spin"
+    assert not acq._abort.is_set(), (
+        "a per-minute rate limit is not a global condition -- setting the "
+        "abort Event stops every other batch in the run"
+    )
+
+    manifest = json.loads(
+        (Path(cfg.watermark_path) / "_failures.json").read_text()
+    )
+    assert manifest == {}, manifest
+    assert (Path(cfg.watermark_path) / "AAPL.json").exists(), (
+        "the retry succeeded, so the watermark must be written"
+    )
+
+
+def test_the_rate_limit_backoff_is_bounded_and_degrades_to_failed(
+    mock_alpaca_client, acquisition_config
+):
+    """T-03.2-17. An unbounded retry loop against a rate limit is a worse
+    version of the problem the backoff exists to solve.
+
+    After `rate_limit_max_retries` consecutive 429s the batch must degrade to
+    `failed`, land in the manifest and get no watermark -- so the next run
+    retries it rather than the current run spinning forever.
+    """
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        kwargs={"rate_limit_backoff_seconds": 0.01, "rate_limit_max_retries": 2},
+    )
+
+    # Never clears.
+    limited = _http_error(429, reason="Too Many Requests")
+    mock_alpaca_client.raise_on = {index: limited for index in range(50)}
+
+    acq = _recording_alpaca(cfg)
+    acq.download()
+
+    assert acq.sleeps == [0.01, 0.01], (
+        f"exactly rate_limit_max_retries backoffs, then give up; got "
+        f"{acq.sleeps}"
+    )
+    assert not acq._abort.is_set()
+
+    manifest = json.loads(
+        (Path(cfg.watermark_path) / "_failures.json").read_text()
+    )
+    assert set(manifest) == {"AAPL"}, manifest
+    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
+
+
+def test_an_alpaca_500_classifies_failed_and_isolates_to_its_batch(
+    mock_alpaca_client, acquisition_config
+):
+    """The conservative default. Anything that is not a known transient is
+    per-unit: it fails ONE batch, lands in the manifest and is retried next
+    run, while every other batch completes.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL", "MSFT"), kwargs={"batch_size": 1}
+    )
+    acq = AlpacaAcquisition(cfg)
+
+    assert acq._classify_error(_http_error(500, reason="Server Error")) == "failed"
+
+    # An exception carrying no reachable status is also `failed`, never a
+    # crash: a classifier that raised would tear down the whole fan-out.
+    assert acq._classify_error(RuntimeError("no status anywhere")) == "failed"
+    assert acq._status_of(RuntimeError("no status anywhere")) is None
+
+    # Batch 0 (AAPL) fails, batch 1 (MSFT) completes.
+    mock_alpaca_client.raise_on = {0: _http_error(500, reason="Server Error")}
+    acq.download()
+
+    manifest = json.loads(
+        (Path(cfg.watermark_path) / "_failures.json").read_text()
+    )
+    assert set(manifest) == {"AAPL"}, manifest
+    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
+    assert (Path(cfg.watermark_path) / "MSFT.json").exists()

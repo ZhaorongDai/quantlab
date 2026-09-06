@@ -216,3 +216,209 @@ def test_refresh_batches_still_chunk_a_large_shared_watermark_group(
     assert sorted(symbol for batch in batches for symbol in batch) == sorted(
         _MANY
     )
+
+
+# ---------------------------------------------------------------------------
+# 03.2-03 Task 3 -- two invariants locked by SOURCE INTROSPECTION.
+#
+# Both are properties of code SHAPE that no runtime assertion can reach:
+#
+# - the global-abort check must be the FIRST executable statement of
+#   `_attempt_batch`. joblib cannot cancel work it has already queued, so the
+#   input generator's check is an optimisation and this one is the guarantee.
+#   Move it three lines down, past a coverage read, and every test still
+#   passes while a quota-exhausted run keeps issuing vendor requests.
+# - no concrete `Acquisition` subclass may carry a not-implemented placeholder,
+#   and every one must reach its vendor through the shared `_fetch_batch`
+#   (SC-1). Asserted by WALKING `Acquisition.__subclasses__()` rather than by
+#   naming the vendors, so a third vendor added later is covered without
+#   editing this file.
+#
+# The Phase-3 precedent for replacing a runtime surprise with a test-time
+# source assertion is `03-03-PLAN.md`'s `Factor` introspection.
+# ---------------------------------------------------------------------------
+
+
+def _first_executable_statement(func):
+    """The first statement of `func`'s body, docstring excluded.
+
+    Parsed from the AST, never matched as a substring of the file: a COMMENT
+    mentioning the abort check, or a docstring quoting it, must not be able to
+    satisfy an assertion about what the code actually does first.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    body = [
+        node
+        for node in tree.body[0].body
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+        )
+    ]
+    assert body, f"{func.__qualname__} has an empty body"
+    return body[0]
+
+
+def test_the_abort_check_is_first_in_attempt_batch_abort_is_first():
+    """Named to match the `-k abort_is_first` selector, deliberately.
+
+    The selector is the plan's evidence that this invariant has a guard, so
+    the name is load-bearing: a rename that drops the token would leave the
+    selector matching zero tests, and `pytest` exits 5 on "no tests ran" --
+    which reads as green to anything checking only the exit code.
+    """
+    import ast
+
+    from base.acquisition import Acquisition
+
+    first = _first_executable_statement(Acquisition._attempt_batch)
+
+    assert isinstance(first, ast.If), (
+        f"the first statement of _attempt_batch must be the abort guard; got "
+        f"{type(first).__name__}"
+    )
+    condition = ast.dump(first.test)
+    assert "_abort" in condition and "is_set" in condition, condition
+
+    # ...and it must RETURN, not merely log. A guard that falls through is not
+    # a guard.
+    assert any(isinstance(node, ast.Return) for node in first.body)
+    returned = ast.dump(ast.Module(body=first.body, type_ignores=[]))
+    assert "skipped" in returned, returned
+
+
+def _concrete_acquisition_subclasses():
+    """Every concrete `Acquisition` subclass defined in the SHIPPED tree.
+
+    Imports every module under the `acquisition` package first, so the walk
+    does not depend on which vendor some earlier test happened to import --
+    and so a third vendor dropped into that package is picked up here with no
+    edit to this file.
+
+    Classes defined inside the test tree are excluded: a test double is not a
+    vendor, and whether one exists at all depends on test ordering.
+    """
+    import importlib
+    import pkgutil
+    import sys
+
+    import acquisition
+    from base.acquisition import Acquisition
+
+    for info in pkgutil.iter_modules(
+        acquisition.__path__, acquisition.__name__ + "."
+    ):
+        importlib.import_module(info.name)
+
+    found: dict[str, type] = {}
+
+    def walk(cls):
+        for subclass in cls.__subclasses__():
+            module = sys.modules.get(subclass.__module__)
+            path = Path(getattr(module, "__file__", "") or "")
+            if "tests" not in path.parts and not getattr(
+                subclass, "__abstractmethods__", None
+            ):
+                found[subclass.__qualname__] = subclass
+            walk(subclass)
+
+    walk(Acquisition)
+    return list(found.values())
+
+
+#: Phrases that mark a method body as a PLACEHOLDER rather than an
+#: implementation. `NotImplementedError` is the obvious one; this codebase has
+#: also used `raise ValueError("Not finished")` for the same thing
+#: (`dataset/stock.py` pre-03.2), so both idioms are caught.
+_PLACEHOLDER_TOKENS = ("not implemented", "not finished", "notimplementederror")
+
+
+def test_no_concrete_acquisition_subclass_carries_a_not_implemented_placeholder():
+    """SC-1, asserted over the hierarchy rather than over two named classes.
+
+    A single-symbol vendor is the DEGENERATE case of the batched primitive
+    (`DEFAULT_BATCH_SIZE = 1`, `_fetch_page` returning `(frame, None)`), not a
+    special case that has to fake a multi-symbol interface. If any subclass
+    ever needs a placeholder to satisfy the base contract, the contract is
+    wrong -- and this test is where that shows up.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    classes = _concrete_acquisition_subclasses()
+    assert len(classes) >= 2, (
+        f"the walk found {len(classes)} concrete subclass(es); with fewer "
+        f"than two vendors this assertion proves nothing about sharing"
+    )
+
+    offenders = []
+    for cls in classes:
+        for name, member in vars(cls).items():
+            function = getattr(member, "__func__", member)
+            if not inspect.isfunction(function):
+                continue
+            tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Raise):
+                    continue
+                rendered = ast.dump(node).lower()
+                if any(token in rendered for token in _PLACEHOLDER_TOKENS):
+                    offenders.append(f"{cls.__qualname__}.{name}")
+
+    assert not offenders, (
+        f"placeholder(s) found in the Acquisition hierarchy: {offenders}. "
+        f"Every concrete subclass must reach its vendor through the shared "
+        f"_fetch_batch/_fetch_page path (SC-1)."
+    )
+
+
+def test_every_concrete_acquisition_subclass_reaches_the_vendor_via_fetch_batch(
+    mock_tiingo_client, mock_alpaca_client, acquisition_config
+):
+    """SC-1's positive direction: one shared path, walked per subclass.
+
+    Both vendor transports are mocked by the two fixtures, so this issues no
+    request and needs no credential. The spy is installed on the INSTANCE, so
+    nothing global is mutated and the vendors cannot interfere with each other.
+    """
+    classes = _concrete_acquisition_subclasses()
+    assert len(classes) >= 2, len(classes)
+
+    roster = ["AAPL", "MSFT"]
+    for cls in classes:
+        cfg = acquisition_config(vendor=cls.VENDOR, symbols=tuple(roster))
+        acq = cls(cfg)
+
+        batched: list[list[str]] = []
+        real = acq._fetch_batch
+
+        def spy(symbols, *args, _real=real, _sink=batched, **kwargs):
+            _sink.append(list(symbols))
+            return _real(symbols, *args, **kwargs)
+
+        acq._fetch_batch = spy
+        acq.download(list(roster))
+
+        assert batched, (
+            f"{cls.__qualname__}.download() never reached _fetch_batch -- it "
+            f"is carrying a second write path that can drift from the shared "
+            f"one"
+        )
+        assert sorted({symbol for call in batched for symbol in call}) == sorted(
+            roster
+        ), f"{cls.__qualname__} fetched {batched}, expected every symbol once"
+
+        # ...and it actually landed: one watermark per symbol, and a shard
+        # tree that is not empty.
+        for symbol in roster:
+            assert (Path(cfg.watermark_path) / f"{symbol}.json").exists(), (
+                f"{cls.__qualname__} wrote no watermark for {symbol}"
+            )
+        assert sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt")), (
+            f"{cls.__qualname__} wrote no raw shard"
+        )
