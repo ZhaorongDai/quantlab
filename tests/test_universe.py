@@ -707,6 +707,27 @@ def test_catalog_build_emits_all_three_categories(mock_universe_fetchers, tmp_pa
     assert set(categories) == set(typing.get_args(UniverseCategory))
 
 
+def test_catalog_round_trips_through_parquet(mock_universe_fetchers, tmp_path):
+    """WR-10. Every other catalog test calls .build() and then reads
+    catalog._backend directly, so save() -> load() -> get_symbols_as_of() --
+    exactly the sequence refresh_us_equity_universe.py writes and
+    ingest_tiingo.py reads -- was entirely untested.
+
+    start_date/end_date are compared as STRINGS, so a dtype change across the
+    parquet round trip would silently break point-in-time correctness in
+    production while every in-memory test stayed green.
+    """
+    config = _make_config(tmp_path)
+    UniverseCatalog(config).build().save()
+
+    reloaded = UniverseCatalog.load(config)
+
+    assert "TSLA" in reloaded.get_symbols_as_of("sp500_constituent", "2020-12-21")
+    assert "TSLA" not in reloaded.get_symbols_as_of("sp500_constituent", "2020-12-20")
+    assert "NEWMEM" in reloaded.get_symbols_as_of("nasdaq100_constituent", "2011-01-03")
+    assert "AAPL" in reloaded.get_symbols_as_of("nasdaq_all", "2021-01-01")
+
+
 def test_get_symbols_as_of_rejects_pre_2007_nasdaq100_dates(
     mock_universe_fetchers, tmp_path
 ):
