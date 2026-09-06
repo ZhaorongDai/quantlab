@@ -681,12 +681,30 @@ def test_an_unfiltered_tick_scan_of_a_mixed_root_raises_rather_than_blending(
     with pytest.raises(Exception):
         unfiltered.collect()
 
-    # And filtering to ONE data type makes the same root readable, which is
-    # what the leading `data_type=` key buys.
-    quotes = unfiltered.filter(pl.col("data_type") == "quotes").collect()
-    assert quotes.height == 1
-    assert "bid_price" in quotes.columns and "price" not in quotes.columns
-    assert quotes["symbol"].to_list() == ["AAPL"], (
+    # And -- the finding that decides `_scan_root`'s shape -- a `data_type`
+    # PREDICATE does not rescue it either. The plan below correctly prunes to
+    # the single trades shard, and the collect still raises, because the
+    # expected schema was already fixed from the alphabetically-first QUOTES
+    # file at scan time.
+    filtered = unfiltered.filter(pl.col("data_type") == "trades")
+    assert "data_type=trades" in filtered.explain()
+    assert "data_type=quotes" not in filtered.explain(), (
+        "the plan is expected to prune correctly -- which is exactly why the "
+        "collect below failing is surprising, and why it is pinned here"
+    )
+    with pytest.raises(Exception):
+        filtered.collect()
+
+    # Scoping the ROOT is what actually isolates a data type, and it is what
+    # `StockDataset._scan_root` does.
+    scoped = pl.scan_parquet(
+        root / "data_type=trades",
+        hive_partitioning=True,
+        hive_schema={"date": pl.Date, "symbol": pl.String},
+    ).collect()
+    assert scoped.height == 1
+    assert "price" in scoped.columns and "bid_price" not in scoped.columns
+    assert scoped["symbol"].to_list() == ["AAPL"], (
         "the `symbol=` path segment restores the column the writer dropped"
     )
 

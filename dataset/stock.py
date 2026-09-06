@@ -43,6 +43,13 @@ class StockDataset(MarketDataset):
         "tick": {"data_type": pl.String, "date": pl.Date, "symbol": pl.String},
     }
 
+    #: Hive keys that are PURELY derived partition metadata and carry no data
+    #: column of their own, so `_scan_raw` drops them before handing the frame
+    #: downstream. `symbol` is deliberately absent: the tick layout expresses
+    #: it as a path segment, and the writer therefore omits it from the file,
+    #: so the hive key is the ONLY carrier of it there.
+    DERIVED_HIVE_KEYS = ("month", "date", "data_type")
+
     def __init__(self, dataset_config: DatasetConfig):
         super().__init__(dataset_config)
 
@@ -100,6 +107,54 @@ class StockDataset(MarketDataset):
             )
         return root
 
+    def _scan_root(self) -> Path:
+        """The directory `pl.scan_parquet` is actually handed.
+
+        For `1d`/`1m` that is the vendor root. For `tick` it is one level
+        deeper -- `{vendor_root}/data_type={quotes|trades}` -- and that is a
+        STRUCTURAL requirement, not a convenience.
+
+        Measured against polars 1.44.1: a scan rooted at a tick vendor root
+        holding both data types fixes its expected schema from the FIRST file
+        it discovers, and that schema is then enforced against every file it
+        opens -- including files a `data_type` PREDICATE has already pruned the
+        scan down to. `.explain()` shows the plan correctly listing only the
+        trades shard, and `.collect()` still raises
+        `SchemaError: extra column in file outside of expected schema: price`,
+        because the expected schema came from the alphabetically-first quotes
+        shard. Filtering therefore CANNOT isolate a data type here; only
+        scoping the root can.
+
+        This is the same lesson as D-11's vendor segment, one level deeper: a
+        distinction that only a predicate enforces is not isolation. The
+        difference is that the vendor case merges silently while this one
+        raises -- and it raises in the direction that depends on filename
+        ordering, so it would look intermittent.
+        """
+        root = Path(self.config.raw_data_dir_path)
+        if "data_type" in self._hive_keys:
+            return root / f"data_type={self._tick_data_type}"
+        return root
+
+    @property
+    def _scanned_hive_keys(self) -> tuple[str, ...]:
+        """The hive keys visible INSIDE the scan.
+
+        A key consumed by `_scan_root` is no longer below the scan root, so
+        polars never materialises it as a column and neither the hive schema
+        nor the predicate may mention it.
+        """
+        # `data_type` is the only key `_scan_root` consumes, and it consumes it
+        # whenever the frequency declares it -- so this is a straight removal
+        # rather than a condition on the resolved root.
+        return tuple(key for key in self._hive_keys if key != "data_type")
+
+    def _scanned_hive_schema(self) -> dict:
+        """`HIVE_SCHEMA_BY_FREQUENCY`, narrowed to the keys inside the scan."""
+        schema = self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency]
+        keys = self._scanned_hive_keys
+        return {name: dtype for name, dtype in schema.items() if name in keys}
+
     def _hive_window_predicate(self, start, end) -> pl.Expr:
         """The predicate over the HIVE key(s), used for directory pruning.
 
@@ -110,19 +165,45 @@ class StockDataset(MarketDataset):
         partially covered by the window, and the `timestamp` predicate applied
         alongside this one trims them exactly.
         """
-        keys = self._hive_keys
+        keys = self._scanned_hive_keys
         if keys == ("month",):
             return (pl.col("month") >= pl.lit(start.strftime("%Y-%m"))) & (
                 pl.col("month") <= pl.lit(end.strftime("%Y-%m"))
             )
-        if keys == ("date",):
+        if keys in (("date",), ("date", "symbol")):
+            # `date` is the only prunable window key for both intraday tiers.
+            # `symbol` carries no predicate here: a scan is over the whole
+            # configured roster, and `data_type` has already been consumed by
+            # `_scan_root` (see there for why a predicate cannot do that job).
             return self._session_date_window_predicate(start, end)
         raise NotImplementedError(
             f"{self.__class__.__name__}: no hive window predicate for "
-            f"frequency {self.config.frequency!r} (keys {keys}). The `tick` "
-            f"reader lands with the tick writer; `1d` (`month=`) and `1m` "
-            f"(`date=`) are wired today."
+            f"frequency {self.config.frequency!r} (scanned keys {keys})."
         )
+
+    @property
+    def _tick_data_type(self) -> str:
+        """Which tick data type this scan reads, from `config.kwargs`.
+
+        RAISES when unset rather than guessing. Quotes and trades share one
+        vendor root and have different column sets, so "read the tick data"
+        is an ambiguous question with two incompatible answers -- and picking
+        one silently would be a confident answer to a question the caller
+        never actually asked.
+        """
+        data_type = (self.config.kwargs or {}).get("data_type")
+        if not data_type:
+            raise ValueError(
+                f"{self.__class__.__name__}: frequency "
+                f"{self.config.frequency!r} needs kwargs['data_type'] set to "
+                f"'quotes' or 'trades'; got {data_type!r}. The two land under "
+                f"one vendor root, distinguished by the leading `data_type=` "
+                f"hive key, and they carry DIFFERENT columns -- an unfiltered "
+                f"scan of a root holding both raises a schema error rather "
+                f"than returning a blended frame, which is the structural "
+                f"guarantee, not a bug. Say which one you want."
+            )
+        return str(data_type)
 
     #: How far the intraday hive predicate widens the window at each edge.
     #:
@@ -209,7 +290,8 @@ class StockDataset(MarketDataset):
         into the parquet scan. `None` means "the config's own edge", which is
         what keeps `_raw_data_to_xr()` byte-identical to its pre-refactor self.
         """
-        root = self._assert_vendor_root()
+        self._assert_vendor_root()
+        root = self._scan_root()
 
         # Distinguish "root absent" from "root present but the window pruned to
         # nothing". Polars infers a scan's schema from the FIRST file it finds,
@@ -241,7 +323,7 @@ class StockDataset(MarketDataset):
         data = pl.scan_parquet(
             root,
             hive_partitioning=True,
-            hive_schema=self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency],
+            hive_schema=self._scanned_hive_schema(),
         )
 
         start = self._as_datetime(
@@ -271,9 +353,24 @@ class StockDataset(MarketDataset):
         # dropped along with the hive key(s), so the downstream column set is
         # exactly what it was before this rework.
         data = self._assert_single_vendor_and_drop(data)
-        data = data.drop(list(self._hive_keys))
+        # Drop only the PURELY DERIVED keys. `symbol` is also a real data
+        # column that the tick layout happens to express as a path segment --
+        # the writer drops it from the file because the segment carries it, so
+        # dropping it here too would delete it outright.
+        data = data.drop(
+            [key for key in self._scanned_hive_keys if key in self.DERIVED_HIVE_KEYS]
+        )
 
         data = data.sort(by=["timestamp", "symbol"])
+        if self.config.frequency == "tick":
+            # NO DEDUP for tick (D-16). `dedup_raw_frame` exists so
+            # `.to_xarray()` receives a unique `[timestamp, symbol]` MultiIndex
+            # -- a dense-panel requirement. Tick has no xarray path this phase
+            # (D-18: an irregular event axis cannot be expressed as a dense
+            # panel), and many genuine quotes and trades legitimately share one
+            # (timestamp, symbol): deduping them would silently discard exactly
+            # the resolution this tier exists to capture.
+            return data
         return dedup_raw_frame(data, keep="last")
 
     @staticmethod

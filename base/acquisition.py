@@ -126,8 +126,30 @@ class Acquisition(ABC):
     def class_name(self) -> str:
         return self.__class__.__name__
 
+    @property
+    def _watermark_root(self) -> Path:
+        """`config.watermark_path`, namespaced by data type where the raw tier
+        partitions on one.
+
+        Tick's quotes and trades share ONE vendor raw root, separated on disk
+        only by the leading `data_type=` hive key. Their bookkeeping sidecars
+        have no such key -- they are `{symbol}.json`, `_failures.json` and
+        `{batch_key}.pages.json` -- so without this namespacing a completed
+        quotes backfill's watermarks would tell a subsequent TRADES run that
+        every symbol is already covered. That run would skip the entire roster
+        and report success having fetched nothing.
+
+        Only a frequency whose `RAW_HIVE_KEYS` actually include `data_type` is
+        affected, so `1d` and `1m` sidecar paths are byte-identical to what
+        they were, and no existing watermark tree moves.
+        """
+        root = Path(self.config.watermark_path)
+        if "data_type" in self._hive_keys:
+            root = root / str(self._data_type)
+        return root
+
     def _watermark_path(self, symbol: str) -> Path:
-        return Path(self.config.watermark_path) / f"{symbol}.json"
+        return self._watermark_root / f"{symbol}.json"
 
     def _read_sidecar(self, symbol: str) -> dict | None:
         """Load a watermark sidecar's raw JSON, or None if it is absent or
@@ -252,7 +274,7 @@ class Acquisition(ABC):
 
         Issues zero network requests.
         """
-        directory = Path(self.config.watermark_path)
+        directory = self._watermark_root
         if not directory.exists():
             return 0
 
@@ -675,6 +697,23 @@ class Acquisition(ABC):
             .dt.date()
         )
 
+    @property
+    def _data_type(self) -> str | None:
+        """Which of the vendor's data types this run fetches, or `None`.
+
+        `None` on the base, because a vendor that offers exactly one shape of
+        data per frequency has no such concept and must not be made to invent
+        one. `_hive_key_expr` raises legibly if a frequency whose keys include
+        `data_type` reaches it with nothing declared.
+
+        A multi-data-type vendor overrides this and VALIDATES against its own
+        accepted set on the way out. Which values are legitimate is the
+        vendor's knowledge, not the base's -- and the same resolved value must
+        drive the endpoint and the written projection, so that they cannot
+        disagree about what a shard holds.
+        """
+        return None
+
     def _hive_key_expr(self, key: str) -> pl.Expr:
         """The expression that derives ONE hive key's value from a raw frame.
 
@@ -701,6 +740,24 @@ class Acquisition(ABC):
             # frame reaches here, so the value cannot escape the raw root
             # (T-03.2-03).
             return pl.col("symbol")
+        if key == "data_type":
+            # A per-RUN constant, not a per-row derivation: one fetch asks one
+            # endpoint for one data type. Writing it as the LEADING key is what
+            # keeps two different column sets from meeting inside one directory
+            # scan, which would make the whole tick tier unreadable rather than
+            # merely mixed (03.2-RESEARCH.md Pitfall 6).
+            data_type = self._data_type
+            if data_type is None:
+                raise ValueError(
+                    f"{self.class_name}: frequency "
+                    f"{self.config.frequency!r} partitions on a `data_type=` "
+                    f"hive key but this class resolves no data type. Override "
+                    f"`_data_type` to return the one this run fetches -- it "
+                    f"must be the SAME value that selected the endpoint, or a "
+                    f"shard's directory name and its columns would describe "
+                    f"different things."
+                )
+            return pl.lit(data_type)
         raise NotImplementedError(
             f"{self.class_name}: no derivation for hive key {key!r} "
             f"(frequency {self.config.frequency!r}, keys {self._hive_keys}). "
@@ -818,7 +875,7 @@ class Acquisition(ABC):
             symbols,
         )
         ledger = PageLedger(
-            PageLedger.default_path(self.config.watermark_path, batch_key),
+            PageLedger.default_path(str(self._watermark_root), batch_key),
             symbols=symbols,
         )
         ledger.describe(
@@ -1527,7 +1584,7 @@ class Acquisition(ABC):
         LATEST run, and an empty one is a meaningful statement that the last
         run was clean (T-0iy-07).
         """
-        path = Path(self.config.watermark_path) / self.FAILURE_MANIFEST_NAME
+        path = self._watermark_root / self.FAILURE_MANIFEST_NAME
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(failures, f, indent=2, sort_keys=True)

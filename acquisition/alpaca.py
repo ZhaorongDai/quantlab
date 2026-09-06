@@ -160,8 +160,21 @@ class AlpacaAcquisition(Acquisition):
     #: the test that catches it.
     SESSION_TIME_ZONE = "America/New_York"
 
-    #: Data type -> endpoint path. `quotes` and `trades` land in 03.2-06.
-    ENDPOINT_MAP = {"bars": "/stocks/bars"}
+    #: Data type -> endpoint path. The envelope's row key happens to equal the
+    #: data type for all three (`{"bars": {...}}`, `{"quotes": {...}}`,
+    #: `{"trades": {...}}`), so one token indexes the request AND the response.
+    ENDPOINT_MAP = {
+        "bars": "/stocks/bars",
+        "quotes": "/stocks/quotes",
+        "trades": "/stocks/trades",
+    }
+
+    #: The data types reachable under `frequency="tick"`, and the ONLY accepted
+    #: values of the `data_type` knob. There is deliberately no default: quotes
+    #: and trades land under ONE vendor root, distinguished only by the leading
+    #: `data_type=` hive key, so a wrong default files one as the other with
+    #: the other's projection applied on the way in (T-03.2-26).
+    TICK_DATA_TYPES = ("quotes", "trades")
 
     #: The vendor's single-letter bar fields -> this project's column names.
     #: This mapping is the single most likely place for the class to be quietly
@@ -178,35 +191,164 @@ class AlpacaAcquisition(Acquisition):
         "vw": "vwap",
     }
 
-    #: The pinned shard projection AND order -- see `Acquisition.RAW_COLUMNS`.
-    RAW_COLUMNS = (
-        "timestamp",
-        "symbol",
-        "vendor",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "trade_count",
-        "vwap",
-    )
-
-    #: The dtype-explicit schema an EMPTY page is built with. Without it a
-    #: no-rows response produces a schemaless frame whose `symbol` column
-    #: cannot be read, so "no data" would raise instead of reporting absence.
-    RAW_SCHEMA = {
-        "timestamp": pl.Datetime,
-        "symbol": pl.String,
-        "vendor": pl.String,
-        "open": pl.Float64,
-        "high": pl.Float64,
-        "low": pl.Float64,
-        "close": pl.Float64,
-        "volume": pl.Float64,
-        "trade_count": pl.Float64,
-        "vwap": pl.Float64,
+    #: The vendor's quote fields -> this project's column names. `c` is
+    #: CONDITIONS here and CLOSE on a bar; that collision is the whole reason
+    #: the field map is per data type rather than one shared mapping.
+    QUOTE_FIELD_MAP = {
+        "t": "timestamp",
+        "bx": "bid_exchange",
+        "bp": "bid_price",
+        "bs": "bid_size",
+        "ax": "ask_exchange",
+        "ap": "ask_price",
+        "as": "ask_size",
+        "c": "conditions",
+        "z": "tape",
     }
+
+    #: The vendor's trade fields -> this project's column names.
+    TRADE_FIELD_MAP = {
+        "t": "timestamp",
+        "x": "exchange",
+        "p": "price",
+        "s": "size",
+        "i": "trade_id",
+        "c": "conditions",
+        "z": "tape",
+    }
+
+    #: Data type -> its field map. `FIELD_MAP` above stays the bars entry and
+    #: keeps its name: it is pinned by direct equality in
+    #: tests/test_alpaca_acquisition.py and is what a reader looking for "the
+    #: bar mapping" will search for.
+    FIELD_MAP_BY_DATA_TYPE = {
+        "bars": FIELD_MAP,
+        "quotes": QUOTE_FIELD_MAP,
+        "trades": TRADE_FIELD_MAP,
+    }
+
+    #: The pinned shard projection AND order, PER DATA TYPE -- see
+    #: `Acquisition.RAW_COLUMNS`. Each entry begins
+    #: `("timestamp", "symbol", "vendor")` and then names that endpoint's own
+    #: fields, so the raw tier is schema-stable by construction and a directory
+    #: scan never has to relax its strictness (03.2-RESEARCH.md Pitfall 6).
+    #:
+    #: The three sets are deliberately DISJOINT beyond that shared prefix. A
+    #: shared projection would force a trade to carry `bid_price`/`ask_price`
+    #: as nulls -- columns that have no meaning on a trade at all -- producing
+    #: a schema that describes neither endpoint.
+    RAW_COLUMNS_BY_DATA_TYPE = {
+        "bars": (
+            "timestamp",
+            "symbol",
+            "vendor",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "trade_count",
+            "vwap",
+        ),
+        "quotes": (
+            "timestamp",
+            "symbol",
+            "vendor",
+            "bid_exchange",
+            "bid_price",
+            "bid_size",
+            "ask_exchange",
+            "ask_price",
+            "ask_size",
+            "conditions",
+            "tape",
+        ),
+        "trades": (
+            "timestamp",
+            "symbol",
+            "vendor",
+            "exchange",
+            "price",
+            "size",
+            "trade_id",
+            "conditions",
+            "tape",
+        ),
+    }
+
+    #: The dtype-explicit schema an EMPTY page is built with, per data type.
+    #: Without it a no-rows response produces a schemaless frame whose `symbol`
+    #: column cannot be read, so "no data" would raise instead of reporting
+    #: absence. It also types the columns a sparse response omits entirely --
+    #: `conditions` is genuinely optional on the wire.
+    RAW_SCHEMA_BY_DATA_TYPE = {
+        "bars": {
+            "timestamp": pl.Datetime,
+            "symbol": pl.String,
+            "vendor": pl.String,
+            "open": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "close": pl.Float64,
+            "volume": pl.Float64,
+            "trade_count": pl.Float64,
+            "vwap": pl.Float64,
+        },
+        "quotes": {
+            "timestamp": pl.Datetime,
+            "symbol": pl.String,
+            "vendor": pl.String,
+            "bid_exchange": pl.String,
+            "bid_price": pl.Float64,
+            "bid_size": pl.Float64,
+            "ask_exchange": pl.String,
+            "ask_price": pl.Float64,
+            "ask_size": pl.Float64,
+            "conditions": pl.List(pl.String),
+            "tape": pl.String,
+        },
+        "trades": {
+            "timestamp": pl.Datetime,
+            "symbol": pl.String,
+            "vendor": pl.String,
+            "exchange": pl.String,
+            "price": pl.Float64,
+            "size": pl.Float64,
+            "trade_id": pl.Int64,
+            "conditions": pl.List(pl.String),
+            "tape": pl.String,
+        },
+    }
+
+    #: Per data type, the columns the vendor may legitimately omit from EVERY
+    #: row of a page. `conditions` is genuinely optional on the wire.
+    #:
+    #: Any OTHER absent column is a MAPPING FAILURE -- a field map that no
+    #: longer matches the envelope -- and `_fetch_page` raises on it rather
+    #: than filling it with nulls. That distinction is load-bearing: a mutation
+    #: swapping `TRADE_FIELD_MAP` for `QUOTE_FIELD_MAP` maps only `t`, `c` and
+    #: `z`, so a blanket null-fill would write an all-null `price` column and
+    #: keep doing so forever, looking exactly like a stretch of untraded
+    #: symbols. It is the same class of silent-wrongness as a swapped `o`/`c`.
+    OPTIONAL_COLUMNS_BY_DATA_TYPE = {
+        "bars": (),
+        "quotes": ("conditions",),
+        "trades": ("conditions",),
+    }
+
+    #: Closed literal sets for the request knobs a caller can set (ASVS V5).
+    #: An out-of-set value RAISES rather than being forwarded: the vendor would
+    #: reject some of them and silently ignore others, and "silently ignored"
+    #: means a run that asks for split-adjusted bars and stores raw ones.
+    #: Sourced from `alpaca_py-0.44.0/alpaca/data/enums.py`.
+    FEED_VALUES = frozenset(
+        {"iex", "sip", "delayed_sip", "otc", "boats", "overnight"}
+    )
+    ADJUSTMENT_VALUES = frozenset({"raw", "split", "dividend", "all"})
+    SORT_VALUES = frozenset({"asc", "desc"})
+
+    #: PINNED to `asc`, never read from a knob -- see `_fetch_page`.
+    SORT = "asc"
 
     #: What a credential value is replaced with in any captured message.
     REDACTION = "<APCA CREDENTIAL REDACTED>"
@@ -248,7 +390,86 @@ class AlpacaAcquisition(Acquisition):
 
     def __init__(self, config: AcquisitionConfig):
         super().__init__(config)
+        # Resolve and validate EAGERLY, before the transport exists, so a bad
+        # `data_type`/`feed`/`adjustment` raises at construction rather than
+        # inside a worker thread where `_attempt_batch` would classify it as a
+        # per-batch failure and file it in the manifest as if the vendor had
+        # rejected it.
+        self._assert_knobs_are_in_range()
         self._client = _AlpacaMarketDataClient()
+
+    # -- data type: one knob drives the endpoint AND the projection ---------
+
+    @property
+    def _data_type(self) -> str:
+        """`bars`, `quotes` or `trades` -- resolved ONCE and used for both the
+        endpoint and the written projection, so the two cannot disagree.
+
+        Bar frequencies resolve from `config.frequency`; `tick` resolves from
+        `config.kwargs["data_type"]` with NO default. `tick` plus a knob covers
+        both tick shapes without touching `enums/data.py`'s locked `Frequency`
+        literal set, whose extension would require revisiting 02-RESEARCH.md
+        Assumptions Log A2.
+        """
+        frequency = self.config.frequency
+        if frequency in self.TIMEFRAME_MAP:
+            return "bars"
+
+        data_type = self._knob("data_type", None)
+        if data_type not in self.TICK_DATA_TYPES:
+            raise ValueError(
+                f"{self.class_name}: frequency {frequency!r} needs "
+                f"kwargs['data_type'] set to one of "
+                f"{sorted(self.TICK_DATA_TYPES)}; got {data_type!r}. There is "
+                f"deliberately NO default -- quotes and trades land under the "
+                f"same vendor root, distinguished only by the leading "
+                f"`data_type=` hive key, so guessing here would file one as "
+                f"the other with the other's column projection applied."
+            )
+        return data_type
+
+    @property
+    def RAW_COLUMNS(self) -> tuple[str, ...]:  # noqa: N802 - base attr name
+        """This run's pinned shard projection, resolved from `_data_type`.
+
+        A PROPERTY rather than a class attribute because the projection depends
+        on which endpoint the run reads. `RAW_COLUMNS_BY_DATA_TYPE` stays the
+        class-level source of truth for anything introspecting the contract.
+        """
+        return self.RAW_COLUMNS_BY_DATA_TYPE[self._data_type]
+
+    @property
+    def RAW_SCHEMA(self) -> dict:  # noqa: N802 - matches RAW_COLUMNS
+        """This run's dtype-explicit empty-page schema."""
+        return self.RAW_SCHEMA_BY_DATA_TYPE[self._data_type]
+
+    def _assert_knobs_are_in_range(self) -> None:
+        """Reject out-of-set request knobs before any request is built.
+
+        `feed` is checked ONLY when set: an unset feed is omitted from the
+        request entirely (D-12 / O-1), and validating a `None` into existence
+        would be the in-code default this class refuses to have.
+        """
+        self._data_type  # resolves and validates, or raises
+
+        for name, allowed, default in (
+            ("feed", self.FEED_VALUES, None),
+            ("adjustment", self.ADJUSTMENT_VALUES, "raw"),
+        ):
+            value = self._knob(name, default)
+            if value is None:
+                continue
+            if value not in allowed:
+                raise ValueError(
+                    f"{self.class_name}: kwargs[{name!r}]={value!r} is not one "
+                    f"of {sorted(allowed)}. An unrecognised value is refused "
+                    f"rather than forwarded: the vendor rejects some and "
+                    f"silently ignores others, and 'silently ignored' means a "
+                    f"run that asks for one thing and stores another."
+                )
+
+        if self.SORT not in self.SORT_VALUES:  # pragma: no cover - constant
+            raise ValueError(f"{self.class_name}: SORT={self.SORT!r} is invalid")
 
     def _rate_limit_headers(self, exc: BaseException) -> dict[str, str]:
         """Whatever `X-RateLimit-*` the vendor happened to send, or `{}`.
@@ -284,29 +505,36 @@ class AlpacaAcquisition(Acquisition):
         end_date: str,
         page_token: str | None = None,
     ) -> tuple[pl.DataFrame, str | None]:
-        """One `GET /v2/stocks/bars` request, flattened to rows.
+        """One `GET /v2/stocks/{bars,quotes,trades}` request, flattened to rows.
 
         Returns `(frame, next_page_token)`. `frame` is projected and ordered to
-        `RAW_COLUMNS`; a `None` token means this was the batch's last page.
+        `RAW_COLUMNS` for THIS run's data type; a `None` token means this was
+        the batch's last page.
+
+        **No aggregation, anywhere (D-16).** Every row the envelope carries
+        becomes exactly one row in the frame and therefore exactly one row in
+        the shard. There is no resampling, no bucketing and no dedup on this
+        path, and there must not be: a "just resample tick to 1s to save space"
+        edit destroys the resolution the tick tier exists to capture, and it
+        looks like an optimisation while doing it.
         """
         symbols = self._validate_symbols(symbols)
+        data_type = self._data_type
 
         params = {
             "symbols": ",".join(symbols),
-            "timeframe": self.TIMEFRAME_MAP[self.config.frequency],
             "start": start_date,
             "end": end_date,
             # The vendor maximum. Fewer rows per page means more requests for
             # the same data, which is pure rate-limit pressure.
             "limit": self._knob("page_limit", 10_000),
-            "adjustment": self._knob("adjustment", "raw"),
             # PINNED to "asc", never read from a knob. Alpaca sorts symbol-major
             # then timestamp; with `asc` that is a total, monotone order, so the
             # ledger's "furthest position reached" is a well-defined resume
             # point. A `desc` request inverts the ordering and makes that
             # recorded position meaningless -- a resumed run would re-fetch what
             # it had and skip what it had not.
-            "sort": "asc",
+            "sort": self.SORT,
             # Passed EXPLICITLY, including as None, and never left to the
             # vendor's default of "today". That default maps each symbol onto
             # whatever entity holds that ticker NOW, so a delisted ticker
@@ -315,6 +543,13 @@ class AlpacaAcquisition(Acquisition):
             # (03.2-RESEARCH.md Pitfall 5).
             "asof": self._knob("asof", None),
         }
+
+        if data_type == "bars":
+            # BAR-ONLY parameters. The quotes and trades endpoints have no
+            # concept of a bar size or of a price adjustment, and sending
+            # either is at best ignored and at worst rejected.
+            params["timeframe"] = self.TIMEFRAME_MAP[self.config.frequency]
+            params["adjustment"] = self._knob("adjustment", "raw")
 
         # OMITTED entirely when unset (assumption O-1 / D-12): no in-code feed
         # default is written anywhere in this phase, because whether the free
@@ -328,33 +563,71 @@ class AlpacaAcquisition(Acquisition):
         if page_token:
             params["page_token"] = page_token
 
-        payload = self._client.get_page(self.ENDPOINT_MAP["bars"], params)
+        payload = self._client.get_page(self.ENDPOINT_MAP[data_type], params)
 
+        # The envelope keys its rows by the data type itself -- `{"bars": ...}`,
+        # `{"quotes": ...}`, `{"trades": ...}` -- so one resolved token indexes
+        # the endpoint, the response and the projection alike.
+        field_map = self.FIELD_MAP_BY_DATA_TYPE[data_type]
         rows = [
             {
                 "symbol": symbol,
                 "vendor": self.VENDOR,
                 **{
-                    self.FIELD_MAP[key]: value
-                    for key, value in bar.items()
-                    if key in self.FIELD_MAP
+                    field_map[key]: value
+                    for key, value in item.items()
+                    if key in field_map
                 },
             }
-            for symbol, bars in (payload.get("bars") or {}).items()
-            for bar in (bars or [])
+            for symbol, items in (payload.get(data_type) or {}).items()
+            for item in (items or [])
         ]
 
+        schema = self.RAW_SCHEMA
         if not rows:
-            frame = pl.DataFrame(schema=self.RAW_SCHEMA)
+            frame = pl.DataFrame(schema=schema)
             return frame.select(self.RAW_COLUMNS), payload.get("next_page_token")
 
         frame = pl.DataFrame(rows)
+
+        # A field the vendor omitted from EVERY row of this page is filled as a
+        # TYPED null column, so the shard's schema is identical either way --
+        # which is what keeps a directory scan of the vendor root readable
+        # (Pitfall 6) -- but ONLY if that column is declared optional.
+        #
+        # Anything else absent means the field map no longer matches the
+        # envelope, and that MUST raise here. Filling it would write an
+        # all-null `price` (or `close`) column that looks like data forever;
+        # this is the same silent-wrongness as a swapped `o`/`c`, and it is the
+        # one this projection exists to make impossible.
+        missing = [name for name in self.RAW_COLUMNS if name not in frame.columns]
+        optional = self.OPTIONAL_COLUMNS_BY_DATA_TYPE[data_type]
+        unexpected = [name for name in missing if name not in optional]
+        if unexpected:
+            raise ValueError(
+                f"{self.class_name}: the {data_type} envelope produced no "
+                f"{unexpected} column(s). Only {list(optional)} may be absent "
+                f"from a {data_type} page; anything else means "
+                f"FIELD_MAP_BY_DATA_TYPE[{data_type!r}] no longer matches what "
+                f"the vendor sends. Refusing rather than writing null columns "
+                f"that would read as untraded data forever. Vendor fields seen: "
+                f"{sorted(field_map)}."
+            )
+        if missing:
+            frame = frame.with_columns(
+                pl.lit(None, dtype=schema[name]).alias(name) for name in missing
+            )
+
         # Alpaca returns RFC-3339 with a trailing `Z`, the same shape Tiingo
         # does. Parse as UTC then DROP the zone, so the dtype is a naive
         # `pl.Datetime` matching every other timestamp in this codebase --
         # parsing without an explicit time zone raises on tz-aware strings, and
         # a tz-aware column would compare unequal to the naive filter bounds
         # `StockDataset._scan_raw` builds.
+        #
+        # The intraday `date=` hive key is derived from these naive-UTC values
+        # by `Acquisition._session_date`, in `SESSION_TIME_ZONE`. The VALUES
+        # stay UTC; only that derived key converts.
         frame = frame.with_columns(
             pl.col("timestamp")
             .str.to_datetime(time_zone="UTC")
@@ -363,7 +636,7 @@ class AlpacaAcquisition(Acquisition):
         frame = frame.cast(
             {
                 name: dtype
-                for name, dtype in self.RAW_SCHEMA.items()
+                for name, dtype in schema.items()
                 if name != "timestamp" and name in frame.columns
             }
         )

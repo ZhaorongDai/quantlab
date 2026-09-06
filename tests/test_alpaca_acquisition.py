@@ -231,9 +231,10 @@ def test_tracer_one_alpaca_daily_batch_lands_as_a_hive_shard_and_reads_back(
     # handed to `_raw_data_to_xr_window` has exactly its pre-refactor shape.
     assert "vendor" not in frame.columns
     assert "month" not in frame.columns
-    assert frame.columns == list(AlpacaAcquisition.RAW_COLUMNS[:2]) + list(
-        AlpacaAcquisition.RAW_COLUMNS[3:]
-    )
+    # Named by DATA TYPE rather than off the instance: `RAW_COLUMNS` resolves
+    # per data type (bars / quotes / trades), and this tracer is the bars path.
+    bars_columns = AlpacaAcquisition.RAW_COLUMNS_BY_DATA_TYPE["bars"]
+    assert frame.columns == list(bars_columns[:2]) + list(bars_columns[3:])
     # Naive datetimes, matching every other timestamp in this codebase.
     assert frame.schema["timestamp"] == pl.Datetime
     assert frame.schema["timestamp"].time_zone is None
@@ -1108,3 +1109,211 @@ def test_a_malformed_symbol_raises_before_any_symbol_path_segment_is_built(
     assert "well-formed ticker" in str(excinfo.value)
     assert mock_alpaca_client.calls == []
     assert not Path(cfg.raw_data_dir_path).exists()
+
+
+def test_a_quotes_backfills_watermarks_do_not_mark_the_trades_run_covered(
+    mock_alpaca_client, acquisition_config
+):
+    """Quotes and trades share one vendor root; their SIDECARS must not.
+
+    The raw tier separates the two with the leading `data_type=` hive key, but
+    a watermark sidecar is `{symbol}.json` and carries no such key. Without a
+    data-type-namespaced watermark root, a completed quotes backfill tells the
+    subsequent trades run that every symbol is already covered -- and that run
+    skips the entire roster, writes nothing, and reports success.
+
+    Asserted in both directions: separate sidecar directories on disk, AND the
+    trades run actually issuing its request and landing its shard.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+
+    written = {}
+    for data_type in ("quotes", "trades"):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            _tick_page(data_type, {"AAPL": ["2024-01-02T14:31:00Z"]})
+        ]
+        cfg = _tick_config(acquisition_config, data_type=data_type)
+        AlpacaAcquisition(cfg).download()
+        written[data_type] = len(mock_alpaca_client.calls)
+        root = Path(cfg.raw_data_dir_path)
+        watermarks = Path(cfg.watermark_path)
+
+    assert written == {"quotes": 1, "trades": 1}, (
+        f"the trades run must issue its own request rather than reading the "
+        f"quotes run's watermarks as coverage; got {written}"
+    )
+    assert (watermarks / "quotes" / "AAPL.json").exists()
+    assert (watermarks / "trades" / "AAPL.json").exists()
+    assert not (watermarks / "AAPL.json").exists(), (
+        "an un-namespaced sidecar is the collision itself"
+    )
+    assert (root / "data_type=quotes").exists()
+    assert (root / "data_type=trades").exists()
+
+
+def test_the_daily_watermark_layout_is_unchanged_by_the_tick_namespacing(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """The namespacing applies ONLY where `RAW_HIVE_KEYS` declares a
+    `data_type` key, so no existing `1d` or `1m` watermark tree moves."""
+    from acquisition.alpaca import AlpacaAcquisition
+
+    for frequency in ("1d", "1m"):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            alpaca_bars_page({"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None)
+        ]
+        cfg = acquisition_config(
+            vendor="alpaca", symbols=("AAPL",), frequency=frequency
+        )
+        AlpacaAcquisition(cfg).download()
+
+        assert (Path(cfg.watermark_path) / "AAPL.json").exists(), frequency
+        assert not (Path(cfg.watermark_path) / "bars").exists(), frequency
+
+
+def test_the_quote_and_trade_field_maps_are_pinned_and_map_nothing_twice(
+    mock_alpaca_client, acquisition_config
+):
+    """The two tick field maps, pinned by DIRECT EQUALITY.
+
+    Same reasoning as the bar map: mapping the vendor's letters is the single
+    most likely place for this class to be quietly wrong, and `c` meaning
+    CONDITIONS on a quote or a trade but CLOSE on a bar is exactly the kind of
+    collision that a shared map would resolve silently and wrongly.
+    """
+    from acquisition.alpaca import AlpacaAcquisition as A
+
+    assert A.QUOTE_FIELD_MAP == {
+        "t": "timestamp",
+        "bx": "bid_exchange",
+        "bp": "bid_price",
+        "bs": "bid_size",
+        "ax": "ask_exchange",
+        "ap": "ask_price",
+        "as": "ask_size",
+        "c": "conditions",
+        "z": "tape",
+    }
+    assert A.TRADE_FIELD_MAP == {
+        "t": "timestamp",
+        "x": "exchange",
+        "p": "price",
+        "s": "size",
+        "i": "trade_id",
+        "c": "conditions",
+        "z": "tape",
+    }
+    assert set(A.QUOTE_FIELD_MAP) == set(_VENDOR_QUOTE_FIELDS)
+    assert set(A.TRADE_FIELD_MAP) == set(_VENDOR_TRADE_FIELDS)
+    for field_map in (A.QUOTE_FIELD_MAP, A.TRADE_FIELD_MAP):
+        # One vendor field per project column -- no two letters collapse.
+        assert len(set(field_map.values())) == len(field_map)
+    assert A.FIELD_MAP_BY_DATA_TYPE["quotes"] is A.QUOTE_FIELD_MAP
+    assert A.FIELD_MAP_BY_DATA_TYPE["trades"] is A.TRADE_FIELD_MAP
+
+
+def test_quote_and_trade_values_survive_the_field_map_onto_the_shard(
+    mock_alpaca_client, acquisition_config
+):
+    """The VALUES, end to end, not just the column names.
+
+    Pinning the maps by equality proves the mapping is declared correctly;
+    this proves the declared mapping is the one `_fetch_page` applies. Without
+    it, substituting the quotes map for the trades one leaves the suite green
+    -- the trade's `x/p/s/i` simply stop mapping and the columns arrive as
+    nulls, which is the silent-wrongness this pair of tests closes.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    mock_alpaca_client.pages = [
+        _tick_page(
+            "trades",
+            {"AAPL": [_vendor_trade("2024-01-02T14:31:00Z", p=123.45, i=99)]},
+        )
+    ]
+    cfg = _tick_config(acquisition_config, data_type="trades")
+    AlpacaAcquisition(cfg).download()
+
+    (shard,) = list(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    row = pl.read_parquet(shard).row(0, named=True)
+    assert row["price"] == 123.45
+    assert row["size"] == 100.0
+    assert row["trade_id"] == 99
+    assert row["exchange"] == "V"
+    assert row["tape"] == "C"
+    assert row["conditions"] == ["@", "T"]
+    assert row["vendor"] == "alpaca"
+
+    mock_alpaca_client.calls = []
+    mock_alpaca_client.pages = [
+        _tick_page(
+            "quotes",
+            {"AAPL": [_vendor_quote("2024-01-02T14:31:00Z", bp=10.5, ap=10.7)]},
+        )
+    ]
+    cfg = _tick_config(acquisition_config, data_type="quotes", subdir="q")
+    AlpacaAcquisition(cfg).download()
+
+    (shard,) = list(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    row = pl.read_parquet(shard).row(0, named=True)
+    assert row["bid_price"] == 10.5 and row["ask_price"] == 10.7
+    assert row["bid_size"] == 100.0 and row["ask_size"] == 200.0
+    assert row["bid_exchange"] == "V" and row["ask_exchange"] == "P"
+    assert row["conditions"] == ["R"]
+
+
+def test_a_field_map_that_stops_matching_the_envelope_raises_not_nulls(
+    mock_alpaca_client, acquisition_config
+):
+    """The guard that makes the mutation above loud rather than silent.
+
+    Only `conditions` may be absent from a tick page. A page whose rows carry
+    none of the trade fields must RAISE, naming what went missing, rather than
+    landing an all-null `price` column that reads as untraded data forever.
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = _tick_config(acquisition_config, data_type="trades")
+    acq = AlpacaAcquisition(cfg)
+
+    mock_alpaca_client.pages = [
+        # A row carrying ONLY the fields a quotes map would have matched.
+        _tick_page("trades", {"AAPL": [{"t": "2024-01-02T14:31:00Z", "z": "C"}]})
+    ]
+    with pytest.raises(ValueError) as excinfo:
+        acq._fetch_page(["AAPL"], cfg.start_date, cfg.end_date)
+
+    message = str(excinfo.value)
+    assert "price" in message and "trade_id" in message
+    assert "conditions" in message, "names what IS allowed to be absent"
+
+    # `conditions` alone missing is fine, and arrives as a typed null.
+    import polars as pl
+
+    mock_alpaca_client.pages = [
+        _tick_page(
+            "trades",
+            {
+                "AAPL": [
+                    {
+                        "t": "2024-01-02T14:31:00Z",
+                        "x": "V",
+                        "p": 1.0,
+                        "s": 100,
+                        "i": 1,
+                        "z": "C",
+                    }
+                ]
+            },
+        )
+    ]
+    frame, _ = acq._fetch_page(["AAPL"], cfg.start_date, cfg.end_date)
+    assert frame.height == 1
+    assert frame.schema["conditions"] == pl.List(pl.String)
+    assert frame["conditions"].to_list() == [None]
