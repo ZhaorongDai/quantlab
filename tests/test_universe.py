@@ -5,6 +5,7 @@ No test in this module makes a real network call: all `requests.get` calls
 are patched by the `mock_universe_fetchers` fixture in `tests/conftest.py`.
 """
 
+import datetime
 import io
 import re
 import typing
@@ -983,6 +984,79 @@ def test_roster_fetchers_registry_is_disjoint_from_membership_fetchers():
     assert not set(UniverseCatalog.ROSTER_FETCHERS) & set(
         UniverseCatalog.MEMBERSHIP_FETCHERS
     )
+
+
+@pytest.mark.parametrize(
+    "fetcher_cls",
+    UniverseCatalog.MEMBERSHIP_FETCHERS,
+    ids=lambda cls: cls.__name__,
+)
+def test_every_membership_fetcher_declares_a_canonical_iso_coverage_start(fetcher_cls):
+    """REGISTRATION is the entrance `_normalize_iso_date` does not guard.
+
+    `_coverage_start` reads `PIT_COVERAGE_START` off every class in
+    `MEMBERSHIP_FETCHERS` and feeds it straight into a LEXICOGRAPHIC `<`
+    against an already-normalised query date. Nothing in the module checks
+    that value's presence or shape, so this registry test is the check:
+
+    - **Presence.** `IndexMembershipFetcher.PIT_COVERAGE_START` is a bare
+      annotation with no value, so a subclass that forgets to assign one
+      raises `AttributeError` from inside a private helper, at query time,
+      with no mention of the offending class. Here it fails at registration
+      time and names the class.
+    - **Canonical zero-padded `YYYY-MM-DD`.** `date.fromisoformat` is not the
+      guard `_coverage_start` has -- and even if it were, it accepts ISO BASIC
+      form (`"20070201"`) and week dates since 3.11. A non-canonical constant
+      breaks the comparison IN BOTH DIRECTIONS: `"2010-06-30" < "2010-1-1"` is
+      True (`'0'` 0x30 < `'1'` 0x31 at index 5), so the boundary would refuse
+      dates INSIDE coverage while `"20100101"` would admit dates OUTSIDE it.
+      Either way the failure is a plausible, silently wrong roster, not an
+      exception.
+
+    Mirrors `test_roster_fetchers_registry_is_disjoint_from_membership_fetchers`:
+    a property of the registry, asserted over the registry, so a third index
+    inherits the check by being registered.
+    """
+    coverage_start = getattr(fetcher_cls, "PIT_COVERAGE_START", None)
+
+    assert isinstance(coverage_start, str), (
+        f"{fetcher_cls.__name__} is registered in MEMBERSHIP_FETCHERS but "
+        f"declares no PIT_COVERAGE_START value (got {coverage_start!r}). "
+        f"The ABC only annotates it, so _coverage_start() would raise "
+        f"AttributeError from inside a private helper on the first query."
+    )
+
+    try:
+        canonical = datetime.date.fromisoformat(coverage_start).isoformat()
+    except ValueError:
+        canonical = None
+    assert canonical == coverage_start, (
+        f"{fetcher_cls.__name__}.PIT_COVERAGE_START must be zero-padded ISO "
+        f"YYYY-MM-DD, got {coverage_start!r}. It is compared "
+        f"LEXICOGRAPHICALLY against query dates in _coverage_start(), so a "
+        f"non-canonical value admits pre-coverage dates and refuses covered "
+        f"ones."
+    )
+
+
+def test_coverage_start_lookup_agrees_with_the_registered_constants():
+    """The registry-driven lookup is what the guard actually consults.
+
+    Asserting the constants alone would leave `_coverage_start` free to read
+    somewhere else; this pins that every registered CATEGORY resolves through
+    it to that class's own canonical constant, and that an unregistered
+    category still resolves to `None` (the D-02 contract for the roster
+    categories).
+    """
+    catalog = UniverseCatalog.__new__(UniverseCatalog)
+
+    for fetcher_cls in UniverseCatalog.MEMBERSHIP_FETCHERS:
+        resolved = catalog._coverage_start(fetcher_cls.CATEGORY)
+        assert resolved == fetcher_cls.PIT_COVERAGE_START
+        assert datetime.date.fromisoformat(resolved).isoformat() == resolved
+
+    for roster_cls in UniverseCatalog.ROSTER_FETCHERS:
+        assert catalog._coverage_start(roster_cls.CATEGORY) is None
 
 
 def test_catalog_build_emits_all_four_categories(mock_universe_fetchers, tmp_path):
