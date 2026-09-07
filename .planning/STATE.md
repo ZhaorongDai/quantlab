@@ -160,7 +160,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- **[major/database]** New listings break cross-run incremental zarr appends — `XrBackend.append()`'s coordinate guard correctly refuses when the symbol union grows, but there is no path to widen an existing store's symbol axis, so a periodic refresh halts after any new listing. Guard must stay (it prevents silent history mis-attribution when the symbol count is unchanged but labels differ — measured). `.planning/todos/pending/2026-09-06-support-new-listings-in-incremental-zarr-appends.md`
+- **[major/database]** New listings break cross-run incremental zarr appends — `XrBackend.append()`'s coordinate guard correctly refuses when the symbol union grows, but there is no path to widen an existing store's symbol axis, so a periodic refresh halts after any new listing. Guard must stay (it prevents silent history mis-attribution when the symbol count is unchanged but labels differ — measured). **IN PROGRESS** (quick task, 2026-09-06: direction 1 widen-in-place first, then direction 2 detect-and-rebuild) — `.planning/todos/completed/2026-09-06-support-new-listings-in-incremental-zarr-appends.md`
 - Broader test-code/temporary-script cleanup (`test.py`, `test_nt.ipynb`, `read_mock_data_sink.py` as CLEAN-02 "test code / temporary scripts" candidates beyond the Phase 1 hardcoded-path fix applied to `test.py`) is intentionally deferred to Phase 7 (QUAL-02: "no leftover test/temp/redundant code remains outside the established `tests/` structure"), not silently dropped from Phase 1. Phase 1 only fixes `test.py`'s hardcoded per-developer paths (01-01 Task 3); it does not relocate, rename, or remove these files.
 
 ### Blockers/Concerns
