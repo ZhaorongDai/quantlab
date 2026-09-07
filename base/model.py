@@ -279,9 +279,16 @@ class BaseModel(ABC):
             raise ValueError(
                 "Model not initialized, please call load() or train() first"
             )
-        data = data.to(self.device)
-        data = self._preprocess(data)
-        return self.model(data)
+        # 推理必须切 eval + no_grad。`load()` 新建的 nn.Module 默认处在 training
+        # 模式，以前这里两样都没做：dropout 是开着的（train_model.py 的配置里
+        # 首层就是 0.5），同一份输入每次调用给出的结果都不一样；而且整张计算图
+        # 被留下来白吃内存。切过之后模型就留在 eval 模式——要继续训练的话，
+        # 训练循环开头本来就会调 `self.model.train()`。
+        self.model.eval()  # type: ignore[union-attr]
+        with torch.no_grad():
+            data = data.to(self.device)
+            data = self._preprocess(data)
+            return self.model(data)
 
     def predict(
         self, data: torch.Tensor | np.ndarray

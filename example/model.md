@@ -726,8 +726,10 @@ sub.to_dataarray().sortby([...,'variable']).coords['variable']  # ['alpha', 'mid
 `DataLoader` 里硬编码，Mac（MPS）上会每次打印 UserWarning。无害，但吵。
 
 **10. `predict()` 不会自动切 `eval()`，也不在 `no_grad` 里。**
-`_predict_nn` 只做了 `to(device)` + `_preprocess` + `model(data)`，
-没有 `model.eval()`、没有 `torch.no_grad()`。而 `load()` 新建的 `nn.Module`
+（**已于 2026-09-07 修复**）
+
+曾经：`_predict_nn` 只做了 `to(device)` + `_preprocess` + `model(data)`，
+没有 `model.eval()`、没有 `torch.no_grad()`；而 `load()` 新建的 `nn.Module`
 默认就处在 training 模式。实测：
 
 ```
@@ -736,15 +738,15 @@ requires_grad on output:     True
 ```
 
 后果是**推理时 dropout 是开着的**——`train_model.py` 的配置里
-`dropout_rates=[0.5, 0.3, 0.3, 0.3, 0.3]`，也就是预测结果里混了一半的随机丢弃，
-而且每次调用结果都不一样。同时因为没有 `no_grad`，整张计算图会被留着，白吃内存。
-自己在 `predict()` 前后加上：
+`dropout_rates=[0.5, 0.3, 0.3, 0.3, 0.3]`，预测结果里混着一半的随机丢弃，
+每次调用还都不一样；同时因为没有 `no_grad`，整张计算图被留着白吃内存。
 
-```python
-model.model.eval()
-with torch.no_grad():
-    pred = model.predict(x)
-```
+现在 `_predict_nn` 自己会 `self.model.eval()` 并在 `torch.no_grad()` 里前向，
+调用方直接 `model.predict(x)` 就行，不用再手动包一层。**副作用是模型会留在
+eval 模式**——要接着训练不用管，`_train_dl` 每个 epoch 开头本来就会调
+`self.model.train()`。回归锁：
+`tests/test_model_layer.py::test_predict_runs_in_eval_mode_without_grad`
+（同一份输入连调两次，断言结果逐位相等）。
 
 **11. 配置 setter 有副作用。**
 `BaseModel.config = cfg` 会**就地修改**你传进来的因子和标签对象的 `config.start_date` /
