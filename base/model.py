@@ -96,13 +96,27 @@ class BaseModel(ABC):
 
     @property
     def num_null(self) -> int:
-        return (
+        """整块面板上 NaN 单元格的总数（跨全部变量、全部 timestamp、全部 symbol）。
+
+        结尾曾经是 `.values[0]`，但它前面那个 `.sum()` 已经把 `variable` 维也加
+        掉了，得到的是一个 **0 维** DataArray——于是**每一次读取**都是
+        `IndexError: too many indices for array: array is 0-dimensional, but 1
+        were indexed`。这个属性的注解写着 `-> int`，`example/model.md` 还把它
+        推荐为「训练前先看一眼缺失值」的入口，所以它是一条被文档化、被推荐、
+        却从来没有跑通过的路（2026-09-07 修复，
+        `tests/test_model_layer.py::test_num_null_counts_missing_cells_and_returns_an_int`
+        锁住）。
+
+        现在取的是 0 维数组本身，并显式 `int()` 兑现注解——`.item()` 出来的是
+        numpy 标量，直接返回会让 `-> int` 继续说谎。
+        """
+        return int(
             self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
             .isnull()
             .sum()
             .to_dataarray()
             .sum()
-            .values[0]
+            .item()
         )
 
     @property

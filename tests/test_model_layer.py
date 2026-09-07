@@ -185,6 +185,27 @@ class FlatValLossRegressor(RecordingRegressor):
         return torch.tensor(1.0)
 
 
+class HolePanel(FakePanel):
+    """`FakePanel` with a KNOWN number of NaNs punched into its first variable.
+
+    `FakePanel` fills every cell with a constant, so a panel built from it has
+    exactly zero missing values -- which cannot tell a working `num_null` apart
+    from one that always answers 0.
+    """
+
+    def __init__(self, values: dict[str, float], n_holes: int):
+        super().__init__(values)
+        first = next(iter(values))
+        arr = self._ds[first].values.copy().reshape(-1)
+        assert n_holes <= arr.size
+        arr[:n_holes] = np.nan
+        self._ds[first] = (
+            ("timestamp", "symbol"),
+            arr.reshape(N_TIMES, N_SYMBOLS),
+        )
+        self.n_holes = n_holes
+
+
 def _make_config(
     tmp_path,
     *,
@@ -195,10 +216,12 @@ def _make_config(
     early_stopping: bool = True,
     early_stopping_patience: int = 5,
     hyperparameters: dict | None = None,
+    factors: list | None = None,
+    labels: list | None = None,
 ) -> DLConfig:
     return DLConfig(
-        factors=[FakePanel(factor_values)],
-        labels=[FakePanel(label_values)],
+        factors=factors if factors is not None else [FakePanel(factor_values)],
+        labels=labels if labels is not None else [FakePanel(label_values)],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -426,3 +449,57 @@ def test_model_is_usable_immediately_after_train(tmp_path):
         torch.randn(2, model.num_symbols, model.num_factors)
     )
     assert out.shape == (2, model.num_symbols, model.num_labels)
+
+
+# --------------------------------------------------------------------------
+# num_null: every read raised
+# --------------------------------------------------------------------------
+
+
+def test_num_null_counts_missing_cells_and_returns_an_int(tmp_path):
+    """`BaseModel.num_null` ended in `.values[0]`, but the `.sum()` before it
+    produces a 0-d array, so EVERY read raised
+
+        IndexError: too many indices for array: array is 0-dimensional,
+        but 1 were indexed
+
+    The property is annotated `-> int` and `example/model.md` recommends it as
+    the pre-training missing-value check, so it was documented, advertised and
+    unusable.
+
+    The two panels punch a different number of holes so a fix that reads only
+    one of them, or that stops at the per-variable `.sum()` (a Dataset, not a
+    scalar), cannot pass.
+    """
+    factor_holes, label_holes = 7, 4
+    cfg = _make_config(
+        tmp_path,
+        factor_values={},
+        label_values={},
+        factors=[HolePanel({"f0": 1.0, "f1": 2.0}, n_holes=factor_holes)],
+        labels=[HolePanel({"y0": 0.5}, n_holes=label_holes)],
+    )
+    model = RecordingRegressor(cfg)
+    model.collect()
+
+    n = model.num_null
+
+    assert n == factor_holes + label_holes
+    assert isinstance(n, int), f"num_null is annotated -> int, got {type(n)}"
+
+
+def test_num_null_is_zero_on_a_dense_panel(tmp_path):
+    """The counterpart to the test above: a panel with no holes must report 0
+    rather than raise. Without this, a `num_null` that returned a constant
+    `len(...)` of something would still pass the counting test by accident on
+    one specific geometry.
+    """
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+    )
+    model = RecordingRegressor(cfg)
+    model.collect()
+
+    assert model.num_null == 0

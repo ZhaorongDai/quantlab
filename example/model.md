@@ -220,7 +220,16 @@ epoch 级别的验证损失，再拿它去比 `best_loss`（2026-09-07 之前是
 
 现有三个模型的实现都是一句 `torch.nan_to_num(data, nan=0.0)`。
 NaN 从哪来？因子的滚动窗口预热期、标签的 `shift` 尾部、稀疏覆盖的标的。
-`num_null` 这个属性就是给你训练前先看一眼用的。
+`num_null` 这个属性就是给你训练前先看一眼用的：它返回整块面板上 NaN 单元格的
+总数（跨全部变量、全部 timestamp、全部 symbol）。
+
+> 它曾经**每次读取都抛异常**（**已于 2026-09-07 修复**）：实现结尾是 `.values[0]`，
+> 但前一个 `.sum()` 已经把 `variable` 维加掉了，拿到的是 0 维数组，于是
+> `IndexError: too many indices for array: array is 0-dimensional, but 1 were
+> indexed`。一条被文档推荐、注解写着 `-> int`、却从来没跑通过的路。现在取 0 维
+> 数组本身再显式 `int()`，由 `tests/test_model_layer.py::
+> test_num_null_counts_missing_cells_and_returns_an_int` 锁住（配套的
+> `test_num_null_is_zero_on_a_dense_panel` 保证它不是恒返回某个常数）。
 
 ---
 
