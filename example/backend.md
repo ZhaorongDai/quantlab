@@ -28,7 +28,7 @@
 
 `base/backend.py:DataBackend` 声明了 8 个抽象方法，加上一个 `data` 属性。
 
-**`data` 属性**：还没读就访问，直接 `AttributeError("Please cal 'read' or 'to_internal' first.")`，不返回空值。docstring 里给的理由值得记住：一个空数据集会被下游当成"这段时间确实没有行情"继续算下去，错误跑到很远才暴露。宁可当场炸。
+**`data` 属性**：还没读就访问，直接 `AttributeError("Please cal 'read' or 'to_internal' first.")`，不返回空值。理由值得记住：一个空数据集会被下游当成"这段时间确实没有行情"继续算下去，错误跑到很远才暴露。宁可当场炸。
 
 **`read(path, **kwargs) -> Self` / `write(path, **kwargs) -> Self`**：磁盘 ↔ 内存，都返回 `self`，所以能串成链。
 

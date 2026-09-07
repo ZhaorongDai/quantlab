@@ -10,12 +10,7 @@ if TYPE_CHECKING:
 
 @dataclass(kw_only=True)
 class BaseDatasetConfig:
-    """数据集共享基类需要读取的全部配置字段，与存储介质无关，也与市场无关。
-
-    这里只放共享基类真正会读的字段，别的一概不放：一个配置只带这些字段就足以驱动
-    任何数据集子类，非行情类的数据集（比如指数成分股面板）才能复用整套存储流程。
-
-    Every field the shared `base/data.py:BaseDataset` contract reads (D-03).
+    """Every field the shared `base/data.py:BaseDataset` contract reads (D-03).
 
     Storage-medium-agnostic and market-agnostic: each field is here because a
     method on the shared base actually consumes it, and for no other reason.
@@ -44,19 +39,12 @@ class BaseDatasetConfig:
     name: str | None = None
 
     def to_dict(self):
-        """把配置摊平成普通字典，让它能随数据一起落盘、之后再原样重建出来。
-
-        Returns:
-            dict: 字段名到字段值的映射。
-        """
         return asdict(self)
 
 
 @dataclass(kw_only=True)
 class DatasetConfig(BaseDatasetConfig):
-    """行情数据集的配置：在共享字段之外，补上只有行情数据才有意义的四个字段。
-
-    Market-dataset configuration -- the config `MarketDataset` takes.
+    """Market-dataset configuration -- the config `MarketDataset` takes.
 
     The four fields added here are market-dataset-specific. `raw_data_dir_path`
     is the local raw-ingestion directory a market dataset parses its CSV/parquet
@@ -96,9 +84,7 @@ class DatasetConfig(BaseDatasetConfig):
 
 @dataclass(kw_only=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
-    """指数成分股面板数据集的配置：只多一个缓存目录，别的字段是刻意不加的。
-
-    Index-membership-panel dataset configuration (DATA-06, D-03).
+    """Index-membership-panel dataset configuration (DATA-06, D-03).
 
     Adds exactly one field: `cache_dir`, the directory an index membership
     fetcher keeps its cached source snapshot in.
@@ -134,9 +120,7 @@ class ConstituentDatasetConfig(BaseDatasetConfig):
 
 @dataclass
 class AcquisitionConfig:
-    """网络采集器的配置；这里永远不放凭证，因为整份配置会被原样写到磁盘上。
-
-    Config for a network-fetching `base/acquisition.py:Acquisition`.
+    """Config for a network-fetching `base/acquisition.py:Acquisition`.
 
     `vendor` is REQUIRED and positioned immediately after `frequency` because
     it is not decoration: it is the terminal segment of `raw_data_dir_path`,
@@ -175,25 +159,12 @@ class AcquisitionConfig:
     name: str | None = None
 
     def to_dict(self):
-        """把采集配置摊平成普通字典，落盘存档并随模型检查点一起保存。
-
-        这条链路正是"配置里不能出现凭证"的原因：写进去的东西会留在没人审计的
-        产物里，而这个仓库已经因此真实泄露过一次密钥。
-
-        Returns:
-            dict: 字段名到字段值的映射。
-        """
         return asdict(self)
 
 
 @dataclass
 class UniverseConfig:
-    """无幸存者偏差、带时点的美股标的池参考表配置。
-
-    它是参考元数据而不是流水线数据，所以走 parquet 落盘，和交易品种元数据文件
-    同一个层级，不进 xarray/Zarr 那条链路。
-
-    Config for the survivorship-bias-free, point-in-time US-equity
+    """Config for the survivorship-bias-free, point-in-time US-equity
     universe reference table (02-08-PLAN.md / 02-CONTEXT.md D-12).
 
     This is reference/metadata, not xarray/Zarr pipeline data (Locked
@@ -209,19 +180,12 @@ class UniverseConfig:
     name: str | None = None
 
     def to_dict(self):
-        """把标的池配置摊平成普通字典，用于落盘与复现同一份参考表。
-
-        Returns:
-            dict: 字段名到字段值的映射。
-        """
         return asdict(self)
 
 
 @dataclass(kw_only=True)
 class BaseFactorConfig:
-    """两种因子后端共用的配置字段，只带到够驱动因子共享基类为止。
-
-    Every field shared by both factor backends (KunQuant and Polars).
+    """Every field shared by both factor backends (KunQuant and Polars).
 
     Backend-agnostic: the shared `base/factor.py:Factor` base reads only these
     fields, so a config carrying nothing beyond them is enough to construct and
@@ -240,22 +204,12 @@ class BaseFactorConfig:
     name: str | None = None
 
     def to_dict(self):
-        """把因子配置摊平成普通字典，用于落盘与复现同一次因子计算。
-
-        需要注意 dataset 字段持有的是数据集对象本身，摊平之后它仍然是一个对象，
-        并不会变成纯粹可序列化的数据。
-
-        Returns:
-            dict: 字段名到字段值的映射。
-        """
         return asdict(self)
 
 
 @dataclass(kw_only=True)
 class FactorConfig(BaseFactorConfig):
-    """KunQuant 后端的因子配置：多出三个只有编译计算图才用得上的字段。
-
-    KunQuant-backend factor configuration.
+    """KunQuant-backend factor configuration.
 
     The three fields added here are KunQuant-specific: `mode` drives the
     batch/stream branch in the KunQuant factor class, `data_columns` names the
@@ -271,9 +225,7 @@ class FactorConfig(BaseFactorConfig):
 
 @dataclass(kw_only=True)
 class PolarsFactorConfig(BaseFactorConfig):
-    """Polars 后端的因子配置：一个字段都不加，因子名在赋值时从计算图自己推导。
-
-    Polars-backend factor configuration.
+    """Polars-backend factor configuration.
 
     Adds no fields to `BaseFactorConfig`. The Polars backend is batch-only
     (D-07), so it deliberately has no `mode`; factor names are DERIVED at
@@ -286,15 +238,6 @@ class PolarsFactorConfig(BaseFactorConfig):
 
 @dataclass
 class DLConfig:
-    """深度学习模型训练的全部配置：数据来源、回测数据与训练超参数集中在一处。
-
-    每一个会影响训练结果的旋钮都必须落在这里，而不是散落在调用脚本里——一次实验
-    能不能被复现，取决于它的参数是不是全都写在配置中。
-
-    未在此声明类型的 backtest_data 是一个普通类属性而非数据类字段，因此不会出现
-    在摊平后的配置字典里。
-    """
-
     # 数据相关
     factors: list["Factor"]
     labels: list["Factor"]
@@ -325,22 +268,11 @@ class DLConfig:
     name: str | None = None
 
     def to_dict(self):
-        """把深度学习训练配置摊平成普通字典，随模型检查点一起保存以便复现。
-
-        Returns:
-            dict: 字段名到字段值的映射。
-        """
         return asdict(self)
 
 
 @dataclass
 class MLConfig:
-    """传统机器学习模型训练的配置，与深度学习配置对称。
-
-    刻意不带逐轮训练才需要的那几个旋钮（学习率、轮次、批大小、早停、数据加载并发
-    度）：这类模型一次拟合成型，给它们这些字段只会让人以为它们会被读到。
-    """
-
     # 数据相关
     factors: list["Factor"]
     labels: list["Factor"]
@@ -365,9 +297,4 @@ class MLConfig:
     name: str | None = None
 
     def to_dict(self):
-        """把机器学习训练配置摊平成普通字典，随模型文件一起保存以便复现。
-
-        Returns:
-            dict: 字段名到字段值的映射。
-        """
         return asdict(self)

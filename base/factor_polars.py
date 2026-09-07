@@ -25,12 +25,7 @@ _SCHEMA_PROBE_ROWS = 8
 
 
 class FactorPolars(Factor):
-    """用 Polars 表达式书写因子逻辑的因子后端，只做批量计算，不提供流式接口。
-
-    它与编译计算图后端是兄弟而不是父子：两者都从同一个因子基类派生，因此可以互相
-    替换而不必改动模型层。子类只需要覆写一个方法，其余全部继承。
-
-    Batch-only factor backend whose factor logic is written in Polars.
+    """Batch-only factor backend whose factor logic is written in Polars.
 
     A sibling -- not a descendant -- of the compiled-graph backend declared in
     `base/factor.py`: both derive from the shared `Factor` base (D-03), so a
@@ -85,24 +80,10 @@ class FactorPolars(Factor):
     """
 
     def __init__(self, config: PolarsFactorConfig):
-        """构造一个 Polars 因子。
-
-        这里没有额外动作，但要留意：构造过程会经由配置赋值触发一次对存储的有界
-        探查，用来确定因子名——因此数据集的存储必须已经存在于磁盘上。原因与代价
-        都记在类文档里。
-
-        Args:
-            config (PolarsFactorConfig): Polars 因子配置。
-        """
         super().__init__(config)
 
     def _get_factor_names(self) -> tuple[str, ...]:
-        """直接问计算图会产出什么，以此确定因子名，而不是让人另外声明一遍。
-
-        名字来自计算图真正产出的列，所以声明与实现不可能对不上——这类不一致往往
-        要到很久之后取不到某一列时才暴露。
-
-        Derive the factor names by asking the graph what it produces.
+        """Derive the factor names by asking the graph what it produces.
 
         Four constraints, each of which fails silently if broken:
 
@@ -134,9 +115,6 @@ class FactorPolars(Factor):
         the factor's. Irrelevant to a schema -- do not "fix" it by reordering
         the setter, which would break the ordering `Factor.__init__` depends
         on.
-
-        Returns:
-            tuple[str, ...]: 计算图产出的因子名，已排除时间与标的这两列索引。
         """
         probe = self.config.dataset.head(_SCHEMA_PROBE_ROWS)
         factor_lf = self._get_factor_lazyframe(probe)
@@ -148,22 +126,16 @@ class FactorPolars(Factor):
 
     @abstractmethod
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """在这里写因子；这是一个子类唯一需要覆写的方法。
-
-        Write the factor here. This is the one method a subclass overrides.
+        """Write the factor here. This is the one method a subclass overrides.
 
         Args:
-            lf (pl.LazyFrame): 数据集已经读入的惰性帧，列名是底层存储中未经改名
-                的原始列名，因此一个因子是照着某一个市场的原始列名写出来的。
-                the dataset's already-read lazyframe, carrying the RAW,
+            lf: the dataset's already-read lazyframe, carrying the RAW,
                 un-renamed column names of the underlying store. There is no
                 per-market normalization step on this path, so a factor is
                 written against one market's raw column names (see
                 `factor/momentum.py` and 03-RESEARCH.md Open Question 2).
 
         Returns:
-            pl.LazyFrame: 只含时间、标的以及算出来的因子值列的惰性帧；除这两列
-                索引之外剩下的列有多少，就是这个类产出多少个因子。
             A `pl.LazyFrame` containing ONLY `timestamp`, `symbol` and the
             computed factor value column(s). No raw price or volume column may
             survive into the output -- whatever columns come back (minus the
@@ -183,17 +155,6 @@ class FactorPolars(Factor):
         ...
 
     def cal(self) -> Self:
-        """跑一遍因子计算图，把结果转成面板交出去。
-
-        因子名在这里再确定一次，用的是本次真正跑出来的列：构造时那次探查读的是很
-        少的几行，而这次是全量数据，以实际产出为准才不会出现名实不符。
-
-        Polars 只是这个类内部的实现手段：结果在离开本类之前就被转成面板，层与层
-        之间的交换格式始终不变。
-
-        Returns:
-            Self: 已持有计算结果的因子自身，可继续链式调用。
-        """
         lf = self.config.dataset.read().get_lazyframe()
         factor_lf = self._get_factor_lazyframe(lf)
 
