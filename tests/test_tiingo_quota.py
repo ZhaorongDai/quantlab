@@ -550,3 +550,129 @@ def test_tiingo_declares_no_rate_limit_status_set(mock_tiingo_client, tmp_path):
     assert TiingoAcquisition.RATE_LIMIT_STATUS_CODES == frozenset(), (
         "Tiingo must classify 429 as `quota`, never as `rate_limited`"
     )
+
+
+# ---------------------------------------------------------------------------
+# WR-03 -- the manifest describes the RUN, not the last pass of it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_later_aborting_pass_does_not_erase_an_earlier_passs_failures(
+    mock_tiingo_client, tmp_path
+):
+    """WR-03. `_run`'s resume loop can execute several passes, and `failures`
+    was REASSIGNED by each one rather than merged.
+
+    The sequence: pass 1 fails a real 404 and then trips the global quota
+    abort; the run waits; pass 2 re-derives `pending` from disk, aborts again
+    on its first batch, and returns `{}`. The manifest was then written EMPTY
+    -- and its own docstring calls an empty manifest "a meaningful statement
+    that the last run was clean", which is a false statement about a run that
+    had a failure. (Reporting only: the symbol keeps no watermark, so it is
+    still retried. The manifest is what the operator is told to trust.)
+    """
+    import json
+
+    bad = "MSFT"
+    not_found = _rest_client_error(404, "Not found", "Not Found")
+    quota = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
+
+    state = {"pass": 1}
+    original = mock_tiingo_client.get_ticker_price
+
+    def scripted(self, ticker, **kwargs):
+        if state["pass"] == 1:
+            # A genuine per-symbol failure, then the vendor-wide condition.
+            if ticker == bad:
+                raise not_found
+            if ticker == "GOOG":
+                raise quota
+            return original(self, ticker, **kwargs)
+        # Pass 2 aborts on everything it touches, so it has NO news about
+        # `bad` and must not speak for it.
+        raise quota
+
+    mock_tiingo_client.get_ticker_price = scripted
+
+    def advance():
+        state["pass"] = 2
+
+    config = _make_config(
+        tmp_path,
+        kwargs={
+            "max_workers": 1,
+            "wait_for_quota": True,
+            "quota_wait_seconds": 1,
+            "quota_max_waits": 1,
+        },
+    )
+    acq = _acquisition_class(on_sleep=advance)(config)
+    acq.download()
+
+    manifest = json.loads(
+        (tmp_path / "watermark" / acq.FAILURE_MANIFEST_NAME).read_text()
+    )
+    assert bad in manifest, (
+        f"pass 1 failed {bad} with a 404 and pass 2 -- which aborted before "
+        f"reaching it -- erased the record: manifest={manifest}"
+    )
+    # The GLOBAL condition still stays out: recording it as one ticker's fault
+    # would defame a perfectly good symbol.
+    assert "GOOG" not in manifest
+    assert not (tmp_path / "watermark" / f"{bad}.json").exists(), (
+        "a failed symbol must keep no watermark, so the next run retries it"
+    )
+
+
+def test_a_symbol_that_succeeds_on_a_later_pass_leaves_the_manifest(
+    mock_tiingo_client, tmp_path
+):
+    """The other direction of the same merge.
+
+    Accumulating without ever removing would be its own lie: a symbol that
+    failed on pass 1 and SUCCEEDED on pass 2 must not still be listed. The
+    succeeding pass reports it as `ok`, so `_run` drops it explicitly.
+    """
+    import json
+
+    flaky = "MSFT"
+    transient = _rest_client_error(500, "boom", "Server Error")
+    quota = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
+
+    state = {"pass": 1}
+    original = mock_tiingo_client.get_ticker_price
+
+    def scripted(self, ticker, **kwargs):
+        if state["pass"] == 1:
+            if ticker == flaky:
+                raise transient
+            if ticker == "GOOG":
+                raise quota
+            return original(self, ticker, **kwargs)
+        return original(self, ticker, **kwargs)
+
+    mock_tiingo_client.get_ticker_price = scripted
+
+    def advance():
+        state["pass"] = 2
+
+    config = _make_config(
+        tmp_path,
+        kwargs={
+            "max_workers": 1,
+            "wait_for_quota": True,
+            "quota_wait_seconds": 1,
+            "quota_max_waits": 1,
+        },
+    )
+    acq = _acquisition_class(on_sleep=advance)(config)
+    acq.download()
+
+    manifest = json.loads(
+        (tmp_path / "watermark" / acq.FAILURE_MANIFEST_NAME).read_text()
+    )
+    assert flaky not in manifest, (
+        f"{flaky} succeeded on the resume pass and must not stay in the "
+        f"manifest: {manifest}"
+    )
+    assert (tmp_path / "watermark" / f"{flaky}.json").exists()

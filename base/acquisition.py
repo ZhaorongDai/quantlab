@@ -1178,7 +1178,25 @@ class Acquisition(ABC):
             if not pending:
                 break
 
-            aborted, failures = self._run_once(pending, from_watermark)
+            aborted, pass_failures, succeeded = self._run_once(
+                pending, from_watermark
+            )
+            # MERGED, not replaced. `_run`'s resume loop can execute several
+            # passes and each one re-derives `pending` from the watermarks on
+            # disk, so a pass that aborts before it reaches an earlier pass's
+            # failures returns `{}` -- and a plain reassignment then wrote an
+            # EMPTY manifest for a run that had, say, 40 real 404s. The
+            # manifest's own docstring calls an empty one "a meaningful
+            # statement that the last run was clean", which would have been a
+            # false statement about a run that was not.
+            #
+            # Symbols that SUCCEEDED this pass are dropped in the same update:
+            # a failure the next pass cleared must not linger in the manifest
+            # either. Symbols merely SKIPPED by an abort are left alone -- they
+            # were not retried, so this pass has no news about them.
+            for symbol in succeeded:
+                failures.pop(symbol, None)
+            failures.update(pass_failures)
             if not aborted:
                 break
             if not wait_for_quota:
@@ -1210,9 +1228,14 @@ class Acquisition(ABC):
 
     def _run_once(
         self, pending: list[str], from_watermark: bool
-    ) -> tuple[bool, dict[str, str]]:
+    ) -> tuple[bool, dict[str, str], set[str]]:
         """One concurrent pass over `pending`, returning
-        `(quota_aborted, per_symbol_failures)`.
+        `(quota_aborted, per_symbol_failures, symbols_that_succeeded)`.
+
+        The third element exists so `_run` can ACCUMULATE failures across
+        passes without a stale entry surviving a later success. It reports only
+        what this pass actually completed -- a symbol skipped by the abort is
+        in neither set, because this pass learned nothing about it.
 
         The unit of work is a BATCH, not a symbol. For a vendor whose
         `DEFAULT_BATCH_SIZE` is 1 the batch count equals the symbol count and
@@ -1278,10 +1301,13 @@ class Acquisition(ABC):
                     bar.set_description("QUOTA EXHAUSTED -- draining, not fetching")
 
         failures = {}
+        succeeded: set[str] = set()
         for batch_symbols, status, message in results:
             if status == "failed":
                 for symbol in batch_symbols:
                     failures[symbol] = message
+            elif status == "ok":
+                succeeded.update(batch_symbols)
         quota_messages = [
             message for _, status, message in results if status == "quota"
         ]
@@ -1303,7 +1329,7 @@ class Acquisition(ABC):
             )
 
         if not abort.is_set():
-            return False, failures
+            return False, failures, succeeded
 
         completed = sum(
             len(batch_symbols)
@@ -1321,7 +1347,7 @@ class Acquisition(ABC):
             f"NOT recorded in the per-symbol failure manifest. Vendor said: "
             f"{detail}"
         )
-        return True, failures
+        return True, failures, succeeded
 
     def coverage_report(self, symbols: list[str] | None = None) -> dict:
         """Classify the roster against the requested window and return the
@@ -1691,6 +1717,13 @@ class Acquisition(ABC):
         here if it fails again. The manifest therefore always describes the
         LATEST run, and an empty one is a meaningful statement that the last
         run was clean (T-0iy-07).
+
+        "The latest RUN", not the latest PASS. `_run`'s resume loop can execute
+        several passes, and `failures` is accumulated across all of them rather
+        than reassigned by each: a pass that aborts early has no news about the
+        symbols an earlier pass already failed, and letting it erase them would
+        make an empty manifest a false statement about a run that had failures
+        (WR-03).
         """
         path = self._watermark_root / self.FAILURE_MANIFEST_NAME
         path.parent.mkdir(parents=True, exist_ok=True)
