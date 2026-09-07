@@ -1069,10 +1069,78 @@ def test_an_absent_window_is_sized_against_a_STATED_assumption():
     assert end > start
 
 
-def test_the_estimate_is_printed_whether_or_not_it_refused():
-    """A user who proceeds should see the numbers they proceeded with. The
-    forced line is what distinguishes 'under every ceiling' from 'over one and
-    overridden', which the estimate alone cannot say."""
+def test_a_refusal_prints_no_estimate_and_carries_the_numbers_itself():
+    """WR-07. The behaviour the old docstring and test name got backwards.
+
+    In all three scripts the call is
+    `print_volume_estimate(pricing.assert_acquisition_volume_fits(...), ...)`
+    -- the guard is an ARGUMENT, so when it raises the printer is never
+    invoked. Asserted twice, because either half alone is weak:
+
+    1. structurally, that every call site really does nest the guard inside the
+       printer (a future call site that separated them would change the
+       answer);
+    2. behaviourally, that the refusal message carries the arithmetic itself,
+       which is WHY the nesting is acceptable rather than a gap.
+    """
+    import ast
+
+    import pytest
+
+    from utils.cli import _explicit_symbol_catalog
+
+    # 1. Structural: the guard is an argument of the printer, at every door.
+    for path in INGEST_SCRIPTS:
+        printers = [
+            node
+            for statement in _main_body(path)
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print_volume_estimate"
+        ]
+        assert printers, path
+        for printer in printers:
+            nested = [
+                inner
+                for inner in ast.walk(printer)
+                if isinstance(inner, ast.Call) and _is_guard_call(inner)
+            ]
+            assert nested, (
+                f"{path}: print_volume_estimate no longer wraps the guard. If "
+                f"that was deliberate, the docstrings claiming the estimate is "
+                f"printed only on admission must change with it."
+            )
+
+    # 2. Behavioural: a refusal's message carries the numbers itself.
+    pricing = _explicit_symbol_catalog(15_000)
+    with pytest.raises(ValueError) as excinfo:
+        pricing.assert_acquisition_volume_fits(
+            "(explicit)",
+            "2016-01-01",
+            "2026-01-01",
+            frequency="1m",
+            batch_size=100,
+        )
+    message = str(excinfo.value)
+    for fragment in ("symbol(s)", "trading day(s)", "request(s)", "GiB", "h at"):
+        assert fragment in message, f"{fragment!r} missing from: {message}"
+    assert "ceiling" in message and "force=True" in message
+
+
+def test_the_forced_line_distinguishes_overridden_from_clean():
+    """What this test actually proves, now named for it (WR-07).
+
+    It calls `print_volume_estimate` directly with a hand-built dict and never
+    exercises a refusal -- so it could not fail for the reason its old name
+    (`..._whether_or_not_it_refused`) asserted, and would have stayed green if
+    the refusal path stopped printing anything at all. Which it already had:
+    see `test_a_refusal_prints_no_estimate_and_carries_the_numbers_itself`.
+
+    The real claim: a user who proceeds sees the numbers they proceeded with,
+    and the `--force-volume` line separates 'under every ceiling' from 'over
+    one and overridden', which the estimate alone cannot say.
+    """
     from utils.cli import print_volume_estimate
 
     lines: list[str] = []

@@ -304,6 +304,10 @@ def add_volume_guard_args(
     exist once (D-14). `--force-volume` is an EXPLICIT, visible opt-out: it is
     a flag a user types, never an environment variable and never a config key
     that could turn the guard off for a whole machine without anyone noticing.
+    It skips the RAISE and never the arithmetic, so a forced run still prints
+    the estimate, with a line saying a ceiling was crossed and overridden. A
+    REFUSED run prints no estimate -- its numbers travel in the exception
+    message instead (WR-07).
 
     `--rows-per-symbol-day` has no default on purpose. Tick volume is not
     derivable from a calendar the way a bar count is, so
@@ -523,9 +527,24 @@ def print_volume_estimate(
 ) -> dict:
     """Print what the user just committed to.
 
-    Printed whether or not the guard refused, the way `ingest_us_equity.py`'s
-    chunked panel report already is: a user who proceeds should see the numbers
-    they proceeded with, not only the ones that would have stopped them.
+    **Reached only when the guard ADMITS the fetch.** Every call site is
+    structured as `print_volume_estimate(pricing.assert_acquisition_volume_fits(
+    ...), ...)`, so the guard is an ARGUMENT: when it raises, this function is
+    never invoked. That is deliberate and it is not a gap -- the refusal message
+    already carries the same arithmetic (symbols, trading days, rows, requests,
+    GiB, hours) plus every ceiling crossed and a concrete narrowing that would
+    fit, so a refused user sees MORE than this prints, not less.
+
+    An earlier version of this docstring claimed the estimate was "printed
+    whether or not the guard refused". It was not, and could not be, in this
+    structure; the claim is corrected rather than the structure changed, and
+    `test_a_refusal_prints_no_estimate_and_carries_the_numbers_itself` pins
+    which of the two is actually true (WR-07).
+
+    What this adds over the refusal message is the ADMITTED case: a user who
+    proceeds sees the numbers they proceeded with, and the `--force-volume`
+    line distinguishes "under every ceiling" from "over one and overridden",
+    which the estimate alone cannot say.
     """
     if window_assumed:
         print_fn(
