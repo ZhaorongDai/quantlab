@@ -4,15 +4,15 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Phase 03.2 complete, ready to plan Phase 3
-last_updated: "2026-09-07T01:39:15.724Z"
+stopped_at: Completed quick task 260906-usg (Phase 3 Gap 1 closed)
+last_updated: "2026-09-07T02:33:17.545Z"
 last_activity: 2026-09-06
 last_activity_desc: Phase 03.2 complete, transitioned to Phase 3
-state_head: ad14177f6dff118ea5ab5552eb6e4c734ca46984
+state_head: b27fa9b3cb413307005da83b8b66a0c85e43dcbd
 progress:
   total_phases: 9
   completed_phases: 1
-  total_plans: 31
+  total_plans: 29
   completed_plans: 29
 milestone_name: milestone
 ---
@@ -79,6 +79,7 @@ Progress: [██████████] 100%
 | Phase 03.2 P05 | 25 min | 2 tasks | 3 files |
 | Phase 03.2 P06 | 17 min | 3 tasks | 5 files |
 | Phase 03.2 P07 | 27 min | 3 tasks | 8 files |
+| Phase quick-260906-usg P01 | 41 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -146,6 +147,10 @@ Recent decisions affecting current work:
 - [Phase 03.2]: Intraday `date=` hive key is the US/Eastern SESSION date (RESEARCH A8 resolved); timestamp values stay naive UTC and only the derived key converts — A UTC-derived key files the last ~4 hours of every US session (20:00-24:00 UTC) under the following day, making a one-trading-day query wrong at both edges in the shape that reads as sparse data rather than as a bug. `Acquisition._session_date` is an overridable seam that RAISES when SESSION_TIME_ZONE is undeclared, so a vendor that never considered the boundary fails at the first intraday write.
 - [Phase 03.2]: A tick scan is ROOT-SCOPED to `data_type={quotes|trades}` rather than filtered on the hive key — Measured on polars 1.44.1: a `data_type` predicate prunes the query plan correctly and `.collect()` still raises SchemaError, because the expected schema is fixed from the first file discovered. Filtering to `quotes` appears to work only because it sorts before `trades`, so the bug is filename-ordering dependent. This is D-11's vendor-segment lesson one level deeper: a distinction only a predicate enforces is not isolation.
 - [Phase 03.2]: Watermark/ledger/failure-manifest sidecars are namespaced by data type where the frequency partitions on one — Quotes and trades share one vendor raw root but their sidecars are `{symbol}.json` with no data_type key, so a completed quotes backfill told the trades run every symbol was covered; it skipped the whole roster and reported success. `1d`/`1m` sidecar paths are unchanged.
+- [quick-260906-usg]: Polars factor names derive from the computation GRAPH, never from the factor store on disk -- a store written under n=5 read back under a config saying n=60 yields momentum_60 and fails loudly at lookup, instead of silently reporting the stale name the data happens to carry. Deriving from disk would match the data while ignoring what the config asked for.
+- [quick-260906-usg]: The Gap 1 fix is a DELETED override, not an added one. base/factor.py already implements "explicit pin wins, else derive"; FactorPolars had disabled the derivation channel with a no-op _maybe_resolve_factor_names(), leaving only cal() to fill config.factor_names. Deleting it fixes read(), cal() and bare construction at once.
+- [quick-260906-usg]: DataBackend.head(n) is an @abstractmethod rather than a limit= keyword on get_lazyframe(). ABC enforcement makes a backend that omits the bounded read impossible to construct; an optional keyword is satisfied by plain inheritance and only fails at whichever call site passes it. Accepted consequence: constructing a FactorPolars now performs a bounded disk read (~25-50 ms, flat in store size).
+- [quick-260906-usg]: XrBackend.head must NOT write its slice back to self.data, unlike its in-place filter_by_date/filter_by_symbol siblings -- a mutating probe would silently leave cal() computing over 8 rows with nothing downstream able to tell. Locked by tests/test_backend_head.py::test_head_does_not_mutate_backend_state and its mutation.
 
 ### Pending Todos
 
@@ -173,8 +178,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-06T22:47:22.322Z
-Stopped at: Phase 03.2 complete, ready to plan Phase 3
+Last session: 2026-09-07T02:32:45.512Z
+Stopped at: Completed quick task 260906-usg (Phase 3 Gap 1 closed)
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

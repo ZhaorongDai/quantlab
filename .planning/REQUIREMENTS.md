@@ -29,8 +29,8 @@
 
 - [ ] **FACTOR-01**: KunQuant 后端支持批量计算 Alpha158 因子集，输出 `xarray.Dataset`
 - [ ] **FACTOR-02**: KunQuant 后端保留流式（`cal_stream`）计算能力，为未来实时数据接入预留接口
-- [ ] **FACTOR-03**: 新增 Polars 批量因子计算后端接口，用于实现新因子（不要求复刻 Alpha101/Alpha158 已有公式），不需要支持流式
-- [ ] **FACTOR-04**: 因子计算模块间的数据传输统一使用 `xarray.Dataset`，不使用 DataFrame 作为流水线传输格式
+- [x] **FACTOR-03**: 新增 Polars 批量因子计算后端接口，用于实现新因子（不要求复刻 Alpha101/Alpha158 已有公式），不需要支持流式
+- [x] **FACTOR-04**: 因子计算模块间的数据传输统一使用 `xarray.Dataset`，不使用 DataFrame 作为流水线传输格式
 
 ### Model（收益预测模型）
 
@@ -109,8 +109,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-06 | Phase 03.1 | Complete |
 | FACTOR-01 | Phase 3 | Gaps Found |
 | FACTOR-02 | Phase 3 | Gaps Found |
-| FACTOR-03 | Phase 3 | Gaps Found |
-| FACTOR-04 | Phase 3 | Gaps Found |
+| FACTOR-03 | Phase 3 | Complete |
+| FACTOR-04 | Phase 3 | Complete |
 | MODEL-01 | Phase 4 | Pending |
 | MODEL-02 | Phase 4 | Pending |
 | PORT-01 | Phase 5 | Pending |
