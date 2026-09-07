@@ -719,9 +719,11 @@ KunQuant 那边没这个问题，因为每个 `Dataset` 子类都覆写了 `_to_
 
 （数据集的 backend 是另一个对象，通过 `self.config.dataset` 拿，那个是存在的，`FactorPolars` 的探查就是这么做的。）
 
-### 11. `WindowedZScore` 的 docstring 说了它没做的事
+### 11. `WindowedZScore` 的 docstring 说了它没做的事（**已于 2026-09-07 修复**）
 
-docstring 写"先将缺失值替换为 0，然后进行滚动标准化"，但 `decompose()` 里只有 `WindowedAvg` / `WindowedStddev` / `Sub` / `Div`，**没有任何缺失值替换**。以代码为准。
+docstring 曾经写"先将缺失值替换为 0，然后进行滚动标准化"，但 `decompose()` 里只有 `WindowedAvg` / `WindowedStddev` / `Sub` / `Div`，**没有任何缺失值替换**。
+
+改的是**文字**不是代码，这是有意的：补一个 `fillna(0)` 会改变这个 op 产出的每一个因子值——而 `Alpha101SpotKline` / `Alpha158SpotKline` 的每一个 `Output(...)` 都裹着它——也就是让已经落盘的每一份因子、以及依赖它们训出来的每一个模型，全部对不上。反过来，那句描述所说的行为一天都没有存在过，所以没有任何调用方能真的依赖它。现在的 docstring 明说「不做任何缺失值处理」，并指出窗口未填满时的前 window-1 根 NaN 是滚动 op 的正常行为，不是缺失值处理的替代品。要填充语义请在调用方显式做。
 
 ### 12. 每次 `cal()` 都重新编译一次图
 
