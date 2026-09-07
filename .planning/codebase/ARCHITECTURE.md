@@ -80,7 +80,7 @@ Cross-cutting: `base/config.py` (dataclass configs consumed by every layer)
 **Key Characteristics:**
 - Every domain object (`Dataset`, `FactorKunQuant`, `BaseModel`) shares the same lifecycle idiom: a `config` property setter that normalizes dates/names on assignment, a `read()`/`cal()`/`save()` trio for lazy-vs-eager data materialization, and `xarray.Dataset` as the universal in-memory exchange format between layers (always indexed by `timestamp` and `symbol`).
 - Factor/label computation is offloaded to **KunQuant**, a compiled-graph engine (`Builder`/`Op`/`Function` → `cfake.compileit` → `KunRunner`), not plain numpy/pandas — factors are defined declaratively as op graphs, then JIT-compiled to native code and executed via a multi-thread executor (`kr.createMultiThreadExecutor`).
-- Model layer (`base/model.py:BaseModel`) is torch-centric: training assumes a `[num_times, num_symbols, num_features]` tensor shape, uses `TensorDataset`/`DataLoader`, and every concrete model implements the same 5-method contract (`_init_model`, `_train_one_epoch`, `_val_one_epoch`, `_test_one_epoch`, `_preprocess`).
+- Model layer (`base/model.py:BaseModel`) is torch-centric: training assumes a `[num_times, num_symbols, num_features]` tensor shape, uses `TensorDataset`/`DataLoader`, and every concrete model implements the same 5-method contract (`_init_model`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, `_preprocess`).
 - Configuration is dataclass-based (not env-var or YAML-based, except `config/instruments.yaml` for exchange instrument metadata) and is **hardcoded with absolute filesystem paths per developer machine** rather than parameterized (see `config/__init__.py`).
 - No dependency injection framework, no plugin registry beyond `utils/module.py:get_cls_from_path` (dynamic import-by-dotted-path used to reconstruct a `Dataset`/`Factor`/`Model` from a saved JSON config).
 
@@ -123,8 +123,8 @@ Cross-cutting: `base/config.py` (dataclass configs consumed by every layer)
 
 1. A config factory builds a `FactorConfig` embedding a `Dataset` instance with hardcoded storage paths (`config/__init__.py:alpha101_config`, `alpha158_config`, `spot_label_config`).
 2. `BaseModel.__init__` receives a `DLConfig` bundling `factors: list[FactorKunQuant]` and `labels: list[FactorKunQuant]` (`base/model.py:28`).
-3. `BaseModel.collect()` calls `_get_features_batch()`/`_get_labels_batch()`, which each either `.cal()` (compute via KunQuant) or `.read()` (load from zarr) per `factor_data_strategy`/`label_data_strategy`, then combines all factor/label `xarray.Dataset`s via `xr.combine_by_coords` (`base/model.py:158-182`).
-4. `_train_dl()` slices the combined dataset into `train`/`val`/`test` windows by timestamp, converts each to a `torch.Tensor` of shape `[time, symbol, variable]`, wraps in `DataLoader`, and runs the epoch loop calling the concrete model's `_train_one_epoch`/`_val_one_epoch`/`_test_one_epoch`/`_preprocess` (`base/model.py:291-420`).
+3. `BaseModel.collect()` calls `_collect_all_features()`/`_collect_all_labels()`, which each either `.cal()` (compute via KunQuant) or `.read()` (load from zarr) per `factor_data_strategy`/`label_data_strategy`, then combines all factor/label `xarray.Dataset`s via `xr.combine_by_coords` (`base/model.py:158-182`).
+4. `_train_dl()` slices the combined dataset into `train`/`val`/`test` windows by timestamp, converts each to a `torch.Tensor` of shape `[time, symbol, variable]`, wraps in `DataLoader`, and runs the epoch loop calling the concrete model's `_train_one_batch`/`_val_one_batch`/`_test_one_batch`/`_preprocess` once per batch (`base/model.py:291-420`).
 5. Checkpoints are written to `{model_save_dir}/{project_name}/{experiment_name}/{model_name}.pth`, plus a sibling `config.json` (`base/model.py:_save_model`).
 
 ### Factor Computation Path (KunQuant)

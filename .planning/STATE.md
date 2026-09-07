@@ -177,6 +177,7 @@ Recent decisions affecting current work:
 | 260906-x2s | Support new listings in incremental zarr appends: widen-in-place symbol axis path on XrBackend, then detect-and-rebuild at the Dataset layer | 2026-09-07 | ea46887 | [260906-x2s-support-new-listings-in-incremental-zarr](./quick/260906-x2s-support-new-listings-in-incremental-zarr/) |
 | 260907-10t | Reconcile the fetch-time ticker guard with the us_all roster: drop malformed roster entries, widen the pattern to the multi-suffix securities the roster deliberately keeps | 2026-09-07 | 4d18336 | [260907-10t-reconcile-the-fetch-time-ticker-guard-wi](./quick/260907-10t-reconcile-the-fetch-time-ticker-guard-wi/) |
 | 260907-1du | Fix three ingest-path defects: empty-store construction crash, double raw-to-xarray conversion, validate_schema false-positive null warnings | 2026-09-07 | 7bbd1f9 | [260907-1du-fix-three-ingest-path-defects-empty-stor](./quick/260907-1du-fix-three-ingest-path-defects-empty-stor/) |
+| 260907-fl6 | Fix the defects surfaced while writing the example/ guides — model-layer correctness (early stopping, alphabetical tensor axis, eval-mode inference), the layer's first tests, three deletions, a persistent refit optimizer, and the `_*_one_epoch`→`_*_one_batch` rename | 2026-09-07 | f80e9fb | [260907-fl6-fix-the-defects-surfaced-while-writing-t](./quick/260907-fl6-fix-the-defects-surfaced-while-writing-t/) |
 
 ### Roadmap Evolution
 

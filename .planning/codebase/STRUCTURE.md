@@ -152,7 +152,7 @@ quantlab/
 - Subclass `base/factor.py:FactorKunQuant` (same base as factors — labels and factors share the same class hierarchy), add under `label/`, implementing `_get_labels`/`_get_features` to shift/transform the target column.
 
 **New model architecture:**
-- Subclass `base/model.py:BaseModel`, add under `dl_model/` (torch) or `ml_model/` (non-torch — note this path is currently unimplemented in `BaseModel._auto_train`, expect to need to add ML training support there too), implementing `_init_model`, `_train_one_epoch`, `_val_one_epoch`, `_test_one_epoch`, `_preprocess`.
+- Subclass `base/model.py:BaseModel`, add under `dl_model/` (torch) or `ml_model/` (non-torch — note this path is currently unimplemented in `BaseModel._auto_train`, expect to need to add ML training support there too), implementing `_init_model`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, `_preprocess` (renamed from `_*_one_epoch` on 2026-09-07 — they are called once per BATCH, and the old name had already caused an early-stopping defect).
 
 **New backtest/strategy:**
 - For live/event-driven backtests: add a new `nautilus_trader.trading.strategy.Strategy` subclass under `backtest/`, following `backtest/test_strategy.py`'s pattern (load model, subscribe bars, predict-and-trade in `on_bar`).
