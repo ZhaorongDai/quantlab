@@ -27,23 +27,36 @@ class DataBackend(ABC):
     def get_lazyframe(self) -> pl.LazyFrame: ...
 
     @abstractmethod
-    def head(self, n: int) -> pl.LazyFrame:
-        """A BOUNDED read: at most `n` rows of the backing store.
+    def head(self, path: str, n: int) -> pl.LazyFrame:
+        """A BOUNDED read: at most `n` rows of the store at `path`.
 
         The bounded twin of `get_lazyframe()`. The returned lazyframe carries
         the same column names and the same dtypes `get_lazyframe()` would
         return -- real dtypes matter, because callers run real expressions
         over this probe to learn what those expressions produce.
 
-        Two obligations on any implementation:
+        **Takes the path and OPENS the store itself**, path first, mirroring
+        `read(path, **kwargs)` -- it does not read `self.data`. That is what
+        makes it usable before anything has read the dataset, and it is not a
+        convenience: reaching the store through `read()` meant the caller had
+        to call `BaseDataset.read()`, which runs `_filter()` and narrows
+        `data_backend.data` IN PLACE. `XrBackend.read()`'s cache early-return
+        then made that narrowing survive every later read, so a probe caller
+        silently truncated the shared dataset (RV-01, `03-VERIFICATION.md`).
+        An implementation that goes back to `self.data` reintroduces it.
+
+        Three obligations on any implementation:
 
         - It must NOT materialize the whole store. That is the entire point;
           an implementation that reads everything and slices afterwards
           satisfies the signature and defeats the purpose.
-        - It must NOT mutate `self.data`. `filter_by_date`/`filter_by_symbol`
-          on this same interface DO filter in place, so an implementation
-          written by analogy with them would silently truncate the store its
-          caller shares with everything else holding that backend.
+        - It must NOT mutate `self.data` -- nor assign to it at all.
+          `filter_by_date`/`filter_by_symbol` on this same interface DO filter
+          in place, so an implementation written by analogy with them would
+          silently truncate the store its caller shares with everything else
+          holding that backend.
+        - It must raise `FileNotFoundError` for an absent store, at the call
+          rather than at `.collect()` time, exactly as `read()` does.
 
         Abstract rather than a `limit=` keyword on `get_lazyframe()` on
         purpose: ABC enforcement makes a backend that omits the bounded read
