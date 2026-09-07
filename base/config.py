@@ -228,9 +228,11 @@ class PolarsFactorConfig(BaseFactorConfig):
     """Polars-backend factor configuration.
 
     Adds no fields to `BaseFactorConfig`. The Polars backend is batch-only
-    (D-07), so it deliberately has no `mode`; factor names are resolved
-    dynamically from the lazyframe schema (D-05), so `factor_names` is expected
-    to stay `None` until `cal()` runs.
+    (D-07), so it deliberately has no `mode`; factor names are DERIVED at
+    config-assignment time from the computation graph's own schema (D-05), via
+    a bounded probe read. Leaving `factor_names` as `None` is therefore the
+    normal case -- the derivation fills it in -- and setting it explicitly
+    pins the names instead, skipping the probe.
     """
 
 
