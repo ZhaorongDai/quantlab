@@ -1443,6 +1443,62 @@ class UniverseCatalog:
                 f"silently incorrect roster."
             ) from exc
 
+    def _coverage_start(self, category: str) -> str | None:
+        """This category's point-in-time coverage start, or `None` if it has
+        none.
+
+        Built from `MEMBERSHIP_FETCHERS` -- each fetcher's own `CATEGORY` ->
+        `PIT_COVERAGE_START` -- so a fifth index inherits a coverage boundary
+        by REGISTRATION, never by someone remembering to add an `if`. The
+        registry is the single source, and no category token is written into
+        either query method's body.
+
+        Returning `None` for an unregistered category is the D-02 CONTRACT,
+        not an oversight. `nasdaq_all` and `us_all` live in the separate
+        `ROSTER_FETCHERS` registry: they are full-exchange rosters with
+        per-symbol listing dates and no index-membership concept, so they have
+        no left-censored change log and therefore no coverage start. A
+        pre-listing query on either must answer from the roster's own dates
+        rather than raising.
+        """
+        return {
+            fetcher_cls.CATEGORY: fetcher_cls.PIT_COVERAGE_START
+            for fetcher_cls in self.MEMBERSHIP_FETCHERS
+        }.get(category)
+
+    def _assert_within_coverage(
+        self, category: str, date: str, field: str
+    ) -> None:
+        """Refuse a date preceding `category`'s point-in-time coverage start.
+
+        THE coverage guard, shared by BOTH membership queries
+        (`get_symbols_as_of` and `get_symbols_in_range`) so there is one
+        contract rather than two that can drift apart. Two that could drift is
+        exactly how `get_symbols_in_range` came to answer pre-coverage windows
+        silently while its sibling raised -- the gap 03.1-VERIFICATION.md
+        records as truth 3.
+
+        **The boundary is INCLUSIVE: the comparison is a strict `<`, so a
+        `date` exactly EQUAL to the coverage start is ACCEPTED.** That is
+        deliberate and load-bearing. The coverage start is the earliest date
+        the change log actually covers, so it is answerable; membership
+        intervals are closed on both ends everywhere else in this layer; and a
+        `<=` here would make the two membership queries disagree on the
+        boundary day by exactly one day.
+
+        `field` names WHICH date argument was rejected, so a caller passing
+        two dates can tell them apart in a log without reading this source.
+        """
+        coverage_start = self._coverage_start(category)
+        if coverage_start is not None and date < coverage_start:
+            raise ValueError(
+                f"Cannot answer {category} membership before "
+                f"{coverage_start} -- {field}={date!r} precedes it. The "
+                f"Wikipedia-sourced change log is left-censored at that "
+                f"date and this query cannot be answered correctly, rather "
+                f"than silently defaulting to an incomplete/wrong answer."
+            )
+
     def get_symbols_in_range(
         self, category: str, start_date: str, end_date: str
     ) -> list[str]:
@@ -1467,10 +1523,36 @@ class UniverseCatalog:
         Both dates and the category are validated for the same reason
         `get_symbols_as_of()` validates them: `[]` is a legitimate answer, so
         a typo must raise rather than silently ingest nothing.
+
+        **A `start_date` before the category's `PIT_COVERAGE_START` RAISES; it
+        is not clamped.** The window's left edge is the only date checked --
+        a window whose left edge is inside coverage cannot reach left-censored
+        territory -- and the check is the same `_assert_within_coverage()`
+        `get_symbols_as_of()` uses, so both membership queries share one
+        boundary and agree on the boundary day (which is INCLUSIVE: a
+        `start_date` exactly equal to the coverage start is answered).
+
+        Raise rather than clamp, because clamping would buy nothing and cost
+        the caller the signal: every membership interval already starts at or
+        after its own coverage start, so raising `1900-01-01` to `1976-07-01`
+        leaves the overlap predicate's result set IDENTICAL. Clamping would
+        hand back the same truncated roster with only a log line to
+        distinguish it from a complete one -- the exact
+        silent-incomplete-roster failure DATA-05 names, and the one the
+        paragraph above already argues against for a typo'd category.
+
+        **`IndexConstituentDataset._clamp_coverage_start()` deliberately does
+        the OPPOSITE on the panel side, and the two must NOT be "aligned".**
+        The panel receives `enums/constant.py:Date.START_DATE` -- a
+        framework-supplied config default nobody typed -- so raising there
+        would make every default construction explode; clamping is right. A
+        query date is one somebody actually asked, so a wrong value is a
+        question, and refusing it is right here.
         """
         self._validate_category(category)
         self._validate_iso_date(start_date, "start_date")
         self._validate_iso_date(end_date, "end_date")
+        self._assert_within_coverage(category, start_date, "start_date")
 
         matched = self._backend.get_lazyframe().filter(
             (pl.col("category") == category)
@@ -2237,21 +2319,12 @@ class UniverseCatalog:
         self._validate_iso_date(as_of_date, "as_of_date")
 
         # Every registered membership category carries its own boundary; a
-        # category absent from the map (i.e. either exchange roster,
+        # category absent from the registry (i.e. either exchange roster,
         # `nasdaq_all` and `us_all`) is boundary-free by design (D-02).
-        coverage_starts = {
-            fetcher_cls.CATEGORY: fetcher_cls.PIT_COVERAGE_START
-            for fetcher_cls in self.MEMBERSHIP_FETCHERS
-        }
-        coverage_start = coverage_starts.get(category)
-        if coverage_start is not None and as_of_date < coverage_start:
-            raise ValueError(
-                f"Cannot answer {category} membership before "
-                f"{coverage_start} -- the "
-                f"Wikipedia-sourced change log is left-censored at that "
-                f"date and this query cannot be answered correctly, rather "
-                f"than silently defaulting to an incomplete/wrong answer."
-            )
+        # The lookup and the raise live in `_assert_within_coverage()` because
+        # `get_symbols_in_range()` needs the identical boundary: one helper,
+        # so the two membership queries cannot drift into two contracts.
+        self._assert_within_coverage(category, as_of_date, "as_of_date")
 
         matched = self._backend.get_lazyframe().filter(
             (pl.col("category") == category)
