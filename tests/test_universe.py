@@ -25,7 +25,7 @@ from acquisition.universe import (
     USEquityUniverseFetcher,
 )
 from base.config import UniverseConfig
-from enums.data import UniverseCategory
+from enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
 
 def _make_config(tmp_path) -> UniverseConfig:
@@ -1491,6 +1491,89 @@ _MEASURED_COMMON = (
     "MIMO-W-A",
     "ACP-R-W",
     "DGAC-UN",
+    # Three-segment `ROOT-X-Y` warrants / when-issued lines (260907-10t). 77
+    # such symbols live in `us_all`. They are the population the fetch guard
+    # used to refuse -- `NXG-R-W` is the exact symbol a real full-market
+    # `download()` aborted its pre-flight on -- and they must survive BOTH the
+    # preferred/baby-bond exclusion AND the new well-formedness filter.
+    "NXG-R-W",
+    "BAC-WS-A",
+    "DB-R-W",
+    # Family evidence `['UA', 'UA-C', 'UA-C-W']`: `UA-C` is one of this
+    # module's own docstring-named surviving class shares, so `UA-C-W` is that
+    # class-C share's when-issued line. Shape `2-1-1`, byte-identical to
+    # `DB-R-W`.
+    "UA-C-W",
+)
+
+#: The 9 measured MALFORMED literals -- 6 in `us_all`, 7 in `nasdaq_all`,
+#: overlapping on 4. Measured 2026-09-07 against the live reference table
+#: (`us_all` 14,485 unique symbols, `nasdaq_all` 8,967): these are exactly and
+#: only what `enums.data.TRADEABLE_TICKER_PATTERN` rejects.
+#:
+#: Each is UNFETCHABLE -- `Acquisition._validate_symbols` refuses it before a
+#: single request is issued -- so persisting it into the reference table
+#: guarantees a whole-roster pre-flight abort later. The drop's axis is
+#: WELL-FORMEDNESS, never security type: `nasdaq_all`'s frozen preferred
+#: shares are all well-formed and are untouched (Locked Decision A4 / D-02).
+_MEASURED_MALFORMED = (
+    # Not matched by `_PREFERRED_SHARE_PATTERN` / `_BABY_BOND_PATTERN`, so in
+    # `us_all` the NEW filter is the only thing that can drop these six --
+    # which is what makes the `us_all` assertion load-bearing rather than a
+    # restatement of 260906-eme.
+    "CAPTW(EXP20260807)",
+    "NXT(EXP20091224)",
+    "DTV_1",
+    "ETP-",
+    # `['NSPR', 'NSPR-WS', 'NSPR-WSB']` -- no `NSPR-WS-B` exists, so this drop
+    # DOES lose one microcap warrant series. Accepted deliberately: admitting
+    # it means widening every suffix segment from {1,2} to {1,3} for all
+    # 14,485 symbols on the evidence of two outliers. Recorded as a named,
+    # measured, carried-forward finding.
+    "NSPR-WSB",
+    # `['OXY', 'OXY-WS', 'OXY-WS-W', 'OXY-WSW']` -- the properly delimited
+    # form of the same warrant is ALREADY in the roster, so this drop loses no
+    # security at all.
+    "OXY-WSW",
+    # Also caught by the preferred/baby-bond exclusion, so these three are
+    # only load-bearing for `nasdaq_all`, which does NOT opt into it and
+    # therefore has nothing but the new filter to drop them.
+    "-P-HIZ",
+    "ASRV 8.45 06-30-28",
+    "CHNG 6",
+)
+
+#: A payload carrying every literal above on NASDAQ rows, so ONE input feeds
+#: both fetchers (`us_all`'s exchange filter includes NASDAQ). Same idiom as
+#: `test_one_payload_yields_kept_in_nasdaq_all_and_dropped_from_us_all`: a
+#: difference between two rosters must not be an artefact of two inputs.
+_RECONCILIATION_CSV = "ticker,exchange,assetType,priceCurrency,startDate,endDate\n" + "".join(
+    f"{ticker},NASDAQ,Stock,USD,2010-01-01,\n"
+    for ticker in (
+        "AAPL",
+        "MSFT",
+        "BRK-A",
+        "UA-C",
+        # Retained multi-suffix warrants / when-issued lines.
+        "NXG-R-W",
+        "ACP-R-W",
+        "BAC-WS-A",
+        "DB-R-W",
+        "UA-C-W",
+        "C-WS-A",
+        "GM-WS-B",
+        "MIMO-W-A",
+        "DGAC-UN",
+        # `nasdaq_all`'s frozen preferred shares -- well-formed, so the
+        # well-formedness filter must not touch them.
+        "FITB-P-A",
+        "FITB-P-I",
+        "FITB-P-K",
+        "FITB-P-M",
+        "AAM-P-A",
+        "MTB-P",
+        *_MEASURED_MALFORMED,
+    )
 )
 
 
@@ -1637,3 +1720,126 @@ def test_min_roster_rows_is_evaluated_on_the_post_exclusion_count(
     # merely a small payload.
     monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
     assert set(NasdaqUniverseFetcher().fetch()["symbol"].to_list()) == {"AAPL"}
+
+
+# ---------------------------------------------------------------------------
+# Build-time well-formedness drop (260907-10t Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_the_roster_builder_drops_malformed_symbols_from_both_categories(
+    monkeypatch,
+):
+    """A malformed entry is unfetchable for EVERY roster, so the drop is
+    unconditional rather than gated on `EXCLUDE_NON_COMMON_SECURITY_TYPES`.
+
+    Gating it on that flag would fix `us_all` and leave `nasdaq_all`
+    permanently unfetchable -- it halts on its own 7 malformed symbols today,
+    and it deliberately does not opt in.
+
+    Reddened by: removing the filter from `TiingoRosterFetcher.fetch()`.
+    """
+    _patch_roster_download(monkeypatch, _roster_zip(_RECONCILIATION_CSV))
+    monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+    monkeypatch.setattr(USEquityUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+
+    nasdaq_all = set(NasdaqUniverseFetcher().fetch()["symbol"].to_list())
+    us_all = set(USEquityUniverseFetcher().fetch()["symbol"].to_list())
+
+    # `nasdaq_all` has NO exclusion filter at all, so the new well-formedness
+    # filter is the only thing that can drop any of the nine.
+    assert sorted(nasdaq_all & set(_MEASURED_MALFORMED)) == []
+    assert sorted(us_all & set(_MEASURED_MALFORMED)) == []
+
+    # ... and the six that `_PREFERRED_SHARE_PATTERN` / `_BABY_BOND_PATTERN`
+    # do NOT match, stated separately so the `us_all` half cannot pass merely
+    # by restating 260906-eme's exclusion.
+    from acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
+
+    only_the_new_filter_can_drop = [
+        ticker
+        for ticker in _MEASURED_MALFORMED
+        if not re.search(_PREFERRED_SHARE_PATTERN, ticker)
+        and not re.search(_BABY_BOND_PATTERN, ticker)
+    ]
+    assert len(only_the_new_filter_can_drop) == 6, only_the_new_filter_can_drop
+    assert not us_all & set(only_the_new_filter_can_drop)
+
+
+def test_the_malformed_drop_does_not_touch_nasdaq_alls_preferred_shares(
+    monkeypatch,
+):
+    """Hard constraint 1 made mechanical: the drop's axis is WELL-FORMEDNESS,
+    never security type.
+
+    `FITB-P-A/-I/-K/-M` are shape `4-1-1` -- the same legitimate three-segment
+    shape as the retained warrants -- so the widened pattern ADMITS them and
+    the filter leaves them alone. `nasdaq_all`'s semantics stay frozen (Locked
+    Decision A4 / D-02).
+
+    Reddened by: implementing the drop as an opt-in on
+    `EXCLUDE_NON_COMMON_SECURITY_TYPES`, or by letting it use a pattern that
+    eats `-P-` shapes.
+    """
+    _patch_roster_download(monkeypatch, _roster_zip(_RECONCILIATION_CSV))
+    monkeypatch.setattr(NasdaqUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+
+    nasdaq_all = set(NasdaqUniverseFetcher().fetch()["symbol"].to_list())
+
+    assert {
+        "FITB-P-A",
+        "FITB-P-I",
+        "FITB-P-K",
+        "FITB-P-M",
+        "AAM-P-A",
+        "MTB-P",
+    } <= nasdaq_all
+
+    # The single mechanism keeping the two rosters apart is UNCHANGED -- the
+    # new filter is not attached to it.
+    assert TiingoRosterFetcher.EXCLUDE_NON_COMMON_SECURITY_TYPES is False
+    assert NasdaqUniverseFetcher.EXCLUDE_NON_COMMON_SECURITY_TYPES is False
+    assert USEquityUniverseFetcher.EXCLUDE_NON_COMMON_SECURITY_TYPES is True
+
+
+def test_the_multi_suffix_warrants_survive_the_malformed_drop(monkeypatch):
+    """260906-eme's retained 1,124 warrant / unit / right / when-issued lines
+    are still retained -- the new filter drops MALFORMED entries, not
+    multi-suffix ones.
+
+    Reddened by: filtering on the OLD one-suffix pattern
+    `^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2})?$`, which would silently delete all
+    77 three-segment `us_all` symbols instead of the 6 malformed ones.
+    """
+    _patch_roster_download(monkeypatch, _roster_zip(_RECONCILIATION_CSV))
+    monkeypatch.setattr(USEquityUniverseFetcher, "MIN_ROSTER_ROWS", 1)
+
+    us_all = set(USEquityUniverseFetcher().fetch()["symbol"].to_list())
+
+    assert {
+        "NXG-R-W",
+        "ACP-R-W",
+        "BAC-WS-A",
+        "DB-R-W",
+        "UA-C-W",
+        "C-WS-A",
+        "GM-WS-B",
+        "MIMO-W-A",
+        "DGAC-UN",
+    } <= us_all
+
+
+def test_the_well_formedness_filter_matches_the_whole_string_not_a_substring(
+    monkeypatch,
+):
+    """polars' `str.contains` is a SEARCH, so the pattern's `^...$` anchors
+    are what make the filter total. Asserted directly on the two literals that
+    would survive an unanchored search -- `ETP-` contains the well-formed
+    `ETP`, and `DTV_1` contains the well-formed `DTV` -- rather than assumed.
+    """
+    frame = pl.DataFrame({"ticker": ["ETP-", "DTV_1", "ETP", "DTV"]})
+    kept = frame.filter(
+        pl.col("ticker").str.contains(TRADEABLE_TICKER_PATTERN.pattern, literal=False)
+    )["ticker"].to_list()
+
+    assert kept == ["ETP", "DTV"]
