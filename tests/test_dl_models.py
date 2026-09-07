@@ -174,10 +174,15 @@ def _make_config(
     return DLConfig(**params)
 
 
-#: `RNNClassifier._init_model` indexes its `hyperparameters` dict directly
-#: (`hyperparameters["hidden_sizes"]` etc.), so it needs a differently-shaped
-#: dict from the MLP's. Kept tiny so the CPU runs stay fast.
-_RNN_CLASSIFIER_HP = {
+#: Both RNN heads build a `ModelRCrypto`, which needs a differently-shaped
+#: hyperparameter dict from the MLP's. Kept tiny so the CPU runs stay fast.
+#:
+#: `RNNRegressor` used to be handed the MLP-shaped
+#: `{"hidden_size1": 16, "hidden_size2": 8}` and passed anyway -- **because
+#: its `_init_model` ignored the argument entirely** (WR-01). Every RNN test
+#: now passes an RNN-shaped dict explicitly, so a green run means the head
+#: was configured, not that the configuration was discarded.
+_RNN_HP = {
     "hidden_sizes": [8, 8],
     "dropout_rates": [0.0, 0.0],
     "hidden_sizes_linear": [8],
@@ -187,8 +192,8 @@ _RNN_CLASSIFIER_HP = {
 
 
 def _hp_for(cls) -> dict:
-    if cls is RNNClassifier:
-        return {"hyperparameters": _RNN_CLASSIFIER_HP}
+    if cls in (RNNClassifier, RNNRegressor):
+        return {"hyperparameters": _RNN_HP}
     return {}
 
 
@@ -357,7 +362,9 @@ def test_update_steps_the_model_when_lr_refit_is_positive(tmp_path):
     Without this, `lr_refit = 0.0` could be satisfied by a field nothing ever
     reads.
     """
-    model = RNNRegressor(_make_config(tmp_path, lr_refit=1e-2))
+    model = RNNRegressor(
+        _make_config(tmp_path, lr_refit=1e-2, **_hp_for(RNNRegressor))
+    )
     model.collect()
     model._init_model_and_optim()
     before = [p.detach().clone() for p in model.model.parameters()]  # type: ignore
@@ -396,7 +403,7 @@ def test_rnn_regressor_val_one_batch_returns_a_floatable_loss(tmp_path):
     on epoch 0. `dl_model/rnn_classification.py` already returned
     `val_loss.detach()`; this aligns the sibling.
     """
-    model = RNNRegressor(_make_config(tmp_path))
+    model = RNNRegressor(_make_config(tmp_path, **_hp_for(RNNRegressor)))
     model.collect()
     model._init_model_and_optim()
     model._init_wandb("quantlab-test", "rnn-val")
@@ -608,7 +615,9 @@ def test_to_tensor_downcasts_a_float64_panel(tmp_path):
     implementations instead would leave this red, which is the point: the
     fourth head would forget.
     """
-    model = RNNRegressor(_make_config(tmp_path, via_pandas=True))
+    model = RNNRegressor(
+        _make_config(tmp_path, via_pandas=True, **_hp_for(RNNRegressor))
+    )
     panel = FakePanel(["f_a", "f_b"], seed=1, via_pandas=True).get_features()
     assert panel["f_a"].dtype == np.float64
 
@@ -630,7 +639,7 @@ def test_to_tensor_follows_torchs_default_dtype_not_a_hardcoded_float32(
     Reddening mutation: hardcode `values.astype(np.float32)` -- the float32
     panel below stays float32 and this goes red.
     """
-    model = RNNRegressor(_make_config(tmp_path))
+    model = RNNRegressor(_make_config(tmp_path, **_hp_for(RNNRegressor)))
     panel = FakePanel(["f_a"], seed=1).get_features()  # float32
     assert panel["f_a"].dtype == np.float32
 
@@ -653,7 +662,7 @@ def test_to_tensor_leaves_non_floating_panels_alone(tmp_path):
     "everything numeric" is a separate decision; this test is what makes it a
     decision rather than a drift.
     """
-    model = RNNRegressor(_make_config(tmp_path))
+    model = RNNRegressor(_make_config(tmp_path, **_hp_for(RNNRegressor)))
     panel = xr.Dataset(
         {"flag": (("timestamp", "symbol"), np.ones((4, N_SYMBOLS), dtype="int64"))},
         coords={"timestamp": TIMES[:4], "symbol": SYMBOLS},
@@ -662,3 +671,72 @@ def test_to_tensor_leaves_non_floating_panels_alone(tmp_path):
     tensor = model.to_tensor(panel, ["flag"])
 
     assert tensor.dtype == torch.int64
+
+
+# --------------------------------------------------------------------------
+# WR-01 (reviewed 2026-09-07): RNNRegressor._init_model ignored its argument
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls", [RNNRegressor, RNNClassifier])
+def test_rnn_head_hyperparameters_reach_the_built_module(tmp_path, cls):
+    """WR-01: `RNNRegressor._init_model` took `hyperparameters: dict` and then
+    hardcoded every value -- `hidden_sizes=[256, 128, 64]`,
+    `dropout_rates=[0.1, 0.1, 0.1]`, `hidden_sizes_linear=[32]`,
+    `model_type="gru"`. `config.hyperparameters` was silently discarded.
+
+    This is the same "declared, accepted, never referenced" lie this session
+    deleted three times over (`_train_dl(backtest=...)`,
+    `get_crypot_currency(name=...)`, `XrBackend.get_xarray_dataset(indexes)`),
+    and `MLPRegressor._init_model` was changed in the same batch to honour it.
+
+    It was invisible because the tests fed `RNNRegressor` the MLP-shaped
+    `{"hidden_size1": 16, "hidden_size2": 8}` and passed BECAUSE the argument
+    was ignored -- had it been honoured they would have raised. Green for the
+    wrong reason.
+
+    Asserting on the BUILT MODULE rather than on the config is the point: the
+    only thing that distinguishes "honoured" from "accepted and discarded" is
+    whether the number shows up in a layer.
+
+    `RNNClassifier` is parametrized in alongside it to pin that the two
+    siblings now agree.
+    """
+    hp = {**_RNN_HP, "hidden_sizes": [6, 5], "model_type": "lstm"}
+    model = cls(_make_config(tmp_path, hyperparameters=hp))
+    model.collect()
+    model._init_model_and_optim()
+
+    layers = model.model.base_models[0].recurrent_layers  # type: ignore
+    assert [layer.hidden_size for layer in layers] == [6, 5], (
+        "hidden_sizes never reached the module -- _init_model discarded its "
+        "hyperparameters argument"
+    )
+    assert all(isinstance(layer, torch.nn.LSTM) for layer in layers), (
+        "model_type never reached the module"
+    )
+
+
+def test_rnn_regressor_defaults_preserve_the_previously_hardcoded_shape(
+    tmp_path,
+):
+    """WR-01's compatibility half: honouring the dict must not change the
+    model any existing config builds.
+
+    Every value is read with `.get(..., <the old hardcoded literal>)`, so a
+    config that passes no RNN keys -- which is every config that existed
+    before this change, `train_model.py` included -- still gets the exact
+    256/128/64 GRU stack it used to get.
+
+    `RNNRegressor` is asserted rather than `RNNClassifier` on purpose: the
+    classifier reads its dict with `[...]` and raises `KeyError` on a missing
+    key, so it has no defaults to preserve. Aligning those two idioms is a
+    separate decision and is NOT made here.
+    """
+    model = RNNRegressor(_make_config(tmp_path, hyperparameters={}))
+    model.collect()
+    model._init_model_and_optim()
+
+    layers = model.model.base_models[0].recurrent_layers  # type: ignore
+    assert [layer.hidden_size for layer in layers] == [256, 128, 64]
+    assert all(isinstance(layer, torch.nn.GRU) for layer in layers)

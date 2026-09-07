@@ -227,14 +227,44 @@ class RNNRegressor(BaseModel):
         num_labels: int,
         hyperparameters: dict,
     ) -> nn.Module:
+        """`hyperparameters` 以前是**收下就扔**：签名收了这个 dict，函数体里每个值
+        都写死（`hidden_sizes=[256, 128, 64]` 等），`config.hyperparameters` 被
+        静默丢掉。想调网络结构的人改了配置、跑完一轮、拿到一个跟改之前一模一样的
+        模型，而且没有任何地方提示他配置没生效。
+
+        这跟本次一起删掉的另外三处「声明了、收下了、从不引用」是同一个谎
+        （`_train_dl(backtest=...)`、`get_crypot_currency(name=...)`、
+        `XrBackend.get_xarray_dataset(indexes)`），而同一批里
+        `MLPRegressor._init_model` 已经改成读它了。
+
+        选择「读」而不是「不再收」：基类是按关键字调的
+        （`hyperparameters=self.config.hyperparameters`），抽象签名上就有这个参数，
+        另外两个出厂头也都在读——去掉参数就得改抽象契约并且弄坏基类的调用。
+
+        每个值都用 `.get(..., <原来写死的字面量>)` 取，所以**任何既有配置建出来的
+        模型结构都不变**。（`RNNClassifier._init_model` 用的是 `[...]`，缺键直接
+        `KeyError`；把两边的取值习惯统一是另一个决定，这里不做。）
+
+        回归锁：`tests/test_dl_models.py::test_rnn_head_hyperparameters_reach_the_built_module`
+        断言在**建出来的模块**上，因为「读了」和「收下就扔」唯一的区别就是那个数字
+        有没有出现在某一层里；
+        `::test_rnn_regressor_defaults_preserve_the_previously_hardcoded_shape`
+        钉住空 dict 仍然给回 256/128/64 的 GRU。
+        """
         return ModelRCrypto(
             input_size=num_features,
             num_labels=num_labels,
-            hidden_sizes=[256, 128, 64],
-            dropout_rates=[0.1, 0.1, 0.1],
-            hidden_sizes_linear=[32],
-            dropout_rates_linear=[0.1],
-            model_type="gru",
+            hidden_sizes=hyperparameters.get("hidden_sizes", [256, 128, 64]),
+            dropout_rates=hyperparameters.get(
+                "dropout_rates", [0.1, 0.1, 0.1]
+            ),
+            hidden_sizes_linear=hyperparameters.get(
+                "hidden_sizes_linear", [32]
+            ),
+            dropout_rates_linear=hyperparameters.get(
+                "dropout_rates_linear", [0.1]
+            ),
+            model_type=hyperparameters.get("model_type", "gru"),
         )
 
     def _init_optim(self, model):

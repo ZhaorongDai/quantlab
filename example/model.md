@@ -903,3 +903,30 @@ eval 模式**——要接着训练不用管，`_train_dl` 每个 epoch 开头本
 `BaseModel.config = cfg` 会**就地修改**你传进来的因子和标签对象的 `config.start_date` /
 `end_date`。同一个因子实例喂给两个日期区间不同的模型，后者会把前者的区间改掉。
 CV 并行那条路 `copy.deepcopy(self)` 就是为了躲这个。
+
+**12. `RNNRegressor._init_model` 曾经收下 `hyperparameters` 然后原样扔掉。**（**已于 2026-09-07 修复**）
+签名上写着 `hyperparameters: dict`，函数体里每一个值都写死：
+`hidden_sizes=[256, 128, 64]`、`dropout_rates=[0.1, 0.1, 0.1]`、
+`hidden_sizes_linear=[32]`、`model_type="gru"`。`config.hyperparameters` 被静默丢掉。
+改了配置、跑完一轮、拿到一个跟改之前逐位相同的模型——没有任何地方提示你配置没生效。
+
+这跟这一批一起删掉的另外三处「声明了、收下了、从不引用」是同一个谎
+（`_train_dl(backtest=...)`、`get_crypot_currency(name=...)`、
+`XrBackend.get_xarray_dataset(indexes)`），而同一批里 `MLPRegressor._init_model`
+已经改成读它了——修那三个、留这一个说不过去。
+
+它藏得住是有具体原因的：测试给 `RNNRegressor` 喂的是 MLP 形状的
+`{"hidden_size1": 16, "hidden_size2": 8}`，**正因为参数被忽略**才通过；真读了反而会炸。
+这是「因为错误的原因而变绿」。
+
+现在它跟 `RNNClassifier` 一样真的读这个 dict，但每个值都用
+`.get(..., <原来写死的字面量>)` 取，**任何既有配置建出来的模型结构都不变**。
+回归锁：`tests/test_dl_models.py::test_rnn_head_hyperparameters_reach_the_built_module`
+（断言在**建出来的模块**上——「读了」和「收下就扔」唯一的区别就是那个数字有没有出现在
+某一层里）和 `::test_rnn_regressor_defaults_preserve_the_previously_hardcoded_shape`。
+所有 RNN 测试也一并改成显式传 RNN 形状的 hyperparameters。
+
+> 三个头对同一个抽象钩子仍然有两种取值习惯：`MLPRegressor` / `RNNRegressor` 用
+> `.get()` 带默认值，`RNNClassifier` 用 `[...]`（缺键直接 `KeyError`）。统一它们
+> 是另一个决定，这次**没有**做——`RNNClassifier` 没有「原来写死的值」可以当默认值，
+> 硬给一个等于替使用者拍板网络结构。
