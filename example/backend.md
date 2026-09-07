@@ -14,7 +14,7 @@
 | `PlBackend`（`dataset/backend.py`） | 单个 Parquet 文件 | `pl.LazyFrame` | 是，`scan_parquet` 全程惰性 |
 | `MlBackend`（`ml_model/backend.py`） | joblib 序列化文件 | 一个 Python 对象（模型） | 无所谓 |
 
-`MlBackend` 实现的是另一个 ABC——`base/backend.py:ModelBackend`，它跟 `DataBackend` 是对称的两半：一个管数据落在哪，一个管模型落在哪。它整个类只有 12 行，没有任何维度、坐标、时间轴的概念，`read` 就是 `joblib.load`。它能和 `XrBackend` 长在同一套设计里，恰恰是因为契约里没有一句话假设"数据是个带 timestamp/symbol 的面板"。
+`MlBackend` 实现的是另一个 ABC——`base/backend.py:ModelBackend`，它跟 `DataBackend` 是对称的两半：一个管数据落在哪，一个管模型落在哪。它整个类只有十几行，没有任何维度、坐标、时间轴的概念，`read` 就是 `joblib.load`。它能和 `XrBackend` 长在同一套设计里，恰恰是因为契约里没有一句话假设"数据是个带 timestamp/symbol 的面板"。
 
 这层分离在项目里是真的被用起来的，不是纸面上的：
 
@@ -448,7 +448,7 @@ Can't instantiate abstract class Incomplete without an implementation for abstra
 
 1. `read` 缺路径抛 `FileNotFoundError`（消息里带上路径）。
 2. `head` 三条义务：自己开 store、真的有界、缺路径当场抛。**不要照着 `filter_by_*` 的样子写它。**
-3. `read`/`write`/`to_internal`/`filter_by_*` 都 `return self`，否则链式调用会碎。`ml_model/backend.py:MlBackend` 就是反例（见常见坑）。
+3. `read`/`write`/`to_internal`/`filter_by_*` 都 `return self`，否则链式调用会碎。`ml_model/backend.py:MlBackend` 曾经是反例（2026-09-07 已修，见常见坑第 5 条）。
 4. `get_xarray_dataset` 必须能吐出 `[timestamp, symbol]` 形状——这是全流水线的硬约束——而且必须**真的按 `indexes` 收窄**：请求了没有的维度要报错，不能静默返回一个形状不符的 `Dataset`。它还必须**不改写** `self.data`（这一点跟 `filter_by_*` 相反）。
 5. 如果这个介质要走分块摄取，还得自己实现 `append`（含坐标 / dtype 守卫）。
 
@@ -485,14 +485,16 @@ indexes 传胡说八道也没事: ['timestamp', 'symbol']
 PlBackend.write 到不存在的目录: FileNotFoundError No such file or directory (os error 2): /tmp/...
 ```
 
-**5. `MlBackend` 的三个方法都不返回 `self`。** `ModelBackend` 的 ABC 签名写的是 `-> Self`，但 `ml_model/backend.py` 的实现全部隐式返回 `None`，所以链式写法会当场挂：
+**5. `MlBackend` 的三个方法都不返回 `self`。**（**已于 2026-09-07 修复**）`ModelBackend` 的 ABC 签名写的是 `-> Self`，但 `ml_model/backend.py` 的实现以前全部隐式返回 `None`，所以链式写法会当场挂：
 
 ```
 MlBackend.to_internal 返回: None
 链式会挂: AttributeError 'NoneType' object has no attribute 'write'
 ```
 
-分两步写就没问题（`m = MlBackend(); m.to_internal(obj); m.write(path)`，实测可用）。另外 `MlBackend` 目前在仓库里**没有任何调用点**——`base/model.py` 是直接用 `torch.save`/`joblib.dump` 的（`base/model.py:401-403`、`435-438`）。它是个已经写好但还没接上的口子。
+现在三个方法都 `return self`，跟 `XrBackend` / `PlBackend` 一致，`MlBackend().to_internal(m).write(path)` 和 `MlBackend().read(path).get_model()` 都能直接写；ABC 早就声明的 `**kwargs` 也补上并真的透传给 joblib。由 `tests/test_ml_backend.py` 锁（含一条 `write(..., compress=3)` 的透传断言，防止 `**kwargs` 变成摆设）。
+
+`MlBackend` 在仓库里仍然**没有任何调用点**——`base/model.py` 是直接用 `torch.save`/`joblib.dump` 的。但它**不是死代码**：`BaseModel.predict()` 签名里的 `np.ndarray` 分支是有意留的，为的是 `MLConfig` 那条非 torch 模型（xgboost 之类）的路，而 `MlBackend` 就是那条路的持久化。它是尚未建成的既定路线的脚手架——正因为如此，才值得在第一个调用方出现之前把它修好，而不是让它在第一次被按文档使用时就挂掉。
 
 **6. `XrBackend.head(path, n)` 的"n 行"是先对每一维都切 n，再取前 n 行。** 实现是 `opened.isel({dim: slice(0, n) for dim in opened.dims})`，然后 `to_dataframe()`，最后 `.head(n)`。所以中间物化的是最多 `n^(维数)` 行——二维面板下 n=3 会先展开成 6 行再切到 3 行。这仍然是有界的（这是"不物化全量"的要求），但如果你把 n 调到几千、维数又多，中间那步不是免费的。用 `isel(dims)` 而不是写死 `timestamp`，是因为一个介质无关的后端不该假设这个项目的面板恰好按时间和标的索引。
 
