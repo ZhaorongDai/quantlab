@@ -34,7 +34,9 @@
 
 **`to_internal(data) -> Self`**：直接接管一份内存里的数据，跳过磁盘。
 
-**`get_xarray_dataset(indexes) -> xr.Dataset`**：转成全项目唯一的层间交换格式。`indexes` 固定是 `["timestamp", "symbol"]`——这是 CLAUDE.md 里的硬约束，不是这个方法的可选项。
+**`get_xarray_dataset(indexes=None) -> xr.Dataset`**：转成全项目唯一的层间交换格式。**`indexes` 就是结果的索引维度**——返回的 `Dataset` 的 `dims` 恰好是它，顺序也照给。铺在 `indexes` 之外维度上的数据变量会被丢掉，用不到的维度连同坐标一起丢掉，剩下的 `transpose` 成给定轴序；请求一个不存在的维度会当场 `ValueError`（消息里列出实际有哪些维度）。传 `None` 表示「不做形状要求，原样给我」，这也是全仓大多数调用点的写法。
+
+全项目实际只会传 `["timestamp", "symbol"]` 或者什么都不传，因为「时间戳 + 标的」是 CLAUDE.md 里的硬约束；但「传了就得算数」是这个方法自己的契约，不是那条约束的推论。
 
 **`get_lazyframe() -> pl.LazyFrame`**：给 Polars 因子用的视角。
 
@@ -447,7 +449,7 @@ Can't instantiate abstract class Incomplete without an implementation for abstra
 1. `read` 缺路径抛 `FileNotFoundError`（消息里带上路径）。
 2. `head` 三条义务：自己开 store、真的有界、缺路径当场抛。**不要照着 `filter_by_*` 的样子写它。**
 3. `read`/`write`/`to_internal`/`filter_by_*` 都 `return self`，否则链式调用会碎。`ml_model/backend.py:MlBackend` 就是反例（见常见坑）。
-4. `get_xarray_dataset` 必须能吐出 `[timestamp, symbol]` 形状——这是全流水线的硬约束。
+4. `get_xarray_dataset` 必须能吐出 `[timestamp, symbol]` 形状——这是全流水线的硬约束——而且必须**真的按 `indexes` 收窄**：请求了没有的维度要报错，不能静默返回一个形状不符的 `Dataset`。它还必须**不改写** `self.data`（这一点跟 `filter_by_*` 相反）。
 5. 如果这个介质要走分块摄取，还得自己实现 `append`（含坐标 / dtype 守卫）。
 
 这几条的可执行版本在 `tests/test_backend_head.py`（有界读取的三条义务）、`tests/test_backend_overwrite.py`（缓存早退与 `overwrite=`）和 `tests/test_symbol_axis_widening.py`（加宽路径的全部不变量）里——19 个用例，`uv run python -m pytest` 跑得通。每个用例的 docstring 都写明了"改成什么样它会变红"，改后端时先读它们比读实现快。
@@ -463,13 +465,19 @@ to_internal 之后再 read: {'timestamp': 1, 'symbol': 2} -> 没有重新读盘
 overwrite=True 之后:     {'timestamp': 2, 'symbol': 2}
 ```
 
-**3. `XrBackend.get_xarray_dataset(indexes)` 完全忽略 `indexes`。** 它就是 `return self.data`——形状是存进去时的形状，参数只是为了跟 ABC 签名对齐。`PlBackend` 那边是真的用（`set_index(indexes)` 然后 `Dataset.from_dataframe`）。
+**3. `XrBackend.get_xarray_dataset(indexes)` 曾经完全忽略 `indexes`。**（**已于 2026-09-07 修复**）以前它的函数体就是 `return self.data`——形状是存进去时的形状，参数只是为了跟 ABC 签名对齐，传胡说八道也照样返回整个面板：
 
 ```
 indexes 传胡说八道也没事: ['timestamp', 'symbol']
 ```
 
-所以别指望传 `indexes` 能把一个 Zarr 面板转轴，它不会。
+而同一个 ABC 方法在 `PlBackend` 那边是真的用（`set_index(indexes)` 然后 `Dataset.from_dataframe`）——一个方法两套含义。
+
+现在两边对齐到 `PlBackend` 一直以来的语义：**`indexes` 就是结果的索引维度**。`XrBackend` 会校验、丢掉不属于这些维度的变量、丢掉用不到的维度、再 `transpose` 成给定轴序；请求不存在的维度会 `ValueError`。由 `tests/test_backend_indexes.py` 锁。
+
+**对既有调用点是无操作**：全仓传的要么是 `["timestamp", "symbol"]`，要么什么都不传，而规范面板的每个变量都恰好铺在这两维上——什么都不会被丢掉，只是轴序被钉死。真正因此改变的只有 `["timestamp"]` 那条路，也就是 `BaseDataset.time_interval`（见 dataset.md 「常见坑」第 6 条）。
+
+所以现在**可以**指望传 `indexes` 收窄一个 Zarr 面板了；但它仍然不会帮你把 long-format 表转成面板，那是 `PlBackend` 的活。
 
 **4. `PlBackend.write()` 不建父目录，`XrBackend.write()` 建。** 前者直接 `self.data.collect().write_parquet(path)`：
 

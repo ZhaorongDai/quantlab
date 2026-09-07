@@ -48,7 +48,7 @@
 |---|---|---|
 | `base/model.py` | `early_stopping=False` 会 `UnboundLocalError` 直接崩；早停计数器按**验证 batch** 递增而非 epoch；张量列序是**字母序**不是你传入的顺序，主目标可能不是你以为的那个 | [model.md](model.md) 「已知的不完整之处」 |
 | `dl_model/` | `MLPRegressor` 三处坏掉无法实例化；`rnn.py` 里的 `RNNClassifier` 是过期坏副本（活的那个在 `rnn_classification.py`）；`update()` 读了 `DLConfig` 没有的字段 | [model.md](model.md) |
-| `dataset/backend.py` | `XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用 | [backend.md](backend.md)、[dataset.md](dataset.md) |
+| ~~`dataset/backend.py`~~ | ~~`XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用~~ **已于 2026-09-07 修复**（`tests/test_backend_indexes.py`） | [backend.md](backend.md)、[dataset.md](dataset.md) |
 | 成分 vs 价格 | 跨改名的代码词表对不上：876 个 sp500 成分符号里 89 个在价格 roster 查无此符号 | [constituent.md](constituent.md) 「已知的坑」 |
 | `base/factor.py` | `save()` 默认 `mode="a"`，但它**不是时间追加**，第二段日期会直接报错 | [factor.md](factor.md) |
 | 死代码 | `MlBackend`、`WindowedRobustStandardization`、`PageLedger.last_position()` 均零调用点 | 各篇 |

@@ -1,6 +1,6 @@
 import xarray as xr
 import polars as pl
-from typing import Literal, Self
+from typing import Literal, Optional, Self
 from abc import abstractmethod, ABC
 
 
@@ -21,7 +21,32 @@ class DataBackend(ABC):
         self._data = data
 
     @abstractmethod
-    def get_xarray_dataset(self, indexes: list[str]) -> xr.Dataset: ...
+    def get_xarray_dataset(
+        self, indexes: Optional[list[str]] = None
+    ) -> xr.Dataset:
+        """转成全流水线唯一的层间交换格式：一个 `xr.Dataset`。
+
+        **`indexes` 就是结果的索引维度**，而且实现必须真的照做——返回的
+        `Dataset` 的维度恰好是 `indexes`，顺序也照给定的来，铺在其他维度上的
+        数据变量要丢掉。全项目绝大多数调用点传的是 `["timestamp", "symbol"]`，
+        因为「时间戳 + 标的」是 CLAUDE.md 里的硬约束，不是本方法的可选项；但
+        「传了就得算数」是本方法的契约，不是那条约束的推论。
+
+        `indexes=None` 表示「不做形状要求，原样给我」。它存在是因为多数调用点
+        只想拿到面板本身，而不是想断言它的形状。
+
+        实现方要注意的两点：
+
+        - 请求了当前数据没有的维度必须**报错**，并把实际有的维度列出来。静默
+          返回一个形状不符的 `Dataset` 会让错误在三层之外才现形。
+        - `XrBackend` 在 `indexes=None` 时返回的是它持有的那个对象本身，不是
+          副本；调用方不应就地改写返回值。
+
+        历史：`XrBackend` 的实现曾经整个忽略这个参数（函数体就是
+        `return self.data`），于是 `BaseDataset.time_interval` 这种依赖「只要
+        时间轴」的调用点在该后端下根本跑不通（2026-09-07 修复）。
+        """
+        ...
 
     @abstractmethod
     def get_lazyframe(self) -> pl.LazyFrame: ...

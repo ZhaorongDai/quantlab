@@ -112,9 +112,28 @@ class BaseDataset(ABC):
 
     @property
     def time_interval(self) -> np.timedelta64:
+        """相邻时间戳之差的**众数**（针对周末/停牌造成的缺口）。
+
+        `get_xarray_dataset(["timestamp"])` 要的就是「只剩时间轴」的那份数据，
+        差分只在这一根轴上做。以前 `XrBackend` 忽略 `indexes`，这里拿回的是整个
+        面板，于是这个属性在该后端下**根本跑不通**——两个错误接连出现（都在
+        `data/data/us_equity/1d/us_all.zarr` 上实测过）：
+
+            TypeError: numpy boolean subtract, the `-` operator, is not
+            supported ...                      # .diff 撞上布尔的 anomaly_flag
+            AttributeError: 'Dataset' object has no attribute 'to_series'
+
+        2026-09-07 一并修好：`indexes` 现在真的收窄维度，而 `.to_series()` 是
+        `DataArray` 的方法不是 `Dataset` 的，所以这里显式取 `["timestamp"]` 这个
+        坐标再差分。由 `tests/test_backend_indexes.py` 锁。
+
+        唯一的调用点是 `dataset/spot.py:_xr_to_bars`（nautilus 那条路）。
+        """
+        timestamps = self.data_backend.get_xarray_dataset(["timestamp"])[
+            "timestamp"
+        ]
         return (
-            self.data_backend.get_xarray_dataset(["timestamp"])
-            .diff(dim="timestamp")
+            timestamps.diff(dim="timestamp")
             .to_series()
             .mode()  # 取众数，针对周末数据缺失的情况
             .values[0]

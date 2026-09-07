@@ -392,7 +392,63 @@ class XrBackend(DataBackend):
     def get_xarray_dataset(
         self, indexes: Optional[list[str]] = None
     ) -> xr.Dataset:
-        return self.data
+        """按 `indexes` 给定的维度返回面板；`indexes=None` 表示「原样返回」。
+
+        `indexes` 的语义与 `PlBackend.get_xarray_dataset` 保持一致：**它就是结果
+        的索引维度**。那边是 `set_index(indexes)` 之后 `Dataset.from_dataframe`，
+        所以只有 `indexes` 里的名字会成为维度，其余列成为数据变量；这边输入本来
+        就是 `xr.Dataset`，等价动作是：
+
+        1. 校验每个名字都是当前面板的维度，不是就报错并把实际维度列出来；
+        2. 丢掉任何铺在 `indexes` 之外维度上的数据变量；
+        3. 丢掉不再被使用的维度（连同它的坐标）；
+        4. 把剩下的变量 `transpose` 成 `indexes` 给定的轴顺序。
+
+        以前这个方法的函数体只有一行 `return self.data`——`indexes` 完全被忽略，
+        传什么都一样（2026-09-07 修复，`tests/test_backend_indexes.py` 锁）。
+
+        **对既有调用点全部是无操作**：全仓传的要么是 `["timestamp", "symbol"]`，
+        要么什么都不传。规范面板的每个数据变量都恰好铺在这两维上，所以第 2、3 步
+        什么都不丢，第 4 步只是把轴顺序钉死成 `(timestamp, symbol)`——这正是
+        CLAUDE.md 里那条硬约束，只不过以前靠 `from_raw_data()` 稠密化时的约定
+        维持，现在在边界上真的校验了。
+
+        真正因此改变行为的只有 `indexes=["timestamp"]`，也就是
+        `BaseDataset.time_interval` 那一条路：它以前拿回整个面板，`.diff()` 撞上
+        布尔的 `anomaly_flag` 直接 `TypeError`。现在拿回的是一个只剩时间轴的
+        `Dataset`（没有数据变量，但保留 `timestamp` 坐标），差分可以正常做。
+
+        `indexes=None` 保持返回 `self.data` 本身（不是副本），因为几十个调用点
+        依赖「拿到的就是后端持有的那个对象」这一点。
+
+        本方法**不改写** `self.data`。同接口上的 `filter_by_date` /
+        `filter_by_symbol` 是就地收窄的，照着它们的样子实现这一个会静默截断调用方
+        和别人共享的那份面板——那正是 RV-01 的故障模式。
+        """
+        if indexes is None:
+            return self.data
+
+        data = self.data
+        missing = [name for name in indexes if name not in data.dims]
+        if missing:
+            raise ValueError(
+                f"XrBackend.get_xarray_dataset: requested index(es) "
+                f"{missing} are not dimensions of this dataset. Present "
+                f"dimensions: {tuple(data.dims)}."
+            )
+
+        dropped_vars = [
+            name
+            for name, variable in data.data_vars.items()
+            if not set(variable.dims) <= set(indexes)
+        ]
+        result = data.drop_vars(dropped_vars)
+
+        unused_dims = [dim for dim in result.dims if dim not in indexes]
+        if unused_dims:
+            result = result.drop_dims(unused_dims)
+
+        return result.transpose(*indexes, ...)
 
     def get_lazyframe(self) -> pl.LazyFrame:
         data = self.data.to_dataframe().reset_index()
@@ -486,7 +542,24 @@ class PlBackend(DataBackend):
             raise FileNotFoundError(f"File {path} does not exist.")
         return pl.scan_parquet(path).head(n)
 
-    def get_xarray_dataset(self, indexes: list[str]) -> xr.Dataset:
+    def get_xarray_dataset(
+        self, indexes: Optional[list[str]] = None
+    ) -> xr.Dataset:
+        """`set_index(indexes)` 之后 `Dataset.from_dataframe`——`indexes` 里的
+        名字成为维度，其余列成为数据变量。这一直是 `indexes` 的语义来源，
+        `XrBackend` 那边在 2026-09-07 才对齐上来。
+
+        这里 `indexes` 不能省：一个 `pl.LazyFrame` 是纯粹的表，没有维度可言，
+        不指定索引就无从构造 `Dataset`。ABC 上的默认值 `None` 是给
+        `XrBackend`「原样返回」用的。
+        """
+        if indexes is None:
+            raise ValueError(
+                "PlBackend.get_xarray_dataset: `indexes` is required. A "
+                "LazyFrame has no dimensions to fall back on -- name the "
+                "columns that should become the dataset's index, e.g. "
+                '["timestamp", "symbol"].'
+            )
         data = self.data.collect().to_pandas()
         data = data.set_index(indexes)
         return xr.Dataset.from_dataframe(data)

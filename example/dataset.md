@@ -42,7 +42,7 @@
 
 ## 核心契约
 
-规范形态只有一句话：**一个 `xr.Dataset`，`dims` 恒为 `(timestamp, symbol)`，每个数据变量都铺在这两维上**。`base/backend.py:DataBackend.get_xarray_dataset` 的中文文档已经把它写死了——"流水线固定使用时间戳与标的这两个维度，这是全项目的硬约束，不是本方法的可选项"。
+规范形态只有一句话：**一个 `xr.Dataset`，`dims` 恒为 `(timestamp, symbol)`，每个数据变量都铺在这两维上**。`base/backend.py:DataBackend.get_xarray_dataset` 的中文文档把它写死了——「时间戳 + 标的」是 CLAUDE.md 里的硬约束，不是这个方法的可选项。2026-09-07 起这条不再只是约定：`get_xarray_dataset(["timestamp", "symbol"])` 会真的按这两维收窄并钉死轴序，请求别的维度会报错。
 
 为什么不是 DataFrame？这是 CLAUDE.md 里的硬约束，理由不是审美：
 
@@ -210,7 +210,7 @@ num_symbols = 7700
 symbols[:5] = ['A', 'AA', 'AAAC', 'AAAP', 'AAC']
 ```
 
-（`ds.time_interval` 这个属性在 `XrBackend` 下是坏的，见"常见坑"第 6 条。）
+（`ds.time_interval` 这个属性在 `XrBackend` 下曾经是坏的，2026-09-07 已修，见"常见坑"第 6 条。）
 
 ## 扩展：新增一个市场 = 新增一个 Dataset 子类
 
@@ -509,7 +509,7 @@ ValueError: validate_schema: required column(s) missing from dataset: ['open', '
 
 即使绕过这一关，`flag_anomalies()` 还会给一个只有布尔变量的面板再挂一个全 False 的 `anomaly_flag`——**盘面尺寸翻倍，记录的信息为零**。用 `dataset/cleaning.py:clean_membership_panel()`，或者写你自己的。
 
-**6. `time_interval` 属性在 `XrBackend` 下是坏的。**
+**6. `time_interval` 属性在 `XrBackend` 下曾经是坏的。**（**已于 2026-09-07 修复**）
 `BaseDataset.time_interval` 写的是 `get_xarray_dataset(["timestamp"]).diff(...).to_series().mode()`，但 `XrBackend.get_xarray_dataset()` **完全忽略 `indexes` 参数**，直接返回整个 `Dataset`。于是两个问题接连出现：
 
 ```
@@ -517,7 +517,11 @@ TypeError: numpy boolean subtract, the `-` operator, is not supported ...   # .d
 AttributeError: 'Dataset' object has no attribute 'to_series'               # 去掉布尔变量之后
 ```
 
-（两条都是在 `data/data/us_equity/1d/us_all.zarr` 上真跑出来的。）它目前唯一的调用点是 `dataset/spot.py:_xr_to_bars`，也就是 nautilus 那条路，所以主线不受影响——但**别在新代码里用它**，除非先修好。
+（两条都是在 `data/data/us_equity/1d/us_all.zarr` 上真跑出来的。）
+
+两个原因一起修掉了：`indexes` 现在真的收窄维度，`["timestamp"]` 拿回的是一个只剩时间轴的 `Dataset`（没有数据变量，但保留 `timestamp` 坐标），布尔变量不再挡路；而 `.to_series()` 是 `DataArray` 的方法不是 `Dataset` 的，所以属性里改成显式取 `["timestamp"]` 这个坐标再差分。`.mode()` 保留着——它就是为了周末/停牌造成的缺口存在的，一个中间有两天空洞的日频面板仍然报 1 天。
+
+现在可以放心用了，由 `tests/test_backend_indexes.py::test_time_interval_works_under_xrbackend` 和 `::test_time_interval_takes_the_mode_not_the_first_gap` 锁住。它唯一的调用点仍然是 `dataset/spot.py:_xr_to_bars`（nautilus 那条路）。
 
 **7. 日期必须是补零 ISO，否则不是匹配失败而是比错。**
 
