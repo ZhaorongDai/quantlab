@@ -61,19 +61,22 @@ gaps:
     disposition_date: "2026-09-06"
     disposition_by: user
     disposition_note: >-
-      Gap stands and will be closed, but NOT via plan 03-06. The user chose a smaller
-      fix: resolve the names on the read() path from the backend's own lazyframe
-      schema -- `self.data_backend.get_lazyframe().collect_schema().names()` minus
-      `_INDEX_COLUMNS` -- mirroring the expression `cal()` already uses at
-      base/factor_polars.py:110-114. Verified empirically on 2026-09-06 that this
-      yields exactly the factor names (`['timestamp','symbol','MOM_5','MOM_20']` ->
-      `['MOM_5','MOM_20']`, identical to `data_vars`). Using the `DataBackend`
-      interface rather than `XrBackend.data_vars` is the deliberate choice: it is
-      the backend-agnostic accessor, which is the same D-03 interchangeability
-      property this gap is about. Cost measured at 0.062s on an 8M-cell store
-      (XrBackend.get_lazyframe materializes via to_dataframe); negligible for a
-      one-time call in read(). Plan 03-06 is superseded. Implementation is the
-      user's, done by hand outside GSD.
+      Gap stands and will be closed, but NOT via plan 03-06. Design settled with the user
+      on 2026-09-06 after three routes were measured. Chosen route: make factor names a
+      DERIVED PROPERTY OF THE COMPUTATION GRAPH rather than stored state. (1) Add a
+      bounded-read method to the `DataBackend` interface (e.g. `head(n)` /
+      `get_lazyframe(limit=n)`), implemented by both `XrBackend` and `PlBackend` -- going
+      through the interface rather than reaching past it, since backend interchangeability
+      (D-03) is what this gap is about. (2) `FactorPolars._get_factor_names()` reads a few
+      rows through that method, runs `_get_factor_lazyframe()` on them, and returns
+      `collect_schema().names()` minus `_INDEX_COLUMNS`. (3) DELETE the
+      `_maybe_resolve_factor_names()` no-op override so the base-class behaviour at
+      base/factor.py:92-93 is restored -- names resolve at config-assignment time, which
+      fixes read(), cal() and a bare-constructed instance at once, and preserves the
+      "explicit pin wins, else derive" semantics for free. The fix is a DELETED override,
+      not an added one. `read()` keeps its existing meaning: instantiate the specified
+      date range of historical data; it plays no part in naming. Implementation is the
+      user's, done by hand outside GSD. Plan 03-06 is superseded.
   - truth: "`Alpha158Stock`/`Alpha101Stock` compute the Alpha158/101 factor set correctly for US equities (phase must-have from 03-03; the D-01 extension of ROADMAP SC1)"
     status: partial
     reason: >-
@@ -282,44 +285,95 @@ reference them) and are **both superseded** by the decisions below.
 | 1 — `FactorPolars` not interchangeable on the `read()` path | Yes | accept-and-fix | Manual fix by the user; plan 03-06 superseded |
 | 2 — synthesized `amount` makes `vwap` identically `close` | Yes | **dismissed** | None; plan 03-07 superseded |
 
-### Gap 1 — accept, fix by a smaller route than 03-06 planned
+### Gap 1 — accept; close it at the root, not on the `read()` path
 
-The gap is real and stays open until the fix lands. Plan `03-06` proposed a broader change;
-the user chose a narrower one: have `FactorPolars.read()` resolve `config.factor_names` from
-the backend's own lazyframe schema, reusing the expression `cal()` already uses.
+The gap is real and stays open until the fix lands. Plan `03-06` proposed a broader change
+and is superseded. Three routes were measured with the user on 2026-09-06 before settling.
+
+**The insight that reframed it.** `base/factor.py:92-93` already implements the right
+pattern for every other factor class:
 
 ```python
-self.data_backend.get_lazyframe().collect_schema().names()   # minus _INDEX_COLUMNS
+def _maybe_resolve_factor_names(self):
+    if self._config.factor_names is None:
+        self._config.factor_names = self._get_factor_names()
 ```
 
-Verified empirically on 2026-09-06 against an `XrBackend` holding a two-factor store: the
-call returns `['timestamp', 'symbol', 'MOM_5', 'MOM_20']`, and removing `_INDEX_COLUMNS`
-leaves exactly `['MOM_5', 'MOM_20']` — identical to `data_vars`.
+`config.factor_names` is the **explicit-pin** channel; `_get_factor_names()` is the
+**derivation** channel. `FactorPolars` overrode `_maybe_resolve_factor_names()` to a no-op
+for one reason only — deriving eagerly would have meant a disk read at construction. So the
+gap is not "`read()` forgot to set a field"; it is "the derivation channel was disabled and
+only `cal()` was left to fill the field in". Fixing the derivation makes the override
+unnecessary. **The fix is a deleted override, not an added one.**
 
-Two properties of this route worth recording, because they are the reasons it was chosen
-over `XrBackend.data_vars`:
+**Chosen design.**
 
-- **It is backend-agnostic.** `get_lazyframe()` is on the `DataBackend` interface and is
-  implemented by both `XrBackend` and `PlBackend`; `data_vars` exists only on `XrBackend`.
-  Resolving names through the interface rather than through one concrete backend is the
-  same interchangeability property (D-03) that this gap is about, so the fix does not
-  reintroduce a backend dependency while removing one.
-- **Its cost is real but small.** `XrBackend.get_lazyframe()` materializes via
-  `to_dataframe()`. Measured at **0.062 s** on an 8M-cell store (2000 timestamps × 500
-  symbols × 8 variables) versus 0.000016 s for `data_vars`. A large ratio, but a one-time
-  call inside `read()`; it was not treated as a reason to prefer the concrete accessor.
+1. Add a bounded-read method to the `DataBackend` interface — `head(n)` or
+   `get_lazyframe(limit=n)` — implemented by both `XrBackend` and `PlBackend`.
+2. `FactorPolars._get_factor_names()` reads a few rows through that method, runs
+   `_get_factor_lazyframe()` on them, and returns `collect_schema().names()` minus
+   `_INDEX_COLUMNS`.
+3. Delete the `_maybe_resolve_factor_names()` no-op override, restoring base-class
+   behaviour: names resolve at config-assignment, so `read()`, `cal()` and a
+   bare-constructed instance are all correct at once, and "explicit pin wins" comes free.
 
-Still open under this gap and NOT addressed by the names fix alone — carry these forward
-if they matter:
+Going through the `DataBackend` interface rather than reaching past it to
+`xr.open_zarr(...).isel(...)` is deliberate: using one concrete backend's private path to
+fix a *backend-dependence* gap would be self-contradicting. On `PlBackend` the same method
+is `scan_parquet().head(n)` — genuinely lazy, so the cost below drops to nothing there.
+
+**Measurements (2026-09-06).** All three routes returned the identical name.
+
+| Route | Cost | Note |
+|---|---|---|
+| Full read through today's `get_lazyframe()` | 0.160 s | on the *smallest* store tested; materializes everything, so it grows with the store |
+| **Bounded read (chosen)** | **~25–50 ms** | see scaling below |
+| Zero-row schema stub | 0.009 s | cheapest, but requires hand-constructing the input schema |
+
+Bounded-read cost does **not grow with store size** — it is dominated by fixed overhead
+(zarr metadata open plus pandas conversion setup), not data volume:
+
+```
+  2520 x 500  ( 30 MB)  53.5 ms   baseline
+ 25200 x 500  (303 MB)  26.0 ms   10x history
+  2520 x 5000 (303 MB)  30.2 ms   10x symbols
+```
+
+The zero-row stub was rejected despite being cheapest: it required hardcoding every input
+dtype (`pl.Float64`), so a dtype-sensitive expression — integer division, a `.str.`
+operation, a cast — could derive a different name or fail spuriously. Reading real rows
+carries real dtypes for free.
+
+**Accepted consequences.**
+
+- **Construction touches disk.** Names now resolve at config-assignment, so constructing a
+  `FactorPolars` reads a few rows. D-04's "computation starts at `cal()`" is not violated —
+  a bounded metadata-plus-few-rows read is not the computation — but the no-op override
+  originally existed to avoid exactly this touch, and that trade is being made knowingly.
+- **`read()` is unchanged.** It keeps its existing meaning: instantiate the specified date
+  range of historical data. It plays no part in naming.
+- **A config/store mismatch now surfaces instead of being papered over.** Because names come
+  from the graph, a store written with `n=5` under a config now saying `n=60` yields
+  `momentum_60`, and the subsequent lookup fails with a name pointing straight at the cause.
+  Deriving from disk instead would have returned `momentum_5` — matching the data while
+  silently ignoring that the config asked for something else.
+- **Known boundary.** A factor whose output column names depend on data *values* (e.g. a
+  pivot over distinct symbols) would derive wrong names from a few rows. Such a factor
+  already violates the stated `_get_factor_lazyframe` contract ("return only `timestamp`,
+  `symbol` and the computed factor column(s)"), so it is out of contract rather than a
+  regression — but it is the one shape this design cannot serve.
+
+**Still open under this gap, and NOT closed by the names fix alone:**
 
 - The regression test driving **both** backends through `save() → fresh instance →
-  read() → _get_factor_names()` with `factor_data_strategy="read"`. Without it, the
-  asymmetry stays invisible to a green suite, which is how it survived in the first place
+  read() → _get_factor_names()` with `factor_data_strategy="read"`. Without it the
+  asymmetry stays invisible to a green suite, which is how it survived
   (`tests/test_factor_hierarchy.py:430-522` pins `factor_data_strategy="cal"`).
 - The false `read()` precondition still asserted in prose in four places:
   `base/factor_polars.py` class docstring (L45-46) and its `RuntimeError` message
-  (L65-70), `tests/test_factor_polars.py:103-105`, and `README.md:34-40`. Fixing the code
-  without fixing these leaves shipped documentation that was wrong for a different reason.
+  (L65-70), `tests/test_factor_polars.py:103-105`, and `README.md:34-40`. Under this design
+  the precondition is not merely mis-stated but obsolete — names no longer depend on
+  `cal()`/`read()` having run at all.
 
 ### Gap 2 — dismissed by user decision
 
