@@ -11,7 +11,7 @@
 
 - **数据格式**: 模块间统一使用 xarray（Zarr 落盘），不使用 DataFrame 作为流水线层间传输格式；模型训练直接消费 xarray — 用户明确要求，是贯穿整个流水线的硬约束
 - **因子计算后端**: 双后端支持——KunQuant（批量 + 流式，保留未来实时数据接入能力）为主，Polars 为新因子的补充计算路径（仅批量，不需要流式）；能用 xarray/KunQuant 完成的处理，优先不用 Polars — 用户明确的技术选型优先级
-- **回测技术栈**: 向量化回测优先用 vectorbt 打通；事件驱动回测（NautilusTrader，现有 `backtest/test_strategy.py` 已有雏形）作为预留扩展能力，非 v1 交付重点
+- **回测技术栈**: 向量化回测优先用 vectorbt 打通；事件驱动回测（NautilusTrader）作为预留扩展能力，非 v1 交付重点。原型 `backtest/test_strategy.py` 已于 2026-09-07 删除（早于当前 Dataset/Factor 契约），重启时按当前契约重建，不复活旧原型
 - **凭证安全**: API Key 等敏感信息一律通过环境变量读取，不硬编码 — 现有代码已经因硬编码 Tiingo Key 造成一次真实泄露
 - **可复现性**: 全流程参数尽量通过配置文件驱动 — 用户明确要求，服务于实验可复现
 - **架构契约**: 数据模块输出数据、因子模块输出因子、收益模型输出未来收益/收益排名预测、组合优化模型输出每个标的目标持仓百分比——各模块通过清晰的输入输出契约组合 — 便于未来插拔式扩展与平台化
@@ -36,7 +36,7 @@
 - **PyTorch** (`torch`) — deep-learning models (`dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py`), trained through the shared `base/model.py:BaseModel` training loop (`DataLoader`/`TensorDataset`).
 - **scikit-learn** (`sklearn.metrics`) — evaluation metrics (accuracy, F1, ROC-AUC, R², RMSE, etc.) used inside DL training loops, not for model fitting itself.
 - **KunQuant** — JIT-compiled factor computation graph library. Used throughout `base/factor.py`, `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` to build and compile (`cfake.compileit`) high-performance alpha factor pipelines (`KunRunner`, `Function`, `Builder`, `Op`, `Stage`).
-- **Nautilus Trader** (`nautilus_trader`) — dual role: (1) data model / `ParquetDataCatalog` for storing bar/instrument data (`base/data.py`, `dataset/spot.py`), and (2) live/backtest trading engine — `backtest/test_strategy.py` implements a `nautilus_trader.trading.strategy.Strategy` subclass.
+- **Nautilus Trader** (`nautilus_trader`) — currently used ONLY as a data model / `ParquetDataCatalog` for storing bar/instrument data (`base/data.py`, `dataset/spot.py`). Its live/backtest trading engine is not used by any code in the repo: the only `Strategy` subclass, `backtest/test_strategy.py`, was deleted 2026-09-07.
 - **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used in `vecbt/bt.py` (incomplete stub) and `test.py` (`vbt.Portfolio.from_signals`).
 - None detected. No `pytest`/`unittest` configuration, no test runner dependency, no `tests/` directory. Files named `test.py` and `test_nt.ipynb` at the repo root are ad hoc exploratory scripts/notebooks, not an automated test suite.
 - No linter/formatter config detected (no `.eslintrc`, `ruff.toml`, `.flake8`, `pyproject.toml` `[tool.ruff]`/`[tool.black]` sections).
@@ -45,7 +45,7 @@
 - `numpy`, `pandas`, `polars`, `xarray` — the core numerical/tabular/labeled-array stack. `xarray.Dataset` (dims `timestamp`, `symbol`) is the canonical in-memory data representation passed between dataset, factor, label, and model layers.
 - `torch` — model definition and training (`dl_model/*`).
 - `KunQuant` — compiled factor computation (`factor/*`, `base/factor.py`, `label/spot.py`, `my_ops/preprocess.py`). Appears to be a specialized/possibly local or pinned package, not a mainstream PyPI package with a standard lockfile entry.
-- `nautilus_trader` — trading engine, data catalog, instrument/currency model (`dataset/spot.py`, `backtest/test_strategy.py`, `utils/nautilus.py`).
+- `nautilus_trader` — data catalog, instrument/currency model (`dataset/spot.py`, `utils/nautilus.py`). The trading engine itself is unused.
 - `vectorbt` — signal-based backtesting (`vecbt/bt.py`, `test.py`).
 - `wandb` — experiment tracking, initialized in every training run (`base/model.py:_init_wandb`).
 - `loguru` — logging throughout (`base/data.py`, `base/factor.py`, `utils/timer.py`, `utils/nautilus.py`, `utils/binance.py`).
@@ -98,7 +98,6 @@ Conventions not yet established. Will populate as patterns emerge during develop
 | `BaseModel` (abstract) | Shared training loop: data collection, train/val/test split, epoch loop, checkpointing, W&B logging, CV | `base/model.py` |
 | `MLPRegressor`, `RNNRegressor`, `RNNClassifier` | Concrete torch model heads (MLP, GRU/LSTM regressor, GRU/LSTM classifier with auxiliary-label architecture) | `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` |
 | `MlBackend` | joblib-based persistence for non-torch (ML) models | `ml_model/backend.py` |
-| `Test` (Strategy) | Nautilus Trader live/backtest strategy: loads a trained model, generates predictions on live bars, sizes and submits orders (with TWAP execution) | `backtest/test_strategy.py` |
 | `backtest_from_signals` | vectorbt-based signal backtest helper (incomplete) | `vecbt/bt.py` |
 | Config factories | Hardcoded-path factory functions producing `DatasetConfig`/`FactorConfig` for spot klines, alpha101, alpha158, labels | `config/__init__.py` |
 | `DatasetConfig`/`FactorConfig`/`DLConfig`/`MLConfig` | Dataclass configuration objects threaded through every layer | `base/config.py` |
@@ -121,19 +120,18 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Purpose: Computes engineered features (factors) and prediction targets (labels) from dataset data using compiled KunQuant graphs, in either batch mode (`cal()`, operates on a full historical window) or streaming mode (`cal_stream()`, incremental per-bar updates for live trading).
 - Location: `base/factor.py` (ABC `FactorKunQuant`), `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` (custom `WindowedCompositiveOp` subclasses).
 - Depends on: Dataset layer (each factor config embeds a `Dataset`), `KunQuant`.
-- Used by: Model layer (`DLConfig.factors`/`DLConfig.labels`), and directly by the live `Strategy` in `backtest/test_strategy.py`.
+- Used by: Model layer (`DLConfig.factors`/`DLConfig.labels`).
 - Purpose: Orchestrates the full training lifecycle — pulling factor/label data into a combined `xarray.Dataset` (`collect()`), splitting into train/val/test or k-fold CV windows, running the epoch loop, early stopping, checkpointing (`.pth` via `torch.save` or `.joblib` via `joblib.dump`), and W&B logging.
 - Location: `base/model.py` (ABC `BaseModel`), `base/config.py` (`DLConfig`/`MLConfig`), `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py`, `ml_model/backend.py` (persistence helper only — no concrete `MLConfig`-based model implementation currently exists; `BaseModel._auto_train` raises `NotImplementedError` for `MLConfig`).
 - Depends on: Factor/Label layer, `torch`, `wandb`, `sklearn.metrics`, `joblib`.
-- Used by: Top-level scripts (`train_model.py`, `test.py`) and the live `Strategy` (`backtest/test_strategy.py`, which loads a trained `.pth` checkpoint directly into a raw `nn.Module`, bypassing `BaseModel.load()`).
-- Purpose: Evaluates a trained model's trading performance, either as a live/replay Nautilus Trader `Strategy` (`backtest/test_strategy.py`) or via vectorbt's signal-based portfolio simulation (`vecbt/bt.py`, `test.py`).
-- Location: `backtest/test_strategy.py` (Nautilus `Strategy`/`StrategyConfig` pair), `vecbt/bt.py` (helper function, currently broken — see Anti-Patterns).
-- Depends on: Model layer (loads a checkpoint), Factor/Label layer (recomputes features for prediction), `nautilus_trader` or `vectorbt`.
+- Used by: Top-level scripts (`train_model.py`, `test.py`).
+- Purpose: Evaluates a trained model's trading performance via vectorbt's signal-based portfolio simulation (`vecbt/bt.py`, `test.py`). The event-driven (Nautilus) alternative is a deferred capability with no current implementation.
+- Location: `vecbt/bt.py` (helper function, currently broken — see Anti-Patterns).
+- Depends on: Model layer (loads a checkpoint), Factor/Label layer (recomputes features for prediction), `vectorbt`.
 - Used by: Nothing else — this is a terminal/output layer.
 ## Data Flow
 ### Primary Training Path
 ### Factor Computation Path (KunQuant)
-### Live Prediction Path (Nautilus Strategy)
 - No shared application state / no server process. State lives in: on-disk zarr/parquet stores (dataset/factor/label caches), on-disk `.pth`/`.joblib` model checkpoints + `config.json`, and in-memory instance attributes (`self.data_backend.data`, `self.predictions_history` in the live strategy).
 ## Key Abstractions
 - Purpose: Represents "a place data is stored," independent of its schema.

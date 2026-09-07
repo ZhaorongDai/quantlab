@@ -230,3 +230,7 @@ model_ckpt
 # agent
 .claude
 .codex
+# GSD run-scoped sentinel (session-local, never shared state)
+.gsd/
+# GSD machine-readable mirror of .planning/STATE.md (regenerated on demand)
+.planning/state.json
