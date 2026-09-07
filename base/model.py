@@ -465,8 +465,15 @@ class BaseModel(ABC):
         if self._wandb_recorder:
             self._wandb_recorder.finish()
 
-        del self.model
-        del self.optim
+        # 训练结束后**保留** `self.model`：以前这里是 `del self.model`，于是
+        # `train()` 之后紧接着 `predict()` 会抛「Model not initialized」，
+        # 必须先把刚存下来的权重再 `load()` 回来，纯属多此一举。
+        #
+        # 优化器状态（Adam 的一阶/二阶动量，约 2 倍参数量）在训练之外没有任何
+        # 用处，显式丢掉——这才是当初 `del` 想省的那部分显存。所有 `self.optim`
+        # 的读取点都在 `_train_one_epoch` 里，而 `_init_model_and_optim()` 会在
+        # 下一次训练（包括 CV 的下一折）开头重新建一个。
+        self.optim = None
 
     def _auto_train(self, project_name, experiment_name, model_name):
         if isinstance(self.config, DLConfig):

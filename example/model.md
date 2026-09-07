@@ -723,9 +723,14 @@ bar，标签又是前视收益，泄漏是存在的。真要做留白得自己�
 `test_periods = train_periods // 5`，没有参数可调。
 另外 `train_periods` 的单位是**时间点个数**（bar 数），不是天数。
 
-**8. 训练完模型就没了。**
-`_train_dl` 最后 `del self.model; del self.optim`（为了 CV 时不累积显存）。
-所以 `model.train()` 之后**不能**直接 `model.predict(...)`——要先 `model.load(权重路径)`。
+**8. 训练完模型就没了。**（**已于 2026-09-07 修复**）
+曾经 `_train_dl` 最后是 `del self.model; del self.optim`（为了 CV 时不累积显存），
+于是 `model.train()` 之后不能直接 `model.predict(...)`，要先把刚存下来的权重
+`model.load(...)` 回来。
+
+现在只丢优化器（`self.optim = None`）——Adam 的一阶/二阶动量约是参数量的 2 倍，
+那才是真正占显存的部分，而且训练之外没人读它。模型留着，`train()` 之后可以直接
+`predict()`。回归锁：`tests/test_model_layer.py::test_model_is_usable_immediately_after_train`。
 
 **9. `pin_memory=True` 是写死的。**
 `DataLoader` 里硬编码，Mac（MPS）上会每次打印 UserWarning。无害，但吵。
