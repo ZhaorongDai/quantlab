@@ -1070,6 +1070,105 @@ def test_get_symbols_in_range_rejects_a_non_iso_date(
         catalog.get_symbols_in_range("us_all", "2006-01-01", "09/06/2026")
 
 
+def test_get_symbols_in_range_rejects_pre_1976_dates(
+    mock_universe_fetchers, tmp_path
+):
+    """The range-query mirror of `test_get_symbols_as_of_rejects_pre_1976_dates`,
+    and half of the gap 03.1-VERIFICATION.md records as truth 3.
+
+    Before the shared `_assert_within_coverage()` guard, this exact call
+    returned a 1976-CENSORED ROSTER with no error and no warning -- and a
+    censored roster is indistinguishable from a correct one to the backfill
+    and the backtest consuming it. `get_symbols_as_of()` had raised for this
+    since 03.1-04; its sibling on the same class did not, so DATA-05's
+    显式报错 clause held for one membership query and silently failed for the
+    other.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError):
+        catalog.get_symbols_in_range("sp500_constituent", "1900-01-01", "2020-01-01")
+
+
+def test_get_symbols_in_range_rejects_pre_2007_nasdaq100_dates(
+    mock_universe_fetchers, tmp_path
+):
+    """The Nasdaq-100 half of the same gap, and the worse-looking failure of
+    the two: this returned a bare `[]`.
+
+    `[]` is documented in this very module as a LEGITIMATE answer -- a
+    pre-listing roster query returns it, and
+    `test_us_all_has_no_coverage_boundary` asserts exactly that -- so the
+    caller had no way whatsoever to tell "no members in this window" from "you
+    asked outside coverage". That indistinguishability is the failure DATA-05
+    exists to prevent, and it is why the guard raises rather than clamping.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError):
+        catalog.get_symbols_in_range(
+            "nasdaq100_constituent", "1900-01-01", "2006-01-01"
+        )
+
+
+def test_get_symbols_in_range_accepts_a_start_date_on_the_coverage_start(
+    mock_universe_fetchers, tmp_path
+):
+    """The boundary is INCLUSIVE, and it is the thing a reviewer is most likely
+    to get backwards.
+
+    The comparison is a strict `<`: the coverage start is the earliest date the
+    change log actually covers, so it IS answerable, and membership intervals
+    are closed on both ends throughout this layer. A `<=` would silently move
+    the first answerable day forward by one.
+
+    The sibling query is asserted on the SAME days on purpose. Both membership
+    queries now run through one `_assert_within_coverage()`, so this pins that
+    they agree ON the boundary rather than differing by a day -- which is the
+    class of drift that produced the original gap.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    spx = catalog.get_symbols_in_range("sp500_constituent", "1976-07-01", "2020-01-01")
+    ndx = catalog.get_symbols_in_range(
+        "nasdaq100_constituent", "2007-02-01", "2020-01-01"
+    )
+
+    assert isinstance(spx, list) and spx
+    assert isinstance(ndx, list) and ndx
+
+    assert isinstance(catalog.get_symbols_as_of("sp500_constituent", "1976-07-01"), list)
+    assert isinstance(
+        catalog.get_symbols_as_of("nasdaq100_constituent", "2007-02-01"), list
+    )
+
+
+def test_get_symbols_in_range_leaves_boundary_free_categories_unguarded(
+    mock_universe_fetchers, tmp_path
+):
+    """D-02, and the "empty is still a legitimate answer" case.
+
+    `us_all` and `nasdaq_all` live in `ROSTER_FETCHERS`, not
+    `MEMBERSHIP_FETCHERS`: they are full-exchange rosters with per-symbol
+    listing dates and no index-membership concept, so they have no
+    left-censored change log and therefore no coverage start. A pre-listing
+    window must answer from the roster's own dates.
+
+    The `== []` assertion is the load-bearing half. Adding a guard that
+    converted a legitimately-empty answer into an exception would trade one
+    silent-wrong-answer failure for a loud-wrong-answer one; the window here is
+    narrow enough to match nothing in the fixture precisely so that case is
+    exercised rather than assumed.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    assert catalog.get_symbols_in_range("us_all", "1900-01-01", "1900-12-31") == []
+
+    nasdaq = catalog.get_symbols_in_range("nasdaq_all", "1900-01-01", "2026-09-06")
+    assert isinstance(nasdaq, list)
+    assert "AAPL" in nasdaq
+
+
 def test_us_all_has_no_coverage_boundary(mock_universe_fetchers, tmp_path):
     """`us_all` is boundary-free for the same reason `nasdaq_all` is (D-02):
     it is a full-market ROSTER with per-symbol listing dates, not index
