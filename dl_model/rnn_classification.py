@@ -481,10 +481,13 @@ class RNNClassifier(BaseModel):
         x = x.to(self.device)
         y = y.to(self.device)
 
-        # Use a dedicated optimizer with the refit learning rate
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=self.config.lr_refit
-        )
+        # A dedicated optimizer with the refit learning rate, CACHED on the
+        # instance. Building a fresh AdamW per call reset Adam's moment
+        # estimates every single step -- silently degrading online training to
+        # SGD with an odd warmup. `_get_refit_optim()` rebuilds only when
+        # `self.model` is replaced (`load()`, `_init_model()`) or `lr_refit`
+        # changes; see its docstring.
+        optimizer = self._get_refit_optim()
         optimizer.zero_grad()
 
         primary_pred, all_direct_preds = self.model(x)  # type: ignore

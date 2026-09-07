@@ -675,6 +675,20 @@ baseline 回归模型。
 `tests/test_dl_models.py` 两头都锁：默认配置下 `update()` 一个参数都不动，
 `lr_refit > 0` 时必须真的走一步优化器（否则「字段加了但没人读」也能骗过测试）。
 
+**同一天修的第二处：`update()` 以前每次调用都现场新建一个 AdamW。**
+Adam 的一阶/二阶动量存在优化器实例里，「每步新建」就是每步清零——不报错，
+只是悄悄退化成一个带古怪 warmup 的 SGD，而 `update()` 的用途正是真正的在线 /
+单步训练，动量累积是它的全部意义。现在走
+`BaseModel._get_refit_optim()`，实例级缓存，按 `(self.model 这个对象, lr_refit)`
+命中：`load()` 或再次 `_init_model()` 换掉 `self.model` 之后缓存自动失效，
+不用任何调用点记得去手动作废——一个指向旧参数张量的陈旧优化器会静默更新一堆
+游离张量，比原来的 bug 更糟。锁它的测试断言的是**状态**（两次 `update()` 之后
+每个参数的 `state[p]["step"] == 2`，且 `exp_avg` 非零），不是 `id()` 相等：
+后者在状态被清空时照样能通过。
+
+它跟 `self.optim` 是两回事——`_train_dl` 结束时 `self.optim = None` 是有意的
+（见「常见坑」#8 旁注），微调优化器没有把它复活。
+
 **8. 「从 xarray 到推理张量」没有被封装。**（**已于 2026-09-07 修复**）
 以前 `_train_dl` 内联了转换逻辑，推理方要手抄一遍。现在是
 `BaseModel.to_tensor(data, variables)`，训练和推理共用；`train_model.py` 已改为调用它。

@@ -734,5 +734,41 @@ class BaseModel(ABC):
     def _init_optim(self, model: torch.nn.Module):
         raise NotImplementedError
 
+    def _get_refit_optim(self) -> torch.optim.Optimizer:
+        """在线学习（`update()`）用的优化器，**跨调用复用**。
+
+        每个 `update()` 以前都是现场 `torch.optim.AdamW(...)` 新建一个。AdamW 的
+        一阶/二阶动量存在优化器实例里，所以「每步新建」等于每一步都把动量清零——
+        它不报错，只是悄悄退化成一个带古怪 warmup 的 SGD。而 `update()` 的用途正是
+        真正的在线 / 单步训练，动量的累积就是它的全部意义所在。
+
+        **失效条件是 `self.model` 被换掉**：优化器持有的是参数张量的引用，
+        `load()` 或再次 `_init_model()` 之后 `self.model` 指向一个全新的
+        `nn.Module`，旧优化器手里那些张量已经跟当前模型无关了——继续拿它 step
+        会静默地更新一堆游离张量，比原来的 bug 更糟。缓存因此按
+        `(self.model 这个对象, lr_refit)` 命中：模型换了、或者学习率改了，都重建。
+        用 `is` 比较对象身份而不是记一个「脏」标志，好处是 `load()` /
+        `_init_model_and_optim()` 一行都不用改，也就不可能有人改了模型却忘了失效。
+
+        这跟 `self.optim` 是**两回事**。`self.optim` 是训练循环的优化器，
+        `_train_dl` 结束时会被显式置 None 释放显存（见上文），那是有意的；
+        微调优化器是另一个生命周期，不要用这个方法去复活 `self.optim`。
+        """
+        key = (self.model, self.config.lr_refit)
+        cached = getattr(self, "_refit_optim_cache", None)
+        if (
+            cached is not None
+            and cached[0][0] is key[0]
+            and cached[0][1] == key[1]
+        ):
+            return cached[1]
+
+        optim = torch.optim.AdamW(
+            self.model.parameters(),  # type: ignore[union-attr]
+            lr=self.config.lr_refit,
+        )
+        self._refit_optim_cache = (key, optim)
+        return optim
+
     def _vecbt(self, prices: pd.Series, signals: pd.Series):
         raise NotImplementedError

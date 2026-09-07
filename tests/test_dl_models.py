@@ -377,3 +377,107 @@ def test_rnn_regressor_val_one_epoch_returns_a_floatable_loss(tmp_path):
         loss = model._val_one_epoch(0, x, y)
     assert loss is not None, "_val_one_epoch returned None"
     assert float(loss) >= 0.0
+
+
+# --------------------------------------------------------------------------
+# The refit optimizer must PERSIST across update() calls
+# --------------------------------------------------------------------------
+
+
+def _refit_ready(cls, tmp_path, lr_refit: float = 1e-2):
+    model = cls(_make_config(tmp_path, lr_refit=lr_refit, **_hp_for(cls)))
+    model.collect()
+    model._init_model_and_optim()
+    rng = np.random.default_rng(7)
+    x = torch.from_numpy(
+        rng.standard_normal((4, N_SYMBOLS, 3)).astype("float32")
+    )
+    y = torch.from_numpy(
+        rng.standard_normal((4, N_SYMBOLS, 2)).astype("float32")
+    )
+    return model, x, y
+
+
+@pytest.mark.parametrize("cls", [RNNRegressor, RNNClassifier])
+def test_refit_optimizer_state_accumulates_across_update_calls(tmp_path, cls):
+    """Every `update()` used to build a brand-new AdamW:
+
+        optimizer = torch.optim.AdamW(self.model.parameters(),
+                                      lr=self.config.lr_refit)
+
+    Adam's first- and second-moment estimates live on the optimizer instance,
+    so a fresh one per call zeroed them every single step -- online training
+    silently degraded to SGD with an odd warmup, with nothing raised.
+
+    This asserts on the STATE, not on object identity. `id(opt1) == id(opt2)`
+    would pass even if the state were being wiped; `step == 2` after two calls
+    cannot. The EMA buffer check is the second half: a `step` counter could in
+    principle be incremented by something that still discards the moments.
+    """
+    model, x, y = _refit_ready(cls, tmp_path)
+
+    model.update(x, y)
+    model.update(x, y)
+
+    optim = model._get_refit_optim()
+    states = [s for s in optim.state.values() if "step" in s]
+    assert states, "the refit optimizer carries no per-parameter state at all"
+    assert all(int(s["step"]) == 2 for s in states), (
+        "expected step == 2 for every parameter after two update() calls; "
+        f"got {sorted({int(s['step']) for s in states})} -- the moment "
+        "estimates are being reset between calls"
+    )
+    assert any(
+        float(s["exp_avg"].abs().sum()) > 0.0 for s in states
+    ), "every exp_avg buffer is zero, so no momentum was accumulated"
+
+
+def test_refit_optimizer_is_rebuilt_when_the_model_is_replaced(tmp_path):
+    """The invalidation half.
+
+    The optimizer holds references to the parameter TENSORS. After `load()` or
+    another `_init_model()`, `self.model` is a different `nn.Module` and those
+    tensors are no longer the model's -- a cached optimizer would go on
+    stepping detached tensors, which is worse than rebuilding every call.
+
+    Keyed on `self.model` object identity, so no call site has to remember to
+    invalidate anything.
+    """
+    model, x, y = _refit_ready(RNNRegressor, tmp_path)
+    model.update(x, y)
+    first = model._get_refit_optim()
+
+    model._init_model_and_optim()  # rebinds self.model
+    second = model._get_refit_optim()
+
+    assert second is not first, "stale optimizer survived a model swap"
+    assert not second.state, "a rebuilt optimizer must start with no state"
+    first_params = {id(p) for g in first.param_groups for p in g["params"]}
+    second_params = {id(p) for g in second.param_groups for p in g["params"]}
+    assert first_params.isdisjoint(second_params), (
+        "the rebuilt optimizer still points at the old model's tensors"
+    )
+
+
+def test_refit_optimizer_is_rebuilt_when_lr_refit_changes(tmp_path):
+    """`lr_refit` is a config field a caller can change between calls; a
+    cached optimizer must not silently keep the old learning rate."""
+    model, x, y = _refit_ready(RNNRegressor, tmp_path, lr_refit=1e-2)
+    first = model._get_refit_optim()
+    assert first.param_groups[0]["lr"] == pytest.approx(1e-2)
+
+    model.config.lr_refit = 5e-3
+    second = model._get_refit_optim()
+    assert second is not first
+    assert second.param_groups[0]["lr"] == pytest.approx(5e-3)
+
+
+def test_train_dl_still_drops_the_training_optimizer(tmp_path):
+    """Batch 1 set `self.optim = None` after training on purpose (Adam's
+    moment buffers are ~2x the parameter count). The refit optimizer is a
+    separate lifecycle and must not resurrect it."""
+    model = MLPRegressor(_make_config(tmp_path, epochs=1))
+    model.collect()
+    model.train()
+    assert model.optim is None
+    assert model.model is not None
