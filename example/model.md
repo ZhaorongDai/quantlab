@@ -110,22 +110,25 @@ CLAUDE.md 把「模块间统一使用 xarray，不用 DataFrame 作为层间传�
 | `config = ...`（setter） | 把训练区间**下推**给每一个因子和标签（`_reset_factors_config` / `_reset_labels_config`），并把 `config.name` 写成本类的完整导入路径。 |
 | `collect()` | 取特征、取标签、`combine_by_coords`、`sortby`、灌进 `XrBackend`。返回 `self`，可以链式写 `Model(cfg).collect().load(ckpt)`。 |
 | `train()` | 生成带时间戳的实验名 → `_init_wandb` → `_auto_train` → `_train_dl`。 |
-| `_train_dl()` | 切 train/test（按配置日期）→ 转张量 → 形状校验 → 从训练段**尾部**按 `val_size` 切验证集 → 建 `DataLoader` → epoch 循环 → 早停 → `_save_model` → `wandb.finish()` → `del self.model; del self.optim`。 |
+| `_train_dl()` | 切 train/test（按配置日期）→ `to_tensor` 转张量 → 形状校验 → 从训练段**尾部**按 `val_size` 切验证集 → 建 `DataLoader` → epoch 循环 → 按 epoch 早停 → `_save_model` → `wandb.finish()` → `self.optim = None`（模型保留）。 |
 | `train_cv(...)` | 沿时间前滚切多折，每折独立训练一个模型。 |
 | `load(path)` | 按当前数据形状重建网络，再灌权重。 |
-| `predict(tensor)` | `to(device)` → `_preprocess` → `model(x)`。 |
+| `predict(tensor)` | `model.eval()` → `to(device)` → `_preprocess` → `model(x)`，整段在 `torch.no_grad()` 里。 |
 
 几个设计选择值得单独说明，因为它们都是**只在量化场景才成立**的：
 
-**验证集是从训练段尾部按时间切的，不是随机抽的**（`base/model.py:594-598`）：
+**验证集是从训练段尾部按时间切的，不是随机抽的**：
 
 ```python
 train_split = int(train_x_t_all.shape[0] * (1 - self.config.val_size))
 train_x_t = train_x_t_all[:train_split]
-val_x_t   = train_x_t_all[train_split + 1:]
+val_x_t   = train_x_t_all[train_split:]
 ```
 
 随机抽样会让模型在训练时见到未来，验证分数会好看得不真实。
+
+（切点原本写的是 `train_split + 1:`，会静默丢掉一行；2026-09-07 修掉了，
+见「常见坑」第 6 条。）
 
 **`train_cv` 是滚动切分，还带 `gap_periods`。** 训练段整段落在测试段之前；
 中间可以留一段空隙，用来隔开标签自身的前视窗口——
@@ -164,8 +167,9 @@ val_x_t   = train_x_t_all[train_split + 1:]
 
 基类默认 `raise NotImplementedError`，但 `_init_model_and_optim` 里的调用**没有** try/except，
 所以不实现就会直接炸。允许返回 `None`——表示「我在训练钩子里自己更新参数」，
-这时基类就不设置 `self.optim`。（但 `_train_dl` 结尾无条件 `del self.optim`，
-所以返回 `None` 会在训练结束时 `AttributeError`。实务上请老实返回一个优化器。）
+这时基类就不设置 `self.optim`。（以前 `_train_dl` 结尾是无条件 `del self.optim`，
+返回 `None` 会在训练结束时 `AttributeError`；2026-09-07 改成了 `self.optim = None`，
+这条路不再炸。实务上还是老实返回一个优化器。）
 
 ### `_train_one_epoch(epoch, x, y) -> Tensor`
 
@@ -179,7 +183,11 @@ val_x_t   = train_x_t_all[train_split + 1:]
 
 同样是「一个 batch」。基类已经在 `model.eval()` + `torch.no_grad()` 里了，
 所以**不要**再自己包 `no_grad`，也不要 backward。
-**它的返回值就是早停判据**——必须返回 loss，返回 `None` 早停逻辑就会拿 `None` 去比大小。
+
+**它的返回值就是早停判据。** 基类把每个 batch 的返回值按样本数加权平均成一个
+epoch 级别的验证损失，再拿它去比 `best_loss`（2026-09-07 之前是逐 batch 直接比，
+见「常见坑」第 2 条）。所以它必须返回一个能 `float()` 的标量 loss——
+返回 `None` 会在 `float(None)` 处直接 `TypeError`。
 
 ### `_test_one_epoch(epoch, x, y) -> Tensor`
 
