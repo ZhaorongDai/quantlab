@@ -412,6 +412,93 @@ def _recording_alpaca(config, on_sleep=None):
     return _Recording(config)
 
 
+def test_the_rate_limit_headers_are_read_and_logged_on_the_first_backoff(
+    mock_alpaca_client, acquisition_config
+):
+    """WR-06. `RATE_LIMIT_HEADERS` and `_rate_limit_headers` were DEAD CODE.
+
+    Neither was referenced anywhere in the repository, while this class's
+    docstring asserted -- in the corporate-actions section -- that it carries
+    "no unreachable branch and no unused constant". More practically, a 429
+    with no diagnostic at all is what makes
+    `DEFAULT_RATE_LIMIT_BACKOFF_SECONDS` unverifiable in the field:
+    `X-RateLimit-Reset` is the only thing that tells an operator whether the
+    ceiling they hit is per-minute.
+
+    Asserted on the LOG LINE, so "the method exists" and "something calls it"
+    stay different claims, and on the ONCE-per-batch scoping, because at
+    `max_workers` x `max_retries` this would otherwise be the noisiest line in
+    a run.
+    """
+    from loguru import logger
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="INFO", format="{message}")
+    try:
+        limited = _http_error(429, reason="Too Many Requests")
+        limited.response.headers["X-RateLimit-Limit"] = "200"
+        limited.response.headers["X-RateLimit-Remaining"] = "0"
+        limited.response.headers["X-RateLimit-Reset"] = "1704207000"
+        # Two consecutive 429s, so the "log once" claim has something to be
+        # false about.
+        mock_alpaca_client.raise_on = {0: limited, 1: limited}
+
+        cfg = acquisition_config(
+            vendor="alpaca",
+            symbols=("AAPL",),
+            frequency="1d",
+            subdir="ratelimit_headers",
+            kwargs={"rate_limit_backoff_seconds": 0, "progress": False},
+        )
+        acq = _recording_alpaca(cfg)
+        acq.download()
+    finally:
+        logger.remove(sink_id)
+
+    rendered = [line for line in messages if "rate-limit headers" in line]
+    assert len(rendered) == 1, (
+        f"expected exactly one header line per batch, got {rendered}"
+    )
+    assert "X-RateLimit-Reset" in rendered[0] and "1704207000" in rendered[0]
+    assert "X-RateLimit-Remaining" in rendered[0]
+    assert acq.sleeps, "the batch must still back off"
+
+
+def test_an_absent_rate_limit_header_contributes_nothing_not_a_default():
+    """Absence means UNKNOWN, the house rule, applied to the headers too.
+
+    A missing `X-RateLimit-Remaining` must not read as `0`: "the vendor said
+    nothing" and "the vendor said zero" mean opposite things, and one of them
+    would send an operator hunting a ceiling that was never reported.
+    """
+    from acquisition.alpaca import AlpacaAcquisition
+    from base.acquisition import Acquisition
+
+    partial = _http_error(429, reason="Too Many Requests")
+    partial.response.headers["X-RateLimit-Limit"] = "200"
+
+    headers = AlpacaAcquisition._rate_limit_headers(
+        AlpacaAcquisition.__new__(AlpacaAcquisition), partial
+    )
+    assert headers == {"X-RateLimit-Limit": "200"}
+
+    # An exception carrying no response at all yields nothing, and the BASE
+    # implementation -- the honest answer for a vendor that publishes no such
+    # headers -- yields nothing either. Both render as "none sent".
+    assert (
+        AlpacaAcquisition._rate_limit_headers(
+            AlpacaAcquisition.__new__(AlpacaAcquisition), ValueError("no response")
+        )
+        == {}
+    )
+    assert (
+        Acquisition._rate_limit_headers(
+            AlpacaAcquisition.__new__(AlpacaAcquisition), partial
+        )
+        == {}
+    )
+
+
 def test_an_alpaca_429_classifies_rate_limited_and_never_trips_the_global_abort(
     mock_alpaca_client, acquisition_config
 ):

@@ -573,6 +573,22 @@ class Acquisition(ABC):
         status = getattr(response, "status_code", None)
         return int(status) if status else None
 
+    def _rate_limit_headers(self, exc: BaseException) -> dict[str, str]:
+        """Whatever rate-limit metadata this vendor sent, for LOGGING only.
+
+        `{}` on the base, which is the honest answer for a vendor that
+        publishes no such headers -- and it is a complete implementation, not a
+        stub: `_attempt_batch` logs whatever it gets, so an empty mapping
+        renders as "the vendor said nothing", which is a true statement.
+
+        An ABSENT header must contribute no entry rather than a default one. A
+        caller has to be able to distinguish "the vendor said nothing" from
+        "the vendor said zero"; those mean opposite things, and a default would
+        silently merge them. Nothing branches on this -- the backoff stays a
+        configured constant, never a computed reset instant.
+        """
+        return {}
+
     def _classify_error(self, exc: BaseException) -> str:
         """How THIS vendor's failures map onto the shared orchestration.
 
@@ -1640,6 +1656,24 @@ class Acquisition(ABC):
                     # every other batch over a condition that has usually
                     # cleared by the time the log line is written, which is
                     # the T-03.2-16 failure in miniature.
+                    if retries == 0:
+                        # Logged ONCE per batch, on the first backoff only: at
+                        # `max_workers` threads x `max_retries` retries this
+                        # would otherwise be the noisiest line in the run.
+                        #
+                        # Whatever the vendor sent, and nothing invented. This
+                        # is the only diagnostic a 429 produces, and without it
+                        # the backoff constant is unverifiable in the field --
+                        # `X-RateLimit-Reset` is what tells an operator whether
+                        # the ceiling they hit is per-minute at all.
+                        headers = self._rate_limit_headers(exc)
+                        logger.info(
+                            f"Rate limited on a batch of {len(symbols)} "
+                            f"symbol(s); backing off {backoff:.0f}s in this "
+                            f"worker only (up to {max_retries} times). Vendor "
+                            f"rate-limit headers: "
+                            f"{headers or 'none sent'}."
+                        )
                     retries += 1
                     self._sleep(backoff)
                     continue

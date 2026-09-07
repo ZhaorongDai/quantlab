@@ -600,10 +600,18 @@ class AlpacaAcquisition(Acquisition):
     def _rate_limit_headers(self, exc: BaseException) -> dict[str, str]:
         """Whatever `X-RateLimit-*` the vendor happened to send, or `{}`.
 
-        Purely informational. An ABSENT header contributes no entry rather
-        than a default one, so a caller can distinguish "the vendor said
-        nothing" from "the vendor said zero" -- the two mean opposite things
-        and a default would silently merge them.
+        Purely informational, and genuinely REACHED: `Acquisition._attempt_batch`
+        calls this on the first backoff of every rate-limited batch. It was dead
+        code until then, alongside `RATE_LIMIT_HEADERS`, while this class's own
+        docstring asserted it carried "no unreachable branch and no unused
+        constant" -- and a 429 with no diagnostic at all is what makes
+        `DEFAULT_RATE_LIMIT_BACKOFF_SECONDS` unverifiable in the field (WR-06).
+
+        An ABSENT header contributes no entry rather than a default one, so a
+        caller can distinguish "the vendor said nothing" from "the vendor said
+        zero" -- the two mean opposite things and a default would silently
+        merge them. Nothing branches on the result; the backoff stays a
+        configured constant and is never a computed reset instant.
         """
         response = self._vendor_response(exc)
         headers = getattr(response, "headers", None) or {}
