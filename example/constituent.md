@@ -73,6 +73,10 @@ symbol: String, category: String, start_date: String, end_date: String, end_date
 
 `get_symbols_in_range` 的 docstring 说得很清楚，它保留的正是"在窗口中间退市的那些票"。实测 `us_all` 的 15,167 行里，有 **7,018 行的 `end_date` 早于 2026-01-01**（即已退市），把它们排除掉就是幸存者偏差本身。
 
+**谓词不同，但覆盖边界的契约是同一份。** 两个查询都要过
+`UniverseCatalog._assert_within_coverage()`：`get_symbols_as_of` 检查 `as_of_date`，
+`get_symbols_in_range` 检查 `start_date`（窗口左端，唯一可能伸进左截断区的那一端）。见下一节。
+
 ### 可回溯起点 `PIT_COVERAGE_START`
 
 历史成分是从维基百科的**变更日志**重建的，而变更日志本身有个最早的一行。在那行之前，源数据**根本没有信息**。
@@ -82,9 +86,33 @@ symbol: String, category: String, start_date: String, end_date: String, end_date
 
 两个日期差了 31 年。docstring 里专门警告：**这两个类别不能被悄悄 union 到同一条时间轴上**，那会暗示一段谁都没有的覆盖范围。
 
-在这个日期之前查询，`get_symbols_as_of` 会**抛 `ValueError`**，而不是返回一份不完整的名单（见例 2）。原因很直白：返回一份"1970 年的标普 500，只有 327 个名字"看起来完全正常，没人会发现它错了；抛异常会立刻停下来。
+在这个日期之前查询，**两个成员查询都会抛 `ValueError`**——`get_symbols_as_of`（时点）和
+`get_symbols_in_range`（区间重叠）——而不是返回一份不完整的名单（见例 2）。原因很直白：返回一份"1970
+年的标普 500，只有 327 个名字"看起来完全正常，没人会发现它错了；抛异常会立刻停下来。区间查询这一半
+更危险：它返回的可能是一份 1976 年左截断的名单，也可能是一个空的 `[]`——而 `[]` 在这个模块里是一个
+**合法返回值**（名册类别查 1970 年就该返回它），调用方根本无从分辨"这段时间没人"和"你问到覆盖范围之外
+去了"。
 
-在面板层，同一件事表现为 `IndexConstituentDataset._clamp_coverage_start()`：配置里的 `start_date` 会被抬到覆盖起点。不抬会怎样？`BaseDatasetConfig` 继承的默认 `Date.START_DATE` 是 `"1900-01-01"`，面板会平白多出 76 年全 `False` 的行——而 `False` 的语义是"不是成员"，不是"不知道"。
+两者共用**同一个** registry 驱动的守卫 `UniverseCatalog._assert_within_coverage(category, date,
+field)`：边界从 `MEMBERSHIP_FETCHERS` 里每个 fetcher 自己的 `PIT_COVERAGE_START` 推导，所以加第五个
+指数只要注册，两个查询同时获得边界，不需要有人记得在方法体里再加一个 `if`（方法体里也确实没有任何
+category 字面量）。**从前不是这样**：边界字典内联在 `get_symbols_as_of` 里，`get_symbols_in_range`
+压根没有这段检查——两个成员查询于是有了两份契约，其中一份静默漂移了（`03.1-VERIFICATION.md` truth 3）。
+
+**边界是闭的（inclusive）。** 比较是严格的 `<`，所以 `start_date` / `as_of_date` **恰好等于**
+`PIT_COVERAGE_START` 时是正常回答的：那一天正是变更日志能覆盖到的最早一天，本来就答得出来；而且这一层
+里到处都是两端闭区间。写成 `<=` 会让两个查询在边界那一天差一天。
+
+在面板层，同一件事的处理方式**恰好相反，而且这是有意的**：`IndexConstituentDataset._clamp_coverage_start()`
+把配置里的 `start_date` **抬（clamp）**到覆盖起点，而不是抛错。不抬会怎样？`BaseDatasetConfig` 继承的
+默认 `Date.START_DATE` 是 `"1900-01-01"`，面板会平白多出 76 年全 `False` 的行——而 `False` 的语义是
+"不是成员"，不是"不知道"。
+
+**面板 clamp、查询 raise，这是一个设计选择，不是需要"对齐"的不一致——别把其中一边删掉。** 区别只有一
+条：面板拿到的 `start_date` 是**框架自己塞的配置默认值**（`enums/constant.py:Date.START_DATE`），没人
+输入过它，在那里抛错会让每一次默认构造都炸掉，所以 clamp 是对的（只有调用方真的自己指定了更早的日期时
+才会 warning）；而查询日期是**调用方亲手问出来的一个问题**，一个越界的值是一个诚实答不出来的问题，拒绝
+它才是对的。
 
 ### 四个 category
 

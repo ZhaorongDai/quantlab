@@ -100,11 +100,30 @@ Point-in-time index membership, as pipeline data. A panel is an `xarray.Dataset`
 | S&P 500 | `dataset/constituent.py:SP500ConstituentDataset` | `sp500_constituent_config()` | `sp500_constituent.zarr` | `1976-07-01` |
 | Nasdaq-100 (NDX) | `dataset/constituent.py:Nasdaq100ConstituentDataset` | `nasdaq100_constituent_config()` | `nasdaq100_constituent.zarr` | `2007-02-01` |
 
-The coverage start is the earliest date the underlying change log actually covers, and it is
-enforced in both directions: a panel's left edge is clamped up to it (so the panel never
-contains an all-False region where the truth is *unknown*), and
-`UniverseCatalog.get_symbols_as_of(category, date)` **raises** for an earlier date rather than
-answering with an incomplete roster. The two indices' starts are ~31 years apart, which is why
+The coverage start is the earliest date the underlying change log actually covers, and **both
+membership queries refuse to answer before it**: the point-in-time query
+`UniverseCatalog.get_symbols_as_of(category, date)` and the interval-overlap query
+`UniverseCatalog.get_symbols_in_range(category, start_date, end_date)` each **raise** for an
+earlier date rather than answering with an incomplete roster. The interval query checks its
+`start_date` -- the window's left edge, the only end that can reach left-censored territory.
+Both run through one registry-driven guard (`UniverseCatalog._assert_within_coverage`), derived
+from each fetcher's own `PIT_COVERAGE_START`, so a further index inherits the boundary on both
+queries by registration alone.
+
+**The boundary is inclusive.** A date exactly *on* the coverage start is answered, because that
+is the earliest date the change log covers -- the comparison is a strict `<`, so the two queries
+agree on the boundary day rather than differing by one.
+
+A panel's left edge is treated differently *on purpose*: it is **clamped** up to the coverage
+start rather than refused (so the panel never contains an all-False region where the truth is
+*unknown*). The asymmetry is deliberate and should not be "fixed" by aligning the two. A panel
+receives its `start_date` from a framework-supplied config default
+(`enums/constant.py:Date.START_DATE`) that nobody typed, so raising would make every default
+construction explode; `IndexConstituentDataset._clamp_coverage_start()` clamps and warns only
+when a caller actually asked for an earlier date. A query date is one somebody did type, so a
+value outside coverage is a question that cannot be answered honestly, and refusing it is right.
+
+The two indices' starts are ~31 years apart, which is why
 they get two stores: unioning them onto one timestamp axis would imply 1976 Nasdaq-100 coverage
 that does not exist. A consumer that wants both opens both and joins on the intersection of
 their timestamp axes.
