@@ -36,19 +36,36 @@ from dataset.spot import SpotKlineDataset
 from factor.momentum import Momentum
 
 
+class _ProbeCalled(Exception):
+    """Raised by a patched `BaseDataset.head` to prove the probe ran.
+
+    A test-local exception type rather than a built-in: it can only come from
+    the patch below, so a test asserting on it cannot pass by accident on some
+    unrelated failure that happens to raise the same class.
+    """
+
+
 def _momentum_config(
-    dataset_config: DatasetConfig, tmp_path: Path, n: int = 5
+    dataset_config: DatasetConfig,
+    tmp_path: Path,
+    n: int = 5,
+    factor_names: list | None = None,
 ) -> PolarsFactorConfig:
     """Build a `PolarsFactorConfig` for `Momentum` over a synthetic Zarr store.
 
     Deliberately does NOT use `config.momentum_config()`: that factory points
     at production data paths, whereas every test here runs against the
     `tmp_path`-scoped `spot_kline_zarr` fixture.
+
+    `factor_names` defaults to `None` -- the normal case, in which the names
+    are derived from the computation graph at config-assignment time. Passing
+    a value exercises the explicit-pin channel instead.
     """
     return PolarsFactorConfig(
         window=n,
         dataset=SpotKlineDataset(dataset_config),
         file_path=str(tmp_path / "factors" / "momentum.zarr"),
+        factor_names=factor_names,
         kwargs={"n": n},
     )
 
@@ -95,25 +112,78 @@ def test_momentum_cal_returns_xarray_dataset_with_only_factor_columns(
 def test_factor_names_resolve_dynamically_from_the_lazyframe_schema(
     spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
-    """D-05: Polars factor names come from the computed frame's own schema,
-    never from a declaration.
+    """D-05: Polars factor names come from the computation GRAPH's own schema,
+    never from a declaration -- and they are known from construction onward.
 
-    The `RuntimeError` half is the documented precondition (03-RESEARCH.md
-    Pitfall 4): `_get_factor_names()` -- and therefore `num_factors` -- is only
-    valid after `cal()`/`read()` has populated `config.factor_names`. That is a
-    deliberate, narrow gap, not a bug: `base/model.py` always calls
-    `.cal()`/`.read()` before asking a factor for its names.
+    The assertions run BEFORE `cal()` first, and that ordering is the point.
+    Names are derived at config-assignment time through a bounded probe read
+    (03-VERIFICATION.md Gap 1), so a bare-constructed factor already reports
+    them; there is no state in which a `FactorPolars` cannot answer what it
+    computes. Repeating the same two assertions after `cal()` keeps the
+    original coverage: computing must not change the answer.
+
+    Deriving from the graph rather than from the factor store on disk is the
+    decided behaviour, not an implementation accident. A store written under
+    `n=5` read back through a config now saying `n=60` yields `momentum_60`
+    and fails loudly at lookup, instead of silently reporting the stale name
+    the data happens to carry.
     """
     config = _momentum_config(spot_kline_zarr(), tmp_path, n=5)
     factor = Momentum(config)
 
-    with pytest.raises(RuntimeError, match="cal"):
-        factor._get_factor_names()
+    assert factor.get_factor_names() == ("momentum_5",)
+    assert factor.num_factors == 1
 
     factor.cal()
 
     assert factor.get_factor_names() == ("momentum_5",)
     assert factor.num_factors == 1
+
+
+def test_an_explicit_factor_names_pin_is_not_overwritten_at_construction(
+    spot_kline_zarr: Callable[..., DatasetConfig],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit `config.factor_names` wins, and skips the probe entirely.
+
+    `base/factor.py:_maybe_resolve_factor_names` owns the two channels:
+    explicit pin, else derive. `FactorPolars` supplies only the derivation, so
+    the pin comes free from the base class -- this test is what proves that
+    "free" is real rather than assumed.
+
+    Two-sided by design, and the second half is what makes the first half
+    meaningful. With the bounded read patched to raise, the PINNED factor
+    constructs (the derivation was never reached) while the UNPINNED one
+    raises (the derivation is precisely what the pin skips). Asserting only
+    the first half would pass just as well against an implementation that
+    probed and then discarded the result.
+
+    Note that `cal()` still overwrites `config.factor_names` from the
+    collected schema. That is pre-existing, unchanged behaviour and is
+    deliberately not asserted here -- this test is about construction.
+    """
+    dataset_config = spot_kline_zarr()
+
+    def _forbidden_head(self, n: int):
+        raise _ProbeCalled(
+            "BaseDataset.head() was called; an explicit factor_names pin must "
+            "short-circuit the derivation before any probe read"
+        )
+
+    monkeypatch.setattr("base.data.BaseDataset.head", _forbidden_head)
+
+    pinned = Momentum(
+        _momentum_config(
+            dataset_config, tmp_path, n=5, factor_names=["pinned_name"]
+        )
+    )
+
+    assert list(pinned.get_factor_names()) == ["pinned_name"]
+    assert pinned.num_factors == 1
+
+    with pytest.raises(_ProbeCalled):
+        Momentum(_momentum_config(dataset_config, tmp_path, n=5))
 
 
 def test_get_factor_lazyframe_stays_lazy_until_cal(
