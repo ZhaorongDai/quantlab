@@ -1114,6 +1114,110 @@ def test_the_estimate_is_printed_whether_or_not_it_refused():
     assert "--force-volume" not in "\n".join(lines)
 
 
+#: The two RAM guards. Either one satisfies "a densification is bounded":
+#: `assert_dense_panel_fits` bounds a whole-window `from_raw_data()`,
+#: `assert_chunked_panel_fits` bounds the largest window of a
+#: `from_raw_data_chunked()`. Neither is `assert_acquisition_volume_fits`,
+#: which bounds disk/requests/wall-clock and cannot see RAM at all.
+_RAM_GUARD_NAMES = frozenset(
+    {"assert_dense_panel_fits", "assert_chunked_panel_fits"}
+)
+
+
+def test_every_entry_point_that_densifies_guards_the_dense_panels_ram():
+    """CR-03. A densification with no RAM guard in front of it dies AFTER a
+    successful multi-hour fetch.
+
+    `assert_acquisition_volume_fits` bounds raw disk bytes, request count and
+    wall clock -- its own docstring calls the dense-panel guards its "siblings,
+    never a replacement". `ingest_alpaca.py` shipped with the new guard wired
+    and NEITHER sibling, while adding a `--frequency 1m` front door: the volume
+    guard's own admitted scenario (S&P-500 minute for one year, ~4,900 requests
+    and ~3 GB) then reaches `from_raw_data()` and asks pandas for ~4 TB against
+    a 4 GiB budget.
+
+    Scoped by REACHABILITY rather than by script name, which is what the
+    pre-existing chunked-guard test got wrong: it pinned itself to
+    `ingest_us_equity.py`, so the second door's gap was invisible to it. Any
+    entry point that calls `from_raw_data` / `from_raw_data_chunked` must also
+    name a RAM guard, and must name it FIRST.
+    """
+    import ast
+
+    densifying = 0
+    for path in INGEST_SCRIPTS:
+        body = _main_body(path)
+
+        def _is_densify(node) -> bool:
+            return isinstance(node.func, ast.Attribute) and node.func.attr in (
+                "from_raw_data",
+                "from_raw_data_chunked",
+            )
+
+        def _is_ram_guard(node) -> bool:
+            return (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _RAM_GUARD_NAMES
+            )
+
+        densify_sites = _call_linenos(body, _is_densify)
+        if not densify_sites:
+            continue
+        densifying += 1
+        ram_guards = _call_linenos(body, _is_ram_guard)
+        assert ram_guards, (
+            f"{path} densifies at line(s) {densify_sites} with no RAM guard "
+            f"in its __main__ body. assert_acquisition_volume_fits bounds "
+            f"disk/requests/wall-clock and cannot see the dense panel's RAM."
+        )
+        assert min(ram_guards) < min(densify_sites), (
+            f"{path}: the RAM guard at {ram_guards} must precede the "
+            f"densification at {densify_sites} -- a guard that runs after the "
+            f"allocation has already spent what it exists to save."
+        )
+
+    assert densifying >= 2, (
+        "expected at least ingest_us_equity.py and ingest_alpaca.py to "
+        "densify; if a door stopped densifying, say so here rather than "
+        "letting this test silently cover nothing"
+    )
+
+
+def test_the_intraday_ram_guard_is_sized_on_the_timestamp_axis_not_the_day():
+    """`assert_dense_panel_fits` sizes the TIMESTAMP axis, and at `1m` a
+    session is 390 rows rather than 1.
+
+    Left at the `bars_per_day=1` default, the guard would report ~10 GiB for a
+    fetch that allocates ~4 TB and would admit the exact scenario it was added
+    to refuse -- a guard that is confidently wrong in the one regime it exists
+    for. Asserted on the arithmetic, so it cannot pass by the call site merely
+    existing.
+    """
+    import pytest
+
+    from utils.cli import _explicit_symbol_catalog
+
+    # 500 symbols over two calendar years -- an S&P-500-shaped minute window,
+    # ~5.5 GiB dense against the 4 GiB budget, versus ~14 MB for the same
+    # window at `1d`. (Note the review's own "~4 TB" figure for one year is an
+    # arithmetic slip: 500 x 98,280 x 7 x 8 is ~2.75 GB, which is why this
+    # asserts over a window that is unambiguously over rather than one sitting
+    # on the edge of the budget.)
+    window = ("2024-01-01", "2025-12-31")
+    pricing = _explicit_symbol_catalog(500)
+    daily = pricing.estimate_dense_panel("(explicit)", *window, bars_per_day=1)
+    minute = pricing.estimate_dense_panel("(explicit)", *window, bars_per_day=390)
+    assert minute["dense_bytes"] == daily["dense_bytes"] * 390
+    assert minute["timestamps"] == daily["trading_days"] * 390
+
+    # The daily window fits; the same window at minute resolution does not.
+    pricing.assert_dense_panel_fits("(explicit)", *window, num_variables=7)
+    with pytest.raises(ValueError, match="Refusing to densify"):
+        pricing.assert_dense_panel_fits(
+            "(explicit)", *window, num_variables=7, bars_per_day=390
+        )
+
+
 def test_the_chunked_panel_guard_keeps_both_of_its_call_sites():
     """The two guards are SIBLINGS. That one bounds RAM for a dense panel;
     this one bounds disk, request count and wall clock. Adding the second must

@@ -54,6 +54,17 @@ directly, e.g.
 `--batch-size` is the one exception, because the pre-flight volume guard has to
 be told the batch size it is pricing.
 
+Two pre-flight guards, and neither replaces the other
+---------------------------------------------------
+`assert_acquisition_volume_fits` bounds raw disk bytes, request count and wall
+clock. `assert_dense_panel_fits` bounds the RAM of the dense
+`[timestamp, symbol]` panel the `1d`/`1m` conversion at the bottom of this
+script builds. Both run BEFORE the client is constructed and before a single
+request. A `1m` window that comfortably passes the first can be three orders of
+magnitude over the second, so the second is sized with
+`bars_per_day=390` rather than at its daily default (CR-03). Tick skips it: the
+conversion it guards does not run for tick (D-18).
+
 No migration (D-13)
 -------------------
 Existing Tiingo raw data and watermarks are NOT migrated to the vendor-
@@ -294,6 +305,40 @@ if __name__ == "__main__":
         window_assumed=window_assumed,
         forced=args.force_volume,
     )
+
+    if args.frequency != "tick":
+        # A SIBLING of the volume guard above, not a replacement -- its own
+        # docstring says so twice. That one bounds raw DISK bytes, request
+        # count and wall clock; this one bounds the RAM of the dense
+        # `[timestamp, symbol]` panel that `StockDataset.from_raw_data()` at
+        # the bottom of this script materialises via
+        # `.to_pandas().set_index([...]).to_xarray()`.
+        #
+        # Without it the guard's own ADMITTED scenario kills the process AFTER
+        # a successful fetch: S&P-500 minute for one year passes the volume
+        # guard at ~4,900 requests and ~3 GB on disk, and then densifies to
+        # ~500 symbols x ~98,000 minute stamps x 7 variables x 8 bytes -- about
+        # 4 TB -- against a 4 GiB budget. `ingest_us_equity.py` already carries
+        # the chunked form of this guard for daily; the second front door
+        # inherited none of it (CR-03).
+        #
+        # `bars_per_day` is REQUIRED here rather than defaulted: this guard
+        # sizes the timestamp axis, and at `1m` a session is 390 rows. Left at
+        # 1 it would admit the very fetch it exists to refuse.
+        #
+        # `num_variables` is Alpaca's own bar width (RAW_COLUMNS minus
+        # timestamp/symbol/vendor), not the 12-column Tiingo EOD default -- a
+        # guard that overstates refuses fetches that would have been fine,
+        # which is how a guard gets deleted.
+        pricing.assert_dense_panel_fits(
+            category,
+            guard_start,
+            guard_end,
+            num_variables=len(
+                AlpacaAcquisition.RAW_COLUMNS_BY_DATA_TYPE["bars"]
+            ) - 3,
+            bars_per_day=pricing.BARS_PER_DAY_BY_FREQUENCY[args.frequency],
+        )
 
     print(
         f"Acquiring {len(acq_config.symbols)} symbol(s) from Alpaca "

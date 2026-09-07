@@ -131,6 +131,16 @@ if __name__ == "__main__":
         forced=args.force_volume,
     )
 
+    # The RAM sibling of the guard above, and the reason it is a SIBLING: that
+    # one bounds raw disk bytes, request count and wall clock; this one bounds
+    # the dense `[timestamp, symbol]` grid that the unconditional
+    # `from_raw_data()` at the bottom of this script materialises through
+    # `.to_pandas().set_index([...]).to_xarray()`. `ingest_us_equity.py`
+    # already carries the chunked form of this for its `--to-zarr` path; this
+    # door densifies the WHOLE window with no chunking at all, so the
+    # whole-window form is the one that applies here (CR-03).
+    pricing.assert_dense_panel_fits(category, guard_start, guard_end)
+
     print(f"Acquiring symbols={acq_config.symbols} via Tiingo (refresh={args.refresh})")
     acquisition = TiingoAcquisition(acq_config)
     if args.refresh:

@@ -410,9 +410,19 @@ def _explicit_symbol_catalog(symbol_count: int):
                 end_date: str,
                 num_variables: int = 12,
                 bytes_per_value: int = 8,
+                bars_per_day: int = 1,
             ) -> dict:
+                # The signature MIRRORS the base's, `bars_per_day` included.
+                # This override is reached by `assert_dense_panel_fits` as well
+                # as by the volume guard, and an override that dropped the
+                # keyword would raise TypeError on the one path that matters --
+                # an explicit `--symbols` list at `--frequency 1m`.
                 self._validate_iso_date(start_date, "start_date")
                 self._validate_iso_date(end_date, "end_date")
+                if bars_per_day < 1:
+                    raise ValueError(
+                        f"bars_per_day must be >= 1, got {bars_per_day!r}."
+                    )
                 window_days = (
                     datetime.date.fromisoformat(end_date)
                     - datetime.date.fromisoformat(start_date)
@@ -426,7 +436,8 @@ def _explicit_symbol_catalog(symbol_count: int):
                     1,
                 )
                 symbols = self._explicit_symbols
-                dense_cells = symbols * trading_days
+                timestamps = trading_days * bars_per_day
+                dense_cells = symbols * timestamps
                 # `observed_cells == dense_cells`, density 1.0. The catalog's
                 # 0.368 density is a property of a survivorship-bias-free
                 # ROSTER over a decade -- most of it delisted for most of the
@@ -436,6 +447,8 @@ def _explicit_symbol_catalog(symbol_count: int):
                 return {
                     "symbols": symbols,
                     "trading_days": trading_days,
+                    "bars_per_day": bars_per_day,
+                    "timestamps": timestamps,
                     "dense_cells": dense_cells,
                     "observed_cells": dense_cells,
                     "density": 1.0,

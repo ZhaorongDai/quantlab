@@ -1413,11 +1413,23 @@ class UniverseCatalog:
         end_date: str,
         num_variables: int = 12,
         bytes_per_value: int = 8,
+        bars_per_day: int = 1,
     ) -> dict:
         """Size the dense `[timestamp, symbol]` panel a window would produce.
 
-        Returns `symbols`, `trading_days`, `dense_cells`, `observed_cells`,
-        `density`, `dense_bytes` and `observed_bytes`.
+        Returns `symbols`, `trading_days`, `bars_per_day`, `timestamps`,
+        `dense_cells`, `observed_cells`, `density`, `dense_bytes` and
+        `observed_bytes`.
+
+        `bars_per_day` is the length of ONE trading day's timestamp axis, and
+        it defaults to 1 because a daily panel has exactly one row per symbol
+        per session. It exists because the timestamp axis -- not the trading-day
+        count -- is what `to_xarray()` allocates against: at `1m` a session is
+        390 rows (`BARS_PER_DAY_BY_FREQUENCY`), so a minute window is 390x the
+        dense grid of the same window at `1d`. Sizing a minute fetch with the
+        default would admit a panel three orders of magnitude over the budget
+        while reporting a number that looks fine, which is the single easiest
+        way for this guard to be confidently wrong.
 
         Everything is derived from this catalog's own interval table clipped
         to the window, because the catalog is the ONLY object that knows when
@@ -1481,14 +1493,21 @@ class UniverseCatalog:
             .collect()
         )
 
+        if bars_per_day < 1:
+            raise ValueError(f"bars_per_day must be >= 1, got {bars_per_day!r}.")
+
         symbols = spans.height
-        dense_cells = symbols * trading_days
+        # The TIMESTAMP axis, which is what a dense panel is allocated on --
+        # trading days only equals it at `1d`.
+        timestamps = trading_days * bars_per_day
+        dense_cells = symbols * timestamps
         observed_cells = min(
             round(
                 float(spans["span_days"].sum() or 0)
                 * self.TRADING_DAYS_PER_YEAR
                 / self.CALENDAR_DAYS_PER_YEAR
-            ),
+            )
+            * bars_per_day,
             dense_cells,
         )
         density = observed_cells / dense_cells if dense_cells else 0.0
@@ -1496,6 +1515,8 @@ class UniverseCatalog:
         return {
             "symbols": symbols,
             "trading_days": trading_days,
+            "bars_per_day": bars_per_day,
+            "timestamps": timestamps,
             "dense_cells": dense_cells,
             "observed_cells": observed_cells,
             "density": density,
@@ -1510,6 +1531,7 @@ class UniverseCatalog:
         end_date: str,
         num_variables: int = 12,
         bytes_per_value: int = 8,
+        bars_per_day: int = 1,
     ) -> None:
         """Raise if densifying this window would exceed
         `MAX_DENSE_PANEL_BYTES`.
@@ -1518,9 +1540,20 @@ class UniverseCatalog:
         whole point is to fail before the pandas densification allocates
         (T-0iy-03). See `MAX_DENSE_PANEL_BYTES` for why RAM rather than disk
         sets the ceiling.
+
+        **Pass `bars_per_day` for any intraday frequency.** This guard sizes
+        the timestamp axis, and at `1m` a session is 390 rows rather than 1
+        (`BARS_PER_DAY_BY_FREQUENCY`). Left at the default, it would admit the
+        very fetch it exists to refuse -- an S&P-500 minute year is ~4 TB dense
+        against a 4 GiB budget, and it would report ~10 GiB.
         """
         estimate = self.estimate_dense_panel(
-            category, start_date, end_date, num_variables, bytes_per_value
+            category,
+            start_date,
+            end_date,
+            num_variables,
+            bytes_per_value,
+            bars_per_day,
         )
         if estimate["dense_bytes"] <= self.MAX_DENSE_PANEL_BYTES:
             return
@@ -1530,7 +1563,8 @@ class UniverseCatalog:
             f"Refusing to densify {category} over {start_date}..{end_date}: "
             f"the dense [timestamp, symbol] grid is "
             f"{estimate['symbols']} symbol(s) x {estimate['trading_days']} "
-            f"trading days x {num_variables} variables = "
+            f"trading days x {estimate['bars_per_day']} row(s)/day x "
+            f"{num_variables} variables = "
             f"{estimate['dense_bytes'] / gib:.2f} GiB, over the "
             f"{self.MAX_DENSE_PANEL_BYTES / gib:.2f} GiB budget. Only "
             f"{estimate['density']:.1%} of that grid is real observations, "

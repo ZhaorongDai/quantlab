@@ -1269,7 +1269,11 @@ def test_the_whole_range_guard_survives_beside_the_chunked_one():
     import inspect
 
     signature = inspect.signature(UniverseCatalog.assert_dense_panel_fits)
-    assert list(signature.parameters) == [
+    # The original parameters, in their original ORDER, all still present. A
+    # later parameter may be APPENDED (`bars_per_day` was, so an intraday
+    # caller can size the real timestamp axis -- CR-03), but removing or
+    # reordering one of these would silently rebind a positional caller.
+    assert list(signature.parameters)[:6] == [
         "self",
         "category",
         "start_date",
@@ -1277,6 +1281,11 @@ def test_the_whole_range_guard_survives_beside_the_chunked_one():
         "num_variables",
         "bytes_per_value",
     ]
+    # And every appended parameter must DEFAULT to the pre-existing behaviour,
+    # so a daily caller that names none of them is byte-identical to before.
+    for name in list(signature.parameters)[6:]:
+        assert signature.parameters[name].default is not inspect.Parameter.empty
+    assert signature.parameters["bars_per_day"].default == 1
     assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3
 
 
