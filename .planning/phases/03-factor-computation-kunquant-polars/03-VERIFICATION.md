@@ -363,17 +363,43 @@ carries real dtypes for free.
   `symbol` and the computed factor column(s)"), so it is out of contract rather than a
   regression — but it is the one shape this design cannot serve.
 
+**Deletions this design authorises** (user decision, 2026-09-06: "不使用新方法的测试可以
+删掉，过时的判断也可以删掉"). Each of these is not merely mis-worded but *obsolete* — the
+condition it describes cannot arise once names derive from the graph.
+
+| Location | What goes | Why it is obsolete, not just wrong |
+|---|---|---|
+| `base/factor_polars.py:55-61` | the `_maybe_resolve_factor_names()` no-op override | the reason it existed (eager derivation meant a disk read) is removed by the bounded read |
+| `base/factor_polars.py:63-71` | the `if self.config.factor_names is None: raise RuntimeError(...)` guard inside `_get_factor_names()` | names are always derivable from the graph, so the unresolved state the guard reports can no longer occur; the method body becomes the derivation |
+| `base/factor_polars.py:44-50` | the class-docstring paragraph stating the `cal()`/`read()` precondition | there is no precondition left to state |
+| `tests/test_factor_polars.py:101-105, 110-111` | the docstring paragraph restating the precondition, and the `pytest.raises(RuntimeError, match="cal")` block | this assertion **inverts** under the new design — a bare-constructed factor now resolves its names, so the test would fail if kept |
+
+The remainder of `test_factor_names_resolve_dynamically_from_the_lazyframe_schema`
+(`cal()`, then `get_factor_names() == ("momentum_5",)` and `num_factors == 1`) stays valid
+and in fact gets **stronger**: under the new design those two assertions should hold
+*without* the preceding `cal()` call, which is the cleanest way to pin the fix.
+
+`tests/test_factor_hierarchy.py`'s references to `_maybe_resolve_factor_names` (L161, L186,
+L340, L364, L370) are **kept** — they exercise the base-class hook contract, which survives;
+only `FactorPolars`'s override of it goes.
+
+**Correction to an earlier entry in this record.** `README.md:34-40` was previously listed
+here as prose needing correction. That was wrong. It claims "nothing downstream can tell
+which one produced a given factor store" and lists `read()` among the shared-contract
+methods the model layer calls — statements that are false against today's code and
+**become true** once this design lands. It needs no edit; the code catches up to it. It is,
+in effect, a specification that was written correctly and shipped ahead of its
+implementation.
+
 **Still open under this gap, and NOT closed by the names fix alone:**
 
 - The regression test driving **both** backends through `save() → fresh instance →
-  read() → _get_factor_names()` with `factor_data_strategy="read"`. Without it the
-  asymmetry stays invisible to a green suite, which is how it survived
-  (`tests/test_factor_hierarchy.py:430-522` pins `factor_data_strategy="cal"`).
-- The false `read()` precondition still asserted in prose in four places:
-  `base/factor_polars.py` class docstring (L45-46) and its `RuntimeError` message
-  (L65-70), `tests/test_factor_polars.py:103-105`, and `README.md:34-40`. Under this design
-  the precondition is not merely mis-stated but obsolete — names no longer depend on
-  `cal()`/`read()` having run at all.
+  read() → _get_factor_names()` with `factor_data_strategy="read"`. This is the one item
+  that is an *addition* rather than a deletion. Without it the asymmetry stays invisible to
+  a green suite, which is how it survived in the first place
+  (`tests/test_factor_hierarchy.py:430-522` pins `factor_data_strategy="cal"` and hand-calls
+  `factor.cal()`, so the `read()` branch of `base/model.py`'s call surface is never driven
+  for either backend).
 
 ### Gap 2 — dismissed by user decision
 
