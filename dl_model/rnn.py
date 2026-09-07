@@ -286,7 +286,21 @@ class RNNRegressor(BaseModel):
         if self._wandb_recorder:
             self._wandb_recorder.log(metrics, step=epoch)
 
-    def _val_one_epoch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
+    def _val_one_epoch(
+        self, epoch: int, x: torch.Tensor, y: torch.Tensor
+    ) -> torch.Tensor:
+        """必须**返回**验证损失，不能只记 metrics。
+
+        `BaseModel._val_one_epoch` 声明的就是 `-> torch.Tensor`，但这里以前什么都
+        不返回。2026-09-07 之后这条从「注解不实」升级成硬故障：epoch 循环现在无条件
+        对每个验证 batch 执行 `val_loss_sum += float(val_loss) * batch_samples`，
+        于是 `RNNRegressor.train()` 在第 0 个 epoch 就是
+        `TypeError: float() argument must be a string or a real number, not
+        'NoneType'`——跟 `early_stopping` 开不开无关。
+
+        同目录的 `rnn_classification.py:RNNClassifier._val_one_epoch` 本来就返回
+        `val_loss.detach()`，这里对齐它。
+        """
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
 
         # Consistent loss calculation for testing
@@ -325,6 +339,7 @@ class RNNRegressor(BaseModel):
         }
         if self._wandb_recorder:
             self._wandb_recorder.log(metrics, step=epoch)
+        return val_loss.detach()
 
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
         data = torch.nan_to_num(data, nan=0.0)

@@ -191,6 +191,14 @@ epoch 级别的验证损失，再拿它去比 `best_loss`（2026-09-07 之前是
 见「常见坑」第 2 条）。所以它必须返回一个能 `float()` 的标量 loss——
 返回 `None` 会在 `float(None)` 处直接 `TypeError`。
 
+> 这条不是假想。`dl_model/rnn.py:RNNRegressor._val_one_epoch` 以前只记 metrics
+> **什么都不返回**，注解写的却是 `-> torch.Tensor`。加权平均那行是无条件执行的
+> （跟 `early_stopping` 开不开无关），所以 `RNNRegressor.train()` 在第 0 个 epoch
+> 就是 `TypeError: float() argument must be a string or a real number, not
+> 'NoneType'`。2026-09-07 已按 `rnn_classification.py` 里同名方法的写法补上
+> `return val_loss.detach()`，由
+> `tests/test_dl_models.py::test_rnn_regressor_val_one_epoch_returns_a_floatable_loss` 锁住。
+
 ### `_test_one_epoch(epoch, x, y) -> Tensor`
 
 每个 epoch 在测试集上跑一遍，只记指标不更新参数。返回值目前基类不使用。

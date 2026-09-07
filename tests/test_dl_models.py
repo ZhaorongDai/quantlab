@@ -3,8 +3,8 @@
 Before this file `dl_model/` had ZERO tests. `tests/test_model_layer.py`
 (batch 1) exercises `base/model.py` through a purpose-built `RecordingRegressor`
 stand-in, which means the SHIPPED heads -- `MLPRegressor`, `RNNRegressor`,
-`RNNClassifier` -- were never instantiated by anything in the suite. Both defects
-below were invisible for exactly that reason.
+`RNNClassifier` -- were never instantiated by anything in the suite. Two of the
+three defects this file locks were invisible for exactly that reason.
 
 What is locked here:
 
@@ -15,6 +15,9 @@ What is locked here:
 - H  every `update()` in `dl_model/` read `self.config.lr_refit`, a field
      `DLConfig` did not define -- `AttributeError` on the first line of the
      online-learning path.
+- Rule-1 deviation: `RNNRegressor._val_one_epoch` returned `None`, which
+     batch 1's per-epoch loss accumulation (`float(val_loss)`) turned into a
+     hard `TypeError` on epoch 0.
 
 Everything is synthetic, CPU-only and offline: no zarr store, no credentials,
 no network, no GPU. `collect()` only ever calls six methods on a factor/label
@@ -335,3 +338,42 @@ def test_update_steps_the_model_when_lr_refit_is_positive(tmp_path):
     assert any(not torch.equal(b, a) for b, a in zip(before, after)), (
         "lr_refit > 0 must actually take an optimizer step"
     )
+
+
+# --------------------------------------------------------------------------
+# Rule-1 deviation: RNNRegressor._val_one_epoch returned None
+# --------------------------------------------------------------------------
+
+
+def test_rnn_regressor_val_one_epoch_returns_a_floatable_loss(tmp_path):
+    """`_val_one_epoch` is declared `-> torch.Tensor` on `BaseModel`, and
+    `RNNRegressor`'s implementation returned nothing at all.
+
+    Batch 1 made that fatal rather than merely wrong: the epoch loop now runs
+    `float(val_loss)` for EVERY validation batch, unconditionally, so
+    `RNNRegressor.train()` raised
+
+        TypeError: float() argument must be a string or a real number,
+        not 'NoneType'
+
+    on epoch 0. `dl_model/rnn_classification.py` already returned
+    `val_loss.detach()`; this aligns the sibling.
+    """
+    model = RNNRegressor(_make_config(tmp_path))
+    model.collect()
+    model._init_model_and_optim()
+    model._init_wandb("quantlab-test", "rnn-val")
+
+    rng = np.random.default_rng(4)
+    x = torch.from_numpy(
+        rng.standard_normal((4, N_SYMBOLS, 3)).astype("float32")
+    )
+    y = torch.from_numpy(
+        rng.standard_normal((4, N_SYMBOLS, 2)).astype("float32")
+    )
+    # Called inside `no_grad` because that is how `_train_dl` calls it: the
+    # whole validation block runs under `torch.no_grad()`.
+    with torch.no_grad():
+        loss = model._val_one_epoch(0, x, y)
+    assert loss is not None, "_val_one_epoch returned None"
+    assert float(loss) >= 0.0
