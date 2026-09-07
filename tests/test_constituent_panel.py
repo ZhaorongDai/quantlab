@@ -42,14 +42,14 @@ def _hand_built_intervals() -> pl.DataFrame:
 
     - `OPEN1`   2000-01-03 -> open        (still a member)
     - `CLOSED1` 2000-01-03 -> 2010-06-15  (a removal on a known date)
-    - `DELISTED1` 1980-01-02 -> 1985-03-04 (ends decades before the right edge)
+    - `DLIST1` 1980-01-02 -> 1985-03-04 (ends decades before the right edge)
     - `LATE1`   2015-09-01 -> open        (joins after the panel's left edge)
     """
     return pl.DataFrame(
         [
             ("OPEN1", "2000-01-03", None),
             ("CLOSED1", "2000-01-03", "2010-06-15"),
-            ("DELISTED1", "1980-01-02", "1985-03-04"),
+            ("DLIST1", "1980-01-02", "1985-03-04"),
             ("LATE1", "2015-09-01", None),
         ],
         schema=["symbol", "start_date", "end_date"],
@@ -66,7 +66,7 @@ def _closed_only_intervals() -> pl.DataFrame:
     return pl.DataFrame(
         [
             ("CLOSED1", "2000-01-03", "2010-06-15"),
-            ("DELISTED1", "1980-01-02", "1985-03-04"),
+            ("DLIST1", "1980-01-02", "1985-03-04"),
         ],
         schema=["symbol", "start_date", "end_date"],
         orient="row",
@@ -265,7 +265,7 @@ def test_delisted_symbol_is_a_real_mostly_false_column(tmp_path):
     """RESEARCH Finding 6 bullet 5 -- the symbol axis is the ALL-TIME union.
 
     Survivorship bias re-enters exactly here: an absent column is
-    indistinguishable from a symbol that was never a member. `DELISTED1`'s
+    indistinguishable from a symbol that was never a member. `DLIST1`'s
     membership ended in 1985, entirely before this window, so it must be
     present as a real, fully-False column.
     """
@@ -273,8 +273,8 @@ def test_delisted_symbol_is_a_real_mostly_false_column(tmp_path):
         _PanelFixture(_make_config(tmp_path, start_date="2000-01-01"))
     )
 
-    assert "DELISTED1" in panel["symbol"].values.tolist()
-    delisted = panel["is_member"].sel(symbol="DELISTED1")
+    assert "DLIST1" in panel["symbol"].values.tolist()
+    delisted = panel["is_member"].sel(symbol="DLIST1")
     assert bool(delisted.any().item()) is False
 
 

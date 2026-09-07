@@ -39,7 +39,7 @@ def test_nasdaq_fetcher_filters_exchange_assettype_currency(mock_universe_fetche
     result = NasdaqUniverseFetcher().fetch()
 
     symbols = set(result["symbol"].to_list())
-    assert symbols == {"AAPL", "MSFT", "DELISTED1"}
+    assert symbols == {"AAPL", "MSFT", "DLIST1"}
     assert "NYSE1" not in symbols  # wrong exchange
     assert "ETF1" not in symbols  # wrong assetType
     assert "EURO1" not in symbols  # wrong priceCurrency
@@ -289,7 +289,7 @@ def test_get_symbols_as_of_nasdaq_all_uses_tiingo_dates(mock_universe_fetchers, 
 
     symbols = catalog.get_symbols_as_of("nasdaq_all", "2021-01-01")
 
-    assert "DELISTED1" not in symbols  # end_date 2020-01-01 is before as_of_date
+    assert "DLIST1" not in symbols  # end_date 2020-01-01 is before as_of_date
     assert "AAPL" in symbols
 
 
@@ -903,7 +903,7 @@ def test_us_equity_fetcher_filters_nyse_nasdaq_amex_and_excludes_others(
 
     symbols = set(result["symbol"].to_list())
 
-    assert {"AAPL", "MSFT", "DELISTED1"} <= symbols  # NASDAQ
+    assert {"AAPL", "MSFT", "DLIST1"} <= symbols  # NASDAQ
     assert {"NYSE1", "NYSE2"} <= symbols  # NYSE
     assert "AMEX1" in symbols  # AMEX token
     assert "MKT1" in symbols  # NYSE MKT token -- same exchange, renamed
@@ -930,7 +930,7 @@ def test_nasdaq_roster_exchange_filter_and_symbol_set_are_unchanged(
     assert issubclass(NasdaqUniverseFetcher, TiingoRosterFetcher)
 
     symbols = set(NasdaqUniverseFetcher().fetch()["symbol"].to_list())
-    assert symbols == {"AAPL", "MSFT", "DELISTED1"}
+    assert symbols == {"AAPL", "MSFT", "DLIST1"}
 
 
 def test_us_equity_roster_guard_rejects_a_drifted_filter(monkeypatch, tmp_path):
@@ -1021,7 +1021,7 @@ def test_get_symbols_in_range_keeps_post_2006_delistings(
 
     symbols = catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
 
-    assert "DELISTED1" in symbols  # ended 2020-01-01, INSIDE the window
+    assert "DLIST1" in symbols  # ended 2020-01-01, INSIDE the window
     assert "AAPL" in symbols  # still listed
     assert "OLD1" not in symbols  # ended 1997-06-30, before the window
 
@@ -1205,7 +1205,7 @@ def test_each_chunk_is_sized_on_the_pinned_whole_range_symbol_count(
 
     report = catalog.assert_chunked_panel_fits("us_all", *_FULL_WINDOW)
 
-    # DELISTED1 ends 2020-01-01, so the 2025 roster is genuinely smaller than
+    # DLIST1 ends 2020-01-01, so the 2025 roster is genuinely smaller than
     # the whole-range one -- the fixture makes the understatement observable.
     chunk = next(c for c in report["chunks"] if c["start"].startswith("2025"))
     scoped = catalog.estimate_dense_panel("us_all", chunk["start"], chunk["end"])

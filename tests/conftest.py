@@ -422,7 +422,19 @@ def mock_universe_fetchers(
         "NYSE1,NYSE,Stock,USD,1990-01-01,\n"
         "ETF1,NASDAQ,ETF,USD,2000-01-01,\n"
         "EURO1,NASDAQ,Stock,EUR,2000-01-01,\n"
-        "DELISTED1,NASDAQ,Stock,USD,1990-01-01,2020-01-01\n"
+        # NOTE (260907-10t): this row was `DELISTED1` until the roster
+        # builder gained its build-time well-formedness filter. Nine
+        # characters with no delimiter is not a shape any real US ticker
+        # has -- the longest delimiter-free symbol in the live 14,485-symbol
+        # `us_all` roster is SEVEN (`ALLPDCL`, `ALLYPRA`) -- so
+        # `Acquisition._validate_symbols` refused it, and had always refused
+        # it. A fixture symbol the production guard rejects is the same trap
+        # 260906-eme documented for `ADDED1`/`TEMP1`/`GONE1`: it makes the
+        # fixture unable to represent the pipeline it stands in for. Keep
+        # every roster-CSV ticker here matching
+        # `enums.data.TRADEABLE_TICKER_PATTERN` -- pinned by
+        # `tests/test_ticker_pattern_reconciliation.py`.
+        "DLIST1,NASDAQ,Stock,USD,1990-01-01,2020-01-01\n"
         # --- Full-US-market roster rows (260906-0iy Task 1). APPEND-ONLY: the
         # NASDAQ-only assertions above pin an exact symbol SET, so not one of
         # these may be NASDAQ/Stock/USD or `USEquityUniverseFetcher`'s wider

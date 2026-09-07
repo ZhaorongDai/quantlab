@@ -60,7 +60,7 @@ from loguru import logger
 from base.chunking import TimeChunkPlanner
 from base.config import UniverseConfig
 from dataset.backend import PlBackend
-from enums.data import UniverseCategory
+from enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
 #: Contact string sent in the outbound `User-Agent` when scraping Wikipedia,
 #: whose bot policy asks for one. Read from the environment per CLAUDE.md's
@@ -209,6 +209,73 @@ class TiingoRosterFetcher:
                 f"baby-bond rows ({before} -> {len(data)})."
             )
 
+        # Build-time WELL-FORMEDNESS drop (260907-10t). Filtered on the
+        # SOURCE's own `ticker` column, before the rename below, matching the
+        # exclusion block's stated convention.
+        #
+        # UNCONDITIONAL -- deliberately NOT behind
+        # `EXCLUDE_NON_COMMON_SECURITY_TYPES`. A malformed entry is
+        # unfetchable for EVERY roster: `Acquisition._validate_symbols`
+        # refuses it before a single request is issued, so persisting one
+        # guarantees that `download()`'s whole-roster pre-flight aborts a
+        # multi-hour job. `nasdaq_all` halts on its own 7 today and does not
+        # opt into the exclusion, so gating this on that flag would fix
+        # `us_all` alone and leave `nasdaq_all` permanently unfetchable.
+        #
+        # THE AXIS IS WELL-FORMEDNESS, NOT SECURITY TYPE. `nasdaq_all`'s
+        # frozen preferred shares (`FITB-P-A/-I/-K/-M`, `AAM-P-A`, `MTB-P`)
+        # are all well-formed and are untouched -- Locked Decision A4 / D-02
+        # is unaffected, and `test_the_malformed_drop_does_not_touch_nasdaq_
+        # alls_preferred_shares` keeps the two axes from being conflated.
+        #
+        # MEASURED 2026-09-07 against the live reference table (`us_all`
+        # 14,485 unique symbols, `nasdaq_all` 8,967).
+        # `TRADEABLE_TICKER_PATTERN` rejects exactly and only:
+        #
+        #   us_all     (6): CAPTW(EXP20260807), DTV_1, ETP-, NSPR-WSB,
+        #                   NXT(EXP20091224), OXY-WSW
+        #   nasdaq_all (7): -P-HIZ, ASRV 8.45 06-30-28, CAPTW(EXP20260807),
+        #                   CHNG 6, DTV_1, NSPR-WSB, NXT(EXP20091224)
+        #
+        # Two of those were argued rather than assumed, on the symbol FAMILY
+        # each belongs to in that same table:
+        #   - `OXY-WSW`: family `['OXY', 'OXY-WS', 'OXY-WS-W', 'OXY-WSW']`.
+        #     The properly delimited form of the SAME warrant is already in
+        #     the roster, so this drop loses no security at all.
+        #   - `NSPR-WSB`: family `['NSPR', 'NSPR-WS', 'NSPR-WSB']`. There is
+        #     no `NSPR-WS-B`, so this drop DOES lose one microcap warrant
+        #     series -- a named, measured, carried-forward finding in the same
+        #     idiom 260906-eme used for the retained warrants. Admitting it
+        #     would mean widening every suffix segment from {1,2} to {1,3} for
+        #     all 14,485 symbols on the evidence of two outliers, one of them
+        #     redundant, against 77 that follow the delimiter convention.
+        #
+        # KEY LINK: like the exclusion block above, this runs BEFORE the
+        # `MIN_ROSTER_ROWS` check, so that guard validates the count that
+        # actually gets PERSISTED. A vocabulary drift that zeroed this filter
+        # then trips the floor rather than silently persisting a truncated
+        # roster (T-10t-03).
+        #
+        # `str.contains` is a SEARCH, not a match -- the pattern's `^...$`
+        # anchors are what make this total. Verified directly rather than
+        # assumed: an unanchored search would keep `ETP-` and `DTV_1`, both of
+        # which CONTAIN a well-formed substring
+        # (`test_the_well_formedness_filter_matches_the_whole_string_not_a_
+        # substring`).
+        before = len(data)
+        data = data.filter(
+            pl.col("ticker").str.contains(
+                TRADEABLE_TICKER_PATTERN.pattern, literal=False
+            )
+        )
+        # Same shape as the exclusion log above -- count before and after,
+        # plus the CATEGORY -- so a future vocabulary drift is visible in a
+        # refresh log rather than only as a diff in the resulting parquet.
+        logger.info(
+            f"{self.CATEGORY}: dropped {before - len(data)} malformed / "
+            f"unfetchable ticker rows ({before} -> {len(data)})."
+        )
+
         data = data.rename(
             {"ticker": "symbol", "startDate": "start_date", "endDate": "end_date"}
         )
@@ -320,6 +387,21 @@ class USEquityUniverseFetcher(TiingoRosterFetcher):
     `-R` 138, `-CL` 57, `-WD` 11, `-WI` 3). The scope is preferred shares and
     baby bonds; this is a named, measured, carried-forward finding, and their
     retention is asserted in the tests so a later widening must be deliberate.
+    **They are now FETCHABLE as well as retained (260907-10t):** 77 of them
+    are three-segment `ROOT-X-Y` (`NXG-R-W`, `BAC-WS-A`, `UA-C-W`), which the
+    fetch-time guard used to refuse -- a real full-market `download()` aborted
+    its whole-roster pre-flight on `NXG-R-W` before issuing one request.
+    Retaining them and being unable to fetch them were two separately
+    deliberate decisions that had never been pinned against each other.
+
+    **Malformed entries are now dropped at BUILD time (260907-10t), and two of
+    those drops are themselves named carried-forward findings.** The filter's
+    axis is well-formedness, never security type; see
+    `TiingoRosterFetcher.fetch()` for the measurement and for the family
+    evidence behind `OXY-WSW` (redundant -- `OXY-WS-W` is already in the
+    roster) and `NSPR-WSB` (NOT redundant -- no `NSPR-WS-B` exists, so this
+    one genuinely loses a microcap warrant series, accepted rather than widen
+    the segment bound for all 14,485 symbols).
 
     **The resulting asymmetry with `nasdaq_all` is intentional.** `us_all` is
     NO LONGER a strict superset of `nasdaq_all`: a NASDAQ-listed preferred
