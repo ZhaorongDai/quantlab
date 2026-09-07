@@ -666,6 +666,19 @@ changing dimension sizes when explicitly appending, but append_dim=None
 
 结论：**因子落盘基本都该用 `save(mode="w")`**。真的要增量追加，得走 `XrBackend.append()` / `widen_and_append()`（`dataset/backend.py`），那边有坐标一致性和 dtype 的检查，而 `Factor.save()` 现在没接过去。
 
+**2026-09-07 起这条报错自己会说该怎么办**（上面那段 zarr 原文现在只是 `__cause__`）：
+
+```
+ValueError: PanelFactor.save(mode="a"): cannot write this date range into the
+existing store at /tmp/.../alpha.zarr. zarr's "a" means "overwrite variables in
+an existing store", NOT "append along time", so a second, differently-sized
+date range is rejected. Use save(mode="w") to replace the store, or delete it
+first. True incremental appends go through XrBackend.append(), which
+Factor.save() is not wired to. Original error: ...
+```
+
+**默认值没有改**，仍然是 `mode="a"`——改默认值对任何依赖它的调用方都是行为变更，而这里真正的伤害是「错误信息隔着两层看不懂」，不是「默认值错了」。由 `tests/test_factor_save_mode.py` 锁（包括「默认值仍是 `a`」这一条，以及「别的 `ValueError` 不能被顺手改写成这句话」）。
+
 ### 5. Polars 因子写的是 store 的**原始列名**，跨市场不可移植
 
 `Dataset.get_lazyframe()` **不改名**，给什么就是什么。`Momentum` 写的是 `pl.col("Close")`（币安 Title-Case），拿去配美股的 store：

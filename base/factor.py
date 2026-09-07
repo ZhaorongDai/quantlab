@@ -129,13 +129,44 @@ class Factor(ABC):
         return self
 
     def save(self, mode: Literal["a", "w"] = "a", **kwargs) -> Self:
+        """落盘因子面板。
+
+        **`mode="a"` 不是「按时间追加」。** zarr 的 `"a"` 是「改写已有 store 里的
+        变量」，写第二段日期区间会直接失败——两段的 `timestamp` 长度不一样，
+        `to_zarr` 拒绝在没有 `append_dim` 的情况下改维度大小。因子落盘基本都该用
+        `save(mode="w")`；真要增量追加得走 `XrBackend.append()`，那边有坐标一致性
+        和 dtype 守卫，而这个方法没接过去。
+
+        默认值**保持 `"a"` 不变**（改默认值对任何依赖它的调用方都是行为变更）。
+        这里做的是把失败讲清楚：`to_zarr` 原本抛的是一句谈 store 内部维度大小的
+        `ValueError`，跟调用方写的 `save()` 之间隔着两层，读的人根本看不出该改
+        什么。现在包一层，把 `mode="w"` 直接写进消息里，原异常挂在 `__cause__`
+        上一个字节不丢。2026-09-07，`tests/test_factor_save_mode.py` 锁。
+        """
         with Timer(f"{self.__class__.__name__}: save"):
             self._auto_filter()
-            self.data_backend.write(
-                self.config.file_path,
-                mode=mode,
-                **kwargs,
-            )
+            try:
+                self.data_backend.write(
+                    self.config.file_path,
+                    mode=mode,
+                    **kwargs,
+                )
+            except ValueError as exc:
+                if "already exists with different dimension sizes" not in str(
+                    exc
+                ):
+                    raise
+                raise ValueError(
+                    f"{self.class_name}.save(mode=\"a\"): cannot write this "
+                    f"date range into the existing store at "
+                    f"{self.config.file_path}. zarr's \"a\" means \"overwrite "
+                    f"variables in an existing store\", NOT \"append along "
+                    f"time\", so a second, differently-sized date range is "
+                    f"rejected. Use save(mode=\"w\") to replace the store, or "
+                    f"delete it first. True incremental appends go through "
+                    f"XrBackend.append(), which Factor.save() is not wired to. "
+                    f"Original error: {exc}"
+                ) from exc
             return self
 
     def _get_lazyframe(self) -> pl.LazyFrame:

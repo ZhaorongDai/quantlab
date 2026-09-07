@@ -50,7 +50,7 @@
 | `dl_model/` | `MLPRegressor` 三处坏掉无法实例化；`rnn.py` 里的 `RNNClassifier` 是过期坏副本（活的那个在 `rnn_classification.py`）；`update()` 读了 `DLConfig` 没有的字段 | [model.md](model.md) |
 | ~~`dataset/backend.py`~~ | ~~`XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用~~ **已于 2026-09-07 修复**（`tests/test_backend_indexes.py`） | [backend.md](backend.md)、[dataset.md](dataset.md) |
 | 成分 vs 价格 | 跨改名的代码词表对不上：876 个 sp500 成分符号里 89 个在价格 roster 查无此符号 | [constituent.md](constituent.md) 「已知的坑」 |
-| `base/factor.py` | `save()` 默认 `mode="a"`，但它**不是时间追加**，第二段日期会直接报错 | [factor.md](factor.md) |
+| `base/factor.py` | `save()` 默认 `mode="a"`，但它**不是时间追加**，第二段日期会直接报错。默认值有意保留；2026-09-07 起报错信息会直接点名 `mode="w"`（`tests/test_factor_save_mode.py`） | [factor.md](factor.md) |
 | 死代码 | `MlBackend`、`WindowedRobustStandardization`、`PageLedger.last_position()` 均零调用点 | 各篇 |
 
 ## 关于例子
