@@ -242,3 +242,151 @@ def test_from_raw_data_calls_clean_market_data(monkeypatch) -> None:
 
 def test_required_columns_constant_matches_expected_set() -> None:
     assert set(REQUIRED_COLUMNS) == {"open", "high", "low", "close", "volume"}
+
+
+# ---------------------------------------------------------------------------
+# validate_schema(): structural sparsity vs. a genuinely withheld column
+# (quick task 260907-1du, defect 3)
+# ---------------------------------------------------------------------------
+
+
+def _captured_warnings():
+    """Attach a temporary in-memory loguru sink.
+
+    loguru does not propagate to stdlib `logging`, so pytest's `caplog` sees
+    nothing (same idiom as tests/test_chunked_ingest.py).
+    """
+    from loguru import logger
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    return messages, sink_id
+
+
+def _validate_capturing_warnings(data: xr.Dataset, **kwargs) -> list[str]:
+    from loguru import logger
+
+    messages, sink_id = _captured_warnings()
+    try:
+        validate_schema(data, **kwargs)
+    finally:
+        logger.remove(sink_id)
+    return messages
+
+
+def _panel(variables: dict, symbols: list[str] | None = None) -> xr.Dataset:
+    symbols = symbols or ["A", "B"]
+    timestamps = ["2024-01-01", "2024-01-02"]
+    return xr.Dataset(
+        {
+            name: (["timestamp", "symbol"], values)
+            for name, values in variables.items()
+        },
+        coords={"timestamp": timestamps, "symbol": symbols},
+    )
+
+
+#: A dense [timestamp, symbol] panel is a cartesian product (D-06), so a symbol
+#: that did not trade in a period is NaN in EVERY variable at that cell. Here
+#: that cell is (2024-01-02, B).
+_SPARSE_REQUIRED = {
+    name: [[100.0, 101.0], [102.0, float("nan")]]
+    for name in ("open", "high", "low", "close", "volume")
+}
+
+
+def test_a_structurally_sparse_panel_logs_no_unexpected_null_warning() -> None:
+    """A cell where NO bar exists must not be reported as a null anomaly.
+
+    On a real minute panel this is the overwhelming majority of cells, and the
+    million-row false alarm it produced is what teaches an operator to ignore
+    the one real warning.
+
+    Reddening mutation: restore the plain per-column null count -- the
+    structurally-empty cell is then reported for `trade_count`.
+    """
+    data = _panel(
+        {
+            **_SPARSE_REQUIRED,
+            "trade_count": [[10.0, 11.0], [12.0, float("nan")]],
+        }
+    )
+
+    messages = _validate_capturing_warnings(data)
+
+    assert not any("trade_count" in message for message in messages), messages
+
+
+def test_a_genuinely_withheld_column_still_warns() -> None:
+    """A column the vendor did not return at all must stay loud, and the count
+    it reports must be the number of cells where a bar EXISTS.
+
+    Reddening mutation: invert the mask so nulls are counted INSIDE it instead
+    of outside -- the warning disappears.
+    """
+    data = _panel(
+        {
+            **_SPARSE_REQUIRED,
+            "vwap": [
+                [float("nan"), float("nan")],
+                [float("nan"), float("nan")],
+            ],
+        }
+    )
+
+    messages = _validate_capturing_warnings(data)
+
+    vwap_warnings = [m for m in messages if "'vwap'" in m]
+    assert len(vwap_warnings) == 1, messages
+    # 4 raw nulls, 1 of them on the structurally-absent bar -> 3 that matter.
+    assert "has 3 null" in vwap_warnings[0], vwap_warnings[0]
+
+
+def test_a_required_column_null_on_an_existing_bar_now_warns() -> None:
+    """`open` missing on a cell where `close` exists is a REAL gap, and it was
+    silently unchecked -- required columns were excluded from the null loop
+    entirely.
+
+    Reddening mutation: restore the `col not in required_columns` filter.
+    """
+    variables = {
+        name: [[100.0, 101.0], [102.0, float("nan")]]
+        for name in ("high", "low", "close", "volume")
+    }
+    # `open` is additionally null at (2024-01-01, A), where `close` is 100.0 --
+    # a bar that exists but is missing its open.
+    variables["open"] = [[float("nan"), 101.0], [102.0, float("nan")]]
+    data = _panel(variables)
+
+    messages = _validate_capturing_warnings(data)
+
+    open_warnings = [m for m in messages if "'open'" in m]
+    assert len(open_warnings) == 1, messages
+    assert "has 1 null" in open_warnings[0], open_warnings[0]
+
+
+def test_the_structural_mask_follows_the_callers_required_columns() -> None:
+    """`SpotKlineDataset._clean()` passes Title-Case required columns. A mask
+    hardcoded to the lowercase module constant would raise `KeyError` on every
+    Binance ingest.
+
+    Reddening mutation: build the mask from `REQUIRED_COLUMNS` instead of the
+    argument -- this raises `KeyError: 'open'`.
+    """
+    title_case = {
+        name: [[100.0, 101.0], [102.0, float("nan")]]
+        for name in ("Open", "High", "Low", "Close", "Volume")
+    }
+    data = _panel(
+        {
+            **title_case,
+            "Quote asset volume": [[10.0, 11.0], [12.0, float("nan")]],
+        }
+    )
+
+    messages = _validate_capturing_warnings(
+        data, required_columns=("Open", "High", "Low", "Close", "Volume")
+    )
+
+    assert not any("Quote asset volume" in m for m in messages), messages
+    assert REQUIRED_COLUMNS == ("open", "high", "low", "close", "volume")

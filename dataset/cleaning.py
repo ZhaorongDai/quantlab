@@ -139,12 +139,45 @@ def validate_schema(
     """Basic schema/non-null validation — D-08.
 
     Raises `ValueError` naming the missing column(s) if any
-    `required_columns` entry is absent from `data.data_vars`. For columns
-    present but not in `required_columns` (non-key columns) containing
-    unexpected nulls, logs a `loguru.logger.warning` and returns `data`
-    unchanged — does NOT raise, consistent with D-07's flag-don't-delete
-    philosophy. Deeper statistical anomaly detection beyond flagging is
-    explicitly out of scope for v1 (CONTEXT.md D-08).
+    `required_columns` entry is absent from `data.data_vars`. That behaviour,
+    and the signature, are unchanged.
+
+    **The discrimination rule.** A dense `[timestamp, symbol]` panel is a
+    cartesian product (D-06), so a symbol that did not trade in a period is
+    NaN in EVERY variable at that cell. That is the panel's design, not an
+    anomaly, and counting those cells produced million-row false alarms on a
+    real minute panel — which is exactly what teaches an operator to ignore
+    the one warning that matters. The two sources of a null are separated by
+    a STRUCTURAL MASK:
+
+    - `structural mask` = logical AND over `isnull()` of every column in the
+      `required_columns` ARGUMENT. True precisely where no bar exists at all.
+    - `unexpected nulls` for a column = `isnull() & ~structural_mask` — nulls
+      on cells where a bar DOES exist. Only these are warned about.
+
+    So `trade_count` null only where the bar is absent is silent, while a
+    `vwap` the vendor withheld entirely still warns — and the count it reports
+    is now the number of cells that actually have a bar behind them.
+
+    **Two deliberate widenings, both closing blind spots.**
+
+    - REQUIRED columns are now null-checked too. `open` missing on a bar whose
+      `close` exists was previously silent, because the loop skipped every
+      required column; it now warns through the same mask.
+    - The mask is built from the `required_columns` ARGUMENT, never from the
+      module-level `REQUIRED_COLUMNS`, because
+      `dataset/spot.py:SpotKlineDataset._clean()` passes Title-Case
+      `("Open","High","Low","Close","Volume")`. A hardcoded mask would raise
+      `KeyError` on every Binance ingest.
+
+    A column whose dims differ from the mask's falls back to the plain
+    whole-column null count rather than broadcasting into a meaningless larger
+    array — no column silently loses its check to a broadcasting accident.
+
+    Still logs a `loguru.logger.warning` and returns `data` unchanged — does
+    NOT raise, consistent with D-07's flag-don't-delete philosophy. Deeper
+    statistical anomaly detection beyond flagging is explicitly out of scope
+    for v1 (CONTEXT.md D-08).
     """
     missing = [col for col in required_columns if col not in data.data_vars]
     if missing:
@@ -153,16 +186,48 @@ def validate_schema(
             f"{missing}"
         )
 
-    non_key_columns = [
-        col for col in data.data_vars if col not in required_columns
-    ]
-    for col in non_key_columns:
-        null_count = int(data[col].isnull().sum().item())
+    structural_mask = None
+    for col in required_columns:
+        is_null = data[col].isnull()
+        structural_mask = (
+            is_null if structural_mask is None else (structural_mask & is_null)
+        )
+
+    if structural_mask is not None:
+        structural_cells = int(structural_mask.sum().item())
+        total_cells = int(structural_mask.size)
+        if structural_cells > 0 and total_cells > 0:
+            logger.info(
+                f"validate_schema: {structural_cells}/{total_cells} "
+                f"({structural_cells / total_cells:.1%}) "
+                f"(timestamp, symbol) cell(s) hold no bar at all — null in "
+                f"every required column. That is the dense panel's cartesian "
+                f"product (D-06), not an anomaly; nulls on those cells are "
+                f"excluded from the counts below."
+            )
+
+    for col in data.data_vars:
+        column = data[col]
+        if structural_mask is not None and tuple(column.dims) == tuple(
+            structural_mask.dims
+        ):
+            null_count = int(
+                (column.isnull() & ~structural_mask).sum().item()
+            )
+            scope = (
+                "null value(s) on (timestamp, symbol) cells where a bar DOES "
+                "exist"
+            )
+        else:
+            null_count = int(column.isnull().sum().item())
+            scope = (
+                f"null value(s) — its dims {tuple(column.dims)} differ from "
+                f"the required-column grid, so the whole column is counted"
+            )
         if null_count > 0:
             logger.warning(
-                f"validate_schema: column '{col}' has {null_count} "
-                f"unexpected null value(s) — not raising, per flag-don't-"
-                f"delete philosophy (D-07)."
+                f"validate_schema: column '{col}' has {null_count} {scope} "
+                f"— not raising, per flag-don't-delete philosophy (D-07)."
             )
 
     return data
