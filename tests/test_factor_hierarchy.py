@@ -450,7 +450,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
     covers the live half.
 
     The four interactions replicated below, in `base/model.py:115-201`'s own
-    order, are `_reset_factors_config`, `_get_features_batch`,
+    order, are `_reset_factors_config`, `_collect_all_features`,
     `get_factor_names` and `get_config`. `BaseModel` itself is deliberately NOT
     instantiated: it is abstract and would drag torch and wandb into a test
     that has no business requiring either.
@@ -493,7 +493,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
         factor.config.end_date = dl.end_date
         factor._reset_dataset_config()
 
-    # (2) base/model.py:_get_features_batch
+    # (2) base/model.py:_collect_all_features
     all_ds = [factor.cal().get_features() for factor in dl.factors]
     data = xr.combine_by_coords(all_ds)
 
@@ -623,7 +623,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path(
         factor.config.end_date = dl.end_date
         factor._reset_dataset_config()
 
-    # (2) base/model.py:_get_features_batch, the "read" arm
+    # (2) base/model.py:_collect_all_features, the "read" arm
     all_ds = [factor.read().get_features() for factor in dl.factors]
     data = xr.combine_by_coords(all_ds)
 

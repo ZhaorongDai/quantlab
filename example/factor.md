@@ -79,7 +79,7 @@ CLAUDE.md 写的是"能用 xarray/KunQuant 完成的处理，优先不用 Polars
 
 统一是 `xr.Dataset`，坐标就是 `timestamp` 和 `symbol`，和输入面板同形状。`tests/test_factor_hierarchy.py::test_public_factor_api_exchanges_only_xarray_datasets` 把这条钉在公共 API 上：`cal` / `read` / `save` / `get_features` / `get_labels` / `get_factor_names` / `get_config` 之间流动的只能是 xarray。Polars 只是 `FactorPolars` 内部的实现手段，结果在离开这个类之前就被 `xr.Dataset.from_dataframe` 转回面板了。
 
-模型层（`base/model.py:_get_features_batch` / `_get_labels_batch`）只调这几个方法，从不检查因子的具体类型——`tests/test_factor_hierarchy.py::test_base_model_does_not_dispatch_on_concrete_factor_types` 会 grep `base/model.py`，出现 `FactorKunQuant` / `FactorPolars` / `isinstance` 就红。这就是"换后端不用改模型层"这句话的兑现方式。
+模型层（`base/model.py:_collect_all_features` / `_collect_all_labels`）只调这几个方法，从不检查因子的具体类型——`tests/test_factor_hierarchy.py::test_base_model_does_not_dispatch_on_concrete_factor_types` 会 grep `base/model.py`，出现 `FactorKunQuant` / `FactorPolars` / `isinstance` 就红。这就是"换后端不用改模型层"这句话的兑现方式。
 
 ### 一份配置，一个因子实例
 

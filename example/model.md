@@ -21,7 +21,7 @@
 ### 吃：两份 xarray 面板
 
 模型层不直接读磁盘、不直接碰行情。它拿到的是配置里塞进来的**因子对象**和**标签对象**，
-然后调用它们的公共契约取数（`base/model.py:_get_features_batch` / `_get_labels_batch`）：
+然后调用它们的公共契约取数（`base/model.py:_collect_all_features` / `_collect_all_labels`）：
 
 ```python
 # factor_data_strategy / label_data_strategy 决定走哪条

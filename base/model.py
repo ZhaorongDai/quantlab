@@ -138,7 +138,14 @@ class BaseModel(ABC):
         self.config.backtest_data.start_date = self._config.start_date
         self.config.backtest_data.end_date = self._config.end_date
 
-    def _get_labels_batch(self) -> xr.Dataset:
+    def _collect_all_labels(self) -> xr.Dataset:
+        """把 `config.labels` 里的**每一个**标签取出来合成一块面板。
+
+        它以前叫 `_get_labels_batch`。这个模块里 `batch` 已经有一个确定的意思
+        ——`DataLoader` 切出来的 mini-batch（见 `_train_one_batch`）——而这里
+        既不切也不采样，是「全部收齐再 `combine_by_coords`」。同一个词在同一个
+        文件里指两件相反的事，名字就得让一个。
+        """
         all_ds = []
         for label in self.config.labels:
             match self.config.label_data_strategy:
@@ -155,7 +162,11 @@ class BaseModel(ABC):
         data = data.sortby(["timestamp", "symbol"])
         return data
 
-    def _get_features_batch(self) -> xr.Dataset:
+    def _collect_all_features(self) -> xr.Dataset:
+        """把 `config.factors` 里的**每一个**因子取出来合成一块面板。
+
+        命名理由见 `_collect_all_labels`：这里没有任何 mini-batch 语义。
+        """
         all_ds = []
         for factor in self.config.factors:
             match self.config.factor_data_strategy:
@@ -174,8 +185,8 @@ class BaseModel(ABC):
     def collect(
         self,
     ) -> Self:
-        feature = self._get_features_batch()
-        label = self._get_labels_batch()
+        feature = self._collect_all_features()
+        label = self._collect_all_labels()
         d = xr.combine_by_coords([feature, label])
         d = d.sortby(["timestamp", "symbol"])
         self.data_backend.to_internal(d)  # type: ignore
