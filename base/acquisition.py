@@ -607,7 +607,8 @@ class Acquisition(ABC):
         """Reject any symbol that is not a well-formed ticker, and return the
         validated list.
 
-        Called BEFORE path construction and BEFORE any query-string
+        Called at the top of `_run` and `coverage_report` -- i.e. BEFORE path
+        construction -- and again in `_fetch_batch` before any query-string
         interpolation, because a symbol crosses two trust boundaries at once:
 
         - it becomes a filesystem path component under the raw root, where a
@@ -982,6 +983,12 @@ class Acquisition(ABC):
         that DID complete has been flushed to the ledger. Swallowing it would
         report success for a short batch; flushing after the fact rather than
         before is what turns the next run into a resume instead of a restart.
+
+        **The page loop is bounded by more than a falsy token.** A vendor that
+        hands back the token it was given would otherwise spin forever, and
+        because `page_index` increments each iteration the shard names keep
+        changing rather than overwriting -- so the failure fills the disk
+        instead of stalling. See the repeated-token check below.
         """
         symbols = self._validate_symbols(symbols)
         if ledger is None or batch_key is None:
@@ -1046,6 +1053,26 @@ class Acquisition(ABC):
                 ledger.mark_complete()
                 outcome.complete = True
                 return outcome
+
+            if next_token == page_token:
+                # The loop's ONLY exit is a falsy token, so a vendor that
+                # echoes the token it was handed -- a mis-implemented
+                # `page_token`, a proxy replaying a response, a partial outage
+                # -- would run forever. `page_index` increments each iteration,
+                # so the shard filenames keep CHANGING: nothing overwrites,
+                # the ledger's `pages` list grows without bound, and the raw
+                # root fills the disk while every individual request looks
+                # successful. Refusing is the only bounded outcome, and it
+                # leaves a resumable ledger behind.
+                raise ValueError(
+                    f"{self.class_name}: the vendor returned the SAME page "
+                    f"token it was given ({next_token!r}) on page "
+                    f"{page_index} of batch {batch_key}. Continuing would "
+                    f"loop forever, writing a new shard every iteration until "
+                    f"the raw root fills the disk. Refusing instead. The "
+                    f"pages that DID land are recorded, so a re-run resumes "
+                    f"rather than restarting."
+                )
 
             page_index += 1
             page_token = next_token
@@ -1118,7 +1145,17 @@ class Acquisition(ABC):
         All three knobs are read from `config.kwargs` via `_knob`, never as
         constructor arguments, and waiting is OFF by default.
         """
-        requested = list(symbols or self.config.symbols)
+        # Validated HERE, not only inside `_fetch_batch`. `_validate_symbols`'
+        # own docstring says it runs "BEFORE path construction", and until this
+        # line that was false: `_partition_by_coverage` below turns EVERY
+        # symbol in the roster into a filesystem path
+        # (`_watermark_path(symbol)` -> `self._watermark_root / f"{symbol}.json"`)
+        # before any batch exists, so a roster entry of `../../../../etc/hosts`
+        # -- from a hand-written `--symbols`, a corrupted `universe.parquet`, or
+        # a future roster source -- was `exists()`-checked and `json.load`ed
+        # outside the watermark root. Reads only, so the blast radius was
+        # bounded; the control simply did not run where it claimed to.
+        requested = self._validate_symbols(list(symbols or self.config.symbols))
         wait_for_quota = bool(
             self._knob("wait_for_quota", self.DEFAULT_WAIT_FOR_QUOTA)
         )
@@ -1297,7 +1334,11 @@ class Acquisition(ABC):
         `_partition_by_coverage` with the real run rather than reimplementing
         the rule, so the two can never disagree.
         """
-        requested = list(symbols if symbols is not None else self.config.symbols)
+        # Same reason as `_run`: `_partition_by_coverage` builds a watermark
+        # path per symbol, so validation has to precede it here too.
+        requested = self._validate_symbols(
+            list(symbols if symbols is not None else self.config.symbols)
+        )
         pending, counts = self._partition_by_coverage(
             requested, from_watermark=False
         )

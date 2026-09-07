@@ -1151,3 +1151,109 @@ def test_a_refresh_may_clear_a_no_data_marker_but_never_assert_a_new_one(
 
     assert _marked_symbols(acq) == set()
     assert acq._read_coverage("MSFT")["start_date"] == "2020-01-01"
+
+
+# ---------------------------------------------------------------------------
+# WR-02 / WR-04 -- the two ways the batched loop was unbounded or unguarded.
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeated_page_token_refuses_instead_of_looping_forever(
+    mock_alpaca_client, acquisition_config
+):
+    """WR-02. The page loop's only exit was a falsy token.
+
+    A vendor that echoes the token it was handed -- a mis-implemented
+    `page_token`, a proxy replaying a response, a partial outage -- spins
+    forever. And it does not merely stall: `page_index` increments every
+    iteration, so the deterministic shard names keep CHANGING, nothing
+    overwrites, the ledger's `pages` list grows without bound, and the raw root
+    fills the disk while every individual request looks successful.
+
+    Asserted by BOUNDED page count, not just by the exception: a check that
+    raised only after ten thousand pages would satisfy a `pytest.raises` and
+    none of the above.
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    def _page(token):
+        return {
+            "bars": {
+                "AAPL": [
+                    {"t": "2024-01-02T00:00:00Z", "o": 1.0, "h": 1.0, "l": 1.0,
+                     "c": 1.0, "v": 1, "n": 1, "vw": 1.0}
+                ]
+            },
+            "next_page_token": token,
+            "currency": "USD",
+        }
+
+    # Page 0 hands out "stuck"; every page after it hands "stuck" back.
+    mock_alpaca_client.pages = [_page("stuck") for _ in range(50)]
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL",), frequency="1d", subdir="echo_token"
+    )
+    acq = AlpacaAcquisition(cfg)
+    with pytest.raises(ValueError) as excinfo:
+        acq._fetch_batch(["AAPL"], cfg.start_date, cfg.end_date)
+
+    message = str(excinfo.value)
+    assert "SAME page token" in message
+    assert "stuck" in message, "the offending token is named"
+    # Two requests: the one that issued the token, and the one that got it
+    # back. Anything more means the loop ran on.
+    assert len(mock_alpaca_client.calls) == 2, mock_alpaca_client.calls
+    shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    assert len(shards) <= 2, [str(path) for path in shards]
+
+
+def test_a_traversal_symbol_raises_before_any_watermark_path_is_opened(
+    mock_alpaca_client, acquisition_config, monkeypatch
+):
+    """WR-04. `_validate_symbols` claimed to run "BEFORE path construction".
+
+    It did not. `_run` calls `_partition_by_coverage` first, which calls
+    `_read_coverage(symbol)` -> `_watermark_path(symbol)` ->
+    `self._watermark_root / f"{symbol}.json"` for EVERY symbol in the roster,
+    before any batch exists. Validation only ran later, inside `_fetch_batch`.
+
+    Proved by instrumenting the sidecar reader rather than by the exception
+    alone: an exception raised after the first `json.load` would still satisfy
+    `pytest.raises` while the control had already been bypassed.
+    """
+    import pytest
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL",), frequency="1d", subdir="traversal"
+    )
+    acq = AlpacaAcquisition(cfg)
+
+    opened: list[str] = []
+    original = AlpacaAcquisition._read_sidecar
+
+    def _spy(self, symbol):
+        opened.append(symbol)
+        return original(self, symbol)
+
+    monkeypatch.setattr(AlpacaAcquisition, "_read_sidecar", _spy)
+
+    for bad in ("../../../../etc/hosts", "AA/PL", "AAPL,MSFT"):
+        opened.clear()
+        mock_alpaca_client.calls = []
+        with pytest.raises(ValueError) as excinfo:
+            acq.download(["AAPL", bad])
+        assert "well-formed ticker" in str(excinfo.value)
+        assert opened == [], (
+            f"{bad!r}: a sidecar path was built and read before validation "
+            f"ran; opened={opened}"
+        )
+        assert mock_alpaca_client.calls == []
+
+    # The same guard, on the read-only report that shares the code path.
+    with pytest.raises(ValueError, match="well-formed ticker"):
+        acq.coverage_report(["../../etc"])
