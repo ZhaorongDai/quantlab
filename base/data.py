@@ -188,6 +188,23 @@ class BaseDataset(ABC):
     def get_lazyframe(self) -> pl.LazyFrame:
         return self.data_backend.get_lazyframe()
 
+    def head(self, n: int) -> pl.LazyFrame:
+        """A BOUNDED read of at most `n` rows -- `get_lazyframe()`'s twin.
+
+        Concrete, not abstract, and shaped exactly like the pass-through above
+        it: the bound is a property of the STORAGE MEDIUM, so every dataset
+        kind inherits whatever its backend implements and none of them has an
+        opinion to add. `tests/test_dataset_hierarchy.py` pins
+        `BaseDataset.__abstractmethods__` to `{"_raw_data_to_xr"}` and that
+        assertion is correct -- one abstract member is what lets a dataset
+        with no OHLCV shape at all complete the whole lifecycle.
+
+        Used by `base/factor_polars.py` to learn what its computation graph
+        produces without reading the store: names derive from the GRAPH, and
+        the graph needs a schema, not data.
+        """
+        return self.data_backend.head(n)
+
     def get_xarray_dataset(self) -> xr.Dataset:
         return self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 

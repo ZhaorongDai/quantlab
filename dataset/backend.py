@@ -154,6 +154,25 @@ class XrBackend(DataBackend):
         data = self.data.to_dataframe().reset_index()
         return pl.from_pandas(data).lazy()
 
+    def head(self, n: int) -> pl.LazyFrame:
+        """At most `n` rows, bounding EVERY dimension before converting.
+
+        The selector is built from `self.data.dims` rather than naming
+        `timestamp`: a storage-medium-agnostic backend has no business knowing
+        that this project's panels happen to be indexed by time and symbol,
+        and a dataset with a third axis would otherwise be converted in full.
+
+        The sliced dataset is a LOCAL. It is deliberately not assigned back to
+        `self.data`, unlike `filter_by_date`/`filter_by_symbol` directly
+        above, which mutate in place by design. Writing it back here would
+        truncate the dataset object every consumer shares -- `cal()` would
+        then compute over `n` rows forever, producing a plausible-looking
+        result no downstream check could distinguish from a real one.
+        """
+        bounded = self.data.isel({dim: slice(0, n) for dim in self.data.dims})
+        frame = bounded.to_dataframe().reset_index()
+        return pl.from_pandas(frame).lazy().head(n)
+
 
 class PlBackend(DataBackend):
     def read(self, path: str, **kwargs) -> Self:
@@ -185,6 +204,16 @@ class PlBackend(DataBackend):
 
     def get_lazyframe(self) -> pl.LazyFrame:
         return self.data
+
+    def head(self, n: int) -> pl.LazyFrame:
+        """At most `n` rows, genuinely lazily.
+
+        `scan_parquet` pushes the limit down into the reader, so this costs
+        essentially nothing here -- and `self.data` is a `pl.LazyFrame`, whose
+        `.head()` returns a new frame rather than mutating the receiver, so
+        the non-mutation half of the contract comes for free.
+        """
+        return self.data.head(n)
 
     def get_xarray_dataset(self, indexes: list[str]) -> xr.Dataset:
         data = self.data.collect().to_pandas()

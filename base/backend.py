@@ -27,6 +27,32 @@ class DataBackend(ABC):
     def get_lazyframe(self) -> pl.LazyFrame: ...
 
     @abstractmethod
+    def head(self, n: int) -> pl.LazyFrame:
+        """A BOUNDED read: at most `n` rows of the backing store.
+
+        The bounded twin of `get_lazyframe()`. The returned lazyframe carries
+        the same column names and the same dtypes `get_lazyframe()` would
+        return -- real dtypes matter, because callers run real expressions
+        over this probe to learn what those expressions produce.
+
+        Two obligations on any implementation:
+
+        - It must NOT materialize the whole store. That is the entire point;
+          an implementation that reads everything and slices afterwards
+          satisfies the signature and defeats the purpose.
+        - It must NOT mutate `self.data`. `filter_by_date`/`filter_by_symbol`
+          on this same interface DO filter in place, so an implementation
+          written by analogy with them would silently truncate the store its
+          caller shares with everything else holding that backend.
+
+        Abstract rather than a `limit=` keyword on `get_lazyframe()` on
+        purpose: ABC enforcement makes a backend that omits the bounded read
+        impossible to construct, whereas an optional keyword is satisfied by
+        plain inheritance and only fails at whichever call site passes it.
+        """
+        ...
+
+    @abstractmethod
     def read(self, path: str, **kwargs) -> Self: ...
 
     @abstractmethod
