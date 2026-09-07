@@ -1941,6 +1941,114 @@ def test_an_explicit_none_asof_is_the_only_way_to_reach_the_vendor_default(
     assert call["asof"] == "2015-06-30"
 
 
+def test_an_intraday_window_is_sent_as_instants_that_cover_the_session(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """WR-09. A bare `YYYY-MM-DD` end is unambiguous for `1d` and not for
+    intraday.
+
+    Alpaca documents `start`/`end` as RFC-3339 instants; a date-only `end` most
+    plausibly resolves to `00:00:00Z`, which excludes the ENTIRE final trading
+    session -- the US regular session is 14:30-21:00 UTC. And the bookkeeping is
+    unconditional: `_attempt_batch` stamps `last_date = config.end_date` on any
+    successful batch whether or not a row for that date arrived, and
+    `_classify_coverage` then reads the symbol as `covered`, so the missing
+    session is never re-fetched and reads as sparse data rather than as a gap.
+
+    The wire value is asserted, at the PREPARED URL as well as in the dict, so
+    the assumption is recorded somewhere a reader can find it rather than left
+    to inference. Daily is asserted too: widening it would be a silent change
+    to the one frequency that never needed it.
+    """
+    import requests
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    def _covers_the_close(end: str) -> bool:
+        """21:00 UTC (16:00 ET) must fall at or before the requested end."""
+        return end >= "2024-01-02T21:00:00Z"
+
+    for frequency, data_type, page in (
+        ("1m", None, None),
+        ("tick", "quotes", _tick_page("quotes", {"AAPL": ["2024-01-02T14:31:00Z"]})),
+        ("tick", "trades", _tick_page("trades", {"AAPL": ["2024-01-02T14:31:00Z"]})),
+    ):
+        mock_alpaca_client.calls = []
+        mock_alpaca_client.pages = [
+            page
+            or alpaca_bars_page(
+                {"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None
+            )
+        ]
+        if data_type is None:
+            cfg = acquisition_config(
+                vendor="alpaca",
+                symbols=("AAPL",),
+                frequency=frequency,
+                subdir=f"window_{frequency}",
+                start_date="2024-01-02",
+                end_date="2024-01-02",
+            )
+        else:
+            cfg = _tick_config(
+                acquisition_config,
+                data_type=data_type,
+                subdir=f"window_{data_type}",
+                start_date="2024-01-02",
+                end_date="2024-01-02",
+            )
+        AlpacaAcquisition(cfg).download()
+
+        (call,) = mock_alpaca_client.calls
+        label = f"{frequency}/{data_type}"
+        assert call["start"] == "2024-01-02T00:00:00Z", label
+        assert _covers_the_close(call["end"]), (
+            f"{label}: end={call['end']!r} does not reach the 21:00Z close, so "
+            f"the whole final session is excluded while the watermark stamps "
+            f"the date as covered"
+        )
+        params = {key: value for key, value in call.items() if key != "path"}
+        prepared = requests.Request(
+            "GET", "https://data.alpaca.markets/v2/stocks/bars", params=params
+        ).prepare()
+        assert "end=2024-01-02T23" in prepared.url.replace("%3A", ":").replace(
+            "%2F", "/"
+        ), prepared.url
+
+    # `1d` keeps bare dates: daily bars are date-stamped, so there is nothing
+    # ambiguous to resolve and widening would be a change with no reason.
+    mock_alpaca_client.calls = []
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)
+    ]
+    cfg = acquisition_config(
+        vendor="alpaca",
+        symbols=("AAPL",),
+        frequency="1d",
+        subdir="window_1d",
+        start_date="2024-01-02",
+        end_date="2024-01-02",
+    )
+    AlpacaAcquisition(cfg).download()
+    (call,) = mock_alpaca_client.calls
+    assert call["start"] == "2024-01-02"
+    assert call["end"] == "2024-01-02"
+
+
+def test_a_caller_supplied_instant_is_not_re_suffixed(
+    mock_alpaca_client, acquisition_config
+):
+    """A bound that already carries a time is passed through untouched --
+    re-suffixing `2024-01-02T15:00:00Z` would produce nonsense."""
+    from acquisition.alpaca import AlpacaAcquisition
+
+    cfg = _tick_config(acquisition_config, data_type="trades", subdir="instant")
+    acq = AlpacaAcquisition(cfg)
+    assert acq._window_bounds(
+        "2024-01-02T15:00:00Z", "2024-01-02T16:00:00Z"
+    ) == ("2024-01-02T15:00:00Z", "2024-01-02T16:00:00Z")
+
+
 def test_an_out_of_set_feed_or_adjustment_raises_before_any_request(
     mock_alpaca_client, acquisition_config
 ):

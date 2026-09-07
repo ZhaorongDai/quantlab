@@ -472,6 +472,33 @@ class AlpacaAcquisition(Acquisition):
     #: PINNED to `asc`, never read from a knob -- see `_fetch_page`.
     SORT = "asc"
 
+    #: How an INTRADAY window's edges are sent. See `_window_bounds`.
+    #:
+    #: Alpaca documents `start`/`end` as RFC-3339 instants. For `1d` a bare
+    #: `YYYY-MM-DD` is unambiguous -- daily bars are date-stamped. For `1m` and
+    #: `tick` it is not, and the most plausible resolution of a bare date is
+    #: `00:00:00Z`, which would exclude the ENTIRE final trading session: the US
+    #: regular session is 14:30-21:00 UTC, so a bare `end` cuts the whole day
+    #: off. Nothing in the code or the tests recorded which reading was assumed,
+    #: which is the actual defect -- so the assumption is now sent explicitly
+    #: rather than inferred (WR-09).
+    #:
+    #: **This is also what makes the watermark bookkeeping honest.** On a
+    #: successful batch `_attempt_batch` stamps `last_date = config.end_date`
+    #: and `_classify_coverage` then reads the symbol as `covered`,
+    #: unconditionally -- so a final session that was never actually requested
+    #: would never be re-fetched and would read as sparse data rather than as a
+    #: gap. With the window provably covering the session, "queried up to
+    #: `end_date`" is a true statement, and the `no_data` marker carries the
+    #: separate "asked and got nothing" case.
+    #:
+    #: Nine fractional digits, matching the vendor's own response resolution
+    #: and `RAW_SCHEMA_BY_DATA_TYPE`'s nanosecond tick timestamps: a truncated
+    #: bound is the one thing that could drop a genuine trade in the final
+    #: microsecond of the day.
+    INTRADAY_START_SUFFIX = "T00:00:00Z"
+    INTRADAY_END_SUFFIX = "T23:59:59.999999999Z"
+
     #: Re-exposed from the module-level constant; see its comment for why a
     #: `None` `asof` is not an option and why this value is still unverified.
     ASOF_NO_MAPPING = ASOF_NO_MAPPING
@@ -597,6 +624,35 @@ class AlpacaAcquisition(Acquisition):
         if self.SORT not in self.SORT_VALUES:  # pragma: no cover - constant
             raise ValueError(f"{self.class_name}: SORT={self.SORT!r} is invalid")
 
+    def _window_bounds(self, start_date: str, end_date: str) -> tuple[str, str]:
+        """`(start, end)` as this data type needs them on the wire.
+
+        Daily bars keep bare dates. Everything intraday is widened to explicit
+        RFC-3339 instants spanning the whole calendar day, because a bare
+        `YYYY-MM-DD` end most plausibly resolves to `00:00:00Z` and would
+        exclude the entire final US session (14:30-21:00 UTC) -- while the
+        watermark would still stamp that date as covered, so the missing
+        session would never be re-fetched and would read as sparse data rather
+        than as a gap. See `INTRADAY_END_SUFFIX`.
+
+        A bound that already carries a time (`T` present) is passed through
+        untouched: a caller who supplied an instant meant it, and re-suffixing
+        it would produce nonsense.
+        """
+        if self._data_type == "bars" and self.config.frequency == "1d":
+            return start_date, end_date
+        start = (
+            start_date
+            if "T" in str(start_date)
+            else f"{start_date}{self.INTRADAY_START_SUFFIX}"
+        )
+        end = (
+            end_date
+            if "T" in str(end_date)
+            else f"{end_date}{self.INTRADAY_END_SUFFIX}"
+        )
+        return start, end
+
     def _rate_limit_headers(self, exc: BaseException) -> dict[str, str]:
         """Whatever `X-RateLimit-*` the vendor happened to send, or `{}`.
 
@@ -655,10 +711,17 @@ class AlpacaAcquisition(Acquisition):
         symbols = self._validate_symbols(symbols)
         data_type = self._data_type
 
+        # Bare dates for `1d`; explicit RFC-3339 instants covering the whole
+        # session for `1m` and `tick` -- see `_window_bounds`. The assumption
+        # is SENT rather than inferred, because a bare intraday `end` most
+        # plausibly resolves to 00:00Z and would silently drop the final
+        # session while the watermark stamped it covered.
+        window_start, window_end = self._window_bounds(start_date, end_date)
+
         params = {
             "symbols": ",".join(symbols),
-            "start": start_date,
-            "end": end_date,
+            "start": window_start,
+            "end": window_end,
             # The vendor maximum. Fewer rows per page means more requests for
             # the same data, which is pure rate-limit pressure.
             "limit": self._knob("page_limit", 10_000),
