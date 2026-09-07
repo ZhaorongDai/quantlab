@@ -4,10 +4,10 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Completed quick task 260906-usg (Phase 3 Gap 1 closed)
+stopped_at: Completed quick task 260906-w3t (RV-01 closed)
 last_updated: "2026-09-07T02:33:17.545Z"
 last_activity: 2026-09-06
-last_activity_desc: Phase 03.2 complete, transitioned to Phase 3
+last_activity_desc: Quick task 260906-w3t complete (RV-01 closed; RV-02 stays filed)
 state_head: b27fa9b3cb413307005da83b8b66a0c85e43dcbd
 progress:
   total_phases: 9
@@ -80,6 +80,7 @@ Progress: [██████████] 100%
 | Phase 03.2 P06 | 17 min | 3 tasks | 5 files |
 | Phase 03.2 P07 | 27 min | 3 tasks | 8 files |
 | Phase quick-260906-usg P01 | 41 min | 3 tasks | 8 files |
+| Phase quick-260906-w3t P01 | 18 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -151,6 +152,11 @@ Recent decisions affecting current work:
 - [quick-260906-usg]: The Gap 1 fix is a DELETED override, not an added one. base/factor.py already implements "explicit pin wins, else derive"; FactorPolars had disabled the derivation channel with a no-op _maybe_resolve_factor_names(), leaving only cal() to fill config.factor_names. Deleting it fixes read(), cal() and bare construction at once.
 - [quick-260906-usg]: DataBackend.head(n) is an @abstractmethod rather than a limit= keyword on get_lazyframe(). ABC enforcement makes a backend that omits the bounded read impossible to construct; an optional keyword is satisfied by plain inheritance and only fails at whichever call site passes it. Accepted consequence: constructing a FactorPolars now performs a bounded disk read (~25-50 ms, flat in store size).
 - [quick-260906-usg]: XrBackend.head must NOT write its slice back to self.data, unlike its in-place filter_by_date/filter_by_symbol siblings -- a mutating probe would silently leave cal() computing over 8 rows with nothing downstream able to tell. Locked by tests/test_backend_head.py::test_head_does_not_mutate_backend_state and its mutation.
+- [quick-260906-w3t]: DataBackend.head takes the store PATH and opens the store itself (head(path, n), path first, mirroring read(path, **kwargs)). Reaching the store through read() ran BaseDataset._filter(), narrowing data_backend.data IN PLACE, and XrBackend.read()'s cache early-return made that narrowing permanent -- so the FactorPolars name probe, which fires BEFORE _reset_dataset_config() widens the window, silently dropped the factor's entire lookback (RV-01: 29 timestamps instead of 49, momentum_5 17.2% NaN, nothing raised).
+- [quick-260906-w3t]: read() is UNCHANGED -- same signature, same meaning, no filter= parameter. The RV-01 fix removes a CALLER, not a method. The rejected alternative (filter= on read() plus clearing self.data afterwards) would have destroyed a caller's already-read data, failed to compose with the cache, and made correctness depend on one side effect cancelling another.
+- [quick-260906-w3t]: XrBackend.head opens with xr.open_dataset, the same opener read() uses -- never xr.open_zarr. Two openers for one store in one class is a divergence waiting to bite; _assert_append_compatible's open_zarr is a separate, append-specific concern.
+- [quick-260906-w3t]: RV-02 is deliberately NOT closed and stays filed in 03-VERIFICATION.md. head() carries read()'s explicit Path(path).exists() guard and its exact FileNotFoundError message on both backends, now locked by a test rather than prose. Accepted narrowing: a dataset whose data exists only in memory (the _reset_symbols() -> from_raw_data() fallback) was previously probeable via the cache early-return and now raises. Closing RV-02 means deciding whether name derivation may be DEFERRED, which re-opens D-05's construction-time-names contract -- a user design call, not a side effect of a mutation fix.
+- [quick-260906-w3t]: Every pre-existing fixture left DatasetConfig.start_date/end_date unset, making _filter() a no-op -- which is exactly why 384 green tests could not see RV-01. Restoring .read() on the probe WITHOUT the new dated fixture leaves the suite green (verified as a mutation). The dated fixture IS the guard; the fix without it would be unprotected.
 
 ### Pending Todos
 
@@ -179,7 +185,7 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-09-07T02:32:45.512Z
-Stopped at: Completed quick task 260906-usg (Phase 3 Gap 1 closed)
+Stopped at: Completed quick task 260906-w3t (RV-01 closed; full suite 387 passed)
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
