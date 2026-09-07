@@ -246,6 +246,34 @@ class BaseModel(ABC):
             raise ValueError(f"Unsupported file type: {p.suffix}")
         return self
 
+    def to_tensor(
+        self, data: xr.Dataset, variables: list[str]
+    ) -> torch.Tensor:
+        """把 `(timestamp, symbol)` 面板转成 `[num_times, num_symbols, len(variables)]`。
+
+        最后一维**严格按 `variables` 给定的顺序**排列，这是这个方法存在的全部理由。
+        以前这段逻辑内联在 `_train_dl` 里，写的是
+        `.sortby(["timestamp", "symbol", "variable"])`——`variable` 也被排进去了，
+        于是最后一维变成**字母序**而不是调用方声明的顺序。它不报错、不警告，
+        但把 `train_model.py` 里 `labels=[ret_30, ret_60, ret_120]` 的第一个标签
+        换成了字母序最小的 `ret_120`，而 `RNNClassifier` 把 `y[:, :, 0]` 当作
+        primary target——训了两个月的模型学的是 120 期收益。
+
+        `timestamp` / `symbol` 仍然要排序：特征面板和标签面板的坐标顺序不保证一致，
+        不排序就会「第 3 行的特征配上第 7 行的标签」。只有 `variable` 不能排。
+
+        推理侧也应该走这个方法，而不是手抄一遍转换逻辑——训练和推理的列顺序一旦
+        不一致，同样是静默错位。
+        """
+        return torch.from_numpy(
+            data[variables]
+            .to_dataarray()
+            .sortby(["timestamp", "symbol"])
+            .sel(variable=variables)
+            .transpose("timestamp", "symbol", "variable")
+            .values
+        )
+
     def _predict_nn(self, data: torch.Tensor) -> torch.Tensor:
         if not hasattr(self, "model") or self.model is None:
             raise ValueError(
@@ -318,16 +346,15 @@ class BaseModel(ABC):
         test_x = test_data[factors]
         test_y = test_data[labels]
 
-        datas = []
-        for d in [train_x, train_y, test_x, test_y]:
-            datas.append(
-                torch.from_numpy(
-                    d.to_dataarray()
-                    .transpose("timestamp", "symbol", "variable")
-                    .sortby(["timestamp", "symbol", "variable"])
-                    .values
-                )
-            )
+        datas = [
+            self.to_tensor(d, names)
+            for d, names in [
+                (train_x, factors),
+                (train_y, labels),
+                (test_x, factors),
+                (test_y, labels),
+            ]
+        ]
         datas = [self._preprocess(d) for d in datas]
 
         train_x_t_all, train_y_t_all, test_x_t, test_y_t = datas

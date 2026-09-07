@@ -49,20 +49,26 @@ ds = factor.read().get_features()   # "read"：读已经算好的 zarr
 
 ### 张量形状：`[num_times, num_symbols, num_features]`
 
-`_train_dl` 里从 xarray 变成 torch 张量的那几行是整层最该看懂的地方
-（`base/model.py:576-586`）：
+从 xarray 变成 torch 张量的那段是整层最该看懂的地方。它现在被封装成了
+`BaseModel.to_tensor(data, variables)`，训练和推理走的是同一份实现：
 
 ```python
 torch.from_numpy(
-    d.to_dataarray()
-     .transpose("timestamp", "symbol", "variable")
-     .sortby(["timestamp", "symbol", "variable"])
-     .values
+    data[variables]
+    .to_dataarray()
+    .sortby(["timestamp", "symbol"])   # 只排这两个
+    .sel(variable=variables)           # 最后一维按调用方声明的顺序钉死
+    .transpose("timestamp", "symbol", "variable")
+    .values
 )
 ```
 
 `to_dataarray()` 把 Dataset 的每个变量（每个因子）堆成新的一维 `variable`，
 于是二维面板 `(timestamp, symbol)` 变成三维 `(timestamp, symbol, variable)`。
+
+`sortby` 里**没有** `variable`，这是 2026-09-07 修掉的一个静默错位：
+把 `variable` 一起排会让最后一维变成字母序而不是配置里的顺序，
+详见「常见坑」第 3 条。
 
 **为什么是这个顺序而不是别的？** 因为 `DataLoader` 只会在**第 0 维**上切 batch。
 把 `timestamp` 放第 0 维，一个 batch 就是「若干个完整的时间截面」——
@@ -240,24 +246,21 @@ model.train()
 > 且 `config/__init__.py` 里的路径是另一台机器的绝对路径。上面的代码抄自
 > `train_model.py:19-58`，只是把 `model.load(...)` 换回了 `model.train()`。
 
-推理这一段值得单独看，因为它暴露了一个契约缺口（`train_model.py:66-78`）：
+推理这一段值得单独看（`train_model.py:66-74`）：
 
 ```python
 model.load(ckpt_path)
 data = model.data_backend.get_xarray_dataset()
 data = data.sel(timestamp=slice("2024-01-01", "2024-03-01"))
-data = data[model.get_factor_names()]
-data = torch.from_numpy(
-    data.to_dataarray().fillna(0)
-        .transpose("timestamp", "symbol", "variable")
-        .sortby(["timestamp", "symbol", "variable"]).values
-)
+factors = model.get_factor_names()
+data = model.to_tensor(data[factors].fillna(0), factors)
 predicts, _ = model.predict(data)
 ```
 
-「从 xarray 面板变成推理张量」这十行是**手抄** `_train_dl` 里的同一段逻辑的。
-基类没有提供 `predict_from_xarray()` 之类的方法，所以任何一个新的推理调用点
-都要重抄一遍——抄漏一个 `sortby` 就是静默错位。这是一个明显的可提炼点。
+这里以前是**手抄**了一份 `_train_dl` 里的转换逻辑（`to_dataarray → transpose →
+sortby(["timestamp","symbol","variable"])`）。抄一份的代价不是重复，是**两份会漂**：
+训练侧一旦改了列顺序，推理侧不跟着改就是静默错位。2026-09-07 把它提成了
+`BaseModel.to_tensor(data, variables)`，训练和推理现在共用同一份实现。
 
 ---
 
@@ -626,8 +629,11 @@ price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
 `rnn.py` 和 `rnn_classification.py` 的 `update()` 第一行是 `if self.config.lr_refit <= 0.0`，
 但 `DLConfig` **没有 `lr_refit` 字段** → `AttributeError`。这条路目前不可用。
 
-**8. 「从 xarray 到推理张量」没有被封装。**
-见上面「简单用法」结尾。`_train_dl` 内联了转换逻辑，推理方要手抄。
+**8. 「从 xarray 到推理张量」没有被封装。**（**已于 2026-09-07 修复**）
+以前 `_train_dl` 内联了转换逻辑，推理方要手抄一遍。现在是
+`BaseModel.to_tensor(data, variables)`，训练和推理共用；`train_model.py` 已改为调用它。
+仍然**没有**一个 `predict_from_xarray()` 把「切时间窗 + 选因子 + 填 NaN + 转张量 + 推理」
+一次做完，调用方还是要自己写那三行。
 
 ---
 
@@ -664,9 +670,10 @@ counter 就可能加几次。实测（`batch_size=16`，每 epoch 2 个验证 ba
 所以它必须返回一个 0 维张量或 python 数（原本就是这么约定的）。
 
 **3. 张量的因子列顺序是「字母序」，不是 `get_factor_names()` 的顺序。**
-这是最阴的一个。`_train_dl` 里的 `.sortby(["timestamp", "symbol", "variable"])`
-把 `variable` 坐标**按字母排序**了，而 `get_factor_names()` 返回的是**配置里的顺序**。
-实测：
+（**已于 2026-09-07 修复**）
+
+曾经是最阴的一个。`_train_dl` 里的 `.sortby(["timestamp", "symbol", "variable"])`
+把 `variable` 坐标**按字母排序**了，而 `get_factor_names()` 返回的是**配置里的顺序**：
 
 ```python
 sub = ds[['zeta', 'alpha', 'mid']]
@@ -674,14 +681,24 @@ sub.to_dataarray().coords['variable']                       # ['zeta', 'alpha', 
 sub.to_dataarray().sortby([...,'variable']).coords['variable']  # ['alpha', 'mid', 'zeta']
 ```
 
-训练和推理都做了同样的 sortby，所以模型自身是自洽的；但只要你想把
-「第 i 列」映射回「第 i 个因子名」，就会错。而且 `_assert_shape_match_x` 只查个数不查名字，
-帮不上忙。
-
-**这个坑在标签上是有实际后果的。** `RNNClassifier` 把 `y[:, :, 0]` 当作 primary target。
-`train_model.py` 的配置写的是 `labels=[label1(30期), label2(60期), label3(120期)]`，
+**它在标签上是有实际后果的。** `RNNClassifier` 把 `y[:, :, 0]` 当作 primary target，
+而 `train_model.py` 写的是 `labels=[label1(30期), label2(60期), label3(120期)]`，
 名字分别是 `ret_30` / `ret_60` / `ret_120`。字母序是 `ret_120 < ret_30 < ret_60`，
-所以**实际被当作 primary target 的是 120 期收益，不是作者写在第一位的 30 期**。
+所以真正被当作 primary target 的是 120 期收益，不是作者写在第一位的 30 期——
+不报错、不警告。
+
+现在转换统一走 `BaseModel.to_tensor(data, variables)`：`sortby` 只排
+`timestamp` / `symbol`，最后一维用 `.sel(variable=variables)` 按调用方声明的顺序**钉死**。
+`train_model.py` 的推理路径也改成调用同一个方法，两侧不会再漂。回归锁：
+`tests/test_model_layer.py::test_tensor_variable_axis_follows_declared_order`
+（因子声明成 `zeta, alpha, mid`、标签声明成 `ret_30, ret_60, ret_120`，
+两组都刻意不是字母序，否则这个测试会因为错误的原因通过）。
+
+> **不做向后兼容**（用户 2026-09-07 锁定的决定）：本仓库是实验性质的，
+> 旧检查点的列顺序与新代码不一致，直接作废重训即可，不加兼容开关、不加版本戳。
+
+顺带一提，`_assert_shape_match_x` / `_assert_shape_match_y` 只查列**数**不查列**名**，
+所以这类错位从来指望不上它们。
 
 **4. dtype 基类不管。**
 `torch.from_numpy` 忠实继承 numpy 的 dtype。zarr 里存的常是 `float64`，

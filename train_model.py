@@ -67,14 +67,10 @@ data = model.data_backend.get_xarray_dataset()
 
 data = data.sel(timestamp=slice("2024-01-01", "2024-03-01"))
 factors = model.get_factor_names()
-data = data[factors]
-data = torch.from_numpy(
-    data.to_dataarray()
-    .fillna(0)
-    .transpose("timestamp", "symbol", "variable")
-    .sortby(["timestamp", "symbol", "variable"])
-    .values
-)
+# 走基类的 BaseModel.to_tensor：最后一维严格按 `factors` 声明的顺序排，
+# 和训练时用的是同一段代码。这里以前手抄了一份 `.sortby([..., "variable"])`，
+# 把列排成了字母序——训练侧修好之后再留着它就是静默错位。
+data = model.to_tensor(data[factors].fillna(0), factors)
 predicts, _ = model.predict(data)
 pred_probs = torch.softmax(predicts, dim=-1)
 # pred_probs = predicts
