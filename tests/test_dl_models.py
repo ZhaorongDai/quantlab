@@ -79,24 +79,48 @@ class FakePanel:
 
     Values are pseudo-random rather than constant on purpose: `MLPRegressor`
     logs `r2_score`, which is degenerate (and warns) on a constant target.
+
+    `via_pandas=True` builds the panel the way the REAL ingest builds one --
+    long-format `DataFrame.set_index(["timestamp", "symbol"]).to_xarray()`,
+    exactly `dataset/*._raw_data_to_xr()` -- and does NOT cast. numpy hands
+    back `float64` and nothing downgrades it, which is what both non-KunQuant
+    data paths actually produce (`FactorPolars`/`PlBackend`, and
+    `StockDataset`'s Tiingo parquet). The default `False` keeps the
+    `.astype("float32")` every pre-existing test in this file relies on.
     """
 
-    def __init__(self, names: list[str], seed: int):
+    def __init__(self, names: list[str], seed: int, via_pandas: bool = False):
         rng = np.random.default_rng(seed)
         self.names = list(names)
-        self._ds = xr.Dataset(
-            {
-                name: (
-                    ("timestamp", "symbol"),
-                    rng.standard_normal((N_TIMES, N_SYMBOLS)).astype(
-                        "float32"
-                    ),
-                )
-                for name in self.names
-            },
-            coords={"timestamp": TIMES, "symbol": SYMBOLS},
-        )
+        if via_pandas:
+            self._ds = self._panel_via_pandas(rng)
+        else:
+            self._ds = xr.Dataset(
+                {
+                    name: (
+                        ("timestamp", "symbol"),
+                        rng.standard_normal((N_TIMES, N_SYMBOLS)).astype(
+                            "float32"
+                        ),
+                    )
+                    for name in self.names
+                },
+                coords={"timestamp": TIMES, "symbol": SYMBOLS},
+            )
         self.config = SimpleNamespace(start_date=None, end_date=None)
+
+    def _panel_via_pandas(self, rng) -> xr.Dataset:
+        frame = pd.DataFrame(
+            {
+                "timestamp": np.repeat(TIMES, N_SYMBOLS),
+                "symbol": np.tile(SYMBOLS, N_TIMES),
+                **{
+                    name: rng.standard_normal(N_TIMES * N_SYMBOLS)
+                    for name in self.names
+                },
+            }
+        )
+        return frame.set_index(["timestamp", "symbol"]).to_xarray()
 
     def _reset_dataset_config(self):
         pass
@@ -120,10 +144,16 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-def _make_config(tmp_path, *, epochs: int = 2, **overrides) -> DLConfig:
+def _make_config(
+    tmp_path, *, epochs: int = 2, via_pandas: bool = False, **overrides
+) -> DLConfig:
     params = dict(
-        factors=[FakePanel(["f_a", "f_b", "f_c"], seed=1)],
-        labels=[FakePanel(["ret_30", "ret_60"], seed=2)],
+        factors=[
+            FakePanel(["f_a", "f_b", "f_c"], seed=1, via_pandas=via_pandas)
+        ],
+        labels=[
+            FakePanel(["ret_30", "ret_60"], seed=2, via_pandas=via_pandas)
+        ],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -512,3 +542,123 @@ def test_rnn_classifier_vecbt_raises_instead_of_returning_none(tmp_path):
 
     with pytest.raises(NotImplementedError, match="Phase 6"):
         model._vecbt(prices=prices, signals=signals)
+
+
+# --------------------------------------------------------------------------
+# BL-02 (reviewed 2026-09-07): to_tensor must normalize the panel's dtype
+# --------------------------------------------------------------------------
+
+
+def test_the_real_pipeline_panel_is_float64_not_float32():
+    """The premise, asserted rather than assumed.
+
+    Every other test in this file builds its panel with `.astype("float32")`,
+    and `tests/test_model_layer.py`'s `RecordingRegressor._preprocess` ends in
+    `.float()` -- so the suite only ever fed float32 into a stub that would
+    have coped anyway. That structural blindness is why BL-02 escaped. This
+    pins that `via_pandas=True` really does reproduce the float64 the real
+    ingest produces; without it the two training tests below would be green
+    for the wrong reason.
+    """
+    panel = FakePanel(["f_a"], seed=1, via_pandas=True).get_features()
+    assert panel["f_a"].dtype == np.float64
+
+
+@pytest.mark.parametrize("cls", [RNNRegressor, RNNClassifier])
+def test_a_shipped_head_trains_on_a_float64_panel(tmp_path, cls):
+    """BL-02: a Polars-backed factor could not train at all.
+
+    `to_tensor` ends in `torch.from_numpy(...values)`, which preserves the
+    panel's numpy dtype, and NONE of the three shipped `_preprocess`
+    implementations casts -- they all do `torch.nan_to_num` only. Every torch
+    module in `dl_model/` is built with default float32 parameters, so the
+    float64 panel that both non-KunQuant data paths produce died inside the
+    first forward pass:
+
+        ValueError: RNN input dtype (torch.float64) does not match weight
+        dtype (torch.float32).
+
+    CLAUDE.md names Polars as a first-class second factor backend, so
+    `DLConfig(factors=[kunquant_factor, polars_factor])` -- the exact
+    interchangeability contract Phase 03 D-03 exists to guarantee -- could not
+    be trained.
+
+    A SHIPPED head is instantiated on purpose: a stand-in with a `.float()` in
+    its `_preprocess` proves nothing about the classes that ship.
+    """
+    model = cls(_make_config(tmp_path, epochs=1, via_pandas=True, **_hp_for(cls)))
+    model.collect()
+    model._init_model_and_optim()
+    before = [p.detach().clone() for p in model.model.parameters()]  # type: ignore
+
+    model.train()
+
+    after = list(model.model.parameters())  # type: ignore
+    assert any(not torch.equal(b, a) for b, a in zip(before, after)), (
+        "the head ran an epoch on a float64 panel without stepping the "
+        "optimizer -- this is not evidence it trained"
+    )
+
+
+def test_to_tensor_downcasts_a_float64_panel(tmp_path):
+    """The pin for the fix itself, at the seam that owns the conversion.
+
+    Reddening mutation: delete the cast in `BaseModel.to_tensor` -- this
+    returns `torch.float64`. Putting the cast in the three `_preprocess`
+    implementations instead would leave this red, which is the point: the
+    fourth head would forget.
+    """
+    model = RNNRegressor(_make_config(tmp_path, via_pandas=True))
+    panel = FakePanel(["f_a", "f_b"], seed=1, via_pandas=True).get_features()
+    assert panel["f_a"].dtype == np.float64
+
+    tensor = model.to_tensor(panel, ["f_a", "f_b"])
+
+    assert tensor.dtype == torch.get_default_dtype() == torch.float32
+
+
+def test_to_tensor_follows_torchs_default_dtype_not_a_hardcoded_float32(
+    tmp_path,
+):
+    """`torch.get_default_dtype()`, not `np.float32`.
+
+    A user who calls `torch.set_default_dtype(torch.float64)` gets float64
+    modules, and a hardcoded downcast to float32 would then break training in
+    the mirror image of BL-02. This is what makes the choice of
+    `get_default_dtype()` load-bearing rather than cosmetic.
+
+    Reddening mutation: hardcode `values.astype(np.float32)` -- the float32
+    panel below stays float32 and this goes red.
+    """
+    model = RNNRegressor(_make_config(tmp_path))
+    panel = FakePanel(["f_a"], seed=1).get_features()  # float32
+    assert panel["f_a"].dtype == np.float32
+
+    original = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float64)
+        tensor = model.to_tensor(panel, ["f_a"])
+    finally:
+        torch.set_default_dtype(original)
+
+    assert tensor.dtype == torch.float64
+
+
+def test_to_tensor_leaves_non_floating_panels_alone(tmp_path):
+    """The cast is scoped to FLOATING dtypes on purpose.
+
+    An integer or boolean panel (a constituent-membership mask, a categorical
+    code) carries meaning that a silent float conversion would blur, and
+    nothing in `dl_model/` feeds one to a module today. Widening the cast to
+    "everything numeric" is a separate decision; this test is what makes it a
+    decision rather than a drift.
+    """
+    model = RNNRegressor(_make_config(tmp_path))
+    panel = xr.Dataset(
+        {"flag": (("timestamp", "symbol"), np.ones((4, N_SYMBOLS), dtype="int64"))},
+        coords={"timestamp": TIMES[:4], "symbol": SYMBOLS},
+    )
+
+    tensor = model.to_tensor(panel, ["flag"])
+
+    assert tensor.dtype == torch.int64

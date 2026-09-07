@@ -289,8 +289,30 @@ class BaseModel(ABC):
 
         推理侧也应该走这个方法，而不是手抄一遍转换逻辑——训练和推理的列顺序一旦
         不一致，同样是静默错位。
+
+        **dtype 也在这里统一。** `torch.from_numpy` 忠实继承 numpy 的 dtype，
+        而具体模型头建的 `nn.Module` 权重是 torch 的默认 dtype（float32）。真实
+        面板给的常常是 float64——凡是没有在上游显式降过型的数据路径（Polars 因子、
+        pandas/parquet 摄取）产出的都是 float64——于是第一次 forward 就死在
+        `ValueError: RNN input dtype (torch.float64) does not match weight
+        dtype (torch.float32)`。也就是说 CLAUDE.md 里写明的第二个因子后端整个
+        训不了，而两个后端在模型层可互换正是它要保证的东西。
+
+        转换放在这一个接缝上，而不是放进各个头的 `_preprocess`：`_preprocess` 有
+        三份实现，第四个头一定会忘；`to_tensor` 是面板变成张量的唯一入口。
+
+        取的是 `torch.get_default_dtype()` 而不是写死的 `float32`——谁要是
+        `torch.set_default_dtype(torch.float64)` 建了 float64 的模型，写死 float32
+        就是把同一个 bug 镜像了一遍。
+
+        **这是一个明写的取舍**：float64 → float32 会掉精度。对行情因子来说这是对的
+        交易（torch 模块本来就是 float32），但它必须是个决定，不能是个意外。
+
+        只转**浮点**：整型 / 布尔面板（成分股掩码、类别编码）带的是含义而不是量纲，
+        静默转成浮点会把它糊掉，而且今天 `dl_model/` 里没有任何一条路会把这种面板
+        喂给模块。要放宽成「所有数值类型」是另一个决定。
         """
-        return torch.from_numpy(
+        tensor = torch.from_numpy(
             data[variables]
             .to_dataarray()
             .sortby(["timestamp", "symbol"])
@@ -298,6 +320,10 @@ class BaseModel(ABC):
             .transpose("timestamp", "symbol", "variable")
             .values
         )
+        default_dtype = torch.get_default_dtype()
+        if tensor.is_floating_point() and tensor.dtype != default_dtype:
+            tensor = tensor.to(default_dtype)
+        return tensor
 
     def _predict_nn(self, data: torch.Tensor) -> torch.Tensor:
         if not hasattr(self, "model") or self.model is None:

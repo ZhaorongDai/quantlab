@@ -728,3 +728,19 @@ docstring 曾经写"先将缺失值替换为 0，然后进行滚动标准化"，
 ### 12. 每次 `cal()` 都重新编译一次图
 
 `FactorKunQuant.cal()` 末尾把 `self._lib = None`。同一个实例连着 `cal()` 两次，就编两次。这是有意的（编译产物占的是本地代码内存，批量通常一个进程只跑一次），但如果你在 notebook 里反复调 `cal()` 调试，那一两秒是每次都要付的。想省就钉 `factor_names` 把图缩到最小。
+
+### 13. Polars 因子产出 `float64`，模型层曾经吃不下（**已于 2026-09-07 修复**）
+
+上面那份 `rel_volume_10` 的输出里写着 `float64` —— 这不是个巧合，`FactorPolars` / `PlBackend` 这条路（以及 `StockDataset` 读 Tiingo parquet 那条）产出的都是 float64。而 `dl_model/` 里每个 `nn.Module` 的权重都是默认的 float32，`BaseModel.to_tensor` 当时不做任何 dtype 转换，三个出厂模型头的 `_preprocess` 也都只做 `torch.nan_to_num`。于是把一个 Polars 因子喂进去，第一次 forward 就死：
+
+```
+ValueError: RNN input dtype (torch.float64) does not match weight dtype
+(torch.float32). Convert input: input.to(torch.float32), or convert model:
+model.to(torch.float64)
+```
+
+也就是说，「KunQuant 因子和 Polars 因子可互换」这条契约（坑 #6 上面那个 `test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path` 守的是读路径那一半）在**模型层**是断的：KunQuant 的 `to_kunquant()` 会 `.astype(np.float32)`，Polars 这条路没有任何地方降过型，`DLConfig(factors=[kunquant 因子, polars 因子])` 训不起来。
+
+现在 `BaseModel.to_tensor` 在面板变成张量的那**一个**接缝上把浮点统一成 `torch.get_default_dtype()`，两个后端的因子在模型层真的可互换了。取舍与理由见 `example/model.md`「常见坑」#4。回归锁：`tests/test_dl_models.py::test_a_shipped_head_trains_on_a_float64_panel`。
+
+**因子这一侧不需要改，也不要改**：不要为了迁就模型层去给 Polars 图加 `.cast(pl.Float32)`。因子落盘保留 float64 是对的（那是计算结果的精度），降型是模型层的决定，发生在模型层。

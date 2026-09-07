@@ -403,8 +403,9 @@ class TinyRegressor(BaseModel):
         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
 
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
-        # NaN 归零 + 强制 float32：xarray 常给 float64，而 nn.Linear 的权重是 float32
-        return torch.nan_to_num(data, nan=0.0).float()
+        # NaN 归零。dtype 不用管了：`to_tensor` 已经统一成 torch 的默认 dtype
+        # （见「常见坑」#4），`.float()` 现在只是个恒等操作。
+        return torch.nan_to_num(data, nan=0.0)
 
     def _train_one_batch(self, epoch, x, y):
         self.optim.zero_grad()
@@ -806,10 +807,44 @@ sub.to_dataarray().sortby([...,'variable']).coords['variable']  # ['alpha', 'mid
 顺带一提，`_assert_shape_match_x` / `_assert_shape_match_y` 只查列**数**不查列**名**，
 所以这类错位从来指望不上它们。
 
-**4. dtype 基类不管。**
-`torch.from_numpy` 忠实继承 numpy 的 dtype。zarr 里存的常是 `float64`，
-而 `nn.Linear` 的权重默认 `float32` → forward 时 dtype mismatch。
-基类不做任何转换，请在 `_preprocess` 里 `.float()`（示例里就是这么写的）。
+**4. dtype 曾经基类不管，float64 面板根本训不了。**（**已于 2026-09-07 修复**）
+`torch.from_numpy` 忠实继承 numpy 的 dtype，而 `dl_model/` 里每个 `nn.Module`
+的权重都是默认的 float32。三个出厂模型头的 `_preprocess` 都只做
+`torch.nan_to_num`，一个 `.float()` 都没有，于是真实面板一进 forward 就死：
+
+```
+ValueError: RNN input dtype (torch.float64) does not match weight dtype
+(torch.float32). Convert input: input.to(torch.float32), or convert model:
+model.to(torch.float64)
+```
+
+float64 不是假想的——它就是两条非 KunQuant 数据路径的产物：Polars 那条
+（`FactorPolars` / `PlBackend`）和 pandas 那条（`StockDataset` 读 Tiingo
+parquet）给回来的都是 float64。也就是说 CLAUDE.md 写明的第二个因子后端
+**训不了**，而 `DLConfig(factors=[kunquant 因子, polars 因子])` 正是 Phase 03
+D-03 要保证的可互换性。
+
+现在 `BaseModel.to_tensor` 在**转换的那一个接缝上**统一 dtype：浮点面板一律转成
+`torch.get_default_dtype()`。放在这里而不是放进各个头的 `_preprocess`，是因为
+`_preprocess` 有三份实现、第四个头一定会忘；`to_tensor` 是面板变成张量的唯一入口。
+取 `get_default_dtype()` 而不是写死 `float32`，是为了跟随 torch 的全局设置——
+谁要是 `torch.set_default_dtype(torch.float64)` 建了 float64 的模型，写死 float32
+就是把同一个 bug 镜像了一遍。
+
+**这是一个明写的取舍**：float64 → float32 会掉精度。对行情因子来说这是对的交易
+（torch 模块本来就是 float32），但它是个决定，不是个意外。只转**浮点**：整型 /
+布尔面板（成分股掩码、类别编码）原样穿过，静默转成浮点会把含义糊掉。
+
+回归锁：`tests/test_dl_models.py::test_a_shipped_head_trains_on_a_float64_panel`
+（参数化 `RNNRegressor` / `RNNClassifier`，面板走
+`DataFrame.set_index([...]).to_xarray()` 这条真实摄取路径造出真的 float64——
+预先 `.astype("float32")` 的面板什么都证明不了，那正是这个缺陷两次逃逸的原因）、
+`::test_to_tensor_downcasts_a_float64_panel`、
+`::test_to_tensor_follows_torchs_default_dtype_not_a_hardcoded_float32`、
+`::test_to_tensor_leaves_non_floating_panels_alone`。
+
+自己写模型头时**不必**再在 `_preprocess` 里 `.float()`（下面示例里那一句留着是无害的
+恒等操作），但仍然要处理 NaN。
 
 **5. 模型类不要定义在 `__main__` 脚本里。**
 `import_path` 用 `self.__class__.__module__`，脚本里定义的类会存成 `__main__.TinyRegressor`
