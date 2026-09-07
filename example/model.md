@@ -152,8 +152,10 @@ val_x_t   = train_x_t_all[train_split:]
 ## 子类的五方法契约
 
 `BaseModel` 有 5 个 `@abstractmethod`，少实现一个类就实例化不了
-（这不是理论——`dl_model/mlp.py:MLPRegressor` 正是漏了 `_val_one_epoch`，
-`MLPRegressor.__abstractmethods__` 实测为 `frozenset({'_val_one_epoch'})`）。
+（这不是理论——`dl_model/mlp.py:MLPRegressor` 曾经漏了 `_val_one_epoch`，
+`MLPRegressor.__abstractmethods__` 实测是 `frozenset({'_val_one_epoch'})`，
+连构造都做不到。已于 2026-09-07 修复，现在三个具体模型头都实现齐了 5 个方法，
+由 `tests/test_dl_models.py::test_mlp_regressor_has_no_unimplemented_abstract_methods` 锁住）。
 
 ### `_init_model(num_symbols, num_features, num_labels, hyperparameters) -> nn.Module`
 
@@ -618,13 +620,32 @@ price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
 而且**全库没有任何地方调用 `_vecbt` 或 `_do_vecbt`**（grep 只命中三处定义）。
 真正跑回测的代码在 `train_model.py` 脚本里手写。
 
-**5. `dl_model/mlp.py:MLPRegressor` 是坏的，三处：**
+**5. `dl_model/mlp.py:MLPRegressor` 曾经是坏的，三处。**（**已于 2026-09-07 修复**）
+以前它同时踩了三个坑，而且是层层挡在后面的三个——修掉一个才能看见下一个：
 - 缺 `_val_one_epoch`，是抽象类，**根本实例化不了**（实测
   `MLPRegressor.__abstractmethods__ == frozenset({'_val_one_epoch'})`）；
 - `_init_model(self, num_symbols, num_features, num_labels)` 少了 `hyperparameters` 参数，
-  而基类是用关键字 `hyperparameters=` 调它的 → `TypeError`；
+  而基类是用关键字 `hyperparameters=` 调它的 →
+  `TypeError: MLPRegressor._init_model() got an unexpected keyword argument 'hyperparameters'`；
 - `_preprocess` 的实现是 `data.fillna(0.0)`，那是 xarray 的 API，
-  但传进来的是 `torch.Tensor` → `AttributeError`。
+  但传进来的是 `torch.Tensor` →
+  `AttributeError: 'Tensor' object has no attribute 'fillna'`。
+
+现在三处都补齐了：`_val_one_epoch` 存在且**返回** `val_loss.detach()`（返回值契约见
+「常见坑」#2 旁注——epoch 循环要 `float()` 它）；`_init_model` 收 `hyperparameters`，
+两个隐藏层宽度从 `hidden_size1`/`hidden_size2` 读，缺省仍是原来硬编码的 512/256；
+`_preprocess` 换成 `torch.nan_to_num(data, nan=0.0)`，跟两个 RNN 头一致。
+`tests/test_dl_models.py::test_mlp_regressor_trains_two_epochs_and_predicts` 真的跑了
+两个 epoch 并断言 `fc1` 权重发生了变化——「能 import」不算证据。
+
+它**没有**被删掉：CLAUDE.md 的架构表把它列为具名组件，而后续阶段需要的正是一个
+baseline 回归模型。
+
+遗留的一处（没修，是有意的）：`MLPRegressor` 的 reshape 写在
+`_train_one_epoch`/`_test_one_epoch` 里，而 `MLP.forward` 只是一串 `nn.Linear`，
+所以 `predict()` 要求调用方传**已经拍平**的 `[num_times, num_symbols * num_features]`，
+不是训练时那个三维张量。补这个缺口要么改 `base/model.py:_predict_nn`，要么改公开的
+`MLP` 模块接受什么，两者都超出了这次的范围。
 
 **6. `dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**
 `rnn.py` 的 `ModelRBaseCrypto` 最后一层是 `nn.Linear(..., 1)`（回归用），

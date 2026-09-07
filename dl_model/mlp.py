@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import xarray as xr
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from base.config import DLConfig
@@ -63,11 +62,27 @@ class MLPRegressor(BaseModel):
         self._wandb_recorder.log(metrics, step=epoch)
 
     def _init_model(
-        self, num_symbols: int, num_features: int, num_labels: int
+        self,
+        num_symbols: int,
+        num_features: int,
+        num_labels: int,
+        hyperparameters: dict,
     ) -> nn.Module:
+        """签名必须带 `hyperparameters`——`BaseModel._init_model_and_optim()` 是
+        按关键字传的（`hyperparameters=self.config.hyperparameters`）。
+
+        以前这里少了这个形参，于是 `MLPRegressor` 连一次 `train()` 都跑不到：
+        `TypeError: _init_model() got an unexpected keyword argument
+        'hyperparameters'`。两个隐藏层的宽度沿用原来硬编码的 512 / 256 作为默认
+        值，所以补上形参不改变任何既有配置下的模型结构。
+        """
         input_size = num_symbols * num_features
         output_size = num_symbols * num_labels
-        return MLP(input_size, 512, 256, output_size).to(self.device)
+        hidden_size1 = hyperparameters.get("hidden_size1", 512)
+        hidden_size2 = hyperparameters.get("hidden_size2", 256)
+        return MLP(input_size, hidden_size1, hidden_size2, output_size).to(
+            self.device
+        )
 
     def _init_optim(self, model):
         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
@@ -97,7 +112,52 @@ class MLPRegressor(BaseModel):
         }
         self._wandb_recorder.log(metrics, step=epoch)
 
-    def _preprocess(self, data: xr.Dataset) -> xr.Dataset:
-        data = data.fillna(0.0)
-        return data
+    def _val_one_epoch(
+        self, epoch: int, x: torch.Tensor, y: torch.Tensor
+    ) -> torch.Tensor:
+        """必须存在，而且必须**返回**一个能 `float()` 的损失。
+
+        它以前根本没有实现，所以 `MLPRegressor.__abstractmethods__` 里始终留着
+        `{'_val_one_epoch'}`，这个类连实例化都做不到：
+        `TypeError: Can't instantiate abstract class MLPRegressor`。
+
+        返回值的契约在 2026-09-07 被收紧过：`base/model.py` 的 epoch 循环现在把
+        每个 batch 的返回值按样本数加权累加成「一个 epoch 的验证损失」再跟早停
+        阈值比较（`val_loss_sum += float(val_loss) * batch_samples`）。返回 None
+        会当场 `TypeError`，所以这里返回的是 `loss.detach()` 而不是只记 metrics。
+        """
+        x = x.to(self.device)
+        y = y.to(self.device)
+
+        num_times = x.shape[0]
+        x = x.reshape(num_times, -1)
+        y = y.reshape(num_times, -1)
+
+        with torch.no_grad():
+            y_pred_tensor = self.model(x)  # type: ignore
+            val_loss = self.criterion(y_pred_tensor, y)
+            y_pred = y_pred_tensor.cpu().numpy()
+            val_y_np = y.cpu().numpy()
+
+        metrics = {
+            "val_loss": val_loss.item(),
+            "val_R²": r2_score(val_y_np, y_pred),
+            "val_MSE": mean_squared_error(val_y_np, y_pred),
+            "val_RMSE": np.sqrt(mean_squared_error(val_y_np, y_pred)),
+            "val_MAE": mean_absolute_error(val_y_np, y_pred),
+        }
+        self._wandb_recorder.log(metrics, step=epoch)
+        return val_loss.detach()
+
+    def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
+        """入参是**张量**，不是 `xr.Dataset`。
+
+        `BaseModel._preprocess` 的契约是 `(torch.Tensor) -> torch.Tensor`，两个
+        调用点（`_train_dl` 里对四个张量批量调用、`_predict_nn` 里对推理输入调用）
+        传进来的都是 `to_tensor()` 的产物。以前这里写的是 `data.fillna(0.0)`，
+        标注也写着 `xr.Dataset`——真跑起来是
+        `AttributeError: 'Tensor' object has no attribute 'fillna'`。
+        `torch.nan_to_num` 是同语义的张量版本，也跟 `dl_model/rnn*.py` 一致。
+        """
+        return torch.nan_to_num(data, nan=0.0)
 
