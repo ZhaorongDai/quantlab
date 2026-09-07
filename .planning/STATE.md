@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Completed quick task 260906-w3t (RV-01 closed)
-last_updated: "2026-09-07T02:33:17.545Z"
-last_activity: 2026-09-06
-last_activity_desc: Quick task 260906-w3t complete (RV-01 closed; RV-02 stays filed)
-state_head: b27fa9b3cb413307005da83b8b66a0c85e43dcbd
+stopped_at: "Completed quick task 260906-x2s (new-listing support: widen + rebuild + --on-new-listing; full suite 405 passed)"
+last_updated: "2026-09-07T04:15:05.483Z"
+last_activity: 2026-09-07
+last_activity_desc: "Quick task 260906-x2s complete (new-listing support: XrBackend widen + Dataset rebuild + --on-new-listing; 405 passed)"
+state_head: ea468870d8c3a981ac28f7f66b6693b0e05bfac7
 progress:
   total_phases: 9
   completed_phases: 1
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-06 — Phase 03.2 complete, transitioned to Phase 3
+Last activity: 2026-09-07 - Completed quick task 260906-x2s: Support new listings in incremental zarr appends
 
 Progress: [██████████] 100%
 
@@ -81,6 +81,7 @@ Progress: [██████████] 100%
 | Phase 03.2 P07 | 27 min | 3 tasks | 8 files |
 | Phase quick-260906-usg P01 | 41 min | 3 tasks | 8 files |
 | Phase quick-260906-w3t P01 | 18 min | 3 tasks | 7 files |
+| Phase quick-260906-x2s P01 | 14 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -167,6 +168,12 @@ Recent decisions affecting current work:
 
 - Tiingo API key currently leaked in `scripts/download_stock_data_from_tiingo.py` and pushed to `origin/main` — user should revoke/rotate the key in the Tiingo dashboard independent of the git-history reset planned in Phase 1.
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260906-x2s | Support new listings in incremental zarr appends: widen-in-place symbol axis path on XrBackend, then detect-and-rebuild at the Dataset layer | 2026-09-07 | ea46887 | [260906-x2s-support-new-listings-in-incremental-zarr](./quick/260906-x2s-support-new-listings-in-incremental-zarr/) |
+
 ### Roadmap Evolution
 
 - Phase 03.1 inserted after Phase 3: Index Historical Constituents Data Layer — daily point-in-time S&P 500 / Nasdaq-100 membership panels as xarray (URGENT)
@@ -185,8 +192,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-07T02:32:45.512Z
-Stopped at: Completed quick task 260906-w3t (RV-01 closed; full suite 387 passed)
+Last session: 2026-09-07T04:15:05.287Z
+Stopped at: Completed quick task 260906-x2s (new-listing support: widen + rebuild + --on-new-listing; full suite 405 passed)
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
