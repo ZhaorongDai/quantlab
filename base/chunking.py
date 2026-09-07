@@ -271,6 +271,26 @@ class ChunkLedger:
         )
         self._flush()
 
+    def rebase(self, symbols: Sequence[str]) -> None:
+        """Re-fingerprint the ledger against a NEW pinned symbol axis.
+
+        Valid ONLY immediately after a successful widen of the store onto that
+        same axis (`XrBackend.widen_symbol_axis`). Called without one it
+        re-fingerprints a store whose columns are still on the OLD axis, which
+        is precisely the misalignment `assert_consistent` exists to catch --
+        the check would then pass and the next append would silently write onto
+        a store whose columns mean something else.
+
+        `windows` is deliberately left untouched. The ledger records WHICH
+        WINDOWS have been written; a widen changes the AXIS, not the windows.
+        Clearing them would make an already-complete store re-densify from the
+        top and append every window a second time.
+        """
+        self._payload["append_dim"] = self.append_dim
+        self._payload["symbol_count"] = len(symbols)
+        self._payload["symbol_fingerprint"] = self.fingerprint(symbols)
+        self._flush()
+
     def assert_consistent(self, symbols: Sequence[str], store_path: str) -> None:
         """Cross-check the ledger against the store before the first append.
 

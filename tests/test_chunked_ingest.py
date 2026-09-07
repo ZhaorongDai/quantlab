@@ -677,3 +677,255 @@ def test_an_absent_store_with_an_empty_ledger_is_the_normal_first_run(
     StockDataset(config).from_raw_data_chunked(granularity="year")
 
     assert _panel(config.zarr_file_path).sizes["timestamp"] == 9
+
+
+# ---------------------------------------------------------------------------
+# New-listing reconciliation (260906-x2s Task 2)
+#
+# A periodic refresh HALTS on the first new listing: the pinned whole-range
+# symbol axis no longer matches the store's, and `assert_consistent` refuses.
+# That refusal is correct and stays the DEFAULT. These tests pin the two
+# explicit opt-ins past it and, critically, the fact that they differ
+# OBSERVABLY -- `rebuild` recovers the new listing's real history from raw,
+# `widen` leaves it NaN. Neither test is redundant with the other.
+# ---------------------------------------------------------------------------
+
+
+class _GrowingRoster:
+    """Two-stage raw tree: a panel over `{A, B}`, then a new listing `C` whose
+    raw rows span timestamps ALREADY in the store.
+
+    Spanning the existing timestamps is the whole point. If `C` only traded
+    after the store's last row, `rebuild` and `widen` would produce the same
+    thing and the pair of tests below could not tell them apart.
+    """
+
+    def __init__(self, raw_dir: Path, tmp_path: Path, row, hive) -> None:
+        self._raw_dir = raw_dir
+        self._tmp_path = tmp_path
+        self._row = row
+        self._hive = hive
+
+    def config(self, store_name: str = "growing.zarr") -> DatasetConfig:
+        return DatasetConfig(
+            raw_data_dir_path=str(self._raw_dir / "tiingo"),
+            zarr_file_path=str(self._tmp_path / store_name),
+            catalog_path=str(self._tmp_path / "catalog"),
+            market="us_equity",
+            frequency="1d",
+            vendor="tiingo",
+        )
+
+    def write_initial(self) -> None:
+        rows = [
+            self._row(f"{year}-{day}", symbol, close=close)
+            for year in _YEARS
+            for day in _DAYS_PER_YEAR
+            for symbol, close in (("A", 100.0), ("B", 200.0))
+        ]
+        self._hive(self._raw_dir, "tiingo", rows, batch_key="panel")
+
+    def write_new_listing(self) -> None:
+        rows = [
+            self._row(f"{year}-{day}", "C", close=300.0)
+            for year in _YEARS
+            for day in _DAYS_PER_YEAR
+        ]
+        self._hive(self._raw_dir, "tiingo", rows, batch_key="newlisting")
+
+
+@pytest.fixture
+def growing_roster(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+) -> _GrowingRoster:
+    return _GrowingRoster(
+        tmp_path / "growing", tmp_path, stock_pqt_row, hive_raw_tree
+    )
+
+
+def _built_over_ab(growing_roster: _GrowingRoster) -> DatasetConfig:
+    """A complete store over `{A, B}`, with `C`'s raw rows then added."""
+    config = growing_roster.config()
+    growing_roster.write_initial()
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+    assert _panel(config.zarr_file_path)["symbol"].values.tolist() == ["A", "B"]
+    growing_roster.write_new_listing()
+    return config
+
+
+def test_the_default_still_refuses_a_roster_change(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """`refuse` is the DEFAULT and is byte-identical to the behaviour before
+    260906-x2s: the `ChunkLedger` roster error still raises and the store is
+    untouched.
+
+    RED under: changing the default to `rebuild` or `widen`, which would let a
+    single unqualified call silently rewrite or NaN-backfill a live
+    multi-hour store.
+    """
+    config = _built_over_ab(growing_roster)
+    before = _panel(config.zarr_file_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    message = str(excinfo.value)
+    assert "roster" in message.lower()
+    xr.testing.assert_identical(_panel(config.zarr_file_path), before)
+
+
+def test_rebuild_redensifies_every_window_onto_the_new_union(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """Direction 2. Every window is re-densified from raw, so the store ends
+    up exactly as a from-scratch chunked run over the same raw tree would
+    build it -- and `C`'s pre-existing timestamps therefore carry its REAL
+    values, not a backfill.
+
+    RED under: routing `rebuild` to the `widen` branch (C's history comes back
+    NaN), or appending onto the existing store instead of rebuilding it.
+    """
+    config = _built_over_ab(growing_roster)
+
+    StockDataset(config).from_raw_data_chunked(
+        granularity="year", on_new_listing="rebuild"
+    )
+
+    rebuilt = _panel(config.zarr_file_path)
+    assert rebuilt["symbol"].values.tolist() == ["A", "B", "C"]
+    # C's REAL history, recovered from raw across the whole range.
+    assert (rebuilt["adjClose"].sel(symbol="C").values == 300.0).all()
+    assert not np.isnan(rebuilt["adjClose"].sel(symbol="C").values).any()
+
+    scratch_config = growing_roster.config("scratch.zarr")
+    StockDataset(scratch_config).from_raw_data_chunked(granularity="year")
+    xr.testing.assert_identical(rebuilt, _panel(scratch_config.zarr_file_path))
+
+
+def test_widen_keeps_history_and_backfills_the_new_listing_with_nan(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """Direction 1 at this layer. The store is KEPT -- every pre-existing
+    symbol's history is bit-identical -- and the new listing's whole historical
+    block is NaN even though raw rows for it exist, because a widen does not
+    re-read raw.
+
+    This test and `test_rebuild_redensifies_every_window_onto_the_new_union`
+    are the pair that makes the two directions observably different; neither is
+    redundant.
+
+    RED under: routing `widen` to `rebuild` (C comes back at 300.0), or
+    skipping `_widen_fill_values` (the widen refuses on the bool
+    `anomaly_flag`).
+    """
+    config = _built_over_ab(growing_roster)
+    before = _panel(config.zarr_file_path)
+
+    StockDataset(config).from_raw_data_chunked(
+        granularity="year", on_new_listing="widen"
+    )
+
+    after = _panel(config.zarr_file_path)
+    assert after["symbol"].values.tolist() == ["A", "B", "C"]
+    assert after.sizes["timestamp"] == before.sizes["timestamp"]
+
+    for symbol in ("A", "B"):
+        for name in before.data_vars:
+            np.testing.assert_array_equal(
+                after[name].sel(symbol=symbol).values,
+                before[name].sel(symbol=symbol).values,
+                err_msg=f"{name}/{symbol}",
+            )
+    assert np.isnan(after["adjClose"].sel(symbol="C").values).all()
+    # The bool flag keeps its dtype through the widen -- `False` is the honest
+    # value for a symbol that was not trading.
+    assert after["anomaly_flag"].dtype == np.dtype("bool")
+    assert (~after["anomaly_flag"].sel(symbol="C").values).all()
+
+
+def test_a_widen_rebases_the_ledger_so_the_next_run_resumes(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """`ChunkLedger.assert_consistent` fingerprints the pinned symbol list
+    ORDER-SENSITIVELY. A widen changes the axis, so without a rebase in the
+    same operation the widened store is UN-RESUMABLE: the very next run raises
+    the roster-refresh error it just got past.
+
+    RED under: omitting the `ChunkLedger.rebase` call.
+    """
+    config = _built_over_ab(growing_roster)
+    StockDataset(config).from_raw_data_chunked(
+        granularity="year", on_new_listing="widen"
+    )
+
+    ledger = ChunkLedger(ChunkLedger.default_path(config.zarr_file_path))
+    assert ledger.symbol_count == 3
+    assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
+    # The rebase re-fingerprints the AXIS; it must not touch the record of
+    # which windows are already written.
+    assert len(ledger.windows) == 3
+
+    resumed = _SpyStockDataset(config)
+    resumed.from_raw_data_chunked(granularity="year")  # default: refuse
+
+    assert resumed.window_calls == []
+    assert resumed.whole_range_calls == 0
+
+
+def test_a_failed_rebuild_restores_the_original_store(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """A rebuild that DELETES first has no way back from a failure halfway
+    through a multi-hour re-densify. The store and the ledger are renamed
+    aside and restored on any exception.
+
+    RED under: deleting the store (or the ledger) before the rebuild instead
+    of renaming it aside.
+    """
+    config = _built_over_ab(growing_roster)
+    before = _panel(config.zarr_file_path)
+    ledger_path = ChunkLedger.default_path(config.zarr_file_path)
+    with open(ledger_path, "r", encoding="utf-8") as handle:
+        ledger_before = handle.read()
+
+    class _FailsDuringRebuild(StockDataset):
+        def _raw_data_to_xr_window(self, start_date, end_date, symbols=None):
+            raise RuntimeError("simulated crash inside the rebuild")
+
+    with pytest.raises(RuntimeError):
+        _FailsDuringRebuild(config).from_raw_data_chunked(
+            granularity="year", on_new_listing="rebuild"
+        )
+
+    restored = _panel(config.zarr_file_path)
+    assert restored["symbol"].values.tolist() == ["A", "B"]
+    xr.testing.assert_identical(restored, before)
+    with open(ledger_path, "r", encoding="utf-8") as handle:
+        assert handle.read() == ledger_before
+    assert not Path(f"{config.zarr_file_path}.superseded.tmp").exists()
+    assert not Path(f"{ledger_path}.superseded.tmp").exists()
+
+
+def test_an_unknown_strategy_lists_the_accepted_values(
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    """Mirrors `test_unknown_granularity_lists_the_accepted_values`. Validated
+    UP FRONT, before any window runs.
+
+    RED under: accepting an arbitrary string and silently falling through to
+    `refuse` -- a typo'd `--on-new-listing rebiuld` would then halt with the
+    roster error and look like the flag simply did not work.
+    """
+    config = three_year_stock_config()
+
+    with pytest.raises(ValueError) as excinfo:
+        StockDataset(config).from_raw_data_chunked(on_new_listing="rebiuld")
+
+    message = str(excinfo.value)
+    assert "rebiuld" in message
+    for accepted in BaseDataset.NEW_LISTING_STRATEGIES:
+        assert accepted in message
+    assert not Path(config.zarr_file_path).exists()

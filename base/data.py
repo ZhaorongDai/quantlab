@@ -1,6 +1,9 @@
 import datetime
+import os
+import shutil
 from abc import ABC, abstractmethod
-from typing import Self
+from pathlib import Path
+from typing import Optional, Self
 
 import numpy as np
 import pandas as pd
@@ -35,6 +38,25 @@ class BaseDataset(ABC):
     persistence lifecycle by implementing exactly one abstract method, instead
     of carrying two meaningless `raise NotImplementedError` stubs.
     """
+
+    #: What `from_raw_data_chunked()` does when the pinned whole-range symbol
+    #: axis no longer matches the STORE's -- the routine consequence of a new
+    #: listing between two periodic refreshes (260906-x2s).
+    #:
+    #: - `refuse`  the DEFAULT, byte-identical to the behaviour before this
+    #:             knob existed: the `ChunkLedger` roster error raises and the
+    #:             store is untouched.
+    #: - `rebuild` direction 2 -- re-densify EVERY window from raw onto the new
+    #:             union, recovering the new listing's REAL history. Correct
+    #:             and expensive.
+    #: - `widen`   direction 1 -- keep the store, widen its symbol axis in
+    #:             place and NaN-backfill the new listing's whole historical
+    #:             block. Cheap in wall-clock, but it does not re-read raw, so
+    #:             history the vendor has is not recovered.
+    #:
+    #: `ingest_us_equity.py --on-new-listing` derives its `choices` from this
+    #: tuple; it is never restated there.
+    NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
     def __init__(self, config: BaseDatasetConfig):
         # Ordering is load-bearing, and it is deliberately the OPPOSITE of
@@ -273,6 +295,7 @@ class BaseDataset(ABC):
         granularity: str = "year",
         ledger_path: str | None = None,
         append_dim: str = "timestamp",
+        on_new_listing: str = "refuse",
     ) -> Self:
         """Densify and append ONE time window at a time (D-01).
 
@@ -292,8 +315,20 @@ class BaseDataset(ABC):
            arithmetic: trading days are not calendar days.
         3. Completed windows are recorded in a sidecar ledger, so an
            interrupted run resumes at the first unwritten window (D-04).
+
+        `on_new_listing` decides what happens when step 1's pinned axis no
+        longer matches the STORE's -- the routine consequence of a new listing
+        between two periodic refreshes. See `NEW_LISTING_STRATEGIES`; the
+        default `refuse` reproduces the pre-260906-x2s behaviour exactly.
         """
         from base.chunking import ChunkLedger, TimeChunkPlanner
+
+        if on_new_listing not in self.NEW_LISTING_STRATEGIES:
+            raise ValueError(
+                f"{self.class_name}: unknown on_new_listing strategy "
+                f"{on_new_listing!r}; accepted values are "
+                f"{list(self.NEW_LISTING_STRATEGIES)}."
+            )
 
         if type(self)._raw_data_to_xr_window is BaseDataset._raw_data_to_xr_window:
             logger.warning(
@@ -313,65 +348,236 @@ class BaseDataset(ABC):
             append_dim=append_dim,
         )
 
-        # Before the first irreversible append, not after: the ledger and the
-        # store are two independent records of the same truth and a resume
-        # trusts neither alone (D-04 / T-13w-02).
-        ledger.assert_consistent(symbols, self.config.zarr_file_path)
-
-        logger.info(
-            f"{self.class_name}: chunked ingestion over {len(windows)} "
-            f"{granularity} window(s), {len(symbols)} pinned symbol(s), "
-            f"{len(timestamps)} observed timestamp(s)."
+        # Reconcile the pinned axis against the STORE's before the ledger
+        # check, because two of the three strategies change what that check is
+        # looking at: `widen` makes the store agree with the pinned axis, and
+        # `rebuild` moves the store out of the way so the run becomes a first
+        # run. `refuse` changes nothing and lets `assert_consistent` raise
+        # exactly as it did before this knob existed.
+        ledger, rebuild_asides = self._reconcile_new_listings(
+            symbols, ledger, append_dim, on_new_listing
         )
 
-        first_timestamp = timestamps.min() if len(timestamps) else None
-        boundaries = 0
-        for start, end in windows:
-            if ledger.is_written(start, end):
-                logger.info(
-                    f"{self.class_name}: window {start.date()}..{end.date()} "
-                    f"already recorded in the ledger, skipping."
-                )
-                continue
+        try:
+            # Before the first irreversible append, not after: the ledger and
+            # the store are two independent records of the same truth and a
+            # resume trusts neither alone (D-04 / T-13w-02).
+            ledger.assert_consistent(symbols, self.config.zarr_file_path)
 
-            window = self._raw_data_to_xr_window(start, end, symbols)
-            actual = [str(symbol) for symbol in window["symbol"].values.tolist()]
-            if actual != symbols:
-                raise ValueError(
-                    f"{self.class_name}: window {start.date()}..{end.date()} "
-                    f"came back on a symbol axis of {len(actual)} label(s), "
-                    f"but the pinned whole-range axis has {len(symbols)}. "
-                    f"Every window must be materialised on the pinned axis "
-                    f"(D-02); appending this one would silently misalign "
-                    f"every column in the store."
-                )
-
-            window = self._clean(window)
-            window = self._pin_append_dtypes(window)
-            if start != first_timestamp:
-                boundaries += 1
-
-            self.data_backend.to_internal(window)
-            self.data_backend.append(
-                self.config.zarr_file_path, append_dim=append_dim
-            )
-            ledger.record(start, end, int(window.sizes[append_dim]), symbols)
             logger.info(
-                f"{self.class_name}: appended window "
-                f"{start.date()}..{end.date()} "
-                f"({int(window.sizes[append_dim])} row(s))."
+                f"{self.class_name}: chunked ingestion over {len(windows)} "
+                f"{granularity} window(s), {len(symbols)} pinned symbol(s), "
+                f"{len(timestamps)} observed timestamp(s)."
             )
 
-        if boundaries:
-            logger.warning(
-                f"{self.class_name}: cleaning ran per window, so at "
-                f"{boundaries} chunk-boundary timestamp(s) `flag_anomalies` "
-                f"had no prior sample to diff against and a single-step jump "
-                f"across that boundary is not flagged. A bounded, documented "
-                f"consequence of chunking -- finer --chunk granularity "
-                f"produces more such boundaries, not fewer."
-            )
+            first_timestamp = timestamps.min() if len(timestamps) else None
+            boundaries = 0
+            for start, end in windows:
+                if ledger.is_written(start, end):
+                    logger.info(
+                        f"{self.class_name}: window {start.date()}..{end.date()} "
+                        f"already recorded in the ledger, skipping."
+                    )
+                    continue
+
+                window = self._raw_data_to_xr_window(start, end, symbols)
+                actual = [str(symbol) for symbol in window["symbol"].values.tolist()]
+                if actual != symbols:
+                    raise ValueError(
+                        f"{self.class_name}: window {start.date()}..{end.date()} "
+                        f"came back on a symbol axis of {len(actual)} label(s), "
+                        f"but the pinned whole-range axis has {len(symbols)}. "
+                        f"Every window must be materialised on the pinned axis "
+                        f"(D-02); appending this one would silently misalign "
+                        f"every column in the store."
+                    )
+
+                window = self._clean(window)
+                window = self._pin_append_dtypes(window)
+                if start != first_timestamp:
+                    boundaries += 1
+
+                self.data_backend.to_internal(window)
+                self.data_backend.append(
+                    self.config.zarr_file_path, append_dim=append_dim
+                )
+                ledger.record(start, end, int(window.sizes[append_dim]), symbols)
+                logger.info(
+                    f"{self.class_name}: appended window "
+                    f"{start.date()}..{end.date()} "
+                    f"({int(window.sizes[append_dim])} row(s))."
+                )
+
+            if boundaries:
+                logger.warning(
+                    f"{self.class_name}: cleaning ran per window, so at "
+                    f"{boundaries} chunk-boundary timestamp(s) `flag_anomalies` "
+                    f"had no prior sample to diff against and a single-step jump "
+                    f"across that boundary is not flagged. A bounded, documented "
+                    f"consequence of chunking -- finer --chunk granularity "
+                    f"produces more such boundaries, not fewer."
+                )
+        except BaseException:
+            # A rebuild that DELETED the store first would have no way back
+            # from a failure halfway through a multi-hour re-densify. The
+            # originals were renamed aside, so restoring them is a rename.
+            if rebuild_asides is not None:
+                self._restore_rebuild_asides(rebuild_asides)
+            raise
+        else:
+            if rebuild_asides is not None:
+                self._discard_rebuild_asides(rebuild_asides)
         return self
+
+    #: Appended to the store and ledger paths while a `rebuild` is in flight.
+    #: Deliberately the same suffix `XrBackend.widen_symbol_axis` uses: both are
+    #: "the previous authoritative copy, kept until the replacement lands".
+    SUPERSEDED_SUFFIX = ".superseded.tmp"
+
+    @staticmethod
+    def _stored_symbol_axis(store_path: str, dim: str = "symbol") -> Optional[list]:
+        """The store's `dim` labels, or None when there is no store (or no such
+        coordinate).
+
+        Opened the way `ChunkLedger._store_tail` opens it -- lazily, coordinate
+        only, closed in a `finally`. Reading the data variables to answer an
+        axis question would defeat the whole point of chunking.
+        """
+        if not Path(store_path).exists():
+            return None
+        store = xr.open_zarr(store_path)
+        try:
+            if dim not in store.coords:
+                return None
+            return [str(label) for label in store[dim].values.tolist()]
+        finally:
+            store.close()
+
+    def _widen_fill_values(self) -> dict:
+        """Per-variable fill values for a `widen`'s reindex.
+
+        `_pin_append_dtypes` promotes integer variables to float64 before an
+        append but deliberately leaves `anomaly_flag` BOOL, so a real cleaned
+        market panel has exactly one non-float variable -- and
+        `XrBackend.widen_symbol_axis` refuses to NaN-backfill a non-float
+        variable without an explicit fill. Without this the widen of a real
+        store would ALWAYS refuse on `anomaly_flag`; it is required, not
+        academic.
+
+        `False` is the honest value for a symbol that was not trading: it was
+        not flagged because there was nothing to flag.
+
+        A seam rather than a constant because a future non-OHLCV `Dataset`
+        subclass carries different variables -- the same reasoning `_clean()`
+        is an overridable hook for.
+        """
+        return {"anomaly_flag": False}
+
+    def _reconcile_new_listings(
+        self,
+        symbols: list,
+        ledger,
+        append_dim: str,
+        on_new_listing: str,
+    ) -> tuple:
+        """Apply `on_new_listing` when the STORE's symbol axis has drifted from
+        the pinned whole-range one. Returns `(ledger, rebuild_asides)`.
+
+        Falls through completely unchanged -- no store read beyond the
+        coordinate, no log line -- when the axes already agree, which is the
+        overwhelmingly common case.
+        """
+        store_path = self.config.zarr_file_path
+        stored = self._stored_symbol_axis(store_path)
+        if stored is None or stored == list(symbols):
+            return ledger, None
+
+        added = [symbol for symbol in symbols if symbol not in set(stored)]
+        removed = [symbol for symbol in stored if symbol not in set(symbols)]
+
+        if on_new_listing == "refuse":
+            # Fall through unchanged: `assert_consistent` raises next, its
+            # message already naming the roster refresh. Logged first so the
+            # operator learns the remedy exists rather than inferring that the
+            # only way forward is deleting the store.
+            logger.info(
+                f"{self.class_name}: the store at {store_path} holds "
+                f"{len(stored)} symbol(s) but the pinned whole-range axis has "
+                f"{len(symbols)} ({len(added)} added, {len(removed)} removed). "
+                f"on_new_listing='refuse' (the default), so this run will "
+                f"halt. Pass --on-new-listing rebuild to re-densify every "
+                f"window from raw, or --on-new-listing widen to keep the store "
+                f"and backfill the new listing(s) with NaN."
+            )
+            return ledger, None
+
+        if on_new_listing == "widen":
+            logger.warning(
+                f"{self.class_name}: widening {store_path} from {len(stored)} "
+                f"to {len(symbols)} symbol(s); added={added}, "
+                f"removed={removed}. The added symbol(s) will carry NaN for "
+                f"the ENTIRE historical block -- a widen does not re-read raw, "
+                f"so history the vendor already has is not recovered. Use "
+                f"on_new_listing='rebuild' for that. The whole store is also "
+                f"materialised in memory to rewrite it (no dask here), so "
+                f"'rebuild' is the strategy for a store too large to hold."
+            )
+            self.data_backend.widen_symbol_axis(
+                store_path,
+                list(symbols),
+                append_dim=append_dim,
+                fill_values=self._widen_fill_values(),
+            )
+            # In the SAME operation, never later: the ledger fingerprints the
+            # pinned symbol list order-sensitively, so a widened store whose
+            # ledger still carries the old fingerprint is un-resumable.
+            ledger.rebase(symbols)
+            return ledger, None
+
+        # rebuild
+        from base.chunking import ChunkLedger
+
+        logger.warning(
+            f"{self.class_name}: rebuilding {store_path} -- EVERY window will "
+            f"be re-densified from raw onto the new {len(symbols)}-symbol "
+            f"union (was {len(stored)}); added={added}, removed={removed}. "
+            f"This recovers the added symbol(s) REAL history rather than "
+            f"backfilling NaN, at the cost of a full re-densify."
+        )
+        asides = {
+            "store": store_path,
+            "store_aside": f"{store_path}{self.SUPERSEDED_SUFFIX}",
+            "ledger": ledger.path,
+            "ledger_aside": f"{ledger.path}{self.SUPERSEDED_SUFFIX}",
+            "ledger_existed": Path(ledger.path).exists(),
+        }
+        # Renamed aside, NEVER deleted: a rebuild that deletes first has no way
+        # back from a failure halfway through.
+        os.replace(asides["store"], asides["store_aside"])
+        if asides["ledger_existed"]:
+            os.replace(asides["ledger"], asides["ledger_aside"])
+        # A FRESH ledger at the original path, so the run below is an ordinary
+        # first run: no store, no recorded windows, `assert_consistent` passes.
+        return ChunkLedger(asides["ledger"], append_dim=append_dim), asides
+
+    def _restore_rebuild_asides(self, asides: dict) -> None:
+        """Put the pre-rebuild store and ledger back, discarding the partial."""
+        if Path(asides["store"]).exists():
+            shutil.rmtree(asides["store"], ignore_errors=True)
+        os.replace(asides["store_aside"], asides["store"])
+        Path(asides["ledger"]).unlink(missing_ok=True)
+        if asides["ledger_existed"]:
+            os.replace(asides["ledger_aside"], asides["ledger"])
+        logger.warning(
+            f"{self.class_name}: the rebuild of {asides['store']} failed; the "
+            f"pre-rebuild store and ledger have been restored."
+        )
+
+    @staticmethod
+    def _discard_rebuild_asides(asides: dict) -> None:
+        """The rebuild landed -- drop the superseded copies."""
+        shutil.rmtree(asides["store_aside"], ignore_errors=True)
+        Path(asides["ledger_aside"]).unlink(missing_ok=True)
 
     @staticmethod
     def _pin_append_dtypes(data: xr.Dataset) -> xr.Dataset:
