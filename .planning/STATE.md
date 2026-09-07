@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.1"
-current_phase_name: index-historical-constituents
+current_phase_name: Index Historical Constituents Data Layer (INSERTED)
 status: executing
-stopped_at: "Completed quick task 260906-x2s (new-listing support: widen + rebuild + --on-new-listing; full suite 405 passed)"
-last_updated: "2026-09-07T21:11:31.649Z"
+stopped_at: Completed 03.1-05-PLAN.md
+last_updated: "2026-09-07T21:31:18.544Z"
 last_activity: 2026-09-07
-last_activity_desc: "Quick task 260906-x2s complete (new-listing support: XrBackend widen + Dataset rebuild + --on-new-listing; 405 passed)"
-state_head: 501f26bb41de8e9be1f76601e4ed9f202a060e80
+last_activity_desc: Phase 03.1 execution started
+state_head: d07be7e55a96171f02edb126e090a55a7600f699
 progress:
   total_phases: 10
   completed_phases: 1
   total_plans: 30
-  completed_plans: 29
+  completed_plans: 30
 milestone_name: milestone
 ---
 
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.2 — Multi-Source Data Acquisition Abstraction (Alpaca)
+**Current focus:** Phase 03.1 — Index Historical Constituents Data Layer (INSERTED)
 
 ## Current Position
 
-Phase: 03.1 (index-historical-constituents) — READY TO EXECUTE
-Plan: Not started
+Phase: 03.1 (Index Historical Constituents Data Layer (INSERTED)) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-09-07 - Completed quick task 260906-x2s: Support new listings in incremental zarr appends
+Last activity: 2026-09-07 — Phase 03.1 execution started
 
 Progress: [██████████] 100%
 
@@ -82,6 +82,7 @@ Progress: [██████████] 100%
 | Phase quick-260906-usg P01 | 41 min | 3 tasks | 8 files |
 | Phase quick-260906-w3t P01 | 18 min | 3 tasks | 7 files |
 | Phase quick-260906-x2s P01 | 14 min | 3 tasks | 8 files |
+| Phase 03.1 P05 | 8 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -158,6 +159,9 @@ Recent decisions affecting current work:
 - [quick-260906-w3t]: XrBackend.head opens with xr.open_dataset, the same opener read() uses -- never xr.open_zarr. Two openers for one store in one class is a divergence waiting to bite; _assert_append_compatible's open_zarr is a separate, append-specific concern.
 - [quick-260906-w3t]: RV-02 is deliberately NOT closed and stays filed in 03-VERIFICATION.md. head() carries read()'s explicit Path(path).exists() guard and its exact FileNotFoundError message on both backends, now locked by a test rather than prose. Accepted narrowing: a dataset whose data exists only in memory (the _reset_symbols() -> from_raw_data() fallback) was previously probeable via the cache early-return and now raises. Closing RV-02 means deciding whether name derivation may be DEFERRED, which re-opens D-05's construction-time-names contract -- a user design call, not a side effect of a mutation fix.
 - [quick-260906-w3t]: Every pre-existing fixture left DatasetConfig.start_date/end_date unset, making _filter() a no-op -- which is exactly why 384 green tests could not see RV-01. Restoring .read() on the probe WITHOUT the new dated fixture leaves the suite green (verified as a mutation). The dated fixture IS the guard; the fix without it would be unprotected.
+- [Phase 03.1]: RAISE rather than warn-and-clamp on a pre-coverage start_date in UniverseCatalog.get_symbols_in_range, with an INCLUSIVE boundary (strict `<`) — DATA-05 says 显式报错 literally; the sibling query already raises, and a different resolution would leave two membership queries with two contracts — the exact condition that produced this gap. Clamping would return the identical censored roster plus a log line, since every membership interval already starts at or after its own coverage start. Reversible: undo is one deleted call.
+- [Phase 03.1]: The coverage boundary lives in ONE shared helper (UniverseCatalog._assert_within_coverage) called by both membership queries, derived from MEMBERSHIP_FETCHERS — A fifth index must inherit the boundary on BOTH queries by registration alone; neither query body contains a category literal. Two independent guards is how get_symbols_in_range silently drifted out of the contract in the first place.
+- [Phase 03.1]: IndexConstituentDataset._clamp_coverage_start() keeps CLAMPING where the two catalog queries RAISE — a design choice, recorded in README.md and example/constituent.md so it is not 'aligned' away — The panel consumes a framework-supplied config default (enums/constant.py:Date.START_DATE) nobody typed, so raising would explode every default construction; a query date is one a caller actually asked, so refusing it is right.
 
 ### Pending Todos
 
@@ -198,8 +202,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-07T04:15:05.287Z
-Stopped at: Completed quick task 260906-x2s (new-listing support: widen + rebuild + --on-new-listing; full suite 405 passed)
+Last session: 2026-09-07T21:30:41.021Z
+Stopped at: Completed 03.1-05-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
