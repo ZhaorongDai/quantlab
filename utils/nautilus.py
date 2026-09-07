@@ -1,6 +1,5 @@
 import os
 from decimal import Decimal
-from typing import Optional
 
 import numpy as np
 import yaml
@@ -16,7 +15,22 @@ from nautilus_trader.model.objects import Currency, Money, Price, Quantity
 from .binance import get_instrument_info as get_instrument_info_binance
 
 
-def get_crypot_currency(symbol: str, name: Optional[str] = None):
+def get_crypto_currency(symbol: str) -> Currency:
+    """按代码取一个 `Currency`（未注册的代码会被当作加密货币，精度默认 8）。
+
+    改名说明：它以前叫 `get_crypot_currency`——"crypot" 是 "crypto" 的拼写错误
+    （2026-09-07 更正）。同一个文件里紧挨着的 `get_crypto_currency_pair` 拼写
+    是对的，两个名字并排放着只会让人以为是两类东西。
+
+    同时**去掉了那个 `name: Optional[str] = None` 参数**。它被声明、被接收，
+    然后函数体一个字都没用到；两个调用点（`dataset/spot.py` 的
+    `base_currency` / `quote_currency`）也都只传 `symbol=`。要真正兑现它，
+    得改用 `Currency(code, precision, iso4217, name, currency_type)` 构造器
+    ——`Currency.from_str(code, strict=False)` 根本不收 name——那需要替每个
+    币种定下 precision / currency_type，仓库里没有任何依据，而且会改变现有两个
+    调用点的行为。所以是删，不是补：一个被接收又被忽略的参数，跟这次一并修掉的
+    `_train_dl(backtest=...)` 是同一种谎。
+    """
     return Currency.from_str(symbol)
 
 

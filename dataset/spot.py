@@ -27,7 +27,7 @@ from enums.data import BinanceCSVHeaders
 from utils.file import file_date_filter, get_csv_files
 from utils.nautilus import (
     generate_bar_type_str,
-    get_crypot_currency,
+    get_crypto_currency,
     get_crypto_currency_pair,
     parse_symbol_currencies,
 )
@@ -141,8 +141,8 @@ class SpotKlineDataset(MarketDataset):
     @staticmethod
     def _get_instrument(symbol: str, venue: str):
         base_symbol, quote_symbol = parse_symbol_currencies(symbol)
-        base_currency = get_crypot_currency(symbol=base_symbol)
-        quote_currency = get_crypot_currency(symbol=quote_symbol)
+        base_currency = get_crypto_currency(symbol=base_symbol)
+        quote_currency = get_crypto_currency(symbol=quote_symbol)
 
         # 创建货币对instrument
         currency_pair = get_crypto_currency_pair(
