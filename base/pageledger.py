@@ -251,22 +251,6 @@ class PageLedger:
     def is_complete(self) -> bool:
         return bool(self._payload["complete"])
 
-    def last_position(self) -> tuple[Optional[str], Optional[str]]:
-        """`(last_symbol, last_timestamp)` from the last recorded page.
-
-        The TOKEN-FREE fallback D-03 asks for. The vendor publishes no
-        statement about token lifetime, and its own published example token
-        decodes to a plain positional `SYMBOL|TIMEFRAME|TIMESTAMP` tuple -- so
-        if a stored token is ever rejected, a resume can degrade to re-issuing
-        the batch with `start` narrowed to this timestamp and the roster
-        trimmed to the symbols at or after this symbol. Wasteful, but correct.
-        """
-        pages = self._payload["pages"]
-        if not pages:
-            return None, None
-        last = pages[-1]
-        return last.get("last_symbol"), last.get("last_timestamp")
-
     # -- writes -------------------------------------------------------------
 
     def describe(
@@ -319,8 +303,16 @@ class PageLedger:
         `symbol|timeframe|timestamp` tuple of our own. The vendor's encoding is
         undocumented and can change without notice; a re-derived token that
         stops matching would resume at a position the vendor never agreed to.
-        `last_symbol` / `last_timestamp` are recorded ALONGSIDE it as the
-        token-free fallback -- see `last_position`.
+        `last_symbol` / `last_timestamp` are recorded ALONGSIDE it as the raw
+        material for a token-free fallback: the vendor publishes no statement
+        about token lifetime, and its own published example token decodes to a
+        plain positional `SYMBOL|TIMEFRAME|TIMESTAMP` tuple, so a rejected
+        token could be recovered from by re-issuing the batch with `start`
+        narrowed to the last timestamp and the roster trimmed to the last
+        symbol and onwards. There is no accessor for that today -- a
+        `last_position()` reader was written, never called by anything, and
+        deleted on 2026-09-07; read `pages[-1]` directly, or restore it from
+        git history when a caller actually exists.
         """
         accumulated = set(self._payload["symbols_with_data"])
         accumulated.update(str(symbol) for symbol in seen)

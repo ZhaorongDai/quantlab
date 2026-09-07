@@ -192,8 +192,8 @@ enum token with no fetcher -- fails there;
   [Factor Backends](#factor-backends).
 - `label/` -- Forward-return prediction targets: `SpotReturn` (regression), `SpotBinaryReturn`
   (classification).
-- `my_ops/` -- Custom KunQuant composite ops used inside factor/label graphs (e.g.
-  `WindowedZScore`, `WindowedRobustStandardization`).
+- `my_ops/` -- Custom KunQuant composite ops used inside factor/label graphs
+  (`WindowedZScore`).
 - `dl_model/` -- Concrete PyTorch model heads trained through `base/model.py:BaseModel`:
   `MLPRegressor`, `RNNRegressor`, `RNNClassifier`.
 - `ml_model/` -- `joblib`-based persistence helper (`MlBackend`) for non-torch models; no

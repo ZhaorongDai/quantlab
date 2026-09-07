@@ -94,7 +94,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 | `FactorKunQuant` (abstract) | Compiles and executes KunQuant factor graphs (batch and streaming modes) | `base/factor.py` |
 | `Alpha101SpotKline` / `Alpha158SpotKline` | Concrete factor sets (Alpha101 formulaic factors, Alpha158 factor library) | `factor/alpha101.py`, `factor/alpha158.py` |
 | `SpotReturn` / `SpotBinaryReturn` | Forward-return regression/classification labels | `label/spot.py` |
-| `WindowedZScore` / `WindowedRobustStandardization` | Custom KunQuant composite ops for factor normalization | `my_ops/preprocess.py` |
+| `WindowedZScore` | Custom KunQuant composite op for time-series factor normalization (`WindowedRobustStandardization` sat beside it with zero call sites and was deleted 2026-09-07) | `my_ops/preprocess.py` |
 | `BaseModel` (abstract) | Shared training loop: data collection, train/val/test split, epoch loop, checkpointing, W&B logging, CV | `base/model.py` |
 | `MLPRegressor`, `RNNRegressor`, `RNNClassifier` | Concrete torch model heads (MLP, GRU/LSTM regressor, GRU/LSTM classifier with auxiliary-label architecture) | `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` |
 | `MlBackend` | joblib-based persistence for non-torch (ML) models | `ml_model/backend.py` |

@@ -655,12 +655,21 @@ baseline 回归模型。
 不是训练时那个三维张量。补这个缺口要么改 `base/model.py:_predict_nn`，要么改公开的
 `MLP` 模块接受什么，两者都超出了这次的范围。
 
-**6. `dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**
+**6. `dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**（**已于 2026-09-07 删除**）
 `rnn.py` 的 `ModelRBaseCrypto` 最后一层是 `nn.Linear(..., 1)`（回归用），
 但它里面的 `RNNClassifier._train_one_epoch` 却写了 `primary_pred.reshape(D * T, 2)`
 ——元素个数对不上，必炸。真正在用的分类器是 `dl_model/rnn_classification.py:RNNClassifier`
 （那份的基础块输出 2 类，`self.out = nn.Linear(num_aux * 2, 2)`，逻辑自洽），
-`train_model.py` 导入的也是它。`rnn.py` 里的 `RNNRegressor` 才是有效的。
+`train_model.py` 导入的也是它。
+
+**两个同名类、一个能跑一个不能，本身就是个陷阱**，所以坏的那份删掉了：删除前
+grep 确认全仓对 `RNNClassifier` 的引用无一例外解析到 `rnn_classification.py`，
+从 `dl_model.rnn` 导入的只有 `RNNRegressor`（`cal.py`、`tests/test_dl_models.py`）。
+`ModelRBaseCrypto` / `ModelRCrypto` 留着，`RNNRegressor` 在用。随之清掉了六个
+只被那份副本用到的 sklearn 分类指标 import。要找回它 `git show` 即可——从没跑通过
+的实现，日后从历史里捞出来比现在维护它便宜。
+
+现在 `dl_model/rnn.py` 里只有 `RNNRegressor`。
 
 **7. `update()`（在线学习）曾经引用不存在的配置字段。**（**已于 2026-09-07 修复**）
 `rnn.py` 和 `rnn_classification.py` 的 `update()` 第一行是 `if self.config.lr_refit <= 0.0`，

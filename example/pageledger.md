@@ -88,9 +88,11 @@ return int(last["index"]) + 1, last.get("next_token")
 
 ### last position（无 token 兜底）
 
-`last_position()` 返回 `(last_symbol, last_timestamp)`。这是设计文档 D-03 要求的**免 token 降级路径**：vendor 对 token 的有效期没有任何公开说明，而它自己文档里的示例 token 解码出来就是一个 `SYMBOL|TIMEFRAME|TIMESTAMP` 的位置三元组。所以万一存的 token 被拒了，恢复可以退化成"把 `start` 收窄到这个时间戳、把名单裁到这个 symbol 及其之后"重发。浪费，但正确。
+每条 page 记录里都带着 `last_symbol` / `last_timestamp`。这是设计文档 D-03 要求的**免 token 降级路径**的原料：vendor 对 token 的有效期没有任何公开说明，而它自己文档里的示例 token 解码出来就是一个 `SYMBOL|TIMEFRAME|TIMESTAMP` 的位置三元组。所以万一存的 token 被拒了，恢复可以退化成"把 `start` 收窄到这个时间戳、把名单裁到这个 symbol 及其之后"重发。浪费，但正确。
 
-> 注：**这条降级路径目前只是"信息被记下来了"**。我在 `base/acquisition.py` 里没有找到读取 `last_position()` 的代码——`_fetch_batch` 只用 `resume_point()`。所以这是一个为将来准备的钩子，不是当前生效的行为。
+> 注：**这条降级路径目前只是"信息被记下来了"**，没有任何读取它的代码——`base/acquisition.py` 的 `_fetch_batch` 只用 `resume_point()`。
+>
+> 曾经有一个 `last_position()` 方法返回 `(last_symbol, last_timestamp)`，但它从来没有被任何地方调用过，**2026-09-07 已删除**。删除的理由和删掉 `WindowedRobustStandardization` 是同一条：一个从未被执行过的公开方法，读的人会当它是个可用的入口。真要用的时候直接读 `pages[-1]` 的 `last_symbol` / `last_timestamp`，或者 `git show` 把它捞回来——那时候至少会有一个真实调用方来验证它。
 
 ### symbols seen
 
@@ -364,14 +366,18 @@ print(ledger)
 print("resume_point() =", ledger.resume_point())
 print("symbols_seen() =", ledger.symbols_seen())
 print("is_complete()  =", ledger.is_complete())
-print("last_position()=", ledger.last_position())
+# 无 token 兜底的位置直接从最后一条 page 记录里读（`last_position()` 已于
+# 2026-09-07 删除，见上文）。
+_last = json.loads(Path(path).read_text())["pages"][-1]
+print("last position  =", (_last["last_symbol"], _last["last_timestamp"]))
 
 print("4) 进程崩溃 —— 丢掉内存对象，只从磁盘重新读")
 del ledger
 resumed = PageLedger(path, symbols=["MSFT", "AAPL"])  # 顺序换了也认得
 print("重新加载:", resumed)
 print("下一次请求从第几页、带什么 token:", resumed.resume_point())
-print("没有 token 时的兜底位置:", resumed.last_position())
+_last = json.loads(Path(path).read_text())["pages"][-1]
+print("没有 token 时的兜底位置:", (_last["last_symbol"], _last["last_timestamp"]))
 resumed.assert_consistent(str(RAW))
 print("assert_consistent(raw_root) 通过")
 
@@ -454,7 +460,7 @@ PageLedger(path='/tmp/pageledger_demo/_watermarks/alpaca/_pages/91c9dc202fdc2cc1
 resume_point() = (2, 'TVNGVHxNfDE3MDQyNDA=')
 symbols_seen() = {'AAPL', 'MSFT'}
 is_complete()  = False
-last_position()= ('MSFT', '2024-01-04 20:00:00')
+last position  = ('MSFT', '2024-01-04 20:00:00')
 
 ============================================================
 4) 进程崩溃 —— 丢掉内存对象，只从磁盘重新读
@@ -496,7 +502,7 @@ reset() 后: PageLedger(path='/tmp/pageledger_demo/_watermarks/alpaca/_pages/91c
 第 7 步值得多看一眼：**同一个文件、同一个路径**，用 `["AAPL","NVDA"]` 打开就是 `(0, None)`（从头来），用 `["AAPL","MSFT"]` 打开就是 `(3, None)`（已完成）。这就是 fingerprint 在做的事。而不传 `symbols` 的话完全不校验——所以别自己 `PageLedger(path)` 然后往上恢复。
 
 > **此处未实际运行的部分**：本例子里没有真的发网络请求。真实抓取中才会出现的行为有两类，本文没有实测：
-> - `next_token` 的真实有效期，以及 token 被 vendor 拒绝时的降级（`last_position()` 的用途）——如上文所说，这条降级路径当前在 `base/acquisition.py` 里还没有调用方。
+> - `next_token` 的真实有效期，以及 token 被 vendor 拒绝时的降级（page 记录里 `last_symbol` / `last_timestamp` 的用途）——如上文所说，这条降级路径当前在 `base/acquisition.py` 里还没有调用方。
 > - `_fetch_batch` 里"vendor 回吐同一个 token"的死循环保护（`next_token == page_token` 分支），需要一个行为异常的 vendor 才能触发。
 
 ---
