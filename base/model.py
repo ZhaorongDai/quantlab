@@ -373,8 +373,10 @@ class BaseModel(ABC):
         train_split = int(train_x_t_all.shape[0] * (1 - self.config.val_size))
         train_x_t = train_x_t_all[:train_split]
         train_y_t = train_y_t_all[:train_split]
-        val_x_t = train_x_t_all[train_split + 1 :]
-        val_y_t = train_y_t_all[train_split + 1 :]
+        # 切点用 `train_split:` 而不是 `train_split + 1:`：后者会让第 train_split
+        # 行既不在训练集也不在验证集，被静默丢掉。
+        val_x_t = train_x_t_all[train_split:]
+        val_y_t = train_y_t_all[train_split:]
 
         train_loader = DataLoader(
             TensorDataset(train_x_t, train_y_t),

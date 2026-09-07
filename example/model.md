@@ -710,9 +710,14 @@ sub.to_dataarray().sortby([...,'variable']).coords['variable']  # ['alpha', 'mid
 （上面真实的 `config.json` 就是这样），`get_cls_from_path` 之后没法把它 import 回来。
 要走 `load_model_from_config` 的话，模型类必须住在一个真实模块里（比如 `dl_model/xxx.py`）。
 
-**6. 验证集切分丢一行。**
-`val_x_t = train_x_t_all[train_split + 1:]` ——第 `train_split` 行既不在训练集也不在验证集。
-只丢一个时间点，无伤大雅，但知道比不知道好。
+**6. 验证集切分丢一行。**（**已于 2026-09-07 修复**）
+曾经是 `val_x_t = train_x_t_all[train_split + 1:]`，第 `train_split` 行既不在训练集
+也不在验证集。现在切点是 `train_split:`，训练集加验证集的行数正好等于训练区间的
+时间点数。回归锁：`tests/test_model_layer.py::test_val_split_keeps_every_training_row`。
+
+注意这**不是**时序留白（purge/embargo）：训练段的最后一根和验证段的第一根是相邻的
+bar，标签又是前视收益，泄漏是存在的。真要做留白得自己按 `n_forward_periods` 切，
+基类不提供。
 
 **7. `train_cv` 的测试段长度写死为训练段的 1/5。**
 `test_periods = train_periods // 5`，没有参数可调。
