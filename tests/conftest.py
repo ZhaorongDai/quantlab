@@ -578,12 +578,22 @@ def spot_kline_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
     calls `read()`) whenever `DatasetConfig.symbols` is not None, so the file
     must already exist by the time a caller hands the config to a
     `MarketDataset`.
+
+    **`start_date`/`end_date` default to `None`, and that default is the
+    reason RV-01 survived a green suite.** With the dates unset,
+    `BaseDataset.config`'s setter fills in the project-wide `Date.START_DATE`
+    /`Date.END_DATE` bounds, so `_filter()` is a no-op and any accidental
+    narrowing of the shared dataset is INVISIBLE. Every pre-existing fixture
+    left them unset. Pass them explicitly to get a config whose filter
+    actually bites -- the shape a factor lookback regression can be seen in.
     """
 
     def _build(
         symbols: Optional[list[str]] = None,
         periods: int = 60,
         seed: int = 0,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ) -> DatasetConfig:
         symbol_list = (
             list(symbols)
@@ -624,6 +634,8 @@ def spot_kline_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
             catalog_path=str(spot_dir / "catalog"),
             market="crypto_spot",
             frequency="1d",
+            start_date=start_date,
+            end_date=end_date,
         )
 
     return _build
