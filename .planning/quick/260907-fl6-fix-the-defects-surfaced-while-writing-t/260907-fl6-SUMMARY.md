@@ -1156,3 +1156,134 @@ Not fixed, per the constraint. All still stand as written in `REVIEW.md`:
 - **IN-01..IN-06** — all untouched.
 
 Nothing dangerous was found beyond what `REVIEW.md` already records.
+
+---
+
+## Follow-up: WR-02 closed (2026-09-07, commit `9993e10`)
+
+**Scope:** WR-02 only. WR-03..WR-07 and IN-01..IN-06 stay open exactly as
+listed above — this section supersedes only the WR-02 bullet.
+
+### What was wrong
+
+`best_loss` was write-only in the sense that matters: it gated the patience
+counter and nothing ever snapshotted the `state_dict` that produced it.
+`_save_model` runs *after* the epoch loop, so the checkpoint held whatever
+the last executed epoch left in memory. When early stopping fires, that epoch
+is by construction the `patience`-th consecutive epoch of *no* improvement.
+Early stopping has two jobs — keep the best, stop wasting time. This did the
+second and inverted the first: the optimum it spent its whole budget finding
+was the one thing it threw away.
+
+Confirmed by grep before touching anything: `best_loss` appeared at
+`base/model.py:490` (init), `:523` (comparison), `:524` (update), and nowhere
+else in the repo.
+
+### The fix (`base/model.py`, 27 lines incl. comments)
+
+1. `best_state: dict[str, torch.Tensor] | None = None`, initialised
+   unconditionally alongside the other four loop locals (same reason they are:
+   the post-loop read is unconditional).
+2. On `epoch_val_loss < best_loss`, snapshot
+   `{k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}`.
+3. Immediately before `_save_model`:
+   `if self.config.early_stopping and best_state is not None: self.model.load_state_dict(best_state)`.
+
+**Snapshot cost, stated rather than hidden.** The snapshot is a second copy of
+the parameters (not the optimizer state — `self.optim` is dropped after the
+loop anyway). It is kept on **CPU** via `.detach().cpu().clone()` rather than
+`copy.deepcopy(state_dict())`: `load_state_dict` copies in place, so CPU
+tensors load back into a CUDA module without complaint, and a GPU run does not
+pay double VRAM for the fix. The price is one host-memory copy of the
+parameters, documented in an inline comment at the initialisation site.
+
+**Both exit paths, deliberately.** The restore is placed after the loop, not
+inside the `break`, so it covers the early-stopping break *and* the loop
+running out of `epochs`. The natural-exit case is restored too, and the
+reasoning is written into the code: `early_stopping=True` expresses the intent
+"select the checkpoint by validation loss"; whether the loop hit `patience` or
+hit the `epochs` ceiling is an accident of the schedule. One config persisting
+the best epoch on one exit and the last epoch on the other is incoherent.
+The final epoch may or may not be the best one — when it is, the restore is a
+no-op; when it is not, restoring is the behaviour the flag asked for.
+
+**The boundary, stated in the code.** `if self.config.early_stopping and ...`.
+A run with early stopping OFF never maintains `best_loss` and has expressed no
+intent to select by validation loss; silently changing which epoch it persists
+would be a behaviour change nobody asked for. It keeps saving the last epoch,
+and there is a test that fails if that ever changes.
+
+### Verification — RED first, on the real class
+
+The three tests drive `RecordingRegressor`'s shipped subclass through the real
+`model.train()` → `_auto_train` → `_train_dl` → `_save_model` path. No stub
+stands in for anything under test.
+
+Two properties make the assertion discriminating, both guarded in-test:
+
+- validation loss follows a **descending-then-ascending script**
+  (`3.0, 1.0, 2.0, 2.0, 2.0`), so best (epoch 1) and last (epoch 4) are
+  different epochs. The test asserts `best_epoch != last_epoch` explicitly —
+  without that, "saved the best" and "saved the last" would be the same claim.
+- `_train_one_batch` overwrites every parameter with `float(epoch)` instead of
+  taking a gradient step, so the persisted weights **name** their epoch. Real
+  SGD would leave the candidates numerically close and reduce the assertion to
+  a tolerance argument.
+- the assertion loads the `.pth` back off disk (`_saved_weight_value`) rather
+  than reading `model.model`. WR-02 is a defect about which weights reach the
+  file; an in-memory assertion cannot see it.
+
+A test asserting only "training stopped early" or "a checkpoint exists" passes
+with the bug present, so neither was written.
+
+Observed RED against the pre-fix code:
+
+```
+FAILED tests/test_model_layer.py::test_early_stopping_saves_the_best_epoch_not_the_waited_out_one
+E   AssertionError: checkpoint holds epoch 4's weights; expected the best
+E   epoch 1 (the last executed epoch was 4)
+E   assert 4.0 == 1.0
+E    +  where 1.0 = float(1)
+
+FAILED tests/test_model_layer.py::test_early_stopping_saves_the_best_epoch_when_epochs_run_out
+E   AssertionError: assert 2.0 == 1.0
+E    +  where 2.0 = _saved_weight_value(PosixPath('.../test_early_stopping_saves_the_1'))
+
+2 failed, 1 passed, 12 deselected
+```
+
+The one that passed RED is `test_early_stopping_off_still_saves_the_last_epoch`
+— correctly so: it locks the scope boundary, which the pre-fix code already
+satisfied by accident. It is there to fail if the fix ever leaks past the
+`early_stopping` guard.
+
+All three green after the fix.
+
+### Suite
+
+`491 passed` before → **`494 passed`** after (`~/.venv/bin/python -m pytest -q`,
+27.1s). No regressions; the three new tests are the whole delta.
+
+### Docs
+
+`example/model.md` gains 常见坑 **#13** in this session's
+「曾经…（已于 2026-09-07 修复）… 现在…」 form, with the epoch/loss trace that
+shows why the last epoch is the worst waited-for one, the three sub-points
+(CPU snapshot cost, both exit paths, the `early_stopping=False` boundary) and
+all three locking test names. Two existing cross-references were updated rather
+than left stale: the `_train_dl` pipeline row (line 113) now names the snapshot
+and restore steps, and the `_val_one_batch` contract note (line ~196) now says
+its return value also decides *which epoch's weights are kept*, not just when
+to stop. A pointer was added at the end of 常见坑 #2 (the other early-stopping
+entry) rather than renumbering #3..#12 — six cross-references elsewhere in
+`example/` address those by number.
+
+### Files
+
+- `base/model.py` — the fix
+- `tests/test_model_layer.py` — `ScriptedValLossRegressor`,
+  `_saved_weight_value`, three tests (+160 lines)
+- `example/model.md` — 常见坑 #13 + three updated cross-references
+
+One commit: `9993e10`. `test.py` (the user's own scratch edit) was neither
+touched nor staged.
