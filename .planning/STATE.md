@@ -1,18 +1,18 @@
 ---
-gsd_state_version: 1.0
+gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: 3
-current_phase_name: Factor Computation (KunQuant + Polars)
-status: planning
+current_phase: "03.1"
+current_phase_name: index-historical-constituents
+status: executing
 stopped_at: "Completed quick task 260906-x2s (new-listing support: widen + rebuild + --on-new-listing; full suite 405 passed)"
-last_updated: "2026-09-07T05:09:50.540Z"
+last_updated: "2026-09-07T21:11:31.649Z"
 last_activity: 2026-09-07
 last_activity_desc: "Quick task 260906-x2s complete (new-listing support: XrBackend widen + Dataset rebuild + --on-new-listing; 405 passed)"
-state_head: 4d183364c5f3b961e456215fbc283c86927ea617
+state_head: 501f26bb41de8e9be1f76601e4ed9f202a060e80
 progress:
   total_phases: 10
   completed_phases: 1
-  total_plans: 29
+  total_plans: 30
   completed_plans: 29
 milestone_name: milestone
 ---
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 3 — Factor Computation (KunQuant + Polars)
+Phase: 03.1 (index-historical-constituents) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-09-07 - Completed quick task 260906-x2s: Support new listings in incremental zarr appends
 
 Progress: [██████████] 100%

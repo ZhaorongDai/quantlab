@@ -150,11 +150,21 @@ Plans:
 **Plans:** 5 plans (4/4 executed, 1 gap-closure pending)
 
 Plans:
+**Wave 1**
 
 - [x] 03.1-01-PLAN.md — Split `base/data.py` into `BaseDataset`/`MarketDataset` and `DatasetConfig` into a three-way config split (wave 1)
 - [x] 03.1-02-PLAN.md — Extract `IndexMembershipFetcher`, add `Nasdaq100MembershipFetcher` and the third universe category (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [x] 03.1-03-PLAN.md — `IndexConstituentDataset` + `SP500ConstituentDataset`: interval-to-daily-panel densification with all six correctness locks (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [x] 03.1-04-PLAN.md — `Nasdaq100ConstituentDataset`, registry-driven `UniverseCatalog` coverage guards, README (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 03.1-05-PLAN.md — Gap closure (VERIFICATION truth 3 / DATA-05): extend the registry-driven coverage guard to `get_symbols_in_range()` so a pre-coverage window raises instead of silently returning a censored roster (wave 4)
 
 ### Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca) (INSERTED)
