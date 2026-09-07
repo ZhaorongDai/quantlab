@@ -26,8 +26,8 @@
 | `stocks/auctions` | OPT-OUT | Not in D-07's delivered set (daily bars, minute bars, quotes/trades); opening/closing auction prices have no consumer in the current pipeline and no success criterion references them |
 | `stocks/meta/conditions` | OPT-OUT | Reference metadata for decoding trade/quote condition codes. Raw tick is landed undownsampled and undecoded per D-16; decoding belongs to the deferred 03.3 tick→Zarr phase |
 | `stocks/meta/exchanges` | OPT-OUT | Same as `stocks/meta/conditions` — exchange-code decoding is a 03.3 concern, not an acquisition concern |
-| `corporate-actions` | OPT-OUT | Explicitly out of scope per the ROADMAP scope fence and D-07 (abstraction must not preclude it; no implementation this phase). `02-08-RESEARCH.md` also records that this endpoint excludes delistings/reorganizations, so it cannot substitute for the Tiingo `supported_tickers.csv` delisting signal |
-| `news` | OPT-OUT | Unstructured text, not market data. The project may ingest news later (user memory: future unstructured data), but no requirement in v1 selects it and it would need a non-OHLCV Dataset shape that D-18 defers |
+| `corporate-actions` | OPT-OUT | Out of scope per the ROADMAP scope fence and D-07. RESEARCH also records it excludes delistings/reorganizations, so it cannot substitute for Tiingo's `supported_tickers.csv` delisting signal |
+| `news` | OPT-OUT | Unstructured text, not market data. May be ingested later, but no v1 requirement selects it and it needs a non-OHLCV Dataset shape that D-18 defers |
 | `screener/stocks/most-actives` | OPT-OUT | Derived ranking, not raw market data; the pipeline derives rankings in the factor layer from data it already owns |
 | `screener/{market}/movers` | OPT-OUT | Same as `most-actives` |
 | `crypto/{loc}/bars`, `crypto` quotes/trades/snapshots | OPT-OUT | The `crypto_spot` market is sourced from Binance (Phase 2). No requirement selects Alpaca as a crypto vendor, and this phase's `Market` scope is `us_equity` |
@@ -52,5 +52,5 @@ silently reintroduces survivorship bias when left at its vendor default (RESEARC
 | `adjustment` (`raw`/`split`/`dividend`/`all`) | INTEGRATE | `config.kwargs["adjustment"]`, no in-code default beyond the vendor's `raw` |
 | `asof` (symbol-mapping date) | INTEGRATE | Required-by-convention, never left to the vendor default of "today" |
 | `feed` (`iex`/`sip`/`delayed_sip`/`otc`/`boats`/`overnight`) | INTEGRATE | `config.kwargs["feed"]` with **no in-code default** until the SIP-tier human checkpoint resolves (D-12, RESEARCH Open Question 1 / Assumption A7) |
-| `sort` | INTEGRATE (pinned `asc`) | Pinned rather than exposed: `desc` inverts the page-resume semantics SC-3 depends on |
+| `sort` | INTEGRATE | Pinned to `asc` rather than exposed: `desc` inverts the page-resume semantics SC-3 depends on |
 | `currency` | OPT-OUT | Every symbol in the `us_all` / index rosters is USD-denominated; a non-USD request would return values the `[timestamp, symbol]` panel has no unit column to disambiguate |
