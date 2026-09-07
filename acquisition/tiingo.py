@@ -120,6 +120,30 @@ class TiingoAcquisition(Acquisition):
     #: DETECTABLE as well as prevented (D-11).
     RAW_COLUMNS = ("timestamp", "symbol", "vendor", *_TIINGO_EOD_COLUMNS)
 
+    #: The pinned DTYPE of every shard column, alongside the pinned names and
+    #: order above.
+    #:
+    #: `RAW_COLUMNS`' own docstring claims the raw tier is "schema-stable BY
+    #: CONSTRUCTION". Column set and order were pinned; dtype was not, and a
+    #: schema is all three. `pl.DataFrame(json_rows)` infers per response, so
+    #: one symbol whose `divCash` is all integer `0`, or whose `volume` is null
+    #: over the requested window, yielded a shard typed `Int64`/`Null` where its
+    #: siblings were `Float64` -- and `dataset/stock.py` deliberately leaves
+    #: `extra_columns`/`missing_columns` at their raising defaults, so the whole
+    #: directory scan then failed with a `SchemaError` naming a FILE rather than
+    #: a cause. Worse, it looked intermittent: which file polars opens first is
+    #: filename-ordering dependent.
+    #:
+    #: `acquisition/alpaca.py` already casts against its `RAW_SCHEMA`; this is
+    #: the same contract implemented the same way, so the two vendors cannot
+    #: drift on what "schema-stable" means (WR-05).
+    RAW_SCHEMA = {
+        "timestamp": pl.Datetime("us"),
+        "symbol": pl.String,
+        "vendor": pl.String,
+        **{name: pl.Float64 for name in _TIINGO_EOD_COLUMNS},
+    }
+
     def __init__(self, config: AcquisitionConfig):
         super().__init__(config)
 
@@ -212,7 +236,20 @@ class TiingoAcquisition(Acquisition):
             pl.lit(symbol).alias("symbol"),
             pl.lit(self.VENDOR).alias("vendor"),
         )
-        return data.select(self.RAW_COLUMNS)
+        # CAST, not merely projected. The projection pins the column names and
+        # their order; without the cast the DTYPES still vary per response --
+        # an all-integer `divCash` or an all-null `volume` types that shard
+        # differently from its siblings and makes the whole month= directory
+        # unreadable. `timestamp` is excluded because it was just parsed to the
+        # naive `pl.Datetime` above and re-casting it would be a no-op that
+        # invites someone to "simplify" the parse away.
+        return data.select(self.RAW_COLUMNS).cast(
+            {
+                name: dtype
+                for name, dtype in self.RAW_SCHEMA.items()
+                if name != "timestamp"
+            }
+        )
 
     def _empty_frame(self) -> pl.DataFrame:
         """An empty frame carrying the RAW_COLUMNS schema.
@@ -222,14 +259,10 @@ class TiingoAcquisition(Acquisition):
         `symbol` off it and a schemaless empty frame would raise there instead
         of reporting "no rows".
         """
-        return pl.DataFrame(
-            schema={
-                "timestamp": pl.Datetime,
-                "symbol": pl.String,
-                "vendor": pl.String,
-                **{name: pl.Float64 for name in _TIINGO_EOD_COLUMNS},
-            }
-        ).select(self.RAW_COLUMNS)
+        # Built from `RAW_SCHEMA`, never from a second inline dtype map: an
+        # empty page and a populated one must land the SAME schema, and two
+        # copies of it are two things that can drift.
+        return pl.DataFrame(schema=dict(self.RAW_SCHEMA)).select(self.RAW_COLUMNS)
 
     def _fetch_page(
         self,

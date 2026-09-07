@@ -656,6 +656,15 @@ def stock_pqt_row() -> Callable[..., dict]:
     timestamp/symbol) so synthetic fixtures schema-match real vendor output
     when `pl.concat()`'d together in `StockDataset._raw_data_to_xr()`.
 
+    Every numeric field is a FLOAT, matching `TiingoAcquisition.RAW_SCHEMA`,
+    which pins the whole projection at `pl.Float64`. Writing `volume` as a
+    Python `int` here types the fixture shard `Int64`, and a hive scan derives
+    ONE schema from the first file it opens: mixing a fixture shard with a real
+    one then fails with `SchemaError: data type mismatch for column volume`,
+    naming a file rather than a cause. It used to match only by accident --
+    `pl.DataFrame(json_rows)` happened to infer `Int64` from the JSON fixture
+    too -- which is precisely the fragility WR-05 removed from the writer.
+
     Promoted out of `tests/test_stock_dataset.py`'s private `_row()` helper
     (03-VALIDATION.md Wave-0 gap) so Phase-3 stock factor tests reuse it
     instead of duplicating it a third time.
@@ -669,12 +678,12 @@ def stock_pqt_row() -> Callable[..., dict]:
             "high": close,
             "low": close,
             "close": close,
-            "volume": 1_000,
+            "volume": 1_000.0,
             "adjOpen": close,
             "adjHigh": close,
             "adjLow": close,
             "adjClose": close,
-            "adjVolume": 1_000,
+            "adjVolume": 1_000.0,
             "divCash": 0.0,
             "splitFactor": 1.0,
         }

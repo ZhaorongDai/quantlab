@@ -713,3 +713,76 @@ def test_coverage_report_counts_without_issuing_a_single_vendor_call(
     assert report["pending"] == 3  # MSFT + AMZN + META
     assert report["skipped"] == 2  # AAPL + the skipped legacy GOOG
     assert mock_tiingo_client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# WR-05 -- the raw tier pins DTYPES, not only names and order.
+# ---------------------------------------------------------------------------
+
+
+def test_two_symbols_whose_json_infers_different_dtypes_share_one_schema(
+    mock_tiingo_client, tmp_path
+):
+    """WR-05. `RAW_COLUMNS`' docstring claims the raw tier is "schema-stable
+    BY CONSTRUCTION" and warns that one differently-shaped shard "makes the
+    whole vendor root unreadable". Column set and order were pinned; DTYPE was
+    not.
+
+    `pl.DataFrame(json_rows)` infers per response, so a symbol whose `divCash`
+    is all integer `0`, or whose `volume` is all null over the window, yields
+    `Int64`/`Null` where its siblings yield `Float64`. A directory scan derives
+    ONE schema from the first file it opens and enforces it across the rest --
+    and `dataset/stock.py` deliberately leaves `extra_columns`/`missing_columns`
+    at their raising defaults, so the scan fails with a `SchemaError` naming a
+    file rather than a cause. It also looks intermittent, because which file
+    polars opens first is filename-ordering dependent.
+
+    Asserted on the SHARDS (identical dtypes) and then through a real scan of
+    the whole root, which is the failure that would actually be reported.
+    """
+    import polars as pl
+
+    from acquisition.tiingo import TiingoAcquisition
+
+    original = mock_tiingo_client.get_ticker_price
+
+    def per_symbol(self, ticker, **kwargs):
+        rows = original(self, ticker, **kwargs)
+        if ticker != "MSFT":
+            return rows
+        # MSFT's window happens to carry whole-number dividends/splits and no
+        # volume at all -- both entirely legal responses.
+        degenerate = []
+        for row in rows:
+            row = dict(row)
+            for name in ("divCash", "splitFactor"):
+                if name in row:
+                    row[name] = 0
+            if "volume" in row:
+                row["volume"] = None
+            degenerate.append(row)
+        return degenerate
+
+    mock_tiingo_client.get_ticker_price = per_symbol
+
+    config = _make_concurrent_config(tmp_path, symbols=("AAPL", "MSFT"))
+    TiingoAcquisition(config).download()
+
+    shards = sorted(Path(config.raw_data_dir_path).rglob("*.pqt"))
+    assert len(shards) >= 2, [str(path) for path in shards]
+
+    schemas = {tuple(pl.read_parquet(path).schema.items()) for path in shards}
+    assert len(schemas) == 1, (
+        "two shards under one vendor root carry different schemas:\n"
+        + "\n".join(
+            f"{path}: {dict(pl.read_parquet(path).schema)}" for path in shards
+        )
+    )
+    assert dict(pl.read_parquet(shards[0]).schema)["divCash"] == pl.Float64
+
+    # And the scan that a `Dataset` actually performs succeeds -- strictness
+    # left at its raising defaults, exactly as `dataset/stock.py` does it.
+    scanned = pl.scan_parquet(
+        Path(config.raw_data_dir_path), hive_partitioning=True
+    ).collect()
+    assert scanned.height > 0
