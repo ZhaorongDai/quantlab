@@ -365,11 +365,14 @@ class BaseModel(ABC):
         ]
         val_loader, test_loader = val_test_loaders
 
-        if self.config.early_stopping:
-            best_loss = float("inf")
-            early_stopping = False
-            patience = self.config.early_stopping_patience
-            counter = 0
+        # 这四个变量必须无条件初始化：epoch 循环末尾的 `if early_stopping: break`
+        # 是无条件执行的，一旦只在 `if self.config.early_stopping:` 里绑定，
+        # `early_stopping=False` 的普通配置就会在第一个 epoch 结束时抛
+        # UnboundLocalError（见 tests/test_model_layer.py 的 A 用例）。
+        best_loss = float("inf")
+        early_stopping = False
+        patience = self.config.early_stopping_patience
+        counter = 0
 
         for epoch in tqdm(
             range(self.config.epochs),

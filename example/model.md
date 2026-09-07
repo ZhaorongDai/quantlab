@@ -633,17 +633,20 @@ price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
 
 ## 常见坑
 
-**1. `early_stopping=False` 会直接崩。**
-`_train_dl` 里 `best_loss` / `early_stopping` / `patience` / `counter` 四个变量
+**1. `early_stopping=False` 会直接崩。**（**已于 2026-09-07 修复**）
+
+曾经：`_train_dl` 里 `best_loss` / `early_stopping` / `patience` / `counter` 四个变量
 只在 `if self.config.early_stopping:` 里初始化，但 epoch 循环末尾的
-`if early_stopping: break` 是**无条件**执行的。实测：
+`if early_stopping: break` 是**无条件**执行的，于是：
 
 ```
 UnboundLocalError: cannot access local variable 'early_stopping'
 where it is not associated with a value
 ```
 
-在修掉之前，**永远传 `early_stopping=True`**（想跑满就把 patience 设得很大）。
+现在这四个变量在 epoch 循环之前**无条件初始化**，`early_stopping=False` 是完全正常的配置，
+会老老实实跑满 `epochs` 个 epoch。回归锁：
+`tests/test_model_layer.py::test_early_stopping_disabled_runs_all_epochs`。
 
 **2. 早停的计数器是按 batch 走的，不是按 epoch。**
 `counter += 1` 写在验证 batch 循环**内部**（`base/model.py:641-654`），
