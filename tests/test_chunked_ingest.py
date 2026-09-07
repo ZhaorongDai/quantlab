@@ -295,6 +295,42 @@ def test_append_refuses_a_changed_symbol_axis(tmp_path: Path) -> None:
     assert "symbol" in message
 
 
+def test_plain_append_still_refuses_a_labels_differ_axis_of_the_same_length(
+    tmp_path: Path,
+) -> None:
+    """The count-unchanged case: one delisting plus one new listing leaves the
+    symbol COUNT identical while the labels differ. Raw
+    `to_zarr(mode="a", append_dim=...)` succeeds silently here and re-attributes
+    every stored row -- measured 2026-09-06 as `rows 0-4 were written for XYZ
+    but are now labelled: ARM`. A length check alone would not catch it.
+
+    This is the regression guard for 260906-x2s's hard constraint: the widen
+    (`XrBackend.widen_and_append`, pinned in
+    `tests/test_symbol_axis_widening.py`) is a separately-named OPT-IN that
+    satisfies this guard by construction. Plain `append()` must keep refusing
+    for a caller who did not opt in.
+
+    RED under: any relaxation of `_assert_append_compatible` -- comparing only
+    `len(incoming) != len(stored)`, or short-circuiting when the counts match.
+    """
+    path = str(tmp_path / "labels_differ.zarr")
+    XrBackend().to_internal(
+        _small_panel(["2022-01-04"], ["A", "XYZ"], 0.0)
+    ).append(path)
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().to_internal(
+            _small_panel(["2023-01-04"], ["A", "ARM"], 100.0)
+        ).append(path)
+
+    message = str(excinfo.value)
+    assert "symbol" in message
+    # The store still holds its original labels and its original history.
+    store = _panel(path)
+    assert store["symbol"].values.tolist() == ["A", "XYZ"]
+    assert store.sizes["timestamp"] == 1
+
+
 def test_append_refuses_a_changed_dtype(tmp_path: Path) -> None:
     """An int64 store silently casts an appended float NaN to 0 -- a real
     value fabricated out of a missing one, with no error. Refuse instead.
