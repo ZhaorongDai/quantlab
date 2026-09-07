@@ -9,7 +9,7 @@ defect below was invisible for exactly that reason.
 What is locked here:
 
 - F  `MLPRegressor` could not be instantiated at all
-     (`__abstractmethods__ == {'_val_one_epoch'}`), and even past that its
+     (`__abstractmethods__ == {'_val_one_batch'}`), and even past that its
      `_init_model` was missing the `hyperparameters` keyword the base passes
      and its `_preprocess` called `.fillna()` on a `torch.Tensor`.
 - H  every `update()` in `dl_model/` read `self.config.lr_refit`, a field
@@ -18,7 +18,7 @@ What is locked here:
 - The refit optimizer: `update()` built a fresh `AdamW` on every call, so
      Adam's moment estimates were zeroed every step and online training
      silently degraded to SGD with an odd warmup.
-- Rule-1 deviation: `RNNRegressor._val_one_epoch` returned `None`, which
+- Rule-1 deviation: `RNNRegressor._val_one_batch` returned `None`, which
      batch 1's per-epoch loss accumulation (`float(val_loss)`) turned into a
      hard `TypeError` on epoch 0.
 
@@ -167,7 +167,7 @@ def test_mlp_regressor_has_no_unimplemented_abstract_methods(tmp_path):
     """Defect F, first symptom: the class could not even be constructed.
 
         TypeError: Can't instantiate abstract class MLPRegressor with
-        abstract method _val_one_epoch
+        abstract method _val_one_batch
 
     Asserting on `__abstractmethods__` rather than only on the constructor
     keeps the failure message pointing at the missing method name.
@@ -184,7 +184,7 @@ def test_mlp_regressor_trains_two_epochs_and_predicts(tmp_path):
     `_init_model_and_optim()` -> two epochs of train/val/test -> checkpoint ->
     `predict()`. Each of the three sub-defects fails it at a different point:
 
-    - missing `_val_one_epoch`   -> TypeError at construction
+    - missing `_val_one_batch`   -> TypeError at construction
     - `_init_model` without
       `hyperparameters`          -> TypeError inside `_init_model_and_optim()`
     - `_preprocess` on a Tensor  -> AttributeError: 'Tensor' object has no
@@ -214,8 +214,8 @@ def test_mlp_regressor_trains_two_epochs_and_predicts(tmp_path):
     # Inference through the public path, i.e. through `_preprocess`.
     #
     # The input is FLATTENED to `[num_times, num_symbols * num_features]` on
-    # purpose. `MLPRegressor` does that reshape inside `_train_one_epoch` /
-    # `_test_one_epoch`, but `BaseModel._predict_nn` hands the tensor straight
+    # purpose. `MLPRegressor` does that reshape inside `_train_one_batch` /
+    # `_test_one_batch`, but `BaseModel._predict_nn` hands the tensor straight
     # to the module, and `MLP.forward` is a plain `nn.Linear` stack with no
     # reshape of its own. So the head's inference contract really is "pass the
     # flat matrix"; asserting it here is what keeps that from being discovered
@@ -246,12 +246,12 @@ def test_mlp_preprocess_takes_a_tensor_and_scrubs_nan(tmp_path):
     assert torch.equal(cleaned, torch.tensor([[1.0, 0.0], [0.0, 4.0]]))
 
 
-def test_mlp_val_one_epoch_returns_a_floatable_loss(tmp_path):
+def test_mlp_val_one_batch_returns_a_floatable_loss(tmp_path):
     """Defect F meets batch 1's tightened contract.
 
     `base/model.py`'s epoch loop now does
     `val_loss_sum += float(val_loss) * batch_samples` for every validation
-    batch, so a `_val_one_epoch` that returns `None` raises `TypeError` on
+    batch, so a `_val_one_batch` that returns `None` raises `TypeError` on
     epoch 0 whether or not early stopping is on.
     """
     model = MLPRegressor(_make_config(tmp_path))
@@ -261,7 +261,7 @@ def test_mlp_val_one_epoch_returns_a_floatable_loss(tmp_path):
 
     x = torch.zeros((4, N_SYMBOLS, 3))
     y = torch.zeros((4, N_SYMBOLS, 2))
-    loss = model._val_one_epoch(0, x, y)
+    loss = model._val_one_batch(0, x, y)
     assert float(loss) >= 0.0
     assert not loss.requires_grad
 
@@ -344,12 +344,12 @@ def test_update_steps_the_model_when_lr_refit_is_positive(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Rule-1 deviation: RNNRegressor._val_one_epoch returned None
+# Rule-1 deviation: RNNRegressor._val_one_batch returned None
 # --------------------------------------------------------------------------
 
 
-def test_rnn_regressor_val_one_epoch_returns_a_floatable_loss(tmp_path):
-    """`_val_one_epoch` is declared `-> torch.Tensor` on `BaseModel`, and
+def test_rnn_regressor_val_one_batch_returns_a_floatable_loss(tmp_path):
+    """`_val_one_batch` is declared `-> torch.Tensor` on `BaseModel`, and
     `RNNRegressor`'s implementation returned nothing at all.
 
     Batch 1 made that fatal rather than merely wrong: the epoch loop now runs
@@ -377,8 +377,8 @@ def test_rnn_regressor_val_one_epoch_returns_a_floatable_loss(tmp_path):
     # Called inside `no_grad` because that is how `_train_dl` calls it: the
     # whole validation block runs under `torch.no_grad()`.
     with torch.no_grad():
-        loss = model._val_one_epoch(0, x, y)
-    assert loss is not None, "_val_one_epoch returned None"
+        loss = model._val_one_batch(0, x, y)
+    assert loss is not None, "_val_one_batch returned None"
     assert float(loss) >= 0.0
 
 

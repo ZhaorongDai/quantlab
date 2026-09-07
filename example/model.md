@@ -152,8 +152,8 @@ val_x_t   = train_x_t_all[train_split:]
 ## 子类的五方法契约
 
 `BaseModel` 有 5 个 `@abstractmethod`，少实现一个类就实例化不了
-（这不是理论——`dl_model/mlp.py:MLPRegressor` 曾经漏了 `_val_one_epoch`，
-`MLPRegressor.__abstractmethods__` 实测是 `frozenset({'_val_one_epoch'})`，
+（这不是理论——`dl_model/mlp.py:MLPRegressor` 曾经漏了 `_val_one_batch`，
+`MLPRegressor.__abstractmethods__` 实测是 `frozenset({'_val_one_batch'})`，
 连构造都做不到。已于 2026-09-07 修复，现在三个具体模型头都实现齐了 5 个方法，
 由 `tests/test_dl_models.py::test_mlp_regressor_has_no_unimplemented_abstract_methods` 锁住）。
 
@@ -173,17 +173,24 @@ val_x_t   = train_x_t_all[train_split:]
 返回 `None` 会在训练结束时 `AttributeError`；2026-09-07 改成了 `self.optim = None`，
 这条路不再炸。实务上还是老实返回一个优化器。）
 
-### `_train_one_epoch(epoch, x, y) -> Tensor`
+### `_train_one_batch(epoch, x, y) -> Tensor`
 
-**名字骗人：它是「一个 batch」，不是「一个 epoch」。** 基类在 batch 循环里调它
-（`base/model.py:634-637`）。你要在里面完成 `zero_grad` → forward → loss → `backward` → `step`，
+**一次调用 = 一个 batch。** 基类在 `for x_batch, y_batch in train_loader:` 里调它，
+你要在里面完成 `zero_grad` → forward → loss → `backward` → `step`，
 外加自己 log 指标。基类已经替你做了 `model.train()` 和 `x.to(device)`。
+
+> 这三个钩子曾经叫 `_train_one_epoch` / `_val_one_epoch` / `_test_one_epoch`
+> （**已于 2026-09-07 改名**）。名字骗人不是文风问题：批次 1 修的那个早停 bug，
+> 正是因为作者把计数器写在 `_val_one_epoch` 旁边、照着名字读成「每个 epoch 一次」，
+> 于是 `counter += 1` 落在验证 batch 循环里（见「常见坑」第 2 条）。
+> 名字留着就等于把同一个坑留给下一个人，所以改了。第一个参数 `epoch` 仍然是
+> epoch 序号——基类透传它只是为了让你 log 到正确的 step 上。
 
 `x` 形状 `(batch内的时间点数, num_symbols, num_features)`，`y` 是 `(..., num_labels)`。
 
-### `_val_one_epoch(epoch, x, y) -> Tensor`
+### `_val_one_batch(epoch, x, y) -> Tensor`
 
-同样是「一个 batch」。基类已经在 `model.eval()` + `torch.no_grad()` 里了，
+同样是一次调用一个 batch。基类已经在 `model.eval()` + `torch.no_grad()` 里了，
 所以**不要**再自己包 `no_grad`，也不要 backward。
 
 **它的返回值就是早停判据。** 基类把每个 batch 的返回值按样本数加权平均成一个
@@ -191,15 +198,15 @@ epoch 级别的验证损失，再拿它去比 `best_loss`（2026-09-07 之前是
 见「常见坑」第 2 条）。所以它必须返回一个能 `float()` 的标量 loss——
 返回 `None` 会在 `float(None)` 处直接 `TypeError`。
 
-> 这条不是假想。`dl_model/rnn.py:RNNRegressor._val_one_epoch` 以前只记 metrics
+> 这条不是假想。`dl_model/rnn.py:RNNRegressor._val_one_batch` 以前只记 metrics
 > **什么都不返回**，注解写的却是 `-> torch.Tensor`。加权平均那行是无条件执行的
 > （跟 `early_stopping` 开不开无关），所以 `RNNRegressor.train()` 在第 0 个 epoch
 > 就是 `TypeError: float() argument must be a string or a real number, not
 > 'NoneType'`。2026-09-07 已按 `rnn_classification.py` 里同名方法的写法补上
 > `return val_loss.detach()`，由
-> `tests/test_dl_models.py::test_rnn_regressor_val_one_epoch_returns_a_floatable_loss` 锁住。
+> `tests/test_dl_models.py::test_rnn_regressor_val_one_batch_returns_a_floatable_loss` 锁住。
 
-### `_test_one_epoch(epoch, x, y) -> Tensor`
+### `_test_one_batch(epoch, x, y) -> Tensor`
 
 每个 epoch 在测试集上跑一遍，只记指标不更新参数。返回值目前基类不使用。
 （是的，这意味着测试集指标在训练过程中一直可见——这在方法论上是有争议的，
@@ -390,7 +397,7 @@ class TinyRegressor(BaseModel):
         # NaN 归零 + 强制 float32：xarray 常给 float64，而 nn.Linear 的权重是 float32
         return torch.nan_to_num(data, nan=0.0).float()
 
-    def _train_one_epoch(self, epoch, x, y):
+    def _train_one_batch(self, epoch, x, y):
         self.optim.zero_grad()
         loss = self.criterion(self.model(x), y)
         loss.backward()
@@ -400,12 +407,12 @@ class TinyRegressor(BaseModel):
         print(f"  epoch {epoch} train_loss={loss.item():.4f}")
         return loss
 
-    def _val_one_epoch(self, epoch, x, y):
+    def _val_one_batch(self, epoch, x, y):
         loss = self.criterion(self.model(x), y)   # 基类已经在 no_grad 里了
         print(f"  epoch {epoch}   val_loss={loss.item():.4f}")
         return loss                                # 早停就看这个返回值
 
-    def _test_one_epoch(self, epoch, x, y):
+    def _test_one_batch(self, epoch, x, y):
         loss = self.criterion(self.model(x), y)
         print(f"  epoch {epoch}  test_loss={loss.item():.4f}")
         return loss
@@ -493,7 +500,8 @@ checkpoint dir: /var/folders/.../T/tiny_ckpt_4qksldir
 来自 `_train_dl` 里写死的 `pin_memory=True`，在 Mac 上无害。）
 
 注意每个 epoch 里 `train_loss` 打印了 2 行、`test_loss` 打印了 2 行——
-这就是「`_train_one_epoch` 实际上是 per-batch」的直接证据。
+这就是「`_train_one_batch` 是 per-batch」的直接证据——改名之前它叫
+`_train_one_epoch`，这段输出跟那个名字是直接矛盾的。
 
 ---
 
@@ -630,8 +638,8 @@ price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
 
 **5. `dl_model/mlp.py:MLPRegressor` 曾经是坏的，三处。**（**已于 2026-09-07 修复**）
 以前它同时踩了三个坑，而且是层层挡在后面的三个——修掉一个才能看见下一个：
-- 缺 `_val_one_epoch`，是抽象类，**根本实例化不了**（实测
-  `MLPRegressor.__abstractmethods__ == frozenset({'_val_one_epoch'})`）；
+- 缺 `_val_one_batch`，是抽象类，**根本实例化不了**（实测
+  `MLPRegressor.__abstractmethods__ == frozenset({'_val_one_batch'})`）；
 - `_init_model(self, num_symbols, num_features, num_labels)` 少了 `hyperparameters` 参数，
   而基类是用关键字 `hyperparameters=` 调它的 →
   `TypeError: MLPRegressor._init_model() got an unexpected keyword argument 'hyperparameters'`；
@@ -639,7 +647,7 @@ price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
   但传进来的是 `torch.Tensor` →
   `AttributeError: 'Tensor' object has no attribute 'fillna'`。
 
-现在三处都补齐了：`_val_one_epoch` 存在且**返回** `val_loss.detach()`（返回值契约见
+现在三处都补齐了：`_val_one_batch` 存在且**返回** `val_loss.detach()`（返回值契约见
 「常见坑」#2 旁注——epoch 循环要 `float()` 它）；`_init_model` 收 `hyperparameters`，
 两个隐藏层宽度从 `hidden_size1`/`hidden_size2` 读，缺省仍是原来硬编码的 512/256；
 `_preprocess` 换成 `torch.nan_to_num(data, nan=0.0)`，跟两个 RNN 头一致。
@@ -650,14 +658,14 @@ price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
 baseline 回归模型。
 
 遗留的一处（没修，是有意的）：`MLPRegressor` 的 reshape 写在
-`_train_one_epoch`/`_test_one_epoch` 里，而 `MLP.forward` 只是一串 `nn.Linear`，
+`_train_one_batch`/`_test_one_batch` 里，而 `MLP.forward` 只是一串 `nn.Linear`，
 所以 `predict()` 要求调用方传**已经拍平**的 `[num_times, num_symbols * num_features]`，
 不是训练时那个三维张量。补这个缺口要么改 `base/model.py:_predict_nn`，要么改公开的
 `MLP` 模块接受什么，两者都超出了这次的范围。
 
 **6. `dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**（**已于 2026-09-07 删除**）
 `rnn.py` 的 `ModelRBaseCrypto` 最后一层是 `nn.Linear(..., 1)`（回归用），
-但它里面的 `RNNClassifier._train_one_epoch` 却写了 `primary_pred.reshape(D * T, 2)`
+但它里面的 `RNNClassifier._train_one_batch` 却写了 `primary_pred.reshape(D * T, 2)`
 ——元素个数对不上，必炸。真正在用的分类器是 `dl_model/rnn_classification.py:RNNClassifier`
 （那份的基础块输出 2 类，`self.out = nn.Linear(num_aux * 2, 2)`，逻辑自洽），
 `train_model.py` 导入的也是它。
@@ -735,7 +743,7 @@ counter 就可能加几次。实测（`batch_size=16`，每 epoch 2 个验证 ba
 `tests/test_model_layer.py::test_early_stopping_patience_counts_epochs_not_batches`
 （它刻意让每个 epoch 有 4 个验证 batch——只有一个 batch 的用例区分不出这两种语义）。
 
-注意 `_val_one_epoch` 的返回值现在会被 `float()` 转成标量参与加权平均，
+注意 `_val_one_batch` 的返回值现在会被 `float()` 转成标量参与加权平均，
 所以它必须返回一个 0 维张量或 python 数（原本就是这么约定的）。
 
 **3. 张量的因子列顺序是「字母序」，不是 `get_factor_names()` 的顺序。**

@@ -418,11 +418,11 @@ class BaseModel(ABC):
             for x_batch, y_batch in train_loader:
                 x_batch = x_batch.to(self.device, non_blocking=True)
                 y_batch = y_batch.to(self.device, non_blocking=True)
-                self._train_one_epoch(epoch, x_batch, y_batch)
+                self._train_one_batch(epoch, x_batch, y_batch)
 
             self.model.eval()  # type: ignore
             with torch.no_grad():
-                # 早停要比较的是「整个 epoch 的验证损失」。`_val_one_epoch` 返回的
+                # 早停要比较的是「整个 epoch 的验证损失」。`_val_one_batch` 返回的
                 # 是单个 batch 的损失，所以这里按样本数加权累加，循环结束后再折算成
                 # 一个 epoch 级别的标量——counter 才是「连续多少个 epoch 没有改善」。
                 val_loss_sum = 0.0
@@ -430,7 +430,7 @@ class BaseModel(ABC):
                 for x_batch, y_batch in val_loader:
                     x_batch = x_batch.to(self.device, non_blocking=True)
                     y_batch = y_batch.to(self.device, non_blocking=True)
-                    val_loss = self._val_one_epoch(epoch, x_batch, y_batch)
+                    val_loss = self._val_one_batch(epoch, x_batch, y_batch)
 
                     batch_samples = int(x_batch.shape[0])
                     val_loss_sum += float(val_loss) * batch_samples
@@ -450,7 +450,7 @@ class BaseModel(ABC):
                 for x_batch, y_batch in test_loader:
                     x_batch = x_batch.to(self.device, non_blocking=True)
                     y_batch = y_batch.to(self.device, non_blocking=True)
-                    self._test_one_epoch(epoch, x_batch, y_batch)
+                    self._test_one_batch(epoch, x_batch, y_batch)
 
                 if early_stopping:
                     break
@@ -471,7 +471,7 @@ class BaseModel(ABC):
         #
         # 优化器状态（Adam 的一阶/二阶动量，约 2 倍参数量）在训练之外没有任何
         # 用处，显式丢掉——这才是当初 `del` 想省的那部分显存。所有 `self.optim`
-        # 的读取点都在 `_train_one_epoch` 里，而 `_init_model_and_optim()` 会在
+        # 的读取点都在 `_train_one_batch` 里，而 `_init_model_and_optim()` 会在
         # 下一次训练（包括 CV 的下一折）开头重新建一个。
         self.optim = None
 
@@ -705,28 +705,70 @@ class BaseModel(ABC):
     ): ...
 
     @abstractmethod
-    def _test_one_epoch(
+    def _test_one_batch(
         self,
         epoch: int,
         x: np.ndarray | torch.Tensor,
         y: np.ndarray | torch.Tensor,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """一次调用 = **一个 batch** 的测试步。
+
+        调用点在 `_train_dl` 的 `for x_batch, y_batch in test_loader:` 里，外面
+        已经是 `model.eval()` + `torch.no_grad()`。只记指标，返回值基类不使用。
+
+        命名说明见 `_train_one_batch`。
+        """
+        ...
 
     @abstractmethod
-    def _train_one_epoch(
+    def _train_one_batch(
         self,
         epoch: int,
         x: np.ndarray | torch.Tensor,
         y: np.ndarray | torch.Tensor,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """一次调用 = **一个 batch** 的完整优化步。
+
+        调用点在 `_train_dl` 的 `for x_batch, y_batch in train_loader:` 里，
+        实现方要自己走完 `zero_grad` → forward → loss → `backward` → `step`。
+        `epoch` 只是透传下来的 epoch 序号，用于把指标 log 到正确的 step 上——
+        它不表示「本次调用覆盖了一整个 epoch」。
+
+        这三个钩子曾经叫 `_train_one_epoch` / `_val_one_epoch` /
+        `_test_one_epoch`。那个名字不是无害的措辞问题：早停计数器一度被写在
+        `_val_one_epoch` 的调用点旁边、照名字理解成「每个 epoch 执行一次」，
+        实际却落在验证 batch 循环内部，于是 patience 数的是 batch 而不是 epoch
+        （2026-09-07 修复，`tests/test_model_layer.py::
+        test_early_stopping_patience_counts_epochs_not_batches` 锁住）。
+        名字保留下去就是把同一个坑留给下一个读者，所以一并改名。
+
+        **想做单步 / 在线训练的不要来改这里。** 这个钩子属于
+        `_train_dl` 的批量训练循环。在线学习的入口是各模型头的 `update()`，
+        它用 `_get_refit_optim()` 拿一个**跨调用复用**的微调优化器
+        （复用是必要的：每步新建会把 AdamW 的动量清零）。
+        """
+        ...
 
     @abstractmethod
-    def _val_one_epoch(
+    def _val_one_batch(
         self,
         epoch: int,
         x: np.ndarray | torch.Tensor,
         y: np.ndarray | torch.Tensor,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """一次调用 = **一个 batch** 的验证步。
+
+        调用点在 `_train_dl` 的 `for x_batch, y_batch in val_loader:` 里，外面
+        已经是 `model.eval()` + `torch.no_grad()`——不要再自己包一层，也不要
+        backward。
+
+        **必须返回一个能 `float()` 的标量 loss。** 基类把每个 batch 的返回值按
+        样本数加权累加，循环结束后折算成一个 epoch 级别的验证损失，那个标量才是
+        早停判据。返回 `None` 会在 `float(None)` 处直接 `TypeError`。
+
+        命名说明见 `_train_one_batch`。
+        """
+        ...
 
     @abstractmethod
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor: ...

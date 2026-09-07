@@ -152,7 +152,7 @@ class RecordingRegressor(BaseModel):
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
         return torch.nan_to_num(data, nan=0.0).float()
 
-    def _train_one_epoch(self, epoch, x, y):
+    def _train_one_batch(self, epoch, x, y):
         self.train_epochs.append(epoch)
         self.train_rows += int(x.shape[0])
         self.seen_x.append([float(v) for v in x[0, 0]])
@@ -163,12 +163,12 @@ class RecordingRegressor(BaseModel):
         self.optim.step()
         return loss
 
-    def _val_one_epoch(self, epoch, x, y):
+    def _val_one_batch(self, epoch, x, y):
         self.val_epochs.append(epoch)
         self.val_rows += int(x.shape[0])
         return self.criterion(self.model(x), y)
 
-    def _test_one_epoch(self, epoch, x, y):
+    def _test_one_batch(self, epoch, x, y):
         self.test_epochs.append(epoch)
         return self.criterion(self.model(x), y)
 
@@ -179,7 +179,7 @@ class FlatValLossRegressor(RecordingRegressor):
     stopping fires is then a pure function of what the patience counter counts.
     """
 
-    def _val_one_epoch(self, epoch, x, y):
+    def _val_one_batch(self, epoch, x, y):
         self.val_epochs.append(epoch)
         self.val_rows += int(x.shape[0])
         return torch.tensor(1.0)

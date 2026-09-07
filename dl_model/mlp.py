@@ -30,7 +30,7 @@ class MLPRegressor(BaseModel):
         super().__init__(config)
         self.criterion = nn.MSELoss()
 
-    def _train_one_epoch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
+    def _train_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
         x = x.to(self.device)
         y = y.to(self.device)
 
@@ -87,7 +87,7 @@ class MLPRegressor(BaseModel):
     def _init_optim(self, model):
         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
 
-    def _test_one_epoch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
+    def _test_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
         x = x.to(self.device)
         y = y.to(self.device)
 
@@ -112,13 +112,13 @@ class MLPRegressor(BaseModel):
         }
         self._wandb_recorder.log(metrics, step=epoch)
 
-    def _val_one_epoch(
+    def _val_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
         """必须存在，而且必须**返回**一个能 `float()` 的损失。
 
         它以前根本没有实现，所以 `MLPRegressor.__abstractmethods__` 里始终留着
-        `{'_val_one_epoch'}`，这个类连实例化都做不到：
+        `{'_val_one_batch'}`，这个类连实例化都做不到：
         `TypeError: Can't instantiate abstract class MLPRegressor`。
 
         返回值的契约在 2026-09-07 被收紧过：`base/model.py` 的 epoch 循环现在把

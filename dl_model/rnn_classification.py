@@ -183,7 +183,7 @@ class RNNClassifier(BaseModel):
         """
         return (y > 0).long()
 
-    def _train_one_epoch(
+    def _train_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
         self.optim.zero_grad()
@@ -292,7 +292,7 @@ class RNNClassifier(BaseModel):
     def _init_optim(self, model):
         return torch.optim.AdamW(model.parameters(), lr=self.config.lr)
 
-    def _test_one_epoch(
+    def _test_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
@@ -369,7 +369,7 @@ class RNNClassifier(BaseModel):
 
         return test_loss.detach()
 
-    def _val_one_epoch(
+    def _val_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
