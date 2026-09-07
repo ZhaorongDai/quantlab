@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -16,22 +15,38 @@ from tqdm import tqdm
 from base.config import AcquisitionConfig
 from base.pageledger import PageLedger
 from enums.constant import Date
-from enums.data import RAW_HIVE_KEYS, Vendor
+from enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN, Vendor
 
 #: The one well-formedness rule a symbol must satisfy before it becomes a
 #: filesystem path segment or a query-string value.
 #:
-#: Imported from `acquisition/universe.py` rather than re-declared: quick task
-#: 260906-eme established that this pattern admits DIGITS (`[A-Z0-9]`) for a
-#: documented reason -- digit-bearing tickers are legitimate US-equity symbols.
-#: A second, stricter regex written here would reject real symbols while
-#: looking like a security improvement.
+#: BOUND, not re-declared. This name is the SAME compiled object that the
+#: roster builder (`acquisition/universe.py:TiingoRosterFetcher.fetch`) filters
+#: on, which is what makes "everything the builder persists is fetchable" true
+#: by construction rather than by coincidence. Identity is asserted directly in
+#: `tests/test_ticker_pattern_reconciliation.py`.
 #:
-#: The import is deferred to `_validate_symbols` (a local import inside the
-#: method) because `acquisition/universe.py` imports nothing from this module
-#: today, but a module-level import here would make `base.acquisition` depend
-#: on the `acquisition` package and invert the layering.
-_TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2})?$")
+#: It is shared VIA `enums/data.py` because neither binder may import the
+#: other: a `base.acquisition -> acquisition.universe` import inverts the
+#: layering, and an `acquisition.universe -> base.acquisition` import breaks
+#: `tests/test_volume_guard.py`, which reads universe.py's source and asserts
+#: the literal `"base.acquisition"` is absent (the volume guard's "refuse
+#: before any client exists" property is structural, not procedural).
+#:
+#: Until quick task 260907-10t this was a standalone `re.compile` of the same
+#: literal, with a comment claiming it was imported from
+#: `acquisition/universe.py` and a deferred local import that did not exist.
+#: Two free-to-diverge copies -- and they HAD diverged, which is the whole bug
+#: 260907-10t fixed.
+#:
+#: DELIBERATELY WIDER than `acquisition/universe.py:_WELL_FORMED_TICKER`, which
+#: is a different guard on a different input: that one validates
+#: Wikipedia-scraped change-log CELLS, where an interior delimiter means two
+#: cells were merged by a parser regression. A three-segment value is that
+#: exact regression signal there, and both constituent categories have ZERO
+#: pattern failures across 1,151 measured symbols -- so widening it would
+#: delete a real guard to buy nothing. Do not "align" the two.
+_TICKER_PATTERN = TRADEABLE_TICKER_PATTERN
 
 
 @dataclass
@@ -638,11 +653,20 @@ class Acquisition(ABC):
         One control covers both, which is why it lives here on the base rather
         than in each vendor's `_fetch_page`.
 
-        The pattern is `acquisition/universe.py`'s `_WELL_FORMED_TICKER`, not a
-        stricter one written for this method: quick task 260906-eme established
-        that it admits digits deliberately, because digit-bearing tickers are
-        real. A second regex here would reject legitimate symbols while looking
-        like a hardening step.
+        The pattern is `enums.data.TRADEABLE_TICKER_PATTERN` -- the SAME
+        compiled object the roster builder filters its output on, bound here
+        rather than re-declared. That shared identity is the point: a symbol
+        the builder persists is admitted here by construction, which is exactly
+        what was NOT true before quick task 260907-10t, when a local copy of a
+        narrower literal made `download()`'s whole-roster pre-flight abort a
+        multi-hour full-market job on `NXG-R-W`.
+
+        It admits digits deliberately (260906-eme: digit-bearing tickers are
+        real) and up to TWO suffix segments (260907-10t: 77 `us_all` and 4
+        `nasdaq_all` symbols are three-segment `ROOT-X-Y`). It is NOT
+        `acquisition/universe.py`'s `_WELL_FORMED_TICKER`, which is
+        deliberately narrower because it guards Wikipedia change-log cells --
+        see that constant's own comment before considering aligning them.
         """
         validated = []
         for symbol in symbols:
@@ -656,7 +680,12 @@ class Acquisition(ABC):
                     f"and a comma-joined query-string value, so a separator, a "
                     f"parent reference or an embedded comma would escape the "
                     f"raw root or silently change which symbols were requested. "
-                    f"Fix the roster rather than relaxing this pattern."
+                    f"Fix the roster rather than relaxing this pattern -- a "
+                    f"malformed symbol should have been dropped by the "
+                    f"build-time well-formedness filter in "
+                    f"acquisition/universe.py:TiingoRosterFetcher.fetch(), so "
+                    f"reaching here means the reference table predates that "
+                    f"filter and needs rebuilding."
                 )
             validated.append(text)
         return validated

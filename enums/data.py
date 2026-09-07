@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -136,3 +137,71 @@ RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
     "1m": ("date",),
     "tick": ("data_type", "date", "symbol"),
 }
+
+
+# The ONE well-formedness rule a US-equity ticker must satisfy before it
+# becomes a filesystem path segment or a query-string value.
+#
+# Declared HERE, and bound by BOTH ends of the symbol lifecycle -- the roster
+# builder (`acquisition/universe.py:TiingoRosterFetcher.fetch`) and the fetch
+# guard (`base/acquisition.py:Acquisition._validate_symbols`) -- for exactly
+# the reason `RAW_HIVE_KEYS` above lives here (D-19): one definition, imported
+# by the writer and the reader, so the two cannot drift.
+#
+# They HAD drifted. `base/acquisition.py` carried a standalone `re.compile` of
+# the same literal while its comment claimed the pattern was imported from
+# `acquisition/universe.py`, and the guard admitted only ONE suffix segment
+# while `us_all` deliberately retained 1,124 warrant / unit / right /
+# when-issued lines (260906-eme). The result was that `download()`'s
+# whole-roster pre-flight raised on `NXG-R-W` and killed a multi-hour
+# full-market job before a single request was issued (quick task 260907-10t).
+#
+# WHY THIS MODULE. Neither of the two binders may import the other:
+# `base/acquisition.py` importing `acquisition.universe` inverts the layering,
+# and `acquisition/universe.py` importing `base.acquisition` breaks
+# `tests/test_volume_guard.py`, which reads universe.py's source and asserts
+# the literal `"base.acquisition"` is absent -- the volume guard's "refuse
+# before any client exists" property is STRUCTURAL. `enums/data.py` is the
+# shared lower module both already import.
+#
+# THE SUFFIX BOUND IS `{0,2}`, MEASURED. Against the live reference table on
+# 2026-09-07 (`us_all` 14,485 unique symbols, `nasdaq_all` 8,967):
+#
+#   77 `us_all` symbols are three-segment `ROOT-X-Y` with each suffix 1-2
+#      chars -- `ACP-R-W` (47 of shape 3-1-1), `AST-WS-W`, `KODK-WS-A`,
+#      `GM-WS-A`, `DB-R-W`, `UA-C-W`, `C-WS-A`.
+#    4 `nasdaq_all` symbols likewise: `FITB-P-A/-I/-K/-M`, the frozen
+#      preferred shares Locked Decision A4 / D-02 keeps. They are ADMITTED by
+#      this bound, never dropped -- the roster filter's axis is
+#      well-formedness, never security type.
+#
+# WHY THE SEGMENT BOUND STAYS `{1,2}` AND NOT `{1,3}`. Exactly two live
+# symbols would need `{1,3}`, and both were argued rather than assumed:
+#   - `OXY-WSW`: the family is `['OXY', 'OXY-WS', 'OXY-WS-W', 'OXY-WSW']`.
+#     The properly-delimited form of the same warrant is ALREADY in the
+#     roster, so refusing the un-delimited variant loses no security at all.
+#   - `NSPR-WSB`: the family is `['NSPR', 'NSPR-WS', 'NSPR-WSB']` -- there is
+#     no `NSPR-WS-B`, so refusing it DOES lose one microcap warrant series.
+#     Accepted deliberately and recorded as a named, measured,
+#     carried-forward finding in the same idiom 260906-eme used for the
+#     retained warrants: a 50% loosening of the segment bound for all 14,485
+#     symbols, to save one redundant and one microcap warrant, against 77
+#     symbols that follow the delimiter convention, does not clear the bar.
+# A later widener should confront that argument, not the regex.
+#
+# WHAT IS DELIBERATELY UNCHANGED. Only the suffix REPETITION COUNT widened
+# (from the prior `?`). The character class `[A-Z0-9]`, the delimiter class
+# `[.-]`, the 1-7 root bound (the longest delimiter-free live symbol is 7:
+# `ALLPDCL`, `ALLYPRA`) and BOTH anchors are untouched -- which is what keeps
+# a path separator, a parent reference, an embedded comma, a space and
+# lowercase unrepresentable rather than merely unmatched (T-10t-01).
+#
+# NOT THE SAME AS `acquisition/universe.py:_WELL_FORMED_TICKER`, which is
+# DELIBERATELY NARROWER and must not be "aligned" with this one. That one
+# validates Wikipedia-scraped change-log CELLS, where an interior delimiter
+# means two cells were merged by a parser regression; a three-segment value is
+# that exact signal on that input, and both constituent categories have ZERO
+# pattern failures across 1,151 measured symbols. Pinned by
+# `tests/test_ticker_pattern_reconciliation.py:
+# test_the_changelog_guard_is_deliberately_narrower_than_the_fetch_guard`.
+TRADEABLE_TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2}){0,2}$")
