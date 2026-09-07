@@ -57,6 +57,23 @@ gaps:
       - "A `FactorPolars.read()` override that resolves `config.factor_names` from the persisted store's non-index data_vars, symmetrically with `cal()`."
       - "A regression test driving BOTH backends through save() -> fresh instance -> read() -> _get_factor_names(), with factor_data_strategy='read'."
       - "Correction of the false `read()` precondition in base/factor_polars.py's docstring, its RuntimeError message, tests/test_factor_polars.py:103-105 and README.md:34-40."
+    disposition: accept-and-fix
+    disposition_date: "2026-09-06"
+    disposition_by: user
+    disposition_note: >-
+      Gap stands and will be closed, but NOT via plan 03-06. The user chose a smaller
+      fix: resolve the names on the read() path from the backend's own lazyframe
+      schema -- `self.data_backend.get_lazyframe().collect_schema().names()` minus
+      `_INDEX_COLUMNS` -- mirroring the expression `cal()` already uses at
+      base/factor_polars.py:110-114. Verified empirically on 2026-09-06 that this
+      yields exactly the factor names (`['timestamp','symbol','MOM_5','MOM_20']` ->
+      `['MOM_5','MOM_20']`, identical to `data_vars`). Using the `DataBackend`
+      interface rather than `XrBackend.data_vars` is the deliberate choice: it is
+      the backend-agnostic accessor, which is the same D-03 interchangeability
+      property this gap is about. Cost measured at 0.062s on an 8M-cell store
+      (XrBackend.get_lazyframe materializes via to_dataframe); negligible for a
+      one-time call in read(). Plan 03-06 is superseded. Implementation is the
+      user's, done by hand outside GSD.
   - truth: "`Alpha158Stock`/`Alpha101Stock` compute the Alpha158/101 factor set correctly for US equities (phase must-have from 03-03; the D-01 extension of ROADMAP SC1)"
     status: partial
     reason: >-
@@ -86,10 +103,29 @@ gaps:
       - "A dollar-volume proxy whose implied vwap is not the close price (e.g. typical price `(high+low+close)/3 * volume`)."
       - "A test asserting `input_dict['amount'] / input_dict['volume']` is NOT allclose to `input_dict['close']`."
       - "A test asserting `Alpha158Stock`'s `VWAP0` output is not constant."
+    disposition: dismissed
+    disposition_date: "2026-09-06"
+    disposition_by: user
+    disposition_note: >-
+      Dismissed by user decision on 2026-09-06 ("第二个可以忽略"). No technical
+      rationale was given and none is inferred here. The finding itself is NOT
+      retracted -- it was confirmed empirically by the verifier and independently by
+      03-REVIEW.md CR-02 -- so the consequences below remain true and accepted:
+      `dataset/stock.py:73-74` synthesizes `amount = volume * close`, KunQuant derives
+      `vwap = amount / volume`, and `vwap` is therefore identically `close` for US
+      equities. Five Alpha158 price-block features carry zero incremental information,
+      and every Alpha101Stock alpha referencing vwap (alpha025, alpha028, alpha041,
+      alpha050, alpha083, ...) degenerates into a close-price variant. Nothing fails
+      loudly. Plan 03-07 is superseded. Re-open this gap if VWAP-derived features are
+      ever used in a model or a backtest.
 human_verification:
   - test: "Decide whether the D-02 `amount` proxy should be the typical-price dollar volume, or whether a real vendor dollar-volume column should be sourced from Tiingo instead."
     expected: "A US-equity `amount` series whose implied `vwap = amount/volume` is not identically `close`, restoring the informational content of the VWAP price block."
     why_human: "Choosing between a synthesized proxy and a vendor column is a data-sourcing decision with cost/coverage tradeoffs, not a programmatic determination."
+    disposition: dismissed
+    disposition_date: "2026-09-06"
+    disposition_by: user
+    disposition_note: "Answered by the gap-2 dismissal: neither option is taken; the existing `volume * close` proxy stands."
 ---
 
 # Phase 3: Factor Computation (KunQuant + Polars) Verification Report
@@ -231,3 +267,93 @@ Neither gap is deferrable. No later phase's goal or success criteria specificall
 
 _Verified: 2026-09-05T16:10:00Z_
 _Verifier: Claude (gsd-verifier)_
+
+---
+
+## Gap Dispositions — 2026-09-06
+
+Both gaps were reviewed with the user on 2026-09-06. Neither finding is retracted; what
+changed is what will be done about each. The two pre-existing gap-closure plans, `03-06`
+and `03-07`, were written against these gaps but never executed (no SUMMARY, no commits
+reference them) and are **both superseded** by the decisions below.
+
+| Gap | Finding stands? | Disposition | Closing route |
+|-----|-----------------|-------------|---------------|
+| 1 — `FactorPolars` not interchangeable on the `read()` path | Yes | accept-and-fix | Manual fix by the user; plan 03-06 superseded |
+| 2 — synthesized `amount` makes `vwap` identically `close` | Yes | **dismissed** | None; plan 03-07 superseded |
+
+### Gap 1 — accept, fix by a smaller route than 03-06 planned
+
+The gap is real and stays open until the fix lands. Plan `03-06` proposed a broader change;
+the user chose a narrower one: have `FactorPolars.read()` resolve `config.factor_names` from
+the backend's own lazyframe schema, reusing the expression `cal()` already uses.
+
+```python
+self.data_backend.get_lazyframe().collect_schema().names()   # minus _INDEX_COLUMNS
+```
+
+Verified empirically on 2026-09-06 against an `XrBackend` holding a two-factor store: the
+call returns `['timestamp', 'symbol', 'MOM_5', 'MOM_20']`, and removing `_INDEX_COLUMNS`
+leaves exactly `['MOM_5', 'MOM_20']` — identical to `data_vars`.
+
+Two properties of this route worth recording, because they are the reasons it was chosen
+over `XrBackend.data_vars`:
+
+- **It is backend-agnostic.** `get_lazyframe()` is on the `DataBackend` interface and is
+  implemented by both `XrBackend` and `PlBackend`; `data_vars` exists only on `XrBackend`.
+  Resolving names through the interface rather than through one concrete backend is the
+  same interchangeability property (D-03) that this gap is about, so the fix does not
+  reintroduce a backend dependency while removing one.
+- **Its cost is real but small.** `XrBackend.get_lazyframe()` materializes via
+  `to_dataframe()`. Measured at **0.062 s** on an 8M-cell store (2000 timestamps × 500
+  symbols × 8 variables) versus 0.000016 s for `data_vars`. A large ratio, but a one-time
+  call inside `read()`; it was not treated as a reason to prefer the concrete accessor.
+
+Still open under this gap and NOT addressed by the names fix alone — carry these forward
+if they matter:
+
+- The regression test driving **both** backends through `save() → fresh instance →
+  read() → _get_factor_names()` with `factor_data_strategy="read"`. Without it, the
+  asymmetry stays invisible to a green suite, which is how it survived in the first place
+  (`tests/test_factor_hierarchy.py:430-522` pins `factor_data_strategy="cal"`).
+- The false `read()` precondition still asserted in prose in four places:
+  `base/factor_polars.py` class docstring (L45-46) and its `RuntimeError` message
+  (L65-70), `tests/test_factor_polars.py:103-105`, and `README.md:34-40`. Fixing the code
+  without fixing these leaves shipped documentation that was wrong for a different reason.
+
+### Gap 2 — dismissed by user decision
+
+Dismissed on 2026-09-06 at the user's direction ("第二个可以忽略"). **No technical
+rationale was offered, and none is invented here.** The finding is not withdrawn — it was
+established empirically by the verifier and independently by `03-REVIEW.md` CR-02 — so the
+following remains true and is accepted as a known condition of the codebase:
+
+- `dataset/stock.py:73-74` computes `amount = volume * close`.
+- KunQuant's `AllData` derives `vwap = amount / volume`, so for US equities
+  **`vwap` is identically `close`**.
+- Probing `Alpha158Stock` with `factor_names=["VWAP0","VWAP1","CLOSE1"]` produced `VWAP0`
+  with unique finite values `[1.0]` (std 5.2e-08 — a zero-variance feature) and `VWAP1`
+  allclose-identical to `CLOSE1`.
+- Five of Alpha158's emitted price-block features therefore carry zero incremental
+  information for US equities, and every `Alpha101Stock` alpha referencing `vwap`
+  (alpha025, alpha028, alpha041, alpha050, alpha083, …) degenerates into a close-price
+  variant.
+- `tests/test_factor_kunquant.py:144`
+  (`test_stock_to_kunquant_synthesizes_amount_as_adjusted_dollar_volume`) locks the current
+  formula in as expected behaviour, so the suite will stay green over it.
+
+**Nothing fails loudly.** That is the operative risk of this dismissal: a model or backtest
+consuming VWAP-derived features will silently receive a duplicate of the close price rather
+than an error.
+
+**Re-open this gap** if VWAP-derived features are used in a model (phase 4) or a backtest
+(phase 6). The accompanying `human_verification` item — choosing between a typical-price
+proxy and a vendor dollar-volume column from Tiingo — is dismissed with it; neither option
+is taken and the existing proxy stands.
+
+### Phase status
+
+Unchanged: `gaps_found`. Gap 1's fix has not landed yet, so the phase is not verified. Once
+it lands, gap 1's remaining items above and this disposition record are what a re-run of
+verification should be measured against — not plan `03-06`, which no longer describes the
+work being done.
