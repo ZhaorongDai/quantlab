@@ -3,8 +3,8 @@
 Before this file `dl_model/` had ZERO tests. `tests/test_model_layer.py`
 (batch 1) exercises `base/model.py` through a purpose-built `RecordingRegressor`
 stand-in, which means the SHIPPED heads -- `MLPRegressor`, `RNNRegressor`,
-`RNNClassifier` -- were never instantiated by anything in the suite. Two of the
-three defects this file locks were invisible for exactly that reason.
+`RNNClassifier` -- were never instantiated by anything in the suite. Every
+defect below was invisible for exactly that reason.
 
 What is locked here:
 
@@ -15,6 +15,9 @@ What is locked here:
 - H  every `update()` in `dl_model/` read `self.config.lr_refit`, a field
      `DLConfig` did not define -- `AttributeError` on the first line of the
      online-learning path.
+- The refit optimizer: `update()` built a fresh `AdamW` on every call, so
+     Adam's moment estimates were zeroed every step and online training
+     silently degraded to SGD with an odd warmup.
 - Rule-1 deviation: `RNNRegressor._val_one_epoch` returned `None`, which
      batch 1's per-epoch loss accumulation (`float(val_loss)`) turned into a
      hard `TypeError` on epoch 0.
