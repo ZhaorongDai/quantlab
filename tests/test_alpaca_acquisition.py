@@ -1175,6 +1175,96 @@ def test_a_field_first_appearing_after_row_100_is_not_dropped_by_inference(
     assert all(list(value) == ["@", "T"] for value in non_null)
 
 
+def test_a_refresh_over_an_overlapping_tick_window_does_not_double_the_tape(
+    mock_alpaca_client, acquisition_config
+):
+    """CR-04. Shard determinism is scoped to ONE window, not to the data.
+
+    `batch_key` hashes `start_date`/`end_date`, so the same session re-fetched
+    over a different window lands under a DIFFERENT filename in the SAME
+    partition directory. `refresh()` does this on every run: `last_date` is
+    inclusive, so the final session is always re-requested with a new start.
+
+    `1d`/`1m` absorb it -- `dataset/stock.py` runs `dedup_raw_frame`. Tick
+    deliberately does NOT dedup (D-16), because genuine quotes and trades share
+    `(timestamp, symbol)`. That correct decision is exactly what makes the
+    duplicate undetectable: a doubled trade tape is indistinguishable from a
+    busy one, and every volume/VWAP/microstructure statistic off this tier is
+    then silently wrong, permanently.
+
+    So: download one session, refresh over a window that overlaps it, and
+    assert the overlap session's row count is UNCHANGED.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    session = "2024-01-02"
+    rows = ["2024-01-02T14:31:00Z", "2024-01-02T14:32:00Z", "2024-01-02T14:33:00Z"]
+
+    def _count(root: Path) -> int:
+        shards = sorted(root.rglob("*.pqt"))
+        if not shards:
+            return 0
+        return sum(pl.read_parquet(shard).height for shard in shards)
+
+    cfg = _tick_config(
+        acquisition_config,
+        data_type="trades",
+        subdir="refresh_overlap",
+        start_date=session,
+        end_date=session,
+    )
+    mock_alpaca_client.calls = []
+    mock_alpaca_client.pages = [_tick_page("trades", {"AAPL": rows})]
+    AlpacaAcquisition(cfg).download()
+
+    root = Path(cfg.raw_data_dir_path)
+    assert _count(root) == 3
+    first_shards = {path.name for path in root.rglob("*.pqt")}
+
+    # A refresh whose window starts at the recorded (inclusive) watermark and
+    # extends forward: the vendor re-sends the whole overlap session, plus the
+    # new one. A different `start_date` -> a different `batch_key` -> a
+    # different shard filename in the same `date=2024-01-02/symbol=AAPL/`
+    # directory.
+    later = _tick_config(
+        acquisition_config,
+        data_type="trades",
+        subdir="refresh_overlap",
+        start_date=session,
+        end_date="2024-01-03",
+    )
+    mock_alpaca_client.calls = []
+    mock_alpaca_client.pages = [
+        _tick_page(
+            "trades",
+            {"AAPL": rows + ["2024-01-03T14:31:00Z", "2024-01-03T14:32:00Z"]},
+        )
+    ]
+    AlpacaAcquisition(later).refresh()
+
+    assert mock_alpaca_client.calls, "the refresh issued no request at all"
+
+    overlap_dir = next(root.rglob(f"date={session}"))
+    overlap_rows = sum(
+        pl.read_parquet(shard).height for shard in overlap_dir.rglob("*.pqt")
+    )
+    assert overlap_rows == 3, (
+        f"the {session} session doubled to {overlap_rows} rows across two "
+        f"shard files. Tick never dedups (D-16), so this duplication is "
+        f"permanent and invisible: shards "
+        f"{sorted(path.name for path in overlap_dir.rglob('*.pqt'))}"
+    )
+    # And the SUPERSEDING shard is a different file from the original, so the
+    # test is proving the cleanup rather than an accidental same-name overwrite.
+    assert {path.name for path in overlap_dir.rglob("*.pqt")} != first_shards
+
+    # The new session landed too -- the cleanup removes superseded shards, not
+    # data the run just fetched.
+    assert _count(root) == 5
+
+
 def test_a_malformed_symbol_raises_before_any_symbol_path_segment_is_built(
     mock_alpaca_client, acquisition_config
 ):

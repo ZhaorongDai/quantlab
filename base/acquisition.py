@@ -787,11 +787,70 @@ class Acquisition(ABC):
         and the ledger record cheap: a re-fetched page OVERWRITES its shard
         rather than adding a second one, so the cost of the window is a
         re-fetch and never a duplicated row (D-19 contract 4).
+
+        **The overwrite holds within ONE window and not across two.**
+        `batch_key` hashes `start_date`/`end_date`, so the same rows re-fetched
+        over a different window (every `refresh()`, whose inclusive `last_date`
+        re-requests the final session) land under a DIFFERENT name in the same
+        partition directory. `1d`/`1m` absorb that in `dedup_raw_frame`; tick
+        never dedups, so `_write_shard` removes the superseded shards instead --
+        see `_clear_superseded_shards`.
         """
         directory = Path(self.config.raw_data_dir_path)
         for key, value in zip(self._hive_keys, partition_values):
             directory = directory / f"{key}={value}"
         return directory / f"part-{batch_key}-{page_index:05d}.pqt"
+
+    #: Whether a partition directory is scoped to ONE symbol, which is what
+    #: makes `_clear_superseded_shards` sound. Derived from the hive keys
+    #: rather than from the frequency, so a future layout that gains or loses
+    #: the `symbol=` key gets the right answer without a second edit.
+    @property
+    def _partition_is_per_symbol(self) -> bool:
+        return "symbol" in self._hive_keys
+
+    def _clear_superseded_shards(self, directory: Path, batch_key: str) -> None:
+        """Delete shards in `directory` written by a DIFFERENT batch key.
+
+        Shard filenames are deterministic, but their determinism is scoped to
+        ONE `(vendor, frequency, start, end, symbols)` tuple: `batch_key` hashes
+        the window, so the SAME rows re-fetched over a DIFFERENT window land
+        under a second filename in the same partition directory rather than
+        overwriting the first. `refresh()` does exactly that on every run --
+        `last_date` is inclusive, so the final session is re-requested with a
+        new start and therefore a new key.
+
+        For `1d`/`1m` that is absorbed downstream: `dataset/stock.py` runs
+        `dedup_raw_frame(keep="last")`. **Tick deliberately does not dedup**
+        (D-16) -- genuine quotes and trades legitimately share
+        `(timestamp, symbol)` -- and that correct decision is exactly what makes
+        the duplicate undetectable afterwards: a doubled trade tape is
+        indistinguishable from a busy one, and every volume, VWAP and
+        microstructure statistic computed off it is silently wrong forever.
+
+        **Only sound when the partition is per-symbol**, hence the gate at the
+        call site. A `1d` (`month=`) or `1m` (`date=`) directory is shared by
+        every concurrently-running batch, so deleting another key's file there
+        would destroy a sibling batch's data. A tick directory is
+        `data_type=/date=/symbol=`, and one symbol belongs to exactly one batch
+        per run, so the only files this can remove are earlier runs' shards for
+        a session the current run is re-fetching in full -- which is precisely
+        what supersedes them.
+
+        Deliberately does NOT change the filename contract (D-19 contract 4):
+        no timestamp, no uuid, no counter is added. The name stays derivable;
+        what changes is that a superseded name is removed rather than left
+        beside its successor.
+        """
+        for stale in directory.glob("part-*.pqt"):
+            # `part-{batch_key}-{page:05d}.pqt` -- the key is the segment
+            # between the first and last dashes of the stem.
+            stem = stale.stem
+            if not stem.startswith("part-") or "-" not in stem[5:]:
+                continue
+            if stem[5:].rsplit("-", 1)[0] == batch_key:
+                continue
+            stale.unlink(missing_ok=True)
 
     def _write_shard(
         self, frame: pl.DataFrame, batch_key: str, page_index: int
@@ -819,6 +878,14 @@ class Acquisition(ABC):
             values = tuple(str(value) for value in values)
             path = self._shard_path(values, batch_key, page_index)
             path.parent.mkdir(parents=True, exist_ok=True)
+            if self._partition_is_per_symbol:
+                # The window is part of `batch_key`, so a re-fetch over a
+                # DIFFERENT window writes a SECOND file rather than overwriting
+                # the first. `1d`/`1m` absorb that in dedup; tick deliberately
+                # never dedups (D-16), so the duplicate would be permanent and
+                # invisible. See `_clear_superseded_shards` for why this is only
+                # sound where the directory belongs to one symbol.
+                self._clear_superseded_shards(path.parent, batch_key)
             group.drop(keys).write_parquet(path)
             written.append(str(path))
         return written
