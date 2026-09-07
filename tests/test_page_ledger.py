@@ -500,3 +500,112 @@ def test_the_token_is_recorded_verbatim_beside_a_token_free_fallback(
 
     # And it was actually SENT back verbatim on the next request.
     assert mock_alpaca_client.calls[1]["page_token"] == weird_token
+
+
+# ---------------------------------------------------------------------------
+# WR-08 -- the missing-fingerprint hole, and the flush that closes its source.
+# ---------------------------------------------------------------------------
+
+
+def test_a_ledger_with_pages_but_no_fingerprint_is_never_resumed_onto(tmp_path):
+    """WR-08. The roster-mismatch guard was skipped when the stored
+    `symbol_fingerprint` was `None`.
+
+    `describe()`'s own docstring names that state as the thing it exists to
+    prevent -- "a ledger with pages but no fingerprint could be resumed onto by
+    a different roster" -- and the loader then tolerated exactly it. Skipping
+    the check is the same failure with an extra step: the pages were fetched
+    for a roster nobody can identify, so resuming past them skips pages that
+    were never fetched for the symbols now in the batch.
+
+    Reachable via any hand-edited, externally produced or partially restored
+    ledger -- which this test writes directly, because that is the real source.
+    """
+    import json
+
+    from base.pageledger import PageLedger
+
+    path = tmp_path / "identityless.pages.json"
+    path.write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {
+                        "index": 0,
+                        "next_token": "tok-0",
+                        "rows": 10,
+                        "shards": [],
+                        "last_symbol": "A",
+                        "last_timestamp": "2024-01-02T00:00:00Z",
+                    }
+                ],
+                "symbols_with_data": ["A"],
+            }
+        )
+    )
+
+    ledger = PageLedger(str(path), symbols=("A", "B", "C"))
+    assert ledger.pages == []
+    assert ledger.resume_point() == (0, None), (
+        "an identity-less ledger with pages must restart at page 0, not resume "
+        "onto pages fetched for an unknown roster"
+    )
+    assert ledger.symbols_seen() == set()
+
+    # A caller that supplies NO roster is making no claim, so it still reads
+    # the file as-is -- the guard is about a roster mismatch, and there is no
+    # roster to mismatch.
+    assert PageLedger(str(path)).resume_point() == (1, "tok-0")
+
+
+def test_an_identityless_ledger_with_no_pages_keeps_its_forward_compatible_keys(
+    tmp_path,
+):
+    """The narrow scope of the rule above: no pages means nothing to resume
+    onto, so the payload is left alone rather than discarded.
+
+    Emptying it would throw away extra keys a NEWER writer put there, breaking
+    the additive-in-both-directions guarantee `_load` states.
+    """
+    import json
+
+    from base.pageledger import PageLedger
+
+    path = tmp_path / "future.pages.json"
+    path.write_text(json.dumps({"pages": [], "a_future_key": "kept"}))
+
+    ledger = PageLedger(str(path), symbols=("A",))
+    ledger.record_page(0, None, 1, ["A"], [])
+    assert json.loads(path.read_text())["a_future_key"] == "kept"
+
+
+def test_describe_puts_the_identity_on_disk_before_the_first_page(tmp_path):
+    """WR-08's other half. `describe()` mutated `_payload` WITHOUT flushing, so
+    the identity only reached disk on the first `record_page`.
+
+    That is what made the tolerated state reachable through the normal path: a
+    batch that died between `describe()` and its first successful page left a
+    file for the next run to inherit -- or left none at all, so nothing
+    recorded which roster the batch belonged to. Flushing here and refusing
+    there cover each other: one keeps the state from being written, the other
+    keeps it from being trusted.
+    """
+    import json
+
+    from base.pageledger import PageLedger
+
+    path = tmp_path / "described.pages.json"
+    ledger = PageLedger(str(path), symbols=("A", "B"))
+    ledger.describe("k", "alpaca", "1d", "2024-01-01", "2024-01-31", ("A", "B"))
+
+    assert path.exists(), "the identity must be on disk before the first request"
+    stored = json.loads(path.read_text())
+    assert stored["symbol_fingerprint"] == PageLedger.fingerprint(("A", "B"))
+    assert stored["symbol_count"] == 2
+    assert stored["pages"] == []
+
+    # And a DIFFERENT roster opening that same file still reads back empty --
+    # the fingerprint written above is what makes that possible.
+    other = PageLedger(str(path), symbols=("A", "C"))
+    assert other.symbol_fingerprint is None
+    assert other.pages == []

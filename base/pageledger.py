@@ -158,6 +158,14 @@ class PageLedger:
         skip pages that were never fetched for `D` and would attribute pages to
         a roster that no longer exists. Returning an empty payload restarts the
         batch at page 0 instead, which is correct and merely costs a re-fetch.
+
+        **A MISSING fingerprint on a ledger that has pages is treated as a
+        mismatch**, not as "no opinion". Skipping the check there is the same
+        failure with an extra step: the pages were fetched for a roster nobody
+        can now identify, so resuming onto them is resuming onto an unknown.
+        Reachable via any hand-edited, externally produced or partially
+        restored ledger; `describe()` now flushes, which closes the path that
+        produced it from this code (WR-08).
         """
         path = Path(self.path)
         if not path.exists():
@@ -177,8 +185,24 @@ class PageLedger:
         for key, value in empty.items():
             payload.setdefault(key, value)
 
-        if self.symbols is not None and payload["symbol_fingerprint"] is not None:
-            if payload["symbol_fingerprint"] != self.fingerprint(self.symbols):
+        if self.symbols is not None:
+            fingerprint = payload["symbol_fingerprint"]
+            if fingerprint is None:
+                # A ledger with PAGES but no fingerprint is exactly the state
+                # `describe()`'s docstring says must not be resumed onto -- "a
+                # ledger with pages but no fingerprint could be resumed onto by
+                # a different roster" -- and the loader used to tolerate it,
+                # skipping the check entirely and resuming past pages that were
+                # fetched for a symbol set nobody can now identify.
+                #
+                # An identity-less ledger with NO pages is harmless (there is
+                # nothing to resume onto, and `describe()` is about to stamp
+                # it), so it is left alone rather than discarded: emptying it
+                # would throw away any forward-compatible extra keys a newer
+                # writer put there.
+                if payload["pages"]:
+                    return self._empty()
+            elif fingerprint != self.fingerprint(self.symbols):
                 return self._empty()
 
         return payload
@@ -259,6 +283,15 @@ class PageLedger:
         Called before the first request so the fingerprint exists even for a
         batch that fails on page 0 -- a ledger with pages but no fingerprint
         could be resumed onto by a different roster.
+
+        **FLUSHES.** Without the flush the identity lived in memory only and
+        reached disk on the first `record_page`, so the very state the sentence
+        above forbids was reachable through the normal path: a batch that died
+        between `describe()` and its first successful page left a file with an
+        identity-less shape for the next run to inherit. `_load` now also
+        refuses a pages-carrying ledger with no fingerprint, so the two halves
+        cover each other -- one keeps the state from being written, the other
+        keeps it from being trusted (WR-08).
         """
         self._payload["batch_key"] = str(batch_key)
         self._payload["vendor"] = str(vendor)
@@ -268,6 +301,7 @@ class PageLedger:
         self._payload["symbol_count"] = len(symbols)
         self._payload["symbol_fingerprint"] = self.fingerprint(symbols)
         self.symbols = tuple(str(symbol) for symbol in symbols)
+        self._flush()
 
     def record_page(
         self,
