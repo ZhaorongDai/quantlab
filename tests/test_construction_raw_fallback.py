@@ -220,3 +220,142 @@ def test_a_populated_store_is_still_read_and_no_raw_conversion_runs(
     assert count_raw_conversions() == 0
     assert dataset.config.symbols == ("AAPL",)
     assert float(dataset.get_xarray_dataset()["close"].values[0, 0]) == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Defect 2 -- one ingest, exactly one raw-to-xarray conversion
+# ---------------------------------------------------------------------------
+
+
+def _ingest_config(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+) -> DatasetConfig:
+    """A pinned-symbol config over a raw tree with NO destination store -- the
+    exact shape `ingest_alpaca.py` / `ingest_tiingo.py` construct.
+    """
+    hive_raw_tree(
+        tmp_path / "raw",
+        "tiingo",
+        [
+            stock_pqt_row("2024-01-02", "AAPL"),
+            stock_pqt_row("2024-01-03", "AAPL"),
+            stock_pqt_row("2024-02-01", "AAPL"),
+        ],
+    )
+    return _make_dataset_config(
+        str(tmp_path / "raw" / "tiingo"),
+        str(tmp_path / "out.zarr"),
+        symbols=("AAPL",),
+    )
+
+
+def _substitute_panel() -> xr.Dataset:
+    values = np.full((1, 1), 7.0, dtype="float64")
+    return xr.Dataset(
+        {name: (["timestamp", "symbol"], values.copy()) for name in _OHLCV},
+        coords={
+            "timestamp": np.array(["2024-01-02"], dtype="datetime64[ns]"),
+            "symbol": ["ZZZZ"],
+        },
+    )
+
+
+def test_one_ingest_runs_exactly_one_raw_conversion(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+    count_raw_conversions: Callable[[], int],
+) -> None:
+    """`StockDataset(cfg).from_raw_data().save()` must convert raw ONCE.
+
+    Measured at 2 before the fix: the construction-time fallback materialises
+    the whole panel and the caller asks for the same panel again microseconds
+    later. Counted, not timed -- a timing assertion passes for the wrong
+    reason on a fast machine.
+
+    Reddening mutation: delete the early return from `from_raw_data()`.
+    """
+    config = _ingest_config(stock_pqt_row, hive_raw_tree, tmp_path)
+
+    dataset = StockDataset(config).from_raw_data()
+    dataset.save()
+
+    assert count_raw_conversions() == 1
+    assert Path(config.zarr_file_path).exists()
+    assert xr.open_zarr(config.zarr_file_path).sizes["timestamp"] == 3
+
+
+def test_the_constructors_panel_is_consumed_once_and_only_once(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+    count_raw_conversions: Callable[[], int],
+) -> None:
+    """The handoff is ONE-SHOT: a second `from_raw_data()` still re-converts.
+
+    The fix removes one duplicate; it does not install a cache.
+
+    Reddening mutation: do not clear the handoff at the top of
+    `from_raw_data()` -- the second call then skips too and the count stays 1.
+    """
+    config = _ingest_config(stock_pqt_row, hive_raw_tree, tmp_path)
+
+    dataset = StockDataset(config).from_raw_data()
+    assert count_raw_conversions() == 1
+
+    dataset.from_raw_data()
+
+    assert count_raw_conversions() == 2
+
+
+def test_a_window_changed_after_construction_forces_a_reconversion(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+    count_raw_conversions: Callable[[], int],
+) -> None:
+    """A date window mutated in place after construction invalidates the
+    handoff -- the panel the constructor built is no longer the panel asked
+    for.
+
+    Reddening mutation: drop the date-pair comparison from the guard.
+    """
+    config = _ingest_config(stock_pqt_row, hive_raw_tree, tmp_path)
+
+    dataset = StockDataset(config)
+    assert count_raw_conversions() == 1
+
+    dataset.config.start_date = "2024-02-01"
+    dataset.from_raw_data()
+
+    assert count_raw_conversions() == 2
+    assert dataset.get_xarray_dataset().sizes["timestamp"] == 1
+
+
+def test_a_replaced_backend_panel_forces_a_reconversion(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+    count_raw_conversions: Callable[[], int],
+) -> None:
+    """A backend whose panel was replaced no longer holds the object the
+    constructor produced, so the handoff must not fire -- identity, not
+    equality.
+
+    Reddening mutation: drop the identity comparison from the guard; the
+    substitute panel then survives the call.
+    """
+    config = _ingest_config(stock_pqt_row, hive_raw_tree, tmp_path)
+
+    dataset = StockDataset(config)
+    assert count_raw_conversions() == 1
+
+    dataset.data_backend.to_internal(_substitute_panel())
+    dataset.from_raw_data()
+
+    assert count_raw_conversions() == 2
+    loaded = dataset.get_xarray_dataset()
+    assert loaded["symbol"].values.tolist() == ["AAPL"]
+    assert loaded.sizes["timestamp"] == 3

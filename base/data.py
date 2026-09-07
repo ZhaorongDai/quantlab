@@ -58,6 +58,28 @@ class BaseDataset(ABC):
     #: tuple; it is never restated there.
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
+    #: ONE-SHOT handoff from the construction-time raw fallback to the FIRST
+    #: `from_raw_data()` call after it, and to nothing else.
+    #:
+    #: When `_reset_symbols()` cannot resolve a symbol axis from the store it
+    #: materialises the whole panel through `from_raw_data()`. The two ingest
+    #: scripts then immediately call `from_raw_data()` themselves, converting
+    #: the identical raw tree a second time microseconds later -- measured at
+    #: 2 conversions for one ingest. These two attributes let that first call
+    #: recognise the panel it is about to rebuild and return it instead.
+    #:
+    #: `_construction_raw_panel` holds the panel object the fallback produced;
+    #: `_construction_raw_window` holds the `(start_date, end_date)` pair it
+    #: was produced for.
+    #:
+    #: Deliberately CLASS attributes rather than `__init__` assignments: the
+    #: relative order of `self.data_backend = ...` and `self.config = config`
+    #: inside `__init__` is source-introspected by
+    #: `tests/test_dataset_hierarchy.py`, and a subclass that builds its
+    #: config outside `BaseDataset.__init__` must not hit a missing attribute.
+    _construction_raw_panel: Optional[xr.Dataset] = None
+    _construction_raw_window: Optional[tuple] = None
+
     def __init__(self, config: BaseDatasetConfig):
         # Ordering is load-bearing, and it is deliberately the OPPOSITE of
         # `base/factor.py:Factor.__init__`, which assigns its config first.
@@ -223,6 +245,18 @@ class BaseDataset(ABC):
                 f"({store_path}: {reason})"
             )
             self.from_raw_data()
+            # Hand the panel just materialised to the NEXT `from_raw_data()`
+            # call -- the caller's -- so one ingest converts raw once. Recorded
+            # on this fallback path ONLY: on the `read()` path below the
+            # caller's `from_raw_data()` is doing real, necessary work and must
+            # not be skipped.
+            self._construction_raw_panel = getattr(
+                self.data_backend, "data", None
+            )
+            self._construction_raw_window = (
+                self._config.start_date,
+                self._config.end_date,
+            )
         else:
             try:
                 self.read()
@@ -285,6 +319,65 @@ class BaseDataset(ABC):
         return self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 
     def from_raw_data(self) -> Self:
+        """Materialise the raw source into the backend: convert, `_clean()`,
+        store.
+
+        **The one-shot handoff.** When `_reset_symbols()` could not resolve a
+        symbol axis from the store it already ran this exact pipeline at
+        construction time; the ingest scripts then call this method again
+        immediately, and the raw tree was being converted TWICE for one
+        ingest. If the constructor left a panel behind, the backend still
+        holds that very object, and the config's date window is still the one
+        it was built for, this call returns it unchanged. The handoff is read
+        and CLEARED on entry whether or not it is used, so it is valid for
+        exactly one call -- a later `from_raw_data()` re-converts, as it
+        always did. This is a duplicate removal, not a cache.
+
+        What this deliberately does NOT change:
+
+        - the signature is still `from_raw_data(self) -> Self`, and no caller
+          passes or receives anything new;
+        - name/symbol derivation still happens EAGERLY at construction, from a
+          full raw materialisation -- D-05's construction-time-names contract
+          is untouched, and RV-02 stays open;
+        - with `symbols=None` (the chunked ingest path) `_reset_symbols()`
+          never fires, no handoff is ever recorded, and behaviour is identical
+          to before;
+        - when the store is POPULATED, `_reset_symbols()` takes the `read()`
+          branch and records no handoff, so this method converts exactly as it
+          always did. The skip only ever applies to a panel the constructor
+          itself just built.
+
+        One named narrowing: a caller that mutates the raw SOURCE location
+        (`config.raw_data_dir_path`, `vendor`, `frequency`) in place on a live
+        instance between construction and the first `from_raw_data()` receives
+        the constructor's panel rather than a re-read of the new location. The
+        guard compares the date window, not the source path. Nothing in this
+        repo does that; a changed date window IS detected.
+        """
+        pending_panel = getattr(self, "_construction_raw_panel", None)
+        pending_window = getattr(self, "_construction_raw_window", None)
+        # Cleared FIRST and unconditionally: the handoff must not survive this
+        # call whether or not it is used.
+        self._construction_raw_panel = None
+        self._construction_raw_window = None
+
+        if (
+            pending_panel is not None
+            # Identity, not equality: a backend whose panel was replaced no
+            # longer holds what the constructor produced.
+            and getattr(self.data_backend, "data", None) is pending_panel
+            and pending_window
+            == (self.config.start_date, self.config.end_date)
+        ):
+            logger.debug(
+                f"{self.class_name}: reusing the panel the construction-time "
+                f"raw fallback already materialised for "
+                f"{pending_window} -- skipping one duplicate conversion. The "
+                f"handoff is now spent; any later from_raw_data() reconverts."
+            )
+            return self
+
         data = self._raw_data_to_xr()
         data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
