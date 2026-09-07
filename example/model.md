@@ -648,12 +648,20 @@ where it is not associated with a value
 会老老实实跑满 `epochs` 个 epoch。回归锁：
 `tests/test_model_layer.py::test_early_stopping_disabled_runs_all_epochs`。
 
-**2. 早停的计数器是按 batch 走的，不是按 epoch。**
-`counter += 1` 写在验证 batch 循环**内部**（`base/model.py:641-654`），
-所以一个 epoch 里有几个验证 batch，counter 就可能加几次。
-验证集 batch 多的时候，`patience=5` 可能一个 epoch 就用完了。
-我第一次跑这个例子（`batch_size=16`，每 epoch 2 个验证 batch，`patience=3`）
-就在 epoch 2 被"早停"了。设 patience 时心里要按 `patience / 每epoch验证batch数` 折算。
+**2. 早停的计数器是按 batch 走的，不是按 epoch。**（**已于 2026-09-07 修复**）
+
+曾经：`counter += 1` 写在验证 batch 循环**内部**，一个 epoch 里有几个验证 batch，
+counter 就可能加几次。实测（`batch_size=16`，每 epoch 2 个验证 batch，`patience=3`）
+在 epoch 2 就被「早停」了；那时设 patience 得按 `patience / 每epoch验证batch数` 折算。
+
+现在验证循环只负责按样本数加权累加，循环结束后折算出**一个 epoch 级别的验证损失**，
+早停判断在循环外每个 epoch 只做一次。`early_stopping_patience=N` 就是字面意思：
+**连续 N 个 epoch 的验证损失没有改善**。回归锁：
+`tests/test_model_layer.py::test_early_stopping_patience_counts_epochs_not_batches`
+（它刻意让每个 epoch 有 4 个验证 batch——只有一个 batch 的用例区分不出这两种语义）。
+
+注意 `_val_one_epoch` 的返回值现在会被 `float()` 转成标量参与加权平均，
+所以它必须返回一个 0 维张量或 python 数（原本就是这么约定的）。
 
 **3. 张量的因子列顺序是「字母序」，不是 `get_factor_names()` 的顺序。**
 这是最阴的一个。`_train_dl` 里的 `.sortby(["timestamp", "symbol", "variable"])`

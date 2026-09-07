@@ -386,20 +386,30 @@ class BaseModel(ABC):
 
             self.model.eval()  # type: ignore
             with torch.no_grad():
+                # 早停要比较的是「整个 epoch 的验证损失」。`_val_one_epoch` 返回的
+                # 是单个 batch 的损失，所以这里按样本数加权累加，循环结束后再折算成
+                # 一个 epoch 级别的标量——counter 才是「连续多少个 epoch 没有改善」。
+                val_loss_sum = 0.0
+                val_sample_count = 0
                 for x_batch, y_batch in val_loader:
                     x_batch = x_batch.to(self.device, non_blocking=True)
                     y_batch = y_batch.to(self.device, non_blocking=True)
                     val_loss = self._val_one_epoch(epoch, x_batch, y_batch)
 
-                    if self.config.early_stopping:
-                        if val_loss < best_loss:
-                            best_loss = val_loss
-                            counter = 0
-                        else:
-                            counter += 1
-                            if counter >= patience:
-                                logger.info(f"Early stopping at epoch {epoch}")
-                                early_stopping = True
+                    batch_samples = int(x_batch.shape[0])
+                    val_loss_sum += float(val_loss) * batch_samples
+                    val_sample_count += batch_samples
+
+                if self.config.early_stopping and val_sample_count > 0:
+                    epoch_val_loss = val_loss_sum / val_sample_count
+                    if epoch_val_loss < best_loss:
+                        best_loss = epoch_val_loss
+                        counter = 0
+                    else:
+                        counter += 1
+                        if counter >= patience:
+                            logger.info(f"Early stopping at epoch {epoch}")
+                            early_stopping = True
 
                 for x_batch, y_batch in test_loader:
                     x_batch = x_batch.to(self.device, non_blocking=True)
