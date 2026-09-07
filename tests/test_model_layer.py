@@ -503,3 +503,106 @@ def test_num_null_is_zero_on_a_dense_panel(tmp_path):
     model.collect()
 
     assert model.num_null == 0
+
+
+# --------------------------------------------------------------------------
+# The vecbt skeleton: honest, not silent
+# --------------------------------------------------------------------------
+#
+# `_do_vecbt`, `_vecbt`, `RNNClassifier._vecbt` and `_train_dl(backtest=...)`
+# are four half-built pieces that never connect to each other. They are KEPT
+# (Phase 6 owns end-to-end backtesting, and the hook has to serve the intended
+# `MLConfig`/xgboost path as well as torch), but a caller must never be able to
+# ask for a backtest and get silence.
+
+
+def test_train_dl_rejects_a_truthy_backtest_flag(tmp_path):
+    """`_train_dl(backtest=...)` was declared and then never referenced -- a
+    caller asking for a backtest trained a model and got no backtest, with no
+    warning anywhere.
+
+    The rejection has to happen BEFORE training, which is what
+    `model.train_epochs == []` pins: on a real run this parameter is passed
+    once and the training it precedes takes hours, so discovering the gap
+    afterwards is barely better than not discovering it.
+    """
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+        epochs=2,
+    )
+    model = RecordingRegressor(cfg)
+    model.collect()
+
+    with pytest.raises(NotImplementedError, match="Phase 6"):
+        model._train_dl(
+            project_name="p",
+            experiment_name="e",
+            model_name="m.pth",
+            backtest=True,
+        )
+
+    assert model.train_epochs == [], (
+        "backtest=True must be rejected before any training runs"
+    )
+
+
+def test_train_dl_still_trains_when_backtest_is_falsy(tmp_path):
+    """The guard above must not turn the default path into a landmine:
+    `backtest=False` (the default, and what `_auto_train` passes) still trains
+    normally."""
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+        epochs=2,
+    )
+    model = RecordingRegressor(cfg)
+    model.collect()
+
+    model.train()
+
+    assert sorted(set(model.train_epochs)) == [0, 1]
+
+
+def test_do_vecbt_says_it_is_unbuilt_instead_of_returning_none(tmp_path):
+    """`_do_vecbt` read the backtest dataset, computed a local `price` and then
+    the function ended -- no return, no use, and nothing in the repository ever
+    called it. A caller who found it got `None` back and no indication that
+    nothing had happened.
+
+    Its two existing argument checks are deliberately kept in front of the
+    raise: a caller who has not configured `backtest_data` at all should still
+    hear about that first, since that is a mistake they can fix today.
+    """
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+    )
+    model = RecordingRegressor(cfg)
+
+    with pytest.raises(ValueError, match="Backtest dataset must be specified"):
+        model._do_vecbt()
+
+    model.config.backtest_data = SimpleNamespace(
+        config=SimpleNamespace(symbols=["S0"])
+    )
+    with pytest.raises(NotImplementedError, match="Phase 6"):
+        model._do_vecbt()
+
+
+def test_vecbt_stub_is_still_a_stub_and_names_phase_6(tmp_path):
+    """`BaseModel._vecbt` stays -- it is where a shared torch/non-torch
+    backtest hook belongs -- but its bare `raise NotImplementedError` said
+    nothing about who owns it or when."""
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+    )
+    model = RecordingRegressor(cfg)
+
+    with pytest.raises(NotImplementedError, match="Phase 6"):
+        model._vecbt(prices=None, signals=None)  # type: ignore[arg-type]

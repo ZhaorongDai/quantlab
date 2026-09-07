@@ -336,17 +336,33 @@ class BaseModel(ABC):
             self.optim = optim
 
     def _do_vecbt(self):
+        """训练后回测的入口。**目前还没有内容**，会直接 `NotImplementedError`。
+
+        这个方法**保留**，不是遗留垃圾：CLAUDE.md 已经确认 `MLConfig`/xgboost
+        这条非 torch 路径是要做的，所以一个日后同时服务 torch 和非 torch 模型的
+        回测钩子挂在基类上位置是对的——只是端到端回测归 Phase 6，现在它还是空的。
+
+        它以前**不报错**：读完 `backtest_data`、算出一个局部变量 `price`，
+        然后函数就结束了，既不返回也不使用（全库也没有任何地方调用它）。
+        调用方拿到 `None`，没有任何迹象表明什么都没发生。空实现要么报错，
+        要么就不该存在；「安静地返回 None」是两者里最糟的一种
+        （2026-09-07 改为显式抛出，`tests/test_model_layer.py::
+        test_do_vecbt_says_it_is_unbuilt_instead_of_returning_none` 锁住）。
+
+        前面两个参数检查**故意留在抛出之前**：`backtest_data` 没配是调用方
+        今天就能改的错误，应该先听到那个。
+        """
         if self.config.backtest_data is None:
             raise ValueError("Backtest dataset must be specified.")
 
         if self.config.backtest_data.config.symbols is None:
             raise ValueError("Backtest dataset symbols must be specified")
 
-        data = self.config.backtest_data
-        data.read()
-        price = data.data_backend.get_xarray_dataset(
-            ["timestamp", "symbol"]
-        ).sel(timestamp=slice(self.config.test_start, self.config.test_end))
+        raise NotImplementedError(
+            "_do_vecbt is a skeleton: end-to-end backtesting is owned by "
+            "Phase 6 and is not built yet. Until then run the backtest "
+            "explicitly (see train_model.py's hand-written vectorbt block)."
+        )
 
     def _train_dl(
         self,
@@ -355,6 +371,21 @@ class BaseModel(ABC):
         model_name: str,
         backtest: bool = False,
     ):
+        # `backtest` 曾经是个**纯粹的摆设**：签名里声明了，函数体里一次都没引用。
+        # 传 `backtest=True` 的人训完一个模型、拿不到任何回测，也收不到任何提示。
+        # 回测本身归 Phase 6（见 `_do_vecbt`），今天兑现不了，那就明确拒绝——
+        # 参数被静默忽略是所有选项里最差的一个。
+        #
+        # 拒绝必须发生在**训练之前**：这个参数在真实调用里只传一次，而它后面那段
+        # 训练要跑几个小时，训完再说「其实我不支持」跟不说没多大区别。
+        if backtest:
+            raise NotImplementedError(
+                "_train_dl(backtest=True) is not supported: end-to-end "
+                "backtesting is owned by Phase 6 and _do_vecbt is still a "
+                "skeleton. Train with backtest=False and run the backtest "
+                "separately."
+            )
+
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
             self.config.train_end,
@@ -838,4 +869,15 @@ class BaseModel(ABC):
         return optim
 
     def _vecbt(self, prices: pd.Series, signals: pd.Series):
-        raise NotImplementedError
+        """把「价格 + 信号」变成一次 vectorbt 回测的钩子。**尚未实现。**
+
+        `_do_vecbt` 是「取数并组织流程」那一半，这个是「拿到序列后真正跑回测」
+        那一半；两半都归 Phase 6。留着是因为它是那条路的正确位置，不是因为
+        它还有用——今天全库没有任何地方调用它。
+
+        以前这里是一句光秃秃的 `raise NotImplementedError`，异常消息是空字符串，
+        撞上的人既不知道谁负责、也不知道什么时候会有。
+        """
+        raise NotImplementedError(
+            "_vecbt is a skeleton: vectorbt integration is owned by Phase 6."
+        )

@@ -30,6 +30,7 @@ documented `WANDB_MODE=disabled` bypass.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 import xarray as xr
@@ -484,3 +485,27 @@ def test_train_dl_still_drops_the_training_optimizer(tmp_path):
     model.train()
     assert model.optim is None
     assert model.model is not None
+
+
+# --------------------------------------------------------------------------
+# The vecbt skeleton must be honest
+# --------------------------------------------------------------------------
+
+
+def test_rnn_classifier_vecbt_raises_instead_of_returning_none(tmp_path):
+    """`RNNClassifier._vecbt` computed four pandas Series and then the file
+    ended -- no return, no vectorbt call, no error. Four lines that look like
+    work and behave like `pass`.
+
+    The method is KEPT (Phase 6 owns end-to-end backtesting, and the entry/exit
+    convention encoded in those four lines is the starting point), but a caller
+    now hears that it is unbuilt instead of receiving `None`.
+    """
+    cfg = _make_config(tmp_path, **_hp_for(RNNClassifier))
+    model = RNNClassifier(cfg)
+
+    prices = pd.Series([1.0, 2.0, 3.0])
+    signals = pd.Series([1, 0, 1])
+
+    with pytest.raises(NotImplementedError, match="Phase 6"):
+        model._vecbt(prices=prices, signals=signals)

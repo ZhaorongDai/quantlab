@@ -622,28 +622,48 @@ elif isinstance(self.config, MLConfig):
 `MLConfig` 这个 dataclass 存在、`MlBackend` 存在，但没有任何一条路把它们接起来。
 今天想接 LightGBM 之类，要么自己写一条 `_train_ml`，要么用 `DLConfig` 硬套。
 
-**2. `_do_vecbt` 取完价格就停了。**
-`base/model.py:507-526` 的最后一行是：
+**2/3/4. 回测骨架还是空的——但现在它会说出来。**（**已于 2026-09-07 改造**）
 
-```python
-price = data.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sel(
-    timestamp=slice(self.config.test_start, self.config.test_end)
-)
+`_do_vecbt`、`_vecbt`、`RNNClassifier._vecbt`、`_train_dl(backtest=...)`
+是四块互不相连的半成品。它们**没有被删掉**：CLAUDE.md 已经确认
+`MLConfig`/xgboost 这条非 torch 路径要做，一个日后同时服务 torch 和非 torch
+模型的回测钩子挂在基类上位置是对的；端到端回测归 **Phase 6**，只是现在还没内容。
+
+改的是它们**失败的方式**——空实现要么报错，要么就不该存在，
+「安静地返回 None」是两者里最糟的一种：
+
+| 曾经 | 现在 |
+|---|---|
+| `_do_vecbt` 读完 `backtest_data`、算出一个局部变量 `price`，函数就结束了，调用方拿到 `None` | 两个既有参数检查保留在前（`backtest_data` 没配是今天就能改的错误），之后 `NotImplementedError`，消息里点名 Phase 6 |
+| `_train_dl(backtest=...)` 签名里声明、函数体里一次都没引用 | 传真值时在**训练开始之前**就 `NotImplementedError`。拒绝必须前置：这参数真实调用里只传一次，后面那段训练要跑几个小时，训完再说「其实我不支持」跟不说差别不大 |
+| `BaseModel._vecbt` 是一句光秃秃的 `raise NotImplementedError`，异常消息是空字符串 | 仍是 stub（**刻意保留**），但消息点名 Phase 6 |
+| `RNNClassifier._vecbt` 算完四个 pandas Series 就到文件末尾——不返回、不调用 vectorbt、不报错 | 先抛 `NotImplementedError`；那四行原样抄进 docstring 保留 |
+
+最后一格值得单独说：那四行**跑不起来**。写测试时实测到
+
+```
+pandas.errors.IndexingError: Unalignable boolean Series provided as indexer
 ```
 
-`price` 赋值之后函数就结束了，既不返回也不使用。而且**全库没有任何地方调用 `_do_vecbt`**。
-不要以为「训练完会自动回测」。
+——`long_exits = long_entries[short_entries == 1]` 拿 `short_entries` 的布尔掩码
+去索引 `long_entries`，而这两个是同一个 Series 的互补子集、index 天然不相交。
+除了「一个多头信号都没有」的退化输入，任何信号序列都会炸（`[1,0,1]`、`[0,1]`、
+`[1,1]`、`[1,0,0,1,1]` 全部抛异常）。让它先执行，等于把「Phase 6 还没做」换成
+一句莫名其妙的 pandas 索引错误——那不是变诚实，只是换了一种骗法。所以四行
+降级成 docstring 里的记录（保留作者的进出场约定：0=做空、1=做多），
+`short_exits` 那行同样可疑，Phase 6 接手时两行都要重新推导，不要照抄。
 
-**3. `_train_dl(backtest=...)` 这个参数完全没被使用。**
-签名里有 `backtest: bool = False`，函数体里一次都没引用它；
-`_auto_train` 调用时也没传。是个纯粹的占位。
+**全库仍然没有任何地方调用 `_vecbt` / `_do_vecbt`**，真正跑回测的代码还是
+`train_model.py` 脚本里手写的那段。不要以为「训练完会自动回测」——只是现在
+你如果那么以为，会立刻收到一个点名 Phase 6 的异常，而不是一片安静。
 
-**4. `_vecbt(prices, signals)` 同样是死路。**
-基类里它是 `raise NotImplementedError`（`base/model.py:1088`）。
-`dl_model/rnn_classification.py:514` 里 `RNNClassifier` 覆写了它，但函数体算完
-四个 pandas Series 之后文件就结束了——不返回、不调用 vectorbt。
-而且**全库没有任何地方调用 `_vecbt` 或 `_do_vecbt`**（grep 只命中三处定义）。
-真正跑回测的代码在 `train_model.py` 脚本里手写。
+由 `tests/test_model_layer.py::test_train_dl_rejects_a_truthy_backtest_flag`
+（并断言拒绝发生在训练之前）、`::test_train_dl_still_trains_when_backtest_is_falsy`
+（保证默认路径没被这道闸门误伤）、
+`::test_do_vecbt_says_it_is_unbuilt_instead_of_returning_none`、
+`::test_vecbt_stub_is_still_a_stub_and_names_phase_6` 和
+`tests/test_dl_models.py::test_rnn_classifier_vecbt_raises_instead_of_returning_none`
+共同锁住。
 
 **5. `dl_model/mlp.py:MLPRegressor` 曾经是坏的，三处。**（**已于 2026-09-07 修复**）
 以前它同时踩了三个坑，而且是层层挡在后面的三个——修掉一个才能看见下一个：

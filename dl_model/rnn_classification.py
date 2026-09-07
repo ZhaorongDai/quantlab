@@ -519,7 +519,35 @@ class RNNClassifier(BaseModel):
         optimizer.step()
 
     def _vecbt(self, prices: pd.Series, signals: pd.Series):
+        """`BaseModel._vecbt` 的分类器版本。**尚未实现。**
+
+        它以前算完四个 Series 就到文件末尾了：不返回、不调用 vectorbt、不报错。
+        调用方拿到 `None`——四行看起来在干活的代码，实际效果等同于 `pass`。
+
+        那四行**没有被删掉**，原样抄录在下面：它们记录了作者对分类信号的进出场
+        约定（0=做空、1=做多），是 Phase 6 接手时的起点。
+
+        ```python
         short_entries = signals[signals == 0]
         long_entries = signals[signals == 1]
         short_exits = long_entries[long_entries == 1]
         long_exits = long_entries[short_entries == 1]
+        ```
+
+        但它们是**注释而不是代码**，因为最后一行根本跑不起来：
+        `short_entries` 和 `long_entries` 是同一个 Series 的两个互补子集，
+        index 天然不相交，拿前者的布尔掩码去索引后者，pandas 直接
+        `IndexingError: Unalignable boolean Series provided as indexer`。
+        实测除了「一个多头信号都没有」这种退化输入，任何信号序列都会炸
+        （`[1,0,1]` / `[0,1]` / `[1,1]` / `[1,0,0,1,1]` 全部抛异常）。
+
+        留着让它先执行，等于把「Phase 6 还没做」换成一句莫名其妙的 pandas
+        索引错误——那不是变诚实，只是换了一种骗法。所以先抛。
+        第三行的 `short_exits` 也可疑（用多头掩码算空头出场），Phase 6 接手时
+        这两行都要重新推导，不要照抄。
+        """
+        raise NotImplementedError(
+            "RNNClassifier._vecbt is a skeleton: only the entry/exit series "
+            "were ever sketched (see the docstring; the long_exits line does "
+            "not run). vectorbt integration is owned by Phase 6."
+        )
