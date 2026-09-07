@@ -5,12 +5,12 @@ current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
 stopped_at: "Completed quick task 260906-x2s (new-listing support: widen + rebuild + --on-new-listing; full suite 405 passed)"
-last_updated: "2026-09-07T04:15:05.483Z"
+last_updated: "2026-09-07T05:09:50.540Z"
 last_activity: 2026-09-07
 last_activity_desc: "Quick task 260906-x2s complete (new-listing support: XrBackend widen + Dataset rebuild + --on-new-listing; 405 passed)"
-state_head: ea468870d8c3a981ac28f7f66b6693b0e05bfac7
+state_head: 4d183364c5f3b961e456215fbc283c86927ea617
 progress:
-  total_phases: 9
+  total_phases: 10
   completed_phases: 1
   total_plans: 29
   completed_plans: 29
@@ -178,6 +178,7 @@ Recent decisions affecting current work:
 
 - Phase 03.1 inserted after Phase 3: Index Historical Constituents Data Layer — daily point-in-time S&P 500 / Nasdaq-100 membership panels as xarray (URGENT)
 - Phase 03.2 inserted after Phase 3: Multi-source acquisition abstraction: batched multi-symbol fetching + pagination in the Acquisition base, plus Alpaca source classes (daily bars, minute bars, corporate actions, high-frequency quotes/trades with a volume guard) (URGENT)
+- Phase 03.3 inserted after Phase 03.2: Tick data storage: a non-dense event-axis Dataset and its raw-to-Zarr conversion. Committed follow-up deferred from 03.2 by D-18, not urgent work.
 
 ## Deferred Items
 

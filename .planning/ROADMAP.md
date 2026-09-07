@@ -18,6 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: Factor Computation (KunQuant + Polars)** - Users can compute Alpha158 factors (batch + streaming) via KunQuant and new factors via Polars
 - [ ] **Phase 03.1: Index Historical Constituents Data Layer** - Point-in-time index membership panels (verification: gaps_found)
 - [x] **Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca)** - Second vendor through the same batched, resumable, volume-guarded `Acquisition` abstraction (completed 2026-09-06)
+- [ ] **Phase 03.3: Tick Data Storage (Non-Dense Event Axis)** - Raw tick shards reach a persisted store via a tick-specific Dataset with a non-dense event axis
 - [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
 - [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
 - [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
@@ -204,6 +205,29 @@ Plans:
 **Cross-cutting constraints:**
 
 - All 43 tests in `tests/test_tiingo_acquisition.py` + `tests/test_tiingo_quota.py` are green at every commit (D-02 hard constraint — this plan modifies `base/acquisition.py`)
+
+### Phase 03.3: Tick Data Storage (Non-Dense Event Axis)
+
+**Goal**: Raw tick shards (quotes/trades) reach a queryable, persisted store through a tick-specific
+`Dataset` whose storage shape is a non-dense EVENT axis -- never the dense `[timestamp, symbol]` panel.
+**Depends on**: Phase 03.2
+**Requirements**: TBD (D-16, D-18 carried forward from 03.2)
+**Success Criteria** (what must be TRUE):
+
+  1. TBD -- run `/gsd-discuss-phase 03.3` to settle the storage shape, then `/gsd-plan-phase 03.3`
+
+**Carried-forward constraints from Phase 03.2 (do NOT re-derive):**
+
+- The dense `[timestamp, symbol]` panel CANNOT express an irregular event axis. Reaching for it is what
+  produced the 16 GiB out-of-memory failure in quick task 260906-13w. `_scan_raw` already reads tick
+  correctly -- root-scoped, symbol preserved, UNDEDUPED -- and stops there.
+- Many genuine quotes/trades share one `(timestamp, symbol)`; that is what a tick stream IS.
+  `dedup_raw_frame` exists only for `.to_xarray()`'s unique-index requirement and must never be applied
+  to tick (D-16 resolution preservation).
+- Trade/quote condition-code and exchange-code decoding (`stocks/meta/conditions`, `stocks/meta/exchanges`)
+  belongs to this phase, not to acquisition (03.2 COVERAGE.md).
+
+**Plans**: TBD
 
 ### Phase 4: Baseline Return Prediction Model
 
