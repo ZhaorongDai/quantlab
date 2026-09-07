@@ -23,6 +23,20 @@ six defects written up in `example/model.md` ("常见坑" / "已知的不完整�
 - L2 `_train_dl` ended with `del self.model`, so `predict()` right after
      `train()` was impossible.
 
+Batch 3 added, for defects surfaced by the same doc pass:
+
+- `num_null` ended in `.values[0]` on a 0-d array, so every read raised
+     `IndexError` -- a property that is annotated `-> int` and recommended by
+     `example/model.md` as the pre-training missing-value check.
+- the vecbt skeleton (`_do_vecbt`, `_vecbt`, `_train_dl(backtest=...)`)
+     did nothing, silently. It is KEPT -- Phase 6 owns end-to-end backtesting
+     and the hook must eventually serve the `MLConfig`/xgboost path too -- but
+     it now says so instead of returning `None`.
+
+Batch 3 also renamed the three per-batch hooks from `_*_one_epoch` to
+`_*_one_batch` (defect B above is what that name cost) and the two collectors
+from `_get_*_batch` to `_collect_all_*`.
+
 Everything here is synthetic, CPU-only and offline: no zarr store, no
 credentials, no network, no GPU. `collect()` only ever calls six methods on a
 factor/label object, so `FakePanel` below stands in for the whole

@@ -21,6 +21,9 @@ What is locked here:
 - Rule-1 deviation: `RNNRegressor._val_one_batch` returned `None`, which
      batch 1's per-epoch loss accumulation (`float(val_loss)`) turned into a
      hard `TypeError` on epoch 0.
+- (batch 3) `RNNClassifier._vecbt` computed four pandas Series and then the
+     file ended -- no return, no vectorbt call, no error. The method is kept,
+     but it now raises instead of handing back `None`.
 
 Everything is synthetic, CPU-only and offline: no zarr store, no credentials,
 no network, no GPU. `collect()` only ever calls six methods on a factor/label
