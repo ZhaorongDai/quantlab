@@ -167,25 +167,70 @@ class BaseDataset(ABC):
         config-assignment time.
 
         The default is exactly the behaviour every dataset class has always
-        had: when the caller pinned a symbol subset, read the store (falling
-        back to `from_raw_data()` if it does not exist yet) and overwrite
-        `config.symbols` with whatever the store actually holds.
+        had: when the caller pinned a symbol subset, resolve the symbol axis
+        from the store -- falling back to `from_raw_data()` when the store
+        cannot supply one -- and overwrite `config.symbols` with whatever was
+        actually resolved.
+
+        **Three cases, decided BEFORE `read()` is called.** The store is
+        probed with `_stored_symbol_axis()`, which answers coordinate-only and
+        lazily:
+
+        - **absent** (`None`, no store on disk): fall back to
+          `from_raw_data()`.
+        - **present and POPULATED** (a non-empty list): `read()`, exactly as
+          before.
+        - **present but EMPTY** (`[]`, or a store with no `symbol`
+          coordinate): fall back to `from_raw_data()` as well. This case is
+          reachable from ANY run that wrote a zero-row panel -- an acquisition
+          that fetched nothing, an aborted chunked ingest, a window that
+          pruned to nothing -- and it is why the probe cannot be replaced by
+          an `except` clause. An empty store does not raise
+          `FileNotFoundError`: `read()` SUCCEEDS and then `_filter()` ->
+          `filter_by_symbol` -> `.sel({"symbol": [...]})` raises
+          `ValueError: could not convert string to float` from INSIDE
+          `read()`, because zarr reads a zero-length symbol axis back as
+          float64. No handler on `read()` can see that as "no data here".
+
+        The inner `try/except FileNotFoundError` is KEPT rather than made
+        dead: it is still reachable if the store is removed between the probe
+        and the read.
 
         Overridable seam: a dataset whose symbol axis is derived from its own
         source rather than from a store -- or one whose `from_raw_data()`
         fallback would perform a remote fetch merely to construct the object
         -- overrides this to a no-op and resolves its symbols inside
-        `_raw_data_to_xr()` instead. Note the fallback only catches
-        `FileNotFoundError`, so for such a dataset any network or parse error
-        would otherwise escape `__init__`.
+        `_raw_data_to_xr()` instead. Only `FileNotFoundError` is caught around
+        the read, so for such a dataset any network or parse error would
+        otherwise escape `__init__`.
         """
-        try:
-            self.read()
-        except FileNotFoundError:
+        store_path = self.config.zarr_file_path
+        stored_symbols = self._stored_symbol_axis(store_path)
+        if not stored_symbols:
+            if stored_symbols is None and not Path(store_path).exists():
+                reason = "there is no store at that path"
+            elif stored_symbols is None:
+                reason = (
+                    "the store at that path carries no 'symbol' coordinate"
+                )
+            else:
+                reason = (
+                    "the store at that path is present but its symbol axis is "
+                    "EMPTY (a zero-row panel from an earlier run)"
+                )
             logger.warning(
-                f"{self.class_name} data not found, try to read from csv"
+                f"{self.class_name} data not found, try to read from csv "
+                f"({store_path}: {reason})"
             )
             self.from_raw_data()
+        else:
+            try:
+                self.read()
+            except FileNotFoundError:
+                logger.warning(
+                    f"{self.class_name} data not found, try to read from csv"
+                )
+                self.from_raw_data()
         symbols = tuple(self._get_symbols())
         self._config.symbols = symbols
 
