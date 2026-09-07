@@ -139,7 +139,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Pattern: Abstract Base Class with `read`/`write`/`to_internal`/`filter_by_*`.
 - Purpose: The single in-memory representation flowing between Dataset → Factor/Label → Model layers. All `.sel()`, `.combine_by_coords()`, and tensor-conversion code assumes this exact 2-D coordinate shape.
 - Examples: `base/data.py`, `base/factor.py`, `base/model.py`.
-- Pattern: Every layer's `get_xarray_dataset(["timestamp", "symbol"])` call enforces this shape at the boundary.
+- Pattern: layers call `get_xarray_dataset(["timestamp", "symbol"])` at the boundary, but note this does NOT enforce the shape: `XrBackend.get_xarray_dataset` ignores its `indexes` argument entirely (its body is `return self.data`). The convention is carried by `from_raw_data()` densifying onto the pinned axes, not by this call. Measured 2026-09-07; the knock-on is that `BaseDataset.time_interval` raises under `XrBackend`. See `example/backend.md` and `example/dataset.md`.
 - Purpose: Typed, serializable (`to_dict()`/`asdict`) parameter bags threaded through every domain object's constructor; each object's `config` property setter mutates the config on assignment (injecting inherited dates, resolved factor names, etc.) rather than the config being immutable.
 - Examples: `DatasetConfig`, `FactorConfig`, `DLConfig`, `MLConfig`.
 - Pattern: Dataclass + `to_dict()`, consumed both for object construction and for JSON-serialized checkpoint metadata (`base/model.py:_save_model`).

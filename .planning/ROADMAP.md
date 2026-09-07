@@ -219,7 +219,13 @@ Plans:
 **Carried-forward constraints from Phase 03.2 (do NOT re-derive):**
 
 - The dense `[timestamp, symbol]` panel CANNOT express an irregular event axis. Reaching for it is what
-  produced the 16 GiB out-of-memory failure in quick task 260906-13w. `_scan_raw` already reads tick
+  produced the out-of-memory failure in quick task 260906-13w -- accurately: a ~7.2 GiB float64
+  grid held together with a ~29.6M-row pandas frame and conversion scratch OOM'd a 16 GiB machine,
+  on FULL-MARKET DAILY data, not on tick. (The 03.2-06-SUMMARY wording this constraint was copied
+  from compresses that into "the 16 GiB OOM", which reads as though the panel were 16 GiB and as
+  though tick caused it; `ingest_us_equity.py`'s module header is the accurate source.) Tick would
+  be far worse, which is the point -- but the recorded failure is not tick's.
+  `_scan_raw` already reads tick
   correctly -- root-scoped, symbol preserved, UNDEDUPED -- and stops there.
 - Many genuine quotes/trades share one `(timestamp, symbol)`; that is what a tick stream IS.
   `dedup_raw_frame` exists only for `.to_xarray()`'s unique-index requirement and must never be applied
