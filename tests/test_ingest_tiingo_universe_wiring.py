@@ -203,6 +203,57 @@ def test_both_roster_modes_are_reachable_and_call_different_catalog_methods():
     ]
 
 
+def test_resolve_symbols_in_range_propagates_the_coverage_guard(
+    mock_universe_fetchers, tmp_path
+):
+    """03.1-VERIFICATION.md truth 3 (SC-3, DATA-05): the coverage-start refusal
+    must survive the path a real backfill takes, not merely the direct call.
+
+    `ingest_us_equity.py:352` reaches `UniverseCatalog.get_symbols_in_range()`
+    only through `utils.cli.resolve_symbols(..., mode="in_range")`. Before this
+    plan that path resolved a LEFT-CENSORED roster straight into a multi-year
+    download with no error and no warning: a 1900-01-01 window on
+    `sp500_constituent` came back as the 1976-censored roster, which is
+    indistinguishable from a complete one to every layer downstream of it.
+
+    A REAL `UniverseCatalog` is built here rather than a fake, because a fake
+    carries no `MEMBERSHIP_FETCHERS` registry and would therefore assert
+    nothing at all about the guard.
+    """
+    import utils.cli as cli
+    from acquisition.universe import UniverseCatalog
+    from base.config import UniverseConfig
+
+    catalog = UniverseCatalog(
+        UniverseConfig(
+            output_path=str(tmp_path / "reference" / "universe.parquet"),
+            cache_dir=str(tmp_path / "reference" / "_cache"),
+        )
+    ).build()
+
+    def _range_args(start_date: str) -> argparse.Namespace:
+        return argparse.Namespace(
+            universe=None,
+            symbols=None,
+            as_of_date=None,
+            category="sp500_constituent",
+            start_date=start_date,
+            end_date="2020-01-01",
+            limit=None,
+        )
+
+    with pytest.raises(ValueError):
+        cli.resolve_symbols(_range_args("1900-01-01"), catalog, mode="in_range")
+
+    # Positive control: without this the test would also pass if the wiring
+    # were broken for EVERY input (a resolver that raised unconditionally).
+    resolved = cli.resolve_symbols(
+        _range_args("2016-01-01"), catalog, mode="in_range"
+    )
+    assert isinstance(resolved, tuple)
+    assert resolved
+
+
 def test_the_category_map_exists_in_exactly_one_module():
     """The `--universe` choices are derived from one map. A per-script copy is
     how the map and the choices drifted apart the first time."""
