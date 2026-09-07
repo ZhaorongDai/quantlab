@@ -3,15 +3,18 @@
 Before this file `dl_model/` had ZERO tests. `tests/test_model_layer.py`
 (batch 1) exercises `base/model.py` through a purpose-built `RecordingRegressor`
 stand-in, which means the SHIPPED heads -- `MLPRegressor`, `RNNRegressor`,
-`RNNClassifier` -- were never instantiated by anything in the suite. Defect F below was
-invisible for exactly that reason.
+`RNNClassifier` -- were never instantiated by anything in the suite. Both defects
+below were invisible for exactly that reason.
 
-What is locked here (this task adds more in later commits):
+What is locked here:
 
 - F  `MLPRegressor` could not be instantiated at all
      (`__abstractmethods__ == {'_val_one_epoch'}`), and even past that its
      `_init_model` was missing the `hyperparameters` keyword the base passes
      and its `_preprocess` called `.fillna()` on a `torch.Tensor`.
+- H  every `update()` in `dl_model/` read `self.config.lr_refit`, a field
+     `DLConfig` did not define -- `AttributeError` on the first line of the
+     online-learning path.
 
 Everything is synthetic, CPU-only and offline: no zarr store, no credentials,
 no network, no GPU. `collect()` only ever calls six methods on a factor/label
@@ -28,6 +31,8 @@ from types import SimpleNamespace
 
 from base.config import DLConfig
 from dl_model.mlp import MLPRegressor
+from dl_model.rnn import RNNRegressor
+from dl_model.rnn_classification import RNNClassifier
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry -- deliberately tiny so a real training run is fast
@@ -127,6 +132,25 @@ def _make_config(tmp_path, *, epochs: int = 2, **overrides) -> DLConfig:
     )
     params.update(overrides)
     return DLConfig(**params)
+
+
+#: `RNNClassifier._init_model` indexes its `hyperparameters` dict directly
+#: (`hyperparameters["hidden_sizes"]` etc.), so it needs a differently-shaped
+#: dict from the MLP's. Kept tiny so the CPU runs stay fast.
+_RNN_CLASSIFIER_HP = {
+    "hidden_sizes": [8, 8],
+    "dropout_rates": [0.0, 0.0],
+    "hidden_sizes_linear": [8],
+    "dropout_rates_linear": [0.0],
+    "model_type": "gru",
+}
+
+
+def _hp_for(cls) -> dict:
+    if cls is RNNClassifier:
+        return {"hyperparameters": _RNN_CLASSIFIER_HP}
+    return {}
+
 
 # --------------------------------------------------------------------------
 # F. MLPRegressor must be instantiable AND trainable
@@ -234,3 +258,80 @@ def test_mlp_val_one_epoch_returns_a_floatable_loss(tmp_path):
     loss = model._val_one_epoch(0, x, y)
     assert float(loss) >= 0.0
     assert not loss.requires_grad
+
+
+# --------------------------------------------------------------------------
+# H. DLConfig.lr_refit
+# --------------------------------------------------------------------------
+
+
+def test_dlconfig_defines_lr_refit_defaulting_to_disabled():
+    """Defect H: both `update()` implementations open with
+
+        if self.config.lr_refit <= 0.0:
+            return
+
+    but `DLConfig` had no such field, so the online-learning path died with
+    `AttributeError: 'DLConfig' object has no attribute 'lr_refit'` on its
+    very first line. The default is 0.0 -- the value the guard the original
+    author wrote already treats as "online updating is off".
+    """
+    config = DLConfig(
+        factors=[],
+        labels=[],
+        model_save_dir="/tmp/does-not-matter",
+        factor_data_strategy="cal",
+        label_data_strategy="cal",
+    )
+    assert config.lr_refit == 0.0
+    assert "lr_refit" in config.to_dict()
+
+
+@pytest.mark.parametrize("cls", [RNNRegressor, RNNClassifier])
+def test_update_is_a_noop_under_the_default_config(tmp_path, cls):
+    """`update()` must be REACHABLE, and by default must do nothing.
+
+    Both surviving `update()` implementations -- `dl_model/rnn.py`'s and
+    `dl_model/rnn_classification.py`'s -- are covered, because both read
+    `config.lr_refit` on their first line.
+    """
+    model = cls(_make_config(tmp_path, **_hp_for(cls)))
+    model.collect()
+    model._init_model_and_optim()
+    before = [p.detach().clone() for p in model.model.parameters()]  # type: ignore
+
+    x = torch.zeros((4, N_SYMBOLS, 3))
+    y = torch.zeros((4, N_SYMBOLS, 2))
+    model.update(x, y)  # must not raise AttributeError on config.lr_refit
+
+    after = list(model.model.parameters())  # type: ignore
+    assert all(torch.equal(b, a) for b, a in zip(before, after)), (
+        "lr_refit defaults to 0.0, so update() must return before touching "
+        "any parameter"
+    )
+
+
+def test_update_steps_the_model_when_lr_refit_is_positive(tmp_path):
+    """The other half of H: the field is a real knob, not a placeholder.
+
+    Without this, `lr_refit = 0.0` could be satisfied by a field nothing ever
+    reads.
+    """
+    model = RNNRegressor(_make_config(tmp_path, lr_refit=1e-2))
+    model.collect()
+    model._init_model_and_optim()
+    before = [p.detach().clone() for p in model.model.parameters()]  # type: ignore
+
+    rng = np.random.default_rng(3)
+    x = torch.from_numpy(
+        rng.standard_normal((4, N_SYMBOLS, 3)).astype("float32")
+    )
+    y = torch.from_numpy(
+        rng.standard_normal((4, N_SYMBOLS, 2)).astype("float32")
+    )
+    model.update(x, y)
+
+    after = list(model.model.parameters())  # type: ignore
+    assert any(not torch.equal(b, a) for b, a in zip(before, after)), (
+        "lr_refit > 0 must actually take an optimizer step"
+    )

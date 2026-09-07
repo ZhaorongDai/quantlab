@@ -254,6 +254,18 @@ class DLConfig:
     # 训练相关
     hyperparameters: dict = field(default_factory=dict)
     lr: float = 1e-3
+    #: 在线学习（`dl_model/*.py` 的 `update()`）微调用的学习率。**0.0 表示关闭**。
+    #:
+    #: 这个字段以前不存在，但两个 `update()` 的第一行都读它，所以整条在线学习路径
+    #: 一调用就是 `AttributeError: 'DLConfig' object has no attribute 'lr_refit'`
+    #: （2026-09-07 修复，`tests/test_dl_models.py` 锁）。
+    #:
+    #: 补字段而不是删掉这处读取，理由在代码里：`update()` 自己写着
+    #: `if self.config.lr_refit <= 0.0: return`——作者本来就是按「配置里的一个开关，
+    #: 取零即关闭」设计的。删掉读取就必须替微调步骤挑一个学习率，而 docstring 明确
+    #: 要求它要**小于**训练用的 `lr`；这是个建模决策，代码里没有依据。默认 0.0 让
+    #: `update()` 在没人显式开启时是纯 no-op，所以补这个字段不改变任何既有行为。
+    lr_refit: float = 0.0
     epochs: int = 100
     early_stopping: bool = False
     early_stopping_patience: int = 5

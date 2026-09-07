@@ -654,9 +654,18 @@ baseline 回归模型。
 （那份的基础块输出 2 类，`self.out = nn.Linear(num_aux * 2, 2)`，逻辑自洽），
 `train_model.py` 导入的也是它。`rnn.py` 里的 `RNNRegressor` 才是有效的。
 
-**7. `update()`（在线学习）引用了不存在的配置字段。**
+**7. `update()`（在线学习）曾经引用不存在的配置字段。**（**已于 2026-09-07 修复**）
 `rnn.py` 和 `rnn_classification.py` 的 `update()` 第一行是 `if self.config.lr_refit <= 0.0`，
-但 `DLConfig` **没有 `lr_refit` 字段** → `AttributeError`。这条路目前不可用。
+但 `DLConfig` **没有 `lr_refit` 字段** →
+`AttributeError: 'DLConfig' object has no attribute 'lr_refit'`，整条在线学习路径不可用。
+
+现在 `DLConfig` 有 `lr_refit: float = 0.0`。**补字段而不是删掉这处读取**，理由在代码本身：
+`update()` 自己写着「取零即 return」，作者本来就是按「配置里的一个开关」设计的；
+删掉读取就必须替微调步骤挑一个学习率，而 docstring 明确要求它要**小于**训练用的 `lr`
+——那是个建模决策，代码里没有依据。默认 0.0 意味着没人显式开启时 `update()` 是纯 no-op，
+所以这个字段不改变任何既有行为。
+`tests/test_dl_models.py` 两头都锁：默认配置下 `update()` 一个参数都不动，
+`lr_refit > 0` 时必须真的走一步优化器（否则「字段加了但没人读」也能骗过测试）。
 
 **8. 「从 xarray 到推理张量」没有被封装。**（**已于 2026-09-07 修复**）
 以前 `_train_dl` 内联了转换逻辑，推理方要手抄一遍。现在是

@@ -339,7 +339,11 @@ class RNNRegressor(BaseModel):
         Update the model with a new batch of data (online learning).
 
         This method performs a single optimization step on the provided data,
-        using a small learning rate (`lr_refit`) to fine-tune the model.
+        using a small learning rate (`config.lr_refit`) to fine-tune the model.
+        `lr_refit` defaults to 0.0, i.e. online updating is OFF unless a caller
+        opts in; the guard below returns immediately in that case. The field
+        was added to `DLConfig` on 2026-09-07 -- before that this method raised
+        `AttributeError` on its first line.
 
         Args:
             x: Input features tensor of shape (batch_size, num_symbols, num_features).
