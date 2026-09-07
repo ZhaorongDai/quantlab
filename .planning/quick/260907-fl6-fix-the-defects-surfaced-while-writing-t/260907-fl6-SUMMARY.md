@@ -938,3 +938,221 @@ untouched:
   reader at it, which is the extent of what was in scope.
 - `.planning/codebase/{ARCHITECTURE,STRUCTURE}.md` still name the pre-rename
   methods. Left deliberately: the orchestrator owns `.planning/`.
+
+---
+
+# 260907-fl6 — batch 4 (code-review remediation: BL-01, BL-02, WR-01)
+
+**Input:** `.planning/quick/260907-fl6-.../REVIEW.md` (2 Critical, 7 Warning,
+6 Info). Scope for this batch was fixed at **BL-01, BL-02 and WR-01 only**.
+The other five Warnings and six Infos were deliberately NOT touched — see
+「Out of scope, still open」 below.
+
+**Suite: 478 → 491 passed** (`~/.venv/bin/python -m pytest -q`, 27.9s).
+Nothing skipped, nothing xfailed, nothing weakened. +13 tests.
+
+**Commits (3, one per finding):**
+
+| Commit | Finding |
+|---|---|
+| `b579ee1` | BL-01 — `validate_schema` goes silent when every required column is null |
+| `417b363` | BL-02 — `to_tensor` does no dtype normalization, so a float64 panel cannot train |
+| `fad4d46` | WR-01 — `RNNRegressor._init_model` accepts `hyperparameters` and ignores it |
+
+Every fix was **observed RED before it was written**. `test.py` (the user's own
+scratch edit) was never staged or touched.
+
+## BL-01 — `dataset/cleaning.py:validate_schema`
+
+**Observed RED.** With `open/high/low/close/volume` all-null and a `vwap`
+carrying one real value plus nulls, the only output was a single INFO line:
+
+```
+INFO | validate_schema: 4/4 (100.0%) (timestamp, symbol) cell(s) hold no bar at
+all — null in every required column. That is the dense panel's cartesian
+product (D-06) ...
+```
+
+Zero WARNING records, for any of the six columns — reproducing the reviewer's
+`[]` exactly. The mask is a logical AND over `isnull()` of every required
+column, so when the required columns are themselves all-null the mask is True
+everywhere, `~mask` is False everywhere, and every per-column warning is
+suppressed.
+
+### The decision: `logger.error` + disable the mask, do NOT raise
+
+**What "loud" was set to, and why.** The empty-ingest case is reported at
+`logger.error` — one level ABOVE the per-column warnings it used to swallow.
+That asymmetry is the point: it does not mean "one column looks odd", it means
+the ingest produced nothing usable at all, and it should outrank the warnings
+whose absence was the symptom. The mask is then disabled for that panel, so the
+per-column loop reports real whole-column counts instead of the zeros the mask
+forces. Both halves are needed — the ERROR alone would still leave six columns
+silently reporting nothing.
+
+**Why not `raise`, which the reviewer suggested first.** `validate_schema`
+raises today only on a SCHEMA violation (a missing column). An all-null panel
+is a data-CONTENT problem, and content problems are governed by D-07
+(flag-don't-delete) — the function's own docstring commits to not raising on
+nulls. More concretely: `clean_market_data()` runs inside `from_raw_data()` on
+every single ingest and **no caller anywhere catches anything**, so raising
+would turn a diagnostic into an unrecoverable abort. A chunked backfill whose
+window happens to contain no traded bar for any symbol (a holiday stretch, a
+universe of not-yet-listed tickers) would die on that window rather than log
+it and carry on. Escalate-and-continue keeps the operator informed without
+handing a data-quality check the power to kill an ingest.
+
+**Locked by 4 tests** in `tests/test_cleaning.py`:
+`test_an_all_null_required_panel_is_reported_at_error_level`,
+`::..._stops_suppressing_per_column_warnings`,
+`::..._still_does_not_raise`, and
+`test_the_sparse_panel_is_unaffected_by_the_all_null_escalation` — the last one
+is the "existing behaviour unchanged" pin the constraint asked for: the D-06
+sparse panel must still report at INFO, still emit no ERROR, and still keep
+`trade_count` silent. A new `_captured_records()` helper keeps the loguru LEVEL
+alongside the message, because "it was logged" is not the assertion that
+matters here; "it was logged louder" is.
+
+The docstring's false claim (a fully-withheld `vwap` still warns) is now
+corrected rather than deleted: it holds while at least one required column has
+data, and the degenerate case is documented directly beneath it.
+
+## BL-02 — `base/model.py:to_tensor`
+
+**Observed RED, real error, on a SHIPPED head:**
+
+```
+ValueError: RNN input dtype (torch.float64) does not match weight dtype
+(torch.float32). Convert input: input.to(torch.float32), or convert model:
+model.to(torch.float64)
+../../.venv/lib/python3.13/site-packages/torch/nn/modules/rnn.py:319: ValueError
+```
+
+Both `RNNRegressor` and `RNNClassifier` failed. Not a stub — the classes that
+ship, running `collect()` → `_init_model_and_optim()` → `train()`.
+
+### Killing the test blindness first
+
+The constraint was right that the existing 47 tests could not see this. The
+panel had to produce float64 **the way the real pipeline produces it**, so
+`FakePanel` gained `via_pandas=True`, which builds through
+`DataFrame.set_index(["timestamp", "symbol"]).to_xarray()` — literally
+`dataset/*._raw_data_to_xr()` — and casts nothing. `test_the_real_pipeline_
+panel_is_float64_not_float32` asserts the premise rather than assuming it; if
+`via_pandas` ever stopped yielding float64 the two training tests would go
+green for the wrong reason again, which is exactly how this escaped twice.
+
+### The fix, and the two stated decisions
+
+Normalized at `to_tensor` — the one seam where a panel becomes a tensor — and
+not in `_preprocess`. There are three `_preprocess` implementations; the fourth
+head would forget. `test_to_tensor_downcasts_a_float64_panel` would stay red
+under the per-head alternative, which is what makes that a pinned decision
+rather than a preference.
+
+1. **`torch.get_default_dtype()`, not a hardcoded `float32`.** Load-bearing,
+   not cosmetic: someone who runs `torch.set_default_dtype(torch.float64)` gets
+   float64 modules, and a hardcoded downcast would break them in the mirror
+   image of BL-02. Pinned by `test_to_tensor_follows_torchs_default_dtype_not_
+   a_hardcoded_float32`, which flips the global default (restored in `finally`)
+   and asserts a float32 panel comes back float64. That test goes red the
+   moment anyone writes `astype(np.float32)`.
+2. **float64 → float32 loses precision, and that is the right trade here.**
+   torch modules are float32 by default and market-data factors do not need
+   float64 mantissas. Stated in the docstring in those words so it stays a
+   decision. The cast is scoped to **floating** dtypes only: an int/bool panel
+   (a constituent-membership mask, a categorical code) passes through
+   untouched, because silently floating it would blur meaning rather than
+   precision. `test_to_tensor_leaves_non_floating_panels_alone` makes widening
+   that scope a decision rather than a drift.
+
+**Reversion pins** (the constraint's "would fail if someone reverted"):
+`test_to_tensor_downcasts_a_float64_panel` (dtype in, dtype out — fails on any
+revert), the `get_default_dtype` test (fails on a hardcoded float32), and
+`test_a_shipped_head_trains_on_a_float64_panel[RNNRegressor|RNNClassifier]`
+(fails with the real `ValueError` above).
+
+**One layering constraint hit en route, worth recording.** The first draft of
+the docstring named `FactorPolars`, `PlBackend` and `StockDataset` to explain
+where float64 comes from — and two existing purity guards caught it:
+`test_core_layer_purity_no_market_specific_logic` and
+`test_base_model_does_not_dispatch_on_concrete_factor_types`. `base/model.py`
+must not name a concrete dataset subclass or factor backend even in prose. The
+docstring was rewritten to describe the paths generically. The guards worked
+exactly as designed; noted here because a future editor will hit the same wall.
+
+## WR-01 — `dl_model/rnn.py:RNNRegressor._init_model`
+
+**Observed RED:** with `hidden_sizes=[6, 5], model_type="lstm"` in the config,
+the built module still had `[256, 128, 64]` GRU layers. `RNNClassifier`
+(parametrized in alongside) passed, isolating the defect to the regressor.
+
+**Decision: honour it, do not drop it.** The base class calls it by keyword
+(`hyperparameters=self.config.hyperparameters`), the abstract signature
+declares it, and both sibling heads read it — dropping the parameter would mean
+changing the abstract contract and breaking `_init_model_and_optim()`'s call.
+"Stop accepting it" was only available to the other three lies this session
+removed because those had no other reader. Every value now reads
+`.get(..., <the old hardcoded literal>)`, so no config that exists today —
+`train_model.py` included — builds a different model.
+
+**Making the dishonest test honest.** `tests/test_dl_models.py` fed
+`RNNRegressor` the MLP-shaped `{"hidden_size1": 16, "hidden_size2": 8}` and
+passed *because* the argument was ignored; honouring it would have left the
+test green via defaults, i.e. still green for the wrong reason. So `_hp_for()`
+now returns an RNN-shaped dict for **both** RNN heads (`_RNN_CLASSIFIER_HP` →
+`_RNN_HP`) and all six `RNNRegressor` call sites pass it explicitly. Two new
+tests assert on the **built module** — `test_rnn_head_hyperparameters_reach_
+the_built_module` (parametrized over both RNN heads) and
+`test_rnn_regressor_defaults_preserve_the_previously_hardcoded_shape`. Asserting
+on the module rather than the config is the whole point: the only observable
+difference between "honoured" and "accepted and discarded" is whether the number
+shows up in a layer.
+
+**Deliberately NOT done:** `RNNClassifier._init_model` still reads its dict with
+`[...]` (KeyError on a missing key) rather than `.get()`. It has no
+previously-hardcoded values to use as defaults, so inventing some would be
+deciding the user's network shape for them. The review's "three mutually
+incompatible contracts" observation is now two, and closing the last gap is a
+separate decision. Recorded in the code and in `example/model.md` #12.
+
+## Docs updated (same commits as their fixes)
+
+Following the session convention — rewrite as 「曾经…（已于 2026-09-07 修复）…
+现在…」 with the locking test name, appended as a new number so existing
+numbering stays stable.
+
+| Doc | Section | Commit |
+|---|---|---|
+| `example/dataset.md` | 「常见坑」 **#10** (new) — the mask swallowing every warning, the ERROR escalation, and the why-not-raise reasoning | `b579ee1` |
+| `example/dataset.md` | 核心契约 #2 — the structural/anomaly distinction now points at #10 for its degenerate case | `b579ee1` |
+| `example/dataset.md` | `read()` walkthrough step 7 — `_clean()`'s logging levels | `b579ee1` |
+| `example/model.md` | 「常见坑」 **#4** — rewritten from "dtype 基类不管，请在 `_preprocess` 里 `.float()`" to the fixed behaviour, with the real `ValueError` and the two decisions | `417b363` |
+| `example/model.md` | the `TinyRegressor` example's `_preprocess` — dropped the now-redundant `.float()` and says why it was there | `417b363` |
+| `example/factor.md` | 「常见坑」 **#13** (new) — why the `rel_volume_10` output says `float64`, and why the fix belongs in the model layer, NOT in the Polars graph | `417b363` |
+| `example/model.md` | 「常见坑」 **#12** (new) — the accepted-and-ignored `hyperparameters`, incl. the surviving `.get()` vs `[...]` split | `fad4d46` |
+
+## Out of scope, still open
+
+Not fixed, per the constraint. All still stand as written in `REVIEW.md`:
+
+- **WR-02** — early stopping tracks `best_loss` but `_save_model` writes
+  whatever the LAST epoch produced, which under early stopping is by
+  construction the `patience`-th non-improving epoch. `best_loss` is
+  write-only. **This is the most serious of the five left**; it silently
+  inverts the mechanism's purpose.
+- **WR-03** — `MLPRegressor._val_one_batch` logs to W&B unguarded
+  (`AttributeError` on any path that skips `_init_wandb`).
+- **WR-04** — `BaseDataset.time_interval` raises a bare `IndexError` on a
+  one-timestamp panel.
+- **WR-05** — `to_tensor` re-sorts both axes and returns a bare tensor;
+  `train_model.py:88` pairs predictions with an unsorted timestamp axis from a
+  *different* object. Touched the same method for BL-02 and deliberately did
+  not widen scope — the misalignment is at the call site, not in `to_tensor`.
+- **WR-06** — `_get_refit_optim` reads `lr_refit`, a `DLConfig`-only field,
+  from the base class, and pins a superseded model in memory.
+- **WR-07** — `MLPRegressor`'s inference contract contradicts its training
+  contract (train reshapes `[T,S,F]→[T,S*F]`, `_predict_nn` does not).
+- **IN-01..IN-06** — all untouched.
+
+Nothing dangerous was found beyond what `REVIEW.md` already records.
