@@ -147,7 +147,7 @@ Plans:
   3. A membership query before an index's coverage start raises rather than returning a silently incomplete roster
   4. The constituent dataset classes and the market dataset classes share one `BaseDataset` abstraction, with no OHLCV-only member (`_to_kunquant`/`_to_nautilus`) reachable from the constituent side, and adding a further index requires zero edits under `base/`
 
-**Plans:** 4/4 plans executed
+**Plans:** 5 plans (4/4 executed, 1 gap-closure pending)
 
 Plans:
 
@@ -155,6 +155,7 @@ Plans:
 - [x] 03.1-02-PLAN.md — Extract `IndexMembershipFetcher`, add `Nasdaq100MembershipFetcher` and the third universe category (wave 1)
 - [x] 03.1-03-PLAN.md — `IndexConstituentDataset` + `SP500ConstituentDataset`: interval-to-daily-panel densification with all six correctness locks (wave 2)
 - [x] 03.1-04-PLAN.md — `Nasdaq100ConstituentDataset`, registry-driven `UniverseCatalog` coverage guards, README (wave 3)
+- [ ] 03.1-05-PLAN.md — Gap closure (VERIFICATION truth 3 / DATA-05): extend the registry-driven coverage guard to `get_symbols_in_range()` so a pre-coverage window raises instead of silently returning a censored roster (wave 4)
 
 ### Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca) (INSERTED)
 
