@@ -48,7 +48,7 @@
 
 **1. 面板天然是矩阵，因子和模型吃的就是矩阵。** KunQuant 的编译图要的是 `[time, symbol]` 的连续数组，从 xarray 一步 `data[col].to_numpy()` 就是（`dataset/stock.py:_to_kunquant`）；`base/model.py` 假设的张量形状是 `[num_times, num_symbols, num_features]`。如果层间传的是 long-format DataFrame，每一层都要自己 pivot 一次，而 pivot 的列顺序、缺失填充、排序规则会在每一层各写一遍，迟早各写各的。
 
-**2. "没有这一格" 和 "这一格是 NaN" 必须能区分。** long-format 里一个标的当天没交易就是"没有这一行"，跟"数据缺了"长得一模一样。稠密面板把它变成一个显式的 NaN 格子——`dataset/cleaning.py:validate_schema` 正是靠这一点区分**结构性空缺**（必需列全为 null，说明这根 bar 根本不存在）和**异常空缺**（bar 在、某一列却是 null）。这个区分在 DataFrame 上表达不出来。
+**2. "没有这一格" 和 "这一格是 NaN" 必须能区分。** long-format 里一个标的当天没交易就是"没有这一行"，跟"数据缺了"长得一模一样。稠密面板把它变成一个显式的 NaN 格子——`dataset/cleaning.py:validate_schema` 正是靠这一点区分**结构性空缺**（必需列全为 null，说明这根 bar 根本不存在）和**异常空缺**（bar 在、某一列却是 null）。这个区分在 DataFrame 上表达不出来。（当必需列**全部**为空时这个区分本身失效，见「常见坑」#10。）
 
 **3. 多个变量共享同一套坐标。** 一个美股面板有 13 个数据变量（`open/high/low/close/volume/adj*/divCash/splitFactor/anomaly_flag`），它们共用一组 `timestamp` 和一组 `symbol`。xarray 存一份坐标，long DataFrame 把坐标重复 13 遍。
 
@@ -83,7 +83,7 @@
 4. 一次性交接检查：如果第 3 步的兜底刚刚已经建好过面板、backend 还持着同一个对象、日期窗口也没变，就直接返回，跳过一次重复转换（实测一次 ingest 会转两遍原始树）。这个交接**只对一次调用有效**，进入方法就无条件清空。
 5. `_raw_data_to_xr()`——**子类唯一必须实现的方法**。它内部要做完三件事：定位/解析原始文件、**去重**、`to_xarray()`。去重走 `dataset/cleaning.py:dedup_raw_frame(keep="last")`，必须在 `to_xarray()` 之前：非唯一的 `(timestamp, symbol)` MultiIndex 会让 `to_xarray()` 直接抛 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`。`keep="last"` 是因为 vendor 的月度重发里，后到的文件更可能是修正后的数据。
 6. **稠密化不需要写代码**。`pandas.DataFrame.set_index(["timestamp","symbol"]).to_xarray()` 本身就产出完整的笛卡尔积，缺的格子自动是 NaN。这就是为什么 `dataset/cleaning.py` 里一行 fill/interpolate 都没有——模块开头写得很直白：加 forward-fill 等于**编造流水线从未观测到的数据**。
-7. `_clean(data)`。默认实现是 `clean_market_data()` = `validate_schema()` + `flag_anomalies()`。前者对缺列**硬抛**，对 null 只 `logger.warning` 不抛（flag-don't-delete）；后者加一个布尔变量 `anomaly_flag`，在任何 price-like 列 ≤ 0、或 `close` 单步涨跌幅超过 `_EXTREME_JUMP_THRESHOLD`（0.5）处置 True，**从不修改原值**。这是个可覆写的钩子，非 OHLCV 的数据集必须覆写它。
+7. `_clean(data)`。默认实现是 `clean_market_data()` = `validate_schema()` + `flag_anomalies()`。前者对缺列**硬抛**，对 null 只 `logger.warning` 不抛（flag-don't-delete）——必需列全空这一种退化情形升到 `logger.error`，同样不抛（见「常见坑」#10）；后者加一个布尔变量 `anomaly_flag`，在任何 price-like 列 ≤ 0、或 `close` 单步涨跌幅超过 `_EXTREME_JUMP_THRESHOLD`（0.5）处置 True，**从不修改原值**。这是个可覆写的钩子，非 OHLCV 的数据集必须覆写它。
 8. `data_backend.to_internal(data)`——面板进内存，此时还没落盘。
 
 **C. 落盘与再读**
@@ -536,3 +536,15 @@ config setter 在边界上一次性拦掉了它，所以下游所有比较可以
 
 **9. 清洗里永远不要加 fill / interpolate。**
 `dataset/cleaning.py` 的模块文档写死了这一条：那等于编造流水线从未观测到的数据。异常只**打标**不修正（`anomaly_flag`），空缺只**报告**不填补。想改这个行为之前，先想清楚你是打算让一个 NaN 在三层之外变成一个看起来很正常的因子值。
+
+**10. 结构性掩码曾经会把**所有**告警一起吞掉。**（**已于 2026-09-07 修复**）
+`validate_schema` 的结构性掩码是「每一个必需列都为 null」的逻辑与，每一列的告警条件是 `isnull() & ~mask`。当必需列**自己**全空时——空的 vendor 响应被写进了 store、CSV 解析错列、backfill 整段失败——掩码在每一格都是 True，`~mask` 在每一格都是 False，于是**每一列的告警都被吞掉，一条都不剩**：
+
+```python
+# 五个必需列全 NaN，另有一个带真实值的 vwap
+validate_schema(panel)   # 曾经：WARNING 一条都没有；结构性报告是 logger.info，warning 级别也看不到
+```
+
+这正是这个检查存在的那个场景：一次彻底空掉的摄取会静默流进 Zarr、流进因子，最后进到一个把每个 NaN 都变成 `0.0` 的 `_preprocess`——第一个可见症状是模型在零上训练。（文档里"vendor 整列扣掉的 `vwap` 仍然会告警"这句话，在这个配置下当时是假的。）
+
+现在这个退化情形被单独识别出来，用 `logger.error` 报告——**故意比它原本吞掉的那些 warning 更响**，因为它意味着这次摄取什么可用数据都没产出——并且**对这个面板关掉掩码**，让逐列循环报出真实的整列 null 数。它**仍然不抛**：抛异常留给**模式**违约（缺列），而全空是**内容**问题，`clean_market_data()` 是在 `from_raw_data()` 里跑的、没有任何调用方接异常，抛出去等于让一次分块 backfill 死在第一个没有任何标的成交的窗口上。回归锁：`tests/test_cleaning.py::test_an_all_null_required_panel_is_reported_at_error_level`、`::test_an_all_null_required_panel_stops_suppressing_per_column_warnings`、`::test_an_all_null_required_panel_still_does_not_raise`，外加 `::test_the_sparse_panel_is_unaffected_by_the_all_null_escalation` 钉住 D-06 稀疏面板的行为没被这次升级带偏。

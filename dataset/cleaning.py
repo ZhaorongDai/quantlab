@@ -159,6 +159,24 @@ def validate_schema(
     `vwap` the vendor withheld entirely still warns — and the count it reports
     is now the number of cells that actually have a bar behind them.
 
+    **The mask's degenerate case: an EMPTY INGEST.** If the required columns
+    are themselves null everywhere — an empty vendor response written to a
+    store, a mis-parsed CSV, a fully-failed backfill — the mask is True on
+    every cell, `~mask` is False on every cell, and the per-column loop
+    reports 0 for EVERY column. This function used to go completely silent on
+    exactly the panel it exists to catch (the `vwap` claim above was false in
+    that configuration), and the structural report was `logger.info`, so
+    nothing surfaced at warning level either. Now that case is detected
+    up front, reported at `logger.error` — deliberately LOUDER than the
+    per-column warnings it was swallowing, because it means the ingest
+    produced nothing usable at all — and the mask is disabled for that panel
+    so the per-column loop reports real whole-column counts. It still does
+    not raise: raising is reserved for a SCHEMA violation (a missing column);
+    an all-null panel is a data-CONTENT problem, and `clean_market_data()`
+    runs inside `from_raw_data()` on every ingest with nothing catching it,
+    so an abort here would kill a chunked backfill on the first window where
+    nothing traded.
+
     **Two deliberate widenings, both closing blind spots.**
 
     - REQUIRED columns are now null-checked too. `open` missing on a bar whose
@@ -193,10 +211,24 @@ def validate_schema(
             is_null if structural_mask is None else (structural_mask & is_null)
         )
 
+    empty_ingest = False
     if structural_mask is not None:
         structural_cells = int(structural_mask.sum().item())
         total_cells = int(structural_mask.size)
-        if structural_cells > 0 and total_cells > 0:
+        if total_cells > 0 and structural_cells == total_cells:
+            empty_ingest = True
+            logger.error(
+                f"validate_schema: EVERY required column is null on EVERY one "
+                f"of the {total_cells} (timestamp, symbol) cell(s) — no bar "
+                f"exists anywhere in this panel. That is NOT the dense "
+                f"panel's cartesian product (D-06); it is an empty ingest: an "
+                f"empty vendor response, a mis-parsed file, or a fully-failed "
+                f"backfill. Required columns: {list(required_columns)}. The "
+                f"structural mask is disabled for this panel, so the "
+                f"per-column counts below are raw whole-column null counts. "
+                f"Not raising, per flag-don't-delete philosophy (D-07)."
+            )
+        elif structural_cells > 0 and total_cells > 0:
             logger.info(
                 f"validate_schema: {structural_cells}/{total_cells} "
                 f"({structural_cells / total_cells:.1%}) "
@@ -208,7 +240,19 @@ def validate_schema(
 
     for col in data.data_vars:
         column = data[col]
-        if structural_mask is not None and tuple(column.dims) == tuple(
+        if empty_ingest:
+            # The mask is True on every cell here, so `~mask` is False on
+            # every cell and the discriminating branch below would report 0
+            # for every column — the exact silence BL-01 describes. Fall back
+            # to raw counts: with no bar anywhere there is no bar-exists grid
+            # left to discriminate against.
+            null_count = int(column.isnull().sum().item())
+            scope = (
+                "raw null value(s) — whole-column count, because the "
+                "structural mask is disabled on an empty-ingest panel (see "
+                "the ERROR above)"
+            )
+        elif structural_mask is not None and tuple(column.dims) == tuple(
             structural_mask.dims
         ):
             null_count = int(

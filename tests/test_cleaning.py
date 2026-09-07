@@ -390,3 +390,151 @@ def test_the_structural_mask_follows_the_callers_required_columns() -> None:
 
     assert not any("Quote asset volume" in m for m in messages), messages
     assert REQUIRED_COLUMNS == ("open", "high", "low", "close", "volume")
+
+
+# ---------------------------------------------------------------------------
+# BL-01 (quick 260907-fl6): the structural mask must never suppress EVERY
+# warning. Reviewed 2026-09-07.
+# ---------------------------------------------------------------------------
+
+
+def _captured_records() -> tuple[list[tuple[str, str]], int]:
+    """Like `_captured_warnings()` but keeps the LEVEL alongside the message.
+
+    BL-01's fix escalates one condition to ERROR, and "it was logged" is not
+    the assertion that matters — "it was logged LOUDER than the per-column
+    warnings it used to swallow" is.
+    """
+    from loguru import logger
+
+    records: list[tuple[str, str]] = []
+    sink_id = logger.add(
+        lambda message: records.append(
+            (message.record["level"].name, message.record["message"])
+        ),
+        level="INFO",
+    )
+    return records, sink_id
+
+
+def _validate_capturing_records(
+    data: xr.Dataset, **kwargs
+) -> list[tuple[str, str]]:
+    from loguru import logger
+
+    records, sink_id = _captured_records()
+    try:
+        validate_schema(data, **kwargs)
+    finally:
+        logger.remove(sink_id)
+    return records
+
+
+#: Every required column null on every cell: an empty vendor response written
+#: to a store, a mis-parsed CSV, a fully-failed backfill. `vwap` carries one
+#: real value so that the "everything got swallowed" symptom is observable —
+#: before the fix this panel produced ZERO warnings of any kind.
+_ALL_NULL_REQUIRED = {
+    name: [[float("nan"), float("nan")], [float("nan"), float("nan")]]
+    for name in ("open", "high", "low", "close", "volume")
+}
+
+
+def test_an_all_null_required_panel_is_reported_at_error_level() -> None:
+    """BL-01: the mask is a logical AND over `isnull()` of every required
+    column, so when the required columns are THEMSELVES all null the mask is
+    True everywhere, `~mask` is False everywhere, and every column's warning
+    is suppressed. The structural report was `logger.info`, so nothing
+    surfaced at warning level either — a totally empty ingest flowed silently
+    into Zarr, into factors, and into a model whose `_preprocess` turns every
+    NaN into 0.0.
+
+    Reddening mutation: drop the `structural_cells == total_cells` branch —
+    this panel then emits nothing above INFO.
+    """
+    data = _panel(
+        {
+            **_ALL_NULL_REQUIRED,
+            "vwap": [[10.0, float("nan")], [float("nan"), float("nan")]],
+        }
+    )
+
+    records = _validate_capturing_records(data)
+
+    errors = [msg for level, msg in records if level == "ERROR"]
+    assert len(errors) == 1, records
+    assert "EVERY required column is null" in errors[0], errors[0]
+    assert "empty ingest" in errors[0], errors[0]
+    # The condition must be named loudly enough to outrank the per-column
+    # warnings it used to swallow.
+    assert not any(level == "INFO" for level, _ in records), records
+
+
+def test_an_all_null_required_panel_stops_suppressing_per_column_warnings(
+) -> None:
+    """The other half of BL-01: with the mask disabled for this panel, the
+    per-column loop must report REAL null counts again.
+
+    Before the fix `validate_schema` on this panel emitted an empty warning
+    list — `[]` — for all six columns including the five required ones.
+
+    Reddening mutation: keep the ERROR but leave the mask in place — every
+    per-column count collapses back to 0 and no warning is emitted.
+    """
+    data = _panel(
+        {
+            **_ALL_NULL_REQUIRED,
+            "vwap": [[10.0, float("nan")], [float("nan"), float("nan")]],
+        }
+    )
+
+    records = _validate_capturing_records(data)
+    warnings = [msg for level, msg in records if level == "WARNING"]
+
+    # 5 required columns, 4 nulls each, plus vwap's 3.
+    for name in ("open", "high", "low", "close", "volume"):
+        hits = [m for m in warnings if f"'{name}'" in m]
+        assert len(hits) == 1, (name, records)
+        assert "has 4 " in hits[0], hits[0]
+    vwap_hits = [m for m in warnings if "'vwap'" in m]
+    assert len(vwap_hits) == 1, records
+    assert "has 3 " in vwap_hits[0], vwap_hits[0]
+
+
+def test_an_all_null_required_panel_still_does_not_raise() -> None:
+    """D-07 (flag-don't-delete) is unchanged by BL-01's fix.
+
+    `validate_schema` raises only on a SCHEMA violation (a missing column).
+    An all-null panel is a data-CONTENT problem, and `clean_market_data()`
+    runs inside `from_raw_data()` on every ingest with no caller catching
+    anything — turning this into an abort would kill a chunked backfill on
+    the first window where nothing traded.
+    """
+    data = _panel(_ALL_NULL_REQUIRED)
+
+    result = validate_schema(data)
+
+    assert result is data
+
+
+def test_the_sparse_panel_is_unaffected_by_the_all_null_escalation() -> None:
+    """BL-01's fix must not make the D-06 cartesian product loud again.
+
+    This pins the pre-existing behaviour the escalation could plausibly
+    break: a partially-sparse panel still reports at INFO, still emits no
+    ERROR, and still excludes structurally-absent cells from `trade_count`.
+    """
+    data = _panel(
+        {
+            **_SPARSE_REQUIRED,
+            "trade_count": [[10.0, 11.0], [12.0, float("nan")]],
+        }
+    )
+
+    records = _validate_capturing_records(data)
+
+    assert not any(level == "ERROR" for level, _ in records), records
+    infos = [msg for level, msg in records if level == "INFO"]
+    assert len(infos) == 1, records
+    assert "hold no bar at all" in infos[0], infos[0]
+    assert not any("trade_count" in msg for _, msg in records), records
