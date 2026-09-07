@@ -16,6 +16,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Codebase Cleanup & Security Hardening** - Repo is clean, secure, dependency-resolvable, and documented accurately (completed 2026-09-05)
 - [x] **Phase 2: Multi-Market Data Foundation** - Users can ingest US equities and Binance spot data into unified, extensible xarray/Zarr storage (completed 2026-09-05)
 - [ ] **Phase 3: Factor Computation (KunQuant + Polars)** - Users can compute Alpha158 factors (batch + streaming) via KunQuant and new factors via Polars
+- [ ] **Phase 03.1: Index Historical Constituents Data Layer** - Point-in-time index membership panels (verification: gaps_found)
+- [x] **Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca)** - Second vendor through the same batched, resumable, volume-guarded `Acquisition` abstraction (completed 2026-09-06)
 - [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
 - [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
 - [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
@@ -272,6 +274,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
 | 2. Multi-Market Data Foundation | 8/8 | Complete   | 2026-09-05 |
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
+| 03.1 Index Historical Constituents Data Layer | 4/4 | Gaps Found |  |
+| 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |
