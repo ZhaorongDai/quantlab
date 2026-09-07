@@ -48,8 +48,9 @@ class FactorPolars(Factor):
 
     **Factor names are DERIVED from the computation graph** (D-05), at
     config-assignment time, via a bounded probe read: `_get_factor_names()`
-    runs `_get_factor_lazyframe()` over a few rows fetched through
-    `BaseDataset.head()` and reads the resulting schema. Names therefore come
+    runs `_get_factor_lazyframe()` over a few rows read straight from the
+    dataset's STORE via `BaseDataset.head()`, which opens the store by path,
+    and reads the resulting schema. Names therefore come
     from what the graph PRODUCES, never from a declaration and never from the
     factor store on disk -- so a store written under one horizon, read back
     under a config asking for another, yields the config's name and fails
@@ -69,6 +70,13 @@ class FactorPolars(Factor):
     because hand-constructing the input dtypes makes any dtype-sensitive
     expression derive a different name or fail spuriously. Real rows carry
     real dtypes for free.
+
+    Because the probe opens the store DIRECTLY -- rather than reaching it
+    through a `read()` that would narrow the shared dataset in place (RV-01)
+    -- a factor cannot be constructed before its dataset's store exists on
+    disk. That narrowing of what is constructible is filed as RV-02 in
+    `03-VERIFICATION.md` and is deliberately NOT closed here (D-3 of the
+    RV-01 fix plan).
     """
 
     def __init__(self, config: PolarsFactorConfig):
@@ -90,10 +98,17 @@ class FactorPolars(Factor):
           `collect_schema()` is consulted, so a date window yielding zero rows
           still yields the right names. `_SCHEMA_PROBE_ROWS` is not a row
           requirement -- it exists so real dtypes come along for free.
-        - The `.read()` call stays. `XrBackend.read` returns early when data
-          is already in memory (the ordinary case, since `BaseDataset.
-          __init__` has read it), so this is normally a cache hit; a dataset
-          whose `_reset_symbols()` is a no-op has nothing loaded and needs it.
+        - **The probe must NOT go through `read()`.** `BaseDataset.read()`
+          runs `_filter()`, which narrows `data_backend.data` IN PLACE via
+          `filter_by_date`, and `XrBackend.read()`'s cache early-return makes
+          that narrowing survive into `cal()`. Because this runs BEFORE
+          `_reset_dataset_config()` widens the dataset's window by the
+          factor's `window` days, and `filter_by_date` can only narrow, a
+          probe that read would silently drop the factor's entire lookback --
+          a factor column that is quietly part-NaN with nothing raised
+          anywhere (RV-01, `03-VERIFICATION.md`). `head()` takes the store
+          path and opens the store itself, so it filters nothing. Do not put
+          `.read()` back in front of it.
 
         Note that `_reset_dataset_config()` runs AFTER name resolution in the
         setter, so the probe sees the dataset's own date window rather than
@@ -101,7 +116,7 @@ class FactorPolars(Factor):
         the setter, which would break the ordering `Factor.__init__` depends
         on.
         """
-        probe = self.config.dataset.read().head(_SCHEMA_PROBE_ROWS)
+        probe = self.config.dataset.head(_SCHEMA_PROBE_ROWS)
         factor_lf = self._get_factor_lazyframe(probe)
         return tuple(
             name
