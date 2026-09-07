@@ -709,24 +709,33 @@ def test_changes_table_is_selected_by_header_not_by_position(monkeypatch, tmp_pa
 
 def test_every_universe_category_is_reachable_from_the_cli():
     """WR-05. The phase added a third UniverseCategory and registered its
-    fetcher, but ingest_tiingo.py's _UNIVERSE_CATEGORY_MAP and its
-    `--universe` choices were a SECOND hardcoded list that was not extended --
-    so nasdaq100_constituent was produced into universe.parquet and could
-    never be selected from the only CLI that consumes the table.
+    fetcher, but the CLI's category map and its `--universe` choices were a
+    SECOND hardcoded list that was not extended -- so nasdaq100_constituent was
+    produced into universe.parquet and could never be selected from the only
+    CLI that consumes the table.
 
     Pinning the map against the enum means a fourth category cannot be added
     without becoming reachable, and the `choices` are derived from the map so
     the two can no longer disagree.
-    """
-    import ingest_tiingo
 
-    assert set(ingest_tiingo._UNIVERSE_CATEGORY_MAP.values()) == set(
+    The map moved from `ingest_tiingo.py` to `utils/cli.py` in 03.2-07 (D-14):
+    it is now read by every script offering `--universe`, and a per-script copy
+    would reintroduce the very drift this test exists to catch one level up.
+    Asserted against EVERY such parser rather than one, so a second script that
+    stopped deriving its choices fails here.
+    """
+    import ingest_alpaca
+    import ingest_tiingo
+    from utils.cli import UNIVERSE_CATEGORY_MAP
+
+    assert set(UNIVERSE_CATEGORY_MAP.values()) == set(
         typing.get_args(UniverseCategory)
     )
-    choices = ingest_tiingo._build_arg_parser()._option_string_actions[
-        "--universe"
-    ].choices
-    assert set(choices) == set(ingest_tiingo._UNIVERSE_CATEGORY_MAP)
+    for module in (ingest_tiingo, ingest_alpaca):
+        choices = module._build_arg_parser()._option_string_actions[
+            "--universe"
+        ].choices
+        assert set(choices) == set(UNIVERSE_CATEGORY_MAP), module.__name__
 
 
 def test_universe_category_literal_has_exactly_four_values():
@@ -1260,7 +1269,11 @@ def test_the_whole_range_guard_survives_beside_the_chunked_one():
     import inspect
 
     signature = inspect.signature(UniverseCatalog.assert_dense_panel_fits)
-    assert list(signature.parameters) == [
+    # The original parameters, in their original ORDER, all still present. A
+    # later parameter may be APPENDED (`bars_per_day` was, so an intraday
+    # caller can size the real timestamp axis -- CR-03), but removing or
+    # reordering one of these would silently rebind a positional caller.
+    assert list(signature.parameters)[:6] == [
         "self",
         "category",
         "start_date",
@@ -1268,6 +1281,11 @@ def test_the_whole_range_guard_survives_beside_the_chunked_one():
         "num_variables",
         "bytes_per_value",
     ]
+    # And every appended parameter must DEFAULT to the pre-existing behaviour,
+    # so a daily caller that names none of them is byte-identical to before.
+    for name in list(signature.parameters)[6:]:
+        assert signature.parameters[name].default is not inspect.Parameter.empty
+    assert signature.parameters["bars_per_day"].default == 1
     assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3
 
 

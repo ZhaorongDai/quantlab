@@ -16,6 +16,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Codebase Cleanup & Security Hardening** - Repo is clean, secure, dependency-resolvable, and documented accurately (completed 2026-09-05)
 - [x] **Phase 2: Multi-Market Data Foundation** - Users can ingest US equities and Binance spot data into unified, extensible xarray/Zarr storage (completed 2026-09-05)
 - [ ] **Phase 3: Factor Computation (KunQuant + Polars)** - Users can compute Alpha158 factors (batch + streaming) via KunQuant and new factors via Polars
+- [ ] **Phase 03.1: Index Historical Constituents Data Layer** - Point-in-time index membership panels (verification: gaps_found)
+- [x] **Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca)** - Second vendor through the same batched, resumable, volume-guarded `Acquisition` abstraction (completed 2026-09-06)
 - [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
 - [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
 - [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
@@ -159,7 +161,7 @@ Plans:
 **Requirements**: TBD (no existing REQ-ID covers vendor-level source extensibility; closest sibling is DATA-03's market/frequency extensibility)
 **Depends on:** Phase 3
 **Canonical refs:** `.planning/phases/03.2-multi-source-data-acquisition-abstraction-alpaca/03.2-CONTEXT.md`
-**Plans:** 7 plans
+**Plans:** 7/7 plans complete
 
 **Success Criteria** (what must be TRUE):
 
@@ -176,28 +178,28 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 03.2-01-PLAN.md — Wave-0 validation scaffolding: paginating/hive/config fixtures plus the five new test files, each with a real self-test
+- [x] 03.2-01-PLAN.md — Wave-0 validation scaffolding: paginating/hive/config fixtures plus the five new test files, each with a real self-test
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03.2-02-PLAN.md — TRACER: one Alpaca daily batch end to end through the batched `_fetch_page` primitive to a vendor-namespaced hive shard, then page-level resume and structural cross-vendor isolation (SC-1, SC-3, SC-5, SC-7)
+- [x] 03.2-02-PLAN.md — TRACER: one Alpaca daily batch end to end through the batched `_fetch_page` primitive to a vendor-namespaced hive shard, then page-level resume and structural cross-vendor isolation (SC-1, SC-3, SC-5, SC-7)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03.2-03-PLAN.md — D-02 orchestration lift: concurrency, resume, failure isolation and the global abort hoisted onto `Acquisition`; `ConcurrentTiingoAcquisition` retired; per-vendor `_classify_error` (SC-1, SC-2)
-- [ ] 03.2-04-PLAN.md — Pre-flight volume guard on `UniverseCatalog`: estimate then refuse on bytes, requests and wall clock, with an explicit override (SC-6)
+- [x] 03.2-03-PLAN.md — D-02 orchestration lift: concurrency, resume, failure isolation and the global abort hoisted onto `Acquisition`; `ConcurrentTiingoAcquisition` retired; per-vendor `_classify_error` (SC-1, SC-2)
+- [x] 03.2-04-PLAN.md — Pre-flight volume guard on `UniverseCatalog`: estimate then refuse on bytes, requests and wall clock, with an explicit override (SC-6)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 03.2-05-PLAN.md — D-04 "queried, no data" third state, additive on disk and gated on batch completion (SC-4)
+- [x] 03.2-05-PLAN.md — D-04 "queried, no data" third state, additive on disk and gated on batch completion (SC-4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 03.2-06-PLAN.md — Alpaca minute bars and quotes/trades at full resolution, US/Eastern session-date hive key, tier limitation documented on the class (SC-5, SC-7)
+- [x] 03.2-06-PLAN.md — Alpaca minute bars and quotes/trades at full resolution, US/Eastern session-date hive key, tier limitation documented on the class (SC-5, SC-7)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] 03.2-07-PLAN.md — `utils/cli.py` shared argument groups, `ingest_alpaca.py`, the guard wired into every entry point, and the three credential-dependent verifications (SC-5, SC-6)
+- [x] 03.2-07-PLAN.md — `utils/cli.py` shared argument groups, `ingest_alpaca.py`, the guard wired into every entry point, and the three credential-dependent verifications (SC-5, SC-6)
 
 **Cross-cutting constraints:**
 
@@ -272,6 +274,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Codebase Cleanup & Security Hardening | 5/5 | Complete   | 2026-09-05 |
 | 2. Multi-Market Data Foundation | 8/8 | Complete   | 2026-09-05 |
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
+| 03.1 Index Historical Constituents Data Layer | 4/4 | Gaps Found |  |
+| 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

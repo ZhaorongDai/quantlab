@@ -231,6 +231,14 @@ imports the layers it needs:
   `TiingoAcquisition`, then converts/cleans/persists it through `StockDataset` into a Zarr
   store. Requires `TIINGO_API_KEY`. Pass `--refresh` to incrementally update from each symbol's
   last recorded watermark instead of a full backfill.
+- `ingest_alpaca.py` -- the second US-equity source (03.2 D-10: parallel to Tiingo, not a
+  replacement). Fetches daily bars, minute bars, quotes or trades from Alpaca Market Data into
+  the vendor-namespaced raw path, then converts bars to Zarr. Requires `APCA_API_KEY_ID` and
+  `APCA_API_SECRET_KEY`. `--frequency tick` stops after the raw shards land: the quotes/trades
+  raw-to-xarray conversion needs an irregular event axis the dense `[timestamp, symbol]` panel
+  cannot express, and arrives in phase 03.3 (D-18). Every entry point runs a pre-flight volume
+  estimate first and refuses an over-budget fetch before constructing a client; `--force-volume`
+  is the explicit override.
 - `read_mock_data_sink.py` -- memory-profiling scratch script for reading a parquet hive
   dataset.
 - `scripts/download_stock_data_from_tiingo.py` -- parallel Tiingo downloader for NASDAQ
@@ -253,6 +261,14 @@ falling back to `cpu`).
 - `TIINGO_API_KEY` -- required to run `ingest_tiingo.py` (the current, documented entry point)
   and `scripts/download_stock_data_from_tiingo.py`. Never hardcode this key; both read it from
   the environment and raise if it is unset.
+- `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` -- required to run `ingest_alpaca.py`. These are
+  Alpaca **market-data** credentials only: they grant no trading or broker access, and there is
+  no paper/live distinction to make, because Alpaca's market-data API does not have one (03.2
+  D-15). Both are read from the environment inside `acquisition/alpaca.py`'s client constructor
+  and are never assigned to a config dataclass -- `AcquisitionConfig.to_dict()` is `asdict()`
+  and lands in persisted configs and in the JSON saved beside model checkpoints. Neither is
+  accepted as a command-line argument, which would put it in shell history and in every process
+  listing. Get a key pair from the Alpaca dashboard (https://app.alpaca.markets/).
 - `WANDB_API_KEY` -- required for Weights & Biases experiment tracking during model training
   (`base/model.py:_init_wandb`).
 - `QUANTLAB_DATA_DIR` -- optional. Overrides the default data root used by `config/__init__.py`'s

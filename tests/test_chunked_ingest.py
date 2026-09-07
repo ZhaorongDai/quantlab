@@ -72,24 +72,33 @@ def _raw_rows(stock_pqt_row: Callable[..., dict]) -> list[dict]:
 @pytest.fixture
 def three_year_stock_config(
     stock_pqt_row: Callable[..., dict],
-    write_stock_pqt: Callable[..., Path],
+    hive_raw_tree: Callable[..., Path],
     tmp_path: Path,
 ) -> Callable[..., DatasetConfig]:
     """Factory. `three_year_stock_config(store_name)` writes the 3-year raw
     parquet panel once and returns a `DatasetConfig` pointing at a fresh Zarr
     path, so one test can build both a chunked and an unchunked store from the
     SAME raw input.
+
+    03.2 D-08/D-11 changed the raw tier's SHAPE, not this module's claims: raw
+    parquet now lives in a hive-partitioned tree under a vendor-terminated root
+    with a literal `vendor` column, so the panel is written via `hive_raw_tree`
+    rather than as one flat `raw/all/data_1.pqt`. Every assertion in this file
+    is untouched -- which is exactly the proof that the hive rework left
+    `_scan_raw`'s output column set and the chunked/unchunked equivalence
+    alone.
     """
     raw_dir = tmp_path / "raw"
-    write_stock_pqt(raw_dir / "all" / "data_1.pqt", _raw_rows(stock_pqt_row))
+    hive_raw_tree(raw_dir, "tiingo", _raw_rows(stock_pqt_row), batch_key="panel")
 
     def _build(store_name: str = "out.zarr") -> DatasetConfig:
         return DatasetConfig(
-            raw_data_dir_path=str(raw_dir),
+            raw_data_dir_path=str(raw_dir / "tiingo"),
             zarr_file_path=str(tmp_path / store_name),
             catalog_path=str(tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
+            vendor="tiingo",
         )
 
     return _build
@@ -559,16 +568,20 @@ def test_the_ledger_lives_beside_the_store_not_inside_it(
 def test_resume_with_a_changed_roster_raises_naming_both_symbol_counts(
     three_year_stock_config: Callable[..., DatasetConfig],
     stock_pqt_row: Callable[..., dict],
-    write_stock_pqt: Callable[..., Path],
+    hive_raw_tree: Callable[..., Path],
 ) -> None:
     config = three_year_stock_config()
     StockDataset(config).from_raw_data_chunked(granularity="year")
 
     # A roster refresh between two runs: a fourth symbol appears, so the
-    # pinned axis is no longer the axis the store was written on.
-    write_stock_pqt(
-        Path(config.raw_data_dir_path) / "extra" / "data_1.pqt",
+    # pinned axis is no longer the axis the store was written on. Written as a
+    # second shard under the SAME vendor root -- a new symbol arrives as a new
+    # batch, not as a new vendor.
+    hive_raw_tree(
+        Path(config.raw_data_dir_path).parent,
+        "tiingo",
         [stock_pqt_row("2024-06-15", "D", close=100.0)],
+        batch_key="extra",
     )
 
     with pytest.raises(ValueError) as excinfo:

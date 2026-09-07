@@ -32,29 +32,38 @@ from acquisition.universe import UniverseCatalog
 from base.config import AcquisitionConfig, DatasetConfig
 from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
+from utils.cli import (
+    add_universe_args,
+    add_volume_guard_args,
+    add_window_args,
+    print_volume_estimate,
+    resolve_symbols,
+    validate_roster_args,
+    volume_pricing,
+)
 
-# Maps the CLI-facing --universe choice to enums.data.UniverseCategory.
-# The --universe `choices` are DERIVED from this map rather than repeated as a
-# second hardcoded list: when they were two separate literals, adding the
-# nasdaq100_constituent category produced it into universe.parquet while
-# leaving it unselectable from the only CLI that consumes the table.
-_UNIVERSE_CATEGORY_MAP = {
-    "sp500": "sp500_constituent",
-    "nasdaq100": "nasdaq100_constituent",
-    "nasdaq_all": "nasdaq_all",
-    "us_all": "us_all",
-}
+#: Tiingo's EOD endpoint is ONE symbol per request -- there is no multi-symbol
+#: batch to amortise over -- so the volume guard is told a batch size of 1.
+#: Telling it anything larger would understate the request count by exactly
+#: that factor, which is the number the request ceiling is denominated in.
+TIINGO_BATCH_SIZE = 1
 
 
 def _build_configs(
     args: argparse.Namespace,
+    catalog=None,
 ) -> tuple[AcquisitionConfig, DatasetConfig]:
-    if args.universe:
-        category = _UNIVERSE_CATEGORY_MAP[args.universe]
+    # The catalog is loaded ONLY when a universe category has to be resolved:
+    # an explicit --symbols list needs no reference table, and loading one
+    # would make this script fail on a machine that has never built it.
+    # `catalog` is accepted so `__main__` can load it ONCE and hand the same
+    # instance to the volume guard rather than re-reading the parquet table.
+    if catalog is None and args.universe:
         catalog = UniverseCatalog.load(universe_config())
-        symbols = tuple(catalog.get_symbols_as_of(category, args.as_of_date))
-    else:
-        symbols = tuple(args.symbols.split(","))
+    # `mode="as_of"` is stated, never defaulted: this script resolves
+    # point-in-time membership on ONE day. `ingest_us_equity.py` deliberately
+    # asks the same helper for `"in_range"` instead.
+    symbols = resolve_symbols(args, catalog, mode="as_of")
 
     acq_config = stock_acquisition_config(
         symbols=symbols,
@@ -76,54 +85,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "xr.Dataset/Zarr. Requires TIINGO_API_KEY."
         )
     )
-    parser.add_argument(
-        "--symbols",
-        type=str,
-        required=False,
-        default=None,
-        help="Comma-separated symbols (e.g. AAPL,MSFT). Mutually exclusive with --universe.",
-    )
-    parser.add_argument(
-        "--universe",
-        type=str,
-        choices=sorted(_UNIVERSE_CATEGORY_MAP),
-        default=None,
-        help=(
-            "Resolve a symbol list from the persisted universe table "
-            "(02-08-PLAN.md) instead of --symbols. 'sp500' resolves "
-            "point-in-time S&P 500 constituent membership; 'nasdaq100' "
-            "resolves point-in-time Nasdaq-100 (NDX) index membership; "
-            "'nasdaq_all' resolves the full NASDAQ-listed Common Stock roster "
-            "(current + delisted); 'us_all' resolves the full US listed-equity "
-            "roster -- NYSE + NASDAQ + AMEX common stock, delisted included "
-            "(~15.4k tickers). Note 'nasdaq100' and 'nasdaq_all' are "
-            "DIFFERENT universes that merely share the word Nasdaq -- the "
-            "former is the ~100-name index, the latter every symbol ever "
-            "listed on the exchange. 'us_all' is a strict superset of "
-            "'nasdaq_all'; both are kept deliberately. Requires --as-of-date. "
-            "For a full-window BACKFILL of every symbol that traded at any "
-            "point in a date range (rather than membership on one day), use "
-            "ingest_us_equity.py, which queries by interval overlap instead."
-        ),
-    )
-    parser.add_argument(
-        "--as-of-date",
-        type=str,
-        default=None,
-        help="Required with --universe; point-in-time date (YYYY-MM-DD) to resolve membership as of.",
-    )
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        default=None,
-        help="Start date (inclusive), e.g. 2024-01-01.",
-    )
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        default=None,
-        help="End date (inclusive), e.g. 2024-12-31.",
-    )
+    add_universe_args(parser)
+    add_window_args(parser)
+    add_volume_guard_args(parser)
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -139,12 +103,43 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    if bool(args.symbols) == bool(args.universe):
-        parser.error("Exactly one of --symbols or --universe must be set.")
-    if args.universe and not args.as_of_date:
-        parser.error("--as-of-date is required when --universe is set.")
+    validate_roster_args(parser, args)
 
-    acq_config, ds_config = _build_configs(args)
+    catalog = UniverseCatalog.load(universe_config()) if args.universe else None
+    acq_config, ds_config = _build_configs(args, catalog)
+
+    # BEFORE the client is constructed and before a single request (D-09).
+    # `_build_configs` above builds paths and resolves a roster; it opens no
+    # connection, so this is still the pre-flight position.
+    pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
+        args, catalog, symbols=acq_config.symbols
+    )
+    print_volume_estimate(
+        pricing.assert_acquisition_volume_fits(
+            category,
+            guard_start,
+            guard_end,
+            frequency="1d",
+            batch_size=TIINGO_BATCH_SIZE,
+            rows_per_symbol_day=args.rows_per_symbol_day,
+            force=args.force_volume,
+        ),
+        category=category,
+        start_date=guard_start,
+        end_date=guard_end,
+        window_assumed=window_assumed,
+        forced=args.force_volume,
+    )
+
+    # The RAM sibling of the guard above, and the reason it is a SIBLING: that
+    # one bounds raw disk bytes, request count and wall clock; this one bounds
+    # the dense `[timestamp, symbol]` grid that the unconditional
+    # `from_raw_data()` at the bottom of this script materialises through
+    # `.to_pandas().set_index([...]).to_xarray()`. `ingest_us_equity.py`
+    # already carries the chunked form of this for its `--to-zarr` path; this
+    # door densifies the WHOLE window with no chunking at all, so the
+    # whole-window form is the one that applies here (CR-03).
+    pricing.assert_dense_panel_fits(category, guard_start, guard_end)
 
     print(f"Acquiring symbols={acq_config.symbols} via Tiingo (refresh={args.refresh})")
     acquisition = TiingoAcquisition(acq_config)

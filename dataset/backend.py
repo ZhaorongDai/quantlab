@@ -154,6 +154,46 @@ class XrBackend(DataBackend):
         data = self.data.to_dataframe().reset_index()
         return pl.from_pandas(data).lazy()
 
+    def head(self, path: str, n: int) -> pl.LazyFrame:
+        """At most `n` rows, bounding EVERY dimension before converting.
+
+        Opens the store at `path` with `xr.open_dataset` -- the SAME opener
+        `read()` above uses, deliberately not `xr.open_zarr`. Two different
+        openers for one store in one class is a divergence waiting to bite;
+        `_assert_append_compatible`'s `open_zarr` is a separate,
+        append-specific concern.
+
+        Opening by path rather than reading `self.data` is the RV-01 fix, not
+        a stylistic choice. `self.data` can only be populated by a prior
+        `read()`, and `BaseDataset.read()` runs `_filter()`, which narrows the
+        shared dataset IN PLACE; `read()`'s cache early-return above then
+        makes that narrowing permanent. A `FactorPolars` name probe going
+        through that path silently dropped its factor's entire lookback
+        window. Nothing here touches `self.data`, so there is no narrowing
+        left to survive.
+
+        The selector is built from the opened dataset's `dims` rather than
+        naming `timestamp`: a storage-medium-agnostic backend has no business
+        knowing that this project's panels happen to be indexed by time and
+        symbol, and a dataset with a third axis would otherwise be converted
+        in full.
+
+        The `Path(path).exists()` guard mirrors `read()`'s, message included
+        (D-3 of the RV-01 fix plan): without it a missing zarr directory
+        surfaces as an obscure xarray engine-guess error instead of naming the
+        path that is not there.
+        """
+        if not Path(path).exists():
+            raise FileNotFoundError(f"File {path} does not exist.")
+
+        opened = xr.open_dataset(path)
+        try:
+            bounded = opened.isel({dim: slice(0, n) for dim in opened.dims})
+            frame = bounded.to_dataframe().reset_index()
+        finally:
+            opened.close()
+        return pl.from_pandas(frame).lazy().head(n)
+
 
 class PlBackend(DataBackend):
     def read(self, path: str, **kwargs) -> Self:
@@ -185,6 +225,22 @@ class PlBackend(DataBackend):
 
     def get_lazyframe(self) -> pl.LazyFrame:
         return self.data
+
+    def head(self, path: str, n: int) -> pl.LazyFrame:
+        """At most `n` rows, genuinely lazily, scanned straight from `path`.
+
+        `scan_parquet` pushes the limit down into the reader, so this costs
+        essentially nothing here -- and it returns a fresh `pl.LazyFrame`
+        rather than touching `self.data`, so the non-mutation half of the
+        contract comes for free.
+
+        The `Path(path).exists()` guard mirrors `read()`'s, message included:
+        `scan_parquet` on an absent file fails only at `.collect()` time, far
+        from the call that was actually wrong.
+        """
+        if not Path(path).exists():
+            raise FileNotFoundError(f"File {path} does not exist.")
+        return pl.scan_parquet(path).head(n)
 
     def get_xarray_dataset(self, indexes: list[str]) -> xr.Dataset:
         data = self.data.collect().to_pandas()

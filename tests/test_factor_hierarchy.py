@@ -520,3 +520,135 @@ def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
         # `in` on a non-mapping would raise; no type check needed.
         assert "dataset" in cfg
         assert "factor_names" in cfg
+
+
+def test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path(
+    spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path
+) -> None:
+    """D-03, live, on the OTHER branch: both backends survive
+    `cal() -> save() -> fresh instance -> read()` driven through
+    `base/model.py`'s `factor_data_strategy="read"` arm.
+
+    The sibling directly above pins `factor_data_strategy="cal"` and hand-calls
+    `factor.cal()`, so the `read()` branch of `base/model.py`'s call surface
+    had never been driven for EITHER backend. That absence is precisely what
+    let Phase 3 Gap 1 survive a green suite: a Polars factor that was READ
+    rather than computed carried `factor_names=None`, so `get_factor_names()`
+    returned nothing and `num_factors` raised -- while the identical sequence
+    on a KunQuant factor succeeded. A config-selectable strategy that works
+    for one backend and raises for the other is not interchangeability.
+
+    **Both fresh factors deliberately leave `factor_names` unset.** That is
+    the exact condition the gap is about -- neither instance is told what it
+    computes, so each must derive it -- and it is what lets the assertion loop
+    below compare the two name surfaces uniformly. (The first, computing
+    instance pins the KunQuant name so `cal()` computes one factor rather than
+    the whole Alpha158 block; that pin is about cost, not about naming.)
+
+    **The public-surface assertion is the one that carries the gap.**
+    `_get_factor_names()` derives, so it stays green even with the regression
+    reintroduced; only `get_factor_names()` / `num_factors`, which read
+    `config.factor_names`, can see it. Asserting only the private one would
+    reproduce this project's recorded "mechanism proved as a function but
+    never through its call site" failure -- the very shape that produced this
+    gap. The mutation that justifies this test is restoring the deleted
+    `FactorPolars` no-op override of the base naming hook: this test must go
+    RED while the cal-path sibling above stays GREEN.
+
+    As in that sibling, there is no runtime check of an object's class here
+    and no per-backend branch anywhere in the body. If a branch were needed,
+    interchangeability would be dead and this test would be documenting the
+    coupling D-03 exists to remove.
+    """
+    dataset_config = spot_kline_zarr(periods=60, seed=0)
+    kunquant_path = str(tmp_path / "factors" / "kunquant.zarr")
+    polars_path = str(tmp_path / "factors" / "polars.zarr")
+
+    # (0) Populate both stores. `mode="w"` is explicit so the test does not
+    # lean on `to_zarr(mode="a")`'s create-if-missing behaviour.
+    Alpha158SpotKline(
+        FactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            mode="batch",
+            data_columns=["open", "close", "volume"],
+            factor_names=[_KUNQUANT_FACTOR_NAME],
+            file_path=kunquant_path,
+            njobs=4,
+        )
+    ).cal().save(mode="w")
+    Momentum(
+        PolarsFactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            file_path=polars_path,
+            kwargs={"n": _MOMENTUM_HORIZON},
+        )
+    ).cal().save(mode="w")
+
+    # FRESH instances over the SAME stores, each with its own dataset object
+    # and neither carrying a factor-name declaration.
+    fresh_kunquant = Alpha158SpotKline(
+        FactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            mode="batch",
+            data_columns=["open", "close", "volume"],
+            file_path=kunquant_path,
+            njobs=4,
+        )
+    )
+    fresh_polars = Momentum(
+        PolarsFactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            file_path=polars_path,
+            kwargs={"n": _MOMENTUM_HORIZON},
+        )
+    )
+
+    dl = DLConfig(
+        factors=[fresh_kunquant, fresh_polars],
+        labels=[],
+        model_save_dir=str(tmp_path),
+        factor_data_strategy="read",
+        label_data_strategy="read",
+        start_date="2024-01-01",
+        end_date="2024-02-29",
+    )
+
+    # (1) base/model.py:_reset_factors_config
+    for factor in dl.factors:
+        factor.config.start_date = dl.start_date
+        factor.config.end_date = dl.end_date
+        factor._reset_dataset_config()
+
+    # (2) base/model.py:_get_features_batch, the "read" arm
+    all_ds = [factor.read().get_features() for factor in dl.factors]
+    data = xr.combine_by_coords(all_ds)
+
+    # (3) base/model.py:get_factor_names + (4) get_config, asserted uniformly.
+    for factor in dl.factors:
+        derived = factor._get_factor_names()
+        assert len(derived) > 0, (
+            f"{factor.class_name}._get_factor_names() is empty after read()"
+        )
+
+        public = factor.get_factor_names()
+        assert public is not None and len(public) > 0, (
+            f"{factor.class_name}.get_factor_names() is empty after read(); "
+            "the model layer reads this surface, not the private one"
+        )
+        assert tuple(public) == tuple(derived), (
+            f"{factor.class_name} disagrees with itself about what it "
+            f"computes: {public!r} vs {derived!r}"
+        )
+        assert factor.num_factors >= 1
+
+        cfg = factor.get_config()
+        assert "factor_names" in cfg
+        assert len(cfg["factor_names"]) > 0
+
+    assert set(data.dims) == {"timestamp", "symbol"}
+    assert _KUNQUANT_FACTOR_NAME in data.data_vars
+    assert f"momentum_{_MOMENTUM_HORIZON}" in data.data_vars

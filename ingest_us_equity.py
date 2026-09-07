@@ -3,7 +3,7 @@
 Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
 `acquisition.universe.UniverseCatalog` resolves the roster,
-`acquisition.tiingo.ConcurrentTiingoAcquisition` fetches it, and
+`acquisition.tiingo.TiingoAcquisition` fetches it, and
 `dataset.stock.StockDataset` converts it. Nothing here should grow a
 behaviour that a component could own instead.
 
@@ -88,11 +88,19 @@ import argparse
 import datetime
 import os
 
-from acquisition.tiingo import ConcurrentTiingoAcquisition
+from acquisition.tiingo import TiingoAcquisition
 from acquisition.universe import UniverseCatalog
-from base.chunking import TimeChunkPlanner
 from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
+from utils.cli import (
+    add_chunk_args,
+    add_concurrency_args,
+    add_volume_guard_args,
+    add_window_args,
+    print_volume_estimate,
+    resolve_symbols,
+    volume_pricing,
+)
 
 #: D-05. The backfill window's default start. Applied as an interval-OVERLAP
 #: bound, not as a listing-date cut -- see `get_symbols_in_range`.
@@ -104,6 +112,12 @@ DEFAULT_START_DATE = "2016-01-01"
 #: BENEATH `QUANTLAB_DATA_DIR` (D-04).
 DEFAULT_SUBDIR = "us_all"
 DEFAULT_STORE_NAME = "us_all.zarr"
+
+#: Tiingo's EOD endpoint is ONE symbol per request, so the volume guard is told
+#: a batch size of 1. Anything larger would understate the request count by
+#: exactly that factor -- and requests are the unit the request ceiling and the
+#: quota that ran out on 2026-09-06 are both denominated in.
+TIINGO_BATCH_SIZE = 1
 
 #: How many resolved symbols to echo in the dry run. The point is to prove the
 #: roster resolved, not to page 15,000 tickers through a terminal.
@@ -177,7 +191,7 @@ def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
         )
         return
 
-    report = ConcurrentTiingoAcquisition(acq_config).coverage_report(list(symbols))
+    report = TiingoAcquisition(acq_config).coverage_report(list(symbols))
     print(f"  already covered:   {report['covered']} (would be skipped)")
     print(
         f"  re-fetch, widened: {report['widened']} "
@@ -208,22 +222,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Build/refresh the table first via refresh_us_equity_universe.py."
         ),
     )
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        default=DEFAULT_START_DATE,
-        help=(
-            f"Window start (inclusive), default {DEFAULT_START_DATE}. Applied "
-            f"as interval OVERLAP: every symbol that traded at ANY point in "
-            f"the window is kept, INCLUDING those that delisted inside it. "
-            f"Only symbols whose listing ended before this date are dropped."
-        ),
-    )
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        default=None,
-        help="Window end (inclusive), default today.",
+    add_window_args(
+        parser,
+        default_start_date=DEFAULT_START_DATE,
+        semantics="interval-overlap",
     )
     parser.add_argument(
         "--dry-run",
@@ -234,14 +236,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "request. Answers 'how big will this be' before a multi-hour job."
         ),
     )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help=(
-            "Process only the first N resolved symbols. For smoke-testing the "
-            "pipeline end to end before committing to the full roster."
-        ),
+    add_concurrency_args(
+        parser, default_max_workers=TiingoAcquisition.DEFAULT_MAX_WORKERS
     )
     parser.add_argument(
         "--refresh",
@@ -250,16 +246,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Start each symbol from its own watermark instead of --start-date. "
             "Both modes are resumable; --refresh additionally narrows the "
             "per-symbol request window to what is actually missing."
-        ),
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=ConcurrentTiingoAcquisition.DEFAULT_MAX_WORKERS,
-        help=(
-            "Concurrent in-flight symbol fetches (default "
-            f"{ConcurrentTiingoAcquisition.DEFAULT_MAX_WORKERS}). Passed "
-            "through config.kwargs, so it stays config-driven."
         ),
     )
     parser.add_argument(
@@ -282,12 +268,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--legacy-watermarks",
         type=str,
-        choices=list(ConcurrentTiingoAcquisition.LEGACY_WATERMARK_POLICIES),
-        default=ConcurrentTiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY,
+        choices=list(TiingoAcquisition.LEGACY_WATERMARK_POLICIES),
+        default=TiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY,
         help=(
             "What to do with a watermark that records no covered start "
             "(default "
-            f"'{ConcurrentTiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
+            f"'{TiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
             "'warn' skips it but reports the count and the stamping command "
             "on every run; 'refetch' treats unknown coverage as uncovered and "
             "re-downloads it. Passed through config.kwargs, so it stays "
@@ -309,10 +295,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quota-wait-seconds",
         type=int,
-        default=ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS,
+        default=TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS,
         help=(
             "Delay between resume attempts (default "
-            f"{ConcurrentTiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS}). "
+            f"{TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS}). "
             "Tiingo's reset semantics -- fixed top-of-hour bucket vs. rolling "
             "window -- are not published, so this is a configured INTERVAL, "
             "not a computed reset time; one hour from the moment of detection "
@@ -322,10 +308,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quota-max-waits",
         type=int,
-        default=ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS,
+        default=TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS,
         help=(
             "How many times to wait and resume before giving up (default "
-            f"{ConcurrentTiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
+            f"{TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
             "on purpose: an unbounded loop against a lockout is a worse "
             "version of the problem. The default comes from the observed "
             "arithmetic -- ~4,600 requests per window against ~14.7k symbols "
@@ -344,18 +330,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "it is slow, not because it is impossible."
         ),
     )
-    parser.add_argument(
-        "--chunk",
-        type=str,
-        choices=list(TimeChunkPlanner.GRANULARITIES),
-        default="year",
-        help=(
-            "Time granularity of one --to-zarr conversion window (default "
-            "year). Finer windows use less peak RAM and give a finer resume "
-            "granularity, at the cost of more append round trips. Pass "
-            "'month' for a dense year the per-chunk sizing guard refuses."
-        ),
-    )
+    add_chunk_args(parser)
+    add_volume_guard_args(parser)
     return parser
 
 
@@ -371,11 +347,9 @@ if __name__ == "__main__":
     # every symbol that traded at ANY point in the window, including the ~6.9k
     # that delisted inside it. Resolving membership on a single day here would
     # reintroduce exactly the survivorship bias this roster exists to remove.
-    symbols = tuple(
-        catalog.get_symbols_in_range(args.category, args.start_date, args.end_date)
-    )
-    if args.limit is not None:
-        symbols = symbols[: args.limit]
+    # `mode` is stated because `utils.cli.resolve_symbols` refuses to have a
+    # default -- the wrong choice here would be silent.
+    symbols = resolve_symbols(args, catalog, mode="in_range")
 
     acq_config = stock_acquisition_config(
         symbols=symbols,
@@ -413,7 +387,7 @@ if __name__ == "__main__":
         # mode: this is a pure local-file migration that issues zero price
         # requests, and it must be impossible to trigger a download by
         # mistyping it alongside another flag.
-        stamped = ConcurrentTiingoAcquisition(acq_config).stamp_watermarks(
+        stamped = TiingoAcquisition(acq_config).stamp_watermarks(
             args.stamp_legacy_watermarks
         )
         print(
@@ -440,6 +414,36 @@ if __name__ == "__main__":
             f"table first: uv run python refresh_us_equity_universe.py"
         )
 
+    # BEFORE `TiingoAcquisition(...)` and before a single request (D-09).
+    # Deliberately AFTER the --stamp-legacy-watermarks and --dry-run exits
+    # above: both issue zero price requests and terminate, and refusing a
+    # local sidecar migration -- or refusing the very dry run whose job is to
+    # tell you how big this is -- would be the guard firing at the one thing it
+    # has no quarrel with.
+    #
+    # A SIBLING of assert_chunked_panel_fits below, not a replacement: that one
+    # bounds RAM for a dense panel, this one bounds disk, request count and
+    # wall clock, and either alone lets a real scenario through.
+    pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
+        args, catalog, symbols=symbols
+    )
+    print_volume_estimate(
+        pricing.assert_acquisition_volume_fits(
+            category,
+            guard_start,
+            guard_end,
+            frequency="1d",
+            batch_size=TIINGO_BATCH_SIZE,
+            rows_per_symbol_day=args.rows_per_symbol_day,
+            force=args.force_volume,
+        ),
+        category=category,
+        start_date=guard_start,
+        end_date=guard_end,
+        window_assumed=window_assumed,
+        forced=args.force_volume,
+    )
+
     if args.to_zarr:
         # Checked HERE, before a single byte is downloaded, rather than only
         # in front of the densification. Both positions satisfy "fires before
@@ -460,9 +464,9 @@ if __name__ == "__main__":
         f"max_workers={args.max_workers}). Already-complete symbols are "
         f"skipped; per-symbol failures land in "
         f"{acq_config.watermark_path}/"
-        f"{ConcurrentTiingoAcquisition.FAILURE_MANIFEST_NAME}."
+        f"{TiingoAcquisition.FAILURE_MANIFEST_NAME}."
     )
-    acquisition = ConcurrentTiingoAcquisition(acq_config)
+    acquisition = TiingoAcquisition(acq_config)
     if args.refresh:
         acquisition.refresh()
     else:

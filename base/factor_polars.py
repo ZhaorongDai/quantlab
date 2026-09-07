@@ -17,6 +17,12 @@ from utils.timer import Timer
 
 _INDEX_COLUMNS = ("timestamp", "symbol")
 
+#: Rows fetched by the bounded probe read that resolves factor names. Only the
+#: SCHEMA of the result is consulted, so this is not a row requirement -- it is
+#: what makes the probe carry the store's real dtypes, which a zero-row stub
+#: could only fake (03-VERIFICATION.md, Gap 1).
+_SCHEMA_PROBE_ROWS = 8
+
 
 class FactorPolars(Factor):
     """Batch-only factor backend whose factor logic is written in Polars.
@@ -40,35 +46,83 @@ class FactorPolars(Factor):
     backend too (its `cal()` likewise reads the whole dataset up front), so it
     is a property of the data layer, not a leak in this contract.
 
-    **Documented precondition on factor names.** Because names come from the
-    computed frame's schema (D-05) rather than from a declaration,
-    `_get_factor_names()` -- and therefore `num_factors` -- is only valid AFTER
-    `cal()` or `read()` has populated `config.factor_names`. `base/model.py`
-    always calls `.cal()`/`.read()` on every factor inside `collect()` before
-    it asks for names, so no code path in the pipeline hits this. It is a
-    narrow, intentional gap, not an oversight.
+    **Factor names are DERIVED from the computation graph** (D-05), at
+    config-assignment time, via a bounded probe read: `_get_factor_names()`
+    runs `_get_factor_lazyframe()` over a few rows read straight from the
+    dataset's STORE via `BaseDataset.head()`, which opens the store by path,
+    and reads the resulting schema. Names therefore come
+    from what the graph PRODUCES, never from a declaration and never from the
+    factor store on disk -- so a store written under one horizon, read back
+    under a config asking for another, yields the config's name and fails
+    loudly at lookup instead of silently reporting the stale one.
+
+    An explicit `config.factor_names` still wins: the inherited
+    `_maybe_resolve_factor_names()` hook derives only when nothing was pinned,
+    and this class deliberately does NOT override it.
+
+    **Construction touches disk, by decision** (03-VERIFICATION.md, "Gap
+    Dispositions" -> "Gap 1"). Because names resolve in the config setter,
+    merely constructing a factor performs a bounded read -- measured at
+    ~25-50 ms and flat in store size, since it is dominated by metadata-open
+    overhead rather than data volume. D-04's "computation starts at `cal()`"
+    is not violated: a few rows plus metadata is not the computation. The
+    alternative -- a zero-row schema stub -- was cheaper and was rejected,
+    because hand-constructing the input dtypes makes any dtype-sensitive
+    expression derive a different name or fail spuriously. Real rows carry
+    real dtypes for free.
+
+    Because the probe opens the store DIRECTLY -- rather than reaching it
+    through a `read()` that would narrow the shared dataset in place (RV-01)
+    -- a factor cannot be constructed before its dataset's store exists on
+    disk. That narrowing of what is constructible is filed as RV-02 in
+    `03-VERIFICATION.md` and is deliberately NOT closed here (D-3 of the
+    RV-01 fix plan).
     """
 
     def __init__(self, config: PolarsFactorConfig):
         super().__init__(config)
 
-    def _maybe_resolve_factor_names(self) -> None:
-        # D-05: names come from the computed lazyframe's schema, so they
-        # cannot be known at config-assignment time (i.e. inside __init__).
-        # Keeping the inherited eager default would make merely CONSTRUCTING
-        # a factor trigger a disk read, contradicting D-04's "computation
-        # starts at cal()". `cal()` assigns config.factor_names instead.
-        return None
-
     def _get_factor_names(self) -> tuple[str, ...]:
-        if self.config.factor_names is None:
-            raise RuntimeError(
-                f"{self.class_name}: factor names are not resolved yet. "
-                "Polars factor names are read from the computed frame's "
-                "schema (D-05), so cal() or read() must run before "
-                "_get_factor_names()/num_factors is valid."
-            )
-        return tuple(self.config.factor_names)
+        """Derive the factor names by asking the graph what it produces.
+
+        Four constraints, each of which fails silently if broken:
+
+        - It does not read `self.config.factor_names`. The base-class hook
+          owns the explicit-pin channel; consulting it here would re-couple
+          the two and make "pin wins, else derive" circular.
+        - It does not touch `self.data_backend`. This runs from inside the
+          `Factor.config` setter, BEFORE `Factor.__init__` has assigned the
+          factor's own storage backend. The DATASET's backend, reached via
+          `self.config.dataset`, is a different object and does exist.
+        - It does not depend on the probe returning any ROWS. Only
+          `collect_schema()` is consulted, so a date window yielding zero rows
+          still yields the right names. `_SCHEMA_PROBE_ROWS` is not a row
+          requirement -- it exists so real dtypes come along for free.
+        - **The probe must NOT go through `read()`.** `BaseDataset.read()`
+          runs `_filter()`, which narrows `data_backend.data` IN PLACE via
+          `filter_by_date`, and `XrBackend.read()`'s cache early-return makes
+          that narrowing survive into `cal()`. Because this runs BEFORE
+          `_reset_dataset_config()` widens the dataset's window by the
+          factor's `window` days, and `filter_by_date` can only narrow, a
+          probe that read would silently drop the factor's entire lookback --
+          a factor column that is quietly part-NaN with nothing raised
+          anywhere (RV-01, `03-VERIFICATION.md`). `head()` takes the store
+          path and opens the store itself, so it filters nothing. Do not put
+          `.read()` back in front of it.
+
+        Note that `_reset_dataset_config()` runs AFTER name resolution in the
+        setter, so the probe sees the dataset's own date window rather than
+        the factor's. Irrelevant to a schema -- do not "fix" it by reordering
+        the setter, which would break the ordering `Factor.__init__` depends
+        on.
+        """
+        probe = self.config.dataset.head(_SCHEMA_PROBE_ROWS)
+        factor_lf = self._get_factor_lazyframe(probe)
+        return tuple(
+            name
+            for name in factor_lf.collect_schema().names()
+            if name not in _INDEX_COLUMNS
+        )
 
     @abstractmethod
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:

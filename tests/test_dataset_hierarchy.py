@@ -46,11 +46,18 @@ MARKET_ONLY_MEMBERS = (
 # `BaseDatasetConfig` (CONFLICT 4). `catalog_path` is the load-bearing one:
 # it is the nautilus write destination, and a non-market dataset must not be
 # able to be handed one at all.
+#
+# `vendor` (03.2 D-11) belongs here for the same reason `raw_data_dir_path`
+# does: it names WHOSE raw market files that directory holds, and a dataset
+# with no directory of raw vendor files -- an index-membership panel, say --
+# has no vendor either. Putting it on the shared base would hand every
+# non-market dataset a provenance field none of them can honestly fill.
 MARKET_ONLY_CONFIG_FIELDS = {
     "raw_data_dir_path",
     "catalog_path",
     "market",
     "frequency",
+    "vendor",
 }
 
 # The two fields `ConstituentDatasetConfig` adds: `cache_dir`, the cached

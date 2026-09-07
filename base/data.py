@@ -188,6 +188,32 @@ class BaseDataset(ABC):
     def get_lazyframe(self) -> pl.LazyFrame:
         return self.data_backend.get_lazyframe()
 
+    def head(self, n: int) -> pl.LazyFrame:
+        """A BOUNDED read of at most `n` rows -- `get_lazyframe()`'s twin.
+
+        Concrete, not abstract, and shaped exactly like the pass-through above
+        it: the bound and now the STORE LOCATION are both properties of the
+        STORAGE MEDIUM. The dataset supplies the path it already owns --
+        exactly as `read()` does, one method up -- and adds no opinion of its
+        own, so every dataset kind inherits whatever its backend implements.
+        `tests/test_dataset_hierarchy.py` pins
+        `BaseDataset.__abstractmethods__` to `{"_raw_data_to_xr"}` and that
+        assertion is correct -- one abstract member is what lets a dataset
+        with no OHLCV shape at all complete the whole lifecycle.
+
+        The signature takes `n` only: the path is not the caller's to choose,
+        and its one caller (`base/factor_polars.py`) has no business naming
+        the store.
+
+        Used by `base/factor_polars.py` to learn what its computation graph
+        produces WITHOUT going through `read()`: names derive from the GRAPH,
+        and the graph needs a schema, not data. Routing that probe through
+        `read()` is what silently narrowed the shared dataset's date window
+        and dropped the factor's lookback (RV-01) -- `read()` runs `_filter()`
+        and the backend caches the result.
+        """
+        return self.data_backend.head(self.config.zarr_file_path, n)
+
     def get_xarray_dataset(self) -> xr.Dataset:
         return self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 

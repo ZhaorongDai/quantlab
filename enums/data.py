@@ -81,3 +81,58 @@ class TiingoColumns:
         "open,high,low,close,volume,adjOpen,adjHigh,adjLow,adjClose,"
         "adjVolume,divCash,splitFactor"
     )
+
+
+# Locked vendor token set (03.2-CONTEXT.md D-10/D-11) — the same discipline as
+# `Market`/`Frequency` above: do not add a value without revisiting
+# 02-RESEARCH.md Assumptions Log A2. A vendor token is not merely a label; it
+# is a PATH SEGMENT (`downloads/{market}/{frequency}/{subdir}/{vendor}/`) and a
+# literal column written into every raw shard, so adding one commits to an
+# on-disk layout that cannot be renamed without relaying the raw tier.
+Vendor = Literal["tiingo", "alpaca"]
+
+# Hive partition key(s) per frequency for the raw tier (D-08 / D-19).
+#
+# ONE definition, imported by BOTH the writer (`base/acquisition.py`'s
+# `_hive_partition_values`) and the reader (`dataset/stock.py`'s
+# `_hive_window_predicate`), so the two cannot drift. A writer and a reader
+# that disagree about the key produce a scan that prunes nothing and silently
+# returns fewer rows than the tree holds.
+#
+# WHY `month=` FOR DAILY rather than the `date=/symbol=` D-08 illustrates.
+# 03.2-RESEARCH.md Pattern 5 did the arithmetic against the real `us_all`
+# roster (15,424 symbols x ~2,690 trading days over 2016-2026):
+#
+#   date=/symbol=  ->  2,690 x 15,424  ~= 41,000,000 leaf directories, each
+#                      holding a one-row file. Inode exhaustion on most
+#                      filesystems before the backfill finishes.
+#   date=          ->  2,690 dirs x ~155 batches ~= 417,000 files of ~90 rows.
+#                      Survivable but pathological.
+#   month=         ->  ~130 dirs; ~155 batches x 130 ~= 20,000 files of ~800
+#                      rows each. This is the right size, and `month=` was
+#                      MEASURED to prune correctly (2 of 5 files opened).
+#
+# For `tick` the calculus inverts: one symbol-day of quotes is large enough to
+# justify its own directory and `symbol=` pruning genuinely pays.
+#
+# WHY `tick` CARRIES A LEADING `data_type=` KEY that RESEARCH's recommended
+# layout does not. Quotes and trades have DIFFERENT column sets, so without
+# that key a directory scan of one tick root meets two schemas and raises.
+# Expressing the distinction as a hive KEY rather than as two new `Frequency`
+# tokens leaves this file's locked literal set untouched and keeps both
+# prunable. Only the tick writer/reader added in 03.2-06 consumes it; `1d` and
+# `1m` are unaffected. This is a planner refinement taken under
+# 03.2-CONTEXT.md's explicit grant of partition-key choice to Claude's
+# discretion, confirmed by the developer as D-19 contract 5/6.
+#
+# NOTE for the intraday keys: the `date=` VALUE is the US/Eastern SESSION date,
+# not the naive-UTC date (D-19 contract 7). Timestamp values stay naive UTC and
+# unchanged; only the derived partition key converts. A UTC-derived key files
+# the last ~4 hours of every US session (20:00-24:00 UTC) under the FOLLOWING
+# day, making a one-trading-day query wrong at both edges in a way that looks
+# like sparse data rather than like a bug.
+RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
+    "1d": ("month",),
+    "1m": ("date",),
+    "tick": ("data_type", "date", "symbol"),
+}
