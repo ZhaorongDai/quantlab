@@ -460,6 +460,30 @@ _BLANK_TICKER_CELLS = frozenset({"", "-", "–", "—"})
 #: any time. The malformations this guard actually exists to catch -- an
 #: interior delimiter, an embedded space, lowercase, an over-long cell --
 #: are all still rejected.
+#:
+#: DO NOT ALIGN THIS WITH `enums.data.TRADEABLE_TICKER_PATTERN` (260907-10t).
+#: That one is its deliberately WIDER sibling, and the difference is the
+#: design, not a drift left over from a refactor. The two answer different
+#: questions on different inputs:
+#:
+#:   TRADEABLE_TICKER_PATTERN  -- "can this symbol safely become a path
+#:     segment and a query value?" Input: Tiingo's ticker directory, which
+#:     legitimately contains 77 three-segment `ROOT-X-Y` warrants and
+#:     when-issued lines in `us_all` alone. Admits up to TWO suffix segments.
+#:
+#:   _WELL_FORMED_TICKER (this) -- "did the Wikipedia change-log parser hand
+#:     me one cell or two?" Input: scraped HTML cells. An INTERIOR DELIMITER
+#:     here means two cells were MERGED, i.e. a parser regression, so a
+#:     three-segment value is the signal this guard exists to raise on.
+#:     Admits at most ONE.
+#:
+#: And the input vocabulary cannot need the widening: index constituents are
+#: common stock, and BOTH constituent categories have ZERO pattern failures
+#: across 1,151 symbols (`sp500_constituent` 876, `nasdaq100_constituent` 275,
+#: measured 2026-09-07 against the live reference table). Widening this would
+#: delete a real guard to buy nothing. Pinned by
+#: `tests/test_ticker_pattern_reconciliation.py:
+#: test_the_changelog_guard_is_deliberately_narrower_than_the_fetch_guard`.
 _WELL_FORMED_TICKER = re.compile(r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2})?$")
 
 
