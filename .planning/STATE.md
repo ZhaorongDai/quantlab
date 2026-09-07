@@ -1,17 +1,17 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.1"
-current_phase_name: Index Historical Constituents Data Layer (INSERTED)
-status: executing
-stopped_at: Completed 03.1-05-PLAN.md
-last_updated: "2026-09-07T21:31:18.544Z"
+current_phase: 3
+current_phase_name: Factor Computation (KunQuant + Polars)
+status: planning
+stopped_at: Phase 03.1 complete, ready to plan Phase 3
+last_updated: "2026-09-07T22:43:21.224Z"
 last_activity: 2026-09-07
-last_activity_desc: Phase 03.1 execution started
-state_head: d07be7e55a96171f02edb126e090a55a7600f699
+last_activity_desc: Phase 03.1 complete, transitioned to Phase 3
+state_head: 02c2cfccfbda614cce5d29c7ab6f3e2635a83a26
 progress:
   total_phases: 10
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 30
   completed_plans: 30
 milestone_name: milestone
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.1 (Index Historical Constituents Data Layer (INSERTED)) — EXECUTING
-Plan: 2 of 5
-Status: Ready to execute
-Last activity: 2026-09-07 — Phase 03.1 execution started
+Phase: 3 — Factor Computation (KunQuant + Polars)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-07 — Phase 03.1 complete, transitioned to Phase 3
 
 Progress: [██████████] 100%
 
@@ -39,7 +39,7 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 7
+- Total plans completed: 12
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -48,6 +48,7 @@ Progress: [██████████] 100%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 03.2 | 7 | - | - |
+| 03.1 | 5 | - | - |
 
 **Recent Trend:**
 
@@ -203,7 +204,7 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-09-07T21:30:41.021Z
-Stopped at: Completed 03.1-05-PLAN.md
+Stopped at: Phase 03.1 complete, ready to plan Phase 3
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
