@@ -620,3 +620,163 @@ def test_vecbt_stub_is_still_a_stub_and_names_phase_6(tmp_path):
 
     with pytest.raises(NotImplementedError, match="Phase 6"):
         model._vecbt(prices=None, signals=None)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------
+# WR-02: the checkpoint must hold the BEST epoch's weights, not the last
+# --------------------------------------------------------------------------
+
+
+class ScriptedValLossRegressor(RecordingRegressor):
+    """A regressor whose validation loss follows a SCRIPT and whose weights
+    identify the epoch that produced them.
+
+    Two properties make the WR-02 assertion possible at all:
+
+    - `_val_one_batch` returns `val_loss_script[epoch]`, a constant within the
+      epoch, so the epoch-level weighted mean is exactly that number. The
+      script can therefore be made to descend and then ascend, which is the
+      only shape in which "best" and "last" are different epochs.
+    - `_train_one_batch` overwrites EVERY parameter with `float(epoch)`
+      instead of taking a gradient step. A `state_dict` read back from disk
+      then names, unambiguously, which epoch's weights were persisted. Real
+      SGD would leave the two candidate epochs numerically close and the
+      assertion would degrade into a tolerance argument.
+    """
+
+    val_loss_script: list[float] = []
+
+    def _train_one_batch(self, epoch, x, y):
+        self.train_epochs.append(epoch)
+        self.train_rows += int(x.shape[0])
+        with torch.no_grad():
+            for p in self.model.parameters():  # type: ignore[union-attr]
+                p.fill_(float(epoch))
+        return torch.tensor(0.0)
+
+    def _val_one_batch(self, epoch, x, y):
+        self.val_epochs.append(epoch)
+        self.val_rows += int(x.shape[0])
+        return torch.tensor(self.val_loss_script[epoch])
+
+    def _test_one_batch(self, epoch, x, y):
+        self.test_epochs.append(epoch)
+        return torch.tensor(0.0)
+
+
+def _saved_weight_value(tmp_path) -> float:
+    """Load the checkpoint `_save_model` actually wrote and return the single
+    constant every parameter holds.
+
+    Asserting on the FILE rather than on `model.model` in memory is the whole
+    point: `_save_model` is the last thing `_train_dl` does, and WR-02 is a
+    defect about which weights reach the disk.
+    """
+    checkpoints = sorted((tmp_path / "ckpt").rglob("*.pth"))
+    assert len(checkpoints) == 1, f"expected one checkpoint, got {checkpoints}"
+    state = torch.load(checkpoints[0], weights_only=True)
+    values = {float(v.flatten()[0]) for v in state.values()}
+    assert len(values) == 1, f"parameters disagree on their value: {values}"
+    return values.pop()
+
+
+def test_early_stopping_saves_the_best_epoch_not_the_waited_out_one(tmp_path):
+    """WR-02: `best_loss` gated the patience counter and nothing else.
+
+    Nothing ever snapshotted the weights that produced it, and `_save_model`
+    runs AFTER the epoch loop -- so the checkpoint held whatever the last
+    executed epoch left in memory. When early stopping fires, that epoch is by
+    construction the `patience`-th consecutive epoch of NO improvement, i.e.
+    the mechanism threw away the optimum it had just spent its budget finding.
+
+    Script below: epoch 0 loss 3.0, epoch 1 loss 1.0 (the best), then 2.0 for
+    epochs 2-4. With `patience=3` the counter fills on epochs 2, 3, 4 and the
+    loop breaks at epoch 4.
+
+    Against the pre-fix code this asserted 1.0 and got 4.0.
+    """
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+        epochs=10,
+        early_stopping=True,
+        early_stopping_patience=3,
+    )
+    model = ScriptedValLossRegressor(cfg)
+    model.val_loss_script = [3.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+    model.collect()
+
+    model.train()
+
+    epochs_run = sorted(set(model.val_epochs))
+    # Guards against passing for the wrong reason: early stopping must
+    # actually have fired, and the best epoch must NOT be the last one --
+    # otherwise "saved the best" and "saved the last" are the same assertion.
+    assert epochs_run == [0, 1, 2, 3, 4], epochs_run
+    best_epoch, last_epoch = 1, 4
+    assert best_epoch != last_epoch
+
+    saved = _saved_weight_value(tmp_path)
+    assert saved == float(best_epoch), (
+        f"checkpoint holds epoch {saved:.0f}'s weights; expected the best "
+        f"epoch {best_epoch} (the last executed epoch was {last_epoch})"
+    )
+
+
+def test_early_stopping_saves_the_best_epoch_when_epochs_run_out(tmp_path):
+    """The same guarantee on the OTHER exit path: the loop finishing its
+    `epochs` budget without the patience counter ever filling.
+
+    `early_stopping=True` is a request to select the checkpoint by validation
+    loss; which of the two exits the loop happened to take is an accident of
+    the schedule, and it would be incoherent for the same config to persist
+    the best epoch when it breaks and the last epoch when it does not.
+
+    Script: 3.0, 1.0, 2.0 over exactly 3 epochs with `patience=5`, so the
+    counter reaches 1 and the loop simply runs out. Best is epoch 1, last is
+    epoch 2.
+    """
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+        epochs=3,
+        early_stopping=True,
+        early_stopping_patience=5,
+    )
+    model = ScriptedValLossRegressor(cfg)
+    model.val_loss_script = [3.0, 1.0, 2.0]
+    model.collect()
+
+    model.train()
+
+    assert sorted(set(model.val_epochs)) == [0, 1, 2]
+    assert _saved_weight_value(tmp_path) == 1.0
+
+
+def test_early_stopping_off_still_saves_the_last_epoch(tmp_path):
+    """The scope boundary, locked.
+
+    `best_loss` is only maintained under `if self.config.early_stopping:`, and
+    a run with early stopping OFF has expressed no intent to select a
+    checkpoint by validation loss. Restoring a "best" epoch for such a run
+    would be a silent behaviour change nobody asked for, so it must keep
+    persisting the last epoch -- here epoch 2, even though epoch 1 scored
+    better on the very same script the two tests above select by.
+    """
+    cfg = _make_config(
+        tmp_path,
+        factor_values={"f0": 1.0, "f1": 2.0},
+        label_values={"y0": 0.5},
+        epochs=3,
+        early_stopping=False,
+    )
+    model = ScriptedValLossRegressor(cfg)
+    model.val_loss_script = [3.0, 1.0, 2.0]
+    model.collect()
+
+    model.train()
+
+    assert sorted(set(model.val_epochs)) == [0, 1, 2]
+    assert _saved_weight_value(tmp_path) == 2.0

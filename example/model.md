@@ -110,7 +110,7 @@ CLAUDE.md 把「模块间统一使用 xarray，不用 DataFrame 作为层间传�
 | `config = ...`（setter） | 把训练区间**下推**给每一个因子和标签（`_reset_factors_config` / `_reset_labels_config`），并把 `config.name` 写成本类的完整导入路径。 |
 | `collect()` | 取特征、取标签、`combine_by_coords`、`sortby`、灌进 `XrBackend`。返回 `self`，可以链式写 `Model(cfg).collect().load(ckpt)`。 |
 | `train()` | 生成带时间戳的实验名 → `_init_wandb` → `_auto_train` → `_train_dl`。 |
-| `_train_dl()` | 切 train/test（按配置日期）→ `to_tensor` 转张量 → 形状校验 → 从训练段**尾部**按 `val_size` 切验证集 → 建 `DataLoader` → epoch 循环 → 按 epoch 早停 → `_save_model` → `wandb.finish()` → `self.optim = None`（模型保留）。 |
+| `_train_dl()` | 切 train/test（按配置日期）→ `to_tensor` 转张量 → 形状校验 → 从训练段**尾部**按 `val_size` 切验证集 → 建 `DataLoader` → epoch 循环 → 按 epoch 早停（并快照最优 epoch 的权重）→ 回滚到最优权重 → `_save_model` → `wandb.finish()` → `self.optim = None`（模型保留）。 |
 | `train_cv(...)` | 沿时间前滚切多折，每折独立训练一个模型。 |
 | `load(path)` | 按当前数据形状重建网络，再灌权重。 |
 | `predict(tensor)` | `model.eval()` → `to(device)` → `_preprocess` → `model(x)`，整段在 `torch.no_grad()` 里。 |
@@ -195,7 +195,9 @@ val_x_t   = train_x_t_all[train_split:]
 
 **它的返回值就是早停判据。** 基类把每个 batch 的返回值按样本数加权平均成一个
 epoch 级别的验证损失，再拿它去比 `best_loss`（2026-09-07 之前是逐 batch 直接比，
-见「常见坑」第 2 条）。所以它必须返回一个能 `float()` 的标量 loss——
+见「常见坑」第 2 条）。**它同时决定存哪一轮的权重**——比 `best_loss` 小的那个
+epoch 会被快照下来，训练结束回滚（见「常见坑」第 13 条）。
+所以它必须返回一个能 `float()` 的标量 loss——
 返回 `None` 会在 `float(None)` 处直接 `TypeError`。
 
 > 这条不是假想。`dl_model/rnn.py:RNNRegressor._val_one_batch` 以前只记 metrics
@@ -776,6 +778,8 @@ counter 就可能加几次。实测（`batch_size=16`，每 epoch 2 个验证 ba
 注意 `_val_one_batch` 的返回值现在会被 `float()` 转成标量参与加权平均，
 所以它必须返回一个 0 维张量或 python 数（原本就是这么约定的）。
 
+> 早停还有另外一半——「把最好的那一轮**留下来**」——它曾经完全没做，见第 13 条。
+
 **3. 张量的因子列顺序是「字母序」，不是 `get_factor_names()` 的顺序。**
 （**已于 2026-09-07 修复**）
 
@@ -930,3 +934,45 @@ CV 并行那条路 `copy.deepcopy(self)` 就是为了躲这个。
 > `.get()` 带默认值，`RNNClassifier` 用 `[...]`（缺键直接 `KeyError`）。统一它们
 > 是另一个决定，这次**没有**做——`RNNClassifier` 没有「原来写死的值」可以当默认值，
 > 硬给一个等于替使用者拍板网络结构。
+
+**13. 早停算出了最优 epoch，存下来的却是等待期里最差的那一轮。**（**已于 2026-09-07 修复**）
+
+曾经：`best_loss` 是个**只写变量**——它唯一的用途是喂 patience 计数器，从来没有人
+把产生它的那份权重快照下来。而 `_save_model` 在整个 epoch 循环**之后**才跑一次，
+存的就是循环退出那一刻内存里的东西。早停触发时，退出的那个 epoch 按定义是
+「连续 `patience` 个没有改善」里的最后一个：
+
+```
+epoch 0  val_loss 3.0   ← counter 归零
+epoch 1  val_loss 1.0   ← 最优
+epoch 2  val_loss 2.0   ← counter 1
+epoch 3  val_loss 2.0   ← counter 2
+epoch 4  val_loss 2.0   ← counter 3 == patience，break
+                          checkpoint 里存的是 epoch 4 的权重
+```
+
+早停本来是两件事：**挑出最好的**、**别再浪费时间**。这份实现只做了后一件，
+还把前一件反着做了——花完 patience 预算找到的最优点，恰恰是被丢掉的那个。
+`best_loss` 越算越像个功能，实际上没有任何下游。
+
+现在：`epoch_val_loss < best_loss` 成立时顺手快照一份 `state_dict`，循环结束后、
+`_save_model` **之前**把它灌回模型。三个细节：
+
+- **快照放 CPU**（`v.detach().cpu().clone()`）。`load_state_dict` 是原地拷贝，
+  CPU 张量灌回 CUDA 模型完全正常，所以 GPU 训练不用为这份快照多付一倍显存；
+  代价是主存里多一份参数（不含优化器状态）——这就是这个修复的价格，写在这里。
+- **两条退出路径都回滚**：早停 `break` 出来的，和 epoch 跑满自然退出的。后者也回滚，
+  因为 `early_stopping=True` 表达的是「按验证损失挑 checkpoint」这个意图，循环是撞上
+  patience 还是撞上 `epochs` 上限纯属排期的偶然；同一份配置一种退法存最优、另一种
+  退法存最后一轮，说不通。
+- **只在早停打开时回滚**。`early_stopping=False` 那条路根本不维护 `best_loss`，
+  也没表达过任何按验证损失择优的意思，替它改掉存哪一轮是没人要求过的行为变更——
+  它仍然老老实实存最后一个 epoch。
+
+回归锁三条，都断言在**从磁盘读回来的 checkpoint** 上（断言内存里的 `self.model`
+测不到 `_save_model` 写了什么）：
+`tests/test_model_layer.py::test_early_stopping_saves_the_best_epoch_not_the_waited_out_one`、
+`::test_early_stopping_saves_the_best_epoch_when_epochs_run_out`、
+`::test_early_stopping_off_still_saves_the_last_epoch`（守住上面那条边界）。
+用例里验证损失是**先降后升**的脚本，且每个 epoch 把全部参数刷成 `float(epoch)`——
+只有这样「最优」和「最后」才是两个可区分的数字，否则这个断言会因为错误的原因变绿。

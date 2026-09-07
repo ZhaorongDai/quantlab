@@ -491,6 +491,17 @@ class BaseModel(ABC):
         early_stopping = False
         patience = self.config.early_stopping_patience
         counter = 0
+        # `best_loss` 曾经是个**只写变量**：它只用来喂 patience 计数器，从没有人
+        # 把对应的权重存下来。而 `_save_model` 在整个 epoch 循环**之后**才跑一次，
+        # 存的是循环退出那一刻内存里的东西——早停触发时，那一刻恰好是「连续
+        # patience 个没有改善」的最后一个 epoch。于是早停的两件事（挑出最好的、
+        # 别再浪费时间）只兑现了后一件，前一件被反着做了：把刚找到的最优点扔掉，
+        # 存下等待期里最差的一版。`best_state` 就是补上的那半件事。
+        #
+        # 快照放 CPU：`load_state_dict` 会原地拷贝，CPU 张量灌回 CUDA 模型完全
+        # 正常，所以 GPU 训练不用为这份快照多付一倍显存，代价只是主存里多一份
+        # 参数（不含优化器状态）。
+        best_state: dict[str, torch.Tensor] | None = None
 
         for epoch in tqdm(
             range(self.config.epochs),
@@ -523,6 +534,10 @@ class BaseModel(ABC):
                     if epoch_val_loss < best_loss:
                         best_loss = epoch_val_loss
                         counter = 0
+                        best_state = {
+                            k: v.detach().cpu().clone()
+                            for k, v in self.model.state_dict().items()  # type: ignore[union-attr]
+                        }
                     else:
                         counter += 1
                         if counter >= patience:
@@ -536,6 +551,18 @@ class BaseModel(ABC):
 
                 if early_stopping:
                     break
+
+        # 回滚必须发生在 `_save_model` 之前，并且要盖住**两条**退出路径：早停
+        # `break` 出来的，和 epoch 跑完自然退出的。后者同样回滚，因为
+        # `early_stopping=True` 表达的是「按验证损失挑 checkpoint」这个意图，
+        # 循环是撞上 patience 还是撞上 epochs 上限纯属排期的偶然；同一份配置
+        # 一种退法存最优、另一种退法存最后一轮，是说不通的。
+        #
+        # 边界：只在 `early_stopping` 打开时回滚。关掉早停的那条路径根本不维护
+        # `best_loss`，也没有表达过任何按验证损失择优的意思——替它改掉存哪一轮
+        # 的权重，是没人要求过的行为变更。
+        if self.config.early_stopping and best_state is not None:
+            self.model.load_state_dict(best_state)  # type: ignore[union-attr]
 
         self._save_model(
             Path(self.config.model_save_dir)
