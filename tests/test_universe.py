@@ -1182,6 +1182,90 @@ def test_us_all_has_no_coverage_boundary(mock_universe_fetchers, tmp_path):
     assert "AMEX1" in catalog.get_symbols_as_of("us_all", "2000-01-01")
 
 
+def test_get_symbols_as_of_rejects_iso_basic_form_before_coverage(
+    mock_universe_fetchers, tmp_path
+):
+    """CR-01. `date.fromisoformat` accepts ISO BASIC form ("20070115") since
+    3.11, and the guard compares LEXICOGRAPHICALLY -- so the string that got
+    validated must be the string that gets compared.
+
+    `"20070115"` vs `"2007-02-01"` compares `'0'` (0x30) against `'-'` (0x2D)
+    at index 4, so the basic form sorts AFTER every dashed date in the same
+    year and the strict `<` never fires. Before normalisation this call
+    returned a roster for a date 17 days inside the left-censored region --
+    the guard's own bypass, reachable straight off `--as-of-date`, which
+    `utils/cli.py:add_window_args` declares as a bare `type=str`.
+
+    The `match=` pins the NORMALISED date, so it fails both if the guard stops
+    firing and if the validator goes back to discarding its parse.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError, match=r"as_of_date='2007-01-15' precedes it"):
+        catalog.get_symbols_as_of("nasdaq100_constituent", "20070115")
+
+
+def test_get_symbols_in_range_rejects_iso_basic_form_before_coverage(
+    mock_universe_fetchers, tmp_path
+):
+    """The range-query half of CR-01, on the same bypass.
+
+    `--start-date 20070101` on a constituent category resolved a
+    left-censored roster straight into a multi-year backfill: the exact
+    DATA-05 failure the coverage guard was written to close, through the
+    guard itself.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    with pytest.raises(ValueError, match=r"start_date='2007-01-01' precedes it"):
+        catalog.get_symbols_in_range(
+            "nasdaq100_constituent", "20070101", "2020-01-01"
+        )
+
+
+def test_iso_basic_form_inside_coverage_answers_as_its_dashed_equivalent(
+    mock_universe_fetchers, tmp_path
+):
+    """The half that pins NORMALISATION rather than mere rejection.
+
+    Refusing pre-coverage basic-form dates is not enough. A basic-form date
+    INSIDE coverage clears every guard and then compares wrong against the
+    table's own dashed strings, inside the polars filter: `"2018-03-02" >=
+    "20180101"` is False, because `'-'` (0x2D) loses to `'1'` (0x31) at index
+    4. Every interval that CLOSED in the query date's own year is silently
+    dropped and the caller gets a plausible, short roster with no error --
+    measured at 184 symbols instead of 187 for `'20100101'`..`'2020-01-01'`
+    against the live table.
+
+    The discriminating year is the QUERY date's year (earlier years differ
+    before index 4 and compare correctly), so this uses 2018: the fixture's
+    LOGI interval closes 2018-03-02.
+
+    Asserting equality with the dashed form rather than a hardcoded count is
+    what makes this a normalisation test: it holds for any fixture, and it
+    fails for any implementation that validates the date and then compares the
+    caller's raw string.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    basic = catalog.get_symbols_in_range(
+        "nasdaq100_constituent", "20180101", "2020-01-01"
+    )
+    dashed = catalog.get_symbols_in_range(
+        "nasdaq100_constituent", "2018-01-01", "2020-01-01"
+    )
+
+    assert sorted(basic) == sorted(dashed)
+    # Not vacuous: LOGI closes 2018-03-02, so it is exactly the row the
+    # raw-string comparison dropped from `basic`. Without this the two lists
+    # could agree by both being wrong.
+    assert "LOGI" in dashed
+
+    assert sorted(
+        catalog.get_symbols_as_of("nasdaq100_constituent", "20180101")
+    ) == sorted(catalog.get_symbols_as_of("nasdaq100_constituent", "2018-01-01"))
+
+
 # ---------------------------------------------------------------------------
 # Dense-panel storage sizing + guard (260906-0iy Task 3, T-0iy-03)
 # ---------------------------------------------------------------------------

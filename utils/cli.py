@@ -448,8 +448,14 @@ def _explicit_symbol_catalog(symbol_count: int):
                 # as by the volume guard, and an override that dropped the
                 # keyword would raise TypeError on the one path that matters --
                 # an explicit `--symbols` list at `--frequency 1m`.
-                self._validate_iso_date(start_date, "start_date")
-                self._validate_iso_date(end_date, "end_date")
+                # Rebound, exactly as the base method does: the validator
+                # NORMALISES (`"20180101"` -> `"2018-01-01"`), and a caller
+                # that validates and then uses its own raw string is the CR-01
+                # bug. Nothing here compares dates lexicographically today,
+                # but this override exists precisely so the explicit path
+                # cannot drift from the category path.
+                start_date = self._normalize_iso_date(start_date, "start_date")
+                end_date = self._normalize_iso_date(end_date, "end_date")
                 if bars_per_day < 1:
                     raise ValueError(
                         f"bars_per_day must be >= 1, got {bars_per_day!r}."

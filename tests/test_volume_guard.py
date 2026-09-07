@@ -371,7 +371,7 @@ def test_tick_without_rows_per_symbol_day_refuses_rather_than_guessing(tmp_path)
 def test_invalid_category_and_malformed_date_raise_through_the_shared_validators(
     tmp_path,
 ):
-    """The new estimator SHARES `_validate_category` / `_validate_iso_date`
+    """The new estimator SHARES `_validate_category` / `_normalize_iso_date`
     rather than re-validating.
 
     Asserted by message equality against a sibling estimator, not by exception

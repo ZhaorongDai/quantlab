@@ -58,7 +58,7 @@
 symbol: String, category: String, start_date: String, end_date: String, end_date_is_inferred: Boolean
 ```
 
-- `start_date` / `end_date` 是 **ISO 字符串**，比较是**字典序**比较。这就是为什么 `UniverseCatalog._validate_iso_date` 必须拒绝非 ISO 日期——`"2020/01/02"` 不会"匹配不上"，它会**比较错**，然后返回一个看起来合理的错名单。
+- `start_date` / `end_date` 是 **ISO 字符串**，比较是**字典序**比较。这就是为什么 `UniverseCatalog._normalize_iso_date` 必须拒绝非 ISO 日期——`"2020/01/02"` 不会"匹配不上"，它会**比较错**，然后返回一个看起来合理的错名单。它还必须把通过校验的日期**归一化**成 `YYYY-MM-DD` 再往下传：`date.fromisoformat` 从 3.11 起也接受 ISO 基本格式（`"20070115"`）和周日期（`"2020-W01-1"`），这些同样是**比较错**（`"20070101" < "2007-02-01"` 为 False），校验完就丢掉解析结果等于没校验。
 - `end_date` 为 `null` 表示"至今仍是成员"。
 - **区间两端都是闭区间。** 一个在 D 日被剔除的股票，D 日读作 `True`，D+1 日才是 `False`。这个约定在两个地方必须完全一致：`UniverseCatalog.get_symbols_as_of` 的 `start_date <= as_of_date & (end_date.is_null() | end_date >= as_of_date)`，和 `IndexConstituentDataset._densify` 的 `(timestamps >= start) & (timestamps <= end)`。`base/constituent.py` 的类 docstring 明确点出：两边一旦不一致，面板和查询会在**历史上每一次剔除**都差一天，而运行时什么都不会报。
 

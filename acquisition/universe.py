@@ -1425,15 +1425,36 @@ class UniverseCatalog:
             )
 
     @staticmethod
-    def _validate_iso_date(value: str, field: str) -> None:
-        """Reject a non-ISO date string.
+    def _normalize_iso_date(value: str, field: str) -> str:
+        """Reject a non-ISO date string, and return it CANONICALISED to
+        zero-padded `YYYY-MM-DD`.
 
         The table stores ISO date strings and compares them
         LEXICOGRAPHICALLY, so a non-ISO value does not merely fail to match --
         it compares wrong and returns a plausible, silently incorrect roster.
+
+        **Returning the canonical form is load-bearing, not tidiness, and it
+        is why this normalises rather than merely validating.**
+        `date.fromisoformat` accepts ANY valid ISO 8601 date since 3.11, not
+        the `YYYY-MM-DD` shape the message below promises -- ISO BASIC form
+        (`"20070115"`) and week dates (`"2020-W01-1"`) parse happily. Both
+        then compare WRONG against this table's dashed strings, in two
+        different places and in two different directions:
+
+        - `"20070101" < "2007-02-01"` is False (`'0'` 0x30 beats `'-'` 0x2D at
+          index 4), so a pre-coverage date sails straight past
+          `_assert_within_coverage()` -- the coverage guard's own bypass.
+        - `"2018-03-02" >= "20180101"` is False for the same reason, so every
+          membership interval closing in the query date's year is silently
+          dropped from the polars filter's result.
+
+        Callers must therefore USE the return value in place of the argument
+        they passed; validating and discarding the parse is exactly the bug.
+        Same reasoning, and the same shape, as `BaseDataset._normalize_date`
+        one layer over.
         """
         try:
-            datetime.date.fromisoformat(value)
+            return datetime.date.fromisoformat(value).isoformat()
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"{field} must be an ISO YYYY-MM-DD string, got {value!r}. "
@@ -1550,8 +1571,8 @@ class UniverseCatalog:
         question, and refusing it is right here.
         """
         self._validate_category(category)
-        self._validate_iso_date(start_date, "start_date")
-        self._validate_iso_date(end_date, "end_date")
+        start_date = self._normalize_iso_date(start_date, "start_date")
+        end_date = self._normalize_iso_date(end_date, "end_date")
         self._assert_within_coverage(category, start_date, "start_date")
 
         matched = self._backend.get_lazyframe().filter(
@@ -1631,8 +1652,8 @@ class UniverseCatalog:
         `StockDataset._raw_data_to_xr()` produces.
         """
         self._validate_category(category)
-        self._validate_iso_date(start_date, "start_date")
-        self._validate_iso_date(end_date, "end_date")
+        start_date = self._normalize_iso_date(start_date, "start_date")
+        end_date = self._normalize_iso_date(end_date, "end_date")
 
         window_days = (
             datetime.date.fromisoformat(end_date)
@@ -1805,8 +1826,8 @@ class UniverseCatalog:
         "max_chunk_bytes"}`, so the caller can print without recomputing.
         """
         self._validate_category(category)
-        self._validate_iso_date(start_date, "start_date")
-        self._validate_iso_date(end_date, "end_date")
+        start_date = self._normalize_iso_date(start_date, "start_date")
+        end_date = self._normalize_iso_date(end_date, "end_date")
 
         planner = TimeChunkPlanner(granularity)
         advisory = self.estimate_dense_panel(
@@ -2316,7 +2337,7 @@ class UniverseCatalog:
         # ingest nothing instead of the requested index -- the same class of
         # silent-wrong-answer the coverage-start guard below raises to prevent.
         self._validate_category(category)
-        self._validate_iso_date(as_of_date, "as_of_date")
+        as_of_date = self._normalize_iso_date(as_of_date, "as_of_date")
 
         # Every registered membership category carries its own boundary; a
         # category absent from the registry (i.e. either exchange roster,
