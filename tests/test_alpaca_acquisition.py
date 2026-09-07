@@ -1175,6 +1175,86 @@ def test_a_field_first_appearing_after_row_100_is_not_dropped_by_inference(
     assert all(list(value) == ["@", "T"] for value in non_null)
 
 
+def test_tick_timestamps_keep_their_nanoseconds_end_to_end(
+    mock_alpaca_client, acquisition_config
+):
+    """WR-01. Alpaca stamps quotes and trades in NANOSECONDS.
+
+    `str.to_datetime()` defaults to microseconds, so
+    `2024-01-02T14:30:00.123456789Z` parsed at the default becomes
+    `...123456` -- verified, and silently. D-16 lands tick rows "at FULL
+    resolution ... no resampling, no bucketing and no dedup"; a truncation
+    here is a resampling step wearing a parser's clothes, and it lands in the
+    one tier that deliberately never dedups on `(timestamp, symbol)`, so the
+    ties it manufactures cannot be told from real simultaneity.
+
+    Asserted on the NINTH fractional digit, through the parquet round trip --
+    `.item()` alone would hide it, because Python's `datetime` only carries
+    microseconds.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    # Three trades inside the SAME microsecond, separated only by nanoseconds.
+    # Truncating merges them into one timestamp; the tier never dedups, so the
+    # merge is invisible afterwards.
+    stamps = [
+        "2024-01-02T14:30:00.123456701Z",
+        "2024-01-02T14:30:00.123456789Z",
+        "2024-01-02T14:30:00.123456999Z",
+    ]
+    mock_alpaca_client.pages = [_tick_page("trades", {"AAPL": stamps})]
+
+    cfg = _tick_config(acquisition_config, data_type="trades", subdir="nanos")
+    AlpacaAcquisition(cfg).download()
+
+    shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    frame = pl.concat([pl.read_parquet(shard) for shard in shards])
+    assert frame.schema["timestamp"].time_unit == "ns", (
+        f"tick timestamps must be stored at nanosecond resolution, got "
+        f"{frame.schema['timestamp']}"
+    )
+    assert sorted(frame["timestamp"].dt.nanosecond().to_list()) == [
+        123456701,
+        123456789,
+        123456999,
+    ]
+    assert frame["timestamp"].n_unique() == 3, (
+        "three distinct nanosecond instants must stay three distinct "
+        "timestamps; truncation collapses them into one and tick never dedups"
+    )
+
+
+def test_bar_timestamps_stay_at_microseconds(
+    mock_alpaca_client, alpaca_bars_page, acquisition_config
+):
+    """The other half of WR-01: only TICK moves to nanoseconds.
+
+    A bar is stamped at a whole minute or a whole day, so nanosecond storage
+    would be bytes spent on zeros. Stated as a test so "just make everything
+    ns" is a visible change rather than a silent one.
+    """
+    import polars as pl
+
+    from acquisition.alpaca import AlpacaAcquisition
+
+    assert (
+        AlpacaAcquisition.RAW_SCHEMA_BY_DATA_TYPE["bars"]["timestamp"].time_unit
+        == "us"
+    )
+    mock_alpaca_client.pages = [
+        alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)
+    ]
+    cfg = acquisition_config(
+        vendor="alpaca", symbols=("AAPL",), frequency="1d", subdir="bar_units"
+    )
+    AlpacaAcquisition(cfg).download()
+    shards = sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt"))
+    frame = pl.concat([pl.read_parquet(shard) for shard in shards])
+    assert frame.schema["timestamp"].time_unit == "us"
+
+
 def test_a_refresh_over_an_overlapping_tick_window_does_not_double_the_tape(
     mock_alpaca_client, acquisition_config
 ):

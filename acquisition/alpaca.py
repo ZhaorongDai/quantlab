@@ -391,9 +391,21 @@ class AlpacaAcquisition(Acquisition):
     #: column cannot be read, so "no data" would raise instead of reporting
     #: absence. It also types the columns a sparse response omits entirely --
     #: `conditions` is genuinely optional on the wire.
+    #:
+    #: **The `timestamp` time unit is part of this schema and differs by data
+    #: type.** Bars are microseconds -- a bar is stamped at a whole minute or a
+    #: whole day, so sub-microsecond precision would be storage spent on zeros.
+    #: Quotes and trades are NANOSECONDS, because that is the resolution Alpaca
+    #: sends them at, and `_fetch_page` parses with the unit named HERE rather
+    #: than at polars' `us` default. D-16 lands tick rows "at FULL resolution
+    #: ... no resampling, no bucketing and no dedup", and truncating
+    #: `14:30:00.123456789` to `14:30:00.123456` is a resampling step wearing a
+    #: parser's clothes: it destroys sub-microsecond ORDERING, and it does so in
+    #: the one tier that deliberately never dedups on `(timestamp, symbol)`, so
+    #: the ties it manufactures are indistinguishable from real simultaneity.
     RAW_SCHEMA_BY_DATA_TYPE = {
         "bars": {
-            "timestamp": pl.Datetime,
+            "timestamp": pl.Datetime("us"),
             "symbol": pl.String,
             "vendor": pl.String,
             "open": pl.Float64,
@@ -405,7 +417,7 @@ class AlpacaAcquisition(Acquisition):
             "vwap": pl.Float64,
         },
         "quotes": {
-            "timestamp": pl.Datetime,
+            "timestamp": pl.Datetime("ns"),  # vendor sends nanoseconds
             "symbol": pl.String,
             "vendor": pl.String,
             "bid_exchange": pl.String,
@@ -418,7 +430,7 @@ class AlpacaAcquisition(Acquisition):
             "tape": pl.String,
         },
         "trades": {
-            "timestamp": pl.Datetime,
+            "timestamp": pl.Datetime("ns"),  # vendor sends nanoseconds
             "symbol": pl.String,
             "vendor": pl.String,
             "exchange": pl.String,
@@ -776,9 +788,18 @@ class AlpacaAcquisition(Acquisition):
         # The intraday `date=` hive key is derived from these naive-UTC values
         # by `Acquisition._session_date`, in `SESSION_TIME_ZONE`. The VALUES
         # stay UTC; only that derived key converts.
+        #
+        # The TIME UNIT comes from `RAW_SCHEMA` and is never left at polars'
+        # `us` default: Alpaca stamps quotes and trades in NANOSECONDS, and
+        # parsing them at microseconds silently truncates
+        # `14:30:00.123456789` to `14:30:00.123456`. That is a resampling step
+        # in a tier whose whole contract is that there is none (D-16), and it
+        # manufactures `(timestamp, symbol)` ties in the one tier that
+        # deliberately never dedups -- so downstream code cannot tell them from
+        # real simultaneity.
         frame = frame.with_columns(
             pl.col("timestamp")
-            .str.to_datetime(time_zone="UTC")
+            .str.to_datetime(time_zone="UTC", time_unit=schema["timestamp"].time_unit)
             .dt.replace_time_zone(None)
         )
         frame = frame.cast(
