@@ -478,7 +478,9 @@ if __name__ == "__main__":
             f"Converting/persisting {len(symbols)} symbols to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        StockDataset(ds_config).from_raw_data_chunked(granularity=args.chunk)
+        StockDataset(ds_config).from_raw_data_chunked(
+            granularity=args.chunk, on_new_listing=args.on_new_listing
+        )
         print(f"Zarr store written at: {ds_config.zarr_file_path}")
     else:
         print(

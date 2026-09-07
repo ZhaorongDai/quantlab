@@ -392,3 +392,32 @@ def test_no_feed_default_reaches_the_alpaca_config(monkeypatch):
 
     assert "feed" not in (acq_config.kwargs or {})
     assert "--feed" not in _option_strings(ingest_alpaca._build_arg_parser())
+
+
+def test_the_new_listing_choices_are_derived_from_the_locked_literal():
+    """`--on-new-listing`'s choices come from
+    `BaseDataset.NEW_LISTING_STRATEGIES`, the same way `--chunk`'s come from
+    `TimeChunkPlanner.GRANULARITIES` and `--frequency`'s from `Frequency`.
+
+    RED under: hardcoding the three strings in `utils/cli.py`, which lets a
+    strategy be added at the Dataset layer and stay unreachable from the
+    command line -- the exact drift that once left `nasdaq100_constituent`
+    produced into universe.parquet but unselectable.
+
+    The default is asserted alongside because `refuse` being the default is
+    what keeps every existing invocation byte-identical; a flag whose default
+    silently rebuilt a live store would be a worse bug than the halt it exists
+    to fix.
+    """
+    import ingest_us_equity
+    from base.data import BaseDataset
+
+    action = ingest_us_equity._build_arg_parser()._option_string_actions[
+        "--on-new-listing"
+    ]
+
+    assert list(action.choices) == list(BaseDataset.NEW_LISTING_STRATEGIES)
+    assert action.default == "refuse"
+    assert ingest_us_equity._build_arg_parser().parse_args(
+        []
+    ).on_new_listing == "refuse"

@@ -9,9 +9,12 @@ script adds only the flags that are genuinely its own.
 This module is deliberately dependency-light in the `utils/` tradition
 (`utils/file.py`, `utils/timer.py`): it builds `argparse` groups and resolves a
 roster through a catalog handed to it. It constructs no acquisition client,
-opens no file and issues no request. The one project import it takes at module
-scope is `base.chunking.TimeChunkPlanner`, itself a leaf, because `--chunk`'s
-`choices` must be DERIVED from `GRANULARITIES` rather than restated.
+opens no file and issues no request. Its two module-scope project imports are
+both there for the same reason -- a `choices` list must be DERIVED from the
+literal that defines it rather than restated here, or a value added at the
+Dataset layer stays unreachable from the command line:
+`base.chunking.TimeChunkPlanner.GRANULARITIES` for `--chunk`, and
+`base.data.BaseDataset.NEW_LISTING_STRATEGIES` for `--on-new-listing`.
 
 **The one thing this module must not unify.** `ingest_tiingo.py` resolves
 point-in-time membership on a single day; `ingest_us_equity.py` resolves
@@ -24,6 +27,7 @@ import argparse
 from typing import Literal
 
 from base.chunking import TimeChunkPlanner
+from base.data import BaseDataset
 
 #: Maps the CLI-facing --universe choice to enums.data.UniverseCategory.
 #:
@@ -157,10 +161,16 @@ def add_chunk_args(
     *,
     default: str = "year",
 ) -> argparse.ArgumentParser:
-    """Add `--chunk`, with `choices` derived from `TimeChunkPlanner`.
+    """Add `--chunk` and `--on-new-listing`, both with DERIVED `choices`.
 
     Derived, never restated: a granularity added to `GRANULARITIES` and its
-    `_period_key` must not need a second edit here to become selectable.
+    `_period_key`, or a strategy added to
+    `BaseDataset.NEW_LISTING_STRATEGIES`, must not need a second edit here to
+    become selectable.
+
+    `--on-new-listing` belongs in THIS group rather than a new one: it is a
+    knob on the same chunked `--to-zarr` conversion `--chunk` governs, and this
+    group is already registered in the shared-group wiring test's table.
     """
     parser.add_argument(
         "--chunk",
@@ -172,6 +182,23 @@ def add_chunk_args(
             "year). Finer windows use less peak RAM and give a finer resume "
             "granularity, at the cost of more append round trips. Pass "
             "'month' for a dense year the per-chunk sizing guard refuses."
+        ),
+    )
+    parser.add_argument(
+        "--on-new-listing",
+        type=str,
+        choices=list(BaseDataset.NEW_LISTING_STRATEGIES),
+        default="refuse",
+        help=(
+            "What to do when the raw roster has grown since the Zarr store "
+            "was built -- the routine consequence of a new listing between two "
+            "refreshes (default refuse). 'refuse' halts with the roster error, "
+            "exactly as before this flag existed, leaving the store untouched. "
+            "'rebuild' re-densifies every --chunk window from raw onto the new "
+            "symbol union, recovering the new listing's REAL history at the "
+            "cost of a full re-densify. 'widen' keeps the store and widens its "
+            "symbol axis in place, which is fast but leaves the new listing's "
+            "entire historical block NaN because raw is not re-read."
         ),
     )
     return parser
