@@ -467,15 +467,28 @@ def test_registration_tuple_shape_is_instances_in_a_rebound_tuple() -> None:
     ]
     assert appends == [], appends
 
-    # ... and the rebinding is really there, as an AugAssign onto SOURCES.
+    # ... and a REBIND is really there. Accepted in either syntactic form
+    # (`SOURCES += (d,)` or `SOURCES = SOURCES + (d,)`), because what the
+    # fixture depends on is the rebinding, not the spelling -- pinning the
+    # exact node type would fail an equivalent and equally correct refactor.
+    #
+    # The `.append` scan above does NOT cover the whole risk on its own:
+    # switching `SOURCES` to a LIST would make `SOURCES += (d,)` an in-place
+    # `list.__iadd__` extend, passing both this arm and the append scan. The
+    # `isinstance(..., tuple)` assertion at the top is what catches that, and
+    # the three arms are only jointly sufficient.
     rebinds = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AugAssign)
-        and isinstance(node.target, ast.Attribute)
-        and node.target.attr == "SOURCES"
+        if isinstance(node, (ast.AugAssign, ast.Assign))
+        and any(
+            isinstance(target, ast.Attribute) and target.attr == "SOURCES"
+            for target in (
+                [node.target] if isinstance(node, ast.AugAssign) else node.targets
+            )
+        )
     ]
-    assert len(rebinds) == 1, ast.dump(tree) and len(rebinds)
+    assert len(rebinds) == 1, [ast.unparse(node) for node in rebinds]
 
 
 def test_decorator_registers_and_returns_the_descriptor(isolated_registry) -> None:
@@ -502,35 +515,47 @@ def test_decorator_registers_and_returns_the_descriptor(isolated_registry) -> No
     assert isolated_registry.SOURCES.count(descriptor) == 1
 
 
-def test_the_isolated_registry_fixture_restored_the_fake_vendors() -> None:
-    """The teardown half of the test above, which it cannot assert itself.
-
-    A fixture that snapshots but never restores looks identical from inside
-    the test that used it. This runs AFTER those tests in file order and
-    asserts the session-global registry is back to the two shipped
-    descriptors, so a leak is caught here rather than surfacing as an
-    inexplicable third row in some later plan's enumeration assertion.
-    """
+def DataSourceRegistry_all():
+    """The live registry's `all()`, named apart so the sorted-order test can
+    assert on BOTH the shipped registry and a synthetic reversed one without
+    the fixture-bound name shadowing the module-level one."""
     from quantlab.acquisition.registry import DataSourceRegistry
 
-    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo"]
-    for leaked in ("fakevendor", "decoratedvendor", "tiingotwin"):
-        assert leaked not in {d.vendor for d in DataSourceRegistry.SOURCES}
+    return DataSourceRegistry.all()
 
 
-def test_enumeration_order_is_sorted_by_vendor() -> None:
-    """D-06: `all()` sorts by vendor rather than returning import order.
+def test_enumeration_order_is_sorted_by_vendor(isolated_registry, monkeypatch) -> None:
+    """D-06: `all()` SORTS by vendor rather than returning registration order.
 
-    Import order is a function of which module the caller touched first, so
-    two installations of the same code would render an operator's source list
-    differently. Sorting also makes this assertion a literal comparison.
+    Import order is a function of which module the caller touched first, so two
+    installations of the same code would otherwise render an operator's source
+    list differently.
+
+    The shipped registry cannot prove this on its own, and asserting only on it
+    would be the 03.2 failure recorded in `.planning/STATE.md` -- "a lock that
+    passes on arrival is mutation-verified rather than accepted". The two real
+    descriptors happen to register in the order `alpaca`, `tiingo`, which is
+    ALREADY sorted, so `all()` returning `tuple(cls.SOURCES)` unsorted would
+    pass a live-registry assertion unchanged. So the ordering is exercised
+    against a registry whose registration order is deliberately the REVERSE of
+    its sorted order; deleting the `sorted(...)` call turns this red.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    assert [d.vendor for d in DataSourceRegistry_all()] == ["alpaca", "tiingo"]
 
-    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo"]
+    reversed_registration = (
+        _fake_descriptor("zzz-last-alphabetically"),
+        _fake_descriptor("aaa-first-alphabetically"),
+    )
+    monkeypatch.setattr(isolated_registry, "SOURCES", reversed_registration)
 
-    vendors = [d.vendor for d in DataSourceRegistry.all()]
-    assert vendors == sorted(vendors)
+    assert [d.vendor for d in isolated_registry.SOURCES] == [
+        "zzz-last-alphabetically",
+        "aaa-first-alphabetically",
+    ]
+    assert [d.vendor for d in isolated_registry.all()] == [
+        "aaa-first-alphabetically",
+        "zzz-last-alphabetically",
+    ]
 
 
 def test_registry_get_is_empty_and_unknown_safe(
@@ -596,3 +621,347 @@ def test_registry_reaches_no_zarr_writer() -> None:
     )
     assert offending == [], offending
     assert "quantlab.base.acquisition" in imported
+
+
+# ---------------------------------------------------------------------------
+# 03.4-02 Task 3 -- cold-import completeness (D-07/SC-1) and the credential
+# contract (D-04/SC-2)
+# ---------------------------------------------------------------------------
+
+#: What the two subprocess tests below strip from the child's environment.
+#: Written as LITERALS, not sourced from `CREDENTIAL_ENV_VARS` or from the
+#: descriptors, for the same reason `tests/conftest.py:_CREDENTIAL_ENV_NAMES`
+#: is: a proof that reads its own subject's declaration proves only that the
+#: declaration is self-consistent.
+_CHILD_CREDENTIALS = ("TIINGO_API_KEY", "APCA_API_KEY_ID", "APCA_API_SECRET_KEY")
+
+
+def _child_env() -> dict:
+    """A copy of this process's environment with every vendor credential gone."""
+    env = dict(os.environ)
+    for name in _CHILD_CREDENTIALS:
+        env.pop(name, None)
+    return env
+
+
+def _run_child(body: str):
+    """Run `body` in a FRESH interpreter and return the completed process.
+
+    A subprocess is REQUIRED rather than fastidious: this pytest session has
+    already imported both vendor modules for other reasons, so an in-process
+    assertion about what a "cold import" reaches would be measuring the state
+    other tests left behind, not the import graph.
+    """
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-c", body],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+        env=_child_env(),
+    )
+
+
+def test_enumeration_is_complete_from_a_cold_import() -> None:
+    """D-07 / SC-1: importing ONLY the registry enumerates every source.
+
+    A decorator-populated registry is exactly as complete as the set of modules
+    that have been imported, so "one registry an operator surface can
+    enumerate" is a claim about the IMPORT GRAPH, not about the decorator. The
+    child imports the registry entry point and nothing else.
+
+    Run with every credential stripped from the child's environment, so this
+    doubles as an SC-2 proof: enumeration needs no credential to be present.
+    A descriptor that reached its credential at import time -- or an
+    `acquisition_cls` constructed at module scope -- would make the child exit
+    non-zero here.
+    """
+    child = _run_child(
+        "from quantlab.acquisition.registry import DataSourceRegistry\n"
+        "print(sorted(d.vendor for d in DataSourceRegistry.all()))\n"
+    )
+
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "['alpaca', 'tiingo']", child.stdout
+    assert "Traceback" not in child.stderr
+
+
+def test_the_acquisition_package_init_is_still_empty() -> None:
+    """L-3: `quantlab/acquisition/__init__.py` stays empty, and the vendor
+    imports live at the bottom of `registry.py` instead.
+
+    A non-empty package `__init__` runs on EVERY
+    `import quantlab.acquisition.<anything>`, including
+    `quantlab.acquisition.universe` -- the one module whose entire structural
+    guarantee is that no acquisition client can be constructed there, whatever
+    the call order. That is what makes the volume guard refuse BEFORE any
+    client exists rather than refuse if called in the right order.
+
+    The erosion would be SILENT: `tests/test_volume_guard.py`'s structural arm
+    is an `ast` scan of `universe.py`'s OWN source plus a
+    `vars(universe_module)` sweep, and neither can see a transitive import
+    dragged in by a package `__init__`. So the property is asserted here
+    directly, on the file, rather than trusted to a test that cannot see it.
+    """
+    init = Path("quantlab/acquisition/__init__.py")
+
+    assert init.exists()
+    assert init.read_text(encoding="utf-8").strip() == ""
+
+
+def test_importing_universe_binds_no_acquisition_client() -> None:
+    """The RUNTIME half of the L-3 guarantee, which the structural test cannot
+    see.
+
+    `tests/test_volume_guard.py` proves `universe.py` does not itself import an
+    acquisition module. This proves the stronger, transitive fact: importing
+    that module ALONE, in a fresh interpreter, leaves no `Acquisition`
+    subclass bound in it and does not drag the vendor modules into
+    `sys.modules` at all. That is the property a non-empty package `__init__`
+    would destroy while every existing test stayed green.
+    """
+    child = _run_child(
+        "import json, sys\n"
+        "import quantlab.acquisition.universe as u\n"
+        "print(json.dumps({\n"
+        "    'bound': [n for n in vars(u) if n.endswith('Acquisition')],\n"
+        "    'tiingo_imported': 'quantlab.acquisition.tiingo' in sys.modules,\n"
+        "    'alpaca_imported': 'quantlab.acquisition.alpaca' in sys.modules,\n"
+        "    'registry_imported': 'quantlab.acquisition.registry' in sys.modules,\n"
+        "}))\n"
+    )
+
+    assert child.returncode == 0, child.stderr
+    observed = json.loads(child.stdout)
+    assert observed["bound"] == []
+    assert observed["tiingo_imported"] is False
+    assert observed["alpaca_imported"] is False
+    assert observed["registry_imported"] is False
+
+
+def _no_network(monkeypatch) -> None:
+    """Make ANY socket allocation raise.
+
+    Copied from `tests/test_volume_guard.py:_no_network` (tests/ is not a
+    package, so helpers travel by copy with an attribution comment).
+
+    Used INSTEAD OF the `mock_tiingo_client` / `mock_alpaca_client` transport
+    fixtures in the credential test below, and that substitution is the whole
+    point of it: `mock_alpaca_client` replaces `_AlpacaMarketDataClient`
+    wholesale, and that class IS Alpaca's missing-credential guard. Mocking the
+    transport therefore DISABLES the control the test exists to prove --
+    threat T-03.4-02-05, "a test double replacing the transport and disabling
+    redaction", one row over. A socket tripwire keeps the real guards running
+    while making a real request impossible.
+    """
+    import socket
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "a socket was opened; the credential contract is checked at "
+            "construction and must cost zero vendor requests"
+        )
+
+    monkeypatch.setattr(socket, "socket", _forbidden)
+    monkeypatch.setattr(socket, "create_connection", _forbidden)
+
+
+@pytest.mark.parametrize("vendor", ["alpaca", "tiingo"])
+def test_env_names_are_exactly_what_gates_construction(
+    vendor, monkeypatch, acquisition_config
+) -> None:
+    """D-04: the descriptor declares EXACTLY the names that gate construction.
+
+    The env var name now lives in two places -- `descriptor.required_env` and
+    the vendor's own credential check -- so it is pinned in BOTH directions,
+    because either half alone passes for the wrong reason:
+
+    - **no name is missing:** with every declared name set, construction
+      SUCCEEDS, so the descriptor does not UNDER-declare. A descriptor missing
+      a name would report a source "configured" whose client then raises.
+    - **no name is extra:** deleting ANY ONE declared name makes construction
+      RAISE, naming that variable, so the descriptor does not OVER-declare. A
+      descriptor with a spurious name would report a source unconfigured that
+      would in fact have worked.
+
+    Finished with the cheap structural half -- `required_env ==
+    acquisition_cls.CREDENTIAL_ENV_VARS` -- which catches a rename applied in
+    only one place. That comparison is not a tautology because
+    `required_env` is a restated literal on the descriptor, never derived from
+    `CREDENTIAL_ENV_VARS`; the other half of that anchoring is asserted in
+    `test_vendor_credential_env_names_are_module_level_constants_...` above.
+
+    Issues zero requests: a socket tripwire is installed instead of a transport
+    mock (see `_no_network`), so both vendors' REAL guards run.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry, is_configured
+
+    _no_network(monkeypatch)
+    descriptor = DataSourceRegistry.get(vendor)
+    config = acquisition_config(vendor=vendor)
+
+    assert descriptor.required_env, vendor
+
+    # Direction 1 -- no name is missing.
+    for name in descriptor.required_env:
+        monkeypatch.setenv(name, "not-a-real-credential")
+    assert is_configured(descriptor) is True
+    descriptor.acquisition_cls(config)
+
+    # Direction 2 -- no name is extra.
+    for name in descriptor.required_env:
+        monkeypatch.delenv(name)
+        assert is_configured(descriptor) is False
+        with pytest.raises(RuntimeError, match=name):
+            descriptor.acquisition_cls(config)
+        monkeypatch.setenv(name, "not-a-real-credential")
+
+    # The structural half.
+    assert descriptor.required_env == descriptor.acquisition_cls.CREDENTIAL_ENV_VARS
+
+
+def test_is_configured_never_returns_a_credential_value(
+    monkeypatch, acquisition_config, mock_tiingo_client
+) -> None:
+    """SC-2 / T-03.4-02-01: a planted credential VALUE escapes nowhere.
+
+    This repository has already leaked one real Tiingo key, and an operator
+    dashboard that renders an env var is how the next one happens. So a
+    recognisable sentinel is planted in every credential name and asserted
+    ABSENT from every egress path the registry has: both return values, the
+    descriptor's `repr`, the whole enumeration's `repr`, the string form of an
+    `AcquisitionResult` produced by a real `run()`, and every loguru record
+    emitted while those calls run.
+
+    There is deliberately no masked or partially-redacted variant to test:
+    `is_configured` returns a `bool` and `credential_status` returns a `bool`
+    per NAME, full stop. A masked display looks responsible and is the shape a
+    leak takes next.
+
+    The types are asserted to be ACTUAL bools rather than merely truthy, since
+    a non-empty credential string is itself truthy -- returning the value
+    unchanged would satisfy a truthiness assertion perfectly.
+    """
+    from loguru import logger
+
+    from quantlab.acquisition.registry import (
+        DataSourceRegistry,
+        credential_status,
+        is_configured,
+        run,
+    )
+
+    sentinel = "SENTINEL-c0ffee-DO-NOT-LEAK"
+    for name in _CHILD_CREDENTIALS:
+        monkeypatch.setenv(name, sentinel)
+
+    records: list[str] = []
+    sink_id = logger.add(lambda message: records.append(str(message)), level="DEBUG")
+    try:
+        tiingo_source = DataSourceRegistry.get("tiingo")
+
+        configured = is_configured(tiingo_source)
+        status = credential_status(tiingo_source)
+        result = run(tiingo_source, acquisition_config(vendor="tiingo"))
+
+        rendered = [
+            repr(configured),
+            repr(status),
+            repr(tiingo_source),
+            repr(DataSourceRegistry.all()),
+            str(result),
+            repr(result),
+        ]
+    finally:
+        logger.remove(sink_id)
+
+    for text in rendered + records:
+        assert sentinel not in text, text
+
+    # Booleans, not values dressed as booleans.
+    assert configured is True
+    assert type(configured) is bool
+    assert set(status) == set(tiingo_source.required_env)
+    for value in status.values():
+        assert type(value) is bool
+
+    # The empty-string case, matching `if not os.environ.get(...)` in both
+    # vendor modules exactly: set-but-empty is NOT configured.
+    monkeypatch.setenv("TIINGO_API_KEY", "")
+    assert is_configured(tiingo_source) is False
+    assert credential_status(tiingo_source) == {"TIINGO_API_KEY": False}
+
+
+def test_is_configured_on_a_descriptor_with_no_required_env(
+    isolated_registry, monkeypatch
+) -> None:
+    """D-04: `required_env=()` reports configured, and reads NO environment.
+
+    A source needing no credential is a legitimate future case (a local-file
+    source, a public endpoint), and it must answer `True` / `{}` rather than
+    raising or falling into an "unknown" third state a console would have to
+    render.
+
+    "Reads no environment variable at all" is asserted rather than assumed, by
+    swapping the module's `os` for one whose `environ.get` raises. A future
+    implementation that consulted the environment first and special-cased the
+    empty tuple afterwards would still return the right answers and would
+    still fail here -- which is the point, because that shape is one refactor
+    away from reading a name it was never given.
+    """
+    import types
+
+    import quantlab.acquisition.registry as registry
+
+    descriptor = _fake_descriptor("nocredvendor", required_env=())
+    registry.register_source(descriptor)
+
+    class _ExplodingEnviron(dict):
+        def get(self, *args, **kwargs):
+            raise AssertionError(
+                "the environment was read for a descriptor declaring no "
+                "credential names"
+            )
+
+    monkeypatch.setattr(
+        registry, "os", types.SimpleNamespace(environ=_ExplodingEnviron())
+    )
+
+    assert registry.is_configured(descriptor) is True
+    assert registry.credential_status(descriptor) == {}
+    assert isolated_registry.get("nocredvendor") is descriptor
+
+
+# ---------------------------------------------------------------------------
+# LAST in file order, deliberately: the teardown half of every isolated test
+# ---------------------------------------------------------------------------
+
+
+def test_the_isolated_registry_fixture_restored_every_fake_vendor() -> None:
+    """`isolated_registry` really RESTORES, which no test using it can assert.
+
+    A fixture that snapshots but never restores looks identical from inside the
+    test that used it -- and a leak would surface much later as an
+    inexplicable third row in some other plan's enumeration assertion, with
+    nothing pointing back here. pytest runs tests in file-definition order, so
+    this sits last and names every fake vendor this module registers.
+
+    Add a fake vendor above without adding its token here and this test
+    silently stops covering it, so the list is the maintenance obligation that
+    comes with `_fake_descriptor`.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo"]
+
+    registered = {d.vendor for d in DataSourceRegistry.SOURCES}
+    for leaked in (
+        "fakevendor",
+        "tiingotwin",
+        "decoratedvendor",
+        "nocredvendor",
+        "only",
+    ):
+        assert leaked not in registered, leaked
