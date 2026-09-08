@@ -21,6 +21,7 @@ sampling RSS:
   to avoid.
 """
 
+import inspect
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -417,6 +418,255 @@ def test_append_refuses_a_window_overlapping_the_stored_timestamps(
     assert _OVERLAP_CONSEQUENCE in message
 
     # Nothing was written: the store is bit-identical to before the refusal.
+    store = _panel(path)
+    index = pd.DatetimeIndex(store["timestamp"].values)
+    assert len(index) == 3
+    assert index.is_unique
+    assert index.is_monotonic_increasing
+    assert store["close"].values.tolist() == before.tolist()
+
+
+def test_append_allows_a_gap_between_the_stored_end_and_the_incoming_start(
+    tmp_path: Path,
+) -> None:
+    """Gaps are deliberately NOT guarded (D-01, decided 2026-09-07). Only
+    OVERLAP is refused. A discontinuous time axis is a legitimate shape this
+    layer takes no position on -- the storage layer cannot tell a deliberately
+    sparse range from a missing one -- so a window starting strictly after the
+    stored end appends normally, whatever the distance.
+
+    This test exists so a later reader cannot "finish the job" by extending
+    the guard to contiguity: doing so reddens here, which is the point.
+
+    RED under: extending the append-dim check in
+    `quantlab/dataset/backend.py::XrBackend._assert_append_compatible` to also
+    refuse a gap (mutation M5).
+    """
+    path = str(tmp_path / "gap.zarr")
+    XrBackend().to_internal(
+        _small_panel(["2022-01-04", "2022-01-05"], ["A", "B"], 0.0)
+    ).append(path)
+
+    XrBackend().to_internal(
+        _small_panel(["2023-06-01"], ["A", "B"], 100.0)
+    ).append(path)
+
+    store = _panel(path)
+    index = pd.DatetimeIndex(store["timestamp"].values)
+    assert len(index) == 3
+    assert index.is_unique
+    assert index.is_monotonic_increasing
+    assert store["close"].values[-1].tolist() == [100.0, 101.0]
+
+
+def test_append_refuses_a_window_that_ends_before_the_stored_start(
+    tmp_path: Path,
+) -> None:
+    """The backwards window: it ends BEFORE the store even begins, so it
+    shares no label with the store at all. Measured 2026-09-07 on the unguarded
+    tree -- store 2022-06-01/2022-06-02 taking a 2022-01-04 window comes back
+    `[06-01, 06-02, 01-04]` with **is_unique TRUE** (nothing repeats) and
+    **is_monotonic_increasing False**, and the same
+    `.sel(timestamp=slice(...))` `KeyError: 'Value based partial slicing on
+    non-monotonic DatetimeIndexes with non-existing keys is not allowed.'`
+    follows.
+
+    That is_unique TRUE measurement is why this fixture matters beyond
+    coverage: it FALSIFIES any refusal message whose stated consequence is
+    "duplicate labels". Nothing is duplicated here, and a reader who cannot
+    see the measurement has no way to check the claim -- which is why the same
+    `_OVERLAP_CONSEQUENCE` clause is asserted here as in the two other refusal
+    tests.
+
+    Refusing this shape is the direct consequence of comparing the incoming
+    START against the stored END, which is the comparison the message
+    describes.
+
+    RED under: comparing the incoming start against the stored MINIMUM instead
+    of its maximum (mutation M3 family).
+    """
+    path = str(tmp_path / "backwards.zarr")
+    XrBackend().to_internal(
+        _small_panel(["2022-06-01", "2022-06-02"], ["A", "B"], 0.0)
+    ).append(path)
+    before = _panel(path)["close"].values.copy()
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().to_internal(
+            _small_panel(["2022-01-04"], ["A", "B"], 100.0)
+        ).append(path)
+
+    message = str(excinfo.value)
+    assert path in message
+    assert "timestamp" in message
+    assert "2022-06-02T00:00:00" in message  # the stored end
+    assert "2022-01-04T00:00:00" in message  # the incoming start
+    assert 'save(mode="w")' in message
+    assert _OVERLAP_CONSEQUENCE in message
+
+    store = _panel(path)
+    index = pd.DatetimeIndex(store["timestamp"].values)
+    assert len(index) == 2
+    assert index.is_unique
+    assert index.is_monotonic_increasing
+    assert store["close"].values.tolist() == before.tolist()
+
+
+def test_append_refuses_a_window_starting_exactly_on_the_stored_end(
+    tmp_path: Path,
+) -> None:
+    """The boundary case, and the ONLY test that reddens when the comparison
+    is relaxed from `<=` to `<`. Record that plainly: a mechanism covered by
+    exactly one test is a weaker guarantee than it looks, so this test must
+    not be deleted as redundant with the partial-overlap one.
+
+    Measured 2026-09-07 on the unguarded tree, this shape runs OPPOSITE to the
+    ends-before fixture next door: store 2022-01-04..2022-01-06 taking a
+    2022-01-06..2022-01-08 window comes back `[01-04, 01-05, 01-06, 01-06,
+    01-07, 01-08]` with **is_unique False** but **is_monotonic_increasing
+    still TRUE**. So the two fixtures break the axis in opposite ways -- one
+    duplicates without disordering, the other disorders without duplicating --
+    and only a consequence true of BOTH survives the shared
+    `_OVERLAP_CONSEQUENCE` assertion the three refusal tests share.
+
+    RED under: relaxing the comparison to strictly-less-than (mutation M2).
+    """
+    path = str(tmp_path / "boundary.zarr")
+    XrBackend().to_internal(
+        _small_panel(["2022-01-04", "2022-01-05", "2022-01-06"], ["A", "B"], 0.0)
+    ).append(path)
+    before = _panel(path)["close"].values.copy()
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().to_internal(
+            _small_panel(
+                ["2022-01-06", "2022-01-07", "2022-01-08"], ["A", "B"], 100.0
+            )
+        ).append(path)
+
+    message = str(excinfo.value)
+    assert path in message
+    assert "timestamp" in message
+    assert "2022-01-06T00:00:00" in message  # both the stored end AND the
+    # incoming start -- that coincidence IS this fixture
+    assert 'save(mode="w")' in message
+    assert _OVERLAP_CONSEQUENCE in message
+
+    store = _panel(path)
+    index = pd.DatetimeIndex(store["timestamp"].values)
+    assert len(index) == 3
+    assert index.is_unique
+    assert index.is_monotonic_increasing
+    assert store["close"].values.tolist() == before.tolist()
+
+
+def test_append_skips_the_overlap_check_without_an_append_dim_coordinate(
+    tmp_path: Path,
+) -> None:
+    """A store can legitimately carry NO coordinate on the append dimension.
+    Measured 2026-09-07: a panel with a `timestamp` DIM but no `timestamp`
+    COORD writes and re-appends cleanly (n=2 then n=4), and it did so before
+    this guard existed.
+
+    The new check therefore skips that case exactly the way the non-append dim
+    loop above it already skips a coordinate absent on either side. Without
+    the skip there is nothing to take a `.min()` of and a working path becomes
+    a crash -- a guard that over-refuses gets deleted rather than obeyed
+    (T-uac-05).
+
+    RED under: dropping the `append_dim in self.data.coords and append_dim in
+    existing.coords` presence check from
+    `quantlab/dataset/backend.py::XrBackend._assert_append_compatible`.
+    """
+
+    def _no_coord_panel(n: int, offset: float) -> xr.Dataset:
+        return xr.Dataset(
+            {
+                "close": (
+                    ["timestamp", "symbol"],
+                    np.arange(n * 2, dtype=float).reshape(n, 2) + offset,
+                )
+            },
+            coords={"symbol": ["A", "B"]},
+        )
+
+    path = str(tmp_path / "no_time_coord.zarr")
+    XrBackend().to_internal(_no_coord_panel(2, 0.0)).append(path)
+    XrBackend().to_internal(_no_coord_panel(2, 100.0)).append(path)
+
+    store = _panel(path)
+    assert store.sizes["timestamp"] == 4
+    assert "timestamp" not in store.coords
+    assert store["close"].values[-1].tolist() == [102.0, 103.0]
+
+
+def test_append_offers_no_overwrite_escape_hatch() -> None:
+    """The DECLARED half of D-02 -- and only that half. Read the next test
+    with this one; neither is sufficient alone.
+
+    D-02 (decided 2026-09-07): the refusal is unconditional, with no overwrite
+    opt-out now or later. Recomputing an already-stored range is
+    `save(mode="w")`'s job -- replace the store -- while `append()` extends
+    it. A flag on `append()` would blur exactly the boundary those two methods
+    are separate in order to keep sharp.
+
+    **This assertion is a structural PROXY that does NOT span the property it
+    stands for, and that is measured rather than suspected.** On 2026-09-07 a
+    hatch popped from `**kwargs` INSIDE the method body -- `if
+    kwargs.pop("force", False): ... return self`, inserted ahead of the guard
+    call -- made the existing symbol-axis guard's `ValueError` disappear
+    entirely while `inspect.signature` still returned this exact, byte-
+    identical parameter tuple. So on its own this test stays green through
+    precisely the drift D-02 exists to catch. The behavioural half lives in
+    `test_append_refuses_an_overlapping_window_carrying_an_unrecognised_kwarg`
+    directly below.
+
+    RED under: adding a NAMED parameter that lets a caller past the refusal
+    (`force=`, `overwrite=`, `mode=`). Deliberately NOT red under a smuggled
+    one -- that is the next test's job, and mutation M6 demonstrates the split.
+    """
+    parameters = tuple(inspect.signature(XrBackend.append).parameters)
+    assert parameters == ("self", "path", "append_dim", "kwargs")
+
+
+def test_append_refuses_an_overlapping_window_carrying_an_unrecognised_kwarg(
+    tmp_path: Path,
+) -> None:
+    """The BEHAVIOURAL half of D-02, and the half that spans the realistic
+    drift. Read it with `test_append_offers_no_overwrite_escape_hatch`
+    directly above, whose signature assertion measurably does NOT cover this.
+
+    The mechanism, which is the reason this passes: `XrBackend.append` calls
+    `_assert_append_compatible(path, append_dim)` BEFORE it touches `kwargs`
+    at all -- before the `kwargs.pop("encoding", None)` and before any
+    `to_zarr` -- so no keyword can be consumed ahead of the refusal, whatever
+    it is named.
+
+    Not green today by accident: measured 2026-09-07 on the unguarded tree
+    this same call raised `TypeError: Dataset.to_zarr() got an unexpected
+    keyword argument 'force'` from deep inside the write, not a `ValueError`
+    from the guard. With the guard in, the `ValueError` must arrive from
+    `_assert_append_compatible`, ahead of `to_zarr`, and the store must be
+    untouched.
+
+    RED under: any hatch consumed from `**kwargs` before the guard call --
+    exactly mutation M6, under which the signature test above stays GREEN.
+    """
+    path = str(tmp_path / "smuggled.zarr")
+    XrBackend().to_internal(
+        _small_panel(["2022-01-04", "2022-01-05", "2022-01-06"], ["A", "B"], 0.0)
+    ).append(path)
+    before = _panel(path)["close"].values.copy()
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().to_internal(
+            _small_panel(
+                ["2022-01-05", "2022-01-06", "2022-01-07"], ["A", "B"], 100.0
+            )
+        ).append(path, "timestamp", force=True)
+
+    assert _OVERLAP_CONSEQUENCE in str(excinfo.value)
+
     store = _panel(path)
     index = pd.DatetimeIndex(store["timestamp"].values)
     assert len(index) == 3

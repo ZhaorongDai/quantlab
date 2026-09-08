@@ -410,3 +410,69 @@ def test_widen_and_append_creates_the_store_when_there_is_none(
 
     assert _stored(path)["symbol"].values.tolist() == ["A", "B"]
     assert zarr.open_group(path, mode="r")["close"].chunks == (2, 2)
+
+
+def test_widen_and_append_inherits_the_overlap_refusal_verbatim(
+    tmp_path: Path,
+) -> None:
+    """D-03 (decided 2026-09-07): `widen_and_append` gets NO separate handling
+    of the append-dim overlap refusal. It closes by calling the UNCHANGED
+    `append()`, which its docstring already declares load-bearing precisely so
+    guards keep applying on the widened path -- so the new overlap guard
+    covers it for free.
+
+    The proof is MESSAGE EQUALITY, not merely that both paths raise. Two
+    stores start identically; one takes a plain `append()` of an overlapping
+    window on the existing roster, the other takes a `widen_and_append()` of
+    the same overlapping window carrying an ADDED symbol C so the widen
+    genuinely runs. With each store's own path normalised out, the two
+    messages must be byte-identical. A second, separately-worded check inside
+    `widen_and_append` cannot produce that equality -- which is exactly what
+    makes this an enforcement of D-03 rather than a restatement of it.
+
+    Also asserted: the ACCEPTED side effect, now recorded in
+    `quantlab/dataset/backend.py::XrBackend.widen_and_append`'s docstring. The
+    widen COMMITS before the closing `append()` raises, so the store's symbol
+    axis MAY have grown to A, B, C while its timestamp axis is still the
+    original three labels -- unique, monotonic, and with A's and B's stored
+    values on those timestamps unchanged. That is the guarantee worth holding;
+    asserting instead that the symbol axis stayed narrow would be asserting
+    that `widen_and_append` does NOT delegate, which is the opposite of D-03.
+
+    RED under: adding a second, differently-worded overlap check at the top of
+    `widen_and_append` so it raises before delegating (mutation M4).
+    """
+    plain_path = str(tmp_path / "plain.zarr")
+    widened_path = str(tmp_path / "widened.zarr")
+    dates = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    for path in (plain_path, widened_path):
+        XrBackend().to_internal(_panel(dates, ["A", "B"], 0.0)).append(path)
+    before = _stored(widened_path)["close"].values.copy()
+
+    overlapping = ["2022-01-05", "2022-01-06", "2022-01-07"]
+    with pytest.raises(ValueError) as plain_error:
+        XrBackend().to_internal(
+            _panel(overlapping, ["A", "B"], 100.0)
+        ).append(plain_path)
+
+    with pytest.raises(ValueError) as widened_error:
+        XrBackend().to_internal(
+            _panel(overlapping, ["A", "B", "C"], 100.0)
+        ).widen_and_append(widened_path)
+
+    placeholder = "<STORE>"
+    assert str(plain_error.value).replace(plain_path, placeholder) == str(
+        widened_error.value
+    ).replace(widened_path, placeholder)
+
+    # The accepted, documented side effect: the widen committed, the window
+    # did not. The symbol axis may have grown; the time axis and every
+    # pre-existing value on it are untouched.
+    store = _stored(widened_path)
+    index = pd.DatetimeIndex(store["timestamp"].values)
+    assert index.tolist() == pd.to_datetime(dates).tolist()
+    assert index.is_unique
+    assert index.is_monotonic_increasing
+    assert store["close"].sel(symbol=["A", "B"]).values.tolist() == (
+        before.tolist()
+    )
