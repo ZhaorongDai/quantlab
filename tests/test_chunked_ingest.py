@@ -354,6 +354,77 @@ def test_append_refuses_a_changed_dtype(tmp_path: Path) -> None:
     assert "dtype" in message.lower()
 
 
+#: The consequence clause the refusal message must state, asserted IDENTICALLY
+#: by all three overlap-refusal tests below. The three fixtures break the time
+#: axis in provably different ways -- measured 2026-09-07 on the unguarded
+#: tree, a partial overlap gives is_unique False / is_monotonic_increasing
+#: False, a window starting exactly on the stored end gives is_unique False
+#: with is_monotonic_increasing still TRUE, and a window ending before the
+#: stored start gives is_unique TRUE with is_monotonic_increasing False. The
+#: ONE property all three break is that the axis is no longer STRICTLY
+#: increasing, so that is the only honest wording. Asserting the same clause in
+#: all three places is what stops a message true of a single shape from
+#: surviving by being checked only where it happens to hold.
+_OVERLAP_CONSEQUENCE = (
+    "no longer STRICTLY increasing -- duplicate labels, out-of-order labels, "
+    "or both"
+)
+
+
+def test_append_refuses_a_window_overlapping_the_stored_timestamps(
+    tmp_path: Path,
+) -> None:
+    """`_assert_append_compatible` guarded every dimension EXCEPT the one being
+    appended along, so nothing compared an incoming window's timestamps against
+    what the store already held. Measured 2026-09-07 on the unguarded tree: a
+    store on 2022-01-04..2022-01-06 taking a 2022-01-05..2022-01-07 window
+    returns cleanly and comes back holding
+    `[01-04, 01-05, 01-06, 01-05, 01-06, 01-07]` -- is_unique False,
+    is_monotonic_increasing False. The damage then surfaces far from its cause:
+    `.sel(timestamp=slice(...))` raises `KeyError: 'Value based partial slicing
+    on non-monotonic DatetimeIndexes with non-existing keys is not allowed.'`,
+    a `to_xarray` round-trip raises `cannot convert a DataFrame with a
+    non-unique MultiIndex into xarray`, and a point `.sel()` on a duplicated
+    date quietly returns TWO rows where the caller expects one.
+
+    The incoming window rides the SAME symbol axis and the same dtypes, so
+    neither sibling guard can fire and this test cannot be green for their
+    reason.
+
+    RED under: removing the append-dim check from
+    `quantlab/dataset/backend.py::XrBackend._assert_append_compatible`
+    (mutation M1).
+    """
+    path = str(tmp_path / "overlap.zarr")
+    XrBackend().to_internal(
+        _small_panel(["2022-01-04", "2022-01-05", "2022-01-06"], ["A", "B"], 0.0)
+    ).append(path)
+    before = _panel(path)["close"].values.copy()
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().to_internal(
+            _small_panel(
+                ["2022-01-05", "2022-01-06", "2022-01-07"], ["A", "B"], 100.0
+            )
+        ).append(path)
+
+    message = str(excinfo.value)
+    assert path in message
+    assert "timestamp" in message
+    assert "2022-01-06T00:00:00" in message  # the stored end
+    assert "2022-01-05T00:00:00" in message  # the incoming start
+    assert 'save(mode="w")' in message
+    assert _OVERLAP_CONSEQUENCE in message
+
+    # Nothing was written: the store is bit-identical to before the refusal.
+    store = _panel(path)
+    index = pd.DatetimeIndex(store["timestamp"].values)
+    assert len(index) == 3
+    assert index.is_unique
+    assert index.is_monotonic_increasing
+    assert store["close"].values.tolist() == before.tolist()
+
+
 # ---------------------------------------------------------------------------
 # StockDataset windowed densification
 # ---------------------------------------------------------------------------

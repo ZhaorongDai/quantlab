@@ -53,14 +53,29 @@ class XrBackend(DataBackend):
 
         **Contract, enforced rather than merely documented.** Every non-append
         dimension and its coordinate values must match the store EXACTLY
-        across calls, and every shared data variable must keep its dtype.
-        Raw `to_zarr(mode="a", append_dim=...)` enforces neither: a mismatched
-        symbol coordinate is silently OVERWRITTEN with the new window's
-        labels, leaving previously-written rows attributed to the wrong
-        symbols, and an appended float64 NaN written into an int64 variable is
-        silently cast to 0 -- a fabricated observation where data was missing.
-        Both corruptions are invisible afterwards from the store alone, which
-        is why they are checked here, before the irreversible append.
+        across calls, every shared data variable must keep its dtype, and the
+        incoming window must begin STRICTLY AFTER the stored end of
+        `append_dim`. Raw `to_zarr(mode="a", append_dim=...)` enforces none of
+        the three: a mismatched symbol coordinate is silently OVERWRITTEN with
+        the new window's labels, leaving previously-written rows attributed to
+        the wrong symbols; an appended float64 NaN written into an int64
+        variable is silently cast to 0 -- a fabricated observation where data
+        was missing; and an OVERLAPPING window is simply concatenated on,
+        leaving the append dimension no longer strictly increasing (measured
+        2026-09-07: a store on 2022-01-04..2022-01-06 taking a
+        2022-01-05..2022-01-07 window comes back holding
+        `[01-04, 01-05, 01-06, 01-05, 01-06, 01-07]`, and the failure surfaces
+        later and elsewhere as a `.sel()` KeyError on a non-monotonic index or
+        a `to_xarray` refusal on a non-unique one). All three corruptions are
+        invisible afterwards from the store alone, which is why they are
+        checked here, before the irreversible append.
+
+        A GAP is NOT an error. A window starting strictly after the stored end
+        appends normally whatever the distance: a discontinuous axis is a
+        legitimate shape this layer takes no position on, and only OVERLAP is
+        refused. The refusal is unconditional and carries no opt-out -- to
+        recompute a range the store already holds, replace the store with
+        `save(mode="w")`; `append()` exists to extend it.
 
         `from_raw_data_chunked()` satisfies the coordinate half by pinning the
         symbol axis once over the whole range (D-02); this check is what turns
@@ -273,6 +288,13 @@ class XrBackend(DataBackend):
         all-time-union rule, because `ChunkLedger`'s fingerprint is
         order-sensitive and the axis must be reproducible across runs.
 
+        Because the widen COMMITS before the closing `append()` runs, a window
+        the shared guard then refuses -- an overlapping `append_dim` range, say
+        -- can leave the store carrying the GROWN symbol axis while its append
+        dimension is untouched and its pre-existing history intact; that is an
+        accepted side effect of inheriting the refusal rather than duplicating
+        it, not a partial write of the window.
+
         Calling this unconditionally is cheap: an unchanged axis skips the
         rewrite entirely and delegates straight to `append()`. An absent store
         does the same, so there is ONE creation path rather than two.
@@ -339,6 +361,20 @@ class XrBackend(DataBackend):
             encoding[name] = {"chunks": tuple(chunks)}
         return encoding
 
+    @staticmethod
+    def _format_append_label(value) -> str:
+        """Render one append-dimension label for a human reading a refusal.
+
+        `append_dim` is a PARAMETER, so this guard must not become
+        timestamp-only: a `datetime64` label reads as an ISO string
+        (`2022-01-07T00:00:00` rather than
+        `np.datetime64('2022-01-07T00:00:00.000000000')`), and anything else
+        falls back to `str()`.
+        """
+        if np.issubdtype(np.asarray(value).dtype, np.datetime64):
+            return pd.Timestamp(value).isoformat()
+        return str(value)
+
     def _assert_append_compatible(self, path: str, append_dim: str) -> None:
         """Raise before an append that would silently corrupt the store."""
         existing = xr.open_zarr(path)
@@ -361,6 +397,41 @@ class XrBackend(DataBackend):
                         f"the '{dim}' axis over the whole range before the "
                         f"first window, the way "
                         f"BaseDataset.from_raw_data_chunked() does."
+                    )
+            # The append dimension itself, skipped by the loop above. Nothing
+            # else compares an incoming window's labels against the stored
+            # ones, so an OVERLAPPING window appends silently and corrupts the
+            # axis. Skipped when either side carries no coordinate on this
+            # dimension -- a store with the dim but no coord appends fine
+            # today, and turning that working path into a crash is not the job
+            # here -- and skipped when either side is empty, since there is
+            # nothing to compare. A GAP is deliberately permitted (D-01).
+            if (
+                append_dim in self.data.coords
+                and append_dim in existing.coords
+                and self.data[append_dim].size
+                and existing[append_dim].size
+            ):
+                # `.min()` / `.max()` rather than positional indexing, so an
+                # unsorted axis on either side cannot fool the comparison.
+                incoming_start = self.data[append_dim].values.min()
+                stored_end = existing[append_dim].values.max()
+                # `<=`, not `<`: a window starting exactly ON the stored end
+                # duplicates that one label.
+                if incoming_start <= stored_end:
+                    raise ValueError(
+                        f"XrBackend.append: refusing to append to {path} -- "
+                        f"the incoming '{append_dim}' window starts at "
+                        f"{self._format_append_label(incoming_start)} but the "
+                        f"store already ends at "
+                        f"{self._format_append_label(stored_end)}. Zarr would "
+                        f"extend the axis without complaint and leave "
+                        f"'{append_dim}' no longer STRICTLY increasing -- "
+                        f"duplicate labels, out-of-order labels, or both -- "
+                        f"which breaks every downstream reader that assumes a "
+                        f"unique, ordered index. append() EXTENDS a store; to "
+                        f"recompute a range it already holds, replace the "
+                        f"store with save(mode=\"w\") instead."
                     )
             for name, variable in self.data.data_vars.items():
                 if name not in existing.data_vars:
