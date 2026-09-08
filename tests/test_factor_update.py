@@ -26,14 +26,16 @@ described above actually shipped -- and this suite could not see it, because
 round-trips through zarr to a FIXED-WIDTH unicode store, while the store the
 real chunked ingest writes is `object`-encoded and decodes to `StringDType()`.
 The coordinate now comes from `conftest.symbol_coord` and the encoding is
-carried on the factor instance by `_factor(..., encoding=...)`, so six of
-the seven tests get a `[fixed_width]` and a `[variable_length]` id. Measured
+carried on the factor instance by `_factor(..., encoding=...)`, so seven of
+the eight tests get a `[fixed_width]` and a `[variable_length]` id (the eighth
+arrived with 260908-g30). Measured
 2026-09-08 with `quantlab/dataset/backend.py` reverted to `dea1e85`, two of
 those `[variable_length]` ids go red while every `[fixed_width]` twin stays
 green.
 """
 
 import inspect
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Mapping, Sequence
@@ -42,10 +44,12 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from loguru import logger
 
-from conftest import symbol_coord
+from conftest import assert_stored_symbol_encoding, symbol_coord
 from quantlab.base.config import BaseFactorConfig
 from quantlab.base.factor import Factor
+from quantlab.dataset.backend import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -153,6 +157,22 @@ def _stored(factor: Factor) -> xr.Dataset:
 
 EARLY = ["2024-02-01", "2024-02-02", "2024-02-03"]
 LATER = ["2024-03-01", "2024-03-02"]
+
+#: A stored range LONGER than `XrBackend.APPEND_DIM_CHUNK` (260908-g30).
+#:
+#: Hourly rather than daily so all 600 rows fall inside the factor config's
+#: 2024-01-01..2024-12-31 window -- `Factor.update()` runs `_auto_filter()`
+#: first, which would truncate a 600-DAY range to that window and leave the
+#: store at 366 rows, below the 512-row block floor.
+#:
+#: The length is load-bearing for the same reason it is in
+#: `tests/test_symbol_axis_widening.py`: a widen forced over budget by
+#: `MAX_WIDEN_BYTES = 0` floors its block at `APPEND_DIM_CHUNK`, so a shorter
+#: store makes the chunked path a single write that no multi-block assertion
+#: can tell from a correct one. This is an ARGUMENT to the existing
+#: `PanelFactor.cal()`, not a new builder.
+LONG = [d.isoformat() for d in pd.date_range("2024-02-01", periods=600, freq="h")]
+AFTER_LONG = ["2024-03-01", "2024-03-02"]
 
 
 # ---------------------------------------------------------------------------
@@ -414,3 +434,63 @@ def test_save_is_unchanged_by_the_arrival_of_update(
     assert "already exists with different dimension sizes" in str(
         excinfo.value.__cause__
     )
+
+
+def test_update_reaches_the_bounded_widen_path_with_no_call_site_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """260908-g30's sharp case, proved from the FACTOR side rather than
+    inferred from the backend suite.
+
+    `Factor` has no raw tier. `BaseDataset`'s `on_new_listing="rebuild"` escape
+    -- re-densify every window from raw -- does not exist for it, so
+    `Factor.update()` -> `XrBackend.widen_and_append` -> `widen_symbol_axis` is
+    the ONLY path a new listing can take here. Before the router that path
+    materialised the whole store unconditionally: a 3,000-symbol 1-minute year
+    of 20 factors is a 43.9 GiB allocation triggered by a single IPO.
+
+    The proof that matters is that routing arrived WITHOUT a call-site change.
+    Nothing in `Factor.update()` names a strategy, passes a budget or knows the
+    storage layer chunks anything; the only thing this test does differently
+    from `test_update_reconciles_a_new_symbol_without_being_told_to` is move
+    the constant.
+
+    600 hourly rows so the block loop genuinely iterates -- see `LONG`. RED
+    under: reverting the router; giving `widen_symbol_axis` a strategy
+    parameter that `update()` would then have to pass; or a chunked path that
+    collapses to one write (the reported block count is then 1).
+    """
+    factor = _factor(tmp_path, encoding=symbol_encoding)
+    factor.cal(LONG).update()
+    before = _stored(factor)
+    assert before.sizes["timestamp"] == len(LONG) > XrBackend.APPEND_DIM_CHUNK
+
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        factor.cal(
+            AFTER_LONG, symbols=["AAA", "BBB", "CCC"], offset=100.0
+        ).update()
+    finally:
+        logger.remove(sink_id)
+
+    # The chunked branch ran, on THIS store, and its loop iterated.
+    named = [m for m in messages if str(factor.config.file_path) in m]
+    assert named, messages
+    match = re.search(r"(\d+) block\(s\) of (\d+) row\(s\)", named[0])
+    assert match, named
+    assert int(match.group(1)) == 2, named[0]
+    assert int(match.group(2)) == XrBackend.APPEND_DIM_CHUNK, named[0]
+
+    after = _stored(factor)
+    assert after["symbol"].values.tolist() == ["AAA", "BBB", "CCC"]
+    assert after.sizes["timestamp"] == len(LONG) + len(AFTER_LONG)
+    for symbol in ("AAA", "BBB"):
+        np.testing.assert_array_equal(
+            after["alpha"].sel(symbol=symbol).values[: len(LONG)],
+            before["alpha"].sel(symbol=symbol).values,
+        )
+    assert np.isnan(after["alpha"].sel(symbol="CCC").values[: len(LONG)]).all()
+    assert not np.isnan(after["alpha"].sel(symbol="CCC").values[len(LONG) :]).any()
+    assert_stored_symbol_encoding(str(factor.config.file_path), symbol_encoding)

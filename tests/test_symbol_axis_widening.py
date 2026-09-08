@@ -44,6 +44,7 @@ named in each carrying test's docstring.
 """
 
 import re
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -53,7 +54,12 @@ import xarray as xr
 import zarr
 from loguru import logger
 
-from conftest import assert_stored_symbol_encoding, symbol_coord
+from conftest import (
+    assert_stored_symbol_encoding,
+    stored_symbol_dtype,
+    stored_symbol_encoding,
+    symbol_coord,
+)
 from quantlab.dataset.backend import XrBackend
 
 # ---------------------------------------------------------------------------
@@ -495,6 +501,288 @@ def test_an_over_budget_widen_takes_a_block_loop_that_actually_iterates(
             before["close"].sel(symbol=symbol).values,
         )
     assert np.isnan(after["close"].sel(symbol="C").values).all()
+    assert not Path(f"{path}.widening.tmp").exists()
+    assert not Path(f"{path}.superseded.tmp").exists()
+
+
+def test_the_two_widen_strategies_leave_identical_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """The deliverable of 260908-g30 is not "a second path exists" but "the
+    second path is INDISTINGUISHABLE from the first on the store it leaves".
+    Two copies of one store, widened under two forced budgets, must come back
+    equal in values (element for element, `equal_nan=True`), in BOTH
+    coordinates, in the on-disk chunk grid, and in the `symbol` coordinate's
+    ON-DISK encoding.
+
+    This carries the GRID claim as a relation rather than a literal: the
+    whole-store path's absolute grid is already pinned next door by
+    `test_the_chunk_grid_survives_a_widen`, so equality against it is what says
+    the chunked path lands on the same one. Measured 2026-09-08: a block
+    shorter than `APPEND_DIM_CHUNK` leaves `(100, 3)` where this leaves
+    `(512, 3)`.
+
+    The encoding half is read through `conftest.stored_symbol_dtype`, straight
+    off zarr, never through the DECODED `xr.open_zarr` value -- that decoded
+    read is exactly what hid the 260908-dvv defect, and a chunked path that
+    rebuilds the coordinate on any block is the same failure at a new site.
+
+    600 timestamps so the forced-`0` side genuinely loops; see `_LONG_DATES`.
+
+    RED under: a chunked path that reindexes by position, that drops or
+    re-derives the coordinate, that omits `encoding=` on its first block, or
+    that sizes its block below `APPEND_DIM_CHUNK` or off its multiple.
+    """
+    whole = str(tmp_path / "whole.zarr")
+    chunked = str(tmp_path / "chunked.zarr")
+    XrBackend().to_internal(
+        _panel(_LONG_DATES, ["A", "B"], 0.0, encoding=symbol_encoding)
+    ).append(whole)
+    shutil.copytree(whole, chunked)
+
+    # Forced high rather than left at the default so BOTH sides of the router
+    # are pinned by an explicit budget; a default that drifted upward or
+    # downward cannot silently move which path this test exercises.
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 1024**4)
+    XrBackend().widen_symbol_axis(whole, ["A", "B", "C"])
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    XrBackend().widen_symbol_axis(chunked, ["A", "B", "C"])
+
+    left, right = _stored(whole), _stored(chunked)
+    assert np.array_equal(
+        left["close"].values, right["close"].values, equal_nan=True
+    )
+    assert left["symbol"].values.tolist() == right["symbol"].values.tolist()
+    np.testing.assert_array_equal(
+        left["timestamp"].values, right["timestamp"].values
+    )
+    assert (
+        zarr.open_group(chunked, mode="r")["close"].chunks
+        == zarr.open_group(whole, mode="r")["close"].chunks
+    )
+    assert stored_symbol_dtype(chunked) == stored_symbol_dtype(whole)
+    assert stored_symbol_encoding(chunked) == symbol_encoding
+
+
+def test_the_chunked_widen_writes_in_bounded_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """Bounded memory, observed DETERMINISTICALLY rather than by RSS: peak is
+    one block precisely because no written block is bigger than one.
+
+    RSS under pytest is not deterministic -- allocator behaviour, other
+    modules' caches and the interpreter's own arenas all move it -- so the
+    observable is the WRITES themselves: record each block's `timestamp` extent
+    at the `to_zarr` boundary, then assert (a) the store took MORE THAN ONE
+    write and (b) no single written block exceeded `block_rows`.
+
+    Both halves are needed. Without (b) a path that wrote one block per row
+    would pass (a); without (a) a path that never chunked at all would pass
+    (b). And (a) is only checkable at 600 rows: a forced budget of `0` floors
+    `block_rows` at `APPEND_DIM_CHUNK` (512), so on a store of 512 rows or
+    fewer the chunked path writes ONE block and (a) cannot fail however the
+    loop is written.
+
+    RED under: a `_widen_chunked` that materialises the whole store and writes
+    it once, or one whose block length ignores `_widen_block_rows`.
+    """
+    path = str(tmp_path / "bounded.zarr")
+    XrBackend().to_internal(
+        _panel(_LONG_DATES, ["A", "B"], 0.0, encoding=symbol_encoding)
+    ).append(path)
+
+    block_rows = XrBackend._widen_block_rows(0)
+    assert block_rows == XrBackend.APPEND_DIM_CHUNK
+
+    original = xr.Dataset.to_zarr
+    written: list[int] = []
+
+    def _recording(self, *args, **kwargs):
+        written.append(int(self.sizes.get("timestamp", 0)))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    monkeypatch.setattr(xr.Dataset, "to_zarr", _recording)
+    XrBackend().widen_symbol_axis(path, ["A", "B", "C"])
+    monkeypatch.undo()
+
+    assert len(written) > 1, written
+    assert written == [512, 88], written
+    assert max(written) <= block_rows, written
+    assert sum(written) == len(_LONG_DATES), written
+    assert_stored_symbol_encoding(path, symbol_encoding)
+
+
+def test_a_chunked_widen_lands_on_the_stores_own_chunk_grid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """`test_the_chunk_grid_survives_a_widen`'s sibling for the bounded path,
+    pinned ABSOLUTELY rather than against the other strategy.
+
+    The relation is already asserted in
+    `test_the_two_widen_strategies_leave_identical_stores`; this is the literal,
+    so a change that moved BOTH paths onto a new grid together still reddens
+    somewhere. The grid must be `APPEND_DIM_CHUNK` along `timestamp` and the
+    WIDENED symbol count across it -- the block length is what decides the
+    former, because the first block carries the `encoding=`.
+
+    RED under: sizing the block below `APPEND_DIM_CHUNK` or off its multiple
+    (measured 2026-09-08: a 100-row block leaves `(100, 3)`), or dropping
+    `encoding=` from the first block's write.
+    """
+    path = str(tmp_path / "grid_chunked.zarr")
+    XrBackend().to_internal(
+        _panel(_LONG_DATES, ["A", "B"], 0.0, encoding=symbol_encoding)
+    ).append(path)
+
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    XrBackend().widen_symbol_axis(path, ["A", "B", "C"])
+
+    assert zarr.open_group(path, mode="r")["close"].chunks == (
+        min(XrBackend.APPEND_DIM_CHUNK, len(_LONG_DATES)),
+        3,
+    )
+    assert_stored_symbol_encoding(path, symbol_encoding)
+
+
+def test_the_budget_routes_in_both_directions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """Both directions, so a router wired end for end cannot pass. An estimate
+    AT OR UNDER `MAX_WIDEN_BYTES` takes the whole-store rewrite and says so at
+    `info`; an estimate OVER it takes the chunked rewrite and says so at
+    `warning`.
+
+    The asymmetry is the deliverable, not an accident of phrasing (D-6): a
+    `warning` on every routine sub-budget widen is noise, and noise is how an
+    operator learns to stop reading warnings. What must never be silent is the
+    SWITCH.
+
+    RED under: inverting the comparison; making it `>=` so a store exactly at
+    the budget chunks; logging at one level for both branches; or dropping
+    either line, which makes "which path ran" unanswerable from the log.
+    """
+    under = str(tmp_path / "under.zarr")
+    over = str(tmp_path / "over.zarr")
+    for path in (under, over):
+        XrBackend().to_internal(
+            _panel(["2022-01-04", "2022-06-15"], ["A", "B"], 0.0, encoding=symbol_encoding)
+        ).append(path)
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="INFO", format="{level}|{message}")
+    try:
+        monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 1024**4)
+        XrBackend().widen_symbol_axis(under, ["A", "B", "C"])
+        under_lines = [m for m in messages if under in m]
+
+        messages.clear()
+        monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+        XrBackend().widen_symbol_axis(over, ["A", "B", "C"])
+        over_lines = [m for m in messages if over in m]
+    finally:
+        logger.remove(sink_id)
+
+    assert under_lines and all(m.startswith("INFO|") for m in under_lines), under_lines
+    assert "whole-store" in under_lines[0]
+    assert not any("block(s) of" in m for m in under_lines), under_lines
+
+    assert over_lines and any(
+        m.startswith("WARNING|") for m in over_lines
+    ), over_lines
+    assert any("block(s) of" in m for m in over_lines), over_lines
+    # The warning carries what an operator needs to act: the budget's name, and
+    # that the slowness is the strategy rather than the machine.
+    warning = next(m for m in over_lines if m.startswith("WARNING|"))
+    assert "MAX_WIDEN_BYTES" in warning
+    assert "3.6-4.0x" in warning
+
+
+def test_the_block_size_rule_floors_onto_the_chunk_grid() -> None:
+    """`_widen_block_rows` in isolation: at least `APPEND_DIM_CHUNK`, ALWAYS a
+    multiple of it, and monotone in the budget.
+
+    Those three properties are what make the two strategies agree on the chunk
+    grid without either restating the arithmetic -- the first block's length
+    decides the store's append-dim chunk, so
+    `min(APPEND_DIM_CHUNK, first_block_len)` must equal
+    `min(APPEND_DIM_CHUNK, total_len)` identically.
+
+    The floor also encodes that this ROUTES rather than refuses: a row so wide
+    that not even one aligned block fits the budget still gets the bounded
+    loop, which is strictly better than the whole-store allocation it replaces.
+
+    No `symbol_encoding` fixture, deliberately and without an `_EXEMPT` entry:
+    this test builds no panel and opens no store, so
+    `tests/test_widening_fixture_realism.py`'s store-touching detector never
+    counts it and no exemption is needed. Adding a second id here would be a
+    byte-identical rerun of pure integer arithmetic.
+
+    RED under: dropping the floor (a huge `row_bytes` then yields 0 and the
+    loop never advances), or returning `raw` unrounded.
+    """
+    chunk = XrBackend.APPEND_DIM_CHUNK
+    budget = XrBackend.MAX_WIDEN_BYTES
+
+    assert XrBackend._widen_block_rows(0) == chunk
+    # A single row wider than the whole budget: the floor still wins.
+    assert XrBackend._widen_block_rows(budget * 2) == chunk
+    # A row that exactly fits one aligned block.
+    assert XrBackend._widen_block_rows(budget // chunk) == chunk
+
+    for row_bytes in (1, 1024, 8 * 3000, budget // (chunk * 4)):
+        rows = XrBackend._widen_block_rows(row_bytes)
+        assert rows >= chunk
+        assert rows % chunk == 0
+        assert rows * row_bytes <= budget or rows == chunk
+
+    # Monotone: a smaller row means more rows fit.
+    assert XrBackend._widen_block_rows(1024) >= XrBackend._widen_block_rows(4096)
+
+
+def test_a_crash_part_way_through_the_block_loop_leaves_the_store_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """The multi-write loop's version of
+    `test_a_failed_widen_leaves_the_original_store_intact`, and the reason D-3
+    said to RE-VERIFY the swap ordering against the loop rather than assume it.
+
+    A single-write rewrite is trivially all-or-nothing. A loop is not: it has
+    an intermediate state where the sidecar holds SOME blocks, and the cleanup
+    has to span the whole loop rather than one write. Crash on block 2 of 2 and
+    `path` must still be the original store, bit for bit, with no
+    `.widening.tmp` left claiming to be one.
+
+    RED under: moving the `except BaseException: rmtree(widening)` handler
+    inside the loop so it only guards one write; renaming the store aside
+    BEFORE the loop rather than after it; or closing `stored` before the loop,
+    which makes the second `isel` read a handle that is gone.
+    """
+    path = str(tmp_path / "loop_crash.zarr")
+    XrBackend().to_internal(
+        _panel(_LONG_DATES, ["A", "B"], 0.0, encoding=symbol_encoding)
+    ).append(path)
+    before = _stored(path)
+
+    original = xr.Dataset.to_zarr
+    calls = {"n": 0}
+
+    def _boom_on_the_second_block(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("simulated crash on block 2 of the chunked widen")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    monkeypatch.setattr(xr.Dataset, "to_zarr", _boom_on_the_second_block)
+    with pytest.raises(RuntimeError):
+        XrBackend().widen_symbol_axis(path, ["A", "B", "C"])
+    monkeypatch.undo()
+
+    # The crash happened MID-LOOP, not before it: block 1 was written.
+    assert calls["n"] == 2
+    xr.testing.assert_identical(_stored(path), before)
+    assert_stored_symbol_encoding(path, symbol_encoding)
     assert not Path(f"{path}.widening.tmp").exists()
     assert not Path(f"{path}.superseded.tmp").exists()
 
