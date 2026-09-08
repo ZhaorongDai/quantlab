@@ -58,6 +58,27 @@ class BaseDataset(ABC):
     #: tuple; it is never restated there.
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
+    #: How `update()` asks `from_raw_data_chunked()` to resolve the strategy
+    #: from raw-layer EVIDENCE instead of being told one.
+    #:
+    #: An `object()` and NOT a string, deliberately and structurally. A string
+    #: sentinel would be a SECOND public way to ask for automatic resolution:
+    #: reachable from `--on-new-listing`, from a config file, from a JSON
+    #: round-trip. A non-string object is reachable only from code holding this
+    #: private attribute, which is what makes `update()` the single public
+    #: route by construction rather than by convention.
+    #:
+    #: Deliberately NOT a member of `NEW_LISTING_STRATEGIES`: that tuple is the
+    #: CLI's `choices` source and the unknown-strategy message's contents, and
+    #: an object no operator can type belongs in neither.
+    _AUTOMATIC = object()
+
+    #: How many qualifying symbols the rebuild report names before it
+    #: truncates (and says that it did). A 500-symbol admission must not
+    #: produce 500 log lines, but a report that named none of them would be
+    #: the silent switch this whole path exists to replace.
+    NEW_LISTING_REPORT_LIMIT: int = 20
+
     #: ONE-SHOT handoff from the construction-time raw fallback to the FIRST
     #: `from_raw_data()` call after it, and to nothing else.
     #:
@@ -447,12 +468,77 @@ class BaseDataset(ABC):
             data = data.reindex(symbol=list(symbols))
         return data
 
+    def update(
+        self,
+        granularity: str = "year",
+        ledger_path: str | None = None,
+        append_dim: str = "timestamp",
+    ) -> Self:
+        """Bring the store up to date -- the AUTOMATIC incremental path.
+
+        `Factor.update()`'s counterpart at the dataset layer, and the split
+        means the same thing on both sides: `from_raw_data()` and
+        `from_raw_data_chunked()` CONVERT with an explicit strategy and their
+        behaviour is unchanged; `update()` EXTENDS and works out for itself
+        what the strategy has to be. Which one a caller reaches for is how it
+        says which it means.
+
+        **There is no strategy parameter, and its absence is the feature.**
+        The choice between widening the store's symbol axis and rebuilding it
+        from raw is not a preference -- it is a FACT about the raw tier, and a
+        caller who guesses it wrong loses data invisibly. So it is read rather
+        than asked for. Three-way, from evidence:
+
+        - ANY newly-added symbol already carrying raw rows INSIDE the store's
+          own append-dim extent -> `rebuild`. Those rows are history a widen
+          would replace with NaN, leaving the store indistinguishable from one
+          where the data never existed. Whole-store, because rebuild is not a
+          per-symbol operation.
+        - NO added symbol carrying such rows -> `widen`. They are genuine new
+          listings, NaN is the correct value over the store's history, and a
+          rebuild would be pure cost.
+        - ANY REMOVED symbol -> `refuse`. `widen` cannot express a dropped
+          label at all (`XrBackend.widen_symbol_axis` refuses a target axis
+          that is not a superset of the stored one) and `rebuild` would
+          silently discard that label's stored history. Neither is safe to
+          choose without an operator, so this path halts rather than inventing
+          an answer.
+
+        The decision is SPOKEN before a rebuild runs -- how many added symbols
+        qualified and, for each, its raw row count inside the store's extent.
+        A silent strategy switch is the same opacity as a wrong flag, in the
+        other direction.
+
+        The probe is only ever paid when the symbol axes actually DRIFTED, and
+        it is asked about the STORE's extent rather than the config's range.
+        Measured ordering (see `_added_symbols_with_raw_history`): the extent
+        probe costs less than a whole-tier probe, which costs less than the
+        `_raw_axes_in_range()` scan every chunked run already pays
+        unconditionally.
+
+        **No route to overwrite a range the store already holds.** There is no
+        `mode`, `force` or `overwrite` parameter, and the unconditional
+        append-dim overlap refusal is inherited through the UNCHANGED backend
+        append. Re-deriving a stored range is the wholesale interface's job.
+
+        Everything else -- window planning, the ledger, resume, the per-window
+        loop, rebuild-aside restoration -- is `from_raw_data_chunked()`'s,
+        forwarded verbatim rather than reimplemented. This method differs from
+        it in exactly one respect: where the strategy comes from.
+        """
+        return self.from_raw_data_chunked(
+            granularity=granularity,
+            ledger_path=ledger_path,
+            append_dim=append_dim,
+            on_new_listing=self._AUTOMATIC,
+        )
+
     def from_raw_data_chunked(
         self,
         granularity: str = "year",
         ledger_path: str | None = None,
         append_dim: str = "timestamp",
-        on_new_listing: str = "refuse",
+        on_new_listing: str | object = "refuse",
     ) -> Self:
         """Densify and append ONE time window at a time (D-01).
 
@@ -477,10 +563,28 @@ class BaseDataset(ABC):
         longer matches the STORE's -- the routine consequence of a new listing
         between two periodic refreshes. See `NEW_LISTING_STRATEGIES`; the
         default `refuse` reproduces the pre-260906-x2s behaviour exactly.
+
+        Its type admits a NON-`str` arm for exactly ONE private sentinel,
+        `_AUTOMATIC`, which `update()` passes and nothing else may. The runtime
+        check against it is an IDENTITY comparison against that one object, so
+        the widened annotation documents what is REACHABLE rather than inviting
+        arbitrary values. The annotation moved because leaving it claiming
+        `str` after a non-`str` value became legal would be FALSE, and a false
+        annotation misleads in the one direction that matters here: it implies
+        some string is the automatic route, which is precisely what the
+        sentinel exists to forbid. The DEFAULT VALUE is untouched, so every
+        caller passing an explicit strategy gets byte-identical behaviour.
         """
         from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 
-        if on_new_listing not in self.NEW_LISTING_STRATEGIES:
+        # The sentinel is admitted by IDENTITY, beside the published tuple
+        # rather than inside it. The raised message below is unchanged and
+        # still lists only the three public values -- the sentinel is not
+        # advertised, because nothing a user can type could reach it anyway.
+        if (
+            on_new_listing is not self._AUTOMATIC
+            and on_new_listing not in self.NEW_LISTING_STRATEGIES
+        ):
             raise ValueError(
                 f"{self.class_name}: unknown on_new_listing strategy "
                 f"{on_new_listing!r}; accepted values are "
@@ -749,6 +853,89 @@ class BaseDataset(ABC):
         """
         return {"anomaly_flag": False}
 
+    def _resolve_new_listing_strategy(
+        self,
+        added: list,
+        removed: list,
+        store_path: str,
+        append_dim: str,
+    ) -> str:
+        """Read the widen-vs-rebuild choice off the raw tier and SAY it.
+
+        Returns one of the three published `NEW_LISTING_STRATEGIES` values, so
+        the existing branches below run untouched. This method chooses WHICH
+        branch runs; it reimplements none of them.
+
+        Lives here, at the point `added`/`removed` are already known, rather
+        than in `update()` -- for two measured reasons. Cost: resolving in
+        `update()` would compute the pinned whole-range axis TWICE, and
+        `_raw_axes_in_range()` is the MORE expensive of the two steps, not the
+        cheaper. Correctness: `_reconcile_new_listings` already owns the ONLY
+        drift-detection site, and a second one is the two-independent-guards
+        shape that has already produced one silent contract drift in this
+        repository.
+        """
+        if removed:
+            logger.warning(
+                f"{self.class_name}: {len(removed)} symbol(s) present in the "
+                f"store at {store_path} are absent from the pinned "
+                f"whole-range axis ({sorted(removed)[: self.NEW_LISTING_REPORT_LIMIT]}"
+                f"{', truncated' if len(removed) > self.NEW_LISTING_REPORT_LIMIT else ''}), "
+                f"so this resolves to 'refuse'. NEITHER other strategy is safe "
+                f"for a dropped label: 'widen' cannot express one at all "
+                f"(widen_symbol_axis refuses a target axis that is not a "
+                f"superset of the stored one), and 'rebuild' would silently "
+                f"DISCARD that label's stored history. Choosing between losing "
+                f"history and halting is an operator's call -- re-run "
+                f"from_raw_data_chunked() with an explicit on_new_listing once "
+                f"you know which you mean."
+            )
+            return "refuse"
+
+        extent = self._stored_append_extent(store_path, append_dim)
+        if extent is None:
+            logger.info(
+                f"{self.class_name}: the store at {store_path} has no "
+                f"{append_dim} extent to lose (absent, or a zero-length axis), "
+                f"so there is no history a NaN backfill could destroy; "
+                f"resolving to 'widen' without asking raw anything."
+            )
+            return "widen"
+
+        start, end = extent
+        evidence = self._added_symbols_with_raw_history(added, start, end)
+        if not evidence:
+            logger.info(
+                f"{self.class_name}: the raw tier was asked about all "
+                f"{len(added)} added symbol(s) over the STORE's own extent "
+                f"({start}..{end}) and reported no rows there for any of them. "
+                f"They are genuine new listings, NaN is the correct value over "
+                f"the store's history, and a rebuild would be pure cost; "
+                f"resolving to 'widen'."
+            )
+            return "widen"
+
+        ranked = sorted(evidence.items(), key=lambda item: (-item[1], item[0]))
+        shown = ranked[: self.NEW_LISTING_REPORT_LIMIT]
+        listing = ", ".join(f"{symbol}={rows}" for symbol, rows in shown)
+        truncation = (
+            f" (top {len(shown)} of {len(ranked)} by raw row count; the rest "
+            f"are not listed)"
+            if len(ranked) > len(shown)
+            else ""
+        )
+        logger.warning(
+            f"{self.class_name}: {len(ranked)} of {len(added)} added symbol(s) "
+            f"ALREADY carry raw rows inside the store's own extent "
+            f"({start}..{end}), so this resolves to 'rebuild' rather than "
+            f"'widen' -- a widen does not re-read raw, so it would replace "
+            f"that existing history with NaN and nothing would report it. "
+            f"Qualifying symbol(s) by raw row count: {listing}{truncation}. "
+            f"Rebuild is a WHOLE-STORE operation, not a per-symbol one, so "
+            f"this run re-densifies EVERY window."
+        )
+        return "rebuild"
+
     def _reconcile_new_listings(
         self,
         symbols: list,
@@ -770,6 +957,16 @@ class BaseDataset(ABC):
 
         added = [symbol for symbol in symbols if symbol not in set(stored)]
         removed = [symbol for symbol in stored if symbol not in set(symbols)]
+
+        # The ONE point the sentinel is exchanged for a published strategy.
+        # Deliberately AFTER the early fall-through above, which already
+        # guarantees the axes genuinely drifted -- so the resolver's raw probe
+        # is never paid on the common case, and there is no second
+        # drift-detection site to drift apart from this one.
+        if on_new_listing is self._AUTOMATIC:
+            on_new_listing = self._resolve_new_listing_strategy(
+                added, removed, store_path, append_dim
+            )
 
         if on_new_listing == "refuse":
             # Fall through unchanged: `assert_consistent` raises next, its
