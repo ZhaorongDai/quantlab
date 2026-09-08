@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Completed quick task 260908-g30
-last_updated: "2026-09-08T16:12:04.465Z"
+stopped_at: Phase 03.4 context gathered
+last_updated: "2026-09-08T19:41:56.587Z"
 last_activity: 2026-09-08
 last_activity_desc: "Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which"
-state_head: 4941e8d9523b513b08a711ef65df08373ad0671c
+state_head: d4a961fd14f16299c68801a9766883f3355c5ebb
 progress:
   total_phases: 11
   completed_phases: 2
@@ -228,9 +228,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T16:11:58.101Z
-Stopped at: Completed quick task 260908-g30
+Last session: 2026-09-08T19:41:56.188Z
+Stopped at: Phase 03.4 context gathered
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: None
+Resume file: .planning/phases/03.4-data-source-registry/03.4-CONTEXT.md
 </content>
