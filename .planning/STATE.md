@@ -5,12 +5,12 @@ current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
 stopped_at: Completed quick task 260907-rjq (--data-dir CLI parameter)
-last_updated: "2026-09-08T00:15:07.684Z"
+last_updated: "2026-09-08T00:26:24.132Z"
 last_activity: 2026-09-07
-last_activity_desc: Completed quick task 260907-rjq: --data-dir CLI parameter for the acquisition scripts
-state_head: 4552b0ca771fb09dce93a9a4435c5cd11077ca89
+last_activity_desc: "Completed quick task 260907-rjq: --data-dir CLI parameter for the acquisition scripts"
+state_head: e34a84b974eb729dd00cfe383ac56e95c2c6e90e
 progress:
-  total_phases: 10
+  total_phases: 11
   completed_phases: 2
   total_plans: 30
   completed_plans: 30
@@ -194,6 +194,7 @@ Recent decisions affecting current work:
 - Phase 03.1 inserted after Phase 3: Index Historical Constituents Data Layer — daily point-in-time S&P 500 / Nasdaq-100 membership panels as xarray (URGENT)
 - Phase 03.2 inserted after Phase 3: Multi-source acquisition abstraction: batched multi-symbol fetching + pagination in the Acquisition base, plus Alpaca source classes (daily bars, minute bars, corporate actions, high-frequency quotes/trades with a volume guard) (URGENT)
 - Phase 03.3 inserted after Phase 03.2: Tick data storage: a non-dense event-axis Dataset and its raw-to-Zarr conversion. Committed follow-up deferred from 03.2 by D-18, not urgent work.
+- Phase 03.4 inserted after Phase 3: Data Source Registry — one registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface. The TUI/web console itself is a SEPARATE repository and is not on this roadmap. (URGENT)
 
 ## Deferred Items
 

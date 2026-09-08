@@ -19,6 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 03.1: Index Historical Constituents Data Layer** - Point-in-time index membership panels (completed 2026-09-07)
 - [x] **Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca)** - Second vendor through the same batched, resumable, volume-guarded `Acquisition` abstraction (completed 2026-09-06)
 - [ ] **Phase 03.3: Tick Data Storage (Non-Dense Event Axis)** - Raw tick shards reach a persisted store via a tick-specific Dataset with a non-dense event axis
+- [ ] **Phase 03.4: Data Source Registry (Operator-Surface Foundation)** - One registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface
 - [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
 - [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
 - [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
@@ -246,6 +247,64 @@ Plans:
 
 **Plans**: TBD
 
+### Phase 03.4: Data Source Registry (Operator-Surface Foundation) (INSERTED)
+
+**Goal**: Every data source quantlab can acquire is described by ONE registered descriptor, so both
+quantlab's own CLI scripts and an out-of-repo operator console enumerate the same sources from the
+same definition -- and adding a vendor is registering a class, not editing five call sites.
+**Depends on**: Phase 03.2 (the `Acquisition` abstraction, watermark/coverage sidecars, vendor path
+segments), Phase 2 (`DatasetConfig`/Zarr layout)
+**Requirements**: TBD -- run `/gsd-discuss-phase 03.4`, then `/gsd-plan-phase 03.4`
+**Success Criteria** (what must be TRUE):
+
+  1. TBD -- settle the descriptor's field set and the read-API surface in discuss
+
+**Why this phase exists, and what it deliberately EXCLUDES.**
+
+The TUI/web operator console this registry serves lives in a SEPARATE repository
+(`quantlab-console`, developer decision 2026-09-07), which depends on quantlab rather than the
+reverse. Only the quantlab-side contract belongs here. The console's service layer, Textual TUI,
+scheduler process and future web backend are OUT of this phase and out of this roadmap.
+
+**In scope (quantlab side):**
+
+- **`DataSourceRegistry`.** One descriptor per source: vendor, market, frequency, acquisition class,
+  config factory, supported universe categories, required credential env vars, declared
+  capabilities. Follow the idiom `UniverseCatalog.MEMBERSHIP_FETCHERS` / `ROSTER_FETCHERS` already
+  establishes -- do not invent a second registry style.
+- **Retire the hardcoded vendor dispatch.** `ingest_tiingo.py` -> `TiingoAcquisition` and
+  `ingest_alpaca.py` -> `AlpacaAcquisition` are hardcoded at each call site today; there is no
+  enumerable list an operator surface could render. The scripts resolve their source through the
+  registry instead, so the registry has a first consumer IN THIS REPO and cannot rot into a
+  console-only side table.
+- **The read-side query surface the console consumes in-process.** `Acquisition.coverage_report()`
+  already answers the coverage question with ZERO vendor requests and shares
+  `_partition_by_coverage` with the real run. Establish what else must be reachable without
+  re-implementing it out of repo: per-source inventory (symbol count, coverage span, disk
+  footprint, last-updated), per-symbol coverage and `_failures.json` reasons, and a LAZY row-level
+  read for data browsing -- `pl.scan_parquet` + hive pruning + slice for the raw tier, `.sel()`
+  slicing for Zarr. `us_all` is ~15.4k symbols x ~5.2k trading days (~30M rows); any surface that
+  can be asked for a whole tier at once is the wrong surface.
+- **Credentials are reported as configured / not configured, never as values.** The descriptor names
+  the env vars; nothing reads or returns them. This repository has a real leaked-key incident in its
+  history (Phase 1), and an operator dashboard that prints an env var is how the next one happens.
+
+**Explicitly OUT of scope (belongs to `quantlab-console`):** the Textual TUI, the service layer, the
+scheduler process and its job files, run history/logs, the download form and progress UI, the CSV
+export, the quality-check report rendering, and the future HTTP API and web frontend.
+
+**Boundary contract with the console (locked 2026-09-07):**
+
+- The console depends on quantlab; quantlab NEVER depends on the console.
+- READS (coverage, inventory, row-level browsing, quality checks) run IN-PROCESS via a direct import
+  of quantlab.
+- WRITES (an actual acquisition run) are launched by the console as a SUBPROCESS invoking
+  quantlab's existing CLI entry points. This is what keeps a multi-hour backfill from taking the
+  console down with it, and it makes the console's "export the equivalent CLI command" guarantee
+  true by construction -- the exported command IS what the console runs.
+
+**Plans**: TBD
+
 ### Phase 4: Baseline Return Prediction Model
 
 **Goal**: Users can train a simple baseline model that consumes factor data directly as xarray and produces return/rank predictions.
@@ -317,6 +376,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 0/TBD | Not started | - |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |
