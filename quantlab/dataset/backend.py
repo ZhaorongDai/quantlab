@@ -53,10 +53,12 @@ class XrBackend(DataBackend):
 
         **Contract, enforced rather than merely documented.** Every non-append
         dimension and its coordinate values must match the store EXACTLY
-        across calls, every shared data variable must keep its dtype, and the
+        across calls, every shared data variable must keep its dtype, the
         incoming window must begin STRICTLY AFTER the stored end of
-        `append_dim`. Raw `to_zarr(mode="a", append_dim=...)` enforces none of
-        the three: a mismatched symbol coordinate is silently OVERWRITTEN with
+        `append_dim`, and the incoming panel's SET of data variables must
+        match the store's exactly. Raw
+        `to_zarr(mode="a", append_dim=...)` enforces none of
+        the four: a mismatched symbol coordinate is silently OVERWRITTEN with
         the new window's labels, leaving previously-written rows attributed to
         the wrong symbols; an appended float64 NaN written into an int64
         variable is silently cast to 0 -- a fabricated observation where data
@@ -66,9 +68,32 @@ class XrBackend(DataBackend):
         2022-01-05..2022-01-07 window comes back holding
         `[01-04, 01-05, 01-06, 01-05, 01-06, 01-07]`, and the failure surfaces
         later and elsewhere as a `.sel()` KeyError on a non-monotonic index or
-        a `to_xarray` refusal on a non-unique one). All three corruptions are
-        invisible afterwards from the store alone, which is why they are
-        checked here, before the irreversible append.
+        a `to_xarray` refusal on a non-unique one); and a panel whose SET of
+        data variables differs from the store's is written variable by
+        variable, leaving the store's variables at DIFFERENT lengths along
+        `append_dim`. The first three corruptions are invisible afterwards
+        from the store alone, which is why they are checked here, before the
+        irreversible append. The fourth is worse than invisible: the store
+        cannot be OPENED afterwards at all.
+
+        **The data-variable set is an axis too**, and the one whose corruption
+        is total. Zarr extends exactly the variables it is handed, so any
+        mismatch in either direction leaves ragged lengths and `xr.open_zarr`
+        then refuses the whole store with `conflicting sizes for dimension
+        'timestamp'` -- measured 2026-09-07 in all three shapes: a variable
+        added, a variable dropped, and the two sets disjoint. The set must
+        therefore MATCH, and the two directions are not symmetric. A panel
+        that legitimately GREW a variable has an explicit opt-in:
+        `widen_data_vars()` materialises it over the store's existing extent
+        with NaN over history, which is the same superset-and-backfill rule
+        the symbol axis already follows, and `widen_and_append()` applies it
+        as part of reconciling every axis. A panel MISSING a stored variable
+        has no such route, because the only way to fill it would be NaN over
+        the INCOMING window -- punching holes into recent dates of a variable
+        that was complete, after which nothing distinguishes those holes from
+        data the vendor never had. That direction destroys history which was
+        valid before the call, so it is refused outright; recompute the window
+        over the store's full variable set, or replace the store.
 
         A GAP is NOT an error. A window starting strictly after the stored end
         appends normally whatever the distance: a discontinuous axis is a
@@ -445,6 +470,57 @@ class XrBackend(DataBackend):
                         f"integer store becomes 0: a fabricated observation "
                         f"where the data was missing."
                     )
+            # The data-variable SET, which the loop above cannot reach: it
+            # skips any incoming name the store lacks, and never visits a
+            # stored name the incoming panel lacks at all. Placed AFTER that
+            # loop deliberately (D-03), so no pre-existing refusal's
+            # precedence moves -- a panel carrying BOTH a dtype mismatch on a
+            # shared variable AND a changed variable set still raises the
+            # dtype message it raised before this check existed.
+            incoming_names = set(self.data.data_vars)
+            stored_names = set(existing.data_vars)
+            # The MISSING direction is checked FIRST: it is the one that
+            # destroys data which was valid before the call, and it is the one
+            # with no remedy short of recomputing. A caller shown the widening
+            # message first would widen the new variable in, retry, and be
+            # refused all over again on the dropped one.
+            absent = sorted(stored_names - incoming_names)
+            if absent:
+                raise ValueError(
+                    f"XrBackend.append: refusing to append to {path} -- the "
+                    f"store holds data variable(s) {absent} that the incoming "
+                    f"panel does not. Zarr extends exactly the variables it "
+                    f"is handed, so the absent one(s) would stay STUCK at "
+                    f"their stored length while every other variable grows, "
+                    f"and the store afterwards cannot be OPENED at all "
+                    f"(measured 2026-09-07: conflicting sizes for dimension "
+                    f"'{append_dim}'). What it loses was valid before this "
+                    f"call. This direction has no opt-in and is not given "
+                    f"one: backfilling the absent variable across the "
+                    f"incoming window would write NaN into recent dates of a "
+                    f"variable that was COMPLETE, and afterwards the store is "
+                    f"indistinguishable from one where those values were "
+                    f"genuinely missing. Recompute this window over the "
+                    f"store's FULL variable set, or replace the store with "
+                    f"save(mode=\"w\")."
+                )
+            unstored = sorted(incoming_names - stored_names)
+            if unstored:
+                raise ValueError(
+                    f"XrBackend.append: refusing to append to {path} -- the "
+                    f"incoming panel carries data variable(s) {unstored} that "
+                    f"the store does not hold. Zarr would write them over the "
+                    f"incoming window ONLY, leaving them shorter along "
+                    f"'{append_dim}' than every stored variable, and the "
+                    f"store afterwards cannot be OPENED at all (measured "
+                    f"2026-09-07: conflicting sizes for dimension "
+                    f"'{append_dim}'). A panel that legitimately grew a "
+                    f"column says so explicitly: materialise the new "
+                    f"variable(s) over the store's EXISTING extent first with "
+                    f"widen_data_vars(), which backfills history rather than "
+                    f"truncating it, or call widen_and_append(), which does "
+                    f"that as part of reconciling every axis."
+                )
         finally:
             existing.close()
 
