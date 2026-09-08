@@ -370,18 +370,22 @@ Plans:
 - [ ] 03.4-04-PLAN.md — `CoverageLedger` extraction (`Acquisition` delegates) + the credential-free
   `SourceInspector` with lazy row-level browsing (SC-3, SC-4, D-08..D-11)
 
-**Wave 5** *(blocked on Wave 4 completion — the two plans below touch disjoint files and run in parallel)*
+**Wave 5** *(blocked on Wave 4 completion)*
 
 - [ ] 03.4-05-PLAN.md — Progress events through a pluggable reporter + a cancel token at the batch
   boundary, with the result object and the failure manifest kept in agreement (SC-5, D-13, D-16..D-19)
+
+**Wave 6** *(blocked on Wave 5 completion — 06's shells call the `run()` signature 05 widens, and
+both plans end on a whole-suite pytest gate, so they are sequenced rather than run in parallel)*
+
 - [ ] 03.4-06-PLAN.md — `ingest_alpaca.py` and `ingest_us_equity.py` reduced to thin shells over
   the registry, with a credential-free `--dry-run` coverage report (SC-6, SC-1, D-15)
 
-**Wave 6** *(blocked on Wave 5 completion)*
+**Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] 03.4-07-PLAN.md — Documentation debt: rewrite the superseded ROADMAP boundary contract,
-  add `example/registry.md`, update the stale sections of `example/acquisition.md` (D-12, D-13,
-  D-15, D-19, D-20)
+- [ ] 03.4-07-PLAN.md — Documentation debt: rewrite the three superseded ROADMAP statements, mark
+  `03.4-RESEARCH.md`'s open questions resolved, add `example/registry.md`, update the stale sections
+  of `example/acquisition.md` (D-12, D-13, D-15, D-19, D-20)
 
 ### Phase 4: Baseline Return Prediction Model
 
