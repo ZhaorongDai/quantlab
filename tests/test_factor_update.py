@@ -18,6 +18,19 @@ a caller says which it means:
     update()  EXTENDS              (no mode, no route to overwrite a stored range)
 
 Every test here names, in its docstring, the mutation that reddens it.
+
+WHY EVERY STORE-TOUCHING TEST HERE RUNS TWICE (260908-dvv). `update()` reaches
+`widen_and_append` and through it `widen_data_vars`, which is where the defect
+described above actually shipped -- and this suite could not see it, because
+`PanelFactor.cal()` built its `symbol` coordinate from a python list. That
+round-trips through zarr to a FIXED-WIDTH unicode store, while the store the
+real chunked ingest writes is `object`-encoded and decodes to `StringDType()`.
+The coordinate now comes from `conftest.symbol_coord` and the encoding is
+carried on the factor instance by `_factor(..., encoding=...)`, so six of
+the seven tests get a `[fixed_width]` and a `[variable_length]` id. Measured
+2026-09-08 with `quantlab/dataset/backend.py` reverted to `dea1e85`, two of
+those `[variable_length]` ids go red while every `[fixed_width]` twin stays
+green.
 """
 
 import inspect
@@ -30,6 +43,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from conftest import symbol_coord
 from quantlab.base.config import BaseFactorConfig
 from quantlab.base.factor import Factor
 
@@ -59,6 +73,13 @@ class PanelFactor(Factor):
     """
 
     SYMBOLS = ["AAA", "BBB"]
+
+    #: Which of `conftest.SYMBOL_COORD_ENCODINGS` this instance's panels are
+    #: built at. Deliberately NOT given a default: a factor constructed
+    #: without one raises `AttributeError` inside `cal()` rather than silently
+    #: falling back to one arm, which is the failure mode this whole task
+    #: exists to close.
+    symbol_encoding: str
 
     def _get_factor_names(self) -> tuple[str, ...]:
         return ("alpha",)
@@ -92,7 +113,7 @@ class PanelFactor(Factor):
                 data,
                 coords={
                     "timestamp": pd.to_datetime(list(dates)),
-                    "symbol": symbols,
+                    "symbol": symbol_coord(symbols, self.symbol_encoding),
                 },
             )
         )
@@ -107,8 +128,13 @@ class FilledPanelFactor(PanelFactor):
         return {"anomaly_flag": False}
 
 
-def _factor(tmp_path: Path, cls=PanelFactor) -> PanelFactor:
-    return cls(
+def _factor(tmp_path: Path, cls=PanelFactor, *, encoding: str) -> PanelFactor:
+    """Build a `PanelFactor` whose panels carry the named symbol encoding.
+
+    `encoding` is keyword-only and REQUIRED, matching `_panel`'s signature in
+    the two sibling widening suites, so a new test cannot forget the axis.
+    """
+    factor = cls(
         BaseFactorConfig(
             window=1,
             dataset=_FakeDataset(),  # type: ignore[arg-type]
@@ -117,6 +143,8 @@ def _factor(tmp_path: Path, cls=PanelFactor) -> PanelFactor:
             end_date="2024-12-31",
         )
     )
+    factor.symbol_encoding = encoding
+    return factor
 
 
 def _stored(factor: Factor) -> xr.Dataset:
@@ -133,7 +161,7 @@ LATER = ["2024-03-01", "2024-03-02"]
 
 
 def test_update_extends_the_store_with_a_later_date_range(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The tracer: the thing `save()` measurably cannot do.
 
@@ -145,7 +173,7 @@ def test_update_extends_the_store_with_a_later_date_range(
     RED under: routing `update()` through `data_backend.write` (it would raise
     zarr's dimension-size error), or through anything that does not extend.
     """
-    factor = _factor(tmp_path)
+    factor = _factor(tmp_path, encoding=symbol_encoding)
     factor.cal(EARLY).update()
     before = _stored(factor)
 
@@ -161,7 +189,7 @@ def test_update_extends_the_store_with_a_later_date_range(
 
 
 def test_update_reconciles_a_new_symbol_without_being_told_to(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """AUTOMATIC is the whole point: the caller names no widening.
 
@@ -173,7 +201,7 @@ def test_update_reconciles_a_new_symbol_without_being_told_to(
     RED under: M11 (route `update()` through `append()` instead of
     `widen_and_append()`) -- the symbol-coordinate guard refuses.
     """
-    factor = _factor(tmp_path)
+    factor = _factor(tmp_path, encoding=symbol_encoding)
     factor.cal(EARLY).update()
 
     factor.cal(LATER, symbols=["AAA", "BBB", "CCC"], offset=100.0).update()
@@ -190,7 +218,7 @@ def test_update_reconciles_a_new_symbol_without_being_told_to(
 
 
 def test_update_reconciles_a_new_variable_without_being_told_to(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The third axis, reconciled just as automatically as the second.
 
@@ -208,7 +236,7 @@ def test_update_reconciles_a_new_variable_without_being_told_to(
     `widen_and_append`'s short-circuit testing the symbol axis alone -- the
     fast path is taken and the closing `append()` refuses `beta`).
     """
-    factor = _factor(tmp_path)
+    factor = _factor(tmp_path, encoding=symbol_encoding)
     factor.cal(EARLY).update()
 
     factor.cal(LATER, variables=["alpha", "beta"], offset=100.0).update()
@@ -242,12 +270,24 @@ def test_update_declares_no_overwrite_parameter(tmp_path: Path) -> None:
     RED under: M10 (give `Factor.update` a `mode` parameter), under which the
     behavioural half below stays GREEN -- a declared-but-unpassed `mode` opens
     no route past a guard that runs before `kwargs` is read.
+
+    THE ONE TEST IN THIS MODULE THAT DOES NOT TAKE `symbol_encoding`, and that
+    is a DECISION rather than an oversight (260908-dvv). It never builds a
+    panel and never opens a store: `inspect.signature(Factor.update)` reads the
+    same tuple whatever a coordinate is encoded as, so a second id here would
+    be a case with byte-identical behaviour -- cost without coverage. It is the
+    single member of the exemption set in
+    `tests/test_widening_fixture_realism.py`, so removing it from there without
+    also giving this test the fixture fails the family guard.
     """
     parameters = tuple(inspect.signature(Factor.update).parameters)
     assert parameters == ("self", "kwargs")
 
 
-def test_update_refuses_a_range_the_store_already_holds(tmp_path: Path) -> None:
+def test_update_refuses_a_range_the_store_already_holds(
+    tmp_path: Path,
+    symbol_encoding: str,
+) -> None:
     """The BEHAVIOURAL half of D-10, and the half that spans the realistic
     drift. Read it with `test_update_declares_no_overwrite_parameter` above,
     whose signature assertion measurably does not cover this.
@@ -266,7 +306,7 @@ def test_update_refuses_a_range_the_store_already_holds(tmp_path: Path) -> None:
     RED under: any hatch consumed from `**kwargs` ahead of the guard, or
     giving `update()` a working overwrite route.
     """
-    factor = _factor(tmp_path)
+    factor = _factor(tmp_path, encoding=symbol_encoding)
     factor.cal(EARLY).update()
     before = _stored(factor)["alpha"].values.copy()
 
@@ -287,7 +327,10 @@ def test_update_refuses_a_range_the_store_already_holds(tmp_path: Path) -> None:
     np.testing.assert_array_equal(after["alpha"].values, before)
 
 
-def test_the_widen_fill_seam_reaches_the_widening_call(tmp_path: Path) -> None:
+def test_the_widen_fill_seam_reaches_the_widening_call(
+    tmp_path: Path,
+    symbol_encoding: str,
+) -> None:
     """DVAR-11: `_widen_fill_values()` is a real seam, asserted BEHAVIOURALLY.
 
     The default is `{}` because every factor and label panel is float today --
@@ -310,7 +353,7 @@ def test_the_widen_fill_seam_reaches_the_widening_call(tmp_path: Path) -> None:
         object.__new__(PanelFactor)
     ) == {}
 
-    plain = _factor(tmp_path / "plain")
+    plain = _factor(tmp_path / "plain", encoding=symbol_encoding)
     plain.cal(EARLY).update()
     with pytest.raises(ValueError) as excinfo:
         plain.cal(
@@ -319,7 +362,11 @@ def test_the_widen_fill_seam_reaches_the_widening_call(tmp_path: Path) -> None:
     assert "anomaly_flag" in str(excinfo.value), str(excinfo.value)
     assert "fill_values" in str(excinfo.value), str(excinfo.value)
 
-    filled = _factor(tmp_path / "filled", cls=FilledPanelFactor)
+    filled = _factor(
+        tmp_path / "filled",
+        cls=FilledPanelFactor,
+        encoding=symbol_encoding,
+    )
     filled.cal(EARLY).update()
     filled.cal(
         LATER, variables={"alpha": "float64", "anomaly_flag": "bool"}
@@ -333,7 +380,10 @@ def test_the_widen_fill_seam_reaches_the_widening_call(tmp_path: Path) -> None:
     assert after["anomaly_flag"].values[len(EARLY) :].all()
 
 
-def test_save_is_unchanged_by_the_arrival_of_update(tmp_path: Path) -> None:
+def test_save_is_unchanged_by_the_arrival_of_update(
+    tmp_path: Path,
+    symbol_encoding: str,
+) -> None:
     """DVAR-12: a no-change lock, not a new behaviour.
 
     `save()` keeps its `mode="a"` default and keeps raising its wrapped,
@@ -351,7 +401,7 @@ def test_save_is_unchanged_by_the_arrival_of_update(tmp_path: Path) -> None:
     """
     assert inspect.signature(Factor.save).parameters["mode"].default == "a"
 
-    factor = _factor(tmp_path)
+    factor = _factor(tmp_path, encoding=symbol_encoding)
     factor.cal(EARLY).save()
 
     with pytest.raises(ValueError) as excinfo:
