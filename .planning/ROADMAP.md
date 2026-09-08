@@ -346,7 +346,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   source. Check whether watermark/sidecar writes are already atomic (temp file + rename) before
   deciding this needs a lock.
 
-**Plans:** 1/7 plans executed
+**Plans:** 2/7 plans executed
 
 Plans:
 **Wave 1**
@@ -356,7 +356,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03.4-02-PLAN.md — TRACER: `DataSourceRegistry` + both descriptors + `AcquisitionResult` +
+- [x] 03.4-02-PLAN.md — TRACER: `DataSourceRegistry` + both descriptors + `AcquisitionResult` +
   the programmatic `run()`, driven end to end by `ingest_tiingo.py` as a thin shell (SC-1, SC-2,
   D-01..D-07, D-12, D-14, D-18)
 
@@ -458,7 +458,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 1/7 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 2/7 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

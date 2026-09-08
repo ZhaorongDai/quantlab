@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation)
 status: executing
-stopped_at: Completed 03.4-01-PLAN.md
-last_updated: "2026-09-08T21:45:22.923Z"
+stopped_at: Completed 03.4-02-PLAN.md
+last_updated: "2026-09-08T23:56:06.377Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: ba22baabfaff05e602326db7bf269b7fae4b7a63
+state_head: 95897317192d391d68f7341a3f9bdd3f0c0affac
 progress:
   total_phases: 11
   completed_phases: 1
   total_plans: 37
-  completed_plans: 30
+  completed_plans: 32
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
@@ -92,6 +92,7 @@ Progress: [██████████] 100%
 | Phase quick-260908-dvv P01 | 27 min | 3 tasks | 8 files |
 | Phase quick-260908-g30 P01 | 42min | 3 tasks | 9 files |
 | Phase 03.4 P01 | 20 min | 3 tasks | 6 files |
+| Phase 03.4 P02 | 22 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -183,6 +184,11 @@ Recent decisions affecting current work:
 - [Phase 3]: 260908-g30: widen_data_vars stays unbounded and is FILED -- the append_dim trick is unavailable there, so a bounded filler needs region= writes against a pre-created full-shape array
 - [Phase 03.4]: Phase 03.4 -k-matches-nothing checks assert pytest exit code 5, not the string 'no tests ran' — pytest 9.1.1 prints 'no tests collected (N deselected)' for a selector matching nothing; the literal 'no tests ran' is never emitted, so plans 02-07 acceptance criteria written as grep -q 'no tests ran' can never pass regardless of implementation. Exit 5 is version-stable and is what both the zero-test trap and the zero-match selector produce -- which of the two is a bug depends on which was expected.
 - [Phase 03.4]: acquisition_config's watermark root is raw_root.parent/'_watermarks', a sibling one level up -- not .parent.parent — 03.4-01-PLAN.md Task 2 specified Path(cfg.watermark_path).parent == Path(cfg.raw_data_dir_path).parent.parent / '_watermarks', which is off by one against the fixture at tests/conftest.py:1104. The invariant that matters (watermark root is NOT inside the raw root, so a .json sidecar cannot break a polars directory scan) is asserted both positively and negatively.
+- [Phase 03.4]: SC-1's "no vendor named at the call site" means no vendor CLASS, not no vendor STRING: ingest_tiingo.py keeps DataSourceRegistry.get("tiingo") because the script's identity IS its vendor and the stricter reading needs the --source flag D-15 forbids — Recorded inline at the SOURCE constant so a later reader does not "finish the job" by adding a --source flag, which would rebuild exactly the merged CLI D-15 supersedes.
+- [Phase 03.4]: The D-04 credential test runs under a SOCKET TRIPWIRE, never the mock_alpaca_client transport fixture -- that fixture replaces _AlpacaMarketDataClient, which IS Alpaca's missing-credential guard — Mocking the transport disables the control the test exists to prove (threat T-03.4-02-05 reached from the test side): direction 2 (delete a name -> construction raises) simply cannot fire. Measured that both real clients construct with socket.socket patched to raise, because a requests.Session allocates no connection at construction.
+- [Phase 03.4]: DataSourceRegistry.SOURCES is a TUPLE rebound by register_source, and its lock needs three jointly-sufficient arms: tuple-type, no .append reaching SOURCES (AST, not substring), and exactly one rebinding statement — The .append scan alone is insufficient: switching SOURCES to a list while keeping `SOURCES += (d,)` is an in-place list.__iadd__ extend -- the exact mutation isolated_registry's monkeypatch isolation cannot survive -- and it passes an append scan untouched. Mutation-verified: list+append turns 5 tests red.
+- [Phase 03.4]: The volume guard's SC-6 ordering test now recognises BOTH fetch-site forms (`acquisition = ...` and `run(...)`); narrowing it back to one makes the assertion vacuous for all three shells at once after plan 06 — A registry-reduced shell binds no `acquisition` name, so the original detector returns an empty list and an ordering assertion over an empty set proves nothing -- the vacuous-guard failure that file's own "the guard is WIRED" section exists to prevent. The empty case is now an explicit failure with a message, not a silent pass.
+- [Phase 03.4]: test_enumeration_order was VACUOUS as planned: alpaca/tiingo register in already-sorted order, so all() returning tuple(SOURCES) unsorted stayed green -- it now also asserts against a synthetic reversed-registration registry — The 03.2 'a lock that passes on arrival is mutation-verified rather than accepted' lesson, hit again. Found by running the mutation, not by reading the test.
 
 ### Pending Todos
 
@@ -232,8 +238,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T21:45:01.251Z
-Stopped at: Completed 03.4-01-PLAN.md
+Last session: 2026-09-08T23:55:42.877Z
+Stopped at: Completed 03.4-02-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
