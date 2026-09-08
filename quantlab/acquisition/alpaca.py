@@ -1,10 +1,17 @@
+import functools
 import os
 
 import polars as pl
 import requests
 
+from quantlab.acquisition.registry import (
+    Capability,
+    SourceDescriptor,
+    register_source,
+)
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
+from quantlab.config import stock_acquisition_config
 
 #: The two environment variables Alpaca market-data credentials are read from.
 #:
@@ -881,3 +888,50 @@ class AlpacaAcquisition(Acquisition):
             }
         )
         return frame.select(self.RAW_COLUMNS), payload.get("next_page_token")
+
+
+#: The registry descriptor for this vendor -- "who I am", beside the class that
+#: is "how I download" (03.4 D-05). Mirrors the `TIINGO_SOURCE` block in
+#: `acquisition/tiingo.py`; see the registry module docstring for why the
+#: elements are instances rather than classes.
+#:
+#: `crypto_spot` gets NO descriptor on day one, and the omission is deliberate
+#: rather than pending: `ingest_binance_spot.py` reads locally-dropped CSVs
+#: through `SpotKlineDataset` and downloads nothing -- there is no `Acquisition`
+#: subclass for it at all -- so the registry has exactly TWO descriptors and
+#: Binance is not one of them. Registering a source whose `acquisition_cls`
+#: could not fetch would put a row in an operator's list that no `run()` can
+#: honour.
+ALPACA_SOURCE = register_source(
+    SourceDescriptor(
+        vendor="alpaca",
+        display_name="Alpaca Market Data",
+        acquisition_cls=AlpacaAcquisition,
+        config_factory=functools.partial(stock_acquisition_config, vendor="alpaca"),
+        #: EXACTLY four, and this list is what a cross-product of
+        #: `markets x frequencies` cannot express (D-01/D-02): `tick` carries a
+        #: data_type that `1d`/`1m` do not, and it splits into two endpoints.
+        #: Pinned against `TIMEFRAME_MAP` / `TICK_DATA_TYPES` / `ENDPOINT_MAP`
+        #: by `test_capabilities_match_the_vendor_class_constants`, so adding an
+        #: endpoint to the class above without adding a Capability here turns
+        #: that test red rather than silently under-advertising the vendor.
+        capabilities=(
+            Capability(market="us_equity", frequency="1d", data_type="bars"),
+            Capability(market="us_equity", frequency="1m", data_type="bars"),
+            Capability(market="us_equity", frequency="tick", data_type="quotes"),
+            Capability(market="us_equity", frequency="tick", data_type="trades"),
+        ),
+        #: LITERALS, restated rather than derived from `CREDENTIAL_ENV_VARS`
+        #: above -- deriving them would make D-04's demanded pinning test the
+        #: tautology `x == x`.
+        required_env=("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"),
+        #: ADVISORY (see `SourceDescriptor.universe_categories`). The roster
+        #: comes from `UniverseCatalog`, never from the vendor.
+        universe_categories=(
+            "nasdaq_all",
+            "us_all",
+            "sp500_constituent",
+            "nasdaq100_constituent",
+        ),
+    )
+)

@@ -7,8 +7,8 @@ credential env-var NAMES and its acquisition class.
 SC-2 — enumeration and credential status never return a credential VALUE and
 never require one to be present.
 
-Scaffolded by plan 03.4-01 (Wave 0). The behaviour those criteria describe does
-not exist yet; plan 03.4-02 builds it and fills this file in.
+Scaffolded by plan 03.4-01 (Wave 0) and filled in by plan 03.4-02, which built
+`quantlab/acquisition/registry.py` and both vendor descriptors.
 
 TWO RULES THIS FILE IS SUBJECT TO, both from incidents this repository has
 already had (recorded in `.planning/STATE.md`):
@@ -22,28 +22,31 @@ already had (recorded in `.planning/STATE.md`):
    nothing produces ("no tests collected (N deselected)"). The two are told
    apart by which is expected: for a scaffold file exit 5 is the failure this
    file exists to prevent; for one of the not-yet-implemented selectors listed
-   in rule 2 it is the required result. The three tests below are
-   genuine infrastructure self-tests: each pins a contract that the plan-02
-   work depends on, and each fails if that contract drifts.
+   in rule 2 it is the required result. Every test below is a genuine
+   assertion against code that exists: the first three are the Wave-0
+   infrastructure self-tests (fixture layout, credential-name anchoring), the
+   rest pin the registry contract itself.
 
 2. A `-k` selector name must not be attached to a test that does not honestly
    cover that selector's behaviour. In 03.2 a mechanism was deleted and
    `-k fingerprint` stayed green, because the only test covering it was named
-   outside its own selector. So none of the tests below is named for a
-   selector `03.4-VALIDATION.md` assigns to a later plan
-   (`one_descriptor_per_vendor`, `capabilities`,
+   outside its own selector. Every selector `03.4-VALIDATION.md` assigns to
+   this file -- `one_descriptor_per_vendor`, `capabilities`,
    `capabilities_match_the_vendor_class`, `direct_class_reference`,
    `env_names_are_exactly_what_gates_construction`,
    `never_returns_a_credential_value`, `registration_tuple_shape`,
    `decorator_registers`, `enumeration_order`,
-   `enumeration_is_complete_from_a_cold_import`). Those selectors must match
-   ZERO tests until the behaviour they name exists. Each later plan is
-   responsible for making its own selector match.
+   `enumeration_is_complete_from_a_cold_import` -- now matches at least one
+   test, and each of those tests genuinely covers the behaviour its selector
+   names. Renaming one of them without moving its assertions is how the 03.2
+   incident repeats.
 """
 
 import json
 import os
 from pathlib import Path
+
+import pytest
 
 import quantlab.acquisition.alpaca as alpaca
 import quantlab.acquisition.tiingo as tiingo
@@ -218,3 +221,378 @@ def test_tracer_end_to_end_registry_to_raw_shard(
     raw_root = Path(config.raw_data_dir_path)
     assert raw_root.name == "tiingo"
     assert list(raw_root.rglob("*.pqt"))
+
+
+# ---------------------------------------------------------------------------
+# 03.4-02 Task 2 -- the D-01 / D-02 / D-03 / D-05 / D-06 registry contract
+# ---------------------------------------------------------------------------
+
+
+def _fake_descriptor(vendor: str, **overrides):
+    """A descriptor over a NOVEL vendor token, built for one test.
+
+    Novel by construction, in the spirit of
+    `tests/test_extensibility_contract.py`'s `FakeDataset`: registering a token
+    the production code has never heard of proves registration works by
+    CONSTRUCTION rather than by re-asserting what the two shipped descriptors
+    happen to do. Anything a caller would notice can be overridden.
+
+    `acquisition_cls` defaults to the real `TiingoAcquisition` because D-03's
+    "two descriptors may name the same class" case needs exactly that, and
+    nothing here constructs it.
+    """
+    from quantlab.acquisition.registry import Capability, SourceDescriptor
+
+    fields = {
+        "vendor": vendor,
+        "display_name": f"Fake {vendor}",
+        "acquisition_cls": tiingo.TiingoAcquisition,
+        "config_factory": lambda **kw: None,
+        "capabilities": (Capability(market="us_equity", frequency="1d"),),
+        "required_env": (),
+    }
+    fields.update(overrides)
+    return SourceDescriptor(**fields)  # type: ignore[arg-type]
+
+
+def test_one_descriptor_per_vendor_rejects_a_duplicate(isolated_registry) -> None:
+    """D-01: a second descriptor for a registered vendor RAISES.
+
+    It must not merge the two capability lists and must not replace the first
+    -- a registry that quietly took the last definition would let IMPORT ORDER
+    decide what a vendor can do, which is the one thing enumeration order was
+    sorted to stop mattering about.
+
+    Registered under a NOVEL vendor token so the collision is created here
+    rather than borrowed from the shipped descriptors: the mechanism is proved
+    by construction, not by re-asserting a fact that already holds.
+    """
+    from quantlab.acquisition.registry import register_source
+
+    first = _fake_descriptor("fakevendor")
+    register_source(first)
+    assert isolated_registry.get("fakevendor") is first
+
+    second = _fake_descriptor("fakevendor", display_name="Impostor")
+    with pytest.raises(ValueError, match="fakevendor"):
+        register_source(second)
+
+    # Neither replaced nor merged.
+    assert isolated_registry.get("fakevendor") is first
+    assert second not in isolated_registry.SOURCES
+    assert [d.vendor for d in isolated_registry.SOURCES].count("fakevendor") == 1
+
+
+def test_capabilities_are_dataclass_instances_and_reject_the_cross_product() -> None:
+    """D-02: capabilities are `Capability` INSTANCES, and the set is not a
+    cross-product of two flat tuples.
+
+    Alpaca's four entries and Tiingo's one are asserted exactly. A
+    `markets x frequencies` product over Alpaca would yield `(us_equity, 1d)`,
+    `(us_equity, 1m)` and `(us_equity, tick)` with no data_type at all -- it
+    could express neither the quotes/trades split nor the fact that `tick` is
+    the only frequency carrying one. `supports()` is asserted in both
+    directions for the same reason: the negative case is the one a product
+    would get wrong.
+    """
+    from quantlab.acquisition.registry import Capability, DataSourceRegistry
+
+    alpaca_source = DataSourceRegistry.get("alpaca")
+    tiingo_source = DataSourceRegistry.get("tiingo")
+
+    for descriptor in (alpaca_source, tiingo_source):
+        assert isinstance(descriptor.capabilities, tuple)
+        assert descriptor.capabilities
+        for capability in descriptor.capabilities:
+            assert isinstance(capability, Capability)
+
+    def triples(descriptor):
+        return {
+            (c.market, c.frequency, c.data_type) for c in descriptor.capabilities
+        }
+
+    assert triples(alpaca_source) == {
+        ("us_equity", "1d", "bars"),
+        ("us_equity", "1m", "bars"),
+        ("us_equity", "tick", "quotes"),
+        ("us_equity", "tick", "trades"),
+    }
+    assert triples(tiingo_source) == {("us_equity", "1d", None)}
+
+    assert tiingo_source.supports("us_equity", "1d") is True
+    assert tiingo_source.supports("us_equity", "tick") is False
+    assert alpaca_source.supports("us_equity", "tick", "quotes") is True
+    assert alpaca_source.supports("us_equity", "tick", "trades") is True
+    assert alpaca_source.supports("us_equity", "1m", "quotes") is False
+    assert alpaca_source.supports("crypto_spot", "1d") is False
+
+
+def test_capabilities_preserve_declaration_order_across_repeated_reads() -> None:
+    """D-02: `capabilities` is an ordered tuple, not a set.
+
+    Enumerating one descriptor's capabilities twice must yield the same
+    sequence, because an operator surface renders them in that order and a set
+    would reorder them per process (string hashing is salted per interpreter
+    run). Asserted as a SEQUENCE, so a change to a frozenset fails here rather
+    than only on a machine whose hash seed happens to differ.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    for descriptor in DataSourceRegistry.all():
+        first = list(descriptor.capabilities)
+        second = list(descriptor.capabilities)
+        assert first == second
+        assert isinstance(descriptor.capabilities, tuple)
+
+    assert [
+        (c.frequency, c.data_type)
+        for c in DataSourceRegistry.get("alpaca").capabilities
+    ] == [("1d", "bars"), ("1m", "bars"), ("tick", "quotes"), ("tick", "trades")]
+
+
+def test_capabilities_match_the_vendor_class_constants() -> None:
+    """D-02: the capability set is PINNED against the vendor class's own
+    constants, not restated independently of them.
+
+    This is what turns "someone added an endpoint to `AlpacaAcquisition` and
+    forgot the descriptor" into a red test instead of a source the console
+    under-advertises forever. Three separate pins, because the class carries
+    three separate facts:
+
+    - bar frequencies <-> `TIMEFRAME_MAP` keys;
+    - tick data types <-> `TICK_DATA_TYPES`;
+    - every declared data_type is a key of `ENDPOINT_MAP`, i.e. a capability
+      cannot name a shape the class has no endpoint for.
+
+    Tiingo is pinned the other way round: it declares `data_type=None`, so the
+    assertion is that it has no endpoint map to disagree with and exactly one
+    frequency, matching `_FREQUENCY_MAP`.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    alpaca_source = DataSourceRegistry.get("alpaca")
+    alpaca_cls = alpaca.AlpacaAcquisition
+
+    bar_frequencies = {
+        c.frequency for c in alpaca_source.capabilities if c.data_type == "bars"
+    }
+    assert bar_frequencies == set(alpaca_cls.TIMEFRAME_MAP)
+
+    tick_types = {
+        c.data_type for c in alpaca_source.capabilities if c.frequency == "tick"
+    }
+    assert tick_types == set(alpaca_cls.TICK_DATA_TYPES)
+
+    for capability in alpaca_source.capabilities:
+        assert capability.data_type in alpaca_cls.ENDPOINT_MAP
+
+    tiingo_source = DataSourceRegistry.get("tiingo")
+    assert {c.frequency for c in tiingo_source.capabilities} == set(
+        tiingo._FREQUENCY_MAP
+    )
+    assert all(c.data_type is None for c in tiingo_source.capabilities)
+    assert not hasattr(tiingo.TiingoAcquisition, "ENDPOINT_MAP")
+
+
+def test_direct_class_reference_is_the_class_object(isolated_registry) -> None:
+    """D-03: `acquisition_cls` is the CLASS OBJECT, never a dotted string.
+
+    Asserted with `is`, so a dotted path that happened to resolve to the same
+    class would still fail -- the point of D-03 is the direct reference itself,
+    which is what makes `descriptor.acquisition_cls.DEFAULT_BATCH_SIZE`
+    readable at a call site without a resolver.
+
+    The second half is the D-03 corollary: only VENDOR collides. Two
+    descriptors may name the SAME class under different vendors (alpaca paper
+    vs live is the motivating case), so registering one must not raise.
+    """
+    from quantlab.acquisition.registry import register_source
+
+    assert isolated_registry.get("tiingo").acquisition_cls is tiingo.TiingoAcquisition
+    assert isolated_registry.get("alpaca").acquisition_cls is alpaca.AlpacaAcquisition
+    for descriptor in isolated_registry.all():
+        assert isinstance(descriptor.acquisition_cls, type)
+        assert not isinstance(descriptor.acquisition_cls, str)
+
+    twin = _fake_descriptor(
+        "tiingotwin", acquisition_cls=tiingo.TiingoAcquisition
+    )
+    assert register_source(twin) is twin
+    assert isolated_registry.get("tiingotwin").acquisition_cls is (
+        isolated_registry.get("tiingo").acquisition_cls
+    )
+
+
+def test_registration_tuple_shape_is_instances_in_a_rebound_tuple() -> None:
+    """D-05: `SOURCES` is a `tuple` of `SourceDescriptor` INSTANCES, rebound
+    rather than mutated.
+
+    This test is the ONLY thing keeping `tests/conftest.py:isolated_registry`
+    honest, and the fixture's own docstring says so. That fixture isolates by
+    `monkeypatch.setattr`-ing `SOURCES`, which saves the old OBJECT and
+    restores it on teardown -- correct only while registration REBINDS the
+    attribute. Switch `register_source` to `list.append` and the fixture would
+    mutate the very object it restores: isolation would silently stop working
+    and a fake descriptor would leak into every later test in the session, with
+    nothing anywhere going red. Hence the source-level arm below.
+
+    The instance-vs-class arm is the other half of D-05: `MEMBERSHIP_FETCHERS`
+    holds classes, this holds instances, and a class accidentally registered
+    here would still satisfy a `len()` check.
+    """
+    import ast
+
+    from quantlab.acquisition.registry import DataSourceRegistry, SourceDescriptor
+
+    assert isinstance(DataSourceRegistry.SOURCES, tuple)
+    assert DataSourceRegistry.SOURCES
+    for element in DataSourceRegistry.SOURCES:
+        assert isinstance(element, SourceDescriptor)
+        assert not isinstance(element, type)
+
+    source = Path("quantlab/acquisition/registry.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # No `.append` may reach SOURCES -- neither `SOURCES.append(...)` nor
+    # `DataSourceRegistry.SOURCES.append(...)`. Matched on the ATTRIBUTE CHAIN
+    # rather than on the rendered text, so a comment or docstring mentioning
+    # `.append` (this one does) is not a false positive.
+    appends = [
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and "SOURCES" in ast.unparse(node.func)
+    ]
+    assert appends == [], appends
+
+    # ... and the rebinding is really there, as an AugAssign onto SOURCES.
+    rebinds = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AugAssign)
+        and isinstance(node.target, ast.Attribute)
+        and node.target.attr == "SOURCES"
+    ]
+    assert len(rebinds) == 1, ast.dump(tree) and len(rebinds)
+
+
+def test_decorator_registers_and_returns_the_descriptor(isolated_registry) -> None:
+    """D-06: `register_source(d) is d`, and applying it twice raises.
+
+    The identity return is what makes the decorated module-level name the
+    descriptor rather than `None` -- the classic decorator bug, which would
+    only surface at the first attribute read somewhere far away.
+
+    Applying the decorator to the SAME OBJECT a second time must take the
+    duplicate-vendor path rather than being special-cased as idempotent: a
+    module imported twice under two names is a real way that happens, and
+    registering it twice would double the row in an operator's list.
+    """
+    from quantlab.acquisition.registry import register_source
+
+    descriptor = _fake_descriptor("decoratedvendor")
+    assert register_source(descriptor) is descriptor
+    assert descriptor in isolated_registry.SOURCES
+    assert isolated_registry.get("decoratedvendor") is descriptor
+
+    with pytest.raises(ValueError, match="already registered"):
+        register_source(descriptor)
+    assert isolated_registry.SOURCES.count(descriptor) == 1
+
+
+def test_the_isolated_registry_fixture_restored_the_fake_vendors() -> None:
+    """The teardown half of the test above, which it cannot assert itself.
+
+    A fixture that snapshots but never restores looks identical from inside
+    the test that used it. This runs AFTER those tests in file order and
+    asserts the session-global registry is back to the two shipped
+    descriptors, so a leak is caught here rather than surfacing as an
+    inexplicable third row in some later plan's enumeration assertion.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo"]
+    for leaked in ("fakevendor", "decoratedvendor", "tiingotwin"):
+        assert leaked not in {d.vendor for d in DataSourceRegistry.SOURCES}
+
+
+def test_enumeration_order_is_sorted_by_vendor() -> None:
+    """D-06: `all()` sorts by vendor rather than returning import order.
+
+    Import order is a function of which module the caller touched first, so
+    two installations of the same code would render an operator's source list
+    differently. Sorting also makes this assertion a literal comparison.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo"]
+
+    vendors = [d.vendor for d in DataSourceRegistry.all()]
+    assert vendors == sorted(vendors)
+
+
+def test_registry_get_is_empty_and_unknown_safe(
+    isolated_registry, monkeypatch
+) -> None:
+    """D-01: `all()` over an EMPTY registry returns `()` rather than raising,
+    and `get()` for an unknown vendor names both the request and what exists.
+
+    "Nothing is registered" is a legitimate state a console must be able to
+    render -- an exception would make the empty case the caller's problem at
+    exactly the moment it has the least information. `get()` is the opposite:
+    a miss is a caller error, so it raises, and the message lists the
+    registered vendors because a bare `KeyError` says nothing about a registry
+    the caller cannot see.
+    """
+    monkeypatch.setattr(isolated_registry, "SOURCES", ())
+
+    assert isolated_registry.all() == ()
+
+    with pytest.raises(ValueError, match="tiingo") as excinfo:
+        isolated_registry.get("tiingo")
+    assert "Registered vendors: []" in str(excinfo.value)
+
+    monkeypatch.setattr(isolated_registry, "SOURCES", (_fake_descriptor("only"),))
+    with pytest.raises(ValueError) as excinfo:
+        isolated_registry.get("nosuchvendor")
+    assert "nosuchvendor" in str(excinfo.value)
+    assert "only" in str(excinfo.value)
+
+
+def test_registry_reaches_no_zarr_writer() -> None:
+    """D-14's acquisition-only amendment, proved NEGATIVELY.
+
+    `run()` downloads to the raw parquet tier and stops; the raw-to-Zarr
+    conversion stays in the shells, because the three entry points convert in
+    three different modes with three differently-sized RAM guards. The cheapest
+    durable proof of "reaches no Zarr writer" is that this module imports no
+    `quantlab.dataset` module at all -- a behavioural test could only show that
+    one particular call did not convert.
+
+    An `ast` walk rather than a substring scan: the docstrings in this file
+    discuss Zarr conversion by name, and a grep would fail on the prose that
+    explains the rule.
+    """
+    import ast
+
+    tree = ast.parse(
+        Path("quantlab/acquisition/registry.py").read_text(encoding="utf-8")
+    )
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            imported.add(module)
+            imported.update(f"{module}.{alias.name}" for alias in node.names)
+
+    offending = sorted(
+        name
+        for name in imported
+        if name == "quantlab.dataset" or name.startswith("quantlab.dataset.")
+    )
+    assert offending == [], offending
+    assert "quantlab.base.acquisition" in imported
