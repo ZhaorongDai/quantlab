@@ -133,9 +133,11 @@ class Factor(ABC):
 
         **`mode="a"` 不是「按时间追加」。** zarr 的 `"a"` 是「改写已有 store 里的
         变量」，写第二段日期区间会直接失败——两段的 `timestamp` 长度不一样，
-        `to_zarr` 拒绝在没有 `append_dim` 的情况下改维度大小。因子落盘基本都该用
-        `save(mode="w")`；真要增量追加得走 `XrBackend.append()`，那边有坐标一致性
-        和 dtype 守卫，而这个方法没接过去。
+        `to_zarr` 拒绝在没有 `append_dim` 的情况下改维度大小。要整段重写用
+        `save(mode="w")`；要按时间增量扩展走 `update()`，它自动对齐 timestamp、
+        symbol 和变量三个轴，并且继承 `XrBackend.append()` 的坐标一致性守卫、
+        dtype 守卫和区间重叠守卫。两个接口表达的就是「整段写」和「增量扩」
+        这组分工 (D-09)。
 
         默认值**保持 `"a"` 不变**（改默认值对任何依赖它的调用方都是行为变更）。
         这里做的是把失败讲清楚：`to_zarr` 原本抛的是一句谈 store 内部维度大小的
@@ -163,11 +165,72 @@ class Factor(ABC):
                     f"variables in an existing store\", NOT \"append along "
                     f"time\", so a second, differently-sized date range is "
                     f"rejected. Use save(mode=\"w\") to replace the store, or "
-                    f"delete it first. True incremental appends go through "
-                    f"XrBackend.append(), which Factor.save() is not wired to. "
+                    f"delete it first. To EXTEND it with a later date range "
+                    f"instead, call update(), which reconciles the timestamp, "
+                    f"symbol and variable axes automatically and inherits "
+                    f"XrBackend.append()'s guards. save() writes wholesale; "
+                    f"update() extends. "
                     f"Original error: {exc}"
                 ) from exc
             return self
+
+    def update(self, **kwargs) -> Self:
+        """Extend the stored factor panel -- the AUTOMATIC incremental path.
+
+        `save()`'s counterpart (D-09), and the split between them is the whole
+        point: `save()` writes WHOLESALE (`save(mode="w")` replaces the
+        store), `update()` EXTENDS. Which one a caller reaches for is how it
+        says which it means.
+
+        Automatic means the caller names no axis and chooses no widening. Hand
+        it a panel; it works out what changed -- later dates, a roster that
+        grew, a variable that appeared -- and reconciles each axis on the way
+        in. That decision belongs to the storage layer, which is the only
+        place that can see the store and the panel at once.
+
+        **No route to overwrite a range the store already holds.** There is no
+        `mode` parameter, and the unconditional append-dim overlap refusal
+        shipped by 260907-uac is inherited through
+        `XrBackend.widen_and_append` -> the UNCHANGED `XrBackend.append`. That
+        guard runs before any keyword is read, so no argument gets past it
+        whatever it is named. Recomputing a stored range is `save(mode="w")`'s
+        job.
+
+        `_auto_filter()` runs first, exactly as it does in `save()`: the same
+        date and symbol normalisation must apply to both write paths, or the
+        window that lands on disk depends on which method was called.
+        """
+        with Timer(f"{self.__class__.__name__}: update"):
+            self._auto_filter()
+            self.data_backend.widen_and_append(
+                self.config.file_path,
+                fill_values=self._widen_fill_values(),
+                **kwargs,
+            )
+            return self
+
+    def _widen_fill_values(self) -> dict:
+        """Per-variable fill values for the widening `update()` performs.
+
+        The same seam `BaseDataset` carries, for the same reason: the widening
+        refuses to backfill a NON-float variable without an explicit fill,
+        because NaN materialised into an integer array becomes 0 and into a
+        boolean array becomes True -- a fabricated history rather than an
+        absent one.
+
+        The default is `{}`, and that is measured rather than assumed: every
+        factor and label panel is float today. KunQuant emits float arrays,
+        and even `SpotBinaryReturn` builds its binary label out of
+        `op.ConstantOp(1.0)`/`(0.0)`, so the "binary" label is float64, not
+        bool. So there is nothing to name yet.
+
+        A seam rather than a constant because this base is shared by factors
+        AND classification labels, and a subclass that does carry a non-float
+        variable has no other way to widen at all -- it would be refused
+        outright. It states its fill ONCE here, and that mapping reaches both
+        widened axes.
+        """
+        return {}
 
     def _get_lazyframe(self) -> pl.LazyFrame:
         df = self.data_backend.get_xarray_dataset().to_pandas()  # type: ignore
