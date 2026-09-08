@@ -27,6 +27,28 @@ past it without weakening it (Task 2), and the three-axis composition inside
 Every test here names, in its docstring, the mutation that reddens it. This
 project has recorded instances of a test passing for the wrong reason; a test
 whose reddening mutation is unstated is a test nobody can check.
+
+WHY EVERY TEST HERE RUNS TWICE (260908-dvv). This suite OWNS `widen_data_vars`
+and `widen_and_append`, and the defect described above -- the filler rebuilding
+the store's coordinates and writing them back -- lived in the first of those.
+It shipped anyway, under a 13/13 verification, and this suite could not see it:
+every test built its `symbol` coordinate from a python list literal, which
+round-trips through zarr to a FIXED-WIDTH unicode store, while the store the
+current chunked ingest writes is `object`-encoded and decodes to
+`StringDType()`. The refusal
+
+    Mismatched dtypes for variable symbol between Zarr store on disk and
+    dataset to append. Store has dtype object but dataset to append has dtype
+    StringDType()
+
+is unreachable in the fixed-width arm and fatal in the other. Measured
+2026-09-08 with `quantlab/dataset/backend.py` reverted to `dea1e85`: this suite
+reported `16 passed` on the list-literal coordinate and reddens on the object
+one. So the symbol coordinate now comes from `conftest.symbol_coord` and every
+test takes the `symbol_encoding` fixture, giving each one a `[fixed_width]` and
+a `[variable_length]` id. The fixed-width arm is byte-identical to what these
+tests did before -- it is a CONTROL, not a new case, and that is what makes any
+red attributable to the encoding rather than to churn.
 """
 
 from pathlib import Path
@@ -38,6 +60,7 @@ import pytest
 import xarray as xr
 import zarr
 
+from conftest import symbol_coord
 from quantlab.dataset.backend import XrBackend
 
 # ---------------------------------------------------------------------------
@@ -54,6 +77,8 @@ def _panel(
     symbols: Sequence[str],
     variables: Mapping[str, str] | Sequence[str],
     offset: float = 0.0,
+    *,
+    encoding: str,
 ) -> xr.Dataset:
     """A `(timestamp, symbol)` panel carrying the named variables.
 
@@ -64,6 +89,12 @@ def _panel(
     Every cell holds a DISTINCT value on purpose: an element-for-element
     history assertion cannot tell an intact store from a rewritten one if
     every cell holds the same number.
+
+    `encoding` is keyword-only and REQUIRED (260908-dvv): the symbol
+    coordinate comes from `conftest.symbol_coord` rather than from
+    `list(symbols)`, so this builder can produce either of the two encodings
+    that are live on real stores. Keyword-only so the existing positional
+    `offset` calls are untouched; required so a new test cannot forget it.
     """
     if not isinstance(variables, Mapping):
         variables = {str(name): "float64" for name in variables}
@@ -80,17 +111,28 @@ def _panel(
         data[name] = (["timestamp", "symbol"], values.astype(dtype))
     return xr.Dataset(
         data,
-        coords={"timestamp": pd.to_datetime(list(dates)), "symbol": list(symbols)},
+        coords={
+            "timestamp": pd.to_datetime(list(dates)),
+            "symbol": symbol_coord(symbols, encoding),
+        },
     )
 
 
 def _typed_panel(
-    dates: Sequence[str], symbols: Sequence[str], name: str, dtype: str
+    dates: Sequence[str],
+    symbols: Sequence[str],
+    name: str,
+    dtype: str,
+    *,
+    encoding: str,
 ) -> xr.Dataset:
     """A single-variable panel at an arbitrary dtype, including non-float.
 
     Separate from `_panel` because `astype(bool)` on an arange is not a
     meaningful bool panel; this one builds each dtype honestly.
+
+    Carries the same required keyword-only `encoding` as `_panel`, for the
+    same reason.
     """
     shape = (len(dates), len(symbols))
     if np.issubdtype(np.dtype(dtype), np.bool_):
@@ -99,7 +141,10 @@ def _typed_panel(
         values = np.arange(shape[0] * shape[1]).reshape(shape).astype(dtype)
     return xr.Dataset(
         {name: (["timestamp", "symbol"], values)},
-        coords={"timestamp": pd.to_datetime(list(dates)), "symbol": list(symbols)},
+        coords={
+            "timestamp": pd.to_datetime(list(dates)),
+            "symbol": symbol_coord(symbols, encoding),
+        },
     )
 
 
@@ -119,7 +164,7 @@ def _stored(path: str) -> xr.Dataset:
 
 
 def test_append_refuses_an_incoming_panel_carrying_an_unstored_variable(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The tracer, end to end: store `{alpha}`, incoming `{alpha, beta}`.
 
@@ -134,12 +179,20 @@ def test_append_refuses_an_incoming_panel_carrying_an_unstored_variable(
     `DID NOT RAISE ValueError`.
     """
     path = str(tmp_path / "new_var.zarr")
-    XrBackend().to_internal(_panel(EARLY, SYMBOLS, ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(EARLY, SYMBOLS, ["alpha"], encoding=symbol_encoding)
+    ).append(path)
     before = _stored(path)
 
     with pytest.raises(ValueError) as excinfo:
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["alpha", "beta"], offset=100.0)
+            _panel(
+                LATER,
+                SYMBOLS,
+                ["alpha", "beta"],
+                offset=100.0,
+                encoding=symbol_encoding,
+            )
         ).append(path)
 
     assert "beta" in str(excinfo.value), str(excinfo.value)
@@ -153,7 +206,7 @@ def test_append_refuses_an_incoming_panel_carrying_an_unstored_variable(
 
 
 def test_append_refuses_an_incoming_panel_missing_a_stored_variable(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The DESTRUCTIVE shape: store `{alpha, beta}`, incoming `{alpha}`.
 
@@ -171,13 +224,13 @@ def test_append_refuses_an_incoming_panel_missing_a_stored_variable(
     """
     path = str(tmp_path / "missing_var.zarr")
     XrBackend().to_internal(
-        _panel(EARLY, SYMBOLS, ["alpha", "beta"])
+        _panel(EARLY, SYMBOLS, ["alpha", "beta"], encoding=symbol_encoding)
     ).append(path)
     before = _stored(path)
 
     with pytest.raises(ValueError) as excinfo:
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["alpha"], offset=100.0)
+            _panel(LATER, SYMBOLS, ["alpha"], offset=100.0, encoding=symbol_encoding)
         ).append(path)
 
     assert "beta" in str(excinfo.value), str(excinfo.value)
@@ -189,7 +242,10 @@ def test_append_refuses_an_incoming_panel_missing_a_stored_variable(
     np.testing.assert_array_equal(after["beta"].values, before["beta"].values)
 
 
-def test_append_refuses_a_fully_disjoint_variable_set(tmp_path: Path) -> None:
+def test_append_refuses_a_fully_disjoint_variable_set(
+    tmp_path: Path,
+    symbol_encoding: str,
+) -> None:
     """Store `{alpha}`, incoming `{beta}` -- both a drop AND an addition.
 
     Deliberately MESSAGE-AGNOSTIC: it asserts only that the append raises and
@@ -202,12 +258,14 @@ def test_append_refuses_a_fully_disjoint_variable_set(tmp_path: Path) -> None:
     RED under: M1 only.
     """
     path = str(tmp_path / "disjoint.zarr")
-    XrBackend().to_internal(_panel(EARLY, SYMBOLS, ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(EARLY, SYMBOLS, ["alpha"], encoding=symbol_encoding)
+    ).append(path)
     before = _stored(path)
 
     with pytest.raises(ValueError):
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["beta"], offset=100.0)
+            _panel(LATER, SYMBOLS, ["beta"], offset=100.0, encoding=symbol_encoding)
         ).append(path)
 
     after = _stored(path)
@@ -219,7 +277,7 @@ def test_append_refuses_a_fully_disjoint_variable_set(tmp_path: Path) -> None:
 
 
 def test_the_two_variable_set_refusals_carry_distinct_messages(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The two directions are not one refusal with a shared sentence.
 
@@ -238,19 +296,27 @@ def test_the_two_variable_set_refusals_carry_distinct_messages(
     change that collapses the two messages into one.
     """
     new_path = str(tmp_path / "pure_new.zarr")
-    XrBackend().to_internal(_panel(EARLY, SYMBOLS, ["alpha"])).append(new_path)
+    XrBackend().to_internal(
+        _panel(EARLY, SYMBOLS, ["alpha"], encoding=symbol_encoding)
+    ).append(new_path)
     with pytest.raises(ValueError) as new_error:
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["alpha", "beta"], offset=100.0)
+            _panel(
+                LATER,
+                SYMBOLS,
+                ["alpha", "beta"],
+                offset=100.0,
+                encoding=symbol_encoding,
+            )
         ).append(new_path)
 
     missing_path = str(tmp_path / "pure_missing.zarr")
     XrBackend().to_internal(
-        _panel(EARLY, SYMBOLS, ["alpha", "beta"])
+        _panel(EARLY, SYMBOLS, ["alpha", "beta"], encoding=symbol_encoding)
     ).append(missing_path)
     with pytest.raises(ValueError) as missing_error:
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["alpha"], offset=100.0)
+            _panel(LATER, SYMBOLS, ["alpha"], offset=100.0, encoding=symbol_encoding)
         ).append(missing_path)
 
     new_message = str(new_error.value)
@@ -270,7 +336,7 @@ def test_the_two_variable_set_refusals_carry_distinct_messages(
 
 
 def test_a_mismatch_in_both_directions_raises_the_missing_variable_message(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """Precedence: store `{alpha, beta}` taking `{alpha, gamma}` is BOTH a
     drop and an addition, and the MISSING branch must win.
@@ -286,12 +352,18 @@ def test_a_mismatch_in_both_directions_raises_the_missing_variable_message(
     """
     path = str(tmp_path / "both_directions.zarr")
     XrBackend().to_internal(
-        _panel(EARLY, SYMBOLS, ["alpha", "beta"])
+        _panel(EARLY, SYMBOLS, ["alpha", "beta"], encoding=symbol_encoding)
     ).append(path)
 
     with pytest.raises(ValueError) as excinfo:
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["alpha", "gamma"], offset=100.0)
+            _panel(
+                LATER,
+                SYMBOLS,
+                ["alpha", "gamma"],
+                offset=100.0,
+                encoding=symbol_encoding,
+            )
         ).append(path)
 
     message = str(excinfo.value)
@@ -300,7 +372,10 @@ def test_a_mismatch_in_both_directions_raises_the_missing_variable_message(
     assert "widen_data_vars" not in message, message
 
 
-def test_an_identical_variable_set_still_appends(tmp_path: Path) -> None:
+def test_an_identical_variable_set_still_appends(
+    tmp_path: Path,
+    symbol_encoding: str,
+) -> None:
     """The positive control: the new check adds NO refusal to the path every
     existing caller already uses.
 
@@ -315,10 +390,16 @@ def test_an_identical_variable_set_still_appends(tmp_path: Path) -> None:
     """
     path = str(tmp_path / "identical.zarr")
     XrBackend().to_internal(
-        _panel(EARLY, SYMBOLS, ["alpha", "beta"])
+        _panel(EARLY, SYMBOLS, ["alpha", "beta"], encoding=symbol_encoding)
     ).append(path)
     XrBackend().to_internal(
-        _panel(LATER, SYMBOLS, ["alpha", "beta"], offset=100.0)
+        _panel(
+            LATER,
+            SYMBOLS,
+            ["alpha", "beta"],
+            offset=100.0,
+            encoding=symbol_encoding,
+        )
     ).append(path)
 
     after = _stored(path)
@@ -329,7 +410,7 @@ def test_an_identical_variable_set_still_appends(tmp_path: Path) -> None:
 
 
 def test_a_shared_variable_dtype_mismatch_outranks_the_variable_set_check(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """D-03: the variable-set check sits AFTER the existing shared-variable
     dtype loop, so no pre-existing refusal's precedence changes.
@@ -355,7 +436,12 @@ def test_a_shared_variable_dtype_mismatch_outranks_the_variable_set_check(
     """
     path = str(tmp_path / "combined.zarr")
     XrBackend().to_internal(
-        _panel(EARLY, SYMBOLS, {"alpha": "float64", "beta": "float64"})
+        _panel(
+            EARLY,
+            SYMBOLS,
+            {"alpha": "float64", "beta": "float64"},
+            encoding=symbol_encoding,
+        )
     ).append(path)
 
     with pytest.raises(ValueError) as excinfo:
@@ -364,7 +450,7 @@ def test_a_shared_variable_dtype_mismatch_outranks_the_variable_set_check(
                 LATER,
                 SYMBOLS,
                 {"alpha": "float32", "gamma": "float64"},
-                offset=100.0,
+                offset=100.0, encoding=symbol_encoding
             )
         ).append(path)
 
@@ -378,7 +464,7 @@ def test_a_shared_variable_dtype_mismatch_outranks_the_variable_set_check(
 
 
 def test_a_variable_mismatched_append_carrying_an_unrecognised_kwarg_raises(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The BEHAVIOURAL half of "there is no opt-out, declared OR smuggled".
 
@@ -404,12 +490,20 @@ def test_a_variable_mismatched_append_carrying_an_unrecognised_kwarg_raises(
     under which the structural test at `:603` stays GREEN.
     """
     path = str(tmp_path / "smuggled_var.zarr")
-    XrBackend().to_internal(_panel(EARLY, SYMBOLS, ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(EARLY, SYMBOLS, ["alpha"], encoding=symbol_encoding)
+    ).append(path)
     before = _stored(path)
 
     with pytest.raises(ValueError) as excinfo:
         XrBackend().to_internal(
-            _panel(LATER, SYMBOLS, ["alpha", "beta"], offset=100.0)
+            _panel(
+                LATER,
+                SYMBOLS,
+                ["alpha", "beta"],
+                offset=100.0,
+                encoding=symbol_encoding,
+            )
         ).append(path, force=True)
 
     assert "beta" in str(excinfo.value), str(excinfo.value)
@@ -427,7 +521,10 @@ def test_a_variable_mismatched_append_carrying_an_unrecognised_kwarg_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_widen_and_append_reconciles_all_three_axes(tmp_path: Path) -> None:
+def test_widen_and_append_reconciles_all_three_axes(
+    tmp_path: Path,
+    symbol_encoding: str,
+) -> None:
     """The tracer for the composed path: a store that grew BOTH a symbol and
     a variable between two runs.
 
@@ -449,11 +546,17 @@ def test_widen_and_append_reconciles_all_three_axes(tmp_path: Path) -> None:
     """
     path = str(tmp_path / "three_axes.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
-    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(history, ["A", "B"], ["alpha"], encoding=symbol_encoding)
+    ).append(path)
     before = _stored(path)
 
     incoming = _panel(
-        ["2022-01-07", "2022-01-10"], ["A", "B", "C"], ["alpha", "beta"], 100.0
+        ["2022-01-07", "2022-01-10"],
+        ["A", "B", "C"],
+        ["alpha", "beta"],
+        100.0,
+        encoding=symbol_encoding,
     )
     XrBackend().to_internal(incoming).widen_and_append(path)
 
@@ -476,7 +579,7 @@ def test_widen_and_append_reconciles_all_three_axes(tmp_path: Path) -> None:
 
 
 def test_widen_data_vars_backfills_the_stores_whole_existing_extent(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The opt-in on its own: the new variable is materialised over the
     store's ENTIRE existing extent, not just the window that introduced it.
@@ -494,7 +597,9 @@ def test_widen_data_vars_backfills_the_stores_whole_existing_extent(
     """
     path = str(tmp_path / "widen_vars.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
-    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(history, ["A", "B"], ["alpha"], encoding=symbol_encoding)
+    ).append(path)
     before = _stored(path)
 
     XrBackend().widen_data_vars(path, {"beta": np.dtype("float64")})
@@ -510,7 +615,7 @@ def test_widen_data_vars_backfills_the_stores_whole_existing_extent(
 
 
 def test_the_filler_carries_the_incoming_variables_dtype(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """D-06, and the M9 canary.
 
@@ -532,7 +637,7 @@ def test_the_filler_carries_the_incoming_variables_dtype(
     path = str(tmp_path / "filler_dtype.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
     XrBackend().to_internal(
-        _panel(history, ["A", "B"], {"alpha": "float64"})
+        _panel(history, ["A", "B"], {"alpha": "float64"}, encoding=symbol_encoding)
     ).append(path)
 
     XrBackend().to_internal(
@@ -540,7 +645,7 @@ def test_the_filler_carries_the_incoming_variables_dtype(
             ["2022-01-07", "2022-01-10"],
             ["A", "B"],
             {"alpha": "float64", "beta": "float32"},
-            100.0,
+            100.0, encoding=symbol_encoding
         )
     ).widen_and_append(path)
 
@@ -552,7 +657,7 @@ def test_the_filler_carries_the_incoming_variables_dtype(
 
 
 def test_the_filler_joins_the_stores_existing_chunk_grid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
 ) -> None:
     """D-07: the filler is written with an explicit `encoding`, so the new
     variable lands on the SAME chunk grid as every other variable.
@@ -576,7 +681,12 @@ def test_the_filler_joins_the_stores_existing_chunk_grid(
     path = str(tmp_path / "chunk_grid.zarr")
     dates = pd.date_range("2022-01-04", periods=10, freq="D")
     XrBackend().to_internal(
-        _panel([str(date.date()) for date in dates], ["A", "B"], ["alpha"])
+        _panel(
+            [str(date.date()) for date in dates],
+            ["A", "B"],
+            ["alpha"],
+            encoding=symbol_encoding,
+        )
     ).append(path)
 
     XrBackend().widen_data_vars(path, {"beta": np.dtype("float64")})
@@ -587,7 +697,7 @@ def test_the_filler_joins_the_stores_existing_chunk_grid(
 
 
 def test_widen_data_vars_refuses_a_non_float_variable_without_a_fill(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """D-08, mirroring `widen_symbol_axis`'s refusal for the same reason.
 
@@ -605,7 +715,9 @@ def test_widen_data_vars_refuses_a_non_float_variable_without_a_fill(
     """
     path = str(tmp_path / "non_float_refused.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
-    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(history, ["A", "B"], ["alpha"], encoding=symbol_encoding)
+    ).append(path)
     before = _stored(path)
 
     with pytest.raises(ValueError) as excinfo:
@@ -624,7 +736,7 @@ def test_widen_data_vars_refuses_a_non_float_variable_without_a_fill(
 
 
 def test_an_explicit_fill_widens_a_non_float_variable_and_keeps_its_dtype(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """D-08's positive half: the remedy the refusal names has to actually
     work, and it has to preserve the dtype EXACTLY.
@@ -638,7 +750,9 @@ def test_an_explicit_fill_widens_a_non_float_variable_and_keeps_its_dtype(
     """
     path = str(tmp_path / "non_float_filled.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
-    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    XrBackend().to_internal(
+        _panel(history, ["A", "B"], ["alpha"], encoding=symbol_encoding)
+    ).append(path)
 
     XrBackend().widen_data_vars(
         path,
@@ -655,7 +769,7 @@ def test_an_explicit_fill_widens_a_non_float_variable_and_keeps_its_dtype(
 
 
 def test_widen_and_append_with_both_axes_agreeing_takes_the_plain_append_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
 ) -> None:
     """D-05: calling `widen_and_append` unconditionally must stay cheap on a
     routine refresh, and folding in a third axis must not change that.
@@ -673,7 +787,7 @@ def test_widen_and_append_with_both_axes_agreeing_takes_the_plain_append_path(
     path = str(tmp_path / "cheap_three_axis.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
     XrBackend().to_internal(
-        _panel(history, ["A", "B"], ["alpha", "beta"])
+        _panel(history, ["A", "B"], ["alpha", "beta"], encoding=symbol_encoding)
     ).append(path)
 
     def _fail(*args, **kwargs):
@@ -683,7 +797,13 @@ def test_widen_and_append_with_both_axes_agreeing_takes_the_plain_append_path(
     monkeypatch.setattr(XrBackend, "widen_data_vars", _fail)
 
     XrBackend().to_internal(
-        _panel(["2022-01-07", "2022-01-10"], ["A", "B"], ["alpha", "beta"], 100.0)
+        _panel(
+            ["2022-01-07", "2022-01-10"],
+            ["A", "B"],
+            ["alpha", "beta"],
+            100.0,
+            encoding=symbol_encoding,
+        )
     ).widen_and_append(path)
 
     after = _stored(path)
@@ -692,7 +812,7 @@ def test_widen_and_append_with_both_axes_agreeing_takes_the_plain_append_path(
 
 
 def test_widen_and_append_still_inherits_the_overlap_refusal_verbatim(
-    tmp_path: Path,
+    tmp_path: Path, symbol_encoding: str
 ) -> None:
     """D-05: reconciling a third axis must not grow a parallel write path.
 
@@ -723,20 +843,26 @@ def test_widen_and_append_still_inherits_the_overlap_refusal_verbatim(
     widened_path = str(tmp_path / "widened_vars.zarr")
     history = ["2022-01-04", "2022-01-05", "2022-01-06"]
     for path in (plain_path, widened_path):
-        XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(
-            path
-        )
+        XrBackend().to_internal(
+            _panel(history, ["A", "B"], ["alpha"], encoding=symbol_encoding)
+        ).append(path)
     before = _stored(widened_path)["alpha"].values.copy()
 
     overlapping = ["2022-01-05", "2022-01-06", "2022-01-07"]
     with pytest.raises(ValueError) as plain_error:
         XrBackend().to_internal(
-            _panel(overlapping, ["A", "B"], ["alpha"], 100.0)
+            _panel(overlapping, ["A", "B"], ["alpha"], 100.0, encoding=symbol_encoding)
         ).append(plain_path)
 
     with pytest.raises(ValueError) as widened_error:
         XrBackend().to_internal(
-            _panel(overlapping, ["A", "B"], ["alpha", "beta"], 100.0)
+            _panel(
+                overlapping,
+                ["A", "B"],
+                ["alpha", "beta"],
+                100.0,
+                encoding=symbol_encoding,
+            )
         ).widen_and_append(widened_path)
 
     placeholder = "<STORE>"

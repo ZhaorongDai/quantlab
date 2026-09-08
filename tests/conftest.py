@@ -24,13 +24,14 @@ import io
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
 import xarray as xr
+import zarr
 
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 
@@ -1156,3 +1157,172 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
         )
 
     return _build
+
+
+# ---------------------------------------------------------------------------
+# Symbol-coordinate encoding (260908-dvv)
+# ---------------------------------------------------------------------------
+
+#: The two symbol-coordinate encodings that are LIVE on real stores today, and
+#: therefore the two a test exercising a widening method has to run under.
+#:
+#: Measured on this machine 2026-09-08 (numpy 2.5.2 / xarray 2026.7.0 /
+#: zarr 3.3.0):
+#:
+#:   "fixed_width"      data/data/us_equity/1d/us_all.zarr
+#:                      on-disk `<U9`, decoded `<U9`, encoding['dtype'] `<U9`,
+#:                      serializer `BytesCodec`. 7700 symbols; `<U9` is the
+#:                      NATURAL width of its own longest label, `SATX-WS-A`.
+#:
+#:   "variable_length"  data/data/us_equity/1m/stock_alpaca.zarr
+#:                      on-disk `StringDType()`, decoded `StringDType()`,
+#:                      encoding['dtype'] `object`, serializer
+#:                      `VLenUTF8Codec`. 102 symbols. This is what the CURRENT
+#:                      chunked ingest writes -- traced end to end,
+#:                      `_raw_data_to_xr()` yields `object`, the reindexed
+#:                      window stays `object`, and `from_raw_data_chunked`
+#:                      writes `StringDType()` -- and it is verbatim the pair
+#:                      named by the `ValueError` that shipped in 260907-vyr:
+#:                      "Store has dtype object but dataset to append has
+#:                      dtype StringDType()".
+#:
+#: A third live dtype was measured and deliberately NOT parametrised:
+#: `data/data/us_equity/1d/stock_alpaca.zarr` records `symbol` as `float64`,
+#: but it is `{timestamp: 0, symbol: 0}` -- an EMPTY store, whose empty python
+#: list carries no string information for numpy to type. That is a degenerate
+#: SHAPE, not a string encoding. It is recorded at
+#: `.planning/todos/pending/2026-09-08-an-empty-zarr-store-records-symbol-as-float64.md`.
+#:
+#: A second fixed-width case was refused on measured evidence too: `<U3` and
+#: `<U9` behaved IDENTICALLY across the whole widening battery once the label
+#: widths were natural, so it would be cost without coverage.
+#:
+#: These two names are load-bearing: they become the pytest parametrisation
+#: ids `[fixed_width]` and `[variable_length]` that the task gates count, and
+#: `tests/test_widening_fixture_realism.py` pins this tuple by literal
+#: equality so the parametrisation cannot be quietly reduced to one arm.
+SYMBOL_COORD_ENCODINGS = ("fixed_width", "variable_length")
+
+
+def symbol_coord(symbols: Sequence[str], encoding: str) -> np.ndarray:
+    """Build a `symbol` coordinate that survives a zarr round trip AS
+    `encoding`.
+
+    The encoding does not exist in memory -- it is decided by the write. This
+    is the measured in-memory-spelling to on-disk-result mapping
+    (2026-09-08, numpy 2.5.2 / xarray 2026.7.0 / zarr 3.3.0):
+
+        spelling                              zarr            serializer
+        ------------------------------------  --------------  -------------
+        python list literal                   <U{n}           BytesCodec
+        np.asarray(list)                      <U{n}           BytesCodec
+        np.array(list, dtype=object)          StringDType()   VLenUTF8Codec
+        np.array(list, dtype=StringDType())   <U{n}           BytesCodec
+        pd.Index(list)                        StringDType()   VLenUTF8Codec
+
+    READ ROW FOUR TWICE. `np.dtypes.StringDType()` is the dtype
+    `xr.open_zarr` DECODES a production coordinate to, so it is the spelling
+    that looks correct -- and it writes a FIXED-WIDTH array, i.e. the wrong
+    arm. Only the `object` spelling reproduces the store the shipped
+    `ValueError` names. Simplifying `dtype=object` to `dtype=StringDType()`
+    here would silently turn the variable-length arm into a second copy of
+    the fixed-width one, with every suite still green.
+    `tests/test_symbol_coord_encoding.py` exists to make that impossible;
+    do not change this function without reading it.
+
+    The fixed-width arm is `np.asarray(list(symbols))`, letting numpy resolve
+    the natural `<U` width. That is deliberately byte-identical to what the
+    owning suites' list literals already produced, so that arm is an
+    unchanged CONTROL rather than a new case.
+    """
+    if encoding == "fixed_width":
+        return np.asarray(list(symbols))
+    if encoding == "variable_length":
+        return np.array(list(symbols), dtype=object)
+    raise ValueError(
+        f"unknown symbol coordinate encoding {encoding!r}; "
+        f"accepted values are {SYMBOL_COORD_ENCODINGS[0]!r} and "
+        f"{SYMBOL_COORD_ENCODINGS[1]!r}"
+    )
+
+
+def stored_symbol_dtype(path: str):
+    """The store's ON-DISK `symbol` dtype, read straight from zarr.
+
+    Deliberately not `xr.open_zarr(path)["symbol"].dtype`: the DECODED value
+    is what hid the defect. `xarray` decodes an `object`-encoded coordinate to
+    `StringDType()` in memory, which is why a suite could pass every value
+    assertion while the store underneath carried a different encoding than the
+    panel that was about to be appended to it.
+    """
+    return zarr.open_group(path, mode="r")["symbol"].dtype
+
+
+def stored_symbol_encoding(path: str) -> str:
+    """Classify a store's on-disk `symbol` dtype as one of
+    `SYMBOL_COORD_ENCODINGS`.
+
+    By dtype KIND -- `"U"` for numpy's fixed-width unicode, `"T"` for
+    `StringDType()` -- never by a width literal. The fixed-width arm's width
+    is a property of the LABELS (`<U1` for `A`/`B`/`C`, `<U9` for
+    `SATX-WS-A`), so any assertion pinned to a particular width reproduces at
+    one label set and nowhere else.
+    """
+    dtype = stored_symbol_dtype(path)
+    if dtype == np.dtypes.StringDType():
+        return "variable_length"
+    if getattr(dtype, "kind", None) == "U":
+        return "fixed_width"
+    raise AssertionError(
+        f"store {path!r} carries a symbol dtype this helper does not model: "
+        f"{dtype!r}. The two modelled encodings are "
+        f"{SYMBOL_COORD_ENCODINGS!r}."
+    )
+
+
+def assert_stored_symbol_encoding(path: str, encoding: str) -> None:
+    """Assert the store at `path` STILL carries the encoding it was built with.
+
+    This is the only observable that can see a widen which raises nothing,
+    passes every value and dtype and NaN-count assertion, and silently
+    rewrites the coordinate's encoding underneath. Measured 2026-09-08:
+    appending `widened = widened.assign_coords({dim: requested})` after the
+    reindex inside `XrBackend.widen_symbol_axis` downgrades a
+    `StringDType()` store to a fixed-width one, and the ENTIRE pass/fail
+    battery across both arms stays green. Without this assertion that
+    mutation escapes both arms.
+    """
+    actual = stored_symbol_encoding(path)
+    if actual == encoding:
+        return
+    expected_dtype = (
+        np.dtypes.StringDType()
+        if encoding == "variable_length"
+        else np.asarray(
+            [str(label) for label in zarr.open_group(path, mode="r")["symbol"][:]]
+        ).dtype
+    )
+    raise AssertionError(
+        f"store {path!r} was built with the {encoding!r} symbol encoding but "
+        f"now carries {actual!r}: on-disk dtype is "
+        f"{stored_symbol_dtype(path)!r}, expected {expected_dtype!r}. A widen "
+        f"that rewrites the coordinate encoding corrupts every later append "
+        f"against a panel carrying the original one."
+    )
+
+
+@pytest.fixture(params=SYMBOL_COORD_ENCODINGS)
+def symbol_encoding(request) -> str:
+    """Run a store-touching test once per LIVE production symbol encoding.
+
+    This fixture is what makes realism the DEFAULT rather than something each
+    individual test remembers to arrange. The three suites owning
+    `XrBackend`'s widening methods request it on every test that builds a
+    panel or opens a store; `tests/test_widening_fixture_realism.py` reads
+    those modules through `ast` and fails if one stops.
+
+    The ids are literally `[fixed_width]` and `[variable_length]`, which is
+    what lets a mutation's red set be attributed to an ENCODING rather than to
+    the tests merely being new.
+    """
+    return request.param
