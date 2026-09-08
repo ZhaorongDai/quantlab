@@ -96,7 +96,7 @@ def test_the_shared_groups_register_the_same_flags_from_either_parser():
     `--category`/`--stamp-legacy-watermarks` on the other. A whole-parser diff
     would fail for the right reason today and the wrong reason tomorrow.
     """
-    import utils.cli as cli
+    import quantlab.utils.cli as cli
 
     for add_group, kwargs in (
         (cli.add_universe_args, {}),
@@ -148,7 +148,7 @@ def test_resolve_symbols_refuses_to_pick_a_roster_mode_for_the_caller():
     the wrong one silent."""
     import inspect
 
-    import utils.cli as cli
+    import quantlab.utils.cli as cli
 
     mode = inspect.signature(cli.resolve_symbols).parameters["mode"]
     assert mode.default is inspect.Parameter.empty
@@ -166,7 +166,7 @@ def test_both_roster_modes_are_reachable_and_call_different_catalog_methods():
     """The bias-safe mode is not merely present -- it dispatches somewhere
     else. A resolver that accepted `"in_range"` and still called
     `get_symbols_as_of` would pass every signature assertion above."""
-    import utils.cli as cli
+    import quantlab.utils.cli as cli
 
     calls: list[str] = []
 
@@ -220,9 +220,9 @@ def test_resolve_symbols_in_range_propagates_the_coverage_guard(
     carries no `MEMBERSHIP_FETCHERS` registry and would therefore assert
     nothing at all about the guard.
     """
-    import utils.cli as cli
-    from acquisition.universe import UniverseCatalog
-    from base.config import UniverseConfig
+    import quantlab.utils.cli as cli
+    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.base.config import UniverseConfig
 
     catalog = UniverseCatalog(
         UniverseConfig(
@@ -259,7 +259,7 @@ def test_the_category_map_exists_in_exactly_one_module():
     how the map and the choices drifted apart the first time."""
     import ast
 
-    import utils.cli as cli
+    import quantlab.utils.cli as cli
 
     assert set(cli.UNIVERSE_CATEGORY_MAP) == {
         "sp500",
@@ -397,7 +397,7 @@ def test_the_alpaca_zarr_store_does_not_overwrite_the_tiingo_one():
     conversion overwrite the Tiingo store in place -- the same silent
     cross-vendor merge, one layer up."""
     import ingest_alpaca
-    from config import stock_kline_config
+    from quantlab.config import stock_kline_config
 
     _, alpaca_ds = ingest_alpaca._build_configs(_alpaca_args())
     tiingo_ds = stock_kline_config(start_date="2024-01-01", end_date="2024-01-31")
@@ -411,7 +411,7 @@ def test_the_frequency_choices_are_derived_from_the_locked_literal():
     import typing
 
     import ingest_alpaca
-    from enums.data import Frequency
+    from quantlab.enums.data import Frequency
 
     choices = ingest_alpaca._build_arg_parser()._option_string_actions[
         "--frequency"
@@ -461,7 +461,7 @@ def test_the_new_listing_choices_are_derived_from_the_locked_literal():
     to fix.
     """
     import ingest_us_equity
-    from base.data import BaseDataset
+    from quantlab.base.data import BaseDataset
 
     action = ingest_us_equity._build_arg_parser()._option_string_actions[
         "--on-new-listing"

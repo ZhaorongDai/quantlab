@@ -25,8 +25,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from base.config import BaseFactorConfig
-from base.factor import Factor
+from quantlab.base.config import BaseFactorConfig
+from quantlab.base.factor import Factor
 
 
 class _FakeDataset:

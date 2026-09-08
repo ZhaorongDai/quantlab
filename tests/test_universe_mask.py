@@ -26,7 +26,7 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from dataset.masking import UniverseMask
+from quantlab.dataset.masking import UniverseMask
 
 #: Five trading days (Mon..Fri) for the market panel.
 _MARKET_DAYS = pd.to_datetime(

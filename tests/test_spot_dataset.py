@@ -11,8 +11,8 @@ import inspect
 from argparse import Namespace
 from typing import Callable
 
-from base.config import DatasetConfig
-from dataset.spot import SpotKlineDataset
+from quantlab.base.config import DatasetConfig
+from quantlab.dataset.spot import SpotKlineDataset
 
 
 def _make_config(raw_data_dir_path: str) -> DatasetConfig:
@@ -84,7 +84,7 @@ def test_build_dataset_config_raw_data_dir_none_is_noop() -> None:
     """Test 3: _build_dataset_config(args) with raw_data_dir=None returns a
     DatasetConfig whose raw_data_dir_path equals spot_kline_config()'s own
     default -- the override is a no-op when not passed."""
-    from config import spot_kline_config
+    from quantlab.config import spot_kline_config
     from ingest_binance_spot import _build_dataset_config
 
     args = Namespace(
@@ -102,7 +102,7 @@ def test_build_dataset_config_raw_data_dir_override_applies() -> None:
     DatasetConfig whose raw_data_dir_path equals that override exactly, with
     no other field (market, frequency, zarr_file_path, catalog_path)
     altered."""
-    from config import spot_kline_config
+    from quantlab.config import spot_kline_config
     from ingest_binance_spot import _build_dataset_config
 
     args = Namespace(
@@ -132,7 +132,7 @@ def test_get_crypto_currency_is_spelled_correctly() -> None:
     "crypto" -- right next to a correctly-spelled `get_crypto_currency_pair`,
     and `dataset/spot.py` imported the typo.
     """
-    import utils.nautilus as nautilus
+    import quantlab.utils.nautilus as nautilus
 
     assert hasattr(nautilus, "get_crypto_currency")
     assert not hasattr(nautilus, "get_crypot_currency"), (
@@ -150,7 +150,7 @@ def test_get_crypto_currency_takes_only_a_symbol() -> None:
     Dropped rather than wired up. This test pins the decision so a future edit
     has to argue with it instead of quietly re-adding an ignored parameter.
     """
-    from utils.nautilus import get_crypto_currency
+    from quantlab.utils.nautilus import get_crypto_currency
 
     params = list(inspect.signature(get_crypto_currency).parameters)
     assert params == ["symbol"], f"unexpected signature: {params}"
@@ -162,7 +162,7 @@ def test_get_crypto_currency_returns_the_currency_for_its_code() -> None:
     contract."""
     from nautilus_trader.model.objects import Currency
 
-    from utils.nautilus import get_crypto_currency
+    from quantlab.utils.nautilus import get_crypto_currency
 
     btc = get_crypto_currency("BTC")
     usdt = get_crypto_currency("USDT")

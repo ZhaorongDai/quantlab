@@ -23,13 +23,13 @@ from typing import Callable
 import numpy as np
 import xarray as xr
 
-from base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
-from base.data import MarketDataset
-from dataset.spot import SpotKlineDataset
-from dataset.stock import StockDataset
-from config import momentum_config, stock_alpha158_config
-from factor.alpha101 import Alpha101SpotKline, Alpha101Stock
-from factor.alpha158 import Alpha158SpotKline, Alpha158Stock
+from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.base.data import MarketDataset
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.dataset.stock import StockDataset
+from quantlab.config import momentum_config, stock_alpha158_config
+from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
+from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 
 
 def _factor_config(

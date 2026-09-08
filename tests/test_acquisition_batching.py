@@ -103,7 +103,7 @@ def _acquisition(acquisition_config, **config_kwargs):
     rules under test belong to the base class, and instantiating a vendor here
     would let a vendor override silently satisfy the assertion.
     """
-    from base.acquisition import Acquisition
+    from quantlab.base.acquisition import Acquisition
 
     class _Batching(Acquisition):
         VENDOR = "tiingo"
@@ -273,7 +273,7 @@ def test_the_abort_check_is_first_in_attempt_batch_abort_is_first():
     """
     import ast
 
-    from base.acquisition import Acquisition
+    from quantlab.base.acquisition import Acquisition
 
     first = _first_executable_statement(Acquisition._attempt_batch)
 
@@ -306,8 +306,8 @@ def _concrete_acquisition_subclasses():
     import pkgutil
     import sys
 
-    import acquisition
-    from base.acquisition import Acquisition
+    import quantlab.acquisition as acquisition
+    from quantlab.base.acquisition import Acquisition
 
     for info in pkgutil.iter_modules(
         acquisition.__path__, acquisition.__name__ + "."
@@ -444,7 +444,7 @@ def test_refresh_actually_dispatches_the_watermark_grouped_batches(
     this covers whichever vendor is multi-symbol rather than the one that
     happens to be today.
     """
-    from base.acquisition import Acquisition
+    from quantlab.base.acquisition import Acquisition
 
     requests_made: list[tuple[tuple[str, ...], str]] = []
 
@@ -825,7 +825,7 @@ def _alpaca(acquisition_config, symbols, **kwargs):
     which "absent from this page" and "absent from this batch" can differ at
     all, which is what makes Pitfall 4 expressible.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     knobs = {"progress": False, "batch_size": 100}
     knobs.update(kwargs)
@@ -933,7 +933,7 @@ def test_a_quota_aborted_run_writes_zero_no_data_markers(
        markers. A global stop is not the moment to start recording new claims
        about what a vendor does not have.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     class _QuotaAlpaca(AlpacaAcquisition):
         def _classify_error(self, exc: BaseException) -> str:
@@ -988,7 +988,7 @@ def test_the_no_data_count_does_not_scale_with_batch_size(
     fixture's queue is global, so concurrent batches would pop each other's
     pages and every batch would "see" symbols it never asked for.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     roster = tuple(f"SYM{i:03d}" for i in range(12))
 
@@ -1079,7 +1079,7 @@ def test_an_incomplete_batch_outcome_writes_zero_no_data_markers(
     substitution is the honest test: the property is `_attempt_batch`'s
     contract WITH `_fetch_batch`, not the page loop's behaviour.
     """
-    from base.acquisition import BatchOutcome
+    from quantlab.base.acquisition import BatchOutcome
 
     acq = _alpaca(acquisition_config, ("AAPL", "MSFT", "GOOG"))
     symbols = ["AAPL", "MSFT", "GOOG"]
@@ -1176,7 +1176,7 @@ def test_a_repeated_page_token_refuses_instead_of_looping_forever(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     def _page(token):
         return {
@@ -1226,7 +1226,7 @@ def test_a_traversal_symbol_raises_before_any_watermark_path_is_opened(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
         vendor="alpaca", symbols=("AAPL",), frequency="1d", subdir="traversal"

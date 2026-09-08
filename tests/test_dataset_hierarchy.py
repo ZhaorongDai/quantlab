@@ -27,8 +27,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from base.config import BaseDatasetConfig, ConstituentDatasetConfig, DatasetConfig
-from base.data import BaseDataset, MarketDataset
+from quantlab.base.config import BaseDatasetConfig, ConstituentDatasetConfig, DatasetConfig
+from quantlab.base.data import BaseDataset, MarketDataset
 
 # The nautilus/KunQuant-specific members. A membership panel has no bar and no
 # compiled-graph representation, so none of these may live on the shared base
@@ -289,7 +289,7 @@ def test_base_data_module_exposes_only_the_two_split_classes() -> None:
     `base.data.Dataset` failed, the answer is `MarketDataset` for a dataset
     with bars and a catalog, `BaseDataset` for anything else.
     """
-    import base.data as base_data_module
+    import quantlab.base.data as base_data_module
 
     assert hasattr(base_data_module, "BaseDataset")
     assert hasattr(base_data_module, "MarketDataset")

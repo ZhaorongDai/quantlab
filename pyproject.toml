@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "quantlab"
 version = "0.1.0"
@@ -32,6 +36,14 @@ dependencies = [
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quantlab*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"quantlab.config" = ["instruments.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

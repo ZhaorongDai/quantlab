@@ -39,10 +39,10 @@ import torch
 import xarray as xr
 from types import SimpleNamespace
 
-from base.config import DLConfig
-from dl_model.mlp import MLPRegressor
-from dl_model.rnn import RNNRegressor
-from dl_model.rnn_classification import RNNClassifier
+from quantlab.base.config import DLConfig
+from quantlab.dl_model.mlp import MLPRegressor
+from quantlab.dl_model.rnn import RNNRegressor
+from quantlab.dl_model.rnn_classification import RNNClassifier
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry -- deliberately tiny so a real training run is fast

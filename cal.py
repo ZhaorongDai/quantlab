@@ -1,19 +1,19 @@
-from factor.alpha101 import Alpha101SpotKline
-from factor.alpha158 import Alpha158SpotKline
-from config import alpha101_config, alpha158_config
-from dl_model.mlp import MLPRegressor
-from dl_model.rnn import RNNRegressor
+from quantlab.factor.alpha101 import Alpha101SpotKline
+from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.config import alpha101_config, alpha158_config
+from quantlab.dl_model.mlp import MLPRegressor
+from quantlab.dl_model.rnn import RNNRegressor
 
 # from dl_model.transformer import Regressor
 from dataclasses import dataclass, asdict
-from base.config import DLConfig, FactorConfig
-from factor.alpha101 import Alpha101SpotKline
-from factor.alpha158 import Alpha158SpotKline
-from config import alpha101_config, alpha158_config, spot_kline_config
-from dataset.spot import SpotKlineDataset
-from config import spot_kline_config, spot_label_config
-from label.spot import SpotReturn, SpotBinaryReturn
-from base.model import BaseModel
+from quantlab.base.config import DLConfig, FactorConfig
+from quantlab.factor.alpha101 import Alpha101SpotKline
+from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.config import alpha101_config, alpha158_config, spot_kline_config
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.config import spot_kline_config, spot_label_config
+from quantlab.label.spot import SpotReturn, SpotBinaryReturn
+from quantlab.base.model import BaseModel
 import numpy as np
 import xarray as xr
 

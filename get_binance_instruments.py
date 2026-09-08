@@ -9,11 +9,18 @@ import yaml
 from typing import Dict, Any
 from pathlib import Path
 
-from utils.binance import _get_binance_exchange_info, _parse_symbol_info
+from quantlab.utils.binance import _get_binance_exchange_info, _parse_symbol_info
+from quantlab.utils.paths import INSTRUMENTS_CONFIG_PATH
 
 
-def update_instruments_config(symbols: list = None, config_path: str = "config/instruments.yaml"):
-    """批量获取并更新交易对配置"""
+def update_instruments_config(
+    symbols: list = None, config_path: str = INSTRUMENTS_CONFIG_PATH
+):
+    """批量获取并更新交易对配置。
+
+    配置文件的默认位置由 `quantlab.utils.paths` 从包自身推导，不再依赖进程
+    的当前工作目录，因此从任何目录运行都会读写同一个随包分发的文件。
+    """
     
     # 获取币安交易所信息
     print("正在获取币安交易所信息...")
@@ -124,8 +131,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="获取币安交易规则并更新配置")
     parser.add_argument('--symbols', '-s', nargs='+', 
                        help='指定要更新的交易对，如: BTCUSDT ETHUSDT')
-    parser.add_argument('--config', '-c', default='config/instruments.yaml',
-                       help='配置文件路径')
+    parser.add_argument('--config', '-c', default=INSTRUMENTS_CONFIG_PATH,
+                       help='配置文件路径（默认为随包分发的实例元数据文件）')
     parser.add_argument('--top-usdt', '-t', type=int, metavar='N',
                        help='获取前N个USDT交易对（按24h交易量排序）')
     parser.add_argument('--list-top', '-l', type=int, metavar='N',

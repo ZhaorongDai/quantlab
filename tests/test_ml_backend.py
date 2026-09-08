@@ -21,8 +21,8 @@ from pathlib import Path
 import joblib
 import pytest
 
-from base.backend import ModelBackend
-from ml_model.backend import MlBackend
+from quantlab.base.backend import ModelBackend
+from quantlab.ml_model.backend import MlBackend
 
 
 class _Model:

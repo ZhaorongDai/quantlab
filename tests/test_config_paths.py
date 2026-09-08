@@ -7,8 +7,8 @@ path convention (02-CONTEXT.md D-01/D-02) that every config factory in
 import ast
 from pathlib import Path
 
-import config
-from config import (
+import quantlab.config as config
+from quantlab.config import (
     alpha101_config,
     get_data_root,
     nasdaq100_constituent_config,

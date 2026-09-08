@@ -10,8 +10,8 @@ TiingoAcquisition -> StockDataset -> Zarr round trip end-to-end (Task 2).
 from pathlib import Path
 from typing import Callable
 
-from base.config import AcquisitionConfig, DatasetConfig
-from dataset.stock import StockDataset
+from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.dataset.stock import StockDataset
 
 # The `stock_pqt_row` / `hive_raw_tree` helpers these tests use live in
 # tests/conftest.py (promoted there by 03-01 Task 2 and extended by 03.2-01)
@@ -125,7 +125,7 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     mocked -- every other layer (TiingoAcquisition's raw-parquet write,
     StockDataset's raw-to-xarray conversion + clean_market_data, XrBackend's
     Zarr write/read) runs for real."""
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     raw_data_dir_path = str(tmp_path / "raw" / "tiingo")
     zarr_file_path = str(tmp_path / "stock.zarr")

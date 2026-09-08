@@ -44,7 +44,7 @@ def test_the_grounded_constants_the_new_volume_guard_is_built_beside():
     collection-time liability of the same kind `tests/conftest.py`'s docstring
     forbids.
     """
-    from acquisition.universe import UniverseCatalog
+    from quantlab.acquisition.universe import UniverseCatalog
 
     assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3, (
         "MAX_DENSE_PANEL_BYTES changed; the acquisition volume guard's budget "
@@ -127,8 +127,8 @@ def _catalog(tmp_path):
     """
     import polars as pl
 
-    from acquisition.universe import UniverseCatalog
-    from base.config import UniverseConfig
+    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.base.config import UniverseConfig
 
     rows = (
         _rows("us_all", US_ALL_SYMBOLS, FULL_WINDOW, US_ALL_DENSITY)
@@ -244,7 +244,7 @@ def test_minute_rows_are_daily_rows_times_the_documented_session_bar_count(tmp_p
     import inspect
     import re
 
-    from acquisition.universe import UniverseCatalog
+    from quantlab.acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 
@@ -312,7 +312,7 @@ def test_wall_clock_is_requests_over_the_rate_limit_and_the_paid_tier_is_50x(tmp
     """
     import pytest
 
-    from acquisition.universe import UniverseCatalog
+    from quantlab.acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 
@@ -498,7 +498,7 @@ def test_full_market_minute_backfill_is_refused_by_the_default_ceilings(
 
     import pytest
 
-    from acquisition.universe import UniverseCatalog
+    from quantlab.acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
     _no_network(monkeypatch)
@@ -614,7 +614,7 @@ def test_each_of_the_three_ceilings_raises_independently(tmp_path):
     """
     import pytest
 
-    from acquisition.universe import UniverseCatalog
+    from quantlab.acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
     ceilings = {
@@ -720,8 +720,8 @@ def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
 
     import pytest
 
-    import acquisition.universe as universe_module
-    from base.acquisition import Acquisition
+    import quantlab.acquisition.universe as universe_module
+    from quantlab.base.acquisition import Acquisition
 
     catalog = _catalog(tmp_path)
     _no_network(monkeypatch)
@@ -760,7 +760,7 @@ def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
     real ceiling -- so all six members are pinned together here, next to the
     guard whose thresholds a careless merge would shift.
     """
-    from acquisition.universe import UniverseCatalog
+    from quantlab.acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 
@@ -911,7 +911,7 @@ def test_force_volume_is_an_explicit_flag_on_every_entry_point():
     (T-03.2-21), so a source scan for one must come up empty."""
     import argparse
 
-    from utils.cli import add_volume_guard_args
+    from quantlab.utils.cli import add_volume_guard_args
 
     parser = argparse.ArgumentParser()
     add_volume_guard_args(parser)
@@ -960,7 +960,7 @@ def test_an_explicit_symbol_list_is_priced_rather_than_exempted(monkeypatch):
 
     _no_network(monkeypatch)
 
-    from utils.cli import volume_pricing
+    from quantlab.utils.cli import volume_pricing
 
     symbols = tuple(f"SYM{index:05d}" for index in range(US_ALL_SYMBOLS))
     args = argparse.Namespace(
@@ -1004,7 +1004,7 @@ def test_a_limited_run_is_priced_at_its_truncated_size(tmp_path, monkeypatch):
 
     _no_network(monkeypatch)
 
-    from utils.cli import volume_pricing
+    from quantlab.utils.cli import volume_pricing
 
     args = argparse.Namespace(
         symbols=None,
@@ -1045,7 +1045,7 @@ def test_an_absent_window_is_sized_against_a_STATED_assumption():
     user is told about is not the silent default the house rule forbids."""
     import argparse
 
-    from utils.cli import UNBOUNDED_WINDOW_START, volume_pricing
+    from quantlab.utils.cli import UNBOUNDED_WINDOW_START, volume_pricing
 
     args = argparse.Namespace(
         symbols="AAPL,MSFT",
@@ -1087,7 +1087,7 @@ def test_a_refusal_prints_no_estimate_and_carries_the_numbers_itself():
 
     import pytest
 
-    from utils.cli import _explicit_symbol_catalog
+    from quantlab.utils.cli import _explicit_symbol_catalog
 
     # 1. Structural: the guard is an argument of the printer, at every door.
     for path in INGEST_SCRIPTS:
@@ -1141,7 +1141,7 @@ def test_the_forced_line_distinguishes_overridden_from_clean():
     and the `--force-volume` line separates 'under every ceiling' from 'over
     one and overridden', which the estimate alone cannot say.
     """
-    from utils.cli import print_volume_estimate
+    from quantlab.utils.cli import print_volume_estimate
 
     lines: list[str] = []
     estimate = {
@@ -1263,7 +1263,7 @@ def test_the_intraday_ram_guard_is_sized_on_the_timestamp_axis_not_the_day():
     """
     import pytest
 
-    from utils.cli import _explicit_symbol_catalog
+    from quantlab.utils.cli import _explicit_symbol_catalog
 
     # 500 symbols over two calendar years -- an S&P-500-shaped minute window,
     # ~5.5 GiB dense against the 4 GiB budget, versus ~14 MB for the same

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from base.config import AcquisitionConfig
+from quantlab.base.config import AcquisitionConfig
 
 
 def _make_config(tmp_path: Path) -> AcquisitionConfig:
@@ -59,7 +59,7 @@ def test_missing_api_key_raises_before_network_call(
 ):
     monkeypatch.delenv("TIINGO_API_KEY", raising=False)
 
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_config(tmp_path)
     with pytest.raises(RuntimeError, match="TIINGO_API_KEY"):
@@ -69,8 +69,8 @@ def test_missing_api_key_raises_before_network_call(
 
 
 def test_download_writes_parquet_and_watermark(mock_tiingo_client, tmp_path):
-    from acquisition.tiingo import TiingoAcquisition
-    from enums.data import TiingoColumns
+    from quantlab.acquisition.tiingo import TiingoAcquisition
+    from quantlab.enums.data import TiingoColumns
 
     config = _make_config(tmp_path)
     acq = TiingoAcquisition(config)
@@ -101,7 +101,7 @@ def test_download_writes_parquet_and_watermark(mock_tiingo_client, tmp_path):
 def test_refresh_uses_watermark_not_config_start_date(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_config(tmp_path)
     acq = TiingoAcquisition(config)
@@ -120,7 +120,7 @@ def test_refresh_uses_watermark_not_config_start_date(
 
 
 def test_credential_never_exposed_on_config_surface(mock_tiingo_client, tmp_path):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_config(tmp_path)
     acq = TiingoAcquisition(config)
@@ -179,7 +179,7 @@ def _make_concurrent_config(
 def test_concurrent_download_writes_every_parquet_and_watermark(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path)
     TiingoAcquisition(config).download()
@@ -199,7 +199,7 @@ def test_second_download_skips_symbols_already_at_the_watermark(
     than by timing -- a job killed at ticker 20,000 and restarted must issue
     zero requests for the 20,000 already at the target watermark.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path)
     TiingoAcquisition(config).download()
@@ -218,7 +218,7 @@ def test_resume_false_re_fetches_symbols_already_at_the_watermark(
     `AcquisitionConfig` already documents -- so it stays config-driven rather
     than becoming a constructor argument no config file can reach.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     mock_tiingo_client.calls.clear()
@@ -250,7 +250,7 @@ def test_one_symbol_failure_does_not_abort_the_others(
 
     The failed symbol gets NO watermark, so the next run retries it.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _fail_one(mock_tiingo_client, "GOOG", "404 Not Found")
 
@@ -287,7 +287,7 @@ def test_failure_manifest_never_contains_the_api_key(
     vendor client embeds the token in the request URL it echoes back on an
     auth error.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     key = os.environ["TIINGO_API_KEY"]
     _fail_one(
@@ -311,7 +311,7 @@ def test_failure_manifest_never_contains_the_api_key(
 def test_concurrent_refresh_starts_each_symbol_from_its_own_watermark(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path, symbols=("AAPL", "MSFT"))
 
@@ -387,7 +387,7 @@ def test_read_coverage_on_a_legacy_watermark_never_invents_a_start(
     invisibly. Only the user knows what window those files were fetched over,
     which is why stamping is an explicit, user-supplied step.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _write_legacy_watermark(tmp_path, "AAPL", "2024-01-31")
     acq = TiingoAcquisition(_make_config(tmp_path))
@@ -403,7 +403,7 @@ def test_read_coverage_on_a_legacy_watermark_never_invents_a_start(
 def test_read_coverage_on_a_new_format_watermark_returns_both_components(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01")
@@ -428,7 +428,7 @@ def test_read_coverage_returns_none_for_an_absent_or_corrupt_sidecar(
     introducing a second failure policy: a corrupt sidecar must never crash a
     15k-symbol run, and the worst case is a wider-than-necessary re-fetch.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     assert acq._read_coverage("AAPL") is None
@@ -445,7 +445,7 @@ def test_write_watermark_stays_readable_by_the_unchanged_read_watermark(
     """The schema is purely ADDITIVE: `last_date` is deliberately not renamed,
     so new code reads old files and old code reads new files.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
 
@@ -467,7 +467,7 @@ def test_sequential_download_records_the_requested_start(
     successful fetch the file contains exactly the requested range -- recording
     `config.start_date` as the covered start is a true statement about it.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     TiingoAcquisition(_make_config(tmp_path)).download(["AAPL"])
 
@@ -484,7 +484,7 @@ def test_sequential_refresh_against_a_legacy_watermark_leaves_the_start_absent(
     covered start is whatever it already was. If it was unknown it STAYS
     unknown -- refresh does not invent coverage it did not fetch (D-04).
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _write_legacy_watermark(tmp_path, "AAPL", "2024-01-15")
     TiingoAcquisition(_make_config(tmp_path)).refresh(["AAPL"])
@@ -497,7 +497,7 @@ def test_sequential_refresh_against_a_legacy_watermark_leaves_the_start_absent(
 def test_sequential_refresh_carries_forward_a_known_start(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     acq._write_watermark("AAPL", "2024-01-15", start_date="2020-01-01")
@@ -520,7 +520,7 @@ def test_second_download_with_an_earlier_start_re_fetches(
     calls, because a call count is the only evidence a passing write cannot
     fake.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     assert len(mock_tiingo_client.calls) == len(_FIVE)
@@ -545,7 +545,7 @@ def test_second_download_with_the_same_start_issues_zero_vendor_calls(
     """D-01. The 4,621 already-downloaded symbols must not be re-fetched by
     default -- re-downloading them costs an entire hourly window for nothing.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     config = _make_concurrent_config(tmp_path)
     TiingoAcquisition(config).download()
@@ -559,7 +559,7 @@ def test_second_download_with_a_later_start_issues_zero_vendor_calls(
     mock_tiingo_client, tmp_path
 ):
     """A narrower request inside proven coverage is not work."""
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     mock_tiingo_client.calls.clear()
@@ -578,7 +578,7 @@ def test_legacy_watermarks_are_skipped_by_default_and_reported_loudly(
     not the skip. A run that skips these while printing their exact count and
     the one command that resolves it is a REPORTED gap with a named cure.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     for symbol in _FIVE:
         _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
@@ -602,7 +602,7 @@ def test_legacy_watermarks_are_re_fetched_under_the_refetch_policy(
     """The opt-in escape hatch. Making it a knob is what turns "unknown
     coverage is treated as covered" from an accident into a choice.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     for symbol in _FIVE:
         _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
@@ -621,7 +621,7 @@ def test_stamp_watermarks_fills_only_absent_starts_and_returns_the_count(
     """Takes the start from its CALLER and derives it from nothing (D-04), and
     refuses to overwrite a start that is already recorded (T-26o-04).
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     _write_legacy_watermark(tmp_path, "AAPL", "2024-01-31")
@@ -649,7 +649,7 @@ def test_stamping_then_widening_re_fetches_the_stamped_symbols(
     """The end-to-end shape of Task 3's checkpoint, proved offline: stamp, and
     a same-window run still skips while a widened run now re-fetches.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     for symbol in _FIVE:
         _write_legacy_watermark(tmp_path, symbol, "2024-01-31")
@@ -675,7 +675,7 @@ def test_concurrent_refresh_is_not_forced_to_re_fetch_by_a_widened_start(
     re-fetch could not close the gap -- an endless, silent quota burn. Refresh
     keeps the end-date-only rule; widening is `download()`'s job.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     TiingoAcquisition(_make_concurrent_config(tmp_path)).download()
     mock_tiingo_client.calls.clear()
@@ -696,7 +696,7 @@ def test_coverage_report_counts_without_issuing_a_single_vendor_call(
     It shares `_partition_by_coverage` with the real run, so the dry run and
     the run it predicts can never disagree.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_concurrent_config(tmp_path))
     acq._write_watermark("AAPL", "2024-01-31", start_date="2020-01-01")
@@ -742,7 +742,7 @@ def test_two_symbols_whose_json_infers_different_dtypes_share_one_schema(
     """
     import polars as pl
 
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     original = mock_tiingo_client.get_ticker_price
 

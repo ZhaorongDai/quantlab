@@ -8,13 +8,13 @@ import torch
 # from vecbt.bt import backtest_binance_crypto, print_performance
 import vectorbt as vbt
 
-from base.config import DLConfig
-from config import alpha101_config, alpha158_config, spot_label_config
-from dl_model.rnn_classification import RNNClassifier
-from factor.alpha101 import Alpha101SpotKline
-from factor.alpha158 import Alpha158SpotKline
-from label.spot import SpotReturn
-from utils.module import load_model_from_config
+from quantlab.base.config import DLConfig
+from quantlab.config import alpha101_config, alpha158_config, spot_label_config
+from quantlab.dl_model.rnn_classification import RNNClassifier
+from quantlab.factor.alpha101 import Alpha101SpotKline
+from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.label.spot import SpotReturn
+from quantlab.utils.module import load_model_from_config
 
 label3 = SpotReturn(
     spot_label_config("ret_1m", n_forward_periods=120, symbols=["BTCUSDT"])

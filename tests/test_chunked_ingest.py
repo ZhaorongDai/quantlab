@@ -30,11 +30,11 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from base.chunking import ChunkLedger, TimeChunkPlanner
-from base.config import BaseDatasetConfig, DatasetConfig
-from base.data import BaseDataset
-from dataset.backend import XrBackend
-from dataset.stock import StockDataset
+from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
+from quantlab.base.config import BaseDatasetConfig, DatasetConfig
+from quantlab.base.data import BaseDataset
+from quantlab.dataset.backend import XrBackend
+from quantlab.dataset.stock import StockDataset
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

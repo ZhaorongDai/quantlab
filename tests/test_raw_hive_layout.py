@@ -146,8 +146,8 @@ import re
 
 import pytest
 
-from base.config import DatasetConfig
-from dataset.stock import StockDataset
+from quantlab.base.config import DatasetConfig
+from quantlab.dataset.stock import StockDataset
 
 #: polars ABBREVIATES a long scan source list rather than printing every path:
 #:
@@ -390,7 +390,7 @@ def test_a_shard_outside_raw_columns_makes_the_scan_raise_rather_than_merge(
 
     # The write-side control that prevents this: both vendors pin the
     # projection, so a shard written through `_write_shard` cannot drift.
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     assert TiingoAcquisition.RAW_COLUMNS[:3] == ("timestamp", "symbol", "vendor")
 

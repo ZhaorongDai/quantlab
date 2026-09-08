@@ -2,9 +2,9 @@
 
 Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
-`acquisition.universe.UniverseCatalog` resolves the roster,
-`acquisition.tiingo.TiingoAcquisition` fetches it, and
-`dataset.stock.StockDataset` converts it. Nothing here should grow a
+`quantlab.acquisition.universe.UniverseCatalog` resolves the roster,
+`quantlab.acquisition.tiingo.TiingoAcquisition` fetches it, and
+`quantlab.dataset.stock.StockDataset` converts it. Nothing here should grow a
 behaviour that a component could own instead.
 
 `TIINGO_API_KEY` is read from the environment by `TiingoAcquisition.__init__`
@@ -13,7 +13,7 @@ anything it calls -- not the failure manifest, not an exception message, not
 the `TiingoClient` config dict. Only symbol lists, date ranges and paths are
 ever printed.
 
-Storage is rooted at whatever `config/__init__.py:get_data_root` resolves,
+Storage is rooted at whatever `quantlab/config/__init__.py:get_data_root` resolves,
 through three levels: the `--data-dir` flag for a per-run root, else the
 `QUANTLAB_DATA_DIR` environment variable, else the repo-root `data/` directory.
 Those are three ways to set ONE root -- this script hardcodes no volume and
@@ -90,11 +90,11 @@ import argparse
 import datetime
 import os
 
-from acquisition.tiingo import TiingoAcquisition
-from acquisition.universe import UniverseCatalog
-from config import stock_acquisition_config, stock_kline_config, universe_config
-from dataset.stock import StockDataset
-from utils.cli import (
+from quantlab.acquisition.tiingo import TiingoAcquisition
+from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
+from quantlab.dataset.stock import StockDataset
+from quantlab.utils.cli import (
     add_chunk_args,
     add_concurrency_args,
     add_data_dir_arg,
@@ -344,7 +344,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before anything that can reach a `config/` factory, and the position is
+    # Before anything that can reach a `quantlab/config/` factory, and the position is
     # load-bearing: the factories snapshot their paths as strings at
     # construction time, so a root override applied afterwards silently does
     # nothing (DDIR-04).
@@ -358,7 +358,7 @@ if __name__ == "__main__":
     # every symbol that traded at ANY point in the window, including the ~6.9k
     # that delisted inside it. Resolving membership on a single day here would
     # reintroduce exactly the survivorship bias this roster exists to remove.
-    # `mode` is stated because `utils.cli.resolve_symbols` refuses to have a
+    # `mode` is stated because `quantlab.utils.cli.resolve_symbols` refuses to have a
     # default -- the wrong choice here would be silent.
     symbols = resolve_symbols(args, catalog, mode="in_range")
 

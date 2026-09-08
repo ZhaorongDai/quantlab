@@ -30,10 +30,10 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from base.config import DatasetConfig, PolarsFactorConfig
-from base.factor_polars import FactorPolars
-from dataset.spot import SpotKlineDataset
-from factor.momentum import Momentum
+from quantlab.base.config import DatasetConfig, PolarsFactorConfig
+from quantlab.base.factor_polars import FactorPolars
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.factor.momentum import Momentum
 
 
 class _ProbeCalled(Exception):

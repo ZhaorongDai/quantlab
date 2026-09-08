@@ -154,10 +154,10 @@ def test_tracer_one_alpaca_daily_batch_lands_as_a_hive_shard_and_reads_back(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
-    from base.config import DatasetConfig
-    from base.pageledger import PageLedger
-    from dataset.stock import StockDataset
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
+    from quantlab.base.config import DatasetConfig
+    from quantlab.base.pageledger import PageLedger
+    from quantlab.dataset.stock import StockDataset
 
     # ONE single-symbol, single-page envelope: `next_page_token=None` makes it
     # the last page, so the batch completes in one request.
@@ -267,7 +267,7 @@ def test_tracer_alpaca_request_pins_sort_asc_and_threads_asof_explicitly(
     free tier reaches historical SIP data is unresolved (D-12) and no in-code
     default may assert an answer.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)
@@ -304,7 +304,7 @@ def test_tracer_no_credential_reaches_the_config_or_a_scrubbed_message(
     captured vendor message passes through before it reaches a log line or the
     failure manifest.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(vendor="alpaca", symbols=("AAPL",))
     acq = AlpacaAcquisition(cfg)
@@ -329,7 +329,7 @@ def test_tracer_field_map_covers_the_whole_vendor_bar_and_maps_nothing_twice():
     A swapped `o`/`c` reads as plausible data forever, so the mapping is pinned
     by direct equality rather than by a round-trip that could agree with itself.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     assert AlpacaAcquisition.FIELD_MAP == {
         "t": "timestamp",
@@ -397,7 +397,7 @@ def _recording_alpaca(config, on_sleep=None):
     """An `AlpacaAcquisition` whose `_sleep` seam is substituted, so backoff is
     asserted by COUNTING waits rather than by waiting.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     class _Recording(AlpacaAcquisition):
         def __init__(self, cfg):
@@ -471,8 +471,8 @@ def test_an_absent_rate_limit_header_contributes_nothing_not_a_default():
     nothing" and "the vendor said zero" mean opposite things, and one of them
     would send an operator hunting a ceiling that was never reported.
     """
-    from acquisition.alpaca import AlpacaAcquisition
-    from base.acquisition import Acquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
+    from quantlab.base.acquisition import Acquisition
 
     partial = _http_error(429, reason="Too Many Requests")
     partial.response.headers["X-RateLimit-Limit"] = "200"
@@ -510,7 +510,7 @@ def test_an_alpaca_429_classifies_rate_limited_and_never_trips_the_global_abort(
     Event alone -- setting it would stop the world over a condition that has
     already cleared by the time the log line is written.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(vendor="alpaca", symbols=("AAPL",))
     acq = AlpacaAcquisition(cfg)
@@ -606,7 +606,7 @@ def test_an_alpaca_500_classifies_failed_and_isolates_to_its_batch(
     per-unit: it fails ONE batch, lands in the manifest and is retried next
     run, while every other batch completes.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
         vendor="alpaca",
@@ -685,7 +685,7 @@ def test_a_minute_config_requests_the_vendors_minute_timeframe_token(
     a behaviour (the Wave-3 "proved as a function is not proved to be wired"
     finding). Both directions are pinned so a future edit cannot swap them.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         alpaca_bars_page({"AAPL": ["2024-01-02T14:31:00Z"]}, next_page_token=None)
@@ -711,9 +711,9 @@ def test_a_minute_fetch_lands_one_date_partition_per_session_date(
     duplicated row (D-19 contract 4), so it is asserted here for the minute
     tier exactly as the daily tracer asserts it for `month=`.
     """
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         alpaca_bars_page(
@@ -762,7 +762,7 @@ def test_a_2030_utc_bar_lands_in_that_days_session_partition_not_the_next(
     behaviour. The distinguishing case is the negative control below, and the
     two are only meaningful together.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         alpaca_bars_page({"AAPL": ["2024-01-02T20:30:00Z"]}, next_page_token=None)
@@ -786,7 +786,7 @@ def test_an_0200_utc_bar_lands_in_the_previous_days_session_partition(
     prevent. This test is the one that turns red if the session conversion is
     ever replaced by a truncation "because the timestamps are UTC anyway".
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         alpaca_bars_page({"AAPL": ["2024-01-03T02:00:00Z"]}, next_page_token=None)
@@ -815,9 +815,9 @@ def test_the_minute_path_paginates_through_the_same_base_class_loop_as_daily(
     """
     import json
 
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     token = "opaque-minute-token"
     mock_alpaca_client.pages = [
@@ -862,7 +862,7 @@ def test_minute_bars_reuse_the_daily_bars_projection_with_no_second_column_set(
     directory scan enforces ONE schema across everything it opens
     (RESEARCH Pitfall 6).
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     daily = AlpacaAcquisition(
         acquisition_config(vendor="alpaca", symbols=("AAPL",), frequency="1d")
@@ -967,7 +967,7 @@ def test_the_data_type_knob_selects_the_endpoint_and_an_unknown_value_raises(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     for data_type, path in (
         ("quotes", "/stocks/quotes"),
@@ -1010,7 +1010,7 @@ def test_a_tick_config_with_no_data_type_raises_rather_than_defaulting(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.calls = []
     with pytest.raises(ValueError) as excinfo:
@@ -1034,7 +1034,7 @@ def test_quotes_and_trades_are_written_through_disjoint_projections(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     columns = {}
     for data_type in ("quotes", "trades"):
@@ -1073,9 +1073,9 @@ def test_tick_shards_land_under_data_type_then_session_date_then_symbol(
     The ORDER is the directory nesting order. `data_type=` must lead: it is
     what keeps two different column sets from meeting inside one scan.
     """
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     root = None
     for data_type in ("quotes", "trades"):
@@ -1124,7 +1124,7 @@ def test_every_vendor_row_reaches_a_shard_one_for_one_with_no_aggregation(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         _tick_page(
@@ -1210,7 +1210,7 @@ def test_a_field_first_appearing_after_row_100_is_not_dropped_by_inference(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     # 120 trades: the first 110 carry NO `c` (conditions) and no `i`
     # (trade_id); the last 10 carry both. Under the default inference window
@@ -1281,7 +1281,7 @@ def test_tick_timestamps_keep_their_nanoseconds_end_to_end(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     # Three trades inside the SAME microsecond, separated only by nanoseconds.
     # Truncating merges them into one timestamp; the tier never dedups, so the
@@ -1324,7 +1324,7 @@ def test_bar_timestamps_stay_at_microseconds(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     assert (
         AlpacaAcquisition.RAW_SCHEMA_BY_DATA_TYPE["bars"]["timestamp"].time_unit
@@ -1364,7 +1364,7 @@ def test_a_refresh_over_an_overlapping_tick_window_does_not_double_the_tape(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     session = "2024-01-02"
     rows = ["2024-01-02T14:31:00Z", "2024-01-02T14:32:00Z", "2024-01-02T14:33:00Z"]
@@ -1444,7 +1444,7 @@ def test_a_malformed_symbol_raises_before_any_symbol_path_segment_is_built(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = _tick_config(acquisition_config)
     acq = AlpacaAcquisition(cfg)
@@ -1472,7 +1472,7 @@ def test_a_quotes_backfills_watermarks_do_not_mark_the_trades_run_covered(
     Asserted in both directions: separate sidecar directories on disk, AND the
     trades run actually issuing its request and landing its shard.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     written = {}
     for data_type in ("quotes", "trades"):
@@ -1504,7 +1504,7 @@ def test_the_daily_watermark_layout_is_unchanged_by_the_tick_namespacing(
 ):
     """The namespacing applies ONLY where `RAW_HIVE_KEYS` declares a
     `data_type` key, so no existing `1d` or `1m` watermark tree moves."""
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     for frequency in ("1d", "1m"):
         mock_alpaca_client.calls = []
@@ -1530,7 +1530,7 @@ def test_the_quote_and_trade_field_maps_are_pinned_and_map_nothing_twice(
     CONDITIONS on a quote or a trade but CLOSE on a bar is exactly the kind of
     collision that a shared map would resolve silently and wrongly.
     """
-    from acquisition.alpaca import AlpacaAcquisition as A
+    from quantlab.acquisition.alpaca import AlpacaAcquisition as A
 
     assert A.QUOTE_FIELD_MAP == {
         "t": "timestamp",
@@ -1574,7 +1574,7 @@ def test_quote_and_trade_values_survive_the_field_map_onto_the_shard(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         _tick_page(
@@ -1624,7 +1624,7 @@ def test_a_field_map_that_stops_matching_the_envelope_raises_not_nulls(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = _tick_config(acquisition_config, data_type="trades")
     acq = AlpacaAcquisition(cfg)
@@ -1683,7 +1683,7 @@ def test_the_class_docstring_carries_the_tier_numbers_and_the_open_question():
     recommendation, and the SIP question must read as UNRESOLVED -- naming
     both readings and asserting neither.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     # Whitespace-normalised: the docstring is line-wrapped, and a phrase
     # straddling a wrap is still present in the prose a reader sees.
@@ -1709,7 +1709,7 @@ def test_the_class_exposes_no_corporate_actions_surface():
     or an unused `corporate_actions` endpoint constant from being added, and
     it is cheap precisely because the correct implementation is nothing.
     """
-    from acquisition.alpaca import AlpacaAcquisition as A
+    from quantlab.acquisition.alpaca import AlpacaAcquisition as A
 
     names = [name for name in dir(A) if "corporate" in name.lower()]
     assert not names, names
@@ -1732,7 +1732,7 @@ def test_no_request_carries_a_feed_key_when_feed_is_unset(
     only shape that says nothing at all, and it is asserted across every data
     type because a per-endpoint branch could reintroduce a default in one.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     for frequency, data_type, page in (
         ("1d", None, None),
@@ -1799,7 +1799,7 @@ def test_every_request_carries_an_encodable_asof_on_every_data_type(
     `requests`' own encoder here for exactly that reason.
     """
     import requests
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     for frequency, data_type, page in (
         ("1d", None, None),
@@ -1858,7 +1858,7 @@ def test_asof_survives_query_string_encoding_at_the_transport(
     """
     import requests
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     # Obviously fake, and set here rather than inherited: this test constructs
     # the REAL client, which demands both variables in `__init__`.
@@ -1908,7 +1908,7 @@ def test_an_explicit_none_asof_is_the_only_way_to_reach_the_vendor_default(
     cannot tell them apart, and collapsing the two is exactly how the harmful
     default became the effective default.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     mock_alpaca_client.pages = [
         alpaca_bars_page({"AAPL": ["2024-01-02T00:00:00Z"]}, next_page_token=None)
@@ -1962,7 +1962,7 @@ def test_an_intraday_window_is_sent_as_instants_that_cover_the_session(
     """
     import requests
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     def _covers_the_close(end: str) -> bool:
         """21:00 UTC (16:00 ET) must fall at or before the requested end."""
@@ -2040,7 +2040,7 @@ def test_a_caller_supplied_instant_is_not_re_suffixed(
 ):
     """A bound that already carries a time is passed through untouched --
     re-suffixing `2024-01-02T15:00:00Z` would produce nonsense."""
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = _tick_config(acquisition_config, data_type="trades", subdir="instant")
     acq = AlpacaAcquisition(cfg)
@@ -2060,7 +2060,7 @@ def test_an_out_of_set_feed_or_adjustment_raises_before_any_request(
     """
     import pytest
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     for knob, value in (("feed", "sipp"), ("adjustment", "adjusted")):
         mock_alpaca_client.calls = []

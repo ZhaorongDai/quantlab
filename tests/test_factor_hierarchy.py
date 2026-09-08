@@ -39,18 +39,18 @@ import xarray as xr
 
 from itertools import chain
 
-from base.config import (
+from quantlab.base.config import (
     DatasetConfig,
     DLConfig,
     FactorConfig,
     MLConfig,
     PolarsFactorConfig,
 )
-from base.factor import Factor, FactorKunQuant
-from dataset.spot import SpotKlineDataset
-from factor.alpha158 import Alpha158SpotKline
-from factor.momentum import Momentum
-from label.spot import SpotBinaryReturn, SpotReturn
+from quantlab.base.factor import Factor, FactorKunQuant
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.factor.momentum import Momentum
+from quantlab.label.spot import SpotBinaryReturn, SpotReturn
 
 CONSUMER_FILE = "base/model.py"
 

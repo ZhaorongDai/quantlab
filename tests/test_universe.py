@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 from loguru import logger
 
-from acquisition.universe import (
+from quantlab.acquisition.universe import (
     IndexMembershipFetcher,
     Nasdaq100MembershipFetcher,
     NasdaqUniverseFetcher,
@@ -25,8 +25,8 @@ from acquisition.universe import (
     UniverseCatalog,
     USEquityUniverseFetcher,
 )
-from base.config import UniverseConfig
-from enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
+from quantlab.base.config import UniverseConfig
+from quantlab.enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
 
 def _make_config(tmp_path) -> UniverseConfig:
@@ -727,7 +727,7 @@ def test_every_universe_category_is_reachable_from_the_cli():
     """
     import ingest_alpaca
     import ingest_tiingo
-    from utils.cli import UNIVERSE_CATEGORY_MAP
+    from quantlab.utils.cli import UNIVERSE_CATEGORY_MAP
 
     assert set(UNIVERSE_CATEGORY_MAP.values()) == set(
         typing.get_args(UniverseCategory)
@@ -1859,7 +1859,7 @@ def test_the_exclusion_criterion_matches_the_measured_directory():
     measured on, so a future edit to either regex has to confront all 36
     cases rather than only whatever the fixture happens to carry.
     """
-    from acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
+    from quantlab.acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
 
     def excluded(ticker: str) -> bool:
         return bool(
@@ -2011,7 +2011,7 @@ def test_the_roster_builder_drops_malformed_symbols_from_both_categories(
     # ... and the six that `_PREFERRED_SHARE_PATTERN` / `_BABY_BOND_PATTERN`
     # do NOT match, stated separately so the `us_all` half cannot pass merely
     # by restating 260906-eme's exclusion.
-    from acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
+    from quantlab.acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
 
     only_the_new_filter_can_drop = [
         ticker

@@ -32,7 +32,7 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from base.config import AcquisitionConfig, DatasetConfig
+from quantlab.base.config import AcquisitionConfig, DatasetConfig
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def _reset_data_root_override():
     collection cost is unchanged and this file keeps its zero-import-time
     dependency promise above.
     """
-    import config
+    import quantlab.config as config
 
     config.set_data_root(None)
     yield
@@ -429,7 +429,7 @@ def mock_universe_fetchers(
 
     No test in this suite makes a real network call.
     """
-    from acquisition.universe import (
+    from quantlab.acquisition.universe import (
         Nasdaq100MembershipFetcher,
         NasdaqUniverseFetcher,
         SP500MembershipFetcher,

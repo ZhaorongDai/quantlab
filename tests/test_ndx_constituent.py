@@ -17,8 +17,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from base.config import ConstituentDatasetConfig
-from dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
+from quantlab.base.config import ConstituentDatasetConfig
+from quantlab.dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
 
 _NDX_COVERAGE_START = "2007-02-01"
 _SP500_COVERAGE_START = "1976-07-01"

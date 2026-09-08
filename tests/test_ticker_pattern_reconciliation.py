@@ -27,8 +27,8 @@ from typing import Optional
 
 import pytest
 
-import base.acquisition as acquisition_module
-import enums.data as enums_data
+import quantlab.base.acquisition as acquisition_module
+import quantlab.enums.data as enums_data
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def _acquisition(acquisition_config, **config_kwargs):
     the assertion. `_validate_symbols` reads only `self.class_name` and
     `self.config.raw_data_dir_path`, so nothing here touches the network.
     """
-    from base.acquisition import Acquisition
+    from quantlab.base.acquisition import Acquisition
 
     class _Guard(Acquisition):
         VENDOR = "tiingo"
@@ -211,7 +211,7 @@ def _built_rosters(monkeypatch, csv_text: Optional[str] = None) -> dict:
     `supported_tickers.csv` built from real measured literals, exactly as
     `tests/test_universe.py` already does.
     """
-    from acquisition.universe import NasdaqUniverseFetcher, USEquityUniverseFetcher
+    from quantlab.acquisition.universe import NasdaqUniverseFetcher, USEquityUniverseFetcher
     from test_universe import _patch_roster_download, _roster_zip
 
     if csv_text is not None:
@@ -311,7 +311,7 @@ def test_the_changelog_guard_is_deliberately_narrower_than_the_fetch_guard():
 
     Reddened by: pointing `_WELL_FORMED_TICKER` at `TRADEABLE_TICKER_PATTERN`.
     """
-    from acquisition.universe import _WELL_FORMED_TICKER
+    from quantlab.acquisition.universe import _WELL_FORMED_TICKER
 
     assert (
         _WELL_FORMED_TICKER.pattern != enums_data.TRADEABLE_TICKER_PATTERN.pattern

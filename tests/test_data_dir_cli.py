@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-import config
-from utils.cli import add_data_dir_arg, apply_data_dir
+import quantlab.config as config
+from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

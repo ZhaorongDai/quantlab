@@ -25,9 +25,9 @@ from typing import Callable
 import numpy as np
 import xarray as xr
 
-from base.config import DatasetConfig, FactorConfig
-from dataset.spot import SpotKlineDataset
-from factor.alpha158 import Alpha158SpotKline
+from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.factor.alpha158 import Alpha158SpotKline
 
 # The `data_columns`/`factor_names` pairing below is LOAD-BEARING, not
 # arbitrary. `init_stream()` calls `queryBufferHandle` for every name in

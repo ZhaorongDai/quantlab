@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from dataset.cleaning import (
+from quantlab.dataset.cleaning import (
     REQUIRED_COLUMNS,
     clean_market_data,
     dedup_raw_frame,
@@ -202,12 +202,12 @@ class _NoOpDataset:
         return self._data
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
-        from base.data import BaseDataset
+        from quantlab.base.data import BaseDataset
 
         return BaseDataset._clean(self, data)  # type: ignore[arg-type]
 
     def from_raw_data(self) -> Self:
-        from base.data import BaseDataset
+        from quantlab.base.data import BaseDataset
 
         return BaseDataset.from_raw_data(self)  # type: ignore[arg-type]
 
@@ -215,7 +215,7 @@ class _NoOpDataset:
 def test_from_raw_data_calls_clean_market_data(monkeypatch) -> None:
     """Test 7: Dataset.from_raw_data() calls clean_market_data() exactly
     once with the xr.Dataset produced by _raw_data_to_xr()."""
-    import base.data as base_data_module
+    import quantlab.base.data as base_data_module
 
     raw_data = _make_xr_dataset([[100.0, 101.0]])
     calls: list[xr.Dataset] = []

@@ -28,7 +28,7 @@ import pytest
 import xarray as xr
 import zarr
 
-from dataset.backend import XrBackend
+from quantlab.dataset.backend import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

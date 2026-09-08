@@ -16,11 +16,11 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from base.config import ConstituentDatasetConfig
-from base.constituent import IndexConstituentDataset
-from base.data import BaseDataset
-from dataset.cleaning import clean_membership_panel
-from dataset.constituent import SP500ConstituentDataset
+from quantlab.base.config import ConstituentDatasetConfig
+from quantlab.base.constituent import IndexConstituentDataset
+from quantlab.base.data import BaseDataset
+from quantlab.dataset.cleaning import clean_membership_panel
+from quantlab.dataset.constituent import SP500ConstituentDataset
 
 _COVERAGE_START = "1976-07-01"
 

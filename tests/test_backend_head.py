@@ -43,8 +43,8 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from base.backend import DataBackend
-from dataset.backend import PlBackend, XrBackend
+from quantlab.base.backend import DataBackend
+from quantlab.dataset.backend import PlBackend, XrBackend
 
 #: 10 timestamps x 3 symbols = 30 long-format rows.
 _PERIODS = 10

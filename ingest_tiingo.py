@@ -3,7 +3,7 @@
 Full Tiingo-to-Zarr pipeline: fetches raw EOD data via TiingoAcquisition
 (writing raw parquet files under the configured raw_data_dir_path), then
 converts/cleans/persists it through StockDataset into a Zarr store (D-02
-market/frequency convention, see config/__init__.py:stock_kline_config()).
+market/frequency convention, see quantlab/config/__init__.py:stock_kline_config()).
 
 Requires the TIINGO_API_KEY environment variable to be set -- get your key
 from the Tiingo dashboard (https://api.tiingo.com/). This script never
@@ -27,12 +27,12 @@ instead of passing --symbols explicitly:
 
 import argparse
 
-from acquisition.tiingo import TiingoAcquisition
-from acquisition.universe import UniverseCatalog
-from base.config import AcquisitionConfig, DatasetConfig
-from config import stock_acquisition_config, stock_kline_config, universe_config
-from dataset.stock import StockDataset
-from utils.cli import (
+from quantlab.acquisition.tiingo import TiingoAcquisition
+from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
+from quantlab.dataset.stock import StockDataset
+from quantlab.utils.cli import (
     add_data_dir_arg,
     add_universe_args,
     add_volume_guard_args,
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before anything that can reach a `config/` factory, and the position is
+    # Before anything that can reach a `quantlab/config/` factory, and the position is
     # load-bearing: the factories snapshot their paths as strings at
     # construction time, so a root override applied afterwards silently does
     # nothing (DDIR-04).

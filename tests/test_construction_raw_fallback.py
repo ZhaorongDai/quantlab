@@ -27,8 +27,8 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from base.config import DatasetConfig
-from dataset.stock import StockDataset
+from quantlab.base.config import DatasetConfig
+from quantlab.dataset.stock import StockDataset
 
 _OHLCV = ("open", "high", "low", "close", "volume")
 

@@ -160,7 +160,7 @@ def _five_page_chain(alpaca_bars_page):
 
 
 def _batch_key_for(cfg):
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
     return PageLedger.batch_key(
         cfg.vendor, cfg.frequency, cfg.start_date, cfg.end_date, cfg.symbols
@@ -168,7 +168,7 @@ def _batch_key_for(cfg):
 
 
 def _ledger_path_for(cfg):
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
     return Path(PageLedger.default_path(cfg.watermark_path, _batch_key_for(cfg)))
 
@@ -190,7 +190,7 @@ def test_an_interrupted_batch_resumes_at_the_failed_page(
     asserted through the manifest rather than through `pytest.raises`, which
     pins BOTH the ledger flush and the isolation.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
         vendor="alpaca",
@@ -251,7 +251,7 @@ def test_a_resumed_run_does_not_re_request_page_zero(
     restarted the batch from scratch. What distinguishes resume from restart is
     that page 0 is never requested a second time.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
         vendor="alpaca", symbols=("AAPL", "MSFT"), kwargs={"batch_size": 2}
@@ -291,7 +291,7 @@ def test_a_re_fetched_page_is_idempotent_and_overwrites_its_shard(
     """
     import polars as pl
 
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
         vendor="alpaca", symbols=("AAPL",), kwargs={"batch_size": 1}
@@ -344,7 +344,7 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
     text, so a regression that downgraded the refusal to a silent skip would
     still fail this test.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     cfg = acquisition_config(
         vendor="alpaca", symbols=("AAPL", "MSFT"), kwargs={"batch_size": 2}
@@ -395,7 +395,7 @@ def test_a_ledger_whose_roster_fingerprint_differs_is_not_resumed_onto(
     sorted roster (so they address different FILES), and `symbol_fingerprint`
     is checked on load (so even a shared file would read back empty).
     """
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
     path = str(tmp_path / "roster.pages.json")
 
@@ -428,8 +428,8 @@ def test_the_batch_key_fingerprint_is_a_function_of_the_set_not_the_order():
     re-fetch data already on disk. A different MEMBER, however, is a different
     batch.
     """
-    from base.chunking import ChunkLedger
-    from base.pageledger import PageLedger
+    from quantlab.base.chunking import ChunkLedger
+    from quantlab.base.pageledger import PageLedger
 
     args = ("alpaca", "1d", "2024-01-01", "2024-01-31")
 
@@ -470,7 +470,7 @@ def test_the_token_is_recorded_verbatim_beside_a_token_free_fallback(
     agreed to -- so the token is stored verbatim, and `last_symbol` /
     `last_timestamp` are stored alongside it as the fallback.
     """
-    from acquisition.alpaca import AlpacaAcquisition
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     weird_token = "Ω/not-base64/{}|<>"  # deliberately un-re-derivable
     cfg = acquisition_config(
@@ -523,7 +523,7 @@ def test_a_ledger_with_pages_but_no_fingerprint_is_never_resumed_onto(tmp_path):
     """
     import json
 
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
     path = tmp_path / "identityless.pages.json"
     path.write_text(
@@ -569,7 +569,7 @@ def test_an_identityless_ledger_with_no_pages_keeps_its_forward_compatible_keys(
     """
     import json
 
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
     path = tmp_path / "future.pages.json"
     path.write_text(json.dumps({"pages": [], "a_future_key": "kept"}))
@@ -592,7 +592,7 @@ def test_describe_puts_the_identity_on_disk_before_the_first_page(tmp_path):
     """
     import json
 
-    from base.pageledger import PageLedger
+    from quantlab.base.pageledger import PageLedger
 
     path = tmp_path / "described.pages.json"
     ledger = PageLedger(str(path), symbols=("A", "B"))

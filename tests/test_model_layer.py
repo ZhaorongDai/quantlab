@@ -52,8 +52,8 @@ import torch.nn as nn
 import xarray as xr
 from types import SimpleNamespace
 
-from base.config import DLConfig
-from base.model import BaseModel
+from quantlab.base.config import DLConfig
+from quantlab.base.model import BaseModel
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry

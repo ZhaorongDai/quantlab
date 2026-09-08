@@ -25,8 +25,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from base.config import DatasetConfig
-from base.data import MarketDataset
+from quantlab.base.config import DatasetConfig
+from quantlab.base.data import MarketDataset
 
 CORE_LAYER_FILES = (
     "base/factor.py",

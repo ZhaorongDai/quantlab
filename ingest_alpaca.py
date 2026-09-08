@@ -3,7 +3,7 @@ vendor-namespaced raw path.
 
 The second source, not a replacement (D-10). Alpaca and Tiingo coexist as
 parallel alternatives selected BY CONFIG: this script builds every path through
-`config/__init__.py`'s factories with `vendor="alpaca"`, so the vendor segment
+`quantlab/config/__init__.py`'s factories with `vendor="alpaca"`, so the vendor segment
 is DERIVED in one place rather than assembled at the call site. Constructing an
 `AcquisitionConfig` or `DatasetConfig` inline here is how the path convention
 drifts back into a silent two-vendor merge, and a test asserts this module
@@ -34,7 +34,7 @@ The feed question is OPEN
 either direction, and this script registers no `--feed` flag that could supply
 one by habit. Alpaca's own documentation self-conflicts about whether the free
 (Basic) tier reaches historical SIP data at all; see
-`acquisition/alpaca.py:AlpacaAcquisition` for both readings. Until a real
+`quantlab/acquisition/alpaca.py:AlpacaAcquisition` for both readings. Until a real
 one-request probe settles it (03.2-07 human-check A), an unset feed is OMITTED
 from the request and the vendor picks the best feed the account allows.
 
@@ -45,7 +45,7 @@ rather than from argparse, so the CLI surface stays small and a knob is added
 without a code change here. To set one, call `_build_configs`'s factories
 directly, e.g.
 
-    from config import stock_acquisition_config
+    from quantlab.config import stock_acquisition_config
     cfg = stock_acquisition_config(
         symbols=("AAPL",), start_date="2024-01-02", end_date="2024-01-02",
         vendor="alpaca", kwargs={"batch_size": 200, "feed": "sip"},
@@ -106,13 +106,13 @@ Usage:
 import argparse
 import typing
 
-from acquisition.alpaca import AlpacaAcquisition
-from acquisition.universe import UniverseCatalog
-from base.config import AcquisitionConfig, DatasetConfig
-from config import stock_acquisition_config, stock_kline_config, universe_config
-from dataset.stock import StockDataset
-from enums.data import Frequency
-from utils.cli import (
+from quantlab.acquisition.alpaca import AlpacaAcquisition
+from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
+from quantlab.dataset.stock import StockDataset
+from quantlab.enums.data import Frequency
+from quantlab.utils.cli import (
     add_data_dir_arg,
     add_universe_args,
     add_volume_guard_args,
@@ -125,7 +125,7 @@ from utils.cli import (
 )
 
 #: The frequencies this script offers, DERIVED from the locked `Frequency`
-#: literal rather than restated, so a frequency added to `enums/data.py`
+#: literal rather than restated, so a frequency added to `quantlab/enums/data.py`
 #: becomes selectable here without a second edit -- the same reason the
 #: `--universe` choices are derived from `UNIVERSE_CATEGORY_MAP`.
 FREQUENCIES: tuple[str, ...] = typing.get_args(Frequency)
@@ -146,7 +146,7 @@ def _build_configs(
     args: argparse.Namespace,
     catalog=None,
 ) -> tuple[AcquisitionConfig, DatasetConfig]:
-    """`(AcquisitionConfig, DatasetConfig)` from the `config/` factories.
+    """`(AcquisitionConfig, DatasetConfig)` from the `quantlab/config/` factories.
 
     The factories are where the D-11 vendor segment is derived and where
     `watermark_path` is placed as a SIBLING of the raw root rather than inside
@@ -161,7 +161,7 @@ def _build_configs(
         catalog = UniverseCatalog.load(universe_config())
     # `mode="as_of"` stated, never defaulted: this script resolves
     # point-in-time membership on ONE day. A full-window backfill wants
-    # interval overlap instead -- see `utils.cli.resolve_symbols`.
+    # interval overlap instead -- see `quantlab.utils.cli.resolve_symbols`.
     symbols = resolve_symbols(args, catalog, mode="as_of")
 
     kwargs: dict = {}
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before anything that can reach a `config/` factory, and the position is
+    # Before anything that can reach a `quantlab/config/` factory, and the position is
     # load-bearing: the factories snapshot their paths as strings at
     # construction time, so a root override applied afterwards silently does
     # nothing (DDIR-04).

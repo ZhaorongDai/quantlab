@@ -4,7 +4,7 @@ This script does NOT download anything (D-03: no new Binance downloader in
 this phase) -- it only reads monthly Binance kline CSV files that already
 exist on disk under `raw_data_dir_path` (default:
 `{root}/downloads/crypto_spot/1d/spot/monthly/klines/`, see
-`config/__init__.py:spot_kline_config()`), converts them through the same
+`quantlab/config/__init__.py:spot_kline_config()`), converts them through the same
 `Dataset`/`DataBackend` abstraction US equities use (`SpotKlineDataset`), and
 writes the resulting `xarray.Dataset` to the configured Zarr path. `{root}` is
 whatever `config.get_data_root()` resolves: `--data-dir` first, then
@@ -30,10 +30,10 @@ Usage:
 
 import argparse
 
-from base.config import DatasetConfig
-from config import spot_kline_config
-from dataset.spot import SpotKlineDataset
-from utils.cli import add_data_dir_arg, apply_data_dir
+from quantlab.base.config import DatasetConfig
+from quantlab.config import spot_kline_config
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 
 
 def _build_dataset_config(args: argparse.Namespace) -> DatasetConfig:

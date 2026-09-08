@@ -30,7 +30,7 @@ import requests
 from loguru import logger
 from tiingo.restclient import RestClientError
 
-from base.config import AcquisitionConfig
+from quantlab.base.config import AcquisitionConfig
 
 #: Deliberately far larger than anything that could be dispatched before the
 #: abort trips. "Stopped early" and "ground through all of them" must not be
@@ -129,7 +129,7 @@ def _acquisition_class(on_sleep=None):
     """A subclass substituting the `_sleep` seam, so wait/resume is asserted by
     COUNTING waits rather than by actually waiting an hour.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     class _Recording(TiingoAcquisition):
         def __init__(self, config):
@@ -152,7 +152,7 @@ def _acquisition_class(on_sleep=None):
 def test_a_429_is_classified_as_global_quota_exhaustion(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     error = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
@@ -166,7 +166,7 @@ def test_the_allocation_wording_alone_is_enough(mock_tiingo_client, tmp_path):
     """The textual signal must stand on its own, because a vendor that stops
     setting 429 must not silently turn this back into a 10,000-request burn.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     # No status code anywhere -- only the wording.
@@ -180,7 +180,7 @@ def test_the_token_survives_the_vendor_rewording_the_period(
     full-string match would break the moment the vendor says "daily" instead
     of "hourly", or edits its support address.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     assert acq._is_quota_error(
@@ -189,7 +189,7 @@ def test_the_token_survives_the_vendor_rewording_the_period(
 
 
 def test_a_404_is_not_quota_exhaustion(mock_tiingo_client, tmp_path):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     error = _rest_client_error(404, "Not found", "Not Found")
@@ -205,7 +205,7 @@ def test_a_plan_restricted_403_is_not_quota_exhaustion(
     run. A 403 whose body carries the wording is still caught textually, so
     the stricter status set costs nothing.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     restricted = _rest_client_error(
@@ -225,7 +225,7 @@ def test_a_404_still_isolates_per_symbol_and_the_run_completes(
     """The property this change must NOT break: one delisted ticker's 404
     still lands in the manifest and the other symbols still complete.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _fail_one(
         mock_tiingo_client, "GOOG", _rest_client_error(404, "Not found", "Not Found")
@@ -254,7 +254,7 @@ def test_quota_exhaustion_stops_dispatch_far_short_of_the_pending_list(
     Asserted by COUNTING vendor calls against a 200-symbol pending list, so
     "stopped early" and "ground through everything" cannot look the same.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -273,7 +273,7 @@ def test_quota_exhaustion_stops_dispatch_far_short_of_the_pending_list(
 def test_un_attempted_symbols_get_no_watermark_so_a_re_run_resumes_them(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -293,7 +293,7 @@ def test_the_quota_condition_never_lands_in_the_failure_manifest(
     perfectly good symbol and make the manifest lie about what the last run
     did -- and the next run would "retry" a symbol that never failed.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -308,7 +308,7 @@ def test_the_quota_condition_never_lands_in_the_failure_manifest(
 def test_the_abort_reports_completed_remaining_and_watermark_preservation(
     mock_tiingo_client, tmp_path
 ):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -397,7 +397,7 @@ def test_wait_for_quota_gives_up_after_the_configured_maximum(
 
 
 def test_the_defaults_are_the_documented_ones(mock_tiingo_client, tmp_path):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     assert TiingoAcquisition.QUOTA_STATUS_CODES == frozenset({429})
     assert TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS == 3600
@@ -416,7 +416,7 @@ def test_no_credential_appears_on_any_quota_path(
     """This repo has already leaked one real Tiingo key. Every new path that
     captures or logs vendor text goes through `_scrub()`.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     key = os.environ["TIINGO_API_KEY"]
     body = (
@@ -447,7 +447,7 @@ def test_is_quota_error_scrubs_the_text_it_inspects(mock_tiingo_client, tmp_path
     must already be scrubbed. Proven by asserting the classifier still works
     on a body carrying the key -- i.e. scrubbing does not destroy the signal.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     key = os.environ["TIINGO_API_KEY"]
     acq = TiingoAcquisition(_make_config(tmp_path))
@@ -459,7 +459,7 @@ def test_is_quota_error_scrubs_the_text_it_inspects(mock_tiingo_client, tmp_path
 
 @pytest.mark.parametrize("status", [429, 403])
 def test_quota_status_set_is_429_only(mock_tiingo_client, tmp_path, status):
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     assert (status in TiingoAcquisition.QUOTA_STATUS_CODES) == (
         status == 429
@@ -483,7 +483,7 @@ def test_a_tiingo_429_classifies_quota_through_the_seam(
     """Behaviourally identical to before the seam existed, now expressed
     through the method both vendors override.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     error = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
@@ -500,7 +500,7 @@ def test_a_tiingo_429_still_aborts_globally_and_stays_out_of_the_manifest(
     """The end-to-end consequence of the classification above, re-asserted
     against the seam rather than against `_is_quota_error` directly.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     _install_vendor(
         mock_tiingo_client,
@@ -528,7 +528,7 @@ def test_a_tiingo_403_classifies_failed_not_quota(mock_tiingo_client, tmp_path):
     different thing and is still caught textually; see
     `test_a_plan_restricted_403_is_not_quota_exhaustion`.)
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     acq = TiingoAcquisition(_make_config(tmp_path))
     restricted = _rest_client_error(
@@ -545,7 +545,7 @@ def test_tiingo_declares_no_rate_limit_status_set(mock_tiingo_client, tmp_path):
     `RATE_LIMIT_STATUS_CODES`. Adding 429 to one would silently downgrade the
     global abort to a worker-local backoff -- the exact 2026-09-06 incident.
     """
-    from acquisition.tiingo import TiingoAcquisition
+    from quantlab.acquisition.tiingo import TiingoAcquisition
 
     assert TiingoAcquisition.RATE_LIMIT_STATUS_CODES == frozenset(), (
         "Tiingo must classify 429 as `quota`, never as `rate_limited`"
