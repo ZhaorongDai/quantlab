@@ -4,14 +4,24 @@ path convention (02-CONTEXT.md D-01/D-02) that every config factory in
 `stock_acquisition_config()` factories (D-09).
 """
 
+import ast
+from pathlib import Path
+
+import config
 from config import (
     alpha101_config,
+    get_data_root,
     nasdaq100_constituent_config,
+    set_data_root,
     sp500_constituent_config,
     spot_kline_config,
     stock_acquisition_config,
     stock_kline_config,
+    universe_config,
 )
+
+_CONFIG_SOURCE = Path(config.__file__).resolve()
+_REPO_ROOT = _CONFIG_SOURCE.parent.parent
 
 
 def test_spot_kline_config_uses_market_frequency_path_convention() -> None:
@@ -60,8 +70,6 @@ def test_stock_config_factories_carry_the_alpaca_vendor_through_both_paths() -> 
     accepted pre-built, so the raw root and the watermark root cannot drift
     apart at a call site.
     """
-    from pathlib import Path
-
     acq = stock_acquisition_config(symbols=("AAPL",), vendor="alpaca")
     ds = stock_kline_config(vendor="alpaca")
 
@@ -154,10 +162,11 @@ def test_stock_config_defaults_are_byte_identical_without_the_new_arguments() ->
 
 
 def test_stock_config_subdir_and_store_name_redirect_under_the_same_root() -> None:
-    """D-04: `QUANTLAB_DATA_DIR` stays the ONLY path knob. The new arguments
-    select a subdirectory/filename BENEATH the existing
-    `data/{market}/{frequency}/` convention -- they are not a second root and
-    they never hardcode a volume.
+    """D-04: there stays exactly ONE storage root, whichever of the three
+    levels answers it (`--data-dir` > `QUANTLAB_DATA_DIR` > repo-root `data/`,
+    260907-rjq D-01). These arguments select a subdirectory/filename BENEATH
+    the existing `data/{market}/{frequency}/` convention -- they are not a
+    second root and they never hardcode a volume.
     """
     acq = stock_acquisition_config(symbols=("AAPL",), subdir="us_all")
     ds = stock_kline_config(subdir="us_all", store_name="us_all.zarr")
@@ -171,3 +180,187 @@ def test_stock_config_subdir_and_store_name_redirect_under_the_same_root() -> No
     assert ds.raw_data_dir_path == acq.raw_data_dir_path
     assert "data/us_equity/1d/" in ds.zarr_file_path.replace("\\", "/")
     assert ds.zarr_file_path.replace("\\", "/").endswith("us_all.zarr")
+
+
+# ---------------------------------------------------------------------------
+# The storage root: one root, three levels (260907-rjq D-01), asserted through
+# real factory paths rather than through the resolver alone.
+# ---------------------------------------------------------------------------
+
+def test_cli_override_beats_the_env_var_in_a_real_factory_path(
+    monkeypatch, tmp_path
+) -> None:
+    """D-01 cells 1 and 2, through `stock_kline_config()` rather than through
+    `get_data_root()` -- a resolver that answers correctly while no factory
+    consults it would pass a resolver-only test.
+    """
+    monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
+    set_data_root(tmp_path / "cli")
+    assert stock_kline_config().zarr_file_path.startswith(str(tmp_path / "cli"))
+
+    monkeypatch.setenv("QUANTLAB_DATA_DIR", str(tmp_path / "env"))
+    assert stock_kline_config().zarr_file_path.startswith(str(tmp_path / "cli"))
+
+
+def test_env_var_and_repo_default_answer_when_the_override_is_cleared(
+    monkeypatch, tmp_path
+) -> None:
+    """D-01 cells 3 and 4."""
+    monkeypatch.setenv("QUANTLAB_DATA_DIR", str(tmp_path / "env"))
+    set_data_root(None)
+    assert stock_kline_config().zarr_file_path.startswith(str(tmp_path / "env"))
+
+    monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
+    assert stock_kline_config().zarr_file_path.startswith(
+        str(_REPO_ROOT / "data")
+    )
+
+
+def test_the_override_reaches_every_path_field_the_flag_promises(
+    monkeypatch, tmp_path
+) -> None:
+    """DDIR-01: `--data-dir /X` must move the four path fields a run actually
+    writes -- `raw_data_dir_path`, `watermark_path`, `zarr_file_path` and the
+    universe table's `output_path` -- across both markets and the constituent
+    panels, not just the one factory the flag was first wired to.
+    """
+    monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
+    set_data_root(tmp_path)
+    root = str(tmp_path)
+
+    acq = stock_acquisition_config(symbols=("AAPL",))
+    assert acq.raw_data_dir_path.startswith(root)
+    assert acq.watermark_path.startswith(root)
+    assert stock_kline_config().zarr_file_path.startswith(root)
+    assert universe_config().output_path.startswith(root)
+    assert universe_config().cache_dir.startswith(root)
+    assert spot_kline_config().raw_data_dir_path.startswith(root)
+    assert sp500_constituent_config().zarr_file_path.startswith(root)
+    assert nasdaq100_constituent_config().zarr_file_path.startswith(root)
+    assert alpha101_config().file_path.startswith(root)
+
+
+#: Names that root a path expression: the resolver itself and the two roots
+#: derived from it. Anything else appearing at the head of a path expression in
+#: a factory body is a second root.
+_ROOTING_CALLS = {"get_data_root", "_market_data_root", "_market_downloads_root"}
+
+
+def _rooted_path_keywords() -> dict[str, list[str]]:
+    """Map each `*_config` factory in `config/__init__.py` to the path-shaped
+    keyword arguments it passes, flagging any that is not rooted in
+    `get_data_root()` or one of its two derived roots.
+
+    Reads the module's own source, so reach is exhaustive by CONSTRUCTION. An
+    enumerated list of factories would go stale the day a thirteenth factory is
+    added -- the failure mode this repo has already hit once, with the
+    `--universe` choices that drifted from `UNIVERSE_CATEGORY_MAP`.
+    """
+    tree = ast.parse(_CONFIG_SOURCE.read_text())
+    offenders: dict[str, list[str]] = {}
+
+    for func in tree.body:
+        if not isinstance(func, ast.FunctionDef) or not func.name.endswith("_config"):
+            continue
+
+        # Local names bound to a rooted expression, e.g.
+        # `downloads = _market_downloads_root(...)`, count as rooted too.
+        rooted_locals: set[str] = set()
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Assign):
+                continue
+            calls = {
+                c.func.id
+                for c in ast.walk(node.value)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            }
+            if calls & _ROOTING_CALLS:
+                rooted_locals.update(
+                    t.id for t in node.targets if isinstance(t, ast.Name)
+                )
+
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg is None or not (
+                    kw.arg.endswith("_path") or kw.arg.endswith("_dir")
+                ):
+                    continue
+                names = {
+                    n.id for n in ast.walk(kw.value) if isinstance(n, ast.Name)
+                }
+                if not (names & (_ROOTING_CALLS | rooted_locals)):
+                    offenders.setdefault(func.name, []).append(kw.arg)
+
+    return offenders
+
+
+def test_no_factory_path_bypasses_the_single_root() -> None:
+    """DDIR-02: exactly one storage root, and no hardcoded volume anywhere.
+
+    Checked by CONSTRUCTION over the module's own source rather than by
+    enumerating factories, so a factory added tomorrow is covered the day it
+    lands.
+    """
+    offenders = _rooted_path_keywords()
+
+    assert not offenders, (
+        "these config factory path arguments are not rooted in "
+        f"get_data_root() or a root derived from it: {offenders}. Every "
+        "storage path must derive from the one resolved root -- a second root "
+        "or a hardcoded volume is what the three-level precedence exists to "
+        "make unnecessary."
+    )
+
+
+def test_the_by_construction_root_check_actually_inspects_something() -> None:
+    """A by-construction check that matches nothing passes vacuously. Count the
+    path keywords the scan CONSIDERED, so a keyword-naming change that makes
+    the scan blind fails here instead of going quietly green.
+    """
+    tree = ast.parse(_CONFIG_SOURCE.read_text())
+    considered = [
+        kw.arg
+        for func in tree.body
+        if isinstance(func, ast.FunctionDef) and func.name.endswith("_config")
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg and (kw.arg.endswith("_path") or kw.arg.endswith("_dir"))
+    ]
+
+    assert len(considered) >= 14, (
+        f"only {len(considered)} path-shaped keyword arguments found in "
+        "config/__init__.py's factories; the by-construction root check above "
+        "is scanning less than the file contains."
+    )
+
+
+def test_env_var_users_and_default_users_both_reproduce_todays_paths(
+    monkeypatch, tmp_path
+) -> None:
+    """DDIR-03: the flag is additive. With no override in play, an env-var user
+    still gets an env-rooted tree and a repo-default user still gets the exact
+    literals `test_stock_config_defaults_are_byte_identical_without_the_new_
+    arguments` pins.
+    """
+    set_data_root(None)
+
+    monkeypatch.setenv("QUANTLAB_DATA_DIR", str(tmp_path / "env"))
+    assert stock_acquisition_config(
+        symbols=("AAPL",)
+    ).raw_data_dir_path.startswith(str(tmp_path / "env"))
+    assert stock_kline_config().zarr_file_path.startswith(str(tmp_path / "env"))
+
+    monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
+    acq = stock_acquisition_config(symbols=("AAPL",))
+    ds = stock_kline_config()
+    assert acq.raw_data_dir_path.replace("\\", "/").endswith(
+        "downloads/us_equity/1d/nasdaq_data/tiingo"
+    )
+    assert ds.zarr_file_path.replace("\\", "/").endswith(
+        "data/us_equity/1d/stock.zarr"
+    )
+    assert acq.raw_data_dir_path.startswith(str(get_data_root()))
+    assert get_data_root() == _REPO_ROOT / "data"

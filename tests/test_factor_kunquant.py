@@ -317,7 +317,7 @@ def test_normalization_matrix_matches_recorded_strategy_types() -> None:
 def test_stock_alpha158_config_wires_amount_and_a_derived_path() -> None:
     """The US-equity Alpha158 factory is reachable, carries `"amount"` (without
     which the D-02 synthesis never fires and the graph crashes), and writes to
-    a `_data_root()`-derived path rather than a hardcoded absolute one.
+    a `get_data_root()`-derived path rather than a hardcoded absolute one.
     """
     cfg = stock_alpha158_config()
 

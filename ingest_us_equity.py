@@ -96,8 +96,8 @@ from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
 from utils.cli import (
     add_chunk_args,
-    add_data_dir_arg,
     add_concurrency_args,
+    add_data_dir_arg,
     add_volume_guard_args,
     add_window_args,
     apply_data_dir,
