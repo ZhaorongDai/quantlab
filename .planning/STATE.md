@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: 3
-current_phase_name: Factor Computation (KunQuant + Polars)
-status: planning
+current_phase: "03.4"
+current_phase_name: Data Source Registry (Operator-Surface Foundation)
+status: executing
 stopped_at: Phase 03.4 context gathered
-last_updated: "2026-09-08T19:41:56.587Z"
+last_updated: "2026-09-08T21:24:06.649Z"
 last_activity: 2026-09-08
 last_activity_desc: "Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which"
-state_head: d4a961fd14f16299c68801a9766883f3355c5ebb
+state_head: 5663e89aa333c4ef08d9b2f32c3977d49f7813e3
 progress:
   total_phases: 11
   completed_phases: 2
-  total_plans: 30
+  total_plans: 37
   completed_plans: 30
 milestone_name: milestone
 ---
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 3 — Factor Computation (KunQuant + Polars)
+Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-09-08 - Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which
 
 Progress: [██████████] 100%
@@ -214,6 +214,7 @@ Recent decisions affecting current work:
 - Phase 03.2 inserted after Phase 3: Multi-source acquisition abstraction: batched multi-symbol fetching + pagination in the Acquisition base, plus Alpaca source classes (daily bars, minute bars, corporate actions, high-frequency quotes/trades with a volume guard) (URGENT)
 - Phase 03.3 inserted after Phase 03.2: Tick data storage: a non-dense event-axis Dataset and its raw-to-Zarr conversion. Committed follow-up deferred from 03.2 by D-18, not urgent work.
 - Phase 03.4 inserted after Phase 3: Data Source Registry — one registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface. The TUI/web console itself is a SEPARATE repository and is not on this roadmap. (URGENT)
+- Phase 03.4 edited: boundary contract revised: writes move IN-PROCESS, superseding the 2026-09-07 subprocess-CLI lock; Requirements/Success Criteria settled from discussion; registry, ingest-script and read-side in-scope bullets rewritten; programmatic write entry point added; long-task isolation, log sink and concurrency control moved to out-of-scope
 
 ## Deferred Items
 
