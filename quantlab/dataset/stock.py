@@ -406,6 +406,44 @@ class StockDataset(MarketDataset):
         )
         return symbols, pd.DatetimeIndex(sorted(timestamps))
 
+    def _added_symbols_with_raw_history(
+        self, added: list, start, end
+    ) -> dict[str, int]:
+        """The hive-pruned answer to the evidence question -- how many raw rows
+        each of `added` carries in the CLOSED window `[start, end]`.
+
+        Routed through `_scan_raw`, which ALREADY applies the `month=` hive
+        predicate (directory pruning at plan time), the timestamp predicate
+        (the window's exact edges), the vendor assertion and the dedup. Going
+        through it rather than re-deriving those is the whole point: the
+        pruning and the vendor isolation come along unchanged, and there is
+        one place where a change to any of them lands.
+
+        Counting is done in polars and only the counts are collected, so the
+        dense `[timestamp, symbol]` grid the base default materialises is never
+        built here. That is what makes the probe cheaper than the whole-range
+        densify -- see `BaseDataset._added_symbols_with_raw_history` for the
+        measured ORDERING (store-extent probe < whole-tier probe <
+        `_raw_axes_in_range()`, which every chunked run already pays
+        unconditionally) and for why that ordering rather than the seconds is
+        the load-bearing claim.
+        """
+        wanted = [str(symbol) for symbol in added]
+        if not wanted:
+            return {}
+
+        counts = (
+            self._scan_raw(start, end)
+            .filter(pl.col("symbol").is_in(wanted))
+            .group_by("symbol")
+            .agg(pl.len().alias("rows"))
+            .collect()
+        )
+        return {
+            str(record["symbol"]): int(record["rows"])
+            for record in counts.to_dicts()
+        }
+
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: Optional[list[str]] = None
     ) -> xr.Dataset:

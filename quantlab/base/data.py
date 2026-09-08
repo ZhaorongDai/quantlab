@@ -610,6 +610,125 @@ class BaseDataset(ABC):
         finally:
             store.close()
 
+    @staticmethod
+    def _stored_append_extent(
+        store_path: str, append_dim: str = "timestamp"
+    ) -> Optional[tuple]:
+        """The store's FIRST and LAST `append_dim` label, or None when there is
+        no store (no such coordinate, or a zero-length axis).
+
+        Opened exactly the way `_stored_symbol_axis` opens it -- lazily,
+        coordinate only, closed in a `finally`. Answering an extent question by
+        reading data variables would defeat chunking.
+
+        **The endpoints are taken by INDEXING, never by reduction, and the
+        length check that makes that safe is load-bearing rather than
+        defensive.** A zero-length append axis is a real shape in this repo,
+        not a hypothetical: `data/data/us_equity/1d/stock_alpaca.zarr` carries
+        a `timestamp` coordinate of size 0, and `.values.min()` on it raises
+        `ValueError: zero-size array to reduction operation minimum which has
+        no identity`. Any run that wrote a zero-row panel -- an acquisition
+        that fetched nothing, an aborted chunked ingest, a window that pruned
+        to nothing -- reaches that shape. `ChunkLedger._store_tail` already
+        solves it with `values[-1] if len(values) else None`; this is the same
+        idiom over both ends.
+
+        None is the honest answer for all three cases and the resolver reads
+        it as one thing: there is no stored history to lose here.
+        """
+        if not Path(store_path).exists():
+            return None
+        store = xr.open_zarr(store_path)
+        try:
+            if append_dim not in store.coords:
+                return None
+            values = store[append_dim].values
+            if not len(values):
+                return None
+            return (values[0], values[-1])
+        finally:
+            store.close()
+
+    def _added_symbols_with_raw_history(
+        self, added: list, start, end
+    ) -> dict[str, int]:
+        """Which of `added` already carry raw rows in the CLOSED window
+        `[start, end]`, and how many -- the EVIDENCE `update()` resolves the
+        widen-vs-rebuild choice from.
+
+        A symbol absent from the mapping carries no rows there; the mapping is
+        never padded with zeros, so `if probe_result:` reads as "there is
+        history to recover". An empty `added` returns `{}` without touching
+        raw at all, which is what keeps the common case free.
+
+        Overridable seam, and the same caveat `_raw_axes_in_range()` carries
+        applies: **this default is correct but NOT memory-bounded**, because it
+        densifies the whole window through `_raw_data_to_xr_window()` and
+        counts afterwards. It exists rather than a `raise NotImplementedError`
+        stub so a subclass that has not overridden the densify seams --
+        `SpotKlineDataset` and `IndexConstituentDataset` today -- keeps
+        working, and it warns at run time when it is the one running so an
+        operator learns the probe took the slow route instead of just waiting.
+        A subclass whose raw source can push a symbol predicate DOWN before
+        materialisation should override it.
+
+        **Cost is recorded as an ORDERING first and absolutes second**, because
+        absolutes go stale on other hardware and a stale number in a docstring
+        is a claim the next reader cannot check. The durable relation:
+        probing the STORE's extent costs LESS than probing the whole raw tier,
+        which costs less than `_raw_axes_in_range()` -- which every chunked run
+        already pays UNCONDITIONALLY. So the probe never adds more than a step
+        the path was already taking, and it is paid ONLY when the symbol axes
+        actually drifted (`_reconcile_new_listings` falls through before
+        reaching the resolver otherwise).
+
+        The dated reading that ordering came from: measured 2026-09-08 on this
+        repo's real raw tier (26,584 `.pqt` files across 13 `month=`
+        partitions, 153.1 MB apparent / 208 MiB on disk), warm cache --
+        1.32-1.75 s for the store-extent window, 2.24-2.38 s for the whole
+        tier, 3.22-3.32 s for `_raw_axes_in_range()`. Those seconds are machine-
+        and cache-dependent and only their ORDER is load-bearing; an earlier
+        reading of the same three steps on a colder cache was about 1.7x higher
+        and preserved the same order.
+        """
+        wanted = [str(symbol) for symbol in added]
+        if not wanted:
+            return {}
+
+        if (
+            type(self)._added_symbols_with_raw_history
+            is BaseDataset._added_symbols_with_raw_history
+        ):
+            logger.warning(
+                f"{self.class_name}: _added_symbols_with_raw_history has not "
+                f"been overridden, so the raw-history probe is answered by "
+                f"densifying the whole window and counting. The answer is "
+                f"correct but the memory bound is absent -- override the seam "
+                f"for a source that can push a symbol predicate down before "
+                f"materialising."
+            )
+
+        window = self._raw_data_to_xr_window(start, end, symbols=None)
+        if "symbol" not in window.coords:
+            return {}
+        present = {str(label) for label in window["symbol"].values.tolist()}
+
+        counts: dict[str, int] = {}
+        for symbol in wanted:
+            if symbol not in present:
+                continue
+            column = window.sel(symbol=symbol)
+            observed = None
+            for variable in column.data_vars.values():
+                notnull = variable.notnull()
+                observed = notnull if observed is None else (observed | notnull)
+            if observed is None:
+                continue
+            rows = int(np.count_nonzero(observed.values))
+            if rows:
+                counts[symbol] = rows
+        return counts
+
     def _widen_fill_values(self) -> dict:
         """Per-variable fill values for a `widen`'s reindex.
 
