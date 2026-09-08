@@ -33,9 +33,11 @@ from base.config import AcquisitionConfig, DatasetConfig
 from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
 from utils.cli import (
+    add_data_dir_arg,
     add_universe_args,
     add_volume_guard_args,
     add_window_args,
+    apply_data_dir,
     print_volume_estimate,
     resolve_symbols,
     validate_roster_args,
@@ -88,6 +90,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     add_universe_args(parser)
     add_window_args(parser)
     add_volume_guard_args(parser)
+    add_data_dir_arg(parser)
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -102,6 +105,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
+
+    # Before anything that can reach a `config/` factory, and the position is
+    # load-bearing: the factories snapshot their paths as strings at
+    # construction time, so a root override applied afterwards silently does
+    # nothing (DDIR-04).
+    apply_data_dir(args)
 
     validate_roster_args(parser, args)
 

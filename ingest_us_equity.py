@@ -13,9 +13,11 @@ anything it calls -- not the failure manifest, not an exception message, not
 the `TiingoClient` config dict. Only symbol lists, date ranges and paths are
 ever printed.
 
-Storage is rooted at `QUANTLAB_DATA_DIR` (see `config/__init__.py:_data_root`),
-which is the ONLY path knob: this script hardcodes no volume and adds no
-competing setting.
+Storage is rooted at whatever `config/__init__.py:get_data_root` resolves,
+through three levels: the `--data-dir` flag for a per-run root, else the
+`QUANTLAB_DATA_DIR` environment variable, else the repo-root `data/` directory.
+Those are three ways to set ONE root -- this script hardcodes no volume and
+adds no competing root of its own.
 
 **Why the default run stops at raw parquet -- and it is no longer memory.**
 Raw acquisition parquet is an acquisition-layer implementation detail
@@ -94,9 +96,11 @@ from config import stock_acquisition_config, stock_kline_config, universe_config
 from dataset.stock import StockDataset
 from utils.cli import (
     add_chunk_args,
+    add_data_dir_arg,
     add_concurrency_args,
     add_volume_guard_args,
     add_window_args,
+    apply_data_dir,
     print_volume_estimate,
     resolve_symbols,
     volume_pricing,
@@ -109,7 +113,7 @@ DEFAULT_START_DATE = "2016-01-01"
 #: Raw-data subdirectory and Zarr store name for this roster, kept separate
 #: from `stock_kline_config`'s NASDAQ-only defaults so the two backfills have
 #: independent watermarks and neither overwrites the other. Both resolve
-#: BENEATH `QUANTLAB_DATA_DIR` (D-04).
+#: BENEATH the root `config.get_data_root()` returns (D-04, 260907-rjq D-01).
 DEFAULT_SUBDIR = "us_all"
 DEFAULT_STORE_NAME = "us_all.zarr"
 
@@ -332,12 +336,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     add_chunk_args(parser)
     add_volume_guard_args(parser)
+    add_data_dir_arg(parser)
     return parser
 
 
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
+
+    # Before anything that can reach a `config/` factory, and the position is
+    # load-bearing: the factories snapshot their paths as strings at
+    # construction time, so a root override applied afterwards silently does
+    # nothing (DDIR-04).
+    apply_data_dir(args)
 
     if args.end_date is None:
         args.end_date = datetime.date.today().isoformat()

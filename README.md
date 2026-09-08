@@ -57,7 +57,7 @@ to express as a KunQuant graph — and never when `xarray`/KunQuant can already 
    `Input(...)`/`Output(...)` nodes, and `_get_factor_names()`, returning the factor names the
    graph emits.
 3. Add a config factory in `config/__init__.py` that builds a `FactorConfig` with paths
-   derived from `_data_root()` — never a hardcoded absolute path.
+   derived from `get_data_root()` — never a hardcoded absolute path.
 
 The inherited `cal()` compiles and runs the graph in batch mode; `init_stream()` /
 `cal_stream()` drive the same graph incrementally, one bar at a time, for live data.
@@ -290,9 +290,13 @@ falling back to `cpu`).
   listing. Get a key pair from the Alpaca dashboard (https://app.alpaca.markets/).
 - `WANDB_API_KEY` -- required for Weights & Biases experiment tracking during model training
   (`base/model.py:_init_wandb`).
-- `QUANTLAB_DATA_DIR` -- optional. Overrides the default data root used by `config/__init__.py`'s
-  factory functions (raw downloads, Zarr factor/label stores, Nautilus catalog). Defaults to a
-  `data/` directory at the repo root if unset.
+- `QUANTLAB_DATA_DIR` -- optional. Sets the data root used by `config/__init__.py`'s factory
+  functions (raw downloads, Zarr factor/label stores, Nautilus catalog). It is the middle of
+  three levels resolving one root: the `--data-dir` flag wins, then this variable, then a
+  `data/` directory at the repo root. `--data-dir` is available on all five data-acquisition
+  entry points (`ingest_tiingo.py`, `ingest_alpaca.py`, `ingest_us_equity.py`,
+  `ingest_binance_spot.py`, `refresh_us_equity_universe.py`) and relocates the root for that one
+  run, without exporting anything.
 
 ## Configuration
 
@@ -312,6 +316,6 @@ constructor:
 
 `config/__init__.py` provides factory functions (`spot_kline_config`, `stock_kline_config`,
 `sp500_constituent_config`, `nasdaq100_constituent_config`, `alpha101_config`,
-`alpha158_config`, `spot_label_config`) that build these configs using paths derived from
-`QUANTLAB_DATA_DIR` (or the repo-root `data/` default), so a fresh clone works without manual
-path edits.
+`alpha158_config`, `spot_label_config`) that build these configs using paths derived from the
+root `get_data_root()` resolves (`--data-dir`, else `QUANTLAB_DATA_DIR`, else the repo-root
+`data/` default), so a fresh clone works without manual path edits.
