@@ -908,6 +908,50 @@ def _is_acquisition_construction(node) -> bool:
     return isinstance(node.func, ast.Name) and node.func.id.endswith("Acquisition")
 
 
+def _fetch_site_linenos(body) -> list[int]:
+    """Every line in a `__main__` block where a real fetch is set in motion.
+
+    TWO forms are matched, because the three shells are mid-migration onto the
+    data-source registry (03.4 D-15):
+
+    - **direct construction** -- `acquisition = <Vendor>Acquisition(cfg)`, then
+      `.download()`/`.refresh()` on that name. The BINDING is the fetch site,
+      because constructing the client is where the credential is demanded.
+    - **registry** -- `run(SOURCE, cfg, ...)`. No vendor class is named at all,
+      so there is no `acquisition = ...` binding to find; the `run(...)` CALL
+      is the fetch site, and it is still the first point a credential is
+      demanded (`registry.run` constructs `descriptor.acquisition_cls` as its
+      first statement).
+
+    Matching only the first form is how this assertion would go VACUOUS: a
+    shell converted to the registry has no binding, `fetching` comes back
+    empty, and an ordering assertion over an empty set proves nothing. That is
+    the exact failure this file's "the guard is WIRED, not merely correct"
+    section exists to prevent, one migration later -- so the emptiness is
+    asserted as an error at the call site rather than silently skipped.
+    """
+    import ast
+
+    module = ast.Module(body=body, type_ignores=[])
+    bindings = [
+        statement.lineno
+        for statement in ast.walk(module)
+        if isinstance(statement, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "acquisition"
+            for t in statement.targets
+        )
+    ]
+    registry_runs = [
+        node.lineno
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "run"
+    ]
+    return sorted(bindings + registry_runs)
+
+
 def test_every_ingest_entry_point_calls_the_guard_by_name():
     """A guard wired into one of three doors is a guard that does not exist.
 
@@ -924,12 +968,16 @@ def test_every_ingest_entry_point_calls_the_guard_by_name():
 def test_the_guard_precedes_the_client_that_fetches_in_every_entry_point():
     """SC-6's ordering claim, made structural at the call site.
 
-    The client that FETCHES is the one bound to `acquisition` and then sent
-    `download()`/`refresh()`. `ingest_us_equity.py` additionally constructs a
-    client EARLIER, inside its `--stamp-legacy-watermarks` branch -- that path
-    issues zero price requests and exits, so the guard sitting after it is
-    correct, and this test states that exception by name rather than silently
-    tolerating any construction it happens to find.
+    The fetch site is either the client bound to `acquisition` and then sent
+    `download()`/`refresh()`, or -- for a shell already reduced over the
+    data-source registry (03.4 D-15) -- the `run(SOURCE, cfg)` call that
+    constructs it. `_fetch_site_linenos` matches both and explains why.
+
+    `ingest_us_equity.py` additionally constructs a client EARLIER, inside its
+    `--stamp-legacy-watermarks` branch -- that path issues zero price requests
+    and exits, so the guard sitting after it is correct, and this test states
+    that exception by name rather than silently tolerating any construction it
+    happens to find.
     """
     import ast
 
@@ -937,16 +985,12 @@ def test_the_guard_precedes_the_client_that_fetches_in_every_entry_point():
         body = _main_body(path)
         guard = min(_call_linenos(body, _is_guard_call))
 
-        fetching = [
-            statement.lineno
-            for statement in ast.walk(ast.Module(body=body, type_ignores=[]))
-            if isinstance(statement, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "acquisition"
-                for t in statement.targets
-            )
-        ]
-        assert fetching, f"{path}: no `acquisition = ...` binding in __main__"
+        fetching = _fetch_site_linenos(body)
+        assert fetching, (
+            f"{path}: __main__ has neither an `acquisition = ...` binding nor "
+            f"a `run(...)` call, so there is no fetch site to order the guard "
+            f"against and this assertion is vacuous."
+        )
         assert guard < min(fetching), (
             f"{path}: the volume guard runs at line {guard}, AFTER the client "
             f"is constructed at line {min(fetching)}. A guard that runs after "

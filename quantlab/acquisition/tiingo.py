@@ -1,10 +1,17 @@
+import functools
 import os
 
 import polars as pl
 from tiingo import TiingoClient
 
+from quantlab.acquisition.registry import (
+    Capability,
+    SourceDescriptor,
+    register_source,
+)
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
+from quantlab.config import stock_acquisition_config
 from quantlab.enums.data import TiingoColumns
 
 #: The environment variable the Tiingo API key is read from.
@@ -290,3 +297,51 @@ class TiingoAcquisition(Acquisition):
         if not frames:
             return self._empty_frame(), None
         return pl.concat(frames, how="vertical"), None
+
+
+#: The registry descriptor for this vendor -- "who I am", beside the class that
+#: is "how I download" (03.4 D-05).
+#:
+#: Defined HERE rather than in `quantlab/acquisition/registry.py` so that
+#: adding a vendor is one file: the class, its capabilities and its credential
+#: names sit together, and nothing has to be remembered in a second place. The
+#: dependency runs vendor-module -> registry, never the reverse at module top;
+#: `registry.py` imports this module at its BOTTOM, after every definition, so
+#: a cold `import quantlab.acquisition.registry` still enumerates this source.
+#:
+#: `required_env` is restated as a LITERAL rather than sourced from
+#: `TiingoAcquisition.CREDENTIAL_ENV_VARS`. Deriving it would make D-04's
+#: demanded pinning test the tautology `x == x`; restating it means the two
+#: declarations are genuinely independent and a rename in one place fails
+#: loudly.
+TIINGO_SOURCE = register_source(
+    SourceDescriptor(
+        vendor="tiingo",
+        display_name="Tiingo EOD",
+        acquisition_cls=TiingoAcquisition,
+        #: One factory serves both vendors, differing by this keyword. The
+        #: partial keeps the descriptor a pure frozen dataclass and passes
+        #: `subdir` / `kwargs` / the window straight through to callers that
+        #: need them.
+        config_factory=functools.partial(stock_acquisition_config, vendor="tiingo"),
+        #: EXACTLY one: Tiingo's EOD endpoint serves US equities at daily
+        #: frequency and nothing else (`_FREQUENCY_MAP = {"1d": "daily"}`
+        #: above). `data_type=None` records the ABSENCE of a bars/quotes/trades
+        #: distinction for this vendor, not a wildcard -- which is why
+        #: `supports("us_equity", "tick")` is False.
+        capabilities=(
+            Capability(market="us_equity", frequency="1d", data_type=None),
+        ),
+        required_env=("TIINGO_API_KEY",),
+        #: ADVISORY (see `SourceDescriptor.universe_categories`): the roster
+        #: comes from `UniverseCatalog`, never from the vendor, so all four
+        #: categories are listed because all four resolve against Tiingo
+        #: tickers today. This gates nothing.
+        universe_categories=(
+            "nasdaq_all",
+            "us_all",
+            "sp500_constituent",
+            "nasdaq100_constituent",
+        ),
+    )
+)

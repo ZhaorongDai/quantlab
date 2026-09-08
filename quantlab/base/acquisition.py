@@ -68,6 +68,42 @@ class BatchOutcome:
     complete: bool = False
 
 
+@dataclass(frozen=True)
+class AcquisitionResult:
+    """What ONE programmatic run did -- the in-process caller's copy of the
+    outcome (03.4 D-18).
+
+    Two outputs on purpose. This object means the caller never has to read disk
+    to know what happened, while `_failures.json` still lands on disk because a
+    crashed process returns nothing. They are built from the SAME accumulated
+    `failures` dict at the SAME point in `_run`, so they cannot disagree.
+
+    **Defined HERE, in `base/`, rather than in
+    `quantlab/acquisition/registry.py`**, and the direction is what matters:
+    the base layer must not import the acquisition package, so a result type
+    living beside the registry would have to be imported backwards (or
+    duplicated). `registry.py` imports it from here instead -- one definition,
+    no cycle.
+
+    **`failures` values are ALREADY SCRUBBED.** They are the same strings
+    `_attempt_batch` produced through `_scrub`, never raw vendor exception
+    text -- which for Tiingo echoes back a request URL carrying the API token
+    as a query parameter. A new egress path for exception text that skipped
+    that choke point is exactly how the next leak happens.
+
+    `coverage` is `coverage_report()`'s shape, computed after the run, so a
+    caller can render "what is on disk now" without a second traversal.
+    """
+
+    vendor: str
+    requested: tuple[str, ...]
+    succeeded: tuple[str, ...]
+    failures: dict[str, str]
+    cancelled: bool
+    quota_aborted: bool
+    coverage: dict
+
+
 class Acquisition(ABC):
     """Abstract base for network-fetching, config-driven data acquisition.
 
@@ -117,6 +153,15 @@ class Acquisition(ABC):
 
     def __init__(self, config: AcquisitionConfig):
         self.config = config
+        #: The outcome of the most recent `download()`/`refresh()`, or `None`
+        #: before either has run (03.4 D-18).
+        #:
+        #: INSTANCE state, exactly like `_abort_event` and `_no_data_marks`,
+        #: and deliberately NOT on the config: `AcquisitionConfig.to_dict()` is
+        #: `asdict(self)` and lands on disk beside model checkpoints, so a run
+        #: outcome parked there would be persisted as if it were reproducible
+        #: configuration.
+        self.last_result: AcquisitionResult | None = None
 
     def __repr__(self):
         return f"{self.__class__.__name__}(config={self.config})"
@@ -1214,6 +1259,15 @@ class Acquisition(ABC):
         )
 
         failures: dict[str, str] = {}
+        # Accumulated across resume PASSES, for the same reason `failures` is:
+        # each pass re-derives `pending` from the watermarks on disk, so the
+        # last pass alone knows nothing about what an earlier pass completed.
+        # A result built from one pass would report a near-empty success list
+        # for a run that in fact downloaded most of the roster.
+        all_succeeded: set[str] = set()
+        # Pre-set so the result is well-defined on the path where `pending` is
+        # empty on the first pass and `_run_once` never runs at all.
+        aborted = False
         waits = 0
         while True:
             pending = requested
@@ -1243,6 +1297,7 @@ class Acquisition(ABC):
             # were not retried, so this pass has no news about them.
             for symbol in succeeded:
                 failures.pop(symbol, None)
+            all_succeeded.update(succeeded)
             failures.update(pass_failures)
             if not aborted:
                 break
@@ -1271,6 +1326,25 @@ class Acquisition(ABC):
             self._sleep(wait_seconds)
 
         self._write_failure_manifest(failures)
+        # Built from the SAME accumulated `failures` dict the manifest just
+        # received, at the SAME point, so `set(result.failures)` and the
+        # manifest's key set cannot drift (03.4 D-18). `cancelled` is False
+        # unconditionally here because no cancellation path exists yet -- plan
+        # 05 introduces the cancel token and is what makes this field able to
+        # be True.
+        self.last_result = AcquisitionResult(
+            vendor=self.VENDOR,
+            requested=tuple(requested),
+            succeeded=tuple(sorted(all_succeeded)),
+            failures=dict(failures),
+            cancelled=False,
+            quota_aborted=aborted,
+            coverage=self.coverage_report(requested),
+        )
+        # `Self`, not the result. `download()`/`refresh()` keep their chaining
+        # contract, which the rest of this repo's idiom
+        # (`Dataset.from_raw_data().save()`) depends on; the result is read off
+        # `last_result` by `quantlab/acquisition/registry.py:run`.
         return self
 
     def _run_once(

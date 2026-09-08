@@ -41,20 +41,35 @@ def test_build_configs_resolves_symbols_from_universe(monkeypatch):
     assert list(ds_config.symbols) == ["AAPL", "MSFT"]
 
 
-def test_build_configs_never_instantiates_tiingo_acquisition_or_stock_dataset(
+def test_build_configs_never_runs_an_acquisition_or_stock_dataset(
     monkeypatch,
 ):
+    """`_build_configs` resolves a roster and builds paths -- nothing more.
+
+    Renamed from `..._never_instantiates_tiingo_acquisition_...` in 03.4-02:
+    the vendor class is no longer named in this script at all (D-15), so
+    `patch("ingest_tiingo.TiingoAcquisition")` has nothing to patch. The
+    property being guarded is unchanged -- config building must open no
+    connection and construct no store -- and the patch target moved to the
+    registry entry point the script now goes through.
+
+    The absence of the vendor class is asserted here too, so the rename
+    records the reason rather than quietly dropping the old assertion. The
+    exhaustive AST form of that check lives in `tests/test_ingest_shells.py`.
+    """
     monkeypatch.setattr(
         ingest_tiingo.UniverseCatalog, "load", classmethod(lambda cls, config: _FakeCatalog())
     )
 
+    assert not hasattr(ingest_tiingo, "TiingoAcquisition")
+
     args = _make_args(universe="sp500", as_of_date="2020-01-01")
-    with patch("ingest_tiingo.TiingoAcquisition") as mock_acquisition, patch(
+    with patch("ingest_tiingo.run") as mock_run, patch(
         "ingest_tiingo.StockDataset"
     ) as mock_dataset:
         ingest_tiingo._build_configs(args)
 
-        mock_acquisition.assert_not_called()
+        mock_run.assert_not_called()
         mock_dataset.assert_not_called()
 
 

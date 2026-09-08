@@ -41,6 +41,7 @@ already had (recorded in `.planning/STATE.md`):
    responsible for making its own selector match.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -142,3 +143,78 @@ def test_the_no_credentials_fixture_empties_every_declared_name(
 
     for name in no_credentials:
         assert name not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# 03.4-02 Task 1 (TRACER) -- the ONE path, end to end
+# ---------------------------------------------------------------------------
+
+
+def test_tracer_end_to_end_registry_to_raw_shard(
+    monkeypatch, acquisition_config, mock_tiingo_client
+) -> None:
+    """One path through every layer this phase touches, asserted end to end.
+
+    Registry -> descriptor -> vendor module -> `Acquisition` base -> raw shard
+    on disk, in one test. This is deliberately NOT a per-layer unit test: the
+    per-layer contracts are pinned separately, and what THIS proves is that the
+    seams between them actually meet -- an architectural dead end surfaces here,
+    after one commit, rather than after the inspector, the reporter, the cancel
+    token and three shells have all been built on top of it.
+
+    Four claims, in the order a caller meets them:
+
+    1. the descriptor is reachable by VENDOR TOKEN, with no vendor class named
+       anywhere in this test (SC-1);
+    2. `is_configured` answers `False` with the key absent and `True` with it
+       set -- and answers at all without a credential present (SC-2);
+    3. `run(descriptor, config)` reaches the vendor through the descriptor's
+       own class reference and returns an `AcquisitionResult` naming the
+       requested symbols (D-12 / D-14 / D-18);
+    4. `_failures.json` still lands on disk beside the watermarks, because the
+       in-process result and the crash-durable record are two outputs on
+       purpose, not one replacing the other (D-18).
+
+    Issues zero real requests: `mock_tiingo_client` replaces the transport
+    wholesale.
+    """
+    from quantlab.acquisition.registry import (
+        DataSourceRegistry,
+        is_configured,
+        run,
+    )
+    from quantlab.base.acquisition import AcquisitionResult
+
+    descriptor = DataSourceRegistry.get("tiingo")
+    config = acquisition_config(vendor="tiingo")
+
+    # (2) -- both directions, and neither reads a VALUE.
+    monkeypatch.delenv("TIINGO_API_KEY", raising=False)
+    assert is_configured(descriptor) is False
+    monkeypatch.setenv("TIINGO_API_KEY", "not-a-real-credential")
+    assert is_configured(descriptor) is True
+
+    # (3)
+    result = run(descriptor, config)
+
+    assert isinstance(result, AcquisitionResult)
+    assert result.vendor == "tiingo"
+    assert set(result.requested) == set(config.symbols)
+    assert set(result.succeeded) == set(config.symbols)
+    assert result.failures == {}
+    assert result.cancelled is False
+    assert result.quota_aborted is False
+    assert result.coverage["requested"] == len(config.symbols)
+
+    # (4) -- the manifest is a SIBLING artefact, not a replacement.
+    manifest = Path(config.watermark_path) / "_failures.json"
+    assert manifest.exists()
+    assert json.loads(manifest.read_text()) == result.failures
+
+    # ... and the raw tier actually received shards, under the vendor-
+    # terminated root. Asserted on the ROOT the config names rather than on a
+    # path rebuilt here, so a layout change fails at the config invariant test
+    # above instead of silently passing a reconstructed path.
+    raw_root = Path(config.raw_data_dir_path)
+    assert raw_root.name == "tiingo"
+    assert list(raw_root.rglob("*.pqt"))

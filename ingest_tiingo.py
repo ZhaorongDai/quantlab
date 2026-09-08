@@ -1,9 +1,12 @@
 """Pull US-equities daily data from Tiingo and persist it as xr.Dataset/Zarr.
 
-Full Tiingo-to-Zarr pipeline: fetches raw EOD data via TiingoAcquisition
-(writing raw parquet files under the configured raw_data_dir_path), then
-converts/cleans/persists it through StockDataset into a Zarr store (D-02
+Full Tiingo-to-Zarr pipeline: fetches raw EOD data through the data-source
+registry (writing raw parquet files under the configured raw_data_dir_path),
+then converts/cleans/persists it through StockDataset into a Zarr store (D-02
 market/frequency convention, see quantlab/config/__init__.py:stock_kline_config()).
+
+This script names no vendor class anywhere: it resolves its source from
+`DataSourceRegistry` and downloads through `registry.run()` (03.4 D-15).
 
 Requires the TIINGO_API_KEY environment variable to be set -- get your key
 from the Tiingo dashboard (https://api.tiingo.com/). This script never
@@ -27,7 +30,7 @@ instead of passing --symbols explicitly:
 
 import argparse
 
-from quantlab.acquisition.tiingo import TiingoAcquisition
+from quantlab.acquisition.registry import DataSourceRegistry, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
@@ -44,11 +47,13 @@ from quantlab.utils.cli import (
     volume_pricing,
 )
 
-#: Tiingo's EOD endpoint is ONE symbol per request -- there is no multi-symbol
-#: batch to amortise over -- so the volume guard is told a batch size of 1.
-#: Telling it anything larger would understate the request count by exactly
-#: that factor, which is the number the request ceiling is denominated in.
-TIINGO_BATCH_SIZE = 1
+#: The ONE place this script's vendor is named, and it is a TOKEN, not a class.
+#:
+#: SC-1's "no vendor named at the call site" means no vendor CLASS: a script
+#: called `ingest_tiingo.py` has its vendor as its whole identity, and the
+#: alternative -- a `--source` flag -- is the merged CLI D-15 explicitly
+#: forbids. Every vendor-specific fact below is now read off the descriptor.
+SOURCE = DataSourceRegistry.get("tiingo")
 
 
 def _build_configs(
@@ -129,7 +134,14 @@ if __name__ == "__main__":
             guard_start,
             guard_end,
             frequency="1d",
-            batch_size=TIINGO_BATCH_SIZE,
+            # Tiingo's EOD endpoint is ONE symbol per request -- there is
+            # no multi-symbol batch to amortise over -- so the volume guard is
+            # told a batch size of 1. Telling it anything larger would
+            # understate the request count by exactly that factor, which is
+            # the number the request ceiling is denominated in. Read off the
+            # descriptor's acquisition class rather than restated here, so the
+            # guard and the fetcher cannot disagree about the batch size.
+            batch_size=SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE,
             rows_per_symbol_day=args.rows_per_symbol_day,
             force=args.force_volume,
         ),
@@ -150,12 +162,18 @@ if __name__ == "__main__":
     # whole-window form is the one that applies here (CR-03).
     pricing.assert_dense_panel_fits(category, guard_start, guard_end)
 
-    print(f"Acquiring symbols={acq_config.symbols} via Tiingo (refresh={args.refresh})")
-    acquisition = TiingoAcquisition(acq_config)
-    if args.refresh:
-        acquisition.refresh()
-    else:
-        acquisition.download()
+    print(
+        f"Acquiring symbols={acq_config.symbols} via "
+        f"{SOURCE.display_name} (refresh={args.refresh})"
+    )
+    result = run(SOURCE, acq_config, refresh=args.refresh)
+    print(
+        f"{len(result.succeeded)} symbol(s) succeeded, "
+        f"{len(result.failures)} failed"
+    )
 
+    # STAYS in the shell: `run()` is acquisition-only (D-14 amendment), and
+    # this door densifies the WHOLE window unconditionally -- which is exactly
+    # the mode `assert_dense_panel_fits` above was sized for.
     print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
     StockDataset(ds_config).from_raw_data().save()
