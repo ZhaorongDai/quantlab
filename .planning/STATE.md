@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Completed quick task 260907-sm2 (quantlab namespace package; installable, console consumes it editable)
+stopped_at: Completed quick task 260907-uac (XrBackend refuses an overlapping append)
 last_updated: "2026-09-08T01:29:01.518Z"
 last_activity: 2026-09-07
-last_activity_desc: "Completed quick task 260907-sm2: quantlab is an installable quantlab.* namespace package"
-state_head: 041eebdcb946f9643ec1a637f11fa08ed49a5076
+last_activity_desc: "Completed quick task 260907-uac: XrBackend refuses an append overlapping the stored timestamps"
+state_head: 8249dedb5636d656fbf3056a2d0ef839fe55db60
 progress:
   total_phases: 11
   completed_phases: 2
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-07 - Completed quick task 260907-sm2: quantlab is an installable quantlab.* namespace package
+Last activity: 2026-09-07 - Completed quick task 260907-uac: XrBackend refuses an append overlapping the stored timestamps
 
 Progress: [██████████] 100%
 
@@ -86,6 +86,7 @@ Progress: [██████████] 100%
 | Phase 03.1 P05 | 8 min | 3 tasks | 5 files |
 | Phase quick-260907-rjq P01 | 34 min | 3 tasks | 12 files |
 | Phase quick-260907-sm2 P01 | 50 min | 3 tasks | 95 files |
+| Phase quick-260907-uac P01 | 14 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -194,6 +195,7 @@ Recent decisions affecting current work:
 | 260907-fl6 | Fix the defects surfaced while writing the example/ guides — model-layer correctness (early stopping, alphabetical tensor axis, eval-mode inference), the layer's first tests, three deletions, a persistent refit optimizer, and the `_*_one_epoch`→`_*_one_batch` rename | 2026-09-07 | f80e9fb | [260907-fl6-fix-the-defects-surfaced-while-writing-t](./quick/260907-fl6-fix-the-defects-surfaced-while-writing-t/) |
 | 260907-rjq | Add a --data-dir CLI parameter to the data acquisition scripts to override the download/storage root | 2026-09-07 | 4552b0c | [260907-rjq-add-a-data-dir-cli-parameter-to-the-data](./quick/260907-rjq-add-a-data-dir-cli-parameter-to-the-data/) |
 | 260907-sm2 | Make quantlab an installable quantlab.* namespace package so quantlab-console can depend on it | 2026-09-07 | 041eebd | [260907-sm2-make-quantlab-an-installable-quantlab-na](./quick/260907-sm2-make-quantlab-an-installable-quantlab-na/) |
+| 260907-uac | Refuse an append that overlaps timestamps already in the store | 2026-09-07 | 8249ded | [260907-uac-refuse-an-append-that-overlaps-timestamp](./quick/260907-uac-refuse-an-append-that-overlaps-timestamp/) |
 
 ### Roadmap Evolution
 
