@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 7
+open_count: 8
 waived_count: 0
 fixed_count: 0
-total_count: 7
-last_updated: 2026-09-06T22:47:40.800Z
+total_count: 8
+last_updated: 2026-09-08T01:29:08.360Z
 ---
 
 # Broken Windows Ledger
@@ -22,6 +22,7 @@ last_updated: 2026-09-06T22:47:40.800Z
 | 5 | 03.2 | unrun-verify | ingest_alpaca.py |  | 03.2-07 open verification A (O-1): free-tier Alpaca SIP access unresolved; needs one live curl with real credentials | open |  | 2026-09-06T22:47:40.434Z |  |
 | 6 | 03.2 | unrun-verify | ingest_alpaca.py |  | 03.2-07 open verification B (SC-5 manual half): no real Alpaca round-trip performed; no credentials on this machine | open |  | 2026-09-06T22:47:40.650Z |  |
 | 7 | 03.2 | unrun-verify | ingest_alpaca.py |  | 03.2-07 open verification C (O-2): real Alpaca symbols-per-request ceiling unprobed; DEFAULT_BATCH_SIZE=100 is a conservative working value | open |  | 2026-09-06T22:47:40.800Z |  |
+| 8 | quick-260907-sm2 | deviation | README.md |  | Doc-path sweep regex excluded ':' so backticked refs like base/model.py:BaseModel were invisible; widened and fixed (~40 refs) | open |  | 2026-09-08T01:29:08.360Z |  |
 
 ````json
 [
@@ -107,6 +108,18 @@ last_updated: 2026-09-06T22:47:40.800Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-06T22:47:40.800Z",
+    "resolved_at": null
+  },
+  {
+    "id": 8,
+    "kind": "deviation",
+    "phase": "quick-260907-sm2",
+    "file": "README.md",
+    "line": null,
+    "description": "Doc-path sweep regex excluded ':' so backticked refs like base/model.py:BaseModel were invisible; widened and fixed (~40 refs)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-08T01:29:08.360Z",
     "resolved_at": null
   }
 ]
