@@ -16,13 +16,69 @@ from dataset.stock import StockDataset
 from enums.data import Frequency, Market, Vendor
 
 
-def _data_root() -> Path:
+#: Process-level storage-root override, set by `set_data_root()` and consulted
+#: first by `get_data_root()`. `None` means "not overridden"; see D-06.
+_DATA_ROOT_OVERRIDE: Path | None = None
+
+
+def set_data_root(path: "str | os.PathLike | None") -> Path | None:
+    """Set the process-level storage root, ahead of the environment variable.
+
+    Precedence, highest first (260907-rjq D-01):
+
+    1. this override,
+    2. the `QUANTLAB_DATA_DIR` environment variable,
+    3. the repo-root-relative `data/` directory.
+
+    There is still exactly ONE data root; it simply has one more way to be set,
+    and no volume is ever hardcoded.
+
+    The value is `expanduser()`-ed but deliberately NOT `resolve()`-d. The
+    environment knob is `Path(env_value)` with no resolution, so resolving only
+    this one would make the two behave differently on a symlinked root -- on
+    macOS `/tmp` resolves to `/private/tmp` -- and would defeat a caller who
+    passed a symlink on purpose. Expansion IS applied because a quoted
+    `--data-dir '~/quantlab-data'` reaches Python with a literal tilde and
+    would otherwise create a directory named `~`.
+
+    The directory is neither created nor required to exist (D-08): the
+    acquisition layer creates its own directories under whatever root it is
+    given, and the environment knob validates nothing -- validating one and not
+    the other is how two knobs drift apart.
+
+    Passing `None` CLEARS the override and returns `None` (D-06); a
+    process-global knob without a reset would let the first caller that sets it
+    silently redirect everything afterwards. An empty or whitespace-only value
+    raises `ValueError`: an unset/empty env var falls through to the default,
+    but someone who typed an empty root meant something, and silently meaning
+    "repo default" is wrong.
+
+    Returns the stored `Path` so a caller can report where the run will write.
+    """
+    global _DATA_ROOT_OVERRIDE
+    if path is None:
+        _DATA_ROOT_OVERRIDE = None
+        return None
+    if isinstance(path, str) and not path.strip():
+        raise ValueError(
+            "data root must be a non-empty path; got an empty/whitespace "
+            "value. Omit the setting entirely to fall back to "
+            "QUANTLAB_DATA_DIR or the repo-root data/ directory."
+        )
+    _DATA_ROOT_OVERRIDE = Path(path).expanduser()
+    return _DATA_ROOT_OVERRIDE
+
+
+def get_data_root() -> Path:
     """Root directory for downloads/data storage.
 
-    Configurable via the QUANTLAB_DATA_DIR environment variable; defaults to
-    a repo-root-relative `data/` directory so a fresh clone works with zero
-    configuration.
+    Resolves the one storage root through three levels, highest first: the
+    process-level override set by `set_data_root()` (what `--data-dir` drives),
+    then the `QUANTLAB_DATA_DIR` environment variable, then a repo-root-relative
+    `data/` directory so a fresh clone works with zero configuration.
     """
+    if _DATA_ROOT_OVERRIDE is not None:
+        return _DATA_ROOT_OVERRIDE
     env_value = os.environ.get("QUANTLAB_DATA_DIR")
     if env_value:
         return Path(env_value)
@@ -32,13 +88,13 @@ def _data_root() -> Path:
 def _market_data_root(market: str, frequency: str) -> Path:
     """`data/{market}/{frequency}` root that every zarr-backed config factory
     derives its `zarr_file_path` from (02-CONTEXT.md D-02)."""
-    return _data_root() / "data" / market / frequency
+    return get_data_root() / "data" / market / frequency
 
 
 def _market_downloads_root(market: str, frequency: str) -> Path:
     """`downloads/{market}/{frequency}` root that every acquisition-facing
     config factory derives its `raw_data_dir_path` from (02-CONTEXT.md D-02)."""
-    return _data_root() / "downloads" / market / frequency
+    return get_data_root() / "downloads" / market / frequency
 
 
 def spot_kline_config(
@@ -54,7 +110,7 @@ def spot_kline_config(
             _market_downloads_root(market, frequency) / "spot" / "monthly" / "klines"
         ),
         zarr_file_path=str(_market_data_root(market, frequency) / "klines.zarr"),
-        catalog_path=str(_data_root() / "data" / "catalog"),
+        catalog_path=str(get_data_root() / "data" / "catalog"),
         market=market,
         frequency=frequency,
         start_date=start_date,
@@ -81,9 +137,12 @@ def stock_kline_config(
     filename, both BENEATH the existing `data/{market}/{frequency}/`
     convention (02-CONTEXT.md D-02). They exist so a second roster -- the
     full-market `us_all` backfill -- can land beside the NASDAQ-only one
-    instead of overwriting it, WITHOUT introducing a second path root: per
-    260906-0iy D-04, `QUANTLAB_DATA_DIR` remains the only path knob and no
-    volume is ever hardcoded.
+    instead of overwriting it, WITHOUT introducing a second path root. There
+    is exactly one storage root, resolved by `get_data_root()` in the order
+    `--data-dir` override > `QUANTLAB_DATA_DIR` > repo-root `data/`
+    (260906-0iy D-04, 260907-rjq D-01); `subdir`/`store_name` select a
+    location beneath whichever of the three answered, and no volume is ever
+    hardcoded here.
 
     `vendor` appends the D-11 vendor segment so `raw_data_dir_path`
     TERMINATES at it -- `Path(raw_data_dir_path).name == vendor` is the
@@ -102,7 +161,7 @@ def stock_kline_config(
             _market_downloads_root(market, frequency) / subdir / vendor
         ),
         zarr_file_path=str(_market_data_root(market, frequency) / store_name),
-        catalog_path=str(_data_root() / "data" / "catalog"),
+        catalog_path=str(get_data_root() / "data" / "catalog"),
         market=market,
         frequency=frequency,
         vendor=vendor,
@@ -129,8 +188,10 @@ def stock_acquisition_config(
     directory) so a second roster's raw parquet and watermarks stay separate
     from the NASDAQ-only ones -- separate watermarks are what make the two
     backfills independently resumable. It is a subdirectory BENEATH
-    `downloads/{market}/{frequency}/`, not a second root: per 260906-0iy D-04
-    `QUANTLAB_DATA_DIR` remains the only path knob.
+    `downloads/{market}/{frequency}/`, not a second root: there is exactly one
+    storage root, resolved by `get_data_root()` in the order `--data-dir`
+    override > `QUANTLAB_DATA_DIR` > repo-root `data/` (260906-0iy D-04,
+    260907-rjq D-01), and this factory hardcodes no volume.
 
     `vendor` is DERIVED into both paths rather than accepted pre-built, so the
     two placements below cannot drift apart at a call site (D-11, D-19):
@@ -175,8 +236,8 @@ def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
     PlBackend/parquet, not XrBackend/Zarr.
     """
     return UniverseConfig(
-        output_path=str(_data_root() / "data" / "reference" / "universe.parquet"),
-        cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
+        output_path=str(get_data_root() / "data" / "reference" / "universe.parquet"),
+        cache_dir=str(get_data_root() / "data" / "reference" / "_cache"),
         kwargs=kwargs,
     )
 
@@ -210,7 +271,7 @@ def sp500_constituent_config(
         zarr_file_path=str(
             _market_data_root("us_equity", "1d") / "sp500_constituent.zarr"
         ),
-        cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
+        cache_dir=str(get_data_root() / "data" / "reference" / "_cache"),
         start_date=start_date,
         end_date=end_date,
         # Converted here rather than passed through: `BaseDatasetConfig`
@@ -254,7 +315,7 @@ def nasdaq100_constituent_config(
         zarr_file_path=str(
             _market_data_root("us_equity", "1d") / "nasdaq100_constituent.zarr"
         ),
-        cache_dir=str(_data_root() / "data" / "reference" / "_cache"),
+        cache_dir=str(get_data_root() / "data" / "reference" / "_cache"),
         start_date=start_date,
         end_date=end_date,
         # Converted here rather than passed through: `BaseDatasetConfig`
@@ -277,7 +338,7 @@ def alpha101_config(
     mode: Literal["batch", "stream"] = "batch",
 ):
     return FactorConfig(
-        file_path=str(_data_root() / "data" / "factor" / "alpha101.zarr"),
+        file_path=str(get_data_root() / "data" / "factor" / "alpha101.zarr"),
         dataset=SpotKlineDataset(spot_kline_config(symbols=symbols)),
         data_columns=[
             "high",
@@ -317,7 +378,7 @@ def stock_alpha101_config(
     `RuntimeError: Bad inputs, given <class 'NoneType'>` at construction time.
     """
     return FactorConfig(
-        file_path=str(_data_root() / "data" / "factor" / "alpha101_stock.zarr"),
+        file_path=str(get_data_root() / "data" / "factor" / "alpha101_stock.zarr"),
         dataset=StockDataset(
             stock_kline_config(
                 symbols=symbols, market=market, frequency=frequency
@@ -348,7 +409,7 @@ def alpha158_config(
     mode: Literal["batch", "stream"] = "batch",
 ):
     return FactorConfig(
-        file_path=str(_data_root() / "data" / "factor" / "alpha158.zarr"),
+        file_path=str(get_data_root() / "data" / "factor" / "alpha158.zarr"),
         dataset=SpotKlineDataset(spot_kline_config(symbols=symbols)),
         data_columns=[
             "high",
@@ -390,7 +451,7 @@ def stock_alpha158_config(
     here; this factory only chooses the dataset.
     """
     return FactorConfig(
-        file_path=str(_data_root() / "data" / "factor" / "alpha158_stock.zarr"),
+        file_path=str(get_data_root() / "data" / "factor" / "alpha158_stock.zarr"),
         dataset=StockDataset(
             stock_kline_config(
                 symbols=symbols, market=market, frequency=frequency
@@ -436,7 +497,7 @@ def momentum_config(
     its horizon from config rather than from a literal in its own source.
     """
     return PolarsFactorConfig(
-        file_path=str(_data_root() / "data" / "factor" / "momentum.zarr"),
+        file_path=str(get_data_root() / "data" / "factor" / "momentum.zarr"),
         dataset=SpotKlineDataset(
             spot_kline_config(
                 symbols=symbols, market=market, frequency=frequency
@@ -462,7 +523,7 @@ def spot_label_config(
         symbols = ["_all_"]
     return FactorConfig(
         file_path=str(
-            _data_root() / "data" / "label" / f"spot_label_{label_name}.zarr"
+            get_data_root() / "data" / "label" / f"spot_label_{label_name}.zarr"
         ),
         dataset=SpotKlineDataset(spot_kline_config(symbols=symbols)),
         data_columns=["close"],

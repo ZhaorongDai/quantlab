@@ -14,14 +14,17 @@ date. Pass --allow-stale to accept a knowingly-frozen table.
 Usage:
     uv run python refresh_us_equity_universe.py
     uv run python refresh_us_equity_universe.py --allow-stale
+    uv run python refresh_us_equity_universe.py --data-dir /Volumes/BigDisk
 """
 
 import argparse
 
 from acquisition.universe import UniverseCatalog
 from config import universe_config
+from utils.cli import add_data_dir_arg, apply_data_dir
 
-if __name__ == "__main__":
+
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Build/refresh the point-in-time US-equity universe reference "
@@ -37,7 +40,17 @@ if __name__ == "__main__":
             "universe.parquet looks exactly like a fresh one."
         ),
     )
-    args = parser.parse_args()
+    add_data_dir_arg(parser)
+    return parser
+
+
+if __name__ == "__main__":
+    args = _build_arg_parser().parse_args()
+
+    # Before `universe_config()`, and the position is load-bearing: the config
+    # factories snapshot their paths as strings at construction time, so a root
+    # override applied afterwards silently does nothing (DDIR-04).
+    apply_data_dir(args)
 
     config = universe_config()
     UniverseCatalog(config).build(allow_stale=args.allow_stale).save()

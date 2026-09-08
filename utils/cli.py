@@ -15,6 +15,11 @@ literal that defines it rather than restated here, or a value added at the
 Dataset layer stays unreachable from the command line:
 `base.chunking.TimeChunkPlanner.GRANULARITIES` for `--chunk`, and
 `base.data.BaseDataset.NEW_LISTING_STRATEGIES` for `--on-new-listing`.
+`apply_data_dir` additionally reaches the `config` layer, but imports it at
+CALL time for the same reason `_explicit_symbol_catalog` defers
+`acquisition.universe`: a module-scope `from config import set_data_root`
+would drag `dataset.backend`, `dataset.spot`, `dataset.stock` and
+`base.config` into every import of this module.
 
 **The one thing this module must not unify.** `ingest_tiingo.py` resolves
 point-in-time membership on a single day; `ingest_us_equity.py` resolves
@@ -319,6 +324,64 @@ def resolve_symbols(
     if limit is not None:
         symbols = symbols[:limit]
     return symbols
+
+
+def add_data_dir_arg(
+    parser: argparse.ArgumentParser,
+) -> argparse.ArgumentParser:
+    """Add `--data-dir`, the per-run storage root override.
+
+    Defined here once (D-14) so the flag name, its help text and its
+    precedence story are identical on every entry point that offers it.
+    """
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help=(
+            "Storage root for this run: everything the run reads and writes "
+            "(raw downloads, watermarks, Zarr stores, the universe table) is "
+            "derived from it. Precedence is --data-dir > QUANTLAB_DATA_DIR > "
+            "the repo-root data/ directory. The directory does not need to "
+            "exist -- the run creates what it needs. It relocates the whole "
+            "ROOT; ingest_binance_spot.py's --raw-data-dir is a different "
+            "knob that points at one pre-existing raw CSV directory, and the "
+            "two compose."
+        ),
+    )
+    return parser
+
+
+def apply_data_dir(args: argparse.Namespace) -> "object | None":
+    """Apply `--data-dir` to the process-level storage root, if it was given.
+
+    Returns the stored root `Path`, or `None` when the flag was absent (in
+    which case the root is left exactly as it was, so `QUANTLAB_DATA_DIR` or
+    the repo default still answers).
+
+    This is an EXPLICIT call each script makes from its own `__main__`, not an
+    argparse `action=` side effect. A custom Action firing inside
+    `parse_args()` would make the ordering structurally unbreakable, which is
+    tempting -- but it was rejected for the reason stated at the volume guard's
+    call-site helper below: each script names the thing it invokes at its own
+    call site, so a reader of the script, and a grep across the entry points,
+    sees the decision where it is made rather than one level of indirection
+    away. A root-relocating side effect hidden inside argument parsing is
+    exactly the kind of invisible action that comment exists to prevent. The
+    ordering is enforced instead by the AST guard in
+    `tests/test_data_dir_cli.py`.
+
+    The `config` import is deferred to call time so this module keeps the
+    module-scope dependency surface its docstring promises -- the same reason
+    `_explicit_symbol_catalog` defers `acquisition.universe`.
+    """
+    value = getattr(args, "data_dir", None)
+    if value is None:
+        return None
+
+    from config import set_data_root
+
+    return set_data_root(value)
 
 
 def add_volume_guard_args(

@@ -35,6 +35,27 @@ import xarray as xr
 from base.config import AcquisitionConfig, DatasetConfig
 
 
+@pytest.fixture(autouse=True)
+def _reset_data_root_override():
+    """Clear the process-level storage-root override around EVERY test.
+
+    `config.set_data_root()` is process-global (260907-rjq D-01/D-06), so a
+    test that sets it and does not clear it would silently redirect every
+    later test's paths in the same session -- including onto a real data root.
+    Clearing on BOTH sides matters: the "after" half contains a test that sets
+    it, the "before" half contains anything that sets it outside a fixture.
+
+    `config` is imported inside the body rather than at module scope so
+    collection cost is unchanged and this file keeps its zero-import-time
+    dependency promise above.
+    """
+    import config
+
+    config.set_data_root(None)
+    yield
+    config.set_data_root(None)
+
+
 @pytest.fixture
 def binance_csv_rows() -> list[list]:
     """Return a small list of raw row-tuples matching the column order of
