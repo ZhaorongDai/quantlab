@@ -81,7 +81,7 @@
 **B. 原始文件 → 面板（`from_raw_data()`）**
 
 4. 一次性交接检查：如果第 3 步的兜底刚刚已经建好过面板、backend 还持着同一个对象、日期窗口也没变，就直接返回，跳过一次重复转换（实测一次 ingest 会转两遍原始树）。这个交接**只对一次调用有效**，进入方法就无条件清空。
-5. `_raw_data_to_xr()`——**子类唯一必须实现的方法**。它内部要做完三件事：定位/解析原始文件、**去重**、`to_xarray()`。去重走 `dataset/cleaning.py:dedup_raw_frame(keep="last")`，必须在 `to_xarray()` 之前：非唯一的 `(timestamp, symbol)` MultiIndex 会让 `to_xarray()` 直接抛 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`。`keep="last"` 是因为 vendor 的月度重发里，后到的文件更可能是修正后的数据。
+5. `_raw_data_to_xr()`——**子类唯一必须实现的方法**。它内部要做完三件事：定位/解析原始文件、**去重**、`to_xarray()`。去重走 `quantlab/dataset/cleaning.py:dedup_raw_frame(keep="last")`，必须在 `to_xarray()` 之前：非唯一的 `(timestamp, symbol)` MultiIndex 会让 `to_xarray()` 直接抛 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`。`keep="last"` 是因为 vendor 的月度重发里，后到的文件更可能是修正后的数据。
 6. **稠密化不需要写代码**。`pandas.DataFrame.set_index(["timestamp","symbol"]).to_xarray()` 本身就产出完整的笛卡尔积，缺的格子自动是 NaN。这就是为什么 `quantlab/dataset/cleaning.py` 里一行 fill/interpolate 都没有——模块开头写得很直白：加 forward-fill 等于**编造流水线从未观测到的数据**。
 7. `_clean(data)`。默认实现是 `clean_market_data()` = `validate_schema()` + `flag_anomalies()`。前者对缺列**硬抛**，对 null 只 `logger.warning` 不抛（flag-don't-delete）——必需列全空这一种退化情形升到 `logger.error`，同样不抛（见「常见坑」#10）；后者加一个布尔变量 `anomaly_flag`，在任何 price-like 列 ≤ 0、或 `close` 单步涨跌幅超过 `_EXTREME_JUMP_THRESHOLD`（0.5）处置 True，**从不修改原值**。这是个可覆写的钩子，非 OHLCV 的数据集必须覆写它。
 8. `data_backend.to_internal(data)`——面板进内存，此时还没落盘。
@@ -507,7 +507,7 @@ clean_market_data(panel)
 ValueError: validate_schema: required column(s) missing from dataset: ['open', 'high', 'low', 'close', 'volume']
 ```
 
-即使绕过这一关，`flag_anomalies()` 还会给一个只有布尔变量的面板再挂一个全 False 的 `anomaly_flag`——**盘面尺寸翻倍，记录的信息为零**。用 `dataset/cleaning.py:clean_membership_panel()`，或者写你自己的。
+即使绕过这一关，`flag_anomalies()` 还会给一个只有布尔变量的面板再挂一个全 False 的 `anomaly_flag`——**盘面尺寸翻倍，记录的信息为零**。用 `quantlab/dataset/cleaning.py:clean_membership_panel()`，或者写你自己的。
 
 **6. `time_interval` 属性在 `XrBackend` 下曾经是坏的。**（**已于 2026-09-07 修复**）
 `BaseDataset.time_interval` 写的是 `get_xarray_dataset(["timestamp"]).diff(...).to_series().mode()`，但 `XrBackend.get_xarray_dataset()` **完全忽略 `indexes` 参数**，直接返回整个 `Dataset`。于是两个问题接连出现：

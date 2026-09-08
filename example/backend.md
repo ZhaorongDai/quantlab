@@ -261,7 +261,7 @@ read 之后: {'timestamp': 100, 'symbol': 2}
 再 read 一次: {'timestamp': 5, 'symbol': 2} <- 收窄活下来了
 ```
 
-第二次 `read()` 什么也没做——`XrBackend.read` 的缓存早退看到 `self.data` 已经在了就直接返回。这就是为什么 `head` 必须绕开 `read()` 这条路，也是为什么 `base/data.py:BaseDataset.head()` 只是一句 `return self.data_backend.head(self.config.zarr_file_path, n)`：路径由数据集提供（它本来就拥有这个路径），有界读取由后端实现，数据集不加自己的意见。
+第二次 `read()` 什么也没做——`XrBackend.read` 的缓存早退看到 `self.data` 已经在了就直接返回。这就是为什么 `head` 必须绕开 `read()` 这条路，也是为什么 `quantlab/base/data.py:BaseDataset.head()` 只是一句 `return self.data_backend.head(self.config.zarr_file_path, n)`：路径由数据集提供（它本来就拥有这个路径），有界读取由后端实现，数据集不加自己的意见。
 
 ### 3. append 与守卫
 
@@ -291,7 +291,7 @@ ABC 的强制力是真的：漏掉任何一个，类**根本无法实例化**。
 Can't instantiate abstract class Incomplete without an implementation for abstract method 'head'
 ```
 
-`append` / `widen_symbol_axis` / `widen_and_append` / `APPEND_DIM_CHUNK` 都**不在** `DataBackend` 上，它们是 `XrBackend` 自己的方法。这是有道理的：追加语义是 Zarr 这个介质才有的能力。但反过来说，`base/data.py:BaseDataset.from_raw_data_chunked()` 里写死了 `self.data_backend.append(...)`，所以一个没有 `append` 的后端目前跑不了分块摄取路径——用得上分块的新介质需要自己实现 `append`。
+`append` / `widen_symbol_axis` / `widen_and_append` / `APPEND_DIM_CHUNK` 都**不在** `DataBackend` 上，它们是 `XrBackend` 自己的方法。这是有道理的：追加语义是 Zarr 这个介质才有的能力。但反过来说，`quantlab/base/data.py:BaseDataset.from_raw_data_chunked()` 里写死了 `self.data_backend.append(...)`，所以一个没有 `append` 的后端目前跑不了分块摄取路径——用得上分块的新介质需要自己实现 `append`。
 
 ### 一个完整可跑的最小后端
 
