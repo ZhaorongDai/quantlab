@@ -1250,3 +1250,292 @@ def test_an_unknown_strategy_lists_the_accepted_values(
     for accepted in BaseDataset.NEW_LISTING_STRATEGIES:
         assert accepted in message
     assert not Path(config.zarr_file_path).exists()
+
+
+# ---------------------------------------------------------------------------
+# The data_vars axis on the chunked path (260908-0f4 Task 3)
+#
+# The per-window write goes through `XrBackend.widen_and_append` -- the ONE
+# composed three-axis entry point -- rather than through plain `append`. A
+# vendor that adds a column between two periodic refreshes used to halt the
+# whole run; it now reconciles, with every inherited refusal intact because
+# the composed method's CLOSING call is the unchanged `append`.
+#
+# The swap has one observable store-side residue and it is asserted rather
+# than assumed away: the widens COMMIT before that closing append, so a
+# rename-shaped window (one variable gone, one new) still HALTS -- no window
+# written, no history truncated -- but leaves the store carrying the new name
+# backfilled all-NaN over its own extent, where plain `append` refused the
+# identical shape with zero store mutation. Measured live both ways.
+# ---------------------------------------------------------------------------
+
+#: A fourth year, appended to raw between the two runs, so the second run has
+#: a window to actually write. Without it every window is ledger-skipped and
+#: no variable reconciliation is ever reached.
+_LATER_YEAR = 2025
+
+
+class _ExtendableRaw:
+    """Raw tree over a FIXED roster `{A, B}` whose date range can be extended
+    between two chunked runs.
+
+    The roster is deliberately fixed: this section is about the data-variable
+    axis, and a symbol-axis drift would drag `on_new_listing` into every
+    assertion.
+    """
+
+    def __init__(self, raw_dir: Path, tmp_path: Path, row, hive) -> None:
+        self._raw_dir = raw_dir
+        self._tmp_path = tmp_path
+        self._row = row
+        self._hive = hive
+
+    def _write(self, years, batch_key: str) -> None:
+        rows = [
+            self._row(f"{year}-{day}", symbol, close=close)
+            for year in years
+            for day in _DAYS_PER_YEAR
+            for symbol, close in (("A", 100.0), ("B", 200.0))
+        ]
+        self._hive(self._raw_dir, "tiingo", rows, batch_key=batch_key)
+
+    def write_initial(self) -> None:
+        self._write(_YEARS, "vardrift-base")
+
+    def extend(self) -> None:
+        self._write((_LATER_YEAR,), "vardrift-later")
+
+    def config(self, store_name: str = "vardrift.zarr") -> DatasetConfig:
+        return DatasetConfig(
+            raw_data_dir_path=str(self._raw_dir / "tiingo"),
+            zarr_file_path=str(self._tmp_path / store_name),
+            catalog_path=str(self._tmp_path / "catalog"),
+            market="us_equity",
+            frequency="1d",
+            vendor="tiingo",
+        )
+
+
+@pytest.fixture
+def extendable_raw(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+) -> _ExtendableRaw:
+    return _ExtendableRaw(
+        tmp_path / "vardrift", tmp_path, stock_pqt_row, hive_raw_tree
+    )
+
+
+def _store_over_three_years(extendable_raw: _ExtendableRaw) -> DatasetConfig:
+    """A complete chunked store over `{A, B}`, with a fourth year then added
+    to raw so the next run has exactly one window to write.
+    """
+    config = extendable_raw.config()
+    extendable_raw.write_initial()
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+    assert _panel(config.zarr_file_path).sizes["timestamp"] == len(_YEARS) * len(
+        _DAYS_PER_YEAR
+    )
+    extendable_raw.extend()
+    return config
+
+
+class _AddsAVariable(StockDataset):
+    """A vendor schema change as it actually reaches this layer: one NEW data
+    variable in every window.
+
+    Built in `_clean` rather than by writing a mismatched parquet shard on
+    purpose -- `_scan_raw` leaves polars' `extra_columns`/`missing_columns` at
+    their RAISING defaults, so a mixed-schema raw tier is refused by the
+    scanner long before the store is reached. Testing it that way would test
+    the scanner, not the reconciliation.
+    """
+
+    def _clean(self, data: xr.Dataset) -> xr.Dataset:
+        data = super()._clean(data)
+        return data.assign(newvar=data["adjClose"] * 2.0)
+
+
+class _RenamesAVariable(StockDataset):
+    """The dangerous shape: one variable GONE and one new -- a vendor column
+    rename. The missing half must still be refused unconditionally.
+    """
+
+    def _clean(self, data: xr.Dataset) -> xr.Dataset:
+        data = super()._clean(data)
+        data = data.assign(adjCloseV2=data["adjClose"])
+        return data.drop_vars("adjClose")
+
+
+class _AddsABooleanVariable(StockDataset):
+    """A NON-float new variable, plus the fill its dataset declares for it.
+
+    `True` in every window it carries, so the `False` the widen materialises
+    over the store's pre-existing extent is distinguishable from the window's
+    own data rather than coinciding with it.
+    """
+
+    def _clean(self, data: xr.Dataset) -> xr.Dataset:
+        data = super()._clean(data)
+        return data.assign(
+            halted=xr.full_like(data["adjClose"], True, dtype=bool)
+        )
+
+    def _widen_fill_values(self) -> dict:
+        return {**super()._widen_fill_values(), "halted": False}
+
+
+def test_a_window_carrying_a_new_variable_is_reconciled_rather_than_refused(
+    extendable_raw: _ExtendableRaw,
+) -> None:
+    """The gap 260907-vyr closed on the factor path, closed here. A vendor
+    that adds a column between two periodic refreshes used to halt the whole
+    run with `XrBackend.append: ... the incoming panel carries data
+    variable(s) [...] that the store does not hold`.
+
+    RED under: reverting the per-window write to plain `append` (M1).
+    """
+    config = _store_over_three_years(extendable_raw)
+
+    _AddsAVariable(config).from_raw_data_chunked(granularity="year")
+
+    after = _panel(config.zarr_file_path)
+    assert "newvar" in after.data_vars
+    assert after.sizes["timestamp"] == (len(_YEARS) + 1) * len(_DAYS_PER_YEAR)
+
+
+def test_the_new_variable_is_backfilled_and_the_stored_ones_are_untouched(
+    extendable_raw: _ExtendableRaw,
+) -> None:
+    """Reconciling the variable axis must not disturb the data already on
+    disk: the new name is materialised all-NaN over the store's PRE-EXISTING
+    extent and carries real values only where the window supplied them, while
+    every stored variable keeps its values bit-for-bit.
+
+    RED under: reverting to plain `append` (M1), or backfilling with something
+    other than NaN over the historical block.
+    """
+    config = _store_over_three_years(extendable_raw)
+    before = _panel(config.zarr_file_path)
+    stored_rows = before.sizes["timestamp"]
+
+    _AddsAVariable(config).from_raw_data_chunked(granularity="year")
+
+    after = _panel(config.zarr_file_path)
+    assert np.isnan(after["newvar"].values[:stored_rows]).all()
+    assert not np.isnan(after["newvar"].values[stored_rows:]).any()
+    for name in before.data_vars:
+        np.testing.assert_array_equal(
+            after[name].values[:stored_rows],
+            before[name].values,
+            err_msg=name,
+        )
+
+
+def test_a_window_missing_a_stored_variable_is_still_refused(
+    extendable_raw: _ExtendableRaw,
+) -> None:
+    """The superset rule is intact, so a column RENAME still HALTS: no window
+    is written and no history is truncated. That is the part that matters and
+    it is fully preserved.
+
+    The store's POST-REFUSAL state is asserted too, because that state is what
+    the swap CHANGES. `widen_and_append` commits its widens before the closing
+    `append()` refuses, so the store afterwards carries the stored name AND
+    the newly-introduced one, the latter all-NaN over the store's own extent;
+    plain `append()` refused the identical shape leaving the variable set
+    untouched. Measured live, both sides. This test LOCKS that accepted side
+    effect rather than discovering it -- the append dimension does not grow
+    and every stored value stays bit-identical, which is why it is accepted.
+
+    A drop-only fixture could not carry this: with nothing to widen, both
+    write paths leave the store identical and the assertion would be a
+    restatement rather than a lock.
+
+    RED under: reverting to plain `append` (M1) -- the refusal happens either
+    way, but the post-refusal variable set does not.
+    """
+    config = _store_over_three_years(extendable_raw)
+    before = _panel(config.zarr_file_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        _RenamesAVariable(config).from_raw_data_chunked(granularity="year")
+
+    assert "adjClose" in str(excinfo.value)
+
+    after = _panel(config.zarr_file_path)
+    assert sorted(after.data_vars) == sorted(
+        list(before.data_vars) + ["adjCloseV2"]
+    )
+    assert after.sizes["timestamp"] == before.sizes["timestamp"]
+    np.testing.assert_array_equal(
+        after["adjClose"].values, before["adjClose"].values
+    )
+    assert np.isnan(after["adjCloseV2"].values).all()
+
+
+def test_a_non_float_new_variable_is_widened_with_the_declared_fill(
+    extendable_raw: _ExtendableRaw,
+) -> None:
+    """`_widen_fill_values()` reaches BOTH widened axes of the chunked path.
+    NaN materialised into a boolean array becomes `True` -- a fabricated
+    history rather than an absent one -- so the widen refuses a non-float
+    variable outright unless the dataset declares its fill.
+
+    RED under: not forwarding `_widen_fill_values()` to the per-window write
+    (the widen refuses on `halted`), or forwarding it to only one axis.
+    """
+    config = _store_over_three_years(extendable_raw)
+    stored_rows = _panel(config.zarr_file_path).sizes["timestamp"]
+
+    _AddsABooleanVariable(config).from_raw_data_chunked(granularity="year")
+
+    after = _panel(config.zarr_file_path)
+    assert after["halted"].dtype == np.dtype("bool")
+    # `False` over the store's own history -- the DECLARED fill, not a NaN
+    # coerced into `True`.
+    assert (~after["halted"].values[:stored_rows]).all()
+    # `True` where the window actually supplied it, so the two are genuinely
+    # distinguishable.
+    assert after["halted"].values[stored_rows:].all()
+
+
+def test_agreeing_axes_still_go_through_the_unchanged_append_guard(
+    extendable_raw: _ExtendableRaw,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The overwhelmingly common case -- symbol axis and variable set both
+    agreeing -- must be preserved BY CONSTRUCTION, not by a second write path.
+    `widen_and_append` delegates straight to the identical `append`, so the
+    overlap and dtype refusals still live exactly where they did.
+
+    Asserted structurally: the closing `append` is reached once per written
+    window. A refactor that wrote the window directly from inside the composed
+    method would remove the guard from this path entirely.
+
+    RED under: writing the window with `to_zarr(mode="a")` from inside the
+    composed method, or introducing a conditional second write path.
+    """
+    config = _store_over_three_years(extendable_raw)
+    scratch = extendable_raw.config("scratch.zarr")
+
+    appended: list[str] = []
+    original = XrBackend.append
+
+    def _recording_append(self, path, append_dim="timestamp", **kwargs):
+        appended.append(path)
+        return original(self, path, append_dim, **kwargs)
+
+    monkeypatch.setattr(XrBackend, "append", _recording_append)
+
+    StockDataset(config).from_raw_data_chunked(granularity="year")
+
+    # Exactly one window was outstanding, and the unchanged guard ran for it.
+    assert appended == [config.zarr_file_path]
+
+    monkeypatch.undo()
+    StockDataset(scratch).from_raw_data_chunked(granularity="year")
+    xr.testing.assert_identical(
+        _panel(config.zarr_file_path), _panel(scratch.zarr_file_path)
+    )

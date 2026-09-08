@@ -404,6 +404,26 @@ class XrBackend(DataBackend):
             dims = tuple(layout) if layout is not None else tuple(stored.sizes)
             shape = tuple(int(stored.sizes[name]) for name in dims)
 
+            # NO coords on the filler, deliberately. The store already holds
+            # every one of these dimensions' coordinates, and handing them
+            # back is not a no-op: `stored[name].values` is the DECODED array,
+            # and re-encoding it on the way in can land on a different dtype
+            # than the one zarr recorded. Measured 2026-09-08 against a store
+            # this project's own chunked ingest builds -- zarr holds `symbol`
+            # as `object`, `xr.open_zarr` decodes it to numpy's
+            # `StringDType()`, and writing that back raises
+            # `ValueError: Mismatched dtypes for variable symbol between Zarr
+            # store on disk and dataset to append`, from INSIDE this method,
+            # before the filler lands. That made the whole variable-widening
+            # path unreachable for any store with a string coordinate, which
+            # is every real store here.
+            #
+            # A filler carrying only its dims is positionally aligned by zarr
+            # against the arrays already on disk, so the coordinates stay
+            # exactly as written and every stored value stays bit-identical
+            # (measured: `keep` unchanged, `symbol`/`timestamp` untouched, the
+            # new variable all-fill across the store's whole extent, and the
+            # following `append()` succeeds).
             filler = xr.Dataset(
                 {
                     name: (
@@ -411,12 +431,7 @@ class XrBackend(DataBackend):
                         np.full(shape, fills.get(name, np.nan), dtype=dtype),
                     )
                     for name, dtype in absent.items()
-                },
-                coords={
-                    name: stored[name].values
-                    for name in dims
-                    if name in stored.coords
-                },
+                }
             )
             encoding = self._append_encoding(append_dim, data=filler)
         finally:

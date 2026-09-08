@@ -517,9 +517,11 @@ class BaseDataset(ABC):
         unconditionally.
 
         **No route to overwrite a range the store already holds.** There is no
-        `mode`, `force` or `overwrite` parameter, and the unconditional
-        append-dim overlap refusal is inherited through the UNCHANGED backend
-        append. Re-deriving a stored range is the wholesale interface's job.
+        `mode` parameter, nothing named to loosen or bypass a guard, and the
+        unconditional append-dim overlap refusal is inherited through the
+        UNCHANGED backend append. That guard runs before any keyword is read,
+        so no argument gets past it whatever it is named. Re-deriving a stored
+        range is the wholesale interface's job.
 
         Everything else -- window planning, the ledger, resume, the per-window
         loop, rebuild-aside restoration -- is `from_raw_data_chunked()`'s,
@@ -659,8 +661,48 @@ class BaseDataset(ABC):
                     boundaries += 1
 
                 self.data_backend.to_internal(window)
-                self.data_backend.append(
-                    self.config.zarr_file_path, append_dim=append_dim
+                # THREE axes, not one, through the single composed backend
+                # entry point -- the reconciliation itself lives in
+                # `XrBackend.widen_and_append` and is not reimplemented here.
+                #
+                # An argued behaviour change rather than an oversight, on
+                # three grounds. (1) When the symbol axis AND the variable set
+                # already agree -- every existing test and every existing
+                # production call -- the composed method delegates to the
+                # IDENTICAL `append()`, and an absent store delegates too, so
+                # existing behaviour is preserved by construction; measured,
+                # the suite stayed at its full pass count when this swap was
+                # applied alone. (2) `on_new_listing` expresses intent about
+                # the SYMBOL axis only, so no explicit caller's stated intent
+                # is being overridden on the variable axis. (3) The dangerous
+                # shape -- a vendor column RENAME -- presents as one variable
+                # missing plus one new, and the MISSING half is still refused
+                # unconditionally, so it still HALTS: no window written, no
+                # history truncated.
+                #
+                # The closing `append()` INSIDE the composed method is what
+                # keeps the overlap and dtype refusals live on this path. A
+                # conditional writer keyed on the strategy would put two write
+                # paths in one loop and give the guard ordering two places to
+                # drift apart.
+                #
+                # ACCEPTED SIDE EFFECT, measured rather than reasoned about:
+                # because the composed method commits its widens BEFORE that
+                # closing append, a rename-shaped window leaves the store
+                # carrying BOTH the stored name and the newly-introduced one
+                # -- the new one materialised all-NaN across the store's
+                # existing extent -- whereas the plain append this replaces
+                # refused the identical shape without touching the store at
+                # all. The append dimension stays where it was and every
+                # stored value stays bit-identical either way, which is why
+                # this is accepted rather than prevented. Locked by
+                # `tests/test_chunked_ingest.py::
+                # test_a_window_missing_a_stored_variable_is_still_refused`,
+                # so this comment describes an asserted fact.
+                self.data_backend.widen_and_append(
+                    self.config.zarr_file_path,
+                    append_dim=append_dim,
+                    fill_values=self._widen_fill_values(),
                 )
                 ledger.record(start, end, int(window.sizes[append_dim]), symbols)
                 logger.info(

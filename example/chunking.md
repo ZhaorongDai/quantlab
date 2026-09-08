@@ -188,6 +188,8 @@ StockDataset(...).from_raw_data_chunked(granularity="year", on_new_listing="refu
         ├─(3) ledger = ChunkLedger(<store>.chunks.json)
         │
         ├─(4) _reconcile_new_listings(...)   ← refuse / rebuild / widen 三选一
+        │     走 update() 进来时，这里的策略是从**原始数据层的证据**解析出来的，
+        │     不是调用方给的：_resolve_new_listing_strategy(added, removed, ...)
         │
         ├─(5) ledger.assert_consistent(symbols, store_path)   ← 在第一次不可逆写入之前
         │
@@ -197,7 +199,9 @@ StockDataset(...).from_raw_data_chunked(granularity="year", on_new_listing="refu
                   assert window.symbol == symbols  逐个标签比对，不一致直接报错
                   window = self._clean(window)                    ← 逐窗口清洗
                   window = self._pin_append_dtypes(window)        ← int → float64
-                  backend.to_internal(window).append(store, append_dim="timestamp")
+                  backend.to_internal(window).widen_and_append(       ← 三条轴一起对齐
+                      store, append_dim="timestamp",
+                      fill_values=self._widen_fill_values())
                   ledger.record(start, end, rows, symbols)         ← 原子写台账
               最后：若存在内部边界，warning 说明 flag_anomalies 的边界损失
 ```
@@ -318,6 +322,84 @@ store 仍是: ['A', 'XYZ']
 最后那次 `append()` 调用是承重的 —— 两边现在共用同一条轴，
 `_assert_append_compatible` 照样跑而且按它自己的规则**通过**，
 守卫是被**构造性地满足**了，而不是被绕过或放松了。没有 opt-in 的调用方仍然会被拒绝。
+
+**逐窗口的那次写入现在就走 `widen_and_append()`**（260908-0f4），所以 `data_vars`
+这条轴在分块路径上也被对齐了：供应商在两次定期刷新之间加了一列，以前整个运行会被
+`append` 的「incoming panel carries data variable(s) [...]」拒掉，现在这一列会先在
+store 的**已有区间**上被物化成 NaN（非浮点变量按 `_widen_fill_values()` 给的值），
+再正常追加。
+
+这是**被论证过的行为改变**，不是顺手改的：
+
+1. 两条轴都一致时（现有的每一个测试、每一个生产调用）`widen_and_append` 直接委派给
+   **同一个** `append()`，store 不存在时也一样委派，所以旧行为是被**构造性**保留的；
+2. `on_new_listing` 表达的只是关于 **symbol 轴**的意图，没有任何调用方在变量轴上
+   声明过什么被推翻；
+3. 真正危险的形状 —— 供应商**改列名** —— 表现为「少一个 + 多一个」，而**少的那一半仍然被
+   无条件拒绝**，所以它照样**停下来**：没有窗口被写入，没有历史被截断。
+
+**改列名这个形状有一个被接受的副作用，实测记录在此，免得后来人当 bug 重新发现一遍。**
+因为加宽是在最后那次 `append()` 之前**提交**的，被拒之后 store 里会**同时**留着旧列名和
+新引入的列名（新的那个在 store 已有区间上是全 NaN）；而它替换掉的那个朴素 `append()`
+面对同样的形状是**完全不碰 store** 的。append 维没有增长、每一个已存值逐位不变，所以这是
+「继承拒绝」的代价而不是半截写入 —— `widen_and_append` 自己的 docstring 早就写明了这一点。
+由 `tests/test_chunked_ingest.py::test_a_window_missing_a_stored_variable_is_still_refused`
+锁住。
+
+顺带修掉的一个真 bug（同一次改动）：`widen_data_vars` 以前会把 store 的坐标读出来再写回去，
+而 `xr.open_zarr` 解码出来的 dtype 和 zarr 记录的 dtype 可能不是同一个（实测：zarr 存
+`symbol` 为 `object`，解码成 numpy 的 `StringDType()`），写回去直接
+`Mismatched dtypes for variable symbol` —— 也就是说**任何带字符串坐标的 store**（这里的
+每一个真实 store）都用不了变量加宽。填充块现在只带 dims 不带 coords，坐标原样留在 store 里。
+
+---
+
+## 两个入口：`from_raw_data_chunked()` 和 `update()`
+
+| | `from_raw_data_chunked(...)` | `update(...)` |
+|---|---|---|
+| 语义 | **转换**：把原始数据按窗口稠密化并落盘 | **增量更新**：把已有 store 补到最新 |
+| 策略从哪来 | 调用方给的 `on_new_listing`，默认 `refuse` | **从原始数据层的证据里读出来**，没有这个参数 |
+| CLI | `ingest_us_equity.py --on-new-listing` | 暂时没有（见 `.planning/todos/pending/`） |
+| 对称物 | `Factor.save()` | `Factor.update()` |
+
+`update()` **不给策略参数，这正是它的功能**。widen 和 rebuild 的区别不是偏好，而是关于
+原始数据层的一个**事实**，而猜错的一方是**无声地丢数据**。所以它被读出来，而不是被问出来。
+三条分支，全部来自证据：
+
+- **任何**新增标的在 store 自己的 append 维区间内**已经有原始数据行** → `rebuild`。
+  这些行是 widen 会用 NaN 顶掉的真实历史，顶掉之后 store 和「这份数据从来不存在」
+  长得一模一样。rebuild 是**整库**操作，不是按标的来的。
+- **没有**任何新增标的带这样的行 → `widen`。它们是真正的新上市，NaN 在 store 的历史上
+  就是正确的值，rebuild 纯属浪费。
+- **任何**标的被移出名单 → `refuse`。`widen` 根本表达不了「少一个标签」
+  （`widen_symbol_axis` 拒绝非超集的目标轴），`rebuild` 会**悄悄丢掉**那个标签已存的历史。
+  两条都不该在没有人的情况下选，所以这条路停下来，而不是替你编一个答案。
+
+**决定会在 rebuild 真的跑起来之前被说出来**：日志会报有几个新增标的够格，并逐个列出标的
+和它在 store 区间内的原始数据行数（按行数降序，最多 20 个，截断时会讲明自己截断了）。
+无声地切换策略，和给错一个 flag 是同一种不透明，只是方向相反。
+
+这个探针只在 symbol 轴**真的漂移**了的时候才会被付费 —— `_reconcile_new_listings` 里那个
+「轴一致就直接返回」的早退是**唯一**的漂移检测点，探针在它后面。而且它问的窗口是
+**store 自己的区间**，不是 config 的日期范围：用后者的话每一个真正的新上市都会看起来像证据，
+从而触发一次没必要的全量重建（实测本仓库真实 store，两个窗口差了十一个月）。
+
+成本记的是**次序**而不是秒数（秒数换台机器就过期，而且下一个读者没法验证）：
+
+```
+探 store 区间  <  探整个原始数据层  <  _raw_axes_in_range()
+                                      ↑ 每一次分块运行本来就无条件在付这一笔
+```
+
+也就是说探针**从来不会**比这条路径本来就要走的一步更贵。2026-09-08 在本仓库真实数据层
+（26,584 个 `.pqt`、13 个 `month=` 分区、153.1 MB）热缓存下的那次读数是
+1.32–1.75 s / 2.24–2.38 s / 3.22–3.32 s ——**只有次序是承重的**。
+
+```python
+# 定期刷新：不用想 widen 还是 rebuild，它自己读
+StockDataset(config).update(granularity="year")
+```
 
 ---
 
