@@ -287,6 +287,144 @@ class XrBackend(DataBackend):
         shutil.rmtree(superseded, ignore_errors=True)
         return self
 
+    def widen_data_vars(
+        self,
+        path: str,
+        variables: Mapping[str, object],
+        append_dim: str = "timestamp",
+        fill_values: Optional[Mapping[str, object]] = None,
+    ) -> Self:
+        """Add data variable(s) to the store at `path`, backfilled over its
+        EXISTING extent.
+
+        The storage-medium answer to "the stored panel grew a column between
+        two runs" -- the `data_vars` counterpart of `widen_symbol_axis`,
+        following the same rule. The incoming set must be a SUPERSET; a new
+        member is materialised across the whole historical block with the fill
+        value (NaN for a floating-point variable, whatever `fill_values` names
+        otherwise); every stored variable keeps its values bit-identical. A
+        name the store already holds is left entirely alone, and when none of
+        `variables` is new this returns without writing at all.
+
+        `variables` maps each name to its DTYPE rather than to the incoming
+        array. The dtype is the narrower of the two and is everything the
+        filler needs, so this method never holds the caller's panel -- like
+        its sibling it operates purely on the store, and a caller can widen
+        without having a panel in hand.
+
+        **Why this is a separate method rather than a flag on `append()`.**
+        `_assert_append_compatible` refuses an incoming variable set the store
+        does not match, for a reason that has not gone away: zarr extends
+        exactly the variables it is handed, so a new name written straight
+        through lands SHORTER along `append_dim` than everything already
+        stored, and `xr.open_zarr` afterwards refuses the ENTIRE store with
+        `conflicting sizes for dimension 'timestamp'` (measured 2026-09-07).
+        Widening is an explicit, separately named opt-in that makes the two
+        sets AGREE before the append; it does not loosen the refusal a caller
+        who did not opt in still gets.
+
+        **Guards fire before any write**, mirroring `widen_symbol_axis`:
+
+        1. No store at `path` -> `FileNotFoundError`, same as its sibling.
+        2. A new variable that is neither floating-point nor named in
+           `fill_values` is refused. Measured 2026-09-07:
+           `np.full(shape, np.nan, dtype='int64')` yields 0 and `dtype=bool`
+           yields True, so an unfilled backfill across the store's whole
+           history FABRICATES observations rather than marking them absent --
+           the same family of invisible corruption
+           `_assert_append_compatible` refuses on the append path. An explicit
+           `fill_values` entry preserves the stored dtype exactly.
+
+        The filler's `encoding` comes from `_append_encoding`, so the new
+        variable joins the store on the SAME chunk grid as every other one.
+        Measured 2026-09-07 with `APPEND_DIM_CHUNK` at 4 over a 10-long store:
+        an unencoded filler takes the store's whole extent as its chunk while
+        the stored variable holds 4. The next append still succeeds, which is
+        precisely why the grid is pinned here by construction rather than left
+        to surface later as a layout nobody chose.
+
+        Unlike its sibling this needs NO directory swap. The measured
+        behaviour is that a partial-extent write raises and leaves the store
+        INTACT, so the operation is already safe to retry.
+        """
+        if not Path(path).exists():
+            raise FileNotFoundError(f"File {path} does not exist.")
+
+        fills = dict(fill_values or {})
+        requested = {
+            str(name): np.dtype(dtype) for name, dtype in variables.items()
+        }
+
+        stored = xr.open_zarr(path)
+        try:
+            absent = {
+                name: dtype
+                for name, dtype in requested.items()
+                if name not in stored.data_vars
+            }
+            if not absent:
+                return self
+
+            offenders = [
+                (name, dtype)
+                for name, dtype in absent.items()
+                if name not in fills and not np.issubdtype(dtype, np.floating)
+            ]
+            if offenders:
+                described = ", ".join(
+                    f"'{name}' ({dtype})" for name, dtype in offenders
+                )
+                raise ValueError(
+                    f"XrBackend.widen_data_vars: refusing to widen {path} -- "
+                    f"new variable(s) {described} are not floating-point and "
+                    f"no fill value was given. The filler spans the store's "
+                    f"ENTIRE existing extent, and an unfilled backfill does "
+                    f"not mark that history absent, it FABRICATES it: "
+                    f"measured 2026-09-07, np.full(shape, np.nan) yields 0 "
+                    f"for int64 and True for bool, so a boolean flag would "
+                    f"read as set on every historical row. That is the same "
+                    f"family of invisible corruption "
+                    f"_assert_append_compatible refuses on the append path. "
+                    f"Pass fill_values={{...}} naming a value for each -- "
+                    f"e.g. fill_values={{'anomaly_flag': False}} -- which is "
+                    f"measured to preserve the dtype exactly."
+                )
+
+            # The store's own layout, taken from a variable that already
+            # spans `append_dim`, so the filler reproduces the shape the store
+            # actually has rather than one assumed here.
+            layout = next(
+                (
+                    variable.dims
+                    for variable in stored.data_vars.values()
+                    if append_dim in variable.dims
+                ),
+                None,
+            )
+            dims = tuple(layout) if layout is not None else tuple(stored.sizes)
+            shape = tuple(int(stored.sizes[name]) for name in dims)
+
+            filler = xr.Dataset(
+                {
+                    name: (
+                        dims,
+                        np.full(shape, fills.get(name, np.nan), dtype=dtype),
+                    )
+                    for name, dtype in absent.items()
+                },
+                coords={
+                    name: stored[name].values
+                    for name in dims
+                    if name in stored.coords
+                },
+            )
+            encoding = self._append_encoding(append_dim, data=filler)
+        finally:
+            stored.close()
+
+        filler.to_zarr(path, mode="a", encoding=encoding)
+        return self
+
     def widen_and_append(
         self,
         path: str,
@@ -295,10 +433,19 @@ class XrBackend(DataBackend):
         fill_values: Optional[Mapping[str, object]] = None,
         **kwargs,
     ) -> Self:
-        """`append()`'s explicit opt-in sibling for a roster that has grown.
+        """`append()`'s explicit opt-in sibling for a panel that has grown.
 
-        Widens the store to `sorted(stored | incoming)`, reindexes `self.data`
-        onto that same axis, and then calls the UNCHANGED `append()`.
+        Reconciles all THREE axes and then calls the UNCHANGED `append()`. The
+        order is fixed: `dim` first (widen the store to
+        `sorted(stored | incoming)` and reindex `self.data` onto that same
+        axis), then the data-variable set (`widen_data_vars`), then the
+        append. Variables second is deliberate -- the filler is built over the
+        store's extent AFTER the `dim` widen, so it is materialised once at
+        the final width rather than written narrow and rewritten.
+
+        This stays the ONE reconcile-then-append path. A second composed entry
+        point for the third axis would give callers two ways to say the same
+        thing and two places for the guard ordering to drift apart.
 
         **The closing `append()` call is load-bearing, not incidental.** Both
         sides now share one axis, so `_assert_append_compatible` still runs and
@@ -313,16 +460,21 @@ class XrBackend(DataBackend):
         all-time-union rule, because `ChunkLedger`'s fingerprint is
         order-sensitive and the axis must be reproducible across runs.
 
-        Because the widen COMMITS before the closing `append()` runs, a window
+        Because the widens COMMIT before the closing `append()` runs, a window
         the shared guard then refuses -- an overlapping `append_dim` range, say
-        -- can leave the store carrying the GROWN symbol axis while its append
-        dimension is untouched and its pre-existing history intact; that is an
-        accepted side effect of inheriting the refusal rather than duplicating
-        it, not a partial write of the window.
+        -- can leave the store carrying the GROWN symbol axis AND the grown
+        variable set while its append dimension is untouched and its
+        pre-existing history intact; that is an accepted side effect of
+        inheriting the refusal rather than duplicating it, not a partial write
+        of the window. It now spans the variable axis as well as the symbol
+        one, and for the same reason.
 
-        Calling this unconditionally is cheap: an unchanged axis skips the
-        rewrite entirely and delegates straight to `append()`. An absent store
-        does the same, so there is ONE creation path rather than two.
+        Calling this unconditionally is cheap: axes that already agree skip
+        both rewrites entirely and delegate straight to `append()`. The fast
+        path requires BOTH the `dim` axis and the variable set to match --
+        checking only the former would send a variable-grown panel to a plain
+        `append()`, which refuses it. An absent store delegates too, so there
+        is ONE creation path rather than two.
         """
         if not Path(path).exists():
             return self.append(path, append_dim, **kwargs)
@@ -334,6 +486,7 @@ class XrBackend(DataBackend):
                 if dim in stored.coords
                 else []
             )
+            stored_names = set(stored.data_vars)
         finally:
             stored.close()
 
@@ -342,20 +495,41 @@ class XrBackend(DataBackend):
             if dim in self.data.coords
             else []
         )
+        # Name -> dtype, which is all `widen_data_vars` needs and all it is
+        # given: the filler's dtype must be the INCOMING one or the closing
+        # `append()`'s shared-variable dtype guard refuses the window.
+        incoming_names = {
+            str(name): variable.dtype
+            for name, variable in self.data.data_vars.items()
+        }
         union = sorted(set(stored_labels) | set(incoming))
-        if union == stored_labels and union == incoming:
+        unstored = [
+            name for name in incoming_names if name not in stored_names
+        ]
+
+        if union == stored_labels and union == incoming and not unstored:
             return self.append(path, append_dim, **kwargs)
 
-        self.widen_symbol_axis(
-            path,
-            union,
-            dim=dim,
-            append_dim=append_dim,
-            fill_values=fill_values,
-        )
-        self.data = self.data.reindex(
-            {dim: union}, fill_value=dict(fill_values or {})
-        )
+        if union != stored_labels or union != incoming:
+            self.widen_symbol_axis(
+                path,
+                union,
+                dim=dim,
+                append_dim=append_dim,
+                fill_values=fill_values,
+            )
+            self.data = self.data.reindex(
+                {dim: union}, fill_value=dict(fill_values or {})
+            )
+
+        if unstored:
+            self.widen_data_vars(
+                path,
+                incoming_names,
+                append_dim=append_dim,
+                fill_values=fill_values,
+            )
+
         return self.append(path, append_dim, **kwargs)
 
     def _append_encoding(

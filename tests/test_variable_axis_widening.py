@@ -420,3 +420,332 @@ def test_a_variable_mismatched_append_carrying_an_unrecognised_kwarg_raises(
     np.testing.assert_array_equal(
         after["alpha"].values, before["alpha"].values
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 2 -- the widening opt-in, and the three-axis composition
+# ---------------------------------------------------------------------------
+
+
+def test_widen_and_append_reconciles_all_three_axes(tmp_path: Path) -> None:
+    """The tracer for the composed path: a store that grew BOTH a symbol and
+    a variable between two runs.
+
+    Store `{alpha}` x `[A, B]` x 3 dates takes `{alpha, beta}` x `[A, B, C]` x
+    2 later dates. The two NaN counts are the assertion that matters, and they
+    are different numbers on purpose: `alpha` gets 3 NaN (the one new symbol
+    over the 3 historical dates) while `beta` gets 9 (all 3 symbols over those
+    same 3 dates). A single "some NaN appeared" check would pass on a filler
+    written at the wrong width; these two counts pin the width of each.
+
+    RED before the implementation: the Task 1 refusal fires through the
+    composed path -- a BEHAVIOURAL red through exactly the mechanism this task
+    removes, not an `AttributeError` from a missing method.
+
+    GREEN under M9 (leaving the short-circuit symbol-only), and that is
+    correct rather than a miss: this test's SYMBOL axis grows, so the fast
+    path is not taken and the widen runs regardless. Test 3 below is the M9
+    canary.
+    """
+    path = str(tmp_path / "three_axes.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    before = _stored(path)
+
+    incoming = _panel(
+        ["2022-01-07", "2022-01-10"], ["A", "B", "C"], ["alpha", "beta"], 100.0
+    )
+    XrBackend().to_internal(incoming).widen_and_append(path)
+
+    after = _stored(path)
+    assert after.sizes["timestamp"] == 5
+    assert after["symbol"].values.tolist() == ["A", "B", "C"]
+    assert sorted(after.data_vars) == ["alpha", "beta"]
+
+    index = after["timestamp"].to_index()
+    assert index.is_unique and index.is_monotonic_increasing
+
+    assert int(np.isnan(after["alpha"].values).sum()) == 3
+    assert int(np.isnan(after["beta"].values).sum()) == 9
+
+    for symbol in ("A", "B"):
+        np.testing.assert_array_equal(
+            after["alpha"].sel(symbol=symbol).values[:3],
+            before["alpha"].sel(symbol=symbol).values,
+        )
+
+
+def test_widen_data_vars_backfills_the_stores_whole_existing_extent(
+    tmp_path: Path,
+) -> None:
+    """The opt-in on its own: the new variable is materialised over the
+    store's ENTIRE existing extent, not just the window that introduced it.
+
+    That is the whole difference between widening and the corruption Task 1
+    refuses -- a variable written over the incoming window alone is exactly
+    the ragged store that cannot be opened. The pre-existing variable staying
+    bit-identical is the other half: widening adds, it does not rewrite.
+
+    Like `widen_symbol_axis`, this operates purely on the store, so the
+    backend holds no panel at all here.
+
+    RED under: writing the filler over anything narrower than the store's
+    extent, or dropping the method entirely (`AttributeError`).
+    """
+    path = str(tmp_path / "widen_vars.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    before = _stored(path)
+
+    XrBackend().widen_data_vars(path, {"beta": np.dtype("float64")})
+
+    after = _stored(path)
+    assert sorted(after.data_vars) == ["alpha", "beta"]
+    assert after.sizes["timestamp"] == 3
+    assert after["beta"].shape == before["alpha"].shape
+    assert np.isnan(after["beta"].values).all()
+    np.testing.assert_array_equal(
+        after["alpha"].values, before["alpha"].values
+    )
+
+
+def test_the_filler_carries_the_incoming_variables_dtype(
+    tmp_path: Path,
+) -> None:
+    """D-06, and the M9 canary.
+
+    The SYMBOL axis agreeing on both sides is load-bearing, not incidental:
+    it is what routes this panel into the short-circuit and therefore what
+    makes M9 observable at all. Measured 2026-09-07 against the
+    still-symbol-only short-circuit, this exact shape takes the fast path and
+    is refused at the closing `append()` with `new=['beta']`.
+
+    The dtype half is a real trap rather than a defensive nicety -- KunQuant
+    emits float32 as readily as float64. A hardcoded float64 filler is refused
+    by the EXISTING shared-variable dtype guard at the closing `append()`, so
+    the composition silently depends on getting this right.
+
+    RED under: M6 (build the filler as float64 unconditionally) via the
+    existing append dtype refusal, and M9 (leave the short-circuit
+    symbol-only) via the Task 1 new-variable refusal.
+    """
+    path = str(tmp_path / "filler_dtype.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    XrBackend().to_internal(
+        _panel(history, ["A", "B"], {"alpha": "float64"})
+    ).append(path)
+
+    XrBackend().to_internal(
+        _panel(
+            ["2022-01-07", "2022-01-10"],
+            ["A", "B"],
+            {"alpha": "float64", "beta": "float32"},
+            100.0,
+        )
+    ).widen_and_append(path)
+
+    after = _stored(path)
+    assert after.sizes["timestamp"] == 5
+    assert after["symbol"].values.tolist() == ["A", "B"]
+    assert after["beta"].dtype == np.dtype("float32"), after["beta"].dtype
+    assert int(np.isnan(after["beta"].values).sum()) == 6
+
+
+def test_the_filler_joins_the_stores_existing_chunk_grid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D-07: the filler is written with an explicit `encoding`, so the new
+    variable lands on the SAME chunk grid as every other variable.
+
+    `APPEND_DIM_CHUNK` is shrunk below the store's length so the two answers
+    differ: measured 2026-09-07 with a chunk of 4 over a 10-timestamp store,
+    an unencoded filler gets `(10, 2)` -- the store's whole extent -- while
+    the pre-existing variable holds `(4, 2)`. The divergence does NOT crash
+    the next append, which is exactly why it has to be pinned by construction
+    rather than by a test that waits for a failure.
+
+    Chunks are read from the zarr array directly; xarray does not surface
+    them. `widen_data_vars` is called DIRECTLY because the encoding is that
+    method's property, and going direct keeps this test independent of
+    `widen_and_append`'s short-circuit so M9 cannot move it.
+
+    RED under: M7 (drop `encoding=` from the filler write).
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+
+    path = str(tmp_path / "chunk_grid.zarr")
+    dates = pd.date_range("2022-01-04", periods=10, freq="D")
+    XrBackend().to_internal(
+        _panel([str(date.date()) for date in dates], ["A", "B"], ["alpha"])
+    ).append(path)
+
+    XrBackend().widen_data_vars(path, {"beta": np.dtype("float64")})
+
+    group = zarr.open_group(path, mode="r")
+    assert group["alpha"].chunks == (4, 2), group["alpha"].chunks
+    assert group["beta"].chunks == group["alpha"].chunks, group["beta"].chunks
+
+
+def test_widen_data_vars_refuses_a_non_float_variable_without_a_fill(
+    tmp_path: Path,
+) -> None:
+    """D-08, mirroring `widen_symbol_axis`'s refusal for the same reason.
+
+    The filler spans the store's whole history, so an unfilled backfill does
+    not mark that history ABSENT -- it FABRICATES it. Measured 2026-09-07:
+    `np.full((2, 2), np.nan, dtype='int64')` yields `0` and `dtype=bool`
+    yields `True`, so a boolean flag backfilled with NaN marks every
+    historical row as FLAGGED. That is the identical family of invisible
+    corruption the append dtype guard already refuses.
+
+    Called directly rather than through `widen_and_append`: the guard belongs
+    to this method, and the direct entry point keeps M9 out of this test too.
+
+    RED under: M8 (allow a non-float new variable through with a NaN fill).
+    """
+    path = str(tmp_path / "non_float_refused.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+    before = _stored(path)
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().widen_data_vars(path, {"anomaly_flag": np.dtype(bool)})
+
+    message = str(excinfo.value)
+    assert "anomaly_flag" in message, message
+    assert "bool" in message, message
+    assert "fill_values" in message, message
+
+    after = _stored(path)
+    assert sorted(after.data_vars) == ["alpha"]
+    np.testing.assert_array_equal(
+        after["alpha"].values, before["alpha"].values
+    )
+
+
+def test_an_explicit_fill_widens_a_non_float_variable_and_keeps_its_dtype(
+    tmp_path: Path,
+) -> None:
+    """D-08's positive half: the remedy the refusal names has to actually
+    work, and it has to preserve the dtype EXACTLY.
+
+    A float64 upcast here would be the same silent schema change to a live
+    store that `widen_symbol_axis` refuses -- the value would be right and
+    the type wrong, which is the harder bug to see.
+
+    RED under: materialising the filler at float64 regardless of the fill, or
+    routing an explicitly-filled variable back through the refusal.
+    """
+    path = str(tmp_path / "non_float_filled.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(path)
+
+    XrBackend().widen_data_vars(
+        path,
+        {"anomaly_flag": np.dtype(bool)},
+        fill_values={"anomaly_flag": False},
+    )
+
+    after = _stored(path)
+    assert after["anomaly_flag"].dtype == np.dtype(bool), after[
+        "anomaly_flag"
+    ].dtype
+    assert after["anomaly_flag"].shape == (3, 2)
+    assert not after["anomaly_flag"].values.any()
+
+
+def test_widen_and_append_with_both_axes_agreeing_takes_the_plain_append_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D-05: calling `widen_and_append` unconditionally must stay cheap on a
+    routine refresh, and folding in a third axis must not change that.
+
+    Both widenings are monkeypatched to raise, the way
+    `tests/test_symbol_axis_widening.py:367` already does for the symbol half
+    alone -- an assertion that neither ran, rather than an inference from a
+    timing or a shape.
+
+    GREEN under M9, which only widens what this test asserts is skipped.
+
+    RED under: rewriting the store unconditionally, or calling
+    `widen_data_vars` when the variable set already agrees.
+    """
+    path = str(tmp_path / "cheap_three_axis.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    XrBackend().to_internal(
+        _panel(history, ["A", "B"], ["alpha", "beta"])
+    ).append(path)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("no widening may run when both axes agree")
+
+    monkeypatch.setattr(XrBackend, "widen_symbol_axis", _fail)
+    monkeypatch.setattr(XrBackend, "widen_data_vars", _fail)
+
+    XrBackend().to_internal(
+        _panel(["2022-01-07", "2022-01-10"], ["A", "B"], ["alpha", "beta"], 100.0)
+    ).widen_and_append(path)
+
+    after = _stored(path)
+    assert after.sizes["timestamp"] == 5
+    assert sorted(after.data_vars) == ["alpha", "beta"]
+
+
+def test_widen_and_append_still_inherits_the_overlap_refusal_verbatim(
+    tmp_path: Path,
+) -> None:
+    """D-05: reconciling a third axis must not grow a parallel write path.
+
+    The proof is MESSAGE EQUALITY, not merely that both paths raise. Two
+    stores start identically; one takes a plain `append()` of an overlapping
+    window, the other a `widen_and_append()` of the same overlapping window
+    carrying an ADDED variable so the variable widen genuinely runs. With each
+    store's own path normalised out, the two messages must be byte-identical
+    -- which no separately-worded check inside `widen_and_append` could
+    produce.
+
+    Also asserted: the ACCEPTED side effect. The widen COMMITS before the
+    closing `append()` raises, so the store may carry the GROWN variable set
+    while its append dimension is untouched and its history intact. Asserting
+    instead that the variable set stayed narrow would be asserting that
+    `widen_and_append` does NOT delegate, which is the opposite of D-05.
+
+    GREEN under M9: measured 2026-09-07, the append-dim overlap check sits
+    AHEAD of the variable-set check inside `_assert_append_compatible`, so
+    this message equality holds whether or not the variable axis was
+    reconciled first.
+
+    RED under: adding a second, differently-worded refusal inside
+    `widen_and_append`, or writing the window directly with
+    `to_zarr(mode="a")` from inside it.
+    """
+    plain_path = str(tmp_path / "plain_vars.zarr")
+    widened_path = str(tmp_path / "widened_vars.zarr")
+    history = ["2022-01-04", "2022-01-05", "2022-01-06"]
+    for path in (plain_path, widened_path):
+        XrBackend().to_internal(_panel(history, ["A", "B"], ["alpha"])).append(
+            path
+        )
+    before = _stored(widened_path)["alpha"].values.copy()
+
+    overlapping = ["2022-01-05", "2022-01-06", "2022-01-07"]
+    with pytest.raises(ValueError) as plain_error:
+        XrBackend().to_internal(
+            _panel(overlapping, ["A", "B"], ["alpha"], 100.0)
+        ).append(plain_path)
+
+    with pytest.raises(ValueError) as widened_error:
+        XrBackend().to_internal(
+            _panel(overlapping, ["A", "B"], ["alpha", "beta"], 100.0)
+        ).widen_and_append(widened_path)
+
+    placeholder = "<STORE>"
+    assert str(plain_error.value).replace(plain_path, placeholder) == str(
+        widened_error.value
+    ).replace(widened_path, placeholder)
+
+    # The accepted, documented side effect: the widen committed, the window
+    # did not. The store is still openable and its history is untouched.
+    after = _stored(widened_path)
+    assert after.sizes["timestamp"] == 3
+    np.testing.assert_array_equal(after["alpha"].values, before)
