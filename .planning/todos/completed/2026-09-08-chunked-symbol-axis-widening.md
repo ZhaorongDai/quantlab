@@ -3,7 +3,7 @@ created: "2026-09-08T00:00:00.000Z"
 title: Chunked symbol-axis widening, so the factor layer has a memory-bounded path
 area: dataset / storage
 severity: major
-status: pending
+status: completed
 blocked_by: 2026-09-08-no-memory-guard-before-a-symbol-axis-widen
 ---
 
@@ -134,3 +134,65 @@ row counts before a rebuild starts. Silently taking a path 4x slower reads to an
 as their machine being slow.
 
 Take these two files together as one brief.
+
+## Closed
+
+2026-09-08, by quick task `260908-g30` (commits `fc93304` router + tracer,
+`1caa8c5` locks, and this documentation commit). See
+`.planning/quick/260908-g30-route-symbol-axis-widening-by-size-add-a/260908-g30-SUMMARY.md`.
+
+All FOUR open questions the brief posed were answered, and each answer now has
+an address in the code:
+
+- **Q1 -- both paths, or replace the whole-store one?** BOTH SHIP, behind one
+  router. `XrBackend.widen_symbol_axis` stays the single public entry with an
+  unchanged signature and no strategy parameter; `_widen_whole_store` (the
+  shipped body, verbatim) and `_widen_chunked` sit behind it. The brief's own
+  timing table decided it: at 1.2x / 4.0x / 3.6x on 0.2 / 34.6 / 137.3 MiB,
+  "always chunk" taxes every routine widen ~4x to buy nothing. The repo's
+  one-path rule forbids two live NAMES for one thing; one name with two
+  size-selected private strategies is not that.
+- **Q2 -- where does the block size come from?** From the BUDGET, floored onto
+  the store's own chunk grid: `XrBackend._widen_block_rows`. `TimeChunkPlanner`
+  was REJECTED with a stated reason -- its granularities are calendar periods,
+  and a period's row count is a function of frequency and density (a month of
+  1-minute bars is ~390x a month of daily bars), so it cannot bound BYTES,
+  which is the entire constraint. The floor onto `APPEND_DIM_CHUNK` is
+  load-bearing and measured: the first block carries the `encoding=`, so a
+  100-row block leaves chunks `(100, 3)` where the whole-store path leaves
+  `(512, 3)`.
+- **Q3 -- does the atomic swap still hold with multiple writes?** RE-VERIFIED
+  against the loop, not assumed. The loop runs inside the `try:` whose
+  `finally` closes `stored` (it reads `path` through that handle for its whole
+  duration); both `os.replace` calls stay outside it, in the shipped order; and
+  the `except BaseException: rmtree(widening)` cleanup spans the WHOLE strategy
+  call rather than one write. Locked by
+  `tests/test_symbol_axis_widening.py::test_a_crash_part_way_through_the_block_loop_leaves_the_store_intact`.
+- **Q4 -- does `widen_data_vars` need the same treatment?** YES, but OUT of
+  scope here and FILED rather than dropped: the `append_dim` trick is
+  unavailable there (extending the append dim would extend every already-full
+  stored variable too), so a bounded version needs `region=` writes against a
+  pre-created full-shape array -- a different write primitive. Carried with its
+  measured cost (~2.4 GiB per variable on a 3,000-symbol 1-minute year) at
+  `.planning/todos/pending/2026-09-08-chunked-widen-data-vars.md`.
+
+The budget is `XrBackend.MAX_WIDEN_BYTES = 4 * 1024**3` -- the same figure as
+`UniverseCatalog.MAX_DENSE_PANEL_BYTES` (same machine, same measured ceiling),
+a SEPARATE constant because `quantlab/dataset/backend.py` has no import path to
+the acquisition layer and must not grow one. It routes every measured scenario
+in the brief correctly: 0.2 / 34.6 / 137.3 MiB and daily-7,700-symbols-x-1yr-x-20
+at 0.3 GiB take whole-store; daily full history at 6.0 GiB, 1-minute 500 symbols
+at 7.3 GiB and 1-minute 3,000 symbols at 43.9 GiB take chunked.
+
+The switch is REPORTED and the report is asymmetric (D-6): the chunked branch
+logs a `warning` naming both symbol counts, the estimate and the budget in GiB,
+the rows per block, the block count, the per-block figure, the measured
+~3.6-4.0x wall-clock cost (so a slow run does not read as a slow machine) and
+how to opt back; the whole-store branch logs one `info` line. A `warning` on
+every routine sub-budget widen would be noise.
+
+The two now-false cost claims this brief's sibling identified were reconciled in
+the same task: `widen_symbol_axis`'s `**Documented cost.**` paragraph,
+`BaseDataset._reconcile_new_listings`'s `widen` warning, and the Chinese bullet
+in `example/backend.md`. `on_new_listing="rebuild"` keeps a reason, but it is
+HISTORY RECOVERY (it re-reads raw) rather than memory.

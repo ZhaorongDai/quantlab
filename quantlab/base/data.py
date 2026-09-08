@@ -52,7 +52,11 @@ class BaseDataset(ABC):
     #: - `widen`   direction 1 -- keep the store, widen its symbol axis in
     #:             place and NaN-backfill the new listing's whole historical
     #:             block. Cheap in wall-clock, but it does not re-read raw, so
-    #:             history the vendor has is not recovered.
+    #:             history the vendor has is not recovered. Store SIZE is not a
+    #:             reason to avoid it: `XrBackend.widen_symbol_axis` sizes the
+    #:             rewrite and takes a bounded block-by-block path above
+    #:             `XrBackend.MAX_WIDEN_BYTES` (260908-g30), at ~3.6-4.0x the
+    #:             whole-store wall clock.
     #:
     #: `ingest_us_equity.py --on-new-listing` derives its `choices` from this
     #: tuple; it is never restated there.
@@ -1033,9 +1037,11 @@ class BaseDataset(ABC):
                 f"removed={removed}. The added symbol(s) will carry NaN for "
                 f"the ENTIRE historical block -- a widen does not re-read raw, "
                 f"so history the vendor already has is not recovered. Use "
-                f"on_new_listing='rebuild' for that. The whole store is also "
-                f"materialised in memory to rewrite it (no dask here), so "
-                f"'rebuild' is the strategy for a store too large to hold."
+                f"on_new_listing='rebuild' for that, which is now the ONLY "
+                f"reason to prefer it: the widen sizes itself and rewrites the "
+                f"store block by block when it would not fit in memory "
+                f"(XrBackend.MAX_WIDEN_BYTES), so 'rebuild' is no longer the "
+                f"strategy a large store forces."
             )
             self.data_backend.widen_symbol_axis(
                 store_path,

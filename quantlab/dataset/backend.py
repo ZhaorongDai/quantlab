@@ -210,13 +210,35 @@ class XrBackend(DataBackend):
         store at `path`, so the next read fails loudly instead of treating a
         half-widened store as authoritative.
 
-        **Documented cost.** dask is not installed here, so `xr.open_zarr`
-        yields lazily-indexed arrays that `.load()` materialises in full -- this
-        holds the WHOLE store in RAM, the exact allocation
-        `BaseDataset.from_raw_data_chunked` exists to avoid. On a store too
-        large to hold, reach for `on_new_listing="rebuild"` instead, which
-        re-densifies window by window and additionally recovers the new
-        listing's REAL history from raw rather than backfilling NaN.
+        **The strategy is chosen BY SIZE, and reported** (260908-g30). dask is
+        not installed here, so `xr.open_zarr` yields lazily-indexed arrays that
+        `.load()` materialises in full. `_estimate_widen_bytes` sizes the
+        WIDENED panel before anything is written, and the result routes:
+
+        - at or under `MAX_WIDEN_BYTES`, `_widen_whole_store` reindexes the
+          whole store and writes it once -- the shipped path, unchanged, and
+          logged at `info`;
+        - over it, `_widen_chunked` rewrites the store block by block along
+          `append_dim`, holding ONE block, and logs a `warning` naming every
+          figure it decided on.
+
+        Both leave the same store: values element for element, both
+        coordinates, the on-disk chunk grid and the `symbol` coordinate's
+        on-disk encoding, measured across both live production encodings and
+        locked by `tests/test_symbol_axis_widening.py`.
+
+        **Why a router rather than always chunking.** Measured 2026-09-08, the
+        chunked rewrite runs 1.2x / 4.0x / 3.6x the whole-store wall clock on
+        0.2 / 34.6 / 137.3 MiB stores. Where both fit, whole-store wins; above
+        the budget, whole-store does not run at all. Chunking unconditionally
+        would tax every routine widen ~4x to buy nothing.
+
+        **`on_new_listing="rebuild"` is still worth reaching for, for a
+        DIFFERENT reason than it used to be.** Not memory -- that argument is
+        gone, and it never applied to `Factor` anyway, which has no raw tier
+        and so no `rebuild` at all. The surviving reason is DATA: `rebuild`
+        re-reads raw and recovers a new listing's REAL history, where a widen
+        of either strategy backfills NaN over the whole historical block.
         """
         target = Path(path)
         widening = Path(f"{path}{self.WIDENING_SUFFIX}")

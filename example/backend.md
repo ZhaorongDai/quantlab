@@ -173,7 +173,11 @@ XYZ 的历史还在 XYZ 名下（退市之后新行是 NaN），ARM 的历史段
 - **写前守卫，共三条**（`widen_symbol_axis` 的 docstring 按顺序列出）：崩溃残留的 `.superseded.tmp` 侧车 + `path` 下无 store → 拒绝并指名手工恢复命令，不自动恢复（"哪个目录是权威的，不是这个方法该替你决定的"）；目标轴必须是存储轴的**超集**（`reindex` 会悄悄删掉没点名的标签，删完之后跟"从来没有过"无法区分）；带 `symbol` 维的变量必须是浮点，否则必须在 `fill_values` 里点名（不填的 `reindex` 会把 bool/int64 **upcast 成 float64+NaN**，等于对一个活着的 store 做静默 schema 变更）。
 - **换库是 rename 三步走**：先把原 store 改名到 `XrBackend.SUPERSEDED_SUFFIX`（`.superseded.tmp`），再把写好的 `XrBackend.WIDENING_SUFFIX`（`.widening.tmp`）改名到位，最后删掉旧的。两次 rename 同父目录、因而是原子的。**先改名旧的**是刻意的：中间崩了的话 `path` 下什么都没有，下一次读会大声失败，而不是把一个改写到一半的 store 当权威。
 - **重写走的仍然是 `_append_encoding`**，所以 chunk 规则单点定义。`tests/test_symbol_axis_widening.py:test_the_chunk_grid_survives_a_widen` 用 600 个时间戳（刻意大于 512，否则编码与不编码的 chunk 大小会撞在一起）钉住这一点，并记了实测：忘了传 `encoding=` 的话，重写出来的 store 会继承源 store 的 encoding，三只票的数组 chunk 回到 `(512, 2)`。
-- **代价是写在文档里的**：这里没装 dask，`xr.open_zarr` 给的是惰性索引数组，`.load()` 会把**整个 store** 拉进内存——正是分块摄取想避免的那笔分配。库大到装不下时，改用 `on_new_listing="rebuild"`（`quantlab/base/data.py`），它逐窗重建，而且能从原始数据里找回新票的**真实**历史，而不是回填 NaN。
+- **策略是按体量选出来的，而且会说自己选了哪条**（260908-g30）：这里没装 dask，`xr.open_zarr` 给的是惰性索引数组，`.load()` 会把整个 store 拉进内存。所以 `widen_symbol_axis` 先用 `_estimate_widen_bytes` 估出**加宽后**这块面板有多大，再据此分路——不超过 `XrBackend.MAX_WIDEN_BYTES`（4 GiB）就走原来那条整库重写，记一行 `info`；超了就沿 `append_dim` **一块一块**重写，同一时刻只握住一块，并且用 `warning` 把两个符号数、估算值、预算、每块行数、块数、每块大小、以及"慢是策略不是机器"都说清楚。
+- **两条路留下的 store 是一模一样的**：逐元素的值（`equal_nan=True`）、两条坐标、磁盘上的 chunk 网格，以及 `symbol` 坐标**在磁盘上的编码**——最后这一项正是 260908-dvv 证明过一整套断言会集体看漏的地方。由 `tests/test_symbol_axis_widening.py:test_the_two_widen_strategies_leave_identical_stores` 在两种编码下钉住。
+- **块的大小向下取整到 `APPEND_DIM_CHUNK` 的倍数，并以它为下限**，这不是审美：第一块是带着 `_append_encoding(...)` 写出去的，所以**块长决定了 store 的 append 维 chunk**。实测 2026-09-08，600 个时间戳的库上，100 行一块得到 `(100, 3)`，512 行一块得到 `(512, 3)`——也就是整库路径的那个网格。由 `tests/test_symbol_axis_widening.py:test_a_chunked_widen_lands_on_the_stores_own_chunk_grid` 与 `test_the_block_size_rule_floors_onto_the_chunk_grid` 分别钉住网格与规则本身。
+- **为什么是分路而不是一律分块**：实测 2026-09-08，分块重写在 0.2 / 34.6 / 137.3 MiB 的库上分别是整库重写的 1.2x / 4.0x / 3.6x 墙钟时间。两条都装得下时整库更快；超预算时整库根本跑不了。一律分块等于给每一次日常加宽白加约 4x。
+- **`on_new_listing="rebuild"` 仍然值得用，但理由换了一个**：不再是内存——那个理由已经没了，而且它对 `Factor` 从来就不成立（`Factor` 没有原始层，压根没有 `rebuild` 这条路）。留下来的理由是**数据**：`rebuild` 会重读原始数据，把新票的**真实**历史找回来；而加宽无论走哪条策略，都是在整段历史上回填 NaN。
 
 ## 简单用法
 
