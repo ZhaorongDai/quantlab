@@ -95,3 +95,30 @@ by the ones just shown to have a blind spot.
 
 2026-09-08, while answering whether a newly added symbol with no history still forces a
 full read. It does.
+
+## Design revised 2026-09-08 — the guard ROUTES, it does not refuse
+
+The developer's decision: when the estimate exceeds the budget, widening switches to the
+chunked path automatically rather than refusing. That merges these two todos into one
+deliverable — *widening picks its strategy by size, and says which* — and REVERSES their
+order: a router cannot route to a path that does not exist, so the chunked path must land
+first or both must land together.
+
+**The threshold earns its place; measured 2026-09-08.** Chunked widening is not free:
+
+| store | whole-store | chunked | ratio |
+|---|---|---|---|
+| 0.2 MiB | 0.04s | 0.04s | 1.2x |
+| 34.6 MiB | 0.14s | 0.56s | **4.0x** |
+| 137.3 MiB | 0.49s | 1.76s | **3.6x** |
+
+So "always chunk" would make every routine widen ~4x slower. Where both fit, whole-store
+wins; above the budget, whole-store does not run at all. The threshold sits exactly on
+that boundary, which is why it is a router rather than a constant.
+
+**The switch must be REPORTED, not silent.** Same shape as
+`BaseDataset._reconcile_new_listings`, which names the qualifying symbols and their raw
+row counts before a rebuild starts. Silently taking a path 4x slower reads to an operator
+as their machine being slow.
+
+Take these two files together as one brief.
