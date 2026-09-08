@@ -338,7 +338,15 @@ def test_vendor_isolation_output_columns_are_exactly_the_pre_refactor_set(
     would do it silently, because an extra variable breaks nothing until
     something downstream enumerates `data_vars`.
     """
-    from tests.conftest import _STOCK_PQT_COLUMNS
+    # `from conftest import ...`, not `from tests.conftest import ...`:
+    # vectorbt ships a top-level REGULAR `tests` package into site-packages,
+    # and a regular package beats this repo's `tests/` namespace portion no
+    # matter where it sits on `sys.path` -- so `tests.conftest` resolves into
+    # vectorbt and raises `ModuleNotFoundError` in any freshly built venv.
+    # `conftest` is the spelling `tests/test_ticker_pattern_reconciliation.py`
+    # already relies on for `test_universe`, and it returns the module pytest
+    # itself loaded rather than a second copy of it.
+    from conftest import _STOCK_PQT_COLUMNS
 
     parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
     root = hive_raw_tree(parent, "tiingo", _rows(stock_pqt_row, "AAPL", 1.0))
