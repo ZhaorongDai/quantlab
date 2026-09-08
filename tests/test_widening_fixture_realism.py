@@ -151,9 +151,11 @@ def test_every_store_touching_test_in_the_owning_suites_requests_the_encoding_fi
         f"touch a store, add it to _EXEMPT with the reason in its docstring, "
         f"the way {sorted(_EXEMPT)[0]!r} does."
     )
-    # Non-vacuity: the guard must actually be looking at the family. 33 of the
-    # 34 tests across the three suites touch a store; the 34th is exempt.
-    assert checked == 33, checked
+    # Non-vacuity: the guard must actually be looking at the family. 34 of the
+    # 35 tests across the three suites touch a store; the 35th is exempt.
+    # Re-derived 2026-09-08 from this assertion's own failure message when
+    # 260908-g30 added its router tracer to test_symbol_axis_widening.py.
+    assert checked == 34, checked
 
 
 def test_no_owning_suite_builds_a_symbol_coordinate_from_a_bare_sequence() -> None:

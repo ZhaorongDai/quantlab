@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
+from loguru import logger
 
 from quantlab.base.backend import DataBackend
 
@@ -32,6 +33,36 @@ class XrBackend(DataBackend):
     #: layout a property of the store rather than of whichever window
     #: happened to be written first.
     APPEND_DIM_CHUNK = 512
+
+    #: Ceiling on the bytes a symbol-axis widen may materialise AT ONCE,
+    #: enforced by `widen_symbol_axis`'s router rather than by a refusal.
+    #:
+    #: **Deliberately the same figure as
+    #: `quantlab/acquisition/universe.py:UniverseCatalog.MAX_DENSE_PANEL_BYTES`,
+    #: and deliberately a SEPARATE constant.** Same figure because it is the
+    #: same machine's already-measured materialisation ceiling -- 4 GiB sits
+    #: below the ~7.2 GiB that OOMs a 16 GiB box and above every window that
+    #: comfortably fits. Separate constant because this module has no import
+    #: path to the acquisition layer and must not grow one: a storage backend
+    #: that imports `UniverseCatalog` to read a number has acquired a
+    #: dependency on the whole acquisition stack for a scalar. That is the
+    #: sibling-constant precedent `MAX_RAW_BYTES` already sets one file over
+    #: (documented there as *A DIFFERENT constraint from
+    #: `MAX_DENSE_PANEL_BYTES`, not a replacement for it*).
+    #:
+    #: **This routes; it does not refuse.** Unlike `MAX_DENSE_PANEL_BYTES`,
+    #: which fails a fetch that would not fit, crossing this budget selects a
+    #: bounded block-by-block rewrite. Refusing is not available here:
+    #: `Factor.update()` reaches `widen_symbol_axis` as its ONLY path -- there
+    #: is no raw tier for it to re-read, so `BaseDataset`'s
+    #: `on_new_listing="rebuild"` escape does not exist on the factor side.
+    #:
+    #: Routing of the brief's measured scenarios at this value (2026-09-08):
+    #: 0.2 / 34.6 / 137.3 MiB stores and a daily 7,700-symbol year of 20
+    #: variables (0.3 GiB) take the whole-store rewrite; daily full history
+    #: (6.0 GiB), 1-minute 500 symbols (7.3 GiB) and 1-minute 3,000 symbols
+    #: (43.9 GiB) take the chunked one.
+    MAX_WIDEN_BYTES = 4 * 1024**3
 
     def write(self, path: str, **kwargs) -> Self:
         if not Path(path).exists():
@@ -267,25 +298,290 @@ class XrBackend(DataBackend):
                     f"append path. {remedy}"
                 )
 
-            # `.load()` is load-bearing, not defensive: without dask,
-            # `open_zarr` still hands back lazily-indexed arrays that read from
-            # the store directory on access, and the swap below renames that
-            # directory out from under them.
-            widened = stored.reindex({dim: requested}, fill_value=fills).load()
-            encoding = self._append_encoding(append_dim, data=widened)
+            estimate = self._estimate_widen_bytes(
+                stored, requested, dim, append_dim
+            )
+            block_rows = self._widen_block_rows(estimate["row_bytes"])
+            chunked = estimate["widened_bytes"] > self.MAX_WIDEN_BYTES
+            self._report_widen_strategy(
+                path, dim, append_dim, estimate, block_rows, chunked
+            )
+
+            # Per D-3 the chosen strategy runs INSIDE `stored`'s lifetime: both
+            # strategies read `path` through that handle, the chunked one for
+            # the whole duration of its block loop. The cleanup spans the WHOLE
+            # strategy call rather than a single write, so a crash on block 7
+            # of 12 leaves no orphan sidecar and leaves `path` authoritative.
+            strategy = self._widen_chunked if chunked else self._widen_whole_store
+            try:
+                strategy(
+                    stored,
+                    widening,
+                    requested,
+                    dim=dim,
+                    append_dim=append_dim,
+                    fills=fills,
+                    block_rows=block_rows,
+                )
+            except BaseException:
+                shutil.rmtree(widening, ignore_errors=True)
+                raise
         finally:
             stored.close()
-
-        try:
-            widened.to_zarr(str(widening), mode="w", encoding=encoding)
-        except BaseException:
-            shutil.rmtree(widening, ignore_errors=True)
-            raise
 
         os.replace(target, superseded)
         os.replace(widening, target)
         shutil.rmtree(superseded, ignore_errors=True)
         return self
+
+    @staticmethod
+    def _estimate_widen_bytes(
+        stored: xr.Dataset,
+        requested: Sequence[str],
+        dim: str,
+        append_dim: str,
+    ) -> dict:
+        """Size the panel a widen of `stored` onto `requested` would produce.
+
+        Takes the ALREADY-OPEN dataset rather than a path on purpose: the
+        router holds one -- it opened the store to run the superset and dtype
+        guards -- and a path-taking sibling would be a SECOND live name for one
+        estimate with no caller of its own. Lift it to a path-taking form the
+        day something outside the router needs to size a widen without opening
+        the store first; until then, one name.
+
+        `widened_bytes` sums, over every data variable, that variable's byte
+        count with the `dim` extent replaced by `len(requested)` -- i.e. the
+        allocation the whole-store rewrite makes. `row_bytes` is the same
+        quantity per ONE `append_dim` row, summed over only those variables
+        that carry `append_dim`, which is what turns a byte budget into a block
+        length in `_widen_block_rows`. Variables that do not carry `append_dim`
+        contribute to `widened_bytes` (they are materialised too) but not to
+        `row_bytes` (they do not scale with the block).
+
+        Metadata only: nothing here reads a chunk off disk, so the estimate is
+        free relative to the rewrite it decides.
+        """
+        widened_bytes = 0
+        row_bytes = 0
+        for variable in stored.data_vars.values():
+            sizes = {str(name): int(size) for name, size in variable.sizes.items()}
+            if dim in sizes:
+                sizes[dim] = len(requested)
+            count = 1
+            for extent in sizes.values():
+                count *= extent
+            nbytes = count * variable.dtype.itemsize
+            widened_bytes += nbytes
+            if sizes.get(append_dim):
+                row_bytes += nbytes // sizes[append_dim]
+
+        return {
+            "stored_symbols": int(stored.sizes.get(dim, 0)),
+            "symbols": len(requested),
+            "timestamps": int(stored.sizes.get(append_dim, 0)),
+            "variables": len(stored.data_vars),
+            "row_bytes": row_bytes,
+            "widened_bytes": widened_bytes,
+        }
+
+    @staticmethod
+    def _widen_block_rows(row_bytes: int) -> int:
+        """How many `append_dim` rows one chunked-rewrite block may hold.
+
+        D-2's rule, verbatim::
+
+            raw        = MAX_WIDEN_BYTES // row_bytes      (0 when row_bytes is 0)
+            block_rows = max(APPEND_DIM_CHUNK,
+                             (raw // APPEND_DIM_CHUNK) * APPEND_DIM_CHUNK)
+
+        **The grid constraint is load-bearing, not stylistic.** The FIRST block
+        is written with `encoding=self._append_encoding(append_dim,
+        data=first_block)` -- routing through the single-sourced chunk rule
+        rather than restating it -- so the block's own length is what decides
+        the store's on-disk append-dim chunk. Measured 2026-09-08 against a
+        600-timestamp store: a 100-row block leaves `close` chunks `(100, 3)`
+        where the whole-store path leaves `(512, 3)`; a 512-row block
+        reproduces `(512, 3)` exactly. Requiring the block to be at least
+        `APPEND_DIM_CHUNK` AND a multiple of it makes
+        `min(APPEND_DIM_CHUNK, first_block_len)` equal
+        `min(APPEND_DIM_CHUNK, total_len)` identically, so the two strategies
+        agree on the grid without either restating the arithmetic.
+
+        **The floor wins even when one aligned block exceeds the budget.** This
+        method ROUTES, it does not refuse: a store whose single `APPEND_DIM_CHUNK`
+        block is already over budget still gets the bounded loop, which is
+        strictly better than the whole-store allocation it replaces. Refusing
+        is not an option `Factor.update()` could act on -- it has no raw tier to
+        rebuild from.
+
+        `TimeChunkPlanner` is deliberately NOT used (D-2). Its granularities are
+        CALENDAR periods, and a period's row count is a function of frequency
+        and density -- a month of 1-minute bars is ~390x a month of daily bars
+        (`BARS_PER_DAY_BY_FREQUENCY`) -- so it cannot bound BYTES, which is the
+        entire constraint here. It stays the right tool for
+        `assert_chunked_panel_fits`, where sizing runs before any timestamp axis
+        exists.
+        """
+        chunk = XrBackend.APPEND_DIM_CHUNK
+        raw = XrBackend.MAX_WIDEN_BYTES // row_bytes if row_bytes > 0 else 0
+        return max(chunk, (raw // chunk) * chunk)
+
+    @staticmethod
+    def _widen_blocks(timestamps: int, block_rows: int) -> range:
+        """The block offsets the chunked rewrite walks.
+
+        `max(timestamps, 1)` so a store with a zero-length `append_dim` still
+        writes exactly one (empty) block rather than no block at all, which
+        would leave no sidecar for the swap to rename in.
+        """
+        return range(0, max(int(timestamps), 1), block_rows)
+
+    def _report_widen_strategy(
+        self,
+        path: str,
+        dim: str,
+        append_dim: str,
+        estimate: Mapping[str, int],
+        block_rows: int,
+        chunked: bool,
+    ) -> None:
+        """Say which strategy ran, and how loudly (D-6).
+
+        Asymmetric on purpose. A `warning` on every routine sub-budget widen is
+        noise, and noise is how an operator learns to stop reading warnings; the
+        requirement is that the SWITCH not be silent, not that every widen
+        announce itself. So the chunked branch is loud and names every figure a
+        reader needs -- including the measured wall-clock multiplier, so a slow
+        run reads as the strategy rather than as the machine -- and the
+        whole-store branch is one `info` line, enough that which path ran is
+        always answerable from the log.
+
+        Shaped after `BaseDataset._reconcile_new_listings`'s widen warning: name
+        the store, name both counts, name the consequence, name the opt-out.
+        """
+        gib = 1024**3
+        mib = 1024**2
+        if not chunked:
+            logger.info(
+                f"XrBackend.widen_symbol_axis: {path} -- widening '{dim}' from "
+                f"{estimate['stored_symbols']} to {estimate['symbols']} "
+                f"label(s) materialises "
+                f"{estimate['widened_bytes'] / gib:.3f} GiB, within the "
+                f"{self.MAX_WIDEN_BYTES / gib:.2f} GiB MAX_WIDEN_BYTES budget; "
+                f"taking the whole-store rewrite."
+            )
+            return
+
+        blocks = len(self._widen_blocks(estimate["timestamps"], block_rows))
+        logger.warning(
+            f"XrBackend.widen_symbol_axis: {path} -- widening '{dim}' from "
+            f"{estimate['stored_symbols']} to {estimate['symbols']} label(s) "
+            f"would materialise {estimate['widened_bytes'] / gib:.3f} GiB at "
+            f"once, over the {self.MAX_WIDEN_BYTES / gib:.2f} GiB "
+            f"MAX_WIDEN_BYTES budget. Rewriting the store block by block along "
+            f"'{append_dim}' instead: {blocks} block(s) of {block_rows} row(s), "
+            f"~{estimate['row_bytes'] * block_rows / mib:.1f} MiB per block, so "
+            f"peak memory is ONE block rather than the whole store. Measured "
+            f"2026-09-08: the chunked rewrite runs ~3.6-4.0x the whole-store "
+            f"wall clock, so a slow run here is the STRATEGY and not the "
+            f"machine. Raise XrBackend.MAX_WIDEN_BYTES deliberately to take the "
+            f"whole-store path anyway."
+        )
+
+    def _widen_whole_store(
+        self,
+        stored: xr.Dataset,
+        widening: Path,
+        requested: Sequence[str],
+        *,
+        dim: str,
+        append_dim: str,
+        fills: Mapping[str, object],
+        block_rows: int,
+    ) -> None:
+        """The shipped rewrite, unchanged: reindex the WHOLE store, write once.
+
+        Faster than `_widen_chunked` wherever it fits -- measured 2026-09-08,
+        chunked runs 1.2x / 4.0x / 3.6x this path's wall clock on 0.2 / 34.6 /
+        137.3 MiB stores -- which is exactly why `widen_symbol_axis` routes
+        rather than always chunking.
+
+        `block_rows` is accepted and ignored. The two strategies carry ONE
+        signature so the router selects between them by name and calls them
+        identically; a router that had to remember which arguments each
+        strategy wanted is a router with two call sites to drift apart.
+        """
+        # `.load()` is load-bearing, not defensive: without dask,
+        # `open_zarr` still hands back lazily-indexed arrays that read from
+        # the store directory on access, and the swap below renames that
+        # directory out from under them.
+        widened = stored.reindex({dim: requested}, fill_value=fills).load()
+        encoding = self._append_encoding(append_dim, data=widened)
+        widened.to_zarr(str(widening), mode="w", encoding=encoding)
+
+    def _widen_chunked(
+        self,
+        stored: xr.Dataset,
+        widening: Path,
+        requested: Sequence[str],
+        *,
+        dim: str,
+        append_dim: str,
+        fills: Mapping[str, object],
+        block_rows: int,
+    ) -> None:
+        """The bounded rewrite: one `append_dim` block in memory at a time.
+
+        Same output as `_widen_whole_store`, measured element for element
+        (values with `equal_nan=True`, both coordinates, the on-disk chunk grid
+        AND the `symbol` coordinate's on-disk encoding, across both live
+        production encodings) -- and a peak allocation of one block instead of
+        the whole store. `tests/test_symbol_axis_widening.py` is what keeps the
+        two paths agreeing; the equivalence is the deliverable, not a nicety.
+
+        The FIRST block creates the sidecar with `mode="w"` and
+        `encoding=self._append_encoding(append_dim, data=block)`, so the chunk
+        rule stays single-sourced and the block-size constraint in
+        `_widen_block_rows` is what makes the resulting grid match the
+        whole-store path's. Every LATER block appends along `append_dim`, first
+        dropping any data variable that does not carry it: the first block
+        already wrote those at their full extent, and handing them to an
+        appending write again would rewrite them per block.
+
+        **Each block is `.load()`ed before its own write**, for the same reason
+        the whole-store path loads once: without dask, `open_zarr` hands back
+        lazily-indexed arrays that read from the store directory on access, and
+        the swap renames that directory out from under them. At block
+        granularity the requirement is sharper -- no lazily-indexed reference
+        may outlive its ITERATION either, because the next iteration's `isel`
+        must be free to read the same handle.
+
+        `stored` is read for the whole duration of the loop, which is why the
+        loop runs inside the router's `try:` whose `finally` closes it, and why
+        both `os.replace` calls stay outside that (D-3).
+        """
+        timestamps = int(stored.sizes.get(append_dim, 0))
+        for index, low in enumerate(self._widen_blocks(timestamps, block_rows)):
+            block = stored.isel(
+                {append_dim: slice(low, low + block_rows)}
+            ).load()
+            block = block.reindex({dim: requested}, fill_value=fills)
+            if index == 0:
+                block.to_zarr(
+                    str(widening),
+                    mode="w",
+                    encoding=self._append_encoding(append_dim, data=block),
+                )
+                continue
+            block = block.drop_vars(
+                [
+                    name
+                    for name, variable in block.data_vars.items()
+                    if append_dim not in variable.dims
+                ]
+            )
+            block.to_zarr(str(widening), mode="a", append_dim=append_dim)
 
     def widen_data_vars(
         self,

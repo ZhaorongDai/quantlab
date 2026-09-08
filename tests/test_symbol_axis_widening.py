@@ -43,6 +43,7 @@ rewrites the store's coordinate encoding underneath. Its reddening mutation is
 named in each carrying test's docstring.
 """
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 import zarr
+from loguru import logger
 
 from conftest import assert_stored_symbol_encoding, symbol_coord
 from quantlab.dataset.backend import XrBackend
@@ -123,6 +125,54 @@ def _typed_panel(
 
 def _stored(path: str) -> xr.Dataset:
     return xr.open_zarr(path).load()
+
+
+#: A store LONGER than `APPEND_DIM_CHUNK`, which is what makes every
+#: multi-block claim in this module checkable (260908-g30).
+#:
+#: A test that forces the chunked branch does so by monkeypatching
+#: `XrBackend.MAX_WIDEN_BYTES` to `0`. That makes `raw` zero, so D-2's FLOOR
+#: decides and `block_rows` is exactly `APPEND_DIM_CHUNK` (512). A store of 512
+#: rows or fewer therefore runs exactly ONE block -- and every assertion about
+#: the block loop is then satisfied without the loop ever iterating, by an
+#: implementation that collapsed to a single write. At 600 rows the loop runs
+#: two blocks (512 + 88) and that collapse is red.
+#:
+#: 600 is the same figure `test_the_chunk_grid_survives_a_widen` already pins
+#: for the neighbouring reason (below 512 the encoded and unencoded append-dim
+#: chunk sizes coincide). It is an ARGUMENT to the existing `_panel` builder,
+#: not a new builder, so `tests/test_widening_fixture_realism.py`'s `found`
+#: literal is unaffected.
+_LONG_DATES = [
+    d.isoformat() for d in pd.date_range("2020-01-01", periods=600, freq="D")
+]
+
+
+def _captured_warnings():
+    """Attach a temporary in-memory loguru sink.
+
+    loguru does not propagate to stdlib `logging`, so pytest's `caplog` sees
+    nothing. Same idiom, for the same reason, as
+    `tests/test_chunked_ingest.py::_captured_warnings`.
+    """
+    messages: list[str] = []
+    return messages, logger.add(messages.append, level="WARNING", format="{message}")
+
+
+def _reported_block_count(messages: list[str]) -> int:
+    """Read the block count out of the chunked branch's own warning.
+
+    Deliberately parsed from the REPORT rather than counted by instrumenting
+    the writes: this is the tracer's proof that the operator-visible figure and
+    the loop agree. The write-level observation is a separate lock next door.
+    """
+    for message in messages:
+        match = re.search(r"(\d+) block\(s\) of (\d+) row\(s\)", message)
+        if match:
+            return int(match.group(1))
+    raise AssertionError(
+        f"no chunked-widen warning naming a block count was logged: {messages}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +436,67 @@ def test_the_chunk_grid_survives_a_widen(tmp_path: Path, symbol_encoding: str) -
     assert_stored_symbol_encoding(path, symbol_encoding)
     chunks = zarr.open_group(path, mode="r")["close"].chunks
     assert chunks == (min(XrBackend.APPEND_DIM_CHUNK, 600), 3)
+
+
+def test_an_over_budget_widen_takes_a_block_loop_that_actually_iterates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
+) -> None:
+    """The end-to-end slice of 260908-g30: `widen_symbol_axis` picks its
+    strategy BY SIZE, says which it picked, and the over-budget strategy
+    rewrites the store block by block without ever holding all of it.
+
+    Forced through `XrBackend.MAX_WIDEN_BYTES`, never through a strategy
+    parameter -- the constant IS the decision variable, so a test that moves it
+    exercises the real router rather than a test-only seam.
+
+    600 TIMESTAMPS IS LOAD-BEARING. A forced budget of `0` makes `raw` zero, so
+    D-2's floor decides and `block_rows` is exactly `APPEND_DIM_CHUNK` (512).
+    Over a store of 512 rows or fewer the loop runs ONE block, and every claim
+    below about the loop would hold for an implementation that never iterated.
+    At 600 rows the reported count is 2 (512 + 88), which is what the block-count
+    assertion pins.
+
+    RED under: a router that ignores the budget and always takes the
+    whole-store path (no warning is logged, so `_reported_block_count` raises);
+    a "chunked" path that collapses to a single write (the count is 1); a block
+    loop that misaligns by position rather than by label (A's and B's history
+    lands under the wrong symbol); a loop that reindexes before loading, or
+    reuses a lazily-indexed block across iterations (the swap renames the
+    directory out from under it).
+
+    The encoding assertion is RED under 260908-dvv's M4 on `[variable_length]`
+    alone, and additionally under a chunked path that rebuilds the coordinate
+    on any block -- the failure mode M4 proved a whole battery can miss.
+    """
+    path = str(tmp_path / "routed.zarr")
+    XrBackend().to_internal(
+        _panel(_LONG_DATES, ["A", "B"], 0.0, encoding=symbol_encoding)
+    ).append(path)
+    before = _stored(path)
+
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    messages, sink_id = _captured_warnings()
+    try:
+        XrBackend().widen_symbol_axis(path, ["A", "B", "C"])
+    finally:
+        logger.remove(sink_id)
+
+    # The switch is REPORTED, and the loop genuinely iterated: 600 rows over a
+    # floored 512-row block is two blocks, not one.
+    assert _reported_block_count(messages) == 2
+
+    after = _stored(path)
+    assert_stored_symbol_encoding(path, symbol_encoding)
+    assert after["symbol"].values.tolist() == ["A", "B", "C"]
+    assert after.sizes["timestamp"] == len(_LONG_DATES)
+    for symbol in ("A", "B"):
+        np.testing.assert_array_equal(
+            after["close"].sel(symbol=symbol).values,
+            before["close"].sel(symbol=symbol).values,
+        )
+    assert np.isnan(after["close"].sel(symbol="C").values).all()
+    assert not Path(f"{path}.widening.tmp").exists()
+    assert not Path(f"{path}.superseded.tmp").exists()
 
 
 def test_a_failed_widen_leaves_the_original_store_intact(
