@@ -250,14 +250,28 @@ Plans:
 ### Phase 03.4: Data Source Registry (Operator-Surface Foundation) (INSERTED)
 
 **Goal**: Every data source quantlab can acquire is described by ONE registered descriptor, so both
-quantlab's own CLI scripts and an out-of-repo operator console enumerate the same sources from the
-same definition -- and adding a vendor is registering a class, not editing five call sites.
+quantlab's own code and an out-of-repo operator console enumerate the same sources from the same
+definition -- and adding a vendor is registering a descriptor, not editing five call sites.
 **Depends on**: Phase 03.2 (the `Acquisition` abstraction, watermark/coverage sidecars, vendor path
 segments), Phase 2 (`DatasetConfig`/Zarr layout)
-**Requirements**: TBD -- run `/gsd-discuss-phase 03.4`, then `/gsd-plan-phase 03.4`
+**Requirements**: Settled in discussion 2026-09-08 -- see
+`.planning/phases/03.4-data-source-registry/03.4-CONTEXT.md` (D-01..D-20). Downstream agents MUST
+read it; several decisions deliberately override wording elsewhere in this section.
 **Success Criteria** (what must be TRUE):
 
-  1. TBD -- settle the descriptor's field set and the read-API surface in discuss
+  1. Every acquirable source is enumerable from ONE registry with no vendor named at the call site,
+     and each descriptor carries its capabilities, credential env var NAMES, and acquisition class.
+  2. Enumerating sources and reading their credential status never returns a credential VALUE and
+     never requires one to be present.
+  3. The read-side surface answers inventory, coverage, failure reasons and row-level browsing on a
+     machine with NO credentials configured, and issues zero vendor requests.
+  4. Coverage judgement is computed by the same code the real acquisition run uses -- not a second
+     implementation.
+  5. A caller can start an acquisition programmatically, observe structured progress, cancel it at a
+     batch boundary leaving the store and watermarks resumable, and receive a result object naming
+     successes and failures.
+  6. The in-repo ingest entry points reach their source through the registry, so the registry has a
+     consumer in this repository.
 
 **Why this phase exists, and what it deliberately EXCLUDES.**
 
@@ -268,42 +282,106 @@ scheduler process and future web backend are OUT of this phase and out of this r
 
 **In scope (quantlab side):**
 
-- **`DataSourceRegistry`.** One descriptor per source: vendor, market, frequency, acquisition class,
-  config factory, supported universe categories, required credential env vars, declared
-  capabilities. Follow the idiom `UniverseCatalog.MEMBERSHIP_FETCHERS` / `ROSTER_FETCHERS` already
-  establishes -- do not invent a second registry style.
+- **`DataSourceRegistry`.** ONE descriptor per VENDOR, carrying a list of capability dataclasses
+  (market / frequency / data type -- Alpaca's `tick` splits into `quotes` and `trades`), plus the
+  acquisition class and config factory as direct class references, plus the credential env var
+  names. Descriptors are dataclass INSTANCES in a class-level registration tuple, populated by a
+  registration decorator, with `quantlab/acquisition/__init__.py` importing every vendor module so
+  enumeration is complete. This follows the spirit of the idiom
+  `UniverseCatalog.MEMBERSHIP_FETCHERS` / `ROSTER_FETCHERS` establishes -- one class-level
+  registration tuple -- and the instance-vs-class difference is a deliberate 2026-09-08 decision
+  (CONTEXT D-05), not a second registry style.
+- **A programmatic write entry point, and progress/cancellation to go with it.** The console starts
+  an acquisition by calling quantlab IN-PROCESS (see the boundary contract below). That entry point
+  reports progress as event objects through a pluggable reporter (tqdm-backed by default), accepts
+  a cancellation token checked at batch boundaries so a cancelled multi-hour backfill stays
+  resumable, and returns a result object -- while still writing `_failures.json`, which remains
+  both the crash-durable record and resume input.
 - **Retire the hardcoded vendor dispatch.** `ingest_tiingo.py` -> `TiingoAcquisition` and
   `ingest_alpaca.py` -> `AlpacaAcquisition` are hardcoded at each call site today; there is no
-  enumerable list an operator surface could render. The scripts resolve their source through the
-  registry instead, so the registry has a first consumer IN THIS REPO and cannot rot into a
-  console-only side table.
-- **The read-side query surface the console consumes in-process.** `Acquisition.coverage_report()`
-  already answers the coverage question with ZERO vendor requests and shares
-  `_partition_by_coverage` with the real run. Establish what else must be reachable without
-  re-implementing it out of repo: per-source inventory (symbol count, coverage span, disk
-  footprint, last-updated), per-symbol coverage and `_failures.json` reasons, and a LAZY row-level
-  read for data browsing -- `pl.scan_parquet` + hive pruning + slice for the raw tier, `.sel()`
-  slicing for Zarr. `us_all` is ~15.4k symbols x ~5.2k trading days (~30M rows); any surface that
-  can be asked for a whole tier at once is the wrong surface.
+  enumerable list an operator surface could render. These scripts become THIN SHELLS over the
+  programmatic entry point, resolving their source through the registry. They stop being a
+  human-facing surface -- the TUI becomes that -- but they are KEPT, because they are the
+  registry's consumer IN THIS REPO and stop it rotting into a console-only side table, they are
+  live proof the programmatic entry point works, and they are the fallback on a machine with no
+  TUI. (`ingest_tiingo.py` already supports `--universe us_all`, so verify whether
+  `ingest_us_equity.py` is already redundant before preserving both.)
+- **The read-side query surface the console consumes in-process.** A read-only inspector that needs
+  NO credentials -- constructing an `Acquisition` is not an option, because `TiingoAcquisition`
+  raises without `TIINGO_API_KEY`. `Acquisition.coverage_report()` already answers the coverage
+  question with ZERO vendor requests and shares `_partition_by_coverage` with the real run; the
+  inspector must SHARE that logic, never re-implement it. Reachable without re-implementing it out
+  of repo: per-source inventory (symbol count, coverage span, disk footprint, last-updated),
+  per-symbol coverage and `_failures.json` reasons, and a LAZY row-level read for data browsing --
+  `pl.scan_parquet` + hive pruning + slice for the raw tier, `.sel()` slicing for Zarr. `us_all` is
+  ~15.4k symbols x ~5.2k trading days (~30M rows), so the lazy read takes symbols AND a date range
+  as REQUIRED arguments: pruning always happens, and asking for a whole tier takes deliberately
+  passing the full roster.
 - **Credentials are reported as configured / not configured, never as values.** The descriptor names
   the env vars; nothing reads or returns them. This repository has a real leaked-key incident in its
   history (Phase 1), and an operator dashboard that prints an env var is how the next one happens.
 
 **Explicitly OUT of scope (belongs to `quantlab-console`):** the Textual TUI, the service layer, the
 scheduler process and its job files, run history/logs, the download form and progress UI, the CSV
-export, the quality-check report rendering, and the future HTTP API and web frontend.
+export, the quality-check report rendering, and the future HTTP API and web frontend. Also out, and
+newly so as of 2026-09-08: keeping a multi-hour backfill from blocking the UI (a thread/process pool
+or job queue), installing a log sink to render acquisition logs, and preventing two concurrent
+acquisitions of the same source. All three now live entirely in the console repository.
 
-**Boundary contract with the console (locked 2026-09-07):**
+**Boundary contract with the console (revised 2026-09-08 -- supersedes the 2026-09-07 lock):**
 
 - The console depends on quantlab; quantlab NEVER depends on the console.
 - READS (coverage, inventory, row-level browsing, quality checks) run IN-PROCESS via a direct import
   of quantlab.
-- WRITES (an actual acquisition run) are launched by the console as a SUBPROCESS invoking
-  quantlab's existing CLI entry points. This is what keeps a multi-hour backfill from taking the
-  console down with it, and it makes the console's "export the equivalent CLI command" guarantee
-  true by construction -- the exported command IS what the console runs.
+- WRITES (an actual acquisition run) ALSO run IN-PROCESS, via the programmatic entry point above.
+  **This reverses the 2026-09-07 decision**, under which the console launched writes as a SUBPROCESS
+  invoking quantlab's CLI. Two things that rule bought are hereby given up: process isolation, so
+  keeping a multi-hour backfill from taking the console down is now the console's own job (hence the
+  cancellation token and progress events quantlab must provide, since the loop lives here); and the
+  "export the equivalent CLI command" guarantee, which was true by construction only because the
+  exported command WAS what the console ran. Any such export is now a reconstruction, and has to be
+  tested as one.
+- Concurrency control is the console's responsibility. Note the residual risk: the thin-shell
+  scripts run outside any console task queue, so a shell and the console can still overlap on one
+  source. Check whether watermark/sidecar writes are already atomic (temp file + rename) before
+  deciding this needs a lock.
 
-**Plans**: TBD
+**Plans:** 7 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 03.4-01-PLAN.md — Wave-0 validation scaffolding: `isolated_registry` / `no_credentials`
+  fixtures plus the five new test files, each with a real infrastructure self-test
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03.4-02-PLAN.md — TRACER: `DataSourceRegistry` + both descriptors + `AcquisitionResult` +
+  the programmatic `run()`, driven end to end by `ingest_tiingo.py` as a thin shell (SC-1, SC-2,
+  D-01..D-07, D-12, D-14, D-18)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03.4-03-PLAN.md — Atomic sidecar writes through one shared `write_json_atomically`, adopted
+  by both existing ledgers and both acquisition writers (D-20, SC-5)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 03.4-04-PLAN.md — `CoverageLedger` extraction (`Acquisition` delegates) + the credential-free
+  `SourceInspector` with lazy row-level browsing (SC-3, SC-4, D-08..D-11)
+
+**Wave 5** *(blocked on Wave 4 completion — the two plans below touch disjoint files and run in parallel)*
+
+- [ ] 03.4-05-PLAN.md — Progress events through a pluggable reporter + a cancel token at the batch
+  boundary, with the result object and the failure manifest kept in agreement (SC-5, D-13, D-16..D-19)
+- [ ] 03.4-06-PLAN.md — `ingest_alpaca.py` and `ingest_us_equity.py` reduced to thin shells over
+  the registry, with a credential-free `--dry-run` coverage report (SC-6, SC-1, D-15)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 03.4-07-PLAN.md — Documentation debt: rewrite the superseded ROADMAP boundary contract,
+  add `example/registry.md`, update the stale sections of `example/acquisition.md` (D-12, D-13,
+  D-15, D-19, D-20)
 
 ### Phase 4: Baseline Return Prediction Model
 
