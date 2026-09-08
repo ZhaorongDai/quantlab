@@ -52,7 +52,7 @@ from quantlab.factor.alpha158 import Alpha158SpotKline
 from quantlab.factor.momentum import Momentum
 from quantlab.label.spot import SpotBinaryReturn, SpotReturn
 
-CONSUMER_FILE = "base/model.py"
+CONSUMER_FILE = "quantlab/base/model.py"
 
 # KunQuant streaming / compiled-graph members. D-07 makes the Polars backend
 # batch-only, so none of these may live on the shared base -- a batch-only

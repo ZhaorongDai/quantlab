@@ -183,7 +183,7 @@ def test_an_explicit_factor_names_pin_is_not_overwritten_at_construction(
             "short-circuit the derivation before any probe read"
         )
 
-    monkeypatch.setattr("base.data.BaseDataset.head", _forbidden_head)
+    monkeypatch.setattr("quantlab.base.data.BaseDataset.head", _forbidden_head)
 
     pinned = Momentum(
         _momentum_config(

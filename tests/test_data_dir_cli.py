@@ -23,6 +23,12 @@ from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: Full dotted name of the configuration package. Matched by EQUALITY,
+#: never by first dot-separated segment: every first-party import now
+#: shares one umbrella package, so a leading-segment comparison would
+#: sweep in every sibling package or none at all.
+CONFIG_MODULE = "quantlab.config"
+
 
 # ---------------------------------------------------------------------------
 # config.get_data_root() / config.set_data_root() -- D-01, D-06, D-07, D-08
@@ -172,13 +178,14 @@ def test_apply_data_dir_sets_the_root_and_returns_it(monkeypatch, tmp_path) -> N
 
 
 def test_utils_cli_does_not_import_config_at_module_scope() -> None:
-    """D-04: `utils/cli.py`'s module docstring pins its module-scope project
-    dependency surface at `base.chunking` and `base.data`. A module-scope
-    `from config import set_data_root` would drag `dataset.backend`,
-    `dataset.spot`, `dataset.stock` and `base.config` into every import of the
-    dependency-light CLI helper module.
+    """D-04: `quantlab/utils/cli.py`'s module docstring pins its module-scope
+    project dependency surface at `quantlab.base.chunking` and
+    `quantlab.base.data`. Importing `set_data_root` from the configuration
+    package at module scope would drag `quantlab.dataset.backend`,
+    `quantlab.dataset.spot`, `quantlab.dataset.stock` and `quantlab.base.config`
+    into every import of the dependency-light CLI helper module.
     """
-    tree = ast.parse((REPO_ROOT / "utils" / "cli.py").read_text())
+    tree = ast.parse((REPO_ROOT / "quantlab" / "utils" / "cli.py").read_text())
 
     module_scope_imports: set[str] = set()
     for node in tree.body:
@@ -188,9 +195,10 @@ def test_utils_cli_does_not_import_config_at_module_scope() -> None:
             module_scope_imports.add(node.module or "")
 
     assert not {
-        name for name in module_scope_imports if name.split(".")[0] == "config"
+        name for name in module_scope_imports if name == CONFIG_MODULE
     }, (
-        "utils/cli.py imports `config` at module scope; D-04 requires the "
+        "quantlab/utils/cli.py imports the configuration package at module "
+        "scope; D-04 requires the "
         "import inside apply_data_dir() so the dependency-light CLI module "
         "does not pull in the whole dataset layer."
     )
@@ -319,9 +327,10 @@ def _calls_in_source_order(node: ast.AST) -> list[tuple[int, int, str]]:
 
 
 def _path_consuming_names(tree: ast.Module) -> set[str]:
-    """Every name in this module whose invocation can reach a `config/`
-    factory: the names imported `from config import ...`, plus every
-    module-level function that calls one of them, transitively.
+    """Every name in this module whose invocation can reach a
+    `quantlab/config/` factory: the names the module imports from the
+    configuration package, plus every module-level function that calls one of
+    them, transitively.
 
     Derived rather than listed. The plan proposed a `_build*` name prefix as
     the proxy for "reaches a factory", but every one of these scripts opens
@@ -335,7 +344,7 @@ def _path_consuming_names(tree: ast.Module) -> set[str]:
         alias.asname or alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and (node.module or "").split(".")[0] == "config"
+        and (node.module or "") == CONFIG_MODULE
         for alias in node.names
     }
     functions = {

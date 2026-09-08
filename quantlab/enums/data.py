@@ -157,12 +157,12 @@ RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
 # full-market job before a single request was issued (quick task 260907-10t).
 #
 # WHY THIS MODULE. Neither of the two binders may import the other:
-# `base/acquisition.py` importing `acquisition.universe` inverts the layering,
-# and `acquisition/universe.py` importing `base.acquisition` breaks
-# `tests/test_volume_guard.py`, which reads universe.py's source and asserts
-# the literal `"base.acquisition"` is absent -- the volume guard's "refuse
-# before any client exists" property is STRUCTURAL. `enums/data.py` is the
-# shared lower module both already import.
+# `quantlab/base/acquisition.py` importing the universe module inverts the
+# layering, and `quantlab/acquisition/universe.py` importing the acquisition
+# base breaks `tests/test_volume_guard.py`, which resolves universe.py's
+# imports with `ast` and asserts none of them is an acquisition module -- the
+# volume guard's "refuse before any client exists" property is STRUCTURAL.
+# `quantlab/enums/data.py` is the shared lower module both already import.
 #
 # THE SUFFIX BOUND IS `{0,2}`, MEASURED. Against the live reference table on
 # 2026-09-07 (`us_all` 14,485 unique symbols, `nasdaq_all` 8,967):

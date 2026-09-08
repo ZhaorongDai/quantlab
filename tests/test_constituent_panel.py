@@ -390,7 +390,7 @@ def test_construction_performs_no_network_call_and_no_store_read(
     def _explode(*args, **kwargs):
         raise AssertionError("network reached during construction")
 
-    monkeypatch.setattr("acquisition.universe.requests.get", _explode)
+    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", _explode)
 
     cfg = _make_config(
         tmp_path / "does-not-exist", symbols=("AAPL", "MSFT")

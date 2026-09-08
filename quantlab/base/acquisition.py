@@ -26,20 +26,22 @@ from quantlab.enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN, Vendor
 #: by construction rather than by coincidence. Identity is asserted directly in
 #: `tests/test_ticker_pattern_reconciliation.py`.
 #:
-#: It is shared VIA `enums/data.py` because neither binder may import the
-#: other: a `base.acquisition -> acquisition.universe` import inverts the
-#: layering, and an `acquisition.universe -> base.acquisition` import breaks
-#: `tests/test_volume_guard.py`, which reads universe.py's source and asserts
-#: the literal `"base.acquisition"` is absent (the volume guard's "refuse
-#: before any client exists" property is structural, not procedural).
+#: It is shared VIA `quantlab/enums/data.py` because neither binder may import
+#: the other: an acquisition-base-to-universe import inverts the layering, and
+#: a universe-to-acquisition-base import breaks
+#: `tests/test_volume_guard.py`, which resolves universe.py's imports with
+#: `ast` and asserts none of them is an acquisition module (the volume guard's
+#: "refuse before any client exists" property is structural, not procedural).
 #:
 #: Until quick task 260907-10t this was a standalone `re.compile` of the same
 #: literal, with a comment claiming it was imported from
-#: `acquisition/universe.py` and a deferred local import that did not exist.
+#: `quantlab/acquisition/universe.py` and a deferred local import that did not
+#: exist.
 #: Two free-to-diverge copies -- and they HAD diverged, which is the whole bug
 #: 260907-10t fixed.
 #:
-#: DELIBERATELY WIDER than `acquisition/universe.py:_WELL_FORMED_TICKER`, which
+#: DELIBERATELY WIDER than
+#: `quantlab/acquisition/universe.py:_WELL_FORMED_TICKER`, which
 #: is a different guard on a different input: that one validates
 #: Wikipedia-scraped change-log CELLS, where an interior delimiter means two
 #: cells were merged by a parser regression. A three-segment value is that

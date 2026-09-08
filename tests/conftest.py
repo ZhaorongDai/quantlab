@@ -186,7 +186,7 @@ def mock_tiingo_client(monkeypatch, tiingo_json_response: list[dict]) -> type:
     FakeTiingoClient.calls = []
 
     monkeypatch.setattr(
-        "acquisition.tiingo.TiingoClient", FakeTiingoClient, raising=False
+        "quantlab.acquisition.tiingo.TiingoClient", FakeTiingoClient, raising=False
     )
     monkeypatch.setenv("TIINGO_API_KEY", "test-key-not-real")
 
@@ -541,7 +541,7 @@ def mock_universe_fetchers(
             return FakeResponse(text=ndx_changes_html_fixture)
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("acquisition.universe.requests.get", fake_get)
+    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", fake_get)
 
     # `NasdaqUniverseFetcher.MIN_ROSTER_ROWS` (1000) guards the REAL ~10k-row
     # Tiingo roster against a silent filter drift that would overwrite
@@ -1002,17 +1002,17 @@ def mock_alpaca_client(monkeypatch, alpaca_bars_page) -> type:
 
     # `monkeypatch.setattr` with a dotted string still IMPORTS the module --
     # `raising=False` only tolerates a missing ATTRIBUTE, not a missing module
-    # (measured: it raises `ImportError: No module named acquisition.alpaca`).
+    # (measured: it raises `ImportError: No module named quantlab.acquisition.alpaca`).
     # So the target's existence is probed first, without importing it. While
-    # `acquisition/alpaca.py` is absent there is nothing to patch AND nothing
+    # `quantlab/acquisition/alpaca.py` is absent there is nothing to patch AND nothing
     # that could issue a real request, because `_AlpacaMarketDataClient` does
     # not exist for any caller to construct; the moment 03.2-06 lands it, the
     # patch becomes real with no change here. Never widen this to a blanket
     # `except Exception` -- a genuine ImportError from a broken
-    # `acquisition/alpaca.py` must surface, not be silently unpatched.
-    if importlib.util.find_spec("acquisition.alpaca") is not None:
+    # `quantlab/acquisition/alpaca.py` must surface, not be silently unpatched.
+    if importlib.util.find_spec("quantlab.acquisition.alpaca") is not None:
         monkeypatch.setattr(
-            "acquisition.alpaca._AlpacaMarketDataClient",
+            "quantlab.acquisition.alpaca._AlpacaMarketDataClient",
             FakeAlpacaClient,
             raising=False,
         )

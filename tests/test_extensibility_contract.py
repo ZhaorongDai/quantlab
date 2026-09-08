@@ -29,10 +29,10 @@ from quantlab.base.config import DatasetConfig
 from quantlab.base.data import MarketDataset
 
 CORE_LAYER_FILES = (
-    "base/factor.py",
-    "base/factor_polars.py",
-    "base/model.py",
-    "base/backend.py",
+    "quantlab/base/factor.py",
+    "quantlab/base/factor_polars.py",
+    "quantlab/base/model.py",
+    "quantlab/base/backend.py",
 )
 
 FORBIDDEN_SUBSTRINGS = (

@@ -1,6 +1,6 @@
 """Regression tests for the `data/{market}/{frequency}/{name}.zarr` storage
 path convention (02-CONTEXT.md D-01/D-02) that every config factory in
-`config/__init__.py` must follow, plus the new `stock_kline_config()` /
+`quantlab/config/__init__.py` must follow, plus the new `stock_kline_config()` /
 `stock_acquisition_config()` factories (D-09).
 """
 
@@ -21,7 +21,14 @@ from quantlab.config import (
 )
 
 _CONFIG_SOURCE = Path(config.__file__).resolve()
-_REPO_ROOT = _CONFIG_SOURCE.parent.parent
+
+#: Derived from THIS FILE, deliberately not from `config.__file__`. The
+#: storage-root default is itself a walk up from the configuration
+#: module, so a root derived the same way moves with that expression and
+#: would keep agreeing with it however wrong it got. `tests/` sits one
+#: level below the repository root, the same independent witness
+#: `test_data_dir_cli.py` uses.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_spot_kline_config_uses_market_frequency_path_convention() -> None:
@@ -332,7 +339,8 @@ def test_the_by_construction_root_check_actually_inspects_something() -> None:
 
     assert len(considered) >= 14, (
         f"only {len(considered)} path-shaped keyword arguments found in "
-        "config/__init__.py's factories; the by-construction root check above "
+        "quantlab/config/__init__.py's factories; the by-construction root check "
+        "above "
         "is scanning less than the file contains."
     )
 

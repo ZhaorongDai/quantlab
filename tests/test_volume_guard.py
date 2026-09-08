@@ -697,6 +697,55 @@ def test_every_threshold_is_overridable_by_keyword_from_config_kwargs(tmp_path):
         )
 
 
+#: Opens the structural arm's assertion message and appears in exactly one file
+#: in the repository, so a failure can be attributed to THIS arm rather than to
+#: a neighbouring one that would have failed anyway.
+_RESOLVER_TOKEN = "FORBIDDEN-IMPORT-RESOLVED"
+
+#: Fully qualified names of the acquisition base and every concrete vendor
+#: client. Reaching any of them from the universe module means a client could
+#: be constructed there.
+_FORBIDDEN_ACQUISITION_MODULES = frozenset(
+    {
+        "quantlab.base.acquisition",
+        "quantlab.acquisition.tiingo",
+        "quantlab.acquisition.alpaca",
+    }
+)
+
+
+def _resolved_imports(source_path, module_name: str) -> set[str]:
+    """Every module `source_path` imports, as a fully qualified dotted name.
+
+    Relative imports are resolved against `module_name`'s own package, which is
+    the whole point: `from ..base.acquisition import X` and
+    `from ..base import acquisition` name the same module as
+    `import quantlab.base.acquisition` and must be seen as such. `from X import
+    y` also contributes `X.y`, because `y` may itself be a submodule.
+    """
+    import ast
+
+    package = module_name.rpartition(".")[0]
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package
+                for _ in range(node.level - 1):
+                    base = base.rpartition(".")[0]
+            else:
+                base = ""
+            target = f"{base}.{node.module}" if base and node.module else (
+                node.module or base
+            )
+            found.add(target)
+            found.update(f"{target}.{alias.name}" for alias in node.names)
+    return found
+
+
 def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
     tmp_path, monkeypatch
 ):
@@ -711,9 +760,9 @@ def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
     1. any socket allocation raises;
     2. every vendor credential is REMOVED from the environment, so a client
        constructed here would raise on its own missing-credential guard;
-    3. structurally, `acquisition/universe.py` imports no acquisition module
-       and binds no `Acquisition` subclass -- so there is nothing here that
-       COULD be constructed, whatever the call order.
+    3. structurally, `quantlab/acquisition/universe.py` imports no acquisition
+       module and binds no `Acquisition` subclass -- so there is nothing here
+       that COULD be constructed, whatever the call order.
     """
     import inspect
     from pathlib import Path
@@ -736,12 +785,27 @@ def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
         "us_all", *FULL_WINDOW, frequency="1d", batch_size=100
     )["requests"] > 0
 
-    source = Path(inspect.getfile(universe_module)).read_text()
-    for forbidden in ("acquisition.tiingo", "acquisition.alpaca", "base.acquisition"):
-        assert forbidden not in source, (
-            f"acquisition/universe.py references {forbidden}; the volume guard "
-            f"must live where no acquisition client can be constructed"
-        )
+    # Structural arm. A substring scan over the source text was airtight only
+    # while every package was a separate top-level root, because then an
+    # acquisition module could only be named absolutely. All twelve packages
+    # now share one parent, so a RELATIVE import reaches a client without
+    # producing any absolute dotted literal to scan for -- and merely
+    # re-prefixing the old literals makes it worse, since a prefixed literal
+    # cannot match a relative spelling at all. Resolve the module's imports
+    # with `ast` instead, relative levels included, and compare fully
+    # qualified names.
+    #
+    # This arm stays AHEAD of the bound-clients scan below: pytest stops at the
+    # first failing assertion, and two of the four reachable spellings would
+    # also trip that scan, so whichever runs first is the one that reports.
+    resolved = _resolved_imports(Path(inspect.getfile(universe_module)),
+                                 universe_module.__name__)
+    forbidden_hits = sorted(resolved & _FORBIDDEN_ACQUISITION_MODULES)
+    assert not forbidden_hits, (
+        f"{_RESOLVER_TOKEN}: quantlab/acquisition/universe.py imports "
+        f"{forbidden_hits}; the volume guard must live where no acquisition "
+        f"client can be constructed, whatever the call order"
+    )
     bound_clients = [
         name
         for name, value in vars(universe_module).items()
