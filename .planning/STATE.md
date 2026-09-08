@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Phase 03.1 complete, ready to plan Phase 3
-last_updated: "2026-09-07T22:43:21.224Z"
+stopped_at: Completed quick task 260907-rjq (--data-dir CLI parameter)
+last_updated: "2026-09-08T00:15:07.684Z"
 last_activity: 2026-09-07
-last_activity_desc: Phase 03.1 complete, transitioned to Phase 3
-state_head: 02c2cfccfbda614cce5d29c7ab6f3e2635a83a26
+last_activity_desc: Completed quick task 260907-rjq: --data-dir CLI parameter for the acquisition scripts
+state_head: 4552b0ca771fb09dce93a9a4435c5cd11077ca89
 progress:
   total_phases: 10
   completed_phases: 2
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-07 — Phase 03.1 complete, transitioned to Phase 3
+Last activity: 2026-09-07 - Completed quick task 260907-rjq: Add a --data-dir CLI parameter to the data acquisition scripts
 
 Progress: [██████████] 100%
 
@@ -84,6 +84,7 @@ Progress: [██████████] 100%
 | Phase quick-260906-w3t P01 | 18 min | 3 tasks | 7 files |
 | Phase quick-260906-x2s P01 | 14 min | 3 tasks | 8 files |
 | Phase 03.1 P05 | 8 min | 3 tasks | 5 files |
+| Phase quick-260907-rjq P01 | 34 min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -163,6 +164,9 @@ Recent decisions affecting current work:
 - [Phase 03.1]: RAISE rather than warn-and-clamp on a pre-coverage start_date in UniverseCatalog.get_symbols_in_range, with an INCLUSIVE boundary (strict `<`) — DATA-05 says 显式报错 literally; the sibling query already raises, and a different resolution would leave two membership queries with two contracts — the exact condition that produced this gap. Clamping would return the identical censored roster plus a log line, since every membership interval already starts at or after its own coverage start. Reversible: undo is one deleted call.
 - [Phase 03.1]: The coverage boundary lives in ONE shared helper (UniverseCatalog._assert_within_coverage) called by both membership queries, derived from MEMBERSHIP_FETCHERS — A fifth index must inherit the boundary on BOTH queries by registration alone; neither query body contains a category literal. Two independent guards is how get_symbols_in_range silently drifted out of the contract in the first place.
 - [Phase 03.1]: IndexConstituentDataset._clamp_coverage_start() keeps CLAMPING where the two catalog queries RAISE — a design choice, recorded in README.md and example/constituent.md so it is not 'aligned' away — The panel consumes a framework-supplied config default (enums/constant.py:Date.START_DATE) nobody typed, so raising would explode every default construction; a query date is one a caller actually asked, so refusing it is right.
+- [Phase 3]: [quick-260907-rjq]: The AST ordering guard's deny set is derived by TRANSITIVE REACHABILITY to a `from config import` name, not by the planned `_build*` name prefix -- every script opens __main__ with `_build_arg_parser()`, which reaches no factory and must run before parse_args(), so the prefix rule made the guard unsatisfiable. Reachability is also strictly stronger: a factory-reaching helper named without the prefix escapes the prefix rule and not this one.
+- [Phase 3]: [quick-260907-rjq]: The derived-script-list lock ESCAPED its own mutation as first written -- a substring scan for `add_data_dir_arg` still matched ingest_alpaca.py after the parser call was deleted, because the import stayed behind, leaving --data-dir dead on that script with the suite green. Registration is now detected as an AST Call plus an assertion that the flag reaches the parser __main__ actually uses.
+- [Phase 3]: [quick-260907-rjq]: --data-dir sets a process-level override consulted by ONE resolver (config.get_data_root), precedence CLI > QUANTLAB_DATA_DIR > repo-root data/. It is an explicit apply_data_dir(args) call in each __main__, never an argparse action= side effect: utils/cli.py already made that call deliberately for the volume guard, and a root-relocating side effect hidden inside argument parsing is exactly the invisible action that comment exists to prevent.
 
 ### Pending Todos
 
@@ -183,6 +187,7 @@ Recent decisions affecting current work:
 | 260907-10t | Reconcile the fetch-time ticker guard with the us_all roster: drop malformed roster entries, widen the pattern to the multi-suffix securities the roster deliberately keeps | 2026-09-07 | 4d18336 | [260907-10t-reconcile-the-fetch-time-ticker-guard-wi](./quick/260907-10t-reconcile-the-fetch-time-ticker-guard-wi/) |
 | 260907-1du | Fix three ingest-path defects: empty-store construction crash, double raw-to-xarray conversion, validate_schema false-positive null warnings | 2026-09-07 | 7bbd1f9 | [260907-1du-fix-three-ingest-path-defects-empty-stor](./quick/260907-1du-fix-three-ingest-path-defects-empty-stor/) |
 | 260907-fl6 | Fix the defects surfaced while writing the example/ guides — model-layer correctness (early stopping, alphabetical tensor axis, eval-mode inference), the layer's first tests, three deletions, a persistent refit optimizer, and the `_*_one_epoch`→`_*_one_batch` rename | 2026-09-07 | f80e9fb | [260907-fl6-fix-the-defects-surfaced-while-writing-t](./quick/260907-fl6-fix-the-defects-surfaced-while-writing-t/) |
+| 260907-rjq | Add a --data-dir CLI parameter to the data acquisition scripts to override the download/storage root | 2026-09-07 | 4552b0c | [260907-rjq-add-a-data-dir-cli-parameter-to-the-data](./quick/260907-rjq-add-a-data-dir-cli-parameter-to-the-data/) |
 
 ### Roadmap Evolution
 
@@ -203,8 +208,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-07T21:30:41.021Z
-Stopped at: Phase 03.1 complete, ready to plan Phase 3
+Last session: 2026-09-08T00:15:07.484Z
+Stopped at: Completed quick task 260907-rjq (--data-dir CLI parameter)
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
