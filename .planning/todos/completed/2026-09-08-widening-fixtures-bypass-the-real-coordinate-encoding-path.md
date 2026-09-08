@@ -3,7 +3,7 @@ created: "2026-09-08T00:00:00.000Z"
 title: Widening fixtures bypass the real coordinate encoding path
 area: testing
 severity: major
-status: pending
+status: completed
 ---
 
 # Widening fixtures bypass the real coordinate encoding path
@@ -117,3 +117,31 @@ catch it, by accident; the gap is that the owning suites do not.
 2026-09-08, in `260908-0f4`, when a task whose fixtures went through the real ingest
 path hit a defect that three dedicated widening suites and a 13/13 verification had
 both missed.
+
+## Resolved
+
+2026-09-08, by quick task `260908-dvv`. See
+`.planning/quick/260908-dvv-make-the-widening-suites-exercise-the-co/260908-dvv-SUMMARY.md`.
+
+Both questions the brief asked a plan to DECIDE rather than assume were decided
+from a measured mutation matrix:
+
+- **Parametrise, over exactly two encodings.** Two mutations redden DISJOINT
+  arms, so neither subsumes the other. A third arm was refused on the same
+  evidence: at natural label widths the two fixed-width cases were measured
+  behaviourally identical, and the `float64` store turned out to be a
+  degenerate 0x0 EMPTY store rather than a string encoding (recorded separately
+  at `.planning/todos/pending/2026-09-08-an-empty-zarr-store-records-symbol-as-float64.md`).
+- **Yes, a shared helper -- at COORDINATE granularity, not panel granularity.**
+  The three suites have three incompatible panel idioms; a coordinate-level
+  helper is the one expression they share. It carries six self-tests, because
+  the realistic construction is counter-intuitive (`np.dtypes.StringDType()`
+  NAMES the decoded dtype and WRITES the wrong arm).
+
+The pass condition the brief set is met: with `quantlab/dataset/backend.py`
+reverted to `dea1e85`, the three OWNING suites now go `8 failed, 59 passed`
+where they previously went `34 passed`, and all 8 are `[variable_length]` ids
+whose `[fixed_width]` twins stay green.
+
+`tests/test_chunked_ingest.py` was not edited, and no file under `quantlab/`
+was edited.
