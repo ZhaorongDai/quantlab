@@ -24,16 +24,16 @@ model). Model training consumes `xarray` data directly rather than converting th
 ## Factor Backends
 
 Factor computation has **two interchangeable backends**, both subclasses of the single
-abstract `Factor` base in `base/factor.py`:
+abstract `Factor` base in `quantlab/base/factor.py`:
 
 | Backend | Class | Config | Modes | Write factors as |
 |---------|-------|--------|-------|------------------|
-| KunQuant | `base/factor.py:FactorKunQuant` | `FactorConfig` | batch **and** streaming | a compiled `KunQuant.Stage.Function` graph |
-| Polars | `base/factor_polars.py:FactorPolars` | `PolarsFactorConfig` | batch only (by decision) | a `polars` lazy-expression chain |
+| KunQuant | `quantlab/base/factor.py:FactorKunQuant` | `FactorConfig` | batch **and** streaming | a compiled `KunQuant.Stage.Function` graph |
+| Polars | `quantlab/base/factor_polars.py:FactorPolars` | `PolarsFactorConfig` | batch only (by decision) | a `polars` lazy-expression chain |
 
 They are siblings, not parent and child, and nothing downstream can tell which one produced
 a given factor store. A factor object from either backend drops into `DLConfig.factors` /
-`MLConfig.factors` with zero changes to `base/model.py` — the model layer only ever calls the
+`MLConfig.factors` with zero changes to `quantlab/base/model.py` — the model layer only ever calls the
 shared contract (`cal()` / `read()` / `get_features()` / `_get_factor_names()` /
 `get_config()` / `_reset_dataset_config()`) and never branches on a factor's runtime type.
 `tests/test_factor_hierarchy.py` locks that property, including a live test that drives one
@@ -50,13 +50,13 @@ to express as a KunQuant graph — and never when `xarray`/KunQuant can already 
 
 ### Adding a KunQuant factor
 
-1. Subclass `FactorKunQuant` (see `factor/alpha158.py`, the dual-market example: the same
+1. Subclass `FactorKunQuant` (see `quantlab/factor/alpha158.py`, the dual-market example: the same
    factor set is exposed as `Alpha158SpotKline` for crypto spot and `Alpha158Stock` for US
    equities).
 2. Implement `_get_factor_func()`, returning the `KunQuant.Stage.Function` built from
    `Input(...)`/`Output(...)` nodes, and `_get_factor_names()`, returning the factor names the
    graph emits.
-3. Add a config factory in `config/__init__.py` that builds a `FactorConfig` with paths
+3. Add a config factory in `quantlab/config/__init__.py` that builds a `FactorConfig` with paths
    derived from `get_data_root()` — never a hardcoded absolute path.
 
 The inherited `cal()` compiles and runs the graph in batch mode; `init_stream()` /
@@ -70,14 +70,14 @@ sets consume every input and are unaffected.
 
 ### Adding a Polars factor
 
-1. Subclass `FactorPolars` (see `factor/momentum.py`, the worked example — an N-day per-symbol
+1. Subclass `FactorPolars` (see `quantlab/factor/momentum.py`, the worked example — an N-day per-symbol
    momentum signal in about a dozen lines).
 2. Implement the single hook `_get_factor_lazyframe(lf) -> pl.LazyFrame`. It receives the
    dataset's already-read lazyframe and must return a lazyframe carrying **only** `timestamp`,
    `symbol` and the computed factor column(s) — whatever non-index columns come back *are* the
    factors, and are persisted as such. Nothing in the hook may materialize (no `.collect()`);
    `cal()` is what triggers computation.
-3. Add a config factory in `config/__init__.py` that builds a `PolarsFactorConfig`.
+3. Add a config factory in `quantlab/config/__init__.py` that builds a `PolarsFactorConfig`.
 
 There is no `_get_factor_names()` to write: names are read from the computed frame's own
 schema inside `cal()`. There is likewise no streaming counterpart — the Polars backend is
@@ -86,7 +86,7 @@ rather than an extension point.
 
 Because `Dataset.get_lazyframe()` performs no per-market column normalization (unlike
 `_to_kunquant()`, which each `Dataset` subclass overrides to rename its columns), a Polars
-factor is written against one market's raw column names — `factor/momentum.py` targets the
+factor is written against one market's raw column names — `quantlab/factor/momentum.py` targets the
 crypto-spot store's Title-Case `Close`.
 
 ## Index Constituent Panels
@@ -97,8 +97,8 @@ Point-in-time index membership, as pipeline data. A panel is an `xarray.Dataset`
 
 | Index | Class | Config factory | Store | Coverage starts |
 |-------|-------|----------------|-------|-----------------|
-| S&P 500 | `dataset/constituent.py:SP500ConstituentDataset` | `sp500_constituent_config()` | `sp500_constituent.zarr` | `1976-07-01` |
-| Nasdaq-100 (NDX) | `dataset/constituent.py:Nasdaq100ConstituentDataset` | `nasdaq100_constituent_config()` | `nasdaq100_constituent.zarr` | `2007-02-01` |
+| S&P 500 | `quantlab/dataset/constituent.py:SP500ConstituentDataset` | `sp500_constituent_config()` | `sp500_constituent.zarr` | `1976-07-01` |
+| Nasdaq-100 (NDX) | `quantlab/dataset/constituent.py:Nasdaq100ConstituentDataset` | `nasdaq100_constituent_config()` | `nasdaq100_constituent.zarr` | `2007-02-01` |
 
 The coverage start is the earliest date the underlying change log actually covers, and **both
 membership queries refuse to answer before it**: the point-in-time query
@@ -118,7 +118,7 @@ A panel's left edge is treated differently *on purpose*: it is **clamped** up to
 start rather than refused (so the panel never contains an all-False region where the truth is
 *unknown*). The asymmetry is deliberate and should not be "fixed" by aligning the two. A panel
 receives its `start_date` from a framework-supplied config default
-(`enums/constant.py:Date.START_DATE`) that nobody typed, so raising would make every default
+(`quantlab/enums/constant.py:Date.START_DATE`) that nobody typed, so raising would make every default
 construction explode; `IndexConstituentDataset._clamp_coverage_start()` clamps and warns only
 when a caller actually asked for an earlier date. A query date is one somebody did type, so a
 value outside coverage is a question that cannot be answered honestly, and refusing it is right.
@@ -147,8 +147,8 @@ symbol that was never a member, which is exactly how survivorship bias re-enters
 Building and reloading a panel:
 
 ```python
-from config import nasdaq100_constituent_config, sp500_constituent_config
-from dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
+from quantlab.config import nasdaq100_constituent_config, sp500_constituent_config
+from quantlab.dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
 
 # Build from source and persist (one Zarr store per index).
 SP500ConstituentDataset(sp500_constituent_config()).from_raw_data().save()
@@ -169,19 +169,19 @@ fetch or parse fails, the fetcher falls back to its cached snapshot under
 `data/reference/_cache/` and does **not** overwrite that cache, so one bad parse cannot poison
 future runs. `read()` touches only the local Zarr store.
 
-**Adding a third index** requires no change under `base/`:
+**Adding a third index** requires no change under `quantlab/base/`:
 
-1. Add a data-only `IndexMembershipFetcher` subclass in `acquisition/universe.py` (nine class
+1. Add a data-only `IndexMembershipFetcher` subclass in `quantlab/acquisition/universe.py` (nine class
    constants + `fetch_anchor()`). The change-log parse is inherited: you declare the source's
    `EXPECTED_SOURCE_HEADER`/`DATE_HEADER` rather than writing a `_parse_changes_table()`, which
    is what makes header validation apply to every index by construction.
-2. Add the category token to `UniverseCategory` in `enums/data.py`.
+2. Add the category token to `UniverseCategory` in `quantlab/enums/data.py`.
 3. Register the fetcher in `UniverseCatalog.MEMBERSHIP_FETCHERS` so it inherits the coverage
    guard.
 4. Add the CLI token to `ingest_tiingo.py`'s `_UNIVERSE_CATEGORY_MAP` (the `--universe` choices
    are derived from that map), or the category is unreachable from the only CLI consumer.
 5. Subclass `IndexConstituentDataset` with `_pit_coverage_start()` and `_build_intervals()`.
-6. Add a config factory in `config/__init__.py`.
+6. Add a config factory in `quantlab/config/__init__.py`.
 
 Steps 2 and 3 are enforced together by `tests/test_universe.py`:
 `test_catalog_build_emits_all_three_categories` asserts the built categories equal
@@ -191,41 +191,45 @@ enum token with no fetcher -- fails there;
 
 ## Project Structure
 
-- `base/` -- Abstract base classes that define the layer contracts: `DataBackend`/`ModelBackend`
+- `quantlab/base/` -- Abstract base classes that define the layer contracts: `DataBackend`/`ModelBackend`
   (`backend.py`), `BaseDataset` and its market-data specialization `MarketDataset` (`data.py`),
   `IndexConstituentDataset` (`constituent.py`), the shared `Factor` base and its `FactorKunQuant`
   backend (`factor.py`), the `FactorPolars` backend (`factor_polars.py`), `BaseModel`
   (`model.py`), plus the dataclass configs (`config.py`: `BaseDatasetConfig`, `DatasetConfig`,
   `ConstituentDatasetConfig`, `BaseFactorConfig`, `FactorConfig`, `PolarsFactorConfig`,
   `DLConfig`, `MLConfig`).
-- `dataset/` -- Concrete dataset/`DataBackend` implementations. `MarketDataset` subclasses:
+- `quantlab/dataset/` -- Concrete dataset/`DataBackend` implementations. `MarketDataset` subclasses:
   `SpotKlineDataset` (Binance spot klines), `StockDataset` (NASDAQ/Tiingo, partially
   implemented). `BaseDataset` subclasses that are deliberately *not* `MarketDataset`s --
   a membership panel has no bar or KunQuant representation -- `SP500ConstituentDataset` and
   `Nasdaq100ConstituentDataset` (`constituent.py`), see
   [Index Constituent Panels](#index-constituent-panels). Backends: `XrBackend` (Zarr-backed),
   `PlBackend` (Parquet/Polars-backed).
-- `factor/` -- Concrete factor sets. Computed via KunQuant: `Alpha101SpotKline`,
+- `quantlab/factor/` -- Concrete factor sets. Computed via KunQuant: `Alpha101SpotKline`,
   `Alpha101Stock`, `Alpha158SpotKline`, `Alpha158Stock`. Computed via Polars: `Momentum`
   (`momentum.py`, the worked example of the Polars backend). See
   [Factor Backends](#factor-backends).
-- `label/` -- Forward-return prediction targets: `SpotReturn` (regression), `SpotBinaryReturn`
+- `quantlab/label/` -- Forward-return prediction targets: `SpotReturn` (regression), `SpotBinaryReturn`
   (classification).
-- `my_ops/` -- Custom KunQuant composite ops used inside factor/label graphs
+- `quantlab/my_ops/` -- Custom KunQuant composite ops used inside factor/label graphs
   (`WindowedZScore`).
-- `dl_model/` -- Concrete PyTorch model heads trained through `base/model.py:BaseModel`:
+- `quantlab/dl_model/` -- Concrete PyTorch model heads trained through `quantlab/base/model.py:BaseModel`:
   `MLPRegressor`, `RNNRegressor`, `RNNClassifier`.
-- `ml_model/` -- `joblib`-based persistence helper (`MlBackend`) for non-torch models; no
+- `quantlab/ml_model/` -- `joblib`-based persistence helper (`MlBackend`) for non-torch models; no
   concrete `MLConfig`-driven model is implemented yet.
 - `backtest/` -- Nautilus Trader live/backtest `Strategy` (`test_strategy.py`) that loads a
   trained model checkpoint and generates/submits orders from live bars.
-- `vecbt/` -- vectorbt-based signal backtest helper (`backtest_from_signals`).
-- `config/` -- Config factory functions (`__init__.py`) that build `DatasetConfig`/
-  `FactorConfig` instances, and `instruments.yaml` (exchange instrument metadata).
-- `enums/` -- Shared constants and enums used across layers.
-- `utils/` -- Cross-cutting helpers: timing (`timer.py`), file I/O (`file.py`), Binance REST
+- `quantlab/vecbt/` -- vectorbt-based signal backtest helper (`backtest_from_signals`).
+- `quantlab/config/` -- Config factory functions (`__init__.py`) that build `DatasetConfig`/
+  `FactorConfig` instances, and `instruments.yaml` -- exchange instrument metadata shipped
+  as package data (declared in `[tool.setuptools.package-data]`, located at runtime
+  through `quantlab.utils.paths`).
+- `quantlab/enums/` -- Shared constants and enums used across layers.
+- `quantlab/utils/` -- Cross-cutting helpers: timing (`timer.py`), file I/O (`file.py`), Binance REST
   calls (`binance.py`), Nautilus Trader conversions (`nautilus.py`), dynamic
-  import-by-dotted-path (`module.py`), dataclass serialization (`asdict.py`).
+  import-by-dotted-path (`module.py`), dataclass serialization (`asdict.py`), and
+  package-derived locations for shipped data files (`paths.py`, stdlib-only by
+  design so both the CLI layer and the dataset layer can import it).
 - `scripts/` -- One-off/exploratory scripts, not part of the core architecture:
   `download_stock_data_from_tiingo.py` (Tiingo downloader).
 
@@ -239,8 +243,13 @@ imports the layers it needs:
   checkpoint, generates predictions over a date range, and runs a vectorbt backtest.
 - `test.py` -- interactive smoke test of `StockDataset`/`Alpha101Stock` against local NASDAQ
   parquet data (meant to be run cell-by-cell, e.g. in VS Code/Jupyter).
-- `get_binance_instruments.py` -- CLI to refresh `config/instruments.yaml` from the live
-  Binance API.
+- `get_binance_instruments.py` -- CLI to refresh the packaged instrument metadata from the
+  live Binance API. The file it reads and rewrites is package data shipped inside
+  `quantlab/config/`; both the CLI default and the Nautilus instrument loader take its
+  location from the single `quantlab.utils.paths.INSTRUMENTS_CONFIG_PATH` constant, which
+  is derived from the installed package rather than from the current working directory, so
+  the command behaves the same whatever directory it is run from. Pass `--config` to point
+  at a different file.
 - `ingest_binance_spot.py` -- rebuilds the Binance spot-kline Zarr store from locally-dropped
   monthly CSVs via `SpotKlineDataset`/`spot_kline_config()`. Does not download anything (Binance
   keeps its manual-CSV-drop workflow). Use `--raw-data-dir` to point at CSVs stored outside the
@@ -272,8 +281,34 @@ uv sync
 ```
 
 This creates a `.venv` and installs the pinned dependencies from `uv.lock`. GPU/CUDA is
-expected for deep-learning model training (`base/model.py` selects `cuda` when available,
+expected for deep-learning model training (`quantlab/base/model.py` selects `cuda` when available,
 falling back to `cpu`).
+
+### Consuming quantlab from another project
+
+Every layer lives under one importable package, so a downstream project depends on
+`quantlab` and imports through it:
+
+```python
+from quantlab.config import stock_kline_config
+from quantlab.dataset.stock import StockDataset
+```
+
+During development, point at a checkout with an editable path source so a change on
+either side is visible immediately with no version bump:
+
+```toml
+[project]
+dependencies = ["quantlab"]
+
+[tool.uv.sources]
+quantlab = { path = "../quantlab", editable = true }
+```
+
+The single top-level package is what makes this work at all. The generic names the
+layers used to occupy at the top level -- among them `base`, `config`, `data`,
+`dataset` and `utils` -- both blocked the build and would have made an import
+ambiguous in any shared environment.
 
 ## Environment Variables
 
@@ -283,14 +318,14 @@ falling back to `cpu`).
 - `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` -- required to run `ingest_alpaca.py`. These are
   Alpaca **market-data** credentials only: they grant no trading or broker access, and there is
   no paper/live distinction to make, because Alpaca's market-data API does not have one (03.2
-  D-15). Both are read from the environment inside `acquisition/alpaca.py`'s client constructor
+  D-15). Both are read from the environment inside `quantlab/acquisition/alpaca.py`'s client constructor
   and are never assigned to a config dataclass -- `AcquisitionConfig.to_dict()` is `asdict()`
   and lands in persisted configs and in the JSON saved beside model checkpoints. Neither is
   accepted as a command-line argument, which would put it in shell history and in every process
   listing. Get a key pair from the Alpaca dashboard (https://app.alpaca.markets/).
 - `WANDB_API_KEY` -- required for Weights & Biases experiment tracking during model training
-  (`base/model.py:_init_wandb`).
-- `QUANTLAB_DATA_DIR` -- optional. Sets the data root used by `config/__init__.py`'s factory
+  (`quantlab/base/model.py:_init_wandb`).
+- `QUANTLAB_DATA_DIR` -- optional. Sets the data root used by `quantlab/config/__init__.py`'s factory
   functions (raw downloads, Zarr factor/label stores, Nautilus catalog). It is the middle of
   three levels resolving one root: the `--data-dir` flag wins, then this variable, then a
   `data/` directory at the repo root. `--data-dir` is available on all five data-acquisition
@@ -300,7 +335,7 @@ falling back to `cpu`).
 
 ## Configuration
 
-Config objects are dataclasses defined in `base/config.py`, threaded through every layer's
+Config objects are dataclasses defined in `quantlab/base/config.py`, threaded through every layer's
 constructor:
 
 - `DatasetConfig` -- raw data paths, Zarr/catalog paths, date range, symbols.
@@ -311,10 +346,10 @@ constructor:
 - `PolarsFactorConfig` -- `BaseFactorConfig` with nothing added; the Polars backend is
   batch-only, so it deliberately has no `mode`.
 - `DLConfig` -- deep-learning training config (factors, labels, model hyperparameters).
-- `MLConfig` -- non-torch model config (persistence via `ml_model/backend.py`; no concrete
+- `MLConfig` -- non-torch model config (persistence via `quantlab/ml_model/backend.py`; no concrete
   model implementation yet).
 
-`config/__init__.py` provides factory functions (`spot_kline_config`, `stock_kline_config`,
+`quantlab/config/__init__.py` provides factory functions (`spot_kline_config`, `stock_kline_config`,
 `sp500_constituent_config`, `nasdaq100_constituent_config`, `alpha101_config`,
 `alpha158_config`, `spot_label_config`) that build these configs using paths derived from the
 root `get_data_root()` resolves (`--data-dir`, else `QUANTLAB_DATA_DIR`, else the repo-root

@@ -10,23 +10,23 @@
 
 | 实现 | 介质 | `self.data` 是什么 | 惰性吗 |
 |---|---|---|---|
-| `XrBackend`（`dataset/backend.py`） | Zarr 目录 | `xr.Dataset` | 否，`xr.open_dataset` 之后基本就在内存里 |
-| `PlBackend`（`dataset/backend.py`） | 单个 Parquet 文件 | `pl.LazyFrame` | 是，`scan_parquet` 全程惰性 |
-| `MlBackend`（`ml_model/backend.py`） | joblib 序列化文件 | 一个 Python 对象（模型） | 无所谓 |
+| `XrBackend`（`quantlab/dataset/backend.py`） | Zarr 目录 | `xr.Dataset` | 否，`xr.open_dataset` 之后基本就在内存里 |
+| `PlBackend`（`quantlab/dataset/backend.py`） | 单个 Parquet 文件 | `pl.LazyFrame` | 是，`scan_parquet` 全程惰性 |
+| `MlBackend`（`quantlab/ml_model/backend.py`） | joblib 序列化文件 | 一个 Python 对象（模型） | 无所谓 |
 
-`MlBackend` 实现的是另一个 ABC——`base/backend.py:ModelBackend`，它跟 `DataBackend` 是对称的两半：一个管数据落在哪，一个管模型落在哪。它整个类只有十几行，没有任何维度、坐标、时间轴的概念，`read` 就是 `joblib.load`。它能和 `XrBackend` 长在同一套设计里，恰恰是因为契约里没有一句话假设"数据是个带 timestamp/symbol 的面板"。
+`MlBackend` 实现的是另一个 ABC——`quantlab/base/backend.py:ModelBackend`，它跟 `DataBackend` 是对称的两半：一个管数据落在哪，一个管模型落在哪。它整个类只有十几行，没有任何维度、坐标、时间轴的概念，`read` 就是 `joblib.load`。它能和 `XrBackend` 长在同一套设计里，恰恰是因为契约里没有一句话假设"数据是个带 timestamp/symbol 的面板"。
 
 这层分离在项目里是真的被用起来的，不是纸面上的：
 
-- `base/data.py:BaseDataset` 和 `base/factor.py` 在 `__init__` 里各自 `self.data_backend = XrBackend()`，之后所有读写都走 `self.data_backend.xxx`，没有一处直接 `to_zarr`。
-- `acquisition/universe.py:UniverseCatalog` 用的是 `PlBackend()`——因为美股 universe 参考表是"元数据"不是"流水线面板"（`config/__init__.py:universe_config` 的注释写明了这个决定），它需要的是 parquet 长表而不是 Zarr 面板。同一套 `read/write/filter_by_*` 调用，换了个介质就成立。
-- `base/model.py:BaseModel` 也有 `self.data_backend = XrBackend()`，用它来装训练集合并后的面板（`collect()` → `to_internal`）。注意训练用的这份数据从来没落过盘，是 `to_internal` 直接从内存接管的——这条"不经磁盘也能进流水线"的路径就是 `to_internal` 存在的理由。
+- `quantlab/base/data.py:BaseDataset` 和 `quantlab/base/factor.py` 在 `__init__` 里各自 `self.data_backend = XrBackend()`，之后所有读写都走 `self.data_backend.xxx`，没有一处直接 `to_zarr`。
+- `quantlab/acquisition/universe.py:UniverseCatalog` 用的是 `PlBackend()`——因为美股 universe 参考表是"元数据"不是"流水线面板"（`quantlab/config/__init__.py:universe_config` 的注释写明了这个决定），它需要的是 parquet 长表而不是 Zarr 面板。同一套 `read/write/filter_by_*` 调用，换了个介质就成立。
+- `quantlab/base/model.py:BaseModel` 也有 `self.data_backend = XrBackend()`，用它来装训练集合并后的面板（`collect()` → `to_internal`）。注意训练用的这份数据从来没落过盘，是 `to_internal` 直接从内存接管的——这条"不经磁盘也能进流水线"的路径就是 `to_internal` 存在的理由。
 
 反过来说，如果没有这层：`BaseDataset` 里会散落 `xr.open_dataset` / `to_zarr` / `sel`，`UniverseCatalog` 里会散落 `scan_parquet`，而 `head()` 那个探查语义（下面细说）会在每个调用点各写一遍、各写错一遍。
 
 ## 核心契约
 
-`base/backend.py:DataBackend` 声明了 8 个抽象方法，加上一个 `data` 属性。
+`quantlab/base/backend.py:DataBackend` 声明了 8 个抽象方法，加上一个 `data` 属性。
 
 **`data` 属性**：还没读就访问，直接 `AttributeError("Please cal 'read' or 'to_internal' first.")`，不返回空值。理由值得记住：一个空数据集会被下游当成"这段时间确实没有行情"继续算下去，错误跑到很远才暴露。宁可当场炸。
 
@@ -56,7 +56,7 @@
 
 1. `BaseDataset.read()` 会跑 `_filter()`，而 `_filter()` 调 `filter_by_date` —— 就地把 `data_backend.data` 收窄了；
 2. `XrBackend.read()` 开头有个缓存早退：`if not overwrite and hasattr(self, "data"): return self` —— 于是那次收窄在后面每一次 `read()` 里都活着；
-3. `base/factor_polars.py:_get_factor_names` 只是想探一下计算图产出什么列，它跑在 `_reset_dataset_config()` 把窗口按因子 `window` 天数放宽**之前**，而 `filter_by_date` 只会收窄不会放宽；
+3. `quantlab/base/factor_polars.py:_get_factor_names` 只是想探一下计算图产出什么列，它跑在 `_reset_dataset_config()` 把窗口按因子 `window` 天数放宽**之前**，而 `filter_by_date` 只会收窄不会放宽；
 4. 结果：一个只想看 schema 的探针，静默地把因子整个 lookback 窗口砍掉了。因子列悄悄变成部分 NaN，没有任何地方报错。
 
 这条链现在可以当场复现出来（见下面"简单用法"第 2 段的对照组）。
@@ -74,7 +74,7 @@ kwargs.setdefault("mode", "w")
 self.data.to_zarr(path, **kwargs)
 ```
 
-`mode="w"` 替换整个 store 目录。这有个连带后果，`base/chunking.py:ChunkLedger` 的注释专门记了一笔：断点续传用的 ledger 必须写在 store **旁边**而不是里面，因为 `write()` 会把整个目录换掉，恰恰是"需要续传"的那个操作会毁掉记录续传进度的东西。
+`mode="w"` 替换整个 store 目录。这有个连带后果，`quantlab/base/chunking.py:ChunkLedger` 的注释专门记了一笔：断点续传用的 ledger 必须写在 store **旁边**而不是里面，因为 `write()` 会把整个目录换掉，恰恰是"需要续传"的那个操作会毁掉记录续传进度的东西。
 
 ### `append()`：沿 `append_dim` 延长
 
@@ -91,7 +91,7 @@ kwargs.pop("encoding", None)   # append 上给 encoding，xarray 直接拒绝
 self.data.to_zarr(path, mode="a", append_dim=append_dim, **kwargs)
 ```
 
-**chunk 网格是在第一次写的时候被钉死的。** `_append_encoding` 给每个带 `append_dim` 的变量算出 chunk 形状：append 维上是 `min(XrBackend.APPEND_DIM_CHUNK, size)`（`APPEND_DIM_CHUNK = 512`，`dataset/backend.py:34`），其余每一维取该维的完整长度。
+**chunk 网格是在第一次写的时候被钉死的。** `_append_encoding` 给每个带 `append_dim` 的变量算出 chunk 形状：append 维上是 `min(XrBackend.APPEND_DIM_CHUNK, size)`（`APPEND_DIM_CHUNK = 512`，`quantlab/dataset/backend.py:34`），其余每一维取该维的完整长度。
 
 为什么要显式钉？因为不给 `encoding` 的话，zarr 会**拿第一个窗口自己的长度当 chunk 大小**。于是 store 的物理布局取决于"谁碰巧第一个被写进去"——第一批是 700 天就 700，是 90 天就 90——之后每一次长度不同的追加（一个短交易年、一个不完整的末月）都跟磁盘上的网格错开。钉一个固定值，布局才是 **store 的属性**而不是**第一个窗口的属性**。
 
@@ -114,7 +114,7 @@ APPEND_DIM_CHUNK = 512
 
 理由是：`to_zarr(mode="a", append_dim=...)` 这两条**一条都不查**，而它出错的方式是静默的。
 
-**第一种静默腐蚀：坐标标签被覆写。** store 里存着 `{A, XYZ}`，进来的窗口是 `{A, ARM}`（一个退市 + 一个新上市，**数量都没变**）。裸 `to_zarr` 会成功，然后把 symbol 坐标改写成 `['A', 'ARM']`，XYZ 已经写进去的历史就挂到了 ARM 名下。代码注释里记了这次实测（`dataset/backend.py:113-114`，measured 2026-09-06：`rows [1.0, 3.0] were written for XYZ but are now labelled: ARM`）。原样复现：
+**第一种静默腐蚀：坐标标签被覆写。** store 里存着 `{A, XYZ}`，进来的窗口是 `{A, ARM}`（一个退市 + 一个新上市，**数量都没变**）。裸 `to_zarr` 会成功，然后把 symbol 坐标改写成 `['A', 'ARM']`，XYZ 已经写进去的历史就挂到了 ARM 名下。代码注释里记了这次实测（`quantlab/dataset/backend.py:113-114`，measured 2026-09-06：`rows [1.0, 3.0] were written for XYZ but are now labelled: ARM`）。原样复现：
 
 ```
 裸 append 之后的 symbol 轴: ['A', 'ARM']
@@ -173,7 +173,7 @@ XYZ 的历史还在 XYZ 名下（退市之后新行是 NaN），ARM 的历史段
 - **写前守卫，共三条**（`widen_symbol_axis` 的 docstring 按顺序列出）：崩溃残留的 `.superseded.tmp` 侧车 + `path` 下无 store → 拒绝并指名手工恢复命令，不自动恢复（"哪个目录是权威的，不是这个方法该替你决定的"）；目标轴必须是存储轴的**超集**（`reindex` 会悄悄删掉没点名的标签，删完之后跟"从来没有过"无法区分）；带 `symbol` 维的变量必须是浮点，否则必须在 `fill_values` 里点名（不填的 `reindex` 会把 bool/int64 **upcast 成 float64+NaN**，等于对一个活着的 store 做静默 schema 变更）。
 - **换库是 rename 三步走**：先把原 store 改名到 `XrBackend.SUPERSEDED_SUFFIX`（`.superseded.tmp`），再把写好的 `XrBackend.WIDENING_SUFFIX`（`.widening.tmp`）改名到位，最后删掉旧的。两次 rename 同父目录、因而是原子的。**先改名旧的**是刻意的：中间崩了的话 `path` 下什么都没有，下一次读会大声失败，而不是把一个改写到一半的 store 当权威。
 - **重写走的仍然是 `_append_encoding`**，所以 chunk 规则单点定义。`tests/test_symbol_axis_widening.py:test_the_chunk_grid_survives_a_widen` 用 600 个时间戳（刻意大于 512，否则编码与不编码的 chunk 大小会撞在一起）钉住这一点，并记了实测：忘了传 `encoding=` 的话，重写出来的 store 会继承源 store 的 encoding，三只票的数组 chunk 回到 `(512, 2)`。
-- **代价是写在文档里的**：这里没装 dask，`xr.open_zarr` 给的是惰性索引数组，`.load()` 会把**整个 store** 拉进内存——正是分块摄取想避免的那笔分配。库大到装不下时，改用 `on_new_listing="rebuild"`（`base/data.py`），它逐窗重建，而且能从原始数据里找回新票的**真实**历史，而不是回填 NaN。
+- **代价是写在文档里的**：这里没装 dask，`xr.open_zarr` 给的是惰性索引数组，`.load()` 会把**整个 store** 拉进内存——正是分块摄取想避免的那笔分配。库大到装不下时，改用 `on_new_listing="rebuild"`（`quantlab/base/data.py`），它逐窗重建，而且能从原始数据里找回新票的**真实**历史，而不是回填 NaN。
 
 ## 简单用法
 
@@ -183,7 +183,7 @@ XYZ 的历史还在 XYZ 名下（退市之后新行是 NaN），ARM 的历史段
 
 ```python
 import numpy as np, pandas as pd, xarray as xr
-from dataset.backend import XrBackend
+from quantlab.dataset.backend import XrBackend
 
 panel = xr.Dataset(
     {"close": (["timestamp", "symbol"], np.arange(6, dtype=float).reshape(3, 2))},
@@ -306,7 +306,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from base.backend import DataBackend
+from quantlab.base.backend import DataBackend
 
 
 class CsvBackend(DataBackend):
@@ -448,7 +448,7 @@ Can't instantiate abstract class Incomplete without an implementation for abstra
 
 1. `read` 缺路径抛 `FileNotFoundError`（消息里带上路径）。
 2. `head` 三条义务：自己开 store、真的有界、缺路径当场抛。**不要照着 `filter_by_*` 的样子写它。**
-3. `read`/`write`/`to_internal`/`filter_by_*` 都 `return self`，否则链式调用会碎。`ml_model/backend.py:MlBackend` 曾经是反例（2026-09-07 已修，见常见坑第 5 条）。
+3. `read`/`write`/`to_internal`/`filter_by_*` 都 `return self`，否则链式调用会碎。`quantlab/ml_model/backend.py:MlBackend` 曾经是反例（2026-09-07 已修，见常见坑第 5 条）。
 4. `get_xarray_dataset` 必须能吐出 `[timestamp, symbol]` 形状——这是全流水线的硬约束——而且必须**真的按 `indexes` 收窄**：请求了没有的维度要报错，不能静默返回一个形状不符的 `Dataset`。它还必须**不改写** `self.data`（这一点跟 `filter_by_*` 相反）。
 5. 如果这个介质要走分块摄取，还得自己实现 `append`（含坐标 / dtype 守卫）。
 
@@ -485,7 +485,7 @@ indexes 传胡说八道也没事: ['timestamp', 'symbol']
 PlBackend.write 到不存在的目录: FileNotFoundError No such file or directory (os error 2): /tmp/...
 ```
 
-**5. `MlBackend` 的三个方法都不返回 `self`。**（**已于 2026-09-07 修复**）`ModelBackend` 的 ABC 签名写的是 `-> Self`，但 `ml_model/backend.py` 的实现以前全部隐式返回 `None`，所以链式写法会当场挂：
+**5. `MlBackend` 的三个方法都不返回 `self`。**（**已于 2026-09-07 修复**）`ModelBackend` 的 ABC 签名写的是 `-> Self`，但 `quantlab/ml_model/backend.py` 的实现以前全部隐式返回 `None`，所以链式写法会当场挂：
 
 ```
 MlBackend.to_internal 返回: None
@@ -494,7 +494,7 @@ MlBackend.to_internal 返回: None
 
 现在三个方法都 `return self`，跟 `XrBackend` / `PlBackend` 一致，`MlBackend().to_internal(m).write(path)` 和 `MlBackend().read(path).get_model()` 都能直接写；ABC 早就声明的 `**kwargs` 也补上并真的透传给 joblib。由 `tests/test_ml_backend.py` 锁（含一条 `write(..., compress=3)` 的透传断言，防止 `**kwargs` 变成摆设）。
 
-`MlBackend` 在仓库里仍然**没有任何调用点**——`base/model.py` 是直接用 `torch.save`/`joblib.dump` 的。但它**不是死代码**：`BaseModel.predict()` 签名里的 `np.ndarray` 分支是有意留的，为的是 `MLConfig` 那条非 torch 模型（xgboost 之类）的路，而 `MlBackend` 就是那条路的持久化。它是尚未建成的既定路线的脚手架——正因为如此，才值得在第一个调用方出现之前把它修好，而不是让它在第一次被按文档使用时就挂掉。
+`MlBackend` 在仓库里仍然**没有任何调用点**——`quantlab/base/model.py` 是直接用 `torch.save`/`joblib.dump` 的。但它**不是死代码**：`BaseModel.predict()` 签名里的 `np.ndarray` 分支是有意留的，为的是 `MLConfig` 那条非 torch 模型（xgboost 之类）的路，而 `MlBackend` 就是那条路的持久化。它是尚未建成的既定路线的脚手架——正因为如此，才值得在第一个调用方出现之前把它修好，而不是让它在第一次被按文档使用时就挂掉。
 
 **6. `XrBackend.head(path, n)` 的"n 行"是先对每一维都切 n，再取前 n 行。** 实现是 `opened.isel({dim: slice(0, n) for dim in opened.dims})`，然后 `to_dataframe()`，最后 `.head(n)`。所以中间物化的是最多 `n^(维数)` 行——二维面板下 n=3 会先展开成 6 行再切到 3 行。这仍然是有界的（这是"不物化全量"的要求），但如果你把 n 调到几千、维数又多，中间那步不是免费的。用 `isel(dims)` 而不是写死 `timestamp`，是因为一个介质无关的后端不该假设这个项目的面板恰好按时间和标的索引。
 

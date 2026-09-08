@@ -1,10 +1,10 @@
 # 因子层（Factor）
 
-> 代码位置：`base/factor.py`（共享契约 + KunQuant 后端）、`base/factor_polars.py`（Polars 后端）
-> 已有因子：`factor/alpha101.py`、`factor/alpha158.py`、`factor/momentum.py`
-> 标签：`label/spot.py`　自定义算子：`my_ops/preprocess.py`
-> 配置：`base/config.py` 里的 `BaseFactorConfig` / `FactorConfig` / `PolarsFactorConfig`
-> 工厂函数：`config/__init__.py`（`alpha101_config` / `alpha158_config` / `momentum_config` / `spot_label_config` …）
+> 代码位置：`quantlab/base/factor.py`（共享契约 + KunQuant 后端）、`quantlab/base/factor_polars.py`（Polars 后端）
+> 已有因子：`quantlab/factor/alpha101.py`、`quantlab/factor/alpha158.py`、`quantlab/factor/momentum.py`
+> 标签：`quantlab/label/spot.py`　自定义算子：`quantlab/my_ops/preprocess.py`
+> 配置：`quantlab/base/config.py` 里的 `BaseFactorConfig` / `FactorConfig` / `PolarsFactorConfig`
+> 工厂函数：`quantlab/config/__init__.py`（`alpha101_config` / `alpha158_config` / `momentum_config` / `spot_label_config` …）
 > 测试：`tests/test_factor_hierarchy.py`、`tests/test_factor_kunquant.py`、`tests/test_factor_polars.py`、`tests/test_factor_stream.py`
 
 本文所有例子都在本机真跑过（macOS / arm64、Python 3.13、KunQuant 0.1.11、Apple clang 21），贴的是真实输出。
@@ -60,7 +60,7 @@ CLAUDE.md 写的是"能用 xarray/KunQuant 完成的处理，优先不用 Polars
 - **快速试一个想法、做研究性的探索、或者逻辑用算子图实在别扭** → Polars。跑通了觉得有用，再决定要不要翻译成 KunQuant。
 - **KunQuant 算子集表达不了的** → Polars，没得选。
 
-`Momentum`（`factor/momentum.py`）是官方给的 Polars 范例，写一个新的照着它抄就行。
+`Momentum`（`quantlab/factor/momentum.py`）是官方给的 Polars 范例，写一个新的照着它抄就行。
 
 ---
 
@@ -79,7 +79,7 @@ CLAUDE.md 写的是"能用 xarray/KunQuant 完成的处理，优先不用 Polars
 
 统一是 `xr.Dataset`，坐标就是 `timestamp` 和 `symbol`，和输入面板同形状。`tests/test_factor_hierarchy.py::test_public_factor_api_exchanges_only_xarray_datasets` 把这条钉在公共 API 上：`cal` / `read` / `save` / `get_features` / `get_labels` / `get_factor_names` / `get_config` 之间流动的只能是 xarray。Polars 只是 `FactorPolars` 内部的实现手段，结果在离开这个类之前就被 `xr.Dataset.from_dataframe` 转回面板了。
 
-模型层（`base/model.py:_collect_all_features` / `_collect_all_labels`）只调这几个方法，从不检查因子的具体类型——`tests/test_factor_hierarchy.py::test_base_model_does_not_dispatch_on_concrete_factor_types` 会 grep `base/model.py`，出现 `FactorKunQuant` / `FactorPolars` / `isinstance` 就红。这就是"换后端不用改模型层"这句话的兑现方式。
+模型层（`quantlab/base/model.py:_collect_all_features` / `_collect_all_labels`）只调这几个方法，从不检查因子的具体类型——`tests/test_factor_hierarchy.py::test_base_model_does_not_dispatch_on_concrete_factor_types` 会 grep `quantlab/base/model.py`，出现 `FactorKunQuant` / `FactorPolars` / `isinstance` 就红。这就是"换后端不用改模型层"这句话的兑现方式。
 
 ### 一份配置，一个因子实例
 
@@ -90,7 +90,7 @@ CLAUDE.md 写的是"能用 xarray/KunQuant 完成的处理，优先不用 Polars
 | `dataset` | 数据从哪来（持有的是对象，不是路径） |
 | `window` | **一词两用**，见「常见坑」第 3 条 |
 | `file_path` | 因子面板落盘的 zarr 路径 |
-| `start_date` / `end_date` | 要哪一段。不填由 `enums/constant.py:Date` 兜底成 `1900-01-01` ~ `2100-01-01` |
+| `start_date` / `end_date` | 要哪一段。不填由 `quantlab/enums/constant.py:Date` 兜底成 `1900-01-01` ~ `2100-01-01` |
 | `symbols` | 要哪些标的，`None` 表示不筛 |
 | `factor_names` | 产出哪几列；**留 `None` 是常态**，见下 |
 | `kwargs` | 每个因子自己的参数逃生口（`n`、`n_forward_periods` …） |
@@ -103,9 +103,9 @@ CLAUDE.md 写的是"能用 xarray/KunQuant 完成的处理，优先不用 Polars
 
 这是这一层最不直观、也最值得讲的一条设计。
 
-`Factor.config` 的 setter（`base/factor.py`）在赋值的当下就调 `_maybe_resolve_factor_names()`：如果调用方没有显式钉 `factor_names`，就问子类"你会产出哪些列"，当场填进配置里。也就是说，**`Factor(config)` 一构造出来，`get_factor_names()` 和 `num_factors` 就已经有答案了，不需要先 `cal()`**。
+`Factor.config` 的 setter（`quantlab/base/factor.py`）在赋值的当下就调 `_maybe_resolve_factor_names()`：如果调用方没有显式钉 `factor_names`，就问子类"你会产出哪些列"，当场填进配置里。也就是说，**`Factor(config)` 一构造出来，`get_factor_names()` 和 `num_factors` 就已经有答案了，不需要先 `cal()`**。
 
-为什么要这么早？因为模型层需要它。`base/model.py` 建网络的时候要知道输入层多宽（`num_factors`），而这时候因子可能根本还没算——特别是 `factor_data_strategy="read"` 这条路：因子是从盘上读回来的，从来没在这个进程里算过。如果名字要等 `cal()` 才知道，读回来的因子就报不出自己算的是什么。（`tests/test_factor_hierarchy.py::test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path` 就是这个 bug 的回归锁：以前 Polars 因子走 read 路径时 `factor_names` 是 `None`，`num_factors` 直接炸，而同样的操作 KunQuant 因子没事——"一个后端能用另一个报错"就不叫可互换。）
+为什么要这么早？因为模型层需要它。`quantlab/base/model.py` 建网络的时候要知道输入层多宽（`num_factors`），而这时候因子可能根本还没算——特别是 `factor_data_strategy="read"` 这条路：因子是从盘上读回来的，从来没在这个进程里算过。如果名字要等 `cal()` 才知道，读回来的因子就报不出自己算的是什么。（`tests/test_factor_hierarchy.py::test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path` 就是这个 bug 的回归锁：以前 Polars 因子走 read 路径时 `factor_names` 是 `None`，`num_factors` 直接炸，而同样的操作 KunQuant 因子没事——"一个后端能用另一个报错"就不叫可互换。）
 
 两个后端回答这个问题的方式不一样：
 
@@ -211,9 +211,9 @@ def build_store(periods: int = 120, n_symbols: int = 8, seed: int = 0) -> Path:
 
 ```python
 from make_store import DEMO, STORE, build_store
-from base.config import DatasetConfig, FactorConfig
-from dataset.spot import SpotKlineDataset
-from factor.alpha158 import Alpha158SpotKline
+from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.factor.alpha158 import Alpha158SpotKline
 
 build_store()
 
@@ -284,7 +284,7 @@ timestamp
 
 ### 顺带说标签
 
-标签类（`label/spot.py`）跟因子共用**同一套机制**，只是 `_get_labels()` 那一半有实现。这里有一个必须理解的细节：
+标签类（`quantlab/label/spot.py`）跟因子共用**同一套机制**，只是 `_get_labels()` 那一半有实现。这里有一个必须理解的细节：
 
 `SpotReturn` 的算子图算的是 `close / BackRef(close, n) - 1`，也就是**过去 n 根的收益**（KunQuant 的图只能往回看，看不到未来）。真正把它变成"未来 n 根的收益"的，是 `_get_labels()` 里那一行 `data.shift(timestamp=-n)`。
 
@@ -313,7 +313,7 @@ timestamp
 2024-01-03 -0.010244  0.043912
 ```
 
-`base/model.py` 走的是 `get_labels()`。**自己写脚本时千万别顺手用 `get_features()` 当标签**——那样训出来的模型是在用过去预测过去。
+`quantlab/base/model.py` 走的是 `get_labels()`。**自己写脚本时千万别顺手用 `get_features()` 当标签**——那样训出来的模型是在用过去预测过去。
 
 ---
 
@@ -329,9 +329,9 @@ import polars as pl
 import xarray as xr
 from make_store import DEMO, STORE, build_store
 
-from base.config import DatasetConfig, PolarsFactorConfig
-from base.factor_polars import FactorPolars
-from dataset.spot import SpotKlineDataset
+from quantlab.base.config import DatasetConfig, PolarsFactorConfig
+from quantlab.base.factor_polars import FactorPolars
+from quantlab.dataset.spot import SpotKlineDataset
 
 
 class RelativeVolume(FactorPolars):
@@ -449,10 +449,10 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 from make_store import DEMO, STORE, build_store
 
-from base.config import DatasetConfig, FactorConfig
-from base.factor import FactorKunQuant
-from dataset.spot import SpotKlineDataset
-from my_ops.preprocess import WindowedZScore
+from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.base.factor import FactorKunQuant
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.my_ops.preprocess import WindowedZScore
 
 
 class MaDeviation(FactorKunQuant):
@@ -562,7 +562,7 @@ NaN 数量: 24 = 3 行 x 8 标的
 
 ### `WindowedZScore` 干的是什么
 
-`my_ops/preprocess.py`：
+`quantlab/my_ops/preprocess.py`：
 
 ```python
 rolling_mean = WindowedAvg(self.inputs[0], window)
@@ -598,7 +598,7 @@ z_score = Div(Sub(self.inputs[0], rolling_mean), rolling_std)
 
 ### 现在还没有的东西
 
-**仓库里没有截面 Z-score 算子。** `my_ops/preprocess.py` 里两个都是 `WindowedCompositiveOp`（时序）。真正的截面标准化算子被推迟到后续阶段（对应 `.planning/` 里的 ARCH-01/ARCH-02，目标是"架构同时兼容单标的时序策略与多标的截面多因子策略"）。现阶段美股这条路的约定是：**因子层出原始值，截面标准化由消费方自己做。**
+**仓库里没有截面 Z-score 算子。** `quantlab/my_ops/preprocess.py` 里两个都是 `WindowedCompositiveOp`（时序）。真正的截面标准化算子被推迟到后续阶段（对应 `.planning/` 里的 ARCH-01/ARCH-02，目标是"架构同时兼容单标的时序策略与多标的截面多因子策略"）。现阶段美股这条路的约定是：**因子层出原始值，截面标准化由消费方自己做。**
 
 如果你现在就需要，在 xarray 层做是最直接的（因子面板已经是 `[timestamp, symbol]`，截面就是沿 `symbol` 维）：
 
@@ -664,7 +664,7 @@ dimension sizes: {'timestamp': 29} != {'timestamp': 31}. to_zarr() only supports
 changing dimension sizes when explicitly appending, but append_dim=None
 ```
 
-结论：**因子落盘基本都该用 `save(mode="w")`**。真的要增量追加，得走 `XrBackend.append()` / `widen_and_append()`（`dataset/backend.py`），那边有坐标一致性和 dtype 的检查，而 `Factor.save()` 现在没接过去。
+结论：**因子落盘基本都该用 `save(mode="w")`**。真的要增量追加，得走 `XrBackend.append()` / `widen_and_append()`（`quantlab/dataset/backend.py`），那边有坐标一致性和 dtype 的检查，而 `Factor.save()` 现在没接过去。
 
 **2026-09-07 起这条报错自己会说该怎么办**（上面那段 zarr 原文现在只是 `__cause__`）：
 
@@ -699,7 +699,7 @@ KunQuant 那边没这个问题，因为每个 `Dataset` 子类都覆写了 `_to_
 承上：`_get_factor_names()` 走 `dataset.head(8)`，**直接按路径打开 store**。所以
 
 - 数据集的 zarr 必须**已经存在**，否则连因子对象都构造不出来（这是已记录的收窄，编号 RV-02，故意没有关掉）；
-- 这个探查**绝对不能改成走 `read()`**。`BaseDataset.read()` 会跑 `_filter()` 原地收窄数据，而 `XrBackend.read()` 有缓存早返回，收窄会一直留到 `cal()`——而探查发生在 `_reset_dataset_config()` 拓宽窗口**之前**，`filter_by_date` 又只会缩不会扩，结果就是**因子的整段回看被静默丢掉**，因子列前 n 行全是 NaN 而没有任何地方报错。这就是编号 RV-01 的事故，`tests/test_factor_polars.py::test_a_dated_dataset_config_keeps_the_factor_lookback_window` 是它的回归锁。`base/factor_polars.py` 的类文档里写着 "Do not put `.read()` back in front of it."
+- 这个探查**绝对不能改成走 `read()`**。`BaseDataset.read()` 会跑 `_filter()` 原地收窄数据，而 `XrBackend.read()` 有缓存早返回，收窄会一直留到 `cal()`——而探查发生在 `_reset_dataset_config()` 拓宽窗口**之前**，`filter_by_date` 又只会缩不会扩，结果就是**因子的整段回看被静默丢掉**，因子列前 n 行全是 NaN 而没有任何地方报错。这就是编号 RV-01 的事故，`tests/test_factor_polars.py::test_a_dated_dataset_config_keeps_the_factor_lookback_window` 是它的回归锁。`quantlab/base/factor_polars.py` 的类文档里写着 "Do not put `.read()` back in front of it."
 
 ### 7. `_get_factor_lazyframe` 忘了最后那个 `.select(...)`
 
@@ -707,7 +707,7 @@ KunQuant 那边没这个问题，因为每个 `Dataset` 子类都覆写了 `_to_
 
 ### 8. 标签别用 `get_features()`
 
-见前面「顺带说标签」。`get_features()` 是**过去** n 期收益，`get_labels()` 才是平移后的**未来** n 期收益。`base/model.py` 用的是后者。
+见前面「顺带说标签」。`get_features()` 是**过去** n 期收益，`get_labels()` 才是平移后的**未来** n 期收益。`quantlab/base/model.py` 用的是后者。
 
 ### 9. 因子类调 `get_labels()` 会抛 `RuntimeError`，反之亦然
 
@@ -731,7 +731,7 @@ docstring 曾经写"先将缺失值替换为 0，然后进行滚动标准化"，
 
 ### 13. Polars 因子产出 `float64`，模型层曾经吃不下（**已于 2026-09-07 修复**）
 
-上面那份 `rel_volume_10` 的输出里写着 `float64` —— 这不是个巧合，`FactorPolars` / `PlBackend` 这条路（以及 `StockDataset` 读 Tiingo parquet 那条）产出的都是 float64。而 `dl_model/` 里每个 `nn.Module` 的权重都是默认的 float32，`BaseModel.to_tensor` 当时不做任何 dtype 转换，三个出厂模型头的 `_preprocess` 也都只做 `torch.nan_to_num`。于是把一个 Polars 因子喂进去，第一次 forward 就死：
+上面那份 `rel_volume_10` 的输出里写着 `float64` —— 这不是个巧合，`FactorPolars` / `PlBackend` 这条路（以及 `StockDataset` 读 Tiingo parquet 那条）产出的都是 float64。而 `quantlab/dl_model/` 里每个 `nn.Module` 的权重都是默认的 float32，`BaseModel.to_tensor` 当时不做任何 dtype 转换，三个出厂模型头的 `_preprocess` 也都只做 `torch.nan_to_num`。于是把一个 Polars 因子喂进去，第一次 forward 就死：
 
 ```
 ValueError: RNN input dtype (torch.float64) does not match weight dtype

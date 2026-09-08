@@ -1,7 +1,7 @@
 # 分页台账（PageLedger）
 
-> 代码位置：`base/pageledger.py`（459 行，纯 stdlib，零项目内 import）
-> 唯一调用方：`base/acquisition.py`（`Acquisition._ledger_for` / `Acquisition._fetch_batch`）
+> 代码位置：`quantlab/base/pageledger.py`（459 行，纯 stdlib，零项目内 import）
+> 唯一调用方：`quantlab/base/acquisition.py`（`Acquisition._ledger_for` / `Acquisition._fetch_batch`）
 > 测试：`tests/test_page_ledger.py`
 
 ---
@@ -14,7 +14,7 @@
 
 ## 不用它会怎样
 
-先说清楚场景。Alpaca 这类行情商，一次请求可以带一整批 symbol（`AlpacaAcquisition.DEFAULT_BATCH_SIZE = 100`），返回结果按 **symbol 优先、再按 bar 时间戳** 排序，用一个不透明的 `next_page_token` 串成页链，每页最多 `page_limit` 行（`acquisition/alpaca.py` 里 `self._knob("page_limit", 10_000)`，默认 10000）。一个 `us_all` 回补要发几千个这样的批次请求，一个批次内部可能有几十上百页。
+先说清楚场景。Alpaca 这类行情商，一次请求可以带一整批 symbol（`AlpacaAcquisition.DEFAULT_BATCH_SIZE = 100`），返回结果按 **symbol 优先、再按 bar 时间戳** 排序，用一个不透明的 `next_page_token` 串成页链，每页最多 `page_limit` 行（`quantlab/acquisition/alpaca.py` 里 `self._knob("page_limit", 10_000)`，默认 10000）。一个 `us_all` 回补要发几千个这样的批次请求，一个批次内部可能有几十上百页。
 
 现在假设第 37 页失败了（限流、网络断、Ctrl-C）。没有台账的话，只有两个选择，**两个都是错的**：
 
@@ -41,7 +41,7 @@
 
 **symbol 在哈希前会排序**，因为批次是一个"集合"。请求 `["B","A"]` 和 `["A","B"]` 发出去是同一个请求、拿回来是同一批行，当成两个批次就会重复下载已经在盘上的数据。
 
-> 这里和 `base/chunking.py` 的 `ChunkLedger.fingerprint` **故意不一样**：那边钉住的是 Zarr 的 symbol **轴**，是有序的，两种顺序会产生两个对不齐的 Zarr store，所以顺序是身份的一部分，不排序。`tests/test_page_ledger.py::test_the_batch_key_fingerprint_is_a_function_of_the_set_not_the_order` 把这个差异写成了断言。
+> 这里和 `quantlab/base/chunking.py` 的 `ChunkLedger.fingerprint` **故意不一样**：那边钉住的是 Zarr 的 symbol **轴**，是有序的，两种顺序会产生两个对不齐的 Zarr store，所以顺序是身份的一部分，不排序。`tests/test_page_ledger.py::test_the_batch_key_fingerprint_is_a_function_of_the_set_not_the_order` 把这个差异写成了断言。
 
 ### fingerprint（名单指纹）
 
@@ -90,13 +90,13 @@ return int(last["index"]) + 1, last.get("next_token")
 
 每条 page 记录里都带着 `last_symbol` / `last_timestamp`。这是设计文档 D-03 要求的**免 token 降级路径**的原料：vendor 对 token 的有效期没有任何公开说明，而它自己文档里的示例 token 解码出来就是一个 `SYMBOL|TIMEFRAME|TIMESTAMP` 的位置三元组。所以万一存的 token 被拒了，恢复可以退化成"把 `start` 收窄到这个时间戳、把名单裁到这个 symbol 及其之后"重发。浪费，但正确。
 
-> 注：**这条降级路径目前只是"信息被记下来了"**，没有任何读取它的代码——`base/acquisition.py` 的 `_fetch_batch` 只用 `resume_point()`。
+> 注：**这条降级路径目前只是"信息被记下来了"**，没有任何读取它的代码——`quantlab/base/acquisition.py` 的 `_fetch_batch` 只用 `resume_point()`。
 >
 > 曾经有一个 `last_position()` 方法返回 `(last_symbol, last_timestamp)`，但它从来没有被任何地方调用过，**2026-09-07 已删除**。删除的理由和删掉 `WindowedRobustStandardization` 是同一条：一个从未被执行过的公开方法，读的人会当它是个可用的入口。真要用的时候直接读 `pages[-1]` 的 `last_symbol` / `last_timestamp`，或者 `git show` 把它捞回来——那时候至少会有一个真实调用方来验证它。
 
 ### symbols seen
 
-`symbols_seen()`：整个批次里、在**任何一页**上出现过至少一行数据的 symbol 集合。见上面"不用它会怎样"最后一段。调用方必须遵守"只有 complete 之后才可信"这条纪律——`base/acquisition.py` 确实遵守了：
+`symbols_seen()`：整个批次里、在**任何一页**上出现过至少一行数据的 symbol 集合。见上面"不用它会怎样"最后一段。调用方必须遵守"只有 complete 之后才可信"这条纪律——`quantlab/base/acquisition.py` 确实遵守了：
 
 ```python
 marked: set[str] = set()
@@ -228,7 +228,7 @@ data/downloads/us_equity/1m/nasdaq_data/_watermarks/alpaca/
 
 ## 它是怎么工作的
 
-调用方是 `Acquisition._fetch_batch`（`base/acquisition.py`）。完整时间线：
+调用方是 `Acquisition._fetch_batch`（`quantlab/base/acquisition.py`）。完整时间线：
 
 ```
 【首次运行】
@@ -307,7 +307,7 @@ import json
 import shutil
 from pathlib import Path
 
-from base.pageledger import PageLedger
+from quantlab.base.pageledger import PageLedger
 
 TMP = Path("/tmp/pageledger_demo")
 shutil.rmtree(TMP, ignore_errors=True)
@@ -502,7 +502,7 @@ reset() 后: PageLedger(path='/tmp/pageledger_demo/_watermarks/alpaca/_pages/91c
 第 7 步值得多看一眼：**同一个文件、同一个路径**，用 `["AAPL","NVDA"]` 打开就是 `(0, None)`（从头来），用 `["AAPL","MSFT"]` 打开就是 `(3, None)`（已完成）。这就是 fingerprint 在做的事。而不传 `symbols` 的话完全不校验——所以别自己 `PageLedger(path)` 然后往上恢复。
 
 > **此处未实际运行的部分**：本例子里没有真的发网络请求。真实抓取中才会出现的行为有两类，本文没有实测：
-> - `next_token` 的真实有效期，以及 token 被 vendor 拒绝时的降级（page 记录里 `last_symbol` / `last_timestamp` 的用途）——如上文所说，这条降级路径当前在 `base/acquisition.py` 里还没有调用方。
+> - `next_token` 的真实有效期，以及 token 被 vendor 拒绝时的降级（page 记录里 `last_symbol` / `last_timestamp` 的用途）——如上文所说，这条降级路径当前在 `quantlab/base/acquisition.py` 里还没有调用方。
 > - `_fetch_batch` 里"vendor 回吐同一个 token"的死循环保护（`next_token == page_token` 分支），需要一个行为异常的 vendor 才能触发。
 
 ---
@@ -531,7 +531,7 @@ reset() 后: PageLedger(path='/tmp/pageledger_demo/_watermarks/alpaca/_pages/91c
 确定性覆盖只在**同一个窗口**内成立。`batch_key` 里哈希了 `start_date`/`end_date`，所以同样的行在不同窗口下重抓，会落到同一个 `date=` 目录里的**另一个**文件名。`1d`/`1m` 靠 `dedup_raw_frame` 吸收；tick 按 D-16 从不 dedup，所以 `_write_shard` 走 `_clear_superseded_shards` 主动删掉被取代的分片。这不是 `PageLedger` 的逻辑，但它是"确定性文件名 → 重抓安全"这条推理的**边界**，容易被误当成无条件成立。
 
 **8. `symbols_seen()` 在批次没完成时是"目前抓到了谁"，不是"这个批次有谁"。**
-调用方必须自己守住 `complete` 这道门。`base/acquisition.py` 守住了（`if outcome.complete and not self._abort.is_set()`），任何新的调用方也必须守。守不住的后果是本文开头说的静默 99% 数据丢失。
+调用方必须自己守住 `complete` 这道门。`quantlab/base/acquisition.py` 守住了（`if outcome.complete and not self._abort.is_set()`），任何新的调用方也必须守。守不住的后果是本文开头说的静默 99% 数据丢失。
 
 ---
 

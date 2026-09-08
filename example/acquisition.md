@@ -1,6 +1,6 @@
 # 数据采集层（Acquisition）
 
-> 代码位置：`base/acquisition.py`（抽象基类）、`acquisition/tiingo.py`、`acquisition/alpaca.py`、
+> 代码位置：`quantlab/base/acquisition.py`（抽象基类）、`quantlab/acquisition/tiingo.py`、`quantlab/acquisition/alpaca.py`、
 > 命令行入口 `ingest_us_equity.py`（Tiingo）与 `ingest_alpaca.py`（Alpaca）。
 > 相关但独立成文的两个模块：分页断点账本见 [pageledger.md](pageledger.md)，
 > 时间窗切分与转换断点见 [chunking.md](chunking.md)。
@@ -14,7 +14,7 @@
 其余全部由基类提供。
 
 注意它的边界：**采集层只写原始文件（parquet 分片），绝不碰 xarray / Zarr**。
-从原始文件到 canonical `[timestamp, symbol]` 面板是 `dataset/stock.py:StockDataset`
+从原始文件到 canonical `[timestamp, symbol]` 面板是 `quantlab/dataset/stock.py:StockDataset`
 的工作（`_raw_data_to_xr()` / `from_raw_data_chunked()`）。这条分界线是硬的，
 `Acquisition` 类文档里写得很直白。
 
@@ -309,10 +309,10 @@ _fetch_batch(symbols, start, end)
 
 ### 与 pageledger / chunking 的关系（一句话各自）
 
-- **`base/pageledger.py`**：采集层**内部**的断点记录。`_fetch_batch` 用它决定
+- **`quantlab/base/pageledger.py`**：采集层**内部**的断点记录。`_fetch_batch` 用它决定
   「这批从第几页、哪个 token 续」，并用 `assert_consistent()` 交叉验证磁盘。
   一批一个文件，所以没有跨线程共享可变状态，不需要锁。细节见 [pageledger.md](pageledger.md)。
-- **`base/chunking.py`**：采集层**下游**的东西，`Acquisition` 完全不 import 它。
+- **`quantlab/base/chunking.py`**：采集层**下游**的东西，`Acquisition` 完全不 import 它。
   它服务于 `StockDataset.from_raw_data_chunked()`——把已经落盘的 raw parquet
   按年/季/月分窗，一窗一窗地稠密化并追加进 Zarr，让峰值内存随**窗口**而不是随**整段区间**增长。
   细节见 [chunking.md](chunking.md)。
@@ -552,7 +552,7 @@ uv run python ingest_alpaca.py --symbols AAPL --frequency tick \
 
 ```python
 import polars as pl
-from base.acquisition import Acquisition
+from quantlab.base.acquisition import Acquisition
 
 
 class MyVendorAcquisition(Acquisition):
@@ -603,8 +603,8 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
 
 ### 还要做的两件配套事
 
-1. 在 `enums/data.py` 的 `Vendor` Literal 里加上你的厂商名。
-2. 在 `config/__init__.py` 的工厂（`stock_acquisition_config`）里通过 `vendor=` 参数走，
+1. 在 `quantlab/enums/data.py` 的 `Vendor` Literal 里加上你的厂商名。
+2. 在 `quantlab/config/__init__.py` 的工厂（`stock_acquisition_config`）里通过 `vendor=` 参数走，
    **不要在调用点手工拼 `AcquisitionConfig`**。工厂是「raw 根以 vendor 结尾、
    watermark 是它的兄弟」这条约定唯一被推导的地方；在调用点手拼就是这条约定开始漂移的方式
    （`ingest_alpaca.py` 的模块 docstring 明确说了这点，还有测试断言它没有直接构造这两个 dataclass）。
@@ -651,7 +651,7 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
    如果你以后给 `1m` 加了 `symbol=` 分区键，这条逻辑会自动生效——请确认那是你想要的。
 
 9. **不要把 `enums.data.TRADEABLE_TICKER_PATTERN` 和
-   `acquisition/universe.py:_WELL_FORMED_TICKER` 「对齐」。** 它们守的是不同的输入：
+   `quantlab/acquisition/universe.py:_WELL_FORMED_TICKER` 「对齐」。** 它们守的是不同的输入：
    前者守「即将变成路径段和 query 参数的 symbol」，后者守「从 Wikipedia 抓来的变更日志单元格」，
    在后者那里出现三段式恰恰是解析出错的信号。曾经有过两份自由漂移的副本，
    结果 `NXG-R-W` 让一个多小时的全市场任务在发出第一个请求前就崩了

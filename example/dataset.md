@@ -36,27 +36,27 @@
  base/factor.py          base/factor_polars.py      （spot 已实现，stock 未实现）
 ```
 
-三条出口是三种下游，不是三种实现：`to_kunquant()` 把面板拍成 KunQuant 计算图要的 `[time, symbol]` C 连续 `float32` 数组；`get_lazyframe()` 是 Polars 因子那条路（`base/factor_polars.py:197` 直接调 `dataset.read().get_lazyframe()`）；`to_nautilus()` 写 Nautilus 的 `ParquetDataCatalog`。**只有第一条和第三条需要子类实现**，第二条是基类白送的。
+三条出口是三种下游，不是三种实现：`to_kunquant()` 把面板拍成 KunQuant 计算图要的 `[time, symbol]` C 连续 `float32` 数组；`get_lazyframe()` 是 Polars 因子那条路（`quantlab/base/factor_polars.py:197` 直接调 `dataset.read().get_lazyframe()`）；`to_nautilus()` 写 Nautilus 的 `ParquetDataCatalog`。**只有第一条和第三条需要子类实现**，第二条是基类白送的。
 
 分块摄取（`from_raw_data_chunked()`、`ChunkLedger`、新上市三策略）另见 `example/chunking.md`；指数成分股面板另见 `example/constituent.md`。
 
 ## 核心契约
 
-规范形态只有一句话：**一个 `xr.Dataset`，`dims` 恒为 `(timestamp, symbol)`，每个数据变量都铺在这两维上**。`base/backend.py:DataBackend.get_xarray_dataset` 的中文文档把它写死了——「时间戳 + 标的」是 CLAUDE.md 里的硬约束，不是这个方法的可选项。2026-09-07 起这条不再只是约定：`get_xarray_dataset(["timestamp", "symbol"])` 会真的按这两维收窄并钉死轴序，请求别的维度会报错。
+规范形态只有一句话：**一个 `xr.Dataset`，`dims` 恒为 `(timestamp, symbol)`，每个数据变量都铺在这两维上**。`quantlab/base/backend.py:DataBackend.get_xarray_dataset` 的中文文档把它写死了——「时间戳 + 标的」是 CLAUDE.md 里的硬约束，不是这个方法的可选项。2026-09-07 起这条不再只是约定：`get_xarray_dataset(["timestamp", "symbol"])` 会真的按这两维收窄并钉死轴序，请求别的维度会报错。
 
 为什么不是 DataFrame？这是 CLAUDE.md 里的硬约束，理由不是审美：
 
-**1. 面板天然是矩阵，因子和模型吃的就是矩阵。** KunQuant 的编译图要的是 `[time, symbol]` 的连续数组，从 xarray 一步 `data[col].to_numpy()` 就是（`dataset/stock.py:_to_kunquant`）；`base/model.py` 假设的张量形状是 `[num_times, num_symbols, num_features]`。如果层间传的是 long-format DataFrame，每一层都要自己 pivot 一次，而 pivot 的列顺序、缺失填充、排序规则会在每一层各写一遍，迟早各写各的。
+**1. 面板天然是矩阵，因子和模型吃的就是矩阵。** KunQuant 的编译图要的是 `[time, symbol]` 的连续数组，从 xarray 一步 `data[col].to_numpy()` 就是（`quantlab/dataset/stock.py:_to_kunquant`）；`quantlab/base/model.py` 假设的张量形状是 `[num_times, num_symbols, num_features]`。如果层间传的是 long-format DataFrame，每一层都要自己 pivot 一次，而 pivot 的列顺序、缺失填充、排序规则会在每一层各写一遍，迟早各写各的。
 
-**2. "没有这一格" 和 "这一格是 NaN" 必须能区分。** long-format 里一个标的当天没交易就是"没有这一行"，跟"数据缺了"长得一模一样。稠密面板把它变成一个显式的 NaN 格子——`dataset/cleaning.py:validate_schema` 正是靠这一点区分**结构性空缺**（必需列全为 null，说明这根 bar 根本不存在）和**异常空缺**（bar 在、某一列却是 null）。这个区分在 DataFrame 上表达不出来。（当必需列**全部**为空时这个区分本身失效，见「常见坑」#10。）
+**2. "没有这一格" 和 "这一格是 NaN" 必须能区分。** long-format 里一个标的当天没交易就是"没有这一行"，跟"数据缺了"长得一模一样。稠密面板把它变成一个显式的 NaN 格子——`quantlab/dataset/cleaning.py:validate_schema` 正是靠这一点区分**结构性空缺**（必需列全为 null，说明这根 bar 根本不存在）和**异常空缺**（bar 在、某一列却是 null）。这个区分在 DataFrame 上表达不出来。（当必需列**全部**为空时这个区分本身失效，见「常见坑」#10。）
 
 **3. 多个变量共享同一套坐标。** 一个美股面板有 13 个数据变量（`open/high/low/close/volume/adj*/divCash/splitFactor/anomaly_flag`），它们共用一组 `timestamp` 和一组 `symbol`。xarray 存一份坐标，long DataFrame 把坐标重复 13 遍。
 
-**4. Zarr 的分块与追加是 xarray 的原生能力。** 沿 `timestamp` 增量 append、按 `symbol` 轴加宽、按块读取——这些是 `dataset/backend.py:XrBackend` 直接用 `to_zarr(append_dim=...)` 做的，换成 parquet 要自己造一套。
+**4. Zarr 的分块与追加是 xarray 的原生能力。** 沿 `timestamp` 增量 append、按 `symbol` 轴加宽、按块读取——这些是 `quantlab/dataset/backend.py:XrBackend` 直接用 `to_zarr(append_dim=...)` 做的，换成 parquet 要自己造一套。
 
 **但 polars 并没有被赶走，它只是不做层间格式。** 它出现在两个地方：一是子类内部解析原始文件（`pl.scan_csv` / `pl.scan_parquet`，在成为面板*之前*），二是 Polars 因子后端通过 `get_lazyframe()` / `head()` 取数（在面板*之后*）。层内用什么都行，**层与层之间只认 xarray**。
 
-配置这边也做了同一件事的镜像切分（`base/config.py`）：
+配置这边也做了同一件事的镜像切分（`quantlab/base/config.py`）：
 
 | 配置类 | 谁用 | 比 `BaseDatasetConfig` 多的字段 |
 |---|---|---|
@@ -74,15 +74,15 @@
 
 **A. 构造期（`BaseDataset.__init__`）**
 
-1. `self.data_backend = XrBackend()`，**然后**才 `self.config = config`。顺序是承重的：config 的 setter 会经 `_reset_symbols()` 调到 `read()`，backend 还不存在就 `AttributeError`。（注意这跟 `base/factor.py` 的顺序**正好相反**，那边是先 config 后 backend，两边都对，别去"统一"。）
-2. config setter：填 `name = import_path`；`start_date`/`end_date` 为 `None` 时用 `enums/constant.py:Date.START_DATE`（`"1900-01-01"`）和 `Date.END_DATE`（`"2100-01-01"`）兜底；然后把两个日期用 `datetime.date.fromisoformat` **规范成补零 ISO**。这一步不是洁癖：全流水线的日期比较都是**字符串字典序**（`_densify` 里的 `max(start_date, coverage_start)`、`_clamp_coverage_start` 里的 `requested >= coverage_start`），`"2007-2-1"` 不会匹配失败，它会**比错**，然后悄悄跳过某个保护。
+1. `self.data_backend = XrBackend()`，**然后**才 `self.config = config`。顺序是承重的：config 的 setter 会经 `_reset_symbols()` 调到 `read()`，backend 还不存在就 `AttributeError`。（注意这跟 `quantlab/base/factor.py` 的顺序**正好相反**，那边是先 config 后 backend，两边都对，别去"统一"。）
+2. config setter：填 `name = import_path`；`start_date`/`end_date` 为 `None` 时用 `quantlab/enums/constant.py:Date.START_DATE`（`"1900-01-01"`）和 `Date.END_DATE`（`"2100-01-01"`）兜底；然后把两个日期用 `datetime.date.fromisoformat` **规范成补零 ISO**。这一步不是洁癖：全流水线的日期比较都是**字符串字典序**（`_densify` 里的 `max(start_date, coverage_start)`、`_clamp_coverage_start` 里的 `requested >= coverage_start`），`"2007-2-1"` 不会匹配失败，它会**比错**，然后悄悄跳过某个保护。
 3. 只有当 `config.symbols is not None` 时，才把它转成 tuple 并调 `_reset_symbols()`。`_reset_symbols()` 先用 `_stored_symbol_axis()` 只读坐标探一下 store，分三种情况：store 不存在 → `from_raw_data()`；store 有且非空 → `read()`；**store 有但 symbol 轴为空** → 也 `from_raw_data()`。第三种情况必须靠"探"而不能靠 `except`，因为零行 store 的 `read()` 不会抛 `FileNotFoundError`，它会成功，然后在 `_filter()` 里以 `ValueError: could not convert string to float` 炸掉（zarr 把零长 symbol 轴读回成 float64）。
 
 **B. 原始文件 → 面板（`from_raw_data()`）**
 
 4. 一次性交接检查：如果第 3 步的兜底刚刚已经建好过面板、backend 还持着同一个对象、日期窗口也没变，就直接返回，跳过一次重复转换（实测一次 ingest 会转两遍原始树）。这个交接**只对一次调用有效**，进入方法就无条件清空。
 5. `_raw_data_to_xr()`——**子类唯一必须实现的方法**。它内部要做完三件事：定位/解析原始文件、**去重**、`to_xarray()`。去重走 `dataset/cleaning.py:dedup_raw_frame(keep="last")`，必须在 `to_xarray()` 之前：非唯一的 `(timestamp, symbol)` MultiIndex 会让 `to_xarray()` 直接抛 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`。`keep="last"` 是因为 vendor 的月度重发里，后到的文件更可能是修正后的数据。
-6. **稠密化不需要写代码**。`pandas.DataFrame.set_index(["timestamp","symbol"]).to_xarray()` 本身就产出完整的笛卡尔积，缺的格子自动是 NaN。这就是为什么 `dataset/cleaning.py` 里一行 fill/interpolate 都没有——模块开头写得很直白：加 forward-fill 等于**编造流水线从未观测到的数据**。
+6. **稠密化不需要写代码**。`pandas.DataFrame.set_index(["timestamp","symbol"]).to_xarray()` 本身就产出完整的笛卡尔积，缺的格子自动是 NaN。这就是为什么 `quantlab/dataset/cleaning.py` 里一行 fill/interpolate 都没有——模块开头写得很直白：加 forward-fill 等于**编造流水线从未观测到的数据**。
 7. `_clean(data)`。默认实现是 `clean_market_data()` = `validate_schema()` + `flag_anomalies()`。前者对缺列**硬抛**，对 null 只 `logger.warning` 不抛（flag-don't-delete）——必需列全空这一种退化情形升到 `logger.error`，同样不抛（见「常见坑」#10）；后者加一个布尔变量 `anomaly_flag`，在任何 price-like 列 ≤ 0、或 `close` 单步涨跌幅超过 `_EXTREME_JUMP_THRESHOLD`（0.5）处置 True，**从不修改原值**。这是个可覆写的钩子，非 OHLCV 的数据集必须覆写它。
 8. `data_backend.to_internal(data)`——面板进内存，此时还没落盘。
 
@@ -95,11 +95,11 @@
 
 ### 1. 从已有 Zarr 读一个面板
 
-配置一律经 `config/__init__.py` 的工厂函数构造，路径根由环境变量 `QUANTLAB_DATA_DIR` 决定，默认落在仓库根的 `data/`。
+配置一律经 `quantlab/config/__init__.py` 的工厂函数构造，路径根由环境变量 `QUANTLAB_DATA_DIR` 决定，默认落在仓库根的 `data/`。
 
 ```python
-from config import stock_kline_config
-from dataset.stock import StockDataset
+from quantlab.config import stock_kline_config
+from quantlab.dataset.stock import StockDataset
 
 cfg = stock_kline_config(subdir="us_all", store_name="us_all.zarr", vendor="tiingo",
                          start_date="2026-08-10", end_date="2026-08-20",
@@ -139,8 +139,8 @@ Data variables: (12/13)
 `head(n)` 是 `get_lazyframe()` 的有界孪生：**自己按路径打开 store**，不碰 `self.data`，也不触发 `_filter()`。Polars 因子层用它推导计算图会产出哪些列名——曾经这个探针走 `read()`，结果把共享数据集的日期窗口悄悄收窄、把因子的整个回看期吃掉了（RV-01）。
 
 ```python
-from config import stock_kline_config
-from dataset.stock import StockDataset
+from quantlab.config import stock_kline_config
+from quantlab.dataset.stock import StockDataset
 
 ds = StockDataset(stock_kline_config(subdir="us_all", store_name="us_all.zarr", vendor="tiingo"))
 probe = ds.head(3).collect()
@@ -171,8 +171,8 @@ shape: (3, 5)
 这条路把上一节 B 段的每一步都跑一遍，日志正好把它们逐条打出来：
 
 ```python
-from config import stock_kline_config
-from dataset.stock import StockDataset
+from quantlab.config import stock_kline_config
+from quantlab.dataset.stock import StockDataset
 
 cfg = stock_kline_config(subdir="us_all", store_name="us_all_demo.zarr", vendor="tiingo",
                          start_date="2026-08-10", end_date="2026-08-14")
@@ -274,18 +274,18 @@ MarketDataset: ['_raw_data_to_xr', '_to_kunquant', '_to_nautilus']
 
 | | `SpotKlineDataset` | `StockDataset` |
 |---|---|---|
-| 原始格式 | 月度 CSV，**无表头**，列名从 `enums/data.py:BinanceCSVHeaders.SPOT` 补 | vendor 命名空间下的 hive 分区 `*.pqt` |
+| 原始格式 | 月度 CSV，**无表头**，列名从 `quantlab/enums/data.py:BinanceCSVHeaders.SPOT` 补 | vendor 命名空间下的 hive 分区 `*.pqt` |
 | 时间戳 | epoch 整数，且 2024 及以前是**毫秒**、2025 起是**微秒**，两条分支 | parquet 原生 datetime |
 | 列名大小写 | Title-Case（`Open`/`High`/…） | 小写（`open`/`high`/…） |
 | `_clean()` | **覆写**：`validate_schema(required_columns=_RAW_REQUIRED_COLUMNS)` + `flag_anomalies()`。`_RAW_REQUIRED_COLUMNS = ("Open","High","Low","Close","Volume")` | **继承默认** `clean_market_data()` |
 | symbol 从哪来 | 文件名 `csv_file.name.split("-")[0]` | 数据里的 `symbol` 列（tick 层则是 hive path segment） |
-| 窗口下推 | 无。先按文件名过滤（`utils/file.py:file_date_filter`），再 `pl.concat` 全量 | `_scan_raw()` 下推**两个**谓词：hive 键谓词在 plan 期剪目录，`timestamp` 谓词修窗口边缘 |
+| 窗口下推 | 无。先按文件名过滤（`quantlab/utils/file.py:file_date_filter`），再 `pl.concat` 全量 | `_scan_raw()` 下推**两个**谓词：hive 键谓词在 plan 期剪目录，`timestamp` 谓词修窗口边缘 |
 | 分块接缝 | 未覆写 → 退化成"全量稠密化后切片"，跑分块时会收到 warning | 覆写了 `_raw_axes_in_range()` 和 `_raw_data_to_xr_window()`，真正拿到内存上界 |
 | `_to_kunquant()` | 把 `Quote asset volume` 改名成 `amount` | 丢掉未复权 OHLCV、把 `adj*` 改名顶上，再按需合成 `amount = volume * close`（Tiingo 不给成交额） |
 | `_to_nautilus()` | 完整实现（`BarDataWrangler` + joblib 并行） | `raise ValueError("Not finished")` |
 | provenance 校验 | 无 | 三重相互加固：① 路径 basename 必须等于 `config.vendor`（防止扫描根开在上一层把两家 vendor 静默合并）；② 扫出来的 `vendor` 列必须唯一且与配置相符——且必须在 dedup **之前**校验，因为 dedup 会把两家的重叠行任意折叠成一行，证据就没了；③ `pl.scan_parquet` 的 `extra_columns`/`missing_columns` 刻意保留会抛的默认值，混 schema 的分片会直接报错 |
 
-从这张表里能读出一条规律：**差异全部落在"原始文件长什么样"和"这个市场的词汇表叫什么"，一条都没有渗进基类**。`tests/test_extensibility_contract.py::test_core_layer_purity_no_market_specific_logic` 用 grep 把这件事钉死：`base/factor.py`、`base/factor_polars.py`、`base/model.py`、`base/backend.py` 的非注释行里不许出现 `SpotKlineDataset`、`StockDataset`、`crypto_spot`、`us_equity` 这四个字符串。
+从这张表里能读出一条规律：**差异全部落在"原始文件长什么样"和"这个市场的词汇表叫什么"，一条都没有渗进基类**。`tests/test_extensibility_contract.py::test_core_layer_purity_no_market_specific_logic` 用 grep 把这件事钉死：`quantlab/base/factor.py`、`quantlab/base/factor_polars.py`、`quantlab/base/model.py`、`quantlab/base/backend.py` 的非注释行里不许出现 `SpotKlineDataset`、`StockDataset`、`crypto_spot`、`us_equity` 这四个字符串。
 
 ### 完整可跑的最小子类
 
@@ -299,9 +299,9 @@ import numpy as np
 import polars as pl
 import xarray as xr
 
-from base.config import DatasetConfig
-from base.data import MarketDataset
-from dataset.cleaning import dedup_raw_frame
+from quantlab.base.config import DatasetConfig
+from quantlab.base.data import MarketDataset
+from quantlab.dataset.cleaning import dedup_raw_frame
 
 TMP = Path("/tmp/quantlab_mini_demo")
 
@@ -521,7 +521,7 @@ AttributeError: 'Dataset' object has no attribute 'to_series'               # �
 
 两个原因一起修掉了：`indexes` 现在真的收窄维度，`["timestamp"]` 拿回的是一个只剩时间轴的 `Dataset`（没有数据变量，但保留 `timestamp` 坐标），布尔变量不再挡路；而 `.to_series()` 是 `DataArray` 的方法不是 `Dataset` 的，所以属性里改成显式取 `["timestamp"]` 这个坐标再差分。`.mode()` 保留着——它就是为了周末/停牌造成的缺口存在的，一个中间有两天空洞的日频面板仍然报 1 天。
 
-现在可以放心用了，由 `tests/test_backend_indexes.py::test_time_interval_works_under_xrbackend` 和 `::test_time_interval_takes_the_mode_not_the_first_gap` 锁住。它唯一的调用点仍然是 `dataset/spot.py:_xr_to_bars`（nautilus 那条路）。
+现在可以放心用了，由 `tests/test_backend_indexes.py::test_time_interval_works_under_xrbackend` 和 `::test_time_interval_takes_the_mode_not_the_first_gap` 锁住。它唯一的调用点仍然是 `quantlab/dataset/spot.py:_xr_to_bars`（nautilus 那条路）。
 
 **7. 日期必须是补零 ISO，否则不是匹配失败而是比错。**
 
@@ -535,7 +535,7 @@ config setter 在边界上一次性拦掉了它，所以下游所有比较可以
 一个"每个标的每天都有 bar"的窗口，`volume` 会保留 pandas 的 `int64`；只要有一个缺口，为了放 NaN 就升成 `float64`。分块写入时这意味着 store 的 dtype 由**碰巧第一个被写进去的窗口**决定，而后来的 float64 NaN 写进 int64 变量会被静默 cast 成 0——在缺数据的地方伪造出一个观测值。`_pin_append_dtypes()` 通过把整型统一提升成 float64 让这个失败不可达（布尔的 `anomaly_flag` 例外，它是标志不是测量值）。
 
 **9. 清洗里永远不要加 fill / interpolate。**
-`dataset/cleaning.py` 的模块文档写死了这一条：那等于编造流水线从未观测到的数据。异常只**打标**不修正（`anomaly_flag`），空缺只**报告**不填补。想改这个行为之前，先想清楚你是打算让一个 NaN 在三层之外变成一个看起来很正常的因子值。
+`quantlab/dataset/cleaning.py` 的模块文档写死了这一条：那等于编造流水线从未观测到的数据。异常只**打标**不修正（`anomaly_flag`），空缺只**报告**不填补。想改这个行为之前，先想清楚你是打算让一个 NaN 在三层之外变成一个看起来很正常的因子值。
 
 **10. 结构性掩码曾经会把**所有**告警一起吞掉。**（**已于 2026-09-07 修复**）
 `validate_schema` 的结构性掩码是「每一个必需列都为 null」的逻辑与，每一列的告警条件是 `isnull() & ~mask`。当必需列**自己**全空时——空的 vendor 响应被写进了 store、CSV 解析错列、backfill 整段失败——掩码在每一格都是 True，`~mask` 在每一格都是 False，于是**每一列的告警都被吞掉，一条都不剩**：

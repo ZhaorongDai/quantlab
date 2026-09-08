@@ -1,8 +1,8 @@
 # 模型层（Model）
 
-> 代码位置：`base/model.py`（抽象基类 `BaseModel`）、`base/config.py`（`DLConfig` / `MLConfig`）、
-> `dl_model/rnn_classification.py`、`dl_model/rnn.py`、`dl_model/mlp.py`（三个具体模型头）、
-> `ml_model/backend.py`（非 torch 模型的持久化后端）、`utils/module.py`（按点分路径重建类）。
+> 代码位置：`quantlab/base/model.py`（抽象基类 `BaseModel`）、`quantlab/base/config.py`（`DLConfig` / `MLConfig`）、
+> `quantlab/dl_model/rnn_classification.py`、`quantlab/dl_model/rnn.py`、`quantlab/dl_model/mlp.py`（三个具体模型头）、
+> `quantlab/ml_model/backend.py`（非 torch 模型的持久化后端）、`quantlab/utils/module.py`（按点分路径重建类）。
 > 一个真实的端到端调用脚本：`train_model.py`。
 
 ---
@@ -21,7 +21,7 @@
 ### 吃：两份 xarray 面板
 
 模型层不直接读磁盘、不直接碰行情。它拿到的是配置里塞进来的**因子对象**和**标签对象**，
-然后调用它们的公共契约取数（`base/model.py:_collect_all_features` / `_collect_all_labels`）：
+然后调用它们的公共契约取数（`quantlab/base/model.py:_collect_all_features` / `_collect_all_labels`）：
 
 ```python
 # factor_data_strategy / label_data_strategy 决定走哪条
@@ -152,7 +152,7 @@ val_x_t   = train_x_t_all[train_split:]
 ## 子类的五方法契约
 
 `BaseModel` 有 5 个 `@abstractmethod`，少实现一个类就实例化不了
-（这不是理论——`dl_model/mlp.py:MLPRegressor` 曾经漏了 `_val_one_batch`，
+（这不是理论——`quantlab/dl_model/mlp.py:MLPRegressor` 曾经漏了 `_val_one_batch`，
 `MLPRegressor.__abstractmethods__` 实测是 `frozenset({'_val_one_batch'})`，
 连构造都做不到。已于 2026-09-07 修复，现在三个具体模型头都实现齐了 5 个方法，
 由 `tests/test_dl_models.py::test_mlp_regressor_has_no_unimplemented_abstract_methods` 锁住）。
@@ -200,7 +200,7 @@ epoch 会被快照下来，训练结束回滚（见「常见坑」第 13 条）�
 所以它必须返回一个能 `float()` 的标量 loss——
 返回 `None` 会在 `float(None)` 处直接 `TypeError`。
 
-> 这条不是假想。`dl_model/rnn.py:RNNRegressor._val_one_batch` 以前只记 metrics
+> 这条不是假想。`quantlab/dl_model/rnn.py:RNNRegressor._val_one_batch` 以前只记 metrics
 > **什么都不返回**，注解写的却是 `-> torch.Tensor`。加权平均那行是无条件执行的
 > （跟 `early_stopping` 开不开无关），所以 `RNNRegressor.train()` 在第 0 个 epoch
 > 就是 `TypeError: float() argument must be a string or a real number, not
@@ -240,12 +240,12 @@ NaN 从哪来？因子的滚动窗口预热期、标签的 `shift` 尾部、稀�
 `train_model.py` 是仓库里唯一一条真实的端到端路径。骨架是这样的：
 
 ```python
-from base.config import DLConfig
-from config import alpha101_config, alpha158_config, spot_label_config
-from dl_model.rnn_classification import RNNClassifier
-from factor.alpha101 import Alpha101SpotKline
-from factor.alpha158 import Alpha158SpotKline
-from label.spot import SpotReturn
+from quantlab.base.config import DLConfig
+from quantlab.config import alpha101_config, alpha158_config, spot_label_config
+from quantlab.dl_model.rnn_classification import RNNClassifier
+from quantlab.factor.alpha101 import Alpha101SpotKline
+from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.label.spot import SpotReturn
 
 label1 = SpotReturn(spot_label_config("ret_1m", n_forward_periods=30,  symbols=["BTCUSDT"]))
 label2 = SpotReturn(spot_label_config("ret_1m", n_forward_periods=60,  symbols=["BTCUSDT"]))
@@ -279,7 +279,7 @@ model.train()
 ```
 
 > **此例未实际运行**：它依赖本机不存在的 Binance BTCUSDT 分钟线 zarr 数据，
-> 且 `config/__init__.py` 里的路径是另一台机器的绝对路径。上面的代码抄自
+> 且 `quantlab/config/__init__.py` 里的路径是另一台机器的绝对路径。上面的代码抄自
 > `train_model.py:19-58`，只是把 `model.load(...)` 换回了 `model.train()`。
 
 推理这一段值得单独看（`train_model.py:66-74`）：
@@ -341,8 +341,8 @@ import torch
 import torch.nn as nn
 import xarray as xr
 
-from base.config import DLConfig
-from base.model import BaseModel
+from quantlab.base.config import DLConfig
+from quantlab.base.model import BaseModel
 
 # ---------------------------------------------------------------- 合成的因子/标签
 N_TIMES, N_SYMBOLS = 200, 4
@@ -532,7 +532,7 @@ else:
 
 torch 那条存的是 `state_dict`——**只有权重，没有结构**。所以加载时必须先把网络重建出来。
 非 torch 那条（sklearn / LightGBM 之类）用 joblib 整个 pickle 掉，结构和权重一起走。
-`ml_model/backend.py:MlBackend` 是给这条路准备的持久化后端，
+`quantlab/ml_model/backend.py:MlBackend` 是给这条路准备的持久化后端，
 但目前**仓库里没有任何地方使用它**（全库 grep 只有定义处一个命中）。
 
 落盘目录是 `{model_save_dir}/{project_name}/{experiment_name}/{model_name}`，
@@ -574,7 +574,7 @@ torch 那条存的是 `state_dict`——**只有权重，没有结构**。所以
 f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 ```
 
-这个字符串就是**重建这个类所需的全部信息**。`utils/module.py` 拿它做反向解析：
+这个字符串就是**重建这个类所需的全部信息**。`quantlab/utils/module.py` 拿它做反向解析：
 
 ```python
 def get_cls_from_path(path: str):
@@ -668,7 +668,7 @@ pandas.errors.IndexingError: Unalignable boolean Series provided as indexer
 `tests/test_dl_models.py::test_rnn_classifier_vecbt_raises_instead_of_returning_none`
 共同锁住。
 
-**5. `dl_model/mlp.py:MLPRegressor` 曾经是坏的，三处。**（**已于 2026-09-07 修复**）
+**5. `quantlab/dl_model/mlp.py:MLPRegressor` 曾经是坏的，三处。**（**已于 2026-09-07 修复**）
 以前它同时踩了三个坑，而且是层层挡在后面的三个——修掉一个才能看见下一个：
 - 缺 `_val_one_batch`，是抽象类，**根本实例化不了**（实测
   `MLPRegressor.__abstractmethods__ == frozenset({'_val_one_batch'})`）；
@@ -692,13 +692,13 @@ baseline 回归模型。
 遗留的一处（没修，是有意的）：`MLPRegressor` 的 reshape 写在
 `_train_one_batch`/`_test_one_batch` 里，而 `MLP.forward` 只是一串 `nn.Linear`，
 所以 `predict()` 要求调用方传**已经拍平**的 `[num_times, num_symbols * num_features]`，
-不是训练时那个三维张量。补这个缺口要么改 `base/model.py:_predict_nn`，要么改公开的
+不是训练时那个三维张量。补这个缺口要么改 `quantlab/base/model.py:_predict_nn`，要么改公开的
 `MLP` 模块接受什么，两者都超出了这次的范围。
 
-**6. `dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**（**已于 2026-09-07 删除**）
+**6. `quantlab/dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**（**已于 2026-09-07 删除**）
 `rnn.py` 的 `ModelRBaseCrypto` 最后一层是 `nn.Linear(..., 1)`（回归用），
 但它里面的 `RNNClassifier._train_one_batch` 却写了 `primary_pred.reshape(D * T, 2)`
-——元素个数对不上，必炸。真正在用的分类器是 `dl_model/rnn_classification.py:RNNClassifier`
+——元素个数对不上，必炸。真正在用的分类器是 `quantlab/dl_model/rnn_classification.py:RNNClassifier`
 （那份的基础块输出 2 类，`self.out = nn.Linear(num_aux * 2, 2)`，逻辑自洽），
 `train_model.py` 导入的也是它。
 
@@ -709,7 +709,7 @@ grep 确认全仓对 `RNNClassifier` 的引用无一例外解析到 `rnn_classif
 只被那份副本用到的 sklearn 分类指标 import。要找回它 `git show` 即可——从没跑通过
 的实现，日后从历史里捞出来比现在维护它便宜。
 
-现在 `dl_model/rnn.py` 里只有 `RNNRegressor`。
+现在 `quantlab/dl_model/rnn.py` 里只有 `RNNRegressor`。
 
 **7. `update()`（在线学习）曾经引用不存在的配置字段。**（**已于 2026-09-07 修复**）
 `rnn.py` 和 `rnn_classification.py` 的 `update()` 第一行是 `if self.config.lr_refit <= 0.0`，
@@ -812,7 +812,7 @@ sub.to_dataarray().sortby([...,'variable']).coords['variable']  # ['alpha', 'mid
 所以这类错位从来指望不上它们。
 
 **4. dtype 曾经基类不管，float64 面板根本训不了。**（**已于 2026-09-07 修复**）
-`torch.from_numpy` 忠实继承 numpy 的 dtype，而 `dl_model/` 里每个 `nn.Module`
+`torch.from_numpy` 忠实继承 numpy 的 dtype，而 `quantlab/dl_model/` 里每个 `nn.Module`
 的权重都是默认的 float32。三个出厂模型头的 `_preprocess` 都只做
 `torch.nan_to_num`，一个 `.float()` 都没有，于是真实面板一进 forward 就死：
 
@@ -853,7 +853,7 @@ D-03 要保证的可互换性。
 **5. 模型类不要定义在 `__main__` 脚本里。**
 `import_path` 用 `self.__class__.__module__`，脚本里定义的类会存成 `__main__.TinyRegressor`
 （上面真实的 `config.json` 就是这样），`get_cls_from_path` 之后没法把它 import 回来。
-要走 `load_model_from_config` 的话，模型类必须住在一个真实模块里（比如 `dl_model/xxx.py`）。
+要走 `load_model_from_config` 的话，模型类必须住在一个真实模块里（比如 `quantlab/dl_model/xxx.py`）。
 
 **6. 验证集切分丢一行。**（**已于 2026-09-07 修复**）
 曾经是 `val_x_t = train_x_t_all[train_split + 1:]`，第 `train_split` 行既不在训练集

@@ -46,15 +46,15 @@
 
 | 位置 | 问题 | 详见 |
 |---|---|---|
-| ~~`base/model.py`~~ | ~~`early_stopping=False` 会 `UnboundLocalError` 直接崩；早停计数器按**验证 batch** 递增而非 epoch；张量列序是**字母序**不是你传入的顺序，主目标可能不是你以为的那个~~ **已于 2026-09-07 修复**（`tests/test_model_layer.py`） | [model.md](model.md) 「常见坑」 |
-| ~~`dl_model/`~~ | ~~`MLPRegressor` 三处坏掉无法实例化；`rnn.py` 里的 `RNNClassifier` 是过期坏副本（活的那个在 `rnn_classification.py`）；`update()` 读了 `DLConfig` 没有的字段~~ **已于 2026-09-07 修复/删除**（`tests/test_dl_models.py`） | [model.md](model.md) |
-| ~~`base/model.py:num_null`~~ | ~~结尾 `.values[0]` 索引一个 0 维数组，**每次读取都 `IndexError`**~~ **已于 2026-09-07 修复**。一条被文档推荐、注解写着 `-> int`、却从来没跑通过的属性（`tests/test_model_layer.py`） | [model.md](model.md) |
+| ~~`quantlab/base/model.py`~~ | ~~`early_stopping=False` 会 `UnboundLocalError` 直接崩；早停计数器按**验证 batch** 递增而非 epoch；张量列序是**字母序**不是你传入的顺序，主目标可能不是你以为的那个~~ **已于 2026-09-07 修复**（`tests/test_model_layer.py`） | [model.md](model.md) 「常见坑」 |
+| ~~`quantlab/dl_model/`~~ | ~~`MLPRegressor` 三处坏掉无法实例化；`rnn.py` 里的 `RNNClassifier` 是过期坏副本（活的那个在 `rnn_classification.py`）；`update()` 读了 `DLConfig` 没有的字段~~ **已于 2026-09-07 修复/删除**（`tests/test_dl_models.py`） | [model.md](model.md) |
+| ~~`quantlab/base/model.py:num_null`~~ | ~~结尾 `.values[0]` 索引一个 0 维数组，**每次读取都 `IndexError`**~~ **已于 2026-09-07 修复**。一条被文档推荐、注解写着 `-> int`、却从来没跑通过的属性（`tests/test_model_layer.py`） | [model.md](model.md) |
 | 回测骨架 | `_do_vecbt` / `_vecbt` / `RNNClassifier._vecbt` / `_train_dl(backtest=...)` 四块半成品互不相连，全部**安静地什么都不做**。**保留**（端到端回测归 Phase 6，钩子位置是对的），但 2026-09-07 起改为显式 `NotImplementedError` 点名 Phase 6——空实现要么报错，要么就不该存在 | [model.md](model.md) |
 | 骗人的命名 | ~~`_train_one_epoch` / `_val_one_epoch` / `_test_one_epoch` 其实是 per-**batch**；`_get_features_batch` / `_get_labels_batch` 里的 `batch` 又是相反的意思（收齐全部）~~ **已于 2026-09-07 改名**为 `_*_one_batch` / `_collect_all_*`。前者的名字实际造成过一个早停缺陷 | [model.md](model.md) |
-| ~~`utils/nautilus.py`~~ | ~~`get_crypot_currency` 拼错了（"crypot"），且有一个被接收又完全忽略的 `name` 参数~~ **已于 2026-09-07 更正并删参**（`tests/test_spot_dataset.py`） | — |
-| ~~`dataset/backend.py`~~ | ~~`XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用~~ **已于 2026-09-07 修复**（`tests/test_backend_indexes.py`） | [backend.md](backend.md)、[dataset.md](dataset.md) |
+| ~~`quantlab/utils/nautilus.py`~~ | ~~`get_crypot_currency` 拼错了（"crypot"），且有一个被接收又完全忽略的 `name` 参数~~ **已于 2026-09-07 更正并删参**（`tests/test_spot_dataset.py`） | — |
+| ~~`quantlab/dataset/backend.py`~~ | ~~`XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用~~ **已于 2026-09-07 修复**（`tests/test_backend_indexes.py`） | [backend.md](backend.md)、[dataset.md](dataset.md) |
 | 成分 vs 价格 | 跨改名的代码词表对不上：876 个 sp500 成分符号里 89 个在价格 roster 查无此符号 | [constituent.md](constituent.md) 「已知的坑」 |
-| `base/factor.py` | `save()` 默认 `mode="a"`，但它**不是时间追加**，第二段日期会直接报错。默认值有意保留；2026-09-07 起报错信息会直接点名 `mode="w"`（`tests/test_factor_save_mode.py`） | [factor.md](factor.md) |
+| `quantlab/base/factor.py` | `save()` 默认 `mode="a"`，但它**不是时间追加**，第二段日期会直接报错。默认值有意保留；2026-09-07 起报错信息会直接点名 `mode="w"`（`tests/test_factor_save_mode.py`） | [factor.md](factor.md) |
 | 死代码 | ~~`WindowedRobustStandardization`、`PageLedger.last_position()`~~ **已于 2026-09-07 删除**（均零调用点，从未被执行过）。`MlBackend` 零调用点但**保留**：它是 `MLConfig` 那条非 torch 模型（如 xgboost）路径的 joblib 持久化，是尚未建成的既定路线的脚手架，不是废弃的入口 | 各篇 |
 
 ## 关于例子

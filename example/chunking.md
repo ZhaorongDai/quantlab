@@ -1,8 +1,8 @@
 # 时间分块与分块台账（chunking）
 
-> 涉及代码：`base/chunking.py`、`base/data.py:BaseDataset.from_raw_data_chunked()`、
-> `dataset/backend.py:XrBackend.append/widen_symbol_axis/widen_and_append`、
-> `dataset/stock.py` 的两个 seam、`acquisition/universe.py:assert_chunked_panel_fits()`、
+> 涉及代码：`quantlab/base/chunking.py`、`base/data.py:BaseDataset.from_raw_data_chunked()`、
+> `quantlab/dataset/backend.py:XrBackend.append/widen_symbol_axis/widen_and_append`、
+> `quantlab/dataset/stock.py` 的两个 seam、`acquisition/universe.py:assert_chunked_panel_fits()`、
 > `ingest_us_equity.py`。测试在 `tests/test_chunked_ingest.py`。
 
 ## 一句话
@@ -31,7 +31,7 @@ bytes = cells × 变量数 × 每格字节数
 8,159 个标的 × 252 个交易日 = 2,056,068 格 → **0.18 GiB**。这个量级毫无压力。
 
 **真实数字之二（把区间拉长到二十年就翻天覆地）**：
-`acquisition/universe.py` 里 `UniverseCatalog.MAX_DENSE_PANEL_BYTES` 的注释记录了
+`quantlab/acquisition/universe.py` 里 `UniverseCatalog.MAX_DENSE_PANEL_BYTES` 的注释记录了
 2026-09-06 在目标机器上的实测：`us_all` 全量在 `2006-01-01..今天` 是
 **15,424 个标的 × ~5,215 个交易日 = 80.4M 格**，其中只有 ~29.6M 格是真实观测
 （密度 0.368 —— 因为绝大多数标的并非全程都在上市）。
@@ -100,7 +100,7 @@ OOM 不是因为面板本身超过 16 GiB，而是因为面板 + 行式 frame + 
 裸 `to_zarr(mode="a", append_dim="timestamp")` 在这里**不会报错**，它会默默把 store 的
 symbol 坐标改成新的，历史行就归属错了。所以 `from_raw_data_chunked()` 先调
 `_raw_axes_in_range()` 拿到整段区间的**全时并集**（这条规则跟
-`base/constituent.py:_densify` 的 all-time-union 一致，不是新发明的机制），
+`quantlab/base/constituent.py:_densify` 的 all-time-union 一致，不是新发明的机制），
 每个窗口都强制 `reindex(symbol=pinned)`。
 
 代价是：一个 2025 年的窗口也会给 2009 年就退市的票留一整列 NaN。
@@ -287,7 +287,7 @@ store 仍是: ['A', 'XYZ']
 
 定期刷新时名单几乎一定会变。`BaseDataset.NEW_LISTING_STRATEGIES = ("refuse", "rebuild", "widen")`，
 对应 `ingest_us_equity.py --on-new-listing`（CLI 的 `choices` 是从这个元组**派生**的，
-`utils/cli.py:add_chunk_args`，不在 CLI 里重复写一遍）。
+`quantlab/utils/cli.py:add_chunk_args`，不在 CLI 里重复写一遍）。
 
 | 策略 | 做什么 | 代价 |
 |---|---|---|
@@ -375,9 +375,9 @@ from pathlib import Path
 import polars as pl
 import xarray as xr
 
-from base.chunking import ChunkLedger, TimeChunkPlanner
-from base.config import DatasetConfig
-from dataset.stock import StockDataset
+from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
+from quantlab.base.config import DatasetConfig
+from quantlab.dataset.stock import StockDataset
 
 TMP = Path("/tmp/quantlab_chunk_demo")
 shutil.rmtree(TMP, ignore_errors=True)
