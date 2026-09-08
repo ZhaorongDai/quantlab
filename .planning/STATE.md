@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Completed quick task 260907-uac (XrBackend refuses an overlapping append)
+stopped_at: Completed quick task 260907-vyr (data_vars reconciled on append; Factor.update)
 last_updated: "2026-09-08T01:29:01.518Z"
-last_activity: 2026-09-07
-last_activity_desc: "Completed quick task 260907-uac: XrBackend refuses an append overlapping the stored timestamps"
-state_head: 8249dedb5636d656fbf3056a2d0ef839fe55db60
+last_activity: 2026-09-08
+last_activity_desc: "Completed quick task 260907-vyr: data_vars is a reconciled append axis; Factor gained an automatic update interface"
+state_head: 41fcf9929e0dee962c824041427238e0586f38a0
 progress:
   total_phases: 11
   completed_phases: 2
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-07 - Completed quick task 260907-uac: XrBackend refuses an append overlapping the stored timestamps
+Last activity: 2026-09-08 - Completed quick task 260907-vyr: data_vars is a reconciled append axis; Factor gained an automatic update interface
 
 Progress: [██████████] 100%
 
@@ -87,6 +87,7 @@ Progress: [██████████] 100%
 | Phase quick-260907-rjq P01 | 34 min | 3 tasks | 12 files |
 | Phase quick-260907-sm2 P01 | 50 min | 3 tasks | 95 files |
 | Phase quick-260907-uac P01 | 14 min | 3 tasks | 4 files |
+| Phase quick-260907-vyr P01 | 22 min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -196,6 +197,7 @@ Recent decisions affecting current work:
 | 260907-rjq | Add a --data-dir CLI parameter to the data acquisition scripts to override the download/storage root | 2026-09-07 | 4552b0c | [260907-rjq-add-a-data-dir-cli-parameter-to-the-data](./quick/260907-rjq-add-a-data-dir-cli-parameter-to-the-data/) |
 | 260907-sm2 | Make quantlab an installable quantlab.* namespace package so quantlab-console can depend on it | 2026-09-07 | 041eebd | [260907-sm2-make-quantlab-an-installable-quantlab-na](./quick/260907-sm2-make-quantlab-an-installable-quantlab-na/) |
 | 260907-uac | Refuse an append that overlaps timestamps already in the store | 2026-09-07 | 8249ded | [260907-uac-refuse-an-append-that-overlaps-timestamp](./quick/260907-uac-refuse-an-append-that-overlaps-timestamp/) |
+| 260907-vyr | Reconcile the data_vars axis on append: refuse a mismatch, widen variables, and give Factor an automatic update interface | 2026-09-08 | 41fcf99 | [260907-vyr-reconcile-the-data-vars-axis-on-append-r](./quick/260907-vyr-reconcile-the-data-vars-axis-on-append-r/) |
 
 ### Roadmap Evolution
 
