@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
-stopped_at: Completed quick task 260908-dvv (widening suites exercise the real coordinate encoding)
-last_updated: "2026-09-08T01:29:01.518Z"
+stopped_at: Completed quick task 260908-g30
+last_updated: "2026-09-08T16:12:04.465Z"
 last_activity: 2026-09-08
-last_activity_desc: "Completed quick task 260908-dvv: the widening lock moved into the suites that own the methods"
-state_head: e2923da80aeb3095097f1c81620703f90eed35a0
+last_activity_desc: "Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which"
+state_head: 4941e8d9523b513b08a711ef65df08373ad0671c
 progress:
   total_phases: 11
   completed_phases: 2
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-08 - Completed quick task 260908-dvv: the widening lock moved into the suites that own the methods
+Last activity: 2026-09-08 - Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which
 
 Progress: [██████████] 100%
 
@@ -90,6 +90,7 @@ Progress: [██████████] 100%
 | Phase quick-260907-vyr P01 | 22 min | 3 tasks | 6 files |
 | Phase quick-260908-0f4 P01 | 29 min | 3 tasks | 9 files |
 | Phase quick-260908-dvv P01 | 27 min | 3 tasks | 8 files |
+| Phase quick-260908-g30 P01 | 42min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -176,6 +177,9 @@ Recent decisions affecting current work:
 - [Phase 3]: [quick-260907-sm2]: Persisted `config.name` dotted paths are a HARD BREAK with no legacy alias table -- census re-derived live found zero .pth, zero .joblib, no model config.json, neither checkpoint directory present, both gitignored, and no file of either extension ever added in history. The set an alias table would rescue is empty; the mapping stays available if an artifact appears.
 - [Phase 3]: [quick-260907-sm2]: The volume guard's structural arm is an `ast` import RESOLVER, not a substring scan. One shared parent package makes relative spellings (`from ..base.acquisition import X`) reach a client while producing no absolute dotted literal, and re-prefixing the old literals makes it worse -- a prefixed literal cannot match a relative spelling at all. RED-proven on all four spellings, each attributed to the resolver by a repo-unique token because two of them also trip a neighbouring arm.
 - [Phase 3]: [quick-260907-sm2]: Packaged instrument metadata is located by ONE package-derived constant in the stdlib-only leaf `quantlab/utils/paths.py`, shared by the nautilus loader and both Binance CLI defaults. It lives under utils/ rather than the config package because config imports the dataset layer, which imports the nautilus helper -- a constant read from config at module scope would close that cycle.
+- [Phase 3]: 260908-g30: symbol-axis widening routes by size behind one unchanged public entry -- whole-store at or under MAX_WIDEN_BYTES (4 GiB), block-by-block above it, with the switch logged as a warning
+- [Phase 3]: 260908-g30: rebuild's surviving justification is HISTORY RECOVERY (it re-reads raw), not memory -- the memory argument is retired from backend.py, base/data.py and example/backend.md
+- [Phase 3]: 260908-g30: widen_data_vars stays unbounded and is FILED -- the append_dim trick is unavailable there, so a bounded filler needs region= writes against a pre-created full-shape array
 
 ### Pending Todos
 
@@ -202,6 +206,7 @@ Recent decisions affecting current work:
 | 260907-vyr | Reconcile the data_vars axis on append: refuse a mismatch, widen variables, and give Factor an automatic update interface | 2026-09-08 | 41fcf99 | [260907-vyr-reconcile-the-data-vars-axis-on-append-r](./quick/260907-vyr-reconcile-the-data-vars-axis-on-append-r/) |
 | 260908-0f4 | Give Dataset an automatic update interface that picks widen or rebuild from raw-layer evidence | 2026-09-08 | c8bba70 | [260908-0f4-give-dataset-an-automatic-update-interfa](./quick/260908-0f4-give-dataset-an-automatic-update-interfa/) |
 | 260908-dvv | Make the widening suites exercise the coordinate dtypes production writes | 2026-09-08 | e2923da | [260908-dvv-make-the-widening-suites-exercise-the-co](./quick/260908-dvv-make-the-widening-suites-exercise-the-co/) |
+| 260908-g30 | Route symbol-axis widening by size: add a memory-bounded chunked widening path to XrBackend and a materialisation estimate that switches to it above budget, reporting which path was taken | 2026-09-08 | 4941e8d | [260908-g30-route-symbol-axis-widening-by-size-add-a](./quick/260908-g30-route-symbol-axis-widening-by-size-add-a/) |
 
 ### Roadmap Evolution
 
@@ -223,8 +228,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T01:29:01.313Z
-Stopped at: Completed quick task 260907-sm2 (quantlab namespace package; installable, console consumes it editable)
+Last session: 2026-09-08T16:11:58.101Z
+Stopped at: Completed quick task 260908-g30
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
