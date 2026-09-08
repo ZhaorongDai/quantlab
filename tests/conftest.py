@@ -58,6 +58,89 @@ def _reset_data_root_override():
 
 
 @pytest.fixture
+def isolated_registry(monkeypatch):
+    """Snapshot and restore `DataSourceRegistry.SOURCES` around ONE test.
+
+    Opt-in, not autouse: only a test that registers a source needs it, and an
+    autouse registry snapshot would pay the (lazy) import cost in every test
+    in the suite.
+
+    LOAD-BEARING PRECONDITION: this isolates only because `SOURCES` is
+    REBOUND (`SOURCES += (descriptor,)` on a tuple) and never mutated in
+    place. `monkeypatch.setattr` saves the old object and puts it back on
+    teardown, so rebinding the attribute inside the test is undone; a
+    `list.append` on a shared mutable would mutate the very object being
+    restored and this fixture would silently stop isolating, leaking a fake
+    descriptor into every later test in the session. `test_registration_tuple_shape`
+    in `tests/test_source_registry.py` is the test that keeps that honest --
+    if it is ever deleted or weakened, this fixture's guarantee goes with it.
+
+    The import is deliberately left to raise `ImportError` until
+    `quantlab/acquisition/registry.py` lands. It must NOT be softened with a
+    `try/except` or a `pytest.importorskip`: a silently-skipped isolation
+    fixture is how a fake source leaks into every later test, and a test that
+    quietly did not isolate is indistinguishable from one that did.
+
+    `quantlab.*` is imported inside the body rather than at module scope, the
+    convention `_reset_data_root_override` above already follows, so this file
+    keeps its zero-import-time dependency promise.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    monkeypatch.setattr(
+        DataSourceRegistry,
+        "SOURCES",
+        tuple(DataSourceRegistry.SOURCES),
+        raising=True,
+    )
+    yield DataSourceRegistry
+
+
+#: The credential environment variables `no_credentials` empties, written as
+#: LITERALS on purpose.
+#:
+#: They are deliberately NOT read from `TiingoAcquisition.CREDENTIAL_ENV_VARS`
+#: / `AlpacaAcquisition.CREDENTIAL_ENV_VARS`. This fixture is the instrument
+#: that PROVES a surface needs no credential, so sourcing its list from the
+#: same declaration the surface under test consults would make the proof
+#: circular: a name dropped from that declaration would vanish from the test's
+#: expectation at the same moment it stopped being cleared, and the test would
+#: still pass. `test_vendor_credential_env_names_are_module_level_constants_not_client_attributes`
+#: in `tests/test_source_registry.py` pins the two lists against each other
+#: from the outside, which is where that comparison belongs.
+_CREDENTIAL_ENV_NAMES = (
+    "TIINGO_API_KEY",
+    "APCA_API_KEY_ID",
+    "APCA_API_SECRET_KEY",
+)
+
+
+@pytest.fixture
+def no_credentials(monkeypatch) -> tuple[str, ...]:
+    """Delete every vendor credential from the environment for ONE test.
+
+    Yields the tuple of NAMES that were cleared. It never reads, returns,
+    prints or asserts on a credential VALUE -- this repo has already leaked one
+    real vendor key, and a fixture whose whole job is credential absence is the
+    last place a value should pass through.
+
+    `raising=False` is required: a developer machine may legitimately have none
+    of the three set, and a fixture that only works when a credential happens
+    to be present would be green for the wrong reason on CI and red on a clean
+    laptop.
+
+    No manual restore is needed or wanted. `monkeypatch.delenv` records the
+    pre-test value (or its absence) and pytest puts the exact prior environment
+    back on teardown, including leaving a name UNSET that was unset before.
+    A hand-rolled `os.environ[name] = saved` would resurrect a name that never
+    existed.
+    """
+    for name in _CREDENTIAL_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    return _CREDENTIAL_ENV_NAMES
+
+
+@pytest.fixture
 def binance_csv_rows() -> list[list]:
     """Return a small list of raw row-tuples matching the column order of
     `enums.data.BinanceCSVHeaders.SPOT` (12 columns), with `Open time` as
