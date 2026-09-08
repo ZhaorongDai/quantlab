@@ -4,14 +4,14 @@ milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation)
 status: executing
-stopped_at: Phase 03.4 context gathered
-last_updated: "2026-09-08T21:24:06.649Z"
+stopped_at: Completed 03.4-01-PLAN.md
+last_updated: "2026-09-08T21:45:22.923Z"
 last_activity: 2026-09-08
-last_activity_desc: "Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which"
-state_head: 5663e89aa333c4ef08d9b2f32c3977d49f7813e3
+last_activity_desc: Phase 03.4 execution started
+state_head: ba22baabfaff05e602326db7bf269b7fae4b7a63
 progress:
   total_phases: 11
-  completed_phases: 2
+  completed_phases: 1
   total_plans: 37
   completed_plans: 30
 milestone_name: milestone
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.1 — Index Historical Constituents Data Layer (INSERTED)
+**Current focus:** Phase 03.4 — Data Source Registry (Operator-Surface Foundation)
 
 ## Current Position
 
-Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — READY TO EXECUTE
-Plan: Not started
+Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — EXECUTING
+Plan: 2 of 7
 Status: Ready to execute
-Last activity: 2026-09-08 - Completed quick task 260908-g30: widening picks whole-store or chunked by size, and says which
+Last activity: 2026-09-08 — Phase 03.4 execution started
 
 Progress: [██████████] 100%
 
@@ -91,6 +91,7 @@ Progress: [██████████] 100%
 | Phase quick-260908-0f4 P01 | 29 min | 3 tasks | 9 files |
 | Phase quick-260908-dvv P01 | 27 min | 3 tasks | 8 files |
 | Phase quick-260908-g30 P01 | 42min | 3 tasks | 9 files |
+| Phase 03.4 P01 | 20 min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -180,6 +181,8 @@ Recent decisions affecting current work:
 - [Phase 3]: 260908-g30: symbol-axis widening routes by size behind one unchanged public entry -- whole-store at or under MAX_WIDEN_BYTES (4 GiB), block-by-block above it, with the switch logged as a warning
 - [Phase 3]: 260908-g30: rebuild's surviving justification is HISTORY RECOVERY (it re-reads raw), not memory -- the memory argument is retired from backend.py, base/data.py and example/backend.md
 - [Phase 3]: 260908-g30: widen_data_vars stays unbounded and is FILED -- the append_dim trick is unavailable there, so a bounded filler needs region= writes against a pre-created full-shape array
+- [Phase 03.4]: Phase 03.4 -k-matches-nothing checks assert pytest exit code 5, not the string 'no tests ran' — pytest 9.1.1 prints 'no tests collected (N deselected)' for a selector matching nothing; the literal 'no tests ran' is never emitted, so plans 02-07 acceptance criteria written as grep -q 'no tests ran' can never pass regardless of implementation. Exit 5 is version-stable and is what both the zero-test trap and the zero-match selector produce -- which of the two is a bug depends on which was expected.
+- [Phase 03.4]: acquisition_config's watermark root is raw_root.parent/'_watermarks', a sibling one level up -- not .parent.parent — 03.4-01-PLAN.md Task 2 specified Path(cfg.watermark_path).parent == Path(cfg.raw_data_dir_path).parent.parent / '_watermarks', which is off by one against the fixture at tests/conftest.py:1104. The invariant that matters (watermark root is NOT inside the raw root, so a .json sidecar cannot break a polars directory scan) is asserted both positively and negatively.
 
 ### Pending Todos
 
@@ -229,9 +232,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-08T19:41:56.188Z
-Stopped at: Phase 03.4 context gathered
+Last session: 2026-09-08T21:45:01.251Z
+Stopped at: Completed 03.4-01-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: .planning/phases/03.4-data-source-registry/03.4-CONTEXT.md
+Resume file: None
 </content>
