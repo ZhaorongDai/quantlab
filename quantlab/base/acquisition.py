@@ -620,6 +620,19 @@ class Acquisition(ABC):
         token = getattr(self, "_cancel_token", None)
         return token is not None and token.is_cancelled()
 
+    def _should_stop(self) -> bool:
+        """Should this batch not be attempted?
+
+        The OR of the two independent stop conditions -- the vendor's quota
+        abort and the caller's cancel token -- and the single expression the
+        batch boundary checks. They are ORed for the decision and kept SEPARATE
+        for the reporting: `_is_cancelled()` and `_abort.is_set()` still answer
+        "which one", which is what stops a cancel from being logged, waited on,
+        or resumed as if the vendor had run out of allocation (D-17, RESEARCH
+        Pitfall 1).
+        """
+        return self._abort.is_set() or self._is_cancelled()
+
     # -- progress reporting (03.4 D-16) -------------------------------------
 
     @property
@@ -1378,6 +1391,10 @@ class Acquisition(ABC):
         # Pre-set so the result is well-defined on the path where `pending` is
         # empty on the first pass and `_run_once` never runs at all.
         aborted = False
+        # Pre-set for the same reason `aborted` is: on the path where `pending`
+        # is empty on the first pass, `_run_once` never runs and the result
+        # still has to be well-defined.
+        cancelled = False
         waits = 0
         while True:
             pending = requested
@@ -1389,7 +1406,7 @@ class Acquisition(ABC):
             if not pending:
                 break
 
-            aborted, pass_failures, succeeded = self._run_once(
+            aborted, pass_failures, succeeded, cancelled = self._run_once(
                 pending, from_watermark
             )
             # MERGED, not replaced. `_run`'s resume loop can execute several
@@ -1409,6 +1426,24 @@ class Acquisition(ABC):
                 failures.pop(symbol, None)
             all_succeeded.update(succeeded)
             failures.update(pass_failures)
+            if cancelled:
+                # BEFORE the quota branch, and it does not fall through into
+                # it: a cancel must never wait, never log the
+                # allocation-exhausted message, and never resume the run the
+                # operator just stopped (D-17, RESEARCH Pitfall 1).
+                self._merge_unattempted_failures(
+                    failures, attempted=all_succeeded | set(failures)
+                )
+                logger.warning(
+                    f"Cancelled at a batch boundary. "
+                    f"{len(all_succeeded)} symbol(s) completed and their "
+                    f"watermarks are on disk; "
+                    f"{len(requested) - len(all_succeeded)} were never "
+                    f"attempted and have no sidecar, so a re-run resumes "
+                    f"exactly there and re-downloads nothing. This is an "
+                    f"operator stop, not a vendor condition."
+                )
+                break
             if not aborted:
                 break
             if not wait_for_quota:
@@ -1440,14 +1475,16 @@ class Acquisition(ABC):
         # received, at the SAME point, so `set(result.failures)` and the
         # manifest's key set cannot drift (03.4 D-18). `cancelled` is False
         # unconditionally here because no cancellation path exists yet -- plan
-        # 05 introduces the cancel token and is what makes this field able to
-        # be True.
+        # 05 introduced the cancel token, and `cancelled` is now the flag
+        # `_run_once` reported -- assembled AFTER the cancel-path merge above,
+        # so `set(result.failures) == set(manifest)` holds on the cancel path
+        # too and not only on the ones that ran to completion.
         self.last_result = AcquisitionResult(
             vendor=self.VENDOR,
             requested=tuple(requested),
             succeeded=tuple(sorted(all_succeeded)),
             failures=dict(failures),
-            cancelled=False,
+            cancelled=cancelled,
             quota_aborted=aborted,
             coverage=self.coverage_report(requested),
         )
@@ -1459,9 +1496,20 @@ class Acquisition(ABC):
 
     def _run_once(
         self, pending: list[str], from_watermark: bool
-    ) -> tuple[bool, dict[str, str], set[str]]:
+    ) -> tuple[bool, dict[str, str], set[str], bool]:
         """One concurrent pass over `pending`, returning
-        `(quota_aborted, per_symbol_failures, symbols_that_succeeded)`.
+        `(quota_aborted, per_symbol_failures, symbols_that_succeeded,
+        cancelled)`.
+
+        **This arity WIDENED in 03.4-05 where `_attempt_batch`'s could not.**
+        The asymmetry is deliberate and is L-6: `_attempt_batch`'s 3-tuple is
+        destructured by two tests in `tests/test_acquisition_batching.py`,
+        while nothing outside this file unpacks `_run_once`'s. So the "why did
+        it stop" signal that `_attempt_batch` may not carry lives here instead,
+        as a fourth element -- and `quota_aborted` and `cancelled` are separate
+        booleans rather than one tri-state, because `_run` must handle them
+        differently: a quota abort may WAIT and resume, a cancel must not
+        (RESEARCH Pitfall 1).
 
         The third element exists so `_run` can ACCUMULATE failures across
         passes without a stale entry surviving a later success. It reports only
@@ -1493,7 +1541,16 @@ class Acquisition(ABC):
                 # joblib queueing new batches, but with pre-dispatch batching
                 # it cannot be relied on alone. The first-statement check in
                 # `_attempt_batch` is what actually stops the vendor requests.
-                if abort.is_set():
+                #
+                # The cancel token is mirrored here for the same reason the
+                # abort is, and with the same caveat: joblib's default
+                # `pre_dispatch` of `2 * n_jobs` means a run with fewer batches
+                # than that has ALL of them queued before the first result is
+                # drained, so this `break` never even executes.
+                # `tests/test_acquisition_progress.py:test_cancel_leaves_a_resumable_store`
+                # is deliberately sized that way, so it cannot pass on this
+                # check alone (RESEARCH Pitfall 2).
+                if self._should_stop():
                     break
                 yield batch
 
@@ -1620,8 +1677,15 @@ class Acquisition(ABC):
                 f"{self.FAILURE_MANIFEST_NAME}."
             )
 
+        # Read ONCE, after the drain, and reported separately from the quota
+        # abort. A cancel does not set `abort`, so the branch below -- and its
+        # allocation-exhausted log line -- is unreachable on a pure cancel: the
+        # early return here is what keeps a cancelled run from being described
+        # to the operator as the vendor running out of allowance.
+        cancelled = self._is_cancelled()
+
         if not abort.is_set():
-            return False, failures, succeeded
+            return False, failures, succeeded, cancelled
 
         completed = sum(
             len(batch_symbols)
@@ -1639,7 +1703,7 @@ class Acquisition(ABC):
             f"NOT recorded in the per-symbol failure manifest. Vendor said: "
             f"{detail}"
         )
-        return True, failures, succeeded
+        return True, failures, succeeded, cancelled
 
     def coverage_report(self, symbols: list[str] | None = None) -> dict:
         """Classify the roster against the requested window and return the
@@ -1804,7 +1868,22 @@ class Acquisition(ABC):
         # -- is what actually stops the ~260 sym/s burn observed in the field.
         # Every remaining batch becomes a no-op returning in microseconds,
         # having issued zero vendor requests.
-        if self._abort.is_set():
+        #
+        # The CANCEL token (03.4 D-17) rides the SAME position, for the same
+        # reason and with the same return shape. `_should_stop()` is the OR of
+        # the quota abort and the cancel token, so a cancel stops the burn at
+        # exactly the granularity the quota abort already did -- a batch
+        # boundary -- which is what makes a cancelled run resumable: every
+        # batch that got past this line finished and wrote its watermarks, and
+        # every batch that did not has no sidecar at all.
+        #
+        # The 3-element return is FIXED (L-6): two tests in
+        # `tests/test_acquisition_batching.py` destructure it, so the cancel
+        # reuses the existing `"skipped"` status rather than adding a fourth
+        # "why it stopped" element. Which condition stopped it is answered by
+        # `_is_cancelled()` at the `_run_once` level, where nothing unpacks a
+        # fixed arity.
+        if self._should_stop():
             return list(symbols), "skipped", None
 
         symbols = list(symbols)
@@ -1944,6 +2023,41 @@ class Acquisition(ABC):
 
         self._record_no_data_marks(recorded)
         return symbols, "ok", None
+
+    def _merge_unattempted_failures(
+        self, failures: dict[str, str], attempted: set[str]
+    ) -> None:
+        """Fold the EXISTING manifest's entries for symbols this run never
+        reached back into `failures`, in place (03.4 D-18, RESEARCH Pitfall 4).
+
+        **Why this exists at all.** `_write_failure_manifest` OVERWRITES, and
+        `_run`'s `failures` starts empty on every call. That was safe while
+        every run either completed or quota-aborted, because such a run reaches
+        (or explicitly declines to speak for) every symbol. A CANCELLED run is
+        the new shape: it can stop before it ever gets to a symbol that failed
+        last time, and would then write `{}` -- while
+        `_write_failure_manifest`'s own docstring calls an empty manifest "a
+        meaningful statement that the last run was clean". That statement would
+        be false about a store that still holds forty un-retried 404s, in the
+        one file the operator console shows.
+
+        **Merge rather than skip the write**, which is the other option
+        RESEARCH left open. Skipping would preserve the old manifest but throw
+        away failures the cancelled run DID discover; merging keeps both, and
+        it is what makes `set(result.failures) == set(manifest)` true on EVERY
+        exit path rather than only on the uncancelled ones -- because `_run`
+        calls this BEFORE both the write and the result assembly, so the two
+        are built from the same dict at the same point exactly as before.
+
+        `attempted` is the set this run has news about: symbols it completed,
+        plus symbols it failed. Entries for those are NOT restored -- a symbol
+        that succeeded this run must leave the manifest, and one that failed
+        this run already carries this run's message.
+        """
+        for symbol, message in self._coverage.read_failure_manifest().items():
+            if symbol in attempted:
+                continue
+            failures.setdefault(symbol, message)
 
     def _write_failure_manifest(self, failures: dict[str, str]) -> None:
         """Persist `{symbol: message}` for this run, overwriting the previous

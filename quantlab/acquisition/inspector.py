@@ -176,18 +176,13 @@ class SourceInspector:
         `Acquisition._attempt_batch` produced through `_scrub`, which is what
         makes the manifest safe to paste into an issue. This method adds no new
         egress path for raw vendor exception text.
+
+        Delegates to `CoverageLedger.read_failure_manifest` (03.4-05): the
+        cancel-path merge in `Acquisition._run` became the manifest's SECOND
+        reader, and two tolerant readers is two copies of the failure policy,
+        free to drift.
         """
-        path = CoverageLedger.for_config(config).failure_manifest_path
-        if not path.exists():
-            return {}
-        try:
-            with open(path) as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        return {str(symbol): str(reason) for symbol, reason in payload.items()}
+        return CoverageLedger.for_config(config).read_failure_manifest()
 
     # -- inventory ----------------------------------------------------------
 

@@ -598,7 +598,7 @@ def test_cancelling_twice_or_after_the_run_is_a_no_op(
 
 
 def test_run_forwards_the_reporter_and_the_cancel_token(
-    mock_tiingo_client, acquisition_config
+    mock_tiingo_client, acquisition_config, tmp_path
 ) -> None:
     """`registry.run()` is the console's entry point, so both arguments have to
     survive the trip through it (D-14 / D-16 / D-17).
@@ -621,7 +621,9 @@ def test_run_forwards_the_reporter_and_the_cancel_token(
 
     events = []
     token = CancelToken()
-    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    config = acquisition_config(
+        vendor="tiingo", symbols=("AAPL", "MSFT"), root=tmp_path / "first"
+    )
 
     result = run(
         TIINGO_SOURCE,
@@ -640,8 +642,20 @@ def test_run_forwards_the_reporter_and_the_cancel_token(
 
     # And the token: a run started with an already-cancelled token fetches
     # nothing at all, which is only true if `run()` forwarded it.
+    #
+    # A FRESH store (`root=`), deliberately. Against the store the first run
+    # just filled, every symbol is already covered, `pending` is empty and
+    # `_run_once` never executes -- so the run would report `cancelled=False`
+    # and issue zero calls whether or not the token had been forwarded, and
+    # the assertion would prove nothing. (That `False` is itself correct: a run
+    # that left nothing undone was not cut short.)
     token.cancel()
     mock_tiingo_client.calls = []
-    cancelled = run(TIINGO_SOURCE, acquisition_config(vendor="tiingo"), cancel=token)
+    cancelled = run(
+        TIINGO_SOURCE,
+        acquisition_config(vendor="tiingo", root=tmp_path / "second"),
+        cancel=token,
+    )
     assert cancelled.cancelled is True
+    assert cancelled.succeeded == ()
     assert mock_tiingo_client.calls == []

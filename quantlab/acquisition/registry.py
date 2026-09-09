@@ -46,6 +46,7 @@ from typing import Callable
 
 from quantlab.base.acquisition import Acquisition, AcquisitionResult
 from quantlab.base.config import AcquisitionConfig
+from quantlab.base.progress import CancelToken, ProgressReporter
 from quantlab.enums.data import Frequency, Market, UniverseCategory, Vendor
 
 
@@ -303,6 +304,8 @@ def run(
     config: AcquisitionConfig,
     *,
     refresh: bool = False,
+    reporter: ProgressReporter | None = None,
+    cancel: CancelToken | None = None,
 ) -> AcquisitionResult:
     """Start an acquisition IN-PROCESS and return its outcome (D-12 / D-14).
 
@@ -326,8 +329,26 @@ def run(
     Constructing `descriptor.acquisition_cls(config)` is the FIRST point a
     credential is demanded, deliberately: that is the vendor class's own
     fail-fast guard, and moving it later would turn fail-fast into fail-late.
+
+    **`reporter` and `cancel` are the console's two handles on a running
+    acquisition** (03.4 D-16 / D-17). Both are KEYWORD-ONLY with `None`
+    defaults, so every existing call site of `run(descriptor, config)` is
+    unchanged and a caller that wants neither gets today's behaviour exactly:
+    the incumbent stderr bar, and no way to stop the run early.
+
+    They are CALL ARGUMENTS, forwarded through `Acquisition.attach()`, and are
+    never assigned onto `config` -- `AcquisitionConfig.to_dict()` is
+    `asdict(self)` and lands on disk beside model checkpoints, where a
+    `threading.Event` cannot be serialised and a live reporter object is not
+    reproducible configuration. See `attach`'s docstring.
+
+    Cancellation is a TOKEN and not the reporter's return value, so a reporter
+    that only wants to log cannot halt a multi-hour backfill by forgetting to
+    return the right value -- and a reporter that raises cannot end the run
+    either (`Acquisition._emit` catches and logs).
     """
     acquisition = descriptor.acquisition_cls(config)
+    acquisition.attach(reporter=reporter, cancel=cancel)
     if refresh:
         acquisition.refresh()
     else:

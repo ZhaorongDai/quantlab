@@ -256,6 +256,40 @@ class CoverageLedger:
         """
         return self.watermark_root / FAILURE_MANIFEST_NAME
 
+    def read_failure_manifest(self) -> dict[str, str]:
+        """The last run's `_failures.json` as `{symbol: reason}`, or `{}`.
+
+        On the ledger for exactly the reason `failure_manifest_path` is, one
+        step further: the manifest now has TWO readers -- the credential-free
+        `SourceInspector.failures`, and `Acquisition._run`'s cancel-path merge
+        (03.4 D-17/D-18), which folds the previous run's entries for symbols
+        THIS run never attempted back in before the overwrite. Two tolerant
+        readers with two copies of the failure policy is precisely the
+        duplication this phase's research names as the failure mode, so there
+        is one.
+
+        Absent means `{}`, not an error: a source that has never failed and a
+        source that has never run look the same from here, and both answers are
+        "nothing to report". A corrupt file is tolerated the same way
+        `read_sidecar` tolerates a corrupt sidecar -- one failure policy for
+        unreadable JSON, not two that can drift.
+
+        The values are already scrubbed on the way IN: they are the strings
+        `Acquisition._attempt_batch` produced through `_scrub`. This method
+        adds no new egress path for raw vendor exception text.
+        """
+        path = self.failure_manifest_path
+        if not path.exists():
+            return {}
+        try:
+            with open(path) as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {str(symbol): str(reason) for symbol, reason in payload.items()}
+
     def iter_watermark_symbols(self) -> Iterator[str]:
         """Every symbol that has a watermark sidecar under `watermark_root`.
 

@@ -270,6 +270,19 @@ def test_the_abort_check_is_first_in_attempt_batch_abort_is_first():
     the name is load-bearing: a rename that drops the token would leave the
     selector matching zero tests, and `pytest` exits 5 on "no tests ran" --
     which reads as green to anything checking only the exit code.
+
+    **Widened in 03.4-05 and NOT weakened.** The cancel token (D-17) rides this
+    same seam, so the first statement now calls `_should_stop()` -- the OR of
+    the quota abort and the cancel token -- where it used to inline
+    `self._abort.is_set()`. The invariant this test exists to protect is
+    unchanged ("nothing happens before the stop check"), and the mechanism it
+    guards simply moved one call deep, so the assertion FOLLOWS it: the first
+    statement must be `_should_stop()`, and `_should_stop`'s own body must
+    still consult `_abort.is_set()`. Asserting both is strictly stronger than
+    the single inline check it replaces -- a `_should_stop` that silently
+    stopped consulting the quota abort would now fail here, where before the
+    quota abort could simply have been deleted from an inlined condition and
+    only the runtime tests would have noticed.
     """
     import ast
 
@@ -278,11 +291,34 @@ def test_the_abort_check_is_first_in_attempt_batch_abort_is_first():
     first = _first_executable_statement(Acquisition._attempt_batch)
 
     assert isinstance(first, ast.If), (
-        f"the first statement of _attempt_batch must be the abort guard; got "
+        f"the first statement of _attempt_batch must be the stop guard; got "
         f"{type(first).__name__}"
     )
     condition = ast.dump(first.test)
-    assert "_abort" in condition and "is_set" in condition, condition
+    assert "_should_stop" in condition, condition
+
+    # The quota abort must still be part of what `_should_stop` answers. This
+    # is the half the inline form used to assert directly. Parsed from the AST
+    # for the same reason `_first_executable_statement` is: a docstring
+    # MENTIONING `_abort.is_set()` -- and `_should_stop`'s does -- must not be
+    # able to satisfy an assertion about what the code does.
+    import inspect
+    import textwrap
+
+    stop_body = ast.parse(
+        textwrap.dedent(inspect.getsource(Acquisition._should_stop))
+    ).body[0].body
+    stop_code = [
+        node
+        for node in stop_body
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+        )
+    ]
+    stop = ast.dump(ast.Module(body=stop_code, type_ignores=[]))
+    assert "_abort" in stop and "is_set" in stop, stop
+    assert "_is_cancelled" in stop, stop
 
     # ...and it must RETURN, not merely log. A guard that falls through is not
     # a guard.
