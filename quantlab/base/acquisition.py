@@ -16,6 +16,7 @@ from quantlab.base.config import AcquisitionConfig
 from quantlab.base.pageledger import PageLedger
 from quantlab.enums.constant import Date
 from quantlab.enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN, Vendor
+from quantlab.utils.atomic import write_json_atomically
 
 #: The one well-formedness rule a symbol must satisfy before it becomes a
 #: filesystem path segment or a query-string value.
@@ -306,16 +307,31 @@ class Acquisition(ABC):
 
         Callers must have earned the `True`: see `_attempt_batch`, where the
         marker is computed once per COMPLETED batch and never per page.
+
+        The write is ATOMIC (D-20). That matters specifically here because
+        D-17's cancellation lands at a BATCH BOUNDARY, which is exactly when
+        this file is being written, and the interrupted file is the one the
+        RESUMED run reads -- a plain `open(path, "w")` truncates a good
+        watermark before the first byte of the new one is written.
         """
         path = self._watermark_path(symbol)
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, str | bool] = {"last_date": last_date}
         if start_date is not None:
             payload["start_date"] = start_date
         if no_data:
             payload["no_data"] = True
-        with open(path, "w") as f:
-            json.dump(payload, f)
+        #: BLAST RADIUS, bounded (D-20 analysis): `_read_sidecar` already
+        #: tolerates a corrupt sidecar by returning None, which degrades to
+        #: "uncovered" and a wider-than-necessary re-fetch -- never to
+        #: corrupted data. So the atomic write removes noise and a false
+        #: re-fetch, not a data-integrity hole. Do NOT tighten that tolerance
+        #: into a raise on the grounds that writes are now atomic: files
+        #: written before this phase are still on disk, and turning "degrade
+        #: and re-fetch" into "crash the run" would punish operators for the
+        #: defect this change just fixed.
+        #: Compact, no `indent` -- unchanged from before the extraction, so
+        #: every sidecar already on disk is byte-comparable with a new one.
+        write_json_atomically(path, payload)
 
     def stamp_watermarks(self, start_date: str) -> int:
         """Fill the covered start into every sidecar that lacks one, and
@@ -1863,11 +1879,22 @@ class Acquisition(ABC):
         symbols an earlier pass already failed, and letting it erase them would
         make an empty manifest a false statement about a run that had failures
         (WR-03).
+
+        The write is ATOMIC (D-20). It matters here for the same reason it
+        matters for the watermark: a cancel lands at a batch boundary and this
+        file is rewritten on the way out, so a plain write could leave a
+        truncated manifest -- either unparseable, or well-formed but naming
+        FEWER failures than the run actually had, which is the same false
+        "the last run was clean" statement WR-03 exists to prevent.
         """
         path = self._watermark_root / self.FAILURE_MANIFEST_NAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(failures, f, indent=2, sort_keys=True)
+        # Atomic for the same reason as the watermark (D-20): a cancel lands at
+        # a batch boundary and this file is written on the way out, so a plain
+        # write could leave a truncated manifest that reads as either invalid
+        # JSON or -- worse -- a SHORTER, well-formed failure list than the run
+        # actually produced. `indent=2, sort_keys=True` is kept at this call
+        # site: a human reads this file, so its formatting is the feature.
+        write_json_atomically(path, failures, indent=2, sort_keys=True)
 
         if failures:
             sample = sorted(failures)[: self._FAILURE_LOG_SAMPLE]
