@@ -313,12 +313,23 @@ scheduler process and future web backend are OUT of this phase and out of this r
   differently-sized RAM guards, and folding that into one call would pick one of the three for
   everybody. If the console ever needs conversion, it gets a SEPARATE registry-level call, never a
   flag on `run()`. `_failures.json` is still written on every exit path, but it is NOT resume input:
-  nothing under `quantlab/` reads the manifest, and resume is driven entirely by watermark-sidecar
-  presence (CONTEXT D-18 FACTUAL CORRECTION 2026-09-08). It is kept because it is the crash-durable
-  operator record -- the one `SourceInspector` reads, through the single tolerant reader
-  `CoverageLedger.read_failure_manifest` -- and the consistency this phase actually pins is
-  `set(result.failures) == set(json.load(_failures.json))` on every exit path, cancelled runs
-  included.
+  resume is driven entirely by watermark-sidecar presence (CONTEXT D-18 FACTUAL CORRECTION
+  2026-09-08). It has TWO in-repo readers -- `SourceInspector.failures()`, the credential-free
+  operator view, and `Acquisition._merge_unattempted_failures`, the pre-write merge that folds back
+  the entries a run had no news about -- and both reach the file through the single tolerant reader
+  `CoverageLedger.read_failure_manifest`, because two tolerant readers would be two copies of the
+  failure policy free to drift. It is kept because it is the crash-durable operator record: a
+  process that dies returns no `AcquisitionResult`. (FACTUAL CORRECTION 2026-09-09, plan 03.4-09:
+  the earlier no-reader clause here was true when D-18 was corrected on 2026-09-08 and plan 03.4-05
+  falsified it by adding the second reader; the set above is what `read_failure_manifest()`'s call
+  sites under `quantlab/` were enumerated to be when this was written, not a count carried forward.)
+  `set(result.failures) == set(json.load(_failures.json))` does hold on every exit path, cancelled
+  runs included -- but say what that equality IS: `_run` builds both sides from ONE dict at ONE
+  point, so it is a receipt that the result and the manifest were assembled together, not a check
+  that either is correct, and it read True during phase verification directly on top of a manifest
+  that had just been emptied. The consistency this phase actually pins is what plan 03.4-08 fixed
+  and asserted instead: after a quota abort on the DEFAULT path the previous run's entries are
+  still in the manifest, read back from disk.
 - **Retire the hardcoded vendor dispatch.** `ingest_tiingo.py` -> `TiingoAcquisition` and
   `ingest_alpaca.py` -> `AlpacaAcquisition` are hardcoded at each call site today; there is no
   enumerable list an operator surface could render. These scripts become THIN SHELLS over the

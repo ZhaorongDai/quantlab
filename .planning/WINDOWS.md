@@ -2,9 +2,9 @@
 schema_version: 1
 open_count: 12
 waived_count: 0
-fixed_count: 0
-total_count: 12
-last_updated: 2026-09-09T02:02:11.204Z
+fixed_count: 1
+total_count: 13
+last_updated: 2026-09-09T03:54:20.534Z
 ---
 
 # Broken Windows Ledger
@@ -27,6 +27,7 @@ last_updated: 2026-09-09T02:02:11.204Z
 | 10 | 03.4 | unmet-truth | ingest_us_equity.py |  | Empty-roster refusal (if not symbols: parser.error) is carried as a backstop truth in 03.4-06: the branch is untouched and sits before the only run(SOURCE, ...) call, but no test drives it | open |  | 2026-09-09T01:39:55.444Z |  |
 | 11 | 03.4 | unmet-truth | ingest_us_equity.py | 449 | The stamp-legacy-watermarks flag reaches stamp_watermarks() only through SOURCE.acquisition_cls; the WRITE itself is unexercised in-repo and remains the open blocking-human checkpoint from quick task 260906-26o | open |  | 2026-09-09T01:40:00.775Z |  |
 | 12 | 03.4 | deviation | .planning/phases/03.4-data-source-registry/03.4-07-PLAN.md | 397 | Task 3 verify counts every '**Resolved:**' literal in the Open Questions section, including one the lead-in sentence legitimately contains; it read 7 against correct content. The section's own lead-in was reworded and a discriminating list-item form was additionally run. Same class as plan 01's 'no tests ran' and plan 05's src.count('Parallel('). | open |  | 2026-09-09T02:02:11.204Z |  |
+| 13 | 03.4 | deviation | quantlab/base/acquisition.py |  | REVIEW CR-01: _merge_unattempted_failures was wired into the 'if cancelled:' branch only, so both quota-abort exits fell through to _write_failure_manifest with only this run's failures and overwrote the previous run's manifest with {} -- which _write_failure_manifest's own docstring defines as 'the last run was clean'. wait_for_quota defaults to False, so this was the DEFAULT quota-abort behaviour. The D-18 invariant set(result.failures) == set(manifest) could not catch it: both sides are built from one dict, so result and manifest were consistently wrong together. Fixed by plan 03.4-08 (merge relocated outside the resume loop, unconditional, immediately before the write). | fixed |  | 2026-09-09T03:54:15.213Z | 2026-09-09T03:54:20.534Z |
 
 ````json
 [
@@ -173,6 +174,18 @@ last_updated: 2026-09-09T02:02:11.204Z
     "reason": "",
     "recorded_at": "2026-09-09T02:02:11.204Z",
     "resolved_at": null
+  },
+  {
+    "id": 13,
+    "kind": "deviation",
+    "phase": "03.4",
+    "file": "quantlab/base/acquisition.py",
+    "line": null,
+    "description": "REVIEW CR-01: _merge_unattempted_failures was wired into the 'if cancelled:' branch only, so both quota-abort exits fell through to _write_failure_manifest with only this run's failures and overwrote the previous run's manifest with {} -- which _write_failure_manifest's own docstring defines as 'the last run was clean'. wait_for_quota defaults to False, so this was the DEFAULT quota-abort behaviour. The D-18 invariant set(result.failures) == set(manifest) could not catch it: both sides are built from one dict, so result and manifest were consistently wrong together. Fixed by plan 03.4-08 (merge relocated outside the resume loop, unconditional, immediately before the write).",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-09-09T03:54:15.213Z",
+    "resolved_at": "2026-09-09T03:54:20.534Z"
   }
 ]
 ````
