@@ -412,7 +412,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
   it.
 
-**Plans:** 9/9 plans executed — 7/9 executed (03.4-08 and 03.4-09 close the two gaps in `03.4-VERIFICATION.md`)
+**Plans:** 11 plans (9/11 executed; 03.4-10 and 03.4-11 close the 4th recurrence of the D-18 documentation-consistency gap in `03.4-VERIFICATION.md`)
 
 Plans:
 **Wave 1**
@@ -467,6 +467,26 @@ both plans end on a whole-suite pytest gate, so they are sequenced rather than r
   `example/registry.md` all deny that any module under `quantlab/` reads `_failures.json` and then
   name a reader two lines later; restate the reader set from a source enumeration run in the plan,
   and file REVIEW CR-01 on the defect ledger (D-18)
+
+**Wave 10** *(blocked on Wave 9 — the 4th recurrence of the same defect; the acceptance method
+itself is what changes, so it must be built after the 3rd attempt's word list is on the record)*
+
+- [ ] 03.4-10-PLAN.md — GAP (D-18, 4th recurrence): five sites still state the retired "last run"
+  semantics — the docstring SUMMARY LINES of both manifest readers
+  (`CoverageLedger.read_failure_manifest`, `SourceInspector.failures`), the `example/registry.md`
+  API table, and two lighter wordings in `quantlab/base/acquisition.py` / `tests/test_tiingo_quota.py`.
+  Replaces the acceptance method: a SENTENCE-LEVEL semantic-intersection enumerator
+  (`manifest_sentence_audit.py`) produces the candidate set and every candidate is adjudicated into
+  a committed ledger — candidates first, word list last (D-18)
+
+**Wave 11** *(blocked on Wave 10 — the extended literal word list may only be derived from the
+retired-sentence record plan 10 produces)*
+
+- [ ] 03.4-11-PLAN.md — Mutation-prove all three arms of the sentence-level gate (including a
+  same-tree "literal scan green / candidate enumeration red" comparison), extend
+  `manifest_semantics_scan.py` from 11 to 16 patterns derived from `manifest-sentence-retired.tsv`,
+  regenerate `scan-allowlist.txt`, and record the candidates-before-word-list ordering in
+  `.planning/STATE.md` (D-18)
 
 ### Phase 4: Baseline Return Prediction Model
 
