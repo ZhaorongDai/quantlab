@@ -1,9 +1,18 @@
-"""Pull US-equities daily data from Tiingo and persist it as xr.Dataset/Zarr.
+"""Pull US-equities daily data from Tiingo into raw parquet, and optionally
+convert it to xr.Dataset/Zarr.
 
-Full Tiingo-to-Zarr pipeline: fetches raw EOD data through the data-source
-registry (writing raw parquet files under the configured raw_data_dir_path),
-then converts/cleans/persists it through StockDataset into a Zarr store (D-02
-market/frequency convention, see quantlab/config/__init__.py:stock_kline_config()).
+Fetches raw EOD data through the data-source registry, writing raw parquet
+files under the configured raw_data_dir_path, and STOPS THERE unless
+`--to-zarr` is passed. With the flag it goes on to convert/clean/persist the
+raw shards through StockDataset into a Zarr store (D-02 market/frequency
+convention, see quantlab/config/__init__.py:stock_kline_config()).
+
+`--to-zarr` is OFF by default, and that default CHANGED (G-03.4-1b): this
+script used to convert unconditionally, which meant a run that fetched nothing
+walked into the conversion anyway and ended on StockDataset's absent-root
+ValueError traceback. All three ingest shells now agree -- raw is the default
+deliverable, conversion is asked for -- and the default path prints that it
+skipped the conversion rather than saying nothing.
 
 This script names no vendor class anywhere: it resolves its source from
 `DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
@@ -17,17 +26,24 @@ symbol lists and date ranges are ever logged/printed.
 
 Usage:
     export TIINGO_API_KEY=your-key-here
+
+    # Raw parquet only -- the default.
     uv run python ingest_tiingo.py --symbols AAPL,MSFT
     uv run python ingest_tiingo.py --symbols AAPL --start-date 2024-01-01 --end-date 2024-12-31
     uv run python ingest_tiingo.py --symbols AAPL,MSFT --refresh
 
+    # Raw parquet AND the Zarr store.
+    uv run python ingest_tiingo.py --symbols AAPL,MSFT --to-zarr
+
 Or resolve a symbol list from the point-in-time US-equity universe table
 (02-08-PLAN.md; build/refresh it first via `refresh_us_equity_universe.py`)
-instead of passing --symbols explicitly:
+instead of passing --symbols explicitly. `--limit N` takes the first N of that
+roster in ASCENDING symbol order, so the same pair of flags resolves the same
+N symbols on every run and a second run resumes where the first stopped:
     uv run python ingest_tiingo.py --universe sp500 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq100 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq_all --as-of-date 2020-01-01
-    uv run python ingest_tiingo.py --universe us_all --as-of-date 2020-01-01
+    uv run python ingest_tiingo.py --universe us_all --as-of-date 2020-01-01 --to-zarr
 """
 
 import argparse
@@ -39,11 +55,13 @@ from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.cli import (
     add_data_dir_arg,
+    add_to_zarr_arg,
     add_universe_args,
     add_volume_guard_args,
     add_window_args,
     apply_data_dir,
     print_volume_estimate,
+    refuse_conversion_without_raw_data,
     resolve_symbols,
     validate_roster_args,
     volume_pricing,
@@ -101,8 +119,9 @@ def _build_configs(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Pull US-equities daily data from Tiingo and persist it as "
-            "xr.Dataset/Zarr. Requires TIINGO_API_KEY."
+            "Pull US-equities daily data from Tiingo into raw parquet, and "
+            "with --to-zarr also persist it as xr.Dataset/Zarr. Requires "
+            "TIINGO_API_KEY."
         )
     )
     add_universe_args(parser)
@@ -117,6 +136,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "watermark instead of a full download() backfill."
         ),
     )
+    # This script used to convert UNCONDITIONALLY, which is why the flag is a
+    # deliberate default change and not a new capability: all three ingest
+    # shells now stop at raw unless asked (G-03.4-1b). `mode="whole-window"`
+    # because there is no chunking here -- `from_raw_data()` densifies the
+    # entire range at once, which is what the dense-panel guard sizes.
+    add_to_zarr_arg(parser, mode="whole-window")
     return parser
 
 
@@ -165,15 +190,28 @@ if __name__ == "__main__":
         forced=args.force_volume,
     )
 
-    # The RAM sibling of the guard above, and the reason it is a SIBLING: that
-    # one bounds raw disk bytes, request count and wall clock; this one bounds
-    # the dense `[timestamp, symbol]` grid that the unconditional
-    # `from_raw_data()` at the bottom of this script materialises through
-    # `.to_pandas().set_index([...]).to_xarray()`. `ingest_us_equity.py`
-    # already carries the chunked form of this for its `--to-zarr` path; this
-    # door densifies the WHOLE window with no chunking at all, so the
-    # whole-window form is the one that applies here (CR-03).
-    pricing.assert_dense_panel_fits(category, guard_start, guard_end)
+    if args.to_zarr:
+        # The RAM sibling of the guard above, and the reason it is a SIBLING:
+        # that one bounds raw disk bytes, request count and wall clock; this
+        # one bounds the dense `[timestamp, symbol]` grid that the
+        # `from_raw_data()` at the bottom of this script materialises through
+        # `.to_pandas().set_index([...]).to_xarray()`. `ingest_us_equity.py`
+        # already carries the chunked form of this for its `--to-zarr` path;
+        # this door densifies the WHOLE window with no chunking at all, so the
+        # whole-window form is the one that applies here (CR-03).
+        #
+        # Conditioned on `--to-zarr` because it measures the RAM of a
+        # densification that no longer always happens: refusing a raw-only
+        # fetch on the size of a panel this run will never build would be a
+        # fresh defect introduced by the fix, not a guard doing its job. Same
+        # shape as `ingest_us_equity.py`, which already wraps
+        # `assert_chunked_panel_fits` in `if args.to_zarr:`.
+        #
+        # The POSITION is unchanged -- still before `run(...)`, so the refusal
+        # arrives before the fetch rather than after it, and the two AST
+        # ordering assertions in `tests/test_volume_guard.py` still read a
+        # guard line number below every densify line number.
+        pricing.assert_dense_panel_fits(category, guard_start, guard_end)
 
     print(
         f"Acquiring symbols={acq_config.symbols} via "
@@ -185,8 +223,26 @@ if __name__ == "__main__":
         f"{len(result.failures)} failed"
     )
 
+    print(f"Raw data written under: {acq_config.raw_data_dir_path}")
+
     # STAYS in the shell: `run()` is acquisition-only (D-14 amendment), and
-    # this door densifies the WHOLE window unconditionally -- which is exactly
-    # the mode `assert_dense_panel_fits` above was sized for.
-    print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
-    StockDataset(ds_config).from_raw_data().save()
+    # this door densifies the WHOLE window -- exactly the mode
+    # `assert_dense_panel_fits` above was sized for.
+    if args.to_zarr:
+        dataset = StockDataset(ds_config)
+        # Before the densification, never after: without this, a run whose
+        # every symbol failed reached `from_raw_data()` and ended on
+        # `quantlab/dataset/stock.py`'s absent-root ValueError traceback --
+        # which reads like a conversion bug rather than "the vendor returned
+        # nothing" (G-03.4-1a).
+        refuse_conversion_without_raw_data(dataset, result)
+        print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
+        dataset.from_raw_data().save()
+        print(f"Zarr store written at: {ds_config.zarr_file_path}")
+    else:
+        # Said out loud rather than left as an absence: a conversion that
+        # silently did not happen is the same silence this flag exists to end.
+        print(
+            "Skipping Zarr conversion (default). The raw shards above are the "
+            "deliverable; pass --to-zarr to convert them."
+        )

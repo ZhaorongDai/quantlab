@@ -109,10 +109,12 @@ from quantlab.utils.cli import (
     add_chunk_args,
     add_concurrency_args,
     add_data_dir_arg,
+    add_to_zarr_arg,
     add_volume_guard_args,
     add_window_args,
     apply_data_dir,
     print_volume_estimate,
+    refuse_conversion_without_raw_data,
     resolve_symbols,
     volume_pricing,
 )
@@ -358,18 +360,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "is roughly three windows."
         ),
     )
-    parser.add_argument(
-        "--to-zarr",
-        action="store_true",
-        help=(
-            "After acquisition, convert the raw parquet into the Zarr store. "
-            "The full window is no longer refused: the conversion densifies "
-            "and appends ONE --chunk window at a time, so peak RAM scales "
-            "with the window rather than the range, and an interrupted run "
-            "resumes at the first unwritten window. OFF by default because "
-            "it is slow, not because it is impossible."
-        ),
-    )
+    # Registered through the shared helper rather than declared here: the
+    # other two shells now carry the same flag, and three declarations of one
+    # flag is how their defaults drifted apart in the first place (G-03.4-1b).
+    # `mode="chunked"` is what keeps THIS script's distinct promise -- one
+    # --chunk window at a time, resumable -- in the help text.
+    add_to_zarr_arg(parser, mode="chunked")
     add_chunk_args(parser)
     add_volume_guard_args(parser)
     add_data_dir_arg(parser)
@@ -540,11 +536,21 @@ if __name__ == "__main__":
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.to_zarr:
+        # This door densifies too, so it carries the same refusal as the other
+        # two: `from_raw_data_chunked()` reaches the identical absent-root
+        # ValueError when a run fetched nothing onto an empty raw tree.
+        # Scoped by REACHABILITY rather than by script name -- pinning a guard
+        # to the script whose bug report arrived is the mistake
+        # `tests/test_volume_guard.py::
+        # test_every_entry_point_that_densifies_guards_the_dense_panels_ram`
+        # records in its own docstring.
+        dataset = StockDataset(ds_config)
+        refuse_conversion_without_raw_data(dataset, result)
         print(
             f"Converting/persisting {len(symbols)} symbols to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        StockDataset(ds_config).from_raw_data_chunked(
+        dataset.from_raw_data_chunked(
             granularity=args.chunk, on_new_listing=args.on_new_listing
         )
         print(f"Zarr store written at: {ds_config.zarr_file_path}")

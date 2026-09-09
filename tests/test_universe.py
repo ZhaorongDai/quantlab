@@ -2100,3 +2100,122 @@ def test_the_well_formedness_filter_matches_the_whole_string_not_a_substring(
     )["ticker"].to_list()
 
     assert kept == ["ETP", "DTV"]
+
+
+# ---------------------------------------------------------------------------
+# G-03.4-2: the roster's ORDER is content-determined, so --limit is reproducible
+# ---------------------------------------------------------------------------
+
+
+def _roster_return_expression(method_name: str):
+    """The `ast` node of `method_name`'s single `return` expression.
+
+    Parsed from the SOURCE FILE rather than `inspect.getsource`, so the
+    assertion below reads the same text a reviewer does, and so a method whose
+    return moved into a helper fails loudly here instead of matching nothing.
+    """
+    import ast
+
+    from quantlab.acquisition import universe as universe_module
+
+    tree = ast.parse(
+        Path(universe_module.__file__).read_text(encoding="utf-8")
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == method_name:
+            returns = [
+                child for child in ast.walk(node) if isinstance(child, ast.Return)
+            ]
+            assert len(returns) == 1, (
+                f"{method_name} has {len(returns)} return statements; this "
+                f"assertion assumes the single query expression."
+            )
+            return returns[0].value
+    raise AssertionError(f"{method_name} not found in {universe_module.__file__}")
+
+
+def _sort_wraps_unique(expression) -> bool:
+    """True when a `.sort(...)` call ENCLOSES a `.unique()` call.
+
+    Enclosure, not co-occurrence: `.sort()` before `.unique()` would be
+    re-shuffled by the dedup, so the two orders are not interchangeable and a
+    test that merely counted both names present would pass on the broken one.
+    """
+    import ast
+
+    for node in ast.walk(expression):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "sort"
+        ):
+            for inner in ast.walk(node.func.value):
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "unique"
+                ):
+                    return True
+    return False
+
+
+def test_both_roster_queries_return_the_same_order_every_call(
+    mock_universe_fetchers, tmp_path
+):
+    """G-03.4-2. `--limit N` must truncate to the SAME N symbols every run.
+
+    `quantlab/utils/cli.py:resolve_symbols` slices `symbols[:limit]`, so an
+    order that varies between calls hands a DIFFERENT batch to each run: the
+    second run never reaches the watermarks the first one wrote, and
+    resume/skip can never fire. That is CLAUDE.md's reproducibility
+    constraint failing at the roster layer, which is why the order is a
+    contract in both docstrings rather than an accident of `.unique()`.
+
+    THREE assertions, doing three different jobs:
+
+    1. call-twice equality -- the property the UAT gap names. On a fixture
+       this small polars may well be stable anyway, so this one can be
+       vacuously green; it is here because it is the property, not because it
+       is the sharp instrument.
+    2. equality with `sorted(...)` -- the ORDER contract itself, which the
+       small fixture cannot fake: a stable-but-arbitrary order fails it.
+    3. the AST arm -- `.sort(...)` must ENCLOSE `.unique()` in both return
+       expressions. This is the one that still goes red if a future fixture
+       happens to be stable and both value assertions go vacuous.
+
+    A null symbol would make `sorted()` raise `TypeError` here rather than
+    quietly disagreeing with polars' nulls-first placement. That loud failure
+    is the intended behaviour: the universe table's symbol column is
+    non-nullable by construction, so a null in it is a corruption worth
+    stopping on, not an ordering nuance worth accommodating.
+    """
+    catalog = UniverseCatalog(_make_config(tmp_path)).build()
+
+    in_range_first = catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
+    in_range_second = catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
+    as_of_first = catalog.get_symbols_as_of("us_all", "2020-01-01")
+    as_of_second = catalog.get_symbols_as_of("us_all", "2020-01-01")
+
+    # 1. The property the gap names: two calls, element-wise equal.
+    assert in_range_first == in_range_second
+    assert as_of_first == as_of_second
+
+    # 2. The contract: that order is ASCENDING, and de-duplication survives it.
+    assert in_range_first == sorted(in_range_first)
+    assert as_of_first == sorted(as_of_first)
+    assert len(in_range_first) == len(set(in_range_first))
+    assert len(as_of_first) == len(set(as_of_first))
+    assert in_range_first and as_of_first, (
+        "an empty roster would make both order assertions vacuous"
+    )
+
+    # 3. The structural arm, which stays sharp when the fixture is stable.
+    for method_name in ("get_symbols_in_range", "get_symbols_as_of"):
+        assert _sort_wraps_unique(_roster_return_expression(method_name)), (
+            f"{method_name} must wrap its `.unique()` in a `.sort(...)`: "
+            f"without it the returned order is whatever polars emitted for "
+            f"this parquet layout, and `--limit` truncates to an arbitrary "
+            f"batch. `unique(maintain_order=True)` is not a substitute -- it "
+            f"pins the order to the table's ROW order, which "
+            f"refresh_us_equity_universe.py rewrites."
+        )

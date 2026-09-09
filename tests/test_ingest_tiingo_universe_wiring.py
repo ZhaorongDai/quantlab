@@ -324,6 +324,13 @@ def _alpaca_args(**overrides) -> argparse.Namespace:
         force_volume=False,
         rows_per_symbol_day=None,
         limit=None,
+        # Mirrors the real parser's default. This Namespace is hand-built, so
+        # a flag added to `_build_arg_parser` has to be added here too or the
+        # validators under test read an attribute the real run always has --
+        # which is why `_validate_data_type` reads `args.to_zarr` directly
+        # rather than through a `getattr(..., False)` that would let the tick
+        # refusal go quietly missing on a Namespace that forgot the flag.
+        to_zarr=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)

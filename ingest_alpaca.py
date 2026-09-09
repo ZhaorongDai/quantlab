@@ -62,13 +62,19 @@ be told the batch size it is pricing.
 Two pre-flight guards, and neither replaces the other
 ---------------------------------------------------
 `assert_acquisition_volume_fits` bounds raw disk bytes, request count and wall
-clock. `assert_dense_panel_fits` bounds the RAM of the dense
-`[timestamp, symbol]` panel the `1d`/`1m` conversion at the bottom of this
-script builds. Both run BEFORE the client is constructed and before a single
-request. A `1m` window that comfortably passes the first can be three orders of
-magnitude over the second, so the second is sized with
-`bars_per_day=390` rather than at its daily default (CR-03). Tick skips it: the
-conversion it guards does not run for tick (D-18).
+clock, and runs on EVERY run. `assert_dense_panel_fits` bounds the RAM of the
+dense `[timestamp, symbol]` panel the `1d`/`1m` conversion at the bottom of
+this script builds, and runs only when that conversion will actually happen --
+i.e. `--to-zarr` and not `--frequency tick`. Both run BEFORE the client is
+constructed and before a single request. A `1m` window that comfortably passes
+the first can be three orders of magnitude over the second, so the second is
+sized with `bars_per_day=390` rather than at its daily default (CR-03).
+
+The dense guard is CONDITIONAL for one reason: it measures the RAM of a
+densification. Refusing a raw-only fetch because a panel this run will never
+build would not fit is a defect, not a guard. Tick skips it because its
+conversion does not exist at all (D-18); a run without `--to-zarr` skips it
+because its conversion was not asked for.
 
 No migration (D-13)
 -------------------
@@ -84,8 +90,16 @@ windows.
 Usage:
     export APCA_API_KEY_ID=your-key-id APCA_API_SECRET_KEY=your-secret
 
+    Every command below lands RAW parquet and stops there. Add --to-zarr to
+    any of the bar commands to convert afterwards; it is not a default and it
+    is refused outright under --frequency tick.
+
     # Daily bars for an explicit symbol list.
     uv run python ingest_alpaca.py --symbols AAPL,MSFT \
+        --start-date 2024-01-01 --end-date 2024-12-31
+
+    # The same fetch, converted to the Zarr store afterwards.
+    uv run python ingest_alpaca.py --symbols AAPL,MSFT --to-zarr \
         --start-date 2024-01-01 --end-date 2024-12-31
 
     # Daily bars for a point-in-time roster.
@@ -99,7 +113,8 @@ Usage:
     # Quotes at full resolution. --data-type is REQUIRED here and rejected
     # everywhere else; --rows-per-symbol-day is what the volume guard prices
     # tick with, and it has no default because tick volume is not derivable
-    # from a calendar.
+    # from a calendar. Adding --to-zarr here exits 2: there is no tick
+    # conversion to opt into (D-18), and refusing beats ignoring.
     uv run python ingest_alpaca.py --symbols AAPL --frequency tick \
         --data-type quotes --rows-per-symbol-day 1000000 \
         --start-date 2024-01-02 --end-date 2024-01-02
@@ -119,11 +134,13 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import Frequency
 from quantlab.utils.cli import (
     add_data_dir_arg,
+    add_to_zarr_arg,
     add_universe_args,
     add_volume_guard_args,
     add_window_args,
     apply_data_dir,
     print_volume_estimate,
+    refuse_conversion_without_raw_data,
     resolve_symbols,
     validate_roster_args,
     volume_pricing,
@@ -146,7 +163,8 @@ SOURCE = DataSourceRegistry.get("alpaca")
 #: `--universe` choices are derived from `UNIVERSE_CATEGORY_MAP`.
 FREQUENCIES: tuple[str, ...] = typing.get_args(Frequency)
 
-#: The Zarr store this script's `1d`/`1m` conversions write to.
+#: The Zarr store this script's `1d`/`1m` conversions write to when `--to-zarr`
+#: asks for one.
 #:
 #: DELIBERATELY not `stock_kline_config`'s `"stock.zarr"` default. D-11 puts the
 #: vendor segment on `raw_data_dir_path` and `watermark_path`, which is what
@@ -270,6 +288,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "watermark instead of a full download() backfill."
         ),
     )
+    # This script used to convert UNCONDITIONALLY for 1d/1m, so the flag is a
+    # deliberate default change rather than a new capability: all three ingest
+    # shells now stop at raw unless asked (G-03.4-1b). `mode="whole-window"`
+    # because there is no chunking here -- `from_raw_data()` densifies the
+    # entire range at once, which is what the dense-panel guard sizes.
+    add_to_zarr_arg(parser, mode="whole-window")
     return parser
 
 
@@ -291,6 +315,20 @@ def _validate_data_type(parser: argparse.ArgumentParser, args) -> None:
         parser.error(
             f"--data-type is only valid with --frequency tick, got "
             f"--frequency {args.frequency}."
+        )
+    if args.frequency == "tick" and args.to_zarr:
+        # Refused rather than ignored, for the same reason `--data-type` is:
+        # a flag silently dropped lets a user believe a conversion happened.
+        # There is no tick conversion to opt into -- the dense
+        # [timestamp, symbol] panel cannot express an irregular event axis, so
+        # the raw-to-xarray step for quotes/trades is a second data model,
+        # deferred to phase 03.3 (D-18).
+        parser.error(
+            "--to-zarr is not available with --frequency tick: the "
+            "quotes/trades raw-to-xarray conversion needs an irregular event "
+            "axis the dense [timestamp, symbol] panel cannot express, and "
+            "arrives in phase 03.3 (D-18). Drop --to-zarr; a tick run's raw "
+            "shards are the deliverable."
         )
 
 
@@ -335,7 +373,17 @@ if __name__ == "__main__":
         forced=args.force_volume,
     )
 
-    if args.frequency != "tick":
+    if args.frequency != "tick" and args.to_zarr:
+        # `args.to_zarr` is half of this condition because the guard measures
+        # the RAM of a densification that no longer always happens: refusing a
+        # raw-only fetch on the size of a panel this run will never build
+        # would be a fresh defect introduced by the fix, not a guard doing its
+        # job. Same shape as `ingest_us_equity.py`, which already wraps
+        # `assert_chunked_panel_fits` in `if args.to_zarr:`. The POSITION is
+        # unchanged -- still before `run(...)`, so the two AST ordering
+        # assertions in `tests/test_volume_guard.py` still read a guard line
+        # number below every densify line number.
+        #
         # A SIBLING of the volume guard above, not a replacement -- its own
         # docstring says so twice. That one bounds raw DISK bytes, request
         # count and wall clock; this one bounds the RAM of the dense
@@ -400,7 +448,22 @@ if __name__ == "__main__":
             "[timestamp, symbol] panel cannot express, and arrives in phase "
             "03.3 (D-18). The raw shards above are the deliverable."
         )
-    else:
+    elif args.to_zarr:
+        dataset = StockDataset(ds_config)
+        # Before the densification, never after: without this, a run whose
+        # every symbol failed reached `from_raw_data()` and ended on
+        # `quantlab/dataset/stock.py`'s absent-root ValueError traceback --
+        # which reads like a conversion bug rather than "the vendor returned
+        # nothing" (G-03.4-1a).
+        refuse_conversion_without_raw_data(dataset, result)
         print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
-        StockDataset(ds_config).from_raw_data().save()
+        dataset.from_raw_data().save()
         print(f"Zarr store written at: {ds_config.zarr_file_path}")
+    else:
+        # Said out loud rather than left as an absence, exactly like the tick
+        # branch above: a conversion that silently did not happen is the same
+        # silence this flag exists to end.
+        print(
+            "Skipping Zarr conversion (default). The raw shards above are the "
+            "deliverable; pass --to-zarr to convert them."
+        )

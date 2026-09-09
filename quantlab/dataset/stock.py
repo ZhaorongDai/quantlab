@@ -282,6 +282,29 @@ class StockDataset(MarketDataset):
             )
         return data.drop("vendor")
 
+    def has_raw_data(self) -> bool:
+        """Whether this config's raw tree holds at least one shard to convert.
+
+        THE raw-presence predicate, and deliberately the only one. `_scan_raw`
+        below reads it to tell "root absent" apart from "window pruned to
+        nothing"; `quantlab.utils.cli.refuse_conversion_without_raw_data`
+        reads the SAME method to refuse a conversion before it starts. Two
+        copies of `exists() / rglob("*.pqt")` -- one here and one in the CLI --
+        is the shape both of the 03.4 UAT gaps grew out of: a contract split
+        into two statements that can then disagree about the same fact.
+
+        Public because a shell calls it, and it is the shell's ONLY sanctioned
+        way to ask: reaching for `Path(config.raw_data_dir_path)` at a call
+        site would miss `_scan_root`'s tick descent into
+        `data_type={quotes|trades}`, and would answer about a directory the
+        scan never opens.
+
+        Read-only: it stats a directory and stops at the first match. It
+        writes nothing, deletes nothing, and opens no parquet file.
+        """
+        root = self._scan_root()
+        return root.exists() and any(root.rglob("*.pqt"))
+
     def _scan_raw(self, start_date=None, end_date=None) -> pl.LazyFrame:
         """The shared LazyFrame pipeline: hive-scan, prune, date-filter,
         assert provenance, sort, dedup -- returned UNCOLLECTED.
@@ -300,7 +323,14 @@ class StockDataset(MarketDataset):
         # that names none of the things a user needs in order to fix it
         # (03.2-RESEARCH.md Pitfall 7). A pruned-to-nothing window is NOT an
         # error and returns an empty frame below.
-        if not root.exists() or not any(root.rglob("*.pqt")):
+        #
+        # The test is `has_raw_data()` rather than an inline
+        # `exists() / rglob()` so that the shell-level refusal
+        # (`quantlab.utils.cli.refuse_conversion_without_raw_data`) decides on
+        # the SAME fact this raise decides on. When they were two statements,
+        # a run that fetched nothing sailed past the shell and landed here as
+        # an uncaught traceback (G-03.4-1).
+        if not self.has_raw_data():
             raise ValueError(
                 f"{self.__class__.__name__}: no raw data for vendor "
                 f"{self.config.vendor!r} at frequency "
