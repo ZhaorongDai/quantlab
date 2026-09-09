@@ -385,7 +385,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
   it.
 
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans executed
 
 Plans:
 **Wave 1**
@@ -422,7 +422,7 @@ both plans end on a whole-suite pytest gate, so they are sequenced rather than r
 
 **Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] 03.4-07-PLAN.md — Documentation debt: rewrite the three superseded ROADMAP statements, mark
+- [x] 03.4-07-PLAN.md — Documentation debt: rewrite the three superseded ROADMAP statements, mark
   `03.4-RESEARCH.md`'s open questions resolved, add `example/registry.md`, update the stale sections
   of `example/acquisition.md` (D-12, D-13, D-15, D-19, D-20)
 
@@ -497,7 +497,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 6/7 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 7/7 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

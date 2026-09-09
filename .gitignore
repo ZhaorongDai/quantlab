@@ -234,3 +234,5 @@ model_ckpt
 .gsd/
 # GSD machine-readable mirror of .planning/STATE.md (regenerated on demand)
 .planning/state.json
+# GSD orchestration lock (session/pid scoped, never shared state)
+.planning/milestone.lock

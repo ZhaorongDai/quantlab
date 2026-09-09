@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation)
-status: executing
-stopped_at: Completed 03.4-06-PLAN.md
-last_updated: "2026-09-09T01:40:23.659Z"
+status: verifying
+stopped_at: Completed 03.4-07-PLAN.md
+last_updated: "2026-09-09T02:06:08.744Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: 5259c1d9878c70985e8f9731d0b99f6f01d0ac44
+state_head: 258b6a64ceea1ceb08480693b68d6ac45e1176b9
 progress:
   total_phases: 11
   completed_phases: 1
   total_plans: 37
-  completed_plans: 36
+  completed_plans: 37
 milestone_name: milestone
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — EXECUTING
 Plan: 7 of 7
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
 Progress: [██████████] 100%
@@ -97,6 +97,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P04 | 23 min | 3 tasks | 4 files |
 | Phase 03.4 P05 | 62 min | 3 tasks | 7 files |
 | Phase 03.4 P06 | 16 min | 3 tasks | 6 files |
+| Phase 03.4 P07 | 22 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -204,6 +205,9 @@ Recent decisions affecting current work:
 - [Phase 03.4]: SC-1 means no vendor CLASS, not no vendor STRING: the shells keep DataSourceRegistry.get(<token>) because a script's identity IS its vendor and the alternative is the merged CLI D-15 forbids
 - [Phase 03.4]: L-5 argparse routing is proved DYNAMICALLY (a stub descriptor's constants must come back out of the built parser), never by scanning the source for SOURCE.acquisition_cls
 - [Phase 03.4]: ingest_tiingo.py routed through SOURCE.config_factory: calling stock_acquisition_config directly worked only because 'tiingo' is that factory's incumbent default, so the vendor was never actually routed
+- [Phase 03.4]: 03.4-07: the ROADMAP refers to the retired write contract ONLY through the labelled phrase "the subprocess-CLI rule it supersedes"; both mechanisms are otherwise described as running "in a child process" — The gate exists to stop a superseded INSTRUCTION standing unlabelled, and a verify that forbids the bare word cannot tell an instruction from an accurate description of what the old rule was. One sentinel phrase plus child-process wording lets the prose stay accurate without weakening the gate.
+- [Phase 03.4]: 03.4-07: example/registry.md pastes eight worked examples of which seven were really executed with all three credential env vars unset; the eighth (the console-side run() with a live cancel) is labelled as not run — example/README.md states that convention for the whole directory. Fabricating one output makes every other output in the directory unreliable, and this phase's headline claim is that the credential-free path works -- so the examples proving it had to actually be run that way.
+- [Phase 03.4]: 03.4-07: two documentation defects outside the plan's files_modified were fixed rather than logged -- quantlab/acquisition/inspector.py's module docstring and example/chunking.md's pasted dry-run output both still asserted the deleted "coverage report: skipped (export TIINGO_API_KEY...)" line as current behaviour — This plan's whole purpose is that no superseded statement is left standing; leaving two behind because they sat outside a file list would have defeated it. Both are the same one-line class plan 06 already fixed for tests/test_source_inspector.py.
 
 ### Pending Todos
 
@@ -254,8 +258,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T01:40:07.878Z
-Stopped at: Completed 03.4-06-PLAN.md
+Last session: 2026-09-09T02:02:18.117Z
+Stopped at: Completed 03.4-07-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
