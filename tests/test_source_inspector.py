@@ -471,8 +471,12 @@ def test_the_inspector_answers_without_credentials(
 
     This is the absurdity D-08 exists to remove. `TiingoAcquisition(config)`
     raises `RuntimeError` at construction without `TIINGO_API_KEY`, so
-    `ingest_us_equity.py` prints "coverage report: skipped" on an unconfigured
-    machine -- for a computation that is nothing but `open()` and `json.load()`.
+    `ingest_us_equity.py` USED TO print "coverage report: skipped" on an
+    unconfigured machine -- for a computation that is nothing but `open()` and
+    `json.load()`. 03.4-06 deleted that skip branch and routed the shell's
+    dry-run report through this class, so the sentence above is now history
+    rather than current behaviour; `tests/test_ingest_shells.py::
+    test_the_dry_run_needs_no_credential` is what keeps it history.
 
     `no_credentials` deletes all three names; the assertion that they really
     are gone is made HERE rather than trusted, because a fixture that silently

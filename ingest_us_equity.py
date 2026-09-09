@@ -3,15 +3,24 @@
 Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
 `quantlab.acquisition.universe.UniverseCatalog` resolves the roster,
-`quantlab.acquisition.tiingo.TiingoAcquisition` fetches it, and
-`quantlab.dataset.stock.StockDataset` converts it. Nothing here should grow a
-behaviour that a component could own instead.
+`quantlab.acquisition.registry.run()` fetches it through the registered source
+descriptor, `quantlab.acquisition.inspector.SourceInspector` answers the
+credential-free coverage question, and `quantlab.dataset.stock.StockDataset`
+converts it. Nothing here should grow a behaviour that a component could own
+instead.
 
-`TIINGO_API_KEY` is read from the environment by `TiingoAcquisition.__init__`
-and is NEVER printed, logged, or written to any artifact by this script or by
-anything it calls -- not the failure manifest, not an exception message, not
-the `TiingoClient` config dict. Only symbol lists, date ranges and paths are
-ever printed.
+This script names no vendor class anywhere: it resolves its source from
+`DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
+builds its acquisition config through `SOURCE.config_factory` and downloads
+through `registry.run()` (03.4 D-15 / SC-1 / SC-6).
+
+`TIINGO_API_KEY` is read from the environment by the vendor client this script
+never names, and is NEVER printed, logged, or written to any artifact by this
+script or by anything it calls -- not the failure manifest, not an exception
+message, not the `TiingoClient` config dict. This module reads no credential
+environment variable AT ALL: the only paths that need one construct the client,
+which is the single place the check belongs. Only symbol lists, date ranges and
+paths are ever printed.
 
 Storage is rooted at whatever `quantlab/config/__init__.py:get_data_root` resolves,
 through three levels: the `--data-dir` flag for a per-run root, else the
@@ -43,8 +52,10 @@ refusing the window outright.
 Build/refresh the universe table first (`refresh_us_equity_universe.py`), then:
 
 Usage:
-    # 1. How big is this? Resolves the roster and sizes the panel, issuing
-    #    ZERO price requests -- no API key needed.
+    # 1. How big is this? Resolves the roster, sizes the panel and CLASSIFIES
+    #    the existing watermarks against the requested window, issuing ZERO
+    #    price requests. Needs no API key -- including for the coverage
+    #    report, which is nothing but local file reads (03.4 SC-3).
     uv run python ingest_us_equity.py --dry-run
 
     # 2. The real backfill (~15.4k symbols, several hours).
@@ -88,11 +99,11 @@ Usage:
 
 import argparse
 import datetime
-import os
 
-from quantlab.acquisition.tiingo import TiingoAcquisition
+from quantlab.acquisition.inspector import SourceInspector
+from quantlab.acquisition.registry import DataSourceRegistry, run
 from quantlab.acquisition.universe import UniverseCatalog
-from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
+from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.cli import (
     add_chunk_args,
@@ -105,6 +116,18 @@ from quantlab.utils.cli import (
     resolve_symbols,
     volume_pricing,
 )
+
+#: The ONE place this script's vendor is named, and it is a TOKEN, not a class.
+#:
+#: SC-1's "no vendor named at the call site" means no vendor CLASS: a script
+#: that backfills the US market from one vendor has that vendor as part of its
+#: identity, and the alternative -- a `--source` flag -- is the merged CLI D-15
+#: explicitly forbids. Every vendor-specific fact below is read off this
+#: descriptor: `SOURCE.config_factory` builds the acquisition config with the
+#: vendor pinned, `SOURCE.acquisition_cls` supplies the six argparse defaults
+#: that used to name the class (L-5) plus the watermark-stamping WRITE, and
+#: `run(SOURCE, ...)` performs the fetch.
+SOURCE = DataSourceRegistry.get("tiingo")
 
 #: D-05. The backfill window's default start. Applied as an interval-OVERLAP
 #: bound, not as a listing-date cut -- see `get_symbols_in_range`.
@@ -183,19 +206,27 @@ def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
     window, so a dry run answers "would widening --start-date actually
     re-fetch anything?" before a multi-hour job commits to it.
 
-    Skipped without an API key rather than failing: `--dry-run` is documented
-    as needing no credential, and `TiingoAcquisition.__init__` demands one at
-    CONSTRUCTION -- before it could know that this path fetches nothing. All
-    the counting itself is local file reads.
-    """
-    if not os.environ.get("TIINGO_API_KEY"):
-        print(
-            "  coverage report:   skipped (export TIINGO_API_KEY to see it; "
-            "it still issues zero price requests)"
-        )
-        return
+    **Unconditional, and needing no credential.** This computation is nothing
+    but local file reads -- `open()` and `json.load()` over the watermark
+    sidecars -- and `SourceInspector` performs them without constructing a
+    client, without importing a vendor module and therefore without issuing a
+    single vendor request. There is consequently no credential check to make
+    here at all: the version that skipped itself when `TIINGO_API_KEY` was
+    unset answered only for people who already had a key, which is the wrong
+    audience for the one command an operator runs BEFORE committing to a
+    multi-hour job (03.4 SC-3 / D-08).
 
-    report = TiingoAcquisition(acq_config).coverage_report(list(symbols))
+    The judgement is NOT re-derived here. `SourceInspector.coverage` reaches
+    the same `CoverageLedger.partition_by_coverage` object the real run
+    reaches, so this report and the fetch that follows it cannot disagree about
+    what "covered" means (D-09).
+
+    The `coverage report:` header is load-bearing rather than cosmetic: it is
+    what the SC-3 dry-run gates assert on, and before this rewrite the only
+    place those two words appeared in this file was inside the skip line above.
+    """
+    report = SourceInspector().coverage(acq_config, symbols=list(symbols))
+    print("  coverage report:")
     print(f"  already covered:   {report['covered']} (would be skipped)")
     print(
         f"  re-fetch, widened: {report['widened']} "
@@ -240,8 +271,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "request. Answers 'how big will this be' before a multi-hour job."
         ),
     )
+    # Read off the DESCRIPTOR, not off a named vendor class (L-5). This is one
+    # of the six argparse defaults that used to type a vendor name at
+    # parser-definition time and would have survived a registry landing
+    # untouched. `add_concurrency_args` takes the value as a PARAMETER on
+    # purpose, so `quantlab/utils/cli.py` stays vendor-agnostic.
     add_concurrency_args(
-        parser, default_max_workers=TiingoAcquisition.DEFAULT_MAX_WORKERS
+        parser, default_max_workers=SOURCE.acquisition_cls.DEFAULT_MAX_WORKERS
     )
     parser.add_argument(
         "--refresh",
@@ -272,12 +308,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--legacy-watermarks",
         type=str,
-        choices=list(TiingoAcquisition.LEGACY_WATERMARK_POLICIES),
-        default=TiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY,
+        choices=list(SOURCE.acquisition_cls.LEGACY_WATERMARK_POLICIES),
+        default=SOURCE.acquisition_cls.DEFAULT_LEGACY_WATERMARK_POLICY,
         help=(
             "What to do with a watermark that records no covered start "
             "(default "
-            f"'{TiingoAcquisition.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
+            f"'{SOURCE.acquisition_cls.DEFAULT_LEGACY_WATERMARK_POLICY}'). "
             "'warn' skips it but reports the count and the stamping command "
             "on every run; 'refetch' treats unknown coverage as uncovered and "
             "re-downloads it. Passed through config.kwargs, so it stays "
@@ -299,10 +335,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quota-wait-seconds",
         type=int,
-        default=TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS,
+        default=SOURCE.acquisition_cls.DEFAULT_QUOTA_WAIT_SECONDS,
         help=(
             "Delay between resume attempts (default "
-            f"{TiingoAcquisition.DEFAULT_QUOTA_WAIT_SECONDS}). "
+            f"{SOURCE.acquisition_cls.DEFAULT_QUOTA_WAIT_SECONDS}). "
             "Tiingo's reset semantics -- fixed top-of-hour bucket vs. rolling "
             "window -- are not published, so this is a configured INTERVAL, "
             "not a computed reset time; one hour from the moment of detection "
@@ -312,10 +348,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quota-max-waits",
         type=int,
-        default=TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS,
+        default=SOURCE.acquisition_cls.DEFAULT_QUOTA_MAX_WAITS,
         help=(
             "How many times to wait and resume before giving up (default "
-            f"{TiingoAcquisition.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
+            f"{SOURCE.acquisition_cls.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
             "on purpose: an unbounded loop against a lockout is a worse "
             "version of the problem. The default comes from the observed "
             "arithmetic -- ~4,600 requests per window against ~14.7k symbols "
@@ -362,7 +398,13 @@ if __name__ == "__main__":
     # default -- the wrong choice here would be silent.
     symbols = resolve_symbols(args, catalog, mode="in_range")
 
-    acq_config = stock_acquisition_config(
+    # `SOURCE.config_factory` is `functools.partial(stock_acquisition_config,
+    # vendor="tiingo")` -- the SAME factory this script called directly before,
+    # with the vendor pinned by the descriptor instead of relying on the
+    # factory's incumbent default. `subdir` still travels through it, which is
+    # what keeps this roster's raw tree and watermarks independent of
+    # `ingest_tiingo.py`'s.
+    acq_config = SOURCE.config_factory(
         symbols=symbols,
         start_date=args.start_date,
         end_date=args.end_date,
@@ -398,7 +440,13 @@ if __name__ == "__main__":
         # mode: this is a pure local-file migration that issues zero price
         # requests, and it must be impossible to trigger a download by
         # mistyping it alongside another flag.
-        stamped = TiingoAcquisition(acq_config).stamp_watermarks(
+        # Reached through the DESCRIPTOR, and it stays a WRITE: D-08 makes
+        # `SourceInspector` read-only, so this does not move onto it. It is
+        # still the only in-repo route to `stamp_watermarks()`, and it still
+        # demands a credential at construction -- deliberately unchanged, so
+        # the open blocking-human checkpoint from quick task 260906-26o is
+        # verified against exactly the behaviour it was raised against.
+        stamped = SOURCE.acquisition_cls(acq_config).stamp_watermarks(
             args.stamp_legacy_watermarks
         )
         print(
@@ -470,18 +518,22 @@ if __name__ == "__main__":
         )
 
     print(
-        f"Acquiring {len(symbols)} symbols from Tiingo "
+        f"Acquiring {len(symbols)} symbols from {SOURCE.display_name} "
         f"({args.start_date}..{args.end_date}, refresh={args.refresh}, "
         f"max_workers={args.max_workers}). Already-complete symbols are "
         f"skipped; per-symbol failures land in "
         f"{acq_config.watermark_path}/"
-        f"{TiingoAcquisition.FAILURE_MANIFEST_NAME}."
+        f"{SOURCE.acquisition_cls.FAILURE_MANIFEST_NAME}."
     )
-    acquisition = TiingoAcquisition(acq_config)
-    if args.refresh:
-        acquisition.refresh()
-    else:
-        acquisition.download()
+    result = run(SOURCE, acq_config, refresh=args.refresh)
+    # Reported from the RESULT rather than left to the log lines: on a roster
+    # this size the per-symbol logs scroll past, and `AcquisitionResult` is
+    # built from the same accumulated failures `_failures.json` receives, so
+    # these two numbers cannot disagree with the manifest (D-18).
+    print(
+        f"{len(result.succeeded)} symbol(s) succeeded, "
+        f"{len(result.failures)} failed"
+    )
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.to_zarr:

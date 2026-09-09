@@ -903,9 +903,34 @@ def _is_guard_call(node) -> bool:
 
 
 def _is_acquisition_construction(node) -> bool:
+    """A vendor client being CONSTRUCTED, in either spelling.
+
+    TWO forms, for the same 03.4 D-15 migration reason `_fetch_site_linenos`
+    below documents:
+
+    - `<Vendor>Acquisition(cfg)` -- the direct construction, an `ast.Name`.
+    - `SOURCE.acquisition_cls(cfg)` -- the registry form, an `ast.Attribute`.
+      A shell that names no vendor class has no `ast.Name` ending in
+      `Acquisition` left to find.
+
+    Matching only the first form is how the caller below goes VACUOUS. As of
+    03.4-06 NO shell carries the `ast.Name` form any more, so a `Name`-only
+    matcher returns an empty list for all three scripts and the
+    "a client constructed before the guard must be the zero-request
+    watermark-stamping migration" assertion silently stops asserting anything
+    at all -- while the one real pre-guard construction
+    (`ingest_us_equity.py`'s `--stamp-legacy-watermarks` branch) is still
+    there. That is the same vacuity trap this file's "the guard is WIRED, not
+    merely correct" section names, one migration later.
+    """
     import ast
 
-    return isinstance(node.func, ast.Name) and node.func.id.endswith("Acquisition")
+    if isinstance(node.func, ast.Name):
+        return node.func.id.endswith("Acquisition")
+    return (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "acquisition_cls"
+    )
 
 
 def _fetch_site_linenos(body) -> list[int]:
