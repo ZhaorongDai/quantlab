@@ -931,3 +931,391 @@ def test_inventory_makes_one_traversal_and_one_sidecar_pass(
     # ONE read per symbol with a sidecar -- not one per field.
     assert sorted(read_calls) == ["AAPL", "GOOG", "MSFT"]
     assert len(read_calls) == len(set(read_calls))
+
+
+# ---------------------------------------------------------------------------
+# 03.4-04 Task 3 -- browse_raw / browse_zarr (D-10, D-11)
+# ---------------------------------------------------------------------------
+
+
+def _browse_dataset_config(tmp_path: Path, vendor: str = "tiingo"):
+    """A `DatasetConfig` whose raw root TERMINATES at the vendor segment.
+
+    `_scan_raw` refuses a root that does not (D-11): a root pointed one level
+    up walks into every vendor directory beneath it and merges them with no
+    error and no provenance. The fixture tree `hive_raw_tree` writes matches
+    that layout, so the two agree by construction rather than by coincidence.
+    """
+    from quantlab.base.config import DatasetConfig
+
+    parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
+    return DatasetConfig(
+        raw_data_dir_path=str(parent / vendor),
+        zarr_file_path=str(tmp_path / "out.zarr"),
+        catalog_path=str(tmp_path / "catalog"),
+        market="us_equity",
+        frequency="1d",
+        vendor=vendor,
+        start_date="2024-01-01",
+        end_date="2024-05-31",
+    )
+
+
+def _five_month_tree(tmp_path: Path, hive_raw_tree, stock_pqt_row):
+    """Five monthly partitions x two symbols -> five shards, ten rows."""
+    parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
+    rows = []
+    for month in range(1, 6):
+        for symbol in ("AAPL", "MSFT"):
+            rows.append(
+                stock_pqt_row(f"2024-0{month}-15", symbol, close=float(month))
+            )
+    root = hive_raw_tree(parent, "tiingo", rows)
+    assert len(list(root.rglob("*.pqt"))) == 5, "five months, five shards"
+    return root
+
+
+def test_browse_requires_symbols_and_window(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row, stock_zarr
+) -> None:
+    """D-11: the narrowness is enforced by the SIGNATURE, not by a convention.
+
+    The developer's D-10 override accepted that a lazy object technically
+    permits asking for a whole tier, and closed the risk from this side
+    instead. So each of the four ways to omit an argument must be a `TypeError`
+    AT THE CALL SITE -- not a default that quietly widens the query -- and an
+    empty `symbols` sequence must be a `ValueError` naming the requirement,
+    because `is_in([])` and `.sel(symbol=[])` are both valid and both silently
+    mean "nothing".
+
+    Reddened by: giving `symbols`, `start_date` or `end_date` a default on
+    either method, or accepting an empty sequence.
+    """
+    import pytest
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    raw_config = _browse_dataset_config(tmp_path)
+    zarr_config = stock_zarr(symbols=["AAPL", "MSFT"], periods=10)
+
+    inspector = SourceInspector()
+
+    for method, config in (
+        (inspector.browse_raw, raw_config),
+        (inspector.browse_zarr, zarr_config),
+    ):
+        # Four omissions: no arguments, config only, config+symbols,
+        # config+symbols+start_date.
+        with pytest.raises(TypeError):
+            method()
+        with pytest.raises(TypeError):
+            method(config)
+        with pytest.raises(TypeError):
+            method(config, ["AAPL"])
+        with pytest.raises(TypeError):
+            method(config, ["AAPL"], "2024-01-01")
+
+        # And the empty-sequence hole the required arguments do not close.
+        with pytest.raises(ValueError, match="NON-EMPTY"):
+            method(config, [], "2024-01-01", "2024-05-31")
+
+    # The full call is what actually works, on both tiers -- so the TypeErrors
+    # above are about the missing arguments and not about a broken method.
+    assert inspector.browse_raw(
+        raw_config, ["AAPL"], "2024-01-01", "2024-05-31"
+    ) is not None
+    assert inspector.browse_zarr(
+        zarr_config, ["AAPL"], "2024-01-01", "2024-01-05"
+    ) is not None
+
+
+def test_browse_prunes(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row
+) -> None:
+    """D-10/D-11: hive pruning really happens, asserted against a control.
+
+    The negative control is in THIS test on purpose (the habit
+    `tests/test_raw_hive_layout.py` establishes). Without it the assertion rots
+    into a tautology the day something else narrows the plan, and it keeps
+    passing for the wrong reason.
+
+    The control is the same scan with NO hive predicate -- only the timestamp
+    and symbol filters. Polars cannot prune directories on a data column, so it
+    must list every shard on disk; the browse plan, carrying the `month`
+    predicate `_scan_raw` applies, must list strictly fewer.
+    """
+    import polars as pl
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    root = _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    on_disk = len(list(root.rglob("*.pqt")))
+    config = _browse_dataset_config(tmp_path)
+
+    narrowed = _scan_source_count(
+        SourceInspector()
+        .browse_raw(config, ["AAPL"], "2024-04-01", "2024-05-31")
+        .explain()
+    )
+
+    # CONTROL: hive partitioning enabled, but no hive predicate -- exactly the
+    # query a mechanical port that kept only the timestamp filter would build.
+    control = (
+        pl.scan_parquet(
+            root, hive_partitioning=True, hive_schema={"month": pl.String}
+        )
+        .filter(pl.col("symbol").is_in(["AAPL"]))
+        .filter(
+            pl.col("timestamp") >= pl.lit("2024-04-01").str.to_datetime(),
+            pl.col("timestamp") <= pl.lit("2024-05-31").str.to_datetime(),
+        )
+    )
+    unpruned = _scan_source_count(control.explain())
+
+    assert unpruned == on_disk, (
+        f"the control must open every shard ({on_disk}), got {unpruned}; "
+        f"if it does not, the comparison below proves nothing"
+    )
+    assert narrowed < unpruned, (
+        f"browse_raw listed {narrowed} sources, the unpruned control "
+        f"{unpruned} -- the hive predicate is not pruning"
+    )
+    assert narrowed == 2, narrowed
+
+
+def test_browse_raw_returns_an_uncollected_lazyframe(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row
+) -> None:
+    """D-10: the caller decides when to collect.
+
+    Asserted by TYPE and by non-collection: `.explain()` produces a plan
+    without touching a byte of data, so a method that had already materialised
+    the frame could not return an object this call succeeds on.
+    """
+    import polars as pl
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    config = _browse_dataset_config(tmp_path)
+
+    result = SourceInspector().browse_raw(
+        config, ["AAPL"], "2024-01-01", "2024-05-31"
+    )
+
+    assert isinstance(result, pl.LazyFrame)
+    assert not isinstance(result, pl.DataFrame)
+    assert "Parquet SCAN" in result.explain()
+    # Collecting is the CALLER's step, and it works.
+    assert result.collect().height == 5
+
+
+def test_browse_raw_is_sorted_and_stable(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row
+) -> None:
+    """Repeated collection of one window yields an identical row order.
+
+    `_scan_raw` sorts, but `browse_raw` applies its symbol filter afterwards
+    and a filter is not obliged to preserve order -- so the sort is reapplied
+    and pinned here. An unstable order is the kind of thing that makes an
+    operator's paging jump between refreshes and looks like a data bug.
+
+    Reddened by: dropping the trailing `.sort(["timestamp", "symbol"])`.
+    """
+    from quantlab.acquisition.inspector import SourceInspector
+
+    _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    config = _browse_dataset_config(tmp_path)
+    inspector = SourceInspector()
+
+    first = inspector.browse_raw(
+        config, ["AAPL", "MSFT"], "2024-01-01", "2024-05-31"
+    ).collect()
+    second = inspector.browse_raw(
+        config, ["AAPL", "MSFT"], "2024-01-01", "2024-05-31"
+    ).collect()
+
+    assert first.height == 10
+    assert first.equals(second)
+
+    keys = list(zip(first["timestamp"].to_list(), first["symbol"].to_list()))
+    assert keys == sorted(keys), keys
+
+
+def test_browse_raw_single_day_window_returns_that_day(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row
+) -> None:
+    """D-11 adjacency: `start_date == end_date` is a real one-day query.
+
+    The inclusive `<=` end edge is what makes it work; an exclusive one would
+    return an empty frame, and an empty frame reads as "no data for this day"
+    rather than as an off-by-one.
+    """
+    from quantlab.acquisition.inspector import SourceInspector
+
+    _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    config = _browse_dataset_config(tmp_path)
+
+    frame = (
+        SourceInspector()
+        .browse_raw(config, ["AAPL", "MSFT"], "2024-03-15", "2024-03-15")
+        .collect()
+    )
+
+    assert frame.height == 2, frame
+    assert {str(value)[:10] for value in frame["timestamp"].to_list()} == {
+        "2024-03-15"
+    }
+    assert sorted(frame["symbol"].to_list()) == ["AAPL", "MSFT"]
+
+
+def test_browse_zarr_names_the_store_on_an_unknown_symbol(
+    no_credentials, stock_zarr
+) -> None:
+    """Pitfall 7 / T-03.4-04-07: refuse loudly, never reindex to NaN.
+
+    `reindex` would hand back a NaN-filled column, and a NaN column is
+    indistinguishable from a genuinely empty history -- the operator reads
+    "this ticker has no data" when the truth is "this store has never heard of
+    it". The message has to name the store, the requested symbols and how many
+    the store carries, because an operator hitting this needs all three to know
+    what to do next.
+
+    Reddened by: replacing `.sel` with `.reindex`, or letting the raw KeyError
+    escape.
+    """
+    import pytest
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    config = stock_zarr(symbols=["AAPL", "MSFT"], periods=10)
+    inspector = SourceInspector()
+
+    with pytest.raises(ValueError) as excinfo:
+        inspector.browse_zarr(
+            config, ["AAPL", "NOSUCH"], "2024-01-01", "2024-01-05"
+        )
+
+    message = str(excinfo.value)
+    assert config.zarr_file_path in message
+    assert "NOSUCH" in message
+    assert "2 symbol(s)" in message
+    # The original KeyError is preserved in the chain rather than swallowed.
+    assert isinstance(excinfo.value.__cause__, KeyError)
+
+    # And the known symbols still browse -- so the refusal is about the unknown
+    # one, not about the method being broken.
+    known = inspector.browse_zarr(config, ["AAPL"], "2024-01-01", "2024-01-05")
+    assert list(known.symbol.values) == ["AAPL"]
+    assert known.sizes["timestamp"] == 5
+    # Nothing was NaN-filled anywhere.
+    assert not bool(known["close"].isnull().any())
+
+
+def test_two_browses_on_one_inspector_do_not_narrow_each_other(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row, stock_zarr
+) -> None:
+    """Pitfall 6: a narrow query must not narrow what a later wide one sees.
+
+    `XrBackend.filter_by_date` / `filter_by_symbol` assign back to `self.data`,
+    so an inspector holding one backend across queries narrows PERMANENTLY --
+    the exact bug quick task 260906-w3t fixed for the Polars factor probe.
+    Both tiers are exercised on ONE instance, and the wide query runs SECOND so
+    the narrowing has already happened if it is going to.
+
+    Reddened by: caching an `XrBackend`, a `_RawTierReader` or an open
+    `xr.Dataset` on the inspector.
+    """
+    from quantlab.acquisition.inspector import SourceInspector
+
+    _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    raw_config = _browse_dataset_config(tmp_path)
+    zarr_config = stock_zarr(symbols=["AAPL", "MSFT"], periods=10)
+
+    inspector = SourceInspector()
+
+    narrow_raw = inspector.browse_raw(
+        raw_config, ["AAPL"], "2024-03-01", "2024-03-31"
+    ).collect()
+    assert narrow_raw.height == 1
+
+    wide_raw = inspector.browse_raw(
+        raw_config, ["AAPL", "MSFT"], "2024-01-01", "2024-05-31"
+    ).collect()
+    assert wide_raw.height == 10, "the earlier narrow query narrowed the later one"
+
+    narrow_zarr = inspector.browse_zarr(
+        zarr_config, ["AAPL"], "2024-01-01", "2024-01-03"
+    )
+    assert narrow_zarr.sizes == {"timestamp": 3, "symbol": 1}
+
+    wide_zarr = inspector.browse_zarr(
+        zarr_config, ["AAPL", "MSFT"], "2024-01-01", "2024-01-10"
+    )
+    assert wide_zarr.sizes == {"timestamp": 10, "symbol": 2}, (
+        "the earlier narrow selection narrowed the later one"
+    )
+
+    # The narrow handles are still valid -- nothing was mutated underneath
+    # them either, which is the same guarantee seen from the other end.
+    assert narrow_zarr.sizes == {"timestamp": 3, "symbol": 1}
+    assert narrow_raw.height == 1
+
+
+def test_browse_raw_reads_no_store_at_construction(
+    tmp_path: Path, no_credentials, hive_raw_tree, stock_pqt_row, monkeypatch
+) -> None:
+    """The `_reset_symbols` override is load-bearing, not decoration.
+
+    `BaseDataset`'s config setter calls `_reset_symbols()` whenever
+    `config.symbols` is set -- and a console-supplied `DatasetConfig` from
+    `quantlab/config` DOES set it. Without the override that call reaches the
+    Zarr store through `read()` and, when the store is absent or empty, falls
+    back to materialising the WHOLE panel via `from_raw_data()`: a full
+    conversion performed before the caller has asked for one row, plus
+    `config.symbols` silently overwritten with whatever was resolved.
+
+    The other tests in this file all pass `symbols=None`, so the override is
+    never exercised by them -- which is exactly how it would rot. This test
+    passes a config WITH symbols, points `zarr_file_path` at a store that does
+    not exist, and makes `from_raw_data` fatal.
+
+    Reddened by: deleting `_RawTierReader._reset_symbols`.
+    """
+    from quantlab.acquisition.inspector import SourceInspector, _RawTierReader
+    from quantlab.base.config import DatasetConfig
+
+    _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
+    parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
+    config = DatasetConfig(
+        raw_data_dir_path=str(parent / "tiingo"),
+        zarr_file_path=str(tmp_path / "absent.zarr"),
+        catalog_path=str(tmp_path / "catalog"),
+        market="us_equity",
+        frequency="1d",
+        vendor="tiingo",
+        symbols=("AAPL",),
+        start_date="2024-01-01",
+        end_date="2024-05-31",
+    )
+    assert not Path(config.zarr_file_path).exists()
+
+    def _fatal(*args, **kwargs):
+        raise AssertionError(
+            "the inspector materialised the panel at construction; the "
+            "_reset_symbols seam must be a no-op for a read-only browse"
+        )
+
+    monkeypatch.setattr(_RawTierReader, "from_raw_data", _fatal)
+    monkeypatch.setattr(_RawTierReader, "read", _fatal)
+
+    frame = (
+        SourceInspector()
+        .browse_raw(config, ["AAPL"], "2024-01-01", "2024-05-31")
+        .collect()
+    )
+    assert frame.height == 5
+
+    # And the caller's config was not rewritten underneath it.
+    assert config.symbols == ("AAPL",)

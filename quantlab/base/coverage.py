@@ -501,56 +501,78 @@ class CoverageLedger:
         """Reject any symbol that is not a well-formed ticker, and return the
         validated list.
 
-        Called BEFORE path construction by everything that builds a watermark
-        path from a caller-supplied symbol -- `Acquisition._run`,
-        `Acquisition.coverage_report`, `SourceInspector.coverage` and
-        `SourceInspector.browse_raw` -- because a symbol crosses two trust
-        boundaries at once:
-
-        - it becomes a filesystem path component under the raw root, where a
-          value containing `/` or `..` would escape that root entirely
-          (T-03.2-03);
-        - it becomes one element of a comma-joined `symbols=` query parameter,
-          where an embedded comma would silently change WHICH symbols were
-          requested -- the response would look fine and the data would be for
-          something else (T-03.2-04).
-
-        One control covers both, which is why it lives on the shared ledger
-        rather than in each vendor's `_fetch_page` or in each reader.
-
-        The pattern is `enums.data.TRADEABLE_TICKER_PATTERN` -- the SAME
-        compiled object the roster builder filters its output on, bound here
-        rather than re-declared. That shared identity is the point: a symbol
-        the builder persists is admitted here by construction, which is exactly
-        what was NOT true before quick task 260907-10t, when a local copy of a
-        narrower literal made `download()`'s whole-roster pre-flight abort a
-        multi-hour full-market job on `NXG-R-W`.
-
-        It admits digits deliberately (260906-eme: digit-bearing tickers are
-        real) and up to TWO suffix segments (260907-10t: 77 `us_all` and 4
-        `nasdaq_all` symbols are three-segment `ROOT-X-Y`). It is NOT
-        `acquisition/universe.py`'s `_WELL_FORMED_TICKER`, which is
-        deliberately narrower because it guards Wikipedia change-log cells --
-        see that constant's own comment before considering aligning them.
+        Thin wrapper over the module-level `validate_symbols`, which is the one
+        implementation. The wrapper exists because most callers already hold a
+        ledger and should not have to unpack two of its fields to ask this
+        question; the free function exists because `SourceInspector.browse_raw`
+        holds a `DatasetConfig` and no ledger, and passing a `DatasetConfig`
+        where an `AcquisitionConfig` is declared -- which would work today,
+        since this check reads only `raw_data_dir_path` -- is a false type
+        claim waiting to break silently.
         """
-        validated = []
-        for symbol in symbols:
-            text = str(symbol)
-            if not _TICKER_PATTERN.match(text):
-                raise ValueError(
-                    f"{self.owner_label}: refusing to fetch {text!r} -- it does "
-                    f"not match the well-formed ticker pattern "
-                    f"{_TICKER_PATTERN.pattern}. A symbol becomes both a "
-                    f"filesystem path segment under {self.config.raw_data_dir_path} "
-                    f"and a comma-joined query-string value, so a separator, a "
-                    f"parent reference or an embedded comma would escape the "
-                    f"raw root or silently change which symbols were requested. "
-                    f"Fix the roster rather than relaxing this pattern -- a "
-                    f"malformed symbol should have been dropped by the "
-                    f"build-time well-formedness filter in "
-                    f"acquisition/universe.py:TiingoRosterFetcher.fetch(), so "
-                    f"reaching here means the reference table predates that "
-                    f"filter and needs rebuilding."
-                )
-            validated.append(text)
-        return validated
+        return validate_symbols(
+            symbols,
+            owner_label=self.owner_label,
+            raw_root=self.config.raw_data_dir_path,
+        )
+
+
+def validate_symbols(
+    symbols: Sequence[str], *, owner_label: str, raw_root: str
+) -> list[str]:
+    """Reject any symbol that is not a well-formed ticker, and return the
+    validated list.
+
+    Called BEFORE path construction by everything that builds a filesystem
+    path from a caller-supplied symbol -- `Acquisition._run`,
+    `Acquisition.coverage_report`, `SourceInspector.coverage` and
+    `SourceInspector.browse_raw` -- because a symbol crosses two trust
+    boundaries at once:
+
+    - it becomes a filesystem path component under the raw root, where a
+      value containing `/` or `..` would escape that root entirely
+      (T-03.2-03);
+    - it becomes one element of a comma-joined `symbols=` query parameter,
+      where an embedded comma would silently change WHICH symbols were
+      requested -- the response would look fine and the data would be for
+      something else (T-03.2-04).
+
+    One control covers both, which is why it lives on the shared ledger
+    rather than in each vendor's `_fetch_page` or in each reader.
+
+    The pattern is `enums.data.TRADEABLE_TICKER_PATTERN` -- the SAME
+    compiled object the roster builder filters its output on, bound here
+    rather than re-declared. That shared identity is the point: a symbol
+    the builder persists is admitted here by construction, which is exactly
+    what was NOT true before quick task 260907-10t, when a local copy of a
+    narrower literal made `download()`'s whole-roster pre-flight abort a
+    multi-hour full-market job on `NXG-R-W`.
+
+    It admits digits deliberately (260906-eme: digit-bearing tickers are
+    real) and up to TWO suffix segments (260907-10t: 77 `us_all` and 4
+    `nasdaq_all` symbols are three-segment `ROOT-X-Y`). It is NOT
+    `acquisition/universe.py`'s `_WELL_FORMED_TICKER`, which is
+    deliberately narrower because it guards Wikipedia change-log cells --
+    see that constant's own comment before considering aligning them.
+    """
+    validated = []
+    for symbol in symbols:
+        text = str(symbol)
+        if not _TICKER_PATTERN.match(text):
+            raise ValueError(
+                f"{owner_label}: refusing to fetch {text!r} -- it does "
+                f"not match the well-formed ticker pattern "
+                f"{_TICKER_PATTERN.pattern}. A symbol becomes both a "
+                f"filesystem path segment under {raw_root} "
+                f"and a comma-joined query-string value, so a separator, a "
+                f"parent reference or an embedded comma would escape the "
+                f"raw root or silently change which symbols were requested. "
+                f"Fix the roster rather than relaxing this pattern -- a "
+                f"malformed symbol should have been dropped by the "
+                f"build-time well-formedness filter in "
+                f"acquisition/universe.py:TiingoRosterFetcher.fetch(), so "
+                f"reaching here means the reference table predates that "
+                f"filter and needs rebuilding."
+            )
+        validated.append(text)
+    return validated

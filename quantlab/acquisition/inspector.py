@@ -31,6 +31,14 @@ and turn a structural guarantee into a conventional one ("we happen not to call
 the client"). The console asks the registry what sources exist and asks the
 inspector what is on disk for one of them.
 
+**Import cost, stated rather than discovered.** This module reaches the raw
+tier through `quantlab/dataset/stock.py`, which transitively imports
+`nautilus_trader` (~1.7 s cold). That is an import cost, not a fragility, and it
+is a strictly LIGHTER path than `quantlab/acquisition/registry.py`, which pays
+the same cost through its config factories AND both vendor SDKs on top.
+Reimplementing the raw scan here to avoid it would trade a measured second for
+the four separately-measured bugs `_scan_raw` already fixes -- see `browse_raw`.
+
 **No caching, deliberately.** Reading 7,756 watermark sidecars was measured at
 ~1.65 s on this machine, while a full directory traversal of the 26,584-file
 raw root costs ~0.05 s warm -- so the sidecar pass is the expensive half, the
@@ -52,11 +60,44 @@ import os
 from pathlib import Path
 from typing import Sequence
 
+import polars as pl
 import xarray as xr
 
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
-from quantlab.base.coverage import CoverageLedger
+from quantlab.base.coverage import CoverageLedger, validate_symbols
+from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import RAW_HIVE_KEYS
+
+
+class _RawTierReader(StockDataset):
+    """A `StockDataset` that performs NO store read at construction.
+
+    `BaseDataset.__init__` assigns the config, and the config setter calls
+    `_reset_symbols()` whenever `symbols` is set -- which reaches the Zarr store
+    through `read()` and falls back to materialising the WHOLE panel via
+    `from_raw_data()` when the store is absent or empty. For a browse that only
+    wants a lazy handle over the raw tier, that is a full conversion performed
+    before the caller has asked for a single row: exactly the
+    narrow-in-place / fallback-on-construction hazard quick task 260906-w3t
+    fixed for the Polars factor probe.
+
+    `_reset_symbols` is documented on `BaseDataset` as an OVERRIDABLE SEAM for
+    precisely this case, and `IndexConstituentDataset` already overrides it to a
+    no-op for the same reason. Overriding it is therefore the established
+    in-repo way to build a dataset object that reads nothing on construction --
+    not a workaround.
+
+    Module-private, and constructed FRESH per query: it exists so `browse_raw`
+    can reuse `_scan_raw`'s vendor-root assertion, tick `_scan_root` descent,
+    pinned `hive_schema` and RAISING `extra_columns` / `missing_columns`
+    defaults. It is not a dataset anyone should persist through.
+    """
+
+    def _reset_symbols(self) -> None:
+        """No-op: the inspector never writes and never needs a resolved symbol
+        axis at construction time. See the class docstring.
+        """
+        return None
 
 
 class SourceInspector:
@@ -318,3 +359,166 @@ class SourceInspector:
             }
         finally:
             dataset.close()
+
+    # -- row-level browsing (D-10 lazy, D-11 narrow by construction) --------
+
+    #: What `browse_raw` / `browse_zarr` refuse an empty `symbols` with.
+    #:
+    #: D-11 makes `symbols` and the window REQUIRED rather than optional, which
+    #: closes the "ask for a whole tier" footgun from the argument side. An
+    #: EMPTY sequence reopens it from the value side: `is_in([])` and
+    #: `.sel(symbol=[])` are both perfectly valid and both mean "no rows", but a
+    #: caller who arrived there by passing an unfiltered roster that happened to
+    #: come back empty gets a silent nothing instead of a question.
+    EMPTY_SYMBOLS_MESSAGE = (
+        "symbols must be a NON-EMPTY sequence. D-11 makes symbols and the date "
+        "window required arguments precisely so the lazy handle is already "
+        "narrow when it is handed out (us_all is ~15.4k symbols x ~5.2k trading "
+        "days, ~30M rows); an empty list is the same unbounded request wearing "
+        "a different hat, so it is refused rather than answered with zero rows."
+    )
+
+    def _require_symbols(self, symbols: Sequence[str], caller: str) -> list[str]:
+        """Normalise `symbols` to a non-empty list, refusing an empty one."""
+        listed = list(symbols)
+        if not listed:
+            raise ValueError(f"{caller}: {self.EMPTY_SYMBOLS_MESSAGE}")
+        return listed
+
+    def browse_raw(
+        self,
+        dataset_config: DatasetConfig,
+        symbols: Sequence[str],
+        start_date: str,
+        end_date: str,
+    ) -> pl.LazyFrame:
+        """A LAZY, already-narrow view of the raw parquet tier. The caller
+        collects (D-10).
+
+        All four arguments are positional-REQUIRED with no defaults, so
+        omitting any one of them is a `TypeError` at the call site (D-11). That
+        is the other side of the developer's D-10 override: a lazy object
+        technically permits asking for a whole tier, and what closes that is the
+        arguments, not the return type. Asking for everything therefore requires
+        deliberately passing the full roster and the full window.
+
+        **It opens no parquet scan of its own, and that is load-bearing.** (Stated
+        without naming the polars call, because the acceptance check for this
+        rule is a literal scan of this file for that call's name -- the same
+        false positive 03.4-01 and 03.4-03 each had to undo in a docstring.)
+        `StockDataset._scan_raw` already carries four separately-measured
+        fixes -- the vendor-root basename assertion (two vendors under one root
+        merge with NO error and no provenance), the tick `_scan_root` descent
+        (a root holding both data types fixes its schema from the
+        alphabetically-first file and then raises on the other), the explicitly
+        pinned `hive_schema` (an inferred numeric-looking key changes dtype and
+        a string comparison then matches nothing), and `extra_columns` /
+        `missing_columns` left at their RAISING defaults. A second scan written
+        here is precisely where `extra_columns="ignore"` gets added "to make it
+        work", reopening the silent cross-vendor merge while looking like a bug
+        fix. So this method calls `_scan_raw` and appends to what it returns.
+
+        Symbols are validated through the shared `validate_symbols` -- the same
+        compiled `TRADEABLE_TICKER_PATTERN` object bound at both ends of the
+        symbol lifecycle, never a local copy. A local copy is what caused
+        incident 260907-10t.
+
+        **The symbol predicate is asymmetric across frequencies, and nobody
+        should optimise that away.** At `1d` and `1m`, `symbol` is a data
+        column, so `is_in` prunes only ROW GROUPS via parquet statistics. At
+        `tick`, `symbol` IS a hive key, so the very same predicate prunes
+        DIRECTORIES. The window predicate is what prunes directories in the
+        first two cases, and `_scan_raw` applies it.
+
+        The result is sorted by `(timestamp, symbol)` so repeated collection of
+        one window yields an identical row order -- `_scan_raw` sorts too, but
+        the symbol filter is applied after it, and a filter is not obliged to
+        preserve order.
+        """
+        listed = self._require_symbols(symbols, "browse_raw")
+        listed = validate_symbols(
+            listed,
+            owner_label=f"{self.__class__.__name__}.browse_raw",
+            raw_root=dataset_config.raw_data_dir_path,
+        )
+        # FRESH reader per query. Nothing is held on the inspector, so a narrow
+        # query cannot narrow what a later wide one sees.
+        reader = _RawTierReader(dataset_config)
+        return (
+            reader._scan_raw(start_date, end_date)
+            .filter(pl.col("symbol").is_in(listed))
+            .sort(["timestamp", "symbol"])
+        )
+
+    def browse_zarr(
+        self,
+        dataset_config: DatasetConfig,
+        symbols: Sequence[str],
+        start_date: str,
+        end_date: str,
+    ) -> xr.Dataset:
+        """A narrowed view of the Zarr tier, lazy and dask-free.
+
+        Same required-argument rule as `browse_raw`, for the same D-11 reason.
+
+        **A separate name rather than one shared browse method**, because the
+        two return different types (`pl.LazyFrame` vs `xr.Dataset`). One name
+        with two return types would be worse than two clearly-named methods:
+        the caller has to branch on the tier anyway, and a shared name hides
+        that it must.
+
+        **The store is opened FRESH per call and never held.**
+        `XrBackend.filter_by_date` / `filter_by_symbol` assign back to
+        `self.data`, so an inspector that kept one backend would narrow
+        permanently and a wide query issued after a narrow one would silently
+        return the narrow result -- the bug quick task 260906-w3t fixed for the
+        Polars factor probe. `.sel(...)` is applied to a LOCAL and the result
+        is returned; nothing is written back anywhere.
+
+        **An unknown symbol RAISES, and is deliberately not reindexed.**
+        `.sel(symbol=[...])` raises `KeyError` when the store does not carry a
+        requested symbol. `reindex` would instead return a NaN-filled column,
+        and a NaN column is INDISTINGUISHABLE from a genuinely empty history --
+        an operator would read "this ticker has no data" when the truth is
+        "this store has never heard of this ticker". The refusal is re-raised
+        as a `ValueError` naming the store, the requested symbols and how many
+        symbols the store carries, because that is this repo's house style for
+        a legible refusal (`_scan_raw`, `_assert_vendor_root` and
+        `validate_symbols` all raise `ValueError`) and because `KeyError`'s
+        `str()` reprs its argument, mangling a multi-line operator message. The
+        original `KeyError` is kept in the exception chain.
+        """
+        listed = self._require_symbols(symbols, "browse_zarr")
+        # NOT validated against TRADEABLE_TICKER_PATTERN, unlike `browse_raw`.
+        # Here a symbol is a coordinate LABEL matched against an index, never a
+        # path segment and never a query-string value, so neither trust
+        # boundary `validate_symbols` guards is crossed -- and the index either
+        # carries the label or raises below, which is a stricter check than the
+        # pattern would be.
+        path = Path(dataset_config.zarr_file_path)
+        dataset = xr.open_zarr(path)
+        try:
+            return dataset.sel(
+                symbol=listed, timestamp=slice(start_date, end_date)
+            )
+        except KeyError as exc:
+            carried = int(dataset.sizes.get("symbol", 0))
+            known = set()
+            if "symbol" in dataset.coords:
+                known = {str(value) for value in dataset["symbol"].values}
+            missing = sorted(symbol for symbol in listed if symbol not in known)
+            dataset.close()
+            raise ValueError(
+                f"{self.__class__.__name__}.browse_zarr: the Zarr store at "
+                f"{str(path)!r} does not carry {missing} (requested "
+                f"{sorted(listed)}). The store carries {carried} symbol(s). "
+                f"This is refused rather than reindexed on purpose: a "
+                f"NaN-filled column for a symbol the store has never heard of "
+                f"is indistinguishable from a symbol with a genuinely empty "
+                f"history, and an operator cannot tell those two apart from "
+                f"the data. Convert the raw tier for these symbols, or ask for "
+                f"the ones the store has."
+            ) from exc
+        except BaseException:
+            dataset.close()
+            raise
