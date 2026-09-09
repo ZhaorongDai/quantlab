@@ -8,8 +8,11 @@ script adds only the flags that are genuinely its own.
 
 This module is deliberately dependency-light in the `utils/` tradition
 (`utils/file.py`, `utils/timer.py`): it builds `argparse` groups and resolves a
-roster through a catalog handed to it. It constructs no acquisition client,
-opens no file and issues no request. Its two module-scope project imports are
+roster through a catalog handed to it. It constructs no acquisition client and
+issues no request, and it opens no file -- `refuse_conversion_without_raw_data`
+does reach the filesystem, but only by asking a Dataset handed to it whether
+its raw root holds a shard (a directory stat, read-only, no parquet opened).
+Every object it works on arrives as an argument. Its two module-scope project imports are
 both there for the same reason -- a `choices` list must be DERIVED from the
 literal that defines it rather than restated here, or a value added at the
 Dataset layer stays unreachable from the command line:
@@ -75,6 +78,31 @@ _WINDOW_HELP = {
         ),
         "end": "Window end (inclusive), default today.",
     },
+}
+
+#: The two shapes a raw-to-Zarr conversion has in this repo, and the help
+#: clause each one adds to `--to-zarr`. Kept as data beside `_WINDOW_HELP` for
+#: the same reason: the difference between the two is stated ONCE, where the
+#: flag is defined, rather than as a string every script has to pass in.
+#:
+#: - `"whole-window"`: `from_raw_data()` densifies the entire range at once
+#:   (`ingest_tiingo.py`, `ingest_alpaca.py`).
+#: - `"chunked"`: `from_raw_data_chunked()` densifies and appends ONE `--chunk`
+#:   window at a time, and resumes (`ingest_us_equity.py`).
+ConversionMode = Literal["whole-window", "chunked"]
+
+_TO_ZARR_HELP = {
+    "whole-window": (
+        "The conversion densifies the WHOLE window at once, so peak RAM "
+        "scales with the range; the dense-panel guard sizes exactly that "
+        "allocation and is skipped when this flag is absent."
+    ),
+    "chunked": (
+        "The full window is no longer refused: the conversion densifies "
+        "and appends ONE --chunk window at a time, so peak RAM scales "
+        "with the window rather than the range, and an interrupted run "
+        "resumes at the first unwritten window."
+    ),
 }
 
 #: The two roster-resolution semantics `resolve_symbols` exposes. Neither is a
@@ -159,6 +187,95 @@ def add_universe_args(
         help="Required with --universe; point-in-time date (YYYY-MM-DD) to resolve membership as of.",
     )
     return parser
+
+
+def add_to_zarr_arg(
+    parser: argparse.ArgumentParser,
+    *,
+    mode: ConversionMode,
+) -> argparse.ArgumentParser:
+    """Add `--to-zarr`, the opt-in that gates every raw-to-Zarr conversion.
+
+    Defined HERE once, for the reason D-14 gives for `--symbols` and friends:
+    `ingest_us_equity.py` had the flag and the other two converted
+    unconditionally, so the three front doors disagreed about what a run
+    without arguments does. A user who learned one script's default learned
+    the wrong thing about the other two (G-03.4-1b).
+
+    OFF by default in all three, and the default path SAYS so rather than
+    staying quiet: a conversion that silently did not happen is the same class
+    of silence this flag exists to end.
+
+    `mode` follows `add_concurrency_args(default_max_workers=...)`: the
+    genuinely different half -- chunked-and-resumable vs. whole-window -- is a
+    PARAMETER, so neither script restates the shared sentence and neither
+    loses its own. `ingest_us_equity.py`'s chunked text is preserved verbatim
+    in `_TO_ZARR_HELP["chunked"]`; it is one of the seven capabilities
+    `tests/test_ingest_shells.py::
+    test_us_equity_keeps_every_capability_that_makes_it_distinct` pins.
+    """
+    parser.add_argument(
+        "--to-zarr",
+        action="store_true",
+        help=(
+            "After acquisition, convert the raw parquet into the Zarr store. "
+            + _TO_ZARR_HELP[mode]
+            + " OFF by default because it is slow, not because it is "
+            "impossible; without it the run stops at the raw shards and says "
+            "so."
+        ),
+    )
+    return parser
+
+
+def refuse_conversion_without_raw_data(dataset, result) -> None:
+    """Refuse a raw-to-Zarr conversion when this run fetched nothing AND the
+    raw tree is empty.
+
+    G-03.4-1a. A run whose every symbol failed (an expired key, an exhausted
+    quota, a roster of typos) used to walk straight into
+    `StockDataset.from_raw_data()` and end on `dataset/stock.py`'s uncaught
+    absent-root `ValueError` -- a traceback that reads like a bug in the
+    conversion layer when the actual event was "the vendor returned nothing".
+    That raise is the correct LOWER-level signal and is unchanged; this is the
+    upper-level caller that translates it into a clean, non-zero exit.
+
+    **Both halves of the condition are load-bearing.** A run in which every
+    symbol was SKIPPED because its watermark already covers the window also
+    reports zero successes -- and it has raw data on disk that must still be
+    converted. Counting successes alone would refuse that legitimate run. What
+    separates the two cases is the disk probe, so the probe is the test and
+    the counts are only reported.
+
+    The probe is `dataset.has_raw_data()` -- the SAME predicate `_scan_raw`
+    decides on -- rather than a second `exists() / rglob()` written here. Two
+    spellings of one fact is the ancestor shape of this gap.
+
+    Takes CONSTRUCTED objects and imports nothing: this module is
+    dependency-light by contract (see the module docstring), and
+    `tests/test_data_dir_cli.py::
+    test_utils_cli_does_not_import_config_at_module_scope` holds it there.
+
+    The message names paths, counts and where to read the failure list. It
+    carries NO credential value and no vendor response body: this repo has
+    already leaked one real key, and a refusal path is exactly where a
+    "helpful" dump of the vendor's error gets added.
+    """
+    if result.succeeded or dataset.has_raw_data():
+        return
+    raise SystemExit(
+        f"Refusing to convert: this run fetched {len(result.succeeded)} "
+        f"symbol(s) successfully and {len(result.failures)} failed, and "
+        f"there is no raw data under "
+        f"{str(dataset.config.raw_data_dir_path)!r} to convert. No Zarr "
+        f"store was written and none was modified. This is NOT a fault in "
+        f"the conversion layer -- the acquisition step returned nothing to "
+        f"convert. Read the per-symbol reasons through "
+        f"SourceInspector.failures() (the _failures.json manifest beside the "
+        f"watermarks); the usual causes are an unset or rejected credential, "
+        f"an exhausted quota, and a roster whose symbols the vendor does not "
+        f"serve."
+    )
 
 
 def add_chunk_args(
