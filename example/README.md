@@ -13,6 +13,7 @@
 | 文档 | 讲什么 | 什么时候读 |
 |---|---|---|
 | [acquisition.md](acquisition.md) | 采集引擎：从厂商 API 到磁盘上的原始分片。并发、失败隔离、配额、断点在哪 | 想下载数据、或下载出问题时 |
+| [registry.md](registry.md) | 数据源登记表：一个厂商一个描述符（能力、凭证变量名、采集类），程序化 `run()`、进度事件、取消令牌，以及无凭证的只读检视器 | 想知道能下载哪些源、想在程序里发起采集、或没凭证只想看盘上有什么时 |
 | [pageledger.md](pageledger.md) | 分页台账：一次多页抓取中途崩了，凭什么能接着跑而不重复不遗漏 | 想搞懂断点续跑，或看到 `_pages/` 里的文件时 |
 | [constituent.md](constituent.md) | 时点成分与标的池：怎么避免幸存者偏差，四个 category 分别是什么 | 要选标的池、要做回测时 |
 
@@ -33,8 +34,9 @@
 
 ## 想直接上手扩展
 
-这四篇各自带一个**从零写到跑通的最小子类**，是最快的入门方式：
+这五篇各自带一个**从零写到跑通的最小扩展**（新数据源是注册一个描述符，其余四篇是一个最小子类），是最快的入门方式：
 
+- 新增一个数据源 → [registry.md](registry.md) 的「扩展」一节（注册一个描述符）
 - 新增一个市场 → [dataset.md](dataset.md) 的「扩展」一节（`MiniCsvDataset`）
 - 新增一种存储介质 → [backend.md](backend.md) 的「扩展」一节（`CsvBackend`）
 - 写一个新因子 → [factor.md](factor.md) 的「扩展一 / 扩展二」（`RelativeVolume` 走 Polars、`MaDeviation` 走 KunQuant）

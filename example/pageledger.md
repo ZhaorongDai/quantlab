@@ -132,6 +132,20 @@ data/downloads/us_equity/1m/nasdaq_data/_watermarks/alpaca/
     └── aff618a1772f46da.pages.json     649 B
 ```
 
+关于那个 `_failures.json`：它是 `Acquisition` 的东西，不是 `PageLedger` 的，
+两者的粒度也完全不同——页台账是**批内**断点（一批一个文件），失败清单是
+**最近一次 run** 的整体快照（`{symbol: 错误消息}`，每次 run 覆盖重写）。
+它**不是续跑输入**：`quantlab/` 里没有任何代码读它，续跑完全由水位边车的存在与否驱动；
+保留它是因为进程崩掉之后它还在，而运维控制台要读失败原因
+（详见 [acquisition.md](acquisition.md) 的「核心概念」与 [registry.md](registry.md)）。
+
+**三种 JSON 边车现在都是原子写的**——页台账（`PageLedger._flush`）、
+水位边车和这个失败清单，加上转换层的 `ChunkLedger._flush`，四个写入方
+全部委托给同一个 `quantlab/utils/atomic.py:write_json_atomically`
+（临时文件 + `fsync` + `os.replace`，且失败时不留下 `.tmp`）。
+两个台账本来就是这么写的，另外两个是 03.4 补上的：在此之前一次批次边界上的中断
+会把一个完好的水位边车先截断成空文件再开始写，而取消恰恰发生在批次边界上。
+
 ### 一个真实的、完整的台账（`aff618a1772f46da.pages.json`，649 字节，单页批次）
 
 ```json

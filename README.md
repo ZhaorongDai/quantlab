@@ -255,10 +255,28 @@ imports the layers it needs:
   keeps its manual-CSV-drop workflow). Use `--raw-data-dir` to point at CSVs stored outside the
   default `data/{market}/{frequency}/...` convention path (e.g. a pre-existing download
   directory) with no filesystem migration required.
-- `ingest_tiingo.py` -- full Tiingo-to-Zarr pipeline for US equities: fetches raw EOD data via
-  `TiingoAcquisition`, then converts/cleans/persists it through `StockDataset` into a Zarr
+- **The three US-equity ingest scripts are THIN SHELLS over the data source registry**
+  (`quantlab/acquisition/registry.py`, phase 03.4). None of them names a vendor acquisition
+  class: each opens with `SOURCE = DataSourceRegistry.get("<vendor token>")`, builds its
+  acquisition config through `SOURCE.config_factory`, reads every vendor constant it needs --
+  including the argparse defaults evaluated at parser-definition time -- off
+  `SOURCE.acquisition_cls`, and downloads through the programmatic entry point
+  `run(SOURCE, config, ...)`, which returns an `AcquisitionResult`. They are kept rather than
+  merged into one `--source` CLI: they are the registry's in-repo consumer, live proof the
+  programmatic entry point works, and the fallback on a machine with no operator console. The
+  raw-to-Zarr conversion stays in each shell, because `run()` is acquisition-only and the three
+  convert in three different modes behind three differently-sized RAM guards.
+- `ingest_tiingo.py` -- full Tiingo-to-Zarr pipeline for US equities: fetches raw EOD data
+  through the registry, then converts/cleans/persists it through `StockDataset` into a Zarr
   store. Requires `TIINGO_API_KEY`. Pass `--refresh` to incrementally update from each symbol's
   last recorded watermark instead of a full backfill.
+- `ingest_us_equity.py` -- the full-market Tiingo backfill: resolves a `us_all`-style roster
+  from the universe table, stores under its own `us_all` subdirectory and watermark tree, and
+  converts to Zarr only under `--to-zarr` (chunked, with `--chunk` / `--on-new-listing`). It is
+  NOT redundant with `ingest_tiingo.py --universe us_all` -- they differ in roster mode, storage
+  subdirectory, conversion mode, dataset symbols, and three flags that exist on only one of
+  them. `--dry-run` prints the roster size, the volume estimate, the resolved paths and a real
+  watermark coverage report, needs NO credential and issues zero vendor requests.
 - `ingest_alpaca.py` -- the second US-equity source (03.2 D-10: parallel to Tiingo, not a
   replacement). Fetches daily bars, minute bars, quotes or trades from Alpaca Market Data into
   the vendor-namespaced raw path, then converts bars to Zarr. Requires `APCA_API_KEY_ID` and

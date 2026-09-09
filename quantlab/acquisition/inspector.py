@@ -9,9 +9,12 @@ on a machine with NO credentials, because everything it answers is a local file
 read. Constructing an `Acquisition` is not an option:
 `TiingoAcquisition.__init__` raises `RuntimeError` the moment `TIINGO_API_KEY`
 is unset -- before it could possibly know that the caller only wanted to count
-sidecars. That is why `ingest_us_equity.py` today prints
+sidecars. That is why `ingest_us_equity.py` USED TO print
 ``coverage report: skipped (export TIINGO_API_KEY to see it)`` for a
-computation that is nothing but `open()` and `json.load()`. Extending
+computation that is nothing but `open()` and `json.load()`. That branch is gone
+as of 03.4-06: `_print_coverage` is unconditional and routes through this class,
+and `tests/test_ingest_shells.py::test_the_dry_run_needs_no_credential` is what
+keeps the skip line history. Extending
 `Acquisition` and deferring its credential check was considered and rejected in
 CONTEXT: it would turn a fail-fast safety behaviour into a fail-late one.
 

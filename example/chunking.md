@@ -408,15 +408,16 @@ StockDataset(config).update(granularity="year")
 ### 例一：真实的分块计划（不需要任何凭证）
 
 ```bash
-uv run python ingest_us_equity.py --start-date 2025-09-07 --end-date 2026-09-06 --dry-run
+env -u TIINGO_API_KEY -u APCA_API_KEY_ID -u APCA_API_SECRET_KEY \
+    uv run python ingest_us_equity.py --start-date 2025-09-07 --end-date 2026-09-06 --dry-run
 ```
 
-真实输出（2026-09-07 跑的）：
+真实输出（2026-09-09 重跑，三个凭证环境变量都用 `env -u` 显式清掉）：
 
 ```
 DRY RUN -- category=us_all, no price requests issued
   symbols resolved:  8159
-  preview:           ['FIGS', 'MSGM', 'AGRO', 'PK', 'TKNO', 'UCTT', 'APOS', 'EMISU', 'EOSEW', 'FTLF']
+  preview:           ['AN', 'GLSI', 'MTB', 'FRHC', 'ISNR', 'KACLW', 'INCY', 'IMMR', 'ASPSW', 'AVB']
   window:            2025-09-07 .. 2026-09-06
   trading days (~):  252
   dense grid cells:  2,056,068
@@ -432,7 +433,11 @@ DRY RUN -- category=us_all, no price requests issued
   raw-data path:     /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/tiingo
   watermark path:    /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/_watermarks/tiingo
   zarr path:         /Users/daizhaorong/projects/quantlab/data/data/us_equity/1d/us_all.zarr
-  coverage report:   skipped (export TIINGO_API_KEY to see it; it still issues zero price requests)
+  coverage report:
+  already covered:   832 (would be skipped)
+  re-fetch, widened: 6924 (recorded coverage starts after --start-date)
+  legacy, no start:  0 (stamp via --stamp-legacy-watermarks)
+  would fetch:       7327/8159
 ```
 
 几个可以对照上文读的点：
@@ -442,6 +447,11 @@ DRY RUN -- category=us_all, no price requests issued
   两个窗口的标的数都是 8,159（钉死的全区间轴），所以只有天数在变。
 - `whole-range total` 只是 advisory，不会因为超标而报错 —— 让整段总量变得可行正是分块的意义（D-05）。
 - 密度 0.890 是因为区间只有一年；拉到 2006 起就掉到 0.368。
+- 覆盖报告**不需要凭证**（03.4 起）：上面这次是把三个凭证环境变量全部清掉跑的。
+  `re-fetch, widened: 6924` 说的正是本文关心的那件事——盘上那批边车记录的覆盖起点
+  晚于这里请求的 `--start-date`，所以历史比要求的浅，要重抓。
+  这个判断走的是真实 run 走的同一个 `CoverageLedger.partition_by_coverage`
+  对象，见 [registry.md](registry.md)。
 
 ### 例二：造合成数据、中途崩溃、恢复、看台账（真跑）
 

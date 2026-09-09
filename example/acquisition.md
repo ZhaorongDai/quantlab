@@ -182,6 +182,20 @@ Alpaca 请求里的 `asof` 参数如果不传，厂商默认用**今天的** tic
   所以它永远描述**最近一次 run**；空的 `{}` 是一句有意义的话：上次跑干净了。
   日志里只列头 `Acquisition._FAILURE_LOG_SAMPLE = 5` 个，全量在文件里。
 
+  **它不是续跑输入。** `quantlab/` 底下没有任何代码读这个文件——续跑完全由
+  **水位边车的存在与否**驱动（03.4 D-18 的 FACTUAL CORRECTION 更正了此前相反的说法）。
+  它被保留下来是因为它是**崩溃后仍然存在的运维记录**：进程死掉就没有
+  `AcquisitionResult` 可以返回了。仓库内的读者只有一个，`SourceInspector.failures()`，
+  它经由唯一那个容错读取器 `CoverageLedger.read_failure_manifest` 去读
+  （两个容错读取器就是两份会各自漂移的失败策略）。取消路径上写清单之前会先
+  **合并**盘上已有的、本轮从没轮到的条目，所以
+  `set(result.failures) == set(_failures.json)` 在**每一条**退出路径上都成立。
+
+  它的写入现在是**原子**的，和水位边车一样，走
+  `quantlab/utils/atomic.py:write_json_atomically`（临时文件 + `fsync` + `os.replace`）。
+  以前是裸 `open(..., "w")` + `json.dump`：一次在批次边界上的中断，会把一个完好的
+  边车先截断成空文件，然后才开始写——而取消恰恰就发生在批次边界上。
+
 - **「查过了，没数据」标记（`no_data`）**：这是第四种状态，和「失败」「从没抓过」都不同。
   三个存储事实映射出四种状态：
 
@@ -238,25 +252,66 @@ download(symbols)                 refresh(symbols)
    │  ③  _run_once(pending)                        │
    │      ├ _reset_abort()      新的全局中止 Event  │
    │      ├ 切批：_batches() 或 _refresh_batches()  │
-   │      └ joblib.Parallel(backend="threading",   │
-   │            n_jobs=max_workers,                │
-   │            return_as="generator_unordered")   │
-   │          └─► _attempt_batch(batch)  × N 并发   │
+   │      ├ emit run_started（total = 批次数）      │
+   │      ├ joblib.Parallel(backend="threading",   │
+   │      │      n_jobs=max_workers,               │
+   │      │      return_as="generator_unordered")  │
+   │      │    └─► _attempt_batch(batch)  × N 并发  │
+   │      ├ 排干结果流，每落地一批 emit             │
+   │      │      batch_completed(completed/total)   │
+   │      │      首次观测到配额中止 → quota_exhausted│
+   │      │      首次观测到取消     → cancelled      │
+   │      └ finally: emit run_finished + 关闭 reporter│
    │                                               │
    │  ④  合并本轮 failures / succeeded              │
+   │      被取消 → break（在配额分支之前！）        │
    │      未中止 → break；中止且 wait_for_quota →   │
    │      _sleep(quota_wait_seconds) 后重来         │
    └───────────────┬───────────────────────────────┘
                    ▼
-   ⑤  _write_failure_manifest()  →  _failures.json
+   ⑤  （仅取消分支内）_merge_unattempted_failures()
+       ← 把盘上本轮从没轮到的条目折回来
+   ⑥  _write_failure_manifest()  →  _failures.json（原子写）
+   ⑦  组装 AcquisitionResult 并挂到 last_result 上，供
+      registry.run() 返回给调用方（requested / succeeded /
+      failures / cancelled / quota_aborted / coverage）
 ```
+
+进度和取消是这一层给**进程内调用方**（运维控制台）的两个把手，
+`registry.run(descriptor, config, *, refresh, reporter, cancel)` 把它们透传进来；
+细节见 [registry.md](registry.md)。三条要点：
+
+- **进度是事件对象，不是 stderr。** `_run_once` 不再自己构造 `tqdm`，它 `_emit`
+  `ProgressEvent`；`TqdmProgressReporter` 用同一个 `total`、同一个 `desc`、
+  同一个 `unit="batch"` 把它渲染回原来的样子。渲染的**人**变了，渲染的**内容**没变。
+  （测试断言的是 `tqdm` 的**构造参数**，不是捕获 stderr——进度条的实际字符宽度取决于终端；
+  `_report_coverage` 那四条日志是逐字保留的，`coverage` 事件是**附加**的。）
+  事件的 `message` 永远是发送方
+  `_scrub` 过的——进度事件是异常字符串的一条新外泄路径，绕过那个唯一收口
+  就是下一次泄露的形状。
+- **一个 reporter 停不掉一次 run。** `emit` 返回 `None` 且调用方忽略返回值，
+  所以「忘了返回 True」不会中止采集；`_emit` 又把每次调用包在 try/except 加一条
+  脱敏 warning 里，所以 reporter 抛异常也中止不了。try/except 放在**调用方**
+  而不是 reporter 里，因为异常要用厂商自己的 `CREDENTIAL_ENV_VARS` 脱敏，
+  只有采集对象知道那些名字。
+- **取消是一个独立的令牌，检查点在 `_attempt_batch` 的第一行。**
+  `_should_stop()` = 配额中止 OR 取消令牌，位置和原来那条止血的
+  `_abort.is_set()` 完全相同。为什么不是输入生成器：joblib 取消不了它已经排队的工作，
+  `pre_dispatch` 默认 `2 * n_jobs`，生成器里的 `break` 只能拦住还没排队的那部分。
+  过了这一行的批次会跑完并写下自己的水位，没过的批次一个边车都没有——
+  这就是「取消之后仍可续跑」这句承诺的实际内容。
+  **取消不是配额中止**：`_run` 在配额分支**之前**就 break 掉取消分支，
+  不 `_sleep`、不等待、不打「额度耗尽」，结果对象上是
+  `cancelled=True, quota_aborted=False`。
 
 ### 一个批次内部（`_attempt_batch` → `_fetch_batch`）
 
 ```
 _attempt_batch(symbols, from_watermark)
   │
-  ├─ **第一行**：if self._abort.is_set(): return "skipped"   ← 真正止血的地方
+  ├─ **第一行**：if self._should_stop(): return "skipped"    ← 真正止血的地方
+  │     （_should_stop() = self._abort.is_set() or self._is_cancelled()；
+  │      配额中止和调用方的取消令牌共用这一个位置）
   │
   ├─ 读这批每个 symbol 的 coverage（一次）
   ├─ 决定请求起点：download → config.start_date
@@ -300,7 +355,8 @@ _fetch_batch(symbols, start, end)
 | 关注点 | 位置 |
 |---|---|
 | 并发 | `_run_once` 的 `joblib.Parallel(backend="threading")`，`DEFAULT_MAX_WORKERS = 8`。用线程不用进程：任务是网络 IO 密集的，且 client 对象是共享的 |
-| 进度条 | `tqdm` 包在**结果流**上（`return_as="generator_unordered"`），一格 = 一批真的落盘了。包在调用上会先空转几小时再瞬间满格 |
+| 进度 | `_run_once` 发 `ProgressEvent`，默认由 `TqdmProgressReporter` 渲染成原来那条 stderr 进度条。事件发在**结果流**上（`return_as="generator_unordered"`），一格 = 一批真的落盘了；发在调用上会先空转几小时再瞬间满格 |
+| 取消 | `CancelToken`，检查点是 `_attempt_batch` 的**第一行**（和全局中止同一位置，`_should_stop()` 是两者的 OR）。见 [registry.md](registry.md) |
 | 失败隔离 | `_attempt_batch` 的 try/except，粒度 = 一个 batch |
 | 全局中止 | `Acquisition._abort`（`threading.Event`），只有 `"quota"` 能触发 |
 | symbol 级断点 | watermark 边车 + `_partition_by_coverage`。**每一轮都从磁盘重新算 pending**，所以「续跑逻辑」和「跳过逻辑」是同一份代码，不存在会漂移的平行账 |
@@ -324,22 +380,28 @@ _fetch_batch(symbols, start, end)
 ### 例 1：真跑过的最小例子（`--dry-run`，不需要任何凭证）
 
 `ingest_us_equity.py --dry-run` 会解析标的池、算体量、打印路径、报告水位覆盖情况，
-然后退出，**一个行情请求都不发**。
+然后退出，**一个行情请求都不发，也不需要任何凭证**。
+
+> 只想问「盘上已经有什么」而不想跑一个脚本？那就直接用 `SourceInspector`——
+> 存量、覆盖、失败原因、行级浏览四件事它都在无凭证、零厂商请求的前提下回答。
+> 见 [registry.md](registry.md) 的「只读检视器」一节。这个 `--dry-run` 里的覆盖报告
+> 本身就是它算的。
 
 ```bash
 cd /Users/daizhaorong/projects/quantlab
-uv run python ingest_us_equity.py --dry-run
+env -u TIINGO_API_KEY -u APCA_API_KEY_ID -u APCA_API_SECRET_KEY \
+    uv run python ingest_us_equity.py --dry-run
 ```
 
-真实输出（2026-09-07 在本机实际执行）：
+真实输出（2026-09-09 在本机实际执行，三个凭证环境变量都用 `env -u` 显式清掉）：
 
 ```
 DRY RUN -- category=us_all, no price requests issued
   symbols resolved:  13729
-  preview:           ['ADUR', 'GFNCP', 'PCBC', 'RMMZ', 'SUGP', 'SWET', 'AAL', 'AD', 'SSEAR', 'TRONW']
-  window:            2016-01-01 .. 2026-09-07
-  trading days (~):  2693
-  dense grid cells:  36,972,197
+  preview:           ['NETDU', 'NBP', 'PRCP', 'PAYX', 'LIII-U', 'OPA-WS', 'PEPLU', 'SDSTW', 'CELL', 'SKT']
+  window:            2016-01-01 .. 2026-09-08
+  trading days (~):  2694
+  dense grid cells:  36,985,926
   real observations: 17,145,396
   density:           0.464
   dense float64:     3.31 GiB
@@ -352,23 +414,43 @@ DRY RUN -- category=us_all, no price requests issued
   raw-data path:     /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/tiingo
   watermark path:    /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/_watermarks/tiingo
   zarr path:         /Users/daizhaorong/projects/quantlab/data/data/us_equity/1d/us_all.zarr
-  coverage report:   skipped (export TIINGO_API_KEY to see it; it still issues zero price requests)
+  coverage report:
+  already covered:   0 (would be skipped)
+  re-fetch, widened: 0 (recorded coverage starts after --start-date)
+  legacy, no start:  0 (stamp via --stamp-legacy-watermarks)
+  would fetch:       13729/13729
 ```
 
 几个值得看的点：
 
 - `raw-data path` 以 `/tiingo` **结尾**，而 `watermark path` 是它的**兄弟**
   `us_all/_watermarks/tiingo`。前面说过：账本 JSON 绝不能落在 raw 树里。
-- 最后一行说明 `coverage_report()` 本身是纯本地文件读、零请求，但它被跳过了——
-  因为 `TiingoAcquisition.__init__` 在**构造时**就要求 `TIINGO_API_KEY`，
-  那时它还不知道这条路径不会发请求。这是个已知的小别扭，脚本选择「跳过并说明」
-  而不是「报错」。
+- **覆盖报告是无条件打印的，一个凭证都不需要。** 这条命令上面那次运行是在
+  `TIINGO_API_KEY` / `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` 全部被
+  `env -u` 显式清掉的情况下跑的。以前这里会打印
+  `coverage report: skipped (export TIINGO_API_KEY to see it)`——因为算它的唯一入口
+  是 `Acquisition.coverage_report()`，而 `TiingoAcquisition.__init__` 在**构造时**
+  就要凭证。于是「跑大任务之前先看看要抓多少」这个命令只对已经有 key 的人有用，
+  恰好是最不需要它的那批人。现在它走 `SourceInspector`：不构造 client、
+  不 import 任何厂商模块，因此**结构上**不可能发请求。判断口径没有第二份实现——
+  `SourceInspector.coverage` 走的是真实 run 走的同一个
+  `CoverageLedger.partition_by_coverage` 对象（D-09），所以这份报告和紧接着的抓取
+  不可能对「什么叫覆盖」有分歧。详见 [registry.md](registry.md)。
+- `would fetch: 13729/13729`：这台机器上 `us_all` 的水位树是空的，
+  所以全部待抓。有边车的时候这四行会分别告诉你「跳过多少」「因为加宽而要重抓多少」
+  「多少个是没有起点的 legacy 边车」。
 - `密度 0.464`：全市场日线是稀疏的（退市股票只在自己活着的那段有数据），
   所以稠密面板会浪费一半以上的内存——这正是 `chunking` 存在的理由之一。
 
 ### 例 2：真跑过的第二个例子（没凭证时体量护栏和凭证拒绝的实际行为）
 
-这条命令在**没有** Alpaca 凭证的环境里执行，能看到「护栏先跑、client 后建」的顺序：
+这条命令在**没有** Alpaca 凭证的环境里执行，能看到「护栏先跑、client 后建」的顺序。
+
+> 注意这里演示的是**构造 client 时的凭证拒绝**——那是 `Acquisition` 的 fail-fast 守卫，
+> 是对的，也不该被挪走。但如果你的问题其实是「没凭证的机器上我还能问什么」，
+> 答案不是这条命令，而是 `SourceInspector`：它不构造任何 client，
+> 所以存量 / 覆盖 / 失败原因 / 行级浏览四件事在这台机器上全都能答。
+> 见 [registry.md](registry.md)。
 
 ```bash
 uv run python ingest_alpaca.py --symbols AAPL,MSFT --frequency 1m \
@@ -601,13 +683,43 @@ class MyVendorAcquisition(Acquisition):
 watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱敏、
 `_validate_symbols`、配额等待循环、`coverage_report()`、`stamp_watermarks()`。
 
-### 还要做的两件配套事
+### 还要做的三件配套事
 
 1. 在 `quantlab/enums/data.py` 的 `Vendor` Literal 里加上你的厂商名。
 2. 在 `quantlab/config/__init__.py` 的工厂（`stock_acquisition_config`）里通过 `vendor=` 参数走，
    **不要在调用点手工拼 `AcquisitionConfig`**。工厂是「raw 根以 vendor 结尾、
    watermark 是它的兄弟」这条约定唯一被推导的地方；在调用点手拼就是这条约定开始漂移的方式
    （`ingest_alpaca.py` 的模块 docstring 明确说了这点，还有测试断言它没有直接构造这两个 dataclass）。
+3. **在你的采集类旁边注册一个描述符**（03.4 起新增的一步）。写完一个 `Acquisition`
+   子类还不够——不注册，运维界面就枚举不到它，这个仓库的 ingest 薄壳也没法通过
+   `DataSourceRegistry.get(...)` 拿到它：
+
+   ```python
+   MYVENDOR_SOURCE = register_source(
+       SourceDescriptor(
+           vendor="myvendor",
+           display_name="My Vendor",
+           acquisition_cls=MyVendorAcquisition,
+           config_factory=functools.partial(stock_acquisition_config, vendor="myvendor"),
+           capabilities=(Capability(market="us_equity", frequency="1d"),),
+           required_env=("MYVENDOR_API_KEY",),   # 只有名字，永远不写值
+       )
+   )
+   ```
+
+   然后在 `quantlab/acquisition/registry.py` 的**文件底部**加一行
+   `from quantlab.acquisition import myvendor as _myvendor`。
+
+   **不要加到 `quantlab/acquisition/__init__.py` 里**，那个文件必须保持 0 字节：
+   非空的包 `__init__` 会在每一次 `import quantlab.acquisition.<任何东西>` 时执行，
+   包括 `quantlab.acquisition.universe`——而那个模块的全部结构性保证就是
+   「这里不可能构造出任何 acquisition client」，并且这条保证会被**静默**侵蚀
+   （体量护栏的结构臂是对 `universe.py` 自己源码的 AST 扫描，看不见传递 import）。
+   底部这个位置同时也是描述符能写在厂商类旁边的原因：
+   `tiingo.py` / `alpaca.py` import `registry.py` 拿装饰器，反过来不成立。
+
+   描述符的字段含义、能力列表为什么不是叉乘、`is_configured` / `run()` /
+   reporter / 取消令牌 / 检视器怎么用，全部见 [registry.md](registry.md)。
 
 ---
 
@@ -634,6 +746,8 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
 
 5. **`_failures.json` 是「最近一次 run」的快照，会被覆盖重写。** 想留证据自己拷走。
    反过来说，空的 `{}` 是真的在说「上次跑干净了」，不是「还没跑过」。
+   **它也不是续跑输入**——`quantlab/` 里没人读它，续跑只看水位边车在不在。
+   保留它是为了「进程崩了也还有一份记录」，以及给运维控制台读原因。
 
 6. **`"quota"` 故意不进失败清单。** 所以配额中止之后，清单是空的，
    但这**不代表**所有 symbol 都成功了——被 `"skipped"` 的那些既不在成功集也不在失败集，
