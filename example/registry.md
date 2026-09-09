@@ -550,7 +550,12 @@ print(result.vendor, len(result.succeeded), len(result.failures), result.cancell
 
 **此例未在本机执行**（没有 Tiingo 凭证），所以上面没有贴输出。
 它的每一个组成部分都被测试覆盖：事件序列、取消后 store 仍可续跑、
-`set(result.failures) == set(_failures.json)` 在包括取消在内的每条退出路径上成立。
+`set(result.failures) == set(_failures.json)` 在包括取消在内的每条退出路径上成立
+（自 03.4-08 起写清单前的合并是无条件的，这条现在成立得更彻底）。
+不过要说清这个等式**是什么**：两边由同一个 dict 在同一处组装出来，所以它是「结果和
+清单是一起拼出来的」的回执，不是对任何一边是否正确的检查。真正的回归在
+`tests/test_acquisition_progress.py`：默认路径上配额中止之后，上一轮的条目仍然在
+清单**内容**里。
 
 ---
 
@@ -653,6 +658,9 @@ empty capabilities -> Refusing to register vendor 'empty' with an empty `capabil
 10. **`run()` 不转 Zarr，别给它加 `to_zarr=` 参数。** 三个入口的转换模式和内存护栏
     各不相同；真要暴露转换，那是另一个 registry 级调用。
 
-11. **`_failures.json` 不是续跑输入。** quantlab 里没有任何代码读它——
-    续跑完全由水位边车的**存在与否**驱动。它被保留是因为它是崩溃后仍然存在的
-    运维记录（进程死掉就没有 `AcquisitionResult` 了），检视器读的就是它。
+11. **`_failures.json` 不是续跑输入。** 续跑完全由水位边车的**存在与否**驱动。
+    它被保留是因为它是崩溃后仍然存在的运维记录（进程死掉就没有 `AcquisitionResult` 了）。
+    仓库内读它的有两处——`SourceInspector.failures()`（检视器那一侧）和写清单前的
+    `Acquisition._merge_unattempted_failures`——两处都经由唯一那个容错读取器
+    `CoverageLedger.read_failure_manifest` 去读（2026-09-09 更正，plan 03.4-09：
+    这里原先写着 quantlab 里没有代码读它，03.4-05 把第二个读者加进来之后就不成立了）。

@@ -135,7 +135,9 @@ data/downloads/us_equity/1m/nasdaq_data/_watermarks/alpaca/
 关于那个 `_failures.json`：它是 `Acquisition` 的东西，不是 `PageLedger` 的，
 两者的粒度也完全不同——页台账是**批内**断点（一批一个文件），失败清单是
 **最近一次 run** 的整体快照（`{symbol: 错误消息}`，每次 run 覆盖重写）。
-它**不是续跑输入**：`quantlab/` 里没有任何代码读它，续跑完全由水位边车的存在与否驱动；
+它**不是续跑输入**：续跑完全由水位边车的存在与否驱动；仓库内读它的有两处——
+`SourceInspector.failures()` 和 `Acquisition._merge_unattempted_failures`——两处都经由
+唯一那个容错读取器 `CoverageLedger.read_failure_manifest` 去读；
 保留它是因为进程崩掉之后它还在，而运维控制台要读失败原因
 （详见 [acquisition.md](acquisition.md) 的「核心概念」与 [registry.md](registry.md)）。
 

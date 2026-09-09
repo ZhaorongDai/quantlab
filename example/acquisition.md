@@ -182,14 +182,26 @@ Alpaca 请求里的 `asof` 参数如果不传，厂商默认用**今天的** tic
   所以它永远描述**最近一次 run**；空的 `{}` 是一句有意义的话：上次跑干净了。
   日志里只列头 `Acquisition._FAILURE_LOG_SAMPLE = 5` 个，全量在文件里。
 
-  **它不是续跑输入。** `quantlab/` 底下没有任何代码读这个文件——续跑完全由
-  **水位边车的存在与否**驱动（03.4 D-18 的 FACTUAL CORRECTION 更正了此前相反的说法）。
+  **它不是续跑输入。** 续跑完全由**水位边车的存在与否**驱动
+  （03.4 D-18 的 FACTUAL CORRECTION 更正了此前相反的说法）。
   它被保留下来是因为它是**崩溃后仍然存在的运维记录**：进程死掉就没有
-  `AcquisitionResult` 可以返回了。仓库内的读者只有一个，`SourceInspector.failures()`，
-  它经由唯一那个容错读取器 `CoverageLedger.read_failure_manifest` 去读
-  （两个容错读取器就是两份会各自漂移的失败策略）。取消路径上写清单之前会先
-  **合并**盘上已有的、本轮从没轮到的条目，所以
-  `set(result.failures) == set(_failures.json)` 在**每一条**退出路径上都成立。
+  `AcquisitionResult` 可以返回了。仓库内读它的有**两处**——`SourceInspector.failures()`
+  （不带凭证的运维视图）和 `Acquisition._merge_unattempted_failures`（写清单前的合并）——
+  两处都经由唯一那个容错读取器 `CoverageLedger.read_failure_manifest` 去读
+  （两个容错读取器就是两份会各自漂移的失败策略）。
+  （2026-09-09 更正，plan 03.4-09：这里原先写着仓库内没有代码读它、读者只有一个；
+  03.4-05 把第二个读者加进来之后，那句话就不成立了。上面这两处是写这段时从 `quantlab/`
+  源码里数出来的，不是从旧文案抄过来的。）
+
+  写清单之前的那次**合并**——把盘上已有的、本轮从没轮到的条目折回来——自 03.4-08 起是
+  **无条件**的：它紧挨在写入之前，覆盖续跑循环的**每一条退出路径**：取消、第一轮
+  `pending` 就是空的、正常跑完、`wait_for_quota` 关着时的配额中止、`quota_max_waits`
+  用尽的配额中止。于是 `set(result.failures) == set(_failures.json)` 在每一条退出路径上
+  都成立——但要说清这个等式**是什么**：两边由同一个 dict 在同一处组装出来，所以它是
+  「结果和清单是一起拼出来的」的**回执**，不是对任何一边是否正确的检查（阶段验收时它
+  就曾在一个刚被清空的清单上读出 True）。真正保护运维的是清单**内容**的存活：默认路径
+  上配额中止之后，上一轮的条目仍然在文件里，由 `tests/test_acquisition_progress.py`
+  把文件从盘上读回来断言。
 
   它的写入现在是**原子**的，和水位边车一样，走
   `quantlab/utils/atomic.py:write_json_atomically`（临时文件 + `fsync` + `os.replace`）。
@@ -269,7 +281,7 @@ download(symbols)                 refresh(symbols)
    │      _sleep(quota_wait_seconds) 后重来         │
    └───────────────┬───────────────────────────────┘
                    ▼
-   ⑤  （仅取消分支内）_merge_unattempted_failures()
+   ⑤  （无条件，覆盖每一条退出路径）_merge_unattempted_failures()
        ← 把盘上本轮从没轮到的条目折回来
    ⑥  _write_failure_manifest()  →  _failures.json（原子写）
    ⑦  组装 AcquisitionResult 并挂到 last_result 上，供
