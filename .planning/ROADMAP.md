@@ -346,7 +346,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   source. Check whether watermark/sidecar writes are already atomic (temp file + rename) before
   deciding this needs a lock.
 
-**Plans:** 3/7 plans executed
+**Plans:** 4/7 plans executed
 
 Plans:
 **Wave 1**
@@ -367,7 +367,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 03.4-04-PLAN.md — `CoverageLedger` extraction (`Acquisition` delegates) + the credential-free
+- [x] 03.4-04-PLAN.md — `CoverageLedger` extraction (`Acquisition` delegates) + the credential-free
   `SourceInspector` with lazy row-level browsing (SC-3, SC-4, D-08..D-11)
 
 **Wave 5** *(blocked on Wave 4 completion)*
@@ -458,7 +458,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 3/7 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 4/7 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

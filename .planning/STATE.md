@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation)
 status: executing
-stopped_at: Completed 03.4-03-PLAN.md
-last_updated: "2026-09-09T00:14:27.893Z"
+stopped_at: Completed 03.4-04-PLAN.md
+last_updated: "2026-09-09T00:46:14.150Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: f19d4aaa7f29a1160d3a85ed654e4f0513450d6f
+state_head: e024f2b023406e8ec18607fb535a13cf209eb532
 progress:
   total_phases: 11
   completed_phases: 1
   total_plans: 37
-  completed_plans: 33
+  completed_plans: 34
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — EXECUTING
-Plan: 4 of 7
+Plan: 5 of 7
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
@@ -94,6 +94,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P01 | 20 min | 3 tasks | 6 files |
 | Phase 03.4 P02 | 22 min | 3 tasks | 8 files |
 | Phase 03.4 P03 | 13 min | 2 tasks | 5 files |
+| Phase 03.4 P04 | 23 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -190,6 +191,10 @@ Recent decisions affecting current work:
 - [Phase 03.4]: DataSourceRegistry.SOURCES is a TUPLE rebound by register_source, and its lock needs three jointly-sufficient arms: tuple-type, no .append reaching SOURCES (AST, not substring), and exactly one rebinding statement — The .append scan alone is insufficient: switching SOURCES to a list while keeping `SOURCES += (d,)` is an in-place list.__iadd__ extend -- the exact mutation isolated_registry's monkeypatch isolation cannot survive -- and it passes an append scan untouched. Mutation-verified: list+append turns 5 tests red.
 - [Phase 03.4]: The volume guard's SC-6 ordering test now recognises BOTH fetch-site forms (`acquisition = ...` and `run(...)`); narrowing it back to one makes the assertion vacuous for all three shells at once after plan 06 — A registry-reduced shell binds no `acquisition` name, so the original detector returns an empty list and an ordering assertion over an empty set proves nothing -- the vacuous-guard failure that file's own "the guard is WIRED" section exists to prevent. The empty case is now an explicit failure with a message, not a silent pass.
 - [Phase 03.4]: test_enumeration_order was VACUOUS as planned: alpaca/tiingo register in already-sorted order, so all() returning tuple(SOURCES) unsorted stayed green -- it now also asserts against a synthetic reversed-registration registry — The 03.2 'a lock that passes on arrival is mutation-verified rather than accepted' lesson, hit again. Found by running the mutation, not by reading the test.
+- [Phase 03.4]: Coverage judgement lives in ONE credential-free leaf, quantlab/base/coverage.py:CoverageLedger; Acquisition composes it per access and every one of eleven moved members is a single delegating call, AST-pinned — A re-inlined body would keep all ~40 existing call sites green while quietly ending D-09. Mutation-verified: re-inlining _partition_by_coverage turns two tests red. Per-access construction (not cached in the config setter) because AlpacaAcquisition._data_type raises for a tick config whose knob is set after assignment.
+- [Phase 03.4]: The D-09 sharing is proved by the MUTATION arm, not the identity arm -- acquisition._coverage.partition_by_coverage.__func__ is CoverageLedger.partition_by_coverage stays true even when Acquisition re-inlines its own body — Measured under mutation M1: the test failed at the monkeypatch assertion (2 == 111), not at the identity assertion. D-09 therefore rests on that mutation arm plus the AST single-delegating-call test. Recorded rather than deleted so a reader does not assume the identity arm carries weight it does not.
+- [Phase 03.4]: browse_zarr refuses an unknown symbol with a ValueError naming the store, the requested symbols and how many it carries -- never reindexed to NaN; the original KeyError stays in __cause__ — A NaN column is indistinguishable from a genuinely empty history, so an operator reads 'this ticker has no data' when the truth is 'this store has never heard of it'. ValueError over KeyError because KeyError.__str__ reprs its argument and mangles a multi-line operator message, and because ValueError is the house style for every other legible refusal in this repo.
+- [Phase 03.4]: Third recurrence of the docstring/literal-scan false positive in this phase: a prohibition stated in a docstring must be written in path form when a literal source scan is its acceptance check — 03.4-01 hit it with pytest.skip, 03.4-03 with os.replace, 03.4-04 with both 'quantlab.base.acquisition' in coverage.py and 'pl.scan_parquet' in inspector.py. The property a substring scan gestures at is genuinely proved by the AST import resolver, which also sees relative spellings a substring scan cannot.
 
 ### Pending Todos
 
@@ -239,8 +244,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T00:14:27.662Z
-Stopped at: Completed 03.4-03-PLAN.md
+Last session: 2026-09-09T00:45:57.547Z
+Stopped at: Completed 03.4-04-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
