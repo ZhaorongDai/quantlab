@@ -6,7 +6,9 @@ then converts/cleans/persists it through StockDataset into a Zarr store (D-02
 market/frequency convention, see quantlab/config/__init__.py:stock_kline_config()).
 
 This script names no vendor class anywhere: it resolves its source from
-`DataSourceRegistry` and downloads through `registry.run()` (03.4 D-15).
+`DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
+builds its acquisition config through `SOURCE.config_factory` and downloads
+through `registry.run()` (03.4 D-15 / SC-1 / SC-6).
 
 Requires the TIINGO_API_KEY environment variable to be set -- get your key
 from the Tiingo dashboard (https://api.tiingo.com/). This script never
@@ -33,7 +35,7 @@ import argparse
 from quantlab.acquisition.registry import DataSourceRegistry, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
-from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
+from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.cli import (
     add_data_dir_arg,
@@ -72,7 +74,18 @@ def _build_configs(
     # asks the same helper for `"in_range"` instead.
     symbols = resolve_symbols(args, catalog, mode="as_of")
 
-    acq_config = stock_acquisition_config(
+    # `SOURCE.config_factory` is `functools.partial(stock_acquisition_config,
+    # vendor="tiingo")` -- the SAME factory this script called directly before,
+    # with the vendor pinned by the DESCRIPTOR instead of inherited from the
+    # factory's incumbent default. The direct call produced an identical config
+    # today only because "tiingo" happens to be that default: the vendor was
+    # never actually routed, so the descriptor's `config_factory` was dead
+    # weight in the one script that was supposed to demonstrate it (03.4-06,
+    # D-15/SC-6). All three shells now build their acquisition config the same
+    # way, which is what `tests/test_ingest_shells.py::
+    # test_each_shell_resolves_its_source_through_the_registry` can assert
+    # uniformly rather than exempting one.
+    acq_config = SOURCE.config_factory(
         symbols=symbols,
         start_date=args.start_date,
         end_date=args.end_date,
