@@ -774,11 +774,10 @@ def test_result_and_manifest_agree(
        pass alone would report a clean run the manifest contradicts.
     2. **Cancelled.** `_write_failure_manifest` OVERWRITES and `_run`'s
        `failures` starts empty, so a run cancelled before it reached symbols
-       that failed LAST time would write `{}` -- and that method's own
-       docstring calls an empty manifest a meaningful statement that the last
-       run was clean. The cancel-path merge is what keeps the previous run's
-       entry on disk; the cancelled run's own result stays empty, because it
-       reached nothing.
+       that failed LAST time would write `{}` -- wiping out the operator's only
+       record that those symbols are still failing. The cancel-path merge is
+       what keeps the previous run's entry on disk; the cancelled run's own
+       result stays empty, because it reached nothing.
     """
     import json
 
@@ -893,8 +892,8 @@ def test_result_and_manifest_agree(
     assert second.last_result.cancelled is True
     assert after != {}, (
         "a cancelled run that never reached the failed symbol must not "
-        "overwrite the manifest with an empty dict claiming the last run was "
-        "clean (RESEARCH Pitfall 4)"
+        "overwrite the manifest with an empty dict, wiping out the operator's "
+        "only record that the symbol is still failing (RESEARCH Pitfall 4)"
     )
     assert after == before
     # The cancelled run reached NO symbol, so it has nothing to report -- while
@@ -1017,8 +1016,8 @@ def test_the_manifest_survives_a_quota_abort_on_the_default_path(
         f"the aborting run erased the previous run's failure record. "
         f"{manifest_path.name} on disk now holds {after}; it held {before} "
         f"before the abort, and the aborting run never asked the vendor for "
-        f"{permanent}. An empty manifest is, per _write_failure_manifest's own "
-        f"docstring, a statement that the last run was clean."
+        f"{permanent}. Emptying this file deletes the operator's only record "
+        f"that the symbol is still failing; nothing else on disk carries it."
     )
     assert after[permanent] == recorded_reason, (
         f"the surviving entry must carry run 1's message; on disk it reads "

@@ -566,10 +566,10 @@ def test_a_later_aborting_pass_does_not_erase_an_earlier_passs_failures(
     The sequence: pass 1 fails a real 404 and then trips the global quota
     abort; the run waits; pass 2 re-derives `pending` from disk, aborts again
     on its first batch, and returns `{}`. The manifest was then written EMPTY
-    -- and its own docstring calls an empty manifest "a meaningful statement
-    that the last run was clean", which is a false statement about a run that
-    had a failure. (Reporting only: the symbol keeps no watermark, so it is
-    still retried. The manifest is what the operator is told to trust.)
+    -- deleting the operator's only record that pass 1's 404 is still failing,
+    even though the run as a whole had that failure. (Reporting only: the
+    symbol keeps no watermark, so it is still retried. The manifest is what the
+    operator is told to trust.)
     """
     import json
 

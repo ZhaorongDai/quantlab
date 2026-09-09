@@ -1419,10 +1419,9 @@ class Acquisition(ABC):
             # passes and each one re-derives `pending` from the watermarks on
             # disk, so a pass that aborts before it reaches an earlier pass's
             # failures returns `{}` -- and a plain reassignment then wrote an
-            # EMPTY manifest for a run that had, say, 40 real 404s. The
-            # manifest's own docstring calls an empty one "a meaningful
-            # statement that the last run was clean", which would have been a
-            # false statement about a run that was not.
+            # EMPTY manifest for a run that had, say, 40 real 404s. Writing the
+            # manifest out as `{}` wipes the operator's only record that those
+            # symbols are still failing; nothing else on disk carries it.
             #
             # Symbols that SUCCEEDED this pass are dropped in the same update:
             # a failure the next pass cleared must not linger in the manifest
@@ -1506,8 +1505,8 @@ class Acquisition(ABC):
         # exits by hand is exactly what was got wrong, and the merge sat in the
         # cancel branch alone while the DEFAULT quota abort
         # (`wait_for_quota` is off unless asked for) overwrote a previous run's
-        # 404s with `{}` -- which `_write_failure_manifest`'s own docstring
-        # calls a meaningful statement that the last run was clean
+        # 404s with `{}` -- erasing the operator's only record that those
+        # symbols are still failing, which nothing else on disk carries
         # (03.4 D-18, `03.4-VERIFICATION.md` gap 1, REVIEW CR-01).
         #
         # `attempted` is derived from `failures`, NOT from `manifest`: it is
@@ -2084,10 +2083,9 @@ class Acquisition(ABC):
         **Why this exists at all.** `_write_failure_manifest` OVERWRITES, and
         `_run`'s `failures` starts empty on every call. Any run that stops
         before it reaches a symbol that failed last time therefore writes `{}`
-        -- while `_write_failure_manifest`'s own docstring calls an empty
-        manifest "a meaningful statement that the last run was clean". That
-        statement would be false about a store that still holds forty
-        un-retried 404s, in the one file the operator console shows.
+        -- wiping out the operator's only record that those symbols are still
+        failing. On a store still holding forty un-retried 404s that is forty
+        live entries deleted from the one file the operator console shows.
 
         **The history, because the first wiring got it wrong.** This method was
         written for the CANCELLED run and wired into the `if cancelled:` branch
@@ -2155,28 +2153,49 @@ class Acquisition(ABC):
             failures.setdefault(symbol, message)
 
     def _write_failure_manifest(self, failures: dict[str, str]) -> None:
-        """Persist `{symbol: message}` for this run, overwriting the previous
-        manifest.
+        """Persist `{symbol: message}` -- the store's durable record of every
+        symbol currently known to be failing.
 
-        Overwriting is correct rather than lossy: a failed symbol never got a
+        The file is rewritten whole on every call, BUT the caller has already
+        folded the on-disk entries this run had no news about into the dict it
+        passes here: `_merge_unattempted_failures`, unconditional since 03.4-08
+        and positioned outside `_run`'s resume loop, immediately before this
+        call. What lands on disk is therefore a CROSS-RUN record rather than a
+        per-run artifact. Rewriting whole is safe because those carried-forward
+        entries are already in the payload, and a failed symbol never got a
         watermark, so the next run puts it back in `pending` and it reappears
-        here if it fails again. The manifest therefore always describes the
-        LATEST run, and an empty one is a meaningful statement that the last
-        run was clean (T-0iy-07).
+        here if it fails again.
 
-        "The latest RUN", not the latest PASS. `_run`'s resume loop can execute
-        several passes, and `failures` is accumulated across all of them rather
-        than reassigned by each: a pass that aborts early has no news about the
-        symbols an earlier pass already failed, and letting it erase them would
-        make an empty manifest a false statement about a run that had failures
-        (WR-03).
+        Read an empty payload as "every symbol this run had news about came
+        back clean, AND the disk held no other carried-forward entry" -- in
+        that direction only, because a NON-empty file likewise does not imply
+        the preceding run failed. `_merge_unattempted_failures`'s docstring
+        works that consequence through in full; it is not repeated here.
+
+        The result object is a DIFFERENT value. `_run` passes a
+        `manifest = dict(failures)` COPY and hands the run's own `failures`
+        untouched to `AcquisitionResult` (REVIEW CR-01), so what holds between
+        them is a containment: the result's failure set is a subset of this
+        file's key set, and the messages agree on every key the two share.
+        (T-0iy-07, as amended by 03.4-08 and REVIEW CR-01. The operator-facing
+        durability guarantee is pinned FROM DISK by
+        `tests/test_acquisition_progress.py`'s
+        `test_the_manifest_survives_a_quota_abort_on_the_default_path`.)
+
+        Accumulated across the RUN, not per PASS. `_run`'s resume loop can
+        execute several passes, and `failures` is accumulated across all of
+        them rather than reassigned by each: a pass that aborts early has no
+        news about the symbols an earlier pass already failed, and letting it
+        erase them would wipe live entries out of the operator's only record
+        that those symbols are still failing (WR-03).
 
         The write is ATOMIC (D-20). It matters here for the same reason it
         matters for the watermark: a cancel lands at a batch boundary and this
         file is rewritten on the way out, so a plain write could leave a
         truncated manifest -- either unparseable, or well-formed but naming
-        FEWER failures than the run actually had, which is the same false
-        "the last run was clean" statement WR-03 exists to prevent.
+        FEWER symbols than the record actually holds, which silently deletes
+        durable entries: the same erasure WR-03 guards against, arriving by a
+        different route.
         """
         # Through the LEDGER, not by re-joining the two parts here: a second
         # path expression is how the tick `data_type` namespacing gets

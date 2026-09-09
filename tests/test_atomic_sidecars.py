@@ -323,15 +323,16 @@ def test_failure_manifest_write_is_atomic_and_keeps_indent_and_sort_keys(
 ) -> None:
     """The failure manifest stays `indent=2, sort_keys=True`.
 
-    A human reads this file to find out which symbols the last run skipped, so
-    its formatting is the feature, not incidental. The same helper writes it
-    and the compact watermark above -- which is the point of forwarding
-    `**json_kwargs` rather than picking one house format.
+    A human reads this file to find out which symbols are currently known to
+    be failing, so its formatting is the feature, not incidental. The same
+    helper writes it and the compact watermark above -- which is the point of
+    forwarding `**json_kwargs` rather than picking one house format.
 
-    An EMPTY manifest is written and asserted too: `_write_failure_manifest`'s
-    docstring says an empty one is "a meaningful statement that the last run
-    was clean" (T-0iy-07), so `{}` must reach disk as a real file rather than
-    being optimised away into an absent one.
+    An EMPTY manifest is written and asserted too, because `{}` is itself a
+    meaningful ON-DISK state -- "no symbol is currently known to be failing"
+    (T-0iy-07). It must therefore reach disk as a real file rather than being
+    optimised away into an absent one: the two states have to stay
+    distinguishable.
     """
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
     acq = TiingoAcquisition(config)
