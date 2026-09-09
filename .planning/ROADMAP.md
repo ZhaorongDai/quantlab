@@ -412,7 +412,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
   it.
 
-**Plans:** 11 plans (9/11 executed; 03.4-10 and 03.4-11 close the 4th recurrence of the D-18 documentation-consistency gap in `03.4-VERIFICATION.md`)
+**Plans:** 10/11 plans executed (9/11 executed; 03.4-10 and 03.4-11 close the 4th recurrence of the D-18 documentation-consistency gap in `03.4-VERIFICATION.md`)
 
 Plans:
 **Wave 1**
@@ -471,7 +471,7 @@ both plans end on a whole-suite pytest gate, so they are sequenced rather than r
 **Wave 10** *(blocked on Wave 9 — the 4th recurrence of the same defect; the acceptance method
 itself is what changes, so it must be built after the 3rd attempt's word list is on the record)*
 
-- [ ] 03.4-10-PLAN.md — GAP (D-18, 4th recurrence): five sites still state the retired "last run"
+- [x] 03.4-10-PLAN.md — GAP (D-18, 4th recurrence): five sites still state the retired "last run"
   semantics — the docstring SUMMARY LINES of both manifest readers
   (`CoverageLedger.read_failure_manifest`, `SourceInspector.failures`), the `example/registry.md`
   API table, and two lighter wordings in `quantlab/base/acquisition.py` / `tests/test_tiingo_quota.py`.
@@ -559,7 +559,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 9/9 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 10/11 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |
