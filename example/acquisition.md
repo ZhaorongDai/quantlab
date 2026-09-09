@@ -756,9 +756,12 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
    要么执行 `--stamp-legacy-watermarks <START_DATE>`（值只能你自己提供，代码绝不猜），
    要么 `--legacy-watermarks refetch`。忽略它 = 接受一个你看不见的历史缺口。
 
-5. **`_failures.json` 是「最近一次 run」的快照，会被覆盖重写。** 想留证据自己拷走。
-   反过来说，空的 `{}` 是真的在说「上次跑干净了」，不是「还没跑过」。
-   **它也不是续跑输入**——`quantlab/` 里没人读它，续跑只看水位边车在不在。
+5. **`_failures.json` 是跨 run 累积的运维记录，每次 run 覆盖重写。** 想留证据自己拷走。
+   自 03.4-08 起，写盘之前会把「盘上已有、本轮从没轮到」的旧条目折回来，所以空的 `{}`
+   只说明「本轮有消息的符号都干净、且盘上也没有别的遗留条目」，不是「还没跑过」。
+   **它也不是续跑输入**——续跑只看水位边车在不在；仓库内读它的有**两处**
+   （`SourceInspector.failures()` 与写盘前的 `Acquisition._merge_unattempted_failures`），
+   两处都经由 `CoverageLedger.read_failure_manifest`。
    保留它是为了「进程崩了也还有一份记录」，以及给运维控制台读原因。
 
 6. **`"quota"` 故意不进失败清单。** 所以配额中止之后，清单是空的，
