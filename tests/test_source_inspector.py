@@ -333,3 +333,601 @@ def test_every_moved_acquisition_member_is_a_single_delegating_call() -> None:
             if isinstance(node, ast.Attribute)
         }
         assert "_coverage" in reached, f"{name} does not reach self._coverage"
+
+
+# ---------------------------------------------------------------------------
+# 03.4-04 Task 2 -- SourceInspector: coverage, failures, inventory
+#                   (SC-3 / SC-4, D-08 / D-09)
+#
+# The three-way proof structure below is copied from
+# `tests/test_volume_guard.py:749-812`
+# (`test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials`).
+# A copy rather than a cross-test import, for the same reason `_scan_source_count`
+# above is a copy: `tests/` is not a package.
+# ---------------------------------------------------------------------------
+
+#: Opens the structural arm's assertion message and appears in exactly one file
+#: in the repository, so a failure can be attributed to THIS arm rather than to
+#: a neighbouring one that would have failed anyway. Deliberately NOT the same
+#: token `tests/test_volume_guard.py` uses.
+_INSPECTOR_RESOLVER_TOKEN = "INSPECTOR-FORBIDDEN-IMPORT-RESOLVED"
+
+#: Every module whose presence in the inspector's import graph would mean an
+#: `Acquisition` subclass -- and therefore a credential demand and a socket --
+#: is reachable from the read surface. `quantlab.acquisition.registry` is in the
+#: set for a second reason: its own bottom imports pull BOTH vendor modules, so
+#: reaching it reaches them transitively.
+_FORBIDDEN_INSPECTOR_MODULES = frozenset(
+    {
+        "quantlab.base.acquisition",
+        "quantlab.acquisition.tiingo",
+        "quantlab.acquisition.alpaca",
+        "quantlab.acquisition.registry",
+    }
+)
+
+
+def _no_network(monkeypatch) -> None:
+    """Make ANY socket allocation raise.
+
+    Copied from `tests/test_volume_guard.py:153-171`. Stronger than patching
+    `requests.get`: it fails on a connection opened through any library by any
+    means, which is what "issues zero vendor requests" has to mean if the claim
+    is to survive someone adding an httpx-based client later.
+    """
+    import socket
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            "the source inspector opened a socket; it is a local-file read "
+            "surface and must cost zero vendor requests"
+        )
+
+    monkeypatch.setattr(socket, "socket", _forbidden)
+    monkeypatch.setattr(socket, "create_connection", _forbidden)
+
+
+def _resolved_imports(source_path, module_name: str) -> set[str]:
+    """Every module `source_path` imports, as a fully qualified dotted name.
+
+    Copied from `tests/test_volume_guard.py:717-745`. Relative imports are
+    resolved against `module_name`'s own package, which is the whole point:
+    `from ..base.acquisition import X` and `from ..base import acquisition`
+    name the same module as `import quantlab.base.acquisition` and must be seen
+    as such. `from X import y` also contributes `X.y`, because `y` may itself be
+    a submodule.
+    """
+    import ast
+
+    package = module_name.rpartition(".")[0]
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package
+                for _ in range(node.level - 1):
+                    base = base.rpartition(".")[0]
+            else:
+                base = ""
+            target = f"{base}.{node.module}" if base and node.module else (
+                node.module or base
+            )
+            found.add(target)
+            found.update(f"{target}.{alias.name}" for alias in node.names)
+    return found
+
+
+def _sidecar_tree(config, *, covered=(), widened=(), legacy=(), no_data=()):
+    """Write watermark sidecars under `config`'s ledger root and return it.
+
+    Each group produces a deliberately different read-time state, so a test
+    exercising this tree exercises all four branches of `classify_coverage`
+    rather than only the easy one:
+
+    - `covered`  -- start <= config.start_date and last_date == config.end_date
+    - `widened`  -- last_date matches but the recorded start is LATER
+    - `legacy`   -- last_date matches, no recorded start at all
+    - `no_data`  -- covered, plus the vendor-said-nothing marker
+    """
+    import json
+
+    from quantlab.base.coverage import CoverageLedger
+
+    ledger = CoverageLedger.for_config(config)
+    root = ledger.watermark_root
+    root.mkdir(parents=True, exist_ok=True)
+
+    def _write(symbol: str, payload: dict) -> None:
+        (root / f"{symbol}.json").write_text(json.dumps(payload))
+
+    for symbol in covered:
+        _write(
+            symbol,
+            {"start_date": config.start_date, "last_date": config.end_date},
+        )
+    for symbol in widened:
+        _write(symbol, {"start_date": "2024-01-15", "last_date": config.end_date})
+    for symbol in legacy:
+        _write(symbol, {"last_date": config.end_date})
+    for symbol in no_data:
+        _write(
+            symbol,
+            {
+                "start_date": config.start_date,
+                "last_date": config.end_date,
+                "no_data": True,
+            },
+        )
+    return ledger
+
+
+def test_the_inspector_answers_without_credentials(
+    acquisition_config, no_credentials, stock_zarr
+) -> None:
+    """SC-3, arm 2: every credential is GONE and all three answers still come.
+
+    This is the absurdity D-08 exists to remove. `TiingoAcquisition(config)`
+    raises `RuntimeError` at construction without `TIINGO_API_KEY`, so
+    `ingest_us_equity.py` prints "coverage report: skipped" on an unconfigured
+    machine -- for a computation that is nothing but `open()` and `json.load()`.
+
+    `no_credentials` deletes all three names; the assertion that they really
+    are gone is made HERE rather than trusted, because a fixture that silently
+    stopped clearing them would leave this test green for the wrong reason.
+
+    Reddened by: importing any vendor class into `inspector.py` and
+    constructing it, or by having the inspector reach coverage through an
+    `Acquisition`.
+    """
+    import os
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    for name in no_credentials:
+        assert os.environ.get(name) is None, name
+
+    config = acquisition_config(
+        vendor="tiingo", symbols=("AAPL", "MSFT", "GOOG", "TSLA")
+    )
+    _sidecar_tree(
+        config, covered=("AAPL",), widened=("MSFT",), legacy=("GOOG",),
+        no_data=("TSLA",),
+    )
+    dataset_config = stock_zarr(symbols=["AAPL", "MSFT"], periods=10)
+
+    inspector = SourceInspector()
+
+    report = inspector.coverage(config)
+    assert report["requested"] == 4
+    assert report["covered"] == 2  # AAPL and the no_data-marked TSLA
+    assert report["widened"] == 1
+    assert report["legacy"] == 1
+    assert report["no_data"] == 1
+    # `legacy_watermarks` defaults to "warn", so GOOG is skipped-but-reported.
+    assert report["pending"] == 1
+    assert report["skipped"] == 3
+
+    assert inspector.failures(config) == {}
+
+    stock = inspector.inventory(config, dataset_config)
+    assert stock["raw"]["symbols_with_watermark"] == 4
+    assert stock["raw"]["no_data"] == 1
+    assert stock["raw"]["coverage_last_date"] == config.end_date
+    assert stock["zarr"] is not None
+    assert stock["zarr"]["exists"] is True
+    assert stock["zarr"]["dims"]["symbol"] == 2
+
+
+def test_the_inspector_issues_zero_vendor_requests(
+    acquisition_config, no_credentials, stock_zarr, monkeypatch
+) -> None:
+    """SC-3, arm 1: every socket allocation raises and every method returns.
+
+    A tripwire on `socket.socket` / `socket.create_connection` rather than on
+    `requests.get`, so the claim survives someone adding an httpx-based client
+    later. Combined with arm 3 below it is the difference between "did not
+    happen to call out" and "could not have".
+    """
+    from quantlab.acquisition.inspector import SourceInspector
+
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    _sidecar_tree(config, covered=("AAPL",), legacy=("MSFT",))
+    dataset_config = stock_zarr(symbols=["AAPL"], periods=5)
+
+    _no_network(monkeypatch)
+
+    inspector = SourceInspector()
+    assert inspector.coverage(config)["requested"] == 2
+    assert inspector.failures(config) == {}
+    assert inspector.inventory(config, dataset_config)["raw"]["exists"] in (
+        True,
+        False,
+    )
+    assert inspector.inventory(config)["zarr"] is None
+
+
+def test_inspector_binds_no_client() -> None:
+    """SC-3, arm 3: the STRUCTURAL proof -- there is nothing here that could
+    open a socket, whatever the call order.
+
+    Arms 1 and 2 are behavioural and would both pass for a surface that merely
+    happens to take the local branch today. This one resolves the import graph
+    of BOTH new modules with `ast` -- relative spellings included, which no
+    substring scan can see -- and asserts the forbidden set is untouched.
+
+    `quantlab.acquisition.registry` is in the forbidden set for a second
+    reason: its own bottom imports pull both vendor modules, so reaching the
+    registry reaches every client transitively.
+
+    Reddened by: adding `from quantlab.acquisition.registry import ...` (or any
+    relative spelling of it) to either module, or binding an `Acquisition`
+    subclass into the inspector's namespace.
+    """
+    import inspect
+    from pathlib import Path
+
+    import quantlab.acquisition.inspector as inspector_module
+    import quantlab.base.coverage as coverage_module
+    from quantlab.base.acquisition import Acquisition
+
+    for module in (inspector_module, coverage_module):
+        resolved = _resolved_imports(
+            Path(inspect.getfile(module)), module.__name__
+        )
+        hits = sorted(resolved & _FORBIDDEN_INSPECTOR_MODULES)
+        assert not hits, (
+            f"{_INSPECTOR_RESOLVER_TOKEN}: {module.__name__} imports {hits}; "
+            f"the read surface must live where no acquisition client can be "
+            f"constructed, whatever the call order"
+        )
+        # Non-vacuity: the resolver saw a real import graph, not an empty one.
+        assert resolved, f"{module.__name__} resolved to zero imports"
+
+    bound_clients = [
+        name
+        for name, value in vars(inspector_module).items()
+        if isinstance(value, type) and issubclass(value, Acquisition)
+    ]
+    assert not bound_clients, bound_clients
+
+    # And no name ending in `Acquisition` is bound at all -- a subclass that
+    # had not yet been imported when this ran would slip past the issubclass
+    # check above.
+    acquisition_names = [
+        name
+        for name in vars(inspector_module)
+        if name.endswith("Acquisition") and name != "AcquisitionConfig"
+    ]
+    assert not acquisition_names, acquisition_names
+
+
+def test_coverage_is_the_same_code_as_the_real_run(
+    acquisition_config, monkeypatch
+) -> None:
+    """SC-4 / D-09: proved by IDENTITY and by MUTATION, not by equality.
+
+    Two implementations that agree on every case anyone tested are exactly how
+    an operator ends up trusting the wrong one, so equality of the two returned
+    dicts is the WEAKEST arm here and is asserted first only because it is the
+    cheapest. What actually binds:
+
+    1. `Acquisition._partition_by_coverage` reaches
+       `CoverageLedger.partition_by_coverage` -- asserted on the FUNCTION
+       OBJECT, so a re-inlined body fails even if it computes the same answer;
+    2. monkeypatching that one function changes BOTH answers. A second
+       implementation would keep answering correctly and this arm would go red.
+
+    Reddened by: giving either caller its own partition body.
+    """
+    import os
+
+    monkeypatch.setenv("TIINGO_API_KEY", "not-a-real-key")
+
+    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition.tiingo import TiingoAcquisition
+    from quantlab.base.coverage import CoverageLedger
+
+    config = acquisition_config(
+        vendor="tiingo", symbols=("AAPL", "MSFT", "GOOG", "TSLA")
+    )
+    _sidecar_tree(
+        config, covered=("AAPL",), widened=("MSFT",), legacy=("GOOG",),
+        no_data=("TSLA",),
+    )
+
+    inspector = SourceInspector()
+    acquisition = TiingoAcquisition(config)
+
+    inspector_answer = inspector.coverage(config)
+    acquisition_answer = acquisition.coverage_report()
+
+    # Arm 0 -- equality, key for key and value for value.
+    assert inspector_answer == acquisition_answer
+    assert set(inspector_answer) == {
+        "requested",
+        "pending",
+        "skipped",
+        "covered",
+        "widened",
+        "legacy",
+        "no_data",
+    }
+
+    # Arm 1 -- IDENTITY. Both callers reach one function object.
+    ledger = CoverageLedger.for_config(config)
+    assert (
+        type(ledger).partition_by_coverage
+        is CoverageLedger.partition_by_coverage
+    )
+    assert (
+        acquisition._coverage.partition_by_coverage.__func__
+        is CoverageLedger.partition_by_coverage
+    )
+
+    # Arm 2 -- MUTATION. One patch, both answers move.
+    sentinel_pending = ["MUTATED"]
+    sentinel_counts = {
+        "covered": 111,
+        "widened": 222,
+        "legacy": 333,
+        "no_data": 444,
+    }
+    monkeypatch.setattr(
+        CoverageLedger,
+        "partition_by_coverage",
+        lambda self, requested, from_watermark: (
+            list(sentinel_pending),
+            dict(sentinel_counts),
+        ),
+    )
+    mutated_inspector = inspector.coverage(config)
+    mutated_acquisition = acquisition.coverage_report()
+
+    for answer in (mutated_inspector, mutated_acquisition):
+        assert answer["pending"] == 1
+        assert answer["covered"] == 111
+        assert answer["widened"] == 222
+        assert answer["legacy"] == 333
+        assert answer["no_data"] == 444
+    assert mutated_inspector == mutated_acquisition
+    # And the mutation really did change something -- otherwise arm 2 would
+    # pass for a patch that happened to reproduce the true answer.
+    assert mutated_inspector != inspector_answer
+
+    assert os.environ["TIINGO_API_KEY"] == "not-a-real-key"
+
+
+def test_the_inspector_rejects_a_traversal_symbol(acquisition_config) -> None:
+    """T-03.4-04-01: a caller-supplied symbol becomes a watermark FILENAME.
+
+    Mirrors the existing `coverage_report(["../../etc"])` test on the
+    acquisition side. The rejection must happen BEFORE any path is built, which
+    is why `SourceInspector.coverage` validates first and why it validates
+    through `CoverageLedger.validate_symbols` rather than through a local copy
+    of the pattern -- a local copy is what caused incident 260907-10t.
+
+    Reddened by: moving the validation after `partition_by_coverage`, or
+    dropping it.
+    """
+    import pytest
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    config = acquisition_config(vendor="tiingo")
+    inspector = SourceInspector()
+
+    with pytest.raises(ValueError, match="well-formed ticker pattern"):
+        inspector.coverage(config, symbols=["../../etc/hosts"])
+
+    # Nothing was created on the way to the refusal.
+    assert not (Path(config.watermark_path).parent / "etc").exists()
+
+
+def test_tick_watermark_roots_agree_between_the_two_ledger_constructors(
+    acquisition_config, monkeypatch, mock_alpaca_client
+) -> None:
+    """Pitfall 8: quotes' watermarks must never answer a trades query.
+
+    `CoverageLedger.for_config` resolves `data_type` from `config.kwargs`
+    directly, while the ledger `Acquisition` composes takes it from
+    `AlpacaAcquisition._data_type` -- an instance property that validates
+    against `TICK_DATA_TYPES`. Two resolutions, so they are pinned to the same
+    `watermark_root` here; the incident STATE.md records is a completed quotes
+    backfill telling a trades run that every symbol was covered.
+
+    The `1d` half is asserted alongside, so a "fix" that namespaced every
+    frequency -- moving every existing sidecar tree -- also fails.
+
+    Reddened by: dropping the `data_type` branch from either `watermark_root`
+    or `for_config`.
+    """
+    monkeypatch.setenv("APCA_API_KEY_ID", "not-a-real-id")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "not-a-real-secret")
+
+    from quantlab.acquisition.alpaca import AlpacaAcquisition
+    from quantlab.base.coverage import CoverageLedger
+
+    tick = acquisition_config(
+        vendor="alpaca", frequency="tick", kwargs={"data_type": "trades"}
+    )
+    from_config = CoverageLedger.for_config(tick)
+    composed = AlpacaAcquisition(tick)._coverage
+
+    assert from_config.watermark_root == composed.watermark_root
+    assert from_config.watermark_root.name == "trades"
+    assert from_config.watermark_path("AAPL") == composed.watermark_path("AAPL")
+
+    # The other data type resolves elsewhere -- the property that makes the
+    # namespacing load-bearing rather than decorative.
+    quotes = acquisition_config(
+        vendor="alpaca", frequency="tick", kwargs={"data_type": "quotes"}
+    )
+    assert (
+        CoverageLedger.for_config(quotes).watermark_root
+        != from_config.watermark_root
+    )
+
+    # `1d` is NOT namespaced, for either constructor: every sidecar tree
+    # already on disk keeps its path.
+    daily = acquisition_config(vendor="alpaca", frequency="1d")
+    assert CoverageLedger.for_config(daily).watermark_root == Path(
+        daily.watermark_path
+    )
+    assert AlpacaAcquisition(daily)._coverage.watermark_root == Path(
+        daily.watermark_path
+    )
+
+
+def test_inventory_reports_the_two_tiers_separately(
+    acquisition_config, no_credentials, hive_raw_tree, stock_pqt_row, stock_zarr
+) -> None:
+    """The two tiers are different artefacts with different lifecycles.
+
+    A single merged footprint would make "the raw tier is 208 MB and the Zarr
+    store is 5.3 MB" unanswerable, and `--to-zarr` is optional on
+    `ingest_us_equity.py`, so "no Zarr store" is a NORMAL state that must read
+    as "not asked" (`None`) rather than as zero.
+
+    The sidecar tree here deliberately contains both artefacts a blind glob
+    would miscount -- the failure manifest and a `_pages/` ledger -- so
+    `symbols_with_watermark` is asserted against a tree that can actually get
+    it wrong.
+    """
+    import json
+
+    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.base.coverage import (
+        FAILURE_MANIFEST_NAME,
+        PAGE_LEDGER_DIR_NAME,
+    )
+
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    ledger = _sidecar_tree(config, covered=("AAPL", "MSFT"))
+    (ledger.watermark_root / FAILURE_MANIFEST_NAME).write_text(
+        json.dumps({"ZZZZ": "vendor said no"})
+    )
+    pages = ledger.watermark_root / PAGE_LEDGER_DIR_NAME
+    pages.mkdir(parents=True, exist_ok=True)
+    (pages / "batch0000.pages.json").write_text(json.dumps({"pages": []}))
+
+    raw_parent = Path(config.raw_data_dir_path).parent
+    raw_root = hive_raw_tree(
+        raw_parent,
+        "tiingo",
+        [stock_pqt_row("2024-01-15", "AAPL"), stock_pqt_row("2024-02-15", "MSFT")],
+    )
+    # A stray non-shard file, so `shards` is asserted against a tree where the
+    # `.pqt` filter can actually be wrong. Without this, dropping the filter
+    # entirely leaves the count at 2 and the assertion proves nothing --
+    # measured, not assumed. `.DS_Store` is the realistic case on the machine
+    # this runs on; a `.crc` sidecar is the realistic case elsewhere.
+    (raw_root / ".DS_Store").write_bytes(b"not a shard")
+    stray_bytes = (raw_root / ".DS_Store").stat().st_size
+
+    inspector = SourceInspector()
+
+    without_zarr = inspector.inventory(config)
+    assert set(without_zarr) == {"raw", "zarr"}
+    assert without_zarr["zarr"] is None
+    assert without_zarr["raw"]["exists"] is True
+    assert without_zarr["raw"]["shards"] == 2
+    assert without_zarr["raw"]["bytes"] > 0
+    # The stray file is neither counted nor weighed.
+    assert len(list(raw_root.rglob("*"))) > without_zarr["raw"]["shards"]
+    counted = sum(
+        path.stat().st_size for path in raw_root.rglob("*.pqt")
+    )
+    assert without_zarr["raw"]["bytes"] == counted
+    assert without_zarr["raw"]["bytes"] != counted + stray_bytes
+    # Neither the manifest nor a page ledger is a symbol.
+    assert without_zarr["raw"]["symbols_with_watermark"] == 2
+    # The manifest is still READ, as failures -- skipped as a symbol, counted
+    # as what it is.
+    assert without_zarr["raw"]["failures"] == 1
+    assert inspector.failures(config) == {"ZZZZ": "vendor said no"}
+
+    dataset_config = stock_zarr(symbols=["AAPL", "MSFT"], periods=10)
+    with_zarr = inspector.inventory(config, dataset_config)
+    assert with_zarr["raw"] == without_zarr["raw"]
+    assert with_zarr["zarr"]["exists"] is True
+    assert with_zarr["zarr"]["bytes"] > 0
+    assert with_zarr["zarr"]["dims"] == {"timestamp": 10, "symbol": 2}
+    assert "adjClose" in with_zarr["zarr"]["data_vars"]
+    assert with_zarr["zarr"]["timestamp_start"].startswith("2024-01-01")
+
+    # `bytes` and `exists` exist on BOTH sub-results deliberately -- they are
+    # the same question asked of two different artefacts -- and the nesting is
+    # what keeps them apart. Assert they are genuinely separate MEASUREMENTS
+    # rather than one figure copied into two places, and that neither leaks to
+    # the top level where a caller could read it without saying which tier.
+    assert with_zarr["raw"]["bytes"] != with_zarr["zarr"]["bytes"]
+    assert "bytes" not in with_zarr and "exists" not in with_zarr
+
+
+def test_inventory_makes_one_traversal_and_one_sidecar_pass(
+    acquisition_config, no_credentials, hive_raw_tree, stock_pqt_row, monkeypatch
+) -> None:
+    """RESEARCH Pitfall 5, as a lock rather than as a docstring claim.
+
+    Reading 7,756 sidecars was measured at ~1.65 s while a full walk of the
+    26,584-file raw root costs ~0.05 s warm, so the sidecar pass -- not the
+    directory walk -- is what makes a TUI that refreshes on every keypress feel
+    broken. The shape that goes wrong is one traversal PER FIELD (shard count,
+    then bytes, then symbol count, then coverage span), which reads perfectly
+    and costs four times what it should.
+
+    Counted rather than timed: a timing assertion on a two-file fixture would
+    be noise. The counts are exact -- one `os.walk` over the raw root, and
+    exactly one `read_coverage` per symbol that has a sidecar.
+
+    Reddened by: computing `bytes` from a second `rglob`, or calling
+    `read_coverage` again for the coverage span after counting.
+    """
+    import os as os_module
+
+    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.base.coverage import CoverageLedger
+
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    _sidecar_tree(config, covered=("AAPL", "MSFT"), legacy=("GOOG",))
+    raw_parent = Path(config.raw_data_dir_path).parent
+    hive_raw_tree(
+        raw_parent,
+        "tiingo",
+        [stock_pqt_row("2024-01-15", "AAPL"), stock_pqt_row("2024-02-15", "MSFT")],
+    )
+
+    walk_roots: list[str] = []
+    real_walk = os_module.walk
+
+    def _counting_walk(top, *args, **kwargs):
+        walk_roots.append(str(top))
+        return real_walk(top, *args, **kwargs)
+
+    read_calls: list[str] = []
+    real_read_coverage = CoverageLedger.read_coverage
+
+    def _counting_read_coverage(self, symbol):
+        read_calls.append(symbol)
+        return real_read_coverage(self, symbol)
+
+    import quantlab.acquisition.inspector as inspector_module
+
+    monkeypatch.setattr(inspector_module.os, "walk", _counting_walk)
+    monkeypatch.setattr(CoverageLedger, "read_coverage", _counting_read_coverage)
+
+    inventory = SourceInspector().inventory(config)
+
+    assert inventory["raw"]["shards"] == 2
+    assert inventory["raw"]["symbols_with_watermark"] == 3
+
+    # ONE walk, of the raw root, and of nothing else (no `dataset_config` was
+    # passed, so the Zarr walk must not have happened either).
+    assert walk_roots == [inventory["raw"]["root"]]
+
+    # ONE read per symbol with a sidecar -- not one per field.
+    assert sorted(read_calls) == ["AAPL", "GOOG", "MSFT"]
+    assert len(read_calls) == len(set(read_calls))
