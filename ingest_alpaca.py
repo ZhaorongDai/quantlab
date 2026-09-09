@@ -3,11 +3,16 @@ vendor-namespaced raw path.
 
 The second source, not a replacement (D-10). Alpaca and Tiingo coexist as
 parallel alternatives selected BY CONFIG: this script builds every path through
-`quantlab/config/__init__.py`'s factories with `vendor="alpaca"`, so the vendor segment
-is DERIVED in one place rather than assembled at the call site. Constructing an
-`AcquisitionConfig` or `DatasetConfig` inline here is how the path convention
-drifts back into a silent two-vendor merge, and a test asserts this module
-calls neither by name.
+`quantlab/config/__init__.py`'s factories with the vendor pinned by the
+registered source descriptor, so the vendor segment is DERIVED in one place
+rather than assembled at the call site. Constructing an `AcquisitionConfig` or
+`DatasetConfig` inline here is how the path convention drifts back into a
+silent two-vendor merge, and a test asserts this module calls neither by name.
+
+This script names no vendor class anywhere: it resolves its source from
+`DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
+builds its acquisition config through `SOURCE.config_factory` and downloads
+through `registry.run()` (03.4 D-15 / SC-1 / SC-6).
 
 Three data types, one flag each: `--frequency 1d` and `--frequency 1m` fetch
 bars; `--frequency tick` fetches `--data-type quotes` or `--data-type trades`
@@ -106,10 +111,10 @@ Usage:
 import argparse
 import typing
 
-from quantlab.acquisition.alpaca import AlpacaAcquisition
+from quantlab.acquisition.registry import DataSourceRegistry, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
-from quantlab.config import stock_acquisition_config, stock_kline_config, universe_config
+from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import Frequency
 from quantlab.utils.cli import (
@@ -123,6 +128,17 @@ from quantlab.utils.cli import (
     validate_roster_args,
     volume_pricing,
 )
+
+#: The ONE place this script's vendor is named, and it is a TOKEN, not a class.
+#:
+#: SC-1's "no vendor named at the call site" means no vendor CLASS: a script
+#: called `ingest_alpaca.py` has its vendor as its whole identity, and the
+#: alternative -- a `--source` flag -- is the merged CLI D-15 explicitly
+#: forbids. Every vendor-specific fact below is read off this descriptor:
+#: `SOURCE.config_factory` builds the acquisition config with the vendor
+#: pinned, `SOURCE.acquisition_cls` supplies the argparse defaults that used to
+#: name the class (L-5), and `run(SOURCE, ...)` performs the fetch.
+SOURCE = DataSourceRegistry.get("alpaca")
 
 #: The frequencies this script offers, DERIVED from the locked `Frequency`
 #: literal rather than restated, so a frequency added to `quantlab/enums/data.py`
@@ -170,12 +186,16 @@ def _build_configs(
     if args.batch_size is not None:
         kwargs["batch_size"] = args.batch_size
 
-    acq_config = stock_acquisition_config(
+    # `SOURCE.config_factory` is `functools.partial(stock_acquisition_config,
+    # vendor="alpaca")` -- the SAME factory this script called directly before,
+    # with the vendor pinned by the descriptor instead of restated here. That
+    # is what makes `vendor=` a fact of the registered source rather than a
+    # keyword this call site has to remember to get right.
+    acq_config = SOURCE.config_factory(
         symbols=symbols,
         start_date=args.start_date,
         end_date=args.end_date,
         frequency=args.frequency,
-        vendor="alpaca",
         kwargs=kwargs,
     )
     # Built for every frequency, but PERSISTED only for `1d`/`1m`: under
@@ -219,7 +239,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-type",
         type=str,
-        choices=list(AlpacaAcquisition.TICK_DATA_TYPES),
+        choices=list(SOURCE.acquisition_cls.TICK_DATA_TYPES),
         default=None,
         help=(
             "REQUIRED with --frequency tick and rejected otherwise. Quotes and "
@@ -234,8 +254,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Symbols per request. Defaults to "
-            f"AlpacaAcquisition.DEFAULT_BATCH_SIZE ({AlpacaAcquisition.DEFAULT_BATCH_SIZE}), "
+            "Symbols per request. Defaults to the source's own "
+            f"DEFAULT_BATCH_SIZE ({SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE}), "
             "which is a conservative working value rather than a verified "
             "vendor ceiling -- the real limit is undocumented. Passed through "
             "config.kwargs, and also handed to the pre-flight volume guard, "
@@ -263,7 +283,7 @@ def _validate_data_type(parser: argparse.ArgumentParser, args) -> None:
     if args.frequency == "tick" and args.data_type is None:
         parser.error(
             "--data-type is required when --frequency is tick "
-            f"(one of {list(AlpacaAcquisition.TICK_DATA_TYPES)}); there is no "
+            f"(one of {list(SOURCE.acquisition_cls.TICK_DATA_TYPES)}); there is no "
             "default, because quotes and trades share a vendor root and are "
             "told apart only by the data_type= hive key."
         )
@@ -304,7 +324,7 @@ if __name__ == "__main__":
             guard_start,
             guard_end,
             frequency=args.frequency,
-            batch_size=args.batch_size or AlpacaAcquisition.DEFAULT_BATCH_SIZE,
+            batch_size=args.batch_size or SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE,
             rows_per_symbol_day=args.rows_per_symbol_day,
             force=args.force_volume,
         ),
@@ -344,21 +364,26 @@ if __name__ == "__main__":
             guard_start,
             guard_end,
             num_variables=len(
-                AlpacaAcquisition.RAW_COLUMNS_BY_DATA_TYPE["bars"]
+                SOURCE.acquisition_cls.RAW_COLUMNS_BY_DATA_TYPE["bars"]
             ) - 3,
             bars_per_day=pricing.BARS_PER_DAY_BY_FREQUENCY[args.frequency],
         )
 
     print(
-        f"Acquiring {len(acq_config.symbols)} symbol(s) from Alpaca "
+        f"Acquiring {len(acq_config.symbols)} symbol(s) from "
+        f"{SOURCE.display_name} "
         f"(frequency={args.frequency}, data_type={args.data_type}, "
         f"refresh={args.refresh})"
     )
-    acquisition = AlpacaAcquisition(acq_config)
-    if args.refresh:
-        acquisition.refresh()
-    else:
-        acquisition.download()
+    result = run(SOURCE, acq_config, refresh=args.refresh)
+    # Reported from the RESULT rather than left to the log lines: a run that
+    # failed every symbol still logs plenty, and `AcquisitionResult` is built
+    # from the same accumulated failures the manifest receives, so these two
+    # numbers cannot disagree with `_failures.json` (D-18).
+    print(
+        f"{len(result.succeeded)} symbol(s) succeeded, "
+        f"{len(result.failures)} failed"
+    )
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.frequency == "tick":
