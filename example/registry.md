@@ -250,7 +250,7 @@ run(descriptor, config, *, refresh=False, reporter=None, cancel=None) -> Acquisi
 | 方法 | 回答什么 | 必填参数 |
 |---|---|---|
 | `coverage(config, symbols=None)` | 请求区间对现有水位的四态分类 + `no_data` 计数 | `config` |
-| `failures(config)` | 上一次 run 的 `_failures.json`，`{symbol: 原因}` | `config` |
+| `failures(config)` | `_failures.json` 里**当前已知仍在失败**的全部符号（跨 run 累积，可能含本轮根本没请求过的符号），`{symbol: 原因}` | `config` |
 | `inventory(config, dataset_config=None)` | raw 层和 Zarr 层**分开**报告的存量 | `config` |
 | `browse_raw(dataset_config, symbols, start_date, end_date)` | raw parquet 层的**惰性** `pl.LazyFrame` | 四个全部必填 |
 | `browse_zarr(dataset_config, symbols, start_date, end_date)` | Zarr 层的 `xr.Dataset` 切片 | 四个全部必填 |

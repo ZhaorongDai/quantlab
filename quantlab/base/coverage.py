@@ -257,7 +257,15 @@ class CoverageLedger:
         return self.watermark_root / FAILURE_MANIFEST_NAME
 
     def read_failure_manifest(self) -> dict[str, str]:
-        """The last run's `_failures.json` as `{symbol: reason}`, or `{}`.
+        """Every symbol `_failures.json` records as failing, accumulated across runs.
+
+        Returned as `{symbol: reason}`, or `{}`. A CROSS-RUN record rather than
+        a report on the most recent run: the manifest can name symbols no
+        recent run requested at all, because the writer folds unattempted
+        entries forward before every overwrite. This summary line is kept
+        verbatim in sync with `SourceInspector.failures`; the two return the
+        same value, and a drifting pair of summaries is where the next
+        divergence starts.
 
         On the ledger for exactly the reason `failure_manifest_path` is, one
         step further: the manifest now has TWO readers -- the credential-free

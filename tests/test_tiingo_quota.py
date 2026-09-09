@@ -290,8 +290,10 @@ def test_the_quota_condition_never_lands_in_the_failure_manifest(
     mock_tiingo_client, tmp_path
 ):
     """Recording a GLOBAL condition as one ticker's fault would defame a
-    perfectly good symbol and make the manifest lie about what the last run
-    did -- and the next run would "retry" a symbol that never failed.
+    perfectly good symbol and park a never-failing symbol in the
+    durable cross-run failure manifest, where the fold-forward keeps it alive
+    until someone clears it by hand -- and the next run would "retry" a symbol
+    that never failed.
     """
     from quantlab.acquisition.tiingo import TiingoAcquisition
 

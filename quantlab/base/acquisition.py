@@ -1894,9 +1894,10 @@ class Acquisition(ABC):
           watermark, and all are retried next run. Unchanged from before
           quota handling existed.
         - `"quota"` -- the account's allocation is gone. Trips the global
-          abort and is EXCLUDED from the manifest: recording a global
-          condition as one ticker's fault would defame a perfectly good
-          symbol and make the manifest lie about what the last run did.
+          abort and is EXCLUDED from the manifest: recording a global condition
+          as one ticker's fault would defame a perfectly good symbol and park a
+          never-failing symbol in the durable cross-run failure manifest, where
+          the fold-forward keeps it alive until someone clears it by hand.
         - `"skipped"` -- never attempted, because the abort was already set.
           No watermark, not a failure, counted for the report only.
 

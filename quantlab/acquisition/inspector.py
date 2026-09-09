@@ -158,7 +158,19 @@ class SourceInspector:
     # -- failures -----------------------------------------------------------
 
     def failures(self, config: AcquisitionConfig) -> dict[str, str]:
-        """The last run's `_failures.json` as `{symbol: reason}`, or `{}`.
+        """Every symbol `_failures.json` records as failing, accumulated across runs.
+
+        Returned as `{symbol: reason}`, or `{}`. Because the manifest
+        accumulates across runs, the console can be shown a symbol the most
+        recent run never requested: `Acquisition._merge_unattempted_failures`
+        folds the on-disk entries a run had no news about forward before every
+        overwrite. Pinned from the console side by
+        `tests/test_acquisition_progress.py::test_the_manifest_survives_a_quota_abort_on_the_default_path`,
+        which reads a symbol back through this method after a run that never
+        asked the vendor for it. This summary line is kept verbatim in sync
+        with `CoverageLedger.read_failure_manifest`; the two return the same
+        value, and a drifting pair of summaries is where the next divergence
+        starts.
 
         **This method is the manifest's FIRST in-repo reader.** What L-2
         established (2026-09-08) is narrower than it was later summarised as:
