@@ -9,7 +9,6 @@ from typing import Iterator, Self, Sequence
 import polars as pl
 from joblib import Parallel, delayed
 from loguru import logger
-from tqdm import tqdm
 
 from quantlab.base.config import AcquisitionConfig
 from quantlab.base.coverage import (
@@ -23,6 +22,14 @@ from quantlab.base.coverage import (
 )
 from quantlab.base.coverage import CoverageLedger
 from quantlab.base.pageledger import PageLedger
+from quantlab.base.progress import (
+    QUOTA_EXHAUSTED_DESCRIPTION,
+    CancelToken,
+    NullProgressReporter,
+    ProgressEvent,
+    ProgressReporter,
+    TqdmProgressReporter,
+)
 from quantlab.enums.constant import Date
 from quantlab.enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN, Vendor
 from quantlab.utils.atomic import write_json_atomically
@@ -181,6 +188,46 @@ class Acquisition(ABC):
         #: outcome parked there would be persisted as if it were reproducible
         #: configuration.
         self.last_result: AcquisitionResult | None = None
+        #: Where progress events go, and how a caller stops the run (03.4
+        #: D-16/D-17). INSTANCE state, exactly like `last_result` and
+        #: `_abort_event` -- see `attach()` for why neither may live on the
+        #: config.
+        self._reporter: ProgressReporter | None = None
+        self._cancel_token: CancelToken | None = None
+        self._resolved_reporter: ProgressReporter | None = None
+
+    def attach(
+        self,
+        *,
+        reporter: ProgressReporter | None = None,
+        cancel: CancelToken | None = None,
+    ) -> Self:
+        """Attach a progress reporter and/or a cancel token for the next run.
+
+        Returns `self`, so it chains the way the rest of this repo does:
+        `TiingoAcquisition(config).attach(reporter=r, cancel=t).download()`.
+
+        **Neither value may be assigned onto `AcquisitionConfig`, and that is a
+        rule rather than a preference.** `AcquisitionConfig.to_dict()` is
+        `asdict(self)` and the result lands on disk in persisted configs and in
+        the JSON metadata saved beside model checkpoints
+        (`base/model.py:_save_model`). A `threading.Event` is not serialisable
+        at all, and a reporter is not reproducible CONFIGURATION -- it is a
+        live object belonging to whoever started the run. Parking either there
+        would persist a run's plumbing as if it were an experiment's
+        parameters. This is the one sanctioned exception to the house rule that
+        every knob rides `config.kwargs` via `_knob`.
+
+        Passing `None` for either argument CLEARS it, so a caller can hand the
+        same acquisition object to a second, unobserved run without inheriting
+        the first run's reporter.
+        """
+        self._reporter = reporter
+        self._cancel_token = cancel
+        # The resolved default is derived from `_reporter` and the `progress`
+        # knob, so it has to be discarded whenever either could have changed.
+        self._resolved_reporter = None
+        return self
 
     def __repr__(self):
         return f"{self.__class__.__name__}(config={self.config})"
@@ -560,6 +607,98 @@ class Acquisition(ABC):
         instead of waiting an hour.
         """
         time.sleep(seconds)
+
+    def _is_cancelled(self) -> bool:
+        """Has the CALLER asked this run to stop? (D-17.)
+
+        Deliberately narrow: this asks about the cancel token ALONE and says
+        nothing about the vendor quota abort. `_should_stop()` is the OR of the
+        two and is what the batch boundary checks; keeping this one separate is
+        what lets the loop report "the operator stopped this" distinctly from
+        "the vendor stopped this" (RESEARCH Pitfall 1).
+        """
+        token = getattr(self, "_cancel_token", None)
+        return token is not None and token.is_cancelled()
+
+    # -- progress reporting (03.4 D-16) -------------------------------------
+
+    @property
+    def _active_reporter(self) -> ProgressReporter:
+        """The reporter this run's events actually go to.
+
+        Resolution order, and the middle branch is what keeps the incumbent
+        stderr rendering the DEFAULT rather than making silence the default:
+
+        1. whatever `attach()` was given, else
+        2. a `TqdmProgressReporter` when `_knob("progress", True)` is truthy,
+           else
+        3. a `NullProgressReporter`.
+
+        Note what branch 3 means: `progress=False` now resolves to a reporter
+        that constructs no bar at all, where the replaced code constructed a
+        `tqdm` with `disable=True`. Both render nothing, so the operator-visible
+        behaviour is identical; not building the object is simply the honest
+        expression of it.
+
+        CACHED, because the default is stateful -- `TqdmProgressReporter` owns
+        the bar across the events of a pass, so re-resolving per event would
+        open a new bar per batch. `attach()` invalidates the cache.
+        """
+        resolved = getattr(self, "_resolved_reporter", None)
+        if resolved is not None:
+            return resolved
+        attached = getattr(self, "_reporter", None)
+        if attached is not None:
+            resolved = attached
+        elif self._knob("progress", True):
+            resolved = TqdmProgressReporter()
+        else:
+            resolved = NullProgressReporter()
+        self._resolved_reporter = resolved
+        return resolved
+
+    def _emit(self, event: ProgressEvent) -> None:
+        """Deliver one event, never raising.
+
+        03.4-RESEARCH Pitfall 9: the console's callback runs INSIDE
+        `_run_once`'s result loop. A callback that throws would propagate out of
+        that loop and tear down the joblib fan-out -- ending a multi-hour
+        backfill over a UI bug. That is precisely the failure mode
+        `_attempt_batch`'s "Never raises" contract exists to prevent,
+        reintroduced one level up, so the same contract is applied here.
+
+        The exception is LOGGED at warning rather than swallowed silently: a
+        reporter bug that produced no signal at all would be invisible, and an
+        invisible broken console is worse than a noisy one (RESEARCH A6). It is
+        scrubbed on the way out for the same reason every other captured string
+        is -- the message belongs to caller code this module does not control.
+        """
+        try:
+            self._active_reporter.emit(event)
+        except Exception as exc:  # noqa: BLE001 -- isolation is the point
+            logger.warning(
+                self._scrub(
+                    f"Progress reporter {type(self._active_reporter).__name__} "
+                    f"raised on a {event.kind!r} event and was ignored; the "
+                    f"run is unaffected. {type(exc).__name__}: {exc}"
+                )
+            )
+
+    def _close_reporter(self) -> None:
+        """Release the active reporter's resources, never raising.
+
+        Same contract as `_emit` and for the same reason: `tqdm.close()` writes
+        to stderr, and a closed/redirected stream must not be what ends a run.
+        """
+        try:
+            self._active_reporter.close()
+        except Exception as exc:  # noqa: BLE001 -- isolation is the point
+            logger.warning(
+                self._scrub(
+                    f"Progress reporter close() raised and was ignored. "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            )
 
     def _reset_no_data_marks(self) -> None:
         """Zero this pass's `no_data` tally, and give it a fresh lock.
@@ -1369,15 +1508,28 @@ class Acquisition(ABC):
             n_jobs=max_workers, backend="threading", return_as="generator_unordered"
         )(delayed(self._attempt_batch)(batch, from_watermark) for batch in inputs())
 
-        bar = tqdm(
-            total=len(batches),
-            desc=f"{self.VENDOR} {self.config.start_date}..{self.config.end_date}",
-            unit="batch",
-            disable=not self._knob("progress", True),
+        # The bar is no longer constructed here: `TqdmProgressReporter` builds
+        # it from this event, with the same `total`, the same `desc`, the same
+        # `unit="batch"` and the same `disable` semantics (D-16). What changed
+        # is WHO renders, not WHAT is rendered -- a console attaches a callback
+        # reporter instead and receives these same events as objects.
+        total = len(batches)
+        self._emit(
+            ProgressEvent(
+                kind="run_started",
+                vendor=self.VENDOR,
+                total=total,
+                message=(
+                    f"{self.VENDOR} "
+                    f"{self.config.start_date}..{self.config.end_date}"
+                ),
+            )
         )
         results = []
         switched = False
-        with bar:
+        cancel_announced = False
+        completed_batches = 0
+        try:
             # DRAINED to completion, never broken out of. Abandoning a joblib
             # result generator mid-iteration leaves worker teardown to garbage
             # collection; draining is deterministic, and it is nearly free
@@ -1387,10 +1539,58 @@ class Acquisition(ABC):
             # "all this work succeeded".
             for result in stream:
                 results.append(result)
-                bar.update(1)
+                completed_batches += 1
+                batch_symbols, batch_status, _batch_message = result
+                self._emit(
+                    ProgressEvent(
+                        kind="batch_completed",
+                        vendor=self.VENDOR,
+                        completed=completed_batches,
+                        total=total,
+                        symbols=tuple(batch_symbols),
+                        detail={"status": batch_status},
+                    )
+                )
                 if abort.is_set() and not switched:
                     switched = True
-                    bar.set_description("QUOTA EXHAUSTED -- draining, not fetching")
+                    self._emit(
+                        ProgressEvent(
+                            kind="quota_exhausted",
+                            vendor=self.VENDOR,
+                            completed=completed_batches,
+                            total=total,
+                            message=QUOTA_EXHAUSTED_DESCRIPTION,
+                        )
+                    )
+                # Announced from the same position as the quota switch, and
+                # separately from it, so a console can tell "the operator
+                # stopped this" from "the vendor stopped this" (D-17).
+                if self._is_cancelled() and not cancel_announced:
+                    cancel_announced = True
+                    self._emit(
+                        ProgressEvent(
+                            kind="cancelled",
+                            vendor=self.VENDOR,
+                            completed=completed_batches,
+                            total=total,
+                            message=(
+                                "Cancelled -- draining the queue, not fetching"
+                            ),
+                        )
+                    )
+        finally:
+            # In a `finally` so an exception escaping the drain (which the
+            # per-batch isolation makes unlikely, not impossible) still closes
+            # the bar instead of leaving a half-drawn one on the terminal.
+            self._emit(
+                ProgressEvent(
+                    kind="run_finished",
+                    vendor=self.VENDOR,
+                    completed=completed_batches,
+                    total=total,
+                )
+            )
+            self._close_reporter()
 
         failures = {}
         succeeded: set[str] = set()
@@ -1513,6 +1713,24 @@ class Acquisition(ABC):
         instead of a silent one.
         """
         skipped = len(requested) - len(pending)
+        # The console gets the counts as STRUCTURE; a shell run's stderr is
+        # byte-unchanged, because every one of the four log lines below is
+        # kept exactly as it was (D-19, RESEARCH Q3). The event is additive:
+        # this method gained a consumer, not a different behaviour.
+        self._emit(
+            ProgressEvent(
+                kind="coverage",
+                vendor=self.VENDOR,
+                completed=len(pending),
+                total=len(requested),
+                detail={
+                    "requested": len(requested),
+                    "pending": len(pending),
+                    "skipped": skipped,
+                    **counts,
+                },
+            )
+        )
         if skipped:
             logger.info(
                 f"Resume: skipping {skipped}/{len(requested)} symbols already "
