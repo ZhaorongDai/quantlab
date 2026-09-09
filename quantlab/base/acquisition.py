@@ -1431,9 +1431,6 @@ class Acquisition(ABC):
                 # it: a cancel must never wait, never log the
                 # allocation-exhausted message, and never resume the run the
                 # operator just stopped (D-17, RESEARCH Pitfall 1).
-                self._merge_unattempted_failures(
-                    failures, attempted=all_succeeded | set(failures)
-                )
                 logger.warning(
                     f"Cancelled at a batch boundary. "
                     f"{len(all_succeeded)} symbol(s) completed and their "
@@ -1470,15 +1467,35 @@ class Acquisition(ABC):
             )
             self._sleep(wait_seconds)
 
+        # UNCONDITIONAL, and outside the `while True:` above, so it runs on
+        # every way out of the resume loop: a cancel, an empty `pending` on the
+        # first pass, a normal completed run, an abort with `wait_for_quota`
+        # off, and an abort that exhausted `quota_max_waits`. The POSITION is
+        # what makes the property hold -- any `break` added to that loop later
+        # inherits it, including ones nobody has written yet. Do not re-express
+        # this as a call on each exit that seems to need one: enumerating the
+        # exits by hand is exactly what was got wrong, and the merge sat in the
+        # cancel branch alone while the DEFAULT quota abort
+        # (`wait_for_quota` is off unless asked for) overwrote a previous run's
+        # 404s with `{}` -- which `_write_failure_manifest`'s own docstring
+        # calls a meaningful statement that the last run was clean
+        # (03.4 D-18, `03.4-VERIFICATION.md` gap 1, REVIEW CR-01).
+        self._merge_unattempted_failures(
+            failures, attempted=all_succeeded | set(failures)
+        )
         self._write_failure_manifest(failures)
         # Built from the SAME accumulated `failures` dict the manifest just
         # received, at the SAME point, so `set(result.failures)` and the
-        # manifest's key set cannot drift (03.4 D-18). `cancelled` is False
-        # unconditionally here because no cancellation path exists yet -- plan
-        # 05 introduced the cancel token, and `cancelled` is now the flag
-        # `_run_once` reported -- assembled AFTER the cancel-path merge above,
-        # so `set(result.failures) == set(manifest)` holds on the cancel path
-        # too and not only on the ones that ran to completion.
+        # manifest's key set cannot drift (03.4 D-18). Say plainly what that
+        # equality IS: both sides are two expressions over one variable
+        # evaluated once, so it is a RECEIPT that the result and the manifest
+        # were assembled together -- not a check that either is correct. It
+        # read True during phase verification directly on top of a manifest
+        # that had just been emptied. The property that protects the operator
+        # is the durability of the manifest's CONTENTS, pinned by
+        # `test_the_manifest_survives_a_quota_abort_on_the_default_path`. The
+        # merge above now runs on every exit path, so the receipt is issued
+        # over a manifest that has already been made whole.
         self.last_result = AcquisitionResult(
             vendor=self.VENDOR,
             requested=tuple(requested),
