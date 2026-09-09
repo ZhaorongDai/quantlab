@@ -2048,23 +2048,50 @@ class Acquisition(ABC):
         reached back into `failures`, in place (03.4 D-18, RESEARCH Pitfall 4).
 
         **Why this exists at all.** `_write_failure_manifest` OVERWRITES, and
-        `_run`'s `failures` starts empty on every call. That was safe while
-        every run either completed or quota-aborted, because such a run reaches
-        (or explicitly declines to speak for) every symbol. A CANCELLED run is
-        the new shape: it can stop before it ever gets to a symbol that failed
-        last time, and would then write `{}` -- while
-        `_write_failure_manifest`'s own docstring calls an empty manifest "a
-        meaningful statement that the last run was clean". That statement would
-        be false about a store that still holds forty un-retried 404s, in the
-        one file the operator console shows.
+        `_run`'s `failures` starts empty on every call. Any run that stops
+        before it reaches a symbol that failed last time therefore writes `{}`
+        -- while `_write_failure_manifest`'s own docstring calls an empty
+        manifest "a meaningful statement that the last run was clean". That
+        statement would be false about a store that still holds forty
+        un-retried 404s, in the one file the operator console shows.
+
+        **The history, because the first wiring got it wrong.** This method was
+        written for the CANCELLED run and wired into the `if cancelled:` branch
+        alone, on the stated premise that a run which completed or quota-aborted
+        reaches, or explicitly declines to speak for, every symbol. That premise
+        is false about the allocation-limit exit: `_run_once` STOPS dispatching,
+        returns `"skipped"` for the remainder, and its own log line reports how
+        many symbols remain. So the allocation-limit exit had the identical
+        hole -- and `wait_for_quota` defaults to OFF
+        (`DEFAULT_WAIT_FOR_QUOTA = False`), which put that hole on the exit the
+        full-market `us_all` backfill is EXPECTED to end on, not on a corner
+        case. Reproduced with an executing test in `03.4-VERIFICATION.md`
+        gap 1 and in REVIEW CR-01; closed by plan 03.4-08.
+
+        **What it covers now.** `_run` calls this UNCONDITIONALLY, immediately
+        before the write and outside the resume loop, so it applies on
+        every exit -- all five of them: a cancel, an empty `pending` on the
+        first pass, a normal completed run, an abort with `wait_for_quota`
+        off, and an abort that exhausted `quota_max_waits`. Two of those are new to it:
+        the empty-`pending` exit and the normal-completion exit. The widened
+        consequence, stated plainly: an entry for a symbol that was never in
+        `pending` at all -- because a watermark already covers it -- is now
+        PRESERVED rather than cleared. The one case where that leaves a stale
+        entry is a symbol hand-stamped by `--stamp-legacy-watermarks` after it
+        failed, so it never returns to `pending` and its old reason lingers.
+        That is a smaller harm than erasing a live 404 from the operator's only
+        record of it, and `SourceInspector.failures()` is an advisory view
+        rather than a control input.
 
         **Merge rather than skip the write**, which is the other option
         RESEARCH left open. Skipping would preserve the old manifest but throw
-        away failures the cancelled run DID discover; merging keeps both, and
-        it is what makes `set(result.failures) == set(manifest)` true on EVERY
-        exit path rather than only on the uncancelled ones -- because `_run`
-        calls this BEFORE both the write and the result assembly, so the two
-        are built from the same dict at the same point exactly as before.
+        away failures the aborting run DID discover; merging keeps both, and
+        `_run` calls this BEFORE both the write and the result assembly, so the
+        two are still built from the same dict at the same point exactly as
+        before. Note what that equality is and is not: it is a receipt that the
+        result and the manifest were assembled together, not a check that
+        either is correct -- what protects the operator is the durability this
+        method gives the manifest's CONTENTS.
 
         `attempted` is the set this run has news about: symbols it completed,
         plus symbols it failed. Entries for those are NOT restored -- a symbol

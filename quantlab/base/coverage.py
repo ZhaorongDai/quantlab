@@ -261,10 +261,13 @@ class CoverageLedger:
 
         On the ledger for exactly the reason `failure_manifest_path` is, one
         step further: the manifest now has TWO readers -- the credential-free
-        `SourceInspector.failures`, and `Acquisition._run`'s cancel-path merge
+        `SourceInspector.failures`, and `Acquisition._run`'s pre-write merge
         (03.4 D-17/D-18), which folds the previous run's entries for symbols
-        THIS run never attempted back in before the overwrite. Two tolerant
-        readers with two copies of the failure policy is precisely the
+        THIS run never attempted back in before the overwrite. That merge runs
+        on EVERY exit path of the resume loop since 03.4-08; it was wired into
+        the cancel branch alone before that, which is what let the default
+        quota abort empty the manifest (`03.4-VERIFICATION.md` gap 1). Two
+        tolerant readers with two copies of the failure policy is precisely the
         duplication this phase's research names as the failure mode, so there
         is one.
 

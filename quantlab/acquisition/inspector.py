@@ -160,11 +160,12 @@ class SourceInspector:
     def failures(self, config: AcquisitionConfig) -> dict[str, str]:
         """The last run's `_failures.json` as `{symbol: reason}`, or `{}`.
 
-        **This method is the manifest's FIRST in-repo reader.** L-2 established
-        that nothing under `quantlab/` reads this file: resume is driven
-        entirely by watermark-sidecar PRESENCE, so an earlier claim that the
-        manifest is resume input was wrong about the code. It is kept anyway,
-        and deliberately (D-18): it is the crash-durable operator record -- a
+        **This method is the manifest's FIRST in-repo reader.** What L-2
+        established (2026-09-08) is narrower than it was later summarised as:
+        the manifest is not RESUME input. Resume is driven entirely by
+        watermark-sidecar PRESENCE, so an earlier claim that the manifest feeds
+        resume was wrong about the code. The manifest is kept anyway, and
+        deliberately (D-18): it is the crash-durable operator record -- a
         process that dies returns no `AcquisitionResult` -- and the console
         needs the reasons, which is what this reads.
 
@@ -181,9 +182,10 @@ class SourceInspector:
         egress path for raw vendor exception text.
 
         Delegates to `CoverageLedger.read_failure_manifest` (03.4-05): the
-        cancel-path merge in `Acquisition._run` became the manifest's SECOND
-        reader, and two tolerant readers is two copies of the failure policy,
-        free to drift.
+        pre-write merge in `Acquisition._run` -- which since 03.4-08 runs on
+        every exit path of the resume loop, not only the cancel one -- also
+        reads the manifest, and two tolerant readers is two copies of the
+        failure policy, free to drift.
         """
         return CoverageLedger.for_config(config).read_failure_manifest()
 
