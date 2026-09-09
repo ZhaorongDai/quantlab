@@ -385,7 +385,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
   it.
 
-**Plans:** 9 plans — 7/9 executed (03.4-08 and 03.4-09 close the two gaps in `03.4-VERIFICATION.md`)
+**Plans:** 8/9 plans executed — 7/9 executed (03.4-08 and 03.4-09 close the two gaps in `03.4-VERIFICATION.md`)
 
 Plans:
 **Wave 1**
@@ -428,7 +428,7 @@ both plans end on a whole-suite pytest gate, so they are sequenced rather than r
 
 **Wave 8** *(gap closure — blocked on `03.4-VERIFICATION.md`, which scored 5/6 and found two gaps)*
 
-- [ ] 03.4-08-PLAN.md — GAP 1 (SC-5): relocate the unattempted-failure merge to run unconditionally
+- [x] 03.4-08-PLAN.md — GAP 1 (SC-5): relocate the unattempted-failure merge to run unconditionally
   before the manifest write so every exit of `_run`'s resume loop is covered by construction, pinned
   by a red-first regression asserting on the manifest's on-disk CONTENTS after a default-path quota
   abort — not on the result/manifest equality, which is built from one dict and cannot fail
@@ -512,7 +512,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 7/7 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 8/9 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

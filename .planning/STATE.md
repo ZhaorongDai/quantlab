@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.4"
-current_phase_name: data-source-registry
+current_phase_name: Data Source Registry (Operator-Surface Foundation) (INSERTED)
 status: executing
-stopped_at: Completed 03.4-07-PLAN.md
-last_updated: "2026-09-09T03:27:21.377Z"
+stopped_at: Completed 03.4-08-PLAN.md
+last_updated: "2026-09-09T03:49:43.923Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: 34361aded78ec749c1040c1e9ae30b9a0ea1c690
+state_head: f9a5c5f3bbe4f7c592a3f88ed7d26df37c5b32ce
 progress:
   total_phases: 11
   completed_phases: 1
   total_plans: 39
-  completed_plans: 37
+  completed_plans: 38
 milestone_name: milestone
 ---
 
@@ -24,12 +24,12 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.4 — Data Source Registry (Operator-Surface Foundation)
+**Current focus:** Phase 03.4 — Data Source Registry (Operator-Surface Foundation) (INSERTED)
 
 ## Current Position
 
-Phase: 03.4 (data-source-registry) — READY TO EXECUTE
-Plan: 7 of 7
+Phase: 03.4 (Data Source Registry (Operator-Surface Foundation) (INSERTED)) — EXECUTING
+Plan: 2 of 9
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
@@ -98,6 +98,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P05 | 62 min | 3 tasks | 7 files |
 | Phase 03.4 P06 | 16 min | 3 tasks | 6 files |
 | Phase 03.4 P07 | 22 min | 3 tasks | 9 files |
+| Phase 03.4 P08 | 12 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -208,6 +209,8 @@ Recent decisions affecting current work:
 - [Phase 03.4]: 03.4-07: the ROADMAP refers to the retired write contract ONLY through the labelled phrase "the subprocess-CLI rule it supersedes"; both mechanisms are otherwise described as running "in a child process" — The gate exists to stop a superseded INSTRUCTION standing unlabelled, and a verify that forbids the bare word cannot tell an instruction from an accurate description of what the old rule was. One sentinel phrase plus child-process wording lets the prose stay accurate without weakening the gate.
 - [Phase 03.4]: 03.4-07: example/registry.md pastes eight worked examples of which seven were really executed with all three credential env vars unset; the eighth (the console-side run() with a live cancel) is labelled as not run — example/README.md states that convention for the whole directory. Fabricating one output makes every other output in the directory unreliable, and this phase's headline claim is that the credential-free path works -- so the examples proving it had to actually be run that way.
 - [Phase 03.4]: 03.4-07: two documentation defects outside the plan's files_modified were fixed rather than logged -- quantlab/acquisition/inspector.py's module docstring and example/chunking.md's pasted dry-run output both still asserted the deleted "coverage report: skipped (export TIINGO_API_KEY...)" line as current behaviour — This plan's whole purpose is that no superseded statement is left standing; leaving two behind because they sat outside a file list would have defeated it. Both are the same one-line class plan 06 already fixed for tests/test_source_inspector.py.
+- [Phase 03.4]: The failure-manifest merge keeps ONE call site, relocated outside the resume loop and immediately before the write, so all five exits are covered by construction rather than by a per-exit audit — Enumerating the exits by hand is what produced VERIFICATION gap 1: the merge sat in the cancel branch alone while wait_for_quota defaults to off, so the DEFAULT quota abort emptied the manifest. The relocation makes any break added later inherit the property.
+- [Phase 03.4]: A regression test for the manifest asserts on its on-disk CONTENTS, never on the result/manifest equality — _run builds both sides from one failures dict at one point, so that equality is an identity that read True over a manifest which had just been emptied. It is a receipt of joint assembly, kept and annotated in 03.4-VALIDATION.md, not a correctness check.
 
 ### Pending Todos
 
@@ -258,8 +261,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T02:02:18.117Z
-Stopped at: Completed 03.4-07-PLAN.md
+Last session: 2026-09-09T03:49:25.297Z
+Stopped at: Completed 03.4-08-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
