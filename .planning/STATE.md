@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation) (INSERTED)) — READY TO EXECUTE
 Plan: 3 of 9
 Status: Ready to execute
-Last activity: 2026-09-09 — Phase 03.4 execution started
+Last activity: 2026-09-09 — Completed quick task 260909-idh: closed the two phase-03.4 UAT gaps
 
 Progress: [██████████] 100%
 
@@ -246,6 +246,7 @@ Recent decisions affecting current work:
 | 260908-dvv | Make the widening suites exercise the coordinate dtypes production writes | 2026-09-08 | e2923da | [260908-dvv-make-the-widening-suites-exercise-the-co](./quick/260908-dvv-make-the-widening-suites-exercise-the-co/) |
 | 260908-g30 | Route symbol-axis widening by size: add a memory-bounded chunked widening path to XrBackend and a materialisation estimate that switches to it above budget, reporting which path was taken | 2026-09-08 | 4941e8d | [260908-g30-route-symbol-axis-widening-by-size-add-a](./quick/260908-g30-route-symbol-axis-widening-by-size-add-a/) |
 | 260909-174 | Retire the stale failure-manifest semantics across 12 sites, breaking the `_write_failure_manifest` docstring citation chain at its root; gated by a whitespace/string-seam normalising scanner diffed both ways against a pre-committed allowlist, plus an AST prose-only proof | 2026-09-09 | e1ef28b | [260909-174-fix-six-stale-documentation-and-docstrin](./quick/260909-174-fix-six-stale-documentation-and-docstrin/) |
+| 260909-idh | Close the two phase-03.4 UAT gaps: make the roster order content-determined so `--limit` is reproducible (G-03.4-2), and refuse a Zarr conversion with nothing to convert while gating all three ingest shells behind `--to-zarr` (G-03.4-1) | 2026-09-09 | cf215bc | [260909-idh-fix-two-uat-gaps-from-phase-03-4-1-g-03-](./quick/260909-idh-fix-two-uat-gaps-from-phase-03-4-1-g-03-/) |
 
 ### Roadmap Evolution
 
