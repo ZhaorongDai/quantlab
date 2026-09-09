@@ -62,13 +62,19 @@ be told the batch size it is pricing.
 Two pre-flight guards, and neither replaces the other
 ---------------------------------------------------
 `assert_acquisition_volume_fits` bounds raw disk bytes, request count and wall
-clock. `assert_dense_panel_fits` bounds the RAM of the dense
-`[timestamp, symbol]` panel the `1d`/`1m` conversion at the bottom of this
-script builds. Both run BEFORE the client is constructed and before a single
-request. A `1m` window that comfortably passes the first can be three orders of
-magnitude over the second, so the second is sized with
-`bars_per_day=390` rather than at its daily default (CR-03). Tick skips it: the
-conversion it guards does not run for tick (D-18).
+clock, and runs on EVERY run. `assert_dense_panel_fits` bounds the RAM of the
+dense `[timestamp, symbol]` panel the `1d`/`1m` conversion at the bottom of
+this script builds, and runs only when that conversion will actually happen --
+i.e. `--to-zarr` and not `--frequency tick`. Both run BEFORE the client is
+constructed and before a single request. A `1m` window that comfortably passes
+the first can be three orders of magnitude over the second, so the second is
+sized with `bars_per_day=390` rather than at its daily default (CR-03).
+
+The dense guard is CONDITIONAL for one reason: it measures the RAM of a
+densification. Refusing a raw-only fetch because a panel this run will never
+build would not fit is a defect, not a guard. Tick skips it because its
+conversion does not exist at all (D-18); a run without `--to-zarr` skips it
+because its conversion was not asked for.
 
 No migration (D-13)
 -------------------
@@ -84,8 +90,16 @@ windows.
 Usage:
     export APCA_API_KEY_ID=your-key-id APCA_API_SECRET_KEY=your-secret
 
+    Every command below lands RAW parquet and stops there. Add --to-zarr to
+    any of the bar commands to convert afterwards; it is not a default and it
+    is refused outright under --frequency tick.
+
     # Daily bars for an explicit symbol list.
     uv run python ingest_alpaca.py --symbols AAPL,MSFT \
+        --start-date 2024-01-01 --end-date 2024-12-31
+
+    # The same fetch, converted to the Zarr store afterwards.
+    uv run python ingest_alpaca.py --symbols AAPL,MSFT --to-zarr \
         --start-date 2024-01-01 --end-date 2024-12-31
 
     # Daily bars for a point-in-time roster.
@@ -99,7 +113,8 @@ Usage:
     # Quotes at full resolution. --data-type is REQUIRED here and rejected
     # everywhere else; --rows-per-symbol-day is what the volume guard prices
     # tick with, and it has no default because tick volume is not derivable
-    # from a calendar.
+    # from a calendar. Adding --to-zarr here exits 2: there is no tick
+    # conversion to opt into (D-18), and refusing beats ignoring.
     uv run python ingest_alpaca.py --symbols AAPL --frequency tick \
         --data-type quotes --rows-per-symbol-day 1000000 \
         --start-date 2024-01-02 --end-date 2024-01-02
@@ -148,7 +163,8 @@ SOURCE = DataSourceRegistry.get("alpaca")
 #: `--universe` choices are derived from `UNIVERSE_CATEGORY_MAP`.
 FREQUENCIES: tuple[str, ...] = typing.get_args(Frequency)
 
-#: The Zarr store this script's `1d`/`1m` conversions write to.
+#: The Zarr store this script's `1d`/`1m` conversions write to when `--to-zarr`
+#: asks for one.
 #:
 #: DELIBERATELY not `stock_kline_config`'s `"stock.zarr"` default. D-11 puts the
 #: vendor segment on `raw_data_dir_path` and `watermark_path`, which is what

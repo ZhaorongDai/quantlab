@@ -1,9 +1,18 @@
-"""Pull US-equities daily data from Tiingo and persist it as xr.Dataset/Zarr.
+"""Pull US-equities daily data from Tiingo into raw parquet, and optionally
+convert it to xr.Dataset/Zarr.
 
-Full Tiingo-to-Zarr pipeline: fetches raw EOD data through the data-source
-registry (writing raw parquet files under the configured raw_data_dir_path),
-then converts/cleans/persists it through StockDataset into a Zarr store (D-02
-market/frequency convention, see quantlab/config/__init__.py:stock_kline_config()).
+Fetches raw EOD data through the data-source registry, writing raw parquet
+files under the configured raw_data_dir_path, and STOPS THERE unless
+`--to-zarr` is passed. With the flag it goes on to convert/clean/persist the
+raw shards through StockDataset into a Zarr store (D-02 market/frequency
+convention, see quantlab/config/__init__.py:stock_kline_config()).
+
+`--to-zarr` is OFF by default, and that default CHANGED (G-03.4-1b): this
+script used to convert unconditionally, which meant a run that fetched nothing
+walked into the conversion anyway and ended on StockDataset's absent-root
+ValueError traceback. All three ingest shells now agree -- raw is the default
+deliverable, conversion is asked for -- and the default path prints that it
+skipped the conversion rather than saying nothing.
 
 This script names no vendor class anywhere: it resolves its source from
 `DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
@@ -17,17 +26,24 @@ symbol lists and date ranges are ever logged/printed.
 
 Usage:
     export TIINGO_API_KEY=your-key-here
+
+    # Raw parquet only -- the default.
     uv run python ingest_tiingo.py --symbols AAPL,MSFT
     uv run python ingest_tiingo.py --symbols AAPL --start-date 2024-01-01 --end-date 2024-12-31
     uv run python ingest_tiingo.py --symbols AAPL,MSFT --refresh
 
+    # Raw parquet AND the Zarr store.
+    uv run python ingest_tiingo.py --symbols AAPL,MSFT --to-zarr
+
 Or resolve a symbol list from the point-in-time US-equity universe table
 (02-08-PLAN.md; build/refresh it first via `refresh_us_equity_universe.py`)
-instead of passing --symbols explicitly:
+instead of passing --symbols explicitly. `--limit N` takes the first N of that
+roster in ASCENDING symbol order, so the same pair of flags resolves the same
+N symbols on every run and a second run resumes where the first stopped:
     uv run python ingest_tiingo.py --universe sp500 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq100 --as-of-date 2015-06-01
     uv run python ingest_tiingo.py --universe nasdaq_all --as-of-date 2020-01-01
-    uv run python ingest_tiingo.py --universe us_all --as-of-date 2020-01-01
+    uv run python ingest_tiingo.py --universe us_all --as-of-date 2020-01-01 --to-zarr
 """
 
 import argparse
@@ -103,8 +119,9 @@ def _build_configs(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Pull US-equities daily data from Tiingo and persist it as "
-            "xr.Dataset/Zarr. Requires TIINGO_API_KEY."
+            "Pull US-equities daily data from Tiingo into raw parquet, and "
+            "with --to-zarr also persist it as xr.Dataset/Zarr. Requires "
+            "TIINGO_API_KEY."
         )
     )
     add_universe_args(parser)

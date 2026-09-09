@@ -6,8 +6,11 @@ registry.
 SC-1 — no vendor class is named at the call site.
 D-15 — the three us-equity ingest scripts are reduced to thin shells and KEPT,
 not deleted: `ingest_us_equity.py` is not redundant (its `mode="in_range"`
-roster, its independent `us_all` watermarks, its chunked `--to-zarr` and its
-`--stamp-legacy-watermarks` all differ from `ingest_tiingo.py`).
+roster, its independent `us_all` watermarks, its CHUNKED conversion and its
+`--stamp-legacy-watermarks` all differ from `ingest_tiingo.py`). The
+`--to-zarr` FLAG is no longer among the differences -- all three shells carry
+it as of G-03.4-1b -- but the chunked, resumable conversion behind it still
+is.
 
 Scaffolded by plan 03.4-01 (Wave 0); filled in by 03.4-02 (`ingest_tiingo.py`)
 and 03.4-06 (`ingest_alpaca.py`, `ingest_us_equity.py`). All three shells are
@@ -560,7 +563,11 @@ def test_every_argparse_default_that_named_a_vendor_class_now_reads_the_descript
 # ---------------------------------------------------------------------------
 
 #: The eleven flags that must survive thinning. `--limit` and `--max-workers`
-#: arrive through `add_concurrency_args`; the rest are declared in the script.
+#: arrive through `add_concurrency_args` and `--to-zarr` through
+#: `add_to_zarr_arg`; the rest are declared in the script. That `--to-zarr` is
+#: now SHARED is exactly why it stays on this list: the assertion below goes
+#: through the real parser, so it still catches the flag disappearing from
+#: this script when the shared registrar is what supplies it.
 _US_EQUITY_FLAGS = (
     "--dry-run",
     "--stamp-legacy-watermarks",
@@ -608,8 +615,10 @@ def test_us_equity_keeps_every_capability_that_makes_it_distinct() -> None:
     day cannot see), the independent `us_all` watermark tree and Zarr store
     (neither script's watermarks satisfy the other's coverage), the deliberate
     `symbols=None` dataset config that keeps `_reset_symbols` from densifying
-    the whole panel at construction time, the chunked `--to-zarr` conversion
-    with its per-chunk RAM guard, the credential-free `--dry-run`, the only
+    the whole panel at construction time, the chunked conversion behind
+    `--to-zarr` with its per-chunk RAM guard (the flag is shared with the
+    other two shells now; the chunking is not), the credential-free
+    `--dry-run`, the only
     in-repo route to watermark stamping, and the four quota/concurrency knobs.
 
     The flag arm goes through the REAL parser rather than the source, so a

@@ -481,9 +481,14 @@ DRY RUN -- category=us_all, no price requests issued
 > 见 [registry.md](registry.md)。
 
 ```bash
-uv run python ingest_alpaca.py --symbols AAPL,MSFT --frequency 1m \
+uv run python ingest_alpaca.py --symbols AAPL,MSFT --frequency 1m --to-zarr \
     --start-date 2026-08-01 --end-date 2026-09-05
 ```
+
+> `--to-zarr` 是后补上的：默认路径不转 Zarr，因此也不会跑
+> `assert_dense_panel_fits`（那个护栏量的是稠密化的内存，稠密化不发生就不该拦人）。
+> 下面这段输出里两个护栏都跑过了，所以能复现它的命令行是带 `--to-zarr` 的这一条。
+> 输出本身一个字没改。
 
 真实输出（同样是本机实际执行）：
 
@@ -815,9 +820,12 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
     同样，`AlpacaAcquisition.DEFAULT_BATCH_SIZE = 100` 也是一个**保守工作值**，
     不是已验证的厂商上限（真实上限没有文档）。
 
-12. **`tick` 频率的 run 到 raw 就停了。** `ingest_alpaca.py` 不会去转 Zarr，
-    因为稠密 `[timestamp, symbol]` 面板表达不了不规则事件轴，这是另一套数据模型，
-    留给后续 phase。脚本会明说，不会让你干等一个永远不会出现的 Zarr store。
+12. **所有频率的 run 默认都到 raw 就停；`tick` 的特别之处是它连 `--to-zarr` 都不接受。**
+    三个 ingest 脚本现在一致：不给 `--to-zarr` 就不转 Zarr，并且会明说自己跳过了转换
+    （G-03.4-1b）。`1d` / `1m` 给了 `--to-zarr` 就会转；`tick` 给了会被 argparse
+    以 exit 2 拒绝——因为稠密 `[timestamp, symbol]` 面板表达不了不规则事件轴，
+    这是另一套数据模型，留给后续 phase（D-18）。拒绝而不是静默忽略，
+    是为了不让你干等一个永远不会出现的 Zarr store。
 
 13. **watermark 根目录会按 `data_type` 再套一层——但只对 tick。**
     `_watermark_root` 在 `RAW_HIVE_KEYS` 含 `data_type` 时会加一段

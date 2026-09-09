@@ -264,23 +264,29 @@ imports the layers it needs:
   `run(SOURCE, config, ...)`, which returns an `AcquisitionResult`. They are kept rather than
   merged into one `--source` CLI: they are the registry's in-repo consumer, live proof the
   programmatic entry point works, and the fallback on a machine with no operator console. The
-  raw-to-Zarr conversion stays in each shell, because `run()` is acquisition-only and the three
-  convert in three different modes behind three differently-sized RAM guards.
-- `ingest_tiingo.py` -- full Tiingo-to-Zarr pipeline for US equities: fetches raw EOD data
-  through the registry, then converts/cleans/persists it through `StockDataset` into a Zarr
-  store. Requires `TIINGO_API_KEY`. Pass `--refresh` to incrementally update from each symbol's
+  raw-to-Zarr conversion stays in each shell, because `run()` is acquisition-only. All three
+  now gate it behind the same `--to-zarr` flag and default to stopping at raw; what still differs
+  is the MODE -- `ingest_us_equity.py` densifies one `--chunk` window at a time, the other two
+  densify the whole window -- and the RAM guard each mode is sized against.
+- `ingest_tiingo.py` -- Tiingo US-equity EOD ingest: fetches raw EOD data through the registry
+  and stops at the raw parquet shards. Pass `--to-zarr` to also convert/clean/persist them
+  through `StockDataset` into a Zarr store (whole-window; the dense-panel RAM guard runs only
+  on that path). Requires `TIINGO_API_KEY`. Pass `--refresh` to incrementally update from each symbol's
   last recorded watermark instead of a full backfill.
 - `ingest_us_equity.py` -- the full-market Tiingo backfill: resolves a `us_all`-style roster
   from the universe table, stores under its own `us_all` subdirectory and watermark tree, and
-  converts to Zarr only under `--to-zarr` (chunked, with `--chunk` / `--on-new-listing`). It is
+  converts to Zarr only under `--to-zarr` -- as all three now do -- but is the only one that
+  converts CHUNKED, one `--chunk` window at a time and resumably (`--chunk` /
+  `--on-new-listing`). It is
   NOT redundant with `ingest_tiingo.py --universe us_all` -- they differ in roster mode, storage
   subdirectory, conversion mode, dataset symbols, and three flags that exist on only one of
   them. `--dry-run` prints the roster size, the volume estimate, the resolved paths and a real
   watermark coverage report, needs NO credential and issues zero vendor requests.
 - `ingest_alpaca.py` -- the second US-equity source (03.2 D-10: parallel to Tiingo, not a
   replacement). Fetches daily bars, minute bars, quotes or trades from Alpaca Market Data into
-  the vendor-namespaced raw path, then converts bars to Zarr. Requires `APCA_API_KEY_ID` and
-  `APCA_API_SECRET_KEY`. `--frequency tick` stops after the raw shards land: the quotes/trades
+  the vendor-namespaced raw path, stopping at the raw shards. Pass `--to-zarr` to convert bars
+  to Zarr afterwards. Requires `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY`. `--frequency tick`
+  REFUSES `--to-zarr` outright (exit 2) rather than ignoring it: the quotes/trades
   raw-to-xarray conversion needs an irregular event axis the dense `[timestamp, symbol]` panel
   cannot express, and arrives in phase 03.3 (D-18). Every entry point runs a pre-flight volume
   estimate first and refuses an over-budget fetch before constructing a client; `--force-volume`
