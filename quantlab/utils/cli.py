@@ -226,8 +226,12 @@ def add_concurrency_args(
         type=int,
         default=None,
         help=(
-            "Process only the first N resolved symbols. For smoke-testing the "
-            "pipeline end to end before committing to the full roster."
+            "Process only the first N resolved symbols, where FIRST means "
+            "ASCENDING BY SYMBOL -- the roster queries return sorted lists on "
+            "purpose, so the same --universe/--limit pair truncates to the "
+            "SAME N symbols on every run and a second run meets the "
+            "watermarks the first one wrote. For smoke-testing the pipeline "
+            "end to end before committing to the full roster."
         ),
     )
     parser.add_argument(

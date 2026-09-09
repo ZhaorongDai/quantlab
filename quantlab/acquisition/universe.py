@@ -1526,6 +1526,21 @@ class UniverseCatalog:
         """Every symbol whose listing interval OVERLAPS `[start_date,
         end_date]`, de-duplicated.
 
+        **Returns the symbols in ASCENDING order, and that order is part of
+        the CONTRACT, not an implementation detail.** Two calls with the same
+        arguments against the same table return element-wise equal lists,
+        because the order is a function of the membership SET rather than of
+        the parquet row order, the file-discovery order or polars' threading.
+
+        The order is depended on: `quantlab/utils/cli.py:resolve_symbols`
+        slices `symbols[:limit]` for `--limit`, so an unstable order truncates
+        to a different batch of symbols on every run, and the second run never
+        meets the watermarks the first one wrote -- resume and skip can then
+        never fire. "The same config resolves the same roster" is CLAUDE.md's
+        reproducibility constraint arriving at this layer, so a future
+        "nobody reads the order, drop the sort" is a behaviour change, not a
+        cleanup.
+
         This is the query a full-window BACKFILL wants;
         `get_symbols_as_of()` is the query a walk-forward backtest wants,
         per-rebalance. The overlap predicate is
@@ -1584,7 +1599,41 @@ class UniverseCatalog:
             # intervals, and this query answers for those too.
             & (pl.col("end_date").is_null() | (pl.col("end_date") >= start_date))
         )
-        return matched.select("symbol").unique().collect()["symbol"].to_list()
+        # `.sort("symbol")` AFTER `.unique()`, and the ORDER is part of this
+        # method's contract rather than an implementation detail -- see the
+        # "Returns" paragraph above for what the contract is; this comment is
+        # for why it is a SORT.
+        #
+        # Without it the returned order is whatever polars' multi-threaded
+        # `unique()` happened to emit for this parquet layout, so two calls on
+        # the SAME table can disagree. `quantlab/utils/cli.py:resolve_symbols`
+        # then slices `symbols[:limit]`, and `--limit 50` truncates to a
+        # DIFFERENT 50 symbols every run: the second run never meets the
+        # watermarks the first one wrote, so resume/skip can never fire. That
+        # is CLAUDE.md's reproducibility constraint failing at the roster
+        # layer.
+        #
+        # `unique(maintain_order=True)` is NOT the fix, though it looks like a
+        # cheaper one. It pins the order to THIS parquet file's ROW order --
+        # and `refresh_us_equity_universe.py` rewrites that table
+        # periodically, so one refresh silently swaps out the batch `--limit`
+        # truncates to. The same reproducibility hole, moved one layer down
+        # where nothing tests for it. Sorting instead makes the order a
+        # FUNCTION OF THE MEMBERSHIP SET: the same set always yields the same
+        # roster order, independent of file count, hive layout, row order and
+        # polars' internals.
+        #
+        # `quantlab/base/acquisition.py:1099`'s `maintain_order=True` is not a
+        # precedent for the alternative: it preserves an order its CALLER
+        # already established, whereas here there is no incoming order to
+        # preserve.
+        return (
+            matched.select("symbol")
+            .unique()
+            .sort("symbol")
+            .collect()["symbol"]
+            .to_list()
+        )
 
     #: Trading days per calendar year, and the calendar year they are scaled
     #: against. A deliberate APPROXIMATION: `estimate_dense_panel()` produces
@@ -2328,6 +2377,21 @@ class UniverseCatalog:
         )
 
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
+        """Every symbol whose listing interval CONTAINS `as_of_date`,
+        de-duplicated -- point-in-time membership on ONE day.
+
+        `get_symbols_in_range()` is the sibling a full-window backfill wants;
+        this is the one a walk-forward backtest wants, per rebalance.
+
+        **Returns the symbols in ASCENDING order, and that order is part of
+        the CONTRACT, not an implementation detail** -- identical to
+        `get_symbols_in_range()`, deliberately, because
+        `quantlab/utils/cli.py:resolve_symbols` slices `symbols[:limit]`
+        whichever of the two it called. See that method's docstring and its
+        return expression for the full argument: an unstable order makes
+        `--limit N` truncate to a different N symbols each run, which is
+        CLAUDE.md's reproducibility constraint failing at the roster layer.
+        """
         # `category` and `as_of_date` arrive unvalidated -- `as_of_date` comes
         # straight off `ingest_tiingo.py`'s `--as-of-date` CLI argument. Both
         # are validated HERE because every wrong input otherwise produces `[]`,
@@ -2352,4 +2416,15 @@ class UniverseCatalog:
             & (pl.col("start_date") <= as_of_date)
             & (pl.col("end_date").is_null() | (pl.col("end_date") >= as_of_date))
         )
-        return matched.select("symbol").unique().collect()["symbol"].to_list()
+        # Ascending by symbol, for the reason argued in full at
+        # `get_symbols_in_range`'s return: the order is a contract callers
+        # slice against, and it must be a function of the membership set
+        # rather than of the parquet layout. Same shape in both queries, on
+        # purpose -- one sorted and one not is how the two contracts drift.
+        return (
+            matched.select("symbol")
+            .unique()
+            .sort("symbol")
+            .collect()["symbol"]
+            .to_list()
+        )
