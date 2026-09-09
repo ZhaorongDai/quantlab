@@ -6,10 +6,11 @@ watermark sidecars must be written the way `PageLedger._flush` already writes
 its ledger, through ONE shared helper rather than a third hand-rolled copy
 (L-4, "Don't Hand-Roll").
 
-Scaffolded by plan 03.4-01 (Wave 0). `quantlab/utils/atomic.py:write_json_atomically`
-does not exist yet; plan 03.4-03 extracts it and fills this file in.
+Scaffolded by plan 03.4-01 (Wave 0) and filled in by plan 03.4-03, which
+extracted `quantlab/utils/atomic.py:write_json_atomically` and routed all four
+sidecar writers through it.
 
-The two tests below bracket that change from both sides:
+The first two tests bracket that change from both sides:
 
 - the PRECEDENT the extraction copies is proven to work before it is copied,
   so a regression in the extracted helper is attributable rather than being
@@ -33,6 +34,8 @@ import pytest
 
 from quantlab.acquisition.tiingo import TiingoAcquisition
 from quantlab.base.pageledger import PageLedger
+from quantlab.utils import atomic
+from quantlab.utils.atomic import write_json_atomically
 
 
 def test_page_ledger_flush_leaves_no_temp_file_and_writes_parseable_json(
@@ -153,8 +156,6 @@ def test_write_json_atomically_leaves_no_temp_file(tmp_path: Path) -> None:
     Missing parent directories are created, matching what every current caller
     does with its own `mkdir(parents=True, exist_ok=True)` line today.
     """
-    from quantlab.utils.atomic import write_json_atomically
-
     directory = tmp_path / "nested" / "_watermarks"
     destination = directory / "AAPL.json"
 
@@ -185,8 +186,6 @@ def test_write_json_atomically_honours_json_kwargs(tmp_path: Path) -> None:
     Asserted against `json.dumps` output rather than by eye, in BOTH
     directions: kwargs forwarded, and no kwargs meaning compact.
     """
-    from quantlab.utils.atomic import write_json_atomically
-
     payload = {"b": 2, "a": 1, "nested": {"z": 0}}
 
     compact = tmp_path / "compact.json"
@@ -216,8 +215,6 @@ def test_a_failed_write_leaves_the_previous_file_intact_and_no_tmp(
     - no `*.tmp` survives, so a failed write leaks neither disk nor the
       partial contents it managed to serialise (T-03.4-03-05).
     """
-    from quantlab.utils.atomic import write_json_atomically
-
     destination = tmp_path / "AAPL.json"
     write_json_atomically(destination, {"last_date": "2024-01-31"})
     before = destination.read_bytes()
@@ -246,8 +243,6 @@ def test_the_temp_file_is_created_in_the_destination_directory(
     reveals which directory it was staged in, so the argument is captured at
     the call rather than inferred from the result.
     """
-    from quantlab.utils import atomic
-
     captured: dict[str, object] = {}
     real = tempfile.NamedTemporaryFile
 

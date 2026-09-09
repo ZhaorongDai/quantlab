@@ -11,21 +11,24 @@ Two pure collaborators for the chunked densify-and-append ingestion path:
 
 Neither depends on a Dataset, a backend or a config -- they are functions of a
 timestamp axis and a file path -- so this module is a LEAF: stdlib plus
-pandas/xarray, and ZERO project-internal imports. That is the same rule
-`dataset/cleaning.py` follows, and it is what keeps this module unit-testable
-without touching a Dataset and structurally incapable of introducing an
-import cycle. (`base.data` imports it, never the other way round.)
+pandas/xarray plus the one stdlib-only leaf `quantlab.utils.atomic`, and no
+other project-internal import. That is the same rule `dataset/cleaning.py`
+follows, and it is what keeps this module unit-testable without touching a
+Dataset and structurally incapable of introducing an import cycle --
+`utils.atomic` imports nothing from this project at all, so depending on it
+cannot close a cycle. (`base.data` imports this module, never the other way
+round.)
 """
 
 import hashlib
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 import xarray as xr
+
+from quantlab.utils.atomic import write_json_atomically
 
 
 class TimeChunkPlanner:
@@ -254,10 +257,11 @@ class ChunkLedger:
     def record(self, start, end, rows: int, symbols: Sequence[str]) -> None:
         """Append one window and rewrite the sidecar ATOMICALLY.
 
-        Written to a temp file in the same directory and then `os.replace`d,
-        so a crash mid-write leaves either the previous valid ledger or the
-        new one -- never a half-written file that cannot be parsed, which
-        would make the next run unable to resume at all.
+        Written to a temp file in the same directory and then renamed over
+        the destination, so a crash mid-write leaves either the previous
+        valid ledger or the new one -- never a half-written file that cannot
+        be parsed, which would make the next run unable to resume at all.
+        See `quantlab.utils.atomic.write_json_atomically` for the mechanism.
         """
         self._payload["append_dim"] = self.append_dim
         self._payload["symbol_count"] = len(symbols)
@@ -380,22 +384,13 @@ class ChunkLedger:
             store.close()
 
     def _flush(self) -> None:
-        directory = Path(self.path).parent
-        directory.mkdir(parents=True, exist_ok=True)
-        handle = tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(directory),
-            prefix=Path(self.path).name + ".",
-            suffix=".tmp",
-            delete=False,
-        )
-        try:
-            with handle:
-                json.dump(self._payload, handle, indent=2)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(handle.name, self.path)
-        except BaseException:
-            Path(handle.name).unlink(missing_ok=True)
-            raise
+        """Rewrite the ledger ATOMICALLY through the shared writer.
+
+        The temp-file/rename body this method used to carry inline -- and
+        that `base/pageledger.py:PageLedger._flush` copied verbatim -- now
+        lives once in
+        `quantlab.utils.atomic.write_json_atomically` (03.4-03). The `indent=2`
+        stays HERE rather than moving into the helper so this ledger's on-disk
+        bytes are unchanged by the extraction.
+        """
+        write_json_atomically(self.path, self._payload, indent=2)

@@ -12,18 +12,20 @@ one -- because the vendor publishes no statement about token lifetime either
 way (D-03).
 
 This module is a LEAF, exactly like its sibling `base/chunking.py`: stdlib
-only, and ZERO project-internal imports. That is what keeps it unit-testable
-without constructing an `Acquisition` and what makes it structurally incapable
-of introducing an import cycle. (`base.acquisition` imports it, never the other
-way round.)
+plus the one stdlib-only leaf `quantlab.utils.atomic`, and no other
+project-internal import. That is what keeps it unit-testable without
+constructing an `Acquisition` and what makes it structurally incapable of
+introducing an import cycle -- `utils.atomic` imports nothing from this project
+at all, so depending on it cannot close a cycle. (`base.acquisition` imports
+this module, never the other way round.)
 """
 
 import hashlib
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
+
+from quantlab.utils.atomic import write_json_atomically
 
 
 class PageLedger:
@@ -423,29 +425,14 @@ class PageLedger:
     def _flush(self) -> None:
         """Rewrite the sidecar ATOMICALLY.
 
-        Written to a temp file in the SAME directory and then `os.replace`d, so
-        a crash mid-write leaves either the previous valid ledger or the new
+        Written to a temp file in the SAME directory and then renamed over the
+        destination, so a crash mid-write leaves either the previous ledger or the new
         one -- never a half-written file that cannot be parsed, which would
-        make the next run unable to resume at all. Copied from
-        `base/chunking.py:ChunkLedger._flush`, whose reasoning applies here
-        unchanged.
+        make the next run unable to resume at all. That body used to be
+        duplicated here from `base/chunking.py:ChunkLedger._flush`; it now
+        lives once in `quantlab.utils.atomic.write_json_atomically`, which both
+        ledgers and both acquisition sidecar writers share (03.4-03). The
+        `indent=2` stays HERE rather than moving into the helper so this
+        ledger's on-disk bytes are unchanged by the extraction.
         """
-        directory = Path(self.path).parent
-        directory.mkdir(parents=True, exist_ok=True)
-        handle = tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(directory),
-            prefix=Path(self.path).name + ".",
-            suffix=".tmp",
-            delete=False,
-        )
-        try:
-            with handle:
-                json.dump(self._payload, handle, indent=2)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(handle.name, self.path)
-        except BaseException:
-            Path(handle.name).unlink(missing_ok=True)
-            raise
+        write_json_atomically(self.path, self._payload, indent=2)
