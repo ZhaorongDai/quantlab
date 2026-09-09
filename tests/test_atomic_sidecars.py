@@ -26,7 +26,10 @@ no test is named for a selector a later plan owns.
 """
 
 import json
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from quantlab.acquisition.tiingo import TiingoAcquisition
 from quantlab.base.pageledger import PageLedger
@@ -125,3 +128,139 @@ def test_a_half_written_watermark_sidecar_reads_back_as_absent(
     not_an_object_path.write_text('["2024-01-31"]', encoding="utf-8")
 
     assert acq._read_sidecar("MSFT") is None
+
+
+# --------------------------------------------------------------------------
+# The extracted helper: quantlab/utils/atomic.py:write_json_atomically
+#
+# Plan 03.4-03 lifts `PageLedger._flush`'s body into ONE shared function that
+# both pre-existing ledgers and both acquisition sidecar writers call, rather
+# than letting a third hand-rolled copy appear (L-4, "Don't Hand-Roll"). The
+# four tests below are the helper's own contract; the two tests above remain
+# the precedent/blast-radius bracket around the change.
+# --------------------------------------------------------------------------
+
+
+def test_write_json_atomically_leaves_no_temp_file(tmp_path: Path) -> None:
+    """A successful write leaves the destination and NOTHING else.
+
+    Written twice on purpose: the first write into an empty directory would
+    leave no temp file even from a naive `open(path, "w")`, so only the
+    OVERWRITE distinguishes an atomic writer from a plain one. A surviving
+    `*.tmp` means either `os.replace` never ran or the writer leaks one file
+    per call -- on a full-market backfill that is one leaked file per symbol.
+
+    Missing parent directories are created, matching what every current caller
+    does with its own `mkdir(parents=True, exist_ok=True)` line today.
+    """
+    from quantlab.utils.atomic import write_json_atomically
+
+    directory = tmp_path / "nested" / "_watermarks"
+    destination = directory / "AAPL.json"
+
+    write_json_atomically(destination, {"last_date": "2024-01-31"})
+    write_json_atomically(destination, {"last_date": "2024-02-29"})
+
+    assert destination.is_file()
+    assert list(directory.glob("*.tmp")) == [], (
+        "a surviving temp file means os.replace never ran, or the writer "
+        "leaks one file per write"
+    )
+    assert sorted(p.name for p in directory.iterdir()) == ["AAPL.json"]
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "last_date": "2024-02-29"
+    }
+
+
+def test_write_json_atomically_honours_json_kwargs(tmp_path: Path) -> None:
+    """Each caller keeps its OWN formatting; the helper imposes none.
+
+    This is the D-20 precision edge. `_write_watermark` writes compact JSON,
+    `_write_failure_manifest` writes `indent=2, sort_keys=True`, and both
+    ledgers write `indent=2`. A helper that normalised all four onto one
+    format would make every pre-existing sidecar on disk look different from
+    every newly written one, for a reason nobody recorded, buried inside a
+    durability refactor.
+
+    Asserted against `json.dumps` output rather than by eye, in BOTH
+    directions: kwargs forwarded, and no kwargs meaning compact.
+    """
+    from quantlab.utils.atomic import write_json_atomically
+
+    payload = {"b": 2, "a": 1, "nested": {"z": 0}}
+
+    compact = tmp_path / "compact.json"
+    write_json_atomically(compact, payload)
+    assert compact.read_text(encoding="utf-8") == json.dumps(payload)
+
+    pretty = tmp_path / "pretty.json"
+    write_json_atomically(pretty, payload, indent=2, sort_keys=True)
+    assert pretty.read_text(encoding="utf-8") == json.dumps(
+        payload, indent=2, sort_keys=True
+    )
+
+
+def test_a_failed_write_leaves_the_previous_file_intact_and_no_tmp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The D-20 boundary: a write that dies at the last byte is a no-op.
+
+    `json.dump` is forced to raise AFTER the destination already holds a good
+    value, which is the case that matters -- an empty directory cannot show
+    that the previous file survived. Three things are asserted together
+    because any one alone would pass against a broken writer:
+
+    - the original exception PROPAGATES (a writer that swallowed it would let
+      a run continue believing it recorded coverage it did not);
+    - the destination's bytes are the OLD ones, byte for byte;
+    - no `*.tmp` survives, so a failed write leaks neither disk nor the
+      partial contents it managed to serialise (T-03.4-03-05).
+    """
+    from quantlab.utils.atomic import write_json_atomically
+
+    destination = tmp_path / "AAPL.json"
+    write_json_atomically(destination, {"last_date": "2024-01-31"})
+    before = destination.read_bytes()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("disk went away mid-dump")
+
+    monkeypatch.setattr(json, "dump", _boom)
+
+    with pytest.raises(RuntimeError, match="disk went away mid-dump"):
+        write_json_atomically(destination, {"last_date": "2024-02-29"})
+
+    assert destination.read_bytes() == before
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_the_temp_file_is_created_in_the_destination_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The `dir=` argument is the whole mechanism, so it is asserted directly.
+
+    `os.replace` is atomic only as a rename WITHIN one filesystem. A temp file
+    left in the system temp dir silently degrades it into a cross-device copy
+    -- interruptible, and therefore exactly the half-written file the helper
+    exists to make impossible (T-03.4-03-02). Nothing about the written file
+    reveals which directory it was staged in, so the argument is captured at
+    the call rather than inferred from the result.
+    """
+    from quantlab.utils import atomic
+
+    captured: dict[str, object] = {}
+    real = tempfile.NamedTemporaryFile
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(atomic.tempfile, "NamedTemporaryFile", _spy)
+
+    directory = tmp_path / "_watermarks" / "tiingo"
+    destination = directory / "AAPL.json"
+    atomic.write_json_atomically(destination, {"last_date": "2024-01-31"})
+
+    assert Path(str(captured["dir"])) == directory
+    assert captured["delete"] is False
+    assert destination.is_file()
