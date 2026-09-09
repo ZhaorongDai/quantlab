@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 9
+open_count: 11
 waived_count: 0
 fixed_count: 0
-total_count: 9
-last_updated: 2026-09-09T01:14:26.385Z
+total_count: 11
+last_updated: 2026-09-09T01:40:00.775Z
 ---
 
 # Broken Windows Ledger
@@ -24,6 +24,8 @@ last_updated: 2026-09-09T01:14:26.385Z
 | 7 | 03.2 | unrun-verify | ingest_alpaca.py |  | 03.2-07 open verification C (O-2): real Alpaca symbols-per-request ceiling unprobed; DEFAULT_BATCH_SIZE=100 is a conservative working value | open |  | 2026-09-06T22:47:40.800Z |  |
 | 8 | quick-260907-sm2 | deviation | README.md |  | Doc-path sweep regex excluded ':' so backticked refs like base/model.py:BaseModel were invisible; widened and fixed (~40 refs) | open |  | 2026-09-08T01:29:08.360Z |  |
 | 9 | 03.4 | unmet-truth | tests/test_tiingo_quota.py |  | The runtime quota suite does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing; surfaced by 03.4-05 mutation M6. | open |  | 2026-09-09T01:14:26.385Z |  |
+| 10 | 03.4 | unmet-truth | ingest_us_equity.py |  | Empty-roster refusal (if not symbols: parser.error) is carried as a backstop truth in 03.4-06: the branch is untouched and sits before the only run(SOURCE, ...) call, but no test drives it | open |  | 2026-09-09T01:39:55.444Z |  |
+| 11 | 03.4 | unmet-truth | ingest_us_equity.py | 449 | The stamp-legacy-watermarks flag reaches stamp_watermarks() only through SOURCE.acquisition_cls; the WRITE itself is unexercised in-repo and remains the open blocking-human checkpoint from quick task 260906-26o | open |  | 2026-09-09T01:40:00.775Z |  |
 
 ````json
 [
@@ -133,6 +135,30 @@ last_updated: 2026-09-09T01:14:26.385Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-09T01:14:26.385Z",
+    "resolved_at": null
+  },
+  {
+    "id": 10,
+    "kind": "unmet-truth",
+    "phase": "03.4",
+    "file": "ingest_us_equity.py",
+    "line": null,
+    "description": "Empty-roster refusal (if not symbols: parser.error) is carried as a backstop truth in 03.4-06: the branch is untouched and sits before the only run(SOURCE, ...) call, but no test drives it",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-09T01:39:55.444Z",
+    "resolved_at": null
+  },
+  {
+    "id": 11,
+    "kind": "unmet-truth",
+    "phase": "03.4",
+    "file": "ingest_us_equity.py",
+    "line": 449,
+    "description": "The stamp-legacy-watermarks flag reaches stamp_watermarks() only through SOURCE.acquisition_cls; the WRITE itself is unexercised in-repo and remains the open blocking-human checkpoint from quick task 260906-26o",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-09T01:40:00.775Z",
     "resolved_at": null
   }
 ]

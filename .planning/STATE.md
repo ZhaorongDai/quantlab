@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation)
 status: executing
-stopped_at: Completed 03.4-05-PLAN.md
-last_updated: "2026-09-09T01:15:48.945Z"
+stopped_at: Completed 03.4-06-PLAN.md
+last_updated: "2026-09-09T01:40:23.659Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: 311020b4b0cc166342f986d3d0c0df576edfacae
+state_head: 5259c1d9878c70985e8f9731d0b99f6f01d0ac44
 progress:
   total_phases: 11
   completed_phases: 1
   total_plans: 37
-  completed_plans: 35
+  completed_plans: 36
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — EXECUTING
-Plan: 6 of 7
+Plan: 7 of 7
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
@@ -96,6 +96,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P03 | 13 min | 2 tasks | 5 files |
 | Phase 03.4 P04 | 23 min | 3 tasks | 4 files |
 | Phase 03.4 P05 | 62 min | 3 tasks | 7 files |
+| Phase 03.4 P06 | 16 min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -200,6 +201,9 @@ Recent decisions affecting current work:
 - [Phase 03.4]: 03.4-05: the cancel path MERGES the on-disk failure manifest rather than skipping the write — RESEARCH Pitfall 4 left the choice open. Merging keeps failures a cancelled run genuinely discovered AND preserves the previous run's un-retried ones, so set(result.failures) == set(manifest) holds on EVERY exit path rather than only the uncancelled ones.
 - [Phase 03.4]: 03.4-05: the plan's no-pool check src.count('Parallel(') == 1 counts COMMENTS and was already false at HEAD — inspect.getsource returns comments; two comments in base/acquisition.py explain the one real call, so the count is 3 before and after this plan. The shipped form counts ast.Call nodes instead. Same class of authoring error as plan 01's 'no tests ran' correction.
 - [Phase 03.4]: 03.4-05: a structural guard whose mechanism moves one call deep FOLLOWS it rather than being deleted — test_the_abort_check_is_first_in_attempt_batch_abort_is_first now asserts the first statement calls _should_stop() AND that _should_stop's AST body consults _abort/is_set and _is_cancelled -- strictly stronger than the inline condition it replaced.
+- [Phase 03.4]: SC-1 means no vendor CLASS, not no vendor STRING: the shells keep DataSourceRegistry.get(<token>) because a script's identity IS its vendor and the alternative is the merged CLI D-15 forbids
+- [Phase 03.4]: L-5 argparse routing is proved DYNAMICALLY (a stub descriptor's constants must come back out of the built parser), never by scanning the source for SOURCE.acquisition_cls
+- [Phase 03.4]: ingest_tiingo.py routed through SOURCE.config_factory: calling stock_acquisition_config directly worked only because 'tiingo' is that factory's incumbent default, so the vendor was never actually routed
 
 ### Pending Todos
 
@@ -250,8 +254,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T01:14:53.593Z
-Stopped at: Completed 03.4-05-PLAN.md
+Last session: 2026-09-09T01:40:07.878Z
+Stopped at: Completed 03.4-06-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

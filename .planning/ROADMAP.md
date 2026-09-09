@@ -346,7 +346,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   source. Check whether watermark/sidecar writes are already atomic (temp file + rename) before
   deciding this needs a lock.
 
-**Plans:** 5/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -378,7 +378,7 @@ Plans:
 **Wave 6** *(blocked on Wave 5 completion — 06's shells call the `run()` signature 05 widens, and
 both plans end on a whole-suite pytest gate, so they are sequenced rather than run in parallel)*
 
-- [ ] 03.4-06-PLAN.md — `ingest_alpaca.py` and `ingest_us_equity.py` reduced to thin shells over
+- [x] 03.4-06-PLAN.md — `ingest_alpaca.py` and `ingest_us_equity.py` reduced to thin shells over
   the registry, with a credential-free `--dry-run` coverage report (SC-6, SC-1, D-15)
 
 **Wave 7** *(blocked on Wave 6 completion)*
@@ -458,7 +458,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 5/7 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 6/7 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |
