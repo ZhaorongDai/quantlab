@@ -209,10 +209,17 @@ def test_tracer_end_to_end_registry_to_raw_shard(
     assert result.quota_aborted is False
     assert result.coverage["requested"] == len(config.symbols)
 
-    # (4) -- the manifest is a SIBLING artefact, not a replacement.
+    # (4) -- the manifest is a SIBLING artefact, not a replacement. The two
+    # coincide here because this store has seen exactly one clean run, so
+    # there is nothing to carry forward; the general contract is CONTAINMENT,
+    # `set(result.failures) <= set(manifest)` -- the manifest accumulates
+    # across runs and may hold more than any single result (REVIEW CR-01,
+    # pinned in `tests/test_acquisition_progress.py`).
     manifest = Path(config.watermark_path) / "_failures.json"
     assert manifest.exists()
-    assert json.loads(manifest.read_text()) == result.failures
+    on_disk = json.loads(manifest.read_text())
+    assert on_disk == {}, on_disk
+    assert result.failures.items() <= on_disk.items()
 
     # ... and the raw tier actually received shards, under the vendor-
     # terminated root. Asserted on the ROOT the config names rather than on a

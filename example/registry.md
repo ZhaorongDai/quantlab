@@ -549,13 +549,18 @@ print(result.vendor, len(result.succeeded), len(result.failures), result.cancell
 ```
 
 **此例未在本机执行**（没有 Tiingo 凭证），所以上面没有贴输出。
-它的每一个组成部分都被测试覆盖：事件序列、取消后 store 仍可续跑、
-`set(result.failures) == set(_failures.json)` 在包括取消在内的每条退出路径上成立
-（自 03.4-08 起写清单前的合并是无条件的，这条现在成立得更彻底）。
-不过要说清这个等式**是什么**：两边由同一个 dict 在同一处组装出来，所以它是「结果和
-清单是一起拼出来的」的回执，不是对任何一边是否正确的检查。真正的回归在
-`tests/test_acquisition_progress.py`：默认路径上配额中止之后，上一轮的条目仍然在
-清单**内容**里。
+它的每一个组成部分都被测试覆盖：事件序列、取消后 store 仍可续跑，以及结果对象与失败
+清单之间的关系。
+
+那个关系**不是相等**（REVIEW CR-01 起）：`len(result.failures)` 是「**本轮**发现了几个
+失败」，而 `_failures.json` 是跨 run 累积的运维记录，可能还留着别的 run 遗留、本轮根本
+没请求过的条目。成立的是包含关系——`set(result.failures) ⊆ set(_failures.json)`，且共有
+key 上消息一致；再加上 `set(result.failures) ⊆ set(result.requested)`。旧的
+`set(result.failures) == set(_failures.json)` 已作废：两边本是同一个 dict 在同一处组装
+出来的回执，不是对任何一边是否正确的检查，而且它会让一次换了 roster 的正常跑把上一轮的
+404 当成自己的报出来。真正的回归在 `tests/test_acquisition_progress.py`：默认路径上配额
+中止之后、以及换成不相交 roster 正常跑完之后，上一轮的条目仍然在清单**内容**里，而结果
+对象是空的。
 
 ---
 

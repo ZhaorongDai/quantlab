@@ -527,9 +527,12 @@ if __name__ == "__main__":
     )
     result = run(SOURCE, acq_config, refresh=args.refresh)
     # Reported from the RESULT rather than left to the log lines: on a roster
-    # this size the per-symbol logs scroll past, and `AcquisitionResult` is
-    # built from the same accumulated failures `_failures.json` receives, so
-    # these two numbers cannot disagree with the manifest (D-18).
+    # this size the per-symbol logs scroll past. These counts describe THIS
+    # run only -- `result.failures` stays inside `requested`, so a
+    # `--symbols AAPL` smoke run reports at most one failure however many old
+    # entries `_failures.json` still carries from earlier rosters. The
+    # manifest is the wider, cross-run record and may name more; read it
+    # through `SourceInspector.failures()` (D-18, REVIEW CR-01).
     print(
         f"{len(result.succeeded)} symbol(s) succeeded, "
         f"{len(result.failures)} failed"

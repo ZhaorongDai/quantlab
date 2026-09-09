@@ -311,10 +311,16 @@ def run(
 
     The vendor is reached through `descriptor.acquisition_cls`, so no caller
     names an acquisition class. `download()` and `refresh()` keep their
-    `-> Self` chaining contract; the outcome is read off `last_result`, which
-    `_run` stashes from the same accumulated failures the failure manifest
-    receives -- so the returned object and `_failures.json` cannot disagree
-    (D-18).
+    `-> Self` chaining contract; the outcome is read off `last_result`.
+
+    **What the returned object says, and what it does not.** Its `failures`
+    are the ones THIS run discovered, always inside its own `requested`. The
+    crash-durable `_failures.json` beside the watermarks is the wider
+    cross-run record and may name symbols this run never attempted, so the two
+    are related by `set(result.failures) <= set(manifest)` -- containment, not
+    equality (D-18; the equality was retired by REVIEW CR-01, where sharing
+    one dict made a `--symbols AAPL` run report another roster's 404s as its
+    own). Read the wider set through `SourceInspector.failures()`.
 
     **ACQUISITION-ONLY, and that is D-14's amendment stated as code.** This
     downloads to the raw parquet tier and STOPS. It performs no raw-to-Zarr

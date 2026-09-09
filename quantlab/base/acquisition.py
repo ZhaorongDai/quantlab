@@ -99,10 +99,16 @@ class AcquisitionResult:
     """What ONE programmatic run did -- the in-process caller's copy of the
     outcome (03.4 D-18).
 
-    Two outputs on purpose. This object means the caller never has to read disk
-    to know what happened, while `_failures.json` still lands on disk because a
-    crashed process returns nothing. They are built from the SAME accumulated
-    `failures` dict at the SAME point in `_run`, so they cannot disagree.
+    Two outputs on purpose, ANSWERING TWO QUESTIONS. This object means the
+    caller never has to read disk to know what happened, while
+    `_failures.json` still lands on disk because a crashed process returns
+    nothing. The manifest is the DURABLE, cross-run record -- every symbol
+    currently known to be failing, including ones no recent run attempted --
+    whereas `failures` here is what THIS run discovered and stays inside
+    `requested`. So `set(failures) <= set(manifest)`: the manifest may hold
+    more, never fewer, and the messages agree on every shared key. They were
+    one dict until REVIEW CR-01, which is how a `--symbols AAPL` run came to
+    report a full-market backfill's 404s as its own.
 
     **Defined HERE, in `base/`, rather than in
     `quantlab/acquisition/registry.py`**, and the direction is what matters:
@@ -1467,6 +1473,29 @@ class Acquisition(ABC):
             )
             self._sleep(wait_seconds)
 
+        # TWO STATEMENTS, TWO DICTS -- do not collapse them back into one.
+        # The manifest on disk answers "every symbol currently known to be
+        # failing, across runs"; `AcquisitionResult.failures` answers "what
+        # THIS run discovered", which is what its own docstring promises and
+        # what `ingest_us_equity.py` prints as this run's failure count. The
+        # merge below folds carried-forward entries into the manifest copy
+        # ONLY. While both were the same dict, a run that completed normally
+        # over a DISJOINT roster reported a previous run's 404s as its own --
+        # `--symbols AAPL` on a store holding 400 old 404s printed
+        # "1 symbol(s) succeeded, 400 failed", and no console gate over
+        # `result.failures` could ever go green again (REVIEW CR-01, pinned by
+        # `test_a_disjoint_rerun_does_not_inherit_earlier_failures`).
+        #
+        # What the split costs, stated so nobody "restores" it as a bug: the
+        # old `set(result.failures) == set(_failures.json)` equality is GONE
+        # and is not coming back. What replaces it is strictly more
+        # informative -- `set(result.failures) <= set(manifest)` and
+        # `set(result.failures) <= set(requested)`. The retired equality was
+        # two expressions over one variable evaluated once, i.e. a receipt
+        # that the two were assembled together, not a check that either was
+        # correct: it read True during phase verification directly on top of a
+        # manifest that had just been emptied (03.4 D-18).
+        manifest = dict(failures)
         # UNCONDITIONAL, and outside the `while True:` above, so it runs on
         # every way out of the resume loop: a cancel, an empty `pending` on the
         # first pass, a normal completed run, an abort with `wait_for_quota`
@@ -1480,22 +1509,20 @@ class Acquisition(ABC):
         # 404s with `{}` -- which `_write_failure_manifest`'s own docstring
         # calls a meaningful statement that the last run was clean
         # (03.4 D-18, `03.4-VERIFICATION.md` gap 1, REVIEW CR-01).
+        #
+        # `attempted` is derived from `failures`, NOT from `manifest`: it is
+        # the set this run has news about, and the carried-forward entries the
+        # merge is about to add are by definition not in it.
         self._merge_unattempted_failures(
-            failures, attempted=all_succeeded | set(failures)
+            manifest, attempted=all_succeeded | set(failures)
         )
-        self._write_failure_manifest(failures)
-        # Built from the SAME accumulated `failures` dict the manifest just
-        # received, at the SAME point, so `set(result.failures)` and the
-        # manifest's key set cannot drift (03.4 D-18). Say plainly what that
-        # equality IS: both sides are two expressions over one variable
-        # evaluated once, so it is a RECEIPT that the result and the manifest
-        # were assembled together -- not a check that either is correct. It
-        # read True during phase verification directly on top of a manifest
-        # that had just been emptied. The property that protects the operator
-        # is the durability of the manifest's CONTENTS, pinned by
-        # `test_the_manifest_survives_a_quota_abort_on_the_default_path`. The
-        # merge above now runs on every exit path, so the receipt is issued
-        # over a manifest that has already been made whole.
+        self._write_failure_manifest(manifest)
+        # `failures`, not `manifest`. The operator's durability guarantee
+        # lives in the file this run just wrote, pinned FROM DISK by
+        # `test_the_manifest_survives_a_quota_abort_on_the_default_path`; the
+        # result object is this run's own report, and keeping it inside
+        # `requested` is what lets it be read alongside `coverage`, which
+        # covers `requested` only.
         self.last_result = AcquisitionResult(
             vendor=self.VENDOR,
             requested=tuple(requested),
@@ -2047,6 +2074,13 @@ class Acquisition(ABC):
         """Fold the EXISTING manifest's entries for symbols this run never
         reached back into `failures`, in place (03.4 D-18, RESEARCH Pitfall 4).
 
+        **`failures` here is the MANIFEST copy, not the run's own dict.**
+        `_run` passes `manifest = dict(failures)` and keeps the run's
+        `failures` untouched for `AcquisitionResult` (REVIEW CR-01). The
+        distinction is the whole point of the parameter: this method widens a
+        DURABLE cross-run record, and widening the run's own report with
+        symbols the run never touched is what it must not do.
+
         **Why this exists at all.** `_write_failure_manifest` OVERWRITES, and
         `_run`'s `failures` starts empty on every call. Any run that stops
         before it reaches a symbol that failed last time therefore writes `{}`
@@ -2072,26 +2106,43 @@ class Acquisition(ABC):
         before the write and outside the resume loop, so it applies on
         every exit -- all five of them: a cancel, an empty `pending` on the
         first pass, a normal completed run, an abort with `wait_for_quota`
-        off, and an abort that exhausted `quota_max_waits`. Two of those are new to it:
-        the empty-`pending` exit and the normal-completion exit. The widened
-        consequence, stated plainly: an entry for a symbol that was never in
-        `pending` at all -- because a watermark already covers it -- is now
-        PRESERVED rather than cleared. The one case where that leaves a stale
-        entry is a symbol hand-stamped by `--stamp-legacy-watermarks` after it
-        failed, so it never returns to `pending` and its old reason lingers.
-        That is a smaller harm than erasing a live 404 from the operator's only
-        record of it, and `SourceInspector.failures()` is an advisory view
-        rather than a control input.
+        off, and an abort that exhausted `quota_max_waits`. Two of those are
+        new to it: the empty-`pending` exit and the normal-completion exit.
+
+        **The widened consequence, in full.** An entry survives whenever this
+        run had no news about its symbol, and there are TWO ways that happens,
+        not one:
+
+        1. the symbol was in `requested` but never entered `pending`, because
+           a watermark already covers it; and
+        2. -- the common one -- the symbol was not in `requested` at all,
+           because this run asked for a different roster. Rosters change every
+           day: `--symbols AAPL`, a per-exchange backfill, a `us_all` window
+           that no longer returns a delisted ticker.
+
+        Case 2 is the ordinary operating condition, so most manifest entries
+        on a busy store are carried forward rather than re-observed. Stale
+        entries therefore accumulate: a symbol hand-stamped by
+        `--stamp-legacy-watermarks` after it failed, or one that left the
+        universe for good, never returns to `pending` and its old reason
+        lingers with no automatic clearing path. That is a smaller harm than
+        erasing a live 404 from the operator's only record of it, and
+        `SourceInspector.failures()` is an advisory view rather than a control
+        input.
 
         **Merge rather than skip the write**, which is the other option
         RESEARCH left open. Skipping would preserve the old manifest but throw
-        away failures the aborting run DID discover; merging keeps both, and
-        `_run` calls this BEFORE both the write and the result assembly, so the
-        two are still built from the same dict at the same point exactly as
-        before. Note what that equality is and is not: it is a receipt that the
-        result and the manifest were assembled together, not a check that
-        either is correct -- what protects the operator is the durability this
-        method gives the manifest's CONTENTS.
+        away failures the aborting run DID discover; merging keeps both. What
+        it must NOT do is widen the run's report: until REVIEW CR-01 the
+        manifest and `AcquisitionResult.failures` were one dict, so these
+        carried-forward entries were broadcast as this run's own failures.
+        They are now two values, and the relationship between them is
+        `set(result.failures) <= set(manifest)` -- the manifest may hold more,
+        never fewer. The old equality between them was a receipt that the two
+        were assembled together, not a check that either was correct; it read
+        True during phase verification on top of a manifest that had just been
+        emptied. What protects the operator is the durability this method
+        gives the manifest's CONTENTS.
 
         `attempted` is the set this run has news about: symbols it completed,
         plus symbols it failed. Entries for those are NOT restored -- a symbol

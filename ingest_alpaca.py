@@ -377,9 +377,10 @@ if __name__ == "__main__":
     )
     result = run(SOURCE, acq_config, refresh=args.refresh)
     # Reported from the RESULT rather than left to the log lines: a run that
-    # failed every symbol still logs plenty, and `AcquisitionResult` is built
-    # from the same accumulated failures the manifest receives, so these two
-    # numbers cannot disagree with `_failures.json` (D-18).
+    # failed every symbol still logs plenty. These counts describe THIS run
+    # only; `_failures.json` is the wider cross-run record and may name
+    # symbols this run never requested, so the two numbers are related by
+    # containment, not equality (D-18, REVIEW CR-01).
     print(
         f"{len(result.succeeded)} symbol(s) succeeded, "
         f"{len(result.failures)} failed"

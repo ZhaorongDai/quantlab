@@ -740,9 +740,31 @@ _ALLOCATION_BODY = (
 def test_result_and_manifest_agree(
     mock_tiingo_client, acquisition_config, tmp_path
 ) -> None:
-    """D-18: the in-process result and the crash-durable manifest are built
-    from the SAME accumulated dict, so they cannot disagree -- on a multi-pass
-    run AND on a cancelled one.
+    """D-18: the in-process result and the crash-durable manifest never
+    contradict each other -- on a multi-pass run AND on a cancelled one.
+
+    **What "agree" means here, since REVIEW CR-01 retired the old form.** It
+    used to mean `set(result.failures) == set(manifest)`, which held because
+    `_run` built both from one dict at one point -- two expressions over one
+    variable evaluated once, i.e. a receipt that they were assembled together,
+    not a check that either was correct. It read True during phase
+    verification on top of a manifest that had just been emptied, and it also
+    forced the manifest's carried-forward entries into the result, so a run
+    over a disjoint roster reported a previous run's 404s as its own. The two
+    are now separate values, and agreement is the relationship that is
+    actually load-bearing:
+
+    - `set(result.failures) <= set(manifest)` -- the durable record may hold
+      MORE (entries carried forward from runs that are over), never fewer than
+      what this run found;
+    - for every key they share, the MESSAGE is identical -- neither side may
+      paraphrase the other;
+    - `set(result.failures) <= set(requested)` -- the result speaks only for
+      the roster this run asked for.
+
+    The strict-superset direction is pinned separately, from disk, by
+    `test_a_disjoint_rerun_does_not_inherit_earlier_failures` and
+    `test_the_manifest_survives_a_quota_abort_on_the_default_path`.
 
     Two scenarios, because they fail for different reasons (RESEARCH Pitfalls 3
     and 4):
@@ -754,8 +776,9 @@ def test_result_and_manifest_agree(
        `failures` starts empty, so a run cancelled before it reached symbols
        that failed LAST time would write `{}` -- and that method's own
        docstring calls an empty manifest a meaningful statement that the last
-       run was clean. The cancel-path merge is what makes the equality hold
-       here too.
+       run was clean. The cancel-path merge is what keeps the previous run's
+       entry on disk; the cancelled run's own result stays empty, because it
+       reached nothing.
     """
     import json
 
@@ -806,12 +829,22 @@ def test_result_and_manifest_agree(
     manifest = json.loads(manifest_path.read_text())
     result = multi.last_result
 
-    assert set(result.failures) == set(manifest), (
-        f"the result and the manifest are built from the same dict at the "
-        f"same point: result={sorted(result.failures)} "
-        f"manifest={sorted(manifest)}"
+    assert set(result.failures) <= set(manifest), (
+        f"every failure this run found must also be in the durable manifest: "
+        f"result={sorted(result.failures)} manifest={sorted(manifest)}"
     )
-    assert result.failures == manifest, "the MESSAGES must agree too, not only the keys"
+    assert all(result.failures[k] == manifest[k] for k in result.failures), (
+        f"the MESSAGES must agree too, not only the keys: "
+        f"result={result.failures} manifest={manifest}"
+    )
+    assert set(result.failures) <= set(result.requested), (
+        f"the result speaks only for its own roster: "
+        f"requested={sorted(result.requested)} failures={sorted(result.failures)}"
+    )
+    assert set(result.failures) == {permanent}, (
+        f"the multi-pass run itself found exactly one permanent failure; it "
+        f"reports {sorted(result.failures)}"
+    )
     assert set(manifest) == {permanent}
     assert flaky not in result.failures and flaky not in manifest, (
         f"{flaky} failed on pass 1 and succeeded on pass 2; it belongs in "
@@ -864,11 +897,21 @@ def test_result_and_manifest_agree(
         "clean (RESEARCH Pitfall 4)"
     )
     assert after == before
-    assert set(second.last_result.failures) == set(after), (
-        f"the equality has to hold on the cancel path too: "
+    # The cancelled run reached NO symbol, so it has nothing to report -- while
+    # the manifest still holds the previous run's entry. That asymmetry is the
+    # contract, not a defect: asserting equality here (as this test did before
+    # REVIEW CR-01) would be asserting that a run which touched nothing
+    # nevertheless failed a symbol, and it is exactly that reading which made
+    # `ingest_us_equity.py` print another roster's 404s as this run's.
+    assert second.last_result.failures == {}, (
+        f"a run cancelled before it reached any symbol has no failures of its "
+        f"own; it reports {second.last_result.failures}, which is the "
+        f"manifest's carried-forward content, not this run's news"
+    )
+    assert set(second.last_result.failures) <= set(after), (
+        f"containment has to hold on the cancel path too: "
         f"result={sorted(second.last_result.failures)} manifest={sorted(after)}"
     )
-    assert second.last_result.failures == after
 
 
 def test_the_manifest_survives_a_quota_abort_on_the_default_path(
@@ -879,11 +922,13 @@ def test_the_manifest_survives_a_quota_abort_on_the_default_path(
     disk, because it never went near those symbols.
 
     This asserts on the manifest's CONTENTS read back FROM DISK, deliberately.
-    `test_result_and_manifest_agree` above pins `set(result.failures) ==
-    set(manifest)`, and `_run` builds both sides from one `failures` dict at one
-    point -- so that equality is a receipt that the two were assembled together,
-    not a check that either is correct. During phase verification it read True
-    directly on top of a manifest that had just been emptied. No assertion in
+    The equality `test_result_and_manifest_agree` used to pin --
+    `set(result.failures) == set(manifest)`, with `_run` building both sides
+    from one `failures` dict at one point -- was a receipt that the two were
+    assembled together, not a check that either was correct: during phase
+    verification it read True directly on top of a manifest that had just been
+    emptied. REVIEW CR-01 has since split the dict, so the sides are
+    independent and the surviving relationship is containment. No assertion in
     this test compares the result object against the manifest.
 
     The scenario, and why each half is shaped the way it is:
@@ -987,6 +1032,122 @@ def test_the_manifest_survives_a_quota_abort_on_the_default_path(
         f"it answered {reported} for a store holding an un-retried 404 on "
         f"{permanent}"
     )
+
+
+def test_a_disjoint_rerun_does_not_inherit_earlier_failures(
+    mock_tiingo_client, acquisition_config, tmp_path
+) -> None:
+    """REVIEW CR-01: the DURABLE manifest and THIS run's result are two
+    different statements, and the pre-write merge may only widen the first.
+
+    03.4-08 made the merge unconditional so the manifest survives every exit
+    (that is `test_the_manifest_survives_a_quota_abort_on_the_default_path`,
+    and it stays). But manifest and result were assembled from ONE dict, so
+    the same merge also poured a previous run's entries into
+    `AcquisitionResult.failures` -- on a run that completed normally with zero
+    failures of its own. `ingest_us_equity.py:535` prints
+    `len(result.failures)`, so a `--symbols AAPL` smoke run over a store
+    holding 400 earlier 404s reported "1 symbol(s) succeeded, 400 failed".
+
+    The scenario is the ordinary one, deliberately: no abort, no cancel, no
+    quota. Run 1 records a 404. Run 2 shares the watermark root but requests a
+    DISJOINT roster and every symbol succeeds. Two things must then be true at
+    once:
+
+    - `result.failures` is EMPTY -- this run discovered nothing. Its keys are
+      a subset of its own `requested`, which is what makes `failures` and
+      `coverage` (built over `requested`) alignable at all.
+    - the manifest on disk STILL holds run 1's entry, with run 1's message --
+      nobody retried that symbol, so nobody may speak for it.
+
+    "Never attempted" is asserted against the vendor's own call log rather
+    than a guard inside the vendor driver: `_attempt_batch` catches
+    `Exception`, so an `AssertionError` raised down there is swallowed and
+    downgraded to a `"failed"` status instead of failing the test.
+    """
+    import json
+
+    permanent = "AMZN"
+    not_found = _rest_client_error(404, "Not found", "Not Found")
+    root = tmp_path / "disjoint"
+    original = mock_tiingo_client.get_ticker_price
+
+    def _config(symbols):
+        return acquisition_config(
+            vendor="tiingo",
+            symbols=symbols,
+            root=root,
+            kwargs={"max_workers": 1},
+        )
+
+    # -- run 1: one real 404, recorded in the manifest ---------------------
+    def one_404(self, ticker, **kwargs):
+        if ticker == permanent:
+            raise not_found
+        return original(self, ticker, **kwargs)
+
+    mock_tiingo_client.get_ticker_price = one_404
+    first = TiingoAcquisition(_config(("AAPL", "MSFT", permanent)))
+    first.download()
+
+    manifest_path = first._coverage.failure_manifest_path
+    before = json.loads(manifest_path.read_text())
+    assert set(before) == {permanent}, (
+        f"run 1 was supposed to record exactly one 404; the manifest on disk "
+        f"holds {before}"
+    )
+    recorded_reason = before[permanent]
+
+    # -- run 2: a disjoint roster, every symbol succeeds -------------------
+    mock_tiingo_client.get_ticker_price = original
+    mock_tiingo_client.calls = []
+    second_config = _config(("NFLX", "NVDA"))
+    second = TiingoAcquisition(second_config)
+    second.download()
+    result = second.last_result
+
+    assert permanent not in {call["ticker"] for call in mock_tiingo_client.calls}, (
+        f"{permanent} was requested by the second run; the scenario is broken "
+        f"-- it must never be attempted, or the run would legitimately have "
+        f"news about it"
+    )
+    assert result.quota_aborted is False and result.cancelled is False, (
+        f"this must be the ORDINARY exit, not an abort: "
+        f"quota_aborted={result.quota_aborted} cancelled={result.cancelled}"
+    )
+    assert set(result.succeeded) == {"NFLX", "NVDA"}, (
+        f"run 2 was supposed to succeed on its whole roster; it reports "
+        f"{sorted(result.succeeded)}"
+    )
+
+    # -- the result speaks for THIS run only -------------------------------
+    assert result.failures == {}, (
+        f"a run that completed with zero failures of its own reported "
+        f"{result.failures}. Those entries are a PREVIOUS run's, carried "
+        f"forward by the pre-write merge; `AcquisitionResult` documents "
+        f"itself as what ONE programmatic run did, and "
+        f"ingest_us_equity.py prints len(result.failures) as this run's "
+        f"failure count"
+    )
+    assert set(result.failures) <= set(result.requested), (
+        f"result.failures must stay inside this run's roster, or it cannot be "
+        f"aligned with `coverage` (which covers `requested` only). "
+        f"requested={sorted(result.requested)} failures={sorted(result.failures)}"
+    )
+
+    # -- and the manifest is still the durable, cross-run record -----------
+    after = json.loads(manifest_path.read_text())
+    assert after.get(permanent) == recorded_reason, (
+        f"the disjoint run erased the previous run's failure record. "
+        f"{manifest_path.name} on disk now holds {after}; it held {before} "
+        f"before, and this run never asked the vendor for {permanent}"
+    )
+    assert set(result.failures) <= set(after), (
+        f"every failure THIS run found must also be in the durable manifest; "
+        f"the manifest may hold more. result={sorted(result.failures)} "
+        f"manifest={sorted(after)}"
+    )
+
 
 def test_result_is_scrubbed(
     monkeypatch, mock_tiingo_client, acquisition_config

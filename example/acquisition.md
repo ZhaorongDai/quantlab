@@ -196,12 +196,26 @@ Alpaca 请求里的 `asof` 参数如果不传，厂商默认用**今天的** tic
   写清单之前的那次**合并**——把盘上已有的、本轮从没轮到的条目折回来——自 03.4-08 起是
   **无条件**的：它紧挨在写入之前，覆盖续跑循环的**每一条退出路径**：取消、第一轮
   `pending` 就是空的、正常跑完、`wait_for_quota` 关着时的配额中止、`quota_max_waits`
-  用尽的配额中止。于是 `set(result.failures) == set(_failures.json)` 在每一条退出路径上
-  都成立——但要说清这个等式**是什么**：两边由同一个 dict 在同一处组装出来，所以它是
-  「结果和清单是一起拼出来的」的**回执**，不是对任何一边是否正确的检查（阶段验收时它
-  就曾在一个刚被清空的清单上读出 True）。真正保护运维的是清单**内容**的存活：默认路径
+  用尽的配额中止。
+
+  **合并只放大盘上的清单，不放大 `AcquisitionResult`**（REVIEW CR-01）。这两个东西回答
+  的是两个不同的问题：`_failures.json` = 「跨 run 累积、当前已知仍在失败的全部符号」，
+  `result.failures` = 「**本轮**发现了什么」。所以 `_run` 先 `manifest = dict(failures)`
+  再往 `manifest` 上合并，run 自己的 `failures` 原样交给结果对象。于是：
+
+  - `set(result.failures) ⊆ set(_failures.json)`——清单可以更多（别的 run 留下的），
+    绝不会更少；共有的 key 上两边的**消息完全一致**；
+  - `set(result.failures) ⊆ set(result.requested)`——结果只替自己这轮的 roster 说话，
+    这也是它能和只覆盖 `requested` 的 `coverage` 字段对齐的前提。
+
+  旧的那条 `set(result.failures) == set(_failures.json)` 等式**已经作废，别再恢复**：
+  两边本是同一个 dict 在同一处组装出来的，它是「结果和清单是一起拼出来的」**回执**，
+  不是对任何一边是否正确的检查（阶段验收时它就曾在一个刚被清空的清单上读出 True）；
+  而且正是它让一次 `--symbols AAPL` 的冒烟跑在一个存着 400 个旧 404 的 store 上打印出
+  「1 symbol(s) succeeded, 400 failed」。真正保护运维的是清单**内容**的存活：默认路径
   上配额中止之后，上一轮的条目仍然在文件里，由 `tests/test_acquisition_progress.py`
-  把文件从盘上读回来断言。
+  把文件从盘上读回来断言（`manifest_survives_a_quota_abort` 与
+  `disjoint_rerun_does_not_inherit_earlier_failures`）。
 
   它的写入现在是**原子**的，和水位边车一样，走
   `quantlab/utils/atomic.py:write_json_atomically`（临时文件 + `fsync` + `os.replace`）。
