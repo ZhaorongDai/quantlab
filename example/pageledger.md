@@ -134,7 +134,8 @@ data/downloads/us_equity/1m/nasdaq_data/_watermarks/alpaca/
 
 关于那个 `_failures.json`：它是 `Acquisition` 的东西，不是 `PageLedger` 的，
 两者的粒度也完全不同——页台账是**批内**断点（一批一个文件），失败清单是
-**最近一次 run** 的整体快照（`{symbol: 错误消息}`，每次 run 覆盖重写）。
+**跨 run 累积**的整体耐久记录（`{symbol: 错误消息}`；自 03.4-08 起，写盘前会把盘上
+本轮没轮到的旧条目折回来，所以它记的是「当前已知仍在失败的全部符号」）。
 它**不是续跑输入**：续跑完全由水位边车的存在与否驱动；仓库内读它的有两处——
 `SourceInspector.failures()` 和 `Acquisition._merge_unattempted_failures`——两处都经由
 唯一那个容错读取器 `CoverageLedger.read_failure_manifest` 去读；
