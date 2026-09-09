@@ -385,7 +385,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
   it.
 
-**Plans:** 7/7 plans executed
+**Plans:** 9 plans — 7/9 executed (03.4-08 and 03.4-09 close the two gaps in `03.4-VERIFICATION.md`)
 
 Plans:
 **Wave 1**
@@ -425,6 +425,21 @@ both plans end on a whole-suite pytest gate, so they are sequenced rather than r
 - [x] 03.4-07-PLAN.md — Documentation debt: rewrite the three superseded ROADMAP statements, mark
   `03.4-RESEARCH.md`'s open questions resolved, add `example/registry.md`, update the stale sections
   of `example/acquisition.md` (D-12, D-13, D-15, D-19, D-20)
+
+**Wave 8** *(gap closure — blocked on `03.4-VERIFICATION.md`, which scored 5/6 and found two gaps)*
+
+- [ ] 03.4-08-PLAN.md — GAP 1 (SC-5): relocate the unattempted-failure merge to run unconditionally
+  before the manifest write so every exit of `_run`'s resume loop is covered by construction, pinned
+  by a red-first regression asserting on the manifest's on-disk CONTENTS after a default-path quota
+  abort — not on the result/manifest equality, which is built from one dict and cannot fail
+  (D-17, D-18)
+
+**Wave 9** *(blocked on Wave 8 — the doc correction must describe the call site 08 leaves behind)*
+
+- [ ] 03.4-09-PLAN.md — GAP 2 (D-18 FACTUAL CORRECTION): the ROADMAP, `example/acquisition.md` and
+  `example/registry.md` all deny that any module under `quantlab/` reads `_failures.json` and then
+  name a reader two lines later; restate the reader set from a source enumeration run in the plan,
+  and file REVIEW CR-01 on the defect ledger (D-18)
 
 ### Phase 4: Baseline Return Prediction Model
 
