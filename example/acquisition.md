@@ -178,9 +178,11 @@ Alpaca 请求里的 `asof` 参数如果不传，厂商默认用**今天的** tic
   `Acquisition.STAMP_COMMAND_HINT` 里写明的命令。
 
 - **失败清单（failure manifest）**：`{watermark_root}/_failures.json`
-  （`Acquisition.FAILURE_MANIFEST_NAME`），`{symbol: 错误消息}`。**每次 run 覆盖重写**，
-  所以它永远描述**最近一次 run**；空的 `{}` 是一句有意义的话：上次跑干净了。
-  日志里只列头 `Acquisition._FAILURE_LOG_SAMPLE = 5` 个，全量在文件里。
+  （`Acquisition.FAILURE_MANIFEST_NAME`），`{symbol: 错误消息}`。它是**跨 run 累积**的
+  耐久记录——自 03.4-08 起，写盘前会把盘上「本轮从没轮到」的旧条目折回来（机制见下面
+  「合并」那段），所以它记的是「当前已知仍在失败的全部符号」。空的 `{}` 只说明「本轮
+  有消息的符号都干净、且盘上也没有别的遗留条目」；反过来也不成立——非空不等于上一轮
+  有失败。日志里只列头 `Acquisition._FAILURE_LOG_SAMPLE = 5` 个，全量在文件里。
 
   **它不是续跑输入。** 续跑完全由**水位边车的存在与否**驱动
   （03.4 D-18 的 FACTUAL CORRECTION 更正了此前相反的说法）。
@@ -557,7 +559,8 @@ data/downloads/us_equity/1m/nasdaq_data/
 {}
 ```
 
-——空的，意思是最近一次 run 干净收尾，没有任何 symbol 失败。
+——空的，意思是「本轮有消息的符号都干净、盘上也没有别的遗留条目」，
+不是「还没跑过」。
 
 `AAPL.json` 的实际内容：
 

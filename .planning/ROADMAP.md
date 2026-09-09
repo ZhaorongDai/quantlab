@@ -323,13 +323,29 @@ scheduler process and future web backend are OUT of this phase and out of this r
   the earlier no-reader clause here was true when D-18 was corrected on 2026-09-08 and plan 03.4-05
   falsified it by adding the second reader; the set above is what `read_failure_manifest()`'s call
   sites under `quantlab/` were enumerated to be when this was written, not a count carried forward.)
-  `set(result.failures) == set(json.load(_failures.json))` does hold on every exit path, cancelled
-  runs included -- but say what that equality IS: `_run` builds both sides from ONE dict at ONE
-  point, so it is a receipt that the result and the manifest were assembled together, not a check
-  that either is correct, and it read True during phase verification directly on top of a manifest
-  that had just been emptied. The consistency this phase actually pins is what plan 03.4-08 fixed
-  and asserted instead: after a quota abort on the DEFAULT path the previous run's entries are
-  still in the manifest, read back from disk.
+  The file is a DURABLE CROSS-RUN record, not a per-run artifact: plan 03.4-08 made the pre-write
+  merge unconditional and lifted it out of the resume loop to sit immediately before the write, so
+  all five exit paths are covered BY CONSTRUCTION rather than audited one at a time. `_run` merges
+  into `manifest = dict(failures)`, a COPY, and hands the run's own untouched `failures` to the
+  result object (REVIEW CR-01, `c0e392f`), so the result and the file on disk are two INDEPENDENT
+  values. The three relationships a console may write assertions against are therefore
+  containments, never an equality in either direction: `set(result.failures) <=
+  set(json.load(_failures.json))`; the MESSAGES agree on every key the two share; and
+  `set(result.failures) <= set(result.requested)`, which is what makes the result alignable with
+  `coverage` (built over `requested`). Read an empty `{}` as "every symbol this run had news about
+  came back clean AND the disk held no other carried-forward entry" -- and read it in one direction
+  only, because a NON-empty manifest likewise does not imply the preceding run failed: on a busy
+  store most entries are folded back rather than re-observed. The operator protection this phase
+  pins is asserted by the two tests that can fail on CONTENTS:
+  `tests/test_acquisition_progress.py::test_the_manifest_survives_a_quota_abort_on_the_default_path`
+  (after a quota abort on the DEFAULT path the previous run's entries are still in the manifest,
+  read back from disk) and `::test_a_disjoint_rerun_does_not_inherit_earlier_failures` (a run over a
+  roster disjoint from an earlier failing one is not inflated by that other roster's entries).
+  (FACTUAL CORRECTION 2026-09-09, quick 260909-174: the equality this bullet asserted here was
+  RETIRED on purpose by REVIEW CR-01, not merely discounted -- keeping it would have meant keeping
+  the single shared dict that leaked earlier runs' failures into `AcquisitionResult`; the reasoning
+  and the replacement contract are the D-18 row and the `result_and_manifest_agree` note in
+  `.planning/phases/03.4-data-source-registry/03.4-VALIDATION.md`.)
 - **Retire the hardcoded vendor dispatch.** `ingest_tiingo.py` -> `TiingoAcquisition` and
   `ingest_alpaca.py` -> `AlpacaAcquisition` are hardcoded at each call site today; there is no
   enumerable list an operator surface could render. These scripts become THIN SHELLS over the
