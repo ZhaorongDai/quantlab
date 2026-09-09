@@ -871,6 +871,123 @@ def test_result_and_manifest_agree(
     assert second.last_result.failures == after
 
 
+def test_the_manifest_survives_a_quota_abort_on_the_default_path(
+    mock_tiingo_client, acquisition_config, tmp_path
+) -> None:
+    """VERIFICATION gap 1 / REVIEW CR-01: a quota abort on the DEFAULT path
+    (`wait_for_quota` never set) must leave the previous run's recorded 404s on
+    disk, because it never went near those symbols.
+
+    This asserts on the manifest's CONTENTS read back FROM DISK, deliberately.
+    `test_result_and_manifest_agree` above pins `set(result.failures) ==
+    set(manifest)`, and `_run` builds both sides from one `failures` dict at one
+    point -- so that equality is a receipt that the two were assembled together,
+    not a check that either is correct. During phase verification it read True
+    directly on top of a manifest that had just been emptied. No assertion in
+    this test compares the result object against the manifest.
+
+    The scenario, and why each half is shaped the way it is:
+
+    - Run 1 downloads a roster in which exactly one symbol 404s. It gets no
+      watermark, so `_failures.json` is the ONLY record of why it is missing.
+    - Run 2 shares the watermark root (hence the manifest) but requests a
+      DIFFERENT roster, so the 404 symbol is not in `pending` and the vendor is
+      never asked for it. "Never attempted" is then proved by a guard that does
+      not fire, rather than asserted about a dispatch loop's internals.
+    - Run 2's `kwargs` does not mention `wait_for_quota` at all, so what runs is
+      `DEFAULT_WAIT_FOR_QUOTA` -- the value an operator hits, and the one the
+      `us_all` backfill this phase serves is expected to end on.
+
+    The vendor driver copies the shape of `tests/test_tiingo_quota.py`'s
+    `_Vendor` / `_install_vendor` (attribution kept), narrowed to the one
+    behaviour this test needs plus the never-attempted guard.
+    """
+    import json
+
+    from quantlab.acquisition.inspector import SourceInspector
+
+    permanent = "AMZN"
+    not_found = _rest_client_error(404, "Not found", "Not Found")
+    quota = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
+    root = tmp_path / "durable"
+    original = mock_tiingo_client.get_ticker_price
+
+    def _config(symbols):
+        return acquisition_config(
+            vendor="tiingo",
+            symbols=symbols,
+            root=root,
+            kwargs={"max_workers": 1},
+        )
+
+    # -- run 1: one real 404, recorded in the manifest ---------------------
+    def one_404(self, ticker, **kwargs):
+        if ticker == permanent:
+            raise not_found
+        return original(self, ticker, **kwargs)
+
+    mock_tiingo_client.get_ticker_price = one_404
+    first_config = _config(("AAPL", "MSFT", permanent))
+    first = TiingoAcquisition(first_config)
+    first.download()
+
+    manifest_path = first._coverage.failure_manifest_path
+    before = json.loads(manifest_path.read_text())
+    assert set(before) == {permanent}, (
+        f"run 1 was supposed to record exactly one 404; the manifest on disk "
+        f"holds {before}"
+    )
+    recorded_reason = before[permanent]
+
+    # -- run 2: global allocation exhaustion, default wait_for_quota -------
+    def exhausted(self, ticker, **kwargs):
+        assert ticker != permanent, (
+            f"{permanent} was requested by the aborting run; the scenario is "
+            f"broken -- it must never be attempted, or the run would have news "
+            f"about it and the merge would rightly say nothing"
+        )
+        raise quota
+
+    mock_tiingo_client.get_ticker_price = exhausted
+    mock_tiingo_client.calls = []
+    second_config = _config(("NFLX", "NVDA", "TSLA"))
+    second = TiingoAcquisition(second_config)
+    second.download()
+    result = second.last_result
+
+    assert result.quota_aborted is True, (
+        f"the test must be on the quota exit; quota_aborted={result.quota_aborted}"
+    )
+    assert result.cancelled is False, (
+        "the test must NOT be on the cancel exit, which already merged before "
+        "this gap was closed"
+    )
+    assert "wait_for_quota" not in (second_config.kwargs or {}), (
+        "run 2 must exercise DEFAULT_WAIT_FOR_QUOTA, not a value this test chose"
+    )
+
+    # -- the gap: the previous run's 404 must still be on disk -------------
+    after = json.loads(manifest_path.read_text())
+    assert permanent in after, (
+        f"the aborting run erased the previous run's failure record. "
+        f"{manifest_path.name} on disk now holds {after}; it held {before} "
+        f"before the abort, and the aborting run never asked the vendor for "
+        f"{permanent}. An empty manifest is, per _write_failure_manifest's own "
+        f"docstring, a statement that the last run was clean."
+    )
+    assert after[permanent] == recorded_reason, (
+        f"the surviving entry must carry run 1's message; on disk it reads "
+        f"{after[permanent]!r}, run 1 wrote {recorded_reason!r}"
+    )
+
+    # -- and through the credential-free operator surface ------------------
+    reported = SourceInspector().failures(second_config)
+    assert reported.get(permanent) == recorded_reason, (
+        f"SourceInspector.failures is what the out-of-repo console renders; "
+        f"it answered {reported} for a store holding an un-retried 404 on "
+        f"{permanent}"
+    )
+
 def test_result_is_scrubbed(
     monkeypatch, mock_tiingo_client, acquisition_config
 ) -> None:
