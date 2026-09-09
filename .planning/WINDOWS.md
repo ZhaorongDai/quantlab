@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 8
+open_count: 9
 waived_count: 0
 fixed_count: 0
-total_count: 8
-last_updated: 2026-09-08T01:29:08.360Z
+total_count: 9
+last_updated: 2026-09-09T01:14:26.385Z
 ---
 
 # Broken Windows Ledger
@@ -23,6 +23,7 @@ last_updated: 2026-09-08T01:29:08.360Z
 | 6 | 03.2 | unrun-verify | ingest_alpaca.py |  | 03.2-07 open verification B (SC-5 manual half): no real Alpaca round-trip performed; no credentials on this machine | open |  | 2026-09-06T22:47:40.650Z |  |
 | 7 | 03.2 | unrun-verify | ingest_alpaca.py |  | 03.2-07 open verification C (O-2): real Alpaca symbols-per-request ceiling unprobed; DEFAULT_BATCH_SIZE=100 is a conservative working value | open |  | 2026-09-06T22:47:40.800Z |  |
 | 8 | quick-260907-sm2 | deviation | README.md |  | Doc-path sweep regex excluded ':' so backticked refs like base/model.py:BaseModel were invisible; widened and fixed (~40 refs) | open |  | 2026-09-08T01:29:08.360Z |  |
+| 9 | 03.4 | unmet-truth | tests/test_tiingo_quota.py |  | The runtime quota suite does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing; surfaced by 03.4-05 mutation M6. | open |  | 2026-09-09T01:14:26.385Z |  |
 
 ````json
 [
@@ -120,6 +121,18 @@ last_updated: 2026-09-08T01:29:08.360Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-08T01:29:08.360Z",
+    "resolved_at": null
+  },
+  {
+    "id": 9,
+    "kind": "unmet-truth",
+    "phase": "03.4",
+    "file": "tests/test_tiingo_quota.py",
+    "line": null,
+    "description": "The runtime quota suite does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing; surfaced by 03.4-05 mutation M6.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-09T01:14:26.385Z",
     "resolved_at": null
   }
 ]
