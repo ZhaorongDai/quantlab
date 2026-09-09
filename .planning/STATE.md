@@ -242,6 +242,7 @@ Recent decisions affecting current work:
 | 260908-0f4 | Give Dataset an automatic update interface that picks widen or rebuild from raw-layer evidence | 2026-09-08 | c8bba70 | [260908-0f4-give-dataset-an-automatic-update-interfa](./quick/260908-0f4-give-dataset-an-automatic-update-interfa/) |
 | 260908-dvv | Make the widening suites exercise the coordinate dtypes production writes | 2026-09-08 | e2923da | [260908-dvv-make-the-widening-suites-exercise-the-co](./quick/260908-dvv-make-the-widening-suites-exercise-the-co/) |
 | 260908-g30 | Route symbol-axis widening by size: add a memory-bounded chunked widening path to XrBackend and a materialisation estimate that switches to it above budget, reporting which path was taken | 2026-09-08 | 4941e8d | [260908-g30-route-symbol-axis-widening-by-size-add-a](./quick/260908-g30-route-symbol-axis-widening-by-size-add-a/) |
+| 260909-174 | Retire the stale failure-manifest semantics across 12 sites, breaking the `_write_failure_manifest` docstring citation chain at its root; gated by a whitespace/string-seam normalising scanner diffed both ways against a pre-committed allowlist, plus an AST prose-only proof | 2026-09-09 | e1ef28b | [260909-174-fix-six-stale-documentation-and-docstrin](./quick/260909-174-fix-six-stale-documentation-and-docstrin/) |
 
 ### Roadmap Evolution
 
