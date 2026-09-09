@@ -335,3 +335,313 @@ def test_the_progress_knob_off_constructs_no_bar(
 
     assert _RecordingTqdm.constructions == []
     assert set(acq.last_result.succeeded) == {"AAPL", "MSFT"}
+
+
+# ---------------------------------------------------------------------------
+# D-17 -- cancellation as a separate token, checked at the batch boundary
+# ---------------------------------------------------------------------------
+
+#: More batches than workers, and -- with Tiingo's `DEFAULT_BATCH_SIZE = 1` --
+#: more batches than joblib's default `pre_dispatch` of `2 * n_jobs` allows to
+#: be withheld. At `max_workers = 8` every one of these 12 batches is QUEUED
+#: before the first result is drained, so the input generator's `break` can
+#: never fire and the FIRST-STATEMENT check in `_attempt_batch` is the only
+#: thing that can stop the vendor requests. That is RESEARCH Pitfall 2 built
+#: into the fixture rather than asserted in prose: an implementation that
+#: checked only the generator would issue all 12 calls.
+_CANCEL_SYMBOLS = tuple(f"SYM{i:02d}" for i in range(12))
+_CANCEL_WORKERS = 8
+
+
+def _cancel_on_first_call(mock_client, token) -> None:
+    """Make the fake vendor cancel the run from inside its FIRST request.
+
+    Cancelling from the client rather than from the drain loop is what makes
+    the test deterministic: at `n_jobs` concurrent workers at most `n_jobs`
+    batches can already be past the first-statement guard when the token is
+    set, so the vendor call count is bounded by `max_workers` -- a real bound,
+    not a timing hope.
+    """
+    original = mock_client.get_ticker_price
+
+    def cancelling(self, ticker, **kwargs):
+        token.cancel()
+        return original(self, ticker, **kwargs)
+
+    mock_client.get_ticker_price = cancelling
+
+
+def _sleep_recording_acquisition():
+    """A `TiingoAcquisition` whose `_sleep` seam records instead of sleeping.
+
+    Adapted from `tests/test_tiingo_quota.py:_acquisition_class` (attribution
+    kept per this phase's copied-helper convention). A cancel that took the
+    quota branch would sit here for an hour; recording turns "did not wait"
+    into an assertion.
+    """
+    from quantlab.acquisition.tiingo import TiingoAcquisition as _Tiingo
+
+    class _Recording(_Tiingo):
+        def __init__(self, config):
+            super().__init__(config)
+            self.sleeps: list[float] = []
+
+        def _sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+
+    return _Recording
+
+
+def test_cancel_check_is_first(mock_tiingo_client, acquisition_config) -> None:
+    """With ONLY the cancel token set, `_attempt_batch` returns on its first
+    statement having issued zero vendor requests.
+
+    The return shape is asserted to be the unchanged 3-element
+    `(symbols, "skipped", None)`: `tests/test_acquisition_batching.py` unpacks
+    that tuple in two places, so the cancel had to REUSE the existing seam
+    rather than widen the signature with a fourth "why it stopped" element
+    (L-6). The abort is deliberately NOT set, so this proves the cancel token
+    reaches the guard on its own rather than riding the quota flag.
+    """
+    from quantlab.base.progress import CancelToken
+
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    acq = TiingoAcquisition(config)
+    token = CancelToken()
+    acq.attach(cancel=token)
+
+    assert not acq._abort.is_set(), (
+        "the quota abort must be clear, or this test would pass on the "
+        "pre-existing abort check alone"
+    )
+    assert acq._should_stop() is False
+    token.cancel()
+    assert acq._should_stop() is True
+
+    result = acq._attempt_batch(["AAPL", "MSFT"], from_watermark=False)
+
+    assert isinstance(result, tuple)
+    assert len(result) == 3, (
+        f"the cancel must reuse the 3-element shape; got {result!r}"
+    )
+    assert result == (["AAPL", "MSFT"], "skipped", None)
+    assert not mock_tiingo_client.calls, (
+        "a cancelled batch must issue zero vendor requests"
+    )
+
+
+def test_cancel_is_not_a_quota_abort(
+    mock_tiingo_client, acquisition_config
+) -> None:
+    """RESEARCH Pitfall 1: a cancel must not be reported, or handled, as the
+    vendor's allocation running out.
+
+    `wait_for_quota=True` is set deliberately -- with waiting OFF the "no
+    `_sleep`" assertion would pass for an implementation that had folded the
+    cancel into the quota branch, because that branch does not sleep either
+    when waiting is disabled. With it ON, a cancel that took the quota path
+    would sleep, log "allocation", and then RESUME the run the operator just
+    cancelled.
+    """
+    from loguru import logger
+
+    from quantlab.base.progress import CancelToken
+
+    config = acquisition_config(
+        vendor="tiingo",
+        symbols=_CANCEL_SYMBOLS,
+        kwargs={
+            "max_workers": _CANCEL_WORKERS,
+            "wait_for_quota": True,
+            "quota_wait_seconds": 3600,
+            "quota_max_waits": 3,
+        },
+    )
+    acq = _sleep_recording_acquisition()(config)
+    token = CancelToken()
+    acq.attach(cancel=token)
+    _cancel_on_first_call(mock_tiingo_client, token)
+
+    messages, sink_id = _captured()
+    try:
+        acq.download()
+    finally:
+        logger.remove(sink_id)
+
+    text = "\n".join(messages).lower()
+    assert "cancel" in text, (
+        f"a cancelled run must say so; captured warnings: {messages}"
+    )
+    assert "allocation" not in text, (
+        f"a cancel is not a quota abort and must not be reported as one; "
+        f"captured warnings: {messages}"
+    )
+    assert acq.sleeps == [], (
+        f"a cancel must never take the quota wait; slept {acq.sleeps}"
+    )
+    assert acq.last_result.cancelled is True
+    assert acq.last_result.quota_aborted is False
+
+
+def test_cancel_leaves_a_resumable_store(
+    mock_tiingo_client, acquisition_config, tmp_path
+) -> None:
+    """SC-5's second half: completed batches land with their watermarks, the
+    remainder is never attempted, and a re-run resumes exactly there.
+
+    The fixture is chosen so the INPUT GENERATOR cannot be what stops the burn
+    (see `_CANCEL_SYMBOLS`): every batch is queued before the first result is
+    drained, so an implementation checking only the generator would call the
+    vendor 12 times. The bound asserted here is `<= max_workers`, which is the
+    real guarantee of a first-statement check -- only batches already past the
+    guard can still reach the vendor.
+    """
+    from quantlab.base.progress import CancelToken
+
+    root = tmp_path / "run"
+    config = acquisition_config(
+        vendor="tiingo",
+        symbols=_CANCEL_SYMBOLS,
+        root=root,
+        kwargs={"max_workers": _CANCEL_WORKERS},
+    )
+    acq = TiingoAcquisition(config)
+    token = CancelToken()
+    acq.attach(cancel=token)
+    _cancel_on_first_call(mock_tiingo_client, token)
+
+    acq.download()
+
+    calls = len(mock_tiingo_client.calls)
+    assert 1 <= calls <= _CANCEL_WORKERS, (
+        f"only batches already past the first-statement guard may reach the "
+        f"vendor: at most {_CANCEL_WORKERS} concurrent workers, got {calls} "
+        f"calls out of {len(_CANCEL_SYMBOLS)} batches"
+    )
+
+    stamped = {p.stem for p in acq._watermark_root.glob("SYM*.json")}
+    assert stamped, "completed batches must keep their watermarks"
+    assert stamped < set(_CANCEL_SYMBOLS), (
+        "a cancelled run must leave the remainder un-stamped, or a re-run "
+        "would skip symbols it never fetched"
+    )
+    assert stamped == set(acq.last_result.succeeded)
+
+    remainder = set(_CANCEL_SYMBOLS) - stamped
+
+    # The re-run: a FRESH acquisition with no cancel token, over the same
+    # store. Resume is driven by watermark presence, so this is the property
+    # that matters -- the operator loses no work and re-downloads nothing.
+    mock_tiingo_client.calls = []
+    resumed_config = acquisition_config(
+        vendor="tiingo",
+        symbols=_CANCEL_SYMBOLS,
+        root=root,
+        kwargs={"max_workers": _CANCEL_WORKERS},
+    )
+    TiingoAcquisition(resumed_config).download()
+
+    asked = {call["ticker"] for call in mock_tiingo_client.calls}
+    assert asked == remainder, (
+        f"the re-run must ask for exactly the un-stamped remainder; asked "
+        f"{sorted(asked)}, expected {sorted(remainder)}"
+    )
+
+
+def test_cancelling_twice_or_after_the_run_is_a_no_op(
+    mock_tiingo_client, acquisition_config
+) -> None:
+    """D-17 idempotency: a second `cancel()`, or a cancel arriving after the
+    run has already finished, changes nothing -- no exception, no second
+    manifest write, no second result.
+
+    Both shapes are covered: a double cancel DURING the run (the console's
+    user double-clicking) and a cancel AFTER it (the console's stop signal
+    racing a run that just completed).
+    """
+    from quantlab.base.progress import CallbackProgressReporter, CancelToken
+
+    config = acquisition_config(
+        vendor="tiingo",
+        symbols=_CANCEL_SYMBOLS,
+        kwargs={"max_workers": _CANCEL_WORKERS},
+    )
+    acq = TiingoAcquisition(config)
+    token = CancelToken()
+
+    cancels = {"n": 0}
+
+    def cancel_twice(event):
+        if event.kind == "batch_completed" and cancels["n"] < 2:
+            cancels["n"] += 1
+            token.cancel()
+
+    acq.attach(reporter=CallbackProgressReporter(cancel_twice), cancel=token)
+    acq.download()
+
+    assert cancels["n"] == 2, "the double cancel must actually have happened"
+    first_result = acq.last_result
+    assert first_result.cancelled is True
+
+    manifest = acq._coverage.failure_manifest_path
+    before = manifest.read_bytes()
+    mtime = manifest.stat().st_mtime_ns
+
+    # ...and a cancel arriving after the run is over.
+    token.cancel()
+    token.cancel()
+
+    assert acq.last_result is first_result
+    assert manifest.read_bytes() == before
+    assert manifest.stat().st_mtime_ns == mtime
+    assert token.is_cancelled() is True
+
+
+def test_run_forwards_the_reporter_and_the_cancel_token(
+    mock_tiingo_client, acquisition_config
+) -> None:
+    """`registry.run()` is the console's entry point, so both arguments have to
+    survive the trip through it (D-14 / D-16 / D-17).
+
+    Both are KEYWORD-ONLY with `None` defaults, which is what keeps every
+    existing call site of `run(descriptor, config)` unchanged -- asserted here
+    through `inspect.signature` rather than by a call that happens to work.
+    """
+    import inspect
+
+    from quantlab.acquisition.registry import run
+    from quantlab.acquisition.tiingo import TIINGO_SOURCE
+    from quantlab.base.progress import CallbackProgressReporter, CancelToken
+
+    parameters = inspect.signature(run).parameters
+    for name in ("reporter", "cancel"):
+        assert name in parameters, f"run() must accept {name}"
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default is None
+
+    events = []
+    token = CancelToken()
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+
+    result = run(
+        TIINGO_SOURCE,
+        config,
+        reporter=CallbackProgressReporter(events.append),
+        cancel=token,
+    )
+
+    assert result is not None
+    assert set(result.succeeded) == {"AAPL", "MSFT"}
+    assert result.cancelled is False
+    assert [event.kind for event in events].count("batch_completed") == 2, (
+        f"the reporter must have been forwarded through attach(); saw "
+        f"{[event.kind for event in events]}"
+    )
+
+    # And the token: a run started with an already-cancelled token fetches
+    # nothing at all, which is only true if `run()` forwarded it.
+    token.cancel()
+    mock_tiingo_client.calls = []
+    cancelled = run(TIINGO_SOURCE, acquisition_config(vendor="tiingo"), cancel=token)
+    assert cancelled.cancelled is True
+    assert mock_tiingo_client.calls == []
