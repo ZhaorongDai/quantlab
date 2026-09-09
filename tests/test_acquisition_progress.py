@@ -5,9 +5,11 @@ SC-5 — a caller can start an acquisition programmatically, observe its
 progress, cancel it at a batch boundary leaving the store resumable, and
 receive a result object describing what happened.
 
-Scaffolded by plan 03.4-01 (Wave 0). `ProgressEvent`, `ProgressReporter`,
-`CancelToken` and `AcquisitionResult` do not exist yet; plans 03.4-02 and
-03.4-05 build them and fill this file in.
+Scaffolded by plan 03.4-01 (Wave 0), which could only pin the fixture and
+arity contracts its subjects had yet to acquire. FILLED IN by plan 03.4-05:
+`AcquisitionResult` arrived with 03.4-02, and `ProgressEvent`,
+`ProgressReporter`, `CancelToken` and the rest of `quantlab/base/progress.py`
+with 03.4-05, so every selector below now matches a real test.
 
 TWO RULES THIS FILE IS SUBJECT TO, both from incidents recorded in
 `.planning/STATE.md`:
@@ -19,14 +21,17 @@ TWO RULES THIS FILE IS SUBJECT TO, both from incidents recorded in
    is what a `-k` selector matching nothing produces; which of the two is a
    bug depends on which was expected.
 
-2. No test here is named for a selector `03.4-VALIDATION.md` assigns to a
-   later plan (`run_returns_a_result`, `emits_one_event_per_batch`,
-   `a_raising_reporter_does_not_abort`, `tqdm_default`,
-   `cancel_leaves_a_resumable_store`, `cancel_is_not_a_quota_abort`,
-   `cancel_check_is_first`, `result_and_manifest_agree`, `result_is_scrubbed`,
-   `logging_is_unchanged`). Those must match ZERO tests until the behaviour
-   exists -- in 03.2 a deleted mechanism left `-k fingerprint` green because
-   its only covering test was named outside the selector.
+2. A `-k` selector name is never attached to a test that does not honestly
+   cover that selector's behaviour. `03.4-VALIDATION.md` assigns these to this
+   file -- `emits_one_event_per_batch`, `a_raising_reporter_does_not_abort`,
+   `tqdm_default`, `cancel_leaves_a_resumable_store`,
+   `cancel_is_not_a_quota_abort`, `cancel_check_is_first`,
+   `result_and_manifest_agree`, `result_is_scrubbed`, `logging_is_unchanged` --
+   and until 03.4-05 they had to match ZERO tests, because in 03.2 a deleted
+   mechanism left `-k fingerprint` green: its only covering test was named
+   outside the selector. Each is now attached to a test whose lock was
+   MUTATION-VERIFIED -- the mechanism was broken and the test observed turning
+   red -- rather than merely read.
 """
 
 from quantlab.acquisition.tiingo import TiingoAcquisition
@@ -659,3 +664,442 @@ def test_run_forwards_the_reporter_and_the_cancel_token(
     assert cancelled.cancelled is True
     assert cancelled.succeeded == ()
     assert mock_tiingo_client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# D-18 / D-19 / D-13 -- the two outputs agree, no credential reaches either,
+# and neither logging nor task isolation changed.
+# ---------------------------------------------------------------------------
+
+#: The one place a module path under `quantlab/` is turned into an AST. Copied
+#: in spirit from `tests/test_volume_guard.py:_resolved_imports` and
+#: `tests/test_ingest_shells.py` (attribution kept per this phase's
+#: copied-helper convention -- `tests/` is not a package). An AST walk rather
+#: than a substring scan, because a docstring MENTIONING a module name must not
+#: be able to fail a prohibition about what the code imports; this file's own
+#: prose names every forbidden module.
+def _quantlab_modules() -> list:
+    from pathlib import Path
+
+    return sorted(Path("quantlab").rglob("*.py"))
+
+
+def _imported_names(path) -> set[str]:
+    import ast
+
+    names: set[str] = set()
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                # A relative import can never reach a stdlib module.
+                continue
+            if node.module:
+                names.add(node.module)
+                for alias in node.names:
+                    names.add(f"{node.module}.{alias.name}")
+    return names
+
+
+def _rest_client_error(status_code: int, body: str, reason: str = "Error"):
+    """Build the exception `tiingo` actually raises.
+
+    Copied from `tests/test_tiingo_quota.py:_rest_client_error` (attribution
+    kept). `tiingo/restclient.py:_request` calls `resp.raise_for_status()`,
+    catches the `HTTPError` and re-raises it wrapped, so the status is reachable
+    at `exc.args[0].response.status_code` and NOT at `exc.response`. A
+    hand-rolled stand-in would let the obvious-but-broken `getattr(exc,
+    "response")` pass.
+    """
+    import requests
+    from tiingo.restclient import RestClientError
+
+    response = requests.Response()
+    response.status_code = status_code
+    response.reason = reason
+    response.url = "https://api.tiingo.com/tiingo/daily/aaa/prices"
+    response._content = body.encode()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as error:
+        return RestClientError(error)
+    raise AssertionError(f"status {status_code} did not raise")
+
+
+#: The observed allocation-exhaustion body, verbatim (copied from
+#: `tests/test_tiingo_quota.py`).
+_ALLOCATION_BODY = (
+    "Error: You have run over your hourly request allocation. Contact us at "
+    "support@tiingo.com to have these lifted."
+)
+
+
+def test_result_and_manifest_agree(
+    mock_tiingo_client, acquisition_config, tmp_path
+) -> None:
+    """D-18: the in-process result and the crash-durable manifest are built
+    from the SAME accumulated dict, so they cannot disagree -- on a multi-pass
+    run AND on a cancelled one.
+
+    Two scenarios, because they fail for different reasons (RESEARCH Pitfalls 3
+    and 4):
+
+    1. **Multi-pass.** `_run`'s resume loop merges failures across passes and
+       drops symbols a later pass cleared. A result assembled from the last
+       pass alone would report a clean run the manifest contradicts.
+    2. **Cancelled.** `_write_failure_manifest` OVERWRITES and `_run`'s
+       `failures` starts empty, so a run cancelled before it reached symbols
+       that failed LAST time would write `{}` -- and that method's own
+       docstring calls an empty manifest a meaningful statement that the last
+       run was clean. The cancel-path merge is what makes the equality hold
+       here too.
+    """
+    import json
+
+    from quantlab.base.progress import CancelToken
+
+    # -- scenario 1: multi-pass -------------------------------------------
+    flaky, permanent = "MSFT", "AMZN"
+    transient = _rest_client_error(500, "boom", "Server Error")
+    not_found = _rest_client_error(404, "Not found", "Not Found")
+    quota = _rest_client_error(429, _ALLOCATION_BODY, "Too Many Requests")
+
+    state = {"pass": 1}
+    original = mock_tiingo_client.get_ticker_price
+
+    def scripted(self, ticker, **kwargs):
+        if state["pass"] == 1:
+            if ticker == flaky:
+                raise transient
+            if ticker == permanent:
+                raise not_found
+            if ticker == "GOOG":
+                state["pass"] = 2
+                raise quota
+            return original(self, ticker, **kwargs)
+        # Pass 2: the flaky symbol recovers, the permanent one does not.
+        if ticker == permanent:
+            raise not_found
+        return original(self, ticker, **kwargs)
+
+    mock_tiingo_client.get_ticker_price = scripted
+
+    multi = TiingoAcquisition(
+        acquisition_config(
+            vendor="tiingo",
+            symbols=("AAPL", flaky, "GOOG", permanent, "META"),
+            root=tmp_path / "multipass",
+            kwargs={
+                "max_workers": 1,
+                "wait_for_quota": True,
+                "quota_wait_seconds": 0,
+                "quota_max_waits": 2,
+            },
+        )
+    )
+    multi.download()
+
+    manifest_path = multi._coverage.failure_manifest_path
+    manifest = json.loads(manifest_path.read_text())
+    result = multi.last_result
+
+    assert set(result.failures) == set(manifest), (
+        f"the result and the manifest are built from the same dict at the "
+        f"same point: result={sorted(result.failures)} "
+        f"manifest={sorted(manifest)}"
+    )
+    assert result.failures == manifest, "the MESSAGES must agree too, not only the keys"
+    assert set(manifest) == {permanent}
+    assert flaky not in result.failures and flaky not in manifest, (
+        f"{flaky} failed on pass 1 and succeeded on pass 2; it belongs in "
+        f"neither. result={result.failures} manifest={manifest}"
+    )
+    assert "GOOG" not in manifest, (
+        "the global quota condition is not one ticker's fault and stays out"
+    )
+
+    # -- scenario 2: cancelled, never reaching a previously-failed symbol ---
+    mock_tiingo_client.get_ticker_price = original
+    root = tmp_path / "cancelled"
+    symbols = ("AAPL", "MSFT", "GOOG", permanent, "META")
+
+    def _config(**extra):
+        return acquisition_config(
+            vendor="tiingo", symbols=symbols, root=root, **extra
+        )
+
+    def failing(self, ticker, **kwargs):
+        if ticker == permanent:
+            raise not_found
+        return original(self, ticker, **kwargs)
+
+    mock_tiingo_client.get_ticker_price = failing
+
+    first = TiingoAcquisition(_config())
+    first.download()
+    before = json.loads(first._coverage.failure_manifest_path.read_text())
+    assert set(before) == {permanent}, before
+
+    # The second run: cancelled before it starts, so it never attempts the one
+    # symbol still pending -- which is the symbol that failed last time.
+    token = CancelToken()
+    token.cancel()
+    second = TiingoAcquisition(_config())
+    second.attach(cancel=token)
+    mock_tiingo_client.calls = []
+    second.download()
+
+    assert mock_tiingo_client.calls == [], (
+        "the cancelled run must have reached no symbol at all, or it would "
+        "have news about the previously-failed one"
+    )
+    after = json.loads(second._coverage.failure_manifest_path.read_text())
+    assert second.last_result.cancelled is True
+    assert after != {}, (
+        "a cancelled run that never reached the failed symbol must not "
+        "overwrite the manifest with an empty dict claiming the last run was "
+        "clean (RESEARCH Pitfall 4)"
+    )
+    assert after == before
+    assert set(second.last_result.failures) == set(after), (
+        f"the equality has to hold on the cancel path too: "
+        f"result={sorted(second.last_result.failures)} manifest={sorted(after)}"
+    )
+    assert second.last_result.failures == after
+
+
+def test_result_is_scrubbed(
+    monkeypatch, mock_tiingo_client, acquisition_config
+) -> None:
+    """RESEARCH Pitfall 10: `_scrub` is the choke point that made the failure
+    manifest safe to paste into an issue, and the result object and the
+    progress events are NEW egress paths for vendor exception text.
+
+    Tiingo's error text echoes back the full request URL, which carries the API
+    token as a query parameter -- this repository has already leaked one real
+    key. So a recognisable sentinel is planted as the credential VALUE, a
+    failure whose message embeds it is forced, and the sentinel is hunted in
+    every direction it could travel: the result object (whole `repr`, so a
+    field added later is covered without editing this test), the emitted
+    events, the on-disk manifest, and the captured log records.
+
+    The redaction marker is asserted POSITIVELY as well. Without that, the test
+    would pass just as happily against an implementation that dropped the
+    message entirely -- and an operator with no reason at all is worse served
+    than one with a redacted reason.
+    """
+    from loguru import logger
+
+    from quantlab.acquisition.tiingo import KEY_ENV, TiingoAcquisition
+    from quantlab.base.progress import CallbackProgressReporter
+
+    sentinel = "sup3rs3cr3t-tiingo-value-2f9c4d"
+    monkeypatch.setenv(KEY_ENV, sentinel)
+
+    def leaking(self, ticker, **kwargs):
+        raise RuntimeError(
+            f"403 Client Error for url: "
+            f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+            f"?token={sentinel}"
+        )
+
+    mock_tiingo_client.get_ticker_price = leaking
+
+    events = []
+    acq = TiingoAcquisition(
+        acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    )
+    acq.attach(reporter=CallbackProgressReporter(events.append))
+
+    messages, sink_id = _captured(level="DEBUG")
+    try:
+        acq.download()
+    finally:
+        logger.remove(sink_id)
+
+    result = acq.last_result
+    manifest_text = acq._coverage.failure_manifest_path.read_text()
+
+    assert set(result.failures) == {"AAPL", "MSFT"}, (
+        f"the test is only meaningful if the failure actually happened: "
+        f"{result.failures}"
+    )
+    # Non-vacuity for the events arm: events were emitted AND inspected.
+    assert [event.kind for event in events].count("batch_completed") == 2
+
+    haystacks = {
+        "result repr": repr(result),
+        "result failures": " ".join(result.failures.values()),
+        "manifest": manifest_text,
+        "events": " ".join(repr(event) for event in events),
+        "logs": "\n".join(messages),
+    }
+    for where, text in haystacks.items():
+        assert sentinel not in text, (
+            f"the credential VALUE reached {where}: {text[:400]}"
+        )
+
+    assert all(
+        TiingoAcquisition.REDACTION in message
+        for message in result.failures.values()
+    ), (
+        f"the message must be REDACTED, not dropped -- otherwise this test "
+        f"passes for an implementation that tells the operator nothing: "
+        f"{result.failures}"
+    )
+    assert TiingoAcquisition.REDACTION in manifest_text
+
+
+def test_logging_is_unchanged(
+    mock_tiingo_client, acquisition_config, tmp_path
+) -> None:
+    """D-19: the console installs its own loguru sink; quantlab does not grow a
+    scoped log handle for an out-of-repo consumer.
+
+    Proved in both directions. NEGATIVELY, no module under `quantlab/` installs
+    or removes a sink -- with a non-vacuity floor, because a scan that walked
+    zero files would pass. POSITIVELY, `_report_coverage` still emits all four
+    of its records, alongside the new structured `coverage` event: the event is
+    ADDITIVE, so a shell run's stderr is unchanged while a console gets counts
+    it can render.
+    """
+    import json
+
+    from loguru import logger
+
+    from quantlab.base.progress import CallbackProgressReporter
+
+    # -- negative: no sink is installed anywhere under quantlab/ -----------
+    forbidden = ("logger.add", "logger.remove")
+    modules = _quantlab_modules()
+    assert len(modules) >= 40, (
+        f"the scan must actually have walked the package; found "
+        f"{len(modules)} modules"
+    )
+    offenders = {
+        str(path): [name for name in forbidden if name in path.read_text()]
+        for path in modules
+    }
+    offenders = {path: hits for path, hits in offenders.items() if hits}
+    assert offenders == {}, (
+        f"quantlab must not install or remove a loguru sink (D-19): "
+        f"{offenders}"
+    )
+
+    # -- positive: all four coverage records still emit, plus one event ----
+    #
+    # Four sidecars engineered so every one of the four branches fires:
+    # a covered symbol (so `skipped` is non-zero), a covered symbol carrying
+    # the `no_data` marker, one whose recorded start is LATER than the request
+    # (widened), and a legacy one with no recorded start at all.
+    config = acquisition_config(
+        vendor="tiingo",
+        symbols=("AAPL", "MSFT", "GOOG", "AMZN"),
+        root=tmp_path / "coverage",
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+    )
+    acq = TiingoAcquisition(config)
+    root = acq._watermark_root
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "AAPL.json").write_text(
+        json.dumps({"start_date": "2024-01-01", "last_date": "2024-01-31"})
+    )
+    (root / "MSFT.json").write_text(
+        json.dumps(
+            {
+                "start_date": "2024-01-01",
+                "last_date": "2024-01-31",
+                "no_data": True,
+            }
+        )
+    )
+    (root / "GOOG.json").write_text(
+        json.dumps({"start_date": "2024-06-01", "last_date": "2024-01-31"})
+    )
+    (root / "AMZN.json").write_text(json.dumps({"last_date": "2024-01-31"}))
+
+    events = []
+    acq.attach(reporter=CallbackProgressReporter(events.append))
+
+    records: list[str] = []
+    sink_id = logger.add(
+        records.append, level="INFO", format="{function}|{message}"
+    )
+    try:
+        acq.download()
+    finally:
+        logger.remove(sink_id)
+
+    coverage_records = [
+        record for record in records if record.startswith("_report_coverage|")
+    ]
+    assert len(coverage_records) == 4, (
+        f"_report_coverage must still emit all four of its records; got "
+        f"{len(coverage_records)}: {coverage_records}"
+    )
+
+    coverage_events = [event for event in events if event.kind == "coverage"]
+    assert len(coverage_events) == 1, [event.kind for event in events]
+    detail = coverage_events[0].detail
+    assert detail["requested"] == 4
+    assert detail["pending"] == 1, detail
+    assert detail["skipped"] == 3, detail
+    assert detail["no_data"] == 1, detail
+    assert detail["widened"] == 1, detail
+    assert detail["legacy"] == 1, detail
+
+
+def test_no_task_isolation_was_added() -> None:
+    """D-13: long-running-task isolation lives in the console repository, not
+    here, and this asserts the obligation NEGATIVELY.
+
+    The boundary the developer accepted: keeping a multi-hour backfill from
+    blocking a TUI is the console's job (a thread/process pool or a job queue
+    THERE). What quantlab owes it in exchange is exactly what 03.4-05 ships --
+    a cancel token it can set and progress events it can render -- and NOT a
+    second fan-out. The only fan-out in this repository remains `_run_once`'s
+    existing `joblib.Parallel` threading call.
+
+    Asserted from the AST rather than by counting substrings. `inspect
+    .getsource(...).count("Parallel(")` -- the obvious form -- is 3 against
+    this file both before and after this plan, because two of those occurrences
+    are in COMMENTS explaining the one real call.
+    """
+    import ast
+
+    banned = {"asyncio", "queue", "multiprocessing", "concurrent"}
+    modules = _quantlab_modules()
+    assert len(modules) >= 40, len(modules)
+
+    offenders = {}
+    for path in modules:
+        hits = sorted(
+            name
+            for name in _imported_names(path)
+            if name.split(".")[0] in banned
+        )
+        if hits:
+            offenders[str(path)] = hits
+    assert offenders == {}, (
+        f"quantlab must not grow a pool, an executor or a job queue for "
+        f"long-task isolation (D-13): {offenders}"
+    )
+
+    tree = ast.parse(
+        (__import__("pathlib").Path("quantlab/base/acquisition.py")).read_text()
+    )
+    parallel_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Parallel"
+    ]
+    assert len(parallel_calls) == 1, (
+        f"exactly one fan-out, the pre-existing one; found "
+        f"{len(parallel_calls)} Parallel() calls"
+    )

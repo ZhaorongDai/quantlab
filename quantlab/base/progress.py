@@ -19,10 +19,17 @@ reporter beside the vendor classes would have to be imported backwards. No
 D-decision names a path, so the divergence is recorded here rather than made
 silently.
 
-**This module is a LEAF.** It imports stdlib plus `tqdm` and `loguru` and
-NOTHING from quantlab, so it cannot participate in an import cycle and any
-module may import it. `tests/test_acquisition_progress.py` asserts that
-structurally by walking this file's `ast`.
+**This module is a LEAF.** It imports stdlib plus `tqdm` and NOTHING from
+quantlab, so it cannot participate in an import cycle and any module may import
+it. `tests/test_acquisition_progress.py` asserts that structurally by walking
+this file's `ast`.
+
+It does not import `loguru` either, and that is not an oversight: the
+never-raises wrapper around `emit` lives in `Acquisition._emit`, on the caller's
+side, because the exception has to be SCRUBBED with the vendor's own
+`CREDENTIAL_ENV_VARS` before it is logged and only the acquisition object knows
+those. Putting the try/except here would either log unscrubbed text or force
+this leaf to learn about credentials.
 
 **Cancellation is a token, never a reporter return value** (D-17). A reporter
 that only wants to log must not be able to halt a multi-hour backfill by
