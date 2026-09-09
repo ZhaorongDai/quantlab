@@ -346,7 +346,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   source. Check whether watermark/sidecar writes are already atomic (temp file + rename) before
   deciding this needs a lock.
 
-**Plans:** 4/7 plans executed
+**Plans:** 5/7 plans executed
 
 Plans:
 **Wave 1**
@@ -372,7 +372,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 03.4-05-PLAN.md — Progress events through a pluggable reporter + a cancel token at the batch
+- [x] 03.4-05-PLAN.md — Progress events through a pluggable reporter + a cancel token at the batch
   boundary, with the result object and the failure manifest kept in agreement (SC-5, D-13, D-16..D-19)
 
 **Wave 6** *(blocked on Wave 5 completion — 06's shells call the `run()` signature 05 widens, and
@@ -458,7 +458,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 4/7 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 5/7 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

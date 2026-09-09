@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation)
 status: executing
-stopped_at: Completed 03.4-04-PLAN.md
-last_updated: "2026-09-09T00:46:14.150Z"
+stopped_at: Completed 03.4-05-PLAN.md
+last_updated: "2026-09-09T01:15:48.945Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: e024f2b023406e8ec18607fb535a13cf209eb532
+state_head: 311020b4b0cc166342f986d3d0c0df576edfacae
 progress:
   total_phases: 11
   completed_phases: 1
   total_plans: 37
-  completed_plans: 34
+  completed_plans: 35
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation)) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
@@ -95,6 +95,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P02 | 22 min | 3 tasks | 8 files |
 | Phase 03.4 P03 | 13 min | 2 tasks | 5 files |
 | Phase 03.4 P04 | 23 min | 3 tasks | 4 files |
+| Phase 03.4 P05 | 62 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -195,6 +196,10 @@ Recent decisions affecting current work:
 - [Phase 03.4]: The D-09 sharing is proved by the MUTATION arm, not the identity arm -- acquisition._coverage.partition_by_coverage.__func__ is CoverageLedger.partition_by_coverage stays true even when Acquisition re-inlines its own body — Measured under mutation M1: the test failed at the monkeypatch assertion (2 == 111), not at the identity assertion. D-09 therefore rests on that mutation arm plus the AST single-delegating-call test. Recorded rather than deleted so a reader does not assume the identity arm carries weight it does not.
 - [Phase 03.4]: browse_zarr refuses an unknown symbol with a ValueError naming the store, the requested symbols and how many it carries -- never reindexed to NaN; the original KeyError stays in __cause__ — A NaN column is indistinguishable from a genuinely empty history, so an operator reads 'this ticker has no data' when the truth is 'this store has never heard of it'. ValueError over KeyError because KeyError.__str__ reprs its argument and mangles a multi-line operator message, and because ValueError is the house style for every other legible refusal in this repo.
 - [Phase 03.4]: Third recurrence of the docstring/literal-scan false positive in this phase: a prohibition stated in a docstring must be written in path form when a literal source scan is its acceptance check — 03.4-01 hit it with pytest.skip, 03.4-03 with os.replace, 03.4-04 with both 'quantlab.base.acquisition' in coverage.py and 'pl.scan_parquet' in inspector.py. The property a substring scan gestures at is genuinely proved by the AST import resolver, which also sees relative spellings a substring scan cannot.
+- [Phase 03.4]: 03.4-05: quantlab/base/progress.py, not quantlab/acquisition/progress.py as RESEARCH suggested — base/acquisition.py imports the default reporter and the repo layering runs base -> concrete packages, never the reverse. No D-decision names a path; the divergence is recorded in the module docstring rather than made silently.
+- [Phase 03.4]: 03.4-05: the cancel path MERGES the on-disk failure manifest rather than skipping the write — RESEARCH Pitfall 4 left the choice open. Merging keeps failures a cancelled run genuinely discovered AND preserves the previous run's un-retried ones, so set(result.failures) == set(manifest) holds on EVERY exit path rather than only the uncancelled ones.
+- [Phase 03.4]: 03.4-05: the plan's no-pool check src.count('Parallel(') == 1 counts COMMENTS and was already false at HEAD — inspect.getsource returns comments; two comments in base/acquisition.py explain the one real call, so the count is 3 before and after this plan. The shipped form counts ast.Call nodes instead. Same class of authoring error as plan 01's 'no tests ran' correction.
+- [Phase 03.4]: 03.4-05: a structural guard whose mechanism moves one call deep FOLLOWS it rather than being deleted — test_the_abort_check_is_first_in_attempt_batch_abort_is_first now asserts the first statement calls _should_stop() AND that _should_stop's AST body consults _abort/is_set and _is_cancelled -- strictly stronger than the inline condition it replaced.
 
 ### Pending Todos
 
@@ -206,6 +211,7 @@ Recent decisions affecting current work:
 ### Blockers/Concerns
 
 - Tiingo API key currently leaked in `scripts/download_stock_data_from_tiingo.py` and pushed to `origin/main` — user should revoke/rotate the key in the Tiingo dashboard independent of the git-history reset planned in Phase 1.
+- tests/test_tiingo_quota.py does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing, surfaced by 03.4-05 mutation M6; recorded in WINDOWS.md.
 
 ### Quick Tasks Completed
 
@@ -244,8 +250,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T00:45:57.547Z
-Stopped at: Completed 03.4-04-PLAN.md
+Last session: 2026-09-09T01:14:53.593Z
+Stopped at: Completed 03.4-05-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
