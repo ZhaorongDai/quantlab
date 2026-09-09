@@ -286,17 +286,39 @@ scheduler process and future web backend are OUT of this phase and out of this r
   (market / frequency / data type -- Alpaca's `tick` splits into `quotes` and `trades`), plus the
   acquisition class and config factory as direct class references, plus the credential env var
   names. Descriptors are dataclass INSTANCES in a class-level registration tuple, populated by a
-  registration decorator, with `quantlab/acquisition/__init__.py` importing every vendor module so
-  enumeration is complete. This follows the spirit of the idiom
+  registration decorator. Enumeration is complete from a cold import -- that intent is unchanged --
+  but the MECHANISM was amended on 2026-09-08 (CONTEXT D-07 AMENDED, developer-confirmed): the
+  vendor imports sit at the BOTTOM of `quantlab/acquisition/registry.py`, and
+  `quantlab/acquisition/__init__.py` STAYS EMPTY. A non-empty package `__init__.py` would run the
+  vendor imports on every `import quantlab.acquisition.universe` -- the one module whose whole
+  guarantee is that no acquisition client can be constructed there -- and it would do so while
+  `tests/test_volume_guard.py` stayed green, because that test's structural arm is an AST scan of
+  `universe.py`'s own source and cannot see a transitive import. Bottom placement is also what lets
+  each descriptor be defined beside its own vendor class (`tiingo.py` / `alpaca.py` import
+  `registry.py`, never the reverse), so the repo's empty-`__init__.py` convention turns out not to
+  be broken after all. Cold-import completeness is proved by an import test that runs in a CHILD
+  PROCESS, because a pytest session that has already imported both vendor modules would measure the
+  session rather than the import graph. This follows the spirit of the idiom
   `UniverseCatalog.MEMBERSHIP_FETCHERS` / `ROSTER_FETCHERS` establishes -- one class-level
   registration tuple -- and the instance-vs-class difference is a deliberate 2026-09-08 decision
   (CONTEXT D-05), not a second registry style.
 - **A programmatic write entry point, and progress/cancellation to go with it.** The console starts
-  an acquisition by calling quantlab IN-PROCESS (see the boundary contract below). That entry point
+  an acquisition by calling quantlab IN-PROCESS (see the boundary contract below), through
+  `registry.run(descriptor, config, *, refresh=False, reporter=None, cancel=None)`. That entry point
   reports progress as event objects through a pluggable reporter (tqdm-backed by default), accepts
   a cancellation token checked at batch boundaries so a cancelled multi-hour backfill stays
-  resumable, and returns a result object -- while still writing `_failures.json`, which remains
-  both the crash-durable record and resume input.
+  resumable, and returns an `AcquisitionResult`. It is ACQUISITION-ONLY and stops at the raw parquet
+  tier (CONTEXT D-14 AMENDED 2026-09-08, developer-confirmed): the raw->Zarr conversion stays with
+  the entry points, because the three of them convert in three different modes behind three
+  differently-sized RAM guards, and folding that into one call would pick one of the three for
+  everybody. If the console ever needs conversion, it gets a SEPARATE registry-level call, never a
+  flag on `run()`. `_failures.json` is still written on every exit path, but it is NOT resume input:
+  nothing under `quantlab/` reads the manifest, and resume is driven entirely by watermark-sidecar
+  presence (CONTEXT D-18 FACTUAL CORRECTION 2026-09-08). It is kept because it is the crash-durable
+  operator record -- the one `SourceInspector` reads, through the single tolerant reader
+  `CoverageLedger.read_failure_manifest` -- and the consistency this phase actually pins is
+  `set(result.failures) == set(json.load(_failures.json))` on every exit path, cancelled runs
+  included.
 - **Retire the hardcoded vendor dispatch.** `ingest_tiingo.py` -> `TiingoAcquisition` and
   `ingest_alpaca.py` -> `AlpacaAcquisition` are hardcoded at each call site today; there is no
   enumerable list an operator surface could render. These scripts become THIN SHELLS over the
@@ -304,8 +326,16 @@ scheduler process and future web backend are OUT of this phase and out of this r
   human-facing surface -- the TUI becomes that -- but they are KEPT, because they are the
   registry's consumer IN THIS REPO and stop it rotting into a console-only side table, they are
   live proof the programmatic entry point works, and they are the fallback on a machine with no
-  TUI. (`ingest_tiingo.py` already supports `--universe us_all`, so verify whether
-  `ingest_us_equity.py` is already redundant before preserving both.)
+  TUI. The redundancy question this bullet used to ask is ANSWERED (plan 03.4-06):
+  `ingest_us_equity.py` is NOT redundant with `ingest_tiingo.py --universe us_all`. The two differ
+  in roster mode (`in_range` vs `as_of`), in storage subdirectory and therefore watermark tree
+  (`us_all` vs `tiingo`), in conversion mode (chunked, opt-in behind `--to-zarr` vs unconditional
+  whole-window), in dataset symbols (`None` vs the resolved roster), and in three flags that exist
+  on only one of them (`--dry-run`, `--stamp-legacy-watermarks`, `--chunk`/`--on-new-listing`). All
+  THREE shells are therefore KEPT, and all three are thin: `ingest_tiingo.py` was also rerouted
+  through `SOURCE.config_factory` in plan 06, because calling `stock_acquisition_config` directly
+  produced an identical config only while `"tiingo"` remained that factory's incumbent default --
+  the vendor was never actually routed.
 - **The read-side query surface the console consumes in-process.** A read-only inspector that needs
   NO credentials -- constructing an `Acquisition` is not an option, because `TiingoAcquisition`
   raises without `TIINGO_API_KEY`. `Acquisition.coverage_report()` already answers the coverage
@@ -334,17 +364,26 @@ acquisitions of the same source. All three now live entirely in the console repo
 - READS (coverage, inventory, row-level browsing, quality checks) run IN-PROCESS via a direct import
   of quantlab.
 - WRITES (an actual acquisition run) ALSO run IN-PROCESS, via the programmatic entry point above.
-  **This reverses the 2026-09-07 decision**, under which the console launched writes as a SUBPROCESS
-  invoking quantlab's CLI. Two things that rule bought are hereby given up: process isolation, so
-  keeping a multi-hour backfill from taking the console down is now the console's own job (hence the
-  cancellation token and progress events quantlab must provide, since the loop lives here); and the
-  "export the equivalent CLI command" guarantee, which was true by construction only because the
-  exported command WAS what the console ran. Any such export is now a reconstruction, and has to be
-  tested as one.
-- Concurrency control is the console's responsibility. Note the residual risk: the thin-shell
-  scripts run outside any console task queue, so a shell and the console can still overlap on one
-  source. Check whether watermark/sidecar writes are already atomic (temp file + rename) before
-  deciding this needs a lock.
+  **SETTLED 2026-09-08 (CONTEXT D-12), shipped 2026-09-09.** This is the contract; the 2026-09-07
+  decision -- the subprocess-CLI rule it supersedes, under which the console launched writes by
+  invoking quantlab's CLI in a child process -- is no longer in force and must not be implemented.
+  Two things that rule bought are hereby given up. Process isolation: keeping a multi-hour backfill
+  from taking the console down is now the console's OWN job, which is exactly why quantlab must
+  provide a cancel token checked at batch boundaries and structured progress events -- the loop now
+  runs inside the console's process. And the "export the equivalent CLI command" guarantee, which
+  was true by construction only while the exported command WAS what the console ran; any such export
+  is now a reconstruction, and has to be tested as one rather than trusted.
+- Concurrency control is the console's responsibility, and quantlab still adds NO lock (CONTEXT
+  D-20). The atomicity question this bullet used to leave open is ANSWERED (plan 03.4-03): the
+  watermark sidecar and `_failures.json` were NOT atomic -- both were plain `open(..., "w")` +
+  `json.dump`, while `ChunkLedger._flush` and `PageLedger._flush` in the same tree already used temp
+  file + `fsync` + `os.replace`. They now are, through one shared writer,
+  `quantlab/utils/atomic.py:write_json_atomically`, which is the only `NamedTemporaryFile` left
+  under `quantlab/` and is what all four JSON sidecar writers delegate to. No lock was added and
+  none is planned. The residual risk stays visible: the thin-shell scripts run outside any console
+  task queue, so a shell and the console can still overlap on one source -- the atomic write BOUNDS
+  what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
+  it.
 
 **Plans:** 6/7 plans executed
 
