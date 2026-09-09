@@ -396,7 +396,7 @@ acquisitions of the same source. All three now live entirely in the console repo
   what that overlap can do (no half-written sidecar, no surviving `.tmp`) rather than preventing
   it.
 
-**Plans:** 8/9 plans executed — 7/9 executed (03.4-08 and 03.4-09 close the two gaps in `03.4-VERIFICATION.md`)
+**Plans:** 9/9 plans executed — 7/9 executed (03.4-08 and 03.4-09 close the two gaps in `03.4-VERIFICATION.md`)
 
 Plans:
 **Wave 1**
@@ -447,7 +447,7 @@ both plans end on a whole-suite pytest gate, so they are sequenced rather than r
 
 **Wave 9** *(blocked on Wave 8 — the doc correction must describe the call site 08 leaves behind)*
 
-- [ ] 03.4-09-PLAN.md — GAP 2 (D-18 FACTUAL CORRECTION): the ROADMAP, `example/acquisition.md` and
+- [x] 03.4-09-PLAN.md — GAP 2 (D-18 FACTUAL CORRECTION): the ROADMAP, `example/acquisition.md` and
   `example/registry.md` all deny that any module under `quantlab/` reads `_failures.json` and then
   name a reader two lines later; restate the reader set from a source enumeration run in the plan,
   and file REVIEW CR-01 on the defect ledger (D-18)
@@ -523,7 +523,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Factor Computation (KunQuant + Polars) | 5/5 | In Progress|  |
 | 03.1 Index Historical Constituents Data Layer | 5/5 | Complete    | 2026-09-07 |
 | 03.2 Multi-Source Data Acquisition Abstraction (Alpaca) | 7/7 | Complete   | 2026-09-06 |
-| 03.4 Data Source Registry (Operator-Surface Foundation) | 8/9 | In Progress|  |
+| 03.4 Data Source Registry (Operator-Surface Foundation) | 9/9 | In Progress|  |
 | 4. Baseline Return Prediction Model | 0/TBD | Not started | - |
 | 5. Portfolio Optimization & Target Holdings | 0/TBD | Not started | - |
 | 6. End-to-End Backtest & Reproducible Pipeline | 0/TBD | Not started | - |

@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: "03.4"
 current_phase_name: Data Source Registry (Operator-Surface Foundation) (INSERTED)
 status: executing
-stopped_at: Completed 03.4-08-PLAN.md
-last_updated: "2026-09-09T03:49:43.923Z"
+stopped_at: Completed 03.4-09-PLAN.md
+last_updated: "2026-09-09T03:58:05.442Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 03.4 execution started
-state_head: f9a5c5f3bbe4f7c592a3f88ed7d26df37c5b32ce
+state_head: 42a8f5dc53a5e3f8a9816cd3e1fb9e16b31ae1f7
 progress:
   total_phases: 11
   completed_phases: 1
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.4 (Data Source Registry (Operator-Surface Foundation) (INSERTED)) — EXECUTING
-Plan: 2 of 9
+Plan: 3 of 9
 Status: Ready to execute
 Last activity: 2026-09-08 — Phase 03.4 execution started
 
@@ -99,6 +99,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P06 | 16 min | 3 tasks | 6 files |
 | Phase 03.4 P07 | 22 min | 3 tasks | 9 files |
 | Phase 03.4 P08 | 12 min | 2 tasks | 6 files |
+| Phase 03.4 P09 | 9 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -211,6 +212,8 @@ Recent decisions affecting current work:
 - [Phase 03.4]: 03.4-07: two documentation defects outside the plan's files_modified were fixed rather than logged -- quantlab/acquisition/inspector.py's module docstring and example/chunking.md's pasted dry-run output both still asserted the deleted "coverage report: skipped (export TIINGO_API_KEY...)" line as current behaviour — This plan's whole purpose is that no superseded statement is left standing; leaving two behind because they sat outside a file list would have defeated it. Both are the same one-line class plan 06 already fixed for tests/test_source_inspector.py.
 - [Phase 03.4]: The failure-manifest merge keeps ONE call site, relocated outside the resume loop and immediately before the write, so all five exits are covered by construction rather than by a per-exit audit — Enumerating the exits by hand is what produced VERIFICATION gap 1: the merge sat in the cancel branch alone while wait_for_quota defaults to off, so the DEFAULT quota abort emptied the manifest. The relocation makes any break added later inherit the property.
 - [Phase 03.4]: A regression test for the manifest asserts on its on-disk CONTENTS, never on the result/manifest equality — _run builds both sides from one failures dict at one point, so that equality is an identity that read True over a manifest which had just been emptied. It is a receipt of joint assembly, kept and annotated in 03.4-VALIDATION.md, not a correctness check.
+- [Phase 03.4]: The manifest's reader set written into documents is enumerated from source at write time, never carried forward: `grep -rn "read_failure_manifest()" quantlab/` returned two call sites (inspector.py:190, base/acquisition.py:2101) and that output is what all four documents state. — VERIFICATION gap 2 was created by inheritance — plan 07's must-have specified a count the same phase had already falsified, and the executor wrote it faithfully. Both tasks' verify gates re-run the enumeration and assert the documents against it, so the claim is checked against code rather than asserted.
+- [Phase 03.4]: The result/manifest equality is documented as a RECEIPT of joint assembly, not a check; the operator-protecting property named in its place is the manifest CONTENTS surviving a default-path quota abort, pinned by tests/test_acquisition_progress.py. — Both sides are built from one dict at one point in `_run`, so the equality read True during phase verification directly on top of a manifest that had just been emptied — it cannot catch CR-01.
 
 ### Pending Todos
 
@@ -261,8 +264,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T03:49:25.297Z
-Stopped at: Completed 03.4-08-PLAN.md
+Last session: 2026-09-09T03:57:56.103Z
+Stopped at: Completed 03.4-09-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
