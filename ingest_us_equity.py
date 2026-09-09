@@ -100,6 +100,8 @@ Usage:
 import argparse
 import datetime
 
+from dataclasses import replace
+
 from quantlab.acquisition.inspector import SourceInspector
 from quantlab.acquisition.registry import DataSourceRegistry, run
 from quantlab.acquisition.universe import UniverseCatalog
@@ -544,8 +546,16 @@ if __name__ == "__main__":
         # `tests/test_volume_guard.py::
         # test_every_entry_point_that_densifies_guards_the_dense_panels_ram`
         # records in its own docstring.
+        # `ds_config` is ALREADY built with `symbols=None` above, so this
+        # construction never densifies -- but the `replace(...)` states that
+        # at the call site instead of leaving a reader to walk back to the
+        # factory for it. Uniform with the other two shells, where the symbol
+        # list IS non-None and the symbol-free probe is what keeps the guard
+        # reachable at all (G-03.4-1a, second order).
+        refuse_conversion_without_raw_data(
+            StockDataset(replace(ds_config, symbols=None)), result
+        )
         dataset = StockDataset(ds_config)
-        refuse_conversion_without_raw_data(dataset, result)
         print(
             f"Converting/persisting {len(symbols)} symbols to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"

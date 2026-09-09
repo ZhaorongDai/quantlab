@@ -126,6 +126,8 @@ Usage:
 import argparse
 import typing
 
+from dataclasses import replace
+
 from quantlab.acquisition.registry import DataSourceRegistry, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
@@ -449,13 +451,20 @@ if __name__ == "__main__":
             "03.3 (D-18). The raw shards above are the deliverable."
         )
     elif args.to_zarr:
+        # Probed on a SYMBOL-FREE config, and the order is load-bearing.
+        # `BaseDataset`'s config setter calls `_reset_symbols()` for any
+        # non-None symbol list, and that calls `read()`, catches the
+        # not-yet-written store's FileNotFoundError and falls back to
+        # `from_raw_data()` -- a full densification at CONSTRUCTION time.
+        # So `StockDataset(ds_config)` on an empty raw tree raises the
+        # absent-root ValueError before any guard placed after it can run;
+        # the guard has to hold a dataset that never densifies. This is the
+        # same `symbols=None` reason `ingest_us_equity.py` states at its own
+        # `stock_kline_config` call (G-03.4-1a).
+        refuse_conversion_without_raw_data(
+            StockDataset(replace(ds_config, symbols=None)), result
+        )
         dataset = StockDataset(ds_config)
-        # Before the densification, never after: without this, a run whose
-        # every symbol failed reached `from_raw_data()` and ended on
-        # `quantlab/dataset/stock.py`'s absent-root ValueError traceback --
-        # which reads like a conversion bug rather than "the vendor returned
-        # nothing" (G-03.4-1a).
-        refuse_conversion_without_raw_data(dataset, result)
         print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
         dataset.from_raw_data().save()
         print(f"Zarr store written at: {ds_config.zarr_file_path}")

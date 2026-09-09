@@ -375,3 +375,74 @@ def test_every_entry_point_that_densifies_refuses_first():
         f"a door stopped densifying, say so here rather than letting this "
         f"test silently cover less than it claims."
     )
+
+
+def test_refusal_precedes_every_symbol_bearing_dataset_construction():
+    """The refusal must also precede the CONSTRUCTION of a symbols-bearing
+    `StockDataset`, not merely the explicit `from_raw_data()` call.
+
+    The sibling ordering assertion above compares the refusal against the
+    explicit densification call sites, and that is exactly the blind spot this
+    test closes. `BaseDataset`'s config setter calls `_reset_symbols()` for any
+    non-None symbol list, which calls `read()`, catches the not-yet-written
+    store's `FileNotFoundError` and falls back to `from_raw_data()` -- a full
+    densification at CONSTRUCTION time, with no `from_raw_data` token anywhere
+    at the call site for an AST scan to find.
+
+    So `dataset = StockDataset(ds_config); refuse_conversion_without_raw_data(
+    dataset, result)` READS correctly and passes the sibling assertion, while
+    raising `stock.py`'s absent-root `ValueError` one line before the guard it
+    was placed in front of. That shipped, and the UAT reproduction still
+    tracebacked with the guard nominally in place (G-03.4-1a, second order).
+
+    A construction is exempt only when its argument is a `replace(...,
+    symbols=None)` -- the symbol-free probe the guard is allowed to hold,
+    which never densifies. All three shells state that shape at the call site,
+    including `ingest_us_equity.py`, whose `ds_config` already carries
+    `symbols=None` from its factory: the redundant `replace` there is what
+    makes the property checkable where it is relied on, rather than one
+    factory call away.
+    """
+    for shell in INGEST_SHELLS:
+        path = REPO_ROOT / shell
+        body = _main_body(path)
+
+        def _is_bare_construction(node) -> bool:
+            if not (isinstance(node.func, ast.Name) and node.func.id == "StockDataset"):
+                return False
+            if not node.args:
+                return False
+            arg = node.args[0]
+            # The exempt shape: StockDataset(replace(ds_config, symbols=None)).
+            return not (
+                isinstance(arg, ast.Call)
+                and isinstance(arg.func, ast.Name)
+                and arg.func.id == "replace"
+                and any(
+                    kw.arg == "symbols"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is None
+                    for kw in arg.keywords
+                )
+            )
+
+        constructions = _call_linenos(body, _is_bare_construction)
+        if not constructions:
+            continue
+
+        refusals = _call_linenos(
+            body,
+            lambda node: isinstance(node.func, ast.Name)
+            and node.func.id == "refuse_conversion_without_raw_data",
+        )
+        assert refusals, (
+            f"{shell} constructs a symbols-bearing StockDataset at line(s) "
+            f"{constructions} with no refuse_conversion_without_raw_data in "
+            f"its __main__ body."
+        )
+        assert min(refusals) < min(constructions), (
+            f"{shell}: the refusal at {refusals} must precede the "
+            f"StockDataset construction at {constructions}. A construction "
+            f"that carries a non-None symbol list densifies inside "
+            f"_reset_symbols(), so a guard placed after it can never run."
+        )
