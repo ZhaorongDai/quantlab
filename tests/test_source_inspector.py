@@ -159,3 +159,177 @@ def test_the_stock_zarr_fixture_opens_and_carries_a_symbol_index(
         assert selected.sizes["timestamp"] == 10
     finally:
         dataset.close()
+
+
+# ---------------------------------------------------------------------------
+# 03.4-04 Task 1 -- the CoverageLedger extraction (D-09)
+#
+# `quantlab/base/coverage.py` is where coverage judgement now lives, and it is
+# a LEAF: `Acquisition` composes a ledger and delegates, while the inspector
+# built in Task 2 composes one directly. These tests pin the two properties the
+# extraction ADDED (an explicit sidecar enumeration, and the shared
+# `_failures.json` / `_pages` names); the properties it PRESERVED are pinned by
+# the ~40 pre-existing call sites in tests/test_acquisition_batching.py,
+# tests/test_tiingo_acquisition.py and tests/test_ticker_pattern_reconciliation.py,
+# which pass unedited through the delegating methods.
+# ---------------------------------------------------------------------------
+
+
+def test_iter_watermark_symbols_skips_the_manifest_and_the_page_ledgers(
+    acquisition_config,
+) -> None:
+    """A blind `*.json` glob would report `_failures` as a symbol.
+
+    `Acquisition.stamp_watermarks` globs the same directory and gets away with
+    it because a manifest and a page ledger both read back with
+    `last_date is None` and fall out of its loop. `iter_watermark_symbols` has
+    no such filter -- "does this symbol have a watermark" is a question about
+    file PRESENCE -- so the skip has to be explicit, and it has to be asserted
+    against a tree that actually contains both artefacts rather than against
+    one where the answer is vacuously right.
+
+    Reddened by: dropping either name from `CoverageLedger`'s skip set, or
+    replacing the non-recursive `glob` with `rglob`.
+    """
+    import json
+
+    from quantlab.base.coverage import (
+        FAILURE_MANIFEST_NAME,
+        PAGE_LEDGER_DIR_NAME,
+        CoverageLedger,
+    )
+
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    ledger = CoverageLedger.for_config(config)
+    root = ledger.watermark_root
+    root.mkdir(parents=True, exist_ok=True)
+
+    for symbol in ("AAPL", "MSFT"):
+        (root / f"{symbol}.json").write_text(
+            json.dumps({"start_date": "2024-01-01", "last_date": "2024-01-31"})
+        )
+    # Both artefacts a naive glob would mistake for a symbol.
+    (root / FAILURE_MANIFEST_NAME).write_text(json.dumps({"ZZZZ": "boom"}))
+    pages = root / PAGE_LEDGER_DIR_NAME
+    pages.mkdir(parents=True, exist_ok=True)
+    (pages / "batch0000.pages.json").write_text(json.dumps({"pages": []}))
+
+    assert list(ledger.iter_watermark_symbols()) == ["AAPL", "MSFT"]
+
+    # Stated negatively too, so a future layout change that keeps the count
+    # right for the wrong reason still fails.
+    listed = set(ledger.iter_watermark_symbols())
+    assert "_failures" not in listed
+    assert "batch0000.pages" not in listed
+    assert not any(name.startswith("_") for name in listed)
+
+    # Non-vacuity: the tree really does hold the two artefacts being skipped.
+    assert (root / FAILURE_MANIFEST_NAME).exists()
+    assert (pages / "batch0000.pages.json").exists()
+
+
+def test_the_failure_manifest_name_is_declared_once_and_bound_by_acquisition(
+    acquisition_config,
+) -> None:
+    """One definition of `_failures.json`, reached by both the writer and the
+    credential-free reader.
+
+    IDENTITY of the string object is not asserted (CPython interns short
+    literals, so two independent declarations of `"_failures.json"` would be
+    `is`-identical and the assertion would be a tautology). What is asserted
+    instead is that `Acquisition`'s class attribute and the ledger's path agree
+    AND that `base/acquisition.py` contains no second declaration of the
+    literal -- which is the property that can actually rot.
+
+    Reddened by: re-declaring `FAILURE_MANIFEST_NAME = "_failures.json"` on
+    `Acquisition`.
+    """
+    import inspect
+    import re
+
+    import quantlab.base.acquisition as acquisition_module
+    from quantlab.base.coverage import FAILURE_MANIFEST_NAME, CoverageLedger
+
+    assert acquisition_module.Acquisition.FAILURE_MANIFEST_NAME == (
+        FAILURE_MANIFEST_NAME
+    )
+
+    config = acquisition_config(vendor="tiingo")
+    ledger = CoverageLedger.for_config(config)
+    assert ledger.failure_manifest_path == (
+        ledger.watermark_root / FAILURE_MANIFEST_NAME
+    )
+
+    source = inspect.getsource(acquisition_module)
+    redeclarations = [
+        line
+        for line in source.splitlines()
+        if re.search(r'=\s*["\']_failures\.json["\']', line)
+    ]
+    assert not redeclarations, redeclarations
+
+
+def test_every_moved_acquisition_member_is_a_single_delegating_call() -> None:
+    """The delegation is structural, not a coincidence of today's bodies.
+
+    D-09 is only true while `Acquisition` has NO coverage body of its own. A
+    reintroduced local implementation would keep the ~40 existing call sites
+    green -- they call the method, not the ledger -- so the shape of the body
+    is what has to be pinned. Every moved member must be exactly one statement
+    that reaches `self._coverage`.
+
+    Reddened by: inlining any of these bodies back into `base/acquisition.py`.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    import quantlab.base.acquisition as acquisition_module
+
+    moved = {
+        "_watermark_root",
+        "_watermark_path",
+        "_read_sidecar",
+        "_read_watermark",
+        "_read_coverage",
+        "_legacy_policy",
+        "_coverage_status",
+        "_classify_coverage",
+        "_covers",
+        "_partition_by_coverage",
+        "_validate_symbols",
+    }
+
+    tree = ast.parse(Path(inspect.getfile(acquisition_module)).read_text())
+    klass = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Acquisition"
+    )
+    functions = {
+        node.name: node
+        for node in klass.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    missing = sorted(moved - set(functions))
+    assert not missing, f"moved members vanished from Acquisition: {missing}"
+
+    for name in sorted(moved):
+        body = [
+            statement
+            for statement in functions[name].body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+        ]
+        assert len(body) == 1, f"{name} has {len(body)} statements, expected 1"
+        assert isinstance(body[0], ast.Return), f"{name} does not return"
+        reached = {
+            node.attr
+            for node in ast.walk(body[0])
+            if isinstance(node, ast.Attribute)
+        }
+        assert "_coverage" in reached, f"{name} does not reach self._coverage"

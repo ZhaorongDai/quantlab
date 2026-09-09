@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import time
@@ -13,6 +12,16 @@ from loguru import logger
 from tqdm import tqdm
 
 from quantlab.base.config import AcquisitionConfig
+from quantlab.base.coverage import (
+    DEFAULT_LEGACY_WATERMARK_POLICY as _DEFAULT_LEGACY_WATERMARK_POLICY,
+)
+from quantlab.base.coverage import (
+    FAILURE_MANIFEST_NAME as _FAILURE_MANIFEST_NAME,
+)
+from quantlab.base.coverage import (
+    LEGACY_WATERMARK_POLICIES as _LEGACY_WATERMARK_POLICIES,
+)
+from quantlab.base.coverage import CoverageLedger
 from quantlab.base.pageledger import PageLedger
 from quantlab.enums.constant import Date
 from quantlab.enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN, Vendor
@@ -40,6 +49,15 @@ from quantlab.utils.atomic import write_json_atomically
 #: exist.
 #: Two free-to-diverge copies -- and they HAD diverged, which is the whole bug
 #: 260907-10t fixed.
+#:
+#: The GUARD that consults it moved to `quantlab/base/coverage.py`
+#: (`CoverageLedger.validate_symbols`) in 03.4-04, so that a credential-free
+#: reader validates a caller-supplied symbol through the same code path the
+#: real run does. This binding stays here, unchanged and pointing at the same
+#: object, because it is this module's provenance anchor and because
+#: `tests/test_ticker_pattern_reconciliation.py` asserts its IDENTITY against
+#: `enums.data.TRADEABLE_TICKER_PATTERN` -- `coverage.py` binds the very same
+#: object, so there is still exactly one compiled pattern in the process.
 #:
 #: DELIBERATELY WIDER than
 #: `quantlab/acquisition/universe.py:_WELL_FORMED_TICKER`, which
@@ -190,94 +208,59 @@ class Acquisition(ABC):
         return self.__class__.__name__
 
     @property
-    def _watermark_root(self) -> Path:
-        """`config.watermark_path`, namespaced by data type where the raw tier
-        partitions on one.
+    def _coverage(self) -> CoverageLedger:
+        """The composed `CoverageLedger` every coverage question routes
+        through (03.4 D-09).
 
-        Tick's quotes and trades share ONE vendor raw root, separated on disk
-        only by the leading `data_type=` hive key. Their bookkeeping sidecars
-        have no such key -- they are `{symbol}.json`, `_failures.json` and
-        `{batch_key}.pages.json` -- so without this namespacing a completed
-        quotes backfill's watermarks would tell a subsequent TRADES run that
-        every symbol is already covered. That run would skip the entire roster
-        and report success having fetched nothing.
+        Built PER ACCESS rather than cached in the config setter, and the
+        reason is `_data_type`: `AlpacaAcquisition` overrides it as an
+        INSTANCE property reading `_knob("data_type")` with NO default, so
+        evaluating it eagerly at config-assignment time would raise for a tick
+        config whose knob is supplied afterwards -- where today
+        `_watermark_root` only evaluates it lazily, at the moment a path is
+        actually needed. Per-access construction is a five-attribute object and
+        preserves the current evaluation timing exactly.
 
-        Only a frequency whose `RAW_HIVE_KEYS` actually include `data_type` is
-        affected, so `1d` and `1m` sidecar paths are byte-identical to what
-        they were, and no existing watermark tree moves.
+        `LEGACY_WATERMARK_POLICIES` / `DEFAULT_LEGACY_WATERMARK_POLICY` are
+        passed as VALUES so a subclass that narrows them still governs its own
+        ledger.
         """
-        root = Path(self.config.watermark_path)
-        if "data_type" in self._hive_keys:
-            root = root / str(self._data_type)
-        return root
+        return CoverageLedger(
+            self.config,
+            data_type=self._data_type,
+            legacy_policies=self.LEGACY_WATERMARK_POLICIES,
+            default_legacy_policy=self.DEFAULT_LEGACY_WATERMARK_POLICY,
+            owner_label=self.class_name,
+        )
+
+    @property
+    def _watermark_root(self) -> Path:
+        """Delegates to `CoverageLedger.watermark_root` -- see there for the
+        tick `data_type` namespacing and why it exists.
+        """
+        return self._coverage.watermark_root
 
     def _watermark_path(self, symbol: str) -> Path:
-        return self._watermark_root / f"{symbol}.json"
+        """Delegates to `CoverageLedger.watermark_path`."""
+        return self._coverage.watermark_path(symbol)
 
     def _read_sidecar(self, symbol: str) -> dict | None:
-        """Load a watermark sidecar's raw JSON, or None if it is absent or
-        unparseable.
-
-        The single tolerant read both `_read_watermark` and `_read_coverage`
-        share, so there is exactly ONE failure policy for a corrupt sidecar
-        rather than two that could drift apart.
+        """Delegates to `CoverageLedger.read_sidecar` -- the one tolerant
+        sidecar read, and the one failure policy for a corrupt one.
         """
-        path = self._watermark_path(symbol)
-        if not path.exists():
-            return None
-        try:
-            with open(path) as f:
-                payload = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            # A missing or corrupt watermark sidecar must never crash the
-            # refresh workflow -- fall back to None (config.start_date),
-            # matching Dataset._reset_symbols' FileNotFoundError-fallback
-            # pattern. Worst case is a wider-than-necessary re-fetch.
-            return None
-        return payload if isinstance(payload, dict) else None
+        return self._coverage.read_sidecar(symbol)
 
     def _read_watermark(self, symbol: str) -> str | None:
-        """The LAST covered date for `symbol`, or None.
-
-        Signature and meaning are deliberately unchanged by the range-aware
-        schema: both `_refresh_batches` and `_attempt_batch` use this to
-        compute an incremental start, and neither wants the covered start.
+        """Delegates to `CoverageLedger.read_watermark` -- the LAST covered
+        date for `symbol`, or None.
         """
-        payload = self._read_sidecar(symbol)
-        return None if payload is None else payload.get("last_date")
+        return self._coverage.read_watermark(symbol)
 
     def _read_coverage(self, symbol: str) -> dict | None:
-        """The covered RANGE for `symbol` as
-        `{"start_date", "last_date", "no_data"}`, or None when no readable
-        sidecar exists.
-
-        Either date component may be None. In particular a LEGACY sidecar --
-        `{"last_date": ...}`, the only format written before 260906-26o --
-        reads back with `start_date=None`, and nothing anywhere fills that in
-        from `config.start_date` or any other fallback.
-
-        That absence is the whole point (D-04). Only the user knows what
-        window those files were actually fetched over; an invented start that
-        happens to be wrong reproduces exactly the silent per-symbol history
-        gap this schema exists to eliminate, and reproduces it invisibly.
-        Stamping is therefore an explicit, user-supplied step --
-        `stamp_watermarks()` below.
-
-        `no_data` follows the SAME discipline from the other side: it defaults
-        to `False` when the key is absent, which is the correct reading of
-        every sidecar written before 03.2 because the old code only wrote a
-        watermark after a successful fetch. It is read through `_read_sidecar`
-        like everything else -- adding a second tolerant read for the marker
-        would give a corrupt sidecar two failure policies that could drift.
+        """Delegates to `CoverageLedger.read_coverage` -- the covered RANGE as
+        `{"start_date", "last_date", "no_data"}`, or None.
         """
-        payload = self._read_sidecar(symbol)
-        if payload is None:
-            return None
-        return {
-            "start_date": payload.get("start_date"),
-            "last_date": payload.get("last_date"),
-            "no_data": bool(payload.get("no_data", False)),
-        }
+        return self._coverage.read_coverage(symbol)
 
     def _write_watermark(
         self,
@@ -432,7 +415,14 @@ class Acquisition(ABC):
     #: Written under `config.watermark_path` alongside the per-symbol
     #: watermark sidecars, because "what did and did not land" is exactly the
     #: same question those sidecars answer (T-0iy-07).
-    FAILURE_MANIFEST_NAME = "_failures.json"
+    #:
+    #: BOUND from `quantlab/base/coverage.py`, where it is DECLARED, so the
+    #: writer here and the credential-free reader in
+    #: `quantlab/acquisition/inspector.py` name the same file by construction
+    #: rather than by two literals that agree today. Every existing
+    #: `self.FAILURE_MANIFEST_NAME` reference and every log message that
+    #: interpolates it keeps working unchanged.
+    FAILURE_MANIFEST_NAME = _FAILURE_MANIFEST_NAME
 
     #: What a credential value is replaced with in any captured message.
     #: Subclasses override it with vendor-specific wording; the base value is
@@ -461,8 +451,17 @@ class Acquisition(ABC):
     #: D-04). `"warn"` skips a sidecar with no recorded covered start but
     #: reports it on every run; `"refetch"` treats unknown coverage as
     #: uncovered. See `_coverage_status` for why `"warn"` is the default.
-    LEGACY_WATERMARK_POLICIES = ("warn", "refetch")
-    DEFAULT_LEGACY_WATERMARK_POLICY = "warn"
+    #:
+    #: BOUND from `quantlab/base/coverage.py` for the same single-definition
+    #: reason as `FAILURE_MANIFEST_NAME`: `CoverageLedger.for_config` -- the
+    #: constructor the credential-free inspector uses -- needs the same policy
+    #: set the real run uses and cannot import this class to get it. They stay
+    #: CLASS attributes here because `ingest_us_equity.py` reads
+    #: `TiingoAcquisition.LEGACY_WATERMARK_POLICIES` for its argparse choices,
+    #: and because a subclass may still narrow them (`_coverage` passes
+    #: whatever this class declares INTO the ledger it composes).
+    LEGACY_WATERMARK_POLICIES = _LEGACY_WATERMARK_POLICIES
+    DEFAULT_LEGACY_WATERMARK_POLICY = _DEFAULT_LEGACY_WATERMARK_POLICY
 
     #: The one command that resolves an un-stamped legacy watermark. Named
     #: verbatim in the warning, because a reported gap with no named cure is
@@ -698,60 +697,16 @@ class Acquisition(ABC):
     # -- symbol validation --------------------------------------------------
 
     def _validate_symbols(self, symbols: Sequence[str]) -> list[str]:
-        """Reject any symbol that is not a well-formed ticker, and return the
-        validated list.
+        """Delegates to `CoverageLedger.validate_symbols` -- the rule, the
+        pattern and the full rationale live there.
 
-        Called at the top of `_run` and `coverage_report` -- i.e. BEFORE path
-        construction -- and again in `_fetch_batch` before any query-string
-        interpolation, because a symbol crosses two trust boundaries at once:
-
-        - it becomes a filesystem path component under the raw root, where a
-          value containing `/` or `..` would escape that root entirely
-          (T-03.2-03);
-        - it becomes one element of a comma-joined `symbols=` query parameter,
-          where an embedded comma would silently change WHICH symbols were
-          requested -- the response would look fine and the data would be for
-          something else (T-03.2-04).
-
-        One control covers both, which is why it lives here on the base rather
-        than in each vendor's `_fetch_page`.
-
-        The pattern is `enums.data.TRADEABLE_TICKER_PATTERN` -- the SAME
-        compiled object the roster builder filters its output on, bound here
-        rather than re-declared. That shared identity is the point: a symbol
-        the builder persists is admitted here by construction, which is exactly
-        what was NOT true before quick task 260907-10t, when a local copy of a
-        narrower literal made `download()`'s whole-roster pre-flight abort a
-        multi-hour full-market job on `NXG-R-W`.
-
-        It admits digits deliberately (260906-eme: digit-bearing tickers are
-        real) and up to TWO suffix segments (260907-10t: 77 `us_all` and 4
-        `nasdaq_all` symbols are three-segment `ROOT-X-Y`). It is NOT
-        `acquisition/universe.py`'s `_WELL_FORMED_TICKER`, which is
-        deliberately narrower because it guards Wikipedia change-log cells --
-        see that constant's own comment before considering aligning them.
+        The guard moved with the coverage extraction (03.4-04) so that the
+        credential-free `SourceInspector` validates a caller-supplied symbol
+        through the SAME code, before it builds any path. `owner_label` is
+        `self.class_name`, so the rendered error text is byte-identical to its
+        pre-extraction form.
         """
-        validated = []
-        for symbol in symbols:
-            text = str(symbol)
-            if not _TICKER_PATTERN.match(text):
-                raise ValueError(
-                    f"{self.class_name}: refusing to fetch {text!r} -- it does "
-                    f"not match the well-formed ticker pattern "
-                    f"{_TICKER_PATTERN.pattern}. A symbol becomes both a "
-                    f"filesystem path segment under {self.config.raw_data_dir_path} "
-                    f"and a comma-joined query-string value, so a separator, a "
-                    f"parent reference or an embedded comma would escape the "
-                    f"raw root or silently change which symbols were requested. "
-                    f"Fix the roster rather than relaxing this pattern -- a "
-                    f"malformed symbol should have been dropped by the "
-                    f"build-time well-formedness filter in "
-                    f"acquisition/universe.py:TiingoRosterFetcher.fetch(), so "
-                    f"reaching here means the reference table predates that "
-                    f"filter and needs rebuilding."
-                )
-            validated.append(text)
-        return validated
+        return self._coverage.validate_symbols(symbols)
 
     # -- raw shard layout ---------------------------------------------------
 
@@ -1513,133 +1468,42 @@ class Acquisition(ABC):
         }
 
     def _legacy_policy(self) -> str:
-        policy = self._knob(
-            "legacy_watermarks", self.DEFAULT_LEGACY_WATERMARK_POLICY
-        )
-        if policy not in self.LEGACY_WATERMARK_POLICIES:
-            raise ValueError(
-                f"legacy_watermarks={policy!r} is not one of "
-                f"{list(self.LEGACY_WATERMARK_POLICIES)}."
-            )
-        return policy
+        """Delegates to `CoverageLedger.legacy_policy`."""
+        return self._coverage.legacy_policy()
 
     def _coverage_status(self, symbol: str, from_watermark: bool = False) -> str:
-        """Classify `symbol` against the REQUESTED window, returning one of
-        `"uncovered"`, `"covered"`, `"widened"` or `"legacy"`.
-
-        A symbol is `"covered"` iff its recorded `last_date` equals
-        `config.end_date` AND its recorded covered start is known and is
-        `<=` `config.start_date`. ISO-8601 `YYYY-MM-DD` orders correctly under
-        plain string comparison, so no date parsing happens here and no time
-        zone can creep in.
-
-        `"widened"` is the 260906-26o defect (D-03): the end date matches but
-        the recorded coverage starts LATER than what is being asked for, so
-        the symbol's history is shallower than the request and it must be
-        re-fetched. Before this predicate existed it was skipped in silence,
-        and the dataset shipped with inconsistent per-symbol history depth.
-
-        `"legacy"` is a sidecar written before this schema: the end date
-        matches but the covered start is UNKNOWN. Three responses exist and
-        two are wrong. Assuming a start is forbidden outright (D-04) -- an
-        assumed range that is wrong reproduces the silent gap invisibly.
-        Treating unknown as uncovered is correct for integrity but re-fetches
-        every already-downloaded symbol and burns a whole quota window (D-01).
-        So the default is the third: treat it as covered for SKIP purposes and
-        say so LOUDLY on every run until stamped. What made the D-03 failure
-        dangerous was the silence, not the skip -- a run that skips these
-        while printing their count and the exact command that fixes them is a
-        REPORTED gap with a named cure, and only the user knows what window
-        those files were fetched over. `legacy_watermarks="refetch"` is the
-        opt-in escape hatch that makes this a choice rather than an accident.
-
-        `from_watermark` (i.e. `refresh()`) short-circuits to the END-DATE
-        rule alone, deliberately. Refresh requests `[watermark, end_date]` per
-        symbol and never `config.start_date`, so judging it against a widened
-        `config.start_date` would mark every symbol pending on every run while
-        the re-fetch it triggers could not close the gap -- an endless, silent
-        quota burn. Widening the covered range is `download()`'s job.
-
-        The rule itself lives in `_classify_coverage`, over an ALREADY-READ
-        coverage dict, so `_partition_by_coverage` can classify and count the
-        `no_data` marker from a single read per sidecar. That is a split of
-        read from rule, not a second read path -- `_read_sidecar` remains the
-        only place a sidecar is opened.
+        """Delegates to `CoverageLedger.coverage_status` -- see there for the
+        four-state rule and the D-04 argument behind the `"legacy"` branch.
         """
-        return self._classify_coverage(
-            self._read_coverage(symbol), from_watermark
-        )
+        return self._coverage.coverage_status(symbol, from_watermark)
 
     def _classify_coverage(
         self, coverage: dict | None, from_watermark: bool = False
     ) -> str:
-        """`_coverage_status`'s rule, applied to an already-read coverage dict.
-
-        Deliberately blind to `coverage["no_data"]`. A marked symbol whose
-        recorded window still covers the request is `covered` by the ordinary
-        rule and is skipped; a marked symbol whose recorded window is narrower
-        is `widened` and is re-fetched. The ABSENCE of a special case here is
-        the design (D-04): the marker records what the vendor said about a
-        WINDOW, and a branch that turned it into a permanent verdict about the
-        symbol would make a later, deeper request unable to reach the vendor
-        at all. Tests pin both directions so the branch cannot be added later
-        as a plausible-looking "optimisation".
+        """Delegates to `CoverageLedger.classify_coverage` -- the D-09 choke
+        point, and the only place a `last_date == end_date` or `start_date <=`
+        comparison belongs.
         """
-        if coverage is None or coverage["last_date"] != self.config.end_date:
-            return "uncovered"
-        if from_watermark:
-            return "covered"
-        if coverage["start_date"] is None:
-            return "legacy"
-        if coverage["start_date"] <= self.config.start_date:
-            return "covered"
-        return "widened"
+        return self._coverage.classify_coverage(coverage, from_watermark)
 
     def _covers(self, symbol: str, from_watermark: bool = False) -> bool:
-        """Whether `symbol` may be skipped for the requested window.
-
-        The skip predicate `_run` filters on. See `_coverage_status` for the
-        rule and for the D-04 argument behind the `"legacy"` branch.
+        """Delegates to `CoverageLedger.covers` -- the skip predicate `_run`
+        filters on.
         """
-        status = self._coverage_status(symbol, from_watermark)
-        if status == "legacy":
-            return self._legacy_policy() == "warn"
-        return status == "covered"
+        return self._coverage.covers(symbol, from_watermark)
 
     def _partition_by_coverage(
         self, requested: list[str], from_watermark: bool
     ) -> tuple[list[str], dict[str, int]]:
-        """Split `requested` into what still needs fetching, plus the counts
-        the run reports. One pass, so each sidecar is read exactly once.
+        """Delegates to `CoverageLedger.partition_by_coverage`.
+
+        **This delegation is what D-09 makes binding.** `coverage_report()`,
+        `_run` and `SourceInspector.coverage` all reach that ONE function
+        object, so a mutation to it changes every answer -- which is how the
+        sharing is proved by identity rather than by results that happen to
+        agree. Reintroducing a body here is the violation.
         """
-        legacy_is_skipped = self._legacy_policy() == "warn"
-        pending: list[str] = []
-        counts = {"covered": 0, "widened": 0, "legacy": 0, "no_data": 0}
-
-        for symbol in requested:
-            coverage = self._read_coverage(symbol)
-            status = self._classify_coverage(coverage, from_watermark)
-            # Counted ALONGSIDE the status rather than as a fourth status: a
-            # marked symbol is `covered`/`widened`/`legacy` by exactly the same
-            # rule as an unmarked one (the marker records what the vendor said
-            # about a window, not a verdict about the symbol), and the count
-            # exists so a run can REPORT how many symbols the vendor had
-            # nothing for -- distinguishably from how many failed. What made
-            # the 260906-26o defect dangerous was the silence, not the skip.
-            if coverage is not None and coverage["no_data"]:
-                counts["no_data"] += 1
-            if status == "covered":
-                counts["covered"] += 1
-                continue
-            if status == "legacy":
-                counts["legacy"] += 1
-                if legacy_is_skipped:
-                    continue
-            elif status == "widened":
-                counts["widened"] += 1
-            pending.append(symbol)
-
-        return pending, counts
+        return self._coverage.partition_by_coverage(requested, from_watermark)
 
     def _report_coverage(
         self, requested: list[str], pending: list[str], counts: dict[str, int]
@@ -1887,7 +1751,10 @@ class Acquisition(ABC):
         FEWER failures than the run actually had, which is the same false
         "the last run was clean" statement WR-03 exists to prevent.
         """
-        path = self._watermark_root / self.FAILURE_MANIFEST_NAME
+        # Through the LEDGER, not by re-joining the two parts here: a second
+        # path expression is how the tick `data_type` namespacing gets
+        # forgotten on one of the two sides, and this is the side that writes.
+        path = self._coverage.failure_manifest_path
         # Atomic for the same reason as the watermark (D-20): a cancel lands at
         # a batch boundary and this file is written on the way out, so a plain
         # write could leave a truncated manifest that reads as either invalid
