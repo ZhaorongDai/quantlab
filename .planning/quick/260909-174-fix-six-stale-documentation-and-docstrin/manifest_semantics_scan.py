@@ -30,6 +30,57 @@ This plan, its SUMMARY and this scanner all live under `.planning/quick/`, so
 the scanner cannot match itself.  `.planning/ROADMAP.md`, `.planning/STATE.md`
 and `.planning/WINDOWS.md` are NOT excluded — two of the sites live in the first
 two, and WINDOWS.md's exemption is recorded in the allowlist where it is visible.
+
+Where these patterns come from
+------------------------------
+
+P00..P10 were copied VERBATIM out of the six variants an earlier verification
+report happened to list.  That report was never an enumeration -- it was a list
+of the sites somebody had already found -- and copying it is exactly how this
+defect recurred a fourth time: every round fixed the wordings on the list and
+left untouched the ones nobody had thought of.  Saying so here, in the file, is
+the point.  If you arrived intending to "just add two more patterns", stop and
+read the next paragraph first.
+
+P11..P13 are DERIVED one at a time from the `retired_sentence` column of
+`.planning/phases/03.4-data-source-registry/manifest-sentence-retired.tsv` --
+sentences a human adjudicated STALE in 03.4-10, retired, and rewrote.  P14 and
+P15 derive from no retired row at all: they are prophylactic entries named word
+for word by item 4 of `gaps[].missing` in
+`.planning/phases/03.4-data-source-registry/03.4-VERIFICATION.md`.  Every entry
+added after P10 carries a trailing provenance comment saying which of those two
+it is, and pointing at the retired row or the verification item it came from.  A
+pattern with no provenance is a pattern of unknown origin, and the next person
+has no way to judge whether it should stay.
+
+The rule from here on: the only legitimate input to this list is
+`manifest-sentence-retired.tsv`, that is, the product of reading candidate
+sentences one at a time.  Never a list of bad sentences assembled from memory,
+and never the findings of the round you happen to be standing in.  That
+direction IS the defect; it is not a shortcut to the fix.
+
+Subordinate to the sentence-level audit
+---------------------------------------
+
+This script is a fast tripwire and nothing more.  Authority lives in the
+candidate-set enumeration of
+`.planning/phases/03.4-data-source-registry/manifest_sentence_audit.py`, which
+intersects two SEMANTIC CLASSES over sentence text and hands every hit to a
+human to adjudicate.  A literal list can only make the RE-appearance of an
+already-retired wording cheap to catch.  It can say nothing at all about a
+wording nobody has written down yet.
+
+That gap is measured, not hypothetical.  03.4-11 Task 1's second mutation
+appended one new false sentence about per-run scope to `example/registry.md` and
+ran both tools against the SAME working tree: this script's two-way allowlist
+diff produced no lines in either direction (green), while the sentence-level
+audit exited 1 with an UNADJUDICATED row naming `example/registry.md`.  Two
+exit codes, one tree.  Read that result narrowly.  It shows this literal list is
+NARROWER than the semantic intersection -- an existence claim, which one sample
+settles.  It does NOT show the semantic intersection is complete: that sentence
+was chosen by the plan, and its run-scope wording was written to hit a run-scope
+term by construction.  Green here is therefore never a completeness claim about
+anything.
 """
 
 from __future__ import annotations
@@ -58,6 +109,11 @@ PATTERNS: list[str] = [
     r"永远描述",                                      # P08
     r"上次跑干净",                                    # P09
     r"干净收尾",                                      # P10
+    r"[Tt]he last run's",  # derived: quantlab/base/coverage.py + quantlab/acquisition/inspector.py (P11)
+    r"上一次\s*run\s*的",  # derived: example/registry.md (P12)
+    r"lie about what the last run",  # derived: quantlab/base/acquisition.py + tests/test_tiingo_quota.py (P13)
+    r"上一轮的\s*_failures",  # named-by: 03.4-VERIFICATION missing #4 (P14)
+    r"describes? the last run",  # named-by: 03.4-VERIFICATION missing #4 (P15)
 ]
 
 COMPILED = [re.compile(p) for p in PATTERNS]
