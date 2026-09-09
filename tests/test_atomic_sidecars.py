@@ -26,6 +26,7 @@ exits **5** ("no tests ran") and a per-file command reads that as green; and
 no test is named for a selector a later plan owns.
 """
 
+import ast
 import json
 import tempfile
 from pathlib import Path
@@ -259,3 +260,195 @@ def test_the_temp_file_is_created_in_the_destination_directory(
     assert Path(str(captured["dir"])) == directory
     assert captured["delete"] is False
     assert destination.is_file()
+
+
+# --------------------------------------------------------------------------
+# The two acquisition sidecar writers, and the no-lock decision.
+#
+# `_write_watermark` and `_write_failure_manifest` were plain
+# `open(path, "w") + json.dump` while `PageLedger._flush` thirty lines away was
+# already atomic. D-17's cancellation lands at a BATCH BOUNDARY -- exactly when
+# a watermark is being written -- so SC-5's "a cancelled run leaves the store
+# and watermarks resumable" was not true against them. They now go through the
+# same shared helper, with their own formatting preserved byte for byte.
+# --------------------------------------------------------------------------
+
+
+def test_watermark_write_is_atomic_and_keeps_its_compact_shape(
+    mock_tiingo_client, acquisition_config
+) -> None:
+    """The watermark sidecar stays COMPACT, and leaves no `*.tmp` behind.
+
+    The formatting half is the D-20 precision edge (T-03.4-03-04): the atomic
+    write must not smuggle in a formatting change, because that would make
+    every sidecar written before this phase differ from every one written
+    after, for a reason recorded nowhere and buried inside a durability
+    refactor. Asserted against `json.dumps` output rather than by eye.
+
+    Both omitted-when-absent keys are exercised in the same file: a watermark
+    written WITHOUT `start_date`/`no_data` must contain neither key (absence,
+    not `null`/`false`, is how "unknown" and "had data" are represented -- see
+    `_read_coverage`), and one written WITH them must carry both.
+
+    The `*.tmp` half is written twice on purpose: the first write into an empty
+    directory leaks nothing even from a plain `open(path, "w")`, so only the
+    OVERWRITE distinguishes an atomic writer from a naive one.
+    """
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    acq = TiingoAcquisition(config)
+
+    acq._write_watermark("AAPL", "2024-01-31")
+    acq._write_watermark("AAPL", "2024-02-29")
+
+    path = acq._watermark_path("AAPL")
+    assert path.read_text(encoding="utf-8") == json.dumps(
+        {"last_date": "2024-02-29"}
+    ), "the watermark sidecar must stay compact -- no indent, no key padding"
+
+    acq._write_watermark(
+        "MSFT", "2024-02-29", start_date="2024-01-01", no_data=True
+    )
+    assert acq._watermark_path("MSFT").read_text(encoding="utf-8") == json.dumps(
+        {"last_date": "2024-02-29", "start_date": "2024-01-01", "no_data": True}
+    )
+
+    assert list(acq._watermark_root.glob("*.tmp")) == [], (
+        "a surviving temp file means os.replace never ran, or the writer "
+        "leaks one file per symbol on a full-market backfill"
+    )
+
+
+def test_failure_manifest_write_is_atomic_and_keeps_indent_and_sort_keys(
+    mock_tiingo_client, acquisition_config
+) -> None:
+    """The failure manifest stays `indent=2, sort_keys=True`.
+
+    A human reads this file to find out which symbols the last run skipped, so
+    its formatting is the feature, not incidental. The same helper writes it
+    and the compact watermark above -- which is the point of forwarding
+    `**json_kwargs` rather than picking one house format.
+
+    An EMPTY manifest is written and asserted too: `_write_failure_manifest`'s
+    docstring says an empty one is "a meaningful statement that the last run
+    was clean" (T-0iy-07), so `{}` must reach disk as a real file rather than
+    being optimised away into an absent one.
+    """
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
+    acq = TiingoAcquisition(config)
+    path = acq._watermark_root / acq.FAILURE_MANIFEST_NAME
+
+    failures = {"MSFT": "429 rate limited", "AAPL": "connection reset"}
+    acq._write_failure_manifest(failures)
+    assert path.read_text(encoding="utf-8") == json.dumps(
+        failures, indent=2, sort_keys=True
+    )
+
+    acq._write_failure_manifest({})
+    assert path.read_text(encoding="utf-8") == json.dumps({}, indent=2, sort_keys=True)
+    assert path.is_file(), "an empty manifest is a statement, not an absence"
+
+    assert list(acq._watermark_root.glob("*.tmp")) == []
+
+
+def test_an_interrupted_watermark_write_leaves_the_previous_value_readable(
+    mock_tiingo_client, acquisition_config, monkeypatch
+) -> None:
+    """The D-20 boundary, on the file that actually matters.
+
+    A cancel lands at a batch boundary, so the watermark write is the write
+    most likely to be interrupted, and the interrupted file is the one the
+    RESUMED run reads. Under a plain `open(path, "w")` the destination is
+    truncated before `json.dump` writes a byte, so an interruption replaces a
+    good watermark with an empty file -- which `_read_sidecar` then reports as
+    "no coverage" and the next run re-fetches from `config.start_date`.
+
+    Four assertions, because the interesting failure modes differ:
+
+    - the exception PROPAGATES (a swallowed one would let the run continue
+      believing it recorded coverage it did not);
+    - the file's BYTES are the previous ones, exactly;
+    - `_read_coverage` -- the answer the resumed run actually consumes --
+      still reports the FIRST date, not the attempted second one and not
+      `None`;
+    - no `*.tmp` fragment survives.
+    """
+    config = acquisition_config(vendor="tiingo", symbols=("AAPL",))
+    acq = TiingoAcquisition(config)
+
+    acq._write_watermark("AAPL", "2024-01-31", start_date="2024-01-01")
+    path = acq._watermark_path("AAPL")
+    before = path.read_bytes()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("cancelled mid-dump")
+
+    monkeypatch.setattr(json, "dump", _boom)
+
+    with pytest.raises(RuntimeError, match="cancelled mid-dump"):
+        acq._write_watermark("AAPL", "2024-02-29", start_date="2024-01-01")
+
+    monkeypatch.undo()
+
+    assert path.read_bytes() == before
+    assert acq._read_coverage("AAPL") == {
+        "start_date": "2024-01-01",
+        "last_date": "2024-01-31",
+        "no_data": False,
+    }
+    assert list(acq._watermark_root.glob("*.tmp")) == []
+
+
+def test_no_lock_is_introduced_anywhere_in_quantlab() -> None:
+    """D-20 itself, asserted as code rather than left as prose.
+
+    quantlab adds NO lock on concurrent acquisition of the same source;
+    concurrency control is the console's task queue's responsibility. The
+    residual risk that decision accepts is real and recorded rather than
+    closed here: the D-15 thin-shell scripts run OUTSIDE any console task
+    queue, so a shell and the console can still overlap on one source. The
+    atomic write does not remove that overlap -- two writers still race, and
+    the loser's value is simply lost -- but it does mean the loser sees a
+    COMPLETE file rather than a truncated one, which is what makes the
+    acceptance materially safer instead of merely tolerated.
+
+    This test exists because "we decided not to add a lock" is exactly the
+    kind of decision a later well-meaning change quietly reverses -- adding
+    `filelock` to make a flaky concurrent run pass would silently move the
+    guarantee back into this repository and out of the console's, without
+    anyone revisiting D-20. If a lock is ever genuinely wanted, this test must
+    be deleted in the SAME commit, which forces the decision to be re-taken
+    rather than drifted into.
+
+    `.lock` path creation is checked alongside the imports because a lockfile
+    hand-rolled with `open(p.with_suffix(".lock"), "x")` needs no import at
+    all and would sail past an import-only scan.
+    """
+    forbidden_imports = ("fcntl", "msvcrt", "filelock", "portalocker")
+    offenders: list[str] = []
+
+    root = Path(__file__).resolve().parent.parent / "quantlab"
+    assert root.is_dir(), f"expected the package at {root}"
+    sources = sorted(root.rglob("*.py"))
+    assert len(sources) > 20, (
+        f"only {len(sources)} module(s) walked -- the scan must not be "
+        "vacuous, or a lock added tomorrow would pass unseen"
+    )
+
+    for source in sources:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in forbidden_imports:
+                        offenders.append(f"{source}: import {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                if (node.module or "").split(".")[0] in forbidden_imports:
+                    offenders.append(f"{source}: from {node.module} import ...")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value.endswith(".lock"):
+                    offenders.append(f"{source}: lockfile literal {node.value!r}")
+
+    assert offenders == [], (
+        "D-20 says quantlab adds no lock; concurrency is the console's task "
+        f"queue's responsibility. Found: {offenders}"
+    )
