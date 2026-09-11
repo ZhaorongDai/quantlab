@@ -115,29 +115,7 @@ class IndexConstituentDataset(BaseDataset):
                 f"answered from the source."
             )
 
-    def _reset_symbols(self) -> None:
-        """No-op override of the inherited eager symbol resolution (CONFLICT 1).
 
-        The inherited body is not merely unnecessary here, it is wrong three
-        times over:
-
-        1. This class's symbol axis is derived from the membership-interval
-           table inside `_raw_data_to_xr()`, not from whatever a store happens
-           to hold, so overwriting `config.symbols` with the store's symbols is
-           meaningless.
-        2. The inherited `FileNotFoundError` fallback calls `from_raw_data()`,
-           which for this class reaches a REMOTE FETCH. Merely constructing the
-           object on a fresh clone with no store on disk would therefore
-           perform an unannounced HTTP request.
-        3. Only `FileNotFoundError` is caught, so any network or parse error
-           raised by that fallback would escape `__init__` outright and the
-           object could not be constructed offline at all.
-
-        Never re-solve this with an `isinstance` check in the shared setter or
-        with a config boolean flag: the seam exists precisely so the decision
-        lives with the class that knows why.
-        """
-        return None
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
         """Route the panel to membership validation, not market-data cleaning."""

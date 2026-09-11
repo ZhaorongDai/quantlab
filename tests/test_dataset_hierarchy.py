@@ -27,7 +27,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.config import BaseDatasetConfig, ConstituentDatasetConfig, DatasetConfig
+from quantlab.base.config import (
+    BaseDatasetConfig,
+    ConstituentDatasetConfig,
+    DatasetConfig,
+)
 from quantlab.base.data import BaseDataset, MarketDataset
 
 # The nautilus/KunQuant-specific members. A membership panel has no bar and no
@@ -204,47 +208,6 @@ def test_base_dataset_init_assigns_the_storage_backend_before_the_config() -> (
     )
 
 
-def test_reset_symbols_seam_suppresses_construction_time_io(
-    tmp_path: Path,
-) -> None:
-    """CONFLICT 1: `_reset_symbols()` is an overridable seam, and overriding
-    it to a no-op demonstrably stops ALL construction-time I/O.
-
-    The inherited default reads the store and, on `FileNotFoundError`, falls
-    back to `from_raw_data()`. For a dataset whose raw source is a remote
-    fetch that means merely constructing the object would hit the network,
-    and it would also overwrite the caller's symbol request with whatever the
-    store happens to hold. Both are asserted suppressed here: the store path
-    below does not exist, yet construction succeeds, the caller's tuple
-    survives, and `_raw_data_to_xr()` is never reached.
-    """
-    config = BaseDatasetConfig(
-        zarr_file_path=str(tmp_path / "does" / "not" / "exist.zarr"),
-        symbols=("PANEL_A",),
-    )
-
-    dataset = PanelDataset(config)
-
-    assert dataset.config.symbols == ("PANEL_A",), (
-        "the caller-supplied symbols tuple was overwritten during "
-        "construction; the _reset_symbols() override did not take effect"
-    )
-    assert dataset.raw_data_calls == 0, (
-        "constructing the dataset reached _raw_data_to_xr(); for a dataset "
-        "whose raw source is a remote fetch that is an unannounced outbound "
-        "request from __init__"
-    )
-
-    assert "_reset_symbols" in BaseDataset.__dict__, (
-        "_reset_symbols() left the shared base; it is called from the shared "
-        "config setter, so pushing it down would force the setter to split too"
-    )
-    assert "_reset_symbols" not in MarketDataset.__dict__, (
-        "MarketDataset overrides _reset_symbols(); market datasets must keep "
-        "inheriting the eager default unchanged"
-    )
-
-
 def test_non_market_dataset_round_trips_through_base_dataset(
     tmp_path: Path,
 ) -> None:
@@ -271,9 +234,7 @@ def test_non_market_dataset_round_trips_through_base_dataset(
     assert result["is_member"].dims == ("timestamp", "symbol")
     assert result["is_member"].dtype == np.dtype("bool")
     assert result.symbol.values.tolist() == list(_PANEL_SYMBOLS)
-    np.testing.assert_array_equal(
-        result["is_member"].values, _PANEL_IS_MEMBER
-    )
+    np.testing.assert_array_equal(result["is_member"].values, _PANEL_IS_MEMBER)
 
 
 def test_base_data_module_exposes_only_the_two_split_classes() -> None:

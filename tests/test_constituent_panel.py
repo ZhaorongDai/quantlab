@@ -416,19 +416,6 @@ def test_non_iso_date_is_rejected_at_the_config_boundary(tmp_path, bad_date):
         _PanelFixture(_make_config(tmp_path, start_date=bad_date))
 
 
-def test_symbols_are_normalized_to_a_tuple_for_the_constituent_branch(tmp_path):
-    """WR-14. `BaseDatasetConfig.symbols` is declared `tuple | None`, but the
-    normalisation lived inside `_reset_symbols()` -- an overridable seam that
-    `IndexConstituentDataset` correctly makes a no-op. So for the whole
-    constituent branch whatever the caller passed survived unchanged, a list
-    reached `filter_by_symbol(col, symbols: tuple[str, ...])`, and the declared
-    contract was simply false there. It worked only because `.sel` accepts both.
-    """
-    dataset = _PanelFixture(
-        _make_config(tmp_path, symbols=["OPEN1", "CLOSED1"])
-    )
-
-    assert isinstance(dataset.config.symbols, tuple)
 
 
 def test_dates_are_normalized_to_canonical_iso_at_the_config_boundary(tmp_path):

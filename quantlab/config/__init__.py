@@ -127,7 +127,7 @@ def spot_kline_config(
 def stock_kline_config(
     start_date: str | None = None,
     end_date: str | None = None,
-    symbols: list | None = None,
+    symbols: tuple[str, ...] | None = None,
     kwargs: dict = None,  # type: ignore
     market: Market = "us_equity",
     frequency: Frequency = "1d",

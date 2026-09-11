@@ -38,6 +38,7 @@ class BaseDataset(ABC):
     persistence lifecycle by implementing exactly one abstract method, instead
     of carrying two meaningless `raise NotImplementedError` stubs.
     """
+
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
     #: How `update()` asks `from_raw_data_chunked()` to resolve the strategy
@@ -80,8 +81,6 @@ class BaseDataset(ABC):
     #: inside `__init__` is source-introspected by
     #: `tests/test_dataset_hierarchy.py`, and a subclass that builds its
     #: config outside `BaseDataset.__init__` must not hit a missing attribute.
-    _construction_raw_panel: Optional[xr.Dataset] = None
-    _construction_raw_window: Optional[tuple] = None
 
     def __init__(self, config: BaseDatasetConfig):
         # Ordering is load-bearing, and it is deliberately the OPPOSITE of
@@ -183,17 +182,6 @@ class BaseDataset(ABC):
             self._config.end_date, "end_date"
         )
 
-        # Normalise `symbols` to the declared `tuple | None` HERE rather than
-        # inside `_reset_symbols()`. `_reset_symbols()` is an overridable seam
-        # -- `IndexConstituentDataset` correctly makes it a no-op -- so
-        # normalising there left the declared contract false for that whole
-        # branch of the hierarchy: whatever the caller passed (a list, from the
-        # constituent config factories) survived unchanged and reached
-        # `filter_by_symbol(col, symbols: tuple[str, ...])`. It worked by
-        # accident because `.sel` accepts both.
-        if self._config.symbols is not None:
-            self._config.symbols = tuple(self._config.symbols)
-            self._reset_symbols()
 
     def _normalize_date(self, value: str, field_name: str) -> str:
         try:
@@ -205,90 +193,6 @@ class BaseDataset(ABC):
                 f"lexicographically throughout this pipeline, so a non-ISO "
                 f"value compares wrong rather than failing to match."
             ) from exc
-
-    def _reset_symbols(self):
-        """Resolve `config.symbols` eagerly from the store, at
-        config-assignment time.
-
-        The default is exactly the behaviour every dataset class has always
-        had: when the caller pinned a symbol subset, resolve the symbol axis
-        from the store -- falling back to `from_raw_data()` when the store
-        cannot supply one -- and overwrite `config.symbols` with whatever was
-        actually resolved.
-
-        **Three cases, decided BEFORE `read()` is called.** The store is
-        probed with `_stored_symbol_axis()`, which answers coordinate-only and
-        lazily:
-
-        - **absent** (`None`, no store on disk): fall back to
-          `from_raw_data()`.
-        - **present and POPULATED** (a non-empty list): `read()`, exactly as
-          before.
-        - **present but EMPTY** (`[]`, or a store with no `symbol`
-          coordinate): fall back to `from_raw_data()` as well. This case is
-          reachable from ANY run that wrote a zero-row panel -- an acquisition
-          that fetched nothing, an aborted chunked ingest, a window that
-          pruned to nothing -- and it is why the probe cannot be replaced by
-          an `except` clause. An empty store does not raise
-          `FileNotFoundError`: `read()` SUCCEEDS and then `_filter()` ->
-          `filter_by_symbol` -> `.sel({"symbol": [...]})` raises
-          `ValueError: could not convert string to float` from INSIDE
-          `read()`, because zarr reads a zero-length symbol axis back as
-          float64. No handler on `read()` can see that as "no data here".
-
-        The inner `try/except FileNotFoundError` is KEPT rather than made
-        dead: it is still reachable if the store is removed between the probe
-        and the read.
-
-        Overridable seam: a dataset whose symbol axis is derived from its own
-        source rather than from a store -- or one whose `from_raw_data()`
-        fallback would perform a remote fetch merely to construct the object
-        -- overrides this to a no-op and resolves its symbols inside
-        `_raw_data_to_xr()` instead. Only `FileNotFoundError` is caught around
-        the read, so for such a dataset any network or parse error would
-        otherwise escape `__init__`.
-        """
-        store_path = self.config.zarr_file_path
-        stored_symbols = self._stored_symbol_axis(store_path)
-        if not stored_symbols:
-            if stored_symbols is None and not Path(store_path).exists():
-                reason = "there is no store at that path"
-            elif stored_symbols is None:
-                reason = (
-                    "the store at that path carries no 'symbol' coordinate"
-                )
-            else:
-                reason = (
-                    "the store at that path is present but its symbol axis is "
-                    "EMPTY (a zero-row panel from an earlier run)"
-                )
-            logger.warning(
-                f"{self.class_name} data not found, try to read from csv "
-                f"({store_path}: {reason})"
-            )
-            self.from_raw_data()
-            # Hand the panel just materialised to the NEXT `from_raw_data()`
-            # call -- the caller's -- so one ingest converts raw once. Recorded
-            # on this fallback path ONLY: on the `read()` path below the
-            # caller's `from_raw_data()` is doing real, necessary work and must
-            # not be skipped.
-            self._construction_raw_panel = getattr(
-                self.data_backend, "data", None
-            )
-            self._construction_raw_window = (
-                self._config.start_date,
-                self._config.end_date,
-            )
-        else:
-            try:
-                self.read()
-            except FileNotFoundError:
-                logger.warning(
-                    f"{self.class_name} data not found, try to read from csv"
-                )
-                self.from_raw_data()
-        symbols = tuple(self._get_symbols())
-        self._config.symbols = symbols
 
     def _get_symbols(self) -> list[str]:
         return self.data_backend.get_xarray_dataset(
@@ -343,63 +247,7 @@ class BaseDataset(ABC):
     def from_raw_data(self) -> Self:
         """Materialise the raw source into the backend: convert, `_clean()`,
         store.
-
-        **The one-shot handoff.** When `_reset_symbols()` could not resolve a
-        symbol axis from the store it already ran this exact pipeline at
-        construction time; the ingest scripts then call this method again
-        immediately, and the raw tree was being converted TWICE for one
-        ingest. If the constructor left a panel behind, the backend still
-        holds that very object, and the config's date window is still the one
-        it was built for, this call returns it unchanged. The handoff is read
-        and CLEARED on entry whether or not it is used, so it is valid for
-        exactly one call -- a later `from_raw_data()` re-converts, as it
-        always did. This is a duplicate removal, not a cache.
-
-        What this deliberately does NOT change:
-
-        - the signature is still `from_raw_data(self) -> Self`, and no caller
-          passes or receives anything new;
-        - name/symbol derivation still happens EAGERLY at construction, from a
-          full raw materialisation -- D-05's construction-time-names contract
-          is untouched, and RV-02 stays open;
-        - with `symbols=None` (the chunked ingest path) `_reset_symbols()`
-          never fires, no handoff is ever recorded, and behaviour is identical
-          to before;
-        - when the store is POPULATED, `_reset_symbols()` takes the `read()`
-          branch and records no handoff, so this method converts exactly as it
-          always did. The skip only ever applies to a panel the constructor
-          itself just built.
-
-        One named narrowing: a caller that mutates the raw SOURCE location
-        (`config.raw_data_dir_path`, `vendor`, `frequency`) in place on a live
-        instance between construction and the first `from_raw_data()` receives
-        the constructor's panel rather than a re-read of the new location. The
-        guard compares the date window, not the source path. Nothing in this
-        repo does that; a changed date window IS detected.
         """
-        pending_panel = getattr(self, "_construction_raw_panel", None)
-        pending_window = getattr(self, "_construction_raw_window", None)
-        # Cleared FIRST and unconditionally: the handoff must not survive this
-        # call whether or not it is used.
-        self._construction_raw_panel = None
-        self._construction_raw_window = None
-
-        if (
-            pending_panel is not None
-            # Identity, not equality: a backend whose panel was replaced no
-            # longer holds what the constructor produced.
-            and getattr(self.data_backend, "data", None) is pending_panel
-            and pending_window
-            == (self.config.start_date, self.config.end_date)
-        ):
-            logger.debug(
-                f"{self.class_name}: reusing the panel the construction-time "
-                f"raw fallback already materialised for "
-                f"{pending_window} -- skipping one duplicate conversion. The "
-                f"handoff is now spent; any later from_raw_data() reconverts."
-            )
-            return self
-
         data = self._raw_data_to_xr()
         data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
@@ -575,7 +423,10 @@ class BaseDataset(ABC):
                 f"{list(self.NEW_LISTING_STRATEGIES)}."
             )
 
-        if type(self)._raw_data_to_xr_window is BaseDataset._raw_data_to_xr_window:
+        if (
+            type(self)._raw_data_to_xr_window
+            is BaseDataset._raw_data_to_xr_window
+        ):
             logger.warning(
                 f"{self.class_name}: _raw_data_to_xr_window has not been "
                 f"overridden, so each window is produced by densifying the "
@@ -626,7 +477,9 @@ class BaseDataset(ABC):
                     continue
 
                 window = self._raw_data_to_xr_window(start, end, symbols)
-                actual = [str(symbol) for symbol in window["symbol"].values.tolist()]
+                actual = [
+                    str(symbol) for symbol in window["symbol"].values.tolist()
+                ]
                 if actual != symbols:
                     raise ValueError(
                         f"{self.class_name}: window {start.date()}..{end.date()} "
@@ -686,7 +539,9 @@ class BaseDataset(ABC):
                     append_dim=append_dim,
                     fill_values=self._widen_fill_values(),
                 )
-                ledger.record(start, end, int(window.sizes[append_dim]), symbols)
+                ledger.record(
+                    start, end, int(window.sizes[append_dim]), symbols
+                )
                 logger.info(
                     f"{self.class_name}: appended window "
                     f"{start.date()}..{end.date()} "
@@ -720,7 +575,9 @@ class BaseDataset(ABC):
     SUPERSEDED_SUFFIX = ".superseded.tmp"
 
     @staticmethod
-    def _stored_symbol_axis(store_path: str, dim: str = "symbol") -> Optional[list]:
+    def _stored_symbol_axis(
+        store_path: str, dim: str = "symbol"
+    ) -> Optional[list]:
         """The store's `dim` labels, or None when there is no store (or no such
         coordinate).
 
@@ -1129,11 +986,7 @@ class MarketDataset(BaseDataset):
     meaningless `raise NotImplementedError` stubs (D-03).
     """
 
-    # Narrowed for readers and type checkers only -- this is a bare
-    # annotation, so it does not shadow `BaseDataset.config`. It records that
-    # the three methods below legitimately read the market-only
-    # `catalog_path` field, which lives on `DatasetConfig` and not on the
-    # shared `BaseDatasetConfig`.
+    # Narrowed for readers and type checkers only
     config: DatasetConfig
 
     def _write_catalog(self, data: list):
@@ -1169,4 +1022,3 @@ class MarketDataset(BaseDataset):
     def _to_nautilus(
         self, data: xr.Dataset, venue: str, n_jobs: int
     ) -> tuple[list[list], list[Instrument]]: ...
-

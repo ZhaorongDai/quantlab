@@ -236,3 +236,6 @@ model_ckpt
 .planning/state.json
 # GSD orchestration lock (session/pid scoped, never shared state)
 .planning/milestone.lock
+
+# personal scratch scripts
+jerry_query_data.py

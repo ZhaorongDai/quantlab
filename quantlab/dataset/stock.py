@@ -235,7 +235,9 @@ class StockDataset(MarketDataset):
             pl.col("date") >= pl.lit((start - self.SESSION_DATE_SLACK).date())
         ) & (pl.col("date") <= pl.lit((end + self.SESSION_DATE_SLACK).date()))
 
-    def _assert_single_vendor_and_drop(self, data: pl.LazyFrame) -> pl.LazyFrame:
+    def _assert_single_vendor_and_drop(
+        self, data: pl.LazyFrame
+    ) -> pl.LazyFrame:
         """Assert the scanned frame holds exactly ONE vendor, then drop the
         column.
 
@@ -388,7 +390,11 @@ class StockDataset(MarketDataset):
         # the writer drops it from the file because the segment carries it, so
         # dropping it here too would delete it outright.
         data = data.drop(
-            [key for key in self._scanned_hive_keys if key in self.DERIVED_HIVE_KEYS]
+            [
+                key
+                for key in self._scanned_hive_keys
+                if key in self.DERIVED_HIVE_KEYS
+            ]
         )
 
         data = data.sort(by=["timestamp", "symbol"])
@@ -429,7 +435,10 @@ class StockDataset(MarketDataset):
         scan = self._scan_raw()
         symbols = sorted(
             str(symbol)
-            for symbol in scan.select("symbol").unique().collect()["symbol"].to_list()
+            for symbol in scan.select("symbol")
+            .unique()
+            .collect()["symbol"]
+            .to_list()
         )
         timestamps = (
             scan.select("timestamp").unique().collect()["timestamp"].to_list()
