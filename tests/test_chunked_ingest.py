@@ -97,7 +97,6 @@ def three_year_stock_config(
             raw_data_dir_path=str(raw_dir / "tiingo"),
             zarr_file_path=str(tmp_path / store_name),
             catalog_path=str(tmp_path / "catalog"),
-            market="us_equity",
             frequency="1d",
             vendor="tiingo",
         )
@@ -1032,7 +1031,6 @@ class _GrowingRoster:
             raw_data_dir_path=str(self._raw_dir / "tiingo"),
             zarr_file_path=str(self._tmp_path / store_name),
             catalog_path=str(self._tmp_path / "catalog"),
-            market="us_equity",
             frequency="1d",
             vendor="tiingo",
         )
@@ -1310,7 +1308,6 @@ class _ExtendableRaw:
             raw_data_dir_path=str(self._raw_dir / "tiingo"),
             zarr_file_path=str(self._tmp_path / store_name),
             catalog_path=str(self._tmp_path / "catalog"),
-            market="us_equity",
             frequency="1d",
             vendor="tiingo",
         )

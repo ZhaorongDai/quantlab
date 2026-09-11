@@ -46,7 +46,6 @@ def _make_dataset_config(
         raw_data_dir_path=raw_data_dir_path,
         zarr_file_path=zarr_file_path,
         catalog_path=raw_data_dir_path,
-        market="us_equity",
         frequency="1d",
         vendor=vendor,  # type: ignore[arg-type]
         symbols=symbols,

@@ -38,28 +38,6 @@ class BaseDataset(ABC):
     persistence lifecycle by implementing exactly one abstract method, instead
     of carrying two meaningless `raise NotImplementedError` stubs.
     """
-
-    #: What `from_raw_data_chunked()` does when the pinned whole-range symbol
-    #: axis no longer matches the STORE's -- the routine consequence of a new
-    #: listing between two periodic refreshes (260906-x2s).
-    #:
-    #: - `refuse`  the DEFAULT, byte-identical to the behaviour before this
-    #:             knob existed: the `ChunkLedger` roster error raises and the
-    #:             store is untouched.
-    #: - `rebuild` direction 2 -- re-densify EVERY window from raw onto the new
-    #:             union, recovering the new listing's REAL history. Correct
-    #:             and expensive.
-    #: - `widen`   direction 1 -- keep the store, widen its symbol axis in
-    #:             place and NaN-backfill the new listing's whole historical
-    #:             block. Cheap in wall-clock, but it does not re-read raw, so
-    #:             history the vendor has is not recovered. Store SIZE is not a
-    #:             reason to avoid it: `XrBackend.widen_symbol_axis` sizes the
-    #:             rewrite and takes a bounded block-by-block path above
-    #:             `XrBackend.MAX_WIDEN_BYTES` (260908-g30), at ~3.6-4.0x the
-    #:             whole-store wall clock.
-    #:
-    #: `ingest_us_equity.py --on-new-listing` derives its `choices` from this
-    #: tuple; it is never restated there.
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
     #: How `update()` asks `from_raw_data_chunked()` to resolve the strategy

@@ -75,7 +75,6 @@ def _dataset(tmp_path: Path) -> StockDataset:
             raw_data_dir_path=str(tmp_path / "raw" / "tiingo"),
             zarr_file_path=str(tmp_path / "stock.zarr"),
             catalog_path=str(tmp_path / "catalog"),
-            market="us_equity",
             frequency="1d",
             vendor="tiingo",
         )

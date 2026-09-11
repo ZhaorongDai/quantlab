@@ -221,7 +221,6 @@ def test_tracer_one_alpaca_daily_batch_lands_as_a_hive_shard_and_reads_back(
         raw_data_dir_path=cfg.raw_data_dir_path,
         zarr_file_path=str(tmp_path / "tracer.zarr"),
         catalog_path=str(tmp_path / "catalog"),
-        market="us_equity",
         frequency="1d",
         vendor="alpaca",
         start_date=cfg.start_date,

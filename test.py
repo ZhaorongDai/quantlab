@@ -1,38 +1,4 @@
 # %%
-import os
-from pathlib import Path
-
-import numpy as np
-
-from config import DatasetConfig, FactorConfig
-from dataset.stock import StockDataset
-from factor.alpha101 import Alpha101Stock
-from utils import file
-
-_data_root = Path(os.environ.get("QUANTLAB_DATA_DIR", Path(__file__).resolve().parent))
-
-dscfg = DatasetConfig(
-    raw_data_dir_path=str(_data_root / "scripts" / "downloads" / "nasdaq_data"),
-    zarr_file_path=str(
-        _data_root / "scripts" / "downloads" / "nasdaq_data" / "stock.zarr"
-    ),
-    catalog_path="none",
-    market="us_equity",
-    frequency="1d",
-)
-
-
-ds = StockDataset(dscfg)
-
-facfg = FactorConfig(
-    window=10,
-    dataset=ds,
-    mode="batch",
-    data_columns=["open", "high", "low", "close", "volume"],
-)
-# %%
-
-fc = Alpha101Stock(facfg)
-# %%
-fc.get_features()
-
+import polars as pl
+df = pl.read_parquet('/Users/daizhaorong/projects/quantlab/data/downloads/us_equity/tick/nasdaq_data/alpaca/data_type=trades/date=2026-09-01/symbol=AAPL/part-b8c83db7772f1134-00000.pqt')
+df

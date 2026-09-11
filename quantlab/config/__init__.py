@@ -15,7 +15,6 @@ from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import Frequency, Market, Vendor
 
-
 #: Process-level storage-root override, set by `set_data_root()` and consulted
 #: first by `get_data_root()`. `None` means "not overridden"; see D-06.
 _DATA_ROOT_OVERRIDE: Path | None = None
@@ -108,11 +107,15 @@ def spot_kline_config(
 ):
     return DatasetConfig(
         raw_data_dir_path=str(
-            _market_downloads_root(market, frequency) / "spot" / "monthly" / "klines"
+            _market_downloads_root(market, frequency)
+            / "spot"
+            / "monthly"
+            / "klines"
         ),
-        zarr_file_path=str(_market_data_root(market, frequency) / "klines.zarr"),
+        zarr_file_path=str(
+            _market_data_root(market, frequency) / "klines.zarr"
+        ),
         catalog_path=str(get_data_root() / "data" / "catalog"),
-        market=market,
         frequency=frequency,
         start_date=start_date,
         end_date=end_date,
@@ -163,7 +166,6 @@ def stock_kline_config(
         ),
         zarr_file_path=str(_market_data_root(market, frequency) / store_name),
         catalog_path=str(get_data_root() / "data" / "catalog"),
-        market=market,
         frequency=frequency,
         vendor=vendor,
         start_date=start_date,
@@ -237,7 +239,9 @@ def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
     PlBackend/parquet, not XrBackend/Zarr.
     """
     return UniverseConfig(
-        output_path=str(get_data_root() / "data" / "reference" / "universe.parquet"),
+        output_path=str(
+            get_data_root() / "data" / "reference" / "universe.parquet"
+        ),
         cache_dir=str(get_data_root() / "data" / "reference" / "_cache"),
         kwargs=kwargs,
     )
@@ -379,7 +383,9 @@ def stock_alpha101_config(
     `RuntimeError: Bad inputs, given <class 'NoneType'>` at construction time.
     """
     return FactorConfig(
-        file_path=str(get_data_root() / "data" / "factor" / "alpha101_stock.zarr"),
+        file_path=str(
+            get_data_root() / "data" / "factor" / "alpha101_stock.zarr"
+        ),
         dataset=StockDataset(
             stock_kline_config(
                 symbols=symbols, market=market, frequency=frequency
@@ -452,7 +458,9 @@ def stock_alpha158_config(
     here; this factory only chooses the dataset.
     """
     return FactorConfig(
-        file_path=str(get_data_root() / "data" / "factor" / "alpha158_stock.zarr"),
+        file_path=str(
+            get_data_root() / "data" / "factor" / "alpha158_stock.zarr"
+        ),
         dataset=StockDataset(
             stock_kline_config(
                 symbols=symbols, market=market, frequency=frequency
