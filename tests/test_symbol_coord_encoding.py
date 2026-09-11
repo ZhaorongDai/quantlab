@@ -256,6 +256,7 @@ def test_the_variable_length_arm_matches_what_the_real_chunked_ingest_writes(
             raw_data_dir_path=str(raw_dir / "tiingo"),
             zarr_file_path=store,
             catalog_path=str(tmp_path / "catalog"),
+            market="us_equity",
             frequency="1d",
             vendor="tiingo",
         )

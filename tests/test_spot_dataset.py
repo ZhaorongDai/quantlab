@@ -22,6 +22,7 @@ def _make_config(raw_data_dir_path: str) -> DatasetConfig:
             __import__("pathlib").Path(raw_data_dir_path).parent / "klines.zarr"
         ),
         catalog_path=raw_data_dir_path,
+        market="crypto_spot",
         frequency="1d",
     )
 
@@ -99,7 +100,7 @@ def test_build_dataset_config_raw_data_dir_none_is_noop() -> None:
 def test_build_dataset_config_raw_data_dir_override_applies() -> None:
     """Test 4: _build_dataset_config(args) with raw_data_dir set returns a
     DatasetConfig whose raw_data_dir_path equals that override exactly, with
-    no other field (frequency, zarr_file_path, catalog_path)
+    no other field (market, frequency, zarr_file_path, catalog_path)
     altered."""
     from quantlab.config import spot_kline_config
     from ingest_binance_spot import _build_dataset_config
@@ -115,6 +116,7 @@ def test_build_dataset_config_raw_data_dir_override_applies() -> None:
     default_config = spot_kline_config()
 
     assert config.raw_data_dir_path == "/custom/existing/csvs"
+    assert config.market == default_config.market
     assert config.frequency == default_config.frequency
     assert config.zarr_file_path == default_config.zarr_file_path
     assert config.catalog_path == default_config.catalog_path

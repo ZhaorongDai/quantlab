@@ -125,6 +125,7 @@ class FakeDataset(MarketDataset):
 
 def _fake_dataset_config(tmp_path: Path) -> DatasetConfig:
     return DatasetConfig(
+        market="fake_market",  # type: ignore[arg-type]
         frequency="1d",
         raw_data_dir_path=str(tmp_path),
         zarr_file_path=str(tmp_path / "fake.zarr"),

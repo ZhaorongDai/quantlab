@@ -40,12 +40,14 @@ console into a credential-exfiltration surface;
 comment.
 """
 
+import dataclasses
 import os
 from dataclasses import dataclass
 from typing import Callable
 
 from quantlab.base.acquisition import Acquisition, AcquisitionResult
-from quantlab.base.config import AcquisitionConfig
+from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.base.data import ConversionResult, MarketDataset
 from quantlab.base.progress import CancelToken, ProgressReporter
 from quantlab.enums.data import Frequency, Market, UniverseCategory, Vendor
 
@@ -84,6 +86,27 @@ class Capability:
     earliest_available: str | None = None
     #: The subscription tier this capability needs, when the vendor has tiers.
     entitlement: str | None = None
+    #: The `MarketDataset` subclass that materialises THIS capability's raw
+    #: tier into Zarr, or `None` where no Dataset can express the axis yet
+    #: (tick -> phase 03.3). `None` IS the SC-7 refusal, expressed as DATA:
+    #: `convert()` below carries no `if frequency == "tick"` branch and no
+    #: vendor literal, because the absence of a conversion target is the
+    #: refusal. Phase 03.3 turns the refusal off by FILLING two fields, not by
+    #: deleting a branch.
+    #:
+    #: On `Capability` rather than on `SourceDescriptor` (03.5 D-01) for the
+    #: reason this class's own docstring above already states: only some rows
+    #: can populate it. It is also exactly `Capability`'s key --
+    #: `(market, frequency, data_type)` -- that Dataset subclasses divide on,
+    #: so `StockDataset` appearing on three rows across two vendors is one
+    #: correct answer to three questions, not a duplicated decision.
+    #:
+    #: Annotated with the `MarketDataset` ABC, following the rule
+    #: `SourceDescriptor.acquisition_cls` states below: the TOP of this module
+    #: must stay vendor-free, or the descriptors could not be defined beside
+    #: the classes they describe. The concrete class reference is DIRECT
+    #: (03.4 D-03), never a dotted path resolved at runtime.
+    dataset_cls: type[MarketDataset] | None = None
 
 
 @dataclass(frozen=True)
@@ -148,12 +171,42 @@ class SourceDescriptor:
         `TIINGO_SOURCE.supports("us_equity", "tick")` is `False` (Tiingo serves
         no tick capability at all) rather than accidentally `True` via
         Tiingo's own `data_type=None` capability.
+
+        The PREDICATE itself lives in `capabilities_for()` below and is not
+        restated here: two copies of a match rule is two places for the
+        "`data_type=None` means do not care" semantics to drift apart, and the
+        drift would be silent -- a boolean that disagrees with the tuple the
+        conversion entry point actually resolves.
         """
-        return any(
-            capability.market == market
+        return bool(self.capabilities_for(market, frequency, data_type))
+
+    def capabilities_for(
+        self,
+        market: Market,
+        frequency: Frequency,
+        data_type: str | None = None,
+    ) -> tuple[Capability, ...]:
+        """EVERY capability matching `(market, frequency[, data_type])`.
+
+        The tuple-valued half of `supports()`, and the lookup
+        `quantlab/acquisition/registry.py:convert()` resolves a conversion
+        target through (03.5 D-03). Same match rule, same
+        "`data_type=None` means do not care" semantics -- stated ONCE, here.
+
+        Returns ALL matches rather than the first, and the plurality is
+        load-bearing: a vendor serving two shapes at one `(market, frequency)`
+        is exactly the case 03.5 D-02 restored `DatasetConfig.market` for, and
+        `convert()` must be able to REFUSE it rather than silently pick a row.
+        `()` over no match is a legitimate answer a caller renders, not an
+        error condition -- the raising happens in `convert()`, where there is
+        a request to name.
+        """
+        return tuple(
+            capability
+            for capability in self.capabilities
+            if capability.market == market
             and capability.frequency == frequency
             and (data_type is None or capability.data_type == data_type)
-            for capability in self.capabilities
         )
 
 
@@ -325,12 +378,18 @@ def run(
     **ACQUISITION-ONLY, and that is D-14's amendment stated as code.** This
     downloads to the raw parquet tier and STOPS. It performs no raw-to-Zarr
     conversion, mirroring `Acquisition`'s own contract that acquisition classes
-    never touch xarray/Zarr storage. The three ingest entry points convert in
-    three genuinely different modes -- unconditional whole-window, per-frequency,
-    and opt-in chunked -- each with a differently-sized RAM guard, and folding
-    them into one call would mean one of the three silently getting the wrong
-    guard. If the console ever needs conversion, it is a separate
-    registry-level call, not a flag here.
+    never touch xarray/Zarr storage. Conversion is the SEPARATE registry-level
+    call `convert()` directly below, never a flag here.
+
+    (The sentence this paragraph used to carry -- that the three ingest entry
+    points convert in three genuinely different modes, each with a
+    differently-sized RAM guard -- was 03.4's reason for keeping the two calls
+    apart and is superseded by 03.5 D-06, which collapses conversion to ONE
+    chunked mode with ONE guard. The separation survives its original reason:
+    downloading and converting are different operations with different
+    failure modes, and `run()` returning an `AcquisitionResult` while
+    `convert()` returns a `ConversionResult` is that difference stated in the
+    type system.)
 
     Constructing `descriptor.acquisition_cls(config)` is the FIRST point a
     credential is demanded, deliberately: that is the vendor class's own
@@ -360,6 +419,79 @@ def run(
     else:
         acquisition.download()
     return acquisition.last_result
+
+
+def convert(
+    descriptor: SourceDescriptor,
+    dataset_config: DatasetConfig,
+    *,
+    data_type: str | None = None,
+    granularity: str = "year",
+    on_new_listing: str = "refuse",
+    predicted_peak_bytes: int | None = None,
+) -> ConversionResult:
+    """Convert an already-acquired RAW tier into Zarr, IN-PROCESS (03.5 D-03).
+
+    **The counterpart to `run()` above, and a SEPARATE function rather than a
+    flag on it (03.4 D-14).** `run()` downloads to the raw parquet tier and
+    stops; this reads that tier and writes the Zarr store. They are adjacent
+    so the two-calls contract is visible while reading, and nothing here
+    touches a vendor client, an endpoint, or a credential.
+
+    **The conversion target comes from the CAPABILITY, never from a branch**
+    (D-01). The lookup key is `(dataset_config.market, dataset_config.frequency,
+    data_type)` -- exactly `Capability`'s own key, which is why D-02 reinstated
+    `DatasetConfig.market`. There is no vendor literal in this body and no
+    frequency literal either: a capability with no `dataset_cls` is refused
+    BECAUSE it has none, so phase 03.3 lands tick conversion by filling two
+    fields rather than by deleting an `if`.
+
+    **It WRITES, period.** That is half the reason it exists: `from_raw_data()`
+    returns `Self` and leaves writing to a separate `.save()`, while
+    `from_raw_data_chunked()` writes inside its loop. A caller reaching the
+    Dataset layer by hand has to know which. A caller here does not.
+
+    **It does NOT run the RAM guard, and that is a recorded, accepted risk
+    (D-11).** The guarantee lives at every call site --
+    `assert_chunked_panel_fits(...)` before `convert(...)`, as
+    `ingest_us_equity.py` already does -- not at the one place that allocates.
+    A new integrator who never asks goes straight to OOM. `predicted_peak_bytes`
+    is the caller's own estimate echoed into the result so a report can put
+    prediction beside outcome; passing it buys no protection, and pretending
+    otherwise here would retire a recorded risk silently instead of by
+    decision.
+
+    PLACEHOLDER REFUSAL, replaced in this phase's next task: the three real
+    outcomes (no match / ambiguous match / no conversion target) are one bare
+    `ValueError` naming the requested tuple for now. The tracer proves the
+    happy path through every layer first; the refusal messages are the
+    sideways expansion.
+    """
+    matches = descriptor.capabilities_for(
+        dataset_config.market, dataset_config.frequency, data_type
+    )
+    requested = (dataset_config.market, dataset_config.frequency, data_type)
+
+    capability = matches[0] if matches else None
+    if capability is None or capability.dataset_cls is None:
+        raise ValueError(
+            f"{descriptor.display_name}: no raw-to-Zarr conversion target for "
+            f"{requested!r}."
+        )
+
+    dataset = capability.dataset_cls(dataset_config)
+    dataset.from_raw_data_chunked(
+        granularity=granularity, on_new_listing=on_new_listing
+    )
+    result = dataset.last_chunk_result
+    if result is None:  # pragma: no cover -- defensive
+        raise RuntimeError(
+            f"{type(dataset).__name__}.from_raw_data_chunked() returned "
+            f"without publishing a ConversionResult on `last_chunk_result`."
+        )
+    return dataclasses.replace(
+        result, predicted_peak_bytes=predicted_peak_bytes
+    )
 
 
 # ---------------------------------------------------------------------------

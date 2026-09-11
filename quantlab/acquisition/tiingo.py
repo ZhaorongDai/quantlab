@@ -12,6 +12,7 @@ from quantlab.acquisition.registry import (
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import stock_acquisition_config
+from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
 
 #: The environment variable the Tiingo API key is read from.
@@ -329,8 +330,18 @@ TIINGO_SOURCE = register_source(
         #: above). `data_type=None` records the ABSENCE of a bars/quotes/trades
         #: distinction for this vendor, not a wildcard -- which is why
         #: `supports("us_equity", "tick")` is False.
+        #: `dataset_cls` is what makes `registry.convert()` reachable for this
+        #: capability (03.5 D-01): the conversion target is CAPABILITY data,
+        #: so no caller has to name `StockDataset` and `convert()` carries no
+        #: vendor branch. A DIRECT class reference (03.4 D-03), so there is no
+        #: copy that can drift -- the same class answers Alpaca's bars rows.
         capabilities=(
-            Capability(market="us_equity", frequency="1d", data_type=None),
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type=None,
+                dataset_cls=StockDataset,
+            ),
         ),
         required_env=("TIINGO_API_KEY",),
         #: ADVISORY (see `SourceDescriptor.universe_categories`): the roster

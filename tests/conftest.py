@@ -749,6 +749,7 @@ def spot_kline_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
             raw_data_dir_path=str(spot_dir / "raw"),
             zarr_file_path=str(zarr_path),
             catalog_path=str(spot_dir / "catalog"),
+            market="crypto_spot",
             frequency="1d",
             start_date=start_date,
             end_date=end_date,
@@ -897,6 +898,7 @@ def stock_zarr(tmp_path: Path) -> Callable[..., DatasetConfig]:
             raw_data_dir_path=str(stock_dir / "raw"),
             zarr_file_path=str(zarr_path),
             catalog_path=str(stock_dir / "catalog"),
+            market="us_equity",
             frequency="1d",
         )
 

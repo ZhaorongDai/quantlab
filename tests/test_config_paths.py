@@ -35,6 +35,7 @@ def test_spot_kline_config_uses_market_frequency_path_convention() -> None:
     cfg = spot_kline_config()
 
     assert "data/crypto_spot/1d/" in cfg.zarr_file_path.replace("\\", "/")
+    assert cfg.market == "crypto_spot"
     assert cfg.frequency == "1d"
 
 
@@ -42,6 +43,7 @@ def test_stock_kline_config_uses_market_frequency_path_convention() -> None:
     cfg = stock_kline_config()
 
     assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
+    assert cfg.market == "us_equity"
     assert cfg.frequency == "1d"
 
 

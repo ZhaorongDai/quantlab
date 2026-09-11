@@ -59,6 +59,7 @@ MARKET_ONLY_MEMBERS = (
 MARKET_ONLY_CONFIG_FIELDS = {
     "raw_data_dir_path",
     "catalog_path",
+    "market",
     "frequency",
     "vendor",
 }

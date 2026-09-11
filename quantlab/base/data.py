@@ -2,6 +2,7 @@ import datetime
 import os
 import shutil
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Self
 
@@ -19,6 +20,76 @@ from quantlab.dataset.backend import XrBackend
 from quantlab.dataset.cleaning import clean_market_data
 from quantlab.enums.constant import Date
 from quantlab.utils.timer import Timer
+
+
+@dataclass(frozen=True)
+class ConversionResult:
+    """What ONE raw->Zarr conversion did, as a value the caller can render.
+
+    Returned by `quantlab/acquisition/registry.py:convert()` (03.5 D-04), so
+    an in-process caller -- the out-of-repo `quantlab-console` first -- learns
+    the outcome without reading disk, and without this layer printing a line.
+
+    **Defined HERE, in `base/`, for the direction stated at
+    `quantlab/base/acquisition.py:113-118`** for `AcquisitionResult`: the base
+    layer must not import the acquisition package, so a result type living
+    beside the registry would have to be imported backwards or duplicated.
+    `registry.py` imports it from here, exactly as it already imports
+    `AcquisitionResult`. It lives in `base/data.py` rather than
+    `base/acquisition.py` because it describes the DATASET layer's output --
+    `from_raw_data_chunked()` is what fills it in.
+
+    **`peak_window_bytes` and `predicted_peak_bytes` are two different
+    measurements and are deliberately not merged.** `peak_window_bytes` is
+    OBSERVED: the `nbytes` of the largest window this run actually
+    materialised, and `None` when no window was written (a fully-resumed run
+    materialises nothing). `predicted_peak_bytes` is the CALLER'S OWN
+    pre-flight estimate, echoed back untouched so a report can put prediction
+    beside outcome. `convert()` cannot compute it: 03.5 D-11 puts the RAM
+    guard at every call site, so `convert()` has no roster category to size
+    against and asks for no arithmetic of its own.
+
+    **Carries paths, integer counts and booleans, and nothing else**
+    (T-03.5-02). No vendor response body, no exception text, no environment
+    value -- the credential rule the registry module docstring states in full
+    applies to every egress from this repository, and a result object rendered
+    into a console screenshot is an egress.
+    """
+
+    #: The Zarr store that was written -- `config.zarr_file_path`, echoed so
+    #: the caller does not have to keep the config alive to name the output.
+    zarr_path: str
+    #: The chunk-ledger sidecar. A resume reads it; an operator inspecting a
+    #: half-finished backfill reads it too.
+    ledger_path: str
+    #: The window granularity the run planned on (`"year"`, `"quarter"`, ...).
+    granularity: str
+    #: How many symbols the pinned whole-range axis carried (D-02's axis,
+    #: resolved once BEFORE any window existed).
+    pinned_symbols: int
+    #: Windows the planner produced over the observed timestamp axis.
+    windows_planned: int
+    #: Windows this run materialised and appended.
+    windows_written: int
+    #: Windows skipped because the ledger already recorded them. `resumed` is
+    #: this being non-zero.
+    windows_skipped: int
+    #: Rows appended along the append dimension, summed over written windows.
+    rows_written: int
+    #: OBSERVED peak: the largest `window.nbytes` this run materialised.
+    #: `None` when no window was written.
+    peak_window_bytes: int | None
+    #: The caller's pre-flight estimate, echoed back. `None` when the caller
+    #: did not offer one -- which is the common case and is not a warning.
+    predicted_peak_bytes: int | None = None
+    #: Whether at least one ledger-recorded window was skipped, i.e. this run
+    #: continued an earlier one rather than starting from nothing.
+    resumed: bool = False
+    #: Reserved for the cancel token 03.5 plan 06 threads through. Always
+    #: `False` today: nothing in this phase's plan 01 can set it, and a field
+    #: that is always `False` is preferable to a field the console has to
+    #: learn about later.
+    cancelled: bool = False
 
 
 class BaseDataset(ABC):
@@ -83,6 +154,15 @@ class BaseDataset(ABC):
     #: config outside `BaseDataset.__init__` must not hit a missing attribute.
 
     def __init__(self, config: BaseDatasetConfig):
+        # FIRST, above the two load-bearing lines below and outside their
+        # ordering rule: `from_raw_data_chunked()` publishes its outcome here
+        # for `registry.convert()` to read, mirroring `Acquisition.last_result`
+        # which `registry.run()` reads the same way one layer up. `None` until
+        # a chunked run completes -- a dataset that was only `read()` has no
+        # conversion to describe, and saying so with `None` is honest where a
+        # zero-filled result would claim a run happened.
+        self.last_chunk_result: "ConversionResult | None" = None
+
         # Ordering is load-bearing, and it is deliberately the OPPOSITE of
         # `base/factor.py:Factor.__init__`, which assigns its config first.
         # Here the config property setter below DOES reach the storage
@@ -439,10 +519,10 @@ class BaseDataset(ABC):
         symbols, timestamps = self._raw_axes_in_range()
         planner = TimeChunkPlanner(granularity)
         windows = planner.plan_from_timestamps(timestamps)
-        ledger = ChunkLedger(
-            ledger_path or ChunkLedger.default_path(self.config.zarr_file_path),
-            append_dim=append_dim,
+        resolved_ledger_path = ledger_path or ChunkLedger.default_path(
+            self.config.zarr_file_path
         )
+        ledger = ChunkLedger(resolved_ledger_path, append_dim=append_dim)
 
         # Reconcile the pinned axis against the STORE's before the ledger
         # check, because two of the three strategies change what that check is
@@ -468,8 +548,18 @@ class BaseDataset(ABC):
 
             first_timestamp = timestamps.min() if len(timestamps) else None
             boundaries = 0
+            # Accounting for `last_chunk_result`. Counted INSIDE the existing
+            # loop rather than reconstructed from the ledger afterwards: the
+            # ledger records completed work across ALL runs, so reading it at
+            # the end would report an earlier run's windows as this one's --
+            # which is the exact distinction `resumed` exists to draw.
+            windows_written = 0
+            windows_skipped = 0
+            rows_written = 0
+            peak_window_bytes: int | None = None
             for start, end in windows:
                 if ledger.is_written(start, end):
+                    windows_skipped += 1
                     logger.info(
                         f"{self.class_name}: window {start.date()}..{end.date()} "
                         f"already recorded in the ledger, skipping."
@@ -492,6 +582,12 @@ class BaseDataset(ABC):
 
                 window = self._clean(window)
                 window = self._pin_append_dtypes(window)
+                # Measured AFTER `_clean`/`_pin_append_dtypes`, because that
+                # is the object the append actually holds -- an upcast during
+                # dtype pinning is part of the peak, not an accounting detail.
+                window_bytes = int(window.nbytes)
+                if peak_window_bytes is None or window_bytes > peak_window_bytes:
+                    peak_window_bytes = window_bytes
                 if start != first_timestamp:
                     boundaries += 1
 
@@ -542,6 +638,8 @@ class BaseDataset(ABC):
                 ledger.record(
                     start, end, int(window.sizes[append_dim]), symbols
                 )
+                windows_written += 1
+                rows_written += int(window.sizes[append_dim])
                 logger.info(
                     f"{self.class_name}: appended window "
                     f"{start.date()}..{end.date()} "
@@ -567,6 +665,24 @@ class BaseDataset(ABC):
         else:
             if rebuild_asides is not None:
                 self._discard_rebuild_asides(rebuild_asides)
+
+        # Published only on the SUCCESS path, and deliberately: the `except`
+        # arm above re-raises, so a caller that sees an exception must not
+        # also find a result object describing a partial run as if it had
+        # finished. A stale `last_chunk_result` from an earlier successful run
+        # would be worse still, which is why `__init__` seeds it to `None`.
+        self.last_chunk_result = ConversionResult(
+            zarr_path=self.config.zarr_file_path,
+            ledger_path=resolved_ledger_path,
+            granularity=granularity,
+            pinned_symbols=len(symbols),
+            windows_planned=len(windows),
+            windows_written=windows_written,
+            windows_skipped=windows_skipped,
+            rows_written=rows_written,
+            peak_window_bytes=peak_window_bytes,
+            resumed=windows_skipped > 0,
+        )
         return self
 
     #: Appended to the store and ledger paths while a `rebuild` is in flight.

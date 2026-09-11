@@ -26,6 +26,21 @@ class BaseDatasetConfig:
 class DatasetConfig(BaseDatasetConfig):
     raw_data_dir_path: str
     catalog_path: str
+    #: REINSTATED by 03.5 D-02, having been dropped as unused by `441e630`.
+    #: Placed beside `frequency` to mirror `AcquisitionConfig`, where the two
+    #: are also adjacent and `market` comes first.
+    #:
+    #: Its first reader is `quantlab/acquisition/registry.py:convert()`: the
+    #: capability lookup key is `(market, frequency, data_type)`, which is
+    #: exactly `Capability`'s own key. Without `market` here the key would be
+    #: `(frequency, data_type)` and would resolve AMBIGUOUSLY the day one
+    #: vendor serves two markets at the same frequency.
+    #:
+    #: Deliberately OFF `BaseDatasetConfig` and pinned there by
+    #: `tests/test_dataset_hierarchy.py:MARKET_ONLY_CONFIG_FIELDS`: a
+    #: constituent panel has no market, and handing it one would impose a
+    #: boundary it must not have.
+    market: Market
     frequency: Frequency
     vendor: Vendor | None = None
 
