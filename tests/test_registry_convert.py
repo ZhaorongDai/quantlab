@@ -190,3 +190,216 @@ def test_run_still_returns_an_acquisition_result_and_converts_nothing() -> None:
 
     run_params = set(inspect.signature(registry.run).parameters)
     assert not run_params & {"mode", "to_zarr", "convert", "granularity"}
+
+
+# ---------------------------------------------------------------------------
+# The SECOND vendor, and the three ways a capability lookup can refuse.
+#
+# Every refusal below is `ValueError` and every assertion is on the MESSAGE,
+# not merely on the type. Asserting the type alone would pass against a single
+# generic raise, which is exactly the shape these three arms replace: a caller
+# who cannot tell "you asked for a combination nobody serves" from "you asked
+# for one nobody can convert yet" has to read this module's source to act.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def alpaca_raw_tier(
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+    tmp_path: Path,
+) -> Callable[..., DatasetConfig]:
+    """The same two-year panel under an `alpaca`-terminated raw root.
+
+    `StockDataset._scan_raw` asserts `Path(raw_data_dir_path).name == vendor`
+    and then asserts the literal `vendor` column agrees, so the vendor token
+    has to be threaded through both the path and the config -- which is also
+    the reason this cannot reuse `tiingo_raw_tier` with a renamed config.
+    """
+    raw_dir = tmp_path / "raw"
+    hive_raw_tree(raw_dir, "alpaca", _raw_rows(stock_pqt_row), batch_key="panel")
+
+    def _build(frequency: str = "1d", store_name: str = "alpaca.zarr") -> DatasetConfig:
+        return DatasetConfig(
+            raw_data_dir_path=str(raw_dir / "alpaca"),
+            zarr_file_path=str(tmp_path / store_name),
+            catalog_path=str(tmp_path / "catalog"),
+            market="us_equity",
+            frequency=frequency,  # type: ignore[arg-type]
+            vendor="alpaca",
+        )
+
+    return _build
+
+
+def test_convert_reaches_the_second_vendor_through_the_same_entry_point(
+    alpaca_raw_tier: Callable[..., DatasetConfig],
+) -> None:
+    """The tracer's sideways expansion: a SECOND descriptor, same call shape.
+
+    `StockDataset` answering for both vendors is the D-01 claim made concrete
+    -- capabilities are keyed by `(market, frequency, data_type)`, which is the
+    axis Dataset subclasses divide on, so one class on three rows across two
+    vendors is one correct answer to three questions rather than a duplicated
+    decision.
+    """
+    result = convert(DataSourceRegistry.get("alpaca"), alpaca_raw_tier())
+
+    assert isinstance(result, ConversionResult)
+    assert result.windows_written == _EXPECTED_WINDOWS
+    assert result.pinned_symbols == _EXPECTED_SYMBOLS
+    assert Path(result.zarr_path).exists()
+
+
+def test_tick_is_refused_because_no_capability_carries_a_conversion_target(
+    alpaca_raw_tier: Callable[..., DatasetConfig],
+) -> None:
+    """SC-7: the tick refusal names phase 03.3 and the irregular event axis.
+
+    Asserted on the SUBSTRINGS rather than on `ValueError` alone, deliberately.
+    The type alone is satisfied by any raise at all -- including the
+    placeholder this arm replaced -- so a message assertion is the only thing
+    that distinguishes "refused for the right reason" from "blew up".
+
+    And no store is created: a refusal that had already written a
+    partially-flattened panel would leave behind exactly the
+    plausible-looking-but-wrong artefact the refusal exists to prevent.
+    """
+    config = alpaca_raw_tier(frequency="tick", store_name="tick.zarr")
+
+    with pytest.raises(ValueError) as excinfo:
+        convert(DataSourceRegistry.get("alpaca"), config)
+
+    message = str(excinfo.value)
+    assert "03.3" in message
+    assert "irregular event" in message
+    assert not Path(config.zarr_file_path).exists()
+
+
+def test_the_tick_lookup_MATCHES_and_the_refusal_is_the_absent_target() -> None:
+    """The refusal is DATA, not a failed lookup (D-01).
+
+    This is the assertion that stops the SC-7 arm from being re-implemented as
+    `if frequency == "tick"` one day: `capabilities_for` must still RETURN the
+    tick rows -- the vendor genuinely serves them, and the registry must keep
+    advertising what it serves -- while every one of them carries
+    `dataset_cls is None`. Phase 03.3 lands tick conversion by FILLING those
+    two fields; nothing in `convert()` has to change.
+    """
+    descriptor = DataSourceRegistry.get("alpaca")
+
+    tick_rows = descriptor.capabilities_for("us_equity", "tick")
+
+    assert len(tick_rows) == 2
+    assert {row.data_type for row in tick_rows} == {"quotes", "trades"}
+    assert all(row.dataset_cls is None for row in tick_rows)
+    # ...and the lookup did not fail: `supports()` still says yes.
+    assert descriptor.supports("us_equity", "tick")
+
+
+def test_an_unserved_combination_names_the_request_and_what_is_served(
+    tiingo_raw_tier: Callable[..., DatasetConfig],
+) -> None:
+    """NO MATCH: the message names the requested tuple AND the served ones.
+
+    A caller who mistyped one element learns which from the same message,
+    rather than getting a bare "not supported" about a registry they cannot
+    see -- the same courtesy `DataSourceRegistry.get()` already extends for a
+    mistyped vendor token.
+    """
+    descriptor = DataSourceRegistry.get("tiingo")
+    config = tiingo_raw_tier()
+    config.frequency = "1m"  # type: ignore[assignment]
+
+    with pytest.raises(ValueError) as excinfo:
+        convert(descriptor, config)
+
+    message = str(excinfo.value)
+    assert "1m" in message
+    assert "us_equity" in message
+    # What it DOES serve, enumerated from `capabilities` rather than restated.
+    assert "'1d'" in message or '"1d"' in message
+
+
+def test_two_matching_targets_without_a_data_type_refuse_rather_than_guess(
+    isolated_registry,
+    tiingo_raw_tier: Callable[..., DatasetConfig],
+) -> None:
+    """AMBIGUOUS: two rows, two targets, no `data_type` -> refuse.
+
+    This is the case D-02's whole argument is about. No shipped vendor has this
+    shape today, which is precisely why it needs a test rather than a comment:
+    the day one does, `convert()` must refuse instead of letting capability
+    ORDER decide what gets converted.
+
+    Built through `isolated_registry`, which restores
+    `DataSourceRegistry.SOURCES` by rebinding the saved tuple on teardown, so
+    the synthetic descriptor cannot leak into a later test.
+    """
+    from quantlab.acquisition import tiingo as tiingo_module
+    from quantlab.acquisition.registry import (
+        Capability,
+        SourceDescriptor,
+        register_source,
+    )
+    from quantlab.dataset.spot import SpotKlineDataset
+    from quantlab.dataset.stock import StockDataset
+
+    register_source(
+        SourceDescriptor(
+            vendor="twotarget",  # type: ignore[arg-type]
+            display_name="Two Target Vendor",
+            acquisition_cls=tiingo_module.TiingoAcquisition,
+            config_factory=lambda **kw: None,  # type: ignore[arg-type,return-value]
+            capabilities=(
+                Capability(
+                    market="us_equity",
+                    frequency="1d",
+                    data_type="bars",
+                    dataset_cls=StockDataset,
+                ),
+                Capability(
+                    market="us_equity",
+                    frequency="1d",
+                    data_type="klines",
+                    dataset_cls=SpotKlineDataset,
+                ),
+            ),
+            required_env=(),
+        )
+    )
+    descriptor = isolated_registry.get("twotarget")
+
+    with pytest.raises(ValueError) as excinfo:
+        convert(descriptor, tiingo_raw_tier(store_name="ambiguous.zarr"))
+
+    message = str(excinfo.value)
+    assert "data_type" in message
+    assert "bars" in message and "klines" in message
+
+    # Supplying the discriminator resolves it -- the refusal is about the
+    # MISSING argument, not about the vendor being unusable.
+    assert descriptor.capabilities_for("us_equity", "1d", "bars")[
+        0
+    ].dataset_cls is StockDataset
+
+
+def test_alpaca_rows_carry_targets_on_bars_and_none_on_tick() -> None:
+    """The four Alpaca rows, pinned as DATA.
+
+    `dataset_cls` on exactly the two `bars` rows and `None` on exactly the two
+    `tick` rows is the whole SC-7 mechanism; a runtime check on the rows is
+    what keeps a future edit from filling a tick row before Phase 03.3 has
+    landed a Dataset that can express the axis.
+    """
+    from quantlab.dataset.stock import StockDataset
+
+    capabilities = DataSourceRegistry.get("alpaca").capabilities
+
+    bars = [c for c in capabilities if c.data_type == "bars"]
+    tick = [c for c in capabilities if c.frequency == "tick"]
+
+    assert len(bars) == 2
+    assert all(c.dataset_cls is StockDataset for c in bars)
+    assert len(tick) == 2
+    assert all(c.dataset_cls is None for c in tick)
