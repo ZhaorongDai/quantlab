@@ -457,7 +457,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
             data_columns=("open", "close", "volume"),
-            factor_names=(_KUNQUANT_FACTOR_NAME),
+            factor_names=(_KUNQUANT_FACTOR_NAME,),
             file_path=str(tmp_path / "factors" / "kunquant.zarr"),
             njobs=4,
         )
@@ -564,7 +564,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path(
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
             data_columns=("open", "close", "volume"),
-            factor_names=(_KUNQUANT_FACTOR_NAME),
+            factor_names=(_KUNQUANT_FACTOR_NAME,),
             file_path=kunquant_path,
             njobs=4,
         )
