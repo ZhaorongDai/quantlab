@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.4"
-current_phase_name: Data Source Registry (Operator-Surface Foundation) (INSERTED)
-status: executing
-stopped_at: Completed 03.4-11-PLAN.md
-last_updated: "2026-09-09T16:06:51.518Z"
-last_activity: 2026-09-09
-last_activity_desc: Phase 03.4 execution started
-state_head: effa0628910ea44e960409a8f86f857a1e4d6fd3
+current_phase: "03.5"
+current_phase_name: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
+status: planning
+stopped_at: Phase 03.5 inserted, not yet planned; Phase 03.4 executed and UAT-passed but NOT sealed
+last_updated: "2026-09-11T20:23:17.943Z"
+last_activity: 2026-09-11
+last_activity_desc: Inserted Phase 03.5 (registry-level raw→Zarr conversion entry point)
+state_head: 441e630712451af2e4f04aab91532d940089e0bf
 progress:
-  total_phases: 11
+  total_phases: 12
   completed_phases: 1
   total_plans: 41
-  completed_plans: 40
+  completed_plans: 41
 milestone_name: milestone
 ---
 
@@ -24,14 +24,16 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.4 — Data Source Registry (Operator-Surface Foundation) (INSERTED)
+**Current focus:** Phase 03.5 — Registry-level raw→Zarr Conversion Entry Point (INSERTED)
 
 ## Current Position
 
-Phase: 03.4 (Data Source Registry (Operator-Surface Foundation) (INSERTED)) — READY TO EXECUTE
-Plan: 3 of 9
-Status: Ready to execute
-Last activity: 2026-09-09 — Completed quick task 260909-idh: closed the two phase-03.4 UAT gaps
+Phase: 03.5 (Registry-level raw→Zarr Conversion Entry Point (INSERTED)) — NOT PLANNED YET
+Plan: 0 of TBD
+Status: planning
+Last activity: 2026-09-11 — Inserted Phase 03.5; the upstream precondition quantlab-console Phase 8 names
+
+Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
 Progress: [██████████] 100%
 
@@ -227,6 +229,7 @@ Recent decisions affecting current work:
 
 ### Blockers/Concerns
 
+- **Phase 03.4 not sealed.** All 11 plans executed and UAT is 4/4 passed (`03.4-UAT.md`), but `03.4-VERIFICATION.md` is STALE (the quick-260909-idh commits landed after its `verified:` timestamp) and no `*-SECURITY.md` was ever produced, so the active verify:post security hook blocks advancement. Phase 03.5 was opened on top of it by explicit user decision on 2026-09-11. Re-run verification and `/gsd-secure-phase 03.4` before closing the milestone.
 - Tiingo API key currently leaked in `scripts/download_stock_data_from_tiingo.py` and pushed to `origin/main` — user should revoke/rotate the key in the Tiingo dashboard independent of the git-history reset planned in Phase 1.
 - tests/test_tiingo_quota.py does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing, surfaced by 03.4-05 mutation M6; recorded in WINDOWS.md.
 
@@ -255,6 +258,7 @@ Recent decisions affecting current work:
 - Phase 03.3 inserted after Phase 03.2: Tick data storage: a non-dense event-axis Dataset and its raw-to-Zarr conversion. Committed follow-up deferred from 03.2 by D-18, not urgent work.
 - Phase 03.4 inserted after Phase 3: Data Source Registry — one registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface. The TUI/web console itself is a SEPARATE repository and is not on this roadmap. (URGENT)
 - Phase 03.4 edited: boundary contract revised: writes move IN-PROCESS, superseding the 2026-09-07 subprocess-CLI lock; Requirements/Success Criteria settled from discussion; registry, ingest-script and read-side in-scope bullets rewritten; programmatic write entry point added; long-task isolation, log sink and concurrency control moved to out-of-scope
+- Phase 03.5 inserted after Phase 03.4: Registry-level raw-to-Zarr conversion entry point: the unmet upstream precondition quantlab-console Phase 8 (CVT-01/02/03) names (URGENT)
 
 ## Deferred Items
 

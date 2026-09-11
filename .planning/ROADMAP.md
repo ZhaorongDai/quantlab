@@ -20,6 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca)** - Second vendor through the same batched, resumable, volume-guarded `Acquisition` abstraction (completed 2026-09-06)
 - [ ] **Phase 03.3: Tick Data Storage (Non-Dense Event Axis)** - Raw tick shards reach a persisted store via a tick-specific Dataset with a non-dense event axis
 - [ ] **Phase 03.4: Data Source Registry (Operator-Surface Foundation)** - One registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface
+- [ ] **Phase 03.5: Registry-level raw→Zarr Conversion Entry Point** - A conversion entry point beside `registry.run()`, with the mode chosen explicitly and its RAM guard answerable before the run
 - [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
 - [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
 - [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
@@ -487,6 +488,54 @@ retired-sentence record plan 10 produces)*
   `manifest_semantics_scan.py` from 11 to 16 patterns derived from `manifest-sentence-retired.tsv`,
   regenerate `scan-allowlist.txt`, and record the candidates-before-word-list ordering in
   `.planning/STATE.md` (D-18)
+
+### Phase 03.5: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
+
+**Goal**: A caller that is not one of quantlab's own scripts — the out-of-repo `quantlab-console`
+first, but the contract is not written for it — can convert an acquired raw tier into the Zarr
+tier through the registry, choosing the conversion mode explicitly and being told which RAM guard
+that choice implies and what peak it predicts BEFORE anything is allocated.
+**Mode:** mvp
+**Requirements**: DATA-07, DATA-08 (to be added in discuss-phase)
+**Depends on:** Phase 03.4
+**Success Criteria** (what must be TRUE):
+
+  1. A conversion can be started through the registry without naming a vendor class, a `Dataset`
+     subclass, or an `ingest_*.py` script at the call site — the same standard `run()` already
+     meets for acquisition (03.4 SC-1).
+  2. `registry.run()` remains acquisition-only. Conversion is a SEPARATE call, never a flag on it
+     (03.4 D-14): the three modes carry three differently-sized RAM guards, and folding them into
+     one call is how one of them silently gets the wrong guard.
+  3. The mode is an explicit argument with NO default, and an omitted mode raises rather than
+     picking one — the same reasoning `resolve_symbols(mode=...)` already encodes, that a wrong
+     choice here is silent and its symptom invisible.
+  4. The caller can ask which guard a given (mode, roster, window) selects and what peak it
+     predicts, and get an answer WITHOUT starting the conversion — the estimate is a value the
+     caller can render, not a line this layer prints.
+  5. A guard refusal names the remedy that would fit (a finer `--chunk`, a narrower window)
+     rather than only refusing, preserving `assert_chunked_panel_fits`'s current behaviour.
+  6. All three ingest shells reach conversion through this entry point rather than each calling
+     `StockDataset` directly — they stay the registry's in-repo consumers and live proof the
+     programmatic path works (03.4 D-15 role b). The `--chunk` / `--on-new-listing` divergence
+     between `ingest_us_equity.py` and `ingest_tiingo.py` / `ingest_alpaca.py` disappears as a
+     consequence of that delegation, not as new surface grown on the shells.
+  7. Tick stays refused, not silently converted: the dense `[timestamp, symbol]` panel cannot
+     express an irregular event axis, and that conversion belongs to Phase 03.3 (03.4 D-18).
+
+**Why this phase exists now**: it is the unmet upstream precondition `quantlab-console`'s Phase 8
+(`CVT-01`/`CVT-02`/`CVT-03`) names by hand. That roadmap put its conversion phase last ONLY
+because this entry point did not exist, and states that moving it earlier is safe once this
+lands — nothing else over there depends on it. Its `QC-02` check meanwhile reports raw/Zarr
+divergence it cannot close, with "run a thin shell by hand" as the written interim workaround.
+CVT-02's requirement that the guard and predicted peak be visible in the UI is the same demand as
+Success Criterion 4, and is why that criterion is about ANSWERING rather than printing.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.5 to break down)
+
 
 ### Phase 4: Baseline Return Prediction Model
 
