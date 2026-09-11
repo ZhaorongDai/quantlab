@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: "03.5"
 current_phase_name: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
 status: planning
-stopped_at: Phase 03.5 inserted, not yet planned; Phase 03.4 executed and UAT-passed but NOT sealed
-last_updated: "2026-09-11T20:23:17.943Z"
+stopped_at: Phase 03.5 context gathered
+last_updated: "2026-09-11T21:05:30.280Z"
 last_activity: 2026-09-11
 last_activity_desc: Inserted Phase 03.5 (registry-level raw→Zarr conversion entry point)
-state_head: 441e630712451af2e4f04aab91532d940089e0bf
+state_head: 602eb65b9bf30280845d2cd49002e85e8c733963
 progress:
   total_phases: 12
   completed_phases: 1
@@ -273,9 +273,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-09T16:06:51.265Z
-Stopped at: Completed 03.4-11-PLAN.md
+Last session: 2026-09-11T21:05:29.845Z
+Stopped at: Phase 03.5 context gathered
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: None
+Resume file: .planning/phases/03.5-registry-level-raw-to-zarr-conversion-entry-point/03.5-CONTEXT.md
 </content>
