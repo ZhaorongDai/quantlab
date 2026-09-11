@@ -2,15 +2,15 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.5"
-current_phase_name: Registry-level raw→Zarr Conversion Entry Point
+current_phase_name: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
 status: executing
 stopped_at: Phase 03.5 context gathered
-last_updated: "2026-09-11T22:47:33.615Z"
+last_updated: "2026-09-11T23:14:08.150Z"
 last_activity: 2026-09-11
-last_activity_desc: Inserted Phase 03.5 (registry-level raw→Zarr conversion entry point)
-state_head: e438b25ce49eb404c23296b246aa09f7fedf8059
+last_activity_desc: Phase 03.5 execution started
+state_head: bd13f52b0f698441be4405aabe4876bf7b161cdc
 progress:
-  total_phases: 12
+  total_phases: 13
   completed_phases: 1
   total_plans: 47
   completed_plans: 41
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.5 (Registry-level raw→Zarr Conversion Entry Point) — READY TO EXECUTE
-Plan: 0 of TBD
-Status: Ready to execute
-Last activity: 2026-09-11 — Inserted Phase 03.5; the upstream precondition quantlab-console Phase 8 names
+Phase: 03.5 (Registry-level raw→Zarr Conversion Entry Point (INSERTED)) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 03.5
+Last activity: 2026-09-11 — Phase 03.5 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -259,6 +259,7 @@ Recent decisions affecting current work:
 - Phase 03.4 inserted after Phase 3: Data Source Registry — one registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface. The TUI/web console itself is a SEPARATE repository and is not on this roadmap. (URGENT)
 - Phase 03.4 edited: boundary contract revised: writes move IN-PROCESS, superseding the 2026-09-07 subprocess-CLI lock; Requirements/Success Criteria settled from discussion; registry, ingest-script and read-side in-scope bullets rewritten; programmatic write entry point added; long-task isolation, log sink and concurrency control moved to out-of-scope
 - Phase 03.5 inserted after Phase 03.4: Registry-level raw-to-Zarr conversion entry point: the unmet upstream precondition quantlab-console Phase 8 (CVT-01/02/03) names (URGENT)
+- Phase 03.6 inserted after Phase 03.5: Frequency-keyed chunking policy: granularity from a per-frequency constant table; the RAM guard's refusing half deleted, estimating half kept
 
 ## Deferred Items
 

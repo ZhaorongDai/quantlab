@@ -560,6 +560,58 @@ Plans:
   window boundaries, forward them from `convert()`, and de-stale `run()`'s three-modes docstring
   (D-05/D-06)
 
+### Phase 03.6: Frequency-Keyed Chunking Policy (INSERTED)
+
+**Goal**: The time-window granularity of a chunked conversion is decided by ONE per-frequency
+constant table rather than resolved at runtime or guessed per invocation, and the RAM guard's
+REFUSING half is deleted while its ESTIMATING half survives as a value the caller renders.
+**Requirements**: TBD (to be settled in discuss-phase)
+**Depends on:** Phase 03.5
+**Success Criteria** (what must be TRUE):
+
+  1. A conversion's window granularity comes from a single source -- `CHUNK_GRANULARITY_BY_FREQUENCY`
+     -- whose values are asserted AT IMPORT TIME to be members of `TimeChunkPlanner.GRANULARITIES`.
+     Reproducing a conversion then needs only the config, never knowledge of how large the roster
+     happened to be on the day it ran (the CLAUDE.md reproducibility constraint).
+  2. `--chunk` drops from a required choice to an OVERRIDE: absent, it takes the table's value for
+     the frequency; present, it wins.
+  3. `day` joins `GRANULARITIES` and `_period_key` supports it. Full-market `1m` at day granularity
+     is ~157 MB per window, which is what makes it the right default for that frequency.
+  4. NO code path raises on a RAM budget any more: `assert_dense_panel_fits` and
+     `assert_chunked_panel_fits` are deleted; `estimate_dense_panel` and `estimate_chunked_panel`
+     survive; `MAX_DENSE_PANEL_BYTES` is demoted from a refusal line to an estimate's reference value.
+  5. The three US-equity shells RENDER the estimate rather than being stopped by it -- the predicted
+     peak is still visible before any memory is allocated, which is what 03.5 SC-4 actually asked for.
+  6. Every locked text this phase falsifies is rewritten rather than left standing: ROADMAP 03.5's
+     SC-5 (a refusal names the fitting remedy) is removed, D-05 (`assert_dense_panel_fits` and
+     `MAX_DENSE_PANEL_BYTES` are kept) is formally amended, and the refusal-bearing halves of 03.5's
+     D-10/D-11 are marked superseded.
+  7. `tick` is deliberately ABSENT from the constant table, and its absence IS the "not wired up yet"
+     answer -- no `if frequency == "tick"` branch is introduced. Same shape as
+     `BARS_PER_DAY_BY_FREQUENCY`'s deliberate tick omission and 03.5 D-01's `dataset_cls=None`.
+
+**Notes carried into discuss-phase (do NOT re-derive):**
+
+- The decision to DELETE the guard was the developer's, made 2026-09-11. Its known cost is accepted:
+  the full-market tick case (~924 GB for one dense hour at 7,700 symbols) is no longer refused and
+  will reach OOM instead. The repo's recorded precedent for that failure mode is quick task
+  260906-13w (~7.2 GiB grid + ~29.6M-row frame OOM'd a 16 GiB box, on full-market DAILY, not tick).
+- Whether `GRANULARITIES` drops a further level to `hour` is NOT decided here. Its precondition is
+  that the raw tier partitions by hour too -- `RAW_HIVE_KEYS` is `1d=month`, `1m=date`, `tick=date`,
+  so an hourly window would be finer than the shard it reads and would re-open the same files
+  6.5-16x. Recommendation: stop at `day`.
+- `plan_calendar` hardcodes `pd.date_range(freq="D")` and returns `YYYY-MM-DD` string pairs. Both are
+  day-resolution assumptions sitting OUTSIDE the `_period_key` single-definition guarantee, so a
+  future `hour` would silently drift `plan_calendar` from `plan_from_timestamps` -- the exact drift
+  the class docstring calls "structurally impossible". Deriving `freq` from the granularity is a
+  cheap compatibility hook worth taking now.
+- `_period_key` returns `tuple[int, int]`. `day` fits as `(year, dayofyear)`; `hour` would not.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.6 to break down)
 
 ### Phase 4: Baseline Return Prediction Model
 

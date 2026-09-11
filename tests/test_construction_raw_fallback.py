@@ -1,36 +1,23 @@
-"""Construction-time store probe and the raw fallback it guards (quick task
-260907-1du).
+"""`from_raw_data()` converts exactly once per call, with no hidden caching
+(quick task 260907-1du).
 
-Every dataset config in this module sets `symbols=(...)` NON-None. That is
-what makes `BaseDataset._reset_symbols()` fire at all, and every pre-existing
-fixture in this repo leaves `symbols` unset -- which is exactly why a green
-suite could not see either defect these tests pin:
-
-- a present-but-EMPTY destination store crashed construction with
-  `ValueError: could not convert string to float`, because the fallback keys
-  off `FileNotFoundError` from `read()` and an empty store does not raise
-  there;
-- one ingest ran the raw-to-xarray conversion TWICE, because the
-  construction-time fallback materialises the whole panel and the caller then
-  asks for the same panel again microseconds later.
-
-loguru does not propagate to stdlib `logging`, so warnings are captured with a
-temporary in-memory sink rather than `caplog` (same idiom as
-tests/test_chunked_ingest.py).
+`from_raw_data()` has no construction-time fallback and no dedup handoff --
+constructing a `BaseDataset` subclass never touches the raw source or the
+Zarr store, and every explicit call to `from_raw_data()` reconverts
+unconditionally. These tests pin exactly that: the ingest idiom
+`Dataset(cfg).from_raw_data().save()` (`ingest_alpaca.py` / `ingest_tiingo.py`)
+converts the raw tree once, and calling `from_raw_data()` a second time
+converts it again rather than silently reusing the first result.
 """
 
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
 import pytest
 import xarray as xr
-from loguru import logger
 
 from quantlab.base.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
-
-_OHLCV = ("open", "high", "low", "close", "volume")
 
 
 def _make_dataset_config(
@@ -40,7 +27,7 @@ def _make_dataset_config(
     vendor: str = "tiingo",
 ) -> DatasetConfig:
     """Same shape as tests/test_stock_dataset.py:_make_dataset_config, with
-    `symbols` PINNED -- the one difference that makes `_reset_symbols()` run.
+    `symbols` PINNED to match the shape the ingest scripts construct.
     """
     return DatasetConfig(
         raw_data_dir_path=raw_data_dir_path,
@@ -50,47 +37,6 @@ def _make_dataset_config(
         vendor=vendor,  # type: ignore[arg-type]
         symbols=symbols,
     )
-
-
-def _write_empty_store(path: Path) -> Path:
-    """Write the exact store shape a zero-row panel leaves behind: present on
-    disk, five zero-shaped OHLCV variables, and both coordinates length 0.
-    """
-    empty = xr.Dataset(
-        {
-            name: (["timestamp", "symbol"], np.zeros((0, 0), dtype="float64"))
-            for name in _OHLCV
-        },
-        coords={
-            "timestamp": np.array([], dtype="datetime64[ns]"),
-            "symbol": np.array([], dtype=object),
-        },
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    empty.to_zarr(path, mode="w")
-    return path
-
-
-def _write_populated_store(path: Path, close: float) -> Path:
-    values = np.full((2, 1), close, dtype="float64")
-    populated = xr.Dataset(
-        {name: (["timestamp", "symbol"], values.copy()) for name in _OHLCV},
-        coords={
-            "timestamp": np.array(
-                ["2024-01-02", "2024-01-03"], dtype="datetime64[ns]"
-            ),
-            "symbol": ["AAPL"],
-        },
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    populated.to_zarr(path, mode="w")
-    return path
-
-
-def _captured_warnings():
-    messages: list[str] = []
-    sink_id = logger.add(messages.append, level="WARNING", format="{message}")
-    return messages, sink_id
 
 
 @pytest.fixture
@@ -109,20 +55,6 @@ def count_raw_conversions(monkeypatch) -> Callable[[], int]:
 
     monkeypatch.setattr(StockDataset, "_raw_data_to_xr", _counted)
     return lambda: len(calls)
-
-
-# ---------------------------------------------------------------------------
-# Defect 1 -- reach the raw fallback when the store is present but EMPTY
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# Defect 2 -- one ingest, exactly one raw-to-xarray conversion
-# ---------------------------------------------------------------------------
 
 
 def _ingest_config(
@@ -149,31 +81,15 @@ def _ingest_config(
     )
 
 
-def _substitute_panel() -> xr.Dataset:
-    values = np.full((1, 1), 7.0, dtype="float64")
-    return xr.Dataset(
-        {name: (["timestamp", "symbol"], values.copy()) for name in _OHLCV},
-        coords={
-            "timestamp": np.array(["2024-01-02"], dtype="datetime64[ns]"),
-            "symbol": ["ZZZZ"],
-        },
-    )
-
-
 def test_one_ingest_runs_exactly_one_raw_conversion(
     stock_pqt_row: Callable[..., dict],
     hive_raw_tree: Callable[..., Path],
     tmp_path: Path,
     count_raw_conversions: Callable[[], int],
 ) -> None:
-    """`StockDataset(cfg).from_raw_data().save()` must convert raw ONCE.
-
-    Measured at 2 before the fix: the construction-time fallback materialises
-    the whole panel and the caller asks for the same panel again microseconds
-    later. Counted, not timed -- a timing assertion passes for the wrong
-    reason on a fast machine.
-
-    Reddening mutation: delete the early return from `from_raw_data()`.
+    """`StockDataset(cfg).from_raw_data().save()` converts raw exactly once:
+    construction itself performs no conversion, so the explicit
+    `from_raw_data()` call is the only one that runs.
     """
     config = _ingest_config(stock_pqt_row, hive_raw_tree, tmp_path)
 
@@ -185,18 +101,15 @@ def test_one_ingest_runs_exactly_one_raw_conversion(
     assert xr.open_zarr(config.zarr_file_path).sizes["timestamp"] == 3
 
 
-def test_the_constructors_panel_is_consumed_once_and_only_once(
+def test_a_second_from_raw_data_call_reconverts(
     stock_pqt_row: Callable[..., dict],
     hive_raw_tree: Callable[..., Path],
     tmp_path: Path,
     count_raw_conversions: Callable[[], int],
 ) -> None:
-    """The handoff is ONE-SHOT: a second `from_raw_data()` still re-converts.
-
-    The fix removes one duplicate; it does not install a cache.
-
-    Reddening mutation: do not clear the handoff at the top of
-    `from_raw_data()` -- the second call then skips too and the count stays 1.
+    """`from_raw_data()` caches nothing: calling it twice converts twice,
+    even with no change to the config or the backend's held panel in
+    between.
     """
     config = _ingest_config(stock_pqt_row, hive_raw_tree, tmp_path)
 
@@ -206,5 +119,3 @@ def test_the_constructors_panel_is_consumed_once_and_only_once(
     dataset.from_raw_data()
 
     assert count_raw_conversions() == 2
-
-
