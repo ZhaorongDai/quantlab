@@ -4,7 +4,7 @@ import polars as pl
 import xarray as xr
 
 from quantlab.base.config import PolarsFactorConfig
-from quantlab.base.factor_polars import FactorPolars
+from quantlab.base.factor import FactorPolars
 
 _DEFAULT_HORIZON = 20
 
@@ -56,9 +56,7 @@ class Momentum(FactorPolars):
             # window per-symbol rather than running across the whole panel.
             lf.sort(["symbol", "timestamp"])
             .with_columns(
-                (close / close.shift(n).over("symbol") - 1.0).alias(
-                    factor_name
-                )
+                (close / close.shift(n).over("symbol") - 1.0).alias(factor_name)
             )
             # D-04: only timestamp/symbol/factor columns may leave the hook --
             # a surviving raw price or volume column would be persisted as if

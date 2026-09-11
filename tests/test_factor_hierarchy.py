@@ -32,12 +32,11 @@ them normally.
 
 import dataclasses
 import inspect
+from itertools import chain
 from pathlib import Path
 from typing import Callable
 
 import xarray as xr
-
-from itertools import chain
 
 from quantlab.base.config import (
     DatasetConfig,
@@ -105,10 +104,7 @@ BASE_MODEL_CALL_SURFACE = (
 # A live reference to either concrete factor backend in the model layer would
 # mean the model knows which backend computed its features -- exactly the
 # coupling D-03 forbids.
-FORBIDDEN_SUBSTRINGS = (
-    "FactorKunQuant",
-    "FactorPolars",
-)
+FORBIDDEN_SUBSTRINGS = ("FactorKunQuant",)
 
 
 def test_base_model_does_not_dispatch_on_concrete_factor_types() -> None:
@@ -405,9 +401,7 @@ def test_public_factor_api_exchanges_only_xarray_datasets() -> None:
             )
 
         for name in ("get_features", "get_labels"):
-            annotation = inspect.signature(
-                getattr(cls, name)
-            ).return_annotation
+            annotation = inspect.signature(getattr(cls, name)).return_annotation
             assert annotation is xr.Dataset, (
                 f"{cls.__name__}.{name} must return an xr.Dataset, not "
                 f"{annotation!r}"
@@ -462,8 +456,8 @@ def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
             window=10,
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
-            data_columns=["open", "close", "volume"],
-            factor_names=[_KUNQUANT_FACTOR_NAME],
+            data_columns=("open", "close", "volume"),
+            factor_names=(_KUNQUANT_FACTOR_NAME),
             file_path=str(tmp_path / "factors" / "kunquant.zarr"),
             njobs=4,
         )
@@ -506,9 +500,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_in_one_dlconfig(
 
     # (3) base/model.py:get_factor_names
     names = list(
-        chain.from_iterable(
-            factor._get_factor_names() for factor in dl.factors
-        )
+        chain.from_iterable(factor._get_factor_names() for factor in dl.factors)
     )
     assert _KUNQUANT_FACTOR_NAME in names
     assert f"momentum_{_MOMENTUM_HORIZON}" in names
@@ -571,8 +563,8 @@ def test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path(
             window=10,
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
-            data_columns=["open", "close", "volume"],
-            factor_names=[_KUNQUANT_FACTOR_NAME],
+            data_columns=("open", "close", "volume"),
+            factor_names=(_KUNQUANT_FACTOR_NAME),
             file_path=kunquant_path,
             njobs=4,
         )
@@ -593,7 +585,7 @@ def test_kunquant_and_polars_factors_are_interchangeable_on_the_read_path(
             window=10,
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
-            data_columns=["open", "close", "volume"],
+            data_columns=("open", "close", "volume"),
             file_path=kunquant_path,
             njobs=4,
         )

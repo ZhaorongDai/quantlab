@@ -31,7 +31,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import DatasetConfig, PolarsFactorConfig
-from quantlab.base.factor_polars import FactorPolars
+from quantlab.base.factor import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.momentum import Momentum
 

@@ -12,7 +12,11 @@ from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Stage import Function
 
-from quantlab.base.config import BaseFactorConfig, FactorConfig
+from quantlab.base.config import (
+    BaseFactorConfig,
+    FactorConfig,
+    PolarsFactorConfig,
+)
 from quantlab.dataset.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.timer import Timer
@@ -79,15 +83,8 @@ class Factor(ABC):
         self._reset_dataset_config()
 
     def _maybe_resolve_factor_names(self) -> None:
-        """Resolve `config.factor_names` eagerly, at config-assignment time.
-
-        The default is exactly the behaviour every KunQuant factor and label
-        class has always had: if the caller did not pin an explicit list, ask
-        the subclass to enumerate its factor names now.
-
-        Overridable seam: a backend whose factor names can only be known after
-        the data is read (a lazyframe schema, say) overrides this to a no-op
-        and resolves them inside its own `cal()`.
+        """
+        Resolve `config.factor_names` eagerly, at config-assignment time.
         """
         if self._config.factor_names is None:
             self._config.factor_names = self._get_factor_names()
@@ -159,12 +156,12 @@ class Factor(ABC):
                 ):
                     raise
                 raise ValueError(
-                    f"{self.class_name}.save(mode=\"a\"): cannot write this "
+                    f'{self.class_name}.save(mode="a"): cannot write this '
                     f"date range into the existing store at "
-                    f"{self.config.file_path}. zarr's \"a\" means \"overwrite "
-                    f"variables in an existing store\", NOT \"append along "
-                    f"time\", so a second, differently-sized date range is "
-                    f"rejected. Use save(mode=\"w\") to replace the store, or "
+                    f'{self.config.file_path}. zarr\'s "a" means "overwrite '
+                    f'variables in an existing store", NOT "append along '
+                    f'time", so a second, differently-sized date range is '
+                    f'rejected. Use save(mode="w") to replace the store, or '
                     f"delete it first. To EXTEND it with a later date range "
                     f"instead, call update(), which reconciles the timestamp, "
                     f"symbol and variable axes automatically and inherits "
@@ -437,3 +434,61 @@ class FactorKunQuant(Factor):
                 f"{self.__class__.__name__}_stream",
                 cfake.CppCompilerConfig(),
             )
+
+
+class FactorPolars(Factor):
+    """
+    Batch-only factor backend whose factor logic is written in Polars.
+    """
+
+    _INDEX_COLUMNS = ("timestamp", "symbol")
+
+    _SCHEMA_PROBE_ROWS = 8
+
+    def __init__(self, config: PolarsFactorConfig):
+        super().__init__(config)
+
+    def _get_factor_names(self) -> tuple[str, ...]:
+        """
+        Derive the factor names by asking the graph what it produces.
+        """
+        probe = self.config.dataset.head(self._SCHEMA_PROBE_ROWS)
+        factor_lf = self._get_factor_lazyframe(probe)
+        return tuple(
+            name
+            for name in factor_lf.collect_schema().names()
+            if name not in self._INDEX_COLUMNS
+        )
+
+    @abstractmethod
+    def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """
+        Write the factor here. This is the one method a subclass overrides.
+        """
+        ...
+
+    def cal(self) -> Self:
+        lf = self.config.dataset.read().get_lazyframe()
+        factor_lf = self._get_factor_lazyframe(lf)
+
+        # D-05: the factor names ARE the non-index columns of the returned
+        # frame. collect_schema() inspects the schema only -- it does not
+        # materialize -- so this stays inside D-04's laziness contract.
+        self.config.factor_names = tuple(
+            name
+            for name in factor_lf.collect_schema().names()
+            if name not in self._INDEX_COLUMNS
+        )
+
+        with Timer(f"{self.__class__.__name__}: cal"):
+            # D-06 / FACTOR-04: Polars is an internal implementation detail;
+            # the result becomes an xr.Dataset before it leaves this class, so
+            # the module boundary stays xarray-only. Same conversion idiom as
+            # dataset/backend.py:PlBackend.get_xarray_dataset().
+            frame = factor_lf.collect().to_pandas()
+            frame = frame.set_index(list(self._INDEX_COLUMNS))
+            data = xr.Dataset.from_dataframe(frame)
+
+        self.data_backend.to_internal(data)
+        self._auto_filter()
+        return self

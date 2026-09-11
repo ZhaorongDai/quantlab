@@ -204,4 +204,6 @@ RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
 # pattern failures across 1,151 measured symbols. Pinned by
 # `tests/test_ticker_pattern_reconciliation.py:
 # test_the_changelog_guard_is_deliberately_narrower_than_the_fetch_guard`.
-TRADEABLE_TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2}){0,2}$")
+TRADEABLE_TICKER_PATTERN = re.compile(
+    r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2}){0,2}$"
+)

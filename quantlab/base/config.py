@@ -69,10 +69,10 @@ class BaseFactorConfig:
     window: int
     dataset: "MarketDataset"
     file_path: str | None = None
-    factor_names: list | None = None
+    factor_names: tuple[str, ...] | None = None
     start_date: str | None = None
     end_date: str | None = None
-    symbols: list | None = None
+    symbols: tuple[str, ...] | None = None
     kwargs: dict | None = None
 
     name: str | None = None
@@ -84,7 +84,7 @@ class BaseFactorConfig:
 @dataclass(kw_only=True)
 class FactorConfig(BaseFactorConfig):
     mode: Literal["stream", "batch"]
-    data_columns: list
+    data_columns: tuple[str, ...]
     njobs: int = 128
 
 
