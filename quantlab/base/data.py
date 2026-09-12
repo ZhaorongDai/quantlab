@@ -16,6 +16,14 @@ from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from tqdm import tqdm
 
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
+
+# `quantlab/base/progress.py` is a LEAF by contract -- its module docstring
+# says so and `tests/test_acquisition_progress.py` asserts it structurally by
+# walking that file's `ast`. It imports stdlib plus `tqdm` and nothing from
+# quantlab, so importing it HERE introduces no cycle, which is what lets the
+# chunk loop carry the same two handles the acquisition loop already carries
+# (03.5 D-05).
+from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.dataset.backend import XrBackend
 from quantlab.dataset.cleaning import clean_market_data
 from quantlab.enums.constant import Date
@@ -85,10 +93,13 @@ class ConversionResult:
     #: Whether at least one ledger-recorded window was skipped, i.e. this run
     #: continued an earlier one rather than starting from nothing.
     resumed: bool = False
-    #: Reserved for the cancel token 03.5 plan 06 threads through. Always
-    #: `False` today: nothing in this phase's plan 01 can set it, and a field
-    #: that is always `False` is preferable to a field the console has to
-    #: learn about later.
+    #: Whether a caller's `CancelToken` was observed at a window boundary and
+    #: the loop stopped early (03.5 D-05). LIVE as of plan 06 -- it was
+    #: declared-and-always-`False` in plan 01 so the console never had to learn
+    #: about a new field later. `cancelled=True` with `windows_written=2` and
+    #: `windows_planned=4` is the honest description of a stopped run; without
+    #: this flag it would be indistinguishable from a run that had only two
+    #: windows of work to do.
     cancelled: bool = False
 
 
@@ -185,6 +196,57 @@ class BaseDataset(ABC):
     @property
     def class_name(self) -> str:
         return self.__class__.__name__
+
+    @property
+    def _progress_vendor(self) -> str:
+        """What goes in `ProgressEvent.vendor` for a conversion event.
+
+        `vendor` is a REQUIRED field with no default, and a conversion has no
+        vendor in the acquisition sense -- it reads a raw tier that is already
+        on disk and constructs no client. The field is REUSED rather than a new
+        one added because `ProgressEvent` is frozen and consumed by an
+        out-of-repo reporter: widening it is a contract change, reusing it is
+        not. The config's own vendor token is the closest true answer (it names
+        whose raw tier is being converted); the class name is the fallback for
+        a config that carries none, and is never empty.
+        """
+        return getattr(self.config, "vendor", None) or self.class_name
+
+    def _emit_progress(
+        self, reporter: ProgressReporter | None, event: ProgressEvent
+    ) -> None:
+        """Deliver one event to `reporter`, never raising.
+
+        The same contract `Acquisition._emit` holds one layer up (03.4-RESEARCH
+        Pitfall 9), applied here because the console's callback now runs inside
+        a SECOND loop this repository owns: unwrapped, a UI bug would propagate
+        out of the window loop and end a multi-hour conversion. The exception is
+        LOGGED at warning rather than swallowed, because a broken console that
+        produces no signal at all is worse than a noisy one.
+
+        **It does NOT scrub, and that asymmetry is deliberate rather than a
+        missing guard.** `Acquisition._emit` runs the message through the
+        vendor's `CREDENTIAL_ENV_VARS` because vendor error strings reach that
+        layer and Tiingo's echo back a request URL carrying the API token. This
+        loop constructs no vendor client and sees no vendor response text, so
+        there is no credential-bearing string in scope -- its events carry
+        window dates, counts and the dataset's class name.
+
+        A `None` reporter is a no-op. No default reporter is instantiated here:
+        `from_raw_data_chunked` already logs per-window progress through loguru,
+        and a second bar beside those lines would be a behaviour change.
+        """
+        if reporter is None:
+            return
+        try:
+            reporter.emit(event)
+        except Exception as exc:  # noqa: BLE001 -- isolation is the point
+            logger.warning(
+                f"{self.class_name}: progress reporter "
+                f"{type(reporter).__name__} raised on a {event.kind!r} event "
+                f"and was ignored; the conversion is unaffected. "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     @property
     def symbols(self) -> list[str]:
@@ -471,6 +533,9 @@ class BaseDataset(ABC):
         ledger_path: str | None = None,
         append_dim: str = "timestamp",
         on_new_listing: str | object = "refuse",
+        *,
+        reporter: ProgressReporter | None = None,
+        cancel: CancelToken | None = None,
     ) -> Self:
         """Densify and append ONE time window at a time (D-01).
 
@@ -506,6 +571,35 @@ class BaseDataset(ABC):
         some string is the automatic route, which is precisely what the
         sentinel exists to forbid. The DEFAULT VALUE is untouched, so every
         caller passing an explicit strategy gets byte-identical behaviour.
+
+        **`reporter` and `cancel` are the console's two handles on a running
+        conversion** (03.5 D-05), word for word the pair `registry.run()`
+        carries for an acquisition and for the identical reason: neither can
+        be added from outside, because the loop lives here. Both are
+        KEYWORD-ONLY with `None` defaults, so every existing call site --
+        including `update()`'s -- is unchanged and gets today's behaviour
+        exactly: loguru progress lines, and no way to stop the run early.
+
+        No default reporter is instantiated when none is supplied. This method
+        already logs its own per-window progress through loguru, and opening a
+        stderr bar beside those lines would be a behaviour change wearing a
+        feature's clothes.
+
+        `cancel` is observed at WINDOW BOUNDARIES only -- at the top of each
+        iteration, before the window is materialised. Stopping mid-window
+        would leave a densified panel unappended for no benefit, and a check
+        between the append and `ledger.record` would leave the store and the
+        ledger disagreeing about the same window (T-03.5-19). Every window
+        recorded before the stop stays resumable, which is the
+        completed-work-stays-resumable precondition `ChunkLedger` already
+        supplies and the acquisition side had to retrofit with atomic
+        sidecars.
+
+        Neither object is ever assigned onto `self.config`.
+        `BaseDatasetConfig.to_dict()` is `asdict(self)` and lands on disk
+        beside model checkpoints, where a `threading.Event` cannot be
+        serialised and a live reporter object is not reproducible
+        configuration.
         """
         from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 
@@ -563,13 +657,75 @@ class BaseDataset(ABC):
             windows_written = 0
             windows_skipped = 0
             rows_written = 0
+            cancelled = False
             peak_window_bytes: int | None = None
+            self._emit_progress(
+                reporter,
+                ProgressEvent(
+                    kind="conversion_started",
+                    vendor=self._progress_vendor,
+                    total=len(windows),
+                    message=(
+                        f"{self.class_name} {granularity} conversion "
+                        f"-> {self.config.zarr_file_path}"
+                    ),
+                    detail={
+                        "pinned_symbols": len(symbols),
+                        "granularity": granularity,
+                        "zarr_path": self.config.zarr_file_path,
+                    },
+                ),
+            )
             for start, end in windows:
+                # The FIRST thing each iteration does, and the only place the
+                # token is read (T-03.5-19). An operator can stop while the
+                # pinned-axis scan is still running, so a loop that asked
+                # after materialising would pay for a window nobody wanted.
+                if cancel is not None and cancel.is_cancelled():
+                    cancelled = True
+                    logger.warning(
+                        f"{self.class_name}: cancel observed at the "
+                        f"{start.date()}..{end.date()} window boundary; "
+                        f"stopping with {windows_written} window(s) written "
+                        f"this run. Every recorded window stays resumable."
+                    )
+                    self._emit_progress(
+                        reporter,
+                        ProgressEvent(
+                            kind="cancelled",
+                            vendor=self._progress_vendor,
+                            completed=windows_written + windows_skipped,
+                            total=len(windows),
+                            message=(
+                                f"cancelled at {start.date()}..{end.date()}"
+                            ),
+                            detail={"granularity": granularity},
+                        ),
+                    )
+                    break
+
                 if ledger.is_written(start, end):
                     windows_skipped += 1
                     logger.info(
                         f"{self.class_name}: window {start.date()}..{end.date()} "
                         f"already recorded in the ledger, skipping."
+                    )
+                    self._emit_progress(
+                        reporter,
+                        ProgressEvent(
+                            kind="window_skipped",
+                            vendor=self._progress_vendor,
+                            completed=windows_written + windows_skipped,
+                            total=len(windows),
+                            message=(
+                                f"skipped {start.date()}..{end.date()} "
+                                f"(already in the ledger)"
+                            ),
+                            detail={
+                                "start": str(start.date()),
+                                "end": str(end.date()),
+                            },
+                        ),
                     )
                     continue
 
@@ -652,6 +808,48 @@ class BaseDataset(ABC):
                     f"{start.date()}..{end.date()} "
                     f"({int(window.sizes[append_dim])} row(s))."
                 )
+                self._emit_progress(
+                    reporter,
+                    ProgressEvent(
+                        kind="window_written",
+                        vendor=self._progress_vendor,
+                        completed=windows_written + windows_skipped,
+                        total=len(windows),
+                        message=f"appended {start.date()}..{end.date()}",
+                        detail={
+                            "start": str(start.date()),
+                            "end": str(end.date()),
+                            "rows": int(window.sizes[append_dim]),
+                            "window_bytes": window_bytes,
+                        },
+                    ),
+                )
+
+            # After the loop DRAINED, whether it ran to the end or stopped on a
+            # cancel -- a stopped conversion still finished the call, and a
+            # reporter that only ever saw a finish event on the happy path
+            # would have no way to release what it opened on the other.
+            self._emit_progress(
+                reporter,
+                ProgressEvent(
+                    kind="conversion_finished",
+                    vendor=self._progress_vendor,
+                    completed=windows_written + windows_skipped,
+                    total=len(windows),
+                    message=(
+                        f"{self.class_name}: {windows_written} written, "
+                        f"{windows_skipped} skipped, "
+                        f"{len(windows)} planned"
+                    ),
+                    detail={
+                        "windows_written": windows_written,
+                        "windows_skipped": windows_skipped,
+                        "windows_planned": len(windows),
+                        "rows_written": rows_written,
+                        "cancelled": cancelled,
+                    },
+                ),
+            )
 
             if boundaries:
                 logger.warning(
@@ -689,6 +887,7 @@ class BaseDataset(ABC):
             rows_written=rows_written,
             peak_window_bytes=peak_window_bytes,
             resumed=windows_skipped > 0,
+            cancelled=cancelled,
         )
         return self
 

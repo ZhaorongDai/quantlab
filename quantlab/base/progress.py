@@ -55,11 +55,20 @@ from tqdm import tqdm
 #: moment.
 QUOTA_EXHAUSTED_DESCRIPTION = "QUOTA EXHAUSTED -- draining, not fetching"
 
-#: Every `ProgressEvent.kind` the acquisition loop emits. Advisory rather than
-#: enforced -- a frozen dataclass validating an enum would make an
-#: out-of-repo consumer's forward-compatibility depend on quantlab shipping
-#: first -- but exhaustive as of 03.4-05, and the tuple a reporter can match
-#: against instead of hard-coding literals.
+#: Every `ProgressEvent.kind` quantlab's long-running loops emit -- the
+#: acquisition fan-out first, and as of 03.5-06 the raw->Zarr chunk loop too.
+#: Advisory rather than enforced -- a frozen dataclass validating an enum would
+#: make an out-of-repo consumer's forward-compatibility depend on quantlab
+#: shipping first -- but exhaustive, and the tuple a reporter can match against
+#: instead of hard-coding literals.
+#:
+#: The two groups are listed separately because they describe two different
+#: operations a console renders differently: a `run_*` bar counts BATCHES
+#: downloaded from a vendor, a `conversion_*` bar counts WINDOWS densified and
+#: appended. `cancelled` is shared, deliberately: it means the same thing in
+#: both loops -- a caller's token was observed at a safe boundary -- and a
+#: second spelling of it would make a console match two literals to render one
+#: state.
 EVENT_KINDS = (
     "run_started",
     "coverage",
@@ -68,12 +77,16 @@ EVENT_KINDS = (
     "quota_exhausted",
     "cancelled",
     "run_finished",
+    "conversion_started",
+    "window_written",
+    "window_skipped",
+    "conversion_finished",
 )
 
 
 @dataclass(frozen=True)
 class ProgressEvent:
-    """ONE thing that happened during an acquisition.
+    """ONE thing that happened during an acquisition or a conversion.
 
     `kind` is one of `EVENT_KINDS`:
 
@@ -86,8 +99,30 @@ class ProgressEvent:
     - ``batch_failed``    -- reserved for a per-batch failure notification.
     - ``quota_exhausted`` -- the vendor's allocation is gone and the remaining
       batches are being drained, not fetched.
-    - ``cancelled``       -- a cancel token was observed mid-pass.
+    - ``cancelled``       -- a cancel token was observed at a safe boundary:
+      mid-pass in the acquisition loop, between two windows in the chunk loop.
     - ``run_finished``    -- the result generator was drained to completion.
+
+    The raw->Zarr chunk loop (`BaseDataset.from_raw_data_chunked`, 03.5 D-05)
+    emits these four:
+
+    - ``conversion_started``  -- the window plan is fixed and the loop is about
+      to start. `total` is the PLANNED window count and `detail` carries the
+      pinned symbol count, the granularity and the target store path.
+    - ``window_written``      -- one window was densified, appended and
+      recorded in the ledger. `completed` rises 1..N over the windows this run
+      resolved and `total` is that same planned count.
+    - ``window_skipped``      -- one window was already in the ledger and was
+      not re-appended. A resume is N of these, not silence.
+    - ``conversion_finished`` -- the window loop drained, whether it ran to the
+      end or stopped on a cancel. `cancelled` is what distinguishes the two,
+      and it arrives BEFORE this one.
+
+    `vendor` carries the dataset config's own vendor token on the conversion
+    events, falling back to the dataset's class name. A conversion has no
+    vendor in the acquisition sense, but the field is REQUIRED and this
+    dataclass is frozen and consumed by an out-of-repo reporter -- widening it
+    is a contract change where reusing a field is not.
 
     **`message` is ALWAYS pre-scrubbed by the emitter and is never raw vendor
     exception text.** `Acquisition._scrub` is the single choke point that made
