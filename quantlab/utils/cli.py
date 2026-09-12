@@ -566,17 +566,17 @@ def _explicit_symbol_catalog(symbol_count: int):
 
     An explicit 15,000-symbol list is exactly as expensive as the same roster
     resolved from a category, so the guard must price it rather than skip it.
-    But `estimate_dense_panel` derives its symbol count and its listing spans
+    But `_roster_window_profile` derives its symbol count and its listing spans
     from the catalog's interval table, and an explicit list has neither.
 
     So this SUBCLASSES `UniverseCatalog` and overrides only the two steps that
     are ABOUT the roster's provenance: the one that resolves a roster from a
-    category (`estimate_dense_panel`), and the one that checks the category
+    category (`_roster_window_profile`), and the one that checks the category
     token is real (`_validate_category`, which admits this view's own sentinel
     and delegates everything else). Every ceiling, every crossed-ceiling
-    report, the refusal message, the chunked estimator and the re-estimated
-    narrowing search stay the catalog's own, which is the point: the explicit
-    path cannot drift away from the category path, because it is the same code.
+    report, the refusal message and the re-estimated narrowing search stay the
+    catalog's own, which is the point: the explicit path cannot drift away from
+    the category path, because it is the same code.
 
     The import is deferred to call time so this module keeps its module-scope
     dependency surface to `base.chunking`; the class is built once and cached.
@@ -600,11 +600,9 @@ def _explicit_symbol_catalog(symbol_count: int):
                 # `EXPLICIT_SYMBOLS_CATEGORY` is a token it can legitimately be
                 # asked about and there is nothing to validate it against.
                 #
-                # Overridden here rather than left to the base because the
-                # methods that reach it are no longer only the ones this class
-                # overrides: `estimate_dense_panel` never validated, but
-                # `estimate_chunked_panel` -- which 03.5 D-07 put on the
-                # `--to-zarr` path of both ingest shells -- opens with
+                # Overridden here rather than left to the base because
+                # `_roster_window_profile` -- which this class DOES override,
+                # and which every pricing path reaches -- opens with
                 # `self._validate_category(category)` and would reject the
                 # sentinel with "Unknown universe category '(explicit
                 # --symbols list)'" before a single byte was fetched.
@@ -618,18 +616,16 @@ def _explicit_symbol_catalog(symbol_count: int):
                 if category != EXPLICIT_SYMBOLS_CATEGORY:
                     super()._validate_category(category)
 
-            def estimate_dense_panel(
+            def _roster_window_profile(
                 self,
                 category: str,
                 start_date: str,
                 end_date: str,
-                num_variables: int = 12,
-                bytes_per_value: int = 8,
                 bars_per_day: int = 1,
             ) -> dict:
                 # The signature MIRRORS the base's, `bars_per_day` included.
-                # This override is reached by `assert_dense_panel_fits` as well
-                # as by the volume guard, and an override that dropped the
+                # This override is what the acquisition-volume guard reaches
+                # on the explicit path, and an override that dropped the
                 # keyword would raise TypeError on the one path that matters --
                 # an explicit `--symbols` list at `--frequency 1m`.
                 # Rebound, exactly as the base method does: the validator
@@ -673,8 +669,6 @@ def _explicit_symbol_catalog(symbol_count: int):
                     "dense_cells": dense_cells,
                     "observed_cells": dense_cells,
                     "density": 1.0,
-                    "dense_bytes": dense_cells * num_variables * bytes_per_value,
-                    "observed_bytes": dense_cells * num_variables * bytes_per_value,
                 }
 
         _EXPLICIT_CATALOG_CLASS = _ExplicitSymbolCatalog

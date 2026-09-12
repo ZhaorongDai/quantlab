@@ -1664,30 +1664,35 @@ class UniverseCatalog:
     #: `MIN_ANCHOR_ROWS` and `_assert_every_category_is_populated()`.
     MAX_DENSE_PANEL_BYTES = 4 * 1024**3
 
-    def estimate_dense_panel(
+    def _roster_window_profile(
         self,
         category: str,
         start_date: str,
         end_date: str,
-        num_variables: int = 12,
-        bytes_per_value: int = 8,
         bars_per_day: int = 1,
     ) -> dict:
-        """Size the dense `[timestamp, symbol]` panel a window would produce.
+        """The roster-window arithmetic the acquisition-volume guard sizes
+        against: who was listed in this window, how long it spans, and how
+        much of the dense grid is real observation.
 
         Returns `symbols`, `trading_days`, `bars_per_day`, `timestamps`,
-        `dense_cells`, `observed_cells`, `density`, `dense_bytes` and
-        `observed_bytes`.
+        `dense_cells`, `observed_cells` and `density`.
+
+        **Denominated in CELLS, never in BYTES.** A caller that wants a RAM
+        figure is asking a question this class no longer answers: phase 03.6
+        deleted the dense-panel estimator and its guard by decision (SC-3), and
+        what survived is this -- roster arithmetic, which a roster catalogue
+        legitimately owns and which `estimate_acquisition_volume()` genuinely
+        needs for its symbol count, its trading-day count and its density.
 
         `bars_per_day` is the length of ONE trading day's timestamp axis, and
         it defaults to 1 because a daily panel has exactly one row per symbol
-        per session. It exists because the timestamp axis -- not the trading-day
-        count -- is what `to_xarray()` allocates against: at `1m` a session is
-        390 rows (`BARS_PER_DAY_BY_FREQUENCY`), so a minute window is 390x the
-        dense grid of the same window at `1d`. Sizing a minute fetch with the
-        default would admit a panel three orders of magnitude over the budget
-        while reporting a number that looks fine, which is the single easiest
-        way for this guard to be confidently wrong.
+        per session. It exists because the timestamp axis -- not the
+        trading-day count -- is what a densifier allocates against: at `1m` a
+        session is 390 rows (`BARS_PER_DAY_BY_FREQUENCY`), so a minute window
+        covers 390x the cells of the same window at `1d`. Sizing a minute fetch
+        with the default understates it by three orders of magnitude while
+        reporting a number that looks fine.
 
         Everything is derived from this catalog's own interval table clipped
         to the window, because the catalog is the ONLY object that knows when
@@ -1695,10 +1700,6 @@ class UniverseCatalog:
         dense grid so much larger than the real observation count. `density`
         below 1 is not an error: it is the survivorship-bias-free roster's
         defining property, ~0.368 for the full US market since 2006.
-
-        `num_variables` defaults to 12 to match `enums.data.TiingoColumns.EOD`
-        and `bytes_per_value` to 8 for float64, the dtype
-        `StockDataset._raw_data_to_xr()` produces.
         """
         self._validate_category(category)
         start_date = self._normalize_iso_date(start_date, "start_date")
@@ -1778,8 +1779,46 @@ class UniverseCatalog:
             "dense_cells": dense_cells,
             "observed_cells": observed_cells,
             "density": density,
-            "dense_bytes": dense_cells * num_variables * bytes_per_value,
-            "observed_bytes": observed_cells * num_variables * bytes_per_value,
+        }
+
+    def estimate_dense_panel(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+        num_variables: int = 12,
+        bytes_per_value: int = 8,
+        bars_per_day: int = 1,
+    ) -> dict:
+        """Size the dense `[timestamp, symbol]` panel a window would produce.
+
+        Returns `symbols`, `trading_days`, `bars_per_day`, `timestamps`,
+        `dense_cells`, `observed_cells`, `density`, `dense_bytes` and
+        `observed_bytes`.
+
+        A thin byte-adding delegate over `_roster_window_profile()`, which
+        carries every cell-denominated figure. The split is deliberate: the
+        roster arithmetic is what `estimate_acquisition_volume()` depends on
+        and what survives phase 03.6, while the two BYTE entries below are the
+        dense-panel RAM estimate that phase deletes.
+
+        `bars_per_day` is the length of ONE trading day's timestamp axis --
+        see `_roster_window_profile()` for why the default understates an
+        intraday window by three orders of magnitude.
+
+        `num_variables` defaults to 12 to match `enums.data.TiingoColumns.EOD`
+        and `bytes_per_value` to 8 for float64, the dtype
+        `StockDataset._raw_data_to_xr()` produces.
+        """
+        profile = self._roster_window_profile(
+            category, start_date, end_date, bars_per_day
+        )
+        return {
+            **profile,
+            "dense_bytes": profile["dense_cells"] * num_variables * bytes_per_value,
+            "observed_bytes": (
+                profile["observed_cells"] * num_variables * bytes_per_value
+            ),
         }
 
     def assert_dense_panel_fits(
@@ -2178,10 +2217,10 @@ class UniverseCatalog:
         )
 
         # Delegated rather than recomputed: the roster, the trading-day count
-        # and the measured 0.368 density all come from the one estimator that
+        # and the measured 0.368 density all come from the one method that
         # already derives them, so the two cannot disagree about the window
         # they are both sizing.
-        panel = self.estimate_dense_panel(category, start_date, end_date)
+        panel = self._roster_window_profile(category, start_date, end_date)
         symbols = panel["symbols"]
         trading_days = panel["trading_days"]
 
