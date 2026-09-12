@@ -461,22 +461,75 @@ def convert(
     otherwise here would retire a recorded risk silently instead of by
     decision.
 
-    PLACEHOLDER REFUSAL, replaced in this phase's next task: the three real
-    outcomes (no match / ambiguous match / no conversion target) are one bare
-    `ValueError` naming the requested tuple for now. The tracer proves the
-    happy path through every layer first; the refusal messages are the
-    sideways expansion.
+    **Refuses in THREE distinguishable ways, all `ValueError`.** A caller who
+    cannot tell "nobody serves that combination" from "nobody can convert it
+    yet" has to read this function's source in order to act, so each arm names
+    the descriptor, the requested tuple, and the one thing that would fix it.
+    Every message is built from the descriptor's own data: there is no vendor
+    literal and no frequency literal in this body, which is what makes the
+    capability list -- not this function -- the place a new combination is
+    added.
     """
     matches = descriptor.capabilities_for(
         dataset_config.market, dataset_config.frequency, data_type
     )
     requested = (dataset_config.market, dataset_config.frequency, data_type)
 
-    capability = matches[0] if matches else None
-    if capability is None or capability.dataset_cls is None:
+    # (1) NO MATCH. Enumerate what the descriptor DOES serve in the same
+    # message, the courtesy `DataSourceRegistry.get()` already extends for a
+    # mistyped vendor token: a caller who got one element wrong learns which.
+    if not matches:
+        served = [
+            (capability.market, capability.frequency, capability.data_type)
+            for capability in descriptor.capabilities
+        ]
         raise ValueError(
-            f"{descriptor.display_name}: no raw-to-Zarr conversion target for "
-            f"{requested!r}."
+            f"{descriptor.display_name} serves no capability for "
+            f"(market, frequency, data_type)={requested!r}. It serves "
+            f"{served!r}. Adding one is adding a Capability row beside the "
+            f"vendor class, never adding a branch here."
+        )
+
+    # (2) AMBIGUOUS. Several rows matched and they disagree about what
+    # materialises them. This is the case D-02 reinstated
+    # `DatasetConfig.market` for, one axis over: refusing is the only honest
+    # answer, because picking `matches[0]` would let capability ORDER -- an
+    # authoring detail nobody reading the call site can see -- decide which
+    # Dataset subclass writes the store.
+    targets = {capability.dataset_cls for capability in matches}
+    if len(targets) > 1:
+        raise ValueError(
+            f"{descriptor.display_name}: {requested!r} matched "
+            f"{len(matches)} capabilities carrying {len(targets)} different "
+            f"conversion targets, with data_type="
+            f"{[capability.data_type for capability in matches]!r}. Pass "
+            f"data_type= to say which one you mean; this layer will not "
+            f"choose for you, because the wrong choice writes a real store."
+        )
+
+    capability = matches[0]
+
+    # (3) NO CONVERSION TARGET (SC-7). The refusal IS the absent field: the
+    # lookup above MATCHED, the vendor genuinely serves this capability, and
+    # what is missing is a Dataset subclass that can express its axis. Voiced
+    # after the parser-level refusal one of the ingest shells already carries
+    # for this same capability, which stays where it is -- that one fires
+    # before any work is done, and this is the second, programmatic layer for
+    # callers that never touch argparse. Naming that shell (or the frequency
+    # token) HERE would put the very literal in this body that the capability
+    # lookup exists to keep out.
+    if capability.dataset_cls is None:
+        raise ValueError(
+            f"{descriptor.display_name}: no raw-to-Zarr conversion exists for "
+            f"{requested!r}. This capability's raw tier is a stream of "
+            f"individually-timestamped events on an irregular event axis, and "
+            f"the dense [timestamp, symbol] panel every Dataset subclass "
+            f"writes cannot express one -- flattening it onto a dense grid "
+            f"would produce a plausible-looking panel that is scientifically "
+            f"wrong, and a wrong panel that loads is worse than this refusal. "
+            f"That axis is phase 03.3's work (03.4 D-18). Until it lands, the "
+            f"raw parquet shards this capability acquires ARE the deliverable "
+            f"and are already queryable with polars."
         )
 
     dataset = capability.dataset_cls(dataset_config)

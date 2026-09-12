@@ -12,6 +12,7 @@ from quantlab.acquisition.registry import (
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import stock_acquisition_config
+from quantlab.dataset.stock import StockDataset
 
 #: The two environment variables Alpaca market-data credentials are read from.
 #:
@@ -915,9 +916,35 @@ ALPACA_SOURCE = register_source(
         #: by `test_capabilities_match_the_vendor_class_constants`, so adding an
         #: endpoint to the class above without adding a Capability here turns
         #: that test red rather than silently under-advertising the vendor.
+        #: TWO of the four rows carry a `dataset_cls` and two deliberately do
+        #: NOT, and the two empty fields are the SC-7 refusal expressed as DATA
+        #: (03.5 D-01). `registry.convert()` refuses `tick` because no
+        #: conversion target exists for it, not because it recognises the
+        #: token: there is no `if frequency == "tick"` anywhere in that
+        #: function and no vendor literal either. The bars rows share
+        #: `StockDataset` with Tiingo's row -- one correct answer to three
+        #: questions, by direct class reference (03.4 D-03), so there is no
+        #: copy that can drift.
+        #:
+        #: Phase 03.3 turns the refusal off by FILLING two fields here, never
+        #: by deleting a branch there. Until it does, the raw parquet shards
+        #: these two rows acquire ARE the deliverable: a quotes/trades stream
+        #: flattened onto a dense `[timestamp, symbol]` grid would produce a
+        #: plausible-looking panel that is scientifically wrong, and a wrong
+        #: panel that loads is worse than a refusal.
         capabilities=(
-            Capability(market="us_equity", frequency="1d", data_type="bars"),
-            Capability(market="us_equity", frequency="1m", data_type="bars"),
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="bars",
+                dataset_cls=StockDataset,
+            ),
+            Capability(
+                market="us_equity",
+                frequency="1m",
+                data_type="bars",
+                dataset_cls=StockDataset,
+            ),
             Capability(market="us_equity", frequency="tick", data_type="quotes"),
             Capability(market="us_equity", frequency="tick", data_type="trades"),
         ),
