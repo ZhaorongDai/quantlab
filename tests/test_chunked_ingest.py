@@ -21,6 +21,7 @@ sampling RSS:
   to avoid.
 """
 
+import argparse
 import inspect
 from pathlib import Path
 from typing import Callable, Optional
@@ -330,6 +331,111 @@ def test_a_granularity_period_key_does_not_handle_refuses_instead_of_guessing(
     message = str(excinfo.value)
     assert "fortnight" in message
     assert "_period_key" in message
+
+
+# ---------------------------------------------------------------------------
+# The ladder's reach into the three shells (03.6 SC-5)
+#
+# These three tests assert NON-CHANGES. `quantlab/utils/cli.py` and the three
+# shells are deliberately untouched by phase 03.6: `--chunk` already derives
+# its `choices` from `TimeChunkPlanner.GRANULARITIES`, so `day` and `hour`
+# became selectable the moment the tuple grew. That automatic reach is the
+# claim under test, not an implementation detail of it.
+# ---------------------------------------------------------------------------
+
+#: The three US-equity shells that expose `--chunk` through `add_chunk_args`.
+_CHUNK_SHELLS = ("ingest_tiingo", "ingest_alpaca", "ingest_us_equity")
+
+
+def _chunk_actions() -> dict[str, argparse.Action]:
+    """One `--chunk` argparse action per shell, keyed by module name.
+
+    The shell modules are imported at FUNCTION scope, the way
+    `tests/test_ingest_tiingo_universe_wiring.py` does, so a missing
+    credential at import time cannot take this whole module down.
+    """
+    import importlib
+
+    actions = {}
+    for name in _CHUNK_SHELLS:
+        parser = importlib.import_module(name)._build_arg_parser()
+        (action,) = [a for a in parser._actions if "--chunk" in a.option_strings]
+        actions[name] = action
+    return actions
+
+
+def test_every_shell_derives_its_chunk_choices_from_the_granularity_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung added to `GRANULARITIES` must not need a second edit to become
+    selectable from the command line.
+
+    The monkeypatch arm is what makes this a DERIVATION test rather than a
+    coincidence test: a hardcoded `["year", "quarter", "month", "day",
+    "hour"]` in `utils/cli.py` passes the first arm and fails the second. The
+    drift it guards is recorded precedent -- `nasdaq100_constituent` was once
+    produced into universe.parquet while staying unselectable from any shell.
+    """
+    import importlib
+
+    for name, action in _chunk_actions().items():
+        assert list(action.choices) == list(TimeChunkPlanner.GRANULARITIES), name
+        assert "day" in action.choices, name
+        assert "hour" in action.choices, name
+
+    monkeypatch.setattr(
+        TimeChunkPlanner,
+        "GRANULARITIES",
+        TimeChunkPlanner.GRANULARITIES + ("fortnight",),
+    )
+    rebuilt = importlib.import_module("ingest_us_equity")._build_arg_parser()
+    (action,) = [a for a in rebuilt._actions if "--chunk" in a.option_strings]
+    assert "fortnight" in action.choices
+
+
+def test_the_chunk_flag_itself_is_left_exactly_as_it_was() -> None:
+    """Deliberately a NON-CHANGE test. Phase 03.6 adds rungs to the ladder and
+    touches nothing else about `--chunk`.
+
+    ROADMAP 03.6 note (a): an explicitly-passed granularity is RECORDED in the
+    invocation, so replaying the command reproduces the same windows. A value
+    that came from a default -- or worse, from a table an unrelated commit
+    edited -- silently reproduces something else. That is why this phase
+    deliberately leaves the flag's required-ness, default and type alone
+    rather than "tidying" them while working nearby. This test is what stops
+    a later reader doing exactly that.
+    """
+    for name, action in _chunk_actions().items():
+        assert action.required is False, name
+        assert action.default == "year", name
+        assert action.type is str, name
+
+
+def test_no_module_under_quantlab_defines_a_chunk_granularity_table() -> None:
+    """SC-5's negative: the granularity is the CALLER's choice, passed
+    explicitly, never looked up from a per-frequency constant table.
+
+    Asserted with an AST walk over assignment TARGETS rather than a text grep:
+    a grep counts comments and docstrings, so this very docstring -- which
+    names the forbidden identifier in order to explain it -- would make a
+    grep-based gate self-invalidating.
+    """
+    import ast
+    import pathlib
+
+    hits = []
+    for path in sorted(pathlib.Path("quantlab").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                name = getattr(target, "id", None) or getattr(target, "attr", "") or ""
+                if "chunk_granularity" in name.lower():
+                    hits.append(f"{path}:{node.lineno}:{name}")
+
+    assert hits == [], hits
 
 
 def test_plan_calendar_and_plan_from_timestamps_share_one_period_rule() -> None:
