@@ -32,7 +32,7 @@ from quantlab.utils.atomic import write_json_atomically
 
 
 class TimeChunkPlanner:
-    """Split a time range into windows at year, quarter or month boundaries.
+    """Split a time range into windows at one of five period boundaries.
 
     The class exposes TWO planners because the pipeline needs windows at two
     different moments, with two different amounts of knowledge:
@@ -52,7 +52,7 @@ class TimeChunkPlanner:
 
     #: Accepted granularity tokens, in coarse-to-fine order. Also the values
     #: `ingest_us_equity.py --chunk` offers.
-    GRANULARITIES: tuple[str, ...] = ("year", "quarter", "month")
+    GRANULARITIES: tuple[str, ...] = ("year", "quarter", "month", "day", "hour")
 
     def __init__(self, granularity: str = "year") -> None:
         if granularity not in self.GRANULARITIES:
@@ -72,13 +72,43 @@ class TimeChunkPlanner:
         group by this and nothing else, which is what makes drift between the
         sizing windows and the write windows structurally impossible rather
         than merely unlikely.
+
+        The SECOND component is not a natural calendar number -- the `year`
+        rung already returns a literal `0`. It is a within-year monotonically
+        increasing discriminant that `_group_by_period()` only ever compares
+        for EQUALITY: it is never ordered and never has arithmetic done on it.
+        That is what lets the finest rung stay inside the declared
+        `tuple[int, int]`: `hour`'s widest value is `366 * 24 + 23 == 8807`,
+        on a leap year's last hour.
         """
         ts = pd.Timestamp(timestamp)
         if self.granularity == "year":
             return (ts.year, 0)
         if self.granularity == "quarter":
             return (ts.year, ts.quarter)
-        return (ts.year, ts.month)
+        if self.granularity == "month":
+            return (ts.year, ts.month)
+        if self.granularity == "day":
+            return (ts.year, ts.dayofyear)
+        if self.granularity == "hour":
+            return (ts.year, ts.dayofyear * 24 + ts.hour)
+        # Unreachable while `GRANULARITIES` and the branches above agree, and
+        # that is the point: `__init__` already refuses a token absent from
+        # `GRANULARITIES`, so only DRIFT between the two lists reaches here.
+        # Before this raise existed the method ended in a bare `return
+        # (ts.year, ts.month)`, so a rung added to `GRANULARITIES` without a
+        # branch here silently produced MONTH-sized windows under another
+        # name -- a wrong window size is a wrong memory bound, and it failed
+        # open. The class docstring's claim that both planners inherit a new
+        # granularity was true only by accident; this makes it true by
+        # construction.
+        raise ValueError(
+            f"TimeChunkPlanner: granularity {self.granularity!r} is accepted by "
+            f"GRANULARITIES but _period_key defines no period for it; accepted "
+            f"values are {list(self.GRANULARITIES)}. Add a branch to "
+            f"_period_key or remove the token from GRANULARITIES -- the two "
+            f"lists have drifted apart."
+        )
 
     def _group_by_period(
         self, index: pd.DatetimeIndex
