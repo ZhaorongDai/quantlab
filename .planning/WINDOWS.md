@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 16
+open_count: 17
 waived_count: 0
 fixed_count: 1
-total_count: 17
-last_updated: 2026-09-12T01:58:32.071Z
+total_count: 18
+last_updated: 2026-09-12T20:56:42.552Z
 ---
 
 # Broken Windows Ledger
@@ -32,6 +32,7 @@ last_updated: 2026-09-12T01:58:32.071Z
 | 15 | 03.5 | unrun-verify | ingest_us_equity.py |  | 03.5-05 Task 1 verify 'ingest_us_equity.py --dry-run' not run: the command uses a --symbols flag this shell has no, and the corrected form needs a universe.parquet this worktree has no data/ dir for | open |  | 2026-09-12T01:41:26.439Z |  |
 | 16 | 03.5 | deviation | quantlab/base/data.py |  | BaseDataset.__init__ ordering comment still claims the config setter reaches the backend via _reset_symbols()->read(); df7bfe9 deleted that method, so the stated AttributeError invariant needs re-testing (plan 04 owns this file) | open |  | 2026-09-12T01:41:30.958Z |  |
 | 17 | 03.5 | deviation | quantlab/acquisition/inspector.py | 99 | _RawTierReader._reset_symbols overrides a method df7bfe9 deleted from BaseDataset, so the override is inert and its class docstring still describes a construction-time from_raw_data() fallback that no longer happens. Same class as open window 16, one file over. Out of plan 06's scope (files_modified does not include inspector.py). | open |  | 2026-09-12T01:58:32.071Z |  |
+| 18 | 03.6 | deviation | quantlab/base/chunking.py |  | Class docstring first line corrected (Rule 1) beyond the plan's two named constructs | open |  | 2026-09-12T20:56:42.552Z |  |
 
 ````json
 [
@@ -237,6 +238,18 @@ last_updated: 2026-09-12T01:58:32.071Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-12T01:58:32.071Z",
+    "resolved_at": null
+  },
+  {
+    "id": 18,
+    "kind": "deviation",
+    "phase": "03.6",
+    "file": "quantlab/base/chunking.py",
+    "line": null,
+    "description": "Class docstring first line corrected (Rule 1) beyond the plan's two named constructs",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-12T20:56:42.552Z",
     "resolved_at": null
   }
 ]

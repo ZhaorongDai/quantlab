@@ -651,7 +651,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -672,7 +672,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03.6-01-PLAN.md — TRACER: the granularity ladder reaches `day` and `hour`
+- [x] 03.6-01-PLAN.md — TRACER: the granularity ladder reaches `day` and `hour`
   (`GRANULARITIES` becomes the five-tuple, `_period_key` gains two explicit branches plus a
   drift-detecting trailing raise), proved end-to-end by a `day`-granularity conversion that
   reaches Zarr identical to the unchunked store; plus the locks that `--chunk`'s derived
