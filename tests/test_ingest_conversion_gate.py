@@ -395,25 +395,35 @@ def test_refusal_precedes_every_symbol_bearing_dataset_construction():
 
     The sibling ordering assertion above compares the refusal against the
     explicit densification call sites, and that is exactly the blind spot this
-    test closes. `BaseDataset`'s config setter calls `_reset_symbols()` for any
-    non-None symbol list, which calls `read()`, catches the not-yet-written
-    store's `FileNotFoundError` and falls back to `from_raw_data()` -- a full
-    densification at CONSTRUCTION time, with no `from_raw_data` token anywhere
-    at the call site for an AST scan to find.
+    test closes. `BaseDataset`'s config setter USED TO call `_reset_symbols()`
+    for any non-None symbol list, which called `read()`, caught the
+    not-yet-written store's `FileNotFoundError` and recovered by densifying
+    the full range through `from_raw_data()` at CONSTRUCTION time -- with no
+    `from_raw_data` token anywhere at the call site for an AST scan to find.
 
     So `dataset = StockDataset(ds_config); refuse_conversion_without_raw_data(
-    dataset, result)` READS correctly and passes the sibling assertion, while
+    dataset, result)` READ correctly and passed the sibling assertion, while
     raising `stock.py`'s absent-root `ValueError` one line before the guard it
     was placed in front of. That shipped, and the UAT reproduction still
     tracebacked with the guard nominally in place (G-03.4-1a, second order).
 
+    **`df7bfe9` deleted `_reset_symbols` outright**, so construction no longer
+    densifies for ANY config and the second-order trap this test was written
+    for cannot currently be sprung. Since 03.5 the shells hold only the
+    symbol-free probe and delegate the conversion to `registry.convert()`, so
+    the loop below finds no bare construction in any of them and every
+    iteration falls through. KEPT DELIBERATELY, and said out loud rather than
+    left for a reader to discover: this is a regression guard, not live
+    coverage. Restoring an eager construction-time read -- in the config
+    setter, in a `__init__`, or in a subclass -- puts the trap back, and it is
+    a shape this repository has already shipped once.
+
     A construction is exempt only when its argument is a `replace(...,
-    symbols=None)` -- the symbol-free probe the guard is allowed to hold,
-    which never densifies. All three shells state that shape at the call site,
-    including `ingest_us_equity.py`, whose `ds_config` already carries
-    `symbols=None` from its factory: the redundant `replace` there is what
-    makes the property checkable where it is relied on, rather than one
-    factory call away.
+    symbols=None)` -- the symbol-free probe the guard is allowed to hold.
+    All three shells state that shape at the call site, including
+    `ingest_us_equity.py`, whose `ds_config` already carries `symbols=None`
+    from its factory: the redundant `replace` there is what makes the property
+    checkable where it is relied on, rather than one factory call away.
     """
     for shell in INGEST_SHELLS:
         path = REPO_ROOT / shell
