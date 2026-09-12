@@ -569,9 +569,12 @@ def _explicit_symbol_catalog(symbol_count: int):
     But `estimate_dense_panel` derives its symbol count and its listing spans
     from the catalog's interval table, and an explicit list has neither.
 
-    So this SUBCLASSES `UniverseCatalog` and overrides exactly one method --
-    the single step that resolves a roster from a category. Every ceiling,
-    every crossed-ceiling report, the refusal message and the re-estimated
+    So this SUBCLASSES `UniverseCatalog` and overrides only the two steps that
+    are ABOUT the roster's provenance: the one that resolves a roster from a
+    category (`estimate_dense_panel`), and the one that checks the category
+    token is real (`_validate_category`, which admits this view's own sentinel
+    and delegates everything else). Every ceiling, every crossed-ceiling
+    report, the refusal message, the chunked estimator and the re-estimated
     narrowing search stay the catalog's own, which is the point: the explicit
     path cannot drift away from the category path, because it is the same code.
 
@@ -591,6 +594,29 @@ def _explicit_symbol_catalog(symbol_count: int):
                 # one would make `--symbols AAPL` fail on a machine that has
                 # never built universe.parquet.
                 self._explicit_symbols = symbols
+
+            def _validate_category(self, category: str) -> None:
+                # This view resolves NO roster from the reference table, so
+                # `EXPLICIT_SYMBOLS_CATEGORY` is a token it can legitimately be
+                # asked about and there is nothing to validate it against.
+                #
+                # Overridden here rather than left to the base because the
+                # methods that reach it are no longer only the ones this class
+                # overrides: `estimate_dense_panel` never validated, but
+                # `estimate_chunked_panel` -- which 03.5 D-07 put on the
+                # `--to-zarr` path of both ingest shells -- opens with
+                # `self._validate_category(category)` and would reject the
+                # sentinel with "Unknown universe category '(explicit
+                # --symbols list)'" before a single byte was fetched.
+                #
+                # Every OTHER token still goes to the base check, so a
+                # `--limit`-truncated REAL category (which `volume_pricing`
+                # reports under its own name) keeps the typo protection.
+                # `known_categories()` reads the two class-level fetcher
+                # registries, never the backend this view does not have, so
+                # delegating is safe without a config.
+                if category != EXPLICIT_SYMBOLS_CATEGORY:
+                    super()._validate_category(category)
 
             def estimate_dense_panel(
                 self,
