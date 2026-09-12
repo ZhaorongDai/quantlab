@@ -140,10 +140,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     # This script used to convert UNCONDITIONALLY, which is why the flag is a
     # deliberate default change and not a new capability: all three ingest
-    # shells now stop at raw unless asked (G-03.4-1b). `mode="whole-window"`
-    # because there is no chunking here -- `from_raw_data()` densifies the
-    # entire range at once, which is what the dense-panel guard sizes.
-    add_to_zarr_arg(parser, mode="whole-window")
+    # shells now stop at raw unless asked (G-03.4-1b).
+    add_to_zarr_arg(parser)
     return parser
 
 

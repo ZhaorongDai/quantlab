@@ -80,31 +80,6 @@ _WINDOW_HELP = {
     },
 }
 
-#: The two shapes a raw-to-Zarr conversion has in this repo, and the help
-#: clause each one adds to `--to-zarr`. Kept as data beside `_WINDOW_HELP` for
-#: the same reason: the difference between the two is stated ONCE, where the
-#: flag is defined, rather than as a string every script has to pass in.
-#:
-#: - `"whole-window"`: `from_raw_data()` densifies the entire range at once
-#:   (`ingest_tiingo.py`, `ingest_alpaca.py`).
-#: - `"chunked"`: `from_raw_data_chunked()` densifies and appends ONE `--chunk`
-#:   window at a time, and resumes (`ingest_us_equity.py`).
-ConversionMode = Literal["whole-window", "chunked"]
-
-_TO_ZARR_HELP = {
-    "whole-window": (
-        "The conversion densifies the WHOLE window at once, so peak RAM "
-        "scales with the range; the dense-panel guard sizes exactly that "
-        "allocation and is skipped when this flag is absent."
-    ),
-    "chunked": (
-        "The full window is no longer refused: the conversion densifies "
-        "and appends ONE --chunk window at a time, so peak RAM scales "
-        "with the window rather than the range, and an interrupted run "
-        "resumes at the first unwritten window."
-    ),
-}
-
 #: The two roster-resolution semantics `resolve_symbols` exposes. Neither is a
 #: default; see that function's docstring.
 RosterMode = Literal["as_of", "in_range"]
@@ -189,11 +164,7 @@ def add_universe_args(
     return parser
 
 
-def add_to_zarr_arg(
-    parser: argparse.ArgumentParser,
-    *,
-    mode: ConversionMode,
-) -> argparse.ArgumentParser:
+def add_to_zarr_arg(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Add `--to-zarr`, the opt-in that gates every raw-to-Zarr conversion.
 
     Defined HERE once, for the reason D-14 gives for `--symbols` and friends:
@@ -206,21 +177,24 @@ def add_to_zarr_arg(
     staying quiet: a conversion that silently did not happen is the same class
     of silence this flag exists to end.
 
-    `mode` follows `add_concurrency_args(default_max_workers=...)`: the
-    genuinely different half -- chunked-and-resumable vs. whole-window -- is a
-    PARAMETER, so neither script restates the shared sentence and neither
-    loses its own. `ingest_us_equity.py`'s chunked text is preserved verbatim
-    in `_TO_ZARR_HELP["chunked"]`; it is one of the seven capabilities
-    `tests/test_ingest_shells.py::
-    test_us_equity_keeps_every_capability_that_makes_it_distinct` pins.
+    **One conversion path, therefore one help text (D-06).** This helper used
+    to take a `mode` selecting between a chunked clause and a whole-window
+    one, following `add_concurrency_args(default_max_workers=...)`. There is
+    no second mode to select any more -- the chunked, resumable conversion is
+    what every shell runs -- so the parameter and the two-armed help dict were
+    retired with the mode itself, and the surviving text is the chunked arm's
+    word for word. The roadmap's "three modes" was stale arithmetic.
     """
     parser.add_argument(
         "--to-zarr",
         action="store_true",
         help=(
             "After acquisition, convert the raw parquet into the Zarr store. "
-            + _TO_ZARR_HELP[mode]
-            + " OFF by default because it is slow, not because it is "
+            "The full window is no longer refused: the conversion densifies "
+            "and appends ONE --chunk window at a time, so peak RAM scales "
+            "with the window rather than the range, and an interrupted run "
+            "resumes at the first unwritten window."
+            " OFF by default because it is slow, not because it is "
             "impossible; without it the run stops at the raw shards and says "
             "so."
         ),

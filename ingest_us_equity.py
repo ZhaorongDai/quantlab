@@ -338,9 +338,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # Registered through the shared helper rather than declared here: the
     # other two shells now carry the same flag, and three declarations of one
     # flag is how their defaults drifted apart in the first place (G-03.4-1b).
-    # `mode="chunked"` is what keeps THIS script's distinct promise -- one
-    # --chunk window at a time, resumable -- in the help text.
-    add_to_zarr_arg(parser, mode="chunked")
+    add_to_zarr_arg(parser)
     add_chunk_args(parser)
     add_volume_guard_args(parser)
     add_data_dir_arg(parser)
