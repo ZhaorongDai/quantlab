@@ -211,6 +211,127 @@ def test_unknown_granularity_lists_the_accepted_values() -> None:
         assert accepted in message
 
 
+def test_the_granularity_ladder_carries_five_rungs_coarse_to_fine() -> None:
+    """Asserted by TUPLE EQUALITY, not by membership.
+
+    The ladder is an ordered, closed literal: `add_chunk_args` renders it
+    verbatim as `--chunk`'s `choices`, and `_period_key` must answer every
+    member of it. A membership assertion would pass while a rung was missing
+    from the CLI or while a sixth rung had appeared with no branch behind it.
+    """
+    assert TimeChunkPlanner.GRANULARITIES == (
+        "year",
+        "quarter",
+        "month",
+        "day",
+        "hour",
+    )
+
+
+def test_plan_from_timestamps_cuts_one_window_per_observed_day() -> None:
+    """The `day` rung, over the module's own three-year axis.
+
+    Every observed timestamp is its own window, so `start == end` everywhere.
+    This is `test_plan_from_timestamps_returns_one_window_per_observed_year`
+    one rung finer: same axis, same observed-edge guarantee, nine windows
+    instead of three.
+    """
+    axis = pd.to_datetime(
+        [f"{year}-{day}" for year in _YEARS for day in _DAYS_PER_YEAR]
+    )
+
+    windows = TimeChunkPlanner("day").plan_from_timestamps(axis)
+
+    assert len(windows) == 9
+    observed = set(axis)
+    for start, end in windows:
+        assert start == end
+        assert start in observed
+    # Time-ordered, non-overlapping, and never merged across a year boundary:
+    # `_period_key`'s first component differs, so 2022-12-28 and 2023-01-04
+    # cannot land in one window even though they are adjacent in the axis.
+    for earlier, later in zip(windows, windows[1:]):
+        assert earlier[1] < later[0]
+    assert [start.year for start, _ in windows] == [y for y in _YEARS for _ in _DAYS_PER_YEAR]
+
+
+def test_plan_from_timestamps_cuts_one_window_per_clock_hour() -> None:
+    """The `hour` rung, over a REAL minute-resolution axis.
+
+    09:30-12:29 spans four clock hours -- a partial 09:xx, a whole 10:xx and
+    11:xx, and a partial 12:xx -- so four windows, and no window may straddle
+    two hours. A minute axis is the regime the rung exists for: the `1m` raw
+    tier is where a yearly window is too large to densify.
+    """
+    axis = pd.date_range("2024-03-05 09:30", "2024-03-05 12:29", freq="min")
+
+    windows = TimeChunkPlanner("hour").plan_from_timestamps(axis)
+
+    assert len(windows) == 4
+    for start, end in windows:
+        assert start.hour == end.hour
+    assert [start.hour for start, _ in windows] == [9, 10, 11, 12]
+    assert windows[0][0] == pd.Timestamp("2024-03-05 09:30")
+    assert windows[-1][1] == pd.Timestamp("2024-03-05 12:29")
+
+
+def test_period_key_is_a_pair_of_ints_at_every_rung() -> None:
+    """The second component is NOT a natural calendar number.
+
+    It is a within-year discriminant that `_group_by_period` only ever
+    compares for EQUALITY -- never orders, never does arithmetic on -- which
+    is why the `year` rung can return a literal `0` and why `hour` can return
+    `dayofyear * 24 + hour`. That expression's upper bound is
+    `366 * 24 + 23 == 8807`, comfortably inside `int`, so the declared
+    `tuple[int, int]` return type carries all five rungs unchanged.
+    """
+    assert TimeChunkPlanner("day")._period_key(pd.Timestamp("2024-12-31")) == (2024, 366)
+    assert TimeChunkPlanner("hour")._period_key(
+        pd.Timestamp("2024-12-31 23:00")
+    ) == (2024, 8807)
+
+    annotation = inspect.signature(TimeChunkPlanner._period_key).return_annotation
+    assert str(annotation) == "tuple[int, int]", annotation
+
+    for granularity in TimeChunkPlanner.GRANULARITIES:
+        key = TimeChunkPlanner(granularity)._period_key(
+            pd.Timestamp("2024-12-31 23:00")
+        )
+        assert isinstance(key, tuple) and len(key) == 2, granularity
+        for component in key:
+            assert isinstance(component, int), (granularity, type(component))
+
+
+def test_a_granularity_period_key_does_not_handle_refuses_instead_of_guessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The drift hazard, and the only reachable path to `_period_key`'s
+    trailing raise.
+
+    `__init__` validates membership of `GRANULARITIES`; `_period_key` answers
+    each rung. Before the trailing raise existed, a token added to the first
+    list without a branch in the second FELL THROUGH to the month key --
+    silently producing month-sized windows under a name that promised
+    something else, which is a wrong memory bound that fails open. Only a
+    monkeypatched sixth token can reach the refusal, and reaching it is what
+    makes the class docstring's "both planners inherit it" claim true rather
+    than accidental.
+    """
+    monkeypatch.setattr(
+        TimeChunkPlanner,
+        "GRANULARITIES",
+        TimeChunkPlanner.GRANULARITIES + ("fortnight",),
+    )
+    planner = TimeChunkPlanner("fortnight")
+
+    with pytest.raises(ValueError) as excinfo:
+        planner.plan_from_timestamps(pd.to_datetime(["2024-01-02", "2024-02-02"]))
+
+    message = str(excinfo.value)
+    assert "fortnight" in message
+    assert "_period_key" in message
+
+
 def test_plan_calendar_and_plan_from_timestamps_share_one_period_rule() -> None:
     """`plan_calendar` is SIZING ONLY -- it runs before the download, when no
     timestamp axis exists. It must nonetheless agree with
@@ -781,6 +902,52 @@ def test_chunked_store_matches_the_unchunked_store(
             np.testing.assert_allclose(
                 left.astype(float), right.astype(float), err_msg=name
             )
+
+
+def test_a_day_granularity_conversion_reaches_zarr_identical_to_the_unchunked_store(
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    """The TRACER slice: a new rung carried all the way to disk.
+
+    `test_chunked_store_matches_the_unchunked_store` proves the chunked path
+    is faithful at `year`. This is the same proof at `day` -- nine windows
+    instead of three -- and it is what makes "a finer rung is a data point on
+    an existing axis, not a new mechanism" a demonstrated claim rather than an
+    architectural assertion. Asserting the two stores are IDENTICAL (variable
+    names, dtypes, coordinates and attributes, `anomaly_flag` included) rather
+    than merely numerically close is affordable here because `_raw_rows`
+    holds `close` flat on purpose, so no anomaly straddles a chunk boundary.
+    """
+    chunked_config = three_year_stock_config("day_chunked.zarr")
+    unchunked_config = three_year_stock_config("day_unchunked.zarr")
+
+    spy = _SpyStockDataset(chunked_config)
+    spy.from_raw_data_chunked(granularity="day")
+    StockDataset(unchunked_config).from_raw_data().save()
+
+    # One window per observed trading day, and the unbounded whole-range
+    # densifier is never reached -- the memory-bound property the chunking
+    # exists for, restated at the finest rung this phase ships.
+    assert spy.whole_range_calls == 0
+    assert len(spy.window_calls) == 9
+    for start, end in spy.window_calls:
+        assert start == end
+    for sizes in spy.window_sizes:
+        assert sizes["timestamp"] == 1
+        assert sizes["symbol"] == 3
+
+    xr.testing.assert_identical(
+        _panel(chunked_config.zarr_file_path),
+        _panel(unchunked_config.zarr_file_path),
+    )
+
+    # And the resume ledger on disk agrees: nine completed windows covering
+    # the nine observed rows, fingerprinted against the pinned roster.
+    ledger = ChunkLedger(ChunkLedger.default_path(chunked_config.zarr_file_path))
+    assert len(ledger.windows) == 9
+    assert sum(w["rows"] for w in ledger.windows) == 9
+    assert ledger.symbol_count == 3
+    assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
 
 
 def test_chunked_run_warns_about_the_cleaning_boundaries(
