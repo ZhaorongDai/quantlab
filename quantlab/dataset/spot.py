@@ -57,6 +57,57 @@ class SpotKlineDataset(MarketDataset):
         data = flag_anomalies(data)
         return data
 
+    def _raw_data_to_xr_window(
+        self,
+        start_date,
+        end_date,
+        symbols: list[str] | None = None,
+    ) -> xr.Dataset:
+        """Densify ONE time window, onto `symbols` when a pinned axis is given.
+
+        **A KNOWN non-memory-bounded implementation, said out loud rather than
+        discovered later.** The body below is `BaseDataset`'s inherited default
+        copied verbatim: it materialises the WHOLE configured range through
+        `_raw_data_to_xr()` and slices afterwards. So it bounds the WRITE and
+        does NOT bound the DENSIFY -- peak RAM is identical to a whole-window
+        conversion, and a chunked run additionally pays one redundant
+        whole-range densification per window plus a ledger sidecar. Chunking is
+        therefore NOT a free superset of whole-window conversion for crypto
+        spot (D-09).
+
+        Declared explicitly anyway, because `MarketDataset` re-declares this
+        seam abstract (D-08): joining the one conversion path is an obligation
+        a market dataset must not be able to satisfy by accident. The honest
+        answer for crypto spot today is "implemented, not yet bounded", and
+        this docstring is where that answer lives.
+
+        A genuinely bounded version is plausible and is deliberately NOT this
+        phase's work: the binance raw tier is monthly CSV, and
+        `quantlab/utils/file.py:file_date_filter` already pushes a date range
+        down over that file list, so a window could scan only the months it
+        covers instead of every month in the config.
+        `StockDataset._raw_data_to_xr_window` (`quantlab/dataset/stock.py`) is
+        the shape such an implementation takes -- push the filter down before
+        materialising, collect, reindex.
+
+        Consequently crypto spot stays OUT of the registry conversion entry
+        point this phase. That costs nothing operationally: binance is not a
+        registered source at all, so `registry.convert()` cannot reach this
+        class, and `ingest_binance_spot.py` keeps converting on its own
+        through `from_raw_data()`.
+
+        When `symbols` is supplied the returned panel's `symbol` coordinate
+        equals it exactly, including symbols with no row in this window --
+        those come back as all-NaN columns rather than being dropped, which is
+        the same value the whole-range densification already produces for an
+        untraded cell.
+        """
+        data = self._raw_data_to_xr()
+        data = data.sel(timestamp=slice(start_date, end_date))
+        if symbols is not None:
+            data = data.reindex(symbol=list(symbols))
+        return data
+
     @staticmethod
     def _spot_kline_to_df(csv_file: Path, before_2025: bool) -> pl.LazyFrame:
         df = pl.scan_csv(

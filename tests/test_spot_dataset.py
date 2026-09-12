@@ -11,7 +11,11 @@ import inspect
 from argparse import Namespace
 from typing import Callable
 
+import numpy as np
+import xarray as xr
+
 from quantlab.base.config import DatasetConfig
+from quantlab.base.data import BaseDataset
 from quantlab.dataset.spot import SpotKlineDataset
 
 
@@ -170,3 +174,90 @@ def test_get_crypto_currency_returns_the_currency_for_its_code() -> None:
     assert isinstance(btc, Currency)
     assert str(btc) == "BTC"
     assert str(usdt) == "USDT"
+
+
+def test_spot_windowed_seam_reproduces_the_inherited_whole_range_densify(
+    write_binance_csv: Callable[..., "__import__('pathlib').Path"],
+    binance_csv_rows: list[list],
+    tmp_path,
+) -> None:
+    """D-09: `SpotKlineDataset._raw_data_to_xr_window` is the INHERITED body,
+    declared explicitly so the class still satisfies `MarketDataset`'s new
+    abstract seam (D-08) -- not a rewrite.
+
+    Behaviour-preservation is the whole contract, so it is asserted twice and
+    from two directions: against `BaseDataset`'s own default called unbound on
+    the same instance, and against the whole-range densify sliced to the same
+    window by hand. A "helpful" rewrite that returns anything else -- a
+    date-pushdown that drops an untraded symbol, say -- reddens this test.
+    """
+    day1, day2 = binance_csv_rows[0], binance_csv_rows[1]
+    # BTCUSDT trades on both days; ETHUSDT only on day 1, so the day-2 window
+    # carries a symbol with no row -- the all-NaN-column case.
+    write_binance_csv(symbol="BTCUSDT", year_month="2024-01", rows=[day1, day2])
+    write_binance_csv(symbol="ETHUSDT", year_month="2024-01", rows=[day1])
+
+    dataset = SpotKlineDataset(_make_config(str(tmp_path)))
+    start = end = "2024-01-02"
+
+    actual = dataset._raw_data_to_xr_window(start, end)
+    inherited = BaseDataset._raw_data_to_xr_window(dataset, start, end)
+    expected = dataset._raw_data_to_xr().sel(timestamp=slice(start, end))
+
+    xr.testing.assert_identical(actual, inherited)
+    xr.testing.assert_identical(actual, expected)
+    assert actual.sizes["timestamp"] == 1
+
+
+def test_spot_windowed_seam_keeps_a_pinned_symbol_absent_from_the_window(
+    write_binance_csv: Callable[..., "__import__('pathlib').Path"],
+    binance_csv_rows: list[list],
+    tmp_path,
+) -> None:
+    """A pinned symbol with no row in this window comes back as an all-NaN
+    COLUMN rather than being dropped.
+
+    `from_raw_data_chunked()` refuses any window whose symbol axis differs
+    from the pinned whole-range axis, so dropping the column would not merely
+    change a value -- it would make every chunked run over crypto spot raise.
+    """
+    day1, day2 = binance_csv_rows[0], binance_csv_rows[1]
+    write_binance_csv(symbol="BTCUSDT", year_month="2024-01", rows=[day1, day2])
+    write_binance_csv(symbol="ETHUSDT", year_month="2024-01", rows=[day1])
+
+    dataset = SpotKlineDataset(_make_config(str(tmp_path)))
+    start = end = "2024-01-02"
+    # SOLUSDT has no row anywhere in the raw tier, ETHUSDT none in THIS window.
+    pinned = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+    windowed = dataset._raw_data_to_xr_window(start, end, symbols=pinned)
+    inherited = BaseDataset._raw_data_to_xr_window(
+        dataset, start, end, symbols=pinned
+    )
+
+    xr.testing.assert_identical(windowed, inherited)
+    assert [
+        str(symbol) for symbol in windowed["symbol"].values.tolist()
+    ] == pinned
+    for absent in ("ETHUSDT", "SOLUSDT"):
+        assert bool(
+            np.isnan(windowed["Close"].sel(symbol=absent).values).all()
+        ), f"{absent} should be an all-NaN column, not a dropped one"
+    assert not bool(
+        np.isnan(windowed["Close"].sel(symbol="BTCUSDT").values).any()
+    )
+
+
+def test_spot_windowed_seam_documents_that_it_is_not_memory_bounded() -> None:
+    """D-09's scope honesty lives in the code, not only in the planning tree.
+
+    The method exists to satisfy an abstract declaration; if its docstring
+    stopped saying that the implementation is unbounded and that the
+    `file_date_filter` pushdown is the pending mechanism, a reader would
+    reasonably conclude chunked conversion bounds memory for crypto spot. It
+    does not.
+    """
+    doc = SpotKlineDataset._raw_data_to_xr_window.__doc__ or ""
+
+    assert "file_date_filter" in doc
+    assert "non-memory-bounded" in doc

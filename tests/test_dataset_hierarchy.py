@@ -131,16 +131,29 @@ def test_base_dataset_is_abstract_and_market_dataset_subclasses_it() -> None:
     is one implementation of it, not the root of the hierarchy.
 
     `_raw_data_to_xr` is the ONE abstract method on the shared base -- the
-    single obligation every dataset kind genuinely has. The two KunQuant/
-    nautilus abstract methods are added by `MarketDataset` and by it alone,
-    which is the mechanism that keeps them off a membership panel.
+    single obligation every dataset kind genuinely has. THREE abstract methods
+    are added by `MarketDataset` and by it alone, which is the mechanism that
+    keeps them off a membership panel: the two KunQuant/nautilus ones, and
+    `_raw_data_to_xr_window` (D-08).
+
+    The third is the odd one out and deliberately so. `BaseDataset` keeps a
+    working concrete default for it -- a membership panel that cannot push a
+    date filter down still needs one -- so this is a RE-declaration, not a
+    relocation. For a market dataset the seam is the single entrance ticket to
+    chunked conversion, and leaving it merely overridable meant a source with
+    no windowed densify silently degraded to a whole-range densify per window,
+    announced only by a `logger.warning`. Abstract here turns that into a
+    `TypeError` at construction.
+
+    The `BaseDataset.__abstractmethods__` assertion below is therefore
+    UNCHANGED, and that is the point: it forbids the other placement.
     """
     assert inspect.isabstract(BaseDataset)
     assert issubclass(MarketDataset, BaseDataset)
     assert BaseDataset.__abstractmethods__ == frozenset({"_raw_data_to_xr"})
     assert set(MarketDataset.__abstractmethods__) - set(
         BaseDataset.__abstractmethods__
-    ) == {"_to_kunquant", "_to_nautilus"}
+    ) == {"_to_kunquant", "_to_nautilus", "_raw_data_to_xr_window"}
 
 
 def test_market_only_members_stay_on_market_dataset() -> None:

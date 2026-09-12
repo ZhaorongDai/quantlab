@@ -809,9 +809,13 @@ class _UnboundedDataset(BaseDataset):
 
     It implements only the one abstract member and inherits BOTH default
     seams, which is exactly the shape `BaseDataset`'s
-    correct-but-unbounded defaults exist to serve: it must still work, and
-    it must be told that chunking is bounding its write and not its
-    densification.
+    correct-but-unbounded defaults exist to serve: a non-market dataset for
+    which densify-then-slice is the intended behaviour, not a degradation.
+
+    Note it subclasses `BaseDataset`, NOT `MarketDataset`. That distinction
+    became load-bearing in 03.5 D-08: a `MarketDataset` with no windowed
+    densify no longer reaches this code path at all, because it cannot be
+    constructed.
     """
 
     def __init__(self, config: BaseDatasetConfig, panel: xr.Dataset):
@@ -836,12 +840,24 @@ def _ohlcv_panel() -> xr.Dataset:
     )
 
 
-def test_default_windowed_seam_warns_that_chunking_bounds_only_the_write(
+def test_default_windowed_seam_is_silent_for_a_non_market_dataset(
     tmp_path: Path,
 ) -> None:
-    """A class that has NOT overridden `_raw_data_to_xr_window` still works --
-    the default is correct -- but chunking then bounds the WRITE and not the
-    DENSIFY, and the memory win is absent. Say so.
+    """A NON-MARKET class that has not overridden `_raw_data_to_xr_window`
+    still works, and is no longer warned at about it (03.5 D-08).
+
+    This test previously asserted the opposite -- that a run emitted a
+    "not been overridden" warning. That warning was deleted with the
+    warn-and-degrade block it guarded, because it was answering the wrong
+    question in both directions. For a MARKET dataset the answer is now
+    structural: `MarketDataset` declares the seam abstract, so a source with
+    no windowed densify raises `TypeError` at construction rather than
+    degrading silently and logging about it mid-backfill. For a dataset kind
+    like this one, densify-then-slice IS the intended behaviour and there is
+    nothing to warn about.
+
+    What survives unchanged is the part that always mattered: the default is
+    correct, so the store is complete.
     """
     config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "unbounded.zarr"))
 
@@ -851,7 +867,7 @@ def test_default_windowed_seam_warns_that_chunking_bounds_only_the_write(
     finally:
         logger.remove(sink_id)
 
-    assert any("not been overridden" in m for m in messages), messages
+    assert not [m for m in messages if "_raw_data_to_xr_window" in m], messages
     # The default is correct, not merely tolerated: the store is complete.
     assert _panel(config.zarr_file_path).sizes["timestamp"] == 9
 
