@@ -62,13 +62,25 @@ be told the batch size it is pricing.
 Two pre-flight guards, and neither replaces the other
 ---------------------------------------------------
 `assert_acquisition_volume_fits` bounds raw disk bytes, request count and wall
-clock, and runs on EVERY run. `assert_dense_panel_fits` bounds the RAM of the
-dense `[timestamp, symbol]` panel the `1d`/`1m` conversion at the bottom of
-this script builds, and runs only when that conversion will actually happen --
-i.e. `--to-zarr` and not `--frequency tick`. Both run BEFORE the client is
+clock, and runs on EVERY run. `assert_chunked_panel_fits` bounds the RAM of the
+largest single WINDOW the `1d`/`1m` conversion at the bottom of this script
+materialises, and runs only when that conversion will actually happen -- i.e.
+`--to-zarr` and not `--frequency tick`. Both run BEFORE the client is
 constructed and before a single request. A `1m` window that comfortably passes
 the first can be three orders of magnitude over the second, so the second is
-sized with `bars_per_day=390` rather than at its daily default (CR-03).
+sized with `bars_per_day=390` rather than at its daily default (CR-03) -- that
+argument crosses to the chunked guard unchanged, because the axis it sizes is
+the timestamp axis either way (D-10 as amended 2026-09-11).
+
+The conversion itself is CHUNKED and it is the REGISTRY'S (03.5
+D-06/D-07/SC-6): this script hands `quantlab.acquisition.registry.convert()` a
+source descriptor and a dataset config and renders the `ConversionResult` it
+gets back, naming no Dataset subclass method. One window is densified and
+appended at a time onto a symbol axis pinned once over the whole range, so
+peak RAM scales with the window rather than the range; `--chunk` selects the
+granularity, `--on-new-listing` says what to do about a symbol that first
+appears mid-range, and an interrupted run resumes at its first unwritten
+window.
 
 The dense guard is CONDITIONAL for one reason: it measures the RAM of a
 densification. Refusing a raw-only fetch because a panel this run will never
@@ -128,7 +140,7 @@ import typing
 
 from dataclasses import replace
 
-from quantlab.acquisition.registry import DataSourceRegistry, run
+from quantlab.acquisition.registry import DataSourceRegistry, convert, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.config import stock_kline_config, universe_config
@@ -140,7 +152,10 @@ from quantlab.utils.cli import (
     add_universe_args,
     add_volume_guard_args,
     add_window_args,
+    add_chunk_args,
     apply_data_dir,
+    print_chunk_report,
+    print_conversion_result,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
     resolve_symbols,
@@ -294,6 +309,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # deliberate default change rather than a new capability: all three ingest
     # shells now stop at raw unless asked (G-03.4-1b).
     add_to_zarr_arg(parser)
+    # Both flags belong here for the same reason `--to-zarr` does: there is
+    # ONE conversion path (D-07), so the knobs that path takes are the same
+    # knobs at every door. This is the `--chunk` / `--on-new-listing`
+    # divergence disappearing as a CONSEQUENCE of sharing one conversion,
+    # not as new surface grown on this script (SC-6).
+    add_chunk_args(parser)
     return parser
 
 
@@ -378,43 +399,59 @@ if __name__ == "__main__":
         # the RAM of a densification that no longer always happens: refusing a
         # raw-only fetch on the size of a panel this run will never build
         # would be a fresh defect introduced by the fix, not a guard doing its
-        # job. Same shape as `ingest_us_equity.py`, which already wraps
-        # `assert_chunked_panel_fits` in `if args.to_zarr:`. The POSITION is
-        # unchanged -- still before `run(...)`, so the two AST ordering
-        # assertions in `tests/test_volume_guard.py` still read a guard line
-        # number below every densify line number.
+        # job. The POSITION is unchanged -- still before `run(...)`, so the
+        # AST ordering assertions in `tests/test_volume_guard.py` still read a
+        # guard line number below every densify line number.
         #
         # A SIBLING of the volume guard above, not a replacement -- its own
         # docstring says so twice. That one bounds raw DISK bytes, request
         # count and wall clock; this one bounds the RAM of the dense
-        # `[timestamp, symbol]` panel that `StockDataset.from_raw_data()` at
-        # the bottom of this script materialises via
-        # `.to_pandas().set_index([...]).to_xarray()`.
+        # `[timestamp, symbol]` panel the conversion at the bottom of this
+        # script materialises.
         #
-        # Without it the guard's own ADMITTED scenario kills the process AFTER
-        # a successful fetch: S&P-500 minute for one year passes the volume
-        # guard at ~4,900 requests and ~3 GB on disk, and then densifies to
-        # ~500 symbols x ~98,000 minute stamps x 7 variables x 8 bytes -- about
-        # 4 TB -- against a 4 GiB budget. `ingest_us_equity.py` already carries
-        # the chunked form of this guard for daily; the second front door
+        # The CHUNKED form, because it is the only form left. This door used
+        # to densify the whole window in one allocation, which is what made
+        # `assert_dense_panel_fits` the guard that applied; D-07 collapsed the
+        # conversion to one chunked path, so there is one guard to match, and
+        # it refuses a `--chunk` whose individual WINDOWS would not fit and
+        # names the finer granularity that would.
+        #
+        # Without a RAM guard here the volume guard's own ADMITTED scenario
+        # kills the process AFTER a successful fetch: S&P-500 minute for one
+        # year passes the volume guard at ~4,900 requests and ~3 GB on disk,
+        # and then densifies ~500 symbols x ~98,000 minute stamps x 7
+        # variables x 8 bytes against a 4 GiB budget. `ingest_us_equity.py`
+        # already carried the chunked form for daily; this front door
         # inherited none of it (CR-03).
         #
         # `bars_per_day` is REQUIRED here rather than defaulted: this guard
         # sizes the timestamp axis, and at `1m` a session is 390 rows. Left at
-        # 1 it would admit the very fetch it exists to refuse.
+        # 1 it would admit the very fetch it exists to refuse -- an
+        # understatement of 390x, which no test written before 03.5 would have
+        # caught, because the call would keep working and keep reporting a
+        # number (T-03.5-15). Carried across from the whole-window guard
+        # unchanged: the chunked pair takes the same keyword-only parameter
+        # and multiplies the same axis by it (D-10 as amended 2026-09-11).
         #
         # `num_variables` is Alpaca's own bar width (RAW_COLUMNS minus
         # timestamp/symbol/vendor), not the 12-column Tiingo EOD default -- a
         # guard that overstates refuses fetches that would have been fine,
         # which is how a guard gets deleted.
-        pricing.assert_dense_panel_fits(
-            category,
-            guard_start,
-            guard_end,
-            num_variables=len(
-                SOURCE.acquisition_cls.RAW_COLUMNS_BY_DATA_TYPE["bars"]
-            ) - 3,
-            bars_per_day=pricing.BARS_PER_DAY_BY_FREQUENCY[args.frequency],
+        #
+        # Bound to a local because `convert()` runs no guard of its own
+        # (D-11) and echoes a `predicted_peak_bytes` back into its result;
+        # `max_chunk_bytes` IS that prediction.
+        chunk_report = print_chunk_report(
+            pricing.assert_chunked_panel_fits(
+                category,
+                guard_start,
+                guard_end,
+                granularity=args.chunk,
+                num_variables=len(
+                    SOURCE.acquisition_cls.RAW_COLUMNS_BY_DATA_TYPE["bars"]
+                ) - 3,
+                bars_per_day=pricing.BARS_PER_DAY_BY_FREQUENCY[args.frequency],
+            )
         )
 
     print(
@@ -449,23 +486,47 @@ if __name__ == "__main__":
             "03.3 (D-18). The raw shards above are the deliverable."
         )
     elif args.to_zarr:
-        # Probed on a SYMBOL-FREE config, and the order is load-bearing.
-        # `BaseDataset`'s config setter calls `_reset_symbols()` for any
-        # non-None symbol list, and that calls `read()`, catches the
-        # not-yet-written store's FileNotFoundError and falls back to
-        # `from_raw_data()` -- a full densification at CONSTRUCTION time.
-        # So `StockDataset(ds_config)` on an empty raw tree raises the
-        # absent-root ValueError before any guard placed after it can run;
-        # the guard has to hold a dataset that never densifies. This is the
-        # same `symbols=None` reason `ingest_us_equity.py` states at its own
-        # `stock_kline_config` call (G-03.4-1a).
+        # Probed on a SYMBOL-FREE config. The reason for that is NOT the one
+        # this comment used to give: it argued that a non-None symbol list
+        # makes `BaseDataset`'s config setter call `_reset_symbols()`, which
+        # reads the store, catches a not-yet-written store's
+        # `FileNotFoundError` and recovers by densifying the FULL RANGE
+        # through `from_raw_data()` at CONSTRUCTION time -- so that
+        # `StockDataset(ds_config)` on an empty raw tree raised before the
+        # guard placed after it could run. `df7bfe9` deleted `_reset_symbols`
+        # outright; the setter now assigns `name`, normalises the two dates
+        # and stops, touching no symbol axis and reading no store. NO
+        # construction densifies any more, for any config.
+        #
+        # What survives is the property the probe needs: this dataset exists
+        # only to be asked `has_raw_data()`, and `replace(..., symbols=None)`
+        # says so AT THE CALL SITE rather than leaving a reader to prove it
+        # from the constructor. It is spelled identically in all three shells
+        # -- the same `symbols=None` shape `ingest_us_equity.py` states at its
+        # own `stock_kline_config` call (G-03.4-1a).
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
-        dataset = StockDataset(ds_config)
-        print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
-        dataset.from_raw_data().save()
-        print(f"Zarr store written at: {ds_config.zarr_file_path}")
+        print(
+            f"Converting/persisting symbols={ds_config.symbols} to Zarr in "
+            f"{args.chunk} windows (resumable; completed windows are skipped)"
+        )
+        # THE conversion, and it is the registry's -- not a Dataset method
+        # called from here (03.5 SC-6). The tick branch ABOVE is unaffected:
+        # it is reached first and stops at raw, and the parser-level refusal
+        # at `_validate_data_type` fires earlier still. `convert()`'s own
+        # absent-`dataset_cls` raise is a THIRD layer, for callers that never
+        # touch argparse -- none of the three replaces another.
+        conversion = convert(
+            SOURCE,
+            ds_config,
+            granularity=args.chunk,
+            on_new_listing=args.on_new_listing,
+            predicted_peak_bytes=chunk_report["max_chunk_bytes"],
+        )
+        # Rendered from the RETURNED object, so what is printed is what was
+        # actually written rather than what the config asked for.
+        print_conversion_result(conversion)
     else:
         # Said out loud rather than left as an absence, exactly like the tick
         # branch above: a conversion that silently did not happen is the same
