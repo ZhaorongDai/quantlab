@@ -530,13 +530,13 @@ divergence it cannot close, with "run a thin shell by hand" as the written inter
 CVT-02's requirement that the guard and predicted peak be visible in the UI is the same demand as
 Success Criterion 4, and is why that criterion is about ANSWERING rather than printing.
 
-**Plans:** 6 plans
+**Plans:** 1/6 plans executed
 
 Plans:
 
 **Wave 1**
 
-- [ ] 03.5-01-PLAN.md — TRACER: one Tiingo capability reaches Zarr through `registry.convert()`
+- [x] 03.5-01-PLAN.md — TRACER: one Tiingo capability reaches Zarr through `registry.convert()`
   end-to-end (`DatasetConfig.market` reinstated, `Capability.dataset_cls`, `ConversionResult`,
   `convert()`), then Alpaca's four rows and the three capability-resolution refusals (D-01..D-04)
 - [ ] 03.5-02-PLAN.md — Split `estimate_chunked_panel` out of `assert_chunked_panel_fits` so the
