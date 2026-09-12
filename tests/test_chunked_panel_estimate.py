@@ -18,15 +18,21 @@ This module pins the split:
   docstring.
 
 Every catalog below is `quantlab.utils.cli._explicit_symbol_catalog`, which
-overrides exactly one method (`estimate_dense_panel`) and touches no reference
-table, so these tests stay offline and credential-free.
+overrides only the two roster-provenance steps (`estimate_dense_panel` and
+`_validate_category`) and touches no reference table, so these tests stay
+offline and credential-free.
 
-**The category must be a REGISTERED one.** `_explicit_symbol_catalog` does NOT
-override `_validate_category`, and the chunked pair validates on its first line
-(the whole-window pair never does, which is why `tests/test_volume_guard.py` can
-pass a placeholder). The explicit catalog ignores the name anyway -- its
-override returns the synthetic roster regardless -- so `us_all` is passed purely
-to satisfy the validator.
+**Most tests below pass a REGISTERED category** (`us_all`), because the chunked
+pair validates on its first line while the whole-window pair never does -- which
+is why `tests/test_volume_guard.py` can pass a placeholder. The explicit catalog
+ignores the name anyway, its override returning the synthetic roster regardless,
+so `us_all` is passed purely to satisfy the validator.
+
+The ONE exception is deliberate and is the reason `_validate_category` is
+overridden at all: `EXPLICIT_SYMBOLS_CATEGORY` is the token
+`quantlab/utils/cli.py:volume_pricing` actually reports for a `--symbols` run,
+and it is not registered anywhere. See
+`test_the_sentinel_category_reaches_the_chunked_guard` at the bottom.
 """
 
 import datetime
@@ -35,7 +41,10 @@ import pytest
 
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.chunking import TimeChunkPlanner
-from quantlab.utils.cli import _explicit_symbol_catalog
+from quantlab.utils.cli import (
+    EXPLICIT_SYMBOLS_CATEGORY,
+    _explicit_symbol_catalog,
+)
 
 #: The remedy sentence SC-5 preserves. Asserted as a SUBSTRING of both the
 #: refusal and the per-chunk `remedy`, because "names a concrete narrowing that
@@ -469,3 +478,78 @@ def test_the_rendered_factors_multiply_out_at_every_frequency():
         _render(catalog.estimate_chunked_panel("us_all", *window, bars_per_day=390))
     )
     assert "x 390 row(s)/day)" in minute
+
+
+# ---------------------------------------------------------------------------
+# The sentinel category (CR-02)
+#
+# `volume_pricing` substitutes `_explicit_symbol_catalog` and reports the
+# category as `EXPLICIT_SYMBOLS_CATEGORY` whenever `--symbols` is given -- so
+# the guard the shells call is reached with a token that is not, and cannot be,
+# in `known_categories()`. `assert_dense_panel_fits` never validated, which is
+# why the explicit path worked for as long as it was the dense pair; D-07 moved
+# both Tiingo and Alpaca onto the chunked pair, which validates on its first
+# line. These are the assertions that turn that difference into a test.
+# ---------------------------------------------------------------------------
+
+
+def test_the_sentinel_category_reaches_the_chunked_guard():
+    """The DOCUMENTED invocation. `ingest_tiingo.py`'s own usage line is
+    `--symbols AAPL,MSFT --to-zarr`, which prices through the explicit catalog
+    under `EXPLICIT_SYMBOLS_CATEGORY`.
+
+    RED under: `_ExplicitSymbolCatalog` not overriding `_validate_category` --
+    the guard then dies with "Unknown universe category '(explicit --symbols
+    list)'" before a single byte is fetched, on every `--symbols`/`--limit` run
+    of either shell.
+    """
+    catalog = _explicit_symbol_catalog(2)
+
+    report = catalog.assert_chunked_panel_fits(
+        EXPLICIT_SYMBOLS_CATEGORY, "2024-01-01", "2025-12-31"
+    )
+
+    # Not merely "did not raise": the sentinel must produce the SAME numbers a
+    # registered token does, because the category name is not an input to any
+    # of this view's arithmetic.
+    assert report["chunks"] == catalog.estimate_chunked_panel(
+        "us_all", "2024-01-01", "2025-12-31"
+    )["chunks"]
+    assert report["advisory"]["symbols"] == 2
+
+
+def test_the_sentinel_is_admitted_at_every_chunked_entry_point():
+    """The estimator too, not just the raising wrapper. `print_chunk_report`
+    renders `estimate_chunked_panel`'s dict, and a shell that estimated for the
+    report and asserted for the gate would otherwise fail on whichever call
+    came first."""
+    catalog = _explicit_symbol_catalog(3)
+
+    report = catalog.estimate_chunked_panel(
+        EXPLICIT_SYMBOLS_CATEGORY, "2024-01-01", "2024-12-31"
+    )
+
+    assert report["advisory"]["symbols"] == 3
+    assert len(report["chunks"]) == 1
+
+
+def test_an_unregistered_non_sentinel_category_is_still_refused():
+    """The override admits ITS OWN token, not every token. A typo'd category
+    reaching the explicit view must still raise, naming the real ones --
+    otherwise `--universe nasdq100 --limit 50` would size a roster nobody
+    asked for.
+
+    RED under: `_validate_category` overridden as an unconditional `pass`,
+    which would make the CR-02 fix a silent removal of the typo guard on the
+    `--limit` path (where `volume_pricing` reports the REAL category name).
+    """
+    catalog = _explicit_symbol_catalog(2)
+
+    with pytest.raises(ValueError) as excinfo:
+        catalog.assert_chunked_panel_fits(
+            "nasdq100_constituent", "2024-01-01", "2024-12-31"
+        )
+
+    message = str(excinfo.value)
+    assert "nasdq100_constituent" in message
+    assert "us_all" in message

@@ -34,6 +34,7 @@ from loguru import logger
 from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.base.data import BaseDataset
+from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.dataset.backend import XrBackend
 from quantlab.dataset.stock import StockDataset
 
@@ -1244,6 +1245,143 @@ def test_a_failed_rebuild_restores_the_original_store(
         assert handle.read() == ledger_before
     assert not Path(f"{config.zarr_file_path}.superseded.tmp").exists()
     assert not Path(f"{ledger_path}.superseded.tmp").exists()
+
+
+class _CancelAfterNWindows(ProgressReporter):
+    """Drives the token from the loop's OWN `window_written` events.
+
+    Cancelling from a second thread would make "after exactly N windows" a
+    race the test cannot win on a fast machine; cancelling on the Nth
+    `window_written` lands the token deterministically between that window's
+    ledger record and the next window's top-of-loop check.
+    """
+
+    def __init__(self, token: CancelToken, after: int) -> None:
+        self._token = token
+        self._after = after
+        self.written = 0
+
+    def emit(self, event: ProgressEvent) -> None:
+        if event.kind == "window_written":
+            self.written += 1
+            if self.written >= self._after:
+                self._token.cancel()
+
+
+def test_a_cancelled_rebuild_restores_the_original_store(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """A CANCEL is the third exit from the loop, and it is a halfway exit --
+    not a landing.
+
+    The `break` on cancel leaves the loop through the `else:` (success) arm,
+    which is where the superseded copies are discarded. Left alone, a
+    cancelled rebuild therefore `rmtree`s the ONLY complete record of what the
+    store held, keeping a truncated partial in its place at the path every
+    reader resolves. That is silent, unrecoverable data loss on the one
+    strategy that exists BECAUSE raw can no longer reconstruct the old store
+    (symbols dropped from the roster have no raw rows in the current window).
+
+    RED under: routing the cancel exit to `_discard_rebuild_asides` -- i.e.
+    the `else:` arm not telling a cancel apart from a completed rebuild.
+    """
+    config = _built_over_ab(growing_roster)
+    before = _panel(config.zarr_file_path)
+    ledger_path = ChunkLedger.default_path(config.zarr_file_path)
+    with open(ledger_path, "r", encoding="utf-8") as handle:
+        ledger_before = handle.read()
+
+    token = CancelToken()
+    dataset = StockDataset(config)
+    dataset.from_raw_data_chunked(
+        granularity="year",
+        on_new_listing="rebuild",
+        reporter=_CancelAfterNWindows(token, after=1),
+        cancel=token,
+    )
+
+    result = dataset.last_chunk_result
+    assert result.cancelled is True
+    assert result.windows_written < result.windows_planned
+    # The result says the appended windows did not survive, so a renderer is
+    # not left describing work that no longer exists on disk.
+    assert result.rebuild_rolled_back is True
+
+    # The pre-rebuild store is still REACHABLE, and unchanged.
+    restored = _panel(config.zarr_file_path)
+    assert restored["symbol"].values.tolist() == ["A", "B"]
+    xr.testing.assert_identical(restored, before)
+    with open(ledger_path, "r", encoding="utf-8") as handle:
+        assert handle.read() == ledger_before
+    # Restored by RENAME, so no aside is left behind to pay for twice.
+    aside = BaseDataset.SUPERSEDED_SUFFIX
+    assert not Path(f"{config.zarr_file_path}{aside}").exists()
+    assert not Path(f"{ledger_path}{aside}").exists()
+
+
+def test_a_rebuild_cancelled_before_the_first_window_keeps_everything(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """The degenerate case, which is the WORSE one: a token already cancelled
+    when the loop starts wrote nothing at all, so discarding the asides
+    removed the store, its ledger AND the backup and put nothing in their
+    place -- leaving `ConversionResult.zarr_path` naming a directory that no
+    longer exists.
+
+    RED under: the same `else:`-arm bug as the test above, with zero windows
+    written to soften it.
+    """
+    config = _built_over_ab(growing_roster)
+    before = _panel(config.zarr_file_path)
+    ledger_path = ChunkLedger.default_path(config.zarr_file_path)
+
+    token = CancelToken()
+    token.cancel()
+    dataset = StockDataset(config)
+    dataset.from_raw_data_chunked(
+        granularity="year", on_new_listing="rebuild", cancel=token
+    )
+
+    result = dataset.last_chunk_result
+    assert result.cancelled is True
+    assert result.windows_written == 0
+    assert result.rebuild_rolled_back is True
+
+    assert Path(result.zarr_path).exists()
+    assert Path(ledger_path).exists()
+    xr.testing.assert_identical(_panel(config.zarr_file_path), before)
+    aside = BaseDataset.SUPERSEDED_SUFFIX
+    assert not Path(f"{config.zarr_file_path}{aside}").exists()
+
+
+def test_a_completed_rebuild_still_discards_the_superseded_copies(
+    growing_roster: _GrowingRoster,
+) -> None:
+    """The other side of the cancel split: a rebuild that RAN TO THE END is a
+    landing, so the superseded copies are dropped rather than kept forever at
+    twice the store's size.
+
+    RED under: over-correcting the fix into "never discard on any exit".
+    """
+    config = _built_over_ab(growing_roster)
+    ledger_path = ChunkLedger.default_path(config.zarr_file_path)
+
+    dataset = StockDataset(config)
+    dataset.from_raw_data_chunked(
+        granularity="year", on_new_listing="rebuild"
+    )
+
+    result = dataset.last_chunk_result
+    assert result.cancelled is False
+    assert result.rebuild_rolled_back is False
+    assert _panel(config.zarr_file_path)["symbol"].values.tolist() == [
+        "A",
+        "B",
+        "C",
+    ]
+    aside = BaseDataset.SUPERSEDED_SUFFIX
+    assert not Path(f"{config.zarr_file_path}{aside}").exists()
+    assert not Path(f"{ledger_path}{aside}").exists()
 
 
 def test_an_unknown_strategy_lists_the_accepted_values(

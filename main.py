@@ -9,6 +9,7 @@ ds = StockDataset(
         symbols=('NVDA', 'AMZN', 'AMD'),
         catalog_path='',
         raw_data_dir_path='',
+        market='us_equity',
         frequency='1d',
     )
 )
