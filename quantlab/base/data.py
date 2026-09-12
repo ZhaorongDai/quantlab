@@ -348,7 +348,13 @@ class BaseDataset(ABC):
         A subclass whose raw source can push a date/column filter DOWN before
         materialisation (a `pl.LazyFrame` over parquet, say) overrides this
         and gets the memory bound; one that cannot inherits a working, slower
-        default and is warned about it at run time.
+        default.
+
+        No run-time warning accompanies that default any more, on either seam.
+        For a market dataset the obligation is enforced at construction
+        instead -- `MarketDataset` re-declares `_raw_data_to_xr_window`
+        abstract (D-08) -- and for a non-market dataset the default is the
+        intended behaviour rather than a degradation worth warning about.
         """
         data = self._raw_data_to_xr()
         symbols = [str(symbol) for symbol in data["symbol"].values.tolist()]
@@ -366,6 +372,20 @@ class BaseDataset(ABC):
         applies: **this default is correct but NOT memory-bounded**, because
         it densifies the whole range and slices afterwards. Overriding it is
         what turns chunking from a bounded WRITE into a bounded DENSIFY.
+
+        **Who still inherits this.** Non-market datasets -- an index-membership
+        panel, say, which subclasses `BaseDataset` directly -- and for them the
+        default is the intended behaviour, not a degradation. `MarketDataset`
+        RE-DECLARES this method `@abstractmethod` (D-08), so a market dataset
+        never reaches this body: the seam is the single entrance ticket to
+        chunked conversion, and an obligation that can be met by accident is
+        not an obligation. A market source with no windowed densify used to
+        get a `logger.warning` and silent degradation to whole-range densify
+        plus slice; it now fails to instantiate, with the missing method
+        named. `StockDataset._raw_data_to_xr_window` is the reference
+        implementation a new author copies the shape of;
+        `SpotKlineDataset._raw_data_to_xr_window` is what an honest
+        not-yet-bounded implementation looks like.
 
         When `symbols` is supplied the returned panel's `symbol` coordinate
         equals it exactly, including symbols with no row in this window --
@@ -501,19 +521,6 @@ class BaseDataset(ABC):
                 f"{self.class_name}: unknown on_new_listing strategy "
                 f"{on_new_listing!r}; accepted values are "
                 f"{list(self.NEW_LISTING_STRATEGIES)}."
-            )
-
-        if (
-            type(self)._raw_data_to_xr_window
-            is BaseDataset._raw_data_to_xr_window
-        ):
-            logger.warning(
-                f"{self.class_name}: _raw_data_to_xr_window has not been "
-                f"overridden, so each window is produced by densifying the "
-                f"WHOLE range and slicing. Chunking still bounds the write "
-                f"and still gives a resumable run, but the memory win is "
-                f"absent -- override the seam for a source that can push the "
-                f"date filter down before materialising."
             )
 
         symbols, timestamps = self._raw_axes_in_range()
@@ -1100,6 +1107,17 @@ class MarketDataset(BaseDataset):
     what lets a dataset with no bar, no catalog and no KunQuant
     representation subclass the shared base directly instead of carrying two
     meaningless `raise NotImplementedError` stubs (D-03).
+
+    A SIXTH member is owned here for a different reason:
+    `_raw_data_to_xr_window` is re-declared `@abstractmethod` (D-08). It is
+    not market-specific -- `BaseDataset` keeps a working concrete default for
+    the dataset kinds that cannot push a date filter down -- but for a market
+    dataset it is the single entrance ticket to chunked conversion, which is
+    the only conversion mode the registry entry point offers. Making it
+    abstract HERE and nowhere else moves "this source has no windowed
+    densify" from a `logger.warning` nobody reads during a multi-hour
+    backfill to a `TypeError` at the new author's first construction, while
+    leaving the shared base's default intact for everyone else.
     """
 
     # Narrowed for readers and type checkers only
@@ -1138,3 +1156,11 @@ class MarketDataset(BaseDataset):
     def _to_nautilus(
         self, data: xr.Dataset, venue: str, n_jobs: int
     ) -> tuple[list[list], list[Instrument]]: ...
+
+    @abstractmethod
+    def _raw_data_to_xr_window(
+        self,
+        start_date,
+        end_date,
+        symbols: list[str] | None = None,
+    ) -> xr.Dataset: ...

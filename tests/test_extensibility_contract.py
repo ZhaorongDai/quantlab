@@ -89,6 +89,13 @@ class FakeDataset(MarketDataset):
     `_to_kunquant`/`_to_nautilus` are not exercised by the lifecycle under
     test (`from_raw_data`/`save`/`read`), so they simply raise
     `NotImplementedError`.
+
+    `_raw_data_to_xr_window` IS implemented, and had to be: 03.5 D-08 makes
+    it abstract on `MarketDataset`, so a new market source that omits it
+    cannot be constructed at all. That is the point of this fixture as a
+    contract test -- the obligation a genuinely novel subclass must meet is
+    now visible here, in the smallest honest implementation of it, instead of
+    being discovered months later as an out-of-memory kill.
     """
 
     def _raw_data_to_xr(self) -> xr.Dataset:
@@ -121,6 +128,23 @@ class FakeDataset(MarketDataset):
 
     def _to_nautilus(self, data: xr.Dataset, venue: str, n_jobs: int):
         raise NotImplementedError
+
+    def _raw_data_to_xr_window(
+        self, start_date, end_date, symbols: "list[str] | None" = None
+    ) -> xr.Dataset:
+        """The windowed densify `MarketDataset` requires (03.5 D-08).
+
+        This fake source materialises its whole panel in memory anyway, so
+        there is no date filter to push down and the body is the same
+        densify-then-slice `BaseDataset` offers non-market datasets. A real
+        source with a filterable raw tier scans only the window -- see
+        `StockDataset._raw_data_to_xr_window`.
+        """
+        data = self._raw_data_to_xr()
+        data = data.sel(timestamp=slice(start_date, end_date))
+        if symbols is not None:
+            data = data.reindex(symbol=list(symbols))
+        return data
 
 
 def _fake_dataset_config(tmp_path: Path) -> DatasetConfig:
