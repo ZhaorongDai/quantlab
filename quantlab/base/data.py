@@ -101,6 +101,18 @@ class ConversionResult:
     #: this flag it would be indistinguishable from a run that had only two
     #: windows of work to do.
     cancelled: bool = False
+    #: Whether an `on_new_listing='rebuild'` was UNDONE before this result was
+    #: published, i.e. the superseded store and ledger were renamed back and
+    #: the partial rebuild was discarded. Only ever `True` together with
+    #: `cancelled`: a rebuild stopped at a window boundary has not re-densified
+    #: every window, so the superseded copies are still the authoritative ones
+    #: and rolling back is what keeps them reachable.
+    #:
+    #: It is what makes `windows_written` / `rows_written` READABLE on that
+    #: path: those counts describe what the loop appended, and a rollback threw
+    #: exactly that away. A renderer that ignores this flag will report work
+    #: that no longer exists on disk.
+    rebuild_rolled_back: bool = False
 
 
 class BaseDataset(ABC):
@@ -634,6 +646,9 @@ class BaseDataset(ABC):
         ledger, rebuild_asides = self._reconcile_new_listings(
             symbols, ledger, append_dim, on_new_listing
         )
+        # Set BEFORE the `try`, so the result construction below can read it on
+        # every path out of the loop rather than only the one that assigns it.
+        rebuild_rolled_back = False
 
         try:
             # Before the first irreversible append, not after: the ledger and
@@ -683,11 +698,23 @@ class BaseDataset(ABC):
                 # after materialising would pay for a window nobody wanted.
                 if cancel is not None and cancel.is_cancelled():
                     cancelled = True
+                    # The resumability promise is TRUE of an ordinary run --
+                    # the ledger records completed windows -- and FALSE of a
+                    # rebuild, whose partial store is rolled back below so the
+                    # superseded copies survive. Saying so here rather than
+                    # letting the operator discover it from the rollback line.
+                    resumability = (
+                        "This run is a rebuild, so the windows written so far "
+                        "will be DISCARDED and the pre-rebuild store restored; "
+                        "a later rebuild starts over."
+                        if rebuild_asides is not None
+                        else "Every recorded window stays resumable."
+                    )
                     logger.warning(
                         f"{self.class_name}: cancel observed at the "
                         f"{start.date()}..{end.date()} window boundary; "
                         f"stopping with {windows_written} window(s) written "
-                        f"this run. Every recorded window stays resumable."
+                        f"this run. {resumability}"
                     )
                     self._emit_progress(
                         reporter,
@@ -869,7 +896,32 @@ class BaseDataset(ABC):
             raise
         else:
             if rebuild_asides is not None:
-                self._discard_rebuild_asides(rebuild_asides)
+                if cancelled:
+                    # A cancel is a HALFWAY EXIT, not a landing. The loop
+                    # `break`s out of the middle of a re-densify, so the
+                    # partial store at the authoritative path holds only the
+                    # windows this run got to -- and the superseded copies are
+                    # still the only complete record of everything the store
+                    # held before. Discarding them here (which this arm did
+                    # until now, because `break` lands in the SUCCESS arm)
+                    # is silent, unrecoverable data loss: `rebuild` exists
+                    # precisely for the case where raw can no longer
+                    # reconstruct what the store had (symbols dropped from
+                    # the roster have no raw rows in the current window).
+                    #
+                    # Treated like the exception arm rather than merely
+                    # KEEPING the asides, because keeping them would leave
+                    # the TRUNCATED partial store sitting at the path every
+                    # reader resolves, with the complete copy hidden behind a
+                    # `.superseded.tmp` suffix nothing looks at. A rollback
+                    # costs the cancelled run's re-densify work; it does not
+                    # cost data.
+                    self._restore_rebuild_asides(
+                        rebuild_asides, reason="cancelled"
+                    )
+                    rebuild_rolled_back = True
+                else:
+                    self._discard_rebuild_asides(rebuild_asides)
 
         # Published only on the SUCCESS path, and deliberately: the `except`
         # arm above re-raises, so a caller that sees an exception must not
@@ -888,6 +940,7 @@ class BaseDataset(ABC):
             peak_window_bytes=peak_window_bytes,
             resumed=windows_skipped > 0,
             cancelled=cancelled,
+            rebuild_rolled_back=rebuild_rolled_back,
         )
         return self
 
@@ -1238,8 +1291,17 @@ class BaseDataset(ABC):
         # first run: no store, no recorded windows, `assert_consistent` passes.
         return ChunkLedger(asides["ledger"], append_dim=append_dim), asides
 
-    def _restore_rebuild_asides(self, asides: dict) -> None:
-        """Put the pre-rebuild store and ledger back, discarding the partial."""
+    def _restore_rebuild_asides(
+        self, asides: dict, *, reason: str = "failed"
+    ) -> None:
+        """Put the pre-rebuild store and ledger back, discarding the partial.
+
+        `reason` names WHY the rebuild is being undone, so the operator reads
+        "failed" for an exception and "cancelled" for their own stop rather
+        than one wording standing in for both. It is the only difference
+        between the two callers: an exception and a cancel are the same
+        halfway exit as far as the superseded copies are concerned.
+        """
         if Path(asides["store"]).exists():
             shutil.rmtree(asides["store"], ignore_errors=True)
         os.replace(asides["store_aside"], asides["store"])
@@ -1247,8 +1309,10 @@ class BaseDataset(ABC):
         if asides["ledger_existed"]:
             os.replace(asides["ledger_aside"], asides["ledger"])
         logger.warning(
-            f"{self.class_name}: the rebuild of {asides['store']} failed; the "
-            f"pre-rebuild store and ledger have been restored."
+            f"{self.class_name}: the rebuild of {asides['store']} was "
+            f"{reason}; the pre-rebuild store and ledger have been restored. "
+            f"Any window this run re-densified has been discarded with the "
+            f"partial store -- a resumed rebuild starts over."
         )
 
     @staticmethod
