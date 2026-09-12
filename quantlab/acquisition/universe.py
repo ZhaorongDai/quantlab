@@ -1833,7 +1833,22 @@ class UniverseCatalog:
             f"MAX_DENSE_PANEL_BYTES deliberately if this machine has the RAM."
         )
 
-    def assert_chunked_panel_fits(
+    #: The narrowing an over-budget chunk carries on its own `remedy` field.
+    #:
+    #: Per CHUNK rather than per run (DATA-08): a caller asking what a
+    #: conversion costs wants the remedy beside the window that needs it, not
+    #: one sentence for a report listing five windows of which two overflow.
+    #: The refusal in `assert_chunked_panel_fits()` states the same narrowing
+    #: inside its own message rather than splicing this constant in, because
+    #: that message is what SC-5 preserves BYTE-IDENTICALLY and a refactor that
+    #: quietly reworded it through a shared constant is exactly the drift SC-5
+    #: is about.
+    _CHUNK_REMEDY = (
+        "Pass a finer --chunk (year -> quarter -> month), or raise "
+        "MAX_DENSE_PANEL_BYTES deliberately if this machine has the RAM."
+    )
+
+    def estimate_chunked_panel(
         self,
         category: str,
         start_date: str,
@@ -1841,18 +1856,30 @@ class UniverseCatalog:
         granularity: str = "year",
         num_variables: int = 12,
         bytes_per_value: int = 8,
+        *,
+        bars_per_day: int = 1,
     ) -> dict:
-        """Size a CHUNKED densification: refuse per chunk, advise on the total.
+        """Size a CHUNKED densification. Answer; never refuse.
 
-        The sibling of `assert_dense_panel_fits()`, not its replacement. That
-        one answers "does this whole window fit in RAM at once", which is the
-        right question for `from_raw_data()`. This one answers "does one
-        `granularity` window fit", which is the right question for
-        `from_raw_data_chunked()` -- and it deliberately does NOT raise merely
-        because the whole-range total is over budget, because making that
-        total achievable is precisely what chunking is for (D-05). The total
-        is still returned and printed, as a non-raising advisory, so a caller
-        sees what they are committing to.
+        What `estimate_dense_panel()` is to `assert_dense_panel_fits()`, this
+        is to `assert_chunked_panel_fits()` below (D-10): ONE copy of the
+        arithmetic, living in the method that answers, and a thin wrapper that
+        turns the answer into a refusal.
+
+        **The loop runs to completion, and that is the whole point.** Every
+        planned window is returned -- over-budget ones included -- each
+        carrying `fits` and, when it does not fit, a `remedy` naming the
+        concrete narrowing that would. The raise-inside-the-loop this replaced
+        returned only the windows BEFORE the first overflow, so a caller whose
+        second window was too large never learned what the fifth cost. SC-4
+        asks what peak a conversion predicts WITHOUT starting it, and DATA-08
+        asks for the remedy per over-budget window; neither is answerable from
+        a list truncated at the first refusal.
+
+        This method NEVER raises for a budget reason. It still raises for a
+        malformed category or date (`_validate_category` /
+        `_normalize_iso_date`) and for `bars_per_day < 1` -- those are input
+        errors rather than verdicts, exactly as in `estimate_dense_panel()`.
 
         **Each chunk is sized on the PINNED WHOLE-RANGE symbol count**, never
         on the roster that overlaps that chunk. `from_raw_data_chunked()`
@@ -1863,6 +1890,17 @@ class UniverseCatalog:
         understate the real allocation, and let the OOM back in -- which is
         the single easiest thing to get subtly wrong here.
 
+        **`bars_per_day` sizes the TIMESTAMP axis, not the trading day**
+        (D-10 as amended 2026-09-11). At `1m` a session is 390 rows
+        (`BARS_PER_DAY_BY_FREQUENCY`), so a minute window is 390x the dense
+        grid of the same window at `1d`; each chunk's timestamp axis is
+        `trading_days * bars_per_day`, and the whole-range advisory is sized
+        the same way so the total printed above the chunks cannot sit three
+        orders of magnitude below them. Keyword-only and defaulted to `1`
+        because `1` is the ARITHMETIC IDENTITY -- one row per session is what
+        every pre-existing caller already computes -- which is what makes this
+        widening backward compatible by construction rather than by promise.
+
         **Why calendar windows are correct in this method and nowhere else.**
         Sizing runs BEFORE the download, when no timestamp axis exists to
         plan against, so `TimeChunkPlanner.plan_calendar()` is the only
@@ -1871,20 +1909,33 @@ class UniverseCatalog:
         be handed to a densifier -- the write loop uses
         `plan_from_timestamps()` against the real observed axis.
 
-        Returns `{"granularity", "advisory", "chunks", "max_chunk",
-        "max_chunk_bytes"}`, so the caller can print without recomputing.
+        Returns `{"granularity", "bars_per_day", "advisory", "chunks",
+        "max_chunk", "max_chunk_bytes"}` (D-12: a dict, the shape
+        `estimate_dense_panel()` and every existing caller of this pair
+        already index), where each chunk is `{"start", "end", "symbols",
+        "trading_days", "dense_cells", "dense_bytes", "fits", "remedy"}`.
         """
         self._validate_category(category)
         start_date = self._normalize_iso_date(start_date, "start_date")
         end_date = self._normalize_iso_date(end_date, "end_date")
 
         planner = TimeChunkPlanner(granularity)
+        # `bars_per_day` is forwarded, not applied to the chunks alone: an
+        # advisory sized at the default while every chunk beneath it is sized
+        # at 390 would print a whole-range total three orders of magnitude
+        # BELOW the per-chunk numbers directly under it. This call is also
+        # where a `bars_per_day < 1` is rejected -- one validation, reused,
+        # rather than a second dialect of the same message here.
         advisory = self.estimate_dense_panel(
-            category, start_date, end_date, num_variables, bytes_per_value
+            category,
+            start_date,
+            end_date,
+            num_variables,
+            bytes_per_value,
+            bars_per_day=bars_per_day,
         )
         pinned_symbols = advisory["symbols"]
 
-        gib = 1024**3
         chunks: list[dict] = []
         for window_start, window_end in planner.plan_calendar(start_date, end_date):
             window_days = (
@@ -1899,41 +1950,114 @@ class UniverseCatalog:
                 ),
                 1,
             )
-            dense_cells = pinned_symbols * trading_days
+            # The TIMESTAMP axis, which is what a dense panel is allocated on.
+            # `trading_days` is a FACTOR of it, never a replacement: the
+            # 252/365.25 derivation above -- half-to-even `round()` and the
+            # `max(..., 1)` floor included -- is untouched.
+            dense_cells = pinned_symbols * trading_days * bars_per_day
             dense_bytes = dense_cells * num_variables * bytes_per_value
-            chunk = {
-                "start": window_start,
-                "end": window_end,
-                "symbols": pinned_symbols,
-                "trading_days": trading_days,
-                "dense_cells": dense_cells,
-                "dense_bytes": dense_bytes,
-            }
-            if dense_bytes > self.MAX_DENSE_PANEL_BYTES:
-                raise ValueError(
-                    f"Refusing to densify {category} in {granularity} chunks: "
-                    f"the window {window_start}..{window_end} alone is "
-                    f"{pinned_symbols} pinned symbol(s) x {trading_days} "
-                    f"trading days x {num_variables} variables = "
-                    f"{dense_bytes / gib:.2f} GiB, over the "
-                    f"{self.MAX_DENSE_PANEL_BYTES / gib:.2f} GiB budget. Every "
-                    f"window is materialised on the whole-range symbol axis, "
-                    f"so a chunk does not get smaller by containing fewer "
-                    f"listed tickers -- only by covering less time. Pass a "
-                    f"finer --chunk (year -> quarter -> month), or raise "
-                    f"MAX_DENSE_PANEL_BYTES deliberately if this machine has "
-                    f"the RAM."
-                )
-            chunks.append(chunk)
+            fits = dense_bytes <= self.MAX_DENSE_PANEL_BYTES
+            chunks.append(
+                {
+                    "start": window_start,
+                    "end": window_end,
+                    "symbols": pinned_symbols,
+                    "trading_days": trading_days,
+                    "dense_cells": dense_cells,
+                    "dense_bytes": dense_bytes,
+                    "fits": fits,
+                    "remedy": None if fits else self._CHUNK_REMEDY,
+                }
+            )
 
+        # `max()` returns the FIRST maximal element, so tied windows resolve to
+        # the EARLIEST one and `chunks` stays in ascending window order. Stated
+        # because the tie-break is depended on, not because it is surprising.
         max_chunk = max(chunks, key=lambda c: c["dense_bytes"]) if chunks else None
         return {
             "granularity": granularity,
+            "bars_per_day": bars_per_day,
             "advisory": advisory,
             "chunks": chunks,
             "max_chunk": max_chunk,
             "max_chunk_bytes": max_chunk["dense_bytes"] if max_chunk else 0,
         }
+
+    def assert_chunked_panel_fits(
+        self,
+        category: str,
+        start_date: str,
+        end_date: str,
+        granularity: str = "year",
+        num_variables: int = 12,
+        bytes_per_value: int = 8,
+        *,
+        bars_per_day: int = 1,
+    ) -> dict:
+        """Raise if any ONE `granularity` window would exceed
+        `MAX_DENSE_PANEL_BYTES`; otherwise return
+        `estimate_chunked_panel()`'s report unchanged.
+
+        The sibling of `assert_dense_panel_fits()`, not its replacement. That
+        one answers "does this whole window fit in RAM at once", which is the
+        right question for `from_raw_data()`. This one answers "does one
+        `granularity` window fit", which is the right question for
+        `from_raw_data_chunked()` -- and it deliberately does NOT raise merely
+        because the whole-range total is over budget, because making that
+        total achievable is precisely what chunking is for (D-05). The total
+        is still returned and printed, as a non-raising advisory, so a caller
+        sees what they are committing to.
+
+        A thin wrapper by design (D-10): every number below is
+        `estimate_chunked_panel()`'s, so the two can never disagree about what
+        a window costs. Read that method for why chunks are sized on the
+        pinned whole-range roster, why calendar windows are acceptable here,
+        and what `bars_per_day` does.
+
+        `bars_per_day` is forwarded, not merely accepted. A parameter that
+        reached the estimate but not the refusal would compute the right
+        number and then decline to act on it -- the guard would admit the very
+        `1m` fetch it exists to refuse (`T-03.5-15`).
+        """
+        report = self.estimate_chunked_panel(
+            category,
+            start_date,
+            end_date,
+            granularity,
+            num_variables,
+            bytes_per_value,
+            bars_per_day=bars_per_day,
+        )
+        offender = next(
+            (chunk for chunk in report["chunks"] if not chunk["fits"]), None
+        )
+        if offender is None:
+            return report
+
+        gib = 1024**3
+        # Appended only above the default, and worded as `assert_dense_panel_fits`
+        # words it. Without the conditional the daily refusal every existing
+        # caller reads would grow a factor; with the factor OMITTED at 390 the
+        # three printed terms would not multiply to the printed byte count, and
+        # a user checking the arithmetic would find the guard lying about why it
+        # refused. Absorbing the intraday case into `num_variables` or
+        # `bytes_per_value` was considered and rejected for that reason.
+        rows_per_day = "" if bars_per_day == 1 else f" x {bars_per_day} row(s)/day"
+        raise ValueError(
+            f"Refusing to densify {category} in {granularity} chunks: "
+            f"the window {offender['start']}..{offender['end']} alone is "
+            f"{offender['symbols']} pinned symbol(s) x "
+            f"{offender['trading_days']} "
+            f"trading days{rows_per_day} x {num_variables} variables = "
+            f"{offender['dense_bytes'] / gib:.2f} GiB, over the "
+            f"{self.MAX_DENSE_PANEL_BYTES / gib:.2f} GiB budget. Every "
+            f"window is materialised on the whole-range symbol axis, "
+            f"so a chunk does not get smaller by containing fewer "
+            f"listed tickers -- only by covering less time. Pass a "
+            f"finer --chunk (year -> quarter -> month), or raise "
+            f"MAX_DENSE_PANEL_BYTES deliberately if this machine has "
+            f"the RAM."
+        )
 
     #: Rows a single symbol-day yields at each `enums.data.Frequency` token.
     #:

@@ -115,6 +115,7 @@ from quantlab.utils.cli import (
     add_volume_guard_args,
     add_window_args,
     apply_data_dir,
+    print_chunk_report,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
     resolve_symbols,
@@ -157,34 +158,6 @@ _SYMBOL_PREVIEW = 10
 _GIB = 1024**3
 
 
-def _print_chunk_report(report: dict) -> None:
-    """The two figures a user needs before committing to a conversion: what
-    the whole range totals (advisory only -- chunking is what makes it
-    achievable) and what the LARGEST single window will actually allocate,
-    which is the number the budget applies to (D-05).
-    """
-    largest = report["max_chunk"]
-    print(f"  chunk granularity: {report['granularity']}")
-    print(f"  chunk count:       {len(report['chunks'])}")
-    print(
-        f"  whole-range total: "
-        f"{report['advisory']['dense_bytes'] / _GIB:.2f} GiB "
-        f"(advisory -- chunking never materialises this at once)"
-    )
-    if largest is not None:
-        print(
-            f"  largest chunk:     {largest['dense_bytes'] / _GIB:.2f} GiB "
-            f"({largest['start']}..{largest['end']}, "
-            f"{largest['symbols']} pinned symbols x "
-            f"{largest['trading_days']} trading days)"
-        )
-    print(
-        f"  per-chunk budget:  "
-        f"{UniverseCatalog.MAX_DENSE_PANEL_BYTES / _GIB:.2f} GiB "
-        f"(a finer --chunk is the remedy above this)"
-    )
-
-
 def _print_estimate(catalog: UniverseCatalog, args, symbols: tuple[str, ...]) -> None:
     estimate = catalog.estimate_dense_panel(
         args.category, args.start_date, args.end_date
@@ -198,7 +171,7 @@ def _print_estimate(catalog: UniverseCatalog, args, symbols: tuple[str, ...]) ->
     print(f"  density:           {estimate['density']:.3f}")
     print(f"  dense float64:     {estimate['dense_bytes'] / _GIB:.2f} GiB")
     print(f"  observed float64:  {estimate['observed_bytes'] / _GIB:.2f} GiB")
-    _print_chunk_report(
+    print_chunk_report(
         catalog.assert_chunked_panel_fits(
             args.category, args.start_date, args.end_date, granularity=args.chunk
         )
@@ -365,9 +338,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # Registered through the shared helper rather than declared here: the
     # other two shells now carry the same flag, and three declarations of one
     # flag is how their defaults drifted apart in the first place (G-03.4-1b).
-    # `mode="chunked"` is what keeps THIS script's distinct promise -- one
-    # --chunk window at a time, resumable -- in the help text.
-    add_to_zarr_arg(parser, mode="chunked")
+    add_to_zarr_arg(parser)
     add_chunk_args(parser)
     add_volume_guard_args(parser)
     add_data_dir_arg(parser)
@@ -509,7 +480,7 @@ if __name__ == "__main__":
         # about immediately (T-0iy-03, preserved from 260906-0iy). What
         # changed is only WHICH guard: the whole-range refusal is lifted, and
         # the per-chunk one names a finer --chunk as its remedy (T-13w-03).
-        _print_chunk_report(
+        print_chunk_report(
             catalog.assert_chunked_panel_fits(
                 args.category, args.start_date, args.end_date, granularity=args.chunk
             )
