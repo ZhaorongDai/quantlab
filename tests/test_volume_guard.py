@@ -208,17 +208,23 @@ def test_estimate_acquisition_volume_reports_rows_bytes_requests_and_wall_clock(
     assert est["wall_clock_hours"] > 0
 
 
-def test_daily_rows_equal_the_dense_panel_estimator_observed_cells(tmp_path):
-    """The two estimators share a roster, so they must agree about it.
+def test_daily_rows_equal_the_roster_profile_observed_cells(tmp_path):
+    """The volume guard and the roster profile share a roster, so they must
+    agree about it.
 
-    `estimate_dense_panel`'s `observed_cells` already encodes the measured
+    `_roster_window_profile`'s `observed_cells` already encodes the measured
     0.368 density; a DENSE count would overstate a full-market daily backfill
     by ~2.7x. Pinning the equality means a change to that density surfaces in
-    both estimators rather than silently in one.
+    both the profile and the guard rather than silently in one.
+
+    This test read the dense-panel estimator until phase 03.6 deleted it
+    (SC-3). The arithmetic it pins is ROSTER arithmetic and was never about
+    bytes, so it moved to `_roster_window_profile` with the arithmetic rather
+    than being deleted beside the RAM guard.
     """
     catalog = _catalog(tmp_path)
 
-    dense = catalog.estimate_dense_panel("us_all", *FULL_WINDOW)
+    dense = catalog._roster_window_profile("us_all", *FULL_WINDOW)
     volume = catalog.estimate_acquisition_volume(
         "us_all", *FULL_WINDOW, frequency="1d", batch_size=100
     )
@@ -387,7 +393,7 @@ def test_invalid_category_and_malformed_date_raise_through_the_shared_validators
             "us_al", *FULL_WINDOW, frequency="1d", batch_size=1
         )
     with pytest.raises(ValueError) as old_category:
-        catalog.estimate_dense_panel("us_al", *FULL_WINDOW)
+        catalog._roster_window_profile("us_al", *FULL_WINDOW)
     assert str(new_category.value) == str(old_category.value)
 
     with pytest.raises(ValueError) as new_date:
@@ -395,7 +401,7 @@ def test_invalid_category_and_malformed_date_raise_through_the_shared_validators
             "us_all", "01/01/2016", "2026-09-06", frequency="1d", batch_size=1
         )
     with pytest.raises(ValueError) as old_date:
-        catalog.estimate_dense_panel("us_all", "01/01/2016", "2026-09-06")
+        catalog._roster_window_profile("us_all", "01/01/2016", "2026-09-06")
     assert str(new_date.value) == str(old_date.value)
 
 
@@ -1476,3 +1482,82 @@ def test_the_chunked_panel_guard_keeps_both_of_its_call_sites():
     ]
     assert len(call_sites) == 2, [node.lineno for node in call_sites]
     assert _call_linenos(body, _is_chunked), "the --to-zarr sizing guard is gone"
+
+
+#: The PRE-EDIT return dict of `estimate_acquisition_volume` for the scenario
+#: pinned below, captured on 2026-09-12 from the UNEDITED working tree at
+#: HEAD=664723c -- before `_roster_window_profile` was extracted and before the
+#: dense-panel group was deleted. Its PROVENANCE is what makes it a fence
+#: rather than a photograph: a baseline taken after the extraction could only
+#: detect LATER drift, never drift the extraction itself introduced.
+#:
+#: Transcribed verbatim from a `pprint` of that call. Not rounded, not
+#: recomputed, not hand-derived.
+_PRE_CUT_ACQUISITION_VOLUME = {
+    "category": "(explicit --symbols list)",
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "frequency": "1d",
+    "symbols": 500,
+    "trading_days": 253,
+    "density": 1.0,
+    "bars_per_day": 1,
+    "rows": 126500,
+    "raw_bytes": 7590000,
+    "requests": 500,
+    "wall_clock_hours": 0.041666666666666664,
+    "batch_size": 1,
+    "page_limit": 10000,
+    "rate_limit_per_min": 200,
+}
+
+
+def test_the_acquisition_volume_arithmetic_survives_the_roster_profile_split():
+    """The SC-4 fence: the acquisition-volume guard's numbers came through the
+    deletion UNCHANGED, not merely still running.
+
+    Phase 03.6 deletes `UniverseCatalog`'s dense-panel estimator, on which
+    `estimate_acquisition_volume` depended for its symbol count, trading-day
+    count, observed-cell count and density. SC-3 asks for that deletion; SC-4
+    declares the acquisition-volume group untouched. Those two are in direct
+    tension, and "the guard still returns a dict" is not evidence that the
+    tension was resolved honestly -- only that it did not crash.
+
+    So this pins the FULL return dict against literals captured from the
+    UNEDITED tree, before the roster-window profile was extracted and before
+    anything was deleted (`_PRE_CUT_ACQUISITION_VOLUME`, whose own comment
+    records the capture). Because the baseline PREDATES the extraction, this
+    test goes red on drift the extraction ITSELF introduces as readily as on
+    drift introduced years later.
+
+    Goes RED under: any change to the 252/365.25 trading-day approximation,
+    the explicit-list density assumption, the row derivation
+    (`observed_cells x bars_per_day`), either request floor (pages vs batches),
+    or the wall-clock division.
+
+    Built on `_explicit_symbol_catalog`, so it needs no backend, no config, no
+    roster file on disk and no credential -- which is also, not incidentally,
+    the `--symbols` pricing path that the same extraction could silently
+    disable.
+    """
+    from quantlab.utils.cli import EXPLICIT_SYMBOLS_CATEGORY, _explicit_symbol_catalog
+
+    pricing = _explicit_symbol_catalog(500)
+    estimate = pricing.estimate_acquisition_volume(
+        EXPLICIT_SYMBOLS_CATEGORY,
+        "2024-01-01",
+        "2024-12-31",
+        frequency="1d",
+        batch_size=1,
+    )
+
+    assert estimate == _PRE_CUT_ACQUISITION_VOLUME, (
+        "the acquisition-volume guard's arithmetic moved; the literals above "
+        "are a PRE-CUT capture, so fix the code, never the literals"
+    )
+    # Two of the fifteen numbers are hand-checkable, stated separately so a
+    # reader can confirm the dict above is not simply whatever the code
+    # happens to emit: 500 symbols were asked for, and a hand-named list
+    # carries no survivorship structure, so its density is exactly 1.
+    assert estimate["symbols"] == 500
+    assert estimate["density"] == 1.0
