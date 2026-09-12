@@ -542,7 +542,7 @@ divergence it cannot close, with "run a thin shell by hand" as the written inter
 CVT-02's requirement that the guard and predicted peak be visible in the UI is the same demand as
 Success Criterion 4, and is why that criterion is about ANSWERING rather than printing.
 
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans executed
 
 Plans:
 
@@ -568,7 +568,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 — shares `quantlab/base/data.py`)*
 
-- [ ] 03.5-06-PLAN.md — Thread `reporter`/`cancel` through the chunk loop with cancellation at
+- [x] 03.5-06-PLAN.md — Thread `reporter`/`cancel` through the chunk loop with cancellation at
   window boundaries, forward them from `convert()`, and de-stale `run()`'s three-modes docstring
   (D-05/D-06)
 
