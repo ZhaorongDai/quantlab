@@ -721,3 +721,49 @@ def test_neither_handle_is_ever_written_onto_the_config(
     as_dict = config.to_dict()
     assert "reporter" not in as_dict
     assert "cancel" not in as_dict
+
+
+def test_convert_forwards_both_handles_into_the_chunk_loop(
+    four_window_raw_tier: Callable[..., DatasetConfig],
+) -> None:
+    """D-05's forwarding, proved BEHAVIOURALLY rather than by signature.
+
+    A test asserting only that `convert()` declares `reporter` and `cancel`
+    would pass against a function that accepts both and drops them on the
+    floor, which is the exact failure this test exists for. So it asserts the
+    two OBSERVABLE consequences: the token passed to `convert()` actually stops
+    the conversion at a window boundary, and the reporter passed to `convert()`
+    actually receives the chunk loop's own events -- the same stream, in the
+    same order, that the direct `from_raw_data_chunked` call produces.
+    """
+    token = CancelToken()
+    reporter = _CancelAfterNWritten(token, after=2)
+    config = four_window_raw_tier(store_name="forwarded.zarr")
+
+    result = convert(
+        DataSourceRegistry.get("tiingo"),
+        config,
+        reporter=reporter,
+        cancel=token,
+    )
+
+    assert result.cancelled is True
+    assert result.windows_written == 2
+    assert result.windows_planned == len(_FOUR_YEARS)
+    assert reporter.kinds() == [
+        "conversion_started",
+        "window_written",
+        "window_written",
+        "cancelled",
+        "conversion_finished",
+    ]
+    # ...and it stopped between two appends, so the two finished windows are
+    # on disk and resumable rather than rolled back.
+    stored = xr.open_zarr(config.zarr_file_path)
+    assert stored.sizes["timestamp"] == 2 * 2
+
+    resumed = convert(DataSourceRegistry.get("tiingo"), config)
+    assert resumed.resumed is True
+    assert resumed.windows_skipped == 2
+    assert resumed.windows_written == 2
+    assert resumed.cancelled is False

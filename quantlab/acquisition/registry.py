@@ -381,15 +381,16 @@ def run(
     never touch xarray/Zarr storage. Conversion is the SEPARATE registry-level
     call `convert()` directly below, never a flag here.
 
-    (The sentence this paragraph used to carry -- that the three ingest entry
-    points convert in three genuinely different modes, each with a
-    differently-sized RAM guard -- was 03.4's reason for keeping the two calls
-    apart and is superseded by 03.5 D-06, which collapses conversion to ONE
-    chunked mode with ONE guard. The separation survives its original reason:
-    downloading and converting are different operations with different
-    failure modes, and `run()` returning an `AcquisitionResult` while
-    `convert()` returns a `ConversionResult` is that difference stated in the
-    type system.)
+    Why the separation, now that 03.5 D-06 has retired 03.4's original
+    argument for it (conversion is ONE chunked path with ONE guard, and all
+    three ingest shells reach it through `convert()`): folding conversion in
+    here would turn an ACQUISITION-ONLY contract into a
+    conversion-sometimes contract, and the two-call shape is precisely what
+    lets a caller acquire without converting -- a credentialled backfill onto
+    a machine that will never densify a panel -- and convert without
+    acquiring, which is what every re-derivation of an existing raw tier is.
+    `run()` returning an `AcquisitionResult` while `convert()` returns a
+    `ConversionResult` is that difference stated in the type system.
 
     Constructing `descriptor.acquisition_cls(config)` is the FIRST point a
     credential is demanded, deliberately: that is the vendor class's own
@@ -429,6 +430,8 @@ def convert(
     granularity: str = "year",
     on_new_listing: str = "refuse",
     predicted_peak_bytes: int | None = None,
+    reporter: ProgressReporter | None = None,
+    cancel: CancelToken | None = None,
 ) -> ConversionResult:
     """Convert an already-acquired RAW tier into Zarr, IN-PROCESS (03.5 D-03).
 
@@ -469,6 +472,35 @@ def convert(
     literal and no frequency literal in this body, which is what makes the
     capability list -- not this function -- the place a new combination is
     added.
+
+    **`reporter` and `cancel` are the console's two handles on a running
+    conversion** (03.5 D-05), word for word the pair `run()` above carries and
+    for the identical reason: 03.4 D-17's argument -- cancellation cannot be
+    added by the console from outside, because the loop lives in quantlab --
+    applies to the chunk loop too, and a chunked conversion of a full-market
+    panel is the longest-running operation this project has. Both are
+    KEYWORD-ONLY with `None` defaults, so every existing
+    `convert(descriptor, dataset_config)` call site is unchanged and a caller
+    that wants neither gets today's behaviour exactly.
+
+    They are CALL ARGUMENTS, forwarded straight into
+    `from_raw_data_chunked()`, and are never assigned onto `dataset_config` --
+    `DatasetConfig.to_dict()` is `asdict(self)` and lands on disk beside model
+    checkpoints, where a `threading.Event` cannot be serialised and a live
+    reporter object is not reproducible configuration.
+
+    Cancellation is a TOKEN and not the reporter's return value, so a reporter
+    that only wants to log cannot halt a multi-hour conversion by forgetting to
+    return the right value -- and a reporter that raises cannot end it either
+    (`BaseDataset._emit_progress` catches and logs).
+
+    The conversion-specific half: the token is observed at WINDOW BOUNDARIES,
+    never mid-window, and `ChunkLedger` already supplies the
+    completed-work-stays-resumable precondition that the acquisition side had
+    to retrofit with atomic sidecars. So a cancelled conversion is not work
+    thrown away -- every window it finished is still there, and the next
+    `convert()` over the same config resumes at the first unwritten one and
+    reports `resumed`.
     """
     matches = descriptor.capabilities_for(
         dataset_config.market, dataset_config.frequency, data_type
@@ -534,7 +566,10 @@ def convert(
 
     dataset = capability.dataset_cls(dataset_config)
     dataset.from_raw_data_chunked(
-        granularity=granularity, on_new_listing=on_new_listing
+        granularity=granularity,
+        on_new_listing=on_new_listing,
+        reporter=reporter,
+        cancel=cancel,
     )
     result = dataset.last_chunk_result
     if result is None:  # pragma: no cover -- defensive
