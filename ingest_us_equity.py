@@ -36,11 +36,18 @@ used to be REFUSED: 15,424 symbols x ~5,215 trading days densifies to a
 grid, the ~29.6M-row pandas frame and conversion scratch at once, which OOMs a
 16 GiB machine.
 
-That is fixed. `--to-zarr` now runs `BaseDataset.from_raw_data_chunked()`,
-which densifies and appends ONE time window at a time onto a symbol axis
-pinned once over the whole range, so peak RAM scales with the WINDOW rather
-than the range (D-01/D-02). `--chunk` selects the granularity (year by
-default) and a run interrupted at window 12 of 21 resumes at window 12.
+That is fixed. `--to-zarr` now goes through
+`quantlab.acquisition.registry.convert()`, which densifies and appends ONE
+time window at a time onto a symbol axis pinned once over the whole range, so
+peak RAM scales with the WINDOW rather than the range (D-01/D-02). `--chunk`
+selects the granularity (year by default) and a run interrupted at window 12
+of 21 resumes at window 12.
+
+The conversion is REACHED THROUGH THE REGISTRY rather than performed here
+(03.5 D-06/SC-6): this script hands `convert()` a source descriptor and a
+dataset config and renders the `ConversionResult` it gets back, so it names no
+Dataset subclass method and shares one conversion path with `ingest_tiingo.py`
+and `ingest_alpaca.py` instead of being a third implementation of it.
 
 So the reason `--to-zarr` stays opt-in is TIME, not memory: the conversion is
 still the long pole after a multi-hour download, and most runs want the raw
@@ -103,7 +110,7 @@ import datetime
 from dataclasses import replace
 
 from quantlab.acquisition.inspector import SourceInspector
-from quantlab.acquisition.registry import DataSourceRegistry, run
+from quantlab.acquisition.registry import DataSourceRegistry, convert, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
@@ -116,6 +123,7 @@ from quantlab.utils.cli import (
     add_window_args,
     apply_data_dir,
     print_chunk_report,
+    print_conversion_result,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
     resolve_symbols,
@@ -387,15 +395,24 @@ if __name__ == "__main__":
             "quota_max_waits": args.quota_max_waits,
         },
     )
-    # `symbols=None`, NOT the resolved roster, and this is load-bearing.
-    # `BaseDataset`'s config setter calls `_reset_symbols()` for any non-None
-    # symbol list, which calls `read()`, catches the FileNotFoundError a
-    # not-yet-written store raises, and falls back to `from_raw_data()` -- a
-    # FULL-RANGE densification, at StockDataset CONSTRUCTION time, before the
-    # chunked loop is ever entered. That is precisely the OOM this path
-    # exists to remove, and on a first run (no store yet) it fires every
-    # single time. The symbol axis is resolved from the raw data by
-    # `_raw_axes_in_range()` inside the chunked loop instead.
+    # `symbols=None`, NOT the resolved roster, and this is load-bearing --
+    # though NOT for the reason this comment used to give. It used to argue
+    # that a non-None symbol list makes `BaseDataset`'s config setter call
+    # `_reset_symbols()`, which reads the store, catches a not-yet-written
+    # store's `FileNotFoundError` and recovers by densifying the FULL RANGE
+    # through `from_raw_data()` at CONSTRUCTION time. `df7bfe9` deleted
+    # `_reset_symbols()` outright: the setter now assigns `name` and
+    # normalises the two dates, touches no symbol axis, reads no store and
+    # raises nothing. Construction no longer densifies for ANY config, so
+    # that is no longer what `symbols=None` buys.
+    #
+    # What it still buys is a SINGLE source of truth for the symbol axis.
+    # The conversion resolves its axis from the raw data itself, through
+    # `_raw_axes_in_range()` inside the chunked loop, pinned once over the
+    # whole range before any window is materialised. A roster named here
+    # would be a second, competing answer to the same question -- and the two
+    # genuinely differ, because `mode="in_range"` resolves membership from the
+    # universe table while the raw tree holds only what actually downloaded.
     ds_config = stock_kline_config(
         symbols=None,
         start_date=args.start_date,
@@ -480,7 +497,13 @@ if __name__ == "__main__":
         # about immediately (T-0iy-03, preserved from 260906-0iy). What
         # changed is only WHICH guard: the whole-range refusal is lifted, and
         # the per-chunk one names a finer --chunk as its remedy (T-13w-03).
-        print_chunk_report(
+        #
+        # Bound to a local because `convert()` runs NO guard of its own
+        # (D-11) and echoes a `predicted_peak_bytes` back into its result.
+        # `max_chunk_bytes` IS that prediction, so forwarding it below puts
+        # the prediction beside the observed peak in the one object a user
+        # reads after the run, instead of leaving the two in different places.
+        chunk_report = print_chunk_report(
             catalog.assert_chunked_panel_fits(
                 args.category, args.start_date, args.end_date, granularity=args.chunk
             )
@@ -517,24 +540,36 @@ if __name__ == "__main__":
         # `tests/test_volume_guard.py::
         # test_every_entry_point_that_densifies_guards_the_dense_panels_ram`
         # records in its own docstring.
-        # `ds_config` is ALREADY built with `symbols=None` above, so this
-        # construction never densifies -- but the `replace(...)` states that
-        # at the call site instead of leaving a reader to walk back to the
-        # factory for it. Uniform with the other two shells, where the symbol
-        # list IS non-None and the symbol-free probe is what keeps the guard
-        # reachable at all (G-03.4-1a, second order).
+        # The probe holds a dataset that must not densify. Since `df7bfe9`
+        # NO construction densifies -- the config setter normalises dates and
+        # a name and stops -- so the `replace(...)` is no longer what prevents
+        # it; `ds_config` is already `symbols=None` besides. It stays because
+        # it states AT THE CALL SITE that this dataset exists only to be
+        # asked `has_raw_data()`, and it keeps the three shells' probes
+        # spelled identically where the other two DO carry a roster
+        # (G-03.4-1a, second order).
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
-        dataset = StockDataset(ds_config)
         print(
             f"Converting/persisting {len(symbols)} symbols to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        dataset.from_raw_data_chunked(
-            granularity=args.chunk, on_new_listing=args.on_new_listing
+        # THE conversion, and it is the registry's -- not a Dataset method
+        # called from here (03.5 SC-6). This script is one of `convert()`'s
+        # in-repo callers, which is what keeps the programmatic entry point
+        # something that has actually been run rather than a signature.
+        conversion = convert(
+            SOURCE,
+            ds_config,
+            granularity=args.chunk,
+            on_new_listing=args.on_new_listing,
+            predicted_peak_bytes=chunk_report["max_chunk_bytes"],
         )
-        print(f"Zarr store written at: {ds_config.zarr_file_path}")
+        # Rendered from the RETURNED object, not from `ds_config` and not by
+        # reading the store back: what is printed is what was actually
+        # written, which is half of what `ConversionResult` exists for.
+        print_conversion_result(conversion)
     else:
         print(
             "Skipping Zarr conversion (default). Pass --to-zarr to convert; "

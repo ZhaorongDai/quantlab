@@ -562,18 +562,23 @@ def test_every_argparse_default_that_named_a_vendor_class_now_reads_the_descript
 # D-15 / L-1: `ingest_us_equity.py` is NOT redundant with `ingest_tiingo.py`
 # ---------------------------------------------------------------------------
 
-#: The eleven flags that must survive thinning. `--limit` and `--max-workers`
-#: arrive through `add_concurrency_args` and `--to-zarr` through
-#: `add_to_zarr_arg`; the rest are declared in the script. That `--to-zarr` is
-#: now SHARED is exactly why it stays on this list: the assertion below goes
-#: through the real parser, so it still catches the flag disappearing from
-#: this script when the shared registrar is what supplies it.
+#: The eight flags that are DISTINCT to `ingest_us_equity.py` and must
+#: survive thinning. `--limit` and `--max-workers` arrive through
+#: `add_concurrency_args`; the rest are declared in the script.
+#:
+#: `--to-zarr`, `--chunk` and `--on-new-listing` are deliberately NOT here any
+#: more. 03.5 D-07 collapsed the repository to ONE conversion path, all three
+#: US-equity shells reach it through `registry.convert()`, and all three
+#: therefore carry all three flags. A flag every shell has cannot evidence
+#: what makes THIS shell distinct, and leaving it on a list named "what makes
+#: it distinct" would make the list say something false. The sharing is
+#: asserted instead -- positively, in
+#: `test_the_three_conversion_flags_are_shared_by_every_us_equity_shell`
+#: below -- rather than merely un-pinned, because "these three shells agree"
+#: is itself a property SC-6 asked for and a later divergence should go red.
 _US_EQUITY_FLAGS = (
     "--dry-run",
     "--stamp-legacy-watermarks",
-    "--to-zarr",
-    "--chunk",
-    "--on-new-listing",
     "--wait-for-quota",
     "--quota-wait-seconds",
     "--quota-max-waits",
@@ -581,6 +586,15 @@ _US_EQUITY_FLAGS = (
     "--legacy-watermarks",
     "--limit",
 )
+
+#: The conversion knobs every US-equity shell offers, because every US-equity
+#: shell reaches the same `registry.convert()` (03.5 SC-6/D-07).
+_SHARED_CONVERSION_FLAGS = ("--to-zarr", "--chunk", "--on-new-listing")
+
+#: The three shells that share them. `ingest_binance_spot.py` is deliberately
+#: absent: it is the fourth converting door, and it cannot reach `convert()`
+#: because binance is not a registered source (03.5 D-09).
+_US_EQUITY_SHELLS = ("ingest_tiingo", "ingest_alpaca", "ingest_us_equity")
 
 
 def _keyword(call: ast.Call, name: str):
@@ -605,7 +619,7 @@ def _calls_named(tree: ast.Module, name: str) -> list[ast.Call]:
 
 
 def test_us_equity_keeps_every_capability_that_makes_it_distinct() -> None:
-    """L-1's seven load-bearing differences, pinned so a later "simplification"
+    """L-1's SIX load-bearing differences, pinned so a later "simplification"
     has to argue with a red test rather than with a reviewer's memory.
 
     D-15 asked whether `ingest_us_equity.py` is redundant with
@@ -614,12 +628,22 @@ def test_us_equity_keeps_every_capability_that_makes_it_distinct() -> None:
     ~6.9k symbols that delisted INSIDE the window, which an as-of roster on one
     day cannot see), the independent `us_all` watermark tree and Zarr store
     (neither script's watermarks satisfy the other's coverage), the deliberate
-    `symbols=None` dataset config that keeps `_reset_symbols` from densifying
-    the whole panel at construction time, the chunked conversion behind
-    `--to-zarr` with its per-chunk RAM guard (the flag is shared with the
-    other two shells now; the chunking is not), the credential-free
-    `--dry-run`, the only
+    `symbols=None` dataset config, the credential-free `--dry-run`, the only
     in-repo route to watermark stamping, and the four quota/concurrency knobs.
+
+    **It was seven, and the seventh LEFT because it stopped being a
+    difference.** That entry was "the chunked conversion behind `--to-zarr`
+    with its per-chunk RAM guard", and the parenthetical beside it said the
+    flag was shared but the chunking was not. 03.5 D-07 collapsed the
+    repository to ONE conversion path: `ingest_tiingo.py` and
+    `ingest_alpaca.py` now reach the same `registry.convert()` through the
+    same `assert_chunked_panel_fits`, and carry `--chunk` and
+    `--on-new-listing` too. Nothing was deleted from this script -- the
+    capability is simply no longer DISTINCT to it, which is what SC-6 asked
+    for, and a list named "what makes it distinct" cannot keep an entry every
+    shell now satisfies. No seventh survivor was found to replace it; the
+    sharing itself is pinned by
+    `test_the_three_conversion_flags_are_shared_by_every_us_equity_shell`.
 
     The flag arm goes through the REAL parser rather than the source, so a
     registration moved into a branch that never runs fails here. The three
@@ -679,12 +703,57 @@ def test_us_equity_keeps_every_capability_that_makes_it_distinct() -> None:
         isinstance(node, ast.Constant) and node.value is None
         for node in dataset_symbols
     ), (
-        "the DatasetConfig must be built with symbols=None. A non-None symbol "
-        "list makes BaseDataset's config setter call _reset_symbols(), which "
-        "falls back to a FULL-RANGE from_raw_data() at construction time -- "
-        "the exact OOM the chunked path exists to remove, fired before the "
-        "chunked loop is entered."
+        "the DatasetConfig must be built with symbols=None. The symbol axis "
+        "for the conversion is resolved from the RAW DATA, by "
+        "_raw_axes_in_range() inside the chunked loop, pinned once over the "
+        "whole range; a roster named in the config would be a second, "
+        "competing answer to the same question, and the two genuinely differ "
+        "-- mode='in_range' resolves membership from the universe table while "
+        "the raw tree holds only what actually downloaded. (This used to be "
+        "justified by BaseDataset's config setter calling _reset_symbols() "
+        "and densifying the full range at construction time. df7bfe9 deleted "
+        "that method; no construction densifies any more, for any config.)"
     )
+
+
+def test_the_three_conversion_flags_are_shared_by_every_us_equity_shell() -> None:
+    """SC-6: one conversion path, therefore the same conversion knobs at every
+    door.
+
+    The negative half of this property -- `--to-zarr` / `--chunk` /
+    `--on-new-listing` leaving `_US_EQUITY_FLAGS` -- is not a property at all
+    on its own: three flags can disappear from a list because they became
+    shared, or because somebody deleted them. Those two outcomes are
+    indistinguishable to a test that only checks the list got shorter, so the
+    sharing is asserted HERE, positively, and a shell that later drops one
+    goes red.
+
+    `ingest_tiingo.py` and `ingest_alpaca.py` had `--to-zarr` and nothing else
+    before 03.5: they converted the WHOLE window in one allocation, so there
+    was no granularity to select and no new-listing policy to state. They
+    carry both now because they reach the same chunked `registry.convert()`
+    that `ingest_us_equity.py` does -- the flags arrived as a CONSEQUENCE of
+    sharing one conversion path, not as new surface grown on two shells.
+
+    Goes through each shell's REAL parser, for the reason the sibling test
+    gives: a registration moved into a branch that never runs would satisfy a
+    source scan and fail a user.
+    """
+    import importlib
+
+    for shell in _US_EQUITY_SHELLS:
+        parser = importlib.import_module(shell)._build_arg_parser()
+        missing = [
+            flag
+            for flag in _SHARED_CONVERSION_FLAGS
+            if flag not in parser._option_string_actions
+        ]
+        assert not missing, (
+            f"{shell}.py does not offer {missing}. All three US-equity shells "
+            f"reach one conversion through registry.convert() (03.5 D-07), so "
+            f"they take the same knobs; a shell that offers fewer either "
+            f"stopped delegating or grew a second conversion path."
+        )
 
 
 # ---------------------------------------------------------------------------

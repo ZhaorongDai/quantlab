@@ -4,8 +4,19 @@ convert it to xr.Dataset/Zarr.
 Fetches raw EOD data through the data-source registry, writing raw parquet
 files under the configured raw_data_dir_path, and STOPS THERE unless
 `--to-zarr` is passed. With the flag it goes on to convert/clean/persist the
-raw shards through StockDataset into a Zarr store (D-02 market/frequency
-convention, see quantlab/config/__init__.py:stock_kline_config()).
+raw shards into a Zarr store (D-02 market/frequency convention, see
+quantlab/config/__init__.py:stock_kline_config()).
+
+The conversion is REACHED THROUGH THE REGISTRY and it is CHUNKED (03.5
+D-06/D-07/SC-6). This script hands `quantlab.acquisition.registry.convert()` a
+source descriptor and a dataset config and renders the `ConversionResult` it
+gets back; it names no Dataset subclass method. There is exactly ONE
+conversion path in this repository and it densifies and appends one time
+window at a time onto a symbol axis pinned once over the whole range, so peak
+RAM scales with the WINDOW rather than the range, `--chunk` selects the
+granularity, `--on-new-listing` says what to do about a symbol that first
+appears mid-range, and a run interrupted at window 12 of 21 resumes at window
+12.
 
 `--to-zarr` is OFF by default, and that default CHANGED (G-03.4-1b): this
 script used to convert unconditionally, which meant a run that fetched nothing
@@ -50,7 +61,7 @@ import argparse
 
 from dataclasses import replace
 
-from quantlab.acquisition.registry import DataSourceRegistry, run
+from quantlab.acquisition.registry import DataSourceRegistry, convert, run
 from quantlab.acquisition.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.config import stock_kline_config, universe_config
@@ -61,7 +72,10 @@ from quantlab.utils.cli import (
     add_universe_args,
     add_volume_guard_args,
     add_window_args,
+    add_chunk_args,
     apply_data_dir,
+    print_chunk_report,
+    print_conversion_result,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
     resolve_symbols,
@@ -142,6 +156,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # deliberate default change and not a new capability: all three ingest
     # shells now stop at raw unless asked (G-03.4-1b).
     add_to_zarr_arg(parser)
+    # Both flags belong here for the same reason `--to-zarr` does: there is
+    # ONE conversion path (D-07), so the knobs that path takes are the same
+    # knobs at every door. This is the `--chunk` / `--on-new-listing`
+    # divergence disappearing as a CONSEQUENCE of sharing one conversion,
+    # not as new surface grown on this script (SC-6).
+    add_chunk_args(parser)
     return parser
 
 
@@ -193,25 +213,35 @@ if __name__ == "__main__":
     if args.to_zarr:
         # The RAM sibling of the guard above, and the reason it is a SIBLING:
         # that one bounds raw disk bytes, request count and wall clock; this
-        # one bounds the dense `[timestamp, symbol]` grid that the
-        # `from_raw_data()` at the bottom of this script materialises through
-        # `.to_pandas().set_index([...]).to_xarray()`. `ingest_us_equity.py`
-        # already carries the chunked form of this for its `--to-zarr` path;
-        # this door densifies the WHOLE window with no chunking at all, so the
-        # whole-window form is the one that applies here (CR-03).
+        # one bounds the dense `[timestamp, symbol]` grid the conversion at
+        # the bottom of this script materialises. Either alone lets a real
+        # scenario through.
+        #
+        # The CHUNKED form, because it is the only form left. This door used
+        # to densify the whole window in one allocation, which is what made
+        # `assert_dense_panel_fits` the guard that applied (CR-03). D-07
+        # collapsed the conversion to one chunked path, so there is one guard
+        # to match: it refuses a `--chunk` whose individual WINDOWS would not
+        # fit and names the finer granularity that would, rather than refusing
+        # the whole range outright.
         #
         # Conditioned on `--to-zarr` because it measures the RAM of a
         # densification that no longer always happens: refusing a raw-only
         # fetch on the size of a panel this run will never build would be a
-        # fresh defect introduced by the fix, not a guard doing its job. Same
-        # shape as `ingest_us_equity.py`, which already wraps
-        # `assert_chunked_panel_fits` in `if args.to_zarr:`.
+        # fresh defect introduced by the fix, not a guard doing its job.
         #
         # The POSITION is unchanged -- still before `run(...)`, so the refusal
-        # arrives before the fetch rather than after it, and the two AST
-        # ordering assertions in `tests/test_volume_guard.py` still read a
-        # guard line number below every densify line number.
-        pricing.assert_dense_panel_fits(category, guard_start, guard_end)
+        # arrives before the fetch rather than after it, and the AST ordering
+        # assertions in `tests/test_volume_guard.py` still read a guard line
+        # number below every densify line number. Bound to a local because
+        # `convert()` runs no guard of its own (D-11) and echoes a
+        # `predicted_peak_bytes` back into its result; `max_chunk_bytes` IS
+        # that prediction.
+        chunk_report = print_chunk_report(
+            pricing.assert_chunked_panel_fits(
+                category, guard_start, guard_end, granularity=args.chunk
+            )
+        )
 
     print(
         f"Acquiring symbols={acq_config.symbols} via "
@@ -225,27 +255,48 @@ if __name__ == "__main__":
 
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
-    # STAYS in the shell: `run()` is acquisition-only (D-14 amendment), and
-    # this door densifies the WHOLE window -- exactly the mode
-    # `assert_dense_panel_fits` above was sized for.
+    # The GUARD stays in this shell: `run()` is acquisition-only (D-14
+    # amendment) and `convert()` deliberately runs no guard of its own
+    # (D-11), so the sizing above is this call site's responsibility.
     if args.to_zarr:
-        # Probed on a SYMBOL-FREE config, and the order is load-bearing.
-        # `BaseDataset`'s config setter calls `_reset_symbols()` for any
-        # non-None symbol list, and that calls `read()`, catches the
-        # not-yet-written store's FileNotFoundError and falls back to
-        # `from_raw_data()` -- a full densification at CONSTRUCTION time.
-        # So `StockDataset(ds_config)` on an empty raw tree raises the
-        # absent-root ValueError before any guard placed after it can run;
-        # the guard has to hold a dataset that never densifies. This is the
-        # same `symbols=None` reason `ingest_us_equity.py` states at its own
-        # `stock_kline_config` call (G-03.4-1a).
+        # Probed on a SYMBOL-FREE config. The reason for that is NOT the one
+        # this comment used to give: it argued that a non-None symbol list
+        # makes `BaseDataset`'s config setter call `_reset_symbols()`, which
+        # reads the store, catches a not-yet-written store's
+        # `FileNotFoundError` and recovers by densifying the FULL RANGE
+        # through `from_raw_data()` at CONSTRUCTION time -- so that
+        # `StockDataset(ds_config)` on an empty raw tree raised before the
+        # guard placed after it could run. `df7bfe9` deleted `_reset_symbols`
+        # outright; the setter now assigns `name`, normalises the two dates
+        # and stops, touching no symbol axis and reading no store. NO
+        # construction densifies any more, for any config.
+        #
+        # What survives is the property the probe needs: this dataset exists
+        # only to be asked `has_raw_data()`, and `replace(..., symbols=None)`
+        # says so AT THE CALL SITE rather than leaving a reader to prove it
+        # from the constructor. It is spelled identically in all three shells
+        # -- the same `symbols=None` shape `ingest_us_equity.py` states at its
+        # own `stock_kline_config` call (G-03.4-1a).
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
-        dataset = StockDataset(ds_config)
-        print(f"Converting/persisting symbols={ds_config.symbols} to Zarr")
-        dataset.from_raw_data().save()
-        print(f"Zarr store written at: {ds_config.zarr_file_path}")
+        print(
+            f"Converting/persisting symbols={ds_config.symbols} to Zarr in "
+            f"{args.chunk} windows (resumable; completed windows are skipped)"
+        )
+        # THE conversion, and it is the registry's -- not a Dataset method
+        # called from here (03.5 SC-6). One entry point, one conversion path,
+        # shared with the other two US-equity shells.
+        conversion = convert(
+            SOURCE,
+            ds_config,
+            granularity=args.chunk,
+            on_new_listing=args.on_new_listing,
+            predicted_peak_bytes=chunk_report["max_chunk_bytes"],
+        )
+        # Rendered from the RETURNED object, so what is printed is what was
+        # actually written rather than what the config asked for.
+        print_conversion_result(conversion)
     else:
         # Said out loud rather than left as an absence: a conversion that
         # silently did not happen is the same silence this flag exists to end.

@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 12
+open_count: 15
 waived_count: 0
 fixed_count: 1
-total_count: 13
-last_updated: 2026-09-09T03:54:20.534Z
+total_count: 16
+last_updated: 2026-09-12T01:41:30.958Z
 ---
 
 # Broken Windows Ledger
@@ -28,6 +28,9 @@ last_updated: 2026-09-09T03:54:20.534Z
 | 11 | 03.4 | unmet-truth | ingest_us_equity.py | 449 | The stamp-legacy-watermarks flag reaches stamp_watermarks() only through SOURCE.acquisition_cls; the WRITE itself is unexercised in-repo and remains the open blocking-human checkpoint from quick task 260906-26o | open |  | 2026-09-09T01:40:00.775Z |  |
 | 12 | 03.4 | deviation | .planning/phases/03.4-data-source-registry/03.4-07-PLAN.md | 397 | Task 3 verify counts every '**Resolved:**' literal in the Open Questions section, including one the lead-in sentence legitimately contains; it read 7 against correct content. The section's own lead-in was reworded and a discriminating list-item form was additionally run. Same class as plan 01's 'no tests ran' and plan 05's src.count('Parallel('). | open |  | 2026-09-09T02:02:11.204Z |  |
 | 13 | 03.4 | deviation | quantlab/base/acquisition.py |  | REVIEW CR-01: _merge_unattempted_failures was wired into the 'if cancelled:' branch only, so both quota-abort exits fell through to _write_failure_manifest with only this run's failures and overwrote the previous run's manifest with {} -- which _write_failure_manifest's own docstring defines as 'the last run was clean'. wait_for_quota defaults to False, so this was the DEFAULT quota-abort behaviour. The D-18 invariant set(result.failures) == set(manifest) could not catch it: both sides are built from one dict, so result and manifest were consistently wrong together. Fixed by plan 03.4-08 (merge relocated outside the resume loop, unconditional, immediately before the write). | fixed |  | 2026-09-09T03:54:15.213Z | 2026-09-09T03:54:20.534Z |
+| 14 | 03.5 | unrun-verify | tests/test_ingest_conversion_gate.py |  | test_refusal_precedes_every_symbol_bearing_dataset_construction has zero live coverage since df7bfe9 deleted BaseDataset._reset_symbols; kept as a regression guard, docstring states it | open |  | 2026-09-12T01:41:21.710Z |  |
+| 15 | 03.5 | unrun-verify | ingest_us_equity.py |  | 03.5-05 Task 1 verify 'ingest_us_equity.py --dry-run' not run: the command uses a --symbols flag this shell has no, and the corrected form needs a universe.parquet this worktree has no data/ dir for | open |  | 2026-09-12T01:41:26.439Z |  |
+| 16 | 03.5 | deviation | quantlab/base/data.py |  | BaseDataset.__init__ ordering comment still claims the config setter reaches the backend via _reset_symbols()->read(); df7bfe9 deleted that method, so the stated AttributeError invariant needs re-testing (plan 04 owns this file) | open |  | 2026-09-12T01:41:30.958Z |  |
 
 ````json
 [
@@ -186,6 +189,42 @@ last_updated: 2026-09-09T03:54:20.534Z
     "reason": "",
     "recorded_at": "2026-09-09T03:54:15.213Z",
     "resolved_at": "2026-09-09T03:54:20.534Z"
+  },
+  {
+    "id": 14,
+    "kind": "unrun-verify",
+    "phase": "03.5",
+    "file": "tests/test_ingest_conversion_gate.py",
+    "line": null,
+    "description": "test_refusal_precedes_every_symbol_bearing_dataset_construction has zero live coverage since df7bfe9 deleted BaseDataset._reset_symbols; kept as a regression guard, docstring states it",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-12T01:41:21.710Z",
+    "resolved_at": null
+  },
+  {
+    "id": 15,
+    "kind": "unrun-verify",
+    "phase": "03.5",
+    "file": "ingest_us_equity.py",
+    "line": null,
+    "description": "03.5-05 Task 1 verify 'ingest_us_equity.py --dry-run' not run: the command uses a --symbols flag this shell has no, and the corrected form needs a universe.parquet this worktree has no data/ dir for",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-12T01:41:26.439Z",
+    "resolved_at": null
+  },
+  {
+    "id": 16,
+    "kind": "deviation",
+    "phase": "03.5",
+    "file": "quantlab/base/data.py",
+    "line": null,
+    "description": "BaseDataset.__init__ ordering comment still claims the config setter reaches the backend via _reset_symbols()->read(); df7bfe9 deleted that method, so the stated AttributeError invariant needs re-testing (plan 04 owns this file)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-12T01:41:30.958Z",
+    "resolved_at": null
   }
 ]
 ````

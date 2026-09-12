@@ -823,6 +823,14 @@ def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
     requests and hours. Collapsing either into the other would silently drop a
     real ceiling -- so all six members are pinned together here, next to the
     guard whose thresholds a careless merge would shift.
+
+    `estimate_chunked_panel` is the sixth, added by 03.5 when
+    `assert_chunked_panel_fits` was demoted to a thin wrapper over it (the
+    estimate/assert split: the estimator completes its loop and answers, the
+    guard reads its verdict and raises). It is pinned HERE rather than in the
+    plan that created it, because this file has exactly one owning plan and
+    two plans half-owning one test file is how a task's own verify ends up
+    contradicting its own action.
     """
     from quantlab.acquisition.universe import UniverseCatalog
 
@@ -831,6 +839,7 @@ def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
     for member in (
         "estimate_dense_panel",
         "assert_dense_panel_fits",
+        "estimate_chunked_panel",
         "assert_chunked_panel_fits",
         "estimate_acquisition_volume",
         "assert_acquisition_volume_fits",
@@ -1340,8 +1349,22 @@ def test_every_entry_point_that_densifies_guards_the_dense_panels_ram():
     Scoped by REACHABILITY rather than by script name, which is what the
     pre-existing chunked-guard test got wrong: it pinned itself to
     `ingest_us_equity.py`, so the second door's gap was invisible to it. Any
-    entry point that calls `from_raw_data` / `from_raw_data_chunked` must also
-    name a RAM guard, and must name it FIRST.
+    entry point that reaches a densification must also name a RAM guard, and
+    must name it FIRST.
+
+    **Since 03.5 the densification is reached through the REGISTRY**, which is
+    why a bare `Name` call to `convert` counts as one here. All three shells
+    now call `quantlab.acquisition.registry.convert()` instead of naming a
+    Dataset method, and `convert()` calls `from_raw_data_chunked()` on the
+    `Capability.dataset_cls` it looked up -- so the allocation is just as
+    real, it simply happens one frame down. An attribute-only detector would
+    have found zero densifying doors, every ordering assertion below would
+    have become vacuous, and the closing threshold is what refused to let that
+    happen silently. The attribute arms stay beside the new one: a shell that
+    goes back to calling `from_raw_data*` directly must still be caught, and
+    `convert()` itself deliberately runs NO guard (03.5 D-11), so the
+    guard-at-the-call-site property this test asserts is the ONLY thing
+    standing between a delegated conversion and an OOM (T-03.5-14).
     """
     import ast
 
@@ -1350,6 +1373,11 @@ def test_every_entry_point_that_densifies_guards_the_dense_panels_ram():
         body = _main_body(path)
 
         def _is_densify(node) -> bool:
+            # The delegated call first, then the two direct ones. See the
+            # docstring: `convert()` is a module-level function, so it is a
+            # bare `Name` rather than an `Attribute`.
+            if isinstance(node.func, ast.Name) and node.func.id == "convert":
+                return True
             return isinstance(node.func, ast.Attribute) and node.func.attr in (
                 "from_raw_data",
                 "from_raw_data_chunked",

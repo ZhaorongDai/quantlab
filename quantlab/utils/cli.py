@@ -841,3 +841,67 @@ def print_chunk_report(
         f"(a finer --chunk is the remedy above this)"
     )
     return report
+
+
+def print_conversion_result(result, *, print_fn=print):
+    """Render the `ConversionResult` `quantlab.acquisition.registry.convert()`
+    returns.
+
+    Beside `print_chunk_report` and shaped the same way -- `print_fn` injected
+    LAST, the input returned so a call site can compose -- because the same
+    rule applies: `quantlab/acquisition/` and `quantlab/base/` produce VALUE
+    objects, and every print of one lives in this module. Three shells render
+    the same outcome, so a third copy of these lines in a third shell is the
+    duplication `print_chunk_report`'s own hoist (D-13) was about.
+
+    **Every line comes off the RETURNED object, none from the config and none
+    from a read-back of the store.** That is half of what `ConversionResult`
+    exists for (03.5 D-04): the written path is echoed rather than re-derived,
+    so a run that wrote somewhere other than where the caller expected says
+    so, and `windows_skipped`/`resumed` describe THIS run rather than what the
+    ledger happens to hold.
+
+    Takes the CONSTRUCTED object and imports nothing, exactly as
+    `refuse_conversion_without_raw_data` above does: this module's module-scope
+    project dependency surface is pinned at `quantlab.base.*` by its own
+    module docstring, and naming `ConversionResult` for an annotation would
+    widen it for no behaviour.
+
+    Prints paths, integer counts and booleans only (T-03.5-17). There is no
+    vendor response body and no credential in a `ConversionResult` to leak,
+    and this renderer adds no field of its own.
+    """
+    print_fn(f"Zarr store written at: {result.zarr_path}")
+    print_fn(
+        f"  windows:           {result.windows_written} written, "
+        f"{result.windows_skipped} skipped of {result.windows_planned} "
+        f"planned ({result.granularity})"
+    )
+    print_fn(f"  symbols pinned:    {result.pinned_symbols}")
+    print_fn(f"  rows appended:     {result.rows_written:,}")
+    if result.resumed:
+        # Said out loud, because "0 windows written" and "this run had nothing
+        # left to do" read identically in a log otherwise -- and one of them
+        # is a bug report.
+        print_fn(
+            "  resumed:           yes -- windows the chunk ledger already "
+            "recorded were skipped, not rewritten"
+        )
+    if result.peak_window_bytes is not None:
+        # Prediction beside outcome, and only when there IS an outcome: a
+        # fully-resumed run materialises no window, so it has no observed peak
+        # and printing `0.00 GiB` would claim a measurement nobody took.
+        predicted = (
+            ""
+            if result.predicted_peak_bytes is None
+            else (
+                f" (predicted "
+                f"{result.predicted_peak_bytes / _GIB:.2f} GiB)"
+            )
+        )
+        print_fn(
+            f"  peak window:       "
+            f"{result.peak_window_bytes / _GIB:.2f} GiB{predicted}"
+        )
+    print_fn(f"  chunk ledger:      {result.ledger_path}")
+    return result
