@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 03.2: Multi-Source Data Acquisition Abstraction (Alpaca)** - Second vendor through the same batched, resumable, volume-guarded `Acquisition` abstraction (completed 2026-09-06)
 - [ ] **Phase 03.3: Tick Data Storage (Non-Dense Event Axis)** - Raw tick shards reach a persisted store via a tick-specific Dataset with a non-dense event axis
 - [ ] **Phase 03.4: Data Source Registry (Operator-Surface Foundation)** - One registered descriptor per data source, consumed by quantlab's own CLI and by the out-of-repo `quantlab-console` operator surface
-- [ ] **Phase 03.5: Registry-level raw→Zarr Conversion Entry Point** - A conversion entry point beside `registry.run()`, with the mode chosen explicitly and its RAM guard answerable before the run
+- [ ] **Phase 03.5: Registry-level raw→Zarr Conversion Entry Point** - A conversion entry point beside `registry.run()`, chunked-only, with its RAM guard answerable before the run
 - [ ] **Phase 4: Baseline Return Prediction Model** - Users can train a baseline model that consumes factor xarray data and outputs return predictions
 - [ ] **Phase 5: Portfolio Optimization & Target Holdings** - Users can turn predictions into long-short, unlevered target holdings
 - [ ] **Phase 6: End-to-End Backtest & Reproducible Pipeline** - Full pipeline runs end-to-end from one config, verified via vectorbt backtest
@@ -493,10 +493,10 @@ retired-sentence record plan 10 produces)*
 
 **Goal**: A caller that is not one of quantlab's own scripts — the out-of-repo `quantlab-console`
 first, but the contract is not written for it — can convert an acquired raw tier into the Zarr
-tier through the registry, choosing the conversion mode explicitly and being told which RAM guard
-that choice implies and what peak it predicts BEFORE anything is allocated.
+tier through the registry, and can ask what peak RAM that conversion predicts BEFORE anything is
+allocated.
 **Mode:** mvp
-**Requirements**: DATA-07, DATA-08 (to be added in discuss-phase)
+**Requirements**: DATA-07, DATA-08
 **Depends on:** Phase 03.4
 **Success Criteria** (what must be TRUE):
 
@@ -504,21 +504,33 @@ that choice implies and what peak it predicts BEFORE anything is allocated.
      subclass, or an `ingest_*.py` script at the call site — the same standard `run()` already
      meets for acquisition (03.4 SC-1).
   2. `registry.run()` remains acquisition-only. Conversion is a SEPARATE call, never a flag on it
-     (03.4 D-14): the three modes carry three differently-sized RAM guards, and folding them into
-     one call is how one of them silently gets the wrong guard.
-  3. The mode is an explicit argument with NO default, and an omitted mode raises rather than
-     picking one — the same reasoning `resolve_symbols(mode=...)` already encodes, that a wrong
-     choice here is silent and its symptom invisible.
-  4. The caller can ask which guard a given (mode, roster, window) selects and what peak it
-     predicts, and get an answer WITHOUT starting the conversion — the estimate is a value the
-     caller can render, not a line this layer prints.
+     (03.4 D-14): folding conversion into `run()` would turn an acquisition-only contract into a
+     conversion-sometimes contract, which is exactly what D-14 separated.
+  3. There is no `mode` parameter at all — not a defaulted one, an ABSENT one — and `convert()`
+     does chunked conversion and only chunked conversion (03.5 D-06). The "three modes" this
+     criterion originally required did not survive contact: it was stale arithmetic, counting
+     three SCRIPTS at a moment when `G-03.4-1b` had already collapsed two of them onto one
+     whole-window path, and the repo's own vocabulary had already settled at two
+     (`ConversionMode = Literal["whole-window", "chunked"]`) before the developer removed the
+     second.
+  4. The caller can ask what peak a given (roster, window) conversion predicts, and get an answer
+     WITHOUT starting the conversion — the estimate is a value the caller can render, not a line
+     this layer prints. "Which guard" is no longer a question this criterion can ask: with one
+     mode there is one guard (03.5 D-06/D-10). The guard is ANSWERABLE before the run, not
+     ENFORCED by it — `convert()` does not run it, and the callers own the asking (03.5 D-11).
   5. A guard refusal names the remedy that would fit (a finer `--chunk`, a narrower window)
      rather than only refusing, preserving `assert_chunked_panel_fits`'s current behaviour.
   6. All three ingest shells reach conversion through this entry point rather than each calling
      `StockDataset` directly — they stay the registry's in-repo consumers and live proof the
      programmatic path works (03.4 D-15 role b). The `--chunk` / `--on-new-listing` divergence
      between `ingest_us_equity.py` and `ingest_tiingo.py` / `ingest_alpaca.py` disappears as a
-     consequence of that delegation, not as new surface grown on the shells.
+     consequence of that delegation, not as new surface grown on the shells. **"One conversion
+     entry point" is INCOMPLETE this phase, by decision (03.5 D-09):** `ingest_binance_spot.py` is
+     a FOURTH converting shell this roadmap never named, and it deliberately does NOT join the
+     entry point, because `SpotKlineDataset` does not override the chunked densify seam — under
+     chunked-only it would densify the whole range once per window for identical peak RAM, plus a
+     ledger sidecar, plus N redundant densifications. Binance is also not a registered source at
+     all, so that shell could not reach the entry point regardless.
   7. Tick stays refused, not silently converted: the dense `[timestamp, symbol]` panel cannot
      express an irregular event axis, and that conversion belongs to Phase 03.3 (03.4 D-18).
 
