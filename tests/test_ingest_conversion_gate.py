@@ -333,9 +333,11 @@ def test_every_entry_point_that_densifies_refuses_first():
     in its own docstring: it scoped itself to one script, so the second door's
     gap was invisible to it.
 
-    So: any `__main__` that calls `from_raw_data` / `from_raw_data_chunked`
-    must also call the guard, and must call it FIRST. A guard that runs after
-    the densification has already taken the traceback it exists to prevent.
+    So: any `__main__` that reaches a densification -- `from_raw_data` /
+    `from_raw_data_chunked` directly, or `registry.convert()`, which is how
+    all three shells reach it since 03.5 -- must also call the guard, and must
+    call it FIRST. A guard that runs after the densification has already taken
+    the traceback it exists to prevent.
     """
     densifying = 0
     for shell in INGEST_SHELLS:
@@ -343,6 +345,16 @@ def test_every_entry_point_that_densifies_refuses_first():
         body = _main_body(path)
 
         def _is_densify(node) -> bool:
+            # A bare `convert(...)` counts, and that arm is why this test did
+            # not quietly start covering nothing. Since 03.5 the shells reach
+            # the densification through
+            # `quantlab.acquisition.registry.convert()` rather than by naming
+            # a Dataset method, so an attribute-only detector would find zero
+            # densifying doors and every ordering assertion below would be
+            # vacuous. The attribute arms stay: a shell that goes back to
+            # calling `from_raw_data*` directly must still be caught.
+            if isinstance(node.func, ast.Name) and node.func.id == "convert":
+                return True
             return isinstance(node.func, ast.Attribute) and node.func.attr in (
                 "from_raw_data",
                 "from_raw_data_chunked",
