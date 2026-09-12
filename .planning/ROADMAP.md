@@ -542,7 +542,7 @@ divergence it cannot close, with "run a thin shell by hand" as the written inter
 CVT-02's requirement that the guard and predicted peak be visible in the UI is the same demand as
 Success Criterion 4, and is why that criterion is about ANSWERING rather than printing.
 
-**Plans:** 2/6 plans executed
+**Plans:** 3/6 plans executed
 
 Plans:
 
@@ -554,7 +554,7 @@ Plans:
 - [x] 03.5-02-PLAN.md — Split `estimate_chunked_panel` out of `assert_chunked_panel_fits` so the
   loop completes and every over-budget window carries its remedy; hoist `print_chunk_report` into
   `quantlab/utils/cli.py`; collapse `--to-zarr` to one flag with one help text (D-06/D-07/D-10/D-12/D-13)
-- [ ] 03.5-03-PLAN.md — Write DATA-07/DATA-08 into REQUIREMENTS.md and rewrite ROADMAP 03.5's Goal
+- [x] 03.5-03-PLAN.md — Write DATA-07/DATA-08 into REQUIREMENTS.md and rewrite ROADMAP 03.5's Goal
   and the Success Criteria D-06 superseded, including SC-6's fourth-shell scope honesty (D-06/D-09)
 
 **Wave 2** *(blocked on Wave 1)*
