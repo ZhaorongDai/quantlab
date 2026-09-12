@@ -389,3 +389,83 @@ def test_bars_per_day_is_keyword_only_on_both_chunked_guards():
         _explicit_symbol_catalog(10).estimate_chunked_panel(
             "us_all", *_ONE_DAY, bars_per_day=0
         )
+
+
+# ---------------------------------------------------------------------------
+# The renderer (D-13) -- hoisted out of ingest_us_equity.py into utils/cli.py
+
+
+def _render(report: dict, **kwargs) -> list[str]:
+    """Capture `print_chunk_report`'s lines. `print_fn` is injected LAST in the
+    signature precisely so a test can do this without touching stdout."""
+    from quantlab.utils.cli import print_chunk_report
+
+    lines: list[str] = []
+    returned = print_chunk_report(report, print_fn=lines.append, **kwargs)
+    # Returning the input is what lets the call site compose as a wrapper
+    # AROUND the guard call, which is what keeps a refusal silent.
+    assert returned is report
+    return lines
+
+
+def test_the_chunk_report_renders_the_two_figures_a_user_commits_to():
+    """Granularity, chunk count, the whole-range advisory and the LARGEST
+    window -- the number the budget actually applies to (D-05)."""
+    catalog = _explicit_symbol_catalog(500)
+    report = catalog.assert_chunked_panel_fits("us_all", "2024-01-01", "2025-12-31")
+
+    rendered = "\n".join(_render(report))
+
+    assert "chunk granularity: year" in rendered
+    assert "chunk count:       2" in rendered
+    assert "whole-range total:" in rendered
+    assert "largest chunk:" in rendered
+    assert "2024-01-01..2024-12-31" in rendered
+    assert "500 pinned symbols x" in rendered
+    # The per-chunk budget and its remedy, read off the catalog constant by
+    # default so no caller has to know the number.
+    budget_gib = UniverseCatalog.MAX_DENSE_PANEL_BYTES / 1024**3
+    assert f"per-chunk budget:  {budget_gib:.2f} GiB" in rendered
+    assert "a finer --chunk is the remedy above this" in rendered
+
+
+def test_an_empty_chunk_report_renders_without_a_keyerror():
+    """`max_chunk is None` is a legitimate report, not a malformed one. The
+    renderer indexes `max_chunk`, so the branch has to exist -- a report that
+    planned no windows must print the granularity, the zero count and the
+    budget rather than raising a KeyError or a TypeError at the user."""
+    empty = {
+        "granularity": "month",
+        "bars_per_day": 1,
+        "advisory": {"dense_bytes": 0},
+        "chunks": [],
+        "max_chunk": None,
+        "max_chunk_bytes": 0,
+    }
+
+    rendered = "\n".join(_render(empty))
+
+    assert "chunk granularity: month" in rendered
+    assert "chunk count:       0" in rendered
+    assert "largest chunk:" not in rendered
+    assert "per-chunk budget:" in rendered
+
+
+def test_the_rendered_factors_multiply_out_at_every_frequency():
+    """SC-5's honesty requirement, at the RENDERER rather than the refusal.
+
+    `N pinned symbols x T trading days` beside a GiB figure computed on 390
+    rows per session is a false decomposition. The factor appears above the
+    default and is ABSENT at it, so the daily output every existing user reads
+    is unchanged byte for byte.
+    """
+    catalog = _explicit_symbol_catalog(500)
+    window = ("2024-01-01", "2025-12-31")
+
+    daily = "\n".join(_render(catalog.estimate_chunked_panel("us_all", *window)))
+    assert "row(s)/day" not in daily
+
+    minute = "\n".join(
+        _render(catalog.estimate_chunked_panel("us_all", *window, bars_per_day=390))
+    )
+    assert "x 390 row(s)/day)" in minute
