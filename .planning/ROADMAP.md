@@ -542,7 +542,7 @@ divergence it cannot close, with "run a thin shell by hand" as the written inter
 CVT-02's requirement that the guard and predicted peak be visible in the UI is the same demand as
 Success Criterion 4, and is why that criterion is about ANSWERING rather than printing.
 
-**Plans:** 3/6 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 
@@ -559,10 +559,10 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 03.5-04-PLAN.md — `_raw_data_to_xr_window` becomes abstract on `MarketDataset` and the
+- [x] 03.5-04-PLAN.md — `_raw_data_to_xr_window` becomes abstract on `MarketDataset` and the
   warn-and-degrade path is deleted; `SpotKlineDataset` gains the explicit, honestly-documented
   implementation (D-08/D-09)
-- [ ] 03.5-05-PLAN.md — All three US-equity shells delegate conversion to `convert()`, adopt the
+- [x] 03.5-05-PLAN.md — All three US-equity shells delegate conversion to `convert()`, adopt the
   chunked guard and both chunk flags, and the two AST test suites are re-expressed so they keep
   their teeth (D-07/D-11, SC-6)
 
