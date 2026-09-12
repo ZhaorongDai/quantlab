@@ -24,6 +24,8 @@
 - [ ] **DATA-04**: 提供数据清洗/预处理模块（复用现有 `my_ops` 标准化算子），输出统一的 `xarray.Dataset`
 - [x] **DATA-05**: 用户可以获得标普 500 与纳斯达克 100 的日频 point-in-time 成分面板（`xarray.Dataset`，dims `timestamp`/`symbol`，布尔变量 `is_member`），在各自可回溯区间内无幸存者偏差；超出可回溯起点的查询必须显式报错而非静默返回不完整名单
 - [x] **DATA-06**: 成分股数据类与行情数据类共享同一 `BaseDataset` 抽象——成分股类不继承任何 OHLCV 专用成员（`_to_kunquant`/`_to_nautilus`），新增一类指数不需要改动上层代码
+- [ ] **DATA-07**: 外部调用方可以不指名 vendor 类、`Dataset` 子类或 `ingest_*.py` 脚本，就通过注册表把已落盘的 raw parquet 层转换为 Zarr 层，并拿到一个描述本次转换结果的对象（写入/跳过的窗口、pinned 符号数、存储路径、是否续跑或被取消）
+- [ ] **DATA-08**: 任何调用方可以在任何内存被分配之前，问出一次转换的预测峰值内存与每个超预算窗口的补救建议；该答案是一个可被调用方渲染的值，而不是这一层打印的日志行
 
 ### Factor（因子计算）
 
@@ -107,6 +109,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-04 | Phase 2 | Pending |
 | DATA-05 | Phase 03.1 | Complete |
 | DATA-06 | Phase 03.1 | Complete |
+| DATA-07 | Phase 03.5 | Pending |
+| DATA-08 | Phase 03.5 | Pending |
 | FACTOR-01 | Phase 3 | Complete — accepted defect (gap 2 dismissed; re-open if VWAP-derived features reach a Phase-4 model or Phase-6 backtest — see 03-VERIFICATION.md § Gap Dispositions) |
 | FACTOR-02 | Phase 3 | Complete |
 | FACTOR-03 | Phase 3 | Complete |
@@ -125,10 +129,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 
-- v1 requirements: 24 total
-- Mapped to phases: 24 (all v1 requirements covered)
+- v1 requirements: 26 total
+- Mapped to phases: 26 (all v1 requirements covered)
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-09-04*
-*Last updated: 2026-09-04 after roadmap creation*
+*Last updated: 2026-09-11 — Phase 03.5 added DATA-07/DATA-08*
