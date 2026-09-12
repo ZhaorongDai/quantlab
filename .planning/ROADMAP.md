@@ -572,58 +572,136 @@ Plans:
   window boundaries, forward them from `convert()`, and de-stale `run()`'s three-modes docstring
   (D-05/D-06)
 
-### Phase 03.6: Frequency-Keyed Chunking Policy (INSERTED)
+### Phase 03.6: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 
-**Goal**: The time-window granularity of a chunked conversion is decided by ONE per-frequency
-constant table rather than resolved at runtime or guessed per invocation, and the RAM guard's
-REFUSING half is deleted while its ESTIMATING half survives as a value the caller renders.
-**Requirements**: TBD (to be settled in discuss-phase)
+**Goal**: `TimeChunkPlanner` becomes the SINGLE chunking authority, its granularity ladder reaches
+`hour`, and the caller chooses a rung by passing it explicitly. The dense-panel estimator/guard
+group is DELETED from `UniverseCatalog` -- both its estimating and its refusing halves -- so a
+roster catalogue goes back to answering only "who is in the pool, and when".
+**Requirements**: N/A -- this phase's contract is its Success Criteria (SC-1..SC-8)
 **Depends on:** Phase 03.5
 **Success Criteria** (what must be TRUE):
 
-  1. A conversion's window granularity comes from a single source -- `CHUNK_GRANULARITY_BY_FREQUENCY`
-     -- whose values are asserted AT IMPORT TIME to be members of `TimeChunkPlanner.GRANULARITIES`.
-     Reproducing a conversion then needs only the config, never knowledge of how large the roster
-     happened to be on the day it ran (the CLAUDE.md reproducibility constraint).
-  2. `--chunk` drops from a required choice to an OVERRIDE: absent, it takes the table's value for
-     the frequency; present, it wins.
-  3. `day` joins `GRANULARITIES` and `_period_key` supports it. Full-market `1m` at day granularity
-     is ~157 MB per window, which is what makes it the right default for that frequency.
-  4. NO code path raises on a RAM budget any more: `assert_dense_panel_fits` and
-     `assert_chunked_panel_fits` are deleted; `estimate_dense_panel` and `estimate_chunked_panel`
-     survive; `MAX_DENSE_PANEL_BYTES` is demoted from a refusal line to an estimate's reference value.
-  5. The three US-equity shells RENDER the estimate rather than being stopped by it -- the predicted
-     peak is still visible before any memory is allocated, which is what 03.5 SC-4 actually asked for.
-  6. Every locked text this phase falsifies is rewritten rather than left standing: ROADMAP 03.5's
-     SC-5 (a refusal names the fitting remedy) is removed, D-05 (`assert_dense_panel_fits` and
-     `MAX_DENSE_PANEL_BYTES` are kept) is formally amended, and the refusal-bearing halves of 03.5's
-     D-10/D-11 are marked superseded.
-  7. `tick` is deliberately ABSENT from the constant table, and its absence IS the "not wired up yet"
-     answer -- no `if frequency == "tick"` branch is introduced. Same shape as
-     `BARS_PER_DAY_BY_FREQUENCY`'s deliberate tick omission and 03.5 D-01's `dataset_cls=None`.
+  1. `GRANULARITIES` is `("year", "quarter", "month", "day", "hour")` and `_period_key` supports all
+     five. Its return type `tuple[int, int]` is UNCHANGED: the second component was never a natural
+     calendar number (the `year` rung already returns `(year, 0)`) -- it is a within-year
+     monotonically increasing discriminant that `_group_by_period` only ever compares for equality.
+     `day` is `(year, dayofyear)`; `hour` is `(year, dayofyear * 24 + hour)`, upper bound 8807.
+  2. `TimeChunkPlanner` exposes exactly ONE planner. `plan_calendar` is DELETED -- its only
+     production call site is `UniverseCatalog.estimate_chunked_panel` (`universe.py:1940`), which
+     SC-3 removes. The class docstring's "exposes TWO planners" section and the drift-defence
+     paragraph justifying the shared `_period_key` are rewritten, not left standing: with one
+     planner there is no drift to defend against.
+  3. The dense-panel estimator/guard group is DELETED from `UniverseCatalog` -- BOTH halves, not
+     just the refusing one: `MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`,
+     `assert_dense_panel_fits`, `estimate_chunked_panel`, `assert_chunked_panel_fits`.
+  4. The ACQUISITION-VOLUME guard group is UNTOUCHED: `_resolve_volume_knobs`,
+     `estimate_acquisition_volume`, `_narrowing_that_fits`, `_crossed_ceilings`,
+     `assert_acquisition_volume_fits`, plus `utils/cli.py`'s `volume_pricing`,
+     `add_volume_guard_args` and `print_volume_estimate`. That group bounds raw disk bytes, request
+     count and wall clock; it sits on the acquisition side sizing the roster's own volume, which is
+     work a roster catalogue legitimately owns.
+  5. NO per-frequency chunk-granularity constant table is introduced. `--chunk` stays REQUIRED, and
+     `add_chunk_args` keeps deriving its `choices` from `GRANULARITIES`, so `day` and `hour` appear
+     there automatically. `GRANULARITIES`'s `#:` comment ("Also the values `ingest_us_equity.py
+     --chunk` offers") therefore stays TRUE and needs no rewrite.
+  6. Whatever in `quantlab/utils/cli.py` exists ONLY to serve a deleted estimator goes with it --
+     `print_chunk_report`, and the dense-panel override inside `_explicit_symbol_catalog`. The test
+     is consumer-based, not name-based: delete it when its only consumer is a deleted estimator,
+     keep it otherwise.
+  7. The three US-equity shells (`ingest_tiingo.py`, `ingest_alpaca.py`, `ingest_us_equity.py`) drop
+     the call sites of the deleted functions. Their `--chunk` plumbing is unchanged.
+  8. Every locked text this phase falsifies is rewritten rather than left standing: ROADMAP 03.5's
+     SC-5 (a refusal names the fitting remedy), D-05 (`assert_dense_panel_fits` and
+     `MAX_DENSE_PANEL_BYTES` are kept), the refusal-bearing halves of 03.5's D-10/D-11, and
+     REQUIREMENTS.md's **DATA-08** -- which promises that a caller can ask for a conversion's
+     predicted peak memory before any memory is allocated. SC-3 deletes the capability DATA-08
+     names, so DATA-08 is formally WITHDRAWN (annotated in place, original wording preserved, per
+     03.6 D-18), not left Pending against an estimator that no longer exists. DATA-09 was drafted
+     in 03.6 D-17 but never written into REQUIREMENTS.md; nothing to unwind there.
 
-**Notes carried into discuss-phase (do NOT re-derive):**
+**Notes carried into planning (do NOT re-derive):**
 
-- The decision to DELETE the guard was the developer's, made 2026-09-11. Its known cost is accepted:
-  the full-market tick case (~924 GB for one dense hour at 7,700 symbols) is no longer refused and
-  will reach OOM instead. The repo's recorded precedent for that failure mode is quick task
-  260906-13w (~7.2 GiB grid + ~29.6M-row frame OOM'd a 16 GiB box, on full-market DAILY, not tick).
-- Whether `GRANULARITIES` drops a further level to `hour` is NOT decided here. Its precondition is
-  that the raw tier partitions by hour too -- `RAW_HIVE_KEYS` is `1d=month`, `1m=date`, `tick=date`,
-  so an hourly window would be finer than the shard it reads and would re-open the same files
-  6.5-16x. Recommendation: stop at `day`.
-- `plan_calendar` hardcodes `pd.date_range(freq="D")` and returns `YYYY-MM-DD` string pairs. Both are
-  day-resolution assumptions sitting OUTSIDE the `_period_key` single-definition guarantee, so a
-  future `hour` would silently drift `plan_calendar` from `plan_from_timestamps` -- the exact drift
-  the class docstring calls "structurally impossible". Deriving `freq` from the granularity is a
-  cheap compatibility hook worth taking now.
-- `_period_key` returns `tuple[int, int]`. `day` fits as `(year, dayofyear)`; `hour` would not.
+- SCOPE WAS NARROWED on 2026-09-12, mid-plan-phase, by the developer. The superseded scope was a
+  per-frequency `CHUNK_GRANULARITY_BY_FREQUENCY` table plus `--chunk` demoted to an override plus a
+  half-deletion that kept the estimators. Three findings drove the change and are recorded here so
+  they are not re-litigated:
+  (a) A REQUIRED `--chunk` is MORE reproducible than a defaulted one. An explicit value is recorded
+      in the invocation; a default drifts silently when the table is edited, so replaying an old
+      command reproduces a different window. The old SC-1 cited the CLAUDE.md reproducibility
+      constraint as the argument FOR the table; the argument in fact runs the other way.
+  (b) `UniverseCatalog` carried ~835 lines of sizing (`universe.py:1665-2500`) on a 1,280-line
+      roster class. The direct cost was visible in `utils/cli.py:605-631`, where the CLI
+      MANUFACTURES a fake catalogue (`_explicit_symbol_catalog`) and overrides `estimate_dense_panel`
+      purely to get an arithmetic answer out of an object that needs a roster file on disk.
+  (c) Deleting the estimators removes `plan_calendar`'s only consumer, which removes the only real
+      obstacle to `hour`.
+- DELETING THE DENSE-PANEL GUARD: cost accepted, decided by the developer 2026-09-11 and re-affirmed
+  on 2026-09-12 when the scope was narrowed. Full-market tick (~924 GB for one dense hour at 7,700
+  symbols) is no longer refused and will reach OOM. Recorded precedent for that failure mode is
+  quick task 260906-13w (~7.2 GiB grid + ~29.6M-row frame OOM'd a 16 GiB box, on full-market DAILY,
+  not tick).
+- `hour`'s IO COST: known and accepted. The raw tier partitions `1m` by `date=`, one shard per day,
+  so an hourly window reads the whole day's parquet and discards most of it; the same file is opened
+  several times across one day (OS page cache absorbs part of this). This is a cost the CALLER takes
+  on when it picks a rung -- the library offers the ladder and does not make the policy choice. Same
+  principle as deleting the memory guard.
+- The earlier note claiming `hour` "would not fit" in `_period_key`'s `tuple[int, int]` was a
+  MISREADING of that method's semantics, corrected in SC-1. Do not reinstate it.
+- The acquisition-volume group and the dense-panel group are different things. Only the latter is
+  deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 0 plans
+**Plans:** 4 plans
+
+**Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
+real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
+`estimate_acquisition_volume` — the heart of the group SC-4 declares UNTOUCHED — calls
+`estimate_dense_panel` (`:2184`), which SC-3 deletes, reading `symbols`, `trading_days`,
+`observed_cells` and `density` off it. `quantlab/utils/cli.py:_explicit_symbol_catalog`
+overrides that same estimator so an explicit `--symbols` list can be priced with no roster
+file on disk. A literal reading of SC-3 therefore breaks SC-4 and silently disables the
+`--symbols` volume guard. Resolution, carried by plan 02: `estimate_dense_panel` is two
+things fused — roster-window ARITHMETIC (cells, trading days, density) and a dense-panel
+RAM estimate (bytes, and `MAX_DENSE_PANEL_BYTES` as its budget). The arithmetic is
+extracted to `UniverseCatalog._roster_window_profile` first, under a golden test pinning
+the volume guard's numbers; then all five named members are deleted. SC-3 is satisfied
+honestly (`not hasattr` on all five, the byte capability gone) and SC-4 is satisfied
+positively (`hasattr` on all fourteen retained members, identical arithmetic).
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 03.6 to break down)
+**Wave 1**
+
+- [ ] 03.6-01-PLAN.md — TRACER: the granularity ladder reaches `day` and `hour`
+  (`GRANULARITIES` becomes the five-tuple, `_period_key` gains two explicit branches plus a
+  drift-detecting trailing raise), proved end-to-end by a `day`-granularity conversion that
+  reaches Zarr identical to the unchunked store; plus the locks that `--chunk`'s derived
+  `choices` picked up both rungs for free and that its required-ness was not touched
+  (SC-1, SC-5)
+
+**Wave 2** *(blocked on Wave 1 — the tracer must be verified before any deletion)*
+
+- [ ] 03.6-02-PLAN.md — The deletion cut: `_roster_window_profile` extracted under a golden
+  arithmetic lock, then `MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`,
+  `assert_dense_panel_fits`, `estimate_chunked_panel`, `assert_chunked_panel_fits`,
+  `print_chunk_report` and the `_explicit_symbol_catalog` dense-panel override all deleted,
+  the three shells' call sites dropped, and every pinning suite re-expressed as a
+  two-directional deletion/survival lock (SC-3, SC-4, SC-6, SC-7)
+
+**Wave 3** *(blocked on Wave 2 — this plan removes `plan_calendar`, whose only production
+caller plan 02 deletes; both touch `quantlab/base/chunking.py` and the same test module)*
+
+- [ ] 03.6-03-PLAN.md — `plan_calendar` deleted so `TimeChunkPlanner` exposes exactly ONE
+  planner; the module docstring, the class docstring's two-planner enumeration and its
+  drift-defence paragraph rewritten to name the drift the class actually has
+  (`GRANULARITIES` vs `_period_key`) and the raise that now detects it (SC-2)
+
+**Wave 4** *(blocked on Wave 3 — it documents the landed state)*
+
+- [ ] 03.6-04-PLAN.md — SC-8's amendments as real edits: ROADMAP 03.5 SC-5, quick task
+  260906-13w's D-05 at every restatement site, the refusal-bearing halves of 03.5's
+  D-10/D-11, REQUIREMENTS.md's **DATA-08** formally WITHDRAWN in place with its original
+  wording preserved, and `example/chunking.md` / `example/acquisition.md` de-staled (SC-8)
 
 ### Phase 4: Baseline Return Prediction Model
 
