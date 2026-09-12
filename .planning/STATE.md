@@ -1,17 +1,17 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.5"
-current_phase_name: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
+current_phase: "03.6"
+current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal
 status: executing
 stopped_at: Phase 03.6 context gathered
-last_updated: "2026-09-12T17:28:44.573Z"
+last_updated: "2026-09-12T20:25:55.425Z"
 last_activity: Phase 03.5 all 6 plans complete — entering phase gates
-state_head: 6b6357603d60b7b4391dcedb6c4f674b9979e426
+state_head: 76f7b2c033620b6f7d9d9ba5bbf97dd61173f309
 progress:
   total_phases: 13
   completed_phases: 1
-  total_plans: 47
+  total_plans: 51
   completed_plans: 47
 milestone_name: milestone
 ---
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.5 (Registry-level raw→Zarr Conversion Entry Point (INSERTED)) — EXECUTING
+Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal) — READY TO EXECUTE
 Plan: 1 of 6
-Status: Executing Phase 03.5
+Status: Ready to execute
 Last activity: Phase 03.5 all 6 plans complete — entering phase gates
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
