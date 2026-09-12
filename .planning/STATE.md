@@ -4,15 +4,15 @@ milestone: v1.0
 current_phase: "03.5"
 current_phase_name: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
 status: executing
-stopped_at: Phase 03.5 context gathered
-last_updated: "2026-09-12T02:02:32.477Z"
+stopped_at: Phase 03.6 context gathered
+last_updated: "2026-09-12T17:28:44.573Z"
 last_activity: Phase 03.5 all 6 plans complete — entering phase gates
-state_head: 15dc4af18cc117528f172004af00dc01f59386d9
+state_head: 6b6357603d60b7b4391dcedb6c4f674b9979e426
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 47
-  completed_plans: 41
+  completed_plans: 47
 milestone_name: milestone
 ---
 
@@ -273,9 +273,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-11T21:05:29.845Z
-Stopped at: Phase 03.5 context gathered
+Last session: 2026-09-12T17:28:44.191Z
+Stopped at: Phase 03.6 context gathered
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: .planning/phases/03.5-registry-level-raw-to-zarr-conversion-entry-point/03.5-CONTEXT.md
+Resume file: .planning/phases/03.6-frequency-keyed-chunking-policy/03.6-CONTEXT.md
 </content>
