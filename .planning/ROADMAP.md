@@ -530,7 +530,7 @@ divergence it cannot close, with "run a thin shell by hand" as the written inter
 CVT-02's requirement that the guard and predicted peak be visible in the UI is the same demand as
 Success Criterion 4, and is why that criterion is about ANSWERING rather than printing.
 
-**Plans:** 1/6 plans executed
+**Plans:** 2/6 plans executed
 
 Plans:
 
@@ -539,7 +539,7 @@ Plans:
 - [x] 03.5-01-PLAN.md — TRACER: one Tiingo capability reaches Zarr through `registry.convert()`
   end-to-end (`DatasetConfig.market` reinstated, `Capability.dataset_cls`, `ConversionResult`,
   `convert()`), then Alpaca's four rows and the three capability-resolution refusals (D-01..D-04)
-- [ ] 03.5-02-PLAN.md — Split `estimate_chunked_panel` out of `assert_chunked_panel_fits` so the
+- [x] 03.5-02-PLAN.md — Split `estimate_chunked_panel` out of `assert_chunked_panel_fits` so the
   loop completes and every over-budget window carries its remedy; hoist `print_chunk_report` into
   `quantlab/utils/cli.py`; collapse `--to-zarr` to one flag with one help text (D-06/D-07/D-10/D-12/D-13)
 - [ ] 03.5-03-PLAN.md — Write DATA-07/DATA-08 into REQUIREMENTS.md and rewrite ROADMAP 03.5's Goal

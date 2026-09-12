@@ -5,9 +5,9 @@ current_phase: "03.5"
 current_phase_name: Registry-level raw→Zarr Conversion Entry Point (INSERTED)
 status: executing
 stopped_at: Phase 03.5 context gathered
-last_updated: "2026-09-12T01:04:55.526Z"
-last_activity: Phase 03.5 plan 01 complete — registry.convert() entry point landed, 748 tests pass
-state_head: add4fdcc6f44ffe0c9791fec0e2c278233574a13
+last_updated: "2026-09-12T01:14:07.973Z"
+last_activity: Phase 03.5 plan 02 complete — chunked estimate/assert split, merged from worktree
+state_head: f12c43dc946ff58631ba12fd751a85fe1faae95d
 progress:
   total_phases: 13
   completed_phases: 1
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 03.5 (Registry-level raw→Zarr Conversion Entry Point (INSERTED)) — EXECUTING
 Plan: 1 of 6
 Status: Executing Phase 03.5
-Last activity: Phase 03.5 plan 01 complete — registry.convert() entry point landed, 748 tests pass
+Last activity: Phase 03.5 plan 02 complete — chunked estimate/assert split, merged from worktree
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
