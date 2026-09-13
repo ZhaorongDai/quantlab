@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 4/4 plans executed
+**Plans:** 6 plans (4 executed; 2 gap-closure plans pending after the `gaps_found` verdict in `03.6-VERIFICATION.md`)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -774,6 +774,34 @@ caller plan 02 deletes; both touch `quantlab/base/chunking.py` and the same test
   260906-13w's D-05 at every restatement site, the refusal-bearing halves of 03.5's
   D-10/D-11, REQUIREMENTS.md's **DATA-08** formally WITHDRAWN in place with its original
   wording preserved, and `example/chunking.md` / `example/acquisition.md` de-staled (SC-8)
+
+**Gap closure** *(added 2026-09-13 after `03.6-VERIFICATION.md` scored 12/13 must-haves;
+`gap_closure: true`, so `/gsd-execute-phase --gaps-only` runs these two and leaves 01-04
+alone)*
+
+**Wave 1**
+
+- [ ] 03.6-05-PLAN.md — GAP #1, the only gap, and it hangs on the phase GOAL's
+  caller-owns-a-stated-cost half rather than on any SC: the chunked write path let the FIRST
+  WINDOW pin the Zarr store's permanent on-disk chunk grid (measured `--chunk day` -> `(1,3)`
+  where the unchunked path leaves `(9,3)`), an irreversible degradation whose only remedy is
+  delete-and-rebuild and which the repo's own `_widen_block_rows` already calls "load-bearing,
+  not stylistic" for the sibling widen path. An `append_dim_size` keyword carries D-02's
+  once-resolved whole-range axis length to the store-creating write, and the SC-1 tracer test
+  gains the `encoding["chunks"]` comparison that `xr.testing.assert_identical` was
+  structurally blind to (PHASE GOAL, SC-1)
+
+**Wave 2** *(blocked on Wave 1 — both plans modify `quantlab/dataset/backend.py` and
+`quantlab/base/data.py`, and plan 06's WR-06 edit sits thirteen lines below plan 05's inside
+the same docstring)*
+
+- [ ] 03.6-06-PLAN.md — WR-04..WR-09, the stale-text defects this phase's deletions left
+  behind: two D-18-shaped in-place annotations (the D-11 RAM-guard claim in
+  `quantlab/base/data.py`, the `_validate_category` reachability argument in
+  `quantlab/utils/cli.py`), four deleted pointers aimed at code this phase removed
+  (`quantlab/dataset/backend.py`, `ingest_tiingo.py`, `ingest_us_equity.py`,
+  `tests/test_ingest_conversion_gate.py`), and `example/acquisition.md`'s `--dry-run`
+  transcript RE-DERIVED from a live credential-free run rather than hand-patched (D-18, SC-8)
 
 ### Phase 4: Baseline Return Prediction Model
 
