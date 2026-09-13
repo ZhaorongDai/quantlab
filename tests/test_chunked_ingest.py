@@ -1452,6 +1452,103 @@ def test_a_variable_widen_leaves_one_chunk_grid_not_two(
     assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 2)}
 
 
+def test_a_store_built_by_write_keeps_two_chunk_grids_accepted_cost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ACCEPTED COST, pinned rather than fixed: a store built through
+    `write()` carries TWO chunk grids after a variable widen, and phase 03.6
+    deliberately does not fix that.
+
+    This arm is NOT a red-to-green repro. It measures behaviour the phase chose
+    to leave alone (route (b): narrow the wording, retract the universal), and
+    it exists so the cost cannot be denied later or silently changed without a
+    test going red.
+
+    WHY the sibling arms are blind to it: every other grid arm in this family
+    builds its store through `_incomplete_store`, i.e. through
+    `append(append_dim_size=9)` -- a store already ON the correct grid. None of
+    them goes through `write()`, which is the path `BaseDataset.save()` and
+    `Factor.save()` actually take. `test_a_variable_widen_leaves_one_chunk_grid_not_two`
+    directly above asserts a SINGLETON grid set, and both it and this arm are
+    correct at the same time: that pair IS the narrowed claim made executable.
+    The widen makes the three things IT writes agree with each other; it says
+    nothing about what the store already held.
+
+    Root cause is WR-02: `XrBackend.write()` passes no `encoding` at all, so
+    the creating write lands on Zarr's default grid (the panel's own full
+    shape) and never on `min(APPEND_DIM_CHUNK, total)`. `Factor.update()` then
+    holds no source for the store's total extent, so the filler takes
+    `min(APPEND_DIM_CHUNK, filler_len)`. This predates phase 03.6 and is
+    INDEPENDENT of the `--chunk` rung -- the filler's grid is decided by
+    `APPEND_DIM_CHUNK` and the filler's own length alone -- which is why it
+    leaves SC-1..SC-8 and the phase goal intact.
+
+    Two measurements, so this is not read as a monkeypatch artifact. The pair
+    this arm reproduces at `APPEND_DIM_CHUNK = 4`: `(10, 2)` for the
+    pre-existing variable and `(4, 2)` for the new one. The decisive pair,
+    measured 2026-09-13 with NO monkeypatch at the real default
+    `APPEND_DIM_CHUNK = 512`, along the documented `Factor.save()` ->
+    `Factor.update()` workflow: a 1000-row store came back as
+    `{'close': (1000, 2)}` and the update added `'newvar': (512, 2)`.
+
+    WHEN THIS GOES RED: `XrBackend.write()` has started pinning `encoding`
+    (route (a)). That is a legitimate change, not a regression -- but it must
+    not land alone. Update, in the SAME change:
+    `.planning/phases/03.6-frequency-keyed-chunking-policy/deferred-items.md`
+    (the accepted-cost entry), `XrBackend.widen_and_append`'s docstring (the
+    D-18 marked block naming this cost), and plan `03.6-07`'s
+    `must_haves.truths` #3 (the retracted universal).
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    path = str(tmp_path / "write_built_two_grids.zarr")
+
+    created = _small_panel(
+        [
+            "2022-01-03",
+            "2022-02-01",
+            "2022-03-01",
+            "2022-04-01",
+            "2022-05-02",
+            "2022-06-01",
+            "2022-07-01",
+            "2022-08-01",
+            "2022-09-01",
+            "2022-10-03",
+        ],
+        ["A", "B"],
+        0.0,
+    )
+    XrBackend().to_internal(created).write(path)
+
+    assert _chunk_grid(path) == {"close": (10, 2)}, (
+        "write() passes no encoding, so the creating write is expected to land "
+        "on Zarr's default grid (the panel's own full shape) rather than on "
+        f"min(APPEND_DIM_CHUNK, 10); got {_chunk_grid(path)}"
+    )
+
+    grown = _small_panel(
+        ["2023-01-04", "2023-06-15", "2023-12-28"], ["A", "B"], 100.0
+    )
+    grown["newvar"] = grown["close"] * 2.0
+    XrBackend().to_internal(grown).widen_and_append(path, append_dim_size=15)
+
+    grid = _chunk_grid(path)
+    assert set(grid) == {"close", "newvar"}
+    assert grid["close"] == (10, 2), (
+        "Zarr fixes a grid at write time and nothing edits it in place, so the "
+        f"pre-existing variable must be untouched by the widen; got {grid}"
+    )
+    assert grid["newvar"] == (min(XrBackend.APPEND_DIM_CHUNK, 15), 2), (
+        "the filler is encoded through _append_encoding with the stated "
+        f"extent, so it takes min(APPEND_DIM_CHUNK, 15); got {grid}"
+    )
+    assert len(set(grid.values())) == 2, (
+        "the ACCEPTED COST: a write()-built store keeps one grid for what was "
+        f"already on disk and another for what the widen added; got {grid}"
+    )
+
+
 def test_the_chunk_grid_survives_a_block_by_block_widen(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
