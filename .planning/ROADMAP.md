@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 6/6 plans executed (4 executed; 2 gap-closure plans pending after the `gaps_found` verdict in `03.6-VERIFICATION.md`)
+**Plans:** 7 plans (6 executed; 03.6-07 is a second-round gap-closure plan, pending after the re-verification `gaps_found` verdict at 16/18 in `03.6-VERIFICATION.md`)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -802,6 +802,16 @@ the same docstring)*
   (`quantlab/dataset/backend.py`, `ingest_tiingo.py`, `ingest_us_equity.py`,
   `tests/test_ingest_conversion_gate.py`), and `example/acquisition.md`'s `--dry-run`
   transcript RE-DERIVED from a live credential-free run rather than hand-patched (D-18, SC-8)
+- [ ] 03.6-07-PLAN.md — GAP, carried forward: the SAME invariant is still false on the widen
+  rewrite path (`03.6-VERIFICATION.md` truths #17/#18, 16/18). `widen_and_append` forwards
+  `append_dim_size` only to the closing `append()`, so `widen_symbol_axis`'s `mode="w"`
+  rewrite re-pins the grid from the extent AT REWRITE TIME — measured on the crash-resume
+  plus roster-growth path, `--chunk year` lands `(3, 3)` and `--chunk day` lands `(1, 3)`
+  where the invariant claims `(4, 3)`. The developer chose the FIX route, not the retract
+  route. Threads the stated extent into `widen_symbol_axis` / `_widen_whole_store` /
+  `_widen_chunked` / `widen_data_vars`' filler / `_reconcile_new_listings`, adds the fifth
+  parametrised `widen` arm plus three companions, and rewrites the three unconditional
+  statements the last round left false (PHASE-GOAL-caller-owns-a-stated-cost, D-12, D-18)
 
 ### Phase 4: Baseline Return Prediction Model
 
