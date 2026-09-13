@@ -25,7 +25,38 @@
 - [x] **DATA-05**: 用户可以获得标普 500 与纳斯达克 100 的日频 point-in-time 成分面板（`xarray.Dataset`，dims `timestamp`/`symbol`，布尔变量 `is_member`），在各自可回溯区间内无幸存者偏差；超出可回溯起点的查询必须显式报错而非静默返回不完整名单
 - [x] **DATA-06**: 成分股数据类与行情数据类共享同一 `BaseDataset` 抽象——成分股类不继承任何 OHLCV 专用成员（`_to_kunquant`/`_to_nautilus`），新增一类指数不需要改动上层代码
 - [ ] **DATA-07**: 外部调用方可以不指名 vendor 类、`Dataset` 子类或 `ingest_*.py` 脚本，就通过注册表把已落盘的 raw parquet 层转换为 Zarr 层，并拿到一个描述本次转换结果的对象（写入/跳过的窗口、pinned 符号数、存储路径、是否续跑或被取消）
-- [ ] **DATA-08**: 任何调用方可以在任何内存被分配之前，问出一次转换的预测峰值内存与每个超预算窗口的补救建议；该答案是一个可被调用方渲染的值，而不是这一层打印的日志行
+- [~] **DATA-08**: 任何调用方可以在任何内存被分配之前，问出一次转换的预测峰值内存与每个超预算窗口的补救建议；该答案是一个可被调用方渲染的值，而不是这一层打印的日志行
+
+  **WITHDRAWN 2026-09-12 — phase 03.6 SC-8. Original wording preserved above, per 03.6 D-18.**
+  Phase 03.6 SC-3 deleted `estimate_dense_panel`, `assert_dense_panel_fits`,
+  `estimate_chunked_panel`, `assert_chunked_panel_fits` and `MAX_DENSE_PANEL_BYTES` from
+  `UniverseCatalog` — that group IS the capability this requirement names, and the 补救建议 clause
+  presumed a refusal that no longer happens. A caller can no longer ask what peak a conversion
+  predicts, before allocation or after it; the accepted consequence is that an over-sized dense
+  panel reaches OOM rather than a legible refusal naming a finer `--chunk` (developer decision
+  2026-09-11, re-affirmed 2026-09-12 when 03.6's scope was narrowed; recorded precedent is quick
+  task 260906-13w).
+
+  **What DID survive, so this is not read as a total loss.**
+  `UniverseCatalog.estimate_acquisition_volume` and `assert_acquisition_volume_fits` still answer
+  and still refuse — on raw disk bytes, request count and wall clock, i.e. money and time rather
+  than RAM (03.6 SC-4), with their arithmetic proved bit-for-bit unchanged. The roster-window
+  arithmetic the deleted estimator carried lives on in `UniverseCatalog._roster_window_profile`.
+  And `TimeChunkPlanner`'s granularity ladder now reaches `hour`
+  (`year`/`quarter`/`month`/`day`/`hour`, 03.6 SC-1), so the operator's lever for reducing peak RAM
+  is FINER than it was when this requirement was written, even though the guard that used to name
+  that lever is gone.
+
+  **Withdrawn, NOT deleted.** The bullet and its traceability row stay so a later reader can see
+  that a requirement was consciously retired rather than quietly dropped — the same discipline
+  03.6 D-18 applies to decisions. The checkbox marker is `[~]`: this file previously used only
+  `[ ]` (pending) and `[x]` (complete), and neither is honest here — DATA-08 was never delivered,
+  so it is not complete, and it is not outstanding work, so it is not pending. NO successor
+  requirement was written to replace it: 03.6 D-17 drafted one, it never reached this file, D-17 is
+  itself SUPERSEDED, and ROADMAP 03.6 records `Requirements: N/A`. That drafted successor's ID is
+  deliberately NOT restated here — an executable gate asserts the identifier appears nowhere in
+  this file, so spelling it out would make this compliance note read as the very violation it
+  records the absence of.
 
 ### Factor（因子计算）
 
@@ -110,7 +141,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DATA-05 | Phase 03.1 | Complete |
 | DATA-06 | Phase 03.1 | Complete |
 | DATA-07 | Phase 03.5 | Pending |
-| DATA-08 | Phase 03.5 | Pending |
+| DATA-08 | Phase 03.5 | Withdrawn — phase 03.6 SC-3 deleted the capability (the dense-panel estimator/guard group on `UniverseCatalog`); never delivered, and not outstanding work. See the DATA-08 annotation in the Data section |
 | FACTOR-01 | Phase 3 | Complete — accepted defect (gap 2 dismissed; re-open if VWAP-derived features reach a Phase-4 model or Phase-6 backtest — see 03-VERIFICATION.md § Gap Dispositions) |
 | FACTOR-02 | Phase 3 | Complete |
 | FACTOR-03 | Phase 3 | Complete |
@@ -129,10 +160,22 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 **Coverage:**
 
-- v1 requirements: 26 total
-- Mapped to phases: 26 (all v1 requirements covered)
+- v1 requirements ever defined: 28 total
+- Withdrawn: 1 (DATA-08 — phase 03.6 SC-3 deleted the capability)
+- Active: 27
+- Mapped to phases: 28 (every v1 requirement, the withdrawn one included, still has a row above)
 - Unmapped: 0
+
+A withdrawn requirement is counted in the "ever defined" total and keeps its traceability row. The
+count of requirements ever defined is itself a fact worth keeping, and a row that disappears cannot
+tell a later reader that a requirement was consciously retired rather than quietly dropped.
+
+**Arithmetic note, 2026-09-12.** This block previously read "26 total / 26 mapped / 0 unmapped".
+That 26 was ALREADY stale before the withdrawal: it predated the 2026-09-11 addition of DATA-07 and
+DATA-08 and was never incremented. The figures above were recomputed from this file's actual rows —
+28 v1 requirement bullets and 28 traceability rows — rather than derived by decrementing 26 by one,
+which would have carried the old error forward and made the totals disagree with the file.
 
 ---
 *Requirements defined: 2026-09-04*
-*Last updated: 2026-09-11 — Phase 03.5 added DATA-07/DATA-08*
+*Last updated: 2026-09-12 — Phase 03.6 withdrew DATA-08 (2026-09-11 — Phase 03.5 added DATA-07/DATA-08)*
