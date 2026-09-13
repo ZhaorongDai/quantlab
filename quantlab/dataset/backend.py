@@ -311,10 +311,30 @@ class XrBackend(DataBackend):
            run crashed between the two renames. Refuse and name the manual move
            -- deciding which directory is authoritative is not this method's
            call to make.
-        2. `symbols` must be a SUPERSET of the stored labels. `reindex` drops
+        2. A `.superseded.tmp` sidecar WITH a store at `path` is the fourth
+           crash state, and it splits by whether the residue holds anything.
+           NON-EMPTY: refuse. The closing rename of the store onto the residue
+           raises `ENOTEMPTY` on POSIX against a non-empty directory, but only
+           AFTER the entire sidecar rewrite has been paid for and thrown away
+           -- measured `OSError: [Errno 66] Directory not empty`, with an
+           orphaned `.widening.tmp` holding a complete widened store left
+           behind. Two DIFFERENT producers write this suffix at this path: a
+           widen that crashed between its two renames, and a SIGKILLed
+           `on_new_listing="rebuild"`, whose `BaseDataset.SUPERSEDED_SUFFIX`
+           aside is this same string (`_restore_rebuild_asides` runs only on an
+           exception or a cancel, and SIGKILL reaches neither). Either may hold
+           the only complete copy of a store, so the residue is never deleted
+           and never renamed over -- the operator is named both producers and
+           told to decide by hand. EMPTY: self-heal with `rmtree`, exactly as
+           the orphaned `.widening.tmp` one line below. This deviates
+           deliberately from the review's suggested guard, which refuses the
+           both-exist state unconditionally: an empty directory holds nothing
+           and `os.replace` onto it SUCCEEDS today, so an unconditional refusal
+           would turn a working widen into an error in the name of fixing one.
+        3. `symbols` must be a SUPERSET of the stored labels. `reindex` drops
            what it is not asked for, and a store missing a delisted symbol's
            history is indistinguishable afterwards from one that never held it.
-        3. Every data variable carrying `dim` must be floating-point, or be
+        4. Every data variable carrying `dim` must be floating-point, or be
            named in `fill_values`. Measured: an unfilled `reindex` upcasts a
            bool `anomaly_flag` and an int64 `volume` to float64-with-NaN -- a
            silent schema change to a LIVE store, the same family of invisible
@@ -397,6 +417,30 @@ class XrBackend(DataBackend):
                 f"Auto-recovering is deliberately not done here: which "
                 f"directory is authoritative is not this method's call to make."
             )
+        if superseded.exists() and any(superseded.iterdir()):
+            raise ValueError(
+                f"XrBackend.widen_symbol_axis: refusing to widen {path} -- "
+                f"a NON-EMPTY superseded residue sits beside the store at "
+                f"{superseded}, and it holds real data. Two different runs "
+                f"write that suffix at that path: a widen that crashed between "
+                f"its two renames, and an `on_new_listing=\"rebuild\"` killed "
+                f"outright (SIGKILL), whose aside uses the same string and is "
+                f"never reclaimed because the rollback runs only on an "
+                f"exception or a cancel. Refusing HERE rather than proceeding "
+                f"is the whole point: the closing rename would fail with "
+                f"'Directory not empty' only AFTER this call had rewritten the "
+                f"entire store into a sidecar, throwing that work away and "
+                f"leaving the sidecar behind. Decide by hand which of {path} "
+                f"and {superseded} is authoritative, remove the other, and "
+                f"re-run. Auto-recovering is deliberately not done here: the "
+                f"residue may be the ONLY complete copy of the store."
+            )
+        if superseded.exists():
+            # Empty, so it holds nothing and `os.replace` onto it would
+            # succeed today anyway. Removing it changes no outcome and keeps
+            # the retry clean -- the same treatment the orphaned
+            # `.widening.tmp` gets one line below.
+            shutil.rmtree(superseded, ignore_errors=True)
         if widening.exists():
             # A never-authoritative orphan from a crashed rewrite. Nothing ever
             # reads it, so removing it is safe and keeps the retry clean.
