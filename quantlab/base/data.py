@@ -53,9 +53,25 @@ class ConversionResult:
     materialised, and `None` when no window was written (a fully-resumed run
     materialises nothing). `predicted_peak_bytes` is the CALLER'S OWN
     pre-flight estimate, echoed back untouched so a report can put prediction
-    beside outcome. `convert()` cannot compute it: 03.5 D-11 puts the RAM
-    guard at every call site, so `convert()` has no roster category to size
-    against and asks for no arithmetic of its own.
+    beside outcome.
+
+    **Why `convert()` computes nothing of its own (03.5 D-11).** SUPERSEDED by
+    phase 03.6 (SC-3). The original sentence read: "`convert()` cannot compute
+    it: 03.5 D-11 puts the RAM guard at every call site, so `convert()` has no
+    roster category to size against and asks for no arithmetic of its own."
+    The deleted guard is not named here: phase 03.6's SC-3 gate asserts those
+    symbols appear nowhere in the tree as executable references, and the
+    convention this repository adopted with that annotation is to describe the
+    deleted capability rather than restate its name. Phase 03.6 DELETED the
+    guard, so the premise is false while the conclusion happens to survive:
+    `convert()` still asks for no arithmetic of its own, but the reason is now
+    that NO call site runs a RAM guard at all -- not that the guard lives
+    upstream. The recorded risk is UNMITIGATED rather than
+    mitigated-at-the-call-site. `predicted_peak_bytes` survives as an
+    out-of-repo caller's OWN estimate, echoed so a report can put prediction
+    beside outcome; passing it buys no protection. See
+    `quantlab/acquisition/registry.py` -- `convert()`'s own docstring carries
+    the fuller treatment of this same D-11 supersession.
 
     **Carries paths, integer counts and booleans, and nothing else**
     (T-03.5-02). No vendor response body, no exception text, no environment

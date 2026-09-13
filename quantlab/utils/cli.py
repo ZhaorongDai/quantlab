@@ -569,14 +569,17 @@ def _explicit_symbol_catalog(symbol_count: int):
     But `_roster_window_profile` derives its symbol count and its listing spans
     from the catalog's interval table, and an explicit list has neither.
 
-    So this SUBCLASSES `UniverseCatalog` and overrides only the two steps that
-    are ABOUT the roster's provenance: the one that resolves a roster from a
-    category (`_roster_window_profile`), and the one that checks the category
-    token is real (`_validate_category`, which admits this view's own sentinel
-    and delegates everything else). Every ceiling, every crossed-ceiling
-    report, the refusal message and the re-estimated narrowing search stay the
-    catalog's own, which is the point: the explicit path cannot drift away from
-    the category path, because it is the same code.
+    So this SUBCLASSES `UniverseCatalog` and overrides `_roster_window_profile`
+    WHOLESALE -- the one step that is ABOUT the roster's provenance. It also
+    carries a `_validate_category` override (admitting this view's own sentinel,
+    delegating everything else), and that override is CURRENTLY UNREACHABLE
+    precisely because the `_roster_window_profile` override is wholesale: the
+    base's validator call lives inside base methods this view either replaces
+    or never enters. It is retained deliberately -- see the comment on the
+    method for why. Every ceiling, every crossed-ceiling report, the refusal
+    message and the re-estimated narrowing search stay the catalog's own, which
+    is the point: the explicit path cannot drift away from the category path,
+    because it is the same code.
 
     The import is deferred to call time so this module keeps its module-scope
     dependency surface to `base.chunking`; the class is built once and cached.
@@ -600,12 +603,29 @@ def _explicit_symbol_catalog(symbol_count: int):
                 # `EXPLICIT_SYMBOLS_CATEGORY` is a token it can legitimately be
                 # asked about and there is nothing to validate it against.
                 #
-                # Overridden here rather than left to the base because
-                # `_roster_window_profile` -- which this class DOES override,
-                # and which every pricing path reaches -- opens with
+                # CURRENTLY UNREACHABLE, and deliberately kept. The validator
+                # call this override was written to intercept belongs to the
+                # BASE `_roster_window_profile`, which opens with
                 # `self._validate_category(category)` and would reject the
                 # sentinel with "Unknown universe category '(explicit
-                # --symbols list)'" before a single byte was fetched.
+                # --symbols list)'" before a single byte was fetched. But this
+                # class overrides `_roster_window_profile` WHOLESALE, and that
+                # override makes no validator call -- so on this view nothing
+                # reaches here. The base's other two call sites
+                # (`get_symbols_in_range`, `get_symbols_as_of`) read the
+                # reference table this view does not have and are never entered
+                # on the pricing path, whose only entry point is
+                # `assert_acquisition_volume_fits` ->
+                # `estimate_acquisition_volume` -> the override below.
+                #
+                # KEEP IT anyway. (i) It is the guard that makes the sentinel
+                # safe IF this view's `_roster_window_profile` is ever narrowed
+                # to delegate to `super()` -- which is exactly the drift this
+                # class exists to prevent, per the factory docstring's "the
+                # explicit path cannot drift away from the category path".
+                # (ii) Deleting it removes that protection in exchange for
+                # nothing measurable. What was wrong here was the REASON given,
+                # not the code.
                 #
                 # Every OTHER token still goes to the base check, so a
                 # `--limit`-truncated REAL category (which `volume_pricing`
