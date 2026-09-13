@@ -495,6 +495,16 @@ retired-sentence record plan 10 produces)*
 first, but the contract is not written for it — can convert an acquired raw tier into the Zarr
 tier through the registry, and can ask what peak RAM that conversion predicts BEFORE anything is
 allocated.
+
+**SUPERSEDED IN PART 2026-09-12 by phase 03.6 SC-3 — the second half of this Goal no longer holds,
+deliberately.** The conversion entry point itself is intact and unchanged: a caller that is not one
+of quantlab's own scripts still reaches the Zarr tier through `registry.convert()`. What no longer
+holds is "can ask what peak RAM that conversion predicts BEFORE anything is allocated" — phase 03.6
+deleted `MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`, `assert_dense_panel_fits`,
+`estimate_chunked_panel` and `assert_chunked_panel_fits` from `UniverseCatalog`, so there is no
+predicted-peak answer left to ask for. See the annotations on SC-4 and SC-5 below, and
+REQUIREMENTS.md's DATA-08, which is formally WITHDRAWN for the same reason.
+
 **Mode:** mvp
 **Requirements**: DATA-07, DATA-08
 **Depends on:** Phase 03.4
@@ -518,8 +528,36 @@ allocated.
      this layer prints. "Which guard" is no longer a question this criterion can ask: with one
      mode there is one guard (03.5 D-06/D-10). The guard is ANSWERABLE before the run, not
      ENFORCED by it — `convert()` does not run it, and the callers own the asking (03.5 D-11).
+
+     **SUPERSEDED 2026-09-12 by phase 03.6 SC-3 — this criterion no longer holds, deliberately.**
+     The predicted-peak capability was DELETED, not relocated: phase 03.6 removed
+     `MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`, `assert_dense_panel_fits`,
+     `estimate_chunked_panel` and `assert_chunked_panel_fits` from `UniverseCatalog`, so there is
+     nothing left to ask and no value left for a caller to render. The "`convert()` does not run
+     it" half is UNCHANGED and still true; what has no answerer any more is the "ANSWERABLE before
+     the run" half. The roster-window ARITHMETIC the estimator carried was preserved and now lives
+     in `UniverseCatalog._roster_window_profile` (symbols, trading days, timestamps, dense cells,
+     observed cells, density); what went with the deletion is the BYTES half and its 4 GiB budget.
+     What an operator has instead: the acquisition-volume guard, which bounds raw disk bytes,
+     request count and wall clock — money and time, not RAM (03.6 SC-4) — plus a finer `--chunk`
+     rung, the ladder now reaching `day` and `hour` (03.6 SC-1).
+
   5. A guard refusal names the remedy that would fit (a finer `--chunk`, a narrower window)
      rather than only refusing, preserving `assert_chunked_panel_fits`'s current behaviour.
+
+     **SUPERSEDED 2026-09-12 by phase 03.6 SC-3 — this criterion no longer holds, deliberately.**
+     Both halves of the dense-panel estimator/guard group were deleted from `UniverseCatalog`
+     (`MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`, `assert_dense_panel_fits`,
+     `estimate_chunked_panel`, `assert_chunked_panel_fits`), so there is no refusal left to name a
+     remedy. The LEVER the remedy named — a finer `--chunk` — still EXISTS, and in fact reaches two
+     rungs FURTHER than it did when this criterion was written: the ladder is now
+     `year -> quarter -> month -> day -> hour` (03.6 SC-1). What phase 03.6 removed is the REFUSAL,
+     not the adjustment. Accepted consequence: an over-sized dense panel now reaches OOM instead of
+     a legible error naming the fitting remedy. The developer took that cost on 2026-09-11 and
+     re-affirmed it on 2026-09-12 when 03.6's scope was narrowed; the recorded precedent is quick
+     task 260906-13w (~7.2 GiB grid plus a ~29.6M-row frame OOM'd a 16 GiB box, on full-market
+     DAILY, not tick).
+
   6. All three ingest shells reach conversion through this entry point rather than each calling
      `StockDataset` directly — they stay the registry's in-repo consumers and live proof the
      programmatic path works (03.4 D-15 role b). The `--chunk` / `--on-new-listing` divergence
@@ -605,6 +643,40 @@ roster catalogue goes back to answering only "who is in the pool, and when".
      `add_chunk_args` keeps deriving its `choices` from `GRANULARITIES`, so `day` and `hour` appear
      there automatically. `GRANULARITIES`'s `#:` comment ("Also the values `ingest_us_equity.py
      --chunk` offers") therefore stays TRUE and needs no rewrite.
+
+     **AMENDED 2026-09-12 — "REQUIRED" describes the intent, not the argument.** This correction is
+     about a wrong paraphrase, not about a changed world: the sentence above was inaccurate the
+     moment it was written, about a part of the code phase 03.6 deliberately did NOT change.
+
+     1. What the live argument actually is. `add_chunk_args` (`quantlab/utils/cli.py`) builds
+        `--chunk` with `type=str`, `choices=list(TimeChunkPlanner.GRANULARITIES)` and
+        `default=default`, where the factory's keyword is `default: str = "year"`. `required` is
+        never passed at all, so argparse leaves it `False`. `--chunk` has never been a required
+        flag; omitting it yields `year`.
+     2. The flag was deliberately left BYTE-IDENTICAL by this phase. Nothing in 03.6 touched its
+        `required`, its `default`, its `type` or its `choices`; the two new rungs reached the CLI
+        for free precisely BECAUSE `choices` is derived. Plan `03.6-01`'s Task 2 carries the
+        executable lock that asserts this on all three US-equity shells
+        (`tests/test_chunked_ingest.py::test_the_chunk_flag_itself_is_left_exactly_as_it_was`) —
+        that is the test that would go red if someone "fixed" the flag toward the wording above.
+     3. What SC-5 operatively asserts, so the criterion stays verifiable rather than merely
+        corrected: (i) NO per-frequency chunk-granularity constant table exists anywhere under
+        `quantlab/`, and (ii) `add_chunk_args` keeps deriving its `choices` from
+        `TimeChunkPlanner.GRANULARITIES`, which is why `day` and `hour` became selectable with zero
+        CLI edits. Both halves are already pinned by plan `03.6-01` Task 2 — an AST scan over
+        assignment targets for the absent table, and a monkeypatch arm that a hardcoded `choices`
+        list would fail.
+
+     Why this is recorded rather than quietly fixed: a downstream verifier reading SC-5 as written
+     either marks the criterion unmet (the flag is not required) or "fixes" the flag toward the
+     wording — and that second outcome is a real operator-facing regression introduced by a
+     documentation slip. The developer's decision was to LEAVE THE FLAG ALONE; "REQUIRED" was a
+     paraphrase of that decision that got the mechanism wrong. The annotation is what makes the
+     criterion mean what was actually decided. The reproducibility argument recorded in the notes
+     below — that an explicit value is recorded in the invocation while a default can drift — stands
+     as the REASON no per-frequency table was introduced; it was never implemented by making the
+     argparse flag mandatory.
+
   6. Whatever in `quantlab/utils/cli.py` exists ONLY to serve a deleted estimator goes with it --
      `print_chunk_report`, and the dense-panel override inside `_explicit_symbol_catalog`. The test
      is consumer-based, not name-based: delete it when its only consumer is a deleted estimator,
