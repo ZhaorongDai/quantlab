@@ -6,7 +6,7 @@
 ## Deferred Items
 
 - `example/chunk_grid_demo.py` 未被追踪，且不属于任何计划的 diff
-  status: open
+  status: resolved
   **What:** 工作树里有一个未追踪文件 `example/chunk_grid_demo.py`（5,857 字节，创建于
   2026-09-13 11:08:17）。它是一个教学脚本，解释 `XrBackend._append_encoding` 的落盘格网
   规则与 `append_dim_size`——即 plan `03.6-05` 的交付物——但 `03.6-05-SUMMARY.md` 的
@@ -22,3 +22,9 @@
   这一点如实记录在此，不作粉饰。
   **Next step:** 由 `03.6-05` 的所有者或阶段验证决定：提交（若它确为有意交付的示例，应同时
   在 `example/README.md` 登记）、删除（若是临时草稿）、或明确接受其未追踪状态。
+  **Resolution (2026-09-13，开发者决定：删除):** 该文件的归属已查清——它不是 `03.6-05` 的
+  交付物，而是本次执行会话中开发者在对话里要求编排器写的一次性讲解脚本，用来解释 `03.6-05`
+  刚落地的 `append_dim_size`。开发者随后明确表示「可以删掉 zarr 的示例和生成的文件」，故
+  删除，不进仓库。`example/README.md` 未被登记，`/tmp/chunk_grid_demo_out/` 的产物一并清除。
+  本条记录保留而非删除：它记录的是一次真实的 scope 判断，`03.6-06` 拒绝把来历不明的文件
+  吸收进自己的提交是正确的，这个判断值得留痕。
