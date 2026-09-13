@@ -1155,6 +1155,164 @@ def test_a_day_granularity_conversion_reaches_zarr_identical_to_the_unchunked_st
     assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
 
 
+# ---------------------------------------------------------------------------
+# The on-disk chunk grid is a property of the STORE, not of the first window
+#
+# The tracer above proves the day rung lands on the unchunked grid. At the real
+# `APPEND_DIM_CHUNK` of 512 over a 9-row axis that comparison cannot, on its
+# own, tell "the caller stated the whole extent" apart from "the encoding was
+# dropped entirely" -- both leave 9. These four arms shrink the ceiling to 4,
+# where the three candidate rules give three different answers, and then carry
+# the property onto the two paths where the store-creating write is NOT the
+# loop's first iteration. `tests/test_symbol_axis_widening.py:412` records the
+# same reasoning for the sibling widen path: with fewer than APPEND_DIM_CHUNK
+# rows the encoded and unencoded answers coincide.
+# ---------------------------------------------------------------------------
+
+
+def test_the_chunk_grid_is_the_stores_extent_not_the_first_windows(
+    three_year_stock_config: Callable[..., DatasetConfig],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decisive arm: three candidate rules, three different answers.
+
+    `APPEND_DIM_CHUNK` is shrunk to 4 over the 9-timestamp panel, and the day
+    rung's first window is 1 row. So:
+
+    - dropping the encoding altogether would leave 9 (Zarr's own whole-array
+      default);
+    - the pre-03.6 rule -- the first window in hand decides -- leaves
+      `min(4, 1) == 1`;
+    - the implemented rule -- the store's stated extent decides, under the
+      unchanged ceiling -- leaves `min(4, 9) == 4`.
+
+    Only the third is green here, which is what makes this a statement about
+    the MECHANISM rather than about a fixture coincidence. At the real 512 all
+    three of those arithmetics collapse onto the panel's own length and the
+    tracer's comparison alone would not discriminate.
+
+    RED under: reverting `append_dim_size` (leaves 1), dropping the
+    store-creating branch's `encoding=` (leaves 9), or replacing the
+    substitution with a `max(APPEND_DIM_CHUNK, ...)` floor beside the existing
+    expression (leaves 4 here but loses the ceiling on a longer range, which is
+    the rung-independence arm's job to catch).
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    config = three_year_stock_config("grid_ceiling.zarr")
+
+    StockDataset(config).from_raw_data_chunked(granularity="day")
+
+    grid = _chunk_grid(config.zarr_file_path)
+    assert grid, "the store carries no data variables to measure"
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+
+@pytest.mark.parametrize("granularity", ["year", "month", "day"])
+def test_the_chunk_grid_is_identical_at_every_rung(
+    three_year_stock_config: Callable[..., DatasetConfig],
+    monkeypatch: pytest.MonkeyPatch,
+    granularity: str,
+) -> None:
+    """The companion invariant the `promote` decision accepted: the store's
+    append-dim chunk is a property of its total extent AT EVERY RUNG.
+
+    The expected map below contains no term derived from the rung -- it is
+    `min(APPEND_DIM_CHUNK, whole-range length)` and nothing else -- so three
+    green parametrisations over windows of 3, 1 and 1 rows ARE the claim that
+    the three rungs produce the identical chunk map. The variable-name set is
+    compared against the unchunked store's so "every data variable" is a real
+    quantifier rather than a claim about whatever happens to be present.
+
+    RED the instant a future change lets the window length decide again: at
+    `APPEND_DIM_CHUNK = 4` the year rung would fall to 3 and the finer two to
+    1, and the three maps would stop agreeing.
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    config = three_year_stock_config(f"grid_rung_{granularity}.zarr")
+    unchunked_config = three_year_stock_config(f"grid_rung_{granularity}_ref.zarr")
+
+    StockDataset(config).from_raw_data_chunked(granularity=granularity)
+    StockDataset(unchunked_config).from_raw_data().save()
+
+    grid = _chunk_grid(config.zarr_file_path)
+    assert set(grid) == set(_chunk_grid(unchunked_config.zarr_file_path))
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+
+def test_the_chunk_grid_survives_a_crash_and_resume(
+    three_year_stock_config: Callable[..., DatasetConfig],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The interrupted backfill -- the case that matters most in production,
+    because it is the one that LEAVES A STORE BEHIND on the grid it chose.
+
+    The store is created by the first run, which dies after one 3-row `year`
+    window, and the grid it pinned must already state the whole 9-row extent:
+    nothing later can revise it.
+
+    The absolute assertion comes FIRST and is the one that discriminates. The
+    clean-run comparison below it is a cross-check only: at `year` the
+    store-creating window is 3 rows in the resumed run and in a clean run
+    alike, so a pre-fix tree puts BOTH on 3 and they agree with each other
+    while both are wrong.
+
+    RED under: reverting `append_dim_size`, or guarding it with a window-index
+    condition -- the resumed run's creating write is iteration zero of the
+    FIRST run, but the resumed process skips straight past it.
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    config = three_year_stock_config("grid_resumed.zarr")
+
+    with pytest.raises(RuntimeError):
+        _FailsOnSecondWindow(config).from_raw_data_chunked(granularity="year")
+    _SpyStockDataset(config).from_raw_data_chunked(granularity="year")
+
+    assert _panel(config.zarr_file_path).sizes["timestamp"] == 9
+    grid = _chunk_grid(config.zarr_file_path)
+    assert grid
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+    clean_config = three_year_stock_config("grid_resume_clean.zarr")
+    StockDataset(clean_config).from_raw_data_chunked(granularity="year")
+    assert grid == _chunk_grid(clean_config.zarr_file_path)
+
+
+def test_the_chunk_grid_survives_a_rebuild(
+    # Forward reference: this arm lives beside its three siblings rather than
+    # beside the fixture it borrows, and `_GrowingRoster` is defined further
+    # down. Quoting the annotation is what lets the four stay together.
+    growing_roster: "_GrowingRoster",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`on_new_listing="rebuild"` moves the store aside, so a LATER call in the
+    loop is the one that creates it. This arm is what proves the fix does not
+    depend on the creating write being iteration zero -- the loop-index
+    heuristic a future reader's first instinct reaches for would be green on a
+    clean run and wrong here.
+
+    Same division of labour as the resume arm: the absolute chunk is the
+    assertion that is red on a pre-fix tree, the clean-run comparison is a
+    cross-check that on its own would pass on one (both land on the 3-row
+    `year` window together).
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    config = _built_over_ab(growing_roster)
+
+    StockDataset(config).from_raw_data_chunked(
+        granularity="year", on_new_listing="rebuild"
+    )
+
+    rebuilt = _panel(config.zarr_file_path)
+    assert rebuilt["symbol"].values.tolist() == ["A", "B", "C"]
+    grid = _chunk_grid(config.zarr_file_path)
+    assert grid
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+    scratch_config = growing_roster.config("grid_rebuild_scratch.zarr")
+    StockDataset(scratch_config).from_raw_data_chunked(granularity="year")
+    assert grid == _chunk_grid(scratch_config.zarr_file_path)
+
+
 def test_chunked_run_warns_about_the_cleaning_boundaries(
     three_year_stock_config: Callable[..., DatasetConfig],
 ) -> None:
