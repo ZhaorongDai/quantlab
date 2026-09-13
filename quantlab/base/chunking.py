@@ -2,9 +2,9 @@
 
 Two pure collaborators for the chunked densify-and-append ingestion path:
 
-- `TimeChunkPlanner` turns either an OBSERVED timestamp axis or a calendar
-  date range into a list of time windows, both driven by one shared period
-  rule so their definitions of "a year" cannot drift apart.
+- `TimeChunkPlanner` turns an OBSERVED timestamp axis into a list of time
+  windows, so every edge it returns is a timestamp that actually appears in
+  the data.
 - `ChunkLedger` is the JSON sidecar recording which windows a previous run
   already appended, so an interrupted multi-hour conversion resumes at the
   first unwritten window instead of at the top.
@@ -32,22 +32,37 @@ from quantlab.utils.atomic import write_json_atomically
 
 
 class TimeChunkPlanner:
-    """Split a time range into windows at one of five period boundaries.
+    """Split an observed timestamp axis into windows at a period boundary.
 
-    The class exposes TWO planners because the pipeline needs windows at two
-    different moments, with two different amounts of knowledge:
+    The accepted granularity tokens are the members of `GRANULARITIES`, in
+    coarse-to-fine order. This docstring deliberately does not re-enumerate
+    them: the enumeration that used to stand here went stale the moment the
+    ladder grew, and a summary line that can go stale is a summary line that
+    will.
 
-    - `plan_from_timestamps()` runs during the WRITE, when the real observed
-      timestamp axis exists. Every window edge it returns is an observed
-      timestamp, so a window handed to a densifier can never name a day on
-      which nothing traded.
-    - `plan_calendar()` runs during SIZING, before the download, when no
-      timestamp axis exists yet and calendar arithmetic is the only option.
+    There is ONE planner. `plan_from_timestamps()` runs during the WRITE,
+    when the real observed timestamp axis exists, and every window edge it
+    returns is an observed timestamp -- so a window handed to a densifier can
+    never name a day on which nothing traded. The class has no other mode.
 
-    Both are built on the same private `_period_key()` and the same private
-    `_group_by_period()`, so "what counts as one window" is defined exactly
-    once. A future granularity is added to `GRANULARITIES` plus `_period_key`
-    and both planners inherit it.
+    A second, SIZING-time planner stood beside it until phase 03.6. It ran
+    BEFORE the download, when no timestamp axis existed yet, so its edges came
+    from calendar arithmetic; its only production consumer was the
+    pre-download dense-panel RAM estimator that phase 03.6 deleted. Calendar
+    edges routinely name days on which nothing traded, which is why that
+    method had to open its own docstring with a warning never to hand its
+    windows to a densifier -- and that warning was the only thing enforcing
+    it. One entry point removes the warning by removing the hazard.
+
+    The drift this class does have to defend against is between
+    `GRANULARITIES` and `_period_key`. A new granularity is added in two
+    places, the tuple and a `_period_key` branch, and adding it to only the
+    first used to fall through to month-sized windows under another name --
+    a wrong window size is a wrong memory bound, and it failed open.
+    `_period_key` now ends in a `raise ValueError` naming BOTH lists. That
+    raise is unreachable while the two agree, because `__init__` already
+    refuses any token absent from `GRANULARITIES`; being unreachable is
+    exactly what makes it a drift detector rather than dead code.
     """
 
     #: Accepted granularity tokens, in coarse-to-fine order. Also the values
@@ -68,10 +83,10 @@ class TimeChunkPlanner:
     def _period_key(self, timestamp) -> tuple[int, int]:
         """Map one timestamp to the label of the period that contains it.
 
-        The single definition of "one window" in this module. Both planners
-        group by this and nothing else, which is what makes drift between the
-        sizing windows and the write windows structurally impossible rather
-        than merely unlikely.
+        The single definition of "one window" in this module.
+        `_group_by_period()` groups by this and nothing else, so "what counts
+        as one window" is defined in exactly one place rather than restated
+        wherever a window is needed.
 
         The SECOND component is not a natural calendar number -- the `year`
         rung already returns a literal `0`. It is a within-year monotonically
@@ -99,9 +114,9 @@ class TimeChunkPlanner:
         # (ts.year, ts.month)`, so a rung added to `GRANULARITIES` without a
         # branch here silently produced MONTH-sized windows under another
         # name -- a wrong window size is a wrong memory bound, and it failed
-        # open. The class docstring's claim that both planners inherit a new
-        # granularity was true only by accident; this makes it true by
-        # construction.
+        # open. The class docstring's claim that a new granularity is added in
+        # `GRANULARITIES` plus a branch here was enforced by nothing before
+        # this raise existed; it is now true by construction.
         raise ValueError(
             f"TimeChunkPlanner: granularity {self.granularity!r} is accepted by "
             f"GRANULARITIES but _period_key defines no period for it; accepted "
@@ -130,8 +145,7 @@ class TimeChunkPlanner:
     def plan_from_timestamps(
         self, timestamps: Iterable
     ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-        """Windows whose edges are OBSERVED timestamps. This is the planner
-        the write loop uses.
+        """Windows whose edges are OBSERVED timestamps. This is the planner.
 
         Trading days are not calendar days. A window running to a calendar
         period end would name a date with no row behind it, and handing that
@@ -150,41 +164,6 @@ class TimeChunkPlanner:
                 "windows would silently write an empty store instead."
             )
         return self._group_by_period(index)
-
-    def plan_calendar(
-        self, start_date: str, end_date: str
-    ) -> list[tuple[str, str]]:
-        """SIZING ONLY -- never hand these windows to a densifier.
-
-        These edges come from CALENDAR arithmetic, so they routinely name
-        dates on which nothing traded (a 31 December that fell on a Sunday,
-        a 1 January holiday). That is acceptable here and only here: sizing
-        runs BEFORE the download, when no timestamp axis exists to plan
-        against, and the estimator it feeds
-        (`UniverseCatalog.estimate_dense_panel`) is already a 252/365.25
-        approximation by design. The write loop uses
-        `plan_from_timestamps()` instead.
-
-        Returns ISO `YYYY-MM-DD` string pairs, clipped to `[start_date,
-        end_date]` at the two outer edges, grouped by the SAME
-        `_period_key()` the observed planner uses.
-        """
-        start = pd.Timestamp(start_date)
-        end = pd.Timestamp(end_date)
-        if end < start:
-            raise ValueError(
-                f"TimeChunkPlanner: end_date {end_date} precedes start_date "
-                f"{start_date}; there is no window to plan."
-            )
-        # Grouping the day-by-day range rather than using `pd.period_range`
-        # is deliberate: it routes through `_period_key()`, the one place a
-        # granularity is defined, so this planner cannot drift from
-        # `plan_from_timestamps()`. Twenty years is ~7,600 iterations.
-        days = pd.date_range(start, end, freq="D")
-        return [
-            (window_start.date().isoformat(), window_end.date().isoformat())
-            for window_start, window_end in self._group_by_period(days)
-        ]
 
 
 class ChunkLedger:
