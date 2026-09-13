@@ -1499,6 +1499,60 @@ def test_the_chunk_grid_survives_a_block_by_block_widen(
     assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
 
 
+def test_a_narrow_stated_extent_cannot_shrink_an_existing_stores_grid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OTHER direction, which every arm above leaves open: a stated extent
+    SMALLER than what the store already holds must not re-pin the grid down.
+
+    All five arms above state an extent at or above the store's own length --
+    `_incomplete_store` states 9 while holding 3 -- so they pin only the
+    "raise the grid" half of the contract. Nothing asserted the half that
+    matters more, because the damage is one-way: `widen_symbol_axis` rewrites
+    with `mode="w"`, Zarr fixes a grid at write time and nothing edits it in
+    place, so a grid re-pinned DOWNWARD can only be undone by
+    delete-and-rebuild.
+
+    The narrow value is not hypothetical. `from_raw_data_chunked` passes
+    `len(timestamps)`, and `_raw_axes_in_range()` resolves that axis inside the
+    run's `config.start_date` / `config.end_date` -- so any run whose config
+    window is narrower than the history already on disk states an extent below
+    the store's true extent, and reaches this path through
+    `_reconcile_new_listings`.
+
+    RED conditions at `APPEND_DIM_CHUNK = 4` over a COMPLETE 12-row store with
+    a stated extent of 2: `_append_encoding` took the stated value
+    unconditionally, so the rewrite left `(2, 3)` where the store had `(4, 2)`.
+    GREEN once the stated extent is a LOWER bound --
+    `max(panel.sizes[dim], append_dim_size)` -- which leaves `(4, 3)`.
+    `APPEND_DIM_CHUNK` stays the ceiling via the existing `min(...)`, so this
+    arm is silent about ranges longer than it.
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    dates = [f"2022-{month:02d}-04" for month in range(1, 13)]
+    assert len(dates) == 12
+
+    path = str(tmp_path / "grid_narrow_extent.zarr")
+    XrBackend().to_internal(_small_panel(dates, ["A", "B"], 0.0)).append(path)
+    assert set(_chunk_grid(path).values()) == {
+        (min(XrBackend.APPEND_DIM_CHUNK, 12), 2)
+    }, "the store did not start on the whole-range grid, so the arm measures nothing"
+
+    # The narrow stated extent a config-windowed run would hand in.
+    XrBackend().widen_symbol_axis(path, ["A", "B", "C"], append_dim_size=2)
+
+    store = _panel(path)
+    assert store["symbol"].values.tolist() == ["A", "B", "C"]
+    assert store.sizes["timestamp"] == 12
+
+    grid = _chunk_grid(path)
+    assert grid, "the store carries no data variables to measure"
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 12), 3)}, (
+        f"a narrow stated extent shrank the store's grid irreversibly: {grid}"
+    )
+
+
 def test_the_chunk_grid_reaches_three_consumers_from_one_read(tmp_path: Path) -> None:
     """The forwarding lock, asserted structurally rather than behaviourally.
 

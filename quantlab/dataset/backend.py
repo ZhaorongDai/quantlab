@@ -1115,16 +1115,41 @@ class XrBackend(DataBackend):
         Routing the widen through this method rather than restating the chunk
         arithmetic is what keeps that rule single-sourced.
 
-        **`append_dim_size` is the store's TOTAL extent along `append_dim`,
-        and it is what the append-dim chunk is a property of.** `None` -- every
-        call site that existed before phase 03.6's gap-closure pass -- means
-        "use the panel's own append-dim length", which is this method's
-        behaviour verbatim and is the right answer for a caller holding the
-        whole store. A caller that writes the store INCREMENTALLY holds only a
-        window, and its window's length is an accident of the chunking rung
-        rather than a property of the store, so it states the extent instead:
+        **`append_dim_size` is a LOWER BOUND on the store's total extent
+        along `append_dim` -- never a replacement for what the panel in hand
+        already proves.** The append-dim chunk is a property of the store's
+        extent, and the effective extent this method uses is
+        `max(panel.sizes[append_dim], append_dim_size)`. `None` -- every call
+        site that existed before phase 03.6's gap-closure pass -- means "use
+        the panel's own append-dim length", which is this method's behaviour
+        verbatim and is the right answer for a caller holding the whole store.
+        A caller that writes the store INCREMENTALLY holds only a window, and
+        its window's length is an accident of the chunking rung rather than a
+        property of the store, so it states the extent instead:
         `BaseDataset.from_raw_data_chunked` passes `len(timestamps)`, D-02's
         once-resolved whole-range axis, through `append()`.
+
+        **That paragraph used to define the keyword WITHOUT the lower-bound
+        qualification, and the missing qualification was a live defect rather
+        than a wording nicety.** SUPERSEDED by phase 03.6's code review
+        (CR-01); the original wording is quoted here rather than deleted so
+        the correction is legible (D-18). It read: "`append_dim_size` is the
+        store's TOTAL extent along `append_dim`, and it is what the append-dim
+        chunk is a property of." The only production call site does not, and
+        cannot, honour that claim. `from_raw_data_chunked` passes
+        `len(timestamps)` from `_raw_axes_in_range()`, which resolves the axis
+        inside the run's `config.start_date` / `config.end_date` -- so a run
+        whose config window is NARROWER than the history already on disk
+        states an extent BELOW the store's true extent. Fed straight into the
+        `min(APPEND_DIM_CHUNK, size)` below, that narrow value re-pinned the
+        grid downward on `widen_symbol_axis`'s `mode="w"` rewrite, measured at
+        `APPEND_DIM_CHUNK = 4` as a complete 12-row store going from `(4, 2)`
+        to `(2, 3)`. Zarr fixes a grid at write time and nothing edits it in
+        place, so that degradation was IRREVERSIBLE -- delete-and-rebuild was
+        the only recovery. Taking the `max()` makes a wrong narrow value inert
+        instead: at worst it fails to raise a grid that was already right.
+        `tests/test_chunked_ingest.py::test_a_narrow_stated_extent_cannot_shrink_an_existing_stores_grid`
+        holds the direction down.
 
         The SIZE is substituted into the existing
         `max(min(APPEND_DIM_CHUNK, size), 1)` rather than a second floor being
@@ -1150,7 +1175,14 @@ class XrBackend(DataBackend):
             chunks = []
             for dim in variable.dims:
                 if dim == append_dim and append_dim_size is not None:
-                    size = int(append_dim_size)
+                    # The stated extent is a LOWER bound, never a ceiling on
+                    # what the panel in hand already proves the store holds.
+                    # It exists to RAISE the grid when the caller holds only a
+                    # window of a larger store; a caller whose window is
+                    # narrower than the store must not be able to re-pin the
+                    # grid downward, because `mode="w"` makes that
+                    # irreversible.
+                    size = max(int(panel.sizes[dim]), int(append_dim_size))
                 else:
                     size = int(panel.sizes[dim])
                 if dim == append_dim:
