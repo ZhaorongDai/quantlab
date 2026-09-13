@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+import zarr
 from loguru import logger
 
 from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
@@ -156,6 +157,24 @@ def _captured_warnings():
 
 def _panel(path: str) -> xr.Dataset:
     return xr.open_zarr(path).load()
+
+
+def _chunk_grid(path: str) -> dict:
+    """Every data variable's ON-DISK chunk shape, name -> shape tuple.
+
+    THE one read idiom in this module, deliberately. `zarr.open_group(path,
+    mode="r")[name].chunks` is what `tests/test_symbol_axis_widening.py:436`
+    already uses against a real store, and it reports what is on DISK rather
+    than what xarray happened to decode -- which is the property every grid
+    assertion here is about. Five call sites share it so they cannot drift
+    apart on how the grid is read, and so a change to the read has exactly one
+    place to land.
+    """
+    store = zarr.open_group(path, mode="r")
+    return {
+        str(name): tuple(store[str(name)].chunks)
+        for name in _panel(path).data_vars
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1065,6 +1084,16 @@ def test_a_day_granularity_conversion_reaches_zarr_identical_to_the_unchunked_st
     names, dtypes, coordinates and attributes, `anomaly_flag` included) rather
     than merely numerically close is affordable here because `_raw_rows`
     holds `close` flat on purpose, so no anomaly straddles a chunk boundary.
+
+    **The on-disk chunk comparison is what now carries that claim.**
+    `xr.testing.assert_identical` is structurally BLIND to `encoding`, and
+    `encoding` was the ONE dimension on which a finer rung could -- and did --
+    differ: measured 2026-09-12, the same raw input left `(9, 3)` unchunked,
+    `(3, 3)` at `--chunk year` and `(1, 3)` at `--chunk day`, because
+    `XrBackend.append` pinned the grid from whichever window created the store.
+    The identity assertion passed through all three. So "a finer rung is a data
+    point on an existing axis, not a new mechanism" is asserted here by the
+    grid comparison below, not by `assert_identical` alone.
     """
     chunked_config = three_year_stock_config("day_chunked.zarr")
     unchunked_config = three_year_stock_config("day_unchunked.zarr")
@@ -1088,6 +1117,17 @@ def test_a_day_granularity_conversion_reaches_zarr_identical_to_the_unchunked_st
         _panel(chunked_config.zarr_file_path),
         _panel(unchunked_config.zarr_file_path),
     )
+
+    # The dimension `assert_identical` cannot see. Variable by variable, with
+    # the name in the message, because a grid that degrades on ONE variable is
+    # the shape a whole-store comparison would report as an opaque dict diff.
+    chunked_grid = _chunk_grid(chunked_config.zarr_file_path)
+    unchunked_grid = _chunk_grid(unchunked_config.zarr_file_path)
+    assert set(chunked_grid) == set(unchunked_grid)
+    expected = min(XrBackend.APPEND_DIM_CHUNK, 9)
+    for name, shape in chunked_grid.items():
+        assert shape == unchunked_grid[name], name
+        assert shape[0] == expected, name
 
     # And the resume ledger on disk agrees: nine completed windows covering
     # the nine observed rows, fingerprinted against the pinned roster.
