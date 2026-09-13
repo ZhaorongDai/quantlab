@@ -651,7 +651,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -691,7 +691,7 @@ Plans:
 **Wave 3** *(blocked on Wave 2 — this plan removes `plan_calendar`, whose only production
 caller plan 02 deletes; both touch `quantlab/base/chunking.py` and the same test module)*
 
-- [ ] 03.6-03-PLAN.md — `plan_calendar` deleted so `TimeChunkPlanner` exposes exactly ONE
+- [x] 03.6-03-PLAN.md — `plan_calendar` deleted so `TimeChunkPlanner` exposes exactly ONE
   planner; the module docstring, the class docstring's two-planner enumeration and its
   drift-defence paragraph rewritten to name the drift the class actually has
   (`GRANULARITIES` vs `_period_key`) and the raise that now detects it (SC-2)
