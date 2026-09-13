@@ -43,8 +43,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: The three front doors. Kept as one list so a fourth shell joins every
 #: assertion below by being added HERE, rather than by somebody remembering to
-#: extend each test -- the reachability lesson `tests/test_volume_guard.py::
-#: test_every_entry_point_that_densifies_guards_the_dense_panels_ram` records.
+#: extend each test -- the reachability lesson this module's own
+#: `test_every_entry_point_that_densifies_refuses_first` records.
 INGEST_SHELLS = ("ingest_tiingo.py", "ingest_alpaca.py", "ingest_us_equity.py")
 
 
@@ -328,10 +328,9 @@ def test_every_entry_point_that_densifies_refuses_first():
     `ingest_us_equity.py --to-zarr` has the identical hole -- its
     `from_raw_data_chunked()` reaches the same absent-root `ValueError` -- and
     it was not in either bug report. Pinning this to the two scripts a user
-    happened to run is the mistake `tests/test_volume_guard.py::
-    test_every_entry_point_that_densifies_guards_the_dense_panels_ram` records
-    in its own docstring: it scoped itself to one script, so the second door's
-    gap was invisible to it.
+    happened to run is a mistake this repository has made before: an earlier
+    reachability guard scoped ITSELF to one script, so the second door's gap
+    was invisible to it.
 
     So: any `__main__` that reaches a densification -- `from_raw_data` /
     `from_raw_data_chunked` directly, or `registry.convert()`, which is how

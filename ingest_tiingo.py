@@ -225,9 +225,6 @@ if __name__ == "__main__":
 
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
-    # The GUARD stays in this shell: `run()` is acquisition-only (D-14
-    # amendment) and `convert()` deliberately runs no guard of its own
-    # (D-11), so the sizing above is this call site's responsibility.
     if args.to_zarr:
         # Probed on a SYMBOL-FREE config. The reason for that is NOT the one
         # this comment used to give: it argued that a non-None symbol list

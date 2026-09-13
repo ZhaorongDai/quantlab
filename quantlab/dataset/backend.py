@@ -519,8 +519,7 @@ class XrBackend(DataBackend):
         and density -- a month of 1-minute bars is ~390x a month of daily bars
         (`BARS_PER_DAY_BY_FREQUENCY`) -- so it cannot bound BYTES, which is the
         entire constraint here. It stays the right tool for planning
-        CONVERSION windows, where the calendar is the unit of work and no
-        timestamp axis exists yet.
+        CONVERSION windows, where the calendar is the unit of work.
         """
         chunk = XrBackend.APPEND_DIM_CHUNK
         raw = XrBackend.MAX_WIDEN_BYTES // row_bytes if row_bytes > 0 else 0

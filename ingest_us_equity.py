@@ -519,10 +519,8 @@ if __name__ == "__main__":
         # two: `from_raw_data_chunked()` reaches the identical absent-root
         # ValueError when a run fetched nothing onto an empty raw tree.
         # Scoped by REACHABILITY rather than by script name -- pinning a guard
-        # to the script whose bug report arrived is the mistake
-        # `tests/test_volume_guard.py::
-        # test_every_entry_point_that_densifies_guards_the_dense_panels_ram`
-        # records in its own docstring.
+        # to the script whose bug report arrived is a mistake this repository
+        # has made before.
         # The probe holds a dataset that must not densify. Since `df7bfe9`
         # NO construction densifies -- the config setter normalises dates and
         # a name and stops -- so the `replace(...)` is no longer what prevents
