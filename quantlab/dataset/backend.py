@@ -561,6 +561,21 @@ class XrBackend(DataBackend):
             block_rows = max(APPEND_DIM_CHUNK,
                              (raw // APPEND_DIM_CHUNK) * APPEND_DIM_CHUNK)
 
+        **The paragraph below transcribes the first block's write as it stood
+        BEFORE plan 03.6-07 threaded the caller's stated extent into it.**
+        NOT TRUE ANY MORE AS OF 03.6-07 -- SUPERSEDED by phase 03.6's third
+        gap-closure pass (plan 03.6-08); the original wording is kept below
+        rather than deleted so the correction is legible (D-18). The excerpt
+        is kept ON PURPOSE rather than deleted as review finding WR-06
+        proposed, because D-18 forbids deleting falsified text and
+        preserve-and-mark is the discipline this whole phase enforces; the rot
+        WR-06 objected to is answered instead by writing the correction as
+        PROSE, so no new transcription enters this file. Only the sentence
+        naming the block's own length as the decider, and the conclusion it
+        supports, are stale -- the 2026-09-08 figures and the
+        `max(APPEND_DIM_CHUNK, ...)` floor argument standing in the same
+        paragraph are still live and still what they measured.
+
         **The grid constraint is load-bearing, not stylistic.** The FIRST block
         is written with `encoding=self._append_encoding(append_dim,
         data=first_block)` -- routing through the single-sourced chunk rule
@@ -573,6 +588,13 @@ class XrBackend(DataBackend):
         `min(APPEND_DIM_CHUNK, first_block_len)` equal
         `min(APPEND_DIM_CHUNK, total_len)` identically, so the two strategies
         agree on the grid without either restating the arithmetic.
+
+        **The correction, in prose.** The first block's write now ALSO passes
+        the caller's stated extent, through `_append_encoding`'s keyword-only
+        `append_dim_size`, so what decides the store's on-disk append-dim
+        chunk is `min(APPEND_DIM_CHUNK, max(block length, stated extent))`.
+        The block's own length is the answer only when the caller states
+        nothing, which is every call site that existed before phase 03.6.
 
         **This path keeps its floor AND the chunked strategy now also takes
         `append_dim_size`. The two do different jobs; neither replaces the
@@ -753,14 +775,35 @@ class XrBackend(DataBackend):
         the whole store. `tests/test_symbol_axis_widening.py` is what keeps the
         two paths agreeing; the equivalence is the deliverable, not a nicety.
 
+        **The transcribed sentence below describes the first block's write as
+        it stood BEFORE plan 03.6-07, and its conclusion about WHY the two
+        strategies agree is now the wrong reason.**
+        NOT TRUE ANY MORE AS OF 03.6-07 -- SUPERSEDED by phase 03.6's third
+        gap-closure pass (plan 03.6-08); the original wording is kept below
+        rather than deleted so the correction is legible (D-18). It read:
+
+        [BEGIN preserved original -- D-18]
         The FIRST block creates the sidecar with `mode="w"` and
         `encoding=self._append_encoding(append_dim, data=block)`, so the chunk
         rule stays single-sourced and the block-size constraint in
         `_widen_block_rows` is what makes the resulting grid match the
-        whole-store path's. Every LATER block appends along `append_dim`, first
-        dropping any data variable that does not carry it: the first block
-        already wrote those at their full extent, and handing them to an
-        appending write again would rewrite them per block.
+        whole-store path's.
+        [END preserved original]
+
+        **The correction, in prose.** The two strategies now agree on the grid
+        because BOTH read the same `append_dim_size` keyword and hand it to
+        `_append_encoding`, not because `_widen_block_rows`'s block-size floor
+        makes them coincide. That floor is still live and still does its own
+        job -- bounding the BYTES one block may materialise under
+        `MAX_WIDEN_BYTES`, which no append-dimension length can express -- it
+        simply is no longer the thing that aligns the grids. The full
+        floor-versus-`append_dim_size` argument is written out once, in
+        `_widen_block_rows`'s own docstring, and is not restated here.
+
+        Every LATER block appends along `append_dim`, first dropping any data
+        variable that does not carry it: the first block already wrote those at
+        their full extent, and handing them to an appending write again would
+        rewrite them per block.
 
         **Each block is `.load()`ed before its own write**, for the same reason
         the whole-store path loads once: without dask, `open_zarr` hands back
