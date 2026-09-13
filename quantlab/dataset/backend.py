@@ -32,6 +32,29 @@ class XrBackend(DataBackend):
     #: then misaligned with the on-disk chunk grid. A fixed value makes the
     #: layout a property of the store rather than of whichever window
     #: happened to be written first.
+    #:
+    #: **That last sentence was TRUE of a whole-range write and FALSE of a
+    #: chunked conversion until phase 03.6's gap-closure pass, and it is kept
+    #: above rather than rewritten so the correction is legible (D-18).** The
+    #: claim holds by construction only when the panel handed to the creating
+    #: write IS the store: `min(APPEND_DIM_CHUNK, panel_len)` equals
+    #: `min(APPEND_DIM_CHUNK, total_len)` exactly then.
+    #: `BaseDataset.from_raw_data_chunked` hands it a WINDOW, so the grid
+    #: became a property of the RUNG the caller picked. Measured 2026-09-12,
+    #: one raw input, 13 data variables: the whole-range write left `(9, 3)`,
+    #: `--chunk year` left `(3, 3)`, `--chunk day` left `(1, 3)`. Zarr fixes
+    #: the grid at creation and append cannot revise it, so a store written
+    #: that way could only be corrected by delete-and-rebuild. Phase 03.6's
+    #: finer rungs are what made it reachable: before them the finest rung was
+    #: `month`, whose first window normally cleared this floor on its own.
+    #:
+    #: **`append_dim_size` is the mechanism that now carries the claim on that
+    #: path.** A caller writing a store INCREMENTALLY states the store's total
+    #: append-dim extent on `append()`, and `_append_encoding` substitutes it
+    #: for the panel-in-hand length -- so both paths land on
+    #: `min(APPEND_DIM_CHUNK, total_len)` and the sentence above is true of
+    #: both. The sibling widen path reaches the same grid by a DIFFERENT
+    #: route, and deliberately: see `_widen_block_rows`.
     APPEND_DIM_CHUNK = 512
 
     #: Ceiling on the bytes a symbol-axis widen may materialise AT ONCE,
@@ -94,7 +117,12 @@ class XrBackend(DataBackend):
         across calls, every shared data variable must keep its dtype, the
         incoming window must begin STRICTLY AFTER the stored end of
         `append_dim`, and the incoming panel's SET of data variables must
-        match the store's exactly. Raw
+        match the store's exactly. Those four are CHECKED on every call; a
+        FIFTH thing is decided once and permanently by the creating write and
+        cannot be checked afterwards at all -- the on-disk chunk grid, which a
+        caller who knows the store's eventual extent states with
+        `append_dim_size` and a caller who does not gets from the panel in
+        hand (see the paragraph on it below). Raw
         `to_zarr(mode="a", append_dim=...)` enforces none of
         the four: a mismatched symbol coordinate is silently OVERWRITTEN with
         the new window's labels, leaving previously-written rows attributed to
@@ -465,6 +493,19 @@ class XrBackend(DataBackend):
         `min(APPEND_DIM_CHUNK, first_block_len)` equal
         `min(APPEND_DIM_CHUNK, total_len)` identically, so the two strategies
         agree on the grid without either restating the arithmetic.
+
+        **This path keeps its floor rather than adopting `append_dim_size`,
+        and the difference is load-bearing too.** A reader who has just met
+        that keyword on `append()` -- where an incremental writer STATES the
+        store's eventual extent so the grid stops depending on which window
+        created it -- will reasonably ask why it is absent here. Because the
+        block size this method returns is bounded by `MAX_WIDEN_BYTES`, a BYTE
+        budget, which no append-dimension length can express: the floor is
+        doing TWO jobs (grid agreement and byte bounding) where
+        `append_dim_size` does only the first. Switching to it would leave the
+        grid correct and the memory ceiling unenforced. The two paths agreeing
+        on the grid by different routes is the intended shape, not a
+        divergence to reconcile.
 
         **The floor wins even when one aligned block exceeds the budget.** This
         method ROUTES, it does not refuse: a store whose single `APPEND_DIM_CHUNK`
