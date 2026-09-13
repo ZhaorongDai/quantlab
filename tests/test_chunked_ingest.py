@@ -188,11 +188,28 @@ def test_plan_from_timestamps_returns_one_window_per_observed_year() -> None:
 
 
 def test_plan_from_timestamps_is_granularity_sensitive() -> None:
+    """One axis, three rungs, three different window counts.
+
+    The last two assertions arrived here from
+    `test_plan_calendar_and_plan_from_timestamps_share_one_period_rule`, which
+    phase 03.6 SC-2 retired with its subject. What that test actually pinned
+    was that the period rule holds ACROSS granularities -- three monthly
+    windows over a Jan-Mar span, four quarterly windows over a full year --
+    and that property is still true and still worth pinning now that one
+    planner answers for it. Re-expressed here over dense synthetic daily axes
+    rather than dropped (03.6 D-18).
+    """
     axis = pd.to_datetime([f"2022-{day}" for day in _DAYS_PER_YEAR])
 
     assert len(TimeChunkPlanner("year").plan_from_timestamps(axis)) == 1
     assert len(TimeChunkPlanner("quarter").plan_from_timestamps(axis)) == 3
     assert len(TimeChunkPlanner("month").plan_from_timestamps(axis)) == 3
+
+    jan_to_mar = pd.date_range("2022-01-01", "2022-03-31", freq="D")
+    assert len(TimeChunkPlanner("month").plan_from_timestamps(jan_to_mar)) == 3
+
+    one_year = pd.date_range("2022-01-01", "2022-12-31", freq="D")
+    assert len(TimeChunkPlanner("quarter").plan_from_timestamps(one_year)) == 4
 
 
 def test_plan_from_timestamps_rejects_an_empty_axis() -> None:
@@ -315,8 +332,8 @@ def test_a_granularity_period_key_does_not_handle_refuses_instead_of_guessing(
     silently producing month-sized windows under a name that promised
     something else, which is a wrong memory bound that fails open. Only a
     monkeypatched sixth token can reach the refusal, and reaching it is what
-    makes the class docstring's "both planners inherit it" claim true rather
-    than accidental.
+    makes the class docstring's "a new granularity is added in two places"
+    procedure true by construction rather than by accident.
     """
     monkeypatch.setattr(
         TimeChunkPlanner,
@@ -331,6 +348,63 @@ def test_a_granularity_period_key_does_not_handle_refuses_instead_of_guessing(
     message = str(excinfo.value)
     assert "fortnight" in message
     assert "_period_key" in message
+
+
+def test_the_full_backfill_range_is_twenty_one_yearly_windows() -> None:
+    """2006..2026 inclusive is 21 yearly windows.
+
+    Inherited from `test_plan_calendar_covers_the_full_backfill_range`, which
+    phase 03.6 SC-2 retired with the sizing planner it drove. The PROPERTY is
+    about the range, not about which planner measures it, so it is re-expressed
+    over an observed axis carrying one timestamp per year rather than dropped
+    (03.6 D-18). A reader looking for "the full backfill range is 21 windows"
+    still finds it here.
+    """
+    axis = pd.to_datetime([f"{year}-06-15" for year in range(2006, 2027)])
+
+    windows = TimeChunkPlanner("year").plan_from_timestamps(axis)
+
+    assert len(windows) == 21
+    assert windows[0][0] == pd.Timestamp("2006-06-15")
+    assert windows[-1][1] == pd.Timestamp("2026-06-15")
+
+
+def test_the_calendar_sizing_planner_is_deleted_and_the_observed_one_is_not() -> None:
+    """SC-2: `TimeChunkPlanner` exposes exactly ONE planner, in both directions.
+
+    WHY the deletion happened: the sizing planner derived its window edges from
+    calendar arithmetic because it ran BEFORE the download, when no timestamp
+    axis existed to plan against. Its only production consumer was the
+    pre-download dense-panel chunk estimator that phase 03.6 SC-3 deleted. A
+    sizing-only planner with nothing left to size is dead weight carrying a
+    documented footgun -- its own docstring opened with a warning never to hand
+    its windows to a densifier, because calendar edges routinely name days on
+    which nothing traded, and that warning was the only control.
+
+    WHY the positive arm is here and not implied by the negative one: a
+    one-directional `not hasattr` deletion test passes just as happily when the
+    WHOLE CLASS is gone. Shape copied from
+    `tests/test_chunked_panel_estimate.py`, which plan 03.6-02 established for
+    the same reason.
+    """
+    assert not hasattr(TimeChunkPlanner, "plan_calendar"), (
+        "phase 03.6 SC-2 deleted the calendar sizing planner, but it is back on "
+        "TimeChunkPlanner. Every window edge a caller can obtain must be an "
+        "OBSERVED timestamp; re-adding a calendar-derived planner reopens the "
+        "densifier footgun that deleting it closed structurally."
+    )
+
+    for survivor in (
+        "plan_from_timestamps",
+        "_group_by_period",
+        "_period_key",
+        "GRANULARITIES",
+    ):
+        assert hasattr(TimeChunkPlanner, survivor), (
+            f"the deletion took {survivor!r} with it. SC-2 removes the SIZING "
+            f"planner, not the class: `plan_from_timestamps` is the one "
+            f"production caller `BaseDataset.from_raw_data_chunked` reaches."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -436,38 +510,6 @@ def test_no_module_under_quantlab_defines_a_chunk_granularity_table() -> None:
                     hits.append(f"{path}:{node.lineno}:{name}")
 
     assert hits == [], hits
-
-
-def test_plan_calendar_and_plan_from_timestamps_share_one_period_rule() -> None:
-    """`plan_calendar` is SIZING ONLY -- it runs before the download, when no
-    timestamp axis exists. It must nonetheless agree with
-    `plan_from_timestamps` about what "a year" is, or the guard would size a
-    different set of windows than the writer materialises.
-    """
-    planner = TimeChunkPlanner("year")
-    calendar = planner.plan_calendar("2022-01-04", "2024-12-28")
-    observed = planner.plan_from_timestamps(
-        pd.to_datetime([f"{year}-{day}" for year in _YEARS for day in _DAYS_PER_YEAR])
-    )
-
-    assert len(calendar) == len(observed) == 3
-    # ISO strings, clipped to the requested range at both outer edges.
-    assert calendar[0] == ("2022-01-04", "2022-12-31")
-    assert calendar[-1] == ("2024-01-01", "2024-12-28")
-    assert all(isinstance(edge, str) for window in calendar for edge in window)
-
-    # And the shared period rule holds across granularities.
-    assert len(TimeChunkPlanner("month").plan_calendar("2022-01-01", "2022-03-31")) == 3
-    assert (
-        len(TimeChunkPlanner("quarter").plan_calendar("2022-01-01", "2022-12-31")) == 4
-    )
-
-
-def test_plan_calendar_covers_the_full_backfill_range() -> None:
-    """Plan verification step 2: 2006..2026 inclusive is 21 yearly windows."""
-    windows = TimeChunkPlanner("year").plan_calendar("2006-01-01", "2026-09-06")
-
-    assert len(windows) == 21
 
 
 # ---------------------------------------------------------------------------
