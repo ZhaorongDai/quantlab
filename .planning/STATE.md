@@ -2,16 +2,16 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.6"
-current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal
+current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
 stopped_at: Completed 03.6-04-PLAN.md
-last_updated: "2026-09-13T02:30:40.101Z"
+last_updated: "2026-09-13T04:41:38.101Z"
 last_activity: Phase 03.5 all 6 plans complete — entering phase gates
-state_head: 7f0039dc1dbc71d7661cdf5308b1d316bfd32265
+state_head: 2e23b16159b321ba2d6bf7e5008ed0d1732df762
 progress:
   total_phases: 13
   completed_phases: 1
-  total_plans: 51
+  total_plans: 53
   completed_plans: 51
 milestone_name: milestone
 ---
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal) — READY TO EXECUTE
+Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — READY TO EXECUTE
 Plan: 5 of 6
 Status: Ready to execute
 Last activity: Phase 03.5 all 6 plans complete — entering phase gates
