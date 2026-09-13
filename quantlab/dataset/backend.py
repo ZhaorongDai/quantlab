@@ -51,10 +51,45 @@ class XrBackend(DataBackend):
     #: **`append_dim_size` is the mechanism that now carries the claim on that
     #: path.** A caller writing a store INCREMENTALLY states the store's total
     #: append-dim extent on `append()`, and `_append_encoding` substitutes it
-    #: for the panel-in-hand length -- so both paths land on
+    #: for the panel-in-hand length.
+    #:
+    #: **That paragraph used to close by counting TWO paths, and there are
+    #: THREE.** SUPERSEDED by phase 03.6's second gap-closure pass; the
+    #: original wording is quoted here rather than deleted so the correction
+    #: is legible (D-18). It read: "so both paths land on
     #: `min(APPEND_DIM_CHUNK, total_len)` and the sentence above is true of
     #: both. The sibling widen path reaches the same grid by a DIFFERENT
-    #: route, and deliberately: see `_widen_block_rows`.
+    #: route, and deliberately: see `_widen_block_rows`." The two it counted
+    #: were the whole-range creating write and the incremental chunked append.
+    #: The third is `widen_symbol_axis`, which rewrites the store with
+    #: `mode="w"` and therefore does not preserve the grid -- it RE-PINS it.
+    #: The three paths, and how each lands on
+    #: `min(APPEND_DIM_CHUNK, stated total extent)`:
+    #:
+    #: 1. the whole-range creating write -- by construction, because the panel
+    #:    in hand IS the store, so panel length and total extent coincide;
+    #: 2. the incremental chunked append -- because the caller STATES the
+    #:    extent with `append_dim_size` (plan `03.6-05`);
+    #: 3. the `mode="w"` widen rewrite via `widen_symbol_axis`, and the
+    #:    variable widen beside it -- because the caller states the extent
+    #:    there too, with the same keyword (this pass).
+    #:
+    #: Measured 2026-09-13, `APPEND_DIM_CHUNK` at 4 over a 9-row range with a
+    #: store created stating an extent of 9 but holding only part of it: the
+    #: widen rewrite left `(3, 3)` at rung `year` and `(1, 3)` at rung `day`,
+    #: where the invariant claims `(4, 3)` for both -- and `(1, 3)` is the
+    #: SAME number the original gap report measured on the creating write,
+    #: which is what identified this as the one defect surviving on a third
+    #: path rather than a new one.
+    #:
+    #: The fairness point, because it explains why no existing test caught
+    #: this: widening an ALREADY-COMPLETE store re-pins to the same value and
+    #: degraded nothing even before the fix. The defect needed a store
+    #: INCOMPLETE relative to its stated extent -- a crash-resume, or a
+    #: rolled-back rebuild -- which is why every widen test stayed green.
+    #:
+    #: The chunked widen strategy now takes the keyword AND keeps its floor,
+    #: for two different jobs -- see `_widen_block_rows`.
     APPEND_DIM_CHUNK = 512
 
     #: Ceiling on the bytes a symbol-axis widen may materialise AT ONCE,
@@ -186,15 +221,33 @@ class XrBackend(DataBackend):
         riding in `**kwargs`, because both branches forward `**kwargs`
         verbatim to `to_zarr`, which would reject an unknown argument.
 
-        Against an EXISTING store the value is accepted and ignored: the grid
-        was pinned irreversibly by the creating write and there is nothing left
-        to decide, so a caller may pass it unconditionally on every window --
-        which is exactly what `from_raw_data_chunked` does, because store
-        EXISTENCE is the real condition and it is owned here. A loop-index
-        guard at the call site would be wrong on the two paths where the
-        creating write is not iteration zero: a resume skips already-recorded
-        windows, and `on_new_listing="rebuild"` moves the store aside so a
-        later call creates it.
+        Against an EXISTING store the value is accepted and ignored, so a
+        caller may pass it unconditionally on every window -- which is exactly
+        what `from_raw_data_chunked` does, because store EXISTENCE is the real
+        condition and it is owned here. A loop-index guard at the call site
+        would be wrong on the two paths where the creating write is not
+        iteration zero: a resume skips already-recorded windows, and
+        `on_new_listing="rebuild"` moves the store aside so a later call
+        creates it.
+
+        **The REASON that paragraph used to give was false, and the falsity
+        was load-bearing rather than cosmetic.** SUPERSEDED by phase 03.6's
+        second gap-closure pass; the original wording is quoted here rather
+        than deleted so the correction is legible (D-18). It read: "the grid
+        was pinned irreversibly by the creating write and there is nothing
+        left to decide". A reader who trusted that would conclude the grid
+        needs no thought at any later point in a store's life, which is the
+        opposite of true. The accurate reason `append()` ignores the value
+        here is narrower: THIS METHOD cannot revise the grid, because xarray
+        rejects `encoding` on an append -- see the `kwargs.pop("encoding")`
+        below. The GRID is not beyond revision. `widen_symbol_axis`, in this
+        same class, rewrites the store with `mode="w"` and re-pins it, and
+        `widen_data_vars` pins its filler; both take the same
+        `append_dim_size` for exactly that reason, so the entry points cannot
+        disagree about what the store's grid should be. What IS irreversible
+        is any individual pinning: Zarr fixes a grid at write time and nothing
+        edits it in place, so a store left on the wrong one can only be
+        corrected by delete-and-rebuild.
         """
         target = Path(path)
         if not target.exists():
@@ -521,18 +574,38 @@ class XrBackend(DataBackend):
         `min(APPEND_DIM_CHUNK, total_len)` identically, so the two strategies
         agree on the grid without either restating the arithmetic.
 
-        **This path keeps its floor rather than adopting `append_dim_size`,
-        and the difference is load-bearing too.** A reader who has just met
-        that keyword on `append()` -- where an incremental writer STATES the
-        store's eventual extent so the grid stops depending on which window
-        created it -- will reasonably ask why it is absent here. Because the
-        block size this method returns is bounded by `MAX_WIDEN_BYTES`, a BYTE
-        budget, which no append-dimension length can express: the floor is
-        doing TWO jobs (grid agreement and byte bounding) where
-        `append_dim_size` does only the first. Switching to it would leave the
-        grid correct and the memory ceiling unenforced. The two paths agreeing
-        on the grid by different routes is the intended shape, not a
-        divergence to reconcile.
+        **This path keeps its floor AND the chunked strategy now also takes
+        `append_dim_size`. The two do different jobs; neither replaces the
+        other.** The floor bounds BYTES under `MAX_WIDEN_BYTES`, which no
+        append-dimension length can express, so dropping it would leave the
+        grid correct and the memory ceiling unenforced. The keyword states the
+        store's EVENTUAL extent, so the first block does not re-pin the grid
+        downward while the store is still incomplete, which no byte budget can
+        express either. Both apply, on the same path, for different reasons.
+
+        **This paragraph used to conclude the opposite, and that conclusion is
+        why the widen family was judged already-covered for a whole round.**
+        SUPERSEDED by phase 03.6's second gap-closure pass; the original
+        argument is preserved here rather than deleted so the correction is
+        legible (D-18). It read: "This path keeps its floor rather than
+        adopting `append_dim_size` [...] the floor is doing TWO jobs (grid
+        agreement and byte bounding) where `append_dim_size` does only the
+        first [...] The two paths agreeing on the grid by different routes is
+        the intended shape, not a divergence to reconcile."
+
+        Two things were wrong with it. First, it was offered as an argument
+        about the widen FAMILY, and the sibling strategy `_widen_whole_store`
+        has no floor and no byte budget at all -- so the argument never
+        covered it. That matters because `_widen_whole_store` is the branch
+        the router actually selects for every store under `MAX_WIDEN_BYTES`,
+        which the logs confirm ("taking the whole-store rewrite"); the covered
+        branch was the rarely-taken one. Second, the floor is not sufficient
+        even HERE: the identity
+        `min(APPEND_DIM_CHUNK, first_block_len) == min(APPEND_DIM_CHUNK,
+        total_len)` holds only once the store has reached its FINAL extent.
+        On an incomplete store the whole store is one block, and at
+        `APPEND_DIM_CHUNK = 4` over 3 held rows the floor alone leaves
+        `min(4, 3) == 3` where the stated extent of 9 wants `min(4, 9) == 4`.
 
         **The floor wins even when one aligned block exceeds the budget.** This
         method ROUTES, it does not refuse: a store whose single `APPEND_DIM_CHUNK`
