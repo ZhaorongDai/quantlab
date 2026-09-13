@@ -1313,6 +1313,75 @@ def test_the_chunk_grid_survives_a_rebuild(
     assert grid == _chunk_grid(scratch_config.zarr_file_path)
 
 
+@pytest.mark.parametrize("granularity", ["year", "day"])
+def test_the_chunk_grid_survives_a_widen(
+    # Forward reference for the same reason as the rebuild arm above:
+    # `_GrowingRoster` is defined further down and this arm belongs beside its
+    # siblings rather than beside the fixture it borrows.
+    growing_roster: "_GrowingRoster",
+    monkeypatch: pytest.MonkeyPatch,
+    granularity: str,
+) -> None:
+    """The third path a store's grid can be decided on: `widen_symbol_axis`
+    rewrites the WHOLE store with `mode="w"`, which re-pins the grid.
+
+    The other three arms all cover a store-CREATING write. This one covers a
+    REWRITE, and it is the path plan `03.6-05` did not reach: the creating
+    write states the whole-range extent correctly, and then a widen throws
+    that away and re-derives the grid from whatever the store happens to hold
+    at rewrite time.
+
+    **The crash is load-bearing, not decoration.** Widening an already-COMPLETE
+    store re-pins to the same value and degrades nothing, which is exactly why
+    `test_widen_keeps_history_and_backfills_the_new_listing_with_nan` -- which
+    uses `_built_over_ab`'s complete store -- stays green straight through the
+    defect. `_FailsOnSecondWindow` is what leaves the store INCOMPLETE relative
+    to its stated 9-row extent, and that is where "the extent at rewrite time"
+    and "the caller's stated extent" give different answers. This arm therefore
+    builds its store by hand rather than through `_built_over_ab`.
+
+    RED conditions, the three-way discrimination, at `APPEND_DIM_CHUNK = 4`
+    over the 9-timestamp panel with the store holding 3 of those rows when the
+    widen runs:
+
+    - "the extent at rewrite time decides" -- the pre-plan behaviour, and also
+      what dropping the rewrite's `encoding=` entirely would leave -- gives
+      `3` at rung `year` and `1` at rung `day`: two DIFFERENT, rung-dependent
+      answers, which is precisely the rung-dependence the phase goal denies;
+    - "any extent derivable from the STORE itself decides" gives the same `3`
+      and `1`, which is why a fix that read the store instead of taking the
+      caller's word would still be red here;
+    - "the caller's STATED total extent decides, under the unchanged ceiling"
+      gives `min(4, 9) == 4` at both rungs.
+
+    Only the third is green. `(1, 3)` at the `day` rung is the SAME number the
+    original gap report measured on the creating write, which is what
+    identifies this as the original defect surviving on a third path rather
+    than an adjacent new one.
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    config = growing_roster.config(f"grid_widen_{granularity}.zarr")
+
+    growing_roster.write_initial()
+    with pytest.raises(RuntimeError):
+        _FailsOnSecondWindow(config).from_raw_data_chunked(
+            granularity=granularity
+        )
+    growing_roster.write_new_listing()
+
+    StockDataset(config).from_raw_data_chunked(
+        granularity=granularity, on_new_listing="widen"
+    )
+
+    resumed = _panel(config.zarr_file_path)
+    assert resumed.sizes["timestamp"] == 9
+    assert resumed["symbol"].values.tolist() == ["A", "B", "C"]
+
+    grid = _chunk_grid(config.zarr_file_path)
+    assert grid, "the store carries no data variables to measure"
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+
 def test_chunked_run_warns_about_the_cleaning_boundaries(
     three_year_stock_config: Callable[..., DatasetConfig],
 ) -> None:

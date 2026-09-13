@@ -1,0 +1,10 @@
+{
+  "command": "uv run pytest tests/test_chunked_ingest.py -k chunk_grid -v --tb=short",
+  "exitCode": 1,
+  "targetTest": "test_the_chunk_grid_survives_a_widen[year]",
+  "targetFile": "tests/test_chunked_ingest.py",
+  "output": "ok 1 - test_the_chunk_grid_is_the_stores_extent_not_the_first_windows\nok 2 - test_the_chunk_grid_is_identical_at_every_rung[year]\nok 3 - test_the_chunk_grid_is_identical_at_every_rung[month]\nok 4 - test_the_chunk_grid_is_identical_at_every_rung[day]\nok 5 - test_the_chunk_grid_survives_a_crash_and_resume\nok 6 - test_the_chunk_grid_survives_a_rebuild\nnot ok 7 - test_the_chunk_grid_survives_a_widen[year]\nnot ok 8 - test_the_chunk_grid_survives_a_widen[day]\n# tests 8\n# pass 6\n# fail 2\n",
+  "expected": "after a crash-resume plus roster-growth widen of an INCOMPLETE store, every data variable's on-disk chunk shape is (min(APPEND_DIM_CHUNK, 9), 3) == (4, 3) at BOTH the year and the day rung",
+  "actual": "AssertionError: assert {(3, 3)} == {(4, 3)} at rung 'year' and assert {(1, 3)} == {(4, 3)} at rung 'day' -- widen_symbol_axis's mode='w' rewrite re-pins the grid from the extent the store holds AT REWRITE TIME (3 rows at 'year', 1 row at 'day'), discarding the whole-range extent the creating write correctly stated",
+  "note": "pytest project: the TAP block above is a faithful projection of the real `uv run pytest` run captured at scratchpad/red1.out (2 failed, 6 passed, 53 deselected). Per-test verdicts were extracted from that run's -v lines; no verdict is hand-written. The two failures are the two new parametrisations, failing on the planned grid assertion -- an intentional RED, not a collection or fixture error. targetTest names the [year] parametrisation exactly because the gate matches failing-test names verbatim; the [day] parametrisation fails on the same assertion and is listed beside it."
+}
