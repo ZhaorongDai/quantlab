@@ -485,10 +485,13 @@ uv run python ingest_alpaca.py --symbols AAPL,MSFT --frequency 1m --to-zarr \
     --start-date 2026-08-01 --end-date 2026-09-05
 ```
 
-> `--to-zarr` 是后补上的：默认路径不转 Zarr，因此也不会跑
-> `assert_dense_panel_fits`（那个护栏量的是稠密化的内存，稠密化不发生就不该拦人）。
-> 下面这段输出里两个护栏都跑过了，所以能复现它的命令行是带 `--to-zarr` 的这一条。
-> 输出本身一个字没改。
+> `--to-zarr` 是后补上的，原因是这条命令当年还会多跑一个只在稠密化时才有意义的内存护栏 ——
+> 量的是稠密化要吃多少内存，稠密化不发生就不该拦人。那个护栏已于 2026-09-12 删除
+> （phase 03.6，见 [chunking.md](chunking.md) 文末一节），所以今天带不带 `--to-zarr`
+> 都只有一个 pre-flight 护栏在跑：`assert_acquisition_volume_fits`。
+> 这恰好说明了两类护栏的分工 —— 体量护栏量的是**原始磁盘字节、请求数、墙钟时间**，
+> 也就是钱和时间，这些开销**每一次采集都会发生**，所以它在每一次采集上跑都是正当的。
+> 命令行保留原样（`--to-zarr` 仍然有效，只是不再多带一个护栏），输出本身一个字没改。
 
 真实输出（同样是本机实际执行）：
 
@@ -510,8 +513,9 @@ Traceback (most recent call last):
 RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must both be set. Alpaca market-data credentials are read from the environment and are never stored on the config (D-15) -- export them before running acquisition (see your Alpaca dashboard for the key pair).
 ```
 
-这段输出证明了两件事：体量护栏（`assert_acquisition_volume_fits` +
-`assert_dense_panel_fits`）在**任何 client 被构造之前**就跑完了；以及凭证只可能来自环境变量，
+这段输出证明了两件事：体量护栏（`assert_acquisition_volume_fits` —— 2026-09-12 起
+它是这条路径上仅有的那一个 pre-flight 护栏）在**任何 client 被构造之前**就跑完了；
+以及凭证只可能来自环境变量，
 命令行里根本没有可以传 key 的地方（传了会被 argparse 拒绝）。
 
 ### 例 3：真实下载的例子（本次未再执行，但盘上的产物是真的）

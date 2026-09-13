@@ -2,8 +2,12 @@
 
 > 涉及代码：`quantlab/base/chunking.py`、`quantlab/base/data.py:BaseDataset.from_raw_data_chunked()`、
 > `quantlab/dataset/backend.py:XrBackend.append/widen_symbol_axis/widen_and_append`、
-> `quantlab/dataset/stock.py` 的两个 seam、`quantlab/acquisition/universe.py:assert_chunked_panel_fits()`、
+> `quantlab/dataset/stock.py` 的两个 seam、`quantlab/acquisition/universe.py:_roster_window_profile()`、
 > `ingest_us_equity.py`。测试在 `tests/test_chunked_ingest.py`。
+>
+> **2026-09-12 更新**：本文原本还记述 `UniverseCatalog` 上那组稠密面板内存估算/守卫，
+> 以及 `TimeChunkPlanner` 的第二个 planner。两者都已在 phase 03.6 删除，见文末
+> 「2026-09-12 —— 内存守卫被删除了（phase 03.6）」一节。
 
 ## 一句话
 
@@ -22,17 +26,22 @@ cells = 时间点数 × 标的数
 bytes = cells × 变量数 × 每格字节数
 ```
 
-`UniverseCatalog.estimate_dense_panel()` 就是按这个算的，默认 `num_variables=12`
-（对应 `enums.data.TiingoColumns.EOD`）、`bytes_per_value=8`（float64，
-`StockDataset._raw_data_to_xr()` 实际产出的 dtype）。
+这套乘法是读者判断「一个粒度够不够小」的基本工具，它没有过时；过时的只是**谁替你算**。
+格数那一半现在由 `UniverseCatalog._roster_window_profile()` 给出
+（标的数 / 交易日数 / 时间点数 / 稠密格数 / 观测格数 / 密度，**不含字节**），
+字节那一半从 2026-09-12 起没有任何代码替你算了：乘上「变量数 × 每格字节数」要自己来。
+习惯取值是 `num_variables=12`（对应 `enums.data.TiingoColumns.EOD`）、
+`bytes_per_value=8`（float64，`StockDataset._raw_data_to_xr()` 实际产出的 dtype）。
 
-**真实数字之一（今天实跑，见下方"完整例子"里的 dry-run 输出）**：
+**真实数字之一（见下方"完整例子"里 2026-09-12 重跑的 dry-run 输出）**：
 `us_all` 全市场、日频、一年区间 `2025-09-07..2026-09-06`，
-8,159 个标的 × 252 个交易日 = 2,056,068 格 → **0.18 GiB**。这个量级毫无压力。
+8,157 个标的 × 252 个交易日 = 2,055,564 格；按 12 × 8 算是 **0.18 GiB**。
+这个量级毫无压力。注意 dry-run 现在只打印格数相关的量（观测格数、密度），
+字节是上面这行手算出来的 —— 它不再是任何一个守卫的输出。
 
 **真实数字之二（把区间拉长到二十年就翻天覆地）**：
-`quantlab/acquisition/universe.py` 里 `UniverseCatalog.MAX_DENSE_PANEL_BYTES` 的注释记录了
-2026-09-06 在目标机器上的实测：`us_all` 全量在 `2006-01-01..今天` 是
+2026-09-06 在目标机器上的实测（这次测量本身没有被删，被删的只是承载它的那个常量）：
+`us_all` 全量在 `2006-01-01..今天` 是
 **15,424 个标的 × ~5,215 个交易日 = 80.4M 格**，其中只有 ~29.6M 格是真实观测
 （密度 0.368 —— 因为绝大多数标的并非全程都在上市）。
 按 12 变量 × 8 字节算就是 **~7.2 GiB 的 float64 稠密网格**。
@@ -51,15 +60,16 @@ OOM 不是因为面板本身超过 16 GiB，而是因为面板 + 行式 frame + 
 
 - **稀疏并不能救你**。密度 0.368 说明 63% 的格子是 NaN，但 `to_xarray()` 产生的是完整
   笛卡尔积，NaN 也要占 8 字节。
-- **频率是乘数**。`estimate_dense_panel(bars_per_day=...)` 存在就是因为分钟频一个交易日
-  是 390 行（`UniverseCatalog.BARS_PER_DAY_BY_FREQUENCY`），
-  同一个窗口在 `1m` 下的稠密网格是 `1d` 的 390 倍。
-  `assert_dense_panel_fits()` 的 docstring 明确写了：S&P 500 的一个分钟年
-  稠密后约 **4 TB**，如果忘了传 `bars_per_day` 会报成 ~10 GiB —— 这是这个守卫
-  最容易"自信地算错"的地方。
+- **频率是乘数**。分钟频一个交易日是 390 行（`UniverseCatalog.BARS_PER_DAY_BY_FREQUENCY`），
+  同一个窗口在 `1m` 下的稠密网格是 `1d` 的 390 倍。S&P 500 的一个分钟年稠密后约 **4 TB**，
+  按日频算会报成 ~10 GiB —— 差三个数量级。`_roster_window_profile()` 的时间点数是按真实
+  时间轴数的，不是按交易日数的，所以这一步不会再算错；但既然没有守卫了，算错的后果也不再
+  是一条报错，而是 OOM。
 
-上限 `UniverseCatalog.MAX_DENSE_PANEL_BYTES = 4 * 1024**3`（4 GiB）就是画在
-"能舒服跑的窗口"和"7.2 GiB 会 OOM"之间的那条线。
+4 GiB 这条线曾经是一个常量（`4 * 1024**3`），画在"能舒服跑的窗口"和"7.2 GiB 会 OOM"
+之间。**这个常量在 2026-09-12 随守卫一起被删除了**，它作为经验参考值仍然有用：
+在一台 16 GiB 的机器上，让单个窗口的稠密面板停在几个 GiB 以内是安全的，
+但今天没有任何代码会替你检查这一点。
 
 ---
 
@@ -68,23 +78,27 @@ OOM 不是因为面板本身超过 16 GiB，而是因为面板 + 行式 frame + 
 ### chunk window（分块窗口）
 
 一段连续时间。`TimeChunkPlanner` 负责把整段区间切成一串窗口，
-粒度由 `TimeChunkPlanner.GRANULARITIES = ("year", "quarter", "month")` 三选一。
+粒度取自 `TimeChunkPlanner.GRANULARITIES`——从粗到细五级：
+`year` / `quarter` / `month` / `day` / `hour`。这里刻意不把这个五元组抄成另一份常量：
+它是唯一定义处，`--chunk` 的 `choices` 也是从它派生的，加一级不需要改 CLI，也不需要改本文。
 
-它有**两个** planner，不是重复代码，是两个不同时刻、不同信息量的问题：
+它只有**一个** planner：
 
 | 方法 | 什么时候用 | 边界是什么 |
 |---|---|---|
 | `plan_from_timestamps(timestamps)` | **写入时**，真实时间轴已经存在 | 边界一定是**观测到的**时间戳 |
-| `plan_calendar(start, end)` | **估算时**（下载之前），还没有时间轴 | 日历算术，返回 ISO 字符串 |
 
-为什么写入必须用前者：**交易日 ≠ 日历日**。如果窗口边界是 `2022-12-31`（那天可能是周日），
-把它交给稠密化逻辑就等于凭空造出一个市场根本没开的行。
-`plan_calendar` 的 docstring 第一行就写着 `SIZING ONLY -- never hand these windows to a densifier`。
+为什么边界必须来自观测值：**交易日 ≠ 日历日**。如果窗口边界是 `2022-12-31`（那天可能是周日），
+把它交给稠密化逻辑就等于凭空造出一个市场根本没开的行。现在调用方能拿到的每一个边界
+都是真实观测到的时间戳，所以这类错误已经不可达 —— 详见文末的 2026-09-12 一节。
 
-两者共用同一个私有方法 `_period_key()` 和 `_group_by_period()`，
-所以"一个年/季/月到底怎么算"在整个模块里**只定义一次**，估算窗口和写入窗口不可能对不上。
-`plan_calendar` 甚至故意去逐日 `date_range` 再分组，而不用 `pd.period_range`，
-就是为了强制走那唯一一个 `_period_key()`。
+分组规则由私有方法 `_period_key()` 与 `_group_by_period()` 承担，
+"一个年/季/月/日/小时到底怎么算"在整个模块里**只定义一次**。
+这个类今天真正要防的漂移在 `GRANULARITIES` 与 `_period_key` 之间：新增一级要改两处，
+只改前者过去会**静默**落到 month 尺寸的窗口 —— 错误的窗口尺寸就是错误的内存上界，
+而且是 fail-open。`_period_key` 末尾现在有一条同时点名两个列表的 `raise ValueError`；
+两者一致时它不可达（`__init__` 先拒绝不在 `GRANULARITIES` 里的 token），
+不可达正是它作为漂移探测器而非死代码的原因。
 
 ### pinned symbol axis（钉死的标的轴，D-02）
 
@@ -104,9 +118,10 @@ symbol 坐标改成新的，历史行就归属错了。所以 `from_raw_data_chu
 每个窗口都强制 `reindex(symbol=pinned)`。
 
 代价是：一个 2025 年的窗口也会给 2009 年就退市的票留一整列 NaN。
-这正是为什么 `assert_chunked_panel_fits()` 给每个 chunk 估算时用的是
-**钉死的全区间标的数**，而不是这个 chunk 期间在市的标的数 ——
-按后者算会低估真实分配量，OOM 就又溜回来了。
+这正是为什么估算一个 chunk 的内存时必须用**钉死的全区间标的数**，
+而不是这个 chunk 期间在市的标的数 —— 按后者算会低估真实分配量，OOM 就又溜回来了。
+（历史注记：这条规则过去由一个 pre-flight 守卫强制执行；守卫已于 2026-09-12 删除，
+规则本身不变，只是现在由你自己在心算时遵守。）
 
 `StockDataset._raw_axes_in_range()` 的实现值得看一眼：它做的是**两次单列 unique 扫描**
 （polars 各自做列投影），峰值内存是原始 frame 的一列，而不是稠密网格。
@@ -170,11 +185,9 @@ symbol 坐标改成新的，历史行就归属错了。所以 `from_raw_data_chu
 ingest_us_equity.py --to-zarr --chunk year --on-new-listing refuse
         │
         ▼
-UniverseCatalog.assert_chunked_panel_fits()      ← 下载/转换之前的尺寸守卫
-        │  用 plan_calendar() 切窗口（估算专用）
-        │  每个 chunk 按【钉死的全区间标的数】× 该窗口交易日 × 12 × 8 估算
-        │  超过 MAX_DENSE_PANEL_BYTES(4 GiB) → 报错并建议更细的 --chunk
-        │  整段总量只作为 advisory 打印，不报错（D-05）
+（2026-09-12 起：这里没有内存尺寸守卫了。窗口太大就直接 OOM，
+  不会有一条指明「换更细的 --chunk」的可读拒绝。）
+        │
         ▼
 StockDataset(...).from_raw_data_chunked(granularity="year", on_new_listing="refuse")
         │
@@ -412,41 +425,42 @@ env -u TIINGO_API_KEY -u APCA_API_KEY_ID -u APCA_API_SECRET_KEY \
     uv run python ingest_us_equity.py --start-date 2025-09-07 --end-date 2026-09-06 --dry-run
 ```
 
-真实输出（2026-09-09 重跑，三个凭证环境变量都用 `env -u` 显式清掉）：
+真实输出（**2026-09-12 重跑**，三个凭证环境变量都用 `env -u` 显式清掉）：
 
 ```
 DRY RUN -- category=us_all, no price requests issued
-  symbols resolved:  8159
-  preview:           ['AN', 'GLSI', 'MTB', 'FRHC', 'ISNR', 'KACLW', 'INCY', 'IMMR', 'ASPSW', 'AVB']
+  symbols resolved:  8157
+  preview:           ['A', 'AA', 'AAAC', 'AAAP', 'AAC', 'AAC-U', 'AAC-WS', 'AACB', 'AACBR', 'AACBU']
   window:            2025-09-07 .. 2026-09-06
   trading days (~):  252
-  dense grid cells:  2,056,068
-  real observations: 1,830,182
-  density:           0.890
-  dense float64:     0.18 GiB
-  observed float64:  0.16 GiB
-  chunk granularity: year
-  chunk count:       2
-  whole-range total: 0.18 GiB (advisory -- chunking never materialises this at once)
-  largest chunk:     0.13 GiB (2026-01-01..2026-09-06, 8159 pinned symbols x 172 trading days)
-  per-chunk budget:  4.00 GiB (a finer --chunk is the remedy above this)
+  real observations: 1,840,211
+  density:           0.895
   raw-data path:     /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/tiingo
   watermark path:    /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/_watermarks/tiingo
   zarr path:         /Users/daizhaorong/projects/quantlab/data/data/us_equity/1d/us_all.zarr
   coverage report:
-  already covered:   832 (would be skipped)
-  re-fetch, widened: 6924 (recorded coverage starts after --start-date)
+  already covered:   831 (would be skipped)
+  re-fetch, widened: 6922 (recorded coverage starts after --start-date)
   legacy, no start:  0 (stamp via --stamp-legacy-watermarks)
-  would fetch:       7327/8159
+  would fetch:       7326/8157
 ```
+
+**这份输出是重跑出来的，不是把旧输出手改的。** 本目录的约定是贴真跑过的输出
+（见 [README.md](README.md)），而 2026-09-09 那一版里的
+`dense grid cells` / `dense float64` / `observed float64` / `chunk granularity` /
+`chunk count` / `whole-range total` / `largest chunk` / `per-chunk budget` 八行
+今天已经一行都不打印了 —— 它们全部属于 phase 03.6 删掉的那组估算/守卫。
+两次之间标的数从 8,159 变成 8,157、密度从 0.890 变成 0.895，是 roster 本身在这三天里动了，
+跟本次删除无关；预览的十个符号变了，是因为这是排序后的前十个而非随机十个。
 
 几个可以对照上文读的点：
 
-- `chunk count: 2` —— 区间跨了 2025 和 2026 两个日历年，`--chunk year` 就是两个窗口。
-- `largest chunk` 是 **2026 的那个**（172 个交易日），不是 2025 的（80 天）；
-  两个窗口的标的数都是 8,159（钉死的全区间轴），所以只有天数在变。
-- `whole-range total` 只是 advisory，不会因为超标而报错 —— 让整段总量变得可行正是分块的意义（D-05）。
-- 密度 0.890 是因为区间只有一年；拉到 2006 起就掉到 0.368。
+- **分块相关的行整体消失了**：粒度、窗口数、整段总量、最大 chunk、每 chunk 预算都不再打印。
+  `--chunk` 本身没有变，它照常被接受、照常传到 `from_raw_data_chunked()`；
+  消失的是那份**内存报告**，不是分块能力。
+- 现在还在的格子类数字（`real observations`、`density`）来自
+  `UniverseCatalog._roster_window_profile()`，就是上文「不用它会怎样」一节用的那套算术。
+- 密度 0.895 是因为区间只有一年；拉到 2006 起就掉到 0.368。
 - 覆盖报告**不需要凭证**（03.4 起）：上面这次是把三个凭证环境变量全部清掉跑的。
   `re-fetch, widened: 6924` 说的正是本文关心的那件事——盘上那批边车记录的覆盖起点
   晚于这里请求的 `--start-date`，所以历史比要求的浅，要重抓。
@@ -641,10 +655,13 @@ fingerprint 校验: True
 
 ## 常见坑
 
-**1. 拿 `plan_calendar()` 的窗口去稠密化。**
-它的边界是日历算术的产物，会给出市场根本没开的日期。它只用于**估算**
-（`assert_chunked_panel_fits`），写入路径必须用 `plan_from_timestamps()`。
-docstring 第一行就是 `SIZING ONLY`。
+**1.（历史，已不可达）拿日历算术切出来的窗口去稠密化。**
+这曾经是一个真实的坑：`TimeChunkPlanner` 过去还有一个只用于估算的 planner，
+它的边界是日历算术的产物，会给出市场根本没开的日期，而唯一拦着你别把这种窗口
+交给稠密化逻辑的东西，是它 docstring 第一行的一句 `SIZING ONLY` 警告。
+phase 03.6 删掉了那个 planner（它唯一的生产调用方是同时被删的内存估算器），
+于是这个坑**在结构上**消失了：今天调用方能拿到的每一个边界都是观测到的时间戳，
+剩下这一个 planner 因此不需要任何这类警告。保留这一条是为了说明为什么它不再出现。
 
 **2. 以为一个更细的 `--chunk` 能减少边界告警。**
 方向反了。窗口越细，chunk 边界越多，`flag_anomalies` 丢掉的跨边界差分越多。
@@ -666,14 +683,16 @@ store 还在、台账没了 → `assert_consistent` 的第 3 种情况 → 直�
 这里没装 dask，所以这正是分块存在要避免的那个分配。
 store 大到装不下的时候，该用的是 `rebuild`（逐窗口重建）。
 
-**6. 给 intraday 频率估算时忘了 `bars_per_day`。**
-默认是 1（日频一个交易日一行）。分钟频是 390。忘了传的话守卫会放行一个超出预算三个数量级的
-请求，而且报出来的数字看着还挺正常。
+**6. 给 intraday 频率估算时按日频的行数算。**
+日频一个交易日一行，分钟频是 390 行（`BARS_PER_DAY_BY_FREQUENCY`）。
+按日频算一个分钟窗口，会把 4 TB 报成 ~10 GiB，差三个数量级。
+2026-09-12 之前这会让守卫「自信地」放行一个超出预算三个数量级的请求；
+今天没有守卫了，所以它直接就是一次 OOM。
 
 **7. 假设 `--chunk month` 一定比 `--chunk year` 小很多。**
 每个窗口都建在**钉死的全区间 symbol 轴**上，所以 chunk 变小**只**因为覆盖的时间变短，
-不会因为那段时间在市的标的少而变小。这也是 `assert_chunked_panel_fits` 用
-`advisory["symbols"]`（全区间标的数）而不是逐 chunk 重算标的数的原因。
+不会因为那段时间在市的标的少而变小。心算一个 chunk 的大小时要用全区间标的数
+（`_roster_window_profile()` 的 `symbols`），不要逐 chunk 重算在市标的数。
 
 **8. 在子类里没覆写 `_raw_data_to_xr_window` 就指望省内存。**
 默认实现是"铺整段再切片"，功能正确但一点内存都不省。这时候分块只限制了**写**、
@@ -689,3 +708,41 @@ store 大到装不下的时候，该用的是 `rebuild`（逐窗口重建）。
 两种静默破坏立刻回来：坐标标签被覆写（历史行归属错误）、float NaN 被转成整数 0
 （缺失变成捏造的观测值）。两者事后都不可见，而 append 不可逆。
 守卫在写之前拒绝，是唯一能起作用的位置。
+（这个守卫**还在**，跟下面那一节说的内存守卫不是同一个东西。）
+
+---
+
+## 2026-09-12 —— 内存守卫被删除了（phase 03.6）
+
+把这一节单独写出来，是因为「文档里干脆不提一个被删掉的守卫」会让读者以为它从来不存在，
+或者以为是漏写。它确实存在过，是被**决定**删掉的。
+
+**被删掉的是什么。** `UniverseCatalog` 上那组稠密面板内存估算/守卫**整组**消失了 ——
+估算的那一半和拒绝的那一半都没了，连同它们共用的 4 GiB 预算常量。开发者的判断是：
+一个 roster 目录（「谁在池子里、什么时候在」）不该同时承担内存尺寸策略，
+而 `quantlab/utils/cli.py` 为了从这个对象里问出一个纯算术答案，
+一度不得不**伪造**一个假的 catalogue 再 override 它的估算方法。
+
+**代价，明确接受。** 一个过大的转换窗口现在**直接 OOM**，
+不再有一条指明「换更细的 `--chunk`」的可读拒绝。
+决定于 2026-09-11 做出、2026-09-12 在缩小 phase 03.6 范围时重申；
+记录在案的先例是 quick task `260906-13w-k-zarr-16gib-oom`
+（~7.2 GiB 稠密网格 + ~2,960 万行 frame 打爆一台 16 GiB 机器，日频全市场，不是 tick）。
+
+**操作者手上还剩什么。**
+
+1. **更细的 `--chunk`，而且比以前更细。** 粒度阶梯从三级扩到了五级：
+   `year` / `quarter` / `month` / `day` / `hour`。被删掉的是**拒绝**，不是**调节手段** ——
+   调节手段反而变强了。注意 `hour` 的 IO 代价是已知且被接受的：原始层按 `date=` 分片，
+   一个小时窗口要读整天的 parquet 再丢掉大部分。
+2. **acquisition-volume 守卫，完整保留。** `estimate_acquisition_volume()` 与
+   `assert_acquisition_volume_fits()` 仍然会回答、仍然会拒绝 —— 但它们量的是
+   **原始磁盘字节、请求数、墙钟时间**，也就是钱和时间，**不是 RAM**。
+   烧掉的 API 配额不可回收，内存不够重跑一次就行，这是两者区别对待的理由。见
+   [acquisition.md](acquisition.md)。
+3. **自己算。** `UniverseCatalog._roster_window_profile()` 给格数、交易日数、密度；
+   乘上变量数和每格字节数就是本文开头那套乘法。它不再是守卫，是一把尺子。
+
+**没被删掉的东西，别搞混。** `XrBackend.append()` 的坐标/dtype 守卫、
+`ChunkLedger.assert_consistent()` 的四种拒绝、`on_new_listing` 的三选一 —— 全都还在。
+本节说的只有稠密面板的**内存**守卫这一个。
