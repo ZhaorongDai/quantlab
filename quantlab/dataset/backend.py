@@ -71,7 +71,14 @@ class XrBackend(DataBackend):
         self.data.to_zarr(path, **kwargs)
         return self
 
-    def append(self, path: str, append_dim: str = "timestamp", **kwargs) -> Self:
+    def append(
+        self,
+        path: str,
+        append_dim: str = "timestamp",
+        *,
+        append_dim_size: Optional[int] = None,
+        **kwargs,
+    ) -> Self:
         """Create the store, or extend it along `append_dim`.
 
         The storage-medium half of the chunked ingestion path: "how the
@@ -136,11 +143,40 @@ class XrBackend(DataBackend):
         `from_raw_data_chunked()` satisfies the coordinate half by pinning the
         symbol axis once over the whole range (D-02); this check is what turns
         that guarantee into an assertion.
+
+        **The creating write decides a FIFTH thing, and it decides it
+        permanently: the on-disk chunk grid.** Zarr fixes it at store creation
+        and append cannot revise it, so a caller who already knows the store's
+        eventual extent along `append_dim` says so with `append_dim_size` and
+        gets `min(APPEND_DIM_CHUNK, that extent)` -- the grid a single
+        whole-range write would have left -- while a caller who does not know
+        it gets the panel-in-hand default. An incremental writer that stays
+        silent hands Zarr its FIRST WINDOW's length as the store's permanent
+        chunk, which is how `--chunk day` came to leave `(1, 3)` where the
+        unchunked path left `(9, 3)` (measured 2026-09-12, fixed in 03.6). The
+        parameter is keyword-ONLY and consumed explicitly rather than left
+        riding in `**kwargs`, because both branches forward `**kwargs`
+        verbatim to `to_zarr`, which would reject an unknown argument.
+
+        Against an EXISTING store the value is accepted and ignored: the grid
+        was pinned irreversibly by the creating write and there is nothing left
+        to decide, so a caller may pass it unconditionally on every window --
+        which is exactly what `from_raw_data_chunked` does, because store
+        EXISTENCE is the real condition and it is owned here. A loop-index
+        guard at the call site would be wrong on the two paths where the
+        creating write is not iteration zero: a resume skips already-recorded
+        windows, and `on_new_listing="rebuild"` moves the store aside so a
+        later call creates it.
         """
         target = Path(path)
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
-            kwargs.setdefault("encoding", self._append_encoding(append_dim))
+            kwargs.setdefault(
+                "encoding",
+                self._append_encoding(
+                    append_dim, append_dim_size=append_dim_size
+                ),
+            )
             self.data.to_zarr(path, mode="w", **kwargs)
             return self
 
@@ -866,7 +902,11 @@ class XrBackend(DataBackend):
         return self.append(path, append_dim, **kwargs)
 
     def _append_encoding(
-        self, append_dim: str, data: Optional[xr.Dataset] = None
+        self,
+        append_dim: str,
+        data: Optional[xr.Dataset] = None,
+        *,
+        append_dim_size: Optional[int] = None,
     ) -> dict:
         """Pin each data variable's chunk shape: `APPEND_DIM_CHUNK` along the
         append dimension, the full length across every other one.
@@ -877,6 +917,33 @@ class XrBackend(DataBackend):
         length while `APPEND_DIM_CHUNK` still governs the append dimension.
         Routing the widen through this method rather than restating the chunk
         arithmetic is what keeps that rule single-sourced.
+
+        **`append_dim_size` is the store's TOTAL extent along `append_dim`,
+        and it is what the append-dim chunk is a property of.** `None` -- every
+        call site that existed before phase 03.6's gap-closure pass -- means
+        "use the panel's own append-dim length", which is this method's
+        behaviour verbatim and is the right answer for a caller holding the
+        whole store. A caller that writes the store INCREMENTALLY holds only a
+        window, and its window's length is an accident of the chunking rung
+        rather than a property of the store, so it states the extent instead:
+        `BaseDataset.from_raw_data_chunked` passes `len(timestamps)`, D-02's
+        once-resolved whole-range axis, through `append()`.
+
+        The SIZE is substituted into the existing
+        `max(min(APPEND_DIM_CHUNK, size), 1)` rather than a second floor being
+        added beside it, deliberately. `APPEND_DIM_CHUNK` is a CEILING as well
+        as the grid unit, so the target is the grid a whole-range write through
+        this same method would have produced -- `min(APPEND_DIM_CHUNK, total)`
+        -- and a bolted-on `max(APPEND_DIM_CHUNK, ...)` floor would lose the
+        ceiling on any range longer than `APPEND_DIM_CHUNK`. That floor IS the
+        right shape one method over in `_widen_block_rows`, which is choosing a
+        block size under a byte budget rather than a chunk under none.
+
+        Only the APPEND dimension reads it. Every other dimension keeps reading
+        the panel in hand, because on the chunked path the panel's non-append
+        axes already equal the store's: D-02 resolves the symbol axis once over
+        the whole range before any window exists, and the ingestion loop
+        refuses a window that came back on a different one.
         """
         panel = self.data if data is None else data
         encoding = {}
@@ -885,7 +952,10 @@ class XrBackend(DataBackend):
                 continue
             chunks = []
             for dim in variable.dims:
-                size = int(panel.sizes[dim])
+                if dim == append_dim and append_dim_size is not None:
+                    size = int(append_dim_size)
+                else:
+                    size = int(panel.sizes[dim])
                 if dim == append_dim:
                     chunks.append(max(min(self.APPEND_DIM_CHUNK, size), 1))
                 else:

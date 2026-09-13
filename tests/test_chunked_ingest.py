@@ -913,9 +913,26 @@ def test_append_offers_no_overwrite_escape_hatch() -> None:
     RED under: adding a NAMED parameter that lets a caller past the refusal
     (`force=`, `overwrite=`, `mode=`). Deliberately NOT red under a smuggled
     one -- that is the next test's job, and mutation M6 demonstrates the split.
+
+    **`append_dim_size` is in the tuple and is NOT a hatch**, which is why this
+    lock was widened rather than deleted when phase 03.6 added it. It is read
+    in the store-CREATING branch ONLY -- the branch that has no refusal to get
+    past, because there is no stored range to overlap -- and against an
+    existing store it is accepted and ignored, ahead of a
+    `_assert_append_compatible` call it cannot reach or influence. It decides
+    the on-disk chunk grid, never whether a window is written. The distinction
+    this test exists to hold is between a parameter that describes the STORE
+    and one that weakens the GUARD; the assertion below still goes red on the
+    second kind.
     """
     parameters = tuple(inspect.signature(XrBackend.append).parameters)
-    assert parameters == ("self", "path", "append_dim", "kwargs")
+    assert parameters == (
+        "self",
+        "path",
+        "append_dim",
+        "append_dim_size",
+        "kwargs",
+    )
 
 
 def test_append_refuses_an_overlapping_window_carrying_an_unrecognised_kwarg(

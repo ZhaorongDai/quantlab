@@ -820,10 +820,24 @@ class BaseDataset(ABC):
                 # `tests/test_chunked_ingest.py::
                 # test_a_window_missing_a_stored_variable_is_still_refused`,
                 # so this comment describes an asserted fact.
+                #
+                # `append_dim_size` states the WHOLE range's extent so the
+                # store's on-disk chunk grid is a property of the store rather
+                # than of whichever window created it -- `len(timestamps)` is
+                # D-02's once-resolved axis, already in hand before this loop
+                # began. Passed on EVERY iteration, never guarded by a window
+                # index: `append()` consults it only when the store does not
+                # yet exist, and the creating write is NOT iteration zero on
+                # either of the two paths that matter -- a resume skips the
+                # windows the ledger already records, and
+                # `on_new_listing="rebuild"` moves the store aside so a later
+                # call creates it. Store existence is the condition and
+                # `append()` already owns it.
                 self.data_backend.widen_and_append(
                     self.config.zarr_file_path,
                     append_dim=append_dim,
                     fill_values=self._widen_fill_values(),
+                    append_dim_size=len(timestamps),
                 )
                 ledger.record(
                     start, end, int(window.sizes[append_dim]), symbols
