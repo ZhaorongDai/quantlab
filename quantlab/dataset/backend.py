@@ -1021,13 +1021,62 @@ class XrBackend(DataBackend):
         `append()`, which refuses it. An absent store delegates too, so there
         is ONE creation path rather than two.
 
+        **This method's grid paragraph used to close with an UNCONDITIONAL
+        claim about the whole store, and that half of it is false.**
+        NOT TRUE ANY MORE AS OF 03.6-07 -- SUPERSEDED by phase 03.6's third
+        gap-closure pass (plan 03.6-08); the original wording is kept below
+        rather than deleted so the correction is legible (D-18). It read,
+        verbatim and unedited, between the two fences:
+
+        [BEGIN preserved original -- D-18, no longer this method's claim]
         **This method reconciles all three axes AND makes all three of them
         agree on ONE chunk grid.** Both rewrites below re-pin the grid -- the
         symbol widen with `mode="w"`, the variable widen by encoding its filler
         -- and the closing `append()` pins it when the store does not yet
         exist. All three read `append_dim_size` from the SAME `kwargs` entry,
-        so a store cannot come out of here carrying one grid per axis. The
-        signature deliberately does not grow the parameter: it rides in
+        so a store cannot come out of here carrying one grid per axis.
+        [END preserved original]
+
+        **The narrowed claim, which IS true, is about THIS CALL only.** The
+        three things this method itself writes -- `widen_symbol_axis`'s
+        `mode="w"` rewrite, `widen_data_vars`'s filler, and the closing
+        `append()` when it creates the store -- all read `append_dim_size`
+        from the SAME `kwargs` entry, so those three cannot disagree WITH EACH
+        OTHER. That says nothing whatever about variables the store already
+        held from an EARLIER write: this method never revises their grid, and
+        Zarr gives it no way to. A store can and does come out of here
+        carrying one grid for what was already on disk and another for what
+        this call added.
+
+        **The accepted cost, named here with its numbers so the next reader
+        does not re-derive them.** `XrBackend.write()` passes no `encoding` at
+        all, so a store created by `BaseDataset.save()` / `Factor.save()`
+        lands on Zarr's default grid -- the panel's own full shape for a
+        numpy-backed panel -- and has NEVER sat on
+        `min(APPEND_DIM_CHUNK, total)`. `Factor.update()` then holds no source
+        for the store's total extent and passes no `append_dim_size`, so
+        `widen_data_vars`'s filler takes `min(APPEND_DIM_CHUNK, filler_len)`.
+        Measured 2026-09-13 at the REAL default `APPEND_DIM_CHUNK = 512` with
+        NO monkeypatch, along the documented `Factor.save()` ->
+        `Factor.update()` workflow: a 1000-row store came back as
+        `{'close': (1000, 2)}` and the update added `'newvar': (512, 2)` --
+        two grids in one store.
+
+        **Disposition: ACCEPTED, not overlooked.** The root cause is WR-02 --
+        `write()` never pins `encoding` -- which predates phase 03.6 and is
+        INDEPENDENT of the `--chunk` rung, because the filler's grid is
+        decided by `APPEND_DIM_CHUNK` and the filler's own length alone. It
+        therefore leaves SC-1..SC-8 and the phase goal's
+        caller-owns-a-stated-cost half intact. It is recorded in
+        `.planning/phases/03.6-frequency-keyed-chunking-policy/deferred-items.md`
+        and pinned by
+        `tests/test_chunked_ingest.py::test_a_store_built_by_write_keeps_two_chunk_grids_accepted_cost`,
+        so it cannot be denied or silently "fixed" without a red test. The
+        route NOT taken: pinning `encoding` inside `write()` would change the
+        on-disk grid of every store this project writes, on a pre-03.6
+        bulk-write path `03.6-REVIEW-FIX.md` already declined as out of scope.
+
+        The signature deliberately does not grow the parameter: it rides in
         `**kwargs` already, and `Factor.update()`'s only route through this
         method is locked against the current parameter tuple by
         `tests/test_factor_update.py`.
