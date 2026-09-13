@@ -421,24 +421,16 @@ env -u TIINGO_API_KEY -u APCA_API_KEY_ID -u APCA_API_SECRET_KEY \
     uv run python ingest_us_equity.py --dry-run
 ```
 
-真实输出（2026-09-09 在本机实际执行，三个凭证环境变量都用 `env -u` 显式清掉）：
+真实输出（**2026-09-13 重跑**，三个凭证环境变量都用 `env -u` 显式清掉）：
 
 ```
 DRY RUN -- category=us_all, no price requests issued
-  symbols resolved:  13729
-  preview:           ['NETDU', 'NBP', 'PRCP', 'PAYX', 'LIII-U', 'OPA-WS', 'PEPLU', 'SDSTW', 'CELL', 'SKT']
-  window:            2016-01-01 .. 2026-09-08
-  trading days (~):  2694
-  dense grid cells:  36,985,926
-  real observations: 17,145,396
-  density:           0.464
-  dense float64:     3.31 GiB
-  observed float64:  1.53 GiB
-  chunk granularity: year
-  chunk count:       11
-  whole-range total: 3.31 GiB (advisory -- chunking never materialises this at once)
-  largest chunk:     0.31 GiB (2016-01-01..2016-12-31, 13729 pinned symbols x 253 trading days)
-  per-chunk budget:  4.00 GiB (a finer --chunk is the remedy above this)
+  symbols resolved:  13731
+  preview:           ['A', 'AA', 'AA-W', 'AAAC', 'AAAP', 'AABA', 'AAC', 'AAC-U', 'AAC-WS', 'AACB']
+  window:            2016-01-01 .. 2026-09-13
+  trading days (~):  2697
+  real observations: 17,163,133
+  density:           0.463
   raw-data path:     /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/tiingo
   watermark path:    /Users/daizhaorong/projects/quantlab/data/downloads/us_equity/1d/us_all/_watermarks/tiingo
   zarr path:         /Users/daizhaorong/projects/quantlab/data/data/us_equity/1d/us_all.zarr
@@ -446,8 +438,22 @@ DRY RUN -- category=us_all, no price requests issued
   already covered:   0 (would be skipped)
   re-fetch, widened: 0 (recorded coverage starts after --start-date)
   legacy, no start:  0 (stamp via --stamp-legacy-watermarks)
-  would fetch:       13729/13729
+  would fetch:       13731/13731
 ```
+
+**这份输出是重跑出来的，不是把旧输出手改的。** 本目录的约定是贴真跑过的输出
+（见 [README.md](README.md)），而 2026-09-09 那一版里的
+`dense grid cells` / `dense float64` / `observed float64` / `chunk granularity` /
+`chunk count` / `whole-range total` / `largest chunk` / `per-chunk budget` 八行
+今天已经一行都不打印了 —— 它们全部属于 phase 03.6 删掉的那组估算/守卫
+（`_print_estimate` 今天只有六个 `print`）。
+
+**其余数字的变动跟那次删除无关，别把两件事读成一件。** 标的数 13,729 → 13,731、
+真实观测 17,145,396 → 17,163,133、密度 0.464 → 0.463，是 roster 本身在这几天里动了；
+窗口末端 2026-09-08 → 2026-09-13 和交易日 2694 → 2697，是因为这条命令**不带
+`--start-date` / `--end-date`**，区间末端就是「今天」，所以这几行本来就随日历走。
+预览的十个符号从 `['NETDU', 'NBP', ...]` 变成 `['A', 'AA', ...]`，是 roster 解析顺序的变化，
+同样不是删除的效果。
 
 几个值得看的点：
 
@@ -464,10 +470,10 @@ DRY RUN -- category=us_all, no price requests issued
   `SourceInspector.coverage` 走的是真实 run 走的同一个
   `CoverageLedger.partition_by_coverage` 对象（D-09），所以这份报告和紧接着的抓取
   不可能对「什么叫覆盖」有分歧。详见 [registry.md](registry.md)。
-- `would fetch: 13729/13729`：这台机器上 `us_all` 的水位树是空的，
+- `would fetch: 13731/13731`：这台机器上 `us_all` 的水位树是空的，
   所以全部待抓。有边车的时候这四行会分别告诉你「跳过多少」「因为加宽而要重抓多少」
   「多少个是没有起点的 legacy 边车」。
-- `密度 0.464`：全市场日线是稀疏的（退市股票只在自己活着的那段有数据），
+- `密度 0.463`：全市场日线是稀疏的（退市股票只在自己活着的那段有数据），
   所以稠密面板会浪费一半以上的内存——这正是 `chunking` 存在的理由之一。
 
 ### 例 2：真跑过的第二个例子（没凭证时体量护栏和凭证拒绝的实际行为）
