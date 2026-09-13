@@ -651,7 +651,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -681,7 +681,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 — the tracer must be verified before any deletion)*
 
-- [ ] 03.6-02-PLAN.md — The deletion cut: `_roster_window_profile` extracted under a golden
+- [x] 03.6-02-PLAN.md — The deletion cut: `_roster_window_profile` extracted under a golden
   arithmetic lock, then `MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`,
   `assert_dense_panel_fits`, `estimate_chunked_panel`, `assert_chunked_panel_fits`,
   `print_chunk_report` and the `_explicit_symbol_catalog` dense-panel override all deleted,

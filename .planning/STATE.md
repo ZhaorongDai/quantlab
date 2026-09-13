@@ -4,15 +4,15 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal
 status: executing
-stopped_at: Completed 03.6-01-PLAN.md
-last_updated: "2026-09-12T20:57:03.072Z"
+stopped_at: Completed 03.6-02-PLAN.md
+last_updated: "2026-09-13T01:58:24.738Z"
 last_activity: Phase 03.5 all 6 plans complete — entering phase gates
-state_head: c220016ed3a9632eab557d90649a6436ec6b11cd
+state_head: b5bea5e156638a56d0cddfae4f85633cb64d7f5f
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 51
-  completed_plans: 48
+  completed_plans: 49
 milestone_name: milestone
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal) — READY TO EXECUTE
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: Phase 03.5 all 6 plans complete — entering phase gates
 
@@ -104,6 +104,7 @@ Progress: [██████████] 100%
 | Phase 03.4 P10 | 10 min | 2 tasks | 7 files |
 | Phase 03.4 P11 | 22 min | 3 tasks | 2 files |
 | Phase 03.6 P01 | 27 min | 2 tasks | 2 files |
+| Phase 03.6 P02 | 4h 51m | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -219,6 +220,10 @@ Recent decisions affecting current work:
 - [Phase 03.4]: The manifest's reader set written into documents is enumerated from source at write time, never carried forward: `grep -rn "read_failure_manifest()" quantlab/` returned two call sites (inspector.py:190, base/acquisition.py:2101) and that output is what all four documents state. — VERIFICATION gap 2 was created by inheritance — plan 07's must-have specified a count the same phase had already falsified, and the executor wrote it faithfully. Both tasks' verify gates re-run the enumeration and assert the documents against it, so the claim is checked against code rather than asserted.
 - [Phase 03.4]: The result/manifest equality is documented as a RECEIPT of joint assembly, not a check; the operator-protecting property named in its place is the manifest CONTENTS surviving a default-path quota abort, pinned by tests/test_acquisition_progress.py. — Both sides are built from one dict at one point in `_run`, so the equality read True during phase verification directly on top of a manifest that had just been emptied — it cannot catch CR-01.
 - [Phase 03.4]: 失败清单的文档契约改用句子级语义求交验收 —— 语义类词表只负责撒网，判定权在 .planning/phases/03.4-data-source-registry/manifest-sentence-ledger.tsv 的逐句判读里。同一形状的缺陷在本阶段复发四次，前三次每一次都是从一份已知坏句子清单倒推 pattern 列表，漏掉的恰恰是没人想到过的措辞。第四次改成先由 .planning/phases/03.4-data-source-registry/manifest_sentence_audit.py 枚举候选集（manifest 语义类词与 run-scope 语义类词在归一化句子上求交，实测 55 句 / 14 个文件），再逐句判读，一次就找齐了三轮闭环没找齐的三处。字面量扫描 .planning/quick/260909-174-fix-six-stale-documentation-and-docstrin/manifest_semantics_scan.py 从此是从属的快速 tripwire，其 pattern 只能从 .planning/phases/03.4-data-source-registry/manifest-sentence-retired.tsv 派生，绝不反向 —— 03.4-11 在同一棵工作树上测过：一句新造的假话，字面量扫描是绿的、句子级审计是红的，所以字面量那一侧的绿从来不构成任何完备性主张。
+- [Phase 03.6]: 先抽后删，且 golden 捕获必须早于抽取：抽取后再取基线只能发现日后漂移，发现不了抽取动作自身引入的漂移
+- [Phase 03.6]: 删除锁用 not hasattr 而非「不再 raise」（D-15 2026-09-12 修订）：被绕过的守卫照样能回答 hasattr
+- [Phase 03.6]: 空集守卫整体删除而非弱化：守卫对象消失后弱化只会制造永远绿的假覆盖
+- [Phase 03.6]: SC-3 的 tests/ 零匹配闸门收窄为 AST 语义（可执行代码零引用），D-18 要求的退役散文保留
 
 ### Pending Todos
 
@@ -274,8 +279,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-12T20:57:02.409Z
-Stopped at: Completed 03.6-01-PLAN.md
+Last session: 2026-09-13T01:58:14.041Z
+Stopped at: Completed 03.6-02-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
