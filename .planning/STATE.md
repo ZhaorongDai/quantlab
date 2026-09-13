@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.6"
-current_phase_name: frequency-keyed-chunking-policy
+current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-07-PLAN.md
-last_updated: "2026-09-13T20:22:59.591Z"
+stopped_at: Completed 03.6-08-PLAN.md
+last_updated: "2026-09-13T20:48:10.450Z"
 last_activity: 2026-09-13
 last_activity_desc: Phase 03.6 execution started
-state_head: 1a03ca5c832bf1c38ef369c551a5fe20eb7fbf36
+state_head: 4b6192fc75d1b375fa4c41a2c81d32f576ef28d9
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 58
-  completed_plans: 53
+  completed_plans: 55
 milestone_name: milestone
 ---
 
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.6 (frequency-keyed-chunking-policy) — READY TO EXECUTE
-Plan: 2 of 7
+Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
+Plan: 2 of 11
 Status: Ready to execute
 Last activity: 2026-09-13 — Phase 03.6 execution started
 
@@ -111,6 +111,7 @@ Progress: [██████████] 100%
 | Phase 03.6 P05 | 34 min | 3 tasks | 5 files |
 | Phase 03.6 P06 | 8 min | 3 tasks | 7 files |
 | Phase 03.6 P07 | 1h05m | 3 tasks | 3 files |
+| Phase 03.6 P08 | 22 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -234,6 +235,8 @@ Recent decisions affecting current work:
 - [Phase 03.6]: dry-run transcript 的可重跑门比较行标签而非字节 — example/acquisition.md 的示例刻意不带时间窗参数，区间末端即今天，字节门次日就会在无人改动的树上变红；行标签才是 WR-09 真正关心的东西且不随日历移动
 - [Phase 03.6]: 03.6-07: closed the widen-path chunk-grid gap by threading append_dim_size into all four rewrite sites (widen_symbol_axis, _widen_whole_store, _widen_chunked's first block, widen_data_vars's filler) rather than retracting the invariant and re-listing grid degradation as an accepted cost
 - [Phase 03.6]: 03.6-07: widen_and_append reads append_dim_size with kwargs.get and never pop, so the symbol widen, the variable widen and the closing append() all reach it from one read and 03.6-05's creating-write fix is not starved
+- [Phase 03.6]: Route (b) executed as locked for GAP #19: widen_and_append's falsified universal is narrowed and marked under D-18; XrBackend.write() is deliberately NOT fixed (route (a) declined). — Pinning encoding in write() would change the on-disk chunk grid of every store this project writes, on a pre-03.6 bulk-write path 03.6-REVIEW-FIX.md already declined as out of scope. The residual two-grid layout cost is accepted, named in production with its measured numbers, and pinned by an executable arm.
+- [Phase 03.6]: WR-06's delete-the-excerpt half declined on the record; the marker-prefix half adopted, with every correction written as prose so no new transcription enters the file. — D-18 forbids deleting falsified text -- preserve-and-mark is the discipline this whole round enforces. The rot concern WR-06 raised is answered by prose corrections rather than by deletion.
 
 ### Pending Todos
 
@@ -289,8 +292,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T18:28:21.056Z
-Stopped at: Completed 03.6-07-PLAN.md
+Last session: 2026-09-13T20:47:42.290Z
+Stopped at: Completed 03.6-08-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

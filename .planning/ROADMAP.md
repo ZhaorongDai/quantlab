@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 7/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
+**Plans:** 8/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -829,7 +829,7 @@ so `/gsd-execute-phase 03.6 --gaps-only` runs these four and leaves 01–07 alon
 and `tests/test_chunked_ingest.py`, `03.6-09` owns `quantlab/base/data.py` and a new test
 module — which is the condition that lets them run in parallel)*
 
-- [ ] 03.6-08-PLAN.md — LEAD. GAP #19's production half by route (b), plus WR-06's remaining
+- [x] 03.6-08-PLAN.md — LEAD. GAP #19's production half by route (b), plus WR-06's remaining
   half. Commit `37e61f2` wrote a falsifiable invariant into production in UNCONDITIONAL form
   (`backend.py:1029`, "a store cannot come out of here carrying one grid per axis") — the
   second violation of this phase's own D-18 discipline in the same file. The sentence is
