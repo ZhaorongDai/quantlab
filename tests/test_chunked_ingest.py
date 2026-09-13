@@ -22,7 +22,9 @@ sampling RSS:
 """
 
 import argparse
+import ast
 import inspect
+import textwrap
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -1380,6 +1382,182 @@ def test_the_chunk_grid_survives_a_widen(
     grid = _chunk_grid(config.zarr_file_path)
     assert grid, "the store carries no data variables to measure"
     assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+
+def _incomplete_store(tmp_path: Path, name: str) -> str:
+    """A store created with a STATED extent of 9 while holding only 3 rows.
+
+    The shape a crash-resumed conversion leaves behind, built directly rather
+    than through `from_raw_data_chunked` so the two backend arms below exercise
+    `XrBackend` on its own terms. Under `APPEND_DIM_CHUNK = 4` the creating
+    write correctly leaves `(4, 2)` -- plan `03.6-05`'s fix -- and everything
+    the arms measure is what a LATER rewrite does to that grid.
+    """
+    path = str(tmp_path / name)
+    XrBackend().to_internal(
+        _small_panel(["2022-01-04", "2022-06-15", "2022-12-28"], ["A", "B"], 0.0)
+    ).append(path, append_dim_size=9)
+    assert set(_chunk_grid(path).values()) == {
+        (min(XrBackend.APPEND_DIM_CHUNK, 9), 2)
+    }, "the creating write did not state the extent, so the arm measures nothing"
+    return path
+
+
+def test_a_variable_widen_leaves_one_chunk_grid_not_two(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second symptom of the same root cause, on the composed path:
+    `widen_and_append`'s FILLER is sized from the store as it is NOW.
+
+    `widen_data_vars` builds the new variable's backfill over the store's
+    existing extent and encodes it from that filler, so on an INCOMPLETE store
+    the new variable lands on a SMALLER chunk than the variables already there
+    -- one store carrying two different grids, which every other arm in this
+    family implicitly denies by asserting a singleton set.
+
+    The store is created with a stated extent of 9 while holding 3 rows, so the
+    creating write leaves `(4, 2)` and the filler is the only thing that can
+    disagree with it.
+
+    RED conditions at `APPEND_DIM_CHUNK = 4`: on the pre-plan tree the
+    pre-existing `close` comes back on `(4, 2)` and the new `newvar` on
+    `(3, 2)`, so `set(_chunk_grid(path).values())` has TWO members. The fix
+    forwards the stated extent from `widen_and_append`'s `**kwargs` into
+    `widen_data_vars`, and both land on `(4, 2)`.
+
+    Also RED if that forwarding were done with `pop` instead of `get`: the
+    closing `append()` would be starved of the keyword, and while this arm's
+    grid assertion would still pass, the four creating-write arms above would
+    go red -- which is the point of reading it without consuming it.
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    path = _incomplete_store(tmp_path, "grid_var_widen.zarr")
+
+    grown = _small_panel(
+        ["2023-01-04", "2023-06-15", "2023-12-28"], ["A", "B"], 100.0
+    )
+    grown["newvar"] = grown["close"] * 2.0
+    XrBackend().to_internal(grown).widen_and_append(path, append_dim_size=9)
+
+    store = _panel(path)
+    assert set(store.data_vars) == {"close", "newvar"}
+    assert store.sizes["timestamp"] == 6
+
+    grid = _chunk_grid(path)
+    assert grid, "the store carries no data variables to measure"
+    assert len(set(grid.values())) == 1, (
+        f"one store, two chunk grids: {grid}"
+    )
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 2)}
+
+
+def test_the_chunk_grid_survives_a_block_by_block_widen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OTHER widen strategy. `MAX_WIDEN_BYTES` forced to `0` routes
+    `widen_symbol_axis` to `_widen_chunked`, the repo's own established way of
+    reaching that branch (`tests/test_symbol_axis_widening.py:665`).
+
+    This is the branch `_widen_block_rows`'s floor argument actually covers,
+    and the floor alone is NOT enough here. `block_rows` comes back as
+    `max(APPEND_DIM_CHUNK, 0) == 4`, so the whole 3-row incomplete store is one
+    block, and the first block's own length decides the grid:
+    `min(4, 3) == 3`. The floor makes `min(APPEND_DIM_CHUNK, first_block_len)`
+    equal `min(APPEND_DIM_CHUNK, total_len)` only once the store has reached
+    its FINAL extent -- which is exactly the assumption the last round's
+    "this path is already covered" conclusion rested on, and exactly what a
+    crash-resumed store violates.
+
+    RED conditions at `APPEND_DIM_CHUNK = 4`, stated extent 9, store holding 3
+    rows: the pre-plan tree leaves `(3, 3)`; the fix forwards the stated extent
+    into the first block's `_append_encoding` and leaves `(4, 3)`. The floor is
+    KEPT either way -- it bounds bytes under `MAX_WIDEN_BYTES`, which no
+    append-dimension length can express.
+    """
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 4)
+    path = _incomplete_store(tmp_path, "grid_chunked_widen.zarr")
+
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    messages, sink_id = _captured_warnings()
+    try:
+        XrBackend().widen_symbol_axis(path, ["A", "B", "C"], append_dim_size=9)
+    finally:
+        logger.remove(sink_id)
+
+    # Proves the block-by-block branch ran rather than the whole-store one:
+    # only `_widen_chunked`'s report names its block plan.
+    assert any("block(s) of" in message for message in messages), messages
+
+    store = _panel(path)
+    assert store["symbol"].values.tolist() == ["A", "B", "C"]
+    assert store.sizes["timestamp"] == 3
+
+    grid = _chunk_grid(path)
+    assert grid, "the store carries no data variables to measure"
+    assert set(grid.values()) == {(min(XrBackend.APPEND_DIM_CHUNK, 9), 3)}
+
+
+def test_the_chunk_grid_reaches_three_consumers_from_one_read(tmp_path: Path) -> None:
+    """The forwarding lock, asserted structurally rather than behaviourally.
+
+    `widen_and_append` receives the stated extent inside `**kwargs` -- passed
+    by `from_raw_data_chunked` -- and has THREE consumers for it: the symbol
+    widen, the variable widen, and the closing `append()` that all three exits
+    forward `**kwargs` to verbatim. Reading it with `pop` would satisfy the
+    first two and STARVE the third, reintroducing the original first-window
+    defect on every store-creating write. That is a strictly worse regression
+    than the gap this closes, and it is invisible from `widen_and_append`'s own
+    behaviour, so it is pinned here.
+
+    The signature must stay byte-identical to `f7c1109` for a separate reason:
+    `Factor.update()`'s only route runs through it and
+    `tests/test_factor_update.py` locks the router call it makes.
+
+    An AST walk rather than a text grep, deliberately. The method's docstring
+    and the comment beside the new binding both name `append_dim_size`, so a
+    text count would include prose and the gate would be self-invalidating.
+
+    RED conditions: red before the forwarding exists (the keyword reaches
+    neither widen), red if the binding is tidied into a `pop`, and red if
+    someone "helpfully" promotes the keyword onto the signature.
+    """
+    source = textwrap.dedent(inspect.getsource(XrBackend.widen_and_append))
+    tree = ast.parse(source)
+
+    receivers = {
+        getattr(node.func, "attr", getattr(node.func, "id", "?"))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(kw.arg == "append_dim_size" for kw in node.keywords)
+    }
+    assert "widen_symbol_axis" in receivers, receivers
+    assert "widen_data_vars" in receivers, receivers
+
+    popped = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", None) == "pop"
+        and any(
+            isinstance(arg, ast.Constant) and arg.value == "append_dim_size"
+            for arg in node.args
+        )
+    ]
+    assert popped == [], (
+        "the keyword is consumed before the closing append(), which "
+        "reintroduces the first-window defect on the creating write"
+    )
+
+    assert tuple(inspect.signature(XrBackend.widen_and_append).parameters) == (
+        "self",
+        "path",
+        "append_dim",
+        "dim",
+        "fill_values",
+        "kwargs",
+    )
 
 
 def test_chunked_run_warns_about_the_cleaning_boundaries(
