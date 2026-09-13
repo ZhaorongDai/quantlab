@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 9/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
+**Plans:** 10/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -857,7 +857,7 @@ module — which is the condition that lets them run in parallel)*
 own; `03.6-11` is blocked on `03.6-08` because `03.6-VERIFICATION.md`'s own text makes the override
 legitimate only AFTER the false statement has been marked. The two wave-2 plans share no file.)*
 
-- [ ] 03.6-10-PLAN.md — WR-03, pulled in from advisory and reproduced first.
+- [x] 03.6-10-PLAN.md — WR-03, pulled in from advisory and reproduced first.
   `widen_symbol_axis`'s crash guard has no case for `superseded.exists() AND target.exists()`, so
   a leftover `.superseded.tmp` makes the closing `os.replace` raise `ENOTEMPTY` only AFTER the
   entire sidecar has been written — the whole rewrite paid for and thrown away, with an orphaned

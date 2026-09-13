@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-09-PLAN.md
-last_updated: "2026-09-13T21:34:08.744Z"
+stopped_at: Completed 03.6-10-PLAN.md
+last_updated: "2026-09-13T21:52:48.868Z"
 last_activity: 2026-09-13
 last_activity_desc: Phase 03.6 execution started
-state_head: c8adc2ba899d3ef1827f50f7fe45eafeae25df63
+state_head: caae4d439c62ab82deb29b77d08b11dfae4bd10f
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 58
-  completed_plans: 56
+  completed_plans: 57
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
-Plan: 3 of 11
+Plan: 4 of 11
 Status: Ready to execute
 Last activity: 2026-09-13 — Phase 03.6 execution started
 
@@ -113,6 +113,7 @@ Progress: [██████████] 100%
 | Phase 03.6 P07 | 1h05m | 3 tasks | 3 files |
 | Phase 03.6 P08 | 22 min | 3 tasks | 2 files |
 | Phase 03.6 P09 | 41min | 3 tasks | 2 files |
+| Phase 03.6 P10 | 26 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -242,6 +243,8 @@ Recent decisions affecting current work:
 - [Phase 03.6]: A cleanup path that only ever runs from an `except ... raise` handler catches its own OSError, logs the surviving aside and the manual remedy, and returns a boolean -- scoped to OSError so a KeyError stays loud
 - [Phase 03.6]: `_restore_rebuild_asides` returns whether it actually restored; `ConversionResult.rebuild_rolled_back` reports that answer instead of an unconditional True
 - [Phase 03.6]: A failed restore is NOT auto-recovered -- the complete copy stays at the aside path and the ERROR names the manual move (T-03.6-09-03, accepted)
+- [Phase 03.6]: 03.6-10: a crash-residue guard splits on emptiness -- a NON-EMPTY .superseded.tmp is refused before any write, an EMPTY one is self-healed — 03.6-REVIEW.md's WR-03 snippet refuses the both-exist state unconditionally, which would refuse an empty residue -- a case that succeeds today on POSIX -- and regress behaviour in the name of fixing it. The non-empty half is never auto-deleted because after a SIGKILLed on_new_listing='rebuild' it may hold the only complete copy of a store. Measured before the fix: OSError [Errno 66] Directory not empty, raised only AFTER the whole-store rewrite was reported and written, leaving an orphaned .widening.tmp holding a complete store.
+- [Phase 03.6]: 03.6-10: the shared .superseded.tmp suffix is closed by SINGLE DEFINITION, not by renaming -- BaseDataset.SUPERSEDED_SUFFIX now references XrBackend.SUPERSEDED_SUFFIX — Renaming the dataset side would change an on-disk artefact name for no safety the new widen guard does not already provide, would require editing tests/test_chunked_ingest.py (plan 03.6-08's file this round, whose literal .superseded.tmp assertions stay green), and would make an existing residue on a real operator's disk invisible to the very code meant to notice it. The string value is unchanged, so nothing on disk is renamed. Annotated in place per D-18.
 
 ### Pending Todos
 
@@ -297,8 +300,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T21:34:08.478Z
-Stopped at: Completed 03.6-09-PLAN.md
+Last session: 2026-09-13T21:52:05.755Z
+Stopped at: Completed 03.6-10-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
