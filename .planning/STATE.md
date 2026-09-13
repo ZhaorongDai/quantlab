@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-05-PLAN.md
-last_updated: "2026-09-13T05:14:29.073Z"
+stopped_at: Completed 03.6-06-PLAN.md
+last_updated: "2026-09-13T15:09:54.027Z"
 last_activity: 2026-09-13
 last_activity_desc: Phase 03.6 execution started
-state_head: 4710f66efa85321580ee4ae480214506e739a954
+state_head: d2f75cb87964c773b331341b09a621bc76b79467
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 53
-  completed_plans: 52
+  completed_plans: 53
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-09-13 — Phase 03.6 execution started
 
@@ -109,6 +109,7 @@ Progress: [██████████] 100%
 | Phase 03.6 P03 | 21 min | 2 tasks | 2 files |
 | Phase 03.6 P04 | 16 min | 3 tasks | 7 files |
 | Phase 03.6 P05 | 34 min | 3 tasks | 5 files |
+| Phase 03.6 P06 | 8 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -228,6 +229,8 @@ Recent decisions affecting current work:
 - [Phase 03.6]: 删除锁用 not hasattr 而非「不再 raise」（D-15 2026-09-12 修订）：被绕过的守卫照样能回答 hasattr
 - [Phase 03.6]: 空集守卫整体删除而非弱化：守卫对象消失后弱化只会制造永远绿的假覆盖
 - [Phase 03.6]: SC-3 的 tests/ 零匹配闸门收窄为 AST 语义（可执行代码零引用），D-18 要求的退役散文保留
+- [Phase 03.6]: WR-04: 保留 _validate_category override，只更正其理由——错的是注释给出的前提，不是代码 — override 是 _roster_window_profile 被收窄为 super() 委派这条漂移路径上的唯一防线；删掉换不来任何可度量的东西，且本计划 scope fence 禁止行为改动
+- [Phase 03.6]: dry-run transcript 的可重跑门比较行标签而非字节 — example/acquisition.md 的示例刻意不带时间窗参数，区间末端即今天，字节门次日就会在无人改动的树上变红；行标签才是 WR-09 真正关心的东西且不随日历移动
 
 ### Pending Todos
 
@@ -283,8 +286,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T05:14:28.715Z
-Stopped at: Completed 03.6-05-PLAN.md
+Last session: 2026-09-13T15:09:53.774Z
+Stopped at: Completed 03.6-06-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

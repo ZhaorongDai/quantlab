@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 5/6 plans executed (4 executed; 2 gap-closure plans pending after the `gaps_found` verdict in `03.6-VERIFICATION.md`)
+**Plans:** 6/6 plans executed (4 executed; 2 gap-closure plans pending after the `gaps_found` verdict in `03.6-VERIFICATION.md`)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -795,7 +795,7 @@ alone)*
 `quantlab/base/data.py`, and plan 06's WR-06 edit sits thirteen lines below plan 05's inside
 the same docstring)*
 
-- [ ] 03.6-06-PLAN.md — WR-04..WR-09, the stale-text defects this phase's deletions left
+- [x] 03.6-06-PLAN.md — WR-04..WR-09, the stale-text defects this phase's deletions left
   behind: two D-18-shaped in-place annotations (the D-11 RAM-guard claim in
   `quantlab/base/data.py`, the `_validate_category` reachability argument in
   `quantlab/utils/cli.py`), four deleted pointers aimed at code this phase removed
