@@ -4,11 +4,11 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-06-PLAN.md
-last_updated: "2026-09-13T17:30:28.679Z"
+stopped_at: Completed 03.6-07-PLAN.md
+last_updated: "2026-09-13T18:28:30.300Z"
 last_activity: 2026-09-13
 last_activity_desc: Phase 03.6 execution started
-state_head: 0f857bfbc32a7edba3867b02980de404049c47d9
+state_head: ed9d77a552a1e0bb3bea5c46ad98656631463e1a
 progress:
   total_phases: 13
   completed_phases: 1
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — READY TO EXECUTE
-Plan: 3 of 6
+Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
+Plan: 2 of 7
 Status: Ready to execute
 Last activity: 2026-09-13 — Phase 03.6 execution started
 
@@ -110,6 +110,7 @@ Progress: [██████████] 100%
 | Phase 03.6 P04 | 16 min | 3 tasks | 7 files |
 | Phase 03.6 P05 | 34 min | 3 tasks | 5 files |
 | Phase 03.6 P06 | 8 min | 3 tasks | 7 files |
+| Phase 03.6 P07 | 1h05m | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -231,6 +232,8 @@ Recent decisions affecting current work:
 - [Phase 03.6]: SC-3 的 tests/ 零匹配闸门收窄为 AST 语义（可执行代码零引用），D-18 要求的退役散文保留
 - [Phase 03.6]: WR-04: 保留 _validate_category override，只更正其理由——错的是注释给出的前提，不是代码 — override 是 _roster_window_profile 被收窄为 super() 委派这条漂移路径上的唯一防线；删掉换不来任何可度量的东西，且本计划 scope fence 禁止行为改动
 - [Phase 03.6]: dry-run transcript 的可重跑门比较行标签而非字节 — example/acquisition.md 的示例刻意不带时间窗参数，区间末端即今天，字节门次日就会在无人改动的树上变红；行标签才是 WR-09 真正关心的东西且不随日历移动
+- [Phase 03.6]: 03.6-07: closed the widen-path chunk-grid gap by threading append_dim_size into all four rewrite sites (widen_symbol_axis, _widen_whole_store, _widen_chunked's first block, widen_data_vars's filler) rather than retracting the invariant and re-listing grid degradation as an accepted cost
+- [Phase 03.6]: 03.6-07: widen_and_append reads append_dim_size with kwargs.get and never pop, so the symbol widen, the variable widen and the closing append() all reach it from one read and 03.6-05's creating-write fix is not starved
 
 ### Pending Todos
 
@@ -286,8 +289,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T15:09:53.774Z
-Stopped at: Completed 03.6-06-PLAN.md
+Last session: 2026-09-13T18:28:21.056Z
+Stopped at: Completed 03.6-07-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

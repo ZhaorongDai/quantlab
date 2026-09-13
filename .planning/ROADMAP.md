@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 7 plans (6 executed; 03.6-07 is a second-round gap-closure plan, pending after the re-verification `gaps_found` verdict at 16/18 in `03.6-VERIFICATION.md`)
+**Plans:** 6/7 plans executed (6 executed; 03.6-07 is a second-round gap-closure plan, pending after the re-verification `gaps_found` verdict at 16/18 in `03.6-VERIFICATION.md`)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
