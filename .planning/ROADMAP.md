@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 6/7 plans executed (6 executed; 03.6-07 is a second-round gap-closure plan, pending after the re-verification `gaps_found` verdict at 16/18 in `03.6-VERIFICATION.md`)
+**Plans:** 7/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -802,7 +802,7 @@ the same docstring)*
   (`quantlab/dataset/backend.py`, `ingest_tiingo.py`, `ingest_us_equity.py`,
   `tests/test_ingest_conversion_gate.py`), and `example/acquisition.md`'s `--dry-run`
   transcript RE-DERIVED from a live credential-free run rather than hand-patched (D-18, SC-8)
-- [ ] 03.6-07-PLAN.md — GAP, carried forward: the SAME invariant is still false on the widen
+- [x] 03.6-07-PLAN.md — GAP, carried forward: the SAME invariant is still false on the widen
   rewrite path (`03.6-VERIFICATION.md` truths #17/#18, 16/18). `widen_and_append` forwards
   `append_dim_size` only to the closing `append()`, so `widen_symbol_axis`'s `mode="w"`
   rewrite re-pins the grid from the extent AT REWRITE TIME — measured on the crash-resume
@@ -812,6 +812,77 @@ the same docstring)*
   `_widen_chunked` / `widen_data_vars`' filler / `_reconcile_new_listings`, adds the fifth
   parametrised `widen` arm plus three companions, and rewrites the three unconditional
   statements the last round left false (PHASE-GOAL-caller-owns-a-stated-cost, D-12, D-18)
+
+**Gap closure, third round** *(added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with
+`gaps_remaining: []`. The phase GOAL is ACHIEVED and SC-1..SC-8 are each VERIFIED — the verifier
+re-measured the grid on four rungs through the production entry point. The ONE failed truth is
+plan `03.6-07`'s own `must_haves.truths` #3, which asserted a universal wider than the phase goal
+("`set(_chunk_grid(store).values())` is a singleton for EVERY store this project writes") that was
+measured false at the real default `APPEND_DIM_CHUNK = 512` with no monkeypatch. The developer
+chose closure route (b): narrow the wording and formally retract, **NO behaviour change to the grid
+path** — route (a), pinning `encoding` in `XrBackend.write()`, was considered and declined because
+it would change the on-disk grid of every store this project writes through a pre-03.6 bulk-write
+path already ruled out of scope in `03.6-REVIEW-FIX.md`. All four plans carry `gap_closure: true`,
+so `/gsd-execute-phase 03.6 --gaps-only` runs these four and leaves 01–07 alone.)*
+
+**Wave 1** *(the two plans touch disjoint files — `03.6-08` owns `quantlab/dataset/backend.py`
+and `tests/test_chunked_ingest.py`, `03.6-09` owns `quantlab/base/data.py` and a new test
+module — which is the condition that lets them run in parallel)*
+
+- [ ] 03.6-08-PLAN.md — LEAD. GAP #19's production half by route (b), plus WR-06's remaining
+  half. Commit `37e61f2` wrote a falsifiable invariant into production in UNCONDITIONAL form
+  (`backend.py:1029`, "a store cannot come out of here carrying one grid per axis") — the
+  second violation of this phase's own D-18 discipline in the same file. The sentence is
+  preserved verbatim under a `NOT TRUE ANY MORE AS OF 03.6-07` / `SUPERSEDED by` marker with
+  the true narrower claim beneath it (the three things ONE `widen_and_append` call writes agree
+  with EACH OTHER; it says nothing about variables the store already held) and the accepted cost
+  named with its measured numbers. `_widen_block_rows`' and `_widen_chunked`'s stale transcribed
+  excerpts get the same marker. A new arm builds a store through `write()` — the path no existing
+  arm exercises, because `_incomplete_store` builds through `append(append_dim_size=9)` — and
+  PINS the two-grid outcome as an accepted cost, so the day someone fixes `write()` the ledger,
+  the docstring and the plan must-have are forced to move together. Zero executable-code change,
+  locked by a docstring-stripped AST comparison (D-18, PHASE-GOAL-caller-owns-a-stated-cost)
+- [ ] 03.6-09-PLAN.md — WR-04, pulled in from advisory and reproduced first.
+  `_restore_rebuild_asides` runs inside `from_raw_data_chunked`'s `except BaseException: … raise`
+  handler, and its silent `rmtree` followed by `os.replace` can raise `OSError` from inside that
+  handler — REPLACING the real failure of a multi-hour rebuild with an unrelated cleanup error.
+  The review recorded it `not independently reproduced`, so Task 1 is a red test before any
+  production line moves, with an explicit halt-and-downgrade path if the condition proves
+  unreachable. The fix reports the cleanup failure through `logger.error` naming the aside that
+  still holds the complete copy and lets the original exception propagate; the method returns
+  whether it actually restored, so `ConversionResult.rebuild_rolled_back` stops claiming a
+  rollback that did not happen (WR-04, D-18)
+
+**Wave 2** *(`03.6-10` is blocked on BOTH wave-1 plans because it edits both production files they
+own; `03.6-11` is blocked on `03.6-08` because `03.6-VERIFICATION.md`'s own text makes the override
+legitimate only AFTER the false statement has been marked. The two wave-2 plans share no file.)*
+
+- [ ] 03.6-10-PLAN.md — WR-03, pulled in from advisory and reproduced first.
+  `widen_symbol_axis`'s crash guard has no case for `superseded.exists() AND target.exists()`, so
+  a leftover `.superseded.tmp` makes the closing `os.replace` raise `ENOTEMPTY` only AFTER the
+  entire sidecar has been written — the whole rewrite paid for and thrown away, with an orphaned
+  `.widening.tmp` left behind and no remedy in the message. Reachable twice over, because
+  `BaseDataset.SUPERSEDED_SUFFIX` and `XrBackend.SUPERSEDED_SUFFIX` are the same string on the
+  same store path, so a SIGKILLed `on_new_listing="rebuild"` aside wedges every later widen. The
+  guard moves ahead of every write and SPLITS the state: a non-empty residue is refused with both
+  producers named (it may hold the only copy), an empty one is self-healed exactly the way
+  `.widening.tmp` already is — a deliberate, recorded deviation from the review's unconditional
+  snippet, which would have regressed a case that works today. The suffix gets ONE definition
+  rather than a rename, because a rename would change an on-disk artifact name and would have to
+  edit a file `03.6-08` owns (WR-03, D-18)
+- [ ] 03.6-11-PLAN.md — GAP #19's paperwork half plus the `example/` advisory. Plan `03.6-07`'s
+  `must_haves.truths` #3 is retracted where it was written — the one deliberate edit to an
+  executed plan this round — visibly, with the original universal preserved under a `SUPERSEDED`
+  marker and pointers to `03.6-VERIFICATION.md` truth #19 and to `03.6-08`. The accepted cost
+  goes into `deferred-items.md` in that ledger's own shape, and the override goes into
+  `03.6-VERIFICATION.md` signed `accepted_by: dzr`, gated on a RUNNABLE precondition that
+  `03.6-08`'s text landed — the report warns in its own words that an override over a still-false
+  statement would be covering a D-18 violation. `status`, `score` and the `gaps` record are left
+  intact as the audit trail. Finally `example/backend.md:94` and `example/chunking.md:264` stop
+  teaching that the chunk grid is pinned once at creation — `widen_symbol_axis`'s `mode="w"`
+  rewrite RE-PINS it — with the shown `_append_encoding` snippet brought to the LIVE signature
+  read from source rather than from the known-stale `03.6-PATTERNS.md` (D-18,
+  PHASE-GOAL-caller-owns-a-stated-cost)
 
 ### Phase 4: Baseline Return Prediction Model
 
