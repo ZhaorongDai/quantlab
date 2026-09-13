@@ -659,8 +659,22 @@ class BaseDataset(ABC):
         # `rebuild` moves the store out of the way so the run becomes a first
         # run. `refuse` changes nothing and lets `assert_consistent` raise
         # exactly as it did before this knob existed.
+        #
+        # `append_dim_size` goes to reconciliation SEPARATELY from the in-loop
+        # `widen_and_append` call below, and both are needed. Reconciliation
+        # runs BEFORE the loop and its `widen` branch rewrites the whole store
+        # with `mode="w"`, re-pinning the on-disk chunk grid from whatever the
+        # store holds at that moment -- which is less than the whole range on
+        # exactly the paths that reach here, a crash-resume or a rolled-back
+        # rebuild. The loop's copy cannot cover it, because the loop has not
+        # started. `len(timestamps)` is the same D-02 once-resolved axis both
+        # call sites read, and the two must not diverge.
         ledger, rebuild_asides = self._reconcile_new_listings(
-            symbols, ledger, append_dim, on_new_listing
+            symbols,
+            ledger,
+            append_dim,
+            on_new_listing,
+            append_dim_size=len(timestamps),
         )
         # Set BEFORE the `try`, so the result construction below can read it on
         # every path out of the loop rather than only the one that assigns it.
@@ -1228,6 +1242,8 @@ class BaseDataset(ABC):
         ledger,
         append_dim: str,
         on_new_listing: str,
+        *,
+        append_dim_size: Optional[int] = None,
     ) -> tuple:
         """Apply `on_new_listing` when the STORE's symbol axis has drifted from
         the pinned whole-range one. Returns `(ledger, rebuild_asides)`.
@@ -1235,6 +1251,14 @@ class BaseDataset(ABC):
         Falls through completely unchanged -- no store read beyond the
         coordinate, no log line -- when the axes already agree, which is the
         overwhelmingly common case.
+
+        `append_dim_size` is the whole range's extent, forwarded to the
+        `widen` branch's `mode="w"` rewrite so the store's on-disk chunk grid
+        stays a property of the store rather than of how much of it happened
+        to be written when the roster changed. The other two branches do not
+        need it: `rebuild` moves the store aside so the next write is a
+        CREATING write, which `append()` already sizes from the same value,
+        and `refuse` writes nothing at all.
         """
         store_path = self.config.zarr_file_path
         stored = self._stored_symbol_axis(store_path)
@@ -1288,6 +1312,7 @@ class BaseDataset(ABC):
                 list(symbols),
                 append_dim=append_dim,
                 fill_values=self._widen_fill_values(),
+                append_dim_size=append_dim_size,
             )
             # In the SAME operation, never later: the ledger fingerprints the
             # pinned symbol list order-sensitively, so a widened store whose

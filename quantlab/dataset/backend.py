@@ -230,6 +230,8 @@ class XrBackend(DataBackend):
         dim: str = "symbol",
         append_dim: str = "timestamp",
         fill_values: Optional[Mapping[str, object]] = None,
+        *,
+        append_dim_size: Optional[int] = None,
     ) -> Self:
         """Rewrite the store at `path` onto a SUPERSET `dim` axis, crash-safely.
 
@@ -290,6 +292,30 @@ class XrBackend(DataBackend):
         coordinates, the on-disk chunk grid and the `symbol` coordinate's
         on-disk encoding, measured across both live production encodings and
         locked by `tests/test_symbol_axis_widening.py`.
+
+        **`append_dim_size` decides the REWRITTEN store's chunk grid.** This
+        is a `mode="w"` write, so it does not merely preserve the grid the
+        creating write pinned -- it re-pins it, and Zarr cannot revise the
+        result afterwards. `None`, which is every call site that existed
+        before this parameter, means "size the rewritten grid from the extent
+        the store has RIGHT NOW"; that is this method's behaviour verbatim and
+        is the right answer for a caller widening a store that has already
+        reached its final extent, which is the overwhelmingly common case. A
+        caller that knows the store's EVENTUAL extent along `append_dim`
+        states it instead and gets `min(APPEND_DIM_CHUNK, that extent)` -- the
+        grid a whole-range write would have left.
+
+        The distinction only bites on an INCOMPLETE store, which is exactly
+        why it went unnoticed for a round: a crash-resumed conversion, or a
+        rolled-back rebuild, widens a store holding less than its stated
+        range. Measured 2026-09-13, `APPEND_DIM_CHUNK` at 4 over a 9-row
+        range with the store holding 3 of those rows: the rewrite came back on
+        `(3, 3)` where the creating write had correctly left `(4, 2)`, and at
+        the `day` rung on `(1, 3)` -- the same number the original gap report
+        measured on the creating write. `BaseDataset.from_raw_data_chunked`
+        therefore passes D-02's once-resolved `len(timestamps)` down through
+        `_reconcile_new_listings`, the same value its in-loop
+        `widen_and_append` already passes.
 
         **Why a router rather than always chunking.** Measured 2026-09-08, the
         chunked rewrite runs 1.2x / 4.0x / 3.6x the whole-store wall clock on
@@ -408,6 +434,7 @@ class XrBackend(DataBackend):
                     append_dim=append_dim,
                     fills=fills,
                     block_rows=block_rows,
+                    append_dim_size=append_dim_size,
                 )
             except BaseException:
                 shutil.rmtree(widening, ignore_errors=True)
@@ -597,6 +624,7 @@ class XrBackend(DataBackend):
         append_dim: str,
         fills: Mapping[str, object],
         block_rows: int,
+        append_dim_size: Optional[int] = None,
     ) -> None:
         """The shipped rewrite, unchanged: reindex the WHOLE store, write once.
 
@@ -609,13 +637,26 @@ class XrBackend(DataBackend):
         signature so the router selects between them by name and calls them
         identically; a router that had to remember which arguments each
         strategy wanted is a router with two call sites to drift apart.
+        `append_dim_size` is on both for the same reason, and unlike
+        `block_rows` this path genuinely uses it.
+
+        **This method has NO floor and NO byte budget.** Its sibling
+        `_widen_chunked` gets grid agreement partly for free from
+        `_widen_block_rows`'s `max(APPEND_DIM_CHUNK, ...)` floor; there is no
+        equivalent here, so the caller's STATED extent is the only thing
+        standing between this rewrite and a grid re-pinned from whatever the
+        store happens to hold right now. That absence is why this branch was
+        judged already-covered by the floor argument one method over and was
+        not: the floor never applied to it at all.
         """
         # `.load()` is load-bearing, not defensive: without dask,
         # `open_zarr` still hands back lazily-indexed arrays that read from
         # the store directory on access, and the swap below renames that
         # directory out from under them.
         widened = stored.reindex({dim: requested}, fill_value=fills).load()
-        encoding = self._append_encoding(append_dim, data=widened)
+        encoding = self._append_encoding(
+            append_dim, data=widened, append_dim_size=append_dim_size
+        )
         widened.to_zarr(str(widening), mode="w", encoding=encoding)
 
     def _widen_chunked(
@@ -628,6 +669,7 @@ class XrBackend(DataBackend):
         append_dim: str,
         fills: Mapping[str, object],
         block_rows: int,
+        append_dim_size: Optional[int] = None,
     ) -> None:
         """The bounded rewrite: one `append_dim` block in memory at a time.
 
@@ -669,7 +711,11 @@ class XrBackend(DataBackend):
                 block.to_zarr(
                     str(widening),
                     mode="w",
-                    encoding=self._append_encoding(append_dim, data=block),
+                    encoding=self._append_encoding(
+                        append_dim,
+                        data=block,
+                        append_dim_size=append_dim_size,
+                    ),
                 )
                 continue
             block = block.drop_vars(
