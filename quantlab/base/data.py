@@ -678,7 +678,13 @@ class BaseDataset(ABC):
         )
         # Set BEFORE the `try`, so the result construction below can read it on
         # every path out of the loop rather than only the one that assigns it.
-        rebuild_rolled_back = False
+        # ANNOTATED rather than bare, and deliberately: this is the SEED, not a
+        # claim about a rollback. Since plan `03.6-09` the only place that
+        # asserts a rollback happened is the cancelled arm below, which now
+        # takes `_restore_rebuild_asides`'s own answer -- so the one remaining
+        # literal in this function must be visibly the declaration of a
+        # default and not a second, silent source of truth.
+        rebuild_rolled_back: bool = False
 
         try:
             # Before the first irreversible append, not after: the ledger and
@@ -960,10 +966,13 @@ class BaseDataset(ABC):
                     # `.superseded.tmp` suffix nothing looks at. A rollback
                     # costs the cancelled run's re-densify work; it does not
                     # cost data.
-                    self._restore_rebuild_asides(
+                    # The METHOD's answer, not an assumption: a restore
+                    # that the filesystem refused reports `False` (WR-04),
+                    # and `rebuild_rolled_back` must not claim a rollback
+                    # that did not happen.
+                    rebuild_rolled_back = self._restore_rebuild_asides(
                         rebuild_asides, reason="cancelled"
                     )
-                    rebuild_rolled_back = True
                 else:
                     self._discard_rebuild_asides(rebuild_asides)
 
@@ -1348,27 +1357,87 @@ class BaseDataset(ABC):
 
     def _restore_rebuild_asides(
         self, asides: dict, *, reason: str = "failed"
-    ) -> None:
+    ) -> bool:
         """Put the pre-rebuild store and ledger back, discarding the partial.
+
+        Returns whether the restore actually COMPLETED: `True` when the
+        pre-rebuild store and ledger are back at their authoritative paths,
+        `False` when the filesystem refused and the complete copy is still
+        sitting at the aside path.
 
         `reason` names WHY the rebuild is being undone, so the operator reads
         "failed" for an exception and "cancelled" for their own stop rather
-        than one wording standing in for both. It is the only difference
+        than one wording standing in for both.
+
+        **That paragraph used to close by calling `reason` the ONLY
+        difference between the two callers, and there are now TWO.**
+        SUPERSEDED by phase 03.6's third gap-closure pass (plan `03.6-09`);
+        the original wording is quoted here rather than deleted so the
+        correction is legible (D-18). It read: "It is the only difference
         between the two callers: an exception and a cancel are the same
-        halfway exit as far as the superseded copies are concerned.
+        halfway exit as far as the superseded copies are concerned." Its
+        second half stays true -- the two exits are still the same as far as
+        the superseded copies are concerned -- but the RETURN VALUE is now a
+        second difference. The cancelled caller consumes it to fill
+        `ConversionResult.rebuild_rolled_back`, so that field stops claiming
+        a rollback that did not happen; the exception caller discards it,
+        because that caller re-raises regardless.
+
+        **An `OSError` on the way out is caught, reported and swallowed, and
+        that is correct HERE specifically (WR-04).** `shutil.rmtree(...,
+        ignore_errors=True)` below silently does NOTHING when it fails, and
+        the `os.replace` on the next line then raises. An exception raised
+        inside an exception handler REPLACES the exception being handled --
+        so before this change the operator of a multi-hour rebuild was shown
+        "Directory not empty" while the failure that actually killed the run
+        survived only in `__context__`. This method is called from exactly
+        two places: an `except BaseException:` arm that is about to `raise`
+        something more important, and a cancel path that must not convert a
+        user's own stop into a crash. On both, reporting a cleanup error
+        beats letting it out. The same swallow in a method that did NOT run
+        from inside a handler would be hiding a real failure from its only
+        caller and would be wrong -- this is a scoped exception to a general
+        rule, not the rule. `except OSError` rather than `except Exception`
+        for the same reason: a `KeyError` here is a bug in the asides dict,
+        not a filesystem refusal, and must stay loud.
+
+        **What the operator must do when that ERROR fires.** Nothing was
+        destroyed. The complete pre-rebuild copy is still at
+        `asides["store_aside"]` and the partial rebuild is still at
+        `asides["store"]`; recovery is a MANUAL move of the aside back over
+        the store path. Deliberately not automated: deciding which of two
+        directories on disk is authoritative is the same call
+        `widen_symbol_axis` already refuses to make on the operator's behalf.
         """
-        if Path(asides["store"]).exists():
-            shutil.rmtree(asides["store"], ignore_errors=True)
-        os.replace(asides["store_aside"], asides["store"])
-        Path(asides["ledger"]).unlink(missing_ok=True)
-        if asides["ledger_existed"]:
-            os.replace(asides["ledger_aside"], asides["ledger"])
-        logger.warning(
-            f"{self.class_name}: the rebuild of {asides['store']} was "
-            f"{reason}; the pre-rebuild store and ledger have been restored. "
-            f"Any window this run re-densified has been discarded with the "
-            f"partial store -- a resumed rebuild starts over."
-        )
+        try:
+            if Path(asides["store"]).exists():
+                shutil.rmtree(asides["store"], ignore_errors=True)
+            os.replace(asides["store_aside"], asides["store"])
+            Path(asides["ledger"]).unlink(missing_ok=True)
+            if asides["ledger_existed"]:
+                os.replace(asides["ledger_aside"], asides["ledger"])
+            logger.warning(
+                f"{self.class_name}: the rebuild of {asides['store']} was "
+                f"{reason}; the pre-rebuild store and ledger have been "
+                f"restored. Any window this run re-densified has been "
+                f"discarded with the partial store -- a resumed rebuild "
+                f"starts over."
+            )
+            return True
+        except OSError as exc:
+            logger.error(
+                f"{self.class_name}: the rebuild of {asides['store']} was "
+                f"{reason}, but the pre-rebuild copy could NOT be put back: "
+                f"{type(exc).__name__}: {exc}. NOTHING WAS DESTROYED -- the "
+                f"complete pre-rebuild copy is STILL at "
+                f"{asides['store_aside']}, and the partial rebuild is at "
+                f"{asides['store']}. Recover by hand: once you have dealt "
+                f"with whatever refused the rename, move "
+                f"{asides['store_aside']} back over {asides['store']}. This "
+                f"is reported rather than raised so a cleanup error cannot "
+                f"replace the failure that stopped the rebuild."
+            )
+            return False
 
     @staticmethod
     def _discard_rebuild_asides(asides: dict) -> None:
