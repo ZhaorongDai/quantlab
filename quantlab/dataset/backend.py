@@ -733,6 +733,8 @@ class XrBackend(DataBackend):
         variables: Mapping[str, object],
         append_dim: str = "timestamp",
         fill_values: Optional[Mapping[str, object]] = None,
+        *,
+        append_dim_size: Optional[int] = None,
     ) -> Self:
         """Add data variable(s) to the store at `path`, backfilled over its
         EXISTING extent.
@@ -782,6 +784,19 @@ class XrBackend(DataBackend):
         the stored variable holds 4. The next append still succeeds, which is
         precisely why the grid is pinned here by construction rather than left
         to surface later as a layout nobody chose.
+
+        **That reasoning covers a filler with NO encoding and misses the case
+        `append_dim_size` exists for: an INCOMPLETE store.** The filler spans
+        the store's extent AS IT IS NOW, so on a store that has not yet reached
+        its stated range the filler is encoded SMALLER than the variables
+        already there -- the opposite direction of the 2026-09-07 measurement,
+        and the same one-store-two-grids outcome. Measured 2026-09-13,
+        `APPEND_DIM_CHUNK` at 4, a store created with a stated extent of 9 but
+        holding 3 rows: `close` on `(4, 2)` and the new `newvar` on `(3, 2)`.
+        A caller that knows the store's eventual extent states it with
+        `append_dim_size` and the filler joins on the same grid as everything
+        else; `None` keeps the store's current extent, which is correct for a
+        caller widening a store that is already complete.
 
         Unlike its sibling this needs NO directory swap. The measured
         behaviour is that a partial-extent write raises and leaves the store
@@ -873,7 +888,9 @@ class XrBackend(DataBackend):
                     for name, dtype in absent.items()
                 }
             )
-            encoding = self._append_encoding(append_dim, data=filler)
+            encoding = self._append_encoding(
+                append_dim, data=filler, append_dim_size=append_dim_size
+            )
         finally:
             stored.close()
 
@@ -930,7 +947,26 @@ class XrBackend(DataBackend):
         checking only the former would send a variable-grown panel to a plain
         `append()`, which refuses it. An absent store delegates too, so there
         is ONE creation path rather than two.
+
+        **This method reconciles all three axes AND makes all three of them
+        agree on ONE chunk grid.** Both rewrites below re-pin the grid -- the
+        symbol widen with `mode="w"`, the variable widen by encoding its filler
+        -- and the closing `append()` pins it when the store does not yet
+        exist. All three read `append_dim_size` from the SAME `kwargs` entry,
+        so a store cannot come out of here carrying one grid per axis. The
+        signature deliberately does not grow the parameter: it rides in
+        `**kwargs` already, and `Factor.update()`'s only route through this
+        method is locked against the current parameter tuple by
+        `tests/test_factor_update.py`.
         """
+        # GET, never POP. All three `self.append(path, append_dim, **kwargs)`
+        # exits below forward `**kwargs` verbatim, so consuming this key would
+        # starve the closing append() and reintroduce the ORIGINAL first-window
+        # defect on every store-CREATING write -- strictly worse than the widen
+        # degradation this forwarding fixes. Locked by
+        # `test_the_chunk_grid_reaches_three_consumers_from_one_read`.
+        append_dim_size = kwargs.get("append_dim_size")
+
         if not Path(path).exists():
             return self.append(path, append_dim, **kwargs)
 
@@ -972,6 +1008,7 @@ class XrBackend(DataBackend):
                 dim=dim,
                 append_dim=append_dim,
                 fill_values=fill_values,
+                append_dim_size=append_dim_size,
             )
             self.data = self.data.reindex(
                 {dim: union}, fill_value=dict(fill_values or {})
@@ -983,6 +1020,7 @@ class XrBackend(DataBackend):
                 incoming_names,
                 append_dim=append_dim,
                 fill_values=fill_values,
+                append_dim_size=append_dim_size,
             )
 
         return self.append(path, append_dim, **kwargs)
