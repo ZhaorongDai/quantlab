@@ -276,8 +276,8 @@ def add_chunk_args(
         help=(
             "Time granularity of one --to-zarr conversion window (default "
             "year). Finer windows use less peak RAM and give a finer resume "
-            "granularity, at the cost of more append round trips. Pass "
-            "'month' for a dense year the per-chunk sizing guard refuses."
+            "granularity, at the cost of more append round trips. The ladder "
+            "now reaches 'hour', so an intraday window has a rung of its own."
         ),
     )
     parser.add_argument(
@@ -792,87 +792,16 @@ def print_volume_estimate(
     return estimate
 
 
-def print_chunk_report(
-    report: dict,
-    *,
-    budget_bytes: int | None = None,
-    print_fn=print,
-) -> dict:
-    """Render `UniverseCatalog.estimate_chunked_panel()`'s report.
-
-    Hoisted out of `ingest_us_equity.py` (D-13), where it was a private
-    `_print_chunk_report`, so that the acquisition layer produces a report
-    OBJECT and every print of it lives here. That is the mechanism behind
-    SC-4's "the estimate is a value the caller can render, not a line that
-    layer prints": all three US-equity shells share this renderer, and the
-    out-of-repo `quantlab-console` renders the same dict its own way.
-
-    The two figures a user needs before committing to a conversion: what the
-    whole range totals (advisory ONLY -- chunking is what makes it achievable,
-    and the guard deliberately does not refuse on it) and what the LARGEST
-    single window will actually allocate, which is the number the budget
-    applies to (D-05).
-
-    Structured like `print_volume_estimate`: `print_fn` injected LAST for
-    testability, and the input dict returned so the call site composes as a
-    wrapper AROUND the guard call (`print_chunk_report(catalog
-    .assert_chunked_panel_fits(...))`). The guard is therefore an ARGUMENT:
-    when it refuses, nothing is printed here, and that is not a gap -- the
-    refusal message carries the same arithmetic plus the remedy.
-
-    `budget_bytes` exists because this module's module-scope project
-    dependency surface is pinned at `quantlab.base.*` (see the module
-    docstring), so `UniverseCatalog.MAX_DENSE_PANEL_BYTES` cannot be named at
-    import time. It defaults to `None`, in which case the constant is read
-    through a call-time import -- the same deferral `_explicit_symbol_catalog`
-    already makes in this file -- so no caller has to know the number, and a
-    caller sizing against a different budget can say so.
-    """
-    if budget_bytes is None:
-        from quantlab.acquisition.universe import UniverseCatalog
-
-        budget_bytes = UniverseCatalog.MAX_DENSE_PANEL_BYTES
-
-    largest = report["max_chunk"]
-    print_fn(f"  chunk granularity: {report['granularity']}")
-    print_fn(f"  chunk count:       {len(report['chunks'])}")
-    print_fn(
-        f"  whole-range total: "
-        f"{report['advisory']['dense_bytes'] / _GIB:.2f} GiB "
-        f"(advisory -- chunking never materialises this at once)"
-    )
-    if largest is not None:
-        # The rows-per-day factor appears ONLY above the default, exactly as
-        # the refusal in `assert_chunked_panel_fits` words it. At `1m` the two
-        # printed factors do not multiply out to the GiB figure beside them
-        # without it; at `1d` printing it would change the output every
-        # existing user reads. Read off the report, never recomputed.
-        bars_per_day = report.get("bars_per_day", 1)
-        rows_per_day = "" if bars_per_day == 1 else f" x {bars_per_day} row(s)/day"
-        print_fn(
-            f"  largest chunk:     {largest['dense_bytes'] / _GIB:.2f} GiB "
-            f"({largest['start']}..{largest['end']}, "
-            f"{largest['symbols']} pinned symbols x "
-            f"{largest['trading_days']} trading days{rows_per_day})"
-        )
-    print_fn(
-        f"  per-chunk budget:  "
-        f"{budget_bytes / _GIB:.2f} GiB "
-        f"(a finer --chunk is the remedy above this)"
-    )
-    return report
-
-
 def print_conversion_result(result, *, print_fn=print):
     """Render the `ConversionResult` `quantlab.acquisition.registry.convert()`
     returns.
 
-    Beside `print_chunk_report` and shaped the same way -- `print_fn` injected
-    LAST, the input returned so a call site can compose -- because the same
-    rule applies: `quantlab/acquisition/` and `quantlab/base/` produce VALUE
-    objects, and every print of one lives in this module. Three shells render
-    the same outcome, so a third copy of these lines in a third shell is the
-    duplication `print_chunk_report`'s own hoist (D-13) was about.
+    Beside `print_volume_estimate` and shaped the same way -- `print_fn`
+    injected LAST, the input returned so a call site can compose -- because
+    the same rule applies: `quantlab/acquisition/` and `quantlab/base/`
+    produce VALUE objects, and every print of one lives in this module. Three
+    shells render the same outcome, so a third copy of these lines in a third
+    shell is the duplication that hoisting into this module (D-13) was about.
 
     **Every line comes off the RETURNED object, none from the config and none
     from a read-back of the store.** That is half of what `ConversionResult`

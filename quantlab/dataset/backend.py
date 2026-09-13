@@ -37,22 +37,22 @@ class XrBackend(DataBackend):
     #: Ceiling on the bytes a symbol-axis widen may materialise AT ONCE,
     #: enforced by `widen_symbol_axis`'s router rather than by a refusal.
     #:
-    #: **Deliberately the same figure as
-    #: `quantlab/acquisition/universe.py:UniverseCatalog.MAX_DENSE_PANEL_BYTES`,
-    #: and deliberately a SEPARATE constant.** Same figure because it is the
-    #: same machine's already-measured materialisation ceiling -- 4 GiB sits
-    #: below the ~7.2 GiB that OOMs a 16 GiB box and above every window that
-    #: comfortably fits. Separate constant because this module has no import
-    #: path to the acquisition layer and must not grow one: a storage backend
-    #: that imports `UniverseCatalog` to read a number has acquired a
-    #: dependency on the whole acquisition stack for a scalar. That is the
-    #: sibling-constant precedent `MAX_RAW_BYTES` already sets one file over
-    #: (documented there as *A DIFFERENT constraint from
-    #: `MAX_DENSE_PANEL_BYTES`, not a replacement for it*).
+    #: **Derived from the target machine's measured materialisation ceiling
+    #: (2026-09-06), and deliberately a constant of this module's own.** 4 GiB
+    #: sits below the ~7.2 GiB that OOMs a 16 GiB box and above every window
+    #: that comfortably fits. It is stated here rather than imported because
+    #: this module has no import path to the acquisition layer and must not
+    #: grow one: a storage backend that imports `UniverseCatalog` to read a
+    #: number has acquired a dependency on the whole acquisition stack for a
+    #: scalar. That is the sibling-constant precedent `MAX_RAW_BYTES` already
+    #: sets one file over, where the same measurement is cited for a DISK
+    #: ceiling rather than a RAM one.
     #:
-    #: **This routes; it does not refuse.** Unlike `MAX_DENSE_PANEL_BYTES`,
-    #: which fails a fetch that would not fit, crossing this budget selects a
-    #: bounded block-by-block rewrite. Refusing is not available here:
+    #: **This routes; it does not refuse.** The acquisition layer's RAM guard,
+    #: which failed a fetch that would not fit, was deleted by decision in
+    #: phase 03.6 (SC-3); this budget never refused in the first place --
+    #: crossing it selects a bounded block-by-block rewrite. Refusing is not
+    #: available here:
     #: `Factor.update()` reaches `widen_symbol_axis` as its ONLY path -- there
     #: is no raw tier for it to re-read, so `BaseDataset`'s
     #: `on_new_listing="rebuild"` escape does not exist on the factor side.
@@ -441,9 +441,9 @@ class XrBackend(DataBackend):
         CALENDAR periods, and a period's row count is a function of frequency
         and density -- a month of 1-minute bars is ~390x a month of daily bars
         (`BARS_PER_DAY_BY_FREQUENCY`) -- so it cannot bound BYTES, which is the
-        entire constraint here. It stays the right tool for
-        `assert_chunked_panel_fits`, where sizing runs before any timestamp axis
-        exists.
+        entire constraint here. It stays the right tool for planning
+        CONVERSION windows, where the calendar is the unit of work and no
+        timestamp axis exists yet.
         """
         chunk = XrBackend.APPEND_DIM_CHUNK
         raw = XrBackend.MAX_WIDEN_BYTES // row_bytes if row_bytes > 0 else 0

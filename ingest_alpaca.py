@@ -59,18 +59,17 @@ directly, e.g.
 `--batch-size` is the one exception, because the pre-flight volume guard has to
 be told the batch size it is pricing.
 
-Two pre-flight guards, and neither replaces the other
----------------------------------------------------
+One pre-flight guard, and it does not bound memory
+-------------------------------------------------
 `assert_acquisition_volume_fits` bounds raw disk bytes, request count and wall
-clock, and runs on EVERY run. `assert_chunked_panel_fits` bounds the RAM of the
-largest single WINDOW the `1d`/`1m` conversion at the bottom of this script
-materialises, and runs only when that conversion will actually happen -- i.e.
-`--to-zarr` and not `--frequency tick`. Both run BEFORE the client is
-constructed and before a single request. A `1m` window that comfortably passes
-the first can be three orders of magnitude over the second, so the second is
-sized with `bars_per_day=390` rather than at its daily default (CR-03) -- that
-argument crosses to the chunked guard unchanged, because the axis it sizes is
-the timestamp axis either way (D-10 as amended 2026-09-11).
+clock, and runs on EVERY run, BEFORE the client is constructed and before a
+single request. It is now the ONLY pre-flight guard: phase 03.6 deleted the
+dense-panel RAM guard that used to sit beside it, by decision (SC-3). An
+over-sized conversion window therefore reaches OOM rather than a legible
+refusal naming a finer `--chunk`, and a `1m` window that comfortably passes
+the volume guard can still be three orders of magnitude too large to densify
+-- the timestamp axis, not the trading-day count, is what a densifier
+allocates against. Choose `--chunk` accordingly.
 
 The conversion itself is CHUNKED and it is the REGISTRY'S (03.5
 D-06/D-07/SC-6): this script hands `quantlab.acquisition.registry.convert()` a
@@ -154,7 +153,6 @@ from quantlab.utils.cli import (
     add_window_args,
     add_chunk_args,
     apply_data_dir,
-    print_chunk_report,
     print_conversion_result,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
@@ -394,66 +392,6 @@ if __name__ == "__main__":
         forced=args.force_volume,
     )
 
-    if args.frequency != "tick" and args.to_zarr:
-        # `args.to_zarr` is half of this condition because the guard measures
-        # the RAM of a densification that no longer always happens: refusing a
-        # raw-only fetch on the size of a panel this run will never build
-        # would be a fresh defect introduced by the fix, not a guard doing its
-        # job. The POSITION is unchanged -- still before `run(...)`, so the
-        # AST ordering assertions in `tests/test_volume_guard.py` still read a
-        # guard line number below every densify line number.
-        #
-        # A SIBLING of the volume guard above, not a replacement -- its own
-        # docstring says so twice. That one bounds raw DISK bytes, request
-        # count and wall clock; this one bounds the RAM of the dense
-        # `[timestamp, symbol]` panel the conversion at the bottom of this
-        # script materialises.
-        #
-        # The CHUNKED form, because it is the only form left. This door used
-        # to densify the whole window in one allocation, which is what made
-        # `assert_dense_panel_fits` the guard that applied; D-07 collapsed the
-        # conversion to one chunked path, so there is one guard to match, and
-        # it refuses a `--chunk` whose individual WINDOWS would not fit and
-        # names the finer granularity that would.
-        #
-        # Without a RAM guard here the volume guard's own ADMITTED scenario
-        # kills the process AFTER a successful fetch: S&P-500 minute for one
-        # year passes the volume guard at ~4,900 requests and ~3 GB on disk,
-        # and then densifies ~500 symbols x ~98,000 minute stamps x 7
-        # variables x 8 bytes against a 4 GiB budget. `ingest_us_equity.py`
-        # already carried the chunked form for daily; this front door
-        # inherited none of it (CR-03).
-        #
-        # `bars_per_day` is REQUIRED here rather than defaulted: this guard
-        # sizes the timestamp axis, and at `1m` a session is 390 rows. Left at
-        # 1 it would admit the very fetch it exists to refuse -- an
-        # understatement of 390x, which no test written before 03.5 would have
-        # caught, because the call would keep working and keep reporting a
-        # number (T-03.5-15). Carried across from the whole-window guard
-        # unchanged: the chunked pair takes the same keyword-only parameter
-        # and multiplies the same axis by it (D-10 as amended 2026-09-11).
-        #
-        # `num_variables` is Alpaca's own bar width (RAW_COLUMNS minus
-        # timestamp/symbol/vendor), not the 12-column Tiingo EOD default -- a
-        # guard that overstates refuses fetches that would have been fine,
-        # which is how a guard gets deleted.
-        #
-        # Bound to a local because `convert()` runs no guard of its own
-        # (D-11) and echoes a `predicted_peak_bytes` back into its result;
-        # `max_chunk_bytes` IS that prediction.
-        chunk_report = print_chunk_report(
-            pricing.assert_chunked_panel_fits(
-                category,
-                guard_start,
-                guard_end,
-                granularity=args.chunk,
-                num_variables=len(
-                    SOURCE.acquisition_cls.RAW_COLUMNS_BY_DATA_TYPE["bars"]
-                ) - 3,
-                bars_per_day=pricing.BARS_PER_DAY_BY_FREQUENCY[args.frequency],
-            )
-        )
-
     print(
         f"Acquiring {len(acq_config.symbols)} symbol(s) from "
         f"{SOURCE.display_name} "
@@ -522,7 +460,6 @@ if __name__ == "__main__":
             ds_config,
             granularity=args.chunk,
             on_new_listing=args.on_new_listing,
-            predicted_peak_bytes=chunk_report["max_chunk_bytes"],
         )
         # Rendered from the RETURNED object, so what is printed is what was
         # actually written rather than what the config asked for.

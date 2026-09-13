@@ -1334,7 +1334,7 @@ class BaseDataset(ABC):
         a fabricated observation where data was missing.
         `XrBackend.append` refuses that append; this makes the refusal
         unreachable by pinning the dtype to what the dense panel is anyway
-        (`estimate_dense_panel` sizes it at 8 bytes per value).
+        (float64, 8 bytes per value).
 
         Booleans are left alone: `anomaly_flag` is a flag, not a measurement.
         """

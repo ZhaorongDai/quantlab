@@ -16,7 +16,11 @@ window at a time onto a symbol axis pinned once over the whole range, so peak
 RAM scales with the WINDOW rather than the range, `--chunk` selects the
 granularity, `--on-new-listing` says what to do about a symbol that first
 appears mid-range, and a run interrupted at window 12 of 21 resumes at window
-12.
+12. **Nothing checks that the chosen window fits in RAM.** Phase 03.6 deleted
+the dense-panel estimator and its per-chunk guard by decision (SC-3), so an
+over-sized `--chunk` reaches OOM rather than a refusal naming the finer
+granularity that would fit. The surviving pre-flight guard bounds disk bytes,
+request count and wall clock, not memory.
 
 `--to-zarr` is OFF by default, and that default CHANGED (G-03.4-1b): this
 script used to convert unconditionally, which meant a run that fetched nothing
@@ -74,7 +78,6 @@ from quantlab.utils.cli import (
     add_window_args,
     add_chunk_args,
     apply_data_dir,
-    print_chunk_report,
     print_conversion_result,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
@@ -210,39 +213,6 @@ if __name__ == "__main__":
         forced=args.force_volume,
     )
 
-    if args.to_zarr:
-        # The RAM sibling of the guard above, and the reason it is a SIBLING:
-        # that one bounds raw disk bytes, request count and wall clock; this
-        # one bounds the dense `[timestamp, symbol]` grid the conversion at
-        # the bottom of this script materialises. Either alone lets a real
-        # scenario through.
-        #
-        # The CHUNKED form, because it is the only form left. This door used
-        # to densify the whole window in one allocation, which is what made
-        # `assert_dense_panel_fits` the guard that applied (CR-03). D-07
-        # collapsed the conversion to one chunked path, so there is one guard
-        # to match: it refuses a `--chunk` whose individual WINDOWS would not
-        # fit and names the finer granularity that would, rather than refusing
-        # the whole range outright.
-        #
-        # Conditioned on `--to-zarr` because it measures the RAM of a
-        # densification that no longer always happens: refusing a raw-only
-        # fetch on the size of a panel this run will never build would be a
-        # fresh defect introduced by the fix, not a guard doing its job.
-        #
-        # The POSITION is unchanged -- still before `run(...)`, so the refusal
-        # arrives before the fetch rather than after it, and the AST ordering
-        # assertions in `tests/test_volume_guard.py` still read a guard line
-        # number below every densify line number. Bound to a local because
-        # `convert()` runs no guard of its own (D-11) and echoes a
-        # `predicted_peak_bytes` back into its result; `max_chunk_bytes` IS
-        # that prediction.
-        chunk_report = print_chunk_report(
-            pricing.assert_chunked_panel_fits(
-                category, guard_start, guard_end, granularity=args.chunk
-            )
-        )
-
     print(
         f"Acquiring symbols={acq_config.symbols} via "
         f"{SOURCE.display_name} (refresh={args.refresh})"
@@ -292,7 +262,6 @@ if __name__ == "__main__":
             ds_config,
             granularity=args.chunk,
             on_new_listing=args.on_new_listing,
-            predicted_peak_bytes=chunk_report["max_chunk_bytes"],
         )
         # Rendered from the RETURNED object, so what is printed is what was
         # actually written rather than what the config asked for.

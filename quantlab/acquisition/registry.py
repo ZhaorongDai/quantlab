@@ -455,14 +455,20 @@ def convert(
     Dataset layer by hand has to know which. A caller here does not.
 
     **It does NOT run the RAM guard, and that is a recorded, accepted risk
-    (D-11).** The guarantee lives at every call site --
-    `assert_chunked_panel_fits(...)` before `convert(...)`, as
-    `ingest_us_equity.py` already does -- not at the one place that allocates.
-    A new integrator who never asks goes straight to OOM. `predicted_peak_bytes`
-    is the caller's own estimate echoed into the result so a report can put
-    prediction beside outcome; passing it buys no protection, and pretending
-    otherwise here would retire a recorded risk silently instead of by
-    decision.
+    (D-11).** SUPERSEDED by phase 03.6 (SC-3). The original sentence read:
+    "The guarantee lives at every call site -- the catalog's per-chunk RAM
+    guard before `convert(...)`, as `ingest_us_equity.py` already does -- not
+    at the one place that allocates." It named that guard by its method name;
+    the name is not restated here because phase 03.6's SC-3 gate asserts the
+    symbol appears nowhere in the tree. Phase 03.6 DELETED the guard, so
+    there is no call-site guarantee left to rely on: the recorded risk is now
+    UNMITIGATED rather than mitigated-at-the-call-site, and every caller --
+    new integrator or in-repo shell alike -- goes straight to OOM on an
+    over-sized window. `predicted_peak_bytes` survives, defaulting to `None`,
+    because an out-of-repo caller with its own estimate may still pass one; it
+    is echoed into the result so a report can put prediction beside outcome.
+    Passing it buys no protection, and pretending otherwise here would retire a
+    recorded risk silently instead of by decision.
 
     **Refuses in THREE distinguishable ways, all `ValueError`.** A caller who
     cannot tell "nobody serves that combination" from "nobody can convert it

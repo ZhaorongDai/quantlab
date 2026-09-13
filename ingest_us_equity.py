@@ -51,10 +51,12 @@ and `ingest_alpaca.py` instead of being a third implementation of it.
 
 So the reason `--to-zarr` stays opt-in is TIME, not memory: the conversion is
 still the long pole after a multi-hour download, and most runs want the raw
-parquet first. The sizing guard remains, ahead of the download, but it is now
-`assert_chunked_panel_fits()` -- it refuses a `--chunk` whose individual
-windows would not fit and names the finer granularity that would, rather than
-refusing the window outright.
+parquet first. **There is no RAM sizing guard any more.** Phase 03.6 deleted
+the dense-panel estimator and its per-chunk refusal by decision (SC-3), so an
+over-sized conversion window reaches OOM rather than a legible refusal; pick a
+finer `--chunk` yourself. What survives ahead of the download is the
+acquisition-volume guard, which bounds disk bytes, request count and wall
+clock.
 
 Build/refresh the universe table first (`refresh_us_equity_universe.py`), then:
 
@@ -122,7 +124,6 @@ from quantlab.utils.cli import (
     add_volume_guard_args,
     add_window_args,
     apply_data_dir,
-    print_chunk_report,
     print_conversion_result,
     print_volume_estimate,
     refuse_conversion_without_raw_data,
@@ -163,27 +164,27 @@ TIINGO_BATCH_SIZE = 1
 #: roster resolved, not to page 15,000 tickers through a terminal.
 _SYMBOL_PREVIEW = 10
 
-_GIB = 1024**3
-
 
 def _print_estimate(catalog: UniverseCatalog, args, symbols: tuple[str, ...]) -> None:
-    estimate = catalog.estimate_dense_panel(
+    """Describe the ROSTER AND WINDOW a dry run would fetch, in cells.
+
+    Denominated in symbols, days and observations -- never in bytes. Phase
+    03.6 deleted the dense-panel RAM estimate and its guard by decision
+    (SC-3), so the three byte-denominated lines this used to print are gone
+    along with the capability that produced them. What remains is what a
+    `--dry-run` operator still legitimately gets: who resolved, over what
+    window, and how much of that grid is real observation rather than the
+    survivorship-bias-free roster's empty cells.
+    """
+    profile = catalog._roster_window_profile(
         args.category, args.start_date, args.end_date
     )
     print(f"  symbols resolved:  {len(symbols)}")
     print(f"  preview:           {list(symbols[:_SYMBOL_PREVIEW])}")
     print(f"  window:            {args.start_date} .. {args.end_date}")
-    print(f"  trading days (~):  {estimate['trading_days']}")
-    print(f"  dense grid cells:  {estimate['dense_cells']:,}")
-    print(f"  real observations: {estimate['observed_cells']:,}")
-    print(f"  density:           {estimate['density']:.3f}")
-    print(f"  dense float64:     {estimate['dense_bytes'] / _GIB:.2f} GiB")
-    print(f"  observed float64:  {estimate['observed_bytes'] / _GIB:.2f} GiB")
-    print_chunk_report(
-        catalog.assert_chunked_panel_fits(
-            args.category, args.start_date, args.end_date, granularity=args.chunk
-        )
-    )
+    print(f"  trading days (~):  {profile['trading_days']}")
+    print(f"  real observations: {profile['observed_cells']:,}")
+    print(f"  density:           {profile['density']:.3f}")
 
 
 def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
@@ -466,9 +467,11 @@ if __name__ == "__main__":
     # tell you how big this is -- would be the guard firing at the one thing it
     # has no quarrel with.
     #
-    # A SIBLING of assert_chunked_panel_fits below, not a replacement: that one
-    # bounds RAM for a dense panel, this one bounds disk, request count and
-    # wall clock, and either alone lets a real scenario through.
+    # Since phase 03.6 this is the ONLY pre-flight guard: the per-chunk RAM
+    # guard that used to sit below it was deleted by decision (SC-3). What
+    # this one bounds is disk bytes, request count and wall clock -- money and
+    # time, not memory -- so an over-sized conversion window now reaches OOM
+    # rather than a legible refusal.
     pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
         args, catalog, symbols=symbols
     )
@@ -488,26 +491,6 @@ if __name__ == "__main__":
         window_assumed=window_assumed,
         forced=args.force_volume,
     )
-
-    if args.to_zarr:
-        # Checked HERE, before a single byte is downloaded, rather than only
-        # in front of the densification. Both positions satisfy "fires before
-        # the densification allocates", but this one also spares the user a
-        # multi-hour backfill that ends in a refusal they could have been told
-        # about immediately (T-0iy-03, preserved from 260906-0iy). What
-        # changed is only WHICH guard: the whole-range refusal is lifted, and
-        # the per-chunk one names a finer --chunk as its remedy (T-13w-03).
-        #
-        # Bound to a local because `convert()` runs NO guard of its own
-        # (D-11) and echoes a `predicted_peak_bytes` back into its result.
-        # `max_chunk_bytes` IS that prediction, so forwarding it below puts
-        # the prediction beside the observed peak in the one object a user
-        # reads after the run, instead of leaving the two in different places.
-        chunk_report = print_chunk_report(
-            catalog.assert_chunked_panel_fits(
-                args.category, args.start_date, args.end_date, granularity=args.chunk
-            )
-        )
 
     print(
         f"Acquiring {len(symbols)} symbols from {SOURCE.display_name} "
@@ -564,7 +547,6 @@ if __name__ == "__main__":
             ds_config,
             granularity=args.chunk,
             on_new_listing=args.on_new_listing,
-            predicted_peak_bytes=chunk_report["max_chunk_bytes"],
         )
         # Rendered from the RETURNED object, not from `ds_config` and not by
         # reading the store back: what is printed is what was actually
