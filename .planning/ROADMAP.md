@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -770,7 +770,7 @@ caller plan 02 deletes; both touch `quantlab/base/chunking.py` and the same test
 
 **Wave 4** *(blocked on Wave 3 — it documents the landed state)*
 
-- [ ] 03.6-04-PLAN.md — SC-8's amendments as real edits: ROADMAP 03.5 SC-5, quick task
+- [x] 03.6-04-PLAN.md — SC-8's amendments as real edits: ROADMAP 03.5 SC-5, quick task
   260906-13w's D-05 at every restatement site, the refusal-bearing halves of 03.5's
   D-10/D-11, REQUIREMENTS.md's **DATA-08** formally WITHDRAWN in place with its original
   wording preserved, and `example/chunking.md` / `example/acquisition.md` de-staled (SC-8)
