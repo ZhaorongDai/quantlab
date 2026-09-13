@@ -632,18 +632,23 @@ def test_us_equity_keeps_every_capability_that_makes_it_distinct() -> None:
     in-repo route to watermark stamping, and the four quota/concurrency knobs.
 
     **It was seven, and the seventh LEFT because it stopped being a
-    difference.** That entry was "the chunked conversion behind `--to-zarr`
-    with its per-chunk RAM guard", and the parenthetical beside it said the
-    flag was shared but the chunking was not. 03.5 D-07 collapsed the
-    repository to ONE conversion path: `ingest_tiingo.py` and
-    `ingest_alpaca.py` now reach the same `registry.convert()` through the
-    same `assert_chunked_panel_fits`, and carry `--chunk` and
-    `--on-new-listing` too. Nothing was deleted from this script -- the
-    capability is simply no longer DISTINCT to it, which is what SC-6 asked
-    for, and a list named "what makes it distinct" cannot keep an entry every
-    shell now satisfies. No seventh survivor was found to replace it; the
-    sharing itself is pinned by
+    difference.** That entry was "the chunked conversion behind `--to-zarr`",
+    and the parenthetical beside it said the flag was shared but the chunking
+    was not. 03.5 D-07 collapsed the repository to ONE conversion path:
+    `ingest_tiingo.py` and `ingest_alpaca.py` now reach the same
+    `registry.convert()`, and carry `--chunk` and `--on-new-listing` too.
+    Nothing was deleted from this script -- the capability is simply no longer
+    DISTINCT to it, which is what SC-6 asked for, and a list named "what makes
+    it distinct" cannot keep an entry every shell now satisfies. No seventh
+    survivor was found to replace it; the sharing itself is pinned by
     `test_the_three_conversion_flags_are_shared_by_every_us_equity_shell`.
+
+    That entry originally read "...with its per-chunk RAM guard", and the
+    sentence above named `assert_chunked_panel_fits` as the shared route.
+    Phase 03.6 SC-3 deleted that guard, so the clause was dropped rather than
+    left describing a method the shells no longer call. What the shells share
+    is the conversion path and its three flags; that half is unchanged by the
+    deletion and is still asserted.
 
     The flag arm goes through the REAL parser rather than the source, so a
     registration moved into a branch that never runs fails here. The three

@@ -11,8 +11,24 @@ with an explicit `--force-volume`.
 Two grounded constants already live on `acquisition/universe.py:UniverseCatalog`
 and the new acquisition-volume estimator is built beside them, sharing their
 arithmetic. This module pins both, so an edit to either surfaces HERE -- next to
-the guard whose thresholds it silently shifts -- rather than only in the
-dense-panel tests it was written for.
+the guard whose thresholds it silently shifts -- rather than only in the roster
+tests they were written for.
+
+**Phase 03.6 SC-3 deleted the dense-panel estimator/guard group**
+(`MAX_DENSE_PANEL_BYTES`, `estimate_dense_panel`, `assert_dense_panel_fits`,
+`estimate_chunked_panel`, `assert_chunked_panel_fits`). Three things in this
+file went with it, deliberately rather than by weakening:
+
+- the `MAX_DENSE_PANEL_BYTES == 4 GiB` assertions (the constant is gone);
+- `_RAM_GUARD_NAMES` and
+  `test_every_entry_point_that_densifies_guards_the_dense_panels_ram`, the AST
+  apparatus asserting that a RAM-guard call preceded every densify. With no RAM
+  guard, that test would pass over an EMPTY SET -- the vacuous-guard failure
+  this repo's STATE.md already records twice -- so it was DELETED rather than
+  left green. Its replacement is the two-directional deletion/survival lock in
+  `tests/test_chunked_panel_estimate.py`;
+- the trailing `assert_dense_panel_fits` arms of the intraday-axis test, whose
+  ARITHMETIC survives repointed at `_roster_window_profile`.
 
 `tick` frequency without an explicit `rows_per_symbol_day` must REFUSE rather
 than guess: an invented row count produces an invented budget, and the whole
@@ -34,10 +50,16 @@ def test_the_grounded_constants_the_new_volume_guard_is_built_beside():
     """Self-test: the two existing `UniverseCatalog` constants the acquisition
     volume estimator shares arithmetic with.
 
-    `MAX_DENSE_PANEL_BYTES` is 4 GiB -- a RAM budget, not a disk one (a dense
-    float64 panel is materialised in memory before it is written).
     `TRADING_DAYS_PER_YEAR` is 252, the figure every window-length estimate in
-    this codebase multiplies through.
+    this codebase multiplies through; `CALENDAR_DAYS_PER_YEAR` is 365.25, the
+    calendar span it is scaled against. Together they are the whole 252/365.25
+    approximation `_roster_window_profile` turns a window into trading days
+    with, and therefore the whole roster half of every acquisition estimate.
+
+    The third constant pinned here until phase 03.6 was `MAX_DENSE_PANEL_BYTES`
+    (4 GiB of dense-panel RAM). SC-3 deleted it with the guard it budgeted, so
+    the assertion went with it rather than being retargeted at a surviving
+    number it was never about.
 
     `UniverseCatalog` is imported INSIDE the test body on purpose. A module-scope
     import of `acquisition.universe` here would make this file a new
@@ -46,13 +68,14 @@ def test_the_grounded_constants_the_new_volume_guard_is_built_beside():
     """
     from quantlab.acquisition.universe import UniverseCatalog
 
-    assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3, (
-        "MAX_DENSE_PANEL_BYTES changed; the acquisition volume guard's budget "
-        "arithmetic is derived from it -- update both together, deliberately"
-    )
     assert UniverseCatalog.TRADING_DAYS_PER_YEAR == 252, (
         "TRADING_DAYS_PER_YEAR changed; every window-length estimate in the "
         "volume guard multiplies through it"
+    )
+    assert UniverseCatalog.CALENDAR_DAYS_PER_YEAR == 365.25, (
+        "CALENDAR_DAYS_PER_YEAR changed; it is the denominator the 252 above "
+        "is scaled against -- moving one without the other silently rescales "
+        "every trading-day count the volume guard prices"
     )
 
 
@@ -68,19 +91,19 @@ def test_the_grounded_constants_the_new_volume_guard_is_built_beside():
 #
 # So these tests build a reference table at the MEASURED scale: 15,424 `us_all`
 # symbols (260906-0iy D-01) shaped to the MEASURED 0.368 daily density
-# (`MAX_DENSE_PANEL_BYTES`'s own rationale block), 500 S&P constituents, and two
+# (`_roster_window_profile`'s own rationale block), 500 S&P constituents, and two
 # smaller rosters used to isolate one ceiling at a time. 17,524 rows of parquet
 # costs milliseconds and no network call; what it buys is that every scenario
 # below reproduces a row of RESEARCH's table rather than approximating one.
 #
 # Every symbol in a synthetic category is given the SAME span, anchored at the
-# window start. `estimate_dense_panel` reduces to one clipped span per symbol
+# window start. `_roster_window_profile` reduces to one clipped span per symbol
 # and then SUMS the span days, so staggering the starts would change nothing
 # about the result while adding clipping edge cases to get wrong.
 # ---------------------------------------------------------------------------
 
 #: The measured `us_all` roster size and its measured daily density, quoted from
-#: `UniverseCatalog.MAX_DENSE_PANEL_BYTES`'s rationale block ("15,424 symbols x
+#: `UniverseCatalog._roster_window_profile`'s rationale block ("15,424 symbols x
 #: ~5,215 trading days = 80.4M dense cells, of which only ~29.6M are real
 #: observations (density 0.368)"). Reproducing BOTH is what makes the scenarios
 #: below RESEARCH's arithmetic rather than a toy.
@@ -820,39 +843,36 @@ def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
     assert not bound_clients, bound_clients
 
 
-def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
-    """The RAM guard and the disk/request/wall-clock guard answer different
-    questions and both must survive.
+def test_the_surviving_guards_ceilings_are_pinned_together(tmp_path):
+    """The disk, request and wall-clock ceilings are pinned TOGETHER, next to
+    the guard whose thresholds a careless merge would shift.
 
-    `MAX_DENSE_PANEL_BYTES` bounds a dense `[timestamp, symbol]` panel in
-    memory; this phase never densifies (D-18), so its constraints are disk,
-    requests and hours. Collapsing either into the other would silently drop a
-    real ceiling -- so all six members are pinned together here, next to the
-    guard whose thresholds a careless merge would shift.
+    Until phase 03.6 this test was `test_the_dense_panel_guards_are_siblings_
+    not_replaced`, and it pinned SIX members: the RAM pair
+    (`estimate_dense_panel` / `assert_dense_panel_fits`), the chunked pair 03.5
+    added when the guard was demoted to a thin wrapper over its estimator, and
+    the acquisition pair. Its claim was that the RAM guard and the
+    disk/request/wall-clock guard answer different questions and that
+    collapsing either into the other would silently drop a real ceiling.
 
-    `estimate_chunked_panel` is the sixth, added by 03.5 when
-    `assert_chunked_panel_fits` was demoted to a thin wrapper over it (the
-    estimate/assert split: the estimator completes its loop and answers, the
-    guard reads its verdict and raises). It is pinned HERE rather than in the
-    plan that created it, because this file has exactly one owning plan and
-    two plans half-owning one test file is how a task's own verify ends up
-    contradicting its own action.
+    SC-3 did not collapse the RAM guard into this one -- it DELETED it, as a
+    recorded decision (developer, 2026-09-11, re-affirmed 2026-09-12). So the
+    four dense-panel members are gone from the enumeration, and their absence is
+    now pinned positively by
+    `tests/test_chunked_panel_estimate.py::test_the_dense_panel_estimator_and_guard_are_both_deleted`.
+    What remains here is the surviving pair and the three ceilings it reads,
+    which bound money and wall clock rather than memory.
     """
     from quantlab.acquisition.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 
     for member in (
-        "estimate_dense_panel",
-        "assert_dense_panel_fits",
-        "estimate_chunked_panel",
-        "assert_chunked_panel_fits",
         "estimate_acquisition_volume",
         "assert_acquisition_volume_fits",
     ):
         assert hasattr(UniverseCatalog, member), member
 
-    assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3
     assert UniverseCatalog.MAX_RAW_BYTES == 20 * 1024**3
     assert UniverseCatalog.MAX_ACQUISITION_REQUESTS == 50_000
     assert UniverseCatalog.MAX_ACQUISITION_WALL_CLOCK_HOURS == 4.0
@@ -867,8 +887,17 @@ def test_the_dense_panel_guards_are_siblings_not_replaced(tmp_path):
         / 60
     )
 
-    # The RAM guard still refuses the window it always refused, unchanged.
-    assert catalog.assert_dense_panel_fits("us_all", "2024-01-01", "2024-01-31") is None
+    # And the surviving guard passes RESEARCH Pattern 6's full-market DAILY
+    # scenario, which sits under all three ceilings above (~29.6M rows, ~1.8 GB,
+    # ~155 batch requests) -- so it must RETURN its estimate rather than raise.
+    # This arm is what keeps `_catalog(tmp_path)` load-bearing here rather than
+    # decorative: the ceilings are asserted as literals just above, and a
+    # literal proves nothing about whether anything still reads it.
+    passing = catalog.assert_acquisition_volume_fits(
+        "us_all", *FULL_WINDOW, frequency="1d", batch_size=100
+    )
+    assert passing["rows"] > 0
+    assert passing["raw_bytes"] < UniverseCatalog.MAX_RAW_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -1330,158 +1359,68 @@ def test_the_forced_line_distinguishes_overridden_from_clean():
     assert "--force-volume" not in "\n".join(lines)
 
 
-#: The two RAM guards. Either one satisfies "a densification is bounded":
-#: `assert_dense_panel_fits` bounds a whole-window `from_raw_data()`,
-#: `assert_chunked_panel_fits` bounds the largest window of a
-#: `from_raw_data_chunked()`. Neither is `assert_acquisition_volume_fits`,
-#: which bounds disk/requests/wall-clock and cannot see RAM at all.
-_RAM_GUARD_NAMES = frozenset(
-    {"assert_dense_panel_fits", "assert_chunked_panel_fits"}
-)
+# ---------------------------------------------------------------------------
+# DELETED by phase 03.6 SC-3: `_RAM_GUARD_NAMES`,
+# `test_every_entry_point_that_densifies_guards_the_dense_panels_ram` (CR-03)
+# and `test_the_chunked_panel_guard_keeps_both_of_its_call_sites`.
+#
+# That apparatus walked each shell's `__main__` body and asserted that a call
+# to `assert_dense_panel_fits` or `assert_chunked_panel_fits` PRECEDED every
+# densifying call (`convert`, `from_raw_data`, `from_raw_data_chunked`). It was
+# real coverage while a RAM guard existed: it is what caught `ingest_alpaca.py`
+# shipping a `--frequency 1m` front door with the volume guard wired and
+# NEITHER RAM sibling.
+#
+# SC-3 deleted both RAM guards. Weakening these tests -- dropping the deleted
+# names from `_RAM_GUARD_NAMES`, or letting the ordering assertion run over an
+# empty guard set -- would leave two tests that PASS BY FINDING NOTHING. This
+# repo's STATE.md already records that failure mode twice, so the apparatus is
+# deleted outright instead. The replacement is the two-directional lock in
+# `tests/test_chunked_panel_estimate.py`: one test red if any of the five
+# deleted members returns, one red if the acquisition-volume group is
+# collaterally cut.
+#
+# What is NOT lost: the surviving `assert_acquisition_volume_fits` keeps its own
+# placement-and-ordering coverage above (`_is_guard_call` at :1033-1069), which
+# still pins that it precedes client construction in all three shells.
+# ---------------------------------------------------------------------------
 
 
-def test_every_entry_point_that_densifies_guards_the_dense_panels_ram():
-    """CR-03. A densification with no RAM guard in front of it dies AFTER a
-    successful multi-hour fetch.
+def test_the_roster_profile_is_sized_on_the_timestamp_axis_not_the_trading_day():
+    """`_roster_window_profile` sizes the TIMESTAMP axis, and at `1m` a session
+    is 390 rows rather than 1.
 
-    `assert_acquisition_volume_fits` bounds raw disk bytes, request count and
-    wall clock -- its own docstring calls the dense-panel guards its "siblings,
-    never a replacement". `ingest_alpaca.py` shipped with the new guard wired
-    and NEITHER sibling, while adding a `--frequency 1m` front door: the volume
-    guard's own admitted scenario (S&P-500 minute for one year, ~4,900 requests
-    and ~3 GB) then reaches `from_raw_data()` and asks pandas for ~4 TB against
-    a 4 GiB budget.
+    Left at the `bars_per_day=1` default, an intraday estimate would report the
+    DAILY figure for a fetch that costs 390x more -- confidently wrong in the
+    one regime the sizing exists for. Asserted on the arithmetic, so it cannot
+    pass by the call site merely existing.
 
-    Scoped by REACHABILITY rather than by script name, which is what the
-    pre-existing chunked-guard test got wrong: it pinned itself to
-    `ingest_us_equity.py`, so the second door's gap was invisible to it. Any
-    entry point that reaches a densification must also name a RAM guard, and
-    must name it FIRST.
-
-    **Since 03.5 the densification is reached through the REGISTRY**, which is
-    why a bare `Name` call to `convert` counts as one here. All three shells
-    now call `quantlab.acquisition.registry.convert()` instead of naming a
-    Dataset method, and `convert()` calls `from_raw_data_chunked()` on the
-    `Capability.dataset_cls` it looked up -- so the allocation is just as
-    real, it simply happens one frame down. An attribute-only detector would
-    have found zero densifying doors, every ordering assertion below would
-    have become vacuous, and the closing threshold is what refused to let that
-    happen silently. The attribute arms stay beside the new one: a shell that
-    goes back to calling `from_raw_data*` directly must still be caught, and
-    `convert()` itself deliberately runs NO guard (03.5 D-11), so the
-    guard-at-the-call-site property this test asserts is the ONLY thing
-    standing between a delegated conversion and an OOM (T-03.5-14).
+    Until phase 03.6 this test read `estimate_dense_panel` and closed on an
+    `assert_dense_panel_fits` pair: the daily window fit the 4 GiB budget, the
+    same window at `bars_per_day=390` raised "Refusing to densify". SC-3 deleted
+    both the estimator and the budget. The 390x ARITHMETIC is untouched by that
+    deletion -- it is roster arithmetic, not a byte count -- so it moved to
+    `_roster_window_profile`, which is the method the surviving
+    `estimate_acquisition_volume` now reads its timestamp count off. The RAM
+    refusal arm did not move; it is gone, and its absence is pinned in
+    `tests/test_chunked_panel_estimate.py`.
     """
-    import ast
-
-    densifying = 0
-    for path in INGEST_SCRIPTS:
-        body = _main_body(path)
-
-        def _is_densify(node) -> bool:
-            # The delegated call first, then the two direct ones. See the
-            # docstring: `convert()` is a module-level function, so it is a
-            # bare `Name` rather than an `Attribute`.
-            if isinstance(node.func, ast.Name) and node.func.id == "convert":
-                return True
-            return isinstance(node.func, ast.Attribute) and node.func.attr in (
-                "from_raw_data",
-                "from_raw_data_chunked",
-            )
-
-        def _is_ram_guard(node) -> bool:
-            return (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr in _RAM_GUARD_NAMES
-            )
-
-        densify_sites = _call_linenos(body, _is_densify)
-        if not densify_sites:
-            continue
-        densifying += 1
-        ram_guards = _call_linenos(body, _is_ram_guard)
-        assert ram_guards, (
-            f"{path} densifies at line(s) {densify_sites} with no RAM guard "
-            f"in its __main__ body. assert_acquisition_volume_fits bounds "
-            f"disk/requests/wall-clock and cannot see the dense panel's RAM."
-        )
-        assert min(ram_guards) < min(densify_sites), (
-            f"{path}: the RAM guard at {ram_guards} must precede the "
-            f"densification at {densify_sites} -- a guard that runs after the "
-            f"allocation has already spent what it exists to save."
-        )
-
-    assert densifying >= 2, (
-        "expected at least ingest_us_equity.py and ingest_alpaca.py to "
-        "densify; if a door stopped densifying, say so here rather than "
-        "letting this test silently cover nothing"
-    )
-
-
-def test_the_intraday_ram_guard_is_sized_on_the_timestamp_axis_not_the_day():
-    """`assert_dense_panel_fits` sizes the TIMESTAMP axis, and at `1m` a
-    session is 390 rows rather than 1.
-
-    Left at the `bars_per_day=1` default, the guard would report ~10 GiB for a
-    fetch that allocates ~4 TB and would admit the exact scenario it was added
-    to refuse -- a guard that is confidently wrong in the one regime it exists
-    for. Asserted on the arithmetic, so it cannot pass by the call site merely
-    existing.
-    """
-    import pytest
-
     from quantlab.utils.cli import _explicit_symbol_catalog
 
-    # 500 symbols over two calendar years -- an S&P-500-shaped minute window,
-    # ~5.5 GiB dense against the 4 GiB budget, versus ~14 MB for the same
-    # window at `1d`. (Note the review's own "~4 TB" figure for one year is an
-    # arithmetic slip: 500 x 98,280 x 7 x 8 is ~2.75 GB, which is why this
-    # asserts over a window that is unambiguously over rather than one sitting
-    # on the edge of the budget.)
+    # 500 symbols over two calendar years -- an S&P-500-shaped minute window.
     window = ("2024-01-01", "2025-12-31")
     pricing = _explicit_symbol_catalog(500)
-    daily = pricing.estimate_dense_panel("(explicit)", *window, bars_per_day=1)
-    minute = pricing.estimate_dense_panel("(explicit)", *window, bars_per_day=390)
-    assert minute["dense_bytes"] == daily["dense_bytes"] * 390
+    daily = pricing._roster_window_profile("(explicit)", *window, bars_per_day=1)
+    minute = pricing._roster_window_profile("(explicit)", *window, bars_per_day=390)
+
     assert minute["timestamps"] == daily["trading_days"] * 390
-
-    # The daily window fits; the same window at minute resolution does not.
-    pricing.assert_dense_panel_fits("(explicit)", *window, num_variables=7)
-    with pytest.raises(ValueError, match="Refusing to densify"):
-        pricing.assert_dense_panel_fits(
-            "(explicit)", *window, num_variables=7, bars_per_day=390
-        )
-
-
-def test_the_chunked_panel_guard_keeps_both_of_its_call_sites():
-    """The two guards are SIBLINGS. That one bounds RAM for a dense panel;
-    this one bounds disk, request count and wall clock. Adding the second must
-    not have quietly replaced the first."""
-    body = _main_body("ingest_us_equity.py")
-
-    def _is_chunked(node) -> bool:
-        import ast
-
-        return (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "assert_chunked_panel_fits"
-        )
-
-    import ast
-
-    # Counted as CALLS in the parsed module, never as substrings: the module
-    # docstring names the guard too, and a substring count would report a
-    # deleted call site as present because prose mentioned it.
-    tree = ast.parse(open("ingest_us_equity.py").read())
-    call_sites = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "assert_chunked_panel_fits"
-    ]
-    assert len(call_sites) == 2, [node.lineno for node in call_sites]
-    assert _call_linenos(body, _is_chunked), "the --to-zarr sizing guard is gone"
+    assert minute["dense_cells"] == daily["dense_cells"] * 390
+    assert minute["observed_cells"] == daily["observed_cells"] * 390
+    # The symbol axis and the density are properties of the ROSTER, so the
+    # bars-per-day factor must not touch either. This is the half of the claim
+    # that a plain "everything scales by 390" assertion would miss.
+    assert minute["symbols"] == daily["symbols"] == 500
+    assert minute["density"] == daily["density"]
 
 
 #: The PRE-EDIT return dict of `estimate_acquisition_volume` for the scenario

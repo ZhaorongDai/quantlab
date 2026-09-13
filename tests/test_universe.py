@@ -1341,21 +1341,30 @@ def test_iso_basic_form_inside_coverage_answers_as_its_dashed_equivalent(
 
 
 # ---------------------------------------------------------------------------
-# Dense-panel storage sizing + guard (260906-0iy Task 3, T-0iy-03)
+# Roster-window profile arithmetic (260906-0iy Task 3, T-0iy-03; re-expressed
+# by 03.6-02 after SC-3 deleted the dense-panel sizing this section began as)
 # ---------------------------------------------------------------------------
 
 
-def test_estimate_dense_panel_reports_a_coherent_density(
+def test_the_roster_window_profile_reports_a_coherent_density(
     mock_universe_fetchers, tmp_path
 ):
-    """The estimate must be internally consistent: `dense_cells` is exactly
+    """The profile must be internally consistent: `dense_cells` is exactly
     `symbols * trading_days`, and `density` is `observed / dense` and lands in
     `(0, 1]` -- a density above 1 would mean more observations than grid
     cells, which is the arithmetic bug this pins.
+
+    This test read `estimate_dense_panel` until phase 03.6 SC-3 deleted it. The
+    density arithmetic is ROSTER arithmetic and is exactly what the SURVIVING
+    `estimate_acquisition_volume` reads for its symbol count, trading-day count
+    and density -- so it was repointed at `_roster_window_profile` rather than
+    deleted with the RAM guard. The two byte assertions that closed this test
+    (`dense_bytes`, `observed_bytes`, both `cells * 12 * 8`) DID go: bytes were
+    the deleted half, and the profile does not compute them.
     """
     catalog = UniverseCatalog(_make_config(tmp_path)).build()
 
-    est = catalog.estimate_dense_panel("us_all", "2006-01-01", "2026-09-06")
+    est = catalog._roster_window_profile("us_all", "2006-01-01", "2026-09-06")
 
     assert est["symbols"] == len(
         catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
@@ -1366,200 +1375,38 @@ def test_estimate_dense_panel_reports_a_coherent_density(
     assert est["density"] == est["observed_cells"] / est["dense_cells"]
     assert 0 < est["density"] <= 1
 
-    # 12 == len(enums.data.TiingoColumns.EOD), float64 by default.
-    assert est["dense_bytes"] == est["dense_cells"] * 12 * 8
-    assert est["observed_bytes"] == est["observed_cells"] * 12 * 8
-
-
-def test_assert_dense_panel_fits_raises_with_the_numbers(
-    mock_universe_fetchers, tmp_path, monkeypatch
-):
-    """T-0iy-03. Disk is not the binding constraint -- RAM is.
-    `StockDataset._raw_data_to_xr()` holds the row frame, the dense array and
-    conversion scratch simultaneously, so the full-market window OOMs a 16 GiB
-    machine. The guard must surface that as a LEGIBLE error naming the
-    numbers, not as an OOM three hours into a backfill.
-    """
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-
-    # The real budget, asserted at its real value so it cannot drift silently.
-    assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3
-
-    monkeypatch.setattr(UniverseCatalog, "MAX_DENSE_PANEL_BYTES", 8)
-    with pytest.raises(ValueError) as excinfo:
-        catalog.assert_dense_panel_fits("us_all", "2006-01-01", "2026-09-06")
-
-    message = str(excinfo.value)
-    assert "GiB" in message  # the estimate and the budget, both sized
-    assert "symbol" in message  # the symbol count
-    assert "narrow" in message.lower()  # what the caller should do about it
-
-
-def test_assert_dense_panel_fits_returns_for_a_small_window(
-    mock_universe_fetchers, tmp_path
-):
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-
-    assert catalog.assert_dense_panel_fits("us_all", "2024-01-01", "2024-01-31") is None
-
 
 # ---------------------------------------------------------------------------
-# Per-chunk sizing guard (260906-13w Task 2, D-05)
+# DELETED by phase 03.6 SC-3: the whole-range RAM guard and the per-chunk one.
 #
-# `assert_dense_panel_fits` refuses a window whose DENSE panel does not fit in
-# RAM. Chunking exists precisely to make that window achievable, so the
-# chunked guard is a SIBLING that lifts the whole-range refusal while keeping
-# a per-window one -- and reports the whole-range total as an advisory so the
-# user still sees what they are committing to.
+# Removed here: `test_assert_dense_panel_fits_raises_with_the_numbers`
+# (T-0iy-03), `test_assert_dense_panel_fits_returns_for_a_small_window`, and
+# the five per-chunk tests added by quick task 260906-13w Task 2 --
+# `test_chunked_guard_lifts_the_whole_range_refusal`,
+# `test_each_chunk_is_sized_on_the_pinned_whole_range_symbol_count`,
+# `test_a_too_coarse_granularity_raises_naming_the_chunk_and_the_remedy`,
+# `test_a_finer_granularity_passes_where_a_coarser_one_raises` and
+# `test_chunked_guard_validates_its_inputs` -- plus
+# `test_the_whole_range_guard_survives_beside_the_chunked_one`, whose docstring
+# restated 260906-13w's D-05 ("`assert_dense_panel_fits` and
+# `MAX_DENSE_PANEL_BYTES` are KEPT, not replaced by the chunked guard").
+#
+# D-05 is REVERSED, not merely outgrown: phase 03.6 SC-3 deletes both the
+# whole-range guard and the chunked one, both halves of each (the estimator as
+# well as the refusal). A test asserting that a deleted member survives is not
+# weakenable into something true, so these were deleted rather than edited.
+#
+# The cost is recorded rather than hidden: an over-sized dense panel now
+# reaches OOM instead of the legible refusal these tests pinned. Developer
+# decision 2026-09-11, re-affirmed 2026-09-12; precedent for the failure mode
+# is 260906-13w's own ~7.2 GiB grid on a 16 GiB box.
+#
+# The replacement coverage is two-directional and lives in
+# `tests/test_chunked_panel_estimate.py`: one test goes red if any of the five
+# deleted members returns, one goes red if the acquisition-volume guard beside
+# them is collaterally cut. What survives HERE is the roster-window profile
+# test above, which is the arithmetic the surviving guard actually depends on.
 # ---------------------------------------------------------------------------
-
-_FULL_WINDOW = ("2006-01-01", "2026-09-06")
-
-
-def test_chunked_guard_lifts_the_whole_range_refusal(
-    mock_universe_fetchers, tmp_path, monkeypatch
-):
-    """The same window that `assert_dense_panel_fits` refuses must PASS the
-    chunked guard: lifting that refusal is what chunking is for (D-05). The
-    whole-range total is still reported, as a non-raising advisory.
-    """
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-    whole = catalog.estimate_dense_panel("us_all", *_FULL_WINDOW)
-
-    # A budget the whole range busts and a single year comfortably fits.
-    monkeypatch.setattr(
-        UniverseCatalog, "MAX_DENSE_PANEL_BYTES", whole["dense_bytes"] // 2
-    )
-
-    with pytest.raises(ValueError):
-        catalog.assert_dense_panel_fits("us_all", *_FULL_WINDOW)
-
-    report = catalog.assert_chunked_panel_fits(
-        "us_all", *_FULL_WINDOW, granularity="year"
-    )
-
-    assert report["advisory"]["dense_bytes"] == whole["dense_bytes"]
-    assert report["advisory"]["dense_bytes"] > UniverseCatalog.MAX_DENSE_PANEL_BYTES
-    assert report["granularity"] == "year"
-    assert len(report["chunks"]) == 21  # 2006..2026 inclusive
-    assert report["max_chunk_bytes"] <= UniverseCatalog.MAX_DENSE_PANEL_BYTES
-    assert report["max_chunk_bytes"] == max(c["dense_bytes"] for c in report["chunks"])
-
-
-def test_each_chunk_is_sized_on_the_pinned_whole_range_symbol_count(
-    mock_universe_fetchers, tmp_path
-):
-    """The single easiest thing to get subtly wrong.
-
-    Every window is materialised on the symbol axis pinned over the WHOLE
-    range (D-02), so a chunk allocates `whole_range_symbols x
-    chunk_trading_days x variables` -- not the symbols that happen to overlap
-    that chunk. Sizing a chunk with `estimate_dense_panel()` scoped to the
-    chunk would understate the real allocation and let the OOM back in.
-    """
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-    whole = catalog.estimate_dense_panel("us_all", *_FULL_WINDOW)
-
-    report = catalog.assert_chunked_panel_fits("us_all", *_FULL_WINDOW)
-
-    # DLIST1 ends 2020-01-01, so the 2025 roster is genuinely smaller than
-    # the whole-range one -- the fixture makes the understatement observable.
-    chunk = next(c for c in report["chunks"] if c["start"].startswith("2025"))
-    scoped = catalog.estimate_dense_panel("us_all", chunk["start"], chunk["end"])
-
-    assert scoped["symbols"] < whole["symbols"]
-    assert chunk["symbols"] == whole["symbols"]
-    assert chunk["dense_bytes"] == whole["symbols"] * chunk["trading_days"] * 12 * 8
-    assert chunk["dense_bytes"] > scoped["dense_bytes"]
-
-
-def test_a_too_coarse_granularity_raises_naming_the_chunk_and_the_remedy(
-    mock_universe_fetchers, tmp_path, monkeypatch
-):
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-    monkeypatch.setattr(UniverseCatalog, "MAX_DENSE_PANEL_BYTES", 8)
-
-    with pytest.raises(ValueError) as excinfo:
-        catalog.assert_chunked_panel_fits("us_all", *_FULL_WINDOW, granularity="year")
-
-    message = str(excinfo.value)
-    assert "2006" in message  # the offending window
-    assert "GiB" in message  # its size and the budget
-    assert "--chunk" in message  # the remedy
-
-
-def test_a_finer_granularity_passes_where_a_coarser_one_raises(
-    mock_universe_fetchers, tmp_path, monkeypatch
-):
-    """`--chunk` genuinely reaches the sizing path: monthly windows are
-    smaller than yearly ones, so a budget between the two admits one and
-    refuses the other.
-    """
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-    yearly = catalog.assert_chunked_panel_fits("us_all", *_FULL_WINDOW, granularity="year")
-    monthly = catalog.assert_chunked_panel_fits(
-        "us_all", *_FULL_WINDOW, granularity="month"
-    )
-
-    assert len(monthly["chunks"]) > len(yearly["chunks"])
-    assert monthly["max_chunk_bytes"] < yearly["max_chunk_bytes"]
-
-    monkeypatch.setattr(
-        UniverseCatalog, "MAX_DENSE_PANEL_BYTES", yearly["max_chunk_bytes"] - 1
-    )
-    with pytest.raises(ValueError):
-        catalog.assert_chunked_panel_fits("us_all", *_FULL_WINDOW, granularity="year")
-    assert (
-        catalog.assert_chunked_panel_fits(
-            "us_all", *_FULL_WINDOW, granularity="month"
-        )["max_chunk_bytes"]
-        <= UniverseCatalog.MAX_DENSE_PANEL_BYTES
-    )
-
-
-def test_the_whole_range_guard_survives_beside_the_chunked_one():
-    """D-05: `assert_dense_panel_fits` and `MAX_DENSE_PANEL_BYTES` are kept,
-    with their current signatures and current behaviour. The chunked guard is
-    an addition, never a replacement -- weakening the original to make the
-    full window pass is exactly the non-deliverable.
-    """
-    import inspect
-
-    signature = inspect.signature(UniverseCatalog.assert_dense_panel_fits)
-    # The original parameters, in their original ORDER, all still present. A
-    # later parameter may be APPENDED (`bars_per_day` was, so an intraday
-    # caller can size the real timestamp axis -- CR-03), but removing or
-    # reordering one of these would silently rebind a positional caller.
-    assert list(signature.parameters)[:6] == [
-        "self",
-        "category",
-        "start_date",
-        "end_date",
-        "num_variables",
-        "bytes_per_value",
-    ]
-    # And every appended parameter must DEFAULT to the pre-existing behaviour,
-    # so a daily caller that names none of them is byte-identical to before.
-    for name in list(signature.parameters)[6:]:
-        assert signature.parameters[name].default is not inspect.Parameter.empty
-    assert signature.parameters["bars_per_day"].default == 1
-    assert UniverseCatalog.MAX_DENSE_PANEL_BYTES == 4 * 1024**3
-
-
-def test_chunked_guard_validates_its_inputs(mock_universe_fetchers, tmp_path):
-    """`[]`-shaped silent wrongness is the failure mode every query method in
-    this class validates against; the guard is no different.
-    """
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-
-    with pytest.raises(ValueError, match="Unknown universe category"):
-        catalog.assert_chunked_panel_fits("nope", *_FULL_WINDOW)
-    with pytest.raises(ValueError, match="ISO"):
-        catalog.assert_chunked_panel_fits("us_all", "01/01/2006", "2026-09-06")
-    with pytest.raises(ValueError, match="fortnight"):
-        catalog.assert_chunked_panel_fits(
-            "us_all", *_FULL_WINDOW, granularity="fortnight"
-        )
 
 
 # ---------------------------------------------------------------------------
