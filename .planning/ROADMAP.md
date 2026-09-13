@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 8/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
+**Plans:** 9/11 plans executed (01–07 executed; 08–11 are a THIRD-round gap-closure set, `gap_closure: true`, added 2026-09-13 after `03.6-VERIFICATION.md` scored 21/22 with `gaps_remaining: []` — the phase GOAL and SC-1..SC-8 are each VERIFIED, and the one FAILED truth is plan `03.6-07`'s own over-broad must-have plus the unconditional false statement it left in production)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -842,7 +842,7 @@ module — which is the condition that lets them run in parallel)*
   PINS the two-grid outcome as an accepted cost, so the day someone fixes `write()` the ledger,
   the docstring and the plan must-have are forced to move together. Zero executable-code change,
   locked by a docstring-stripped AST comparison (D-18, PHASE-GOAL-caller-owns-a-stated-cost)
-- [ ] 03.6-09-PLAN.md — WR-04, pulled in from advisory and reproduced first.
+- [x] 03.6-09-PLAN.md — WR-04, pulled in from advisory and reproduced first.
   `_restore_rebuild_asides` runs inside `from_raw_data_chunked`'s `except BaseException: … raise`
   handler, and its silent `rmtree` followed by `os.replace` can raise `OSError` from inside that
   handler — REPLACING the real failure of a multi-hour rebuild with an unrelated cleanup error.

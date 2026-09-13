@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-08-PLAN.md
-last_updated: "2026-09-13T20:48:10.450Z"
+stopped_at: Completed 03.6-09-PLAN.md
+last_updated: "2026-09-13T21:34:08.744Z"
 last_activity: 2026-09-13
 last_activity_desc: Phase 03.6 execution started
-state_head: 4b6192fc75d1b375fa4c41a2c81d32f576ef28d9
+state_head: c8adc2ba899d3ef1827f50f7fe45eafeae25df63
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 58
-  completed_plans: 55
+  completed_plans: 56
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
-Plan: 2 of 11
+Plan: 3 of 11
 Status: Ready to execute
 Last activity: 2026-09-13 — Phase 03.6 execution started
 
@@ -112,6 +112,7 @@ Progress: [██████████] 100%
 | Phase 03.6 P06 | 8 min | 3 tasks | 7 files |
 | Phase 03.6 P07 | 1h05m | 3 tasks | 3 files |
 | Phase 03.6 P08 | 22 min | 3 tasks | 2 files |
+| Phase 03.6 P09 | 41min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -237,6 +238,10 @@ Recent decisions affecting current work:
 - [Phase 03.6]: 03.6-07: widen_and_append reads append_dim_size with kwargs.get and never pop, so the symbol widen, the variable widen and the closing append() all reach it from one read and 03.6-05's creating-write fix is not starved
 - [Phase 03.6]: Route (b) executed as locked for GAP #19: widen_and_append's falsified universal is narrowed and marked under D-18; XrBackend.write() is deliberately NOT fixed (route (a) declined). — Pinning encoding in write() would change the on-disk chunk grid of every store this project writes, on a pre-03.6 bulk-write path 03.6-REVIEW-FIX.md already declined as out of scope. The residual two-grid layout cost is accepted, named in production with its measured numbers, and pinned by an executable arm.
 - [Phase 03.6]: WR-06's delete-the-excerpt half declined on the record; the marker-prefix half adopted, with every correction written as prose so no new transcription enters the file. — D-18 forbids deleting falsified text -- preserve-and-mark is the discipline this whole round enforces. The rot concern WR-06 raised is answered by prose corrections rather than by deletion.
+- [Phase 03.6]: WR-04 is a real defect, reproduced red before the fix: a cleanup OSError inside `_restore_rebuild_asides` replaced the exception being handled (ENOTDIR induction stands in for the reported ENOTEMPTY)
+- [Phase 03.6]: A cleanup path that only ever runs from an `except ... raise` handler catches its own OSError, logs the surviving aside and the manual remedy, and returns a boolean -- scoped to OSError so a KeyError stays loud
+- [Phase 03.6]: `_restore_rebuild_asides` returns whether it actually restored; `ConversionResult.rebuild_rolled_back` reports that answer instead of an unconditional True
+- [Phase 03.6]: A failed restore is NOT auto-recovered -- the complete copy stays at the aside path and the ERROR names the manual move (T-03.6-09-03, accepted)
 
 ### Pending Todos
 
@@ -292,8 +297,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T20:47:42.290Z
-Stopped at: Completed 03.6-08-PLAN.md
+Last session: 2026-09-13T21:34:08.478Z
+Stopped at: Completed 03.6-09-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
