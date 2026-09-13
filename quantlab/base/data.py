@@ -998,9 +998,46 @@ class BaseDataset(ABC):
         return self
 
     #: Appended to the store and ledger paths while a `rebuild` is in flight.
-    #: Deliberately the same suffix `XrBackend.widen_symbol_axis` uses: both are
-    #: "the previous authoritative copy, kept until the replacement lands".
-    SUPERSEDED_SUFFIX = ".superseded.tmp"
+    #:
+    #: **That comment called the shared suffix deliberate and was right about
+    #: WHY, but it did not anticipate what sharing it COSTS.** SUPERSEDED by
+    #: phase 03.6's third gap-closure pass (plan `03.6-10`); the original
+    #: wording is kept above rather than deleted so the correction is legible
+    #: (D-18). It read: "Deliberately the same suffix
+    #: `XrBackend.widen_symbol_axis` uses: both are
+    #: 'the previous authoritative copy, kept until the replacement lands'."
+    #: That claim is still TRUE and is not retracted -- the two artefacts
+    #: really do mean the same thing.
+    #:
+    #: The consequence it missed: both producers write the SAME suffix after
+    #: the SAME store path, so on disk a `rebuild` aside is INDISTINGUISHABLE
+    #: from a crashed widen's aside. And the rebuild aside can outlive its
+    #: run: `_restore_rebuild_asides` executes only on an exception or a
+    #: cancel, and a SIGKILL reaches neither, so a killed
+    #: `on_new_listing="rebuild"` leaves `<store>.superseded.tmp` on disk with
+    #: nothing left to reclaim it (on the resume, `_reconcile_new_listings`
+    #: sees the partial store's roster already on the new union, falls
+    #: through, and `_discard_rebuild_asides` never runs).
+    #:
+    #: Before plan `03.6-10` that residue wedged the widen path: with a store
+    #: AND a non-empty residue both present, `XrBackend.widen_symbol_axis` had
+    #: no guard, so it materialised and wrote the ENTIRE sidecar and only then
+    #: raised from the closing rename -- measured `OSError: [Errno 66]
+    #: Directory not empty`, the whole rewrite thrown away and an orphaned
+    #: `.widening.tmp` holding a complete widened store left behind. That
+    #: method now decides the state BEFORE any write: a non-empty residue is
+    #: refused with a message naming both producers and the manual remedy, an
+    #: empty one is removed. Locked by `tests/test_widen_crash_residue.py`.
+    #:
+    #: The fix here is SINGLE DEFINITION rather than a rename: this is a
+    #: reference to `XrBackend.SUPERSEDED_SUFFIX`, so the two cannot drift
+    #: apart and the widen guard cannot stop recognising the aside it exists
+    #: to notice. Renaming the dataset side (the review's other branch) was
+    #: DECLINED: it would change an on-disk artefact name for no safety the
+    #: guard does not already provide, and would make an existing
+    #: `.superseded.tmp` residue on a real operator's disk invisible to the
+    #: very code meant to notice it.
+    SUPERSEDED_SUFFIX = XrBackend.SUPERSEDED_SUFFIX
 
     @staticmethod
     def _stored_symbol_axis(
