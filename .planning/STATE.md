@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.6"
-current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
+current_phase_name: frequency-keyed-chunking-policy
 status: executing
 stopped_at: Completed 03.6-07-PLAN.md
-last_updated: "2026-09-13T18:28:30.300Z"
+last_updated: "2026-09-13T20:22:59.591Z"
 last_activity: 2026-09-13
 last_activity_desc: Phase 03.6 execution started
-state_head: ed9d77a552a1e0bb3bea5c46ad98656631463e1a
+state_head: 1a03ca5c832bf1c38ef369c551a5fe20eb7fbf36
 progress:
   total_phases: 13
   completed_phases: 1
-  total_plans: 54
+  total_plans: 58
   completed_plans: 53
 milestone_name: milestone
 ---
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
+Phase: 03.6 (frequency-keyed-chunking-policy) — READY TO EXECUTE
 Plan: 2 of 7
 Status: Ready to execute
 Last activity: 2026-09-13 — Phase 03.6 execution started
