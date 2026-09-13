@@ -723,7 +723,7 @@ roster catalogue goes back to answering only "who is in the pool, and when".
 - The acquisition-volume group and the dense-panel group are different things. Only the latter is
   deleted: the former bounds money and wall clock, and a burned API quota is not recoverable.
 
-**Plans:** 6 plans (4 executed; 2 gap-closure plans pending after the `gaps_found` verdict in `03.6-VERIFICATION.md`)
+**Plans:** 5/6 plans executed (4 executed; 2 gap-closure plans pending after the `gaps_found` verdict in `03.6-VERIFICATION.md`)
 
 **Planning note (2026-09-12):** SC-3 and SC-4 are in direct tension and the tension is
 real, not editorial. An AST walk of `quantlab/acquisition/universe.py` shows
@@ -781,7 +781,7 @@ alone)*
 
 **Wave 1**
 
-- [ ] 03.6-05-PLAN.md — GAP #1, the only gap, and it hangs on the phase GOAL's
+- [x] 03.6-05-PLAN.md — GAP #1, the only gap, and it hangs on the phase GOAL's
   caller-owns-a-stated-cost half rather than on any SC: the chunked write path let the FIRST
   WINDOW pin the Zarr store's permanent on-disk chunk grid (measured `--chunk day` -> `(1,3)`
   where the unchunked path leaves `(9,3)`), an irreversible degradation whose only remedy is

@@ -4,15 +4,16 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-04-PLAN.md
-last_updated: "2026-09-13T04:41:38.101Z"
-last_activity: Phase 03.5 all 6 plans complete — entering phase gates
-state_head: 2e23b16159b321ba2d6bf7e5008ed0d1732df762
+stopped_at: Completed 03.6-05-PLAN.md
+last_updated: "2026-09-13T05:14:29.073Z"
+last_activity: 2026-09-13
+last_activity_desc: Phase 03.6 execution started
+state_head: 4710f66efa85321580ee4ae480214506e739a954
 progress:
   total_phases: 13
   completed_phases: 1
   total_plans: 53
-  completed_plans: 51
+  completed_plans: 52
 milestone_name: milestone
 ---
 
@@ -23,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.5 — Registry-level raw→Zarr Conversion Entry Point (INSERTED)
+**Current focus:** Phase 03.6 — Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 
 ## Current Position
 
-Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — READY TO EXECUTE
-Plan: 5 of 6
+Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: Phase 03.5 all 6 plans complete — entering phase gates
+Last activity: 2026-09-13 — Phase 03.6 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -107,6 +108,7 @@ Progress: [██████████] 100%
 | Phase 03.6 P02 | 4h 51m | 3 tasks | 12 files |
 | Phase 03.6 P03 | 21 min | 2 tasks | 2 files |
 | Phase 03.6 P04 | 16 min | 3 tasks | 7 files |
+| Phase 03.6 P05 | 34 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -281,8 +283,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T02:30:39.836Z
-Stopped at: Completed 03.6-04-PLAN.md
+Last session: 2026-09-13T05:14:28.715Z
+Stopped at: Completed 03.6-05-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
