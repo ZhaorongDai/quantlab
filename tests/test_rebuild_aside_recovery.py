@@ -167,6 +167,14 @@ def test_a_failed_restore_logs_the_surviving_aside_and_reports_no_rollback(
 
     RED on HEAD `00cd680`: the call raises `OSError`, so it never returns and
     none of the three hold.
+
+    The SUCCESS half at the bottom is what makes the two-way return a
+    CONTRACT rather than a detail of the failure branch. Without it a future
+    refactor could return `False` unconditionally -- or `True` -- and the
+    failure assertions above would still pass. It also pins the level split:
+    a restore that worked is a WARNING, a restore that did not is an ERROR,
+    and an operator filtering on ERROR must not be paged by the ordinary
+    rollback of their own cancel.
     """
     dataset = _dataset(tmp_path)
     asides = _asides(tmp_path / "wreck", restorable=False)
@@ -183,4 +191,30 @@ def test_a_failed_restore_logs_the_surviving_aside_and_reports_no_rollback(
     assert any(asides["store_aside"] in m for m in errors), (
         "the ERROR does not name the aside path that still holds the "
         f"complete copy; captured: {errors}"
+    )
+
+    # --- the success path, unchanged by the fix except for the return -----
+    ok = _asides(tmp_path / "intact", restorable=True)
+
+    ok_messages, ok_sink_id = _captured_logs()
+    try:
+        ok_restored = dataset._restore_rebuild_asides(ok, reason="cancelled")
+    finally:
+        logger.remove(ok_sink_id)
+
+    assert ok_restored is True
+    assert Path(ok["store"]).is_dir(), "the store was not put back"
+    assert (Path(ok["store"]) / "marker.txt").read_text() == "pre-rebuild", (
+        "the PARTIAL rebuild is still at the authoritative path -- the "
+        "pre-rebuild copy did not replace it"
+    )
+    assert not Path(ok["store_aside"]).exists(), "the aside was not consumed"
+    ok_warnings = [m for m in ok_messages if m.startswith("WARNING|")]
+    assert ok_warnings, f"no WARNING was logged; captured: {ok_messages}"
+    assert any("cancelled" in m for m in ok_warnings), (
+        f"the WARNING does not name the reason; captured: {ok_warnings}"
+    )
+    assert not [m for m in ok_messages if m.startswith("ERROR|")], (
+        "an ordinary rollback logged at ERROR; an operator filtering on "
+        f"ERROR would be paged by their own cancel. Captured: {ok_messages}"
     )
