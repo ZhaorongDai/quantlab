@@ -71,31 +71,7 @@ class Alpha101SpotKline(FactorKunQuant):
 
 
 class Alpha101Stock(FactorKunQuant):
-    """Alpha101 factor set over US-equity (Tiingo/`StockDataset`) data.
-
-    **Normalization: none. This class emits raw, un-normalized factor values.**
-
-    US equities in this project are traded with 截面 / cross-sectional
-    strategies, which normalize ACROSS SYMBOLS at each timestamp -- not across
-    each symbol's own rolling time window. `my_ops/preprocess.py:WindowedZScore`
-    is the latter, a 时序 / time-series normalization, which is why its absence
-    here is correct-by-design and NOT a defect to "fix" by adding one to align
-    this class with `Alpha101SpotKline`. The downstream consumer applies its own
-    cross-sectional normalization to these raw values.
-
-    This is a strategy-type choice, not a market-dependent bug. See NORM-01 in
-    `03-03-PLAN.md` and the locked decision D-09 in
-    `.planning/phases/03-factor-computation-kunquant-polars/03-CONTEXT.md`;
-    `tests/test_factor_kunquant.py:test_normalization_matrix_matches_recorded_strategy_types`
-    is the automated lock. An actual cross-sectional Z-score op is deferred to
-    the ARCH-01/ARCH-02 work in Phase 6 -- D-09 asks for raw output here, not
-    for that op to be built now.
-
-    The class's one genuine historical defect was the missing `amount` input
-    (fixed in 03-03: `Alpha101.AllData` unconditionally derives `vwap` from it,
-    so construction raised `RuntimeError: Bad inputs, given <class 'NoneType'>`).
-    Its lack of a rolling z-score was never part of that defect.
-    """
+    """Alpha101 factor set over US-equity (Tiingo/`StockDataset`) data."""
 
     def __init__(self, factor_config: FactorConfig):
         super().__init__(factor_config)
@@ -104,12 +80,12 @@ class Alpha101Stock(FactorKunQuant):
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
-            close = Input("close")
-            low = Input("low")
-            high = Input("high")
-            vopen = Input("open")
+            close = Input("adjClose")
+            low = Input("adjLow")
+            high = Input("adjHigh")
+            vopen = Input("adjOpen")
             amount = Input("amount")
-            vol = Input("volume")
+            vol = Input("adjVolume")
             all_data = Alpha101.AllData(
                 low=low,
                 high=high,

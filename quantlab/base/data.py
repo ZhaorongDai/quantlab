@@ -16,13 +16,6 @@ from nautilus_trader.persistence.catalog import ParquetDataCatalog
 from tqdm import tqdm
 
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
-
-# `quantlab/base/progress.py` is a LEAF by contract -- its module docstring
-# says so and `tests/test_acquisition_progress.py` asserts it structurally by
-# walking that file's `ast`. It imports stdlib plus `tqdm` and nothing from
-# quantlab, so importing it HERE introduces no cycle, which is what lets the
-# chunk loop carry the same two handles the acquisition loop already carries
-# (03.5 D-05).
 from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.dataset.backend import XrBackend
 from quantlab.dataset.cleaning import clean_market_data
@@ -33,51 +26,6 @@ from quantlab.utils.timer import Timer
 @dataclass(frozen=True)
 class ConversionResult:
     """What ONE raw->Zarr conversion did, as a value the caller can render.
-
-    Returned by `quantlab/acquisition/registry.py:convert()` (03.5 D-04), so
-    an in-process caller -- the out-of-repo `quantlab-console` first -- learns
-    the outcome without reading disk, and without this layer printing a line.
-
-    **Defined HERE, in `base/`, for the direction stated at
-    `quantlab/base/acquisition.py:113-118`** for `AcquisitionResult`: the base
-    layer must not import the acquisition package, so a result type living
-    beside the registry would have to be imported backwards or duplicated.
-    `registry.py` imports it from here, exactly as it already imports
-    `AcquisitionResult`. It lives in `base/data.py` rather than
-    `base/acquisition.py` because it describes the DATASET layer's output --
-    `from_raw_data_chunked()` is what fills it in.
-
-    **`peak_window_bytes` and `predicted_peak_bytes` are two different
-    measurements and are deliberately not merged.** `peak_window_bytes` is
-    OBSERVED: the `nbytes` of the largest window this run actually
-    materialised, and `None` when no window was written (a fully-resumed run
-    materialises nothing). `predicted_peak_bytes` is the CALLER'S OWN
-    pre-flight estimate, echoed back untouched so a report can put prediction
-    beside outcome.
-
-    **Why `convert()` computes nothing of its own (03.5 D-11).** SUPERSEDED by
-    phase 03.6 (SC-3). The original sentence read: "`convert()` cannot compute
-    it: 03.5 D-11 puts the RAM guard at every call site, so `convert()` has no
-    roster category to size against and asks for no arithmetic of its own."
-    The deleted guard is not named here: phase 03.6's SC-3 gate asserts those
-    symbols appear nowhere in the tree as executable references, and the
-    convention this repository adopted with that annotation is to describe the
-    deleted capability rather than restate its name. Phase 03.6 DELETED the
-    guard, so the premise is false while the conclusion happens to survive:
-    `convert()` still asks for no arithmetic of its own, but the reason is now
-    that NO call site runs a RAM guard at all -- not that the guard lives
-    upstream. The recorded risk is UNMITIGATED rather than
-    mitigated-at-the-call-site. `predicted_peak_bytes` survives as an
-    out-of-repo caller's OWN estimate, echoed so a report can put prediction
-    beside outcome; passing it buys no protection. See
-    `quantlab/acquisition/registry.py` -- `convert()`'s own docstring carries
-    the fuller treatment of this same D-11 supersession.
-
-    **Carries paths, integer counts and booleans, and nothing else**
-    (T-03.5-02). No vendor response body, no exception text, no environment
-    value -- the credential rule the registry module docstring states in full
-    applies to every egress from this repository, and a result object rendered
-    into a console screenshot is an egress.
     """
 
     #: The Zarr store that was written -- `config.zarr_file_path`, echoed so
@@ -133,20 +81,6 @@ class ConversionResult:
 
 class BaseDataset(ABC):
     """The shared, storage-medium-agnostic dataset contract (D-03, DATA-06).
-
-    Everything the pipeline needs from a dataset lives here: the `config`
-    lifecycle, the `XrBackend` storage round-trip (`read`/`save`), the
-    `xr.Dataset` / `pl.LazyFrame` accessors, the `from_raw_data()` ingestion
-    pipeline with its overridable `_clean()` hook, and the single abstract
-    member `_raw_data_to_xr()` that every dataset kind implements for itself.
-
-    The base is deliberately free of any nautilus or KunQuant concept -- no
-    bar conversion, no `ParquetDataCatalog`, no compiled-graph input arrays,
-    and no read of the market-only `raw_data_dir_path`/`catalog_path`/
-    `market`/`frequency` config fields. That is what lets a dataset with no
-    OHLCV shape at all -- an index-membership panel, say -- complete the whole
-    persistence lifecycle by implementing exactly one abstract method, instead
-    of carrying two meaningless `raise NotImplementedError` stubs.
     """
 
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
@@ -284,23 +218,6 @@ class BaseDataset(ABC):
 
     @property
     def time_interval(self) -> np.timedelta64:
-        """相邻时间戳之差的**众数**（针对周末/停牌造成的缺口）。
-
-        `get_xarray_dataset(["timestamp"])` 要的就是「只剩时间轴」的那份数据，
-        差分只在这一根轴上做。以前 `XrBackend` 忽略 `indexes`，这里拿回的是整个
-        面板，于是这个属性在该后端下**根本跑不通**——两个错误接连出现（都在
-        `data/data/us_equity/1d/us_all.zarr` 上实测过）：
-
-            TypeError: numpy boolean subtract, the `-` operator, is not
-            supported ...                      # .diff 撞上布尔的 anomaly_flag
-            AttributeError: 'Dataset' object has no attribute 'to_series'
-
-        2026-09-07 一并修好：`indexes` 现在真的收窄维度，而 `.to_series()` 是
-        `DataArray` 的方法不是 `Dataset` 的，所以这里显式取 `["timestamp"]` 这个
-        坐标再差分。由 `tests/test_backend_indexes.py` 锁。
-
-        唯一的调用点是 `dataset/spot.py:_xr_to_bars`（nautilus 那条路）。
-        """
         timestamps = self.data_backend.get_xarray_dataset(["timestamp"])[
             "timestamp"
         ]
@@ -352,7 +269,6 @@ class BaseDataset(ABC):
             self._config.end_date, "end_date"
         )
 
-
     def _normalize_date(self, value: str, field_name: str) -> str:
         try:
             return datetime.date.fromisoformat(str(value)).isoformat()
@@ -387,27 +303,6 @@ class BaseDataset(ABC):
 
     def head(self, n: int) -> pl.LazyFrame:
         """A BOUNDED read of at most `n` rows -- `get_lazyframe()`'s twin.
-
-        Concrete, not abstract, and shaped exactly like the pass-through above
-        it: the bound and now the STORE LOCATION are both properties of the
-        STORAGE MEDIUM. The dataset supplies the path it already owns --
-        exactly as `read()` does, one method up -- and adds no opinion of its
-        own, so every dataset kind inherits whatever its backend implements.
-        `tests/test_dataset_hierarchy.py` pins
-        `BaseDataset.__abstractmethods__` to `{"_raw_data_to_xr"}` and that
-        assertion is correct -- one abstract member is what lets a dataset
-        with no OHLCV shape at all complete the whole lifecycle.
-
-        The signature takes `n` only: the path is not the caller's to choose,
-        and its one caller (`base/factor_polars.py`) has no business naming
-        the store.
-
-        Used by `base/factor_polars.py` to learn what its computation graph
-        produces WITHOUT going through `read()`: names derive from the GRAPH,
-        and the graph needs a schema, not data. Routing that probe through
-        `read()` is what silently narrowed the shared dataset's date window
-        and dropped the factor's lookback (RV-01) -- `read()` runs `_filter()`
-        and the backend caches the result.
         """
         return self.data_backend.head(self.config.zarr_file_path, n)
 
@@ -426,25 +321,6 @@ class BaseDataset(ABC):
     def _raw_axes_in_range(self) -> tuple[list[str], "pd.DatetimeIndex"]:
         """Return `(pinned_symbols, observed_timestamps)` for the config's
         whole date range, from ONE scan of the raw source.
-
-        Overridable seam. **This default is correct but NOT memory-bounded:**
-        it derives both axes from `_raw_data_to_xr()`, so it materialises the
-        entire dense whole-range panel -- exactly the allocation
-        `from_raw_data_chunked()` exists to avoid. It is the historical
-        behaviour rather than a `raise NotImplementedError` stub, following
-        `_reset_symbols()`'s idiom, so every existing subclass keeps working
-        unchanged.
-
-        A subclass whose raw source can push a date/column filter DOWN before
-        materialisation (a `pl.LazyFrame` over parquet, say) overrides this
-        and gets the memory bound; one that cannot inherits a working, slower
-        default.
-
-        No run-time warning accompanies that default any more, on either seam.
-        For a market dataset the obligation is enforced at construction
-        instead -- `MarketDataset` re-declares `_raw_data_to_xr_window`
-        abstract (D-08) -- and for a non-market dataset the default is the
-        intended behaviour rather than a degradation worth warning about.
         """
         data = self._raw_data_to_xr()
         symbols = [str(symbol) for symbol in data["symbol"].values.tolist()]
@@ -457,30 +333,6 @@ class BaseDataset(ABC):
         symbols: list[str] | None = None,
     ) -> xr.Dataset:
         """Densify ONE time window, onto `symbols` when a pinned axis is given.
-
-        Overridable seam, and the same caveat as `_raw_axes_in_range()`
-        applies: **this default is correct but NOT memory-bounded**, because
-        it densifies the whole range and slices afterwards. Overriding it is
-        what turns chunking from a bounded WRITE into a bounded DENSIFY.
-
-        **Who still inherits this.** Non-market datasets -- an index-membership
-        panel, say, which subclasses `BaseDataset` directly -- and for them the
-        default is the intended behaviour, not a degradation. `MarketDataset`
-        RE-DECLARES this method `@abstractmethod` (D-08), so a market dataset
-        never reaches this body: the seam is the single entrance ticket to
-        chunked conversion, and an obligation that can be met by accident is
-        not an obligation. A market source with no windowed densify used to
-        get a `logger.warning` and silent degradation to whole-range densify
-        plus slice; it now fails to instantiate, with the missing method
-        named. `StockDataset._raw_data_to_xr_window` is the reference
-        implementation a new author copies the shape of;
-        `SpotKlineDataset._raw_data_to_xr_window` is what an honest
-        not-yet-bounded implementation looks like.
-
-        When `symbols` is supplied the returned panel's `symbol` coordinate
-        equals it exactly, including symbols with no row in this window --
-        those become all-NaN columns, which is the same value the whole-range
-        densification already produces for an untraded cell.
         """
         data = self._raw_data_to_xr()
         data = data.sel(timestamp=slice(start_date, end_date))
@@ -495,58 +347,6 @@ class BaseDataset(ABC):
         append_dim: str = "timestamp",
     ) -> Self:
         """Bring the store up to date -- the AUTOMATIC incremental path.
-
-        `Factor.update()`'s counterpart at the dataset layer, and the split
-        means the same thing on both sides: `from_raw_data()` and
-        `from_raw_data_chunked()` CONVERT with an explicit strategy and their
-        behaviour is unchanged; `update()` EXTENDS and works out for itself
-        what the strategy has to be. Which one a caller reaches for is how it
-        says which it means.
-
-        **There is no strategy parameter, and its absence is the feature.**
-        The choice between widening the store's symbol axis and rebuilding it
-        from raw is not a preference -- it is a FACT about the raw tier, and a
-        caller who guesses it wrong loses data invisibly. So it is read rather
-        than asked for. Three-way, from evidence:
-
-        - ANY newly-added symbol already carrying raw rows INSIDE the store's
-          own append-dim extent -> `rebuild`. Those rows are history a widen
-          would replace with NaN, leaving the store indistinguishable from one
-          where the data never existed. Whole-store, because rebuild is not a
-          per-symbol operation.
-        - NO added symbol carrying such rows -> `widen`. They are genuine new
-          listings, NaN is the correct value over the store's history, and a
-          rebuild would be pure cost.
-        - ANY REMOVED symbol -> `refuse`. `widen` cannot express a dropped
-          label at all (`XrBackend.widen_symbol_axis` refuses a target axis
-          that is not a superset of the stored one) and `rebuild` would
-          silently discard that label's stored history. Neither is safe to
-          choose without an operator, so this path halts rather than inventing
-          an answer.
-
-        The decision is SPOKEN before a rebuild runs -- how many added symbols
-        qualified and, for each, its raw row count inside the store's extent.
-        A silent strategy switch is the same opacity as a wrong flag, in the
-        other direction.
-
-        The probe is only ever paid when the symbol axes actually DRIFTED, and
-        it is asked about the STORE's extent rather than the config's range.
-        Measured ordering (see `_added_symbols_with_raw_history`): the extent
-        probe costs less than a whole-tier probe, which costs less than the
-        `_raw_axes_in_range()` scan every chunked run already pays
-        unconditionally.
-
-        **No route to overwrite a range the store already holds.** There is no
-        `mode` parameter, nothing named to loosen or bypass a guard, and the
-        unconditional append-dim overlap refusal is inherited through the
-        UNCHANGED backend append. That guard runs before any keyword is read,
-        so no argument gets past it whatever it is named. Re-deriving a stored
-        range is the wholesale interface's job.
-
-        Everything else -- window planning, the ledger, resume, the per-window
-        loop, rebuild-aside restoration -- is `from_raw_data_chunked()`'s,
-        forwarded verbatim rather than reimplemented. This method differs from
-        it in exactly one respect: where the strategy comes from.
         """
         return self.from_raw_data_chunked(
             granularity=granularity,
@@ -565,69 +365,7 @@ class BaseDataset(ABC):
         reporter: ProgressReporter | None = None,
         cancel: CancelToken | None = None,
     ) -> Self:
-        """Densify and append ONE time window at a time (D-01).
-
-        Peak memory scales with the WINDOW rather than the range, which is
-        what makes the full multi-decade, full-market panel materialisable on
-        a machine that cannot hold it whole.
-
-        The ordering is load-bearing:
-
-        1. The symbol axis is resolved ONCE over the whole range, BEFORE any
-           window exists (D-02) -- the same all-time-union rule
-           `base/constituent.py:_densify` follows. If each window derived its
-           own axis, the chunks would carry inconsistent coordinates and the
-           append would silently misalign, so every window is materialised on
-           this one pinned axis and checked against it element-for-element.
-        2. Windows come from the OBSERVED timestamp axis, never from calendar
-           arithmetic: trading days are not calendar days.
-        3. Completed windows are recorded in a sidecar ledger, so an
-           interrupted run resumes at the first unwritten window (D-04).
-
-        `on_new_listing` decides what happens when step 1's pinned axis no
-        longer matches the STORE's -- the routine consequence of a new listing
-        between two periodic refreshes. See `NEW_LISTING_STRATEGIES`; the
-        default `refuse` reproduces the pre-260906-x2s behaviour exactly.
-
-        Its type admits a NON-`str` arm for exactly ONE private sentinel,
-        `_AUTOMATIC`, which `update()` passes and nothing else may. The runtime
-        check against it is an IDENTITY comparison against that one object, so
-        the widened annotation documents what is REACHABLE rather than inviting
-        arbitrary values. The annotation moved because leaving it claiming
-        `str` after a non-`str` value became legal would be FALSE, and a false
-        annotation misleads in the one direction that matters here: it implies
-        some string is the automatic route, which is precisely what the
-        sentinel exists to forbid. The DEFAULT VALUE is untouched, so every
-        caller passing an explicit strategy gets byte-identical behaviour.
-
-        **`reporter` and `cancel` are the console's two handles on a running
-        conversion** (03.5 D-05), word for word the pair `registry.run()`
-        carries for an acquisition and for the identical reason: neither can
-        be added from outside, because the loop lives here. Both are
-        KEYWORD-ONLY with `None` defaults, so every existing call site --
-        including `update()`'s -- is unchanged and gets today's behaviour
-        exactly: loguru progress lines, and no way to stop the run early.
-
-        No default reporter is instantiated when none is supplied. This method
-        already logs its own per-window progress through loguru, and opening a
-        stderr bar beside those lines would be a behaviour change wearing a
-        feature's clothes.
-
-        `cancel` is observed at WINDOW BOUNDARIES only -- at the top of each
-        iteration, before the window is materialised. Stopping mid-window
-        would leave a densified panel unappended for no benefit, and a check
-        between the append and `ledger.record` would leave the store and the
-        ledger disagreeing about the same window (T-03.5-19). Every window
-        recorded before the stop stays resumable, which is the
-        completed-work-stays-resumable precondition `ChunkLedger` already
-        supplies and the acquisition side had to retrofit with atomic
-        sidecars.
-
-        Neither object is ever assigned onto `self.config`.
-        `BaseDatasetConfig.to_dict()` is `asdict(self)` and lands on disk
-        beside model checkpoints, where a `threading.Event` cannot be
-        serialised and a live reporter object is not reproducible
-        configuration.
+        """Densify and append ONE time window at a time
         """
         from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 
@@ -812,7 +550,10 @@ class BaseDataset(ABC):
                 # is the object the append actually holds -- an upcast during
                 # dtype pinning is part of the peak, not an accounting detail.
                 window_bytes = int(window.nbytes)
-                if peak_window_bytes is None or window_bytes > peak_window_bytes:
+                if (
+                    peak_window_bytes is None
+                    or window_bytes > peak_window_bytes
+                ):
                     peak_window_bytes = window_bytes
                 if start != first_timestamp:
                     boundaries += 1
@@ -1066,25 +807,6 @@ class BaseDataset(ABC):
     ) -> Optional[tuple]:
         """The store's FIRST and LAST `append_dim` label, or None when there is
         no store (no such coordinate, or a zero-length axis).
-
-        Opened exactly the way `_stored_symbol_axis` opens it -- lazily,
-        coordinate only, closed in a `finally`. Answering an extent question by
-        reading data variables would defeat chunking.
-
-        **The endpoints are taken by INDEXING, never by reduction, and the
-        length check that makes that safe is load-bearing rather than
-        defensive.** A zero-length append axis is a real shape in this repo,
-        not a hypothetical: `data/data/us_equity/1d/stock_alpaca.zarr` carries
-        a `timestamp` coordinate of size 0, and `.values.min()` on it raises
-        `ValueError: zero-size array to reduction operation minimum which has
-        no identity`. Any run that wrote a zero-row panel -- an acquisition
-        that fetched nothing, an aborted chunked ingest, a window that pruned
-        to nothing -- reaches that shape. `ChunkLedger._store_tail` already
-        solves it with `values[-1] if len(values) else None`; this is the same
-        idiom over both ends.
-
-        None is the honest answer for all three cases and the resolver reads
-        it as one thing: there is no stored history to lose here.
         """
         if not Path(store_path).exists():
             return None
@@ -1105,41 +827,6 @@ class BaseDataset(ABC):
         """Which of `added` already carry raw rows in the CLOSED window
         `[start, end]`, and how many -- the EVIDENCE `update()` resolves the
         widen-vs-rebuild choice from.
-
-        A symbol absent from the mapping carries no rows there; the mapping is
-        never padded with zeros, so `if probe_result:` reads as "there is
-        history to recover". An empty `added` returns `{}` without touching
-        raw at all, which is what keeps the common case free.
-
-        Overridable seam, and the same caveat `_raw_axes_in_range()` carries
-        applies: **this default is correct but NOT memory-bounded**, because it
-        densifies the whole window through `_raw_data_to_xr_window()` and
-        counts afterwards. It exists rather than a `raise NotImplementedError`
-        stub so a subclass that has not overridden the densify seams --
-        `SpotKlineDataset` and `IndexConstituentDataset` today -- keeps
-        working, and it warns at run time when it is the one running so an
-        operator learns the probe took the slow route instead of just waiting.
-        A subclass whose raw source can push a symbol predicate DOWN before
-        materialisation should override it.
-
-        **Cost is recorded as an ORDERING first and absolutes second**, because
-        absolutes go stale on other hardware and a stale number in a docstring
-        is a claim the next reader cannot check. The durable relation:
-        probing the STORE's extent costs LESS than probing the whole raw tier,
-        which costs less than `_raw_axes_in_range()` -- which every chunked run
-        already pays UNCONDITIONALLY. So the probe never adds more than a step
-        the path was already taking, and it is paid ONLY when the symbol axes
-        actually drifted (`_reconcile_new_listings` falls through before
-        reaching the resolver otherwise).
-
-        The dated reading that ordering came from: measured 2026-09-08 on this
-        repo's real raw tier (26,584 `.pqt` files across 13 `month=`
-        partitions, 153.1 MB apparent / 208 MiB on disk), warm cache --
-        1.32-1.75 s for the store-extent window, 2.24-2.38 s for the whole
-        tier, 3.22-3.32 s for `_raw_axes_in_range()`. Those seconds are machine-
-        and cache-dependent and only their ORDER is load-bearing; an earlier
-        reading of the same three steps on a colder cache was about 1.7x higher
-        and preserved the same order.
         """
         wanted = [str(symbol) for symbol in added]
         if not wanted:
@@ -1181,21 +868,6 @@ class BaseDataset(ABC):
 
     def _widen_fill_values(self) -> dict:
         """Per-variable fill values for a `widen`'s reindex.
-
-        `_pin_append_dtypes` promotes integer variables to float64 before an
-        append but deliberately leaves `anomaly_flag` BOOL, so a real cleaned
-        market panel has exactly one non-float variable -- and
-        `XrBackend.widen_symbol_axis` refuses to NaN-backfill a non-float
-        variable without an explicit fill. Without this the widen of a real
-        store would ALWAYS refuse on `anomaly_flag`; it is required, not
-        academic.
-
-        `False` is the honest value for a symbol that was not trading: it was
-        not flagged because there was nothing to flag.
-
-        A seam rather than a constant because a future non-OHLCV `Dataset`
-        subclass carries different variables -- the same reasoning `_clean()`
-        is an overridable hook for.
         """
         return {"anomaly_flag": False}
 
@@ -1207,19 +879,6 @@ class BaseDataset(ABC):
         append_dim: str,
     ) -> str:
         """Read the widen-vs-rebuild choice off the raw tier and SAY it.
-
-        Returns one of the three published `NEW_LISTING_STRATEGIES` values, so
-        the existing branches below run untouched. This method chooses WHICH
-        branch runs; it reimplements none of them.
-
-        Lives here, at the point `added`/`removed` are already known, rather
-        than in `update()` -- for two measured reasons. Cost: resolving in
-        `update()` would compute the pinned whole-range axis TWICE, and
-        `_raw_axes_in_range()` is the MORE expensive of the two steps, not the
-        cheaper. Correctness: `_reconcile_new_listings` already owns the ONLY
-        drift-detection site, and a second one is the two-independent-guards
-        shape that has already produced one silent contract drift in this
-        repository.
         """
         if removed:
             logger.warning(
@@ -1293,18 +952,6 @@ class BaseDataset(ABC):
     ) -> tuple:
         """Apply `on_new_listing` when the STORE's symbol axis has drifted from
         the pinned whole-range one. Returns `(ledger, rebuild_asides)`.
-
-        Falls through completely unchanged -- no store read beyond the
-        coordinate, no log line -- when the axes already agree, which is the
-        overwhelmingly common case.
-
-        `append_dim_size` is the whole range's extent, forwarded to the
-        `widen` branch's `mode="w"` rewrite so the store's on-disk chunk grid
-        stays a property of the store rather than of how much of it happened
-        to be written when the roster changed. The other two branches do not
-        need it: `rebuild` moves the store aside so the next write is a
-        CREATING write, which `append()` already sizes from the same value,
-        and `refuse` writes nothing at all.
         """
         store_path = self.config.zarr_file_path
         stored = self._stored_symbol_axis(store_path)
@@ -1396,55 +1043,6 @@ class BaseDataset(ABC):
         self, asides: dict, *, reason: str = "failed"
     ) -> bool:
         """Put the pre-rebuild store and ledger back, discarding the partial.
-
-        Returns whether the restore actually COMPLETED: `True` when the
-        pre-rebuild store and ledger are back at their authoritative paths,
-        `False` when the filesystem refused and the complete copy is still
-        sitting at the aside path.
-
-        `reason` names WHY the rebuild is being undone, so the operator reads
-        "failed" for an exception and "cancelled" for their own stop rather
-        than one wording standing in for both.
-
-        **That paragraph used to close by calling `reason` the ONLY
-        difference between the two callers, and there are now TWO.**
-        SUPERSEDED by phase 03.6's third gap-closure pass (plan `03.6-09`);
-        the original wording is quoted here rather than deleted so the
-        correction is legible (D-18). It read: "It is the only difference
-        between the two callers: an exception and a cancel are the same
-        halfway exit as far as the superseded copies are concerned." Its
-        second half stays true -- the two exits are still the same as far as
-        the superseded copies are concerned -- but the RETURN VALUE is now a
-        second difference. The cancelled caller consumes it to fill
-        `ConversionResult.rebuild_rolled_back`, so that field stops claiming
-        a rollback that did not happen; the exception caller discards it,
-        because that caller re-raises regardless.
-
-        **An `OSError` on the way out is caught, reported and swallowed, and
-        that is correct HERE specifically (WR-04).** `shutil.rmtree(...,
-        ignore_errors=True)` below silently does NOTHING when it fails, and
-        the `os.replace` on the next line then raises. An exception raised
-        inside an exception handler REPLACES the exception being handled --
-        so before this change the operator of a multi-hour rebuild was shown
-        "Directory not empty" while the failure that actually killed the run
-        survived only in `__context__`. This method is called from exactly
-        two places: an `except BaseException:` arm that is about to `raise`
-        something more important, and a cancel path that must not convert a
-        user's own stop into a crash. On both, reporting a cleanup error
-        beats letting it out. The same swallow in a method that did NOT run
-        from inside a handler would be hiding a real failure from its only
-        caller and would be wrong -- this is a scoped exception to a general
-        rule, not the rule. `except OSError` rather than `except Exception`
-        for the same reason: a `KeyError` here is a bug in the asides dict,
-        not a filesystem refusal, and must stay loud.
-
-        **What the operator must do when that ERROR fires.** Nothing was
-        destroyed. The complete pre-rebuild copy is still at
-        `asides["store_aside"]` and the partial rebuild is still at
-        `asides["store"]`; recovery is a MANUAL move of the aside back over
-        the store path. Deliberately not automated: deciding which of two
-        directories on disk is authoritative is the same call
-        `widen_symbol_axis` already refuses to make on the operator's behalf.
         """
         try:
             if Path(asides["store"]).exists():
@@ -1485,19 +1083,6 @@ class BaseDataset(ABC):
     @staticmethod
     def _pin_append_dtypes(data: xr.Dataset) -> xr.Dataset:
         """Promote integer data variables to float64 before an append.
-
-        The dtype of a window is a function of its own DENSITY: a window in
-        which every pinned symbol traded on every timestamp keeps pandas'
-        int64 for `volume`, while any window with a gap upcasts to float64
-        for the NaN. Left alone, the store's dtype would therefore be decided
-        by whichever window happened to be written first, and a later
-        float64 NaN appended into an int64 variable is silently cast to 0 --
-        a fabricated observation where data was missing.
-        `XrBackend.append` refuses that append; this makes the refusal
-        unreachable by pinning the dtype to what the dense panel is anyway
-        (float64, 8 bytes per value).
-
-        Booleans are left alone: `anomaly_flag` is a flag, not a measurement.
         """
         promoted = {
             name: variable.astype("float64")
@@ -1508,12 +1093,6 @@ class BaseDataset(ABC):
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
         """Cleaning hook run after raw-to-xarray conversion, before persistence.
-
-        Defaults to the shared market-data cleaning pipeline (anomaly-flagging,
-        schema validation — see dataset/cleaning.py). Overridable so a future
-        Dataset subclass whose data isn't OHLCV-shaped tabular market data
-        (e.g. unstructured sources like news) is not forced through
-        market-specific validation it doesn't apply to.
         """
         return clean_market_data(data)
 
@@ -1523,25 +1102,6 @@ class BaseDataset(ABC):
 
 class MarketDataset(BaseDataset):
     """The market-data dataset backend.
-
-    Owns everything nautilus- and KunQuant-specific: the
-    `ParquetDataCatalog` write (`_write_catalog`), the bar-conversion path
-    (`to_nautilus` / `_to_nautilus`), and the compiled-graph input path
-    (`to_kunquant` / `_to_kunquant`). Keeping all five off `BaseDataset` is
-    what lets a dataset with no bar, no catalog and no KunQuant
-    representation subclass the shared base directly instead of carrying two
-    meaningless `raise NotImplementedError` stubs (D-03).
-
-    A SIXTH member is owned here for a different reason:
-    `_raw_data_to_xr_window` is re-declared `@abstractmethod` (D-08). It is
-    not market-specific -- `BaseDataset` keeps a working concrete default for
-    the dataset kinds that cannot push a date filter down -- but for a market
-    dataset it is the single entrance ticket to chunked conversion, which is
-    the only conversion mode the registry entry point offers. Making it
-    abstract HERE and nowhere else moves "this source has no windowed
-    densify" from a `logger.warning` nobody reads during a multi-hour
-    backfill to a `TypeError` at the new author's first construction, while
-    leaving the shared base's default intact for everyone else.
     """
 
     # Narrowed for readers and type checkers only

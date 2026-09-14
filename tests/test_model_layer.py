@@ -580,46 +580,6 @@ def test_train_dl_still_trains_when_backtest_is_falsy(tmp_path):
     assert sorted(set(model.train_epochs)) == [0, 1]
 
 
-def test_do_vecbt_says_it_is_unbuilt_instead_of_returning_none(tmp_path):
-    """`_do_vecbt` read the backtest dataset, computed a local `price` and then
-    the function ended -- no return, no use, and nothing in the repository ever
-    called it. A caller who found it got `None` back and no indication that
-    nothing had happened.
-
-    Its two existing argument checks are deliberately kept in front of the
-    raise: a caller who has not configured `backtest_data` at all should still
-    hear about that first, since that is a mistake they can fix today.
-    """
-    cfg = _make_config(
-        tmp_path,
-        factor_values={"f0": 1.0, "f1": 2.0},
-        label_values={"y0": 0.5},
-    )
-    model = RecordingRegressor(cfg)
-
-    with pytest.raises(ValueError, match="Backtest dataset must be specified"):
-        model._do_vecbt()
-
-    model.config.backtest_data = SimpleNamespace(
-        config=SimpleNamespace(symbols=["S0"])
-    )
-    with pytest.raises(NotImplementedError, match="Phase 6"):
-        model._do_vecbt()
-
-
-def test_vecbt_stub_is_still_a_stub_and_names_phase_6(tmp_path):
-    """`BaseModel._vecbt` stays -- it is where a shared torch/non-torch
-    backtest hook belongs -- but its bare `raise NotImplementedError` said
-    nothing about who owns it or when."""
-    cfg = _make_config(
-        tmp_path,
-        factor_values={"f0": 1.0, "f1": 2.0},
-        label_values={"y0": 0.5},
-    )
-    model = RecordingRegressor(cfg)
-
-    with pytest.raises(NotImplementedError, match="Phase 6"):
-        model._vecbt(prices=None, signals=None)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------

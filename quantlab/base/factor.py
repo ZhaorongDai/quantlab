@@ -23,19 +23,6 @@ from quantlab.utils.timer import Timer
 
 
 class Factor(ABC):
-    """The shared, backend-agnostic factor contract (D-03).
-
-    Everything the model layer needs from a factor lives here: the `config`
-    lifecycle, the `XrBackend` storage round-trip (`read`/`save`), the
-    `xr.Dataset` feature/label accessors, and the two abstract members
-    (`cal`, `_get_factor_names`) each backend implements for itself.
-
-    The base is deliberately free of any KunQuant concept -- no streaming, no
-    compiled graph, and no read of the KunQuant-only `mode`/`data_columns`/
-    `njobs` config fields. That is what makes a non-KunQuant factor backend
-    droppable into `DLConfig.factors` with zero edits to `base/model.py`.
-    """
-
     def __init__(self, config: BaseFactorConfig):
         # Ordering is load-bearing: assigning `self.config` fires the property
         # setter below, which runs before `self.data_backend` exists. No
@@ -126,22 +113,6 @@ class Factor(ABC):
         return self
 
     def save(self, mode: Literal["a", "w"] = "a", **kwargs) -> Self:
-        """落盘因子面板。
-
-        **`mode="a"` 不是「按时间追加」。** zarr 的 `"a"` 是「改写已有 store 里的
-        变量」，写第二段日期区间会直接失败——两段的 `timestamp` 长度不一样，
-        `to_zarr` 拒绝在没有 `append_dim` 的情况下改维度大小。要整段重写用
-        `save(mode="w")`；要按时间增量扩展走 `update()`，它自动对齐 timestamp、
-        symbol 和变量三个轴，并且继承 `XrBackend.append()` 的坐标一致性守卫、
-        dtype 守卫和区间重叠守卫。两个接口表达的就是「整段写」和「增量扩」
-        这组分工 (D-09)。
-
-        默认值**保持 `"a"` 不变**（改默认值对任何依赖它的调用方都是行为变更）。
-        这里做的是把失败讲清楚：`to_zarr` 原本抛的是一句谈 store 内部维度大小的
-        `ValueError`，跟调用方写的 `save()` 之间隔着两层，读的人根本看不出该改
-        什么。现在包一层，把 `mode="w"` 直接写进消息里，原异常挂在 `__cause__`
-        上一个字节不丢。2026-09-07，`tests/test_factor_save_mode.py` 锁。
-        """
         with Timer(f"{self.__class__.__name__}: save"):
             self._auto_filter()
             try:
@@ -172,31 +143,6 @@ class Factor(ABC):
             return self
 
     def update(self, **kwargs) -> Self:
-        """Extend the stored factor panel -- the AUTOMATIC incremental path.
-
-        `save()`'s counterpart (D-09), and the split between them is the whole
-        point: `save()` writes WHOLESALE (`save(mode="w")` replaces the
-        store), `update()` EXTENDS. Which one a caller reaches for is how it
-        says which it means.
-
-        Automatic means the caller names no axis and chooses no widening. Hand
-        it a panel; it works out what changed -- later dates, a roster that
-        grew, a variable that appeared -- and reconciles each axis on the way
-        in. That decision belongs to the storage layer, which is the only
-        place that can see the store and the panel at once.
-
-        **No route to overwrite a range the store already holds.** There is no
-        `mode` parameter, and the unconditional append-dim overlap refusal
-        shipped by 260907-uac is inherited through
-        `XrBackend.widen_and_append` -> the UNCHANGED `XrBackend.append`. That
-        guard runs before any keyword is read, so no argument gets past it
-        whatever it is named. Recomputing a stored range is `save(mode="w")`'s
-        job.
-
-        `_auto_filter()` runs first, exactly as it does in `save()`: the same
-        date and symbol normalisation must apply to both write paths, or the
-        window that lands on disk depends on which method was called.
-        """
         with Timer(f"{self.__class__.__name__}: update"):
             self._auto_filter()
             self.data_backend.widen_and_append(
@@ -207,26 +153,6 @@ class Factor(ABC):
             return self
 
     def _widen_fill_values(self) -> dict:
-        """Per-variable fill values for the widening `update()` performs.
-
-        The same seam `BaseDataset` carries, for the same reason: the widening
-        refuses to backfill a NON-float variable without an explicit fill,
-        because NaN materialised into an integer array becomes 0 and into a
-        boolean array becomes True -- a fabricated history rather than an
-        absent one.
-
-        The default is `{}`, and that is measured rather than assumed: every
-        factor and label panel is float today. KunQuant emits float arrays,
-        and even `SpotBinaryReturn` builds its binary label out of
-        `op.ConstantOp(1.0)`/`(0.0)`, so the "binary" label is float64, not
-        bool. So there is nothing to name yet.
-
-        A seam rather than a constant because this base is shared by factors
-        AND classification labels, and a subclass that does carry a non-float
-        variable has no other way to widen at all -- it would be refused
-        outright. It states its fill ONCE here, and that mapping reaches both
-        widened axes.
-        """
         return {}
 
     def _get_lazyframe(self) -> pl.LazyFrame:
@@ -266,13 +192,7 @@ class Factor(ABC):
 
 
 class FactorKunQuant(Factor):
-    """The KunQuant factor backend.
-
-    Owns everything compiled-graph- and streaming-specific: `cal()` over
-    `kr.runGraph`, the `init_stream()`/`cal_stream()` incremental path, the
-    two `cfake.compileit` wrappers, and the three `mode`-branching overrides
-    that keep the batch/stream distinction off the shared base (D-07).
-    """
+    """The KunQuant factor backend."""
 
     def __init__(self, config: FactorConfig):
         super().__init__(config)
@@ -408,16 +328,6 @@ class FactorKunQuant(Factor):
 
     def _make_stream(self):
         with Timer(f"{self.__class__.__name__}: make stream"):
-            # The SIMD block width is deliberately left unset so KunQuant picks
-            # it per architecture. It is architecture-dependent -- KunQuant's
-            # own defaults for float are 8 on x86_64 and 4 on aarch64
-            # (`KunQuant/Driver.py`) -- so pinning the x86 value here raised
-            # `RuntimeError: Blocking length 8 is not supported for float on
-            # aarch64` on Apple Silicon, i.e. on this project's own dev
-            # machine. Leaving it unset preserves the previous x86_64 behaviour
-            # exactly, because 8 is what KunQuant selects there anyway.
-            # `partition_factor` below is unrelated: it controls graph
-            # partitioning, not SIMD width.
             return cfake.compileit(
                 [
                     (
@@ -471,9 +381,6 @@ class FactorPolars(Factor):
         lf = self.config.dataset.read().get_lazyframe()
         factor_lf = self._get_factor_lazyframe(lf)
 
-        # D-05: the factor names ARE the non-index columns of the returned
-        # frame. collect_schema() inspects the schema only -- it does not
-        # materialize -- so this stays inside D-04's laziness contract.
         self.config.factor_names = tuple(
             name
             for name in factor_lf.collect_schema().names()
@@ -481,10 +388,6 @@ class FactorPolars(Factor):
         )
 
         with Timer(f"{self.__class__.__name__}: cal"):
-            # D-06 / FACTOR-04: Polars is an internal implementation detail;
-            # the result becomes an xr.Dataset before it leaves this class, so
-            # the module boundary stays xarray-only. Same conversion idiom as
-            # dataset/backend.py:PlBackend.get_xarray_dataset().
             frame = factor_lf.collect().to_pandas()
             frame = frame.set_index(list(self._INDEX_COLUMNS))
             data = xr.Dataset.from_dataframe(frame)

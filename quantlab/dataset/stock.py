@@ -501,13 +501,6 @@ class StockDataset(MarketDataset):
     def _raw_axes_in_range(self) -> tuple[list[str], pd.DatetimeIndex]:
         """Both axes for the config's whole range, from one scan, WITHOUT
         densifying anything (D-02).
-
-        Two single-column unique scans: polars projects each one on its own,
-        so peak memory is one column of the raw frame rather than the dense
-        `[timestamp, symbol]` grid. The symbol axis is `sorted()` for the
-        same reason `base/constituent.py:_densify` sorts its all-time union
-        -- it must match the coordinate order `to_xarray()` produces, which
-        is the pandas MultiIndex level order.
         """
         scan = self._scan_raw()
         symbols = sorted(
@@ -525,24 +518,9 @@ class StockDataset(MarketDataset):
     def _added_symbols_with_raw_history(
         self, added: list, start, end
     ) -> dict[str, int]:
-        """The hive-pruned answer to the evidence question -- how many raw rows
+        """
+        The hive-pruned answer to the evidence question -- how many raw rows
         each of `added` carries in the CLOSED window `[start, end]`.
-
-        Routed through `_scan_raw`, which ALREADY applies the `month=` hive
-        predicate (directory pruning at plan time), the timestamp predicate
-        (the window's exact edges), the vendor assertion and the dedup. Going
-        through it rather than re-deriving those is the whole point: the
-        pruning and the vendor isolation come along unchanged, and there is
-        one place where a change to any of them lands.
-
-        Counting is done in polars and only the counts are collected, so the
-        dense `[timestamp, symbol]` grid the base default materialises is never
-        built here. That is what makes the probe cheaper than the whole-range
-        densify -- see `BaseDataset._added_symbols_with_raw_history` for the
-        measured ORDERING (store-extent probe < whole-tier probe <
-        `_raw_axes_in_range()`, which every chunked run already pays
-        unconditionally) and for why that ordering rather than the seconds is
-        the load-bearing claim.
         """
         wanted = [str(symbol) for symbol in added]
         if not wanted:
@@ -563,18 +541,7 @@ class StockDataset(MarketDataset):
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: Optional[list[str]] = None
     ) -> xr.Dataset:
-        """Densify ONE window, reindexed onto the pinned symbol axis.
-
-        A pinned symbol with no row in this window becomes an all-NaN column
-        -- and the integer columns it touches upcast to float. That is not a
-        chunking artefact: the whole-range densification already produces
-        exactly this for an untraded cell, because
-        `set_index([...]).to_xarray()` emits the full `[timestamp, symbol]`
-        cartesian product with NaN in the gaps. The two paths therefore
-        agree, which is what
-        `tests/test_chunked_ingest.py::test_chunked_store_matches_the_unchunked_store`
-        pins.
-        """
+        """Densify ONE window, reindexed onto the pinned symbol axis."""
         data = self._scan_raw(start_date, end_date)
         data = data.collect().to_pandas().set_index(["timestamp", "symbol"])
         data = data.to_xarray()
@@ -584,9 +551,6 @@ class StockDataset(MarketDataset):
 
     def _raw_data_to_xr(self) -> xr.Dataset:
         with Timer(f" {self.__class__.__name__}: from pqt"):
-            # The whole range, on no pinned axis -- byte-identical to the
-            # pre-refactor body, which is why every existing assertion in
-            # tests/test_stock_dataset.py stands untouched.
             return self._raw_data_to_xr_window(
                 self.config.start_date, self.config.end_date, symbols=None
             )
@@ -595,29 +559,7 @@ class StockDataset(MarketDataset):
         self, data: xr.Dataset, data_columns: tuple
     ) -> tuple[dict, np.ndarray, np.ndarray]:
         with Timer(f"{self.__class__.__name__}: to kunquant"):
-            data = data.drop_vars(["open", "high", "low", "close", "volume"])
-            data = data.rename(
-                {
-                    "adjOpen": "open",
-                    "adjHigh": "high",
-                    "adjLow": "low",
-                    "adjClose": "close",
-                    "adjVolume": "volume",
-                }
-            )
             data = data.sortby(["timestamp", "symbol"])
-            # D-02: Tiingo supplies no native dollar-volume ("amount") column,
-            # while KunQuant's Alpha101/Alpha158 AllData graphs derive vwap
-            # from it. Synthesize the standard `volume * close` proxy here,
-            # once and centrally, so every KunQuant factor class reading
-            # US-equity data gets it without per-class duplication. The rename
-            # above has already run, so `volume`/`close` are the ADJUSTED
-            # series -- the proxy is adjusted dollar-volume, consistent with
-            # the rest of the adjusted-price pipeline. Double-guarded: only
-            # when the caller actually asks for `amount` and only when the
-            # dataset does not already carry a real vendor column of that name.
-            if "amount" in data_columns and "amount" not in data.data_vars:
-                data = data.assign(amount=data["volume"] * data["close"])
             timestamp = data["timestamp"].values
             symbols = data["symbol"].values
             input_dict = {}
