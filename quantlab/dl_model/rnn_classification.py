@@ -12,7 +12,7 @@ from sklearn.metrics import (
 )
 
 from quantlab.base.config import DLConfig
-from quantlab.base.model import BaseModel
+from quantlab.base.model import DLModel
 
 
 class ModelRBaseCrypto(nn.Module):
@@ -161,7 +161,7 @@ class ModelRCrypto(nn.Module):
         return primary_pred_final, all_direct_preds
 
 
-class RNNClassifier(BaseModel):
+class RNNClassifier(DLModel):
     """
     A classifier that uses `ModelRCrypto` for up/down predictions, integrated with the
     project's BaseModel interface and training loop.

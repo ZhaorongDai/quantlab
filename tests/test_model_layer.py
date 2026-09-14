@@ -53,7 +53,7 @@ import xarray as xr
 from types import SimpleNamespace
 
 from quantlab.base.config import DLConfig
-from quantlab.base.model import BaseModel
+from quantlab.base.model import DLModel
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry
@@ -132,7 +132,7 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.values)}
 
 
-class RecordingRegressor(BaseModel):
+class RecordingRegressor(DLModel):
     """Minimal concrete `BaseModel` that records everything the epoch loop
     hands it, so tests can assert on the loop's behaviour rather than on loss
     values."""
@@ -550,7 +550,7 @@ def test_train_dl_rejects_a_truthy_backtest_flag(tmp_path):
     model.collect()
 
     with pytest.raises(NotImplementedError, match="Phase 6"):
-        model._train_dl(
+        model._fit(
             project_name="p",
             experiment_name="e",
             model_name="m.pth",

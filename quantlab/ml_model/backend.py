@@ -13,9 +13,11 @@ class MlBackend(ModelBackend):
     ——它能和 `XrBackend` 长在同一套设计里，恰恰因为契约里没有一句话假设「数据是
     个带 timestamp/symbol 的面板」。
 
-    目前全仓没有调用点：`BaseModel._auto_train` 对 `MLConfig` 还是
-    `NotImplementedError`。这是**尚未建成的既定路线的脚手架**，不是废弃入口
-    （`BaseModel.predict()` 签名里的 `np.ndarray` 分支就是为它留的）。
+    它是 `quantlab/base/model.py:MLModel` 的 checkpoint 持久化后端：
+    `MLModel._write_checkpoint` 调 `MlBackend().to_internal(model).write(path)`，
+    `MLModel._read_checkpoint` 调 `MlBackend().read(path).get_model()`
+    （首个调用点来自 260914-lno，此前它是尚未建成路线的脚手架）。joblib 本质是
+    pickle，只加载自己信任的文件。
 
     2026-09-07 修：`read` / `write` / `to_internal` 三个方法以前都隐式返回
     `None`，而 ABC 上写的是 `-> Self`，所以任何链式写法当场

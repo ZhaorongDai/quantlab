@@ -8,7 +8,7 @@ of them -- see `get_cls_from_path` for the decision and its evidence.
 
 import importlib
 
-from quantlab.base.config import DatasetConfig, DLConfig, FactorConfig
+from quantlab.base.config import DatasetConfig, FactorConfig
 
 
 def get_cls_from_path(path: str):
@@ -55,6 +55,14 @@ def load_factor_from_config(config: dict):
 
 
 def load_model_from_config(config: dict):
+    """Rebuild a model, using the config class the model class declares.
+
+    `cls.config_cls` is `DLConfig` for `DLModel` heads and `MLConfig` for
+    `MLModel` heads. Hardcoding `DLConfig` here used to turn an ML checkpoint's
+    config into a `DLConfig` silently; the `BaseModel` config setter now also
+    rejects a mismatched config type with `TypeError`.
+    """
     config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
     config["labels"] = [load_factor_from_config(l) for l in config["labels"]]
-    return get_cls_from_path(config["name"])(DLConfig(**config))
+    cls = get_cls_from_path(config["name"])
+    return cls(cls.config_cls(**config))

@@ -4,7 +4,7 @@ import torch.nn as nn
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from quantlab.base.config import DLConfig
-from quantlab.base.model import BaseModel
+from quantlab.base.model import DLModel
 
 
 class MLP(nn.Module):
@@ -25,7 +25,7 @@ class MLP(nn.Module):
         return out
 
 
-class MLPRegressor(BaseModel):
+class MLPRegressor(DLModel):
     def __init__(self, config: DLConfig):
         super().__init__(config)
         self.criterion = nn.MSELoss()
@@ -68,7 +68,7 @@ class MLPRegressor(BaseModel):
         num_labels: int,
         hyperparameters: dict,
     ) -> nn.Module:
-        """签名必须带 `hyperparameters`——`BaseModel._init_model_and_optim()` 是
+        """签名必须带 `hyperparameters`——`DLModel._init_model_and_optim()` 是
         按关键字传的（`hyperparameters=self.config.hyperparameters`）。
 
         以前这里少了这个形参，于是 `MLPRegressor` 连一次 `train()` 都跑不到：
@@ -152,8 +152,8 @@ class MLPRegressor(BaseModel):
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
         """入参是**张量**，不是 `xr.Dataset`。
 
-        `BaseModel._preprocess` 的契约是 `(torch.Tensor) -> torch.Tensor`，两个
-        调用点（`_train_dl` 里对四个张量批量调用、`_predict_nn` 里对推理输入调用）
+        `DLModel._preprocess` 的契约是 `(torch.Tensor) -> torch.Tensor`，两个
+        调用点（`DLModel._fit` 里对四个张量批量调用、`DLModel._predict` 里对推理输入调用）
         传进来的都是 `to_tensor()` 的产物。以前这里写的是 `data.fillna(0.0)`，
         标注也写着 `xr.Dataset`——真跑起来是
         `AttributeError: 'Tensor' object has no attribute 'fillna'`。

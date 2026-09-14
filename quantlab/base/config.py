@@ -164,6 +164,10 @@ class MLConfig:
 
     # 训练相关
     hyperparameters: dict = field(default_factory=dict)
+    # 对树模型头（如 XGBoostRegressor），patience 按 boosting 轮数计，由库的原生
+    # 早停执行；刻意没有 `epochs` 字段——ML 头没有外层 epoch 循环。
+    early_stopping: bool = False
+    early_stopping_patience: int = 5
     val_size: float = 0.2
     random_seed: int = 42
     train_start: str | None = None

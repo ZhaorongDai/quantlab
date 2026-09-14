@@ -8,7 +8,7 @@ from sklearn.metrics import (
 )
 
 from quantlab.base.config import DLConfig
-from quantlab.base.model import BaseModel
+from quantlab.base.model import DLModel
 
 
 class ModelRBaseCrypto(nn.Module):
@@ -157,7 +157,7 @@ class ModelRCrypto(nn.Module):
         return primary_pred_final, all_direct_preds
 
 
-class RNNRegressor(BaseModel):
+class RNNRegressor(DLModel):
     """
     A regressor that uses `ModelRCrypto` for predictions, integrated with the
     project's BaseModel interface and training loop.
