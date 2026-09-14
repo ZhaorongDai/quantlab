@@ -41,6 +41,7 @@ from quantlab.base.model import BaseModel, DLModel, MLModel
 from quantlab.dl_model.mlp import MLPRegressor
 from quantlab.dl_model.rnn import RNNRegressor
 from quantlab.dl_model.rnn_classification import RNNClassifier
+from quantlab.ml_model.xgb import XGBoostRegressor
 
 N_TIMES = 40
 N_SYMBOLS = 3
@@ -179,7 +180,7 @@ def test_public_methods_live_on_base_model():
 
 @pytest.mark.parametrize(
     "cls",
-    [DLModel, MLModel, MLPRegressor, RNNRegressor, RNNClassifier, StubMLHead],
+    [DLModel, MLModel, MLPRegressor, RNNRegressor, RNNClassifier, XGBoostRegressor, StubMLHead],
     ids=lambda c: c.__name__,
 )
 def test_no_class_above_base_model_redefines_a_public_method(cls):
@@ -300,6 +301,68 @@ def test_loader_builds_an_ml_config_for_an_ml_head(tmp_path, monkeypatch):
 
     assert isinstance(model, StubMLHead)
     assert type(model.config) is MLConfig
+
+
+def test_loader_builds_an_ml_config_for_the_shipped_xgboost_head(tmp_path, monkeypatch):
+    """Same as above through the REAL dotted path of the shipped ML head, so
+    the class lookup itself is not faked."""
+    _patch_factor_loader(monkeypatch)
+    saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
+    assert saved["name"] == "quantlab.ml_model.xgb.XGBoostRegressor"
+
+    model = module_utils.load_model_from_config(saved)
+
+    assert isinstance(model, XGBoostRegressor)
+    assert type(model.config) is MLConfig
+
+
+def test_loader_drops_the_resolved_hyperparameters_record(tmp_path, monkeypatch):
+    """`MLModel.get_config` may add a top-level `resolved_hyperparameters`
+    record; it is not an `MLConfig` field, so the loader must drop it before
+    `cls.config_cls(**config)` or every such checkpoint fails to reload."""
+    _patch_factor_loader(monkeypatch)
+    saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
+    saved["resolved_hyperparameters"] = {"eta": 0.3, "num_boost_round": 4}
+
+    model = module_utils.load_model_from_config(saved)
+
+    assert type(model.config) is MLConfig
+    assert model.config.hyperparameters == {}
+
+
+def test_loader_still_rejects_other_unknown_keys(tmp_path, monkeypatch):
+    """Only that one record key is dropped; anything else unknown stays loud."""
+    _patch_factor_loader(monkeypatch)
+    saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
+    saved["not_a_config_field"] = 1
+
+    with pytest.raises(TypeError, match="not_a_config_field"):
+        module_utils.load_model_from_config(saved)
+
+
+def test_dl_config_json_has_no_resolved_hyperparameters_key(tmp_path):
+    """The record is an MLModel feature; DL checkpoints' config.json is
+    unchanged."""
+    cfg = DLConfig(
+        **_kwargs(tmp_path),
+        train_start=START,
+        train_end=np.datetime_as_string(TIMES[29], unit="D"),
+        test_start=np.datetime_as_string(TIMES[30], unit="D"),
+        test_end=END,
+        epochs=1,
+        batch_size=16,
+        num_workers=0,
+    )
+    model = LinearDLHead(cfg)
+    model.collect()
+    model.train()
+
+    written = sorted((tmp_path / "ckpt").rglob("config.json"))
+    assert len(written) == 1
+    import json
+
+    assert "resolved_hyperparameters" not in json.loads(written[0].read_text())
+    assert "resolved_hyperparameters" not in model.get_config()
 
 
 # --------------------------------------------------------------------------

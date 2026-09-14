@@ -18,6 +18,28 @@ time. Keep it that way: a top-level `import acquisition.alpaca` here would
 break collection of the ENTIRE suite until that module lands.
 """
 
+# macOS OpenMP guard (quick task 260914-lno). MUST stay the first executable
+# code in this file, ahead of every other import: numpy/polars/quantlab can
+# pull torch in, and OMP_NUM_THREADS is only honoured if set before torch loads.
+#
+# Root cause: xgboost's macOS wheel links Homebrew's libomp, torch bundles its
+# own libomp. In one process the two runtimes clash -- torch-then-xgboost
+# segfaults (OMP: Error #179), xgboost-then-torch deadlocks.
+# A ctypes RTLD_GLOBAL preload of Homebrew libomp was tried and REJECTED: it
+# fixed torch-then-xgboost but made torch's own GRU forward and a 20k-row
+# cross_entropy segfault with no xgboost involved (measured 2026-09-14,
+# fresh subprocesses). Forcing single-threaded OpenMP was the only setting
+# that passed the full mixed torch/xgboost/threaded-xgboost sequence.
+#
+# macOS only, and setdefault so an explicit value wins; Linux is never
+# touched. Cost: torch and xgboost run single-threaded in macOS test runs.
+# Locked by tests/test_macos_openmp_guard.py.
+import os
+import sys
+
+if sys.platform == "darwin":
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import base64
 import importlib.util
 import io
