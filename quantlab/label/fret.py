@@ -7,7 +7,7 @@ from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
 
 
-class SpotReturn(FactorKunQuant):
+class Return(FactorKunQuant):
     def __init__(self, factor_config: FactorConfig):
         super().__init__(factor_config)
 
@@ -37,7 +37,7 @@ class SpotReturn(FactorKunQuant):
         return data
 
 
-class SpotBinaryReturn(FactorKunQuant):
+class BinaryReturn(FactorKunQuant):
     def __init__(self, factor_config: FactorConfig):
         super().__init__(factor_config)
 

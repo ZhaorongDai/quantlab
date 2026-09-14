@@ -49,7 +49,7 @@ from quantlab.base.factor import Factor, FactorKunQuant
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.alpha158 import Alpha158SpotKline
 from quantlab.factor.momentum import Momentum
-from quantlab.label.spot import SpotBinaryReturn, SpotReturn
+from quantlab.label.fret import BinaryReturn, SpotReturn
 
 CONSUMER_FILE = "quantlab/base/model.py"
 
@@ -189,14 +189,14 @@ def test_label_classes_construct_through_the_refactored_hierarchy(
     """
     dataset_config = spot_kline_zarr(periods=30, seed=0)
 
-    label = SpotReturn(_label_factor_config(dataset_config, tmp_path))
+    label = Return(_label_factor_config(dataset_config, tmp_path))
 
     resolved = label.config.factor_names
     assert isinstance(resolved, (tuple, list))
     assert len(resolved) > 0
     assert resolved[0] == "ret_1"
 
-    for label_cls in (SpotReturn, SpotBinaryReturn):
+    for label_cls in (SpotReturn, BinaryReturn):
         assert issubclass(label_cls, FactorKunQuant)
         assert issubclass(label_cls, Factor)
         for member in BASE_MODEL_CALL_SURFACE:

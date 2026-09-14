@@ -84,14 +84,12 @@ class Alpha101Stock(FactorKunQuant):
             low = Input("adjLow")
             high = Input("adjHigh")
             vopen = Input("adjOpen")
-            amount = Input("amount")
             vol = Input("adjVolume")
             all_data = Alpha101.AllData(
                 low=low,
                 high=high,
                 close=close,
                 open=vopen,
-                amount=amount,
                 volume=vol,
             )
             for alpha in Alpha101.all_alpha:
