@@ -786,3 +786,132 @@ def test_two_symbols_whose_json_infers_different_dtypes_share_one_schema(
         Path(config.raw_data_dir_path), hive_partitioning=True
     ).collect()
     assert scanned.height > 0
+
+
+def _leading_null_low_response(null_rows: int = 150, total: int = 200) -> list[dict]:
+    """Tiingo's real shape for a symbol whose early history has no `low`.
+
+    A CONTIGUOUS LEADING run of nulls longer than polars' default
+    `infer_schema_length` of 100, then real floats. Measured against the live
+    API on 2026-09-13: `CAB` is null in `low`/`adjLow` for its first 409
+    sessions (first real value 1.5, 2009-04-03) and `VNLPY` for its first 337
+    (first real value 0.04, 2008-11-13). 150/200 reproduces the same shape at
+    test speed -- what matters is only that the run crosses 100.
+    """
+    rows = []
+    for index in range(total):
+        nulled = index < null_rows
+        day = 1 + index
+        rows.append(
+            {
+                "date": f"2024-01-01T00:00:00.000Z".replace(
+                    "01-01", f"{1 + day // 28:02d}-{1 + day % 28:02d}"
+                ),
+                "open": 100.0,
+                "high": 102.5,
+                "low": None if nulled else 1.5,
+                "close": 101.0,
+                "volume": 1000000,
+                "adjOpen": 100.0,
+                "adjHigh": 102.5,
+                "adjLow": None if nulled else 1.5,
+                "adjClose": 101.0,
+                "adjVolume": 1000000,
+                "divCash": 0.0,
+                "splitFactor": 1.0,
+            }
+        )
+    return rows
+
+
+def test_a_leading_null_run_longer_than_the_infer_window_still_fetches(
+    monkeypatch, tmp_path
+):
+    """The `CAB` / `VNLPY` regression: nulls at the START must not fail the fetch.
+
+    polars infers dtypes from the first `infer_schema_length` rows (default
+    100). When a column is null across that whole window and real afterwards,
+    the column types `Null` and the first real value raises AT CONSTRUCTION:
+
+        ComputeError: could not append value: 1.5 of type: f64 to the builder
+
+    WR-05 pinned dtypes with a `.cast()` AFTER construction and argued the two
+    vendors could then not drift on what "schema-stable" means. Only half was
+    ported: a cast repairs a frame built with the wrong dtype and cannot run
+    when the build itself throws. `acquisition/alpaca.py` had already reached
+    the right spelling from the other direction (an OMITTED field rather than a
+    nulled one); this pins that Tiingo keeps it too.
+
+    Both symbols failed on EVERY full-market run before this, recording a
+    polars builder error in `_failures.json` -- a message naming neither the
+    symbol's data shape nor anything an operator could act on.
+    """
+    import polars as pl
+
+    from quantlab.acquisition.tiingo import TiingoAcquisition
+
+    rows = _leading_null_low_response()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get_ticker_price(self, ticker, **kwargs):
+            return rows
+
+    monkeypatch.setattr(
+        "quantlab.acquisition.tiingo.TiingoClient", FakeClient, raising=False
+    )
+    monkeypatch.setenv("TIINGO_API_KEY", "test-key-not-real")
+
+    config = _make_config(tmp_path)
+    acq = TiingoAcquisition(config)
+    acq.download(["CAB"])
+
+    assert acq.last_result.failures == {}, "the leading null run must not fail"
+    assert acq.last_result.succeeded == ("CAB",)
+
+    frame = pl.read_parquet(sorted(_raw_root(tmp_path).rglob("*.pqt")))
+    assert frame["low"].dtype == pl.Float64, "the cast still pins the dtype"
+    assert frame["low"].null_count() > 0, "the real nulls are preserved, not filled"
+    assert frame["low"].drop_nulls().to_list()[0] == 1.5
+
+
+def test_a_column_the_vendor_nulls_in_every_row_still_types_float(
+    monkeypatch, tmp_path
+):
+    """The other half, and the reason the cast is NOT redundant with the
+    construction fix.
+
+    `infer_schema_length=None` scans every row, but an all-null column has no
+    row that says otherwise -- it still infers `Null`. The `.cast()` against
+    `RAW_SCHEMA` is what turns it into `Float64`, which is what keeps the shard
+    readable beside its siblings: `dataset/stock.py` leaves
+    `extra_columns`/`missing_columns` at their raising defaults, so one
+    `Null`-typed shard makes the whole `month=` directory unscannable.
+    """
+    import polars as pl
+
+    from quantlab.acquisition.tiingo import TiingoAcquisition
+
+    rows = _leading_null_low_response(null_rows=200, total=200)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get_ticker_price(self, ticker, **kwargs):
+            return rows
+
+    monkeypatch.setattr(
+        "quantlab.acquisition.tiingo.TiingoClient", FakeClient, raising=False
+    )
+    monkeypatch.setenv("TIINGO_API_KEY", "test-key-not-real")
+
+    acq = TiingoAcquisition(_make_config(tmp_path))
+    acq.download(["ALLNULL"])
+
+    assert acq.last_result.failures == {}
+    frame = pl.read_parquet(sorted(_raw_root(tmp_path).rglob("*.pqt")))
+    assert frame["low"].dtype == pl.Float64
+    assert frame["low"].null_count() == frame.height

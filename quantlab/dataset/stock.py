@@ -50,6 +50,15 @@ class StockDataset(MarketDataset):
     #: so the hive key is the ONLY carrier of it there.
     DERIVED_HIVE_KEYS = ("month", "date", "data_type")
 
+    #: Filename suffix of one raw shard, named ONCE so the two places that ask
+    #: "which files are the raw tier?" cannot drift: `_scan_raw`'s recursive
+    #: glob and `has_raw_data`'s `rglob`. They were two independent `"*.pqt"`
+    #: literals, which is the same split-contract shape the `has_raw_data`
+    #: docstring already warns about one level up -- a scan that reads a wider
+    #: set than the presence check answers about is a scan that can fail on a
+    #: file the check never considered.
+    RAW_SHARD_SUFFIX = ".pqt"
+
     def __init__(self, dataset_config: DatasetConfig):
         super().__init__(dataset_config)
 
@@ -138,21 +147,51 @@ class StockDataset(MarketDataset):
 
     @property
     def _scanned_hive_keys(self) -> tuple[str, ...]:
-        """The hive keys visible INSIDE the scan.
+        """The hive keys the WINDOW PREDICATE may filter on.
 
-        A key consumed by `_scan_root` is no longer below the scan root, so
-        polars never materialises it as a column and neither the hive schema
-        nor the predicate may mention it.
+        NOT TRUE ANY MORE: this used to be "the hive keys visible INSIDE the
+        scan", justified as "a key consumed by `_scan_root` is no longer below
+        the scan root, so polars never materialises it as a column and neither
+        the hive schema nor the predicate may mention it". The first half of
+        that stopped holding when `_scan_raw` moved from a bare directory to a
+        recursive glob: a glob has no directory to treat as the hive boundary,
+        so polars walks the path upward and materialises EVERY `key=value`
+        segment it finds -- `data_type=quotes` included, even though the scan
+        root already sits inside it. `_materialised_hive_keys` below is the
+        set the schema and the drop must now use.
+
+        What survives is the predicate half, and it survives for a better
+        reason than "the column is absent": a key consumed by `_scan_root` is
+        already scoped by the ROOT, so filtering on it would restate a
+        guarantee the path shape has already made structurally. Root scoping
+        remains the isolation -- measured after the glob change, a tick scan
+        rooted at `data_type=quotes` still sees exactly `['quotes']`.
         """
         # `data_type` is the only key `_scan_root` consumes, and it consumes it
         # whenever the frequency declares it -- so this is a straight removal
         # rather than a condition on the resolved root.
         return tuple(key for key in self._hive_keys if key != "data_type")
 
+    @property
+    def _materialised_hive_keys(self) -> tuple[str, ...]:
+        """Every hive key the glob makes polars produce as a column.
+
+        Distinct from `_scanned_hive_keys` above, which is the narrower
+        predicate set. Two consumers need THIS one and would be wrong with the
+        other: `hive_schema` must declare every key polars parses or the scan
+        raises `SchemaFieldNotFoundError`, and the drop must remove every key
+        it declared or a consumed key leaks into the downstream column set.
+        """
+        return self._hive_keys
+
     def _scanned_hive_schema(self) -> dict:
-        """`HIVE_SCHEMA_BY_FREQUENCY`, narrowed to the keys inside the scan."""
+        """`HIVE_SCHEMA_BY_FREQUENCY`, narrowed to the keys the glob produces.
+
+        Every key must be declared explicitly rather than inferred: an
+        inferred numeric-looking key changes dtype (Pitfall 8).
+        """
         schema = self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency]
-        keys = self._scanned_hive_keys
+        keys = self._materialised_hive_keys
         return {name: dtype for name, dtype in schema.items() if name in keys}
 
     def _hive_window_predicate(self, start, end) -> pl.Expr:
@@ -305,7 +344,7 @@ class StockDataset(MarketDataset):
         writes nothing, deletes nothing, and opens no parquet file.
         """
         root = self._scan_root()
-        return root.exists() and any(root.rglob("*.pqt"))
+        return root.exists() and any(root.rglob(f"*{self.RAW_SHARD_SUFFIX}"))
 
     def _scan_raw(self, start_date=None, end_date=None) -> pl.LazyFrame:
         """The shared LazyFrame pipeline: hive-scan, prune, date-filter,
@@ -342,9 +381,40 @@ class StockDataset(MarketDataset):
                 f"merely prunes to zero rows returns an empty frame instead."
             )
 
-        # A DIRECTORY argument (not a file list) is what auto-enables hive
-        # partitioning, and `hive_schema` is passed explicitly because an
-        # inferred numeric-looking key changes dtype (Pitfall 8).
+        # A RECURSIVE GLOB over the shard extension, not the bare directory.
+        #
+        # NOT TRUE ANY MORE: the previous comment here read "A DIRECTORY
+        # argument (not a file list) is what auto-enables hive partitioning".
+        # Auto-enabling is not what this call relies on -- `hive_partitioning`
+        # is passed EXPLICITLY on the line below, and measurement on the live
+        # tree confirms a glob keeps both halves: the `month` key is still
+        # materialised, and plan-time DIRECTORY PRUNING still happens (a
+        # three-partition tree filtered to one month lists exactly
+        # `month=.../part-0.pqt` in the scan node, 1 of 3). Handing a bare
+        # directory was therefore never load-bearing, and it carried a defect.
+        #
+        # The defect: polars walks EVERY file beneath a directory argument and
+        # refuses the scan outright when the extensions disagree --
+        # `InvalidOperationError: directory contained paths with different file
+        # extensions`. `config/__init__.py` already knows this failure mode; it
+        # is the documented reason (D-13) the watermark sidecars live in a
+        # SIBLING directory rather than inside the raw tree. That mitigation
+        # assumes nothing else ever writes into the tree, and on macOS that
+        # assumption does not hold: opening the folder in Finder is enough to
+        # leave a `.DS_Store` beside the partitions, after which every scan
+        # fails until someone deletes it. A full-market backfill hit exactly
+        # this after a two-hour download, on the FIRST collect of the
+        # conversion.
+        #
+        # `*.pqt` is the repo's own shard extension, and using it here means
+        # the scan and `has_raw_data()` (`root.rglob("*.pqt")`, below) decide
+        # on the SAME set of files rather than on two similar-looking ones.
+        # The glob narrows nothing real: a `.pqt` sitting directly in the scan
+        # root, with no `month=` segment, fails hive parsing identically under
+        # both spellings, so no supported layout loses a shard.
+        #
+        # `hive_schema` is passed explicitly because an inferred
+        # numeric-looking key changes dtype (Pitfall 8).
         #
         # `extra_columns` and `missing_columns` are LEFT AT THEIR RAISING
         # DEFAULTS on purpose. The SchemaError a mixed-schema scan raises is
@@ -353,7 +423,7 @@ class StockDataset(MarketDataset):
         # make the scan work" would reopen precisely the silent merge this
         # method exists to prevent, while looking like a bug fix.
         data = pl.scan_parquet(
-            root,
+            str(root / "**" / f"*{self.RAW_SHARD_SUFFIX}"),
             hive_partitioning=True,
             hive_schema=self._scanned_hive_schema(),
         )
@@ -389,10 +459,17 @@ class StockDataset(MarketDataset):
         # column that the tick layout happens to express as a path segment --
         # the writer drops it from the file because the segment carries it, so
         # dropping it here too would delete it outright.
+        #
+        # Iterates `_materialised_hive_keys`, NOT `_scanned_hive_keys`: the two
+        # differ by exactly the key `_scan_root` consumed (`data_type`), and
+        # since the glob change polars materialises that one as a column too.
+        # Dropping the narrower set would leak `data_type` into the downstream
+        # column set on the tick path -- a column no caller of `_scan_raw` has
+        # ever seen, which is a schema change wearing a bug fix's clothes.
         data = data.drop(
             [
                 key
-                for key in self._scanned_hive_keys
+                for key in self._materialised_hive_keys
                 if key in self.DERIVED_HIVE_KEYS
             ]
         )

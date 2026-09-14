@@ -820,3 +820,122 @@ def test_a_tick_scan_does_not_dedup_rows_sharing_a_timestamp_and_symbol(
         "two quotes sharing one (timestamp, symbol) are two quotes, not one"
     )
     assert sorted(frame["bid_price"].to_list()) == [1.0, 1.2]
+
+
+def test_scan_raw_ignores_a_foreign_file_dropped_into_the_raw_tree(
+    tmp_path: Path, hive_raw_tree, stock_pqt_row
+):
+    """A `.DS_Store` beside the partitions must not break the scan.
+
+    Handing `pl.scan_parquet` a bare DIRECTORY makes it walk every file
+    beneath that root and refuse the whole scan when the extensions disagree:
+    `InvalidOperationError: directory contained paths with different file
+    extensions`. `config/__init__.py` already knows this failure mode -- it is
+    the documented reason (D-13) the watermark sidecars sit in a SIBLING
+    directory rather than inside the raw tree.
+
+    That mitigation assumes nothing else ever writes into the tree, and on
+    macOS the assumption is false: opening the folder in Finder is enough to
+    leave a `.DS_Store` next to the partitions, after which EVERY scan fails
+    until a human deletes it. This is not hypothetical -- a full-market
+    backfill hit it on the first collect of the conversion, after a two-hour
+    download had already succeeded.
+
+    The fix is a recursive glob on the shard suffix instead of a bare
+    directory. This test is what stops a later "simplify it back to the
+    directory" from silently reopening the hole, since the tree still scans
+    fine without a foreign file present.
+    """
+    parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
+    root = hive_raw_tree(parent, "tiingo", _five_month_rows(stock_pqt_row))
+
+    intruder = root / ".DS_Store"
+    intruder.write_bytes(b"\x00\x01Bud1 junk")
+    assert intruder.exists(), "the foreign file must really be in the tree"
+
+    frame = StockDataset(_make_config(root))._scan_raw().collect()
+
+    assert frame.height == 5, "every partition's row survives the foreign file"
+    assert intruder.exists(), "the scan must not delete what it ignores"
+
+
+def test_scan_raw_still_prunes_directories_with_a_foreign_file_present(
+    tmp_path: Path, hive_raw_tree, stock_pqt_row
+):
+    """The glob must not cost plan-time pruning -- the whole point of the
+    hive layout.
+
+    Pinned SEPARATELY from the correctness test above because the two fail for
+    different reasons: a scan can return every right row while opening every
+    file. `test_scan_raw_prunes_directories_on_the_hive_key_not_on_timestamp`
+    asserts the same property on a clean tree; this one asserts the foreign
+    file changed nothing about it.
+    """
+    parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
+    root = hive_raw_tree(parent, "tiingo", _five_month_rows(stock_pqt_row))
+    (root / ".DS_Store").write_bytes(b"\x00\x01Bud1 junk")
+
+    dataset = StockDataset(_make_config(root))
+
+    whole = _scan_source_count(dataset._scan_raw().explain())
+    narrowed = _scan_source_count(
+        dataset._scan_raw("2024-04-01", "2024-05-31").explain()
+    )
+
+    assert whole == 5, "the unfiltered plan still reaches all five shards"
+    assert narrowed == 2, "the hive predicate still prunes to two directories"
+
+
+def test_the_shard_suffix_is_defined_once_for_scan_and_presence(
+    tmp_path: Path, hive_raw_tree, stock_pqt_row
+):
+    """`_scan_raw`'s glob and `has_raw_data`'s rglob must ask about the SAME
+    files.
+
+    They were two independent `"*.pqt"` literals. A scan that reads a wider
+    set than the presence check answers about is a scan that can fail on a
+    file the check never considered -- which is exactly the split-contract
+    shape `has_raw_data`'s own docstring warns about one level up.
+    """
+    parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
+    root = hive_raw_tree(parent, "tiingo", _five_month_rows(stock_pqt_row))
+    (root / ".DS_Store").write_bytes(b"\x00\x01Bud1 junk")
+
+    dataset = StockDataset(_make_config(root))
+
+    assert StockDataset.RAW_SHARD_SUFFIX == ".pqt"
+    assert dataset.has_raw_data(), "the foreign file must not mask real shards"
+    assert dataset._scan_raw().collect().height == 5
+
+
+def test_a_tick_scan_also_survives_a_foreign_file_in_its_scan_root(
+    tmp_path: Path
+):
+    """The `.DS_Store` regression, on the OTHER layout.
+
+    Pinned separately from the `1d` case because the two failed for different
+    reasons and were fixed by different halves of the same change. Before the
+    fix `1d` died on the extension mismatch; tick died on it too, and then --
+    once the glob replaced the bare directory -- died instead on
+    `SchemaFieldNotFoundError: path contains column not present in the given
+    Hive schema: "data_type"`, because a glob has no directory to treat as the
+    hive boundary and polars walks up into the key `_scan_root` had consumed.
+
+    Declaring that key in the schema and dropping it alongside the other
+    derived keys is what makes both layouts survive. This test is what stops a
+    later narrowing of either set from reopening the tick half silently, since
+    the tick tree scans fine with no foreign file present.
+    """
+    root = _tick_tree(tmp_path)
+    scan_root = root / "data_type=trades"
+    (scan_root / ".DS_Store").write_bytes(b"\x00\x01Bud1 junk")
+
+    frame = StockDataset(_tick_config(root, data_type="trades"))._scan_raw().collect()
+
+    assert frame.height == 1, "the trades shard still reads"
+    assert "price" in frame.columns, "the trades projection is intact"
+    assert "bid_price" not in frame.columns, "root scoping still isolates quotes"
+    # The consumed key must not leak: the glob materialises it, the drop
+    # removes it, and the downstream column set is unchanged.
+    assert "data_type" not in frame.columns
+    assert "date" not in frame.columns

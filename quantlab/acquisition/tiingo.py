@@ -224,7 +224,31 @@ class TiingoAcquisition(Acquisition):
             frequency=frequency,
             columns=TiingoColumns.EOD,
         )
-        data = pl.DataFrame(response)
+        # `infer_schema_length=None` -- infer over the WHOLE response, never
+        # the default 100 rows. This is the same spelling `acquisition/alpaca.py`
+        # already uses at its own construction site, reached from a different
+        # direction: there the vendor OMITS an absent field, here it NULLS one.
+        #
+        # Tiingo backfills `low`/`adjLow` as `null` for the early history of
+        # some symbols -- a contiguous LEADING run, not scattered gaps. `CAB`
+        # is null for its first 409 sessions and `VNLPY` for its first 337, so
+        # the default 100-row window sees nothing but nulls, types the column
+        # `Null`, and then the first real value raises at CONSTRUCTION:
+        #
+        #     ComputeError: could not append value: 1.5 of type: f64 to the
+        #     builder; make sure that all rows have the same schema
+        #
+        # WR-05 pinned the dtypes with the `.cast()` below and argued the two
+        # vendors could then not drift on what "schema-stable" means. It ported
+        # only half: a cast repairs a frame that was BUILT with the wrong dtype,
+        # and cannot run at all when the build itself throws. Both symbols
+        # failed every full-market run this way, and the manifest recorded a
+        # polars builder error rather than anything a reader could act on.
+        #
+        # A column the vendor nulls in EVERY row still infers `Null` here; the
+        # `.cast()` below turns it into `Float64`. The two measures are
+        # complementary and neither is redundant.
+        data = pl.DataFrame(response, infer_schema_length=None)
         if data.is_empty():
             return None
 
