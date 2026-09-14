@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-import ingest_tiingo
+from scripts import ingest_tiingo
 
 
 class _FakeCatalog:
@@ -31,7 +31,9 @@ def _make_args(**overrides) -> argparse.Namespace:
 
 def test_build_configs_resolves_symbols_from_universe(monkeypatch):
     monkeypatch.setattr(
-        ingest_tiingo.UniverseCatalog, "load", classmethod(lambda cls, config: _FakeCatalog())
+        ingest_tiingo.UniverseCatalog,
+        "load",
+        classmethod(lambda cls, config: _FakeCatalog()),
     )
 
     args = _make_args(universe="sp500", as_of_date="2020-01-01")
@@ -58,15 +60,18 @@ def test_build_configs_never_runs_an_acquisition_or_stock_dataset(
     exhaustive AST form of that check lives in `tests/test_ingest_shells.py`.
     """
     monkeypatch.setattr(
-        ingest_tiingo.UniverseCatalog, "load", classmethod(lambda cls, config: _FakeCatalog())
+        ingest_tiingo.UniverseCatalog,
+        "load",
+        classmethod(lambda cls, config: _FakeCatalog()),
     )
 
     assert not hasattr(ingest_tiingo, "TiingoAcquisition")
 
     args = _make_args(universe="sp500", as_of_date="2020-01-01")
-    with patch("ingest_tiingo.run") as mock_run, patch(
-        "ingest_tiingo.StockDataset"
-    ) as mock_dataset:
+    with (
+        patch("ingest_tiingo.run") as mock_run,
+        patch("ingest_tiingo.StockDataset") as mock_dataset,
+    ):
         ingest_tiingo._build_configs(args)
 
         mock_run.assert_not_called()
@@ -122,7 +127,9 @@ def test_the_shared_groups_register_the_same_flags_from_either_parser():
         first, second = argparse.ArgumentParser(), argparse.ArgumentParser()
         add_group(first, **kwargs)
         add_group(second, **kwargs)
-        assert _option_strings(first) == _option_strings(second) != set(), add_group
+        assert _option_strings(first) == _option_strings(second) != set(), (
+            add_group
+        )
 
 
 def test_both_existing_scripts_take_their_window_flags_from_the_shared_group():
@@ -140,14 +147,17 @@ def test_both_existing_scripts_take_their_window_flags_from_the_shared_group():
 
     assert tiingo.parse_args([]).start_date is None
     assert (
-        us_equity.parse_args([]).start_date == ingest_us_equity.DEFAULT_START_DATE
+        us_equity.parse_args([]).start_date
+        == ingest_us_equity.DEFAULT_START_DATE
     )
 
 
 def test_the_universe_flags_reach_ingest_tiingo_and_the_choices_are_unchanged():
     parser = ingest_tiingo._build_arg_parser()
 
-    assert {"--symbols", "--universe", "--as-of-date"} <= _option_strings(parser)
+    assert {"--symbols", "--universe", "--as-of-date"} <= _option_strings(
+        parser
+    )
 
     choices = next(
         action.choices
@@ -195,9 +205,9 @@ def test_both_roster_modes_are_reachable_and_call_different_catalog_methods():
             return ["AAPL", "DELISTED"]
 
     as_of_args = _make_args(universe="sp500", as_of_date="2020-01-01")
-    assert cli.resolve_symbols(as_of_args, _RecordingCatalog(), mode="as_of") == (
-        "AAPL",
-    )
+    assert cli.resolve_symbols(
+        as_of_args, _RecordingCatalog(), mode="as_of"
+    ) == ("AAPL",)
 
     range_args = argparse.Namespace(
         universe=None,
@@ -348,7 +358,12 @@ def test_ingest_alpaca_exposes_the_shared_flags_plus_its_own():
         "--start-date",
         "--end-date",
     } <= options, "the shared groups did not reach the third script"
-    assert {"--frequency", "--data-type", "--refresh", "--force-volume"} <= options
+    assert {
+        "--frequency",
+        "--data-type",
+        "--refresh",
+        "--force-volume",
+    } <= options
 
 
 def test_ingest_alpaca_registers_no_credential_argument():
@@ -419,10 +434,13 @@ def test_the_alpaca_zarr_store_does_not_overwrite_the_tiingo_one():
     conversion overwrite the Tiingo store in place -- the same silent
     cross-vendor merge, one layer up."""
     import ingest_alpaca
+
     from quantlab.config import stock_kline_config
 
     _, alpaca_ds = ingest_alpaca._build_configs(_alpaca_args())
-    tiingo_ds = stock_kline_config(start_date="2024-01-01", end_date="2024-01-31")
+    tiingo_ds = stock_kline_config(
+        start_date="2024-01-01", end_date="2024-01-31"
+    )
 
     assert alpaca_ds.zarr_file_path != tiingo_ds.zarr_file_path
 
@@ -433,11 +451,14 @@ def test_the_frequency_choices_are_derived_from_the_locked_literal():
     import typing
 
     import ingest_alpaca
+
     from quantlab.enums.data import Frequency
 
-    choices = ingest_alpaca._build_arg_parser()._option_string_actions[
-        "--frequency"
-    ].choices
+    choices = (
+        ingest_alpaca._build_arg_parser()
+        ._option_string_actions["--frequency"]
+        .choices
+    )
     assert set(choices) == set(typing.get_args(Frequency))
 
 
@@ -483,6 +504,7 @@ def test_the_new_listing_choices_are_derived_from_the_locked_literal():
     to fix.
     """
     import ingest_us_equity
+
     from quantlab.base.data import BaseDataset
 
     action = ingest_us_equity._build_arg_parser()._option_string_actions[
@@ -491,6 +513,7 @@ def test_the_new_listing_choices_are_derived_from_the_locked_literal():
 
     assert list(action.choices) == list(BaseDataset.NEW_LISTING_STRATEGIES)
     assert action.default == "refuse"
-    assert ingest_us_equity._build_arg_parser().parse_args(
-        []
-    ).on_new_listing == "refuse"
+    assert (
+        ingest_us_equity._build_arg_parser().parse_args([]).on_new_listing
+        == "refuse"
+    )
