@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
 Plan: 4 of 11
 Status: Ready to execute
-Last activity: 2026-09-13 — Phase 03.6 execution started
+Last activity: 2026-09-14 - Completed quick task 260914-lno: BaseModel 拆为 DLModel/MLModel 三层（通用 train/train_cv/load/predict），ml_model 下新增 XGBoostRegressor（原生早停、wandb、ML 交叉验证）
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -276,6 +276,7 @@ Recent decisions affecting current work:
 | 260908-g30 | Route symbol-axis widening by size: add a memory-bounded chunked widening path to XrBackend and a materialisation estimate that switches to it above budget, reporting which path was taken | 2026-09-08 | 4941e8d | [260908-g30-route-symbol-axis-widening-by-size-add-a](./quick/260908-g30-route-symbol-axis-widening-by-size-add-a/) |
 | 260909-174 | Retire the stale failure-manifest semantics across 12 sites, breaking the `_write_failure_manifest` docstring citation chain at its root; gated by a whitespace/string-seam normalising scanner diffed both ways against a pre-committed allowlist, plus an AST prose-only proof | 2026-09-09 | e1ef28b | [260909-174-fix-six-stale-documentation-and-docstrin](./quick/260909-174-fix-six-stale-documentation-and-docstrin/) |
 | 260909-idh | Close the two phase-03.4 UAT gaps: make the roster order content-determined so `--limit` is reproducible (G-03.4-2), and refuse a Zarr conversion with nothing to convert while gating all three ingest shells behind `--to-zarr` (G-03.4-1) | 2026-09-09 | cf215bc | [260909-idh-fix-two-uat-gaps-from-phase-03-4-1-g-03-](./quick/260909-idh-fix-two-uat-gaps-from-phase-03-4-1-g-03-/) |
+| 260914-lno | Split BaseModel into DLModel/MLModel with shared public train/train_cv/load/predict and one CV fold generator; add XGBoostRegressor in ml_model (native early stopping, per-round wandb, sklearn alias normalization, resolved_hyperparameters), panel IC/RankIC metrics, and a macOS-only OMP_NUM_THREADS=1 test guard for the torch/xgboost libomp clash | 2026-09-14 | 5b01c65 | [260914-lno-basemodel-mlconfig-dl-save-load-predict-](./quick/260914-lno-basemodel-mlconfig-dl-save-load-predict-/) |
 
 ### Roadmap Evolution
 
