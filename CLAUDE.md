@@ -28,12 +28,12 @@
 - Jupyter (`.ipynb`) — exploratory/scratch work, e.g. `test_nt.ipynb`.
 ## Runtime
 - CPython >=3.13 (declared, not currently installed as default `python3` on this machine).
-- GPU/CUDA expected for deep-learning model code: `base/model.py` calls `torch.cuda.manual_seed_all` and `BaseModel.device` selects `"cuda"` when available, falling back to `"cpu"`.
+- GPU/CUDA expected for deep-learning model code: `base/model.py` calls `torch.cuda.manual_seed_all` and `DLModel.device` selects `"cuda"` when available, falling back to `"cpu"`.
 - `uv` (evidenced by `uv.lock` and the bare `pyproject.toml` layout uv generates).
 - Lockfile: present (`uv.lock`) but **stale/mismatched** — it locks only `bottleneck`, `numpy`, and a self-reference to a project named `crypto-quant` (not `quantlab`), and declares `requires-python = ">=3.12"` (vs. `>=3.13` in `pyproject.toml`). This lockfile predates the current `pyproject.toml` and does not reflect the packages actually imported by the code (see Key Dependencies below). Running `uv sync` today will not install a working environment.
 ## Frameworks
 - No web/API framework. This is a research/trading codebase (data pipeline + ML models + backtesting), not a service.
-- **PyTorch** (`torch`) — deep-learning models (`dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py`), trained through the shared `base/model.py:BaseModel` training loop (`DataLoader`/`TensorDataset`).
+- **PyTorch** (`torch`) — deep-learning models (`dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py`), trained through the `base/model.py:DLModel` epoch loop (`DataLoader`/`TensorDataset`).
 - **scikit-learn** (`sklearn.metrics`) — evaluation metrics (accuracy, F1, ROC-AUC, R², RMSE, etc.) used inside DL training loops, not for model fitting itself.
 - **KunQuant** — JIT-compiled factor computation graph library. Used throughout `base/factor.py`, `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` to build and compile (`cfake.compileit`) high-performance alpha factor pipelines (`KunRunner`, `Function`, `Builder`, `Op`, `Stage`).
 - **Nautilus Trader** (`nautilus_trader`) — currently used ONLY as a data model / `ParquetDataCatalog` for storing bar/instrument data (`base/data.py`, `dataset/spot.py`). Its live/backtest trading engine is not used by any code in the repo: the only `Strategy` subclass, `backtest/test_strategy.py`, was deleted 2026-09-07.
@@ -44,12 +44,14 @@
 ## Key Dependencies
 - `numpy`, `pandas`, `polars`, `xarray` — the core numerical/tabular/labeled-array stack. `xarray.Dataset` (dims `timestamp`, `symbol`) is the canonical in-memory data representation passed between dataset, factor, label, and model layers.
 - `torch` — model definition and training (`dl_model/*`).
+- `xgboost` — tree-model future-return regression (`ml_model/xgb.py:XGBoostRegressor`), trained with `xgb.train` and XGBoost's native `EarlyStopping(save_best=True)`.
+- `scipy` — `scipy.stats.rankdata` for the cross-sectional RankIC in `utils/metrics.py`; declared directly in `pyproject.toml`.
 - `KunQuant` — compiled factor computation (`factor/*`, `base/factor.py`, `label/spot.py`, `my_ops/preprocess.py`). Appears to be a specialized/possibly local or pinned package, not a mainstream PyPI package with a standard lockfile entry.
 - `nautilus_trader` — data catalog, instrument/currency model (`dataset/spot.py`, `utils/nautilus.py`). The trading engine itself is unused.
 - `vectorbt` — signal-based backtesting (`vecbt/bt.py`, `test.py`).
 - `wandb` — experiment tracking, initialized in every training run (`base/model.py:_init_wandb`).
 - `loguru` — logging throughout (`base/data.py`, `base/factor.py`, `utils/timer.py`, `utils/nautilus.py`, `utils/binance.py`).
-- `joblib` — parallelism (`Parallel`/`delayed` for CV folds and nautilus bar conversion) and non-torch model persistence (`joblib.dump`/`load` in `base/model.py`, `ml_model/backend.py`).
+- `joblib` — parallelism (`Parallel`/`delayed` for CV folds and nautilus bar conversion) and non-torch model persistence through `ml_model/backend.py:MlBackend` (the `.joblib` checkpoint backend of `base/model.py:MLModel`).
 - `tqdm` — progress bars across data/factor/CV loops.
 - `bottleneck` — the one dependency actually declared/locked (`pyproject.toml`/`uv.lock` under the old `crypto-quant` name); likely used for fast rolling/window numpy ops (not directly observed via `import` grep, may be an `xarray`/`pandas` accelerator dependency).
 - `requests` — Binance REST calls (`utils/binance.py`, `get_binance_instruments.py`).
@@ -66,6 +68,7 @@
 - `uv.lock` — present but stale (see Runtime/Package Manager above); does not currently reflect a resolvable, working dependency set for this codebase.
 ## Platform Requirements
 - macOS (current dev host is Darwin/arm64 per environment) or Linux — code contains Linux-style absolute paths hardcoded into config factories (see `config/__init__.py`, e.g. `/home/zhrdai/projects/crypto_quant/...`), implying the primary development/training environment is a Linux workstation, not this machine.
+- macOS dev host OpenMP clash: xgboost's wheel links Homebrew libomp while torch bundles its own, so a process mixing both segfaults or deadlocks. `tests/conftest.py` sets `OMP_NUM_THREADS=1` on darwin before any import (locked by `tests/test_macos_openmp_guard.py`); user scripts/notebooks on macOS that mix torch and xgboost must set it too. Linux is untouched. See `example/model.md`.
 - A working `uv`-managed Python 3.13 environment must be created and `pyproject.toml` dependencies must be reconciled with actual imports before the code can run; currently `uv sync` alone is insufficient.
 - No deployment target detected (no Dockerfile, no cloud config, no server entry point). This is a local research/trading pipeline intended to run on a workstation/server with GPU access for model training and disk access to large local datasets (CSV/Parquet klines, zarr stores).
 <!-- GSD:stack-end -->
@@ -95,16 +98,20 @@ Conventions not yet established. Will populate as patterns emerge during develop
 | `Alpha101SpotKline` / `Alpha158SpotKline` | Concrete factor sets (Alpha101 formulaic factors, Alpha158 factor library) | `factor/alpha101.py`, `factor/alpha158.py` |
 | `SpotReturn` / `SpotBinaryReturn` | Forward-return regression/classification labels | `label/spot.py` |
 | `WindowedZScore` | Custom KunQuant composite op for time-series factor normalization (`WindowedRobustStandardization` sat beside it with zero call sites and was deleted 2026-09-07) | `my_ops/preprocess.py` |
-| `BaseModel` (abstract) | Shared training loop: data collection, train/val/test split, epoch loop, checkpointing, W&B logging, CV | `base/model.py` |
+| `BaseModel` (abstract) | Framework-agnostic shared lifecycle: config type guard, factor/label collection, the public `train`/`train_cv`/`load`/`predict` (implemented once), checkpoint dir + `config.json`, the single CV fold generator `_cv_folds`, per-fold CV results and the `{cls}_cv_summary` W&B run | `base/model.py` |
+| `DLModel` (abstract) | torch variant: device, `to_tensor`, DataLoader epoch loop with per-epoch early stopping and best-epoch rollback, `.pth` checkpoints; five tensor hooks | `base/model.py` |
+| `MLModel` (abstract) | numpy variant for tree/ML models: one `_fit_model` call with the library's native early stopping, `_evaluate` writing `{split}_*` metrics to the W&B summary, `.joblib` checkpoints via `MlBackend`, resolved-hyperparameter recording; four hooks | `base/model.py` |
+| `XGBoostRegressor` | Future-return regression with `xgb.train` + native `EarlyStopping(save_best=True)`, per-round W&B callback, sklearn-alias normalization, CV via inherited `train_cv` | `ml_model/xgb.py` |
+| Panel metrics | Vectorized MSE/RMSE/MAE/R² and cross-sectional IC/RankIC over `[T, S]` panels | `utils/metrics.py` |
 | `MLPRegressor`, `RNNRegressor`, `RNNClassifier` | Concrete torch model heads (MLP, GRU/LSTM regressor, GRU/LSTM classifier with auxiliary-label architecture) | `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` |
-| `MlBackend` | joblib-based persistence for non-torch (ML) models | `ml_model/backend.py` |
+| `MlBackend` | joblib-based checkpoint persistence for `MLModel` heads | `ml_model/backend.py` |
 | `backtest_from_signals` | vectorbt-based signal backtest helper (incomplete) | `vecbt/bt.py` |
 | Config factories | Hardcoded-path factory functions producing `DatasetConfig`/`FactorConfig` for spot klines, alpha101, alpha158, labels | `config/__init__.py` |
 | `DatasetConfig`/`FactorConfig`/`DLConfig`/`MLConfig` | Dataclass configuration objects threaded through every layer | `base/config.py` |
 ## Pattern Overview
 - Every domain object (`Dataset`, `FactorKunQuant`, `BaseModel`) shares the same lifecycle idiom: a `config` property setter that normalizes dates/names on assignment, a `read()`/`cal()`/`save()` trio for lazy-vs-eager data materialization, and `xarray.Dataset` as the universal in-memory exchange format between layers (always indexed by `timestamp` and `symbol`).
 - Factor/label computation is offloaded to **KunQuant**, a compiled-graph engine (`Builder`/`Op`/`Function` → `cfake.compileit` → `KunRunner`), not plain numpy/pandas — factors are defined declaratively as op graphs, then JIT-compiled to native code and executed via a multi-thread executor (`kr.createMultiThreadExecutor`).
-- Model layer (`base/model.py:BaseModel`) is torch-centric: training assumes a `[num_times, num_symbols, num_features]` tensor shape, uses `TensorDataset`/`DataLoader`, and every concrete model implements the same 5-method contract (`_init_model`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, `_preprocess`).
+- Model layer (`base/model.py`) is a three-layer hierarchy: framework-agnostic `BaseModel` owns the public `train`/`train_cv`/`load`/`predict` and CV fold geometry; `DLModel` (torch, `[num_times, num_symbols, num_features]` tensors through `TensorDataset`/`DataLoader`) requires five hooks (`_init_model`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, `_preprocess`); `MLModel` (numpy, native library early stopping, no epoch loop) requires four (`_init_model`, `_preprocess`, `_fit_model`, `_forward`). Each variant declares `config_cls` (`DLConfig`/`MLConfig`) and `checkpoint_suffix` (`.pth`/`.joblib`).
 - Configuration is dataclass-based (not env-var or YAML-based, except `config/instruments.yaml` for exchange instrument metadata) and is **hardcoded with absolute filesystem paths per developer machine** rather than parameterized (see `config/__init__.py`).
 - No dependency injection framework, no plugin registry beyond `utils/module.py:get_cls_from_path` (dynamic import-by-dotted-path used to reconstruct a `Dataset`/`Factor`/`Model` from a saved JSON config).
 ## Layers
@@ -121,9 +128,9 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Location: `base/factor.py` (ABC `FactorKunQuant`), `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` (custom `WindowedCompositiveOp` subclasses).
 - Depends on: Dataset layer (each factor config embeds a `Dataset`), `KunQuant`.
 - Used by: Model layer (`DLConfig.factors`/`DLConfig.labels`).
-- Purpose: Orchestrates the full training lifecycle — pulling factor/label data into a combined `xarray.Dataset` (`collect()`), splitting into train/val/test or k-fold CV windows, running the epoch loop, early stopping, checkpointing (`.pth` via `torch.save` or `.joblib` via `joblib.dump`), and W&B logging.
-- Location: `base/model.py` (ABC `BaseModel`), `base/config.py` (`DLConfig`/`MLConfig`), `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py`, `ml_model/backend.py` (persistence helper only — no concrete `MLConfig`-based model implementation currently exists; `BaseModel._auto_train` raises `NotImplementedError` for `MLConfig`).
-- Depends on: Factor/Label layer, `torch`, `wandb`, `sklearn.metrics`, `joblib`.
+- Purpose: Orchestrates the full training lifecycle — pulling factor/label data into a combined `xarray.Dataset` (`collect()`), splitting into train/val/test or rolling walk-forward CV windows (one `_cv_folds` generator for both variants and both sequential/parallel branches), training (DL: epoch loop with per-epoch early stopping; ML: one native-early-stopping fit), checkpointing (`.pth` via `torch.save` in `DLModel`, `.joblib` via `MlBackend` in `MLModel`), and W&B logging.
+- Location: `base/model.py` (`BaseModel` / `DLModel` / `MLModel`), `base/config.py` (`DLConfig`/`MLConfig`), `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` (all `DLModel`), `ml_model/xgb.py` (`XGBoostRegressor`, an `MLModel`), `ml_model/backend.py` (`MlBackend`), `utils/metrics.py` (panel metrics).
+- Depends on: Factor/Label layer, `torch`, `xgboost`, `wandb`, `sklearn.metrics`, `scipy`, `joblib`.
 - Used by: Top-level scripts (`train_model.py`, `test.py`).
 - Purpose: Evaluates a trained model's trading performance via vectorbt's signal-based portfolio simulation (`vecbt/bt.py`, `test.py`). The event-driven (Nautilus) alternative is a deferred capability with no current implementation.
 - Location: `vecbt/bt.py` (helper function, currently broken — see Anti-Patterns).
@@ -169,7 +176,8 @@ Conventions not yet established. Will populate as patterns emerge during develop
 ### Broken/incomplete backtest helper committed as-is
 ## Error Handling
 - Config setters validate/derive values eagerly (e.g. `FactorKunQuant.config` setter auto-fills `start_date`/`end_date`/`factor_names` if unset) rather than deferring to call time.
-- Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs consistently — `dataset/stock.py` uses `raise ValueError("Not finished")` for `_get_instrument`/`_xr_to_bars`/`_to_nautilus`, while `base/model.py:_auto_train` uses `raise NotImplementedError("ML training not implemented")` for the `MLConfig` branch.
+- Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs consistently — `dataset/stock.py` uses `raise ValueError("Not finished")` for `_get_instrument`/`_xr_to_bars`/`_to_nautilus`, while `base/model.py:DLModel._fit(backtest=True)` raises `NotImplementedError` naming Phase 6 before any training runs.
+- A model given the wrong config class raises `TypeError` as the first statement of the `BaseModel.config` setter, before any factor/label is touched; `load()` rejects a checkpoint whose suffix differs from the variant's `checkpoint_suffix` before building a model.
 ## Cross-Cutting Concerns
 <!-- GSD:architecture-end -->
 

@@ -8,12 +8,11 @@ implementations returned `None` implicitly, so any chained call died with
 `AttributeError: 'NoneType' object has no attribute ...` -- evidence the class
 had never actually been run.
 
-`MlBackend` is zero-call-site but deliberately KEPT: `BaseModel.predict()`'s
-`np.ndarray` branch exists for non-torch `MLConfig` models (xgboost and the
-like) and this is their joblib persistence. Scaffolding for a path that is
-intended and not yet built is not an abandoned entrance -- but scaffolding
-that breaks the moment someone uses it as documented is worth fixing before
-the first caller arrives, which is what this file locks.
+`MlBackend` is now the checkpoint persistence backend of
+`quantlab/base/model.py:MLModel` (quick task 260914-lno): `_write_checkpoint`
+and `_read_checkpoint` go through it, so `XGBoostRegressor`'s `.joblib` files
+are written and read here. It was fixed before that first caller arrived,
+which is what this file locks.
 """
 
 from pathlib import Path

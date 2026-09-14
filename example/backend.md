@@ -498,7 +498,7 @@ MlBackend.to_internal 返回: None
 
 现在三个方法都 `return self`，跟 `XrBackend` / `PlBackend` 一致，`MlBackend().to_internal(m).write(path)` 和 `MlBackend().read(path).get_model()` 都能直接写；ABC 早就声明的 `**kwargs` 也补上并真的透传给 joblib。由 `tests/test_ml_backend.py` 锁（含一条 `write(..., compress=3)` 的透传断言，防止 `**kwargs` 变成摆设）。
 
-`MlBackend` 在仓库里仍然**没有任何调用点**——`quantlab/base/model.py` 是直接用 `torch.save`/`joblib.dump` 的。但它**不是死代码**：`BaseModel.predict()` 签名里的 `np.ndarray` 分支是有意留的，为的是 `MLConfig` 那条非 torch 模型（xgboost 之类）的路，而 `MlBackend` 就是那条路的持久化。它是尚未建成的既定路线的脚手架——正因为如此，才值得在第一个调用方出现之前把它修好，而不是让它在第一次被按文档使用时就挂掉。
+`MlBackend` 现在是 **`MLModel` 的 checkpoint 持久化后端**（2026-09-14，260914-lno 接上了第一个调用点）：`quantlab/base/model.py:MLModel._write_checkpoint` 调 `MlBackend().to_internal(self.model).write(path)`，`_read_checkpoint` 调 `MlBackend().read(path).get_model()`，`XGBoostRegressor` 的 `.joblib` 就经这条路落盘和读回。torch 那条路仍由 `DLModel` 直接 `torch.save(state_dict)`。它在第一个调用方出现之前就被修好（上面这条），所以第一次被按文档使用时没有挂掉。`.joblib` 本质是 pickle，只加载自己信任的文件。
 
 **6. `XrBackend.head(path, n)` 的"n 行"是先对每一维都切 n，再取前 n 行。** 实现是 `opened.isel({dim: slice(0, n) for dim in opened.dims})`，然后 `to_dataframe()`，最后 `.head(n)`。所以中间物化的是最多 `n^(维数)` 行——二维面板下 n=3 会先展开成 6 行再切到 3 行。这仍然是有界的（这是"不物化全量"的要求），但如果你把 n 调到几千、维数又多，中间那步不是免费的。用 `isel(dims)` 而不是写死 `timestamp`，是因为一个介质无关的后端不该假设这个项目的面板恰好按时间和标的索引。
 

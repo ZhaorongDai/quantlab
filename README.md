@@ -194,8 +194,10 @@ enum token with no fetcher -- fails there;
 - `quantlab/base/` -- Abstract base classes that define the layer contracts: `DataBackend`/`ModelBackend`
   (`backend.py`), `BaseDataset` and its market-data specialization `MarketDataset` (`data.py`),
   `IndexConstituentDataset` (`constituent.py`), the shared `Factor` base and its `FactorKunQuant`
-  backend (`factor.py`), the `FactorPolars` backend (`factor_polars.py`), `BaseModel`
-  (`model.py`), plus the dataclass configs (`config.py`: `BaseDatasetConfig`, `DatasetConfig`,
+  backend (`factor.py`), the `FactorPolars` backend (`factor_polars.py`), the three-layer model
+  hierarchy in `model.py` -- framework-agnostic `BaseModel` (public `train`/`train_cv`/`load`/
+  `predict`, the single CV fold generator), the torch variant `DLModel` and the numpy/tree
+  variant `MLModel` -- plus the dataclass configs (`config.py`: `BaseDatasetConfig`, `DatasetConfig`,
   `ConstituentDatasetConfig`, `BaseFactorConfig`, `FactorConfig`, `PolarsFactorConfig`,
   `DLConfig`, `MLConfig`).
 - `quantlab/dataset/` -- Concrete dataset/`DataBackend` implementations. `MarketDataset` subclasses:
@@ -213,10 +215,11 @@ enum token with no fetcher -- fails there;
   (classification).
 - `quantlab/my_ops/` -- Custom KunQuant composite ops used inside factor/label graphs
   (`WindowedZScore`).
-- `quantlab/dl_model/` -- Concrete PyTorch model heads trained through `quantlab/base/model.py:BaseModel`:
-  `MLPRegressor`, `RNNRegressor`, `RNNClassifier`.
-- `quantlab/ml_model/` -- `joblib`-based persistence helper (`MlBackend`) for non-torch models; no
-  concrete `MLConfig`-driven model is implemented yet.
+- `quantlab/dl_model/` -- Concrete PyTorch model heads, each a `quantlab/base/model.py:DLModel`
+  subclass: `MLPRegressor`, `RNNRegressor`, `RNNClassifier`.
+- `quantlab/ml_model/` -- `MlBackend` (`backend.py`, joblib checkpoint persistence for `MLModel`)
+  and `XGBoostRegressor` (`xgb.py`: future-return regression with XGBoost's native early
+  stopping, supports `train_cv`).
 - `backtest/` -- Nautilus Trader live/backtest `Strategy` (`test_strategy.py`) that loads a
   trained model checkpoint and generates/submits orders from live bars.
 - `quantlab/vecbt/` -- vectorbt-based signal backtest helper (`backtest_from_signals`).
@@ -370,8 +373,10 @@ constructor:
 - `PolarsFactorConfig` -- `BaseFactorConfig` with nothing added; the Polars backend is
   batch-only, so it deliberately has no `mode`.
 - `DLConfig` -- deep-learning training config (factors, labels, model hyperparameters).
-- `MLConfig` -- non-torch model config (persistence via `quantlab/ml_model/backend.py`; no concrete
-  model implementation yet).
+- `MLConfig` -- non-torch model config for `MLModel` heads such as `XGBoostRegressor`; no `epochs`
+  field. `early_stopping` / `early_stopping_patience` are handed to the library's native early
+  stopping, so for tree heads patience counts boosting rounds. Checkpoints persist via
+  `quantlab/ml_model/backend.py`.
 
 `quantlab/config/__init__.py` provides factory functions (`spot_kline_config`, `stock_kline_config`,
 `sp500_constituent_config`, `nasdaq100_constituent_config`, `alpha101_config`,

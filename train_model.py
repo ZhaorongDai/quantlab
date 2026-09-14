@@ -67,7 +67,7 @@ data = model.data_backend.get_xarray_dataset()
 
 data = data.sel(timestamp=slice("2024-01-01", "2024-03-01"))
 factors = model.get_factor_names()
-# 走基类的 BaseModel.to_tensor：最后一维严格按 `factors` 声明的顺序排，
+# 走 DLModel.to_tensor（包装 BaseModel.to_array）：最后一维严格按 `factors` 声明的顺序排，
 # 和训练时用的是同一段代码。这里以前手抄了一份 `.sortby([..., "variable"])`，
 # 把列排成了字母序——训练侧修好之后再留着它就是静默错位。
 data = model.to_tensor(data[factors].fillna(0), factors)
