@@ -62,6 +62,10 @@ def load_model_from_config(config: dict):
     config into a `DLConfig` silently; the `BaseModel` config setter now also
     rejects a mismatched config type with `TypeError`.
     """
+    # `resolved_hyperparameters` is a record written by `MLModel.get_config`
+    # (what the library actually trained with), not a config field: drop it,
+    # and only it, so any other unknown key still fails loudly below.
+    config.pop("resolved_hyperparameters", None)
     config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
     config["labels"] = [load_factor_from_config(l) for l in config["labels"]]
     cls = get_cls_from_path(config["name"])

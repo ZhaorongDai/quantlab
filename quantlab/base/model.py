@@ -960,6 +960,25 @@ class MLModel(BaseModel):
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """对已预处理的 `[T, S, F]` 输入返回 `[T, S, L]` 预测。"""
 
+    def _resolved_hyperparameters(self) -> dict | None:
+        """实际生效的超参记录（默认值合并用户覆盖之后），默认 None 表示不记录。
+
+        头在 `_init_model` 里解析出库参数后覆盖本钩子返回它们。非 None 时，
+        `_fit` 把它写进 wandb run config，`get_config` 把它放进 `config.json`
+        的顶层 `resolved_hyperparameters`——这样日后库默认值或头的默认参数改了，
+        这次训练仍能按记录复现。它是记录不是输入：`config.hyperparameters`
+        保持用户原样，`load_model_from_config` 重建配置时丢弃这个键。
+        """
+        return None
+
+    def get_config(self) -> dict:
+        """在 `BaseModel.get_config` 之上，追加非 None 的 `resolved_hyperparameters`。"""
+        cfg = super().get_config()
+        resolved = self._resolved_hyperparameters()
+        if resolved is not None:
+            cfg["resolved_hyperparameters"] = dict(resolved)
+        return cfg
+
     def _loss(self, y: np.ndarray, pred: np.ndarray) -> float:
         """默认损失：所有标签都有限的 `(t, s)` 位置上、对全部标签求 MSE。
 
@@ -1020,6 +1039,13 @@ class MLModel(BaseModel):
             num_labels=self.num_labels,
             hyperparameters=self.config.hyperparameters,
         )
+        resolved = self._resolved_hyperparameters()
+        if resolved is not None and self._wandb_recorder is not None:
+            # run 在 `_init_wandb` 时已经打开，那时参数还没解析；这里补记。
+            self._wandb_recorder.config.update(
+                {"resolved_hyperparameters": dict(resolved)},
+                allow_val_change=True,
+            )
 
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
         train_data = data.sel(timestamp=slice(train_start, train_end))
