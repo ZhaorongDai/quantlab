@@ -77,12 +77,12 @@
 
 ### Backtest（回测）
 
-- [x] **BT-01**: 基于 vectorbt 的向量化回测打通：输入目标持仓，输出回测结果（收益曲线、关键指标等）
+- [ ] **BT-01**: 基于 vectorbt 的向量化回测打通：输入目标持仓，输出回测结果（收益曲线、关键指标等）
 - [ ] **BT-02**: 预留事件驱动回测扩展能力（NautilusTrader），整理现有 `backtest/test_strategy.py` 集成使其至少可运行，不要求完整生产化
 
 ### Config（可复现性）
 
-- [x] **CFG-01**: 流水线各阶段（数据/因子/模型/组合优化/回测）的参数通过配置文件驱动，同一份配置可复现同一次实验结果
+- [ ] **CFG-01**: 流水线各阶段（数据/因子/模型/组合优化/回测）的参数通过配置文件驱动，同一份配置可复现同一次实验结果
 
 ### Architecture（架构契约）
 
@@ -150,9 +150,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MODEL-02 | Phase 4 | Pending |
 | PORT-01 | Phase 5 | Pending |
 | PORT-02 | Phase 5 | Pending |
-| BT-01 | Phase 6 | Complete |
+| BT-01 | Phase 6 | Partial (03.7: vectorbt backtester; target-holdings entry + end-to-end pipeline still Phase 6) |
 | BT-02 | Phase 6 | Pending |
-| CFG-01 | Phase 6 | Complete |
+| CFG-01 | Phase 6 | Partial (03.7: backtest config round-trip; single-config end-to-end pipeline still Phase 6) |
 | ARCH-01 | Phase 6 | Pending |
 | ARCH-02 | Phase 6 | Pending |
 | QUAL-01 | Phase 7 | Pending |
