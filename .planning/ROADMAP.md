@@ -141,13 +141,13 @@ Plans:
 **Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
 **Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 13 plans
+**Plans:** 14 plans
 
 Plans:
 
 **Wave 1**
 
-- [ ] 03.7-01-PLAN.md — Tracer: `run()` end to end (load a checkpoint, predict_panel, TopN weights, vectorbt t+1 fills, persisted run dir) plus architecture locks
+- [ ] 03.7-01-PLAN.md — Tracer: `run()` end to end (load a checkpoint, predict_panel, TopN weights, vectorbt t+1 fills, persisted run dir)
 - [ ] 03.7-02-PLAN.md — Config rebuild fix: `config_cls` on dataset/factor classes, non-mutating loaders, `Factor.read(overwrite=)`
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -156,6 +156,7 @@ Plans:
 - [ ] 03.7-04-PLAN.md — Engine hardening: fill/fee/flip facts, delisting liquidation records, market spec, D-01 sibling proof
 - [ ] 03.7-05-PLAN.md — predict_panel head adapters (MLP, RNNRegressor, RNNClassifier) and `_vecbt` removal
 - [ ] 03.7-06-PLAN.md — Model preparation and date alignment: bar-accurate warm-up, cache-proof re-dating, train/load (incl. DL)
+- [ ] 03.7-14-PLAN.md — Architecture locks: exact abstract sets, run() only on the base, price-column literals, factory imports, layering (split out of 03.7-01 for context budget)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -176,8 +177,11 @@ Plans:
 
 **Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] 03.7-12-PLAN.md — Retire `quantlab/vecbt/`, correct README/CLAUDE.md/codebase maps
 - [ ] 03.7-13-PLAN.md — `example/backtest.md` with a runnable example; predict_panel and cv_folds.json in the model guide
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [ ] 03.7-12-PLAN.md — Retire `quantlab/vecbt/`, correct README/CLAUDE.md/codebase maps (links the `example/backtest.md` that 03.7-13 creates)
 
 ### Phase 03.1: Index Historical Constituents Data Layer (INSERTED)
 
