@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.6"
-current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
+current_phase: "03.7"
+current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
 stopped_at: Phase 03.7 context gathered
-last_updated: "2026-09-15T01:58:57.739Z"
+last_updated: "2026-09-15T04:07:29.103Z"
 last_activity: 2026-09-14
 last_activity_desc: Phase 03.6 execution started
-state_head: 1bfc679dda43a2122e58f309c8f4fa12f7e004f8
+state_head: d7d9c6e6ac82e9760955b17d2c4a0a2bf14a6570
 progress:
   total_phases: 14
   completed_phases: 1
-  total_plans: 58
+  total_plans: 72
   completed_plans: 57
 milestone_name: milestone
 ---
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 
 ## Current Position
 
-Phase: 03.6 (Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)) — EXECUTING
+Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — READY TO EXECUTE
 Plan: 4 of 11
 Status: Ready to execute
 Last activity: 2026-09-14 - Completed quick task 260914-lno: BaseModel 拆为 DLModel/MLModel 三层（通用 train/train_cv/load/predict），ml_model 下新增 XGBoostRegressor（原生早停、wandb、ML 交叉验证）
