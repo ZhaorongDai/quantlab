@@ -73,10 +73,20 @@ class CrossSectionTopNSelector:
     ) -> xr.Dataset:
         """分数 + 下一 bar 成交价 + 调仓掩码 -> 满足 D-03 契约的目标权重。
 
-        非调仓 bar 保持全 NaN（持有）。调仓 bar 先整行写 0.0：NaN 在调仓 bar 上
-        的意思是「保持原仓位」，会悄悄挡住整次调仓（03.7-RESEARCH.md Pitfall 3）。
-        可选 = 分数有限且下一 bar 成交价有限（D-12）。排序用稳定排序，平分时按
-        标的轴顺序决定，结果可复现（D-25）。
+        规则（均由 tests/test_backtest_selection.py 锁定）：
+
+        - 非调仓 bar 整行 NaN（持有）。调仓 bar 先整行写 0.0：NaN 在调仓 bar 上
+          的意思是「保持原仓位」，会悄悄挡住整次调仓（03.7-RESEARCH.md Pitfall 3）。
+        - 可选 = 分数有限且下一 bar 成交价有限（D-12）。NaN 与 inf 分数都不可选；
+          t+1 没有成交价（已退市）的标的也不可选。
+        - 可选标的按分数从高到低排序。排序是稳定的，平分时按标的轴顺序决定，
+          同一面板永远得到同一组权重（D-25）。
+        - `long_only`：k = min(top_n, 可选数)，排名前 k 个各 1/k（D-09）。
+        - `long_short`：k = min(top_n, 可选数 // 2)，排名前 k 个各 +0.5/k、
+          末尾 k 个各 -0.5/k。可选数不足 2·top_n 时两本书依然不共享标的，
+          毛敞口 1、净敞口 0（D-09，03.7-RESEARCH.md A6）。
+        - k < top_n 时记一条 warning，写明该 bar 的时间戳（D-12）；k == 0 时
+          该行全 0.0，即清仓，而不是 NaN。
         """
         scores = scores.transpose("timestamp", "symbol")
         next_fill_price = next_fill_price.transpose("timestamp", "symbol")
