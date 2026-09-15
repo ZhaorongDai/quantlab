@@ -32,6 +32,12 @@
 | [factor.md](factor.md) | 因子层：KunQuant 与 Polars 两个后端，各自适合什么 | 要写新因子时 |
 | [model.md](model.md) | 模型层：基类替你做了什么，子类要实现哪五个方法 | 要接新模型时 |
 
+### 第四步：回测
+
+| 文档 | 讲什么 | 什么时候读 |
+|---|---|---|
+| [backtest.md](backtest.md) | 回测层：`run()` / `run_cv()` 的模板步骤、目标权重契约、t+1 开盘成交、退市强平、截面 TopN 选股、样本内外分开报告、运行目录与数据指纹、从 `config.json` 重建重跑；附一个离线真跑过的最小例子 | 训完模型想看它能不能交易、要回放一次 `train_cv`、或要写新的回测引擎/市场/选股规则时 |
+
 ## 想直接上手扩展
 
 这五篇各自带一个**从零写到跑通的最小扩展**（新数据源是注册一个描述符，其余四篇是一个最小子类），是最快的入门方式：
@@ -51,7 +57,7 @@
 | ~~`quantlab/base/model.py`~~ | ~~`early_stopping=False` 会 `UnboundLocalError` 直接崩；早停计数器按**验证 batch** 递增而非 epoch；张量列序是**字母序**不是你传入的顺序，主目标可能不是你以为的那个~~ **已于 2026-09-07 修复**（`tests/test_model_layer.py`） | [model.md](model.md) 「常见坑」 |
 | ~~`quantlab/dl_model/`~~ | ~~`MLPRegressor` 三处坏掉无法实例化；`rnn.py` 里的 `RNNClassifier` 是过期坏副本（活的那个在 `rnn_classification.py`）；`update()` 读了 `DLConfig` 没有的字段~~ **已于 2026-09-07 修复/删除**（`tests/test_dl_models.py`） | [model.md](model.md) |
 | ~~`quantlab/base/model.py:num_null`~~ | ~~结尾 `.values[0]` 索引一个 0 维数组，**每次读取都 `IndexError`**~~ **已于 2026-09-07 修复**。一条被文档推荐、注解写着 `-> int`、却从来没跑通过的属性（`tests/test_model_layer.py`） | [model.md](model.md) |
-| 回测骨架 | `_do_vecbt` / `_vecbt` / `RNNClassifier._vecbt` / `DLModel._fit(backtest=...)`（2026-09-14 前叫 `_train_dl`）四块半成品互不相连，全部**安静地什么都不做**。**保留**（端到端回测归 Phase 6，钩子位置是对的），但 2026-09-07 起改为显式 `NotImplementedError` 点名 Phase 6——空实现要么报错，要么就不该存在 | [model.md](model.md) |
+| ~~回测骨架~~ | ~~`_do_vecbt` / `_vecbt` / `RNNClassifier._vecbt` / `DLModel._fit(backtest=...)`（2026-09-14 前叫 `_train_dl`）四块半成品互不相连，全部**安静地什么都不做**。**保留**（端到端回测归 Phase 6，钩子位置是对的），但 2026-09-07 起改为显式 `NotImplementedError` 点名 Phase 6——空实现要么报错，要么就不该存在~~ **已删除**，连同锁它们的测试：`_do_vecbt` / `_vecbt` 于 2026-09-14（`d07f06e`），`RNNClassifier._vecbt`、`DLModel._fit(backtest=...)` 与 `backtest_data` 于阶段 03.7（D-37，`tests/test_model_hierarchy.py::test_stale_backtest_hooks_are_deleted` 锁住不再回来）。回测现在只在 `quantlab/backtest/` | [model.md](model.md)、[backtest.md](backtest.md) |
 | 骗人的命名 | ~~`_train_one_epoch` / `_val_one_epoch` / `_test_one_epoch` 其实是 per-**batch**；`_get_features_batch` / `_get_labels_batch` 里的 `batch` 又是相反的意思（收齐全部）~~ **已于 2026-09-07 改名**为 `_*_one_batch` / `_collect_all_*`。前者的名字实际造成过一个早停缺陷 | [model.md](model.md) |
 | ~~`quantlab/utils/nautilus.py`~~ | ~~`get_crypot_currency` 拼错了（"crypot"），且有一个被接收又完全忽略的 `name` 参数~~ **已于 2026-09-07 更正并删参**（`tests/test_spot_dataset.py`） | — |
 | ~~`quantlab/dataset/backend.py`~~ | ~~`XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用~~ **已于 2026-09-07 修复**（`tests/test_backend_indexes.py`） | [backend.md](backend.md)、[dataset.md](dataset.md) |

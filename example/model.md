@@ -1,7 +1,8 @@
 # 模型层（Model）
 
 > 代码位置：`quantlab/base/model.py`（三层模型类：框架无关的 `BaseModel`、torch 变体 `DLModel`、
-> numpy / 树模型变体 `MLModel`）、`quantlab/base/config.py`（`DLConfig` / `MLConfig`）、
+> numpy / 树模型变体 `MLModel`；面板预测 `predict_panel` 与它的 `_predict_panel_array` 钩子；`train_cv` 写的
+> 折清单 `cv_folds.json`，常量 `CV_FOLDS_FILENAME` / `CV_FOLDS_FORMAT_VERSION`）、`quantlab/base/config.py`（`DLConfig` / `MLConfig`）、
 > `quantlab/dl_model/rnn_classification.py`、`quantlab/dl_model/rnn.py`、`quantlab/dl_model/mlp.py`（三个 `DLModel` 头）、
 > `quantlab/ml_model/xgb.py`（`XGBoostRegressor`，`MLModel` 头）、`quantlab/ml_model/backend.py`（`MLModel` 的 checkpoint 持久化后端）、
 > `quantlab/utils/metrics.py`（截面 IC / RankIC 等面板指标）、`quantlab/utils/module.py`（按点分路径重建类）。
@@ -74,6 +75,9 @@ ds = factor.read().get_features()   # "read"：读已经算好的 zarr
 下游由组合优化模块把它变成目标持仓。**这条下游目前还没有接上**——
 `train_model.py` 里是手写的一段 vectorbt 信号回测，不是一个组件。
 
+> **2026-09-15 更新（阶段 03.7）**：上面「下游还没有接上」只对组合优化模块仍然成立。回测现在是一个组件，住在
+> `quantlab/backtest/`，从模型拿的是面板形式的预测（下一节「面板预测：predict_panel」），用法见 [backtest.md](backtest.md)。
+
 ### 张量形状：`[num_times, num_symbols, num_features]`
 
 从 xarray 变成数组/张量的那段是整层最该看懂的地方。它现在被封装成了
@@ -126,6 +130,57 @@ CLAUDE.md 把「模块间统一使用 xarray，不用 DataFrame 作为层间传�
    `torch.from_numpy` 零拷贝接管。走 DataFrame 要多一轮 pivot + to_numpy。
 
 代价是 NaN 要自己处理——这正是 `_preprocess` 存在的原因。
+
+---
+
+## 面板预测：predict_panel
+
+> 2026-09-15 新增（阶段 03.7，D-29 / D-33）。回测层（[backtest.md](backtest.md)）就是通过它拿预测的。
+
+`predict()` 吃的是 `[T, S, F]` 数组、吐的是模型的原始输出，调用方要自己把 xarray 面板转成数组、再把结果贴回坐标。
+`BaseModel.predict_panel(features: xr.Dataset) -> xr.Dataset` 把这一整段「xarray → 数组 → 预测 → xarray」只在模型层写一份，
+DL 与 ML 共用：
+
+- **进**：一个 `(timestamp, symbol)` 的特征面板，至少包含 `get_factor_names()` 列出的全部变量（多出来的变量，
+  比如 `collect()` 后面板里的标签列，会被忽略）。缺任何一个因子变量就 `ValueError`，写出缺了哪些。
+- **出**：同维度 `("timestamp", "symbol")` 的 `xr.Dataset`，**每个标签名一个变量，按 `get_label_names()` 声明的顺序**。
+  坐标取自实际送进模型的那块面板：先按 `timestamp`、`symbol` 排序，再 `to_array`，所以坐标和数值不会错位。
+- **全 NaN 行预测为 NaN**：某个 `(t, s)` 上**所有**特征都是 NaN 时，这个位置所有标签的预测都置 NaN；只有部分特征
+  是 NaN 的位置照常预测。原因是 xgboost 对全缺失的行也会给出有限预测（实测一个 5 轮 booster 对两行全 NaN 输入给
+  `1.703115`），DL 头又先 `nan_to_num` 成 0，不屏蔽的话还没上市或已经退市的标的会被选股选进去。
+- 走公开的 `predict()`，所以模型没训练也没加载时照样报 `Model not initialized`；预测形状不是
+  `[T, S, L]` 时 `ValueError`，写出期望与实际形状。
+
+**头怎么适配：只有一个钩子 `_predict_panel_array(x)`**，`[T, S, F]` numpy 进，`[T, S, L]` numpy 出。它刻意是普通方法
+而不是抽象方法：做成抽象的话每一层的 `__abstractmethods__` 都会变，而 `tests/test_model_hierarchy.py` 锁的正是这些集合。
+
+| 头 | `_predict_panel_array` 做什么 |
+|---|---|
+| `MLModel` 默认（`XGBoostRegressor` 用它） | `np.asarray(self.predict(x))`：`_forward` 本来就返回 `[T, S, L]` |
+| `DLModel` 默认 | 张量转 numpy；`forward` 返回 tuple 的头**必须**自己覆盖本钩子，否则 `TypeError`，消息写出头名 |
+| `MLPRegressor` | 先把 `[T, S, F]` 按 C 序展平成 `[T, S*F]` 交给公开的 `predict()`，再把 `[T, S*L]` reshape 回 `[T, S, L]`，展平方式与 `_train_one_batch` 完全一致 |
+| `RNNRegressor` | `forward` 返回 `(primary_pred_final, all_direct_preds)`，取第二项：通道 i 就是标签 i，**标签 0 是 `base_models[0]` 的直接预测**，不是用辅助预测线性组合出来的 `primary_pred_final` |
+| `RNNClassifier` | 同样只用 `all_direct_preds`（`[T, S, 2L]`）：标签 i 占相邻两个 logit 通道 `[2i, 2i+1]`，softmax 后取类别 1。**每个标签变量装的是上涨概率 P(up)，取值 [0, 1]，不是收益**；通道数不等于 2 × 标签数时 `ValueError` |
+
+**MLP 这一行修正了 D-33 的前提。** D-33 原本把 MLP 和 XGBoost 一起列为「走通用 `[T, S, L]` 路径、不需要适配器」的头。
+代码不是这样：`MLPRegressor._init_model` 建的是 `nn.Linear(num_symbols * num_features, ...)`，训练循环也是先把每个 bar
+展平成 `[T, S*F]`（这正是下面「已知的不完整之处」第 5 条末尾说的那个遗留）。走通用路径实测直接
+`RuntimeError: mat1 and mat2 shapes cannot be multiplied (90x2 and 6x16)`。所以 MLP 也补了适配器，
+公开的 `predict()` **没有改**，它仍然接受展平矩阵，既有调用方不受影响。
+
+用法（此例未单独运行；同样的调用在 [backtest.md](backtest.md) 的「最小可运行例子」里经回测器真实跑过）：
+
+```python
+model = XGBoostRegressor(cfg).collect()
+model.train()                                    # 或 .load(checkpoint)
+panel = model.data_backend.get_xarray_dataset()  # collect 后的面板，含特征与标签列
+preds = model.predict_panel(panel)               # 每个标签一个变量，维度 (timestamp, symbol)
+preds[model.get_label_names()[0]].sel(timestamp="2024-05-02")
+```
+
+由 `tests/test_model_predict_panel.py` 锁住：标签按声明顺序（测试里故意把标签声明成非字母序）、坐标与数值对齐
+（输入的两个轴都反序给出）、全 NaN 行屏蔽而部分 NaN 行不屏蔽、缺因子 / 未初始化 / 未适配的 tuple 头各自报错，
+以及 MLP、`RNNRegressor`、`RNNClassifier` 三个适配器的输出（期望值直接从 `model.model(...)` 算，不经适配器本身）。
 
 ---
 
@@ -954,6 +1009,56 @@ njobs 份，内存按此估算。xgboost 默认用满全部核，njobs 个折同
 `hyperparameters` 里设 `nthread ≈ 核数 // njobs`。**代码不会替你改写 `nthread`**（测试锁住并行 CV 之后它仍是用户给的值）。
 顺序与并行两个分支消费同一个 `_cv_folds`，产出相同的折与 checkpoint。
 
+### cv_folds.json
+
+> 2026-09-15 新增（阶段 03.7，D-30 / D-36）。
+
+`train_cv` 返回之前，把折清单写进它的**项目目录**：
+
+```
+{model_save_dir}/{类名}_trial_{YYYYmmdd_HHMMSS}/
+├── cv_folds.json
+├── {类名}_cv_fold_0/{类名}_cv_fold_0.joblib   (DL 头是 .pth)
+├── {类名}_cv_fold_1/...
+└── ...
+```
+
+文件的形状（下面是结构说明，尖括号里的不是某次运行的真实值）：
+
+```json
+{
+  "format_version": 1,
+  "folds": [
+    {
+      "fold": 0,
+      "train_start": "<日期字符串>", "train_end": "<日期字符串>",
+      "test_start": "<日期字符串>", "test_end": "<日期字符串>",
+      "experiment_name": "<类名>_cv_fold_0",
+      "checkpoint": "<该折 checkpoint 的路径>",
+      "test_loss": 0.0, "test_mse": 0.0, "test_rmse": 0.0, "test_mae": 0.0,
+      "test_r2": 0.0, "test_ic": 0.0, "test_rank_ic": 0.0
+    }
+  ]
+}
+```
+
+- **`folds` 就是 `train_cv` 返回的那个 list**，不多不少，只是经 `to_jsonable` 转成 JSON：NaN / inf 的指标写成 `null`，
+  所以文件是严格 JSON。返回值本身不变，里面没有任何清单的键。
+- 字段与返回值一致：折号、四个日期、`experiment_name`、`checkpoint`，ML 头另有七个 `test_*` 指标，DL 头没有指标。
+  日期是 `np.datetime_as_string` 生成的字符串，精度跟着面板的时间 dtype 走，真实库上是
+  `'2026-08-07T00:00:00.000000000'` 这种纳秒字符串，读的时候先 `str()` 再交给 `pd.Timestamp`。
+- 折数为 0 时照样写，`folds` 为 `[]`。经 `write_json_atomically` 原子写入，中断的 run 不会留下写了一半的文件。
+- 顺序与并行两个分支都写，写在 summary run 之后、`return` 之前。
+
+**为什么带 `format_version`。** 回测层的 `run_cv()` 读的是**旧**训练 run 留下的清单，逐折加载 checkpoint 回测样本外段，
+所以这个文件是一个持久化格式。改动它的结构必须递增 `BaseModel.CV_FOLDS_FORMAT_VERSION`（现在是 1）；
+`run_cv()` 拒收没有 `format_version` 或版本不认识的清单，也拒收 `folds` 不是非空 list、某折缺字段的清单，
+而不是猜着读。读清单的一侧见 [backtest.md](backtest.md) 的「run_cv()」。
+
+由 `tests/test_model_cv_manifest.py` 锁住（顺序 ML、并行 ML、DL 三种情况下清单都等于返回值，字段齐全且 checkpoint
+真实存在，返回值里没有清单键，零折照样写，NaN 指标写成 `null`）。`tests/test_model_cv.py` 的 golden 列目录断言
+为此只多跳过了 `cv_folds.json` 这一个文件，折目录名、日期与内容的断言逐字未动。
+
 ### macOS / Linux：OpenMP 冲突
 
 **症状（macOS 开发机）。** xgboost 3.4.1 的 macOS wheel 链接 Homebrew 的
@@ -1110,6 +1215,20 @@ ML 头：直接读回整个模型，不调 `_init_model`，所以**不需要先 
 
 **2/3/4. 回测骨架还是空的——但现在它会说出来。**（**已于 2026-09-07 改造**）
 
+> **2026-09-15 更新：这一条说的回测钩子已经全部删除，锁它们的测试也一并删除。回测现在只在 `quantlab/backtest/`，
+> 见 [backtest.md](backtest.md)。** 模型层不再有任何回测入口，逐个对应：
+>
+> - `_do_vecbt` 与 `BaseModel._vecbt`：2026-09-14 在提交 `d07f06e`（早于阶段 03.7）里删除，它们的两个锁
+>   `test_do_vecbt_says_it_is_unbuilt_instead_of_returning_none`、`test_vecbt_stub_is_still_a_stub_and_names_phase_6` 同一提交删除；
+> - `RNNClassifier._vecbt`：阶段 03.7（D-37，03.7-05）删除，锁换成 `tests/test_dl_models.py::test_rnn_classifier_vecbt_is_deleted`；
+> - `DLModel._fit(backtest=...)` 及其 `NotImplementedError` 分支、`DLConfig` / `MLConfig` 的 `backtest_data` 槽位、
+>   `_reset_backtest_dataset_config`：阶段 03.7（D-37，03.7-07）删除，两个锁 `test_train_dl_rejects_a_truthy_backtest_flag`、
+>   `test_train_dl_still_trains_when_backtest_is_falsy` 同时删除，现在由
+>   `tests/test_model_hierarchy.py::test_stale_backtest_hooks_are_deleted` 锁住它们不再回来。
+>
+> 下面是 2026-09-07 的原文，按「保留并标注」的约定留作历史记录。其中「没有被删掉」「钩子挂在基类上位置是对的」
+> 「由……共同锁住」这些说法都已经不成立。
+
 `_do_vecbt`、`_vecbt`、`RNNClassifier._vecbt`、`_train_dl(backtest=...)`
 是四块互不相连的半成品。它们**没有被删掉**：CLAUDE.md 已经确认
 `MLConfig`/xgboost 这条非 torch 路径要做，一个日后同时服务 torch 和非 torch
@@ -1151,6 +1270,12 @@ pandas.errors.IndexingError: Unalignable boolean Series provided as indexer
 `tests/test_dl_models.py::test_rnn_classifier_vecbt_raises_instead_of_returning_none`
 共同锁住。
 
+> **2026-09-15 注：上面列的五个测试都已不是当前的锁。** 它们锁的钩子已经删除（见本条开头的更新）：前两个在阶段 03.7
+> 03.7-07 删除，中间两个在 2026-09-14 的 `d07f06e` 删除，最后一个在 03.7-05 换成了
+> `tests/test_dl_models.py::test_rnn_classifier_vecbt_is_deleted`。现在锁住「这些钩子不再回来」的是
+> `tests/test_model_hierarchy.py::test_stale_backtest_hooks_are_deleted` 和 `test_rnn_classifier_vecbt_is_deleted`；
+> 上面「全库仍然没有任何地方调用 `_vecbt` / `_do_vecbt`」那段同样只是历史叙述，那两个方法本身已经不存在。
+
 **5. `quantlab/dl_model/mlp.py:MLPRegressor` 曾经是坏的，三处。**（**已于 2026-09-07 修复**）
 以前它同时踩了三个坑，而且是层层挡在后面的三个——修掉一个才能看见下一个：
 - 缺 `_val_one_batch`，是抽象类，**根本实例化不了**（实测
@@ -1177,6 +1302,10 @@ baseline 回归模型。
 所以 `predict()` 要求调用方传**已经拍平**的 `[num_times, num_symbols * num_features]`，
 不是训练时那个三维张量。补这个缺口要么改 `quantlab/base/model.py:DLModel._predict`，要么改公开的
 `MLP` 模块接受什么，两者都超出了这次的范围。
+
+> **2026-09-15 注（阶段 03.7）：** 这个遗留仍在，`predict()` 依旧只收展平矩阵；但面板这条路补上了第三种办法——
+> `MLPRegressor._predict_panel_array` 在头里做展平与还原，`predict_panel` 因此对 MLP 直接可用，公开的 `predict()`
+> 和 `MLP` 模块都没改。见「面板预测：predict_panel」。
 
 **6. `quantlab/dl_model/rnn.py` 里那个 `RNNClassifier` 是一份坏掉的旧副本。**（**已于 2026-09-07 删除**）
 `rnn.py` 的 `ModelRBaseCrypto` 最后一层是 `nn.Linear(..., 1)`（回归用），
@@ -1226,6 +1355,10 @@ Adam 的一阶/二阶动量存在优化器实例里，「每步新建」就是�
 `DLModel.to_tensor(data, variables)`（2026-09-14 之前定义在基类上），训练和推理共用；`train_model.py` 已改为调用它。
 仍然**没有**一个 `predict_from_xarray()` 把「切时间窗 + 选因子 + 填 NaN + 转张量 + 推理」
 一次做完，调用方还是要自己写那三行。
+
+> **2026-09-15 注（阶段 03.7，D-29）：** 叫 `predict_from_xarray` 的方法依旧没有，但它要做的事现在由
+> `BaseModel.predict_panel(features)` 做了：选因子、排序、转数组、推理、全 NaN 行屏蔽、贴回 `(timestamp, symbol)` 坐标，
+> DL 与 ML 共用一份。切时间窗仍由调用方做（对输入或输出 `.sel(timestamp=...)` 即可）。见「面板预测：predict_panel」。
 
 ---
 
