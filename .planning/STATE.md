@@ -21,10 +21,10 @@ milestone_name: milestone
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-04)
+See: .planning/PROJECT.md (updated 2026-09-15)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.7 — cross-sectional-backtester-basebacktester-abc-usequitycrosse
+**Current focus:** Phase 3 — Factor Computation (KunQuant + Polars)
 
 ## Current Position
 
@@ -35,7 +35,7 @@ Last activity: 2026-09-15 — Phase 03.7 complete, transitioned to Phase 3
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
-Progress: [██████████] 100%
+Progress: [██████████] 99% (75/76 plans)
 
 ## Performance Metrics
 
@@ -311,6 +311,8 @@ Recent decisions affecting current work:
 
 ### Blockers/Concerns
 
+- [Phase 03.7] No `03.7-SECURITY.md`: `workflow.security_enforcement` is on and the verify:post security hook is active, so run `/gsd-secure-phase 03.7` before closing the milestone (same condition as 03.4 below).
+- [Phase 03.7] Open code-review findings in `03.7-REVIEW.md` (gap-closure round): CR-01 `XGBoostRegressor._record_feature_importance` raises for `booster="gblinear"` or non-scalar scores before the checkpoint is saved; WR-01 the legacy-record fallback in `_assert_trained_variables` refuses a model's own pre-`trained_on` checkpoint on factor order; WR-02 `Alpha158Stock` still reads a missing `amount` input on stock data. Fix via `/gsd-code-review 03.7 --fix`.
 - **Phase 03.4 not sealed.** All 11 plans executed and UAT is 4/4 passed (`03.4-UAT.md`), but `03.4-VERIFICATION.md` is STALE (the quick-260909-idh commits landed after its `verified:` timestamp) and no `*-SECURITY.md` was ever produced, so the active verify:post security hook blocks advancement. Phase 03.5 was opened on top of it by explicit user decision on 2026-09-11. Re-run verification and `/gsd-secure-phase 03.4` before closing the milestone.
 - Tiingo API key currently leaked in `scripts/download_stock_data_from_tiingo.py` and pushed to `origin/main` — user should revoke/rotate the key in the Tiingo dashboard independent of the git-history reset planned in Phase 1.
 - tests/test_tiingo_quota.py does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing, surfaced by 03.4-05 mutation M6; recorded in WINDOWS.md.
@@ -358,7 +360,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T20:09:55.081Z
+Last session: 2026-09-15T20:32:04.074Z
 Stopped at: Phase 03.7 complete, ready to plan Phase 3
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.

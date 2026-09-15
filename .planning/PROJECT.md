@@ -12,7 +12,7 @@
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ 向量化截面回测（vectorbt）：`BaseBacktester` → `VectorBtBacktester` → `USEquityCrossectionSelectStockVectorBt`，t+1 开盘成交、long_only / long_short TopN 目标权重、`run()` / `run_cv()`、样本内外分报、运行目录与数据指纹落盘、从 `config.json` 重建复跑 — Phase 03.7（BT-01 的 vectorbt 部分；目标持仓入口与端到端流水线仍在 Phase 6，所以 BT-01 整体仍为 Partial）
 
 <!-- 现有仓库中的原型代码（分层架构、KunQuant 因子引擎、xarray 存储、torch 模型训练、vectorbt/nautilus 回测）是有价值的设计参考和部分可复用实现，但尚未作为"已验证需求"锁定——用户计划先审查、清理测试/临时/冗余代码后再决定复用范围，因此不视为 Validated，相关内容记录在 Context 中。 -->
 
@@ -25,7 +25,7 @@
 - [ ] 收益模型：v1 用简单基线模型（如线性回归）输出未来收益或收益排名预测，模型训练直接消费 xarray（不经过 DataFrame）
 - [ ] 组合优化模型：v1 用简单基线方法（如均值方差/等权），支持多空、不加杠杆（净/毛敞口 ≤100%），输出每个标的的目标持仓百分比
 - [ ] 生成目标持仓并落盘
-- [ ] 向量化回测（基于 vectorbt）打通，输出回测结果
+- [ ] 向量化回测（基于 vectorbt）打通，输出回测结果（回测器本身已在 Phase 03.7 交付，见 Validated；剩余是从目标持仓入口接入的端到端流水线，归 Phase 6）
 - [ ] 预留事件驱动回测扩展点（NautilusTrader），整理现有集成但非 v1 交付重点
 - [ ] 全流程参数尽可能通过配置文件驱动，保证实验可复现
 - [ ] 敏感凭证（如 Tiingo API Key）一律通过环境变量读取，不硬编码
@@ -51,7 +51,7 @@
 - `pyproject.toml` 声明零依赖、`uv.lock` 也过期（锁的是旧项目 `crypto-quant` 的 3 个包），而实际代码 import 了约 20 个第三方包（torch、xarray、polars、KunQuant、vectorbt、nautilus_trader、wandb 等），`uv sync` 目前无法得到可用环境
 - **`scripts/download_stock_data_from_tiingo.py` 硬编码了一个 Tiingo API Key，且该文件已随 `Initial commit` 推送到 GitHub（`origin/main`），Key 处于泄露状态**——用户需尽快在 Tiingo 后台吊销/轮换；清理阶段要把该脚本改为从环境变量读取，且新的 git 历史不应再包含这个 key
 - `README.md` 内容与实际代码结构不符（提到不存在的 `models/lstm_model.py`、`examples/train_models.py` 等）
-- `vecbt/bt.py:backtest_from_signals` 调用 `vbt.Portfolio.from_signals()` 时未传参数，运行会直接报错
+- `vecbt/bt.py:backtest_from_signals` 调用 `vbt.Portfolio.from_signals()` 时未传参数，运行会直接报错（已解决：Phase 03.7 D-31 退役了 `quantlab/vecbt/`，由 `quantlab/backtest/` 取代）
 - `get_binance_instruments.py` 与 `utils/binance.py` 存在重复实现的解析逻辑
 - 无测试、无 lint/CI 配置
 
@@ -66,7 +66,7 @@
 
 - **数据格式**: 模块间统一使用 xarray（Zarr 落盘），不使用 DataFrame 作为流水线层间传输格式；模型训练直接消费 xarray — 用户明确要求，是贯穿整个流水线的硬约束
 - **因子计算后端**: 双后端支持——KunQuant（批量 + 流式，保留未来实时数据接入能力）为主，Polars 为新因子的补充计算路径（仅批量，不需要流式）；能用 xarray/KunQuant 完成的处理，优先不用 Polars — 用户明确的技术选型优先级
-- **回测技术栈**: 向量化回测优先用 vectorbt 打通；事件驱动回测（NautilusTrader，现有 `backtest/test_strategy.py` 已有雏形）作为预留扩展能力，非 v1 交付重点
+- **回测技术栈**: 向量化回测优先用 vectorbt 打通（Phase 03.7 已交付 `quantlab/backtest/`）；事件驱动回测（NautilusTrader）作为预留扩展能力，非 v1 交付重点。原型 `backtest/test_strategy.py` 已于 2026-09-07 删除，重启时按当前契约重建
 - **凭证安全**: API Key 等敏感信息一律通过环境变量读取，不硬编码 — 现有代码已经因硬编码 Tiingo Key 造成一次真实泄露
 - **可复现性**: 全流程参数尽量通过配置文件驱动 — 用户明确要求，服务于实验可复现
 - **架构契约**: 数据模块输出数据、因子模块输出因子、收益模型输出未来收益/收益排名预测、组合优化模型输出每个标的目标持仓百分比——各模块通过清晰的输入输出契约组合 — 便于未来插拔式扩展与平台化
@@ -83,6 +83,10 @@
 | 数据层从设计上支持多市场（美股/加密）与多频率（日/分钟/tick），不是只做美股日频 | 用户强调需要从一开始就把扩展性设计进去，避免后续推倒重来 | — Pending |
 | v1 交付全链路（数据→因子→收益模型→组合优化→目标持仓→回测），每一步先用简单/基线实现打通 | 用户确认，保证架构契约在所有模块间都被验证过，后续再逐步替换/增强各环节复杂度 | — Pending |
 | Git 历史重置为全新仓库，不保留当前含泄露 Key 的提交 | 现有 `Initial commit` 已推送 GitHub 且包含硬编码的 Tiingo Key | — Pending（将在清理阶段执行，执行前会再次与用户确认） |
+| 回测器与选股/组合优化之间的接口是 `(timestamp, symbol)` 上的目标权重 `weight`：非调仓行整行 NaN，调仓行整行有限值、毛敞口 ≤1（D-03） | Phase 5 组合优化器产出同一契约即可替换 TopN 选股而不改回测器；调仓行 NaN 会被 vectorbt 读成保持仓位 | ✓ Good — Phase 03.7 交付并由测试锁住 |
+| bar t 形成的信号在 bar t+1 开盘成交；样本内外从同一次模拟切片报告，不重跑（D-05、D-17、D-34） | 避免前视；分段重跑会重置资金、改变路径 | ✓ Good — Phase 03.7 |
+| 模型加载时的变量名/顺序核对只有一份，放在模型层 `BaseModel._assert_trained_variables`，以 checkpoint 的 `trained_on` 为准（G-03.7-9） | 因子配置字段可与训练真正用的名字不同，旧的回测器内检查实测既误报又漏报；直接 `load()` 的调用方也要受保护。XGBoost `feature_names` 不作为顺序保证（用户决定） | ✓ Good — Phase 03.7 |
+| DL 模型的标的布局契约是按标的排序，`trained_on.symbols` 只决定成员（G-03.7-8） | 保留记录顺序会破坏已有位置敏感 checkpoint 的数值；排序后对齐对新旧 checkpoint 都正确 | ✓ Good — Phase 03.7 |
 
 ## Evolution
 
@@ -102,4 +106,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-04 after initialization*
+*Last updated: 2026-09-15 after Phase 03.7*
