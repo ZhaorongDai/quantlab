@@ -14,7 +14,9 @@ What is locked here, the decision each lock enforces, and what turns it red:
 - **Exact abstract-method sets (D-01).** Each layer's `__abstractmethods__` is
   compared with a literal set. A hook that silently gains a default, a new
   abstract hook, or an engine that stops implementing one of its three hooks
-  changes a set and fails the test.
+  changes a set and fails the test. Since plan 03.7-08 the engine implements
+  four hooks: `_simulate`, `_simulate_benchmark`, `_engine_stats` and
+  `_period_returns_stats` (slice returns statistics, D-34).
 - **`run()` is the single template (D-02).** No class above `BaseBacktester` in
   the concrete class's MRO may define `run` or any public function, classmethod,
   staticmethod or property of its own. An override that "only calls super()"
@@ -89,6 +91,9 @@ def test_abstract_method_sets_are_exact():
             "_simulate",
             "_simulate_benchmark",
             "_engine_stats",
+            # 03.7-08: slice returns statistics need the engine's returns
+            # accessor (D-34, RESEARCH Pitfall 5), so they are an engine hook.
+            "_period_returns_stats",
         }
     )
     assert VectorBtBacktester.__abstractmethods__ == frozenset(

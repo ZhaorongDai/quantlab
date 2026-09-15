@@ -36,13 +36,17 @@ never through `quantlab/config/__init__.py` (D-32).
 """
 
 import json
+import math
+import types
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 from loguru import logger
 
+import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, PolarsFactorConfig
 from tests.backtest_fixtures import (
@@ -273,3 +277,169 @@ def test_model_without_train_dates_warns_and_records_null(tmp_path, warnings_sin
     ]
     assert any("train_start" in message for message in warnings_sink), warnings_sink
     assert _strict_json(result.run_dir / "metrics.json")["training_window"] is None
+
+
+# --------------------------------------------------------------------------
+# D-17 / D-34: one continuous simulation, sliced afterwards
+# --------------------------------------------------------------------------
+
+#: Training window bar 0 .. bar 25 (train_end bar 24 + 1-bar horizon); this
+#: window puts bars 20..25 in-sample and 26..45 out-of-sample, each slice
+#: holding at least one fill bar (fills land on window bars 1, 6, 11, ...).
+OVERLAP_START, OVERLAP_END = 20, 45
+
+
+def _slice_returns(returns: xr.DataArray, day_range) -> np.ndarray:
+    start, end = day_range
+    return returns.sel(timestamp=slice(start, end)).values
+
+
+def test_from_orders_runs_exactly_once_per_run_even_with_an_overlap(
+    tmp_path, monkeypatch
+):
+    backtester = _run_backtester(
+        tmp_path, window_start_bar=OVERLAP_START, window_end_bar=OVERLAP_END
+    )
+    real_from_orders = engine_module.vbt.Portfolio.from_orders
+    calls = []
+
+    def _spy(*args, **kwargs):
+        calls.append(kwargs.get("size"))
+        return real_from_orders(*args, **kwargs)
+
+    monkeypatch.setattr(
+        engine_module,
+        "vbt",
+        types.SimpleNamespace(Portfolio=types.SimpleNamespace(from_orders=_spy)),
+    )
+
+    result = backtester.run()
+
+    assert result.metrics["in_sample_range"] is not None
+    assert result.metrics["in_sample"] is not None
+    assert result.metrics["out_of_sample"] is not None
+    assert len(calls) == 1
+
+
+def test_slice_total_return_is_compounded_from_the_single_simulations_returns(
+    tmp_path,
+):
+    result = _run_backtester(
+        tmp_path, window_start_bar=OVERLAP_START, window_end_bar=OVERLAP_END
+    ).run()
+    metrics = result.metrics
+    returns = result.simulation.returns
+
+    in_sample = _slice_returns(returns, metrics["in_sample_range"])
+    assert in_sample.size == TRAIN_END_BAR + 1 - OVERLAP_START + 1
+    assert metrics["in_sample"]["Total Return [%]"] == pytest.approx(
+        100.0 * (np.prod(1.0 + in_sample) - 1.0), abs=1e-9
+    )
+
+    (out_range,) = metrics["out_of_sample_ranges"]
+    out_of_sample = _slice_returns(returns, out_range)
+    assert in_sample.size + out_of_sample.size == returns.sizes["timestamp"]
+    assert metrics["out_of_sample"]["Total Return [%]"] == pytest.approx(
+        100.0 * (np.prod(1.0 + out_of_sample) - 1.0), abs=1e-9
+    )
+    # A slice statistic is not the whole-run statistic in disguise.
+    assert metrics["out_of_sample"]["Total Return [%]"] != pytest.approx(
+        metrics["whole"]["Total Return [%]"], abs=1e-9
+    )
+
+
+def test_slice_order_counts_partition_the_whole_run(tmp_path):
+    result = _run_backtester(
+        tmp_path, window_start_bar=OVERLAP_START, window_end_bar=OVERLAP_END
+    ).run()
+    metrics = result.metrics
+    orders = result.simulation.orders
+    inside, outside = metrics["in_sample"], metrics["out_of_sample"]
+
+    assert inside["order_count"] > 0 and outside["order_count"] > 0
+    assert inside["order_count"] + outside["order_count"] == orders.sizes["order"]
+
+    total_fees = float(orders["fees"].values.sum())
+    assert total_fees > 0.0
+    assert inside["fees_paid"] + outside["fees_paid"] == pytest.approx(
+        total_fees, abs=1e-9
+    )
+    assert metrics["whole"]["Total Fees Paid"] == pytest.approx(total_fees, abs=1e-6)
+
+    notional = float(
+        (np.abs(orders["size"].values) * orders["price"].values).sum()
+    )
+    assert inside["traded_notional"] + outside["traded_notional"] == pytest.approx(
+        notional, rel=1e-12
+    )
+
+
+def test_turnover_is_one_for_a_full_entry_and_two_for_a_full_swap(tmp_path):
+    backtester = _unit_backtester(tmp_path)
+    backtester.config.fees = 0.0
+    backtester.config.slippage = 0.0
+    market = backtester.MARKET
+    timestamps = pd.bdate_range("2024-01-01", periods=6)
+    symbols = ["A", "B"]
+    constant = np.full((6, 2), 100.0)
+    prices = xr.Dataset(
+        {
+            market.fill_price_column: (("timestamp", "symbol"), constant),
+            market.valuation_price_column: (("timestamp", "symbol"), constant.copy()),
+        },
+        coords={"timestamp": timestamps, "symbol": symbols},
+    )
+    rows = np.full((6, 2), np.nan)
+    rows[0] = [1.0, 0.0]  # full entry into A, fills on bar 1
+    rows[2] = [0.0, 1.0]  # swap the whole book into B, fills on bar 3
+    weights = xr.Dataset(
+        {"weight": (("timestamp", "symbol"), rows)},
+        coords={"timestamp": timestamps, "symbol": symbols},
+    )
+
+    turnover = backtester._turnover(backtester._simulate(weights, prices))
+
+    assert turnover.dims == ("timestamp",)
+    np.testing.assert_array_equal(
+        turnover.timestamp.values.astype("datetime64[ns]"),
+        timestamps[[1, 3]].values.astype("datetime64[ns]"),
+    )
+    assert turnover.values[0] == pytest.approx(1.0, abs=1e-9)
+    assert turnover.values[1] == pytest.approx(2.0, abs=1e-9)
+
+
+def test_metrics_blocks_have_the_d22_d34_keys(tmp_path):
+    # One in-sample bar (bar 25): its returns slice genuinely has a NaN
+    # volatility, so metrics.json must convert it to null to parse strictly.
+    result = _run_backtester(
+        tmp_path, window_start_bar=TRAIN_END_BAR + 1, window_end_bar=OVERLAP_END
+    ).run()
+    metrics = result.metrics
+    turnover_keys = {"mean_per_rebalance", "sum", "annualized"}
+
+    whole = metrics["whole"]
+    for key in ("Total Return [%]", "Sharpe Ratio", "Max Drawdown [%]", "Total Fees Paid"):
+        assert key in whole, key
+    assert set(whole["turnover"]) == turnover_keys
+    assert "benchmark" not in metrics
+
+    slice_keys = (
+        "Total Return [%]",
+        "Sharpe Ratio",
+        "order_count",
+        "fees_paid",
+        "traded_notional",
+        "closed_trade_count",
+        "open_trade_count",
+    )
+    blocks = [metrics["in_sample"], metrics["out_of_sample"]]
+    assert all(block is not None for block in blocks)
+    for block in blocks:
+        for key in slice_keys:
+            assert key in block, key
+        assert set(block["turnover"]) == turnover_keys
+
+    assert math.isnan(metrics["in_sample"]["Annualized Volatility [%]"])
+    persisted = _strict_json(result.run_dir / "metrics.json")
+    assert persisted["in_sample"]["Annualized Volatility [%]"] is None
+    assert set(persisted["out_of_sample"]["turnover"]) == turnover_keys
