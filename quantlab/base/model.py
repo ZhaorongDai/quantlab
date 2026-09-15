@@ -364,6 +364,10 @@ class BaseModel(ABC):
 
         返回的 `xr.Dataset` 每个标签名一个变量，维度 `("timestamp", "symbol")`，
         坐标取自 `to_array` 实际消费的那块排序后的面板，所以坐标与数值不会错位。
+        `_align_prediction_symbols` 钩子返回之后会再按 `["timestamp", "symbol"]`
+        排一次序，坐标就从这块重排后的面板读（G-03.7-8）：以前坐标取自钩子返回的
+        面板，而 `to_array` 会重新排序，钩子一返回乱序面板（例如 DL 头按乱序的
+        训练记录选标的），每个预测就落到别的标的坐标上。现在任何钩子都无法让两者分叉。
         xarray -> 数组 -> 预测 -> xarray 这条管道只在模型层实现一份，DL 与 ML
         共用；变体之间的差别只在 `_predict_panel_array` 这一个钩子里。
 
@@ -382,9 +386,10 @@ class BaseModel(ABC):
                 f"variable(s) {missing}"
             )
 
+        # 钩子之后再排一次：坐标与 `to_array` 的布局来自同一块面板（G-03.7-8）。
         feats = self._align_prediction_symbols(
             features[factors].sortby(["timestamp", "symbol"])
-        )
+        ).sortby(["timestamp", "symbol"])
         x = self.to_array(feats, factors)
         y = np.asarray(self._predict_panel_array(x), dtype=np.float64)
         expected = (x.shape[0], x.shape[1], len(labels))
@@ -1005,7 +1010,7 @@ class DLModel(BaseModel):
         self.optim = None
 
     def _align_prediction_symbols(self, feats: xr.Dataset) -> xr.Dataset:
-        """DL 头只在训练过的标的上、按训练时的顺序预测（代码审查 WR-02）。
+        """DL 头只在训练过的标的上预测，布局是按标的排序后的训练标的（代码审查 WR-02，G-03.7-8）。
 
         DL 头按标的**位置**编码输入：`MLPRegressor` 把每个 bar 展平成
         `[S*F]`，只核对总长度；RNN 头沿标的轴递推，一个标的的预测依赖排在它
@@ -1016,7 +1021,13 @@ class DLModel(BaseModel):
           也在这里暴露）；
         - 面板多出训练时没有的标的：logger.warning 写明它们，并丢掉；它们没有
           预测，回测器 reindex 后是 NaN，因此不可选；
-        - 面板按训练标的的顺序取出，网络看到的布局与训练时逐位相同。
+        - 取出的是 `sorted(训练标的)`，按标的排序。网络训练时看到的就是这个
+          布局：`to_array` 对标的轴排序，`DLModel._fit` 经 `to_tensor ->
+          to_array` 训练（自 6b3c603 起一直排序）。所以训练记录里只有**成员**
+          是权威的，记录的顺序无关紧要。以前这里按记录顺序取，记录一旦不是
+          排好序的（没经过 `collect()` 就训练、或手改过 `trained_on`），坐标就
+          跟着记录走、数值跟着排序走，位置敏感的头每个预测都落到别的标的上
+          （G-03.7-8）。
 
         `_trained_symbols` 未知（没有训练记录的旧 checkpoint）时原样返回。
         """
@@ -1042,7 +1053,7 @@ class DLModel(BaseModel):
                 f"the model was not trained on, which get no prediction: "
                 f"{extra[:20]}{' ...' if len(extra) > 20 else ''} (WR-02)"
             )
-        return feats.sel(symbol=trained)
+        return feats.sel(symbol=sorted(trained))
 
     def _write_checkpoint(self, path: Path) -> None:
         torch.save(self.model.state_dict(), path)  # type: ignore[union-attr]
