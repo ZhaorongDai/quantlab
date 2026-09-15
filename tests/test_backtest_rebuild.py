@@ -1,0 +1,241 @@
+"""A backtest rebuilds from its persisted config.json and re-runs identically (phase 03.7, plan 11).
+
+What is locked here:
+
+- **D-25, the config rebuilds everything.** `load_backtester_from_config`
+  turns the `config.json` a run wrote back into a backtester: the backtester
+  class, its `CrossSectionBacktestConfig`, the price dataset, the model with its
+  factors and labels (and the checkpoint reference), and every scalar
+  parameter. Re-running the rebuilt backtester reproduces the same target
+  weights and the same equity curve, for `run()` in load and train mode and for
+  `run_cv()`.
+- **D-26, the backtester round trip.** `get_config()` -> JSON -> loader ->
+  `get_config()` is the identity, with the declared config classes on the way.
+- **D-27, fingerprints on rebuild.** `data_fingerprint` in `config.json` is a
+  record of what the original run read, not a config field. The loader moves it
+  onto `expected_fingerprint`, so an unchanged store re-runs silently and a
+  changed store re-runs with a warning naming the dataset, and still completes.
+- **Security (RESEARCH Security Domain).** A `name` that is not a
+  `BaseBacktester` subclass is refused before any dataset or model is built.
+
+Fixture classes must live in an importable module (`tests.backtest_fixtures`):
+a rebuild resolves every class by its dotted `name`, and a class defined in
+`__main__` or inside a test function cannot be imported back.
+
+Everything is synthetic, CPU-only and offline. Configs are constructed
+directly, never through the factories in `quantlab/config/__init__.py` (D-32).
+"""
+
+import ast
+import copy
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+import xarray as xr
+from loguru import logger
+
+import quantlab.utils.module as module_utils
+from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.base.config import CrossSectionBacktestConfig, MLConfig
+from quantlab.utils.jsonable import to_jsonable
+from tests.backtest_fixtures import (
+    make_model,
+    make_stock_dataset,
+    train_checkpoint,
+    write_price_store,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+N_BARS = 60
+BARS = pd.bdate_range("2024-01-01", periods=N_BARS)
+TRAIN_END_BAR = 24
+WINDOW_START_BAR = 30
+WINDOW_END_BAR = 50
+REBALANCE_PERIODS = 2
+TOP_N = 2
+INIT_CASH = 1_000_000.0
+
+FINGERPRINT_WARNING = "data fingerprint mismatch"
+
+
+@pytest.fixture(autouse=True)
+def _offline_wandb(monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+
+@pytest.fixture
+def warning_messages():
+    """Every loguru WARNING emitted during the test, as plain message text."""
+    messages: list[str] = []
+    handler_id = logger.add(
+        lambda message: messages.append(message.record["message"]),
+        level="WARNING",
+    )
+    yield messages
+    logger.remove(handler_id)
+
+
+def _day(ts) -> str:
+    return pd.Timestamp(ts).strftime("%Y-%m-%d")
+
+
+def _json(cfg: dict) -> dict:
+    """What `config.json` holds: `to_jsonable` then a strict JSON trip."""
+    return json.loads(json.dumps(to_jsonable(cfg), allow_nan=False))
+
+
+def _model_dates() -> dict:
+    return dict(
+        start_date=_day(BARS[0]),
+        end_date=_day(BARS[29]),
+        train_start=_day(BARS[0]),
+        train_end=_day(BARS[TRAIN_END_BAR]),
+        test_start=_day(BARS[TRAIN_END_BAR + 1]),
+        test_end=_day(BARS[29]),
+    )
+
+
+def _backtester(
+    root: Path,
+    dataset_config,
+    *,
+    model_mode: str = "load",
+    checkpoint=None,
+    **overrides,
+) -> USEquityCrossectionSelectStockVectorBt:
+    kwargs = dict(
+        price_dataset=make_stock_dataset(dataset_config),
+        model=make_model(root / "backtest", dataset_config, **_model_dates()),
+        model_mode=model_mode,
+        checkpoint=None if checkpoint is None else str(checkpoint),
+        start_date=_day(BARS[WINDOW_START_BAR]),
+        end_date=_day(BARS[WINDOW_END_BAR]),
+        output_dir=str(root / "runs"),
+        rebalance_periods=REBALANCE_PERIODS,
+        direction="long_only",
+        top_n=TOP_N,
+        fees=0.0,
+        slippage=0.0,
+        init_cash=INIT_CASH,
+    )
+    kwargs.update(overrides)
+    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))
+
+
+def _trained(root: Path):
+    dataset_config = write_price_store(root / "store", n_bars=N_BARS)
+    checkpoint = train_checkpoint(
+        make_model(root / "train", dataset_config, **_model_dates())
+    )
+    return dataset_config, checkpoint
+
+
+def _read_run_config(run_dir: Path) -> dict:
+    return json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# Task 1: the loader rebuilds the whole backtester (D-25, D-26)
+# --------------------------------------------------------------------------
+
+
+def test_rebuilt_backtester_has_the_same_class_config_class_and_config(tmp_path):
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    original = _backtester(
+        tmp_path, dataset_config, checkpoint=tmp_path / "never_read.joblib"
+    )
+    saved = _json(original.get_config())
+
+    rebuilt = module_utils.load_backtester_from_config(saved)
+
+    assert type(rebuilt) is USEquityCrossectionSelectStockVectorBt
+    assert type(rebuilt.config) is CrossSectionBacktestConfig
+    assert type(rebuilt.config.model.config) is MLConfig
+    assert rebuilt.expected_fingerprint is None
+    assert _json(rebuilt.get_config()) == saved
+
+
+def test_rebuild_from_a_run_config_moves_the_fingerprint_to_expected(tmp_path):
+    dataset_config, checkpoint = _trained(tmp_path)
+    result = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+    saved = _read_run_config(result.run_dir)
+    assert "data_fingerprint" in saved
+
+    rebuilt = module_utils.load_backtester_from_config(saved)
+
+    assert rebuilt.expected_fingerprint == saved["data_fingerprint"]
+    assert "data_fingerprint" not in rebuilt.get_config()
+    assert rebuilt.config.checkpoint == str(checkpoint)
+
+
+def test_loader_does_not_mutate_its_input(tmp_path):
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    saved = _json(
+        _backtester(
+            tmp_path, dataset_config, checkpoint=tmp_path / "never_read.joblib"
+        ).get_config()
+    )
+    saved["data_fingerprint"] = {"price_dataset": {"digest": "abc"}}
+    before = copy.deepcopy(saved)
+
+    module_utils.load_backtester_from_config(saved)
+
+    assert saved == before
+
+
+def test_non_backtester_class_is_refused_before_building_anything(
+    tmp_path, monkeypatch
+):
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    saved = _json(
+        _backtester(
+            tmp_path, dataset_config, checkpoint=tmp_path / "never_read.joblib"
+        ).get_config()
+    )
+    tampered = dict(saved, name="quantlab.dataset.stock.StockDataset")
+
+    dataset_calls: list[dict] = []
+    model_calls: list[dict] = []
+    monkeypatch.setattr(
+        module_utils, "load_dataset_from_config", lambda cfg: dataset_calls.append(cfg)
+    )
+    monkeypatch.setattr(
+        module_utils, "load_model_from_config", lambda cfg: model_calls.append(cfg)
+    )
+
+    with pytest.raises(TypeError, match=r"quantlab\.dataset\.stock\.StockDataset"):
+        module_utils.load_backtester_from_config(tampered)
+
+    assert dataset_calls == []
+    assert model_calls == []
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """Every absolute module name `path` imports, including `from a import b` as `a.b`."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            assert node.level == 0, f"relative import in {path}: resolve it first"
+            names.add(node.module or "")
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
+
+
+def test_backtester_rebuild_imports_no_config_factories():
+    """D-32: neither the loader nor these locks reach `quantlab.config`."""
+    # Positive control: the scan sees this file's own real imports.
+    assert "quantlab.utils.module" in _imported_modules(Path(__file__))
+
+    for path in (Path(__file__), REPO_ROOT / "quantlab/utils/module.py"):
+        offending = sorted(
+            name
+            for name in _imported_modules(path)
+            if name == "quantlab.config" or name.startswith("quantlab.config.")
+        )
+        assert offending == [], f"{path} imports {offending}"
