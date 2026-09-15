@@ -427,12 +427,14 @@ class BaseBacktester(ABC):
             # 路径也就是逐折记录与 metrics.json 里落盘的 checkpoint。
             fold["checkpoint"] = self._resolve_fold_checkpoint(fold["checkpoint"])
             saved = self._load_model_checkpoint(fold["checkpoint"])
-            # D-16 以清单的折日期为准；checkpoint 自己记的训练日期与清单不同时
-            # warning（代码审查 WR-01）：两者本应出自同一次 train_cv。
-            recorded = self._checkpoint_train_bounds(saved, fold["checkpoint"])
+            # D-16 以清单的折日期为准。checkpoint 自己记的训练日期只与清单核对
+            # （代码审查 WR-01、G-03.7-7）：两者本应出自同一次 train_cv。每折的
+            # 训练段本来就各不相同，所以这里从不与回测模型配置里的日期比较；
+            # 比较的是两对日期在价格日历上选中的 bar，不是文本。
+            recorded = self._recorded_train_bounds(saved)
             manifest_bounds = fold["_train_bounds"]
-            if saved is not None and tuple(map(str, recorded)) != tuple(
-                map(str, manifest_bounds)
+            if recorded is not None and not self._same_training_bars(
+                calendar, recorded, manifest_bounds
             ):
                 logger.warning(
                     f"{self.class_name}: fold {fold['fold']} checkpoint "
@@ -766,14 +768,18 @@ class BaseBacktester(ABC):
           train/test 日期。回测窗口从不写进这些日期：回测窗口只决定预测区间和
           样本内/外的划分，改写它们会让训练集跟着回测参数漂移。返回模型配置里
           的两个日期。
-        - `load`：`_load_model_checkpoint(config.checkpoint)`，返回
-          `_checkpoint_train_bounds` 选出的日期：checkpoint 旁 `config.json`
-          记录的才是这个模型真正训练过的日期（代码审查 WR-01）。
+        - `load`：`_load_model_checkpoint(config.checkpoint)`。checkpoint 旁
+          `config.json` 记录的才是这个模型真正训练过的日期（代码审查 WR-01），
+          所以有记录（`_recorded_train_bounds`）时返回记录的日期，没有时返回
+          `config.model` 的日期。
         """
         model = self.config.model
         if self.config.model_mode == "load":
             saved = self._load_model_checkpoint(self.config.checkpoint)
-            return self._checkpoint_train_bounds(saved, self.config.checkpoint)
+            recorded = self._recorded_train_bounds(saved)
+            if recorded is not None:
+                return recorded
+            return model.config.train_start, model.config.train_end
         model.collect()
         # 训练段数据的指纹（代码审查 WR-05）：collect 刚读完、train 之前记录。
         self._record_training_fingerprints()
@@ -781,30 +787,71 @@ class BaseBacktester(ABC):
         self._trained_checkpoint = str(model.train())
         return model.config.train_start, model.config.train_end
 
-    def _checkpoint_train_bounds(self, saved: dict | None, checkpoint) -> tuple:
-        """D-17 用的训练段端点：有 checkpoint 记录时用记录，否则用 `config.model` 的。
+    @staticmethod
+    def _recorded_train_bounds(saved: dict | None) -> tuple | None:
+        """checkpoint 旁 `config.json` 记录的 `(train_start, train_end)`；缺任一个时 None。
 
-        `config.model` 的日期可能是手工重建模型时写的、或者早就过时的：拿它们
-        判定样本内，会把真正训练过的 bar 悄悄算成样本外（代码审查 WR-01）。
-        checkpoint 旁的 `config.json` 由 `_save_model` 在训练时写下，记的是
-        这个 checkpoint 真正用过的 `train_start` / `train_end`，所以两者不同时
-        logger.warning 写明两对日期与 checkpoint 路径，然后用记录的日期继续。
-        记录里没有这两个日期（或没有记录）时退回 `config.model` 的日期。
+        纯读取：不 warning，也不看 `config.model`。`_save_model` 在训练时写下
+        这两个日期，它们是这个 checkpoint 真正用过的训练段（代码审查 WR-01）。
+        与谁比较、不同时怎么办由调用方决定：`run()` 的 load 模式与
+        `config.model` 比，`run_cv` 每折只与清单比（G-03.7-7）。
         """
-        model = self.config.model
-        configured = (model.config.train_start, model.config.train_end)
-        if saved is None or saved.get("train_start") is None or saved.get("train_end") is None:
-            return configured
-        recorded = (saved["train_start"], saved["train_end"])
-        if tuple(map(str, recorded)) != tuple(map(str, configured)):
-            logger.warning(
-                f"{self.class_name}: checkpoint {checkpoint} was trained on "
-                f"{recorded[0]}..{recorded[1]} (its config.json), but config.model "
-                f"says train_start={configured[0]!r}, train_end={configured[1]!r}; "
-                f"using the checkpoint's dates for the effective training window "
-                f"(D-17, WR-01)"
-            )
-        return recorded
+        if not isinstance(saved, dict):
+            return None
+        if saved.get("train_start") is None or saved.get("train_end") is None:
+            return None
+        return saved["train_start"], saved["train_end"]
+
+    @classmethod
+    def _same_training_bars(cls, calendar, a: tuple, b: tuple) -> bool:
+        """两对 `(train_start, train_end)` 是否选中价格日历上同一段训练 bar（G-03.7-7）。
+
+        所有训练日期的一致性判定都走这里，不比较日期的文本。同一个时刻可以写成
+        `"2024-01-01"`、`"2024-01-01T00:00:00"` 或 `np.datetime_as_string` 的
+        纳秒字符串；按文本比较会把它们判成不同，每次正常的 `run_cv` 都会
+        误报。
+
+        也不用裸的 `pd.Timestamp` 相等。模型层按
+        `data.sel(timestamp=slice(train_start, train_end))` 训练，字符串端点
+        按分辨率解释（代码审查 CR-01）：日内数据上 `"2024-02-09"` 包含当天全部
+        bar，而纳秒字符串的午夜只到前一个交易日的最后一个 bar。两者 Timestamp
+        相等，训练段却不同。所以这里与 `_training_window` 共用同一个 pandas
+        `slice_indexer` 和 `_slice_bound`，比较两对端点选中的 bar 位置。
+
+        规则：
+        - 两对原样相同：相同；
+        - 否则任一端点为 None：不同；
+        - 日历为空：两对端点逐个 `pd.Timestamp` 相等才相同；
+        - 否则两对选中的 (start, stop) bar 位置必须相同，并且落在日历首尾 bar
+          之外的端点必须与对应端点 `pd.Timestamp` 相等。`run()` 的日历只到
+          回测 `end_date`，两个都晚于它的不同 `train_end` 会截到同一个 stop；
+          没有这一条，过时的日期就不会被发现。
+
+        结果只决定是否 warning，从不决定用哪对日期。无法解析的日期文本由
+        pandas 直接报错，不会被悄悄当成相同。
+        """
+        if tuple(a) == tuple(b):
+            return True
+        if any(value is None for value in (*a, *b)):
+            return False
+        a_ts = tuple(pd.Timestamp(str(value)) for value in a)
+        b_ts = tuple(pd.Timestamp(str(value)) for value in b)
+        bars = np.sort(np.asarray(calendar).astype("datetime64[ns]"))
+        if bars.size == 0:
+            return a_ts == b_ts
+
+        index = pd.DatetimeIndex(bars)
+        a_slice = index.slice_indexer(cls._slice_bound(a[0]), cls._slice_bound(a[1]))
+        b_slice = index.slice_indexer(cls._slice_bound(b[0]), cls._slice_bound(b[1]))
+        if (a_slice.start, a_slice.stop) != (b_slice.start, b_slice.stop):
+            return False
+
+        first, last = index[0], index[-1]
+        for x, y in zip(a_ts, b_ts):
+            outside = not (first <= x <= last) or not (first <= y <= last)
+            if outside and x != y:
+                return False
+        return True
 
     def _load_model_checkpoint(self, checkpoint) -> dict | None:
         """把 `checkpoint` 加载进 `config.model`；`run()` 与 `run_cv()` 的每折共用。
