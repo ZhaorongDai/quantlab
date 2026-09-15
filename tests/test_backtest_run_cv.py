@@ -402,6 +402,55 @@ def test_per_fold_split_uses_the_folds_own_train_dates(
     assert len(overlaps) == N_FOLDS, overlaps
 
 
+CHECKPOINT_DATES_WARNING = "using the checkpoint's dates"
+MANIFEST_DATES_WARNING = "using the manifest's dates"
+
+
+def test_a_normal_run_cv_logs_no_checkpoint_date_warning(
+    tmp_path, cv_project, warning_messages
+):
+    """UAT gap G-03.7-7: checkpoints and manifest from one train_cv agree, so nothing warns.
+
+    Every fold used to be compared with config.model's single training window.
+    Folds 1..7 legitimately train on other windows, and fold 0's identical
+    instants were written as nanosecond strings against config.model's plain
+    dates, so a normal run logged one "using the checkpoint's dates" warning
+    per fold (8 here) although run_cv uses the manifest's dates. run_cv's only
+    date check is now each fold checkpoint's record against the manifest.
+    """
+    _backtester(tmp_path, cv_project).run_cv()
+
+    checkpoint_dates = [m for m in warning_messages if CHECKPOINT_DATES_WARNING in m]
+    manifest_dates = [m for m in warning_messages if MANIFEST_DATES_WARNING in m]
+    assert checkpoint_dates == []
+    assert manifest_dates == []
+
+
+def test_a_fold_checkpoint_that_disagrees_with_the_manifest_still_warns(
+    tmp_path, cv_project, warning_messages
+):
+    """G-03.7-7: the genuine checkpoint-vs-manifest mismatch keeps its one warning.
+
+    Fold 3's manifest `train_end` is moved one bar earlier, written in the same
+    nanosecond text shape train_cv writes. Its checkpoint still records the
+    original date, so exactly that fold warns, and none warns about config.model.
+    """
+    folds = [dict(fold) for fold in cv_project.manifest["folds"]]
+    bars = cv_project.bars.astype("datetime64[ns]")
+    recorded_end = np.datetime64(pd.Timestamp(folds[3]["train_end"]).to_datetime64(), "ns")
+    (end_idx,) = np.flatnonzero(bars == recorded_end)
+    folds[3]["train_end"] = np.datetime_as_string(bars[end_idx - 1])
+    project = _edited_project(tmp_path, {**cv_project.manifest, "folds": folds})
+
+    _backtester(tmp_path, cv_project, cv_project_dir=project).run_cv()
+
+    manifest_dates = [m for m in warning_messages if MANIFEST_DATES_WARNING in m]
+    assert len(manifest_dates) == 1, warning_messages
+    assert "fold 3 " in manifest_dates[0]
+    checkpoint_dates = [m for m in warning_messages if CHECKPOINT_DATES_WARNING in m]
+    assert checkpoint_dates == []
+
+
 # --------------------------------------------------------------------------
 # D-35: contiguity is asserted before anything runs
 # --------------------------------------------------------------------------
