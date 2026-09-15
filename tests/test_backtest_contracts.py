@@ -351,10 +351,11 @@ def test_vecbt_package_is_retired():
 
     `quantlab/vecbt/bt.py:backtest_from_signals` called `from_signals` with no
     size semantics and never reached a working state; `quantlab/backtest/`
-    replaced it. Both arms are needed: the editable install maps only the top
-    `quantlab` package, so a restored `__init__.py` makes `find_spec` succeed,
-    while a leftover directory holding only `__pycache__` is invisible to
-    `find_spec` but still misleads a reader browsing the tree.
+    replaced it. The editable install maps only the top `quantlab` package, so
+    a restored `__init__.py` makes `find_spec` succeed, and so does a leftover
+    directory holding only `__pycache__`: Python treats it as a namespace
+    package (measured in 03.7-12). The existence arm additionally catches a
+    non-package filesystem entry at that path, which `find_spec` cannot see.
     """
     import importlib.util
 
