@@ -1107,6 +1107,9 @@ class MarketDataset(BaseDataset):
     # Narrowed for readers and type checkers only
     config: DatasetConfig
 
+    # D-26: the config class `quantlab/utils/module.py` rebuilds this dataset with.
+    config_cls = DatasetConfig
+
     def _write_catalog(self, data: list):
         catalog = ParquetDataCatalog(
             self.config.catalog_path, fs_protocol="file"

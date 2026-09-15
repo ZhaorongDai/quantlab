@@ -67,6 +67,9 @@ class IndexConstituentDataset(BaseDataset):
       at every removal in history, and nothing at runtime would notice.
     """
 
+    # D-26: the config class `quantlab/utils/module.py` rebuilds this dataset with.
+    config_cls = ConstituentDatasetConfig
+
     # The property is redefined here (rather than left inherited) purely so
     # the setter can run `_clamp_coverage_start()` after the shared lifecycle.
     # Its narrowed return type also records that this hierarchy takes the

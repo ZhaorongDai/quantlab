@@ -194,6 +194,9 @@ class Factor(ABC):
 class FactorKunQuant(Factor):
     """The KunQuant factor backend."""
 
+    # D-26: the config class `quantlab/utils/module.py` rebuilds this factor with.
+    config_cls = FactorConfig
+
     def __init__(self, config: FactorConfig):
         super().__init__(config)
         self._stream_context: kr.StreamContext = None
@@ -350,6 +353,9 @@ class FactorPolars(Factor):
     """
     Batch-only factor backend whose factor logic is written in Polars.
     """
+
+    # D-26: the config class `quantlab/utils/module.py` rebuilds this factor with.
+    config_cls = PolarsFactorConfig
 
     _INDEX_COLUMNS = ("timestamp", "symbol")
 

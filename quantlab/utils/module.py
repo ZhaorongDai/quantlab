@@ -6,9 +6,8 @@ therefore part of the on-disk format, and the namespace migration changed all
 of them -- see `get_cls_from_path` for the decision and its evidence.
 """
 
+import copy
 import importlib
-
-from quantlab.base.config import DatasetConfig, FactorConfig
 
 
 def get_cls_from_path(path: str):
@@ -45,13 +44,48 @@ def get_cls_from_path(path: str):
     return getattr(module, class_name)
 
 
+def _config_cls_of(cls) -> type:
+    """Return the config class `cls` declares, or refuse it by name.
+
+    A class without `config_cls` gives the loader no way to know which config
+    to build, and guessing one is exactly how a `PolarsFactorConfig` dict used
+    to become a `FactorConfig` (D-26). The refusal also keeps an arbitrary
+    importable callable from being instantiated with a config dict.
+    """
+    config_cls = getattr(cls, "config_cls", None)
+    if not isinstance(config_cls, type):
+        raise TypeError(
+            f"{cls.__qualname__} declares no config_cls, so it cannot be "
+            f"rebuilt from a config dict."
+        )
+    return config_cls
+
+
 def load_dataset_from_config(config: dict):
-    return get_cls_from_path(config["name"])(DatasetConfig(**config))
+    """Rebuild a dataset with the config class its class declares (D-26).
+
+    `MarketDataset` declares `DatasetConfig` and `IndexConstituentDataset`
+    declares `ConstituentDatasetConfig`. The input is deep-copied first:
+    callers reuse the dict they saved, so it must come back untouched
+    (RESEARCH Pitfall 9).
+    """
+    config = copy.deepcopy(config)
+    cls = get_cls_from_path(config["name"])
+    return cls(_config_cls_of(cls)(**config))
 
 
 def load_factor_from_config(config: dict):
+    """Rebuild a factor, and its nested dataset, with their declared config classes (D-26).
+
+    `FactorKunQuant` declares `FactorConfig` and `FactorPolars` declares
+    `PolarsFactorConfig`. The nested `dataset` dict is replaced by a rebuilt
+    dataset object on a deep copy, never on the caller's dict (RESEARCH
+    Pitfall 9).
+    """
+    config = copy.deepcopy(config)
     config["dataset"] = load_dataset_from_config(config["dataset"])
-    return get_cls_from_path(config["name"])(FactorConfig(**config))
+    cls = get_cls_from_path(config["name"])
+    return cls(_config_cls_of(cls)(**config))
 
 
 def load_model_from_config(config: dict):
@@ -61,7 +95,11 @@ def load_model_from_config(config: dict):
     `MLModel` heads. Hardcoding `DLConfig` here used to turn an ML checkpoint's
     config into a `DLConfig` silently; the `BaseModel` config setter now also
     rejects a mismatched config type with `TypeError`.
+
+    The input is deep-copied first so the caller's dict never receives the
+    rebuilt factor objects (RESEARCH Pitfall 9).
     """
+    config = copy.deepcopy(config)
     # `resolved_hyperparameters` is a record written by `MLModel.get_config`
     # (what the library actually trained with), not a config field: drop it,
     # and only it, so any other unknown key still fails loudly below.
