@@ -141,7 +141,7 @@ Plans:
 **Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
 **Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 13/14 plans executed
+**Plans:** 14/14 plans executed
 
 Plans:
 
@@ -181,7 +181,7 @@ Plans:
 
 **Wave 8** *(blocked on Wave 7 completion)*
 
-- [ ] 03.7-12-PLAN.md — Retire `quantlab/vecbt/`, correct README/CLAUDE.md/codebase maps (links the `example/backtest.md` that 03.7-13 creates)
+- [x] 03.7-12-PLAN.md — Retire `quantlab/vecbt/`, correct README/CLAUDE.md/codebase maps (links the `example/backtest.md` that 03.7-13 creates)
 
 ### Phase 03.1: Index Historical Constituents Data Layer (INSERTED)
 
