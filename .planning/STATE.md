@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-15-PLAN.md
-last_updated: "2026-09-15T19:25:36.241Z"
+stopped_at: Completed 03.7-16-PLAN.md
+last_updated: "2026-09-15T19:38:04.457Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: 8cadd06d7650d4ec749fdfe7b34e82145ec50641
+state_head: 842bcd0f8947282cab07bb0d002a8e574603457c
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 76
-  completed_plans: 72
+  completed_plans: 73
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 2 of 18
+Plan: 3 of 18
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -129,6 +129,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P13 | 15 min | 2 tasks | 3 files |
 | Phase 03.7 P12 | 9 min | 2 tasks | 9 files |
 | Phase 03.7 P15 | 12 min | 2 tasks | 4 files |
+| Phase 03.7 P16 | 9 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -294,6 +295,7 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-12: current-state docs name the retired vecbt helper or the deleted DLModel._fit(backtest) guard only inside a parenthetical saying retired/deleted; stale Nautilus-strategy statements outside the rewritten passages went to deferred-items.md
 - [Phase 03.7]: 03.7-15: run_cv compares each fold checkpoint recorded train dates only with cv_folds.json, never with config.model; only run() load mode keeps the config.model WR-01 warning — Folds legitimately train on windows other than config.model (D-16 manifest authority); a normal 8-fold run_cv logged 8 spurious warnings (G-03.7-7)
 - [Phase 03.7]: 03.7-15: every train-date agreement check resolves both pairs to the bars they select on the price calendar via _same_training_bars (pandas slice_indexer + _slice_bound, shared with _training_window); endpoints outside the calendar span must also be Timestamp-equal — Text comparison mismatched equal instants (ns vs plain ISO); bare Timestamp equality would silence a real intraday difference (plain 2024-02-09 vs ns midnight select different end bars). User-confirmed 2026-09-15
+- [Phase 03.7]: 03.7-16: DL symbol layout contract is symbol-sorted; trained_on.symbols contributes membership only. _align_prediction_symbols selects sorted(trained), predict_panel re-sorts after the hook and reads coords from the panel to_array consumes, _save_model records sorted symbols. to_array and DLModel._fit unchanged (user decision; preserving record order corrupts existing position-sensitive checkpoints, debug P4)
 
 ### Pending Todos
 
@@ -351,8 +353,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T19:25:20.761Z
-Stopped at: Completed 03.7-15-PLAN.md
+Last session: 2026-09-15T19:38:03.941Z
+Stopped at: Completed 03.7-16-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
