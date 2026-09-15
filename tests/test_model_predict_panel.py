@@ -464,6 +464,121 @@ def test_dl_predict_panel_refuses_a_panel_missing_a_training_symbol(tmp_path, re
         fresh.predict_panel(features)
 
 
+# --------------------------------------------------------------------------
+# G-03.7-8: the symbol-sorted layout is the contract, whatever the record order
+# --------------------------------------------------------------------------
+
+#: Small MLP widths. `MLPRegressor` flattens `[T, S*F]`, so its output for a
+#: symbol depends on that symbol's POSITION: the head that can see a mislabel.
+_MLP_HP = {"hidden_size1": 16, "hidden_size2": 8}
+
+
+def _mlp_config(tmp_path) -> DLConfig:
+    return DLConfig(**_dl_train_kwargs(tmp_path), hyperparameters=dict(_MLP_HP))
+
+
+def _mlp_sorted_layout_prediction(model, features, symbols) -> np.ndarray:
+    """The network run on the symbol-sorted layout of `symbols`, without `to_array`.
+
+    `[T, len(symbols), L]`, in the sorted symbol order. That is the layout
+    `DLModel._fit` trains on (`to_tensor -> to_array` sorts the symbol axis).
+    """
+    ordered = sorted(symbols)
+    x = _stack(features.sel(symbol=ordered), FACTORS)
+    flat = torch.from_numpy(
+        x.reshape(N_TIMES, len(ordered) * len(FACTORS))
+    ).float()
+    return (
+        model.predict(flat)
+        .detach()
+        .cpu()
+        .numpy()
+        .reshape(N_TIMES, len(ordered), len(LABELS))
+    )
+
+
+def _assert_each_coord_holds_its_own_prediction(pred, expected, symbols):
+    """Each `(symbol, label)` column of `pred` equals that symbol's ground truth."""
+    for i, symbol in enumerate(sorted(symbols)):
+        for j, label in enumerate(LABELS):
+            np.testing.assert_allclose(
+                pred[label].sel(symbol=symbol).values,
+                expected[:, i, j],
+                atol=1e-6,
+                err_msg=f"coordinate {symbol}/{label} holds another symbol's prediction",
+            )
+
+
+@pytest.mark.parametrize(
+    "record",
+    [["S1", "S0", "S2"], ["S2", "S1", "S0"], ["S2", "S0", "S1"]],
+    ids=["one-swap", "reversed", "rotated"],
+)
+def test_dl_predict_panel_is_correct_for_an_unsorted_training_record(
+    tmp_path, record
+):
+    """G-03.7-8: an unsorted `trained_on.symbols` must not move any prediction.
+
+    The network was trained on the symbol-sorted layout, so the record decides
+    only WHICH symbols the head knows, never their order. The record is
+    rewritten here to an unsorted order, as a hand edit or another producer
+    would. The head is `MLPRegressor`, which is position-sensitive.
+    Each coordinate must carry the network's output for that symbol on the
+    sorted layout. The old code selected the panel in record order and took
+    coords from it while `to_array` re-sorted the values, so every position
+    where the record differs from sorted order held another symbol's
+    prediction.
+    """
+    trained = MLPRegressor(_mlp_config(tmp_path))
+    trained.collect()
+    checkpoint = trained.train()
+    sidecar = checkpoint.parent / "config.json"
+    saved = json.loads(sidecar.read_text())
+    saved["trained_on"]["symbols"] = record
+    sidecar.write_text(json.dumps(saved, indent=4))
+
+    fresh = MLPRegressor(_mlp_config(tmp_path))
+    fresh.load(checkpoint)
+    features = _features(fresh)
+
+    pred = fresh.predict_panel(features)
+
+    expected = _mlp_sorted_layout_prediction(fresh, features, SYMBOLS)
+    _assert_each_coord_holds_its_own_prediction(pred, expected, SYMBOLS)
+    assert pred.symbol.values.tolist() == SYMBOLS
+
+
+class UnsortedHookLinearDLHead(LinearDLHead):
+    """A DL head whose symbol hook hands back an unsorted panel."""
+
+    def _align_prediction_symbols(self, feats):
+        return feats.isel(symbol=[2, 0, 1])
+
+
+def test_a_hook_returning_an_unsorted_panel_cannot_mislabel_coords(tmp_path):
+    """G-03.7-8: predict_panel's coords are the panel `to_array` lays out.
+
+    `_align_prediction_symbols` is a hook, so a future override can return
+    any symbol order. `predict_panel` must re-sort after the hook and read its
+    coords from that re-sorted panel, so coords and values cannot disagree.
+    The old code read coords from the hook's panel (S2, S0, S1) while
+    `to_array` laid the values out sorted.
+    """
+    model = UnsortedHookLinearDLHead(DLConfig(**_config_kwargs(tmp_path)))
+    model.collect()
+    model._init_model_and_optim()
+    plain = LinearDLHead(DLConfig(**_config_kwargs(tmp_path)))
+    plain.collect()
+    plain._init_model_and_optim()
+    plain.model.load_state_dict(model.model.state_dict())  # type: ignore[union-attr]
+    features = _features(model)
+
+    pred = model.predict_panel(features)
+
+    assert pred.symbol.values.tolist() == SYMBOLS
+    xr.testing.assert_allclose(pred, plain.predict_panel(features))
+
+
 def test_checkpoint_config_json_with_the_training_record_rebuilds_the_model(tmp_path):
     """Code review WR-02: the new `trained_on` record does not break the config loader.
 
