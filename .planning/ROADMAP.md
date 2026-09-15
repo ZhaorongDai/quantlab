@@ -141,7 +141,7 @@ Plans:
 **Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
 **Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 7/14 plans executed
+**Plans:** 8/14 plans executed
 
 Plans:
 
@@ -160,7 +160,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03.7-07-PLAN.md — `cv_folds.json` manifest in `train_cv` and deletion of the stale in-model backtest hooks
+- [x] 03.7-07-PLAN.md — `cv_folds.json` manifest in `train_cv` and deletion of the stale in-model backtest hooks
 - [ ] 03.7-08-PLAN.md — In-sample detection and whole/in-sample/out-of-sample metrics from one simulation, with turnover
 
 **Wave 4** *(blocked on Wave 3 completion)*

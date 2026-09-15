@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-14-PLAN.md
-last_updated: "2026-09-15T05:43:26.609Z"
+stopped_at: Completed 03.7-07-PLAN.md
+last_updated: "2026-09-15T05:56:24.512Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: ebccf888cef7edf480ccfb77f4bd02354146aaa4
+state_head: 55f8da69e4cf902b6d6afdfc7e24fd0de3cc5de7
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 72
-  completed_plans: 64
+  completed_plans: 65
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 8 of 14
+Plan: 9 of 14
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -121,6 +121,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P05 | 10 min | 2 tasks | 5 files |
 | Phase 03.7 P06 | 12 min | 2 tasks | 2 files |
 | Phase 03.7 P14 | 6 min | 2 tasks | 1 files |
+| Phase 03.7 P07 | 8 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -268,6 +269,8 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-06: _iso renamed to _iso_date, the single normalizer for every date written into a dataset or factor config. Load-mode order is fixed as existence check, then DL-only feature-panel collection, then load; 03.7-10 relaxes the construction-time checkpoint check by editing its one marked condition.
 - [Phase 03.7]: 03.7-14: the backtest public-surface lock counts functions, classmethods, staticmethods, properties, cached_property and partialmethod as methods; plain class attributes such as config_cls, MARKET and STATS_METRICS are configuration, because config_cls is a class and a bare callable rule would wrongly flag it
 - [Phase 03.7]: 03.7-14: the D-04 literal lock scans function bodies only, never class bodies, because D-04 explicitly allows column names as class attributes on the backtester; every static import scan also carries a positive control on real code so it cannot pass by being blind
+- [Phase 03.7]: 03.7-07: train_cv writes cv_folds.json as format_version 1 plus folds equal to to_jsonable of the returned list, atomically after both branches; results is returned untouched and an empty fold list still writes folds []
+- [Phase 03.7]: 03.7-07: the test_model_cv.py goldens coexist with D-30 by excluding exactly BaseModel.CV_FOLDS_FILENAME from the two project-directory listings and asserting it exists; no golden value changed
 
 ### Pending Todos
 
@@ -325,8 +328,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T05:43:26.324Z
-Stopped at: Completed 03.7-14-PLAN.md
+Last session: 2026-09-15T05:56:24.218Z
+Stopped at: Completed 03.7-07-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
