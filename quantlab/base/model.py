@@ -1449,15 +1449,16 @@ class MLModel(BaseModel):
         factors = self.get_factor_names()
         labels = self.get_label_names()
 
-        train_x_all, train_y_all, test_x, test_y = [
-            self._preprocess(self.to_array(d, names))
-            for d, names in [
-                (train_data, factors),
-                (train_data, labels),
-                (test_data, factors),
-                (test_data, labels),
+        with Timer(f"{self.class_name}: to_array"):
+            train_x_all, train_y_all, test_x, test_y = [
+                self._preprocess(self.to_array(d, names))
+                for d, names in [
+                    (train_data, factors),
+                    (train_data, labels),
+                    (test_data, factors),
+                    (test_data, labels),
+                ]
             ]
-        ]
         for d in [train_x_all, test_x]:
             self._assert_shape_match_x(d)
         for d in [train_y_all, test_y]:
@@ -1478,14 +1479,16 @@ class MLModel(BaseModel):
         else:
             val_x = val_y = None
 
-        self._fit_model(train_x, train_y, val_x, val_y)
+        with Timer(f"{self.class_name}: fit_model"):
+            self._fit_model(train_x, train_y, val_x, val_y)
 
-        self._evaluate("train", train_x, train_y)
-        if val_x is not None:
-            self._evaluate("val", val_x, val_y)
-        test_metrics = (
-            self._evaluate("test", test_x, test_y) if test_x.shape[0] > 0 else {}
-        )
+        with Timer(f"{self.class_name}: evaluate"):
+            self._evaluate("train", train_x, train_y)
+            if val_x is not None:
+                self._evaluate("val", val_x, val_y)
+            test_metrics = (
+                self._evaluate("test", test_x, test_y) if test_x.shape[0] > 0 else {}
+            )
 
         self._save_model(
             Path(self.config.model_save_dir)
