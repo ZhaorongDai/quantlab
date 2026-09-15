@@ -149,6 +149,29 @@ class MLPRegressor(DLModel):
         self._wandb_recorder.log(metrics, step=epoch)
         return val_loss.detach()
 
+    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+        """`predict_panel` 的 MLP 适配器：`[T, S, F]` 进，`[T, S, L]` 出（03.7 D-29）。
+
+        MLP 模块的推理输入是**展平后的矩阵** `[T, S*F]`：`_init_model` 建的是
+        `nn.Linear(num_symbols * num_features, ...)`，`_train_one_batch` 也是先
+        `x.reshape(num_times, -1)` 再喂模块，输出同样是展平的 `[T, S*L]`
+        （`tests/test_dl_models.py::test_mlp_regressor_trains_two_epochs_and_predicts`
+        里那段注释记的就是这个契约）。`DLModel` 的通用路径把 `[T, S, F]` 直接交给
+        模块，会在第一个 Linear 层报形状错误。
+
+        D-33 原本假设 MLP 可以走通用的 `[T, S, L]` 路径，代码不是这样，所以这里
+        补一个适配器。公开的 `predict()` **刻意不改**：它仍然接受展平矩阵，既有
+        调用方与测试不受影响。
+
+        展平与还原都是 C 序、symbol 在前，与 `_train_one_batch` 里对 x、y 的
+        `reshape(num_times, -1)` 完全一致，所以输出的 reshape 恰好是训练时布局的逆。
+        """
+        num_times, num_symbols, num_features = x.shape
+        flat = x.reshape(num_times, num_symbols * num_features)
+        out = self.predict(flat)
+        out = out.detach().cpu().numpy()  # type: ignore[union-attr]
+        return out.reshape(num_times, num_symbols, -1)
+
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
         """入参是**张量**，不是 `xr.Dataset`。
 
