@@ -196,13 +196,20 @@ class BaseBacktester(ABC):
         return cfg
 
     @staticmethod
-    def _iso(date) -> str:
-        return pd.Timestamp(str(date)).strftime("%Y-%m-%d")
+    def _iso_date(value) -> str:
+        """把任意日期样式的值规范成 ISO `YYYY-MM-DD` 字符串（03.7-RESEARCH.md Pitfall 10）。
+
+        本模块写进数据集或因子配置的每一个日期都经过这里：数据集 setter 的 ISO
+        规范化只在整份配置赋值时发生，直接改 `config.start_date` 不会经过它，而
+        下游的日期比较是字符串字典序。先 `str(value)`，因为 `pd.Timestamp` 不接受
+        `numpy.str_`；真实数据上的折日期形如 `'2026-08-07T00:00:00.000000000'`。
+        """
+        return pd.Timestamp(str(value)).strftime("%Y-%m-%d")
 
     def run(self) -> BacktestResult:
         """模型回测的模板方法（D-02）。子类不覆盖。"""
-        start_date = self._iso(self.config.start_date)
-        end_date = self._iso(self.config.end_date)
+        start_date = self._iso_date(self.config.start_date)
+        end_date = self._iso_date(self.config.end_date)
 
         self._prepare_model()
         calendar = self._price_calendar(end_date)
@@ -271,13 +278,32 @@ class BaseBacktester(ABC):
                 calendar, np.datetime64(pd.Timestamp(start_date)), side="left"
             )
         )
+        warmup = self._iso_date(calendar[max(idx - window, 0)])
         if idx - window < 0:
             logger.warning(
                 f"{self.class_name}: warm-up needs {window} bars before "
                 f"{start_date} but the price calendar has only {idx}; short by "
-                f"{window - idx} bar(s), starting at the first available bar"
+                f"{window - idx} bar(s), clamping the warm-up start to the "
+                f"first bar {warmup}"
             )
-        return pd.Timestamp(calendar[max(idx - window, 0)]).strftime("%Y-%m-%d")
+        return warmup
+
+    def _refresh_factor_reads(self, factor) -> None:
+        """改过日期之后，强制重读因子背后的数据（D-14，03.7-RESEARCH.md Pitfall 1）。
+
+        XrBackend 的 `read` 一旦已经持有数据就直接返回，不再打开存储；而
+        `BaseDataset.read()` 的 `_filter` 与 `Factor.read()` 的 `_auto_filter`
+        都是**就地**收窄这份缓存。所以模型先按自己的日期 collect/train 过之后，
+        再把因子日期放宽到「预热 + 回测窗口」重读，拿回的仍是先前那段更窄的
+        窗口：不报错，只是缺 bar——预热悄悄变短，或首个调仓日整行没有预测。
+
+        - 数据集总是 `read(overwrite=True)`：`cal` 策略的因子从数据集现算；
+        - `factor_data_strategy == "read"` 时，因子库本身也 `read(overwrite=True)`
+          （03.7-02 加的开关）：`read` 策略的特征直接来自因子库的缓存。
+        """
+        factor.config.dataset.read(overwrite=True)
+        if self.config.model.config.factor_data_strategy == "read":
+            factor.read(overwrite=True)
 
     def _align_and_predict(
         self, start_date: str, end_date: str, calendar: np.ndarray
@@ -289,7 +315,7 @@ class BaseBacktester(ABC):
             factor.config.start_date = warmup
             factor.config.end_date = end_date
             factor._reset_dataset_config()
-            factor.config.dataset.read(overwrite=True)
+            self._refresh_factor_reads(factor)
 
         features = model._collect_all_features()
         return model.predict_panel(features).sel(
