@@ -598,7 +598,7 @@ z_score = Div(Sub(self.inputs[0], rolling_mean), rolling_std)
 
 ### 现在还没有的东西
 
-**仓库里没有截面 Z-score 算子。** `quantlab/my_ops/preprocess.py` 里两个都是 `WindowedCompositiveOp`（时序）。真正的截面标准化算子被推迟到后续阶段（对应 `.planning/` 里的 ARCH-01/ARCH-02，目标是"架构同时兼容单标的时序策略与多标的截面多因子策略"）。现阶段美股这条路的约定是：**因子层出原始值，截面标准化由消费方自己做。**
+~~**仓库里没有截面 Z-score 算子。** `quantlab/my_ops/preprocess.py` 里两个都是 `WindowedCompositiveOp`（时序）。~~ **2026-09-15 更新**：上面这句已经过时，留作历史。截面 Z-score 算子现在有了：`quantlab/my_ops/preprocess.py:CrossSectionalZScore`，一个直接提供 C++ 循环体的 `GenericCrossSectionalOp`——NaN 感知、样本标准差（ddof=1），某个截面有效值少于 2 个或 sd == 0 时整行输出 NaN。但**没有任何因子类默认使用它**：上面的四格矩阵不变，美股因子仍输出原始值（D-09），把它接入因子类仍推迟到后续阶段（对应 `.planning/` 里的 ARCH-01/ARCH-02，目标是"架构同时兼容单标的时序策略与多标的截面多因子策略"）。现阶段美股这条路的约定仍是：**因子层出原始值，截面标准化由消费方自己做。** 真要用这个算子，先读它 docstring 里的坑，尤其是 KunQuant 0.1.11 上 start>0 的 `runGraph` 会给出错误结果，以及标的数必须 SIMD 对齐。
 
 如果你现在就需要，在 xarray 层做是最直接的（因子面板已经是 `[timestamp, symbol]`，截面就是沿 `symbol` 维）：
 
@@ -608,6 +608,8 @@ cs_z = (panel - panel.mean(dim="symbol")) / panel.std(dim="symbol")
 ```
 
 （这段是示意，不是仓库里现有的代码。）
+
+注意 xarray 的 `.std()` 默认 ddof=0，和算子（ddof=1）差一个 sqrt(n/(n-1)) 的倍数；想和 `CrossSectionalZScore` 的结果一致，传 `ddof=1`。
 
 ---
 
