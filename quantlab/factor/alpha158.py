@@ -99,12 +99,12 @@ class Alpha158Stock(FactorKunQuant):
         return tuple(self._factor_names_stream())
 
     def _get_func_names(self):
-        close = Input("close")
-        low = Input("low")
-        high = Input("high")
-        vopen = Input("open")
+        close = Input("adjClose")
+        low = Input("adjLow")
+        high = Input("adjHigh")
+        vopen = Input("adjOpen")
         amount = Input("amount")
-        vol = Input("volume")
+        vol = Input("adjVolume")
         all_data = Alpha158.AllData(
             low=low,
             high=high,

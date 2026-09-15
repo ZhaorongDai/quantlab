@@ -15,7 +15,7 @@ class Return(FactorKunQuant):
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
-            close = Input("close")
+            close = Input("adjClose")
             return_ = op.SubConst(
                 op.Div(
                     close,
@@ -45,7 +45,7 @@ class BinaryReturn(FactorKunQuant):
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
-            close = Input("close")
+            close = Input("adjClose")
             return_ = op.SubConst(
                 op.Div(
                     close,

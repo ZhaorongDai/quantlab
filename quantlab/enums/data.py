@@ -90,7 +90,7 @@ class TiingoColumns:
 # is a PATH SEGMENT (`downloads/{market}/{frequency}/{subdir}/{vendor}/`) and a
 # literal column written into every raw shard, so adding one commits to an
 # on-disk layout that cannot be renamed without relaying the raw tier.
-Vendor = Literal["tiingo", "alpaca"]
+Vendor = Literal["tiingo", "alpaca", "wrds"]
 
 # Hive partition key(s) per frequency for the raw tier (D-08 / D-19).
 #
