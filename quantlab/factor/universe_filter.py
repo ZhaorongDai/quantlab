@@ -159,8 +159,40 @@ class UniverseFilteredFactor(FactorKunQuant):
     #: 非普通股代码规则（LS-1 的 (a)）。`(标签, 正则)` 对，对**大写**代码做
     #: `re.search`。
     #:
-    #: 这一版是规划期给出的起始集合，Task 2 会在
-    #: `data/data/reference/universe.parquet` 上重新测量并把逐条计数记在这里。
+    #: **测量**（2026-09-15，`data/data/reference/universe.parquet` 里
+    #: `category == "us_all"` 的 14,481 个不同代码）：
+    #:
+    #:     nasdaq_fifth_letter    2310   AACIW AACBR AACBU ABEOW ...
+    #:     six_char_warrant         13   AACTWS ACNDWS EONRWS GRAFWS ...
+    #:     delimited_suffix       1056   AAC-WS AAC-U ACP-R ACP-R-W ...
+    #:     when_issued_or_called    71   DD-WD JNJ-WD AED-CL DSXN-CL ...
+    #:     test_symbol_zzzt          7   ZAZZT ZBZZT ZCZZT ZJZZT ZVZZT ZWZZT ZXZZT
+    #:     test_symbol_xtest        72   ATEST-* CTEST-* MTEST-* NTEST-* PTEST-*
+    #:     test_symbol_zxyz          1   ZXYZ-A
+    #:     preferred_share           0   （us_all 采集期已剔除；nasdaq_all 建的库仍需要）
+    #:     baby_bond                 0   （同上，A4/D-02）
+    #:
+    #: 并集 3,519 / 14,481（24.3%），剩下 10,962 个普通股。
+    #:
+    #: **证伪一（机械）**：把每一组与 `sp500_constituent` + `nasdaq100_constituent`
+    #: 的 966 个不同代码求交——九组**全部为 0**。指数成分股必然是普通股，所以任何
+    #: 一个命中都会是一次错误排除。
+    #:
+    #: **证伪二（人工复核）**：2,310 个五字母命中里有 284 个在名单里找不到佐证
+    #: （没有 4 字母词根、没有同词根的其他 W/R/U、也没有 `ROOT-WS`/`-U`/`-R`
+    #: 兄弟），中位挂牌 1.9 年，其中 36 个 ≥ 5 年。逐个按 NASDAQ 第五字符约定
+    #: （R=权利、U=单位、W=认股权证）判读：**没有一个是普通股**，所以**不设**
+    #: `COMMON_TICKER_ALLOWLIST`。挂牌最久的那批恰好是「3 字符词根 + 双写后缀」
+    #: 这一形状，而上面那条佐证规则按 4 字符词根去找，结构上就看不见它们——
+    #: TMCWW/TMC、HTZWW/HTZ、VLYWW/VLY、XOSWW/XOS、RNWWW/RNW、SMXWW/SMX、
+    #: ZEOWW/ZEO、BNCWW/BNC、FGIWW/FGI、UHGWW/UHG、WGSWW/WGS、AUROW/AUR、
+    #: QSIAW/QSI，13 个短词根 13 个都在 us_all 里。其余（THWWW、GSMGW、CMPOW、
+    #: SBNYW、ETHZW、MCAGR、IMAQU…）的普通股已退市或被并购，不在 us_all 里，与
+    #: 「SPAC 权证/单位」完全吻合。
+    #:
+    #: 未被任何规则命中的带分隔符代码共 45 个，尾巴只有 6 种：`-A`(21)、`-B`(15)、
+    #: `-1`(3)、`-C`(3)、`-V`(2)、`-T`(1)——全是普通股或类别股，正是下面这段陷阱
+    #: 说的那批。
     #:
     #: **这条规则要避开的陷阱**：`BRK-A`、`BRK-B`、`BF-A`、`BF-B`、`HEI-A`、
     #: `LEN-B`、`MOG-A`、`UA-C`、`MKC-V`、`CWEN-A`、`PBR-A` 都是**带连字符的普通
@@ -431,6 +463,109 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         self._lib = None
         self._to_xarray_dataset(out_dict, timestamps, symbols)
+        return self
+
+    def read(self, overwrite: bool = False) -> Self:
+        """从因子库读回落盘结果，并重新算出掩码。
+
+        掩码来自**数据集**（原始 close/volume），不是因子库——因子库里只有因子值。
+        所以这里要先读数据集再读因子库。
+
+        **注意落盘的是打掩码之前的值。** 继承来的 `save()` / `update()` 写的是
+        改写后的图的输出，输出掩码（LS-3）是 `read()` 之后再施加的。因此
+        `factor_data_strategy="read"` 用的因子库**必须**是经由本包装类写出来的：
+        用未包装的内层因子写出来的库，其截面值已经被出池标的污染了，再怎么在读
+        的时候打掩码也救不回来。
+        """
+        self.config.dataset.read(overwrite=overwrite)
+        self._universe_mask = self.compute_universe_mask(
+            self.config.dataset.get_xarray_dataset()
+        )
+        super().read(overwrite=overwrite)
+        return self
+
+    # ------------------------------------------------------------------
+    # 流式计算
+    # ------------------------------------------------------------------
+
+    def init_stream(self) -> Self:
+        """编译改写后的图（STREAM layout），并额外绑定掩码输入的 buffer。
+
+        只在图里真的有截面算子时才绑定：没有的话 KunQuant 已经把掩码输入剪掉了，
+        `queryBufferHandle` 会抛 `RuntimeError: Cannot find the buffer name`。
+        """
+        super().init_stream()
+        if self._uses_mask:
+            self._buffer_name_to_id[self.MASK_INPUT] = (
+                self._stream_context.queryBufferHandle(self.MASK_INPUT)
+            )
+        return self
+
+    def cal_stream(
+        self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]
+    ) -> Self:
+        """推进一根 bar：先算这一行掩码并推进去，再走内层的流式计算。
+
+        `data` 里除了 `config.data_columns`，还**必须**带上原始 `close` 与
+        `volume`：继承来的推送只发 `data_columns`，这两个键是掩码专用的额外输入。
+
+        成交额均值用 `np.mean`（不是 `nanmean`）对**攒满**的窗口求：窗口没满就整行
+        NaN，窗口里有 NaN 也得到 NaN。这与批量路径 `min_periods=window` 的语义
+        逐位一致——两条路必须给出同一个掩码，否则流式和批量的因子值会悄悄分叉。
+        """
+        missing = [
+            column
+            for column in (self.PRICE_COLUMN, self.VOLUME_COLUMN)
+            if column not in data
+        ]
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__}.cal_stream: the bar dict is missing "
+                f"the RAW column(s) {missing}, which decide universe "
+                f"membership. They are EXTRA keys beyond config.data_columns "
+                f"({tuple(self.config.data_columns)}): the inherited push only "
+                f"sends data_columns, so they must be supplied explicitly."
+            )
+
+        close = np.asarray(data[self.PRICE_COLUMN], dtype=np.float64).reshape(-1)
+        volume = np.asarray(
+            data[self.VOLUME_COLUMN], dtype=np.float64
+        ).reshape(-1)
+        self._stream_dollar_volume.append(close * volume)
+
+        if len(self._stream_dollar_volume) == self.window:
+            average = np.mean(np.stack(self._stream_dollar_volume), axis=0)
+        else:
+            average = np.full(close.shape, np.nan)
+
+        in_universe = (close >= self.min_price) & (
+            average >= self.min_dollar_volume
+        )
+        if self.exclude_non_common:
+            in_universe = in_universe & np.array(
+                [self.is_common_ticker(symbol) for symbol in symbols],
+                dtype=bool,
+            )
+        row = np.where(in_universe, 1.0, np.nan).astype(np.float32)
+
+        if self._stream_context is None:
+            self.init_stream()
+
+        # 掩码必须在 `run()` 之前推进去；`super().cal_stream` 推完数据列就会 run。
+        if self._uses_mask:
+            self._stream_context.pushData(
+                self._buffer_name_to_id[self.MASK_INPUT],
+                np.ascontiguousarray(row),
+            )
+
+        super().cal_stream(data, timestamp, symbols)
+
+        self._universe_mask = xr.DataArray(
+            row.reshape(1, -1).astype("float64"),
+            dims=["timestamp", "symbol"],
+            coords={"timestamp": [timestamp], "symbol": list(symbols)},
+            name=self.MASK_INPUT,
+        )
         return self
 
     # ------------------------------------------------------------------

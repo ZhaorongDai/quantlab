@@ -48,6 +48,17 @@ ILLIQUID = "ILQD"
 #: the LS-4 drop-out: selectable before the drop, ineligible after it.
 DROPOUT = "DRPX"
 
+#: Leaves the universe for `REENTRY_OUT` and comes back. It is the LS-5 case:
+#: a time-series op OVER a cross-sectional one is NaN for its whole window
+#: after the symbol re-enters, because the cross-sectional input was NaN while
+#: it was out.
+REENTRY = "TXN"
+REENTRY_OUT = (20, 30)
+
+#: The symbols that are NEVER in the universe, for any reason. Perturbing
+#: their data must not move any in-universe output.
+NEVER_IN_UNIVERSE = (WARRANT, PENNY, ILLIQUID)
+
 #: Twelve plain commons plus the four special symbols above. SIXTEEN, because
 #: KunQuant requires the symbol count to align with its SIMD block width -- on
 #: this aarch64 machine 16 works and 13 does not (see
@@ -104,6 +115,7 @@ def write_universe_store(
     n_bars: int = 80,
     drop_bar: int = 40,
     seed: int = 0,
+    perturb_never_in_universe: float = 1.0,
 ) -> DatasetConfig:
     """Write a Tiingo-shaped store with junk/penny/illiquid/drop-out symbols.
 
@@ -163,8 +175,56 @@ def write_universe_store(
     put("close", DROPOUT, dropout_close)
     put("adjClose", DROPOUT, DROPOUT_ADJ_CLOSE)
 
+    # The re-entry symbol: out on RAW price for one stretch, back afterwards.
+    reentry_close = np.full(n_bars, 50.0 * 1.7)
+    reentry_close[REENTRY_OUT[0] : REENTRY_OUT[1]] = 1.0
+    put("close", REENTRY, reentry_close)
+
+    # `perturb_never_in_universe` scales the ADJUSTED close of the symbols that
+    # are never in the universe. The wrapped outputs on in-universe cells must
+    # not move; the UNWRAPPED ones must, which is what gives that test teeth.
+    if perturb_never_in_universe != 1.0:
+        for symbol in NEVER_IN_UNIVERSE:
+            put(
+                "adjClose",
+                symbol,
+                column("adjClose")[:, symbols.index(symbol)]
+                * perturb_never_in_universe,
+            )
+
     panel.to_zarr(zarr_path, mode="w")
     return dataset_config
+
+
+def hand_panel(
+    close: np.ndarray,
+    volume: np.ndarray,
+    *,
+    symbols: list[str],
+    adj_close: np.ndarray | None = None,
+    start: str = FIRST_BAR,
+) -> xr.Dataset:
+    """A hand-built `(timestamp, symbol)` panel for the mask rule matrix.
+
+    No KunQuant, no store: `compute_universe_mask` is a pure function of a
+    panel, so the rule matrix is tested directly against arrays whose every
+    cell was chosen on purpose.
+    """
+    close = np.asarray(close, dtype="float64")
+    volume = np.asarray(volume, dtype="float64")
+    if adj_close is None:
+        adj_close = close
+    return xr.Dataset(
+        {
+            "close": (["timestamp", "symbol"], close),
+            "volume": (["timestamp", "symbol"], volume),
+            "adjClose": (["timestamp", "symbol"], np.asarray(adj_close, dtype="float64")),
+        },
+        coords={
+            "timestamp": pd.bdate_range(start, periods=close.shape[0]),
+            "symbol": list(symbols),
+        },
+    )
 
 
 def pandas_universe_mask(
@@ -233,14 +293,18 @@ def make_rank_close_factor(
     *,
     window: int = 5,
     njobs: int = 4,
+    mode: str = "batch",
+    dataset=None,
     **config_kwargs,
 ) -> RankCloseFactor:
     """A bare (UNWRAPPED) `RankCloseFactor` over its own dataset instance."""
     return RankCloseFactor(
         FactorConfig(
             window=window,
-            dataset=make_stock_dataset(dataset_config),
-            mode="batch",
+            dataset=make_stock_dataset(dataset_config)
+            if dataset is None
+            else dataset,
+            mode=mode,
             data_columns=("adjClose",),
             njobs=njobs,
             **config_kwargs,
