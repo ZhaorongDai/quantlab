@@ -1,0 +1,442 @@
+"""Model preparation and date alignment in `BaseBacktester.run()` (phase 03.7, plan 06).
+
+This module locks D-06, D-13, D-14 and D-15, plus the read-cache trap that
+sits underneath D-14.
+
+- **D-15, bar-accurate warm-up.** The warm-up start is the largest factor
+  `config.window`, counted in bars on the price dataset's own timestamp axis.
+  `Factor._reset_dataset_config` subtracts `window` *calendar* days from the
+  dataset start, and that is only an extra buffer. The warm-up test uses a
+  5-bar lookback, so the buffer alone is not enough (5 calendar days before a
+  Monday reach back only 3 bars). A zero-bar warm-up therefore goes red on the
+  factor start date and on NaN first-bar predictions. Calendar-day
+  arithmetic goes red too, because it lands on the preceding Wednesday rather
+  than the Monday one week earlier. A short history clamps to the first bar
+  and logs a warning that names the clamped start.
+- **D-14, re-dating through the factor configs, and the read cache.**
+  `XrBackend.read` returns early once the backend holds data, and
+  `BaseDataset.read()` / `Factor.read()` then narrow that cached panel IN
+  PLACE. A model trained first has already read its data narrowed to its own
+  dates. Widening the factor dates for the backtest and reading again returns
+  the same narrow panel, and nothing raises. RESEARCH Pitfall 1 measured it:
+  a 10-bar store read from a later start gave 6 bars, still 6 after widening,
+  and 10 only with `overwrite=True`. So the two strategy tests put the backtest
+  window BEFORE the model's own start date. Without the dataset refresh
+  ("cal"), or without the factor-store refresh ("read"), the window's first bar
+  is absent from the features and its predictions are NaN.
+- **D-06, the universe is every price symbol.** Predictions are reindexed onto
+  the price dataset's symbol and timestamp axes before selection. A symbol the
+  factor never saw scores NaN and gets 0.0 on every rebalance row. Predictions
+  always come back symbol-sorted from `predict_panel`, so a price store written
+  in a different symbol order has the same shape and a different order.
+  Removing the reindex then either raises in the weights contract or selects
+  by position. The alignment test checks both values and chosen names by
+  symbol label.
+- **D-13, model preparation.** "train" trains on the model's own
+  train/test dates and never rewrites them. "load" refuses a missing file
+  before any feature work. A DL head gets its feature panel collected before
+  `load()`, because `DLModel._read_checkpoint` sizes the network from
+  `num_symbols` on the model's data backend (RESEARCH Pitfall 11).
+- **Fold-style dates.** `'2026-08-07T00:00:00.000000000'`, numpy datetimes
+  and timestamps with a time all normalize to an ISO date through one helper
+  (RESEARCH Pitfall 10).
+
+Everything is synthetic, CPU-only and offline. Configs are constructed
+directly, never through the factories in `quantlab/config/__init__.py` (D-32).
+"""
+
+import dataclasses
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import torch
+import torch.nn.functional as F
+import xarray as xr
+from loguru import logger
+from torch import nn
+
+from quantlab.base.backtest import BaseBacktester
+from quantlab.base.config import (
+    CrossSectionBacktestConfig,
+    DLConfig,
+    MLConfig,
+    PolarsFactorConfig,
+)
+from quantlab.base.model import DLModel
+from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from tests.backtest_fixtures import (
+    SYMBOLS,
+    FirstFeatureHead,
+    ForwardReturnLabel,
+    PastReturnFactor,
+    make_model,
+    make_stock_dataset,
+    train_checkpoint,
+    write_price_store,
+)
+
+N_BARS = 60
+TOP_N = 2
+REBALANCE_PERIODS = 5
+
+
+@pytest.fixture(autouse=True)
+def _offline_wandb(monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+
+@pytest.fixture
+def warning_messages():
+    """Every loguru WARNING emitted during the test, as plain message text."""
+    messages: list[str] = []
+    handler_id = logger.add(messages.append, level="WARNING", format="{message}")
+    yield messages
+    logger.remove(handler_id)
+
+
+def _day(ts) -> str:
+    return pd.Timestamp(ts).strftime("%Y-%m-%d")
+
+
+def _bars(dataset_config) -> np.ndarray:
+    return xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+
+
+def _model_dates(bars, first: int, train_last: int, last: int) -> dict:
+    return dict(
+        start_date=_day(bars[first]),
+        end_date=_day(bars[last]),
+        train_start=_day(bars[first]),
+        train_end=_day(bars[train_last]),
+        test_start=_day(bars[train_last + 1]),
+        test_end=_day(bars[last]),
+    )
+
+
+def _backtester(
+    tmp_path: Path,
+    price_config,
+    model,
+    bars,
+    *,
+    start_bar: int,
+    end_bar: int,
+    model_mode: str = "load",
+    checkpoint=None,
+) -> USEquityCrossectionSelectStockVectorBt:
+    return USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(price_config),
+            model=model,
+            model_mode=model_mode,
+            checkpoint=None if checkpoint is None else str(checkpoint),
+            start_date=_day(bars[start_bar]),
+            end_date=_day(bars[end_bar]),
+            output_dir=str(tmp_path / "runs"),
+            rebalance_periods=REBALANCE_PERIODS,
+            direction="long_only",
+            top_n=TOP_N,
+            fees=0.0,
+            slippage=0.0,
+            init_cash=1_000_000.0,
+        )
+    )
+
+
+def _loaded_model(tmp_path: Path, dataset_config, dates: dict, **model_kwargs):
+    """A checkpoint trained by one model, and a fresh twin that will load it."""
+    checkpoint = train_checkpoint(
+        make_model(tmp_path / "train", dataset_config, **dates, **model_kwargs)
+    )
+    model = make_model(tmp_path / "backtest", dataset_config, **dates, **model_kwargs)
+    return model, checkpoint
+
+
+def _adj_close(dataset_config) -> xr.DataArray:
+    return (
+        xr.open_zarr(dataset_config.zarr_file_path)["adjClose"]
+        .load()
+        .transpose("timestamp", "symbol")
+    )
+
+
+# --------------------------------------------------------------------------
+# D-15: bar-accurate warm-up
+# --------------------------------------------------------------------------
+
+
+def test_warmup_counts_bars_on_the_price_calendar_not_calendar_days(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    start_bar = 30
+    assert pd.Timestamp(bars[start_bar]).day_name() == "Monday"
+
+    model, checkpoint = _loaded_model(
+        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), n=5, window=5
+    )
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=start_bar, end_bar=50, checkpoint=checkpoint,
+    ).run()
+
+    # 5 bars before Monday 2024-02-12 is Monday 2024-02-05 (7 calendar days).
+    # Subtracting 5 calendar days would give Wednesday 2024-02-07.
+    factor = model.config.factors[0]
+    assert factor.config.start_date == _day(bars[start_bar - 5]) == "2024-02-05"
+
+    # The 5-bar lookback of the first window bar is fully inside the warm-up.
+    first = result.predictions["fwd_ret_1"].isel(timestamp=0)
+    assert np.isfinite(first.values).all(), first.values
+
+
+def test_warmup_clamps_to_first_bar_and_warns_on_short_history(
+    tmp_path, warning_messages
+):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+
+    model, checkpoint = _loaded_model(
+        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), window=5
+    )
+    _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=2, end_bar=20, checkpoint=checkpoint,
+    ).run()
+
+    first_day = _day(bars[0])
+    assert model.config.factors[0].config.start_date == first_day
+
+    shortfall = [m for m in warning_messages if "warm-up" in m]
+    assert len(shortfall) == 1, warning_messages
+    message = shortfall[0]
+    assert "5 bars" in message
+    assert "only 2" in message
+    assert "short by 3" in message
+    assert first_day in message
+
+
+# --------------------------------------------------------------------------
+# D-14: factor re-dating
+# --------------------------------------------------------------------------
+
+
+def _two_factor_model(root: Path, dataset_config, dates: dict) -> FirstFeatureHead:
+    factors = [
+        PastReturnFactor(
+            PolarsFactorConfig(
+                window=window,
+                dataset=make_stock_dataset(dataset_config),
+                kwargs={"n": n},
+            )
+        )
+        for n, window in ((1, 3), (2, 7))
+    ]
+    label = ForwardReturnLabel(
+        PolarsFactorConfig(
+            window=0,
+            dataset=make_stock_dataset(dataset_config),
+            kwargs={"n_forward_periods": 1},
+        )
+    )
+    return FirstFeatureHead(
+        MLConfig(
+            factors=factors,
+            labels=[label],
+            model_save_dir=str(root / "models"),
+            factor_data_strategy="cal",
+            label_data_strategy="cal",
+            val_size=0.0,
+            **dates,
+        )
+    )
+
+
+def test_factor_dates_are_pushed_and_predictions_cover_exactly_the_window(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    start_bar, end_bar = 30, 50
+
+    model = _two_factor_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=start_bar, end_bar=end_bar, model_mode="train",
+    ).run()
+
+    # The warm-up is the LARGEST window (7), applied to every factor.
+    for factor in model.config.factors:
+        assert factor.config.start_date == _day(bars[start_bar - 7])
+        assert factor.config.end_date == _day(bars[end_bar])
+
+    np.testing.assert_array_equal(
+        result.predictions.timestamp.values.astype("datetime64[ns]"),
+        bars[start_bar : end_bar + 1].astype("datetime64[ns]"),
+    )
+    # The model's own end date is bar 29; the last window bar is predicted
+    # only because the end date was pushed into the factors.
+    last = result.predictions["fwd_ret_1"].isel(timestamp=-1)
+    assert np.isfinite(last.values).all(), last.values
+
+
+def _strategy_model(tmp_path: Path, dataset_config, bars, strategy: str):
+    """A model whose own dates (bars 35..59) start AFTER the backtest warm-up."""
+    file_path = None
+    if strategy == "read":
+        file_path = str(tmp_path / "factors" / "past_ret.zarr")
+        PastReturnFactor(
+            PolarsFactorConfig(
+                window=5,
+                dataset=make_stock_dataset(dataset_config),
+                file_path=file_path,
+                kwargs={"n": 1},
+            )
+        ).cal().save(mode="w")
+
+    factor = PastReturnFactor(
+        PolarsFactorConfig(
+            window=5,
+            dataset=make_stock_dataset(dataset_config),
+            file_path=file_path,
+            kwargs={"n": 1},
+        )
+    )
+    label = ForwardReturnLabel(
+        PolarsFactorConfig(
+            window=0,
+            dataset=make_stock_dataset(dataset_config),
+            kwargs={"n_forward_periods": 1},
+        )
+    )
+    return FirstFeatureHead(
+        MLConfig(
+            factors=[factor],
+            labels=[label],
+            model_save_dir=str(tmp_path / "models"),
+            factor_data_strategy=strategy,
+            label_data_strategy="cal",
+            val_size=0.0,
+            **_model_dates(bars, 35, 49, 59),
+        )
+    )
+
+
+def _assert_first_window_bar_is_predicted_and_traded(result, bars, start_bar):
+    first = result.predictions["fwd_ret_1"].sel(timestamp=bars[start_bar])
+    assert np.isfinite(first.values).all(), first.values
+    first_rebalance = result.weights["weight"].isel(timestamp=0).values
+    assert np.count_nonzero(first_rebalance) == TOP_N, first_rebalance
+
+
+def test_read_strategy_predicts_over_the_widened_range_after_training(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    start_bar = 25
+
+    model = _strategy_model(tmp_path, dataset_config, bars, "read")
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=start_bar, end_bar=45, model_mode="train",
+    ).run()
+
+    _assert_first_window_bar_is_predicted_and_traded(result, bars, start_bar)
+
+
+def test_cal_strategy_predicts_over_the_widened_range_after_training(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    start_bar = 25
+
+    model = _strategy_model(tmp_path, dataset_config, bars, "cal")
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=start_bar, end_bar=45, model_mode="train",
+    ).run()
+
+    _assert_first_window_bar_is_predicted_and_traded(result, bars, start_bar)
+
+
+# --------------------------------------------------------------------------
+# D-06: the universe is every price symbol
+# --------------------------------------------------------------------------
+
+
+def test_symbol_absent_from_predictions_gets_zero_weight_on_rebalance_rows(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    absent = SYMBOLS[-1]
+    dates = _model_dates(bars, 0, 24, 29)
+
+    _, checkpoint = _loaded_model(tmp_path, dataset_config, dates)
+    model = make_model(tmp_path / "backtest", dataset_config, **dates)
+    narrowed = dataclasses.replace(dataset_config, symbols=tuple(SYMBOLS[:-1]))
+    model.config.factors[0].config.dataset = make_stock_dataset(narrowed)
+
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=30, end_bar=50, checkpoint=checkpoint,
+    ).run()
+
+    assert result.weights.symbol.values.tolist() == SYMBOLS
+    assert np.isnan(result.predictions["fwd_ret_1"].sel(symbol=absent).values).all()
+    weight = result.weights["weight"]
+    rebalance = np.isfinite(weight.values).all(axis=1)
+    assert rebalance.sum() == 4
+    absent_weight = weight.sel(symbol=absent).values
+    assert (absent_weight[rebalance] == 0.0).all()
+    assert np.isnan(absent_weight[~rebalance]).all()
+
+
+def test_predictions_align_to_price_symbols_by_label_not_position(tmp_path):
+    """Carried from plans 01 and 03: `CrossSectionTopNSelector.select` pairs
+    scores with fill prices by shape only. `predict_panel` returns symbols
+    sorted, so a price store written in reverse order has the same shape and
+    a different order. Only the reindex onto `prices.symbol` keeps them paired.
+    """
+    reversed_symbols = list(reversed(SYMBOLS))
+    dataset_config = write_price_store(tmp_path, symbols=reversed_symbols, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    start_bar = 30
+
+    model, checkpoint = _loaded_model(
+        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29)
+    )
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=start_bar, end_bar=50, checkpoint=checkpoint,
+    ).run()
+
+    assert result.predictions.symbol.values.tolist() == reversed_symbols
+    assert result.weights.symbol.values.tolist() == reversed_symbols
+
+    adj_close = _adj_close(dataset_config)
+    past_return = (
+        adj_close.isel(timestamp=start_bar) / adj_close.isel(timestamp=start_bar - 1)
+        - 1.0
+    )
+    for symbol in reversed_symbols:
+        assert float(
+            result.predictions["fwd_ret_1"]
+            .isel(timestamp=0)
+            .sel(symbol=symbol)
+        ) == pytest.approx(float(past_return.sel(symbol=symbol)), rel=1e-12)
+
+    expected_top = set(past_return.to_series().nlargest(TOP_N).index)
+    first_row = result.weights["weight"].isel(timestamp=0)
+    chosen = {str(s) for s in first_row.symbol.values[first_row.values > 0]}
+    assert chosen == expected_top
+
+
+# --------------------------------------------------------------------------
+# Pitfall 10: fold-style dates
+# --------------------------------------------------------------------------
+
+
+def test_iso_date_normalizes_fold_style_strings():
+    fold_style = np.datetime_as_string(np.datetime64("2026-08-07", "ns"))
+    assert fold_style == "2026-08-07T00:00:00.000000000"
+    assert BaseBacktester._iso_date(fold_style) == "2026-08-07"
+    assert BaseBacktester._iso_date(np.str_(fold_style)) == "2026-08-07"
+    assert BaseBacktester._iso_date(np.datetime64("2026-08-07")) == "2026-08-07"
+    assert BaseBacktester._iso_date(pd.Timestamp("2026-08-07 15:30")) == "2026-08-07"
