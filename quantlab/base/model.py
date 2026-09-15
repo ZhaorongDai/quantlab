@@ -505,7 +505,11 @@ class BaseModel(ABC):
         """在**本实例**上训练一折，返回该折的结果 dict。
 
         结果 = 折 dict 的五个键 + `experiment_name` + `checkpoint`（该折落盘的
-        文件路径）+ `_fit` 返回的 test 指标（不产出指标的变体没有这部分）。
+        文件的**绝对**路径）+ `_fit` 返回的 test 指标（不产出指标的变体没有这部分）。
+
+        `checkpoint` 写绝对路径（代码审查 WR-03）：`cv_folds.json` 由另一个
+        进程、从另一个工作目录读，相对 `model_save_dir` 写出的相对路径到那里
+        要么找不到，要么指到工作目录下另一次训练的同名文件。
         """
         self.config.train_start = fold["train_start"]
         self.config.train_end = fold["train_end"]
@@ -528,10 +532,12 @@ class BaseModel(ABC):
             **fold,
             "experiment_name": experiment_name,
             "checkpoint": str(
-                Path(self.config.model_save_dir)
-                / project_name
-                / experiment_name
-                / model_name
+                (
+                    Path(self.config.model_save_dir)
+                    / project_name
+                    / experiment_name
+                    / model_name
+                ).absolute()
             ),
             **(metrics or {}),
         }

@@ -84,6 +84,15 @@ BaseBacktester                         quantlab/base/backtest.py      模板方�
 构造期只要求 `load` 模式下 `checkpoint` 与 `cv_project_dir` **至少有其一**；缺的恰好是某个入口要的那个时，
 由那个入口在运行时报错（`run()` 要 `checkpoint`，`run_cv()` 要 `cv_project_dir`）。
 
+**路径不依赖工作目录（2026-09-15，代码审查 WR-03）。** 以前 `train_cv` 把 `model_save_dir` 原样拼进清单，
+相对的 `model_save_dir` 就写出相对路径，`run_cv` 再按**当前工作目录**解析：换个目录运行找不到，
+更糟的是会加载工作目录下另一次训练的同名 checkpoint。现在：
+
+- `train_cv` 在清单与返回值里写 checkpoint 的绝对路径；
+- `run_cv` 按 `{cv_project_dir}/{实验目录}/{文件名}` 在项目目录下找每折的 checkpoint（项目整体搬走也找得到），
+  找不到才接受记录里本身存在的绝对路径，从不按工作目录解析；两处都没有时 `FileNotFoundError`；
+- `BacktestConfig` 的 `checkpoint`、`cv_project_dir`、`output_dir` 在构造时规范成绝对路径，所以 `config.json` 里记的也是绝对路径。
+
 **顺序。**
 
 1. `_read_cv_folds` 读清单并校验：文件不存在 `FileNotFoundError`；没有 `format_version`、版本不等于

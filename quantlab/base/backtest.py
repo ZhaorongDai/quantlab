@@ -243,6 +243,13 @@ class BaseBacktester(ABC):
                 f"exists; the benchmark_dataset config slot is kept, leave it None"
             )
 
+        # 路径字段一律存绝对路径（代码审查 WR-03）：config.json 会在另一个进程、
+        # 另一个工作目录里重建回测（D-25），相对路径到那里指向别处。
+        for name in ("checkpoint", "cv_project_dir", "output_dir"):
+            value = getattr(config, name)
+            if value is not None:
+                setattr(config, name, str(Path(value).absolute()))
+
         self._config = config
         self._config.name = self.import_path
         self._validate_config()
@@ -403,6 +410,9 @@ class BaseBacktester(ABC):
 
         records: list[dict] = []
         for fold in folds:
+            # 在项目目录下解析，而不是按进程工作目录（代码审查 WR-03）；解析后的
+            # 路径也就是逐折记录与 metrics.json 里落盘的 checkpoint。
+            fold["checkpoint"] = self._resolve_fold_checkpoint(fold["checkpoint"])
             saved = self._load_model_checkpoint(fold["checkpoint"])
             # D-16 以清单的折日期为准；checkpoint 自己记的训练日期与清单不同时
             # warning（代码审查 WR-01）：两者本应出自同一次 train_cv。
@@ -580,6 +590,33 @@ class BaseBacktester(ABC):
                 )
             folds.append(fold)
         return sorted(folds, key=lambda fold: fold["fold"])
+
+    def _resolve_fold_checkpoint(self, recorded) -> str:
+        """清单里一折的 checkpoint 记录 -> 实际要加载的文件（代码审查 WR-03）。
+
+        `train_cv` 的布局固定是 `{cv_project_dir}/{experiment_name}/{model_name}`，
+        所以先在 `cv_project_dir` 下按记录路径的**最后两段**找。项目目录整体
+        搬走了、或者清单里是相对 `model_save_dir` 写出的相对路径，都能找到，
+        而且与进程的工作目录无关。
+
+        找不到时，再接受记录里本身存在的**绝对**路径（比如只把清单拷到别处，
+        checkpoint 仍在原处）。相对路径从不按当前工作目录解析：那样换个目录
+        运行会找不到，更糟的是会悄悄加载工作目录下另一次训练的同名
+        checkpoint。两处都没有时 FileNotFoundError，写明两个候选路径。
+        """
+        project_dir = Path(self.config.cv_project_dir)  # type: ignore[arg-type]
+        recorded_path = Path(str(recorded))
+        in_project = project_dir / recorded_path.parent.name / recorded_path.name
+        if in_project.is_file():
+            return str(in_project)
+        if recorded_path.is_absolute() and recorded_path.is_file():
+            return str(recorded_path)
+        raise FileNotFoundError(
+            f"{self.class_name}: fold checkpoint {recorded!r} was found neither "
+            f"inside cv_project_dir as {in_project} nor as an existing absolute "
+            f"path; relative manifest entries are never resolved against the "
+            f"working directory (WR-03)"
+        )
 
     def _select_folds(self, folds: list[dict]) -> list[dict]:
         """只留测试段整段落在 `[config.start_date, config.end_date]` 内的折。

@@ -301,6 +301,60 @@ def test_each_fold_loads_its_own_checkpoint_and_trades_only_its_test_segment(
         assert record["checkpoint"] == cv_project.manifest["folds"][fold]["checkpoint"]
 
 
+@pytest.mark.parametrize("recorded", ["stale-absolute", "relative"])
+def test_run_cv_resolves_fold_checkpoints_inside_the_project_dir_not_the_cwd(
+    tmp_path, cv_project, monkeypatch, recorded
+):
+    """Code review WR-03: fold checkpoints are found in `cv_project_dir`, never via the cwd.
+
+    The project directory is copied elsewhere, as when a project is moved, and
+    its manifest is rewritten two ways:
+
+    - `stale-absolute`: every entry points at the project's OLD location, which
+      no longer exists. The old `Path(checkpoint)` raised FileNotFoundError.
+    - `relative`: every entry is the relative path a relative `model_save_dir`
+      writes, and the process runs from another directory holding a same-named
+      DECOY checkpoint at each of those relative paths. The old code resolved
+      against the cwd and silently loaded the decoys: another training run's
+      model.
+
+    Both go red on the old code. The fix resolves `{experiment}/{file}`
+    inside `cv_project_dir`, and the resolved paths are what gets recorded.
+    """
+    import shutil
+
+    moved = tmp_path / "moved" / cv_project.project_dir.name
+    shutil.copytree(cv_project.project_dir, moved)
+    payload = json.loads((moved / "cv_folds.json").read_text(encoding="utf-8"))
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+    for entry in payload["folds"]:
+        original = Path(entry["checkpoint"])
+        tail = (
+            Path("models") / cv_project.project_dir.name / original.parent.name / original.name
+        )
+        if recorded == "stale-absolute":
+            entry["checkpoint"] = str(tmp_path / "gone" / tail)
+        else:
+            entry["checkpoint"] = str(tail)
+            decoy = cwd / tail
+            decoy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(cv_project.manifest["folds"][0]["checkpoint"], decoy)
+    (moved / "cv_folds.json").write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.chdir(cwd)
+
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=moved)
+    loaded = _spy_load(monkeypatch, backtester)
+    result = backtester.run_cv()
+
+    expected = [
+        str(moved / Path(entry["checkpoint"]).parent.name / Path(entry["checkpoint"]).name)
+        for entry in payload["folds"]
+    ]
+    assert loaded == expected
+    assert [record["checkpoint"] for record in result.folds] == expected
+
+
 def test_per_fold_split_uses_the_folds_own_train_dates(
     tmp_path, cv_project, warning_messages
 ):

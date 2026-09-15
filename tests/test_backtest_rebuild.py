@@ -201,6 +201,36 @@ def test_rebuild_from_a_run_config_moves_the_fingerprint_to_expected(tmp_path):
     assert rebuilt.config.checkpoint == str(checkpoint)
 
 
+def test_backtest_config_path_fields_are_stored_absolute(tmp_path, monkeypatch):
+    """Code review WR-03: `checkpoint`, `cv_project_dir` and `output_dir` persist as absolute paths.
+
+    A persisted `config.json` holding relative paths rebuilds against
+    whatever directory the rebuild runs in (D-25). The backtester is built
+    from `tmp_path` with relative spellings and the config is read back. The
+    old setter kept them verbatim and goes red.
+    """
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    monkeypatch.chdir(tmp_path)
+
+    config = _json(
+        _backtester(
+            tmp_path,
+            dataset_config,
+            checkpoint="ckpt/model.joblib",
+            output_dir="runs",
+            cv_project_dir="models/project",
+        ).get_config()
+    )
+
+    for key, relative in (
+        ("checkpoint", "ckpt/model.joblib"),
+        ("output_dir", "runs"),
+        ("cv_project_dir", "models/project"),
+    ):
+        assert Path(config[key]).is_absolute(), (key, config[key])
+        assert Path(config[key]).resolve() == (tmp_path / relative).resolve()
+
+
 def test_loader_does_not_mutate_its_input(tmp_path):
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
     saved = _json(

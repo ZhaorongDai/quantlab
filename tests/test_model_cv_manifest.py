@@ -265,6 +265,35 @@ def test_manifest_fold_entries_carry_the_d30_keys_and_real_checkpoints(tmp_path)
         assert Path(entry["checkpoint"]).is_file(), entry["checkpoint"]
 
 
+def test_manifest_checkpoints_are_absolute_with_a_relative_save_dir(tmp_path, monkeypatch):
+    """Code review WR-03: a relative `model_save_dir` still yields absolute checkpoints.
+
+    The manifest is read later, by `run_cv`, from whatever directory that
+    process runs in. A relative entry written from the training cwd resolves
+    against the reader's cwd: from another directory it is missing, or worse, it
+    names another run's checkpoint. Training runs from `tmp_path` with
+    `model_save_dir="ckpt"`, and the entries are checked from a different
+    directory. The old code wrote `ckpt/...` verbatim and goes red here.
+    """
+    monkeypatch.chdir(tmp_path)
+    kwargs = _common(tmp_path, "unused")
+    kwargs["model_save_dir"] = "ckpt"
+    model = StubMLHead(MLConfig(**kwargs))
+    model.collect()
+
+    results = model.train_cv(train_periods=TRAIN_PERIODS)
+
+    manifest = _read_manifest(tmp_path / "ckpt")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert len(manifest["folds"]) == len(results) == N_FOLDS
+    for result, entry in zip(results, manifest["folds"]):
+        assert Path(entry["checkpoint"]).is_absolute(), entry["checkpoint"]
+        assert Path(entry["checkpoint"]).is_file(), entry["checkpoint"]
+        assert entry["checkpoint"] == result["checkpoint"]
+
+
 def test_return_value_carries_no_manifest_keys(tmp_path):
     """D-30: the returned value is unchanged by the manifest write. No fold
     dict gains the wrapper's keys, and the manifest holds exactly as many
