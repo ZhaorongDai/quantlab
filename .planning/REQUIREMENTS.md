@@ -8,7 +8,7 @@
 ### Cleanup（现有代码库整理，前置工作）
 
 - [ ] **CLEAN-01**: 仓库通过全新 Git 历史初始化，不包含现有已泄露 Tiingo API Key 的提交
-- [ ] **CLEAN-02**: 删除/清理测试代码、临时脚本、明显冗余或不适合长期维护的实现（如 `vecbt/bt.py` 未完整传参的 `backtest_from_signals`、`get_binance_instruments.py` 与 `utils/binance.py` 的重复解析逻辑）
+- [x] **CLEAN-02**: 删除/清理测试代码、临时脚本、明显冗余或不适合长期维护的实现（如 `vecbt/bt.py` 未完整传参的 `backtest_from_signals`、`get_binance_instruments.py` 与 `utils/binance.py` 的重复解析逻辑）
 - [ ] **CLEAN-03**: `README.md` 内容与实际代码结构保持一致
 - [ ] **CLEAN-04**: `pyproject.toml`/`uv.lock`（通过 `uv` 管理）正确声明并锁定实际依赖，`uv sync` 后环境可用
 
@@ -130,7 +130,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CLEAN-01 | Phase 1 | Pending |
-| CLEAN-02 | Phase 1 | Pending |
+| CLEAN-02 | Phase 1 | Complete |
 | CLEAN-03 | Phase 1 | Pending |
 | CLEAN-04 | Phase 1 | Pending |
 | SEC-01 | Phase 1 | Pending |
