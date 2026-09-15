@@ -467,9 +467,16 @@ AttributeError: module '__main__' has no attribute 'PastReturn'
 
 要能重建，把因子类放进 `quantlab/factor/xxx.py` 这样的模块，从那里 import。
 
-**train 模式重建会再训练一个模型。** 模型层的项目目录名只精确到秒（`{类名}_trial_{YYYYmmdd_HHMMSS}`），
+**train 模式重建会再训练一个模型。** ~~模型层的项目目录名只精确到秒（`{类名}_trial_{YYYYmmdd_HHMMSS}`），
 而 `_save_model` 遇到已存在的目录会 `RuntimeError`。同一个 `model_save_dir` 下，原始运行和重建运行如果落在同一秒内，
-第二次训练会撞名失败；测试里为此等了 1.1 秒。load 模式和 `run_cv` 不训练，没有这个问题。
+第二次训练会撞名失败；测试里为此等了 1.1 秒。load 模式和 `run_cv` 不训练，没有这个问题。~~
+
+> **更正（2026-09-15，代码审查 WR-04）：上面删除线部分已作废，保留原文作记录。**
+> - 项目目录名现在是 `{类名}_trial_{YYYYmmdd_HHMMSS_ffffff}`，目录已存在时再追加 `_1`、`_2`……，所以连续两次训练永不撞名，测试里的等待已删除。
+> - `BaseModel.train()` 返回它写出的 checkpoint 绝对路径。train 模式的 `run()` 把它记进 `config.json` 与 `metrics.json` 的
+>   顶层 `trained_checkpoint`（和 `data_fingerprint` 一样是记录，不是配置字段，重建时加载器取走它）。
+> - 重建一个 train 模式的 `config.json` 仍然会**再训练**；要精确回放当初那个模型（torch / GPU 训练不能逐位复现），
+>   把 `model_mode` 改成 `"load"`、`checkpoint` 设成记录里的 `trained_checkpoint` 再重建。
 
 **信任边界。** `config.json` 会指定要 import 的类和要读的路径，`.joblib` checkpoint 本质是 pickle。只加载自己产出、自己信任的运行目录。
 
@@ -790,8 +797,9 @@ result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
 **9. `RNNClassifier` 的分数是概率。** 它的预测变量是 P(上涨)，取值 [0, 1]。按它排序选股没问题，
 但不要把它当收益幅度读，也不要拿它和回归头的分数混着比较。
 
-**10. train 模式的两次运行落在同一秒会撞名。** 模型层项目目录只精确到秒，第二次训练 `RuntimeError`。
-快速连续跑两次 train 模式回测（比如原始运行后立刻重建重跑）时，换一个 `model_save_dir` 或者隔一秒。
+~~**10. train 模式的两次运行落在同一秒会撞名。** 模型层项目目录只精确到秒，第二次训练 `RuntimeError`。
+快速连续跑两次 train 模式回测（比如原始运行后立刻重建重跑）时，换一个 `model_save_dir` 或者隔一秒。~~
+（2026-09-15 代码审查 WR-04 已修复，保留原文作记录：项目目录名带微秒并在已存在时追加序号，不再撞名；见「从 config 重建与复现」。）
 
 ---
 

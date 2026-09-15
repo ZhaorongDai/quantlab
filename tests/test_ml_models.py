@@ -305,6 +305,49 @@ def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
     assert joblib.load(_checkpoint(tmp_path)) == model.model
 
 
+def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
+    tmp_path, recorders, monkeypatch
+):
+    """Code review WR-04: `train()` says what it wrote, and project names never collide.
+
+    The clock is frozen, so every run asks for a project directory in the SAME
+    microsecond. That is the worst case of the old second-precision name
+    `{class}_trial_%Y%m%d_%H%M%S`, reached by a train-mode backtest followed by
+    its immediate rebuild. Two `train()` calls and two `train_cv()` calls must
+    all land in distinct project directories. Each `train()` returns the absolute
+    path of the checkpoint it wrote, so a caller can record it. The old code
+    returned None and the second `train()` raised `RuntimeError: ... already
+    exists`, so this test goes red.
+    """
+    import datetime as datetime_module
+
+    import quantlab.base.model as model_module
+
+    frozen = datetime_module.datetime(2026, 9, 15, 12, 0, 0, 123456)
+
+    class _FrozenDatetime(datetime_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(model_module, "datetime", _FrozenDatetime)
+    model = StubMLHead(_config(tmp_path))
+    model.collect()
+
+    first = model.train()
+    second = model.train()
+    model.train_cv(train_periods=50)
+    model.train_cv(train_periods=50)
+
+    assert first is not None and second is not None and first != second
+    for checkpoint in (first, second):
+        assert Path(checkpoint).is_absolute(), checkpoint
+        assert Path(checkpoint).is_file(), checkpoint
+    projects = sorted(p for p in (tmp_path / "ckpt").iterdir() if p.is_dir())
+    assert len(projects) == 4, projects
+    assert len(sorted((tmp_path / "ckpt").rglob("cv_folds.json"))) == 2
+
+
 def test_fresh_instance_loads_without_init_model_and_predicts_identically(tmp_path, recorders):
     """`MLModel.load` must not rebuild the model: the file IS the model, and a
     loaded-but-never-collected instance cannot know its feature count."""

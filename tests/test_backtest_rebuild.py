@@ -29,7 +29,6 @@ directly, never through the factories in `quantlab/config/__init__.py` (D-32).
 import ast
 import copy
 import json
-import time
 from pathlib import Path
 
 import numpy as np
@@ -335,10 +334,10 @@ def test_train_mode_rebuild_retrains_and_reproduces_weights_and_equity(
     assert saved["checkpoint"] is None
 
     rebuilt = module_utils.load_backtester_from_config(saved)
-    # `BaseModel.train` names its project directory to the second
-    # (`{class}_trial_%Y%m%d_%H%M%S`) under the same model_save_dir, so a retrain
-    # inside the same second as the first run would collide with its directory.
-    time.sleep(1.1)
+    # Code review WR-04: `BaseModel.train` names its project directory to the
+    # microsecond and never reuses an existing one, so the rebuild retrains
+    # immediately. The old `time.sleep(1.1)` wall-clock workaround is gone;
+    # without the fix this line raises "... already exists" within the second.
     second = rebuilt.run()
 
     checkpoints = sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib"))
@@ -349,6 +348,40 @@ def test_train_mode_rebuild_retrains_and_reproduces_weights_and_equity(
         == first.metrics["whole"]["Total Return [%]"]
     )
     assert _fingerprint_warnings(warning_messages) == []
+
+
+def test_train_mode_run_records_its_checkpoint_and_replays_it_in_load_mode(tmp_path):
+    """Code review WR-04: a train-mode run records the checkpoint it trained.
+
+    Before the fix neither config.json nor metrics.json named the model a
+    train-mode backtest produced. That backtest could not be replayed against
+    the exact model, only retrained, and retraining is not bit-reproducible for
+    torch or GPU heads. `trained_checkpoint` must now be in both files, point at
+    the one checkpoint trained, and replay identically through a load-mode
+    rebuild. The loader treats it as a record, so the replay's own config
+    (load mode, nothing trained) carries none. Red on the old code
+    (KeyError on `trained_checkpoint`).
+    """
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    first = _backtester(tmp_path, dataset_config, model_mode="train").run()
+    saved = _read_run_config(first.run_dir)
+    metrics = json.loads((first.run_dir / "metrics.json").read_text(encoding="utf-8"))
+
+    recorded = saved["trained_checkpoint"]
+    assert Path(recorded).is_absolute() and Path(recorded).is_file(), recorded
+    assert metrics["trained_checkpoint"] == recorded
+    assert sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib")) == [
+        Path(recorded)
+    ]
+
+    replay = module_utils.load_backtester_from_config(
+        dict(saved, model_mode="load", checkpoint=recorded)
+    )
+    second = replay.run()
+
+    _assert_same_run_artifacts(first.run_dir, second.run_dir)
+    assert "trained_checkpoint" not in _read_run_config(second.run_dir)
+    assert len(sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib"))) == 1
 
 
 def test_run_cv_rebuild_reproduces_the_stitched_curve(tmp_path, warning_messages):

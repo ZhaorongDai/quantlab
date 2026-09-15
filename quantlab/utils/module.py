@@ -142,6 +142,11 @@ def load_backtester_from_config(config: dict):
 
     config = copy.deepcopy(config)
     expected = config.pop("data_fingerprint", None)
+    # `trained_checkpoint` is a record a train-mode run writes: the checkpoint it
+    # trained (code review WR-04). It is not a config field. Rebuilding a
+    # train-mode config retrains; to replay that exact model, set
+    # model_mode="load" and checkpoint to the recorded path.
+    config.pop("trained_checkpoint", None)
 
     cls = get_cls_from_path(config["name"])
     if not (isinstance(cls, type) and issubclass(cls, BaseBacktester)):

@@ -171,6 +171,9 @@ class BaseBacktester(ABC):
         # `data_fingerprint`）重建回测时设置，run() 用它比对本次读到的数据。
         self.expected_fingerprint: dict | None = None
         self._fingerprints: dict = {}
+        # train 模式下本次 run() 训练出的 checkpoint 绝对路径；load 模式与未运行时
+        # 为 None（代码审查 WR-04）。get_config 与 metrics 据此记录。
+        self._trained_checkpoint: str | None = None
         self.config = config
 
     @property
@@ -281,6 +284,10 @@ class BaseBacktester(ABC):
         )
         if self._fingerprints:
             cfg["data_fingerprint"] = dict(self._fingerprints)
+        # train 模式跑过之后再多一个记录 `trained_checkpoint`（代码审查 WR-04）：
+        # 本次训练出的 checkpoint，用 load 模式可以精确回放同一个模型。
+        if self._trained_checkpoint is not None:
+            cfg["trained_checkpoint"] = self._trained_checkpoint
         return cfg
 
     @staticmethod
@@ -339,6 +346,8 @@ class BaseBacktester(ABC):
         end_date = self._iso_date(self.config.end_date)
         # 每次运行重新记录指纹：同一个回测器跑第二次，不能带着上一次的记录。
         self._fingerprints = {}
+        # 训练出的 checkpoint 同理（代码审查 WR-04）：只有本次 train 模式才有。
+        self._trained_checkpoint = None
 
         # load 模式下训练日期取自 checkpoint 自己的 config.json（代码审查 WR-01）。
         train_bounds = self._prepare_model()
@@ -347,6 +356,8 @@ class BaseBacktester(ABC):
         self._compare_fingerprints()
 
         metrics = window.metrics
+        if self._trained_checkpoint is not None:
+            metrics["trained_checkpoint"] = self._trained_checkpoint
         metrics["notes"] = self._report_notes()
         run_dir = self._report_and_persist(
             window.predictions, window.weights, window.simulation, metrics
@@ -403,6 +414,8 @@ class BaseBacktester(ABC):
                 f"{self.config.model_mode!r}"
             )
         self._fingerprints = {}
+        # run_cv 只加载不训练：不能带着之前某次 train 模式 run() 的记录（WR-04）。
+        self._trained_checkpoint = None
 
         folds = self._select_folds(self._read_cv_folds())
         calendar = self._price_calendar(folds[-1]["test_end"])
@@ -762,7 +775,8 @@ class BaseBacktester(ABC):
             saved = self._load_model_checkpoint(self.config.checkpoint)
             return self._checkpoint_train_bounds(saved, self.config.checkpoint)
         model.collect()
-        model.train()
+        # 记下训练出的 checkpoint（代码审查 WR-04），config.json 与 metrics.json 据此记录。
+        self._trained_checkpoint = str(model.train())
         return model.config.train_start, model.config.train_end
 
     def _checkpoint_train_bounds(self, saved: dict | None, checkpoint) -> tuple:

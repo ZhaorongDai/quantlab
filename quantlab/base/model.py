@@ -427,8 +427,31 @@ class BaseModel(ABC):
             f"{self.class_name} does not implement _predict_panel_array"
         )
 
-    def train(self):
-        project_name = f"{self.class_name}_trial_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    def _new_project_name(self) -> str:
+        """`{class}_trial_{%Y%m%d_%H%M%S_%f}`，在 `model_save_dir` 下从不与已有目录重名（代码审查 WR-04）。
+
+        以前只精确到秒，而 `_save_model` 遇到已存在的目录会 RuntimeError：一次
+        train 模式回测和紧接着的重建重跑落在同一秒就撞名，测试只能 sleep 等时钟。
+        现在带微秒，并且目录已存在时追加 `_1`、`_2`……，所以即使时钟不走
+        （或被调回）也不会撞名。`train` 与 `train_cv` 都经过这里。
+        """
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        base = f"{self.class_name}_trial_{stamp}"
+        root = Path(self.config.model_save_dir)
+        name, suffix = base, 1
+        while (root / name).exists():
+            name = f"{base}_{suffix}"
+            suffix += 1
+        return name
+
+    def train(self) -> Path:
+        """按配置里的四个日期训练一次并落盘，返回 checkpoint 文件的绝对路径。
+
+        返回路径是为了让调用方记录「训练出的是哪个模型」（代码审查 WR-04）：
+        train 模式的回测把它写进运行目录，之后可以用 load 模式精确回放同一个
+        模型，而不是再训练一个（torch / GPU 训练不能逐位复现）。
+        """
+        project_name = self._new_project_name()
         experiment_name = f"{self.class_name}_total"
         model_name = f"{experiment_name}{self.checkpoint_suffix}"
         self._init_wandb(
@@ -440,6 +463,9 @@ class BaseModel(ABC):
             experiment_name=experiment_name,
             model_name=model_name,
         )
+        return (
+            Path(self.config.model_save_dir) / project_name / experiment_name / model_name
+        ).absolute()
 
     @staticmethod
     def _cv_folds(
@@ -627,7 +653,8 @@ class BaseModel(ABC):
         start_date = self.config.start_date
         end_date = self.config.end_date
 
-        project_name = f"{self.class_name}_trial_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # 与 train() 共用的防撞名项目目录名（代码审查 WR-04）。
+        project_name = self._new_project_name()
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 
         # Filter data by date range
