@@ -21,6 +21,8 @@ from tqdm import tqdm
 from quantlab.dataset.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.ml_model.backend import MlBackend
+from quantlab.utils.atomic import write_json_atomically
+from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
 
 from .config import DLConfig, MLConfig
@@ -497,6 +499,12 @@ class BaseModel(ABC):
         """
         return copy.deepcopy(self)._train_one_fold(fold, project_name)
 
+    #: `train_cv` 在项目目录里写的折清单文件名（03.7 D-30）。
+    CV_FOLDS_FILENAME = "cv_folds.json"
+    #: 折清单的格式版本（03.7 D-36）。`run_cv` 会读旧训练 run 的清单，并拒收
+    #: 它不认识的版本；改动清单结构时必须递增这里。
+    CV_FOLDS_FORMAT_VERSION = 1
+
     #: 折 dict 自带的键。`test_start` / `test_end` 也以 `test_` 开头，但它们是
     #: 日期不是指标，求 CV 均值时必须排除。
     _CV_FOLD_KEYS = frozenset(
@@ -552,6 +560,18 @@ class BaseModel(ABC):
         `{class}_cv_summary` run 的 summary（`cv_mean_test_*` 与 `cv_n_folds`）：
         每折的 `_fit` 结束时已经 finish 了自己的 run，均值算出来时没有还开着的
         run 可写。`parallel=True` 在 joblib threading 后端上为每折深拷贝本实例。
+
+        返回前把折清单写到 `{model_save_dir}/{project_name}/cv_folds.json`
+        （03.7 D-30 / D-36），内容是 `{"format_version": 1, "folds": [...]}`：
+        `folds` 就是本方法返回的这个 list 的 JSON 形式（`to_jsonable` 转换，NaN /
+        inf 写成 null，所以文件是严格 JSON），不多不少。折数为 0 时照样写，
+        `folds` 为 `[]`。经 `write_json_atomically` 落盘，中断的 run 不会留下
+        写了一半的文件。
+
+        之所以带 `format_version`：`run_cv` 要读**旧**训练 run 留下的清单来回测
+        每折的样本外段，清单因此是一个持久化格式，结构改动必须递增
+        `CV_FOLDS_FORMAT_VERSION`，`run_cv` 拒收不认识的版本。清单不改变返回值：
+        返回的折 dict 里没有任何清单的键。
         """
         start_date = self.config.start_date
         end_date = self.config.end_date
@@ -602,6 +622,19 @@ class BaseModel(ABC):
             if self._wandb_recorder is not None:
                 self._wandb_recorder.summary.update(means)
                 self._wandb_recorder.finish()
+
+        # 放在两个分支之后：顺序与并行都经过这里。写入的是 `to_jsonable` 转出的
+        # 新对象，`results` 本身原样返回（D-30 要求返回值不变）。
+        write_json_atomically(
+            Path(self.config.model_save_dir)
+            / project_name
+            / self.CV_FOLDS_FILENAME,
+            {
+                "format_version": self.CV_FOLDS_FORMAT_VERSION,
+                "folds": to_jsonable(results),
+            },
+            indent=2,
+        )
 
         return results
 

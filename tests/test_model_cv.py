@@ -25,6 +25,14 @@ The dates are observed from inside training -- the stub head records
 right dates but trained on different ones still turns these tests red.
 
 Everything is synthetic, CPU-only and offline.
+
+2026-09-15, phase 03.7: `train_cv` now also writes `cv_folds.json` into the CV
+project directory, because D-30 places the fold manifest there. The two
+project-directory listings (`_assert_golden_fold_dirs` and the handmade-fold
+branch test) therefore exclude exactly that one file name and assert that it
+exists. No golden value changed: the fold names, the trained dates and the
+per-fold directory contents are asserted exactly as captured, and the fold
+geometry goldens still hold as captured before the refactor.
 """
 
 from pathlib import Path
@@ -193,7 +201,12 @@ def _golden_fold_dates(model) -> list[tuple[str, str, str, str]]:
 def _assert_golden_fold_dirs(root: Path, cls_name: str, suffix: str) -> None:
     projects = [p for p in root.iterdir() if p.is_dir()]
     assert len(projects) == 1, f"expected one CV project dir, got {projects}"
-    fold_dirs = sorted(p.name for p in projects[0].iterdir())
+    assert (projects[0] / BaseModel.CV_FOLDS_FILENAME).is_file()
+    fold_dirs = sorted(
+        p.name
+        for p in projects[0].iterdir()
+        if p.name != BaseModel.CV_FOLDS_FILENAME
+    )
     assert fold_dirs == sorted(
         f"{cls_name}_cv_fold_{i}" for i in range(GOLDEN_N_FOLDS)
     )
@@ -428,7 +441,10 @@ def test_both_train_cv_branches_train_exactly_what_cv_folds_yields(tmp_path, mon
     assert sorted(r["fold"] for r in results) == [3, 5]
     projects = list((tmp_path / save_dir).iterdir())
     assert len(projects) == 1
-    assert sorted(p.name for p in projects[0].iterdir()) == ["StubMLHead_cv_fold_3", "StubMLHead_cv_fold_5"]
+    assert (projects[0] / BaseModel.CV_FOLDS_FILENAME).is_file()
+    assert sorted(
+        p.name for p in projects[0].iterdir() if p.name != BaseModel.CV_FOLDS_FILENAME
+    ) == ["StubMLHead_cv_fold_3", "StubMLHead_cv_fold_5"]
 
 
 # --------------------------------------------------------------------------
