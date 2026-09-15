@@ -28,14 +28,29 @@ column names, so D-04's single source of truth is kept even in tests.
 Everything is synthetic, CPU-only and offline.
 """
 
+import types
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+import quantlab.backtest.engine_vectorbt as engine_module
+from quantlab.backtest.engine_vectorbt import VectorBtBacktester
+from quantlab.backtest.selection import rebalance_mask
+from quantlab.backtest.us_equity import (
+    US_EQUITY_MARKET,
+    USEquityCrossectionSelectStockVectorBt,
+)
 from quantlab.base.config import CrossSectionBacktestConfig
-from tests.backtest_fixtures import make_model, make_stock_dataset, write_price_store
+from tests.backtest_fixtures import (
+    SYMBOLS,
+    make_model,
+    make_stock_dataset,
+    train_checkpoint,
+    write_price_store,
+)
 
 MARKET = USEquityCrossectionSelectStockVectorBt.MARKET
 
@@ -366,10 +381,6 @@ def test_rebalance_row_mixing_nan_and_finite_is_refused_before_simulating(
     tmp_path, monkeypatch
 ):
     """Pitfall 3: [1.0, NaN] would silently hold B and block A; refuse it loudly."""
-    import types
-
-    import quantlab.backtest.engine_vectorbt as engine_module
-
     backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
     calls = []
 
@@ -377,8 +388,12 @@ def test_rebalance_row_mixing_nan_and_finite_is_refused_before_simulating(
         calls.append(kwargs)
         raise AssertionError("vectorbt from_orders was reached")
 
+    # Replace the engine module's `vbt` name only, so the real vectorbt
+    # Portfolio class stays untouched for every other test in the process.
     monkeypatch.setattr(
-        engine_module, "vbt", types.SimpleNamespace(Portfolio=types.SimpleNamespace(from_orders=_spy))
+        engine_module,
+        "vbt",
+        types.SimpleNamespace(Portfolio=types.SimpleNamespace(from_orders=_spy)),
     )
     ts = _timestamps(4)
     symbols = ["A", "B"]
@@ -390,22 +405,14 @@ def test_rebalance_row_mixing_nan_and_finite_is_refused_before_simulating(
     assert calls == []
 
 
-def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
-    """Through run(): the selected symbol delists mid-window and is recorded."""
-    from tests.backtest_fixtures import SYMBOLS, train_checkpoint
+RUN_BARS = 60
+RUN_WINDOW_START = 30
+RUN_WINDOW_END = 50
 
-    window_start, window_end, delist_bar = 30, 50, 33
-    # The fixture store is seeded, so a probe store with the same seed tells
-    # which symbol the model picks at the window's first rebalance; delisting
-    # from bar 33 does not touch the bars that pick depends on.
-    probe = xr.open_zarr(write_price_store(tmp_path / "probe", n_bars=60).zarr_file_path).load()
-    close = probe["adjClose"].transpose("timestamp", "symbol").values
-    picked = SYMBOLS[int(np.argmax(close[window_start] / close[window_start - 1] - 1.0))]
 
-    dataset_config = write_price_store(
-        tmp_path / "store", n_bars=60, delist_at={picked: delist_bar}
-    )
-    bars = pd.bdate_range("2024-01-01", periods=60)
+def _trained_run_config(tmp_path, dataset_config, **overrides) -> CrossSectionBacktestConfig:
+    """Load-mode config over a checkpoint trained on bars 0-29, backtesting bars 30-50."""
+    bars = pd.bdate_range("2024-01-01", periods=RUN_BARS)
     model_dates = dict(
         start_date=_day(bars[0]),
         end_date=_day(bars[29]),
@@ -417,30 +424,177 @@ def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
     checkpoint = train_checkpoint(
         make_model(tmp_path / "train", dataset_config, **model_dates)
     )
+    kwargs = dict(
+        price_dataset=make_stock_dataset(dataset_config),
+        model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
+        model_mode="load",
+        checkpoint=str(checkpoint),
+        start_date=_day(bars[RUN_WINDOW_START]),
+        end_date=_day(bars[RUN_WINDOW_END]),
+        output_dir=str(tmp_path / "runs"),
+        rebalance_periods=5,
+        direction="long_only",
+        top_n=2,
+        fees=0.0,
+        slippage=0.0,
+    )
+    kwargs.update(overrides)
+    return CrossSectionBacktestConfig(**kwargs)
+
+
+def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
+    """Through run(): the selected symbol delists mid-window and is recorded."""
+    delist_bar = RUN_WINDOW_START + 3
+    # The fixture store is seeded, so a probe store with the same seed tells
+    # which symbol the model picks at the window's first rebalance. The model
+    # scores by the fixture factor's past return on adjClose (its own input
+    # column, not a price the engine reads); delisting from bar 33 does not
+    # touch bars 29 and 30, which that pick depends on.
+    probe = xr.open_zarr(
+        write_price_store(tmp_path / "probe", n_bars=RUN_BARS).zarr_file_path
+    ).load()
+    close = probe["adjClose"].transpose("timestamp", "symbol").values
+    past_return = close[RUN_WINDOW_START] / close[RUN_WINDOW_START - 1] - 1.0
+    picked = SYMBOLS[int(np.argmax(past_return))]
+
+    dataset_config = write_price_store(
+        tmp_path / "store", n_bars=RUN_BARS, delist_at={picked: delist_bar}
+    )
     result = USEquityCrossectionSelectStockVectorBt(
-        CrossSectionBacktestConfig(
-            price_dataset=make_stock_dataset(dataset_config),
-            model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
-            model_mode="load",
-            checkpoint=str(checkpoint),
-            start_date=_day(bars[window_start]),
-            end_date=_day(bars[window_end]),
-            output_dir=str(tmp_path / "runs"),
-            rebalance_periods=5,
-            direction="long_only",
-            top_n=1,
-            fees=0.0,
-            slippage=0.0,
-        )
+        _trained_run_config(tmp_path, dataset_config, top_n=1)
     ).run()
 
+    bars = pd.bdate_range("2024-01-01", periods=RUN_BARS)
     liquidations = result.simulation.liquidations
     assert liquidations, "the delisted holding must be recorded"
     for record in liquidations:
         assert set(record) == {"symbol", "signal_timestamp", "fill_timestamp", "price"}
     first = liquidations[0]
     assert first["symbol"] == picked
-    assert first["signal_timestamp"] == bars[window_start + 5]
-    assert first["fill_timestamp"] == bars[window_start + 6]
+    assert first["signal_timestamp"] == bars[RUN_WINDOW_START + 5]
+    assert first["fill_timestamp"] == bars[RUN_WINDOW_START + 6]
     last_open = probe[MARKET.fill_price_column].sel(symbol=picked).values[delist_bar - 1]
     assert first["price"] == pytest.approx(float(last_open), rel=1e-12)
+
+
+# --------------------------------------------------------------------------
+# Task 3: market spec (D-04), construction check (D-11), benchmark deferral
+# (D-08) and sibling extensibility (D-01)
+# --------------------------------------------------------------------------
+
+
+def test_us_equity_year_freq_daily_is_252_days_and_minute_is_252_sessions():
+    """D-04 / Pitfall 6: 252 trading days and 390-minute sessions, not 365 days."""
+    assert US_EQUITY_MARKET.year_freq(np.timedelta64(1, "D")) == pd.Timedelta(days=252)
+    assert US_EQUITY_MARKET.year_freq(np.timedelta64(1, "m")) == pd.Timedelta(
+        minutes=252 * 390
+    )
+
+
+def test_us_equity_market_uses_adjusted_columns():
+    """D-04: fills and valuation use the split/dividend-adjusted Tiingo EOD columns."""
+    from quantlab.enums.data import TiingoColumns
+
+    eod_columns = TiingoColumns.EOD.split(",")
+    assert USEquityCrossectionSelectStockVectorBt.MARKET is US_EQUITY_MARKET
+    assert US_EQUITY_MARKET.fill_price_column == "adjOpen"
+    assert US_EQUITY_MARKET.valuation_price_column == "adjClose"
+    assert US_EQUITY_MARKET.fill_price_column in eod_columns
+    assert US_EQUITY_MARKET.valuation_price_column in eod_columns
+
+
+def test_unknown_score_label_fails_at_construction_before_training(tmp_path):
+    """D-11: a mistyped score_label fails when the backtester is built, before training."""
+    config = _config(tmp_path, score_label="no_such_label")
+
+    with pytest.raises(ValueError, match="no_such_label"):
+        USEquityCrossectionSelectStockVectorBt(config)
+
+    assert config.model.model is None
+    assert not list(Path(config.model.config.model_save_dir).rglob("*.joblib"))
+
+
+def test_benchmark_dataset_is_refused_naming_d08(tmp_path):
+    """D-08: benchmark comparison is deferred; a non-None slot is refused by name."""
+    benchmark = make_stock_dataset(write_price_store(tmp_path / "benchmark", n_bars=40))
+
+    with pytest.raises(NotImplementedError, match="D-08"):
+        _backtester(tmp_path, benchmark_dataset=benchmark)
+
+
+def test_engine_stats_carry_no_benchmark_metric_and_warn_nothing(tmp_path, recwarn):
+    """D-08 / Pitfall 6: a real run reports no Benchmark row and no benchmark_rets warning."""
+    config = _trained_run_config(
+        tmp_path, write_price_store(tmp_path / "store", n_bars=RUN_BARS)
+    )
+
+    result = USEquityCrossectionSelectStockVectorBt(config).run()
+
+    whole = result.metrics["whole"]
+    assert "Total Return [%]" in whole
+    assert [key for key in whole if "Benchmark" in key] == []
+    assert "benchmark" not in result.metrics
+    benchmark_warnings = [
+        w
+        for w in recwarn.list
+        if issubclass(w.category, UserWarning) and "benchmark_rets" in str(w.message)
+    ]
+    assert benchmark_warnings == []
+
+
+def test_simulate_benchmark_returns_none(tmp_path):
+    """D-08: the engine's benchmark hook stays in place and returns None this phase."""
+    backtester = _backtester(tmp_path)
+
+    assert (
+        backtester._simulate_benchmark(
+            backtester.config.start_date, backtester.config.end_date
+        )
+        is None
+    )
+
+
+class EqualWeightEveryone(VectorBtBacktester):
+    """Test-local D-01 sibling of the US-equity backtester.
+
+    It declares only `config_cls`, `MARKET` and `_generate_signals`, and holds
+    every symbol at 1/n on each rebalance bar. `BaseBacktester` is not edited
+    to make it run.
+    """
+
+    config_cls = CrossSectionBacktestConfig
+    MARKET = US_EQUITY_MARKET
+
+    def _generate_signals(self, predictions: xr.Dataset, prices: xr.Dataset) -> xr.Dataset:
+        n_bars = prices.sizes["timestamp"]
+        n_symbols = prices.sizes["symbol"]
+        weights = np.full((n_bars, n_symbols), np.nan)
+        weights[rebalance_mask(n_bars, self.config.rebalance_periods)] = 1.0 / n_symbols
+        return xr.Dataset(
+            {"weight": (("timestamp", "symbol"), weights)},
+            coords={"timestamp": prices.timestamp.values, "symbol": prices.symbol.values},
+        )
+
+
+def test_a_sibling_engine_subclass_runs_without_touching_the_base(tmp_path):
+    """D-01: a new engine-layer sibling needs config_cls, MARKET and _generate_signals only."""
+    own_members = {
+        name
+        for name in vars(EqualWeightEveryone)
+        if not (name.startswith("__") and name.endswith("__")) and name != "_abc_impl"
+    }
+    assert own_members == {"config_cls", "MARKET", "_generate_signals"}
+
+    config = _trained_run_config(
+        tmp_path, write_price_store(tmp_path / "store", n_bars=RUN_BARS)
+    )
+    result = EqualWeightEveryone(config).run()
+
+    weights = result.weights["weight"].values
+    n_bars, n_symbols = weights.shape
+    mask = rebalance_mask(n_bars, config.rebalance_periods)
+    assert mask.any()
+    np.testing.assert_allclose(weights[mask], 1.0 / n_symbols, rtol=0.0, atol=1e-15)
+    assert np.isnan(weights[~mask]).all()
+    assert result.simulation.orders.sizes["order"] > 0
+    assert result.run_dir.is_dir()
