@@ -196,7 +196,7 @@ Plans:
 
 **Gap Wave 3** *(blocked on Gap Wave 2)*
 
-- [x] 03.7-18-PLAN.md — G-03.7-9 (user addition): XGBoost DMatrix feature_names, predict-time name check, zero-filled W&B feature importance
+- [x] 03.7-18-PLAN.md — G-03.7-9 (user addition): zero-filled XGBoost feature importance in the W&B summary (feature_names and a predict-time name check dropped by user decision 2026-09-15; variable order is owned by 03.7-17)
 
 ### Phase 03.1: Index Historical Constituents Data Layer (INSERTED)
 
