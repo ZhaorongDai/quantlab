@@ -229,12 +229,20 @@ class BaseBacktester(ABC):
             timestamp=prices.timestamp.values, symbol=prices.symbol.values
         )
 
+        model = self.config.model
+        split = self._split_window(
+            prices.timestamp.values,
+            self._training_window(
+                calendar, model.config.train_start, model.config.train_end
+            ),
+        )
+
         weights = self._generate_signals(predictions, prices)
         self._assert_weights_contract(weights, prices)
 
         simulation = self._simulate(weights, prices)
         benchmark = self._simulate_benchmark(start_date, end_date)
-        metrics = self._compute_metrics(simulation, benchmark)
+        metrics = self._compute_metrics(simulation, benchmark, split)
         run_dir = self._report_and_persist(predictions, weights, simulation, metrics)
 
         return BacktestResult(
@@ -430,12 +438,145 @@ class BaseBacktester(ABC):
     def _engine_stats(self, simulation: SimulationResult) -> dict:
         """引擎自己的整段统计指标，键为指标名。"""
 
+    def _label_horizon_bars(self) -> int:
+        """模型所有标签里最大的 `n_forward_periods`，单位是 bar（D-17）。
+
+        `train_end` 那一 bar 的标签读的是之后 n 个 bar 的价格，所以这 n 个 bar
+        也属于样本内。标签的 `config.kwargs` 为 None 或没有这个键时，它贡献 0，
+        并且 warning 写明标签类名：不静默猜一个值。
+        """
+        horizon = 0
+        for label in self.config.model.config.labels:
+            kwargs = label.config.kwargs
+            if kwargs is None or "n_forward_periods" not in kwargs:
+                logger.warning(
+                    f"{self.class_name}: label {type(label).__name__} has no "
+                    f"n_forward_periods in config.kwargs; it contributes a "
+                    f"0-bar horizon to the effective training window (D-17)"
+                )
+                continue
+            horizon = max(horizon, int(kwargs["n_forward_periods"]))
+        return horizon
+
+    def _training_window(
+        self, calendar: np.ndarray, train_start, train_end
+    ) -> tuple[str, str] | None:
+        """模型的有效训练窗口 `[train_start, train_end + 标签期限]`（D-17），ISO 日期对。
+
+        期限在价格日历上按 bar 数，不做日历日加法：周五的 `train_end` 加 2 个
+        bar 是下周二。
+        - 起点：日历上第一个不早于 `train_start` 的 bar；
+        - 终点：日历上最后一个不晚于 `train_end` 的 bar 再往后数期限个 bar，
+          超出日历时截到最后一个 bar。
+
+        任一日期为 None 时返回 None 并 warning：没有训练日期就无从判断样本内，
+        metrics 里记显式的 null，而不是猜。
+        """
+        if train_start is None or train_end is None:
+            logger.warning(
+                f"{self.class_name}: model config has train_start={train_start!r}, "
+                f"train_end={train_end!r}; the effective training window is "
+                f"unknown, so metrics record training_window as null and every "
+                f"backtest bar as out-of-sample (D-17)"
+            )
+            return None
+
+        calendar = np.asarray(calendar).astype("datetime64[ns]")
+        start = np.datetime64(pd.Timestamp(self._iso_date(train_start)), "ns")
+        end = np.datetime64(pd.Timestamp(self._iso_date(train_end)), "ns")
+        last = calendar.size - 1
+
+        start_idx = int(np.searchsorted(calendar, start, side="left"))
+        end_idx = (
+            int(np.searchsorted(calendar, end, side="right"))
+            - 1
+            + self._label_horizon_bars()
+        )
+        window_start = (
+            self._iso_date(calendar[start_idx])
+            if start_idx <= last
+            else self._iso_date(train_start)
+        )
+        window_end = (
+            self._iso_date(calendar[min(end_idx, last)])
+            if end_idx >= 0
+            else self._iso_date(train_end)
+        )
+        return window_start, window_end
+
+    def _split_window(
+        self, window_timestamps: np.ndarray, training_window: tuple[str, str] | None
+    ) -> dict:
+        """把回测窗口的 bar 切成样本内与样本外（D-17）。
+
+        返回三个键，原样并入 metrics 顶层：
+        - `training_window`：有效训练窗口的 ISO 日期对，或 None；
+        - `in_sample_range`：回测窗口与训练窗口重叠部分的首尾 bar，或 None；
+        - `out_of_sample_ranges`：重叠之外的 bar 组成的连续段，0、1 或 2 段。
+
+        比较按日期（`datetime64[D]`）做，与训练窗口的 ISO 日期口径一致。两个
+        窗口都是区间，所以重叠部分一定连续。重叠非空时 warning 写明两个窗口，
+        并说明样本内外分开报告；回测照常继续。
+        """
+        timestamps = np.asarray(window_timestamps).astype("datetime64[ns]")
+        split = {
+            "training_window": training_window,
+            "in_sample_range": None,
+            "out_of_sample_ranges": [],
+        }
+        if timestamps.size == 0:
+            return split
+
+        days = timestamps.astype("datetime64[D]")
+        if training_window is None:
+            in_sample = np.zeros(days.size, dtype=bool)
+        else:
+            first = np.datetime64(training_window[0], "D")
+            last = np.datetime64(training_window[1], "D")
+            in_sample = (days >= first) & (days <= last)
+
+        pieces = []
+        if in_sample.any():
+            idx = np.flatnonzero(in_sample)
+            lo, hi = int(idx[0]), int(idx[-1])
+            split["in_sample_range"] = (
+                self._iso_date(timestamps[lo]),
+                self._iso_date(timestamps[hi]),
+            )
+            if lo > 0:
+                pieces.append((0, lo - 1))
+            if hi < timestamps.size - 1:
+                pieces.append((hi + 1, timestamps.size - 1))
+            window = (self._iso_date(timestamps[0]), self._iso_date(timestamps[-1]))
+            logger.warning(
+                f"{self.class_name}: backtest window {window[0]}..{window[1]} "
+                f"overlaps the model's effective training window "
+                f"{training_window[0]}..{training_window[1]} (train_start.."  # type: ignore[index]
+                f"train_end + label horizon, D-17); bars "
+                f"{split['in_sample_range'][0]}..{split['in_sample_range'][1]} "
+                f"are in-sample. Continuing: in-sample and out-of-sample results "
+                f"are reported separately"
+            )
+        else:
+            pieces.append((0, timestamps.size - 1))
+
+        split["out_of_sample_ranges"] = [
+            (self._iso_date(timestamps[a]), self._iso_date(timestamps[b]))
+            for a, b in pieces
+        ]
+        return split
+
     def _compute_metrics(
-        self, simulation: SimulationResult, benchmark: SimulationResult | None
+        self,
+        simulation: SimulationResult,
+        benchmark: SimulationResult | None,
+        split: dict,
     ) -> dict:
         metrics = {"whole": self._engine_stats(simulation)}
         if benchmark is not None:
             metrics["benchmark"] = self._engine_stats(benchmark)
+        for key in ("training_window", "in_sample_range", "out_of_sample_ranges"):
+            metrics[key] = split[key]
         return metrics
 
     def _run_dir_name(self) -> str:
