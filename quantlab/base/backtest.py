@@ -113,10 +113,10 @@ class CVBacktestResult:
     - `metrics`：与 metrics.json 相同的结构，`stitched`、`folds`、`notes`。
     """
 
-    run_dir: Path | None
+    run_dir: Path
     folds: list[dict]
-    weights: xr.Dataset | None = None
-    simulation: SimulationResult | None = None
+    weights: xr.Dataset
+    simulation: SimulationResult
     metrics: dict = field(default_factory=dict)
 
 
@@ -320,6 +320,15 @@ class BaseBacktester(ABC):
            样本内/外按**该折**的 train 日期加标签期限划分（D-17 逐折），所以
            gap 为 0 时每折开头的期限个 bar 是样本内，并各自 warning。
 
+        4. 拼接（D-35）：各折测试段权重沿 `timestamp` 拼起来，对「首折
+           test_start .. 末折 test_end」的价格跑**一次**连续模拟，资金在折边界
+           不重置；逐折指标仍来自上面各自独立的逐折模拟。拼接曲线按构造是样本
+           外的，只有每折开头的标签期限个 bar 是样本内，`in_sample_ranges`
+           逐段记下它们（`_stitched_split`）；
+        5. 指纹覆盖整个拼接窗口（D-27）：因子重新定到「首折预热起点 .. 末折
+           test_end」并重读后记录，价格指纹取自拼接价格，然后比对；
+        6. 落盘（`_persist_cv`），可选 wandb，返回 `CVBacktestResult`。
+
         折日期经 `_iso_date` 规范成 ISO 日期（真实数据上是纳秒字符串），所以
         判定按日期粒度进行。
         """
@@ -361,7 +370,69 @@ class BaseBacktester(ABC):
                 }
             )
 
-        return CVBacktestResult(run_dir=None, folds=records)
+        # D-35：拼接权重，对整段拼接价格跑一次连续模拟（资金不在折边界重置）。
+        first_start = folds[0]["test_start"]
+        last_end = folds[-1]["test_end"]
+        stitched_weights = xr.concat(
+            [record["weights"] for record in records], dim="timestamp"
+        )
+
+        # D-27：逐折记录的只是最后一折的窗口。重置后把因子定到整个拼接窗口
+        # （含首折预热）重读并记录，价格指纹取自拼接价格，然后比对。
+        self._fingerprints = {}
+        self._redate_factors(first_start, last_end, calendar)
+        stitched_prices = self._load_prices(first_start, last_end)
+        self._compare_fingerprints()
+
+        if not np.array_equal(
+            stitched_weights.timestamp.values.astype("datetime64[ns]"),
+            stitched_prices.timestamp.values.astype("datetime64[ns]"),
+        ):
+            raise ValueError(
+                f"{self.class_name}: the concatenated fold weights do not cover "
+                f"exactly the price bars {first_start}..{last_end}"
+            )
+        self._assert_weights_contract(stitched_weights, stitched_prices)
+        stitched_simulation = self._simulate(stitched_weights, stitched_prices)
+        stitched_metrics = self._compute_metrics(
+            stitched_simulation,
+            self._simulate_benchmark(first_start, last_end),
+            self._stitched_split(stitched_prices.timestamp.values, records),
+        )
+
+        notes = self._report_notes() + [
+            f"run_cv: the stitched curve is one continuous simulation over folds "
+            f"{[fold['fold'] for fold in folds]} ({first_start}..{last_end}), "
+            f"capital carried across fold boundaries; per-fold metrics come from "
+            f"separate per-fold simulations. Each fold's first label-horizon "
+            f"bars are in-sample (metrics stitched.in_sample_ranges) and are not "
+            f"shaded in this report."
+        ]
+        metrics = {
+            "stitched": stitched_metrics,
+            "folds": [
+                {
+                    **{key: record[key] for key in self._CV_RECORD_KEYS},
+                    "metrics": record["metrics"],
+                }
+                for record in records
+            ],
+            "notes": notes,
+        }
+        run_dir = self._persist_cv(
+            records, stitched_weights, stitched_simulation, metrics
+        )
+        # wandb 默认关闭（D-28）；打开时记的是拼接曲线的指标。
+        if self.config.use_wandb:
+            self._log_to_wandb(run_dir, stitched_metrics)
+
+        return CVBacktestResult(
+            run_dir=run_dir,
+            folds=records,
+            weights=stitched_weights,
+            simulation=stitched_simulation,
+            metrics=metrics,
+        )
 
     #: 每折记录与 metrics.json 里逐折条目共有的清单字段。
     _CV_RECORD_KEYS = (
@@ -660,19 +731,29 @@ class BaseBacktester(ABC):
         if self.config.model.config.factor_data_strategy == "read":
             factor.read(overwrite=True)
 
+    def _redate_factors(
+        self, start_date: str, end_date: str, calendar: np.ndarray
+    ) -> None:
+        """把每个因子的日期定到「预热起点 .. end_date」、强制重读，并记录因子指纹。
+
+        预热按 bar 计（`_warmup_start`，D-15），重读绕过读缓存（D-14），重读后
+        立刻记录指纹：此时数据集持有的正是「预热 + 窗口」（D-27）。`run()` 的
+        窗口与 `run_cv()` 的每折、以及拼接窗口的指纹都经过这里。
+        """
+        warmup = self._warmup_start(calendar, start_date)
+        for factor in self.config.model.config.factors:
+            factor.config.start_date = warmup
+            factor.config.end_date = end_date
+            factor._reset_dataset_config()
+            self._refresh_factor_reads(factor)
+        self._record_factor_fingerprints()
+
     def _align_and_predict(
         self, start_date: str, end_date: str, calendar: np.ndarray
     ) -> xr.Dataset:
         """改因子配置日期（含预热）-> 只算特征 -> 预测 -> 切回回测窗口（D-14）。"""
         model = self.config.model
-        warmup = self._warmup_start(calendar, start_date)
-        for factor in model.config.factors:
-            factor.config.start_date = warmup
-            factor.config.end_date = end_date
-            factor._reset_dataset_config()
-            self._refresh_factor_reads(factor)
-        # 重读之后立刻记录：此时数据集持有的正是「预热 + 回测窗口」（D-27）。
-        self._record_factor_fingerprints()
+        self._redate_factors(start_date, end_date, calendar)
 
         features = model._collect_all_features()
         return model.predict_panel(features).sel(
@@ -1115,8 +1196,12 @@ class BaseBacktester(ABC):
         - `out_of_sample`：同上，作用于样本外各段。两段时收益统计用拼接后的
           样本外收益，记录统计把两段相加；没有样本外区间时 None；
         - `benchmark`：只在有基准时出现（D-08）；
-        - `training_window` / `in_sample_range` / `out_of_sample_ranges`：`_split_window`
-          的结果原样并入顶层。
+        - `split` 的每个键原样并入顶层：`run()` 是 `_split_window` 的
+          `training_window` / `in_sample_range` / `out_of_sample_ranges`；
+          `run_cv()` 的拼接曲线是 `_stitched_split` 的 `training_windows` /
+          `in_sample_ranges` / `out_of_sample_ranges`。`split` 带
+          `in_sample_ranges`（可以多段）时样本内切片用它，否则用单段的
+          `in_sample_range`。
 
         本方法与本模块的任何路径都不会发起第二次模拟：组合不能切片，切片重算
         会重置资金、改变路径。
@@ -1135,14 +1220,18 @@ class BaseBacktester(ABC):
                 **self._period_record_stats(simulation, ranges),
             }
 
-        in_sample_range = split["in_sample_range"]
-        metrics["in_sample"] = _slice([in_sample_range] if in_sample_range else [])
+        if "in_sample_ranges" in split:
+            in_sample_ranges = list(split["in_sample_ranges"])
+        else:
+            in_sample_range = split["in_sample_range"]
+            in_sample_ranges = [in_sample_range] if in_sample_range else []
+        metrics["in_sample"] = _slice(in_sample_ranges)
         metrics["out_of_sample"] = _slice(list(split["out_of_sample_ranges"]))
 
         if benchmark is not None:
             metrics["benchmark"] = self._engine_stats(benchmark)
-        for key in ("training_window", "in_sample_range", "out_of_sample_ranges"):
-            metrics[key] = split[key]
+        for key, value in split.items():
+            metrics[key] = value
         return metrics
 
     def _report_notes(self) -> list[str]:
@@ -1217,18 +1306,11 @@ class BaseBacktester(ABC):
         实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
         `_report_notes()`；本阶段没有基准曲线（D-08）。
         """
-        run_dir = Path(self.config.output_dir) / self._run_dir_name()
-        if run_dir.exists():
-            raise RuntimeError(f"{run_dir} already exists")
-        run_dir.mkdir(parents=True)
-
+        run_dir = self._new_run_dir()
         write_json_atomically(
             run_dir / "config.json", to_jsonable(self.get_config()), indent=2
         )
-        XrBackend().to_internal(weights).write(str(run_dir / "weights.zarr"))
-        XrBackend().to_internal(
-            xr.Dataset({"value": simulation.value, "returns": simulation.returns})
-        ).write(str(run_dir / "equity.zarr"))
+        self._write_weights_and_equity(run_dir, weights, simulation)
         write_json_atomically(
             run_dir / "liquidations.json",
             to_jsonable(simulation.liquidations),
@@ -1242,6 +1324,121 @@ class BaseBacktester(ABC):
             run_dir / "report.html",
             in_sample_range=metrics.get("in_sample_range"),
             notes=self._report_notes(),
+            title=run_dir.name,
+        )
+        write_json_atomically(
+            run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
+        )
+        return run_dir
+
+    def _new_run_dir(self) -> Path:
+        """建 `output_dir/{class}_{timestamp}/`（D-24）；已存在就报错，从不覆盖。"""
+        run_dir = Path(self.config.output_dir) / self._run_dir_name()
+        if run_dir.exists():
+            raise RuntimeError(f"{run_dir} already exists")
+        run_dir.mkdir(parents=True)
+        return run_dir
+
+    @staticmethod
+    def _write_weights_and_equity(
+        directory: Path, weights: xr.Dataset, simulation: SimulationResult
+    ) -> None:
+        """在 `directory` 下写 weights.zarr 与 equity.zarr（value、returns）。"""
+        XrBackend().to_internal(weights).write(str(directory / "weights.zarr"))
+        XrBackend().to_internal(
+            xr.Dataset({"value": simulation.value, "returns": simulation.returns})
+        ).write(str(directory / "equity.zarr"))
+
+    def _stitched_split(
+        self, timestamps: np.ndarray, records: list[dict]
+    ) -> dict:
+        """拼接曲线的样本内/外划分，由各折自己的划分拼成（D-17 逐折、D-35）。
+
+        拼接曲线按构造是样本外的：每折只交易自己的测试段。例外是每折开头与该折
+        有效训练窗口重叠的那几个 bar（标签期限），所以样本内是**多段**：
+        - `training_windows`：各折的有效训练窗口，按折顺序；
+        - `in_sample_ranges`：各折非空的 `in_sample_range`，按折顺序；没有任何
+          一折重叠时是空 list；
+        - `out_of_sample_ranges`：拼接窗口里不在任何样本内段内的 bar 组成的连续段。
+
+        单段的 `in_sample_range` 刻意不出现：多段样本内塞不进一个日期对。
+        """
+        in_sample_ranges = [
+            record["metrics"]["in_sample_range"]
+            for record in records
+            if record["metrics"]["in_sample_range"] is not None
+        ]
+        ts = np.asarray(timestamps).astype("datetime64[ns]")
+        out_mask = ~self._in_ranges(ts, in_sample_ranges)
+        pieces = []
+        idx = np.flatnonzero(out_mask)
+        if idx.size:
+            breaks = np.flatnonzero(np.diff(idx) > 1)
+            starts = np.concatenate(([idx[0]], idx[breaks + 1]))
+            ends = np.concatenate((idx[breaks], [idx[-1]]))
+            pieces = [
+                (self._iso_date(ts[a]), self._iso_date(ts[b]))
+                for a, b in zip(starts, ends)
+            ]
+        return {
+            "training_windows": [
+                record["metrics"]["training_window"] for record in records
+            ],
+            "in_sample_ranges": in_sample_ranges,
+            "out_of_sample_ranges": pieces,
+        }
+
+    def _persist_cv(
+        self,
+        records: list[dict],
+        weights: xr.Dataset,
+        simulation: SimulationResult,
+        metrics: dict,
+    ) -> Path:
+        """`run_cv()` 的运行目录（D-24 按 D-35 展开）；从不覆盖已有目录。
+
+        顶层描述**拼接曲线**，与 `run()` 的运行目录同名同义：
+        config.json、weights.zarr、equity.zarr、metrics.json（`stitched`、
+        `folds`、`notes`）、liquidations.json（`stitched` 与逐折 `folds`）、
+        fingerprint.json（拼接窗口）、report.html（拼接曲线，不涂样本内：多段
+        样本内由 notes 说明）。每折的逐折模拟另存在 `folds/fold_{i}/` 下的
+        weights.zarr 与 equity.zarr，`i` 是清单里的折号。
+        """
+        run_dir = self._new_run_dir()
+        write_json_atomically(
+            run_dir / "config.json", to_jsonable(self.get_config()), indent=2
+        )
+        self._write_weights_and_equity(run_dir, weights, simulation)
+        for record in records:
+            fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
+            fold_dir.mkdir(parents=True)
+            self._write_weights_and_equity(
+                fold_dir, record["weights"], record["simulation"]
+            )
+        write_json_atomically(
+            run_dir / "liquidations.json",
+            to_jsonable(
+                {
+                    "stitched": simulation.liquidations,
+                    "folds": [
+                        {
+                            "fold": record["fold"],
+                            "liquidations": record["simulation"].liquidations,
+                        }
+                        for record in records
+                    ],
+                }
+            ),
+            indent=2,
+        )
+        write_json_atomically(
+            run_dir / "metrics.json", to_jsonable(metrics), indent=2
+        )
+        write_backtest_report(
+            simulation.value,
+            run_dir / "report.html",
+            in_sample_range=None,
+            notes=metrics["notes"],
             title=run_dir.name,
         )
         write_json_atomically(
