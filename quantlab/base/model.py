@@ -321,7 +321,15 @@ class BaseModel(ABC):
         `torch.load`，失败方式要么是难懂的反序列化报错，要么是悄悄反序列化出
         一个错误类型的对象。
 
-        读 checkpoint 之前先从旁边的 `config.json` 取训练记录里的标的
+        后缀校验之后、读 checkpoint 之前，先核对变量（`_assert_trained_variables`，
+        G-03.7-9）：checkpoint 训练记录里的因子与标签变量名和顺序必须与本模型
+        `get_factor_names()` / `get_label_names()` 一致，否则 ValueError，写明
+        两边的变量与路径。两类头都不会自己发现错位：xgboost 的 Booster 没有
+        特征名、`inplace_predict` 只核对列数，torch 的 `state_dict` 只核对形状。
+        所以这一步必须在 `_read_checkpoint` 之前，DL 头换了因子个数时拿到的是
+        这条带名字的错误，而不是 torch 的 `size mismatch`。
+
+        然后从旁边的 `config.json` 取训练记录里的标的
         （`_read_trained_symbols`，代码审查 WR-02）：DL 头据此确定网络的
         `num_symbols`，`predict_panel` 据此核对输入面板的标的。没有记录时为
         None，行为与以前一样。
@@ -338,17 +346,74 @@ class BaseModel(ABC):
                 f"checkpoints use {self.checkpoint_suffix!r} ({p})"
             )
 
+        self._assert_trained_variables(p)
         self._trained_symbols = self._read_trained_symbols(p)
         self._read_checkpoint(p)
         return self
 
-    def _read_trained_symbols(self, p: Path) -> list[str] | None:
-        """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。"""
+    def _read_checkpoint_sidecar(self, p: Path) -> dict | None:
+        """checkpoint 旁 `config.json` 的唯一解析入口；文件不存在时 None。
+
+        文件存在但不是 JSON 对象时 ValueError 写明文件：损坏与缺失不是一回事，
+        把它当成「没有记录」会悄悄跳过所有核对。
+        """
         sidecar = p.parent / "config.json"
         if not sidecar.is_file():
             return None
         saved = json.loads(sidecar.read_text(encoding="utf-8"))
-        record = saved.get(self.TRAINED_ON_KEY) if isinstance(saved, dict) else None
+        if not isinstance(saved, dict):
+            raise ValueError(
+                f"{self.class_name}: {sidecar} is not a model config object"
+            )
+        return saved
+
+    def _assert_trained_variables(self, p: Path) -> None:
+        """checkpoint 训练用过的因子与标签变量（名字与顺序）必须与本模型声明的一致（G-03.7-9）。
+
+        记录取 `config.json` 里的 `trained_on.factor_names` / `label_names`：
+        `_save_model` 用构建训练数组的同一组 `get_factor_names()` /
+        `get_label_names()` 调用写下它们，所以它们就是训练时的变量顺序。**不**
+        取因子配置字段 `factors[].factor_names`：那是用户可以自己填的配置，
+        可以与训练真正用的名字（`_get_factor_names()`）顺序不同。
+
+        不一致时 ValueError，写明 checkpoint 路径、记录的变量与本模型声明的
+        变量，先因子后标签。因子错位意味着模型吃到别的或错位的输入；标签错位
+        意味着输出被贴上错的变量名。
+
+        本方法只读 `config.json`，不需要任何数据，所以回测器可以在特征计算之前
+        调用它；`load()` 自己也调用，直接加载的调用方同样受保护。
+        """
+        saved = self._read_checkpoint_sidecar(p)
+        if saved is None:
+            return
+        record = saved.get(self.TRAINED_ON_KEY)
+        for kind, key, declared in (
+            ("factor", "factor_names", self.get_factor_names()),
+            ("label", "label_names", self.get_label_names()),
+        ):
+            recorded = record.get(key) if isinstance(record, dict) else None
+            if not isinstance(recorded, list):
+                continue
+            recorded = [str(name) for name in recorded]
+            current = [str(name) for name in declared]
+            if recorded == current:
+                continue
+            consequence = (
+                "feed the model different or permuted inputs"
+                if kind == "factor"
+                else "label the model's outputs with the wrong variables"
+            )
+            raise ValueError(
+                f"{self.class_name}: checkpoint {p} was trained on {kind} "
+                f"variables {recorded} (trained_on in its config.json), but this "
+                f"model declares {current}; loading it would {consequence} "
+                f"(G-03.7-9)"
+            )
+
+    def _read_trained_symbols(self, p: Path) -> list[str] | None:
+        """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。"""
+        saved = self._read_checkpoint_sidecar(p)
+        record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
         symbols = record.get("symbols") if isinstance(record, dict) else None
         if not isinstance(symbols, list):
             return None
