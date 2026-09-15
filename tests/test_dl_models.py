@@ -24,6 +24,9 @@ What is locked here:
 - (batch 3) `RNNClassifier._vecbt` computed four pandas Series and then the
      file ended -- no return, no vectorbt call, no error. The method is kept,
      but it now raises instead of handing back `None`.
+     (Superseded in phase 03.7, D-37: the method was DELETED and is now locked
+     out by `test_rnn_classifier_vecbt_is_deleted`; backtesting lives only in
+     `quantlab/backtest/`.)
 
 Everything is synthetic, CPU-only and offline: no zarr store, no credentials,
 no network, no GPU. `collect()` only ever calls six methods on a factor/label
@@ -528,27 +531,21 @@ def test_train_dl_still_drops_the_training_optimizer(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# The vecbt skeleton must be honest
+# The stale in-model backtest hook is deleted (phase 03.7, D-37)
 # --------------------------------------------------------------------------
 
 
-def test_rnn_classifier_vecbt_raises_instead_of_returning_none(tmp_path):
-    """`RNNClassifier._vecbt` computed four pandas Series and then the file
-    ended -- no return, no vectorbt call, no error. Four lines that look like
-    work and behave like `pass`.
+def test_rnn_classifier_vecbt_is_deleted():
+    """`RNNClassifier._vecbt` was a skeleton that raised `NotImplementedError`
+    naming Phase 6. Phase 03.7 moved backtesting out of the model layer into
+    `quantlab/backtest/` (predictions reach it only through `predict_panel`),
+    so D-37 deletes the hook rather than keeping a second, dead entry point.
 
-    The method is KEPT (Phase 6 owns end-to-end backtesting, and the entry/exit
-    convention encoded in those four lines is the starting point), but a caller
-    now hears that it is unbuilt instead of receiving `None`.
+    Asserted with `hasattr`, not "no longer raises": a reintroduced method that
+    quietly returns would satisfy the latter. Goes red if `_vecbt` is defined
+    on `RNNClassifier` or any base it inherits from.
     """
-    cfg = _make_config(tmp_path, **_hp_for(RNNClassifier))
-    model = RNNClassifier(cfg)
-
-    prices = pd.Series([1.0, 2.0, 3.0])
-    signals = pd.Series([1, 0, 1])
-
-    with pytest.raises(NotImplementedError, match="Phase 6"):
-        model._vecbt(prices=prices, signals=signals)
+    assert not hasattr(RNNClassifier, "_vecbt")
 
 
 # --------------------------------------------------------------------------

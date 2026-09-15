@@ -39,6 +39,8 @@ import xarray as xr
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import DLModel, MLModel
 from quantlab.dl_model.mlp import MLPRegressor
+from quantlab.dl_model.rnn import RNNRegressor
+from quantlab.dl_model.rnn_classification import RNNClassifier
 from quantlab.ml_model.xgb import XGBoostRegressor
 
 N_TIMES = 30
@@ -414,3 +416,105 @@ def test_xgboost_regressor_predict_panel_matches_predict(tmp_path):
     got = pred.to_dataarray().transpose("timestamp", "symbol", "variable").values
     assert got.shape == (N_TIMES, N_SYMBOLS, 1)
     np.testing.assert_allclose(got, expected, atol=1e-12)
+
+
+# --------------------------------------------------------------------------
+# RNN heads: forward returns (primary_pred_final, all_direct_preds) -- D-33
+# --------------------------------------------------------------------------
+
+#: Tiny `ModelRCrypto` shape; dropout 0 so eval/train mode cannot move values.
+_RNN_HP = {
+    "hidden_sizes": [8, 8],
+    "dropout_rates": [0.0, 0.0],
+    "hidden_sizes_linear": [8],
+    "dropout_rates_linear": [0.0],
+    "model_type": "gru",
+}
+
+
+def _module_outputs(model, features):
+    """The head's raw module outputs, computed here, not through `predict`."""
+    x = model._preprocess(
+        model.to_tensor(features.sortby(["timestamp", "symbol"]), FACTORS)
+    )
+    model.model.eval()  # type: ignore[union-attr]
+    with torch.no_grad():
+        primary, direct = model.model(x)  # type: ignore[misc]
+    return primary.numpy(), direct.numpy()
+
+
+def test_rnn_regressor_labels_are_the_direct_prediction_channels(tmp_path):
+    """Locks D-33 for RNNRegressor: label i is channel i of `all_direct_preds`.
+
+    Label 0 is `base_models[0]`'s direct prediction, NOT the aux-combined
+    `primary_pred_final`; labels 1.. are the auxiliary direct predictions. The
+    last assertion proves the two candidates differ on this seed, so the test
+    can tell them apart. Goes red if the adapter returns `primary_pred_final`
+    for label 0, if the channels are reordered, or if the head has no adapter
+    at all (the generic path raises `TypeError` on the tuple).
+    """
+    labels = ["ret_60", "ret_30", "ret_10"]
+    model = RNNRegressor(
+        DLConfig(
+            **_config_kwargs(tmp_path, labels=labels),
+            hyperparameters=_RNN_HP,
+            random_seed=7,
+        )
+    )
+    model.collect()
+    model._init_model_and_optim()
+    features = _features(model)
+
+    pred = model.predict_panel(features)
+
+    primary, direct = _module_outputs(model, features)
+    got = pred.to_dataarray().transpose("timestamp", "symbol", "variable").values
+    assert list(pred.data_vars) == labels
+    assert got.shape == (N_TIMES, N_SYMBOLS, len(labels))
+    np.testing.assert_allclose(got, direct, atol=1e-6)
+    assert not np.allclose(got[..., 0], primary[..., 0], atol=1e-4), (
+        "label 0 matches primary_pred_final everywhere, so this seed cannot "
+        "distinguish the direct prediction from the aux-combined one"
+    )
+
+
+def test_rnn_classifier_labels_are_per_label_up_probabilities(tmp_path):
+    """Locks D-33 for RNNClassifier: label i is P(up) from direct channels [2i, 2i+1].
+
+    Each label variable holds a class-1 softmax probability in [0, 1], not a
+    return. The channel pairing mirrors `_train_one_batch`'s
+    `i * 2 : (i + 1) * 2` slice. Goes red if the adapter takes class 0, pairs
+    channels differently, reads `primary_pred_final` for label 0, returns raw
+    logits, or is missing (the generic path raises `TypeError` on the tuple).
+    """
+    model = RNNClassifier(
+        DLConfig(
+            **_config_kwargs(tmp_path),
+            hyperparameters=_RNN_HP,
+            random_seed=7,
+        )
+    )
+    model.collect()
+    model._init_model_and_optim()
+    features = _features(model)
+
+    pred = model.predict_panel(features)
+
+    primary, direct = _module_outputs(model, features)
+    expected = np.stack(
+        [
+            torch.softmax(torch.from_numpy(direct[..., 2 * i : 2 * i + 2]), dim=-1)[..., 1].numpy()
+            for i in range(len(LABELS))
+        ],
+        axis=-1,
+    )
+    primary_up = torch.softmax(torch.from_numpy(primary), dim=-1)[..., 1].numpy()
+    got = pred.to_dataarray().transpose("timestamp", "symbol", "variable").values
+    assert list(pred.data_vars) == LABELS
+    assert got.shape == (N_TIMES, N_SYMBOLS, len(LABELS))
+    np.testing.assert_allclose(got, expected, atol=1e-6)
+    assert ((got >= 0.0) & (got <= 1.0)).all()
+    assert not np.allclose(got[..., 0], primary_up, atol=1e-4), (
+        "label 0 equals P(up) of primary_pred_final everywhere, so this seed "
+        "cannot distinguish the direct prediction from the aux-combined one"
+    )
