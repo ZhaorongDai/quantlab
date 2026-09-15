@@ -369,6 +369,22 @@ class RNNRegressor(DLModel):
         data = torch.nan_to_num(data, nan=0.0)
         return data
 
+    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+        """`predict_panel` 的 RNNRegressor 适配器：每个标签取 `all_direct_preds` 的一个通道（03.7 D-33）。
+
+        `ModelRCrypto.forward` 返回 `(primary_pred_final, all_direct_preds)` 这个
+        tuple，`DLModel` 的通用路径消费不了。这里只取第二项：形状 `[T, S, L]`，
+        通道 0 是 `base_models[0]` 对主标签的**直接**预测，通道 1.. 是各辅助标签
+        的直接预测，与 `_train_one_batch` 里 `criterion(all_direct_preds, y)` 对齐
+        的标签顺序一致。
+
+        刻意不用 `primary_pred_final`：它是用辅助预测经 `self.out` 线性组合出来
+        的主标签预测，只有一个通道；D-33 明确规定标签 0 取直接预测，而不是这个
+        组合值。
+        """
+        _, direct = self.predict(x)
+        return direct.detach().cpu().numpy()
+
     def _preprocess_stream(self, data: torch.Tensor) -> torch.Tensor:
         data = torch.nan_to_num(data, nan=0.0)
         return data

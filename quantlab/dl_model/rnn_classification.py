@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.metrics import (
@@ -518,36 +517,31 @@ class RNNClassifier(DLModel):
         loss.backward()
         optimizer.step()
 
-    def _vecbt(self, prices: pd.Series, signals: pd.Series):
-        """`BaseModel._vecbt` 的分类器版本。**尚未实现。**
+    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+        """`predict_panel` 的 RNNClassifier 适配器：每个标签给出 P(up)（03.7 D-33）。
 
-        它以前算完四个 Series 就到文件末尾了：不返回、不调用 vectorbt、不报错。
-        调用方拿到 `None`——四行看起来在干活的代码，实际效果等同于 `pass`。
+        `ModelRCrypto.forward` 返回 `(primary_pred_final, all_direct_preds)`。这里
+        只用 `all_direct_preds`，形状 `[T, S, 2 * L]`：每个标签占相邻两个 logit
+        通道 `[2i, 2i+1]`，与 `_train_one_batch` 里
+        `all_direct_preds_reshaped[:, i * 2 : (i + 1) * 2]` 的切法完全一致；标签 0
+        取 `base_models[0]` 的直接预测，不是辅助组合出来的 `primary_pred_final`。
 
-        那四行**没有被删掉**，原样抄录在下面：它们记录了作者对分类信号的进出场
-        约定（0=做空、1=做多），是 Phase 6 接手时的起点。
+        每对 logit 做 softmax 后取类别 1（上涨）的概率。**注意：输出的每个标签
+        变量装的是概率（取值 [0, 1]），不是收益**；回测拿它当排序分数用，但不能
+        把它当收益幅度解读。
 
-        ```python
-        short_entries = signals[signals == 0]
-        long_entries = signals[signals == 1]
-        short_exits = long_entries[long_entries == 1]
-        long_exits = long_entries[short_entries == 1]
-        ```
-
-        但它们是**注释而不是代码**，因为最后一行根本跑不起来：
-        `short_entries` 和 `long_entries` 是同一个 Series 的两个互补子集，
-        index 天然不相交，拿前者的布尔掩码去索引后者，pandas 直接
-        `IndexingError: Unalignable boolean Series provided as indexer`。
-        实测除了「一个多头信号都没有」这种退化输入，任何信号序列都会炸
-        （`[1,0,1]` / `[0,1]` / `[1,1]` / `[1,0,0,1,1]` 全部抛异常）。
-
-        留着让它先执行，等于把「Phase 6 还没做」换成一句莫名其妙的 pandas
-        索引错误——那不是变诚实，只是换了一种骗法。所以先抛。
-        第三行的 `short_exits` 也可疑（用多头掩码算空头出场），Phase 6 接手时
-        这两行都要重新推导，不要照抄。
+        通道数必须恰好是标签数的两倍，否则说明模块与标签配置不匹配，报
+        `ValueError` 并写出头名与两个数字，而不是悄悄错位配对。
         """
-        raise NotImplementedError(
-            "RNNClassifier._vecbt is a skeleton: only the entry/exit series "
-            "were ever sketched (see the docstring; the long_exits line does "
-            "not run). vectorbt integration is owned by Phase 6."
-        )
+        _, direct = self.predict(x)
+        num_times, num_symbols, num_channels = direct.shape
+        num_labels = self.num_labels
+        if num_channels != 2 * num_labels:
+            raise ValueError(
+                f"{self.class_name}: all_direct_preds has {num_channels} "
+                f"channels, expected 2 * {num_labels} labels = {2 * num_labels}"
+            )
+        probs = torch.softmax(
+            direct.reshape(num_times, num_symbols, num_channels // 2, 2), dim=-1
+        )[..., 1]
+        return probs.detach().cpu().numpy()
