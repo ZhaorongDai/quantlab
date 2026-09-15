@@ -138,6 +138,41 @@ class VectorBtBacktester(BaseBacktester):
             native=pf,
         )
 
+    @staticmethod
+    def _signed_order_sizes(
+        orders: xr.Dataset, timestamps: np.ndarray, symbols: np.ndarray
+    ) -> xr.DataArray:
+        """订单记录 -> 每个 bar 收盘后的累计带符号持仓，维度 `(timestamp, symbol)`。
+
+        Buy 记 +size、Sell 记 -size，按 `timestamps` / `symbols` 轴累加。持仓只从
+        订单记录推出，不读引擎的组合对象，因此与 vectorbt 如何分组无关。
+        """
+        ts = np.asarray(timestamps).astype("datetime64[ns]")
+        syms = [str(s) for s in symbols]
+        positions = np.zeros((ts.size, len(syms)), dtype=np.float64)
+
+        if orders.sizes.get("order", 0) > 0:
+            order_ts = orders["timestamp"].values.astype("datetime64[ns]")
+            t_idx = np.searchsorted(ts, order_ts)
+            if (t_idx >= ts.size).any() or not np.array_equal(
+                ts[np.minimum(t_idx, ts.size - 1)], order_ts
+            ):
+                raise ValueError("an order timestamp is not on the price timestamp axis")
+            column = {s: i for i, s in enumerate(syms)}
+            s_idx = np.array([column[str(s)] for s in orders["symbol"].values])
+            side = orders["side"].values.astype(str)
+            unknown = sorted(set(side) - {"Buy", "Sell"})
+            if unknown:
+                raise ValueError(f"unknown order side(s) {unknown}")
+            signed = np.where(side == "Buy", 1.0, -1.0) * orders["size"].values
+            np.add.at(positions, (t_idx, s_idx), signed)
+
+        return xr.DataArray(
+            np.cumsum(positions, axis=0),
+            dims=("timestamp", "symbol"),
+            coords={"timestamp": ts, "symbol": syms},
+        )
+
     def _simulate_benchmark(
         self, start_date: str, end_date: str
     ) -> SimulationResult | None:
