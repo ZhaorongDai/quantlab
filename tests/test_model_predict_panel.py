@@ -610,6 +610,98 @@ def test_checkpoint_config_json_with_the_training_record_rebuilds_the_model(tmp_
     )
 
 
+def _mlp_on_a_backend_filled_without_collect(tmp_path, symbols) -> MLPRegressor:
+    """An MLPRegressor whose data backend holds the panel in `symbols` order.
+
+    `collect()` sorts the symbol axis. This fills the backend directly, as a
+    caller that calls `data_backend.to_internal` and then `train()` would, so the
+    backend order is whatever `symbols` says.
+    """
+    model = MLPRegressor(_mlp_config(tmp_path))
+    panel = xr.merge(
+        [model.config.factors[0].get_features(), model.config.labels[0].get_labels()]
+    )
+    model.data_backend.to_internal(panel.sel(symbol=list(symbols)))
+    assert model.symbols == list(symbols)
+    return model
+
+
+def test_train_on_an_unsorted_backend_records_sorted_symbols_and_predicts_correctly(
+    tmp_path,
+):
+    """G-03.7-8: the training record describes the layout the network trained on.
+
+    `DLModel._fit` trains through `to_array`, which sorts the symbol axis, so
+    a backend in S2, S0, S1 order still trains on S0, S1, S2. The record in
+    config.json and `_trained_symbols` must say S0, S1, S2. The same
+    instance's `predict_panel` must put each MLP prediction on its own
+    coordinate. The old code recorded the backend order (S2, S0, S1).
+    """
+    model = _mlp_on_a_backend_filled_without_collect(tmp_path, ["S2", "S0", "S1"])
+
+    checkpoint = model.train()
+
+    sidecar = json.loads((checkpoint.parent / "config.json").read_text())
+    assert sidecar["trained_on"]["symbols"] == SYMBOLS
+    assert model._trained_symbols == SYMBOLS
+
+    features = _features(model)
+    pred = model.predict_panel(features)
+
+    assert pred.symbol.values.tolist() == SYMBOLS
+    expected = _mlp_sorted_layout_prediction(model, features, SYMBOLS)
+    _assert_each_coord_holds_its_own_prediction(pred, expected, SYMBOLS)
+
+
+def test_train_cv_on_an_unsorted_backend_records_sorted_symbols_in_every_fold(
+    tmp_path,
+):
+    """G-03.7-8: every train_cv fold checkpoint records the sorted training layout.
+
+    30 timestamps with `train_periods=20` give 2 folds. Each fold goes through
+    `_save_model`, so each sidecar must record S0, S1, S2 even though the
+    backend holds S2, S0, S1. The old code recorded the backend order in
+    every fold.
+    """
+    model = _mlp_on_a_backend_filled_without_collect(tmp_path, ["S2", "S0", "S1"])
+
+    results = model.train_cv(train_periods=20)
+
+    assert len(results) == 2, results
+    for result in results:
+        sidecar = json.loads(
+            (Path(result["checkpoint"]).parent / "config.json").read_text()
+        )
+        assert sidecar["trained_on"]["symbols"] == SYMBOLS, result["fold"]
+
+
+def test_single_symbol_training_record_predicts_only_that_symbol(
+    tmp_path, warning_messages
+):
+    """G-03.7-8 boundary: a one-symbol record through the drop-extras path.
+
+    A one-element record is always sorted, so this passes on arrival. It is kept
+    as a boundary lock: a network trained on S1 alone must predict only S1 on the
+    full three-symbol panel. The warning must name the dropped S0 and S2, and
+    the value must be the network's output on the S1-only flat layout.
+    """
+    trained = _mlp_on_a_backend_filled_without_collect(tmp_path, ["S1"])
+    checkpoint = trained.train()
+
+    fresh = MLPRegressor(_mlp_config(tmp_path))
+    fresh.load(checkpoint)
+    features = _features(fresh)
+
+    pred = fresh.predict_panel(features)
+
+    assert pred.symbol.values.tolist() == ["S1"]
+    assert any(
+        "S0" in m and "S2" in m and "WR-02" in m for m in warning_messages
+    ), warning_messages
+    expected = _mlp_sorted_layout_prediction(fresh, features, ["S1"])
+    _assert_each_coord_holds_its_own_prediction(pred, expected, ["S1"])
+
+
 def test_tuple_returning_head_without_adapter_raises_naming_it(tmp_path):
     """Locks D-33's rejection arm (T-03.7-17).
 
