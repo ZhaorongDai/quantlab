@@ -25,6 +25,10 @@ _PARAM_ALIASES: dict[str, str] = {
     "reg_lambda": "lambda",
 }
 
+#: 训练结束写进 wandb summary 的 `Booster.get_score` 重要性类型：分裂次数、
+#: 平均每次分裂的增益、总增益（见 `XGBoostRegressor._record_feature_importance`）。
+_IMPORTANCE_TYPES: tuple[str, ...] = ("weight", "gain", "total_gain")
+
 
 class _WandbEvalCallback(xgb.callback.TrainingCallback):
     """逐轮把 xgboost 的 eval 结果写进模型头**当前**的 wandb run。
@@ -93,6 +97,13 @@ class XGBoostRegressor(MLModel):
         逐轮曲线 `train-rmse` / `val-rmse`（连字符，`step=iteration`）；训练结束
         summary 里是 `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`
         （下划线），以及早停启用时的 `best_iteration` / `best_score`。
+
+        另有每个因子的重要性 `importance_{weight,gain,total_gain}/{因子名}`
+        （03.7-18，G-03.7-9）：训练结束后对 Booster 调 `get_score`，只进 summary，
+        从不进逐轮曲线。Booster 不带特征名，键 `f{i}` 按列下标映射到
+        `get_factor_names()[i]`；从未分裂的因子补 0.0。多标签（多输出）模型的
+        重要性由 xgboost 在各输出之间汇总，不分标签。变量顺序由
+        `BaseModel.load()` 核对，不靠 xgboost 的特征名。
 
     交叉验证
         `train_cv` 继承自 `BaseModel`：每折在折内训练段尾部的验证段上独立做
@@ -275,6 +286,44 @@ class XGBoostRegressor(MLModel):
                 {
                     "best_iteration": int(self.model.best_iteration),
                     "best_score": float(self.model.best_score),
+                }
+            )
+
+        if self._wandb_recorder is not None:
+            self._record_feature_importance()
+
+    def _record_feature_importance(self) -> None:
+        """把每个因子的重要性写进 wandb summary（03.7-18，G-03.7-9）。
+
+        Booster 不带特征名：`get_score` 的键是 `f{i}`，`i` 是列下标，而
+        `_fit_model` 按 `get_factor_names()` 的顺序排列，所以 `f{i}` 就是第 `i`
+        个因子名。从未分裂的因子 `get_score` 不返回，这里补 0.0。只走
+        `summary.update`，从不 `log`，逐轮曲线的 step 保持连续。早停时
+        `self.model` 已是截断后的 Booster，重要性描述的就是落盘的模型。
+
+        键解析不成 `f<int>` 或下标越界时抛 `ValueError`：那说明 Booster 不是这里
+        按列顺序训练出来的，悄悄丢掉会把重要性记错到别的因子上。
+        """
+        names = [str(name) for name in self.get_factor_names()]
+        for importance_type in _IMPORTANCE_TYPES:
+            values = {name: 0.0 for name in names}
+            scores = self.model.get_score(  # type: ignore[union-attr]
+                importance_type=importance_type
+            )
+            for key, score in scores.items():
+                digits = key[1:] if key.startswith("f") else ""
+                index = int(digits) if digits.isdigit() else -1
+                if not 0 <= index < len(names):
+                    raise ValueError(
+                        f"{self.class_name}: Booster.get_score returned feature "
+                        f"key {key!r}, which is not f<index> for one of the "
+                        f"{len(names)} factors {names}."
+                    )
+                values[names[index]] = float(score)
+            self._wandb_recorder.summary.update(
+                {
+                    f"importance_{importance_type}/{name}": value
+                    for name, value in values.items()
                 }
             )
 
