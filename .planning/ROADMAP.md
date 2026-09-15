@@ -138,14 +138,46 @@ Plans:
 
 ### Phase 03.7: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
+**Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 0 plans
+**Plans:** 13 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 03.7 to break down)
+**Wave 1**
+
+- [ ] 03.7-01-PLAN.md — Tracer: `run()` end to end (load a checkpoint, predict_panel, TopN weights, vectorbt t+1 fills, persisted run dir) plus architecture locks
+- [ ] 03.7-02-PLAN.md — Config rebuild fix: `config_cls` on dataset/factor classes, non-mutating loaders, `Factor.read(overwrite=)`
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03.7-03-PLAN.md — Selector hardening: books, eligibility, ties, rebalance schedule, D-03 invariant
+- [ ] 03.7-04-PLAN.md — Engine hardening: fill/fee/flip facts, delisting liquidation records, market spec, D-01 sibling proof
+- [ ] 03.7-05-PLAN.md — predict_panel head adapters (MLP, RNNRegressor, RNNClassifier) and `_vecbt` removal
+- [ ] 03.7-06-PLAN.md — Model preparation and date alignment: bar-accurate warm-up, cache-proof re-dating, train/load (incl. DL)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03.7-07-PLAN.md — `cv_folds.json` manifest in `train_cv` and deletion of the stale in-model backtest hooks
+- [ ] 03.7-08-PLAN.md — In-sample detection and whole/in-sample/out-of-sample metrics from one simulation, with turnover
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 03.7-09-PLAN.md — Complete run directory, data fingerprint, HTML report, optional wandb
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 03.7-10-PLAN.md — `run_cv()`: manifest validation, per-fold backtests, contiguity, one continuous stitched simulation
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 03.7-11-PLAN.md — `load_backtester_from_config` and identical re-runs for run and run_cv
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 03.7-12-PLAN.md — Retire `quantlab/vecbt/`, correct README/CLAUDE.md/codebase maps
+- [ ] 03.7-13-PLAN.md — `example/backtest.md` with a runnable example; predict_panel and cv_folds.json in the model guide
 
 ### Phase 03.1: Index Historical Constituents Data Layer (INSERTED)
 
