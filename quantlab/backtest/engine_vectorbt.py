@@ -301,12 +301,18 @@ class VectorBtBacktester(BaseBacktester):
         """同一次模拟的收益截到 `ranges` 后，用 vectorbt 收益访问器算统计（D-34）。
 
         `Portfolio` 不能按时间切片（Pitfall 5），所以只切 `pf.returns()`：每段
-        `.loc[start:end]`（按日期含两端），多段按时间顺序拼接。年化口径与整段
-        统计一致，取自市场规格。截出来是空序列时报错：切片区间来自回测窗口的
-        bar，空序列说明调用方传错了区间。
+        按**精确的** bar 时间戳 `.loc[Timestamp(start):Timestamp(end)]`（含两端），
+        多段按时间顺序拼接。端点是 `_bar_label` 写出的标签，日期即午夜。不用
+        字符串切片：`.loc["2024-01-02"]` 作终点会包含那一整天，日内数据上一个
+        午夜 bar 的标签会把当天其余 bar 也切进来（代码审查 CR-01）。年化口径与
+        整段统计一致，取自市场规格。截出来是空序列时报错：切片区间来自回测窗口
+        的 bar，空序列说明调用方传错了区间。
         """
         returns = simulation.native.returns()  # type: ignore[union-attr]
-        pieces = [returns.loc[start:end] for start, end in ranges]
+        pieces = [
+            returns.loc[pd.Timestamp(str(start)) : pd.Timestamp(str(end))]
+            for start, end in ranges
+        ]
         sliced = pd.concat(pieces) if len(pieces) > 1 else pieces[0]
         if sliced.empty:
             raise ValueError(

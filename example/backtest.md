@@ -288,7 +288,7 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 
 | `metrics.json` 的键 | 内容 |
 |---|---|
-| `training_window` | 有效训练窗口的日期对，或 `null` |
+| `training_window` | 有效训练窗口的 bar 标签对（午夜的 bar 写日期，其余写完整 ISO 时间，见本节末尾的更正），或 `null` |
 | `in_sample_range` | 重叠部分的首尾 bar（两个区间的交集，必然是一段），或 `null` |
 | `out_of_sample_ranges` | 重叠之外的连续段，0、1 或 2 段 |
 | `whole` | 引擎的整段统计：vectorbt `Portfolio.stats()` 全套指标（去掉 `benchmark_return`），加 `turnover` |
@@ -304,7 +304,21 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
   `traded_notional`、`closed_trade_count`（平仓时间在段内）、`open_trade_count`（段末仍未平仓）、`turnover`。
   两段样本外时，收益按时间顺序拼接后计算，记录统计逐段相加。
 
-日期比较按天做：日内数据上 `train_end` 那一天的所有 bar 都算样本内，这是偏保守的方向。
+~~日期比较按天做：日内数据上 `train_end` 那一天的所有 bar 都算样本内，这是偏保守的方向。~~
+
+> **更正（2026-09-15，代码审查 CR-01）：上面这句已作废，保留原文作记录。** 它说的方向是错的，而且那种做法本身有缺陷。
+> 旧实现先把 `train_end` 截成当天午夜，再在日历上找「最后一个不晚于午夜的 bar」。日内数据上那一天的 bar 都晚于午夜，
+> 所以找到的是**前一个交易日**的最后一个 bar，加上标签期限后又截成日期、按天比较。结果是 `train_end` 当天整天算样本内，
+> 而模型最后几个训练标签真正读过的、落在**下一个交易日**开头的那期限个 bar 被算成了样本外，样本外指标因此被训练信息污染。
+> 这是不保守的方向。日线不受影响，因为日线的 bar 就在午夜。
+>
+> 现在的做法：
+> - 训练段用与模型层 `data.sel(timestamp=slice(train_start, train_end))` 同一个 pandas `slice_indexer` 定位。
+>   `"2024-05-17"` 包含当天全部 bar，`"2024-05-17T13:00"` 只到 13:00；`cv_folds.json` 里的纳秒字符串精确匹配。
+> - 终点是训练段最后一个 bar 再往后数期限个 bar。
+> - `training_window`、`in_sample_range`、`out_of_sample_ranges` 的端点是 bar 标签：午夜的 bar 写日期（所以日线的输出与以前一样），
+>   其余写完整 ISO 时间（如 `2024-01-03T11:00:00`）。
+> - 样本内外划分、切片收益、订单与交易的按段过滤，一律按精确的 bar 时间戳比较，不再按天。
 
 **换手率的口径（D-22，由 `_turnover` 定义）。** 每个有成交的 bar：
 

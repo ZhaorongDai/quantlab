@@ -38,8 +38,10 @@ def write_backtest_report(
     """Write the equity and drawdown report for `value` to `path`.
 
     - `value`: portfolio value on the `timestamp` dimension;
-    - `in_sample_range`: ISO date pair (first, last in-sample bar), shaded when
-      given, or None for a fully out-of-sample window;
+    - `in_sample_range`: bar-label pair (first, last in-sample bar), shaded
+      when given, or None for a fully out-of-sample window. A midnight bar is
+      labelled by its ISO date and any other bar by its full ISO timestamp;
+      plotly reads both;
     - `notes`: lines printed below the plot (e.g. what the simulation does not
       model);
     - `title`: page title, typically the run directory name.

@@ -48,6 +48,7 @@ from loguru import logger
 
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.base.backtest import SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig, PolarsFactorConfig
 from tests.backtest_fixtures import (
     ForwardReturnLabel,
@@ -208,6 +209,139 @@ def test_label_without_n_forward_periods_warns_and_uses_zero(tmp_path, warnings_
     assert any("ForwardReturnLabel" in message for message in warnings_sink), (
         warnings_sink
     )
+
+
+# --------------------------------------------------------------------------
+# D-17 on intraday bars (code review CR-01)
+# --------------------------------------------------------------------------
+
+#: Three 7-bar hourly sessions (10:00..16:00); no bar sits at midnight.
+SESSION_DAYS = ("2024-01-01", "2024-01-02", "2024-01-03")
+SESSION_HOURS = tuple(range(10, 17))
+
+
+def _sessions(days, hours=SESSION_HOURS) -> np.ndarray:
+    return pd.DatetimeIndex(
+        [pd.Timestamp(f"{day} {hour:02d}:00") for day in days for hour in hours]
+    ).values
+
+
+def test_intraday_training_window_ends_horizon_bars_into_the_next_session(tmp_path):
+    """CR-01: on intraday bars the label-horizon bars after `train_end` are in-sample.
+
+    The model layer trains on `sel(timestamp=slice(train_start, train_end))`,
+    and a date-only `train_end` selects that whole session (positive control
+    below), so the last training label sits at 16:00 and reads the next two
+    bars: 10:00 and 11:00 of the FOLLOWING session. Those two bars must be
+    in-sample. The old code truncated `train_end` to midnight, landed on the
+    previous session's last bar, added the horizon and then compared by day:
+    the whole `train_end` session was in-sample and the two leaked bars on the
+    next session were labelled out-of-sample. This test goes red on that.
+    """
+    backtester = _unit_backtester(tmp_path, n_forward_periods=2)
+    calendar = _sessions(SESSION_DAYS)
+    model_layer_slice = xr.DataArray(
+        np.arange(calendar.size), dims="timestamp", coords={"timestamp": calendar}
+    ).sel(timestamp=slice("2024-01-01", "2024-01-02"))
+    assert pd.Timestamp(model_layer_slice.timestamp.values[-1]) == pd.Timestamp(
+        "2024-01-02 16:00"
+    )
+
+    window = backtester._training_window(calendar, "2024-01-01", "2024-01-02")
+
+    assert tuple(window) == ("2024-01-01T10:00:00", "2024-01-03T11:00:00")
+    split = backtester._split_window(_sessions(SESSION_DAYS[2:]), window)
+    assert tuple(split["in_sample_range"]) == (
+        "2024-01-03T10:00:00",
+        "2024-01-03T11:00:00",
+    )
+    assert [tuple(r) for r in split["out_of_sample_ranges"]] == [
+        ("2024-01-03T12:00:00", "2024-01-03T16:00:00")
+    ]
+
+
+@pytest.mark.parametrize(
+    "train_end",
+    [
+        "2024-01-02T13:00:00",
+        "2024-01-02T13:00:00.000000000",
+        pd.Timestamp("2024-01-02 13:00"),
+        np.datetime64("2024-01-02T13:00"),
+    ],
+    ids=["iso", "fold-style-ns", "timestamp", "datetime64"],
+)
+def test_training_window_honours_a_time_of_day_train_end(tmp_path, train_end):
+    """CR-01: a `train_end` carrying a time of day is not truncated to its date.
+
+    `cv_folds.json` stores fold dates as nanosecond strings, which the model
+    layer slices exactly. Training ends at 13:00, so with a 2-bar horizon the
+    window ends at 15:00 on the same session. The old `_iso_date` truncation
+    turned every spelling into the bare date and went red here.
+    """
+    backtester = _unit_backtester(tmp_path, n_forward_periods=2)
+
+    window = backtester._training_window(
+        _sessions(SESSION_DAYS), "2024-01-01", train_end
+    )
+
+    assert tuple(window) == ("2024-01-01T10:00:00", "2024-01-02T15:00:00")
+
+
+def test_slice_statistics_compare_exact_bar_timestamps_not_days(tmp_path):
+    """CR-01: slice masks, sliced returns and trade counts use exact bar times.
+
+    A 24-hour hourly market has a bar AT midnight, whose range label is the
+    bare date `2024-01-02`. The range 21:00 .. that midnight bar holds exactly
+    four bars. Day-based comparison (the old `_in_ranges`, the old open-trade
+    count and the old string `.loc` slice) stretches the end to the whole of
+    2024-01-02 and goes red: 28 bars, a compounded return over 28 bars, a
+    trade entered at 10:00 on 2024-01-02 counted as open at the range end, and
+    a trade closed at 05:00 counted as closed inside the range.
+    """
+    backtester = _unit_backtester(tmp_path)
+    index = pd.date_range("2024-01-01", periods=48, freq="h")
+    returns = pd.Series(np.linspace(0.001, 0.048, index.size), index=index)
+    trades = xr.Dataset(
+        {
+            "symbol": ("trade", np.array(["AAA", "BBB"])),
+            "entry_timestamp": (
+                "trade",
+                pd.to_datetime(["2024-01-01 22:00", "2024-01-02 10:00"]).values,
+            ),
+            "exit_timestamp": (
+                "trade",
+                pd.to_datetime(["2024-01-02 05:00", "2024-01-02 23:00"]).values,
+            ),
+            "pnl": ("trade", np.array([1.0, 2.0])),
+            "return": ("trade", np.array([0.01, 0.02])),
+            "status": ("trade", np.array(["Closed", "Open"])),
+        }
+    )
+    simulation = SimulationResult(
+        value=xr.DataArray(
+            np.ones(index.size), dims="timestamp", coords={"timestamp": index.values}
+        ),
+        returns=xr.DataArray(
+            returns.values, dims="timestamp", coords={"timestamp": index.values}
+        ),
+        orders=xr.Dataset(),
+        liquidations=[],
+        bar_interval=np.timedelta64(1, "h"),
+        trades=trades,
+        native=types.SimpleNamespace(returns=lambda: returns),
+    )
+    ranges = [("2024-01-01T21:00:00", "2024-01-02")]
+
+    mask = backtester._in_ranges(index.values, ranges)
+    assert list(index[mask]) == list(pd.date_range("2024-01-01 21:00", periods=4, freq="h"))
+
+    stats = backtester._period_returns_stats(simulation, ranges)
+    expected = (np.prod(1.0 + returns.iloc[21:25].values) - 1.0) * 100.0
+    assert stats["Total Return [%]"] == pytest.approx(expected, rel=1e-12)
+
+    records = backtester._period_record_stats(simulation, ranges)
+    assert records["open_trade_count"] == 1
+    assert records["closed_trade_count"] == 0
 
 
 # --------------------------------------------------------------------------

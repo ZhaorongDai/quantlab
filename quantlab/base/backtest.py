@@ -264,6 +264,40 @@ class BaseBacktester(ABC):
         """
         return pd.Timestamp(str(value)).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _bar_label(value) -> str:
+        """一个 bar 时间戳的持久化标签：午夜的 bar 写 ISO 日期，其余写完整 ISO 时间。
+
+        样本内外的区间端点（`training_window`、`in_sample_range`、
+        `out_of_sample_ranges`）都经过这里（代码审查 CR-01）。日线的 bar 都在
+        午夜，所以日线的标签与以前一样是日期；日内 bar 保留时刻，区间端点不会
+        被截到当天。读回标签时一律按**精确时间戳**比较（`_label_ns`），不再按天。
+        """
+        ts = pd.Timestamp(str(value)) if isinstance(value, str) else pd.Timestamp(value)
+        if ts == ts.normalize():
+            return ts.strftime("%Y-%m-%d")
+        return ts.isoformat()
+
+    @staticmethod
+    def _label_ns(label) -> np.datetime64:
+        """把 `_bar_label` 写出的标签还原成精确的 `datetime64[ns]`（日期即午夜）。"""
+        return np.datetime64(pd.Timestamp(str(label)).to_datetime64(), "ns")
+
+    @staticmethod
+    def _slice_bound(value):
+        """模型层切片端点的原样形式：字符串保持字符串，其余转 `pd.Timestamp`。
+
+        模型层按 `data.sel(timestamp=slice(train_start, train_end))` 训练，而
+        xarray 把这个切片交给 pandas 的 `slice_indexer`。字符串端点按其**分辨率**
+        解释：`"2024-05-17"` 包含当天全部 bar，`"2024-05-17T13:00"` 只到 13:00。
+        `_training_window` 用同一个 `slice_indexer` 定位训练段，所以必须把端点
+        原样交过去，不能先截成日期（代码审查 CR-01）。`str()` 是因为
+        `numpy.str_` 不是所有 pandas 入口都接受。
+        """
+        if isinstance(value, str):
+            return str(value)
+        return pd.Timestamp(value)
+
     def run(self) -> BacktestResult:
         """模型回测的模板方法（D-02）。子类不覆盖。"""
         if self.config.model_mode == "load" and self.config.checkpoint is None:
@@ -357,8 +391,7 @@ class BaseBacktester(ABC):
                 fold["test_start"],
                 fold["test_end"],
                 calendar,
-                fold["train_start"],
-                fold["train_end"],
+                *fold["_train_bounds"],
             )
             records.append(
                 {
@@ -503,6 +536,10 @@ class BaseBacktester(ABC):
                     f"is missing {missing}"
                 )
             fold = dict(entry)
+            # 训练段端点原样保留一份给 `_training_window`（代码审查 CR-01）：
+            # 清单里是 `np.datetime_as_string` 的纳秒字符串，模型层按它精确切片；
+            # 截成日期后日内折的整个 train_end 当天都会被当成训练段。
+            fold["_train_bounds"] = (entry["train_start"], entry["train_end"])
             for key in ("train_start", "train_end", "test_start", "test_end"):
                 fold[key] = self._iso_date(fold[key])
             if fold["test_start"] > fold["test_end"]:
@@ -951,13 +988,24 @@ class BaseBacktester(ABC):
     def _training_window(
         self, calendar: np.ndarray, train_start, train_end
     ) -> tuple[str, str] | None:
-        """模型的有效训练窗口 `[train_start, train_end + 标签期限]`（D-17），ISO 日期对。
+        """模型的有效训练窗口 `[train_start, train_end + 标签期限]`（D-17），bar 标签对。
 
         期限在价格日历上按 bar 数，不做日历日加法：周五的 `train_end` 加 2 个
         bar 是下周二。
-        - 起点：日历上第一个不早于 `train_start` 的 bar；
-        - 终点：日历上最后一个不晚于 `train_end` 的 bar 再往后数期限个 bar，
-          超出日历时截到最后一个 bar。
+        - 训练段：日历上与模型层 `data.sel(timestamp=slice(train_start, train_end))`
+          **同一个** pandas `slice_indexer` 选中的 bar。端点原样交过去
+          （`_slice_bound`），所以 `"2024-05-17"` 包含当天全部 bar，
+          `"2024-05-17T13:00"` 只到 13:00，纳秒精度的折日期精确匹配；
+        - 起点：训练段的第一个 bar；
+        - 终点：训练段的最后一个 bar 再往后数期限个 bar，超出日历时截到最后一个 bar。
+
+        返回的两端经 `_bar_label`：日线是日期，日内保留时刻。
+
+        **代码审查 CR-01 更正。** 以前先把 `train_end` 截成当天午夜再找「最后一个
+        不晚于它的 bar」。日内数据上那一天的 bar 全都晚于午夜，于是落到**前一个
+        交易日**的最后一个 bar 再加期限，终点又被截成日期、按天比较：`train_end`
+        当天全算样本内，而真正读过训练标签的、落在下一个交易日的那期限个 bar
+        却被算成样本外，污染样本外指标。日线的 bar 就在午夜，不受影响。
 
         任一日期为 None 时返回 None 并 warning：没有训练日期就无从判断样本内，
         metrics 里记显式的 null，而不是猜。
@@ -971,26 +1019,22 @@ class BaseBacktester(ABC):
             )
             return None
 
-        calendar = np.asarray(calendar).astype("datetime64[ns]")
-        start = np.datetime64(pd.Timestamp(self._iso_date(train_start)), "ns")
-        end = np.datetime64(pd.Timestamp(self._iso_date(train_end)), "ns")
+        calendar = np.sort(np.asarray(calendar).astype("datetime64[ns]"))
         last = calendar.size - 1
-
-        start_idx = int(np.searchsorted(calendar, start, side="left"))
-        end_idx = (
-            int(np.searchsorted(calendar, end, side="right"))
-            - 1
-            + self._label_horizon_bars()
+        trained = pd.DatetimeIndex(calendar).slice_indexer(
+            self._slice_bound(train_start), self._slice_bound(train_end)
         )
+        start_idx = int(trained.start)
+        end_idx = int(trained.stop) - 1 + self._label_horizon_bars()
         window_start = (
-            self._iso_date(calendar[start_idx])
+            self._bar_label(calendar[start_idx])
             if start_idx <= last
-            else self._iso_date(train_start)
+            else self._bar_label(train_start)
         )
         window_end = (
-            self._iso_date(calendar[min(end_idx, last)])
+            self._bar_label(calendar[min(end_idx, last)])
             if end_idx >= 0
-            else self._iso_date(train_end)
+            else self._bar_label(train_end)
         )
         return window_start, window_end
 
@@ -1000,13 +1044,14 @@ class BaseBacktester(ABC):
         """把回测窗口的 bar 切成样本内与样本外（D-17）。
 
         返回三个键，原样并入 metrics 顶层：
-        - `training_window`：有效训练窗口的 ISO 日期对，或 None；
+        - `training_window`：有效训练窗口的 bar 标签对（`_bar_label`），或 None；
         - `in_sample_range`：回测窗口与训练窗口重叠部分的首尾 bar，或 None；
         - `out_of_sample_ranges`：重叠之外的 bar 组成的连续段，0、1 或 2 段。
 
-        比较按日期（`datetime64[D]`）做，与训练窗口的 ISO 日期口径一致。两个
-        窗口都是区间，所以重叠部分一定连续。重叠非空时 warning 写明两个窗口，
-        并说明样本内外分开报告；回测照常继续。
+        比较按**精确的 bar 时间戳**做（代码审查 CR-01）：以前按日期比较，日内
+        数据上 `train_end` 所在那一天整天算样本内，而下一天读过训练标签的 bar
+        算样本外。两个窗口都是区间，所以重叠部分一定连续。重叠非空时 warning
+        写明两个窗口，并说明样本内外分开报告；回测照常继续。
         """
         timestamps = np.asarray(window_timestamps).astype("datetime64[ns]")
         split = {
@@ -1017,27 +1062,26 @@ class BaseBacktester(ABC):
         if timestamps.size == 0:
             return split
 
-        days = timestamps.astype("datetime64[D]")
         if training_window is None:
-            in_sample = np.zeros(days.size, dtype=bool)
+            in_sample = np.zeros(timestamps.size, dtype=bool)
         else:
-            first = np.datetime64(training_window[0], "D")
-            last = np.datetime64(training_window[1], "D")
-            in_sample = (days >= first) & (days <= last)
+            first = self._label_ns(training_window[0])
+            last = self._label_ns(training_window[1])
+            in_sample = (timestamps >= first) & (timestamps <= last)
 
         pieces = []
         if in_sample.any():
             idx = np.flatnonzero(in_sample)
             lo, hi = int(idx[0]), int(idx[-1])
             split["in_sample_range"] = (
-                self._iso_date(timestamps[lo]),
-                self._iso_date(timestamps[hi]),
+                self._bar_label(timestamps[lo]),
+                self._bar_label(timestamps[hi]),
             )
             if lo > 0:
                 pieces.append((0, lo - 1))
             if hi < timestamps.size - 1:
                 pieces.append((hi + 1, timestamps.size - 1))
-            window = (self._iso_date(timestamps[0]), self._iso_date(timestamps[-1]))
+            window = (self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))
             logger.warning(
                 f"{self.class_name}: backtest window {window[0]}..{window[1]} "
                 f"overlaps the model's effective training window "
@@ -1051,18 +1095,22 @@ class BaseBacktester(ABC):
             pieces.append((0, timestamps.size - 1))
 
         split["out_of_sample_ranges"] = [
-            (self._iso_date(timestamps[a]), self._iso_date(timestamps[b]))
+            (self._bar_label(timestamps[a]), self._bar_label(timestamps[b]))
             for a, b in pieces
         ]
         return split
 
-    @staticmethod
-    def _in_ranges(timestamps: np.ndarray, ranges: list[tuple[str, str]]) -> np.ndarray:
-        """`timestamps` 中落在任一 ISO 日期对内（按日期、含两端）的布尔掩码。"""
-        days = np.asarray(timestamps).astype("datetime64[ns]").astype("datetime64[D]")
-        mask = np.zeros(days.size, dtype=bool)
+    @classmethod
+    def _in_ranges(cls, timestamps: np.ndarray, ranges: list[tuple[str, str]]) -> np.ndarray:
+        """`timestamps` 中落在任一 bar 标签对内（精确时间戳、含两端）的布尔掩码。
+
+        标签是 `_bar_label` 写出的端点，日期即午夜。不按天比较（代码审查
+        CR-01）：日内数据上一个午夜 bar 的标签按天比较会把当天其余 bar 也算进来。
+        """
+        ts = np.asarray(timestamps).astype("datetime64[ns]")
+        mask = np.zeros(ts.size, dtype=bool)
         for start, end in ranges:
-            mask |= (days >= np.datetime64(start, "D")) & (days <= np.datetime64(end, "D"))
+            mask |= (ts >= cls._label_ns(start)) & (ts <= cls._label_ns(end))
         return mask
 
     def _turnover(self, simulation: SimulationResult) -> xr.DataArray:
@@ -1158,15 +1206,13 @@ class BaseBacktester(ABC):
             closed_trade_count = int(
                 (closed & self._in_ranges(trades["exit_timestamp"].values, ranges)).sum()
             )
-            entry_days = (
-                trades["entry_timestamp"].values.astype("datetime64[ns]").astype("datetime64[D]")
-            )
-            exit_days = (
-                trades["exit_timestamp"].values.astype("datetime64[ns]").astype("datetime64[D]")
-            )
+            # 精确时间戳比较，不按天（代码审查 CR-01）：日内段末是某个 bar，
+            # 段末之后同一天才入场的交易不算「段末仍未平仓」。
+            entry_ts = trades["entry_timestamp"].values.astype("datetime64[ns]")
+            exit_ts = trades["exit_timestamp"].values.astype("datetime64[ns]")
             for _, end in ranges:
-                end_day = np.datetime64(end, "D")
-                open_at_end = (entry_days <= end_day) & (~closed | (exit_days > end_day))
+                end_ts = self._label_ns(end)
+                open_at_end = (entry_ts <= end_ts) & (~closed | (exit_ts > end_ts))
                 open_trade_count += int(open_at_end.sum())
 
         turnover = self._turnover(simulation)
@@ -1377,7 +1423,7 @@ class BaseBacktester(ABC):
             starts = np.concatenate(([idx[0]], idx[breaks + 1]))
             ends = np.concatenate((idx[breaks], [idx[-1]]))
             pieces = [
-                (self._iso_date(ts[a]), self._iso_date(ts[b]))
+                (self._bar_label(ts[a]), self._bar_label(ts[b]))
                 for a, b in zip(starts, ends)
             ]
         return {
