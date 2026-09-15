@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Literal
 
 from quantlab.enums.data import Frequency, Market, Vendor
@@ -6,6 +6,7 @@ from quantlab.enums.data import Frequency, Market, Vendor
 if TYPE_CHECKING:
     from .data import MarketDataset
     from .factor import Factor
+    from .model import BaseModel
 
 
 @dataclass(kw_only=True)
@@ -179,3 +180,67 @@ class MLConfig:
 
     def to_dict(self):
         return asdict(self)
+
+
+@dataclass(kw_only=True)
+class BacktestConfig:
+    """回测器的公共配置（03.7 D-13/D-18/D-19/D-08/D-28）。
+
+    选股相关的参数不在这里，放在子类上：D-01 预留的时序兄弟类拿到的配置不应该
+    带着截面字段。
+    """
+
+    # 数据与模型
+    price_dataset: "MarketDataset"
+    model: "BaseModel"
+    model_mode: Literal["train", "load"]
+
+    # 回测窗口与输出
+    start_date: str
+    end_date: str
+    output_dir: str
+
+    # 调仓
+    rebalance_periods: int
+
+    # 模型准备
+    checkpoint: str | None = None
+    cv_project_dir: str | None = None
+
+    # 成交成本与资金
+    fees: float = 0.0005
+    slippage: float = 0.0005
+    init_cash: float = 1_000_000.0
+
+    # 基准（本阶段不实现，D-08；保留槽位）
+    benchmark_dataset: "MarketDataset | None" = None
+
+    # 记录
+    use_wandb: bool = False
+
+    name: str | None = None
+
+    #: 持有对象的字段。`to_dict` 跳过它们，由回测器的 `get_config` 逐个嵌套。
+    _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset")
+
+    def to_dict(self):
+        """只返回标量字段。
+
+        刻意不用 `asdict(self)`：它会深拷贝已经读进内存的面板和训练好的模型，
+        每调一次 `get_config` 就复制一遍（03.7-RESEARCH.md Pitfall 8）。
+        """
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if f.name not in self._OBJECT_FIELDS
+        }
+
+
+@dataclass(kw_only=True)
+class CrossSectionBacktestConfig(BacktestConfig):
+    """截面选股回测的配置（D-09/D-10/D-11）。没有分位数字段（D-10）。"""
+
+    # 选股
+    direction: Literal["long_only", "long_short"]
+    top_n: int
+    score_label: str | None = None

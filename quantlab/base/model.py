@@ -324,6 +324,62 @@ class BaseModel(ABC):
             )
         return self._predict(data)
 
+    def predict_panel(self, features: xr.Dataset) -> xr.Dataset:
+        """对 `(timestamp, symbol)` 特征面板给出同维度的预测面板（03.7 D-29）。
+
+        返回的 `xr.Dataset` 每个标签名一个变量，维度 `("timestamp", "symbol")`，
+        坐标取自 `to_array` 实际消费的那块排序后的面板，所以坐标与数值不会错位。
+        xarray -> 数组 -> 预测 -> xarray 这条管道只在模型层实现一份，DL 与 ML
+        共用；变体之间的差别只在 `_predict_panel_array` 这一个钩子里。
+
+        所有特征都是 NaN 的 `(t, s)` 位置，所有标签的预测都置为 NaN：xgboost 与
+        先 `nan_to_num` 输入的 DL 头会给还没上市的标的算出有限预测，不屏蔽的话
+        回测会把它们选进去（03.7-RESEARCH.md Pitfall 7）。
+
+        走公开的 `predict`，「Model not initialized」的守卫在那里。
+        """
+        factors = self.get_factor_names()
+        labels = self.get_label_names()
+        missing = [name for name in factors if name not in features.data_vars]
+        if missing:
+            raise ValueError(
+                f"{self.class_name}.predict_panel: features are missing factor "
+                f"variable(s) {missing}"
+            )
+
+        feats = features[factors].sortby(["timestamp", "symbol"])
+        x = self.to_array(feats, factors)
+        y = np.asarray(self._predict_panel_array(x), dtype=np.float64)
+        expected = (x.shape[0], x.shape[1], len(labels))
+        if y.shape != expected:
+            raise ValueError(
+                f"{self.class_name}.predict_panel: expected prediction shape "
+                f"{expected} [num_times, num_symbols, num_labels], got {y.shape}"
+            )
+
+        y = y.copy()
+        y[np.isnan(x).all(axis=-1)] = np.nan
+        return xr.Dataset(
+            {
+                name: (("timestamp", "symbol"), y[..., i])
+                for i, name in enumerate(labels)
+            },
+            coords={
+                "timestamp": feats.timestamp.values,
+                "symbol": feats.symbol.values,
+            },
+        )
+
+    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+        """`predict_panel` 的变体钩子：`[T, S, F]` numpy 进，`[T, S, L]` numpy 出。
+
+        刻意是普通方法而不是抽象方法：抽象的话每一层的 `__abstractmethods__`
+        都会变，`tests/test_model_hierarchy.py` 锁的正是这些集合。
+        """
+        raise NotImplementedError(
+            f"{self.class_name} does not implement _predict_panel_array"
+        )
+
     def train(self):
         project_name = f"{self.class_name}_trial_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         experiment_name = f"{self.class_name}_total"
@@ -664,6 +720,22 @@ class DLModel(BaseModel):
             data = data.to(self.device)
             data = self._preprocess(data)
             return self.model(data)  # type: ignore[misc]
+
+    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+        """张量输出转 numpy；`forward` 返回 tuple 的头必须自己覆盖本钩子（D-33）。"""
+        raw = self.predict(x)
+        if isinstance(raw, torch.Tensor):
+            return raw.detach().cpu().numpy()
+        if isinstance(raw, (tuple, list)):
+            raise TypeError(
+                f"{self.class_name}: forward returns a {type(raw).__name__}, not "
+                f"a [T, S, L] tensor; the head must override "
+                f"_predict_panel_array to map it onto one channel per label"
+            )
+        raise TypeError(
+            f"{self.class_name}: unsupported prediction type "
+            f"{type(raw).__name__}; expected a torch.Tensor"
+        )
 
     def _init_model_and_optim(self):
         self.model = self._init_model(
@@ -1109,6 +1181,10 @@ class MLModel(BaseModel):
         if not isinstance(data, np.ndarray):
             raise TypeError(f"Unsupported data type: {type(data)}")
         return self._forward(self._preprocess(data))
+
+    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+        """ML 头的 `_forward` 本来就返回 `[T, S, L]` numpy，这里只做 `np.asarray`。"""
+        return np.asarray(self.predict(x))
 
     def _write_checkpoint(self, path: Path) -> None:
         MlBackend().to_internal(self.model).write(str(path))
