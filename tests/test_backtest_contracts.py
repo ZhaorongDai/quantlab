@@ -17,10 +17,13 @@ What is locked here, the decision each lock enforces, and what turns it red:
   changes a set and fails the test. Since plan 03.7-08 the engine implements
   four hooks: `_simulate`, `_simulate_benchmark`, `_engine_stats` and
   `_period_returns_stats` (slice returns statistics, D-34).
-- **`run()` is the single template (D-02).** No class above `BaseBacktester` in
-  the concrete class's MRO may define `run` or any public function, classmethod,
-  staticmethod or property of its own. An override that "only calls super()"
-  is still a second implementation of the public entry, so it is red.
+- **`run()` and `run_cv()` are the two templates (D-02).** No class above
+  `BaseBacktester` in the concrete class's MRO may define `run`, `run_cv` or
+  any public function, classmethod, staticmethod or property of its own. An
+  override that "only calls super()" is still a second implementation of the
+  public entry, so it is red. Since plan 03.7-10 the public callables defined
+  on `BaseBacktester` itself are also pinned to exactly `run`, `run_cv` and
+  `get_config`, so a third public entry point on the base is red too.
 - **Type check first (D-01).** A concrete backtester given a plain
   `BacktestConfig` raises `TypeError` naming `CrossSectionBacktestConfig`
   before any dataset or model attribute is read. The config carries bare
@@ -76,6 +79,18 @@ _METHOD_KINDS = (
     functools.partialmethod,
 )
 
+#: D-02's user-facing entry points, both defined once on `BaseBacktester`.
+_ENTRY_POINTS = ("run", "run_cv")
+
+#: Class-dict entries that are callable methods. Unlike `_METHOD_KINDS` this
+#: excludes properties, which are attribute surface rather than entry points.
+_CALLABLE_KINDS = (
+    types.FunctionType,
+    classmethod,
+    staticmethod,
+    functools.partialmethod,
+)
+
 
 # --------------------------------------------------------------------------
 # Class surface (D-01, D-02)
@@ -103,9 +118,12 @@ def test_abstract_method_sets_are_exact():
 
 
 def test_run_lives_only_on_base_backtester():
-    """`run()` is the one template (D-02): nothing above the base redefines it
-    or grows a public method of its own."""
-    assert "run" in vars(BaseBacktester)
+    """`run()` and `run_cv()` are the two templates (D-02): nothing above the
+    base redefines either or grows a public method of its own, and the public
+    callables the base itself defines are exactly the two entry points plus
+    `get_config`."""
+    for entry in _ENTRY_POINTS:
+        assert entry in vars(BaseBacktester), entry
 
     mro = USEquityCrossectionSelectStockVectorBt.__mro__
     above = mro[: mro.index(BaseBacktester)]
@@ -116,12 +134,21 @@ def test_run_lives_only_on_base_backtester():
         names = sorted(
             name
             for name, value in vars(cls).items()
-            if name == "run"
+            if name in _ENTRY_POINTS
             or (not name.startswith("_") and isinstance(value, _METHOD_KINDS))
         )
         if names:
             offenders[cls.__qualname__] = names
     assert offenders == {}, offenders
+
+    # 03.7-10: properties (`config`, `config_cls`, `class_name`, `import_path`)
+    # are attribute surface, not callables, and are not counted here.
+    public_callables = {
+        name
+        for name, value in vars(BaseBacktester).items()
+        if not name.startswith("_") and isinstance(value, _CALLABLE_KINDS)
+    }
+    assert public_callables == {"run", "run_cv", "get_config"}, public_callables
 
 
 def test_backtest_configs_are_constructed_with_their_own_classes():

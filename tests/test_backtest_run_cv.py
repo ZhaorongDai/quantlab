@@ -382,3 +382,156 @@ def test_folds_outside_the_config_window_are_skipped(
     kept = cv_project.manifest["folds"][first_kept:]
     assert [record["fold"] for record in result.folds] == [f["fold"] for f in kept]
     assert loaded == [fold["checkpoint"] for fold in kept]
+
+
+# --------------------------------------------------------------------------
+# D-35: one continuous stitched simulation
+# --------------------------------------------------------------------------
+
+
+def _strict_json(path: Path):
+    def _reject(token):
+        raise ValueError(f"non-standard JSON constant {token!r} in {path}")
+
+    return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject)
+
+
+def test_stitched_curve_is_one_continuous_simulation(
+    tmp_path, cv_project, monkeypatch
+):
+    calls = _spy_from_orders(monkeypatch)
+
+    result = _backtester(tmp_path, cv_project).run_cv()
+
+    assert len(calls) == N_FOLDS + 1
+    for fold in range(N_FOLDS):
+        np.testing.assert_array_equal(
+            calls[fold].to_numpy().astype("datetime64[ns]"),
+            _test_bars(cv_project, fold),
+        )
+    stitched_bars = cv_project.bars[FIRST_TEST_BAR : LAST_TEST_BAR + 1].astype(
+        "datetime64[ns]"
+    )
+    np.testing.assert_array_equal(
+        calls[-1].to_numpy().astype("datetime64[ns]"), stitched_bars
+    )
+    np.testing.assert_array_equal(
+        result.simulation.value.timestamp.values.astype("datetime64[ns]"),
+        stitched_bars,
+    )
+
+
+def test_stitched_capital_is_not_reset_at_fold_boundaries(tmp_path, cv_project):
+    """Fold 1's own simulation starts flat at init_cash; the stitched curve
+    arrives at fold 1 still holding fold 0's last book, so its value moves
+    across the boundary bar. A curve glued from per-fold values, whether reset
+    to init_cash or rescaled to the previous end value, stays flat there."""
+    result = _backtester(tmp_path, cv_project).run_cv()
+
+    stitched = result.simulation.value
+    fold0 = result.folds[0]["simulation"].value
+    fold1 = result.folds[1]["simulation"].value
+    boundary = _test_bars(cv_project, 1)[0]
+    before = _test_bars(cv_project, 0)[-1]
+
+    assert float(fold1.values[0]) == pytest.approx(INIT_CASH)
+    assert abs(float(stitched.sel(timestamp=boundary)) - INIT_CASH) > 1.0
+    assert (
+        abs(
+            float(stitched.sel(timestamp=boundary))
+            - float(stitched.sel(timestamp=before))
+        )
+        > 1e-6
+    )
+    # Until the first boundary the stitched path IS fold 0's path.
+    np.testing.assert_allclose(
+        stitched.values[:TEST_PERIODS], fold0.values, rtol=1e-12
+    )
+
+
+def test_stitched_weights_equal_the_concatenated_fold_weights(tmp_path, cv_project):
+    result = _backtester(tmp_path, cv_project).run_cv()
+
+    expected = xr.concat([record["weights"] for record in result.folds], dim="timestamp")
+    xr.testing.assert_identical(result.weights, expected)
+
+
+def test_run_cv_run_directory_contents(tmp_path, cv_project):
+    result = _backtester(tmp_path, cv_project).run_cv()
+    run_dir = result.run_dir
+    folds = cv_project.manifest["folds"]
+
+    assert run_dir.parent == tmp_path / "runs"
+    assert {p.name for p in run_dir.iterdir()} == {
+        "config.json",
+        "weights.zarr",
+        "equity.zarr",
+        "metrics.json",
+        "liquidations.json",
+        "fingerprint.json",
+        "report.html",
+        "folds",
+    }
+
+    # --- stitched artifacts --------------------------------------------------
+    np.testing.assert_array_equal(
+        xr.open_zarr(run_dir / "weights.zarr")["weight"].values,
+        result.weights["weight"].values,
+    )
+    np.testing.assert_array_equal(
+        xr.open_zarr(run_dir / "equity.zarr")["value"].values,
+        result.simulation.value.values,
+    )
+
+    # --- per-fold artifacts --------------------------------------------------
+    assert sorted(p.name for p in (run_dir / "folds").iterdir()) == sorted(
+        f"fold_{record['fold']}" for record in result.folds
+    )
+    for record in result.folds:
+        fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
+        assert {p.name for p in fold_dir.iterdir()} == {"weights.zarr", "equity.zarr"}
+        np.testing.assert_array_equal(
+            xr.open_zarr(fold_dir / "weights.zarr")["weight"].values,
+            record["weights"]["weight"].values,
+        )
+        np.testing.assert_array_equal(
+            xr.open_zarr(fold_dir / "equity.zarr")["value"].values,
+            record["simulation"].value.values,
+        )
+
+    # --- metrics.json --------------------------------------------------------
+    metrics = _strict_json(run_dir / "metrics.json")
+    assert set(metrics) == {"stitched", "folds", "notes"}
+    assert "Total Return [%]" in metrics["stitched"]["whole"]
+    assert metrics["notes"]
+    assert [entry["fold"] for entry in metrics["folds"]] == list(range(N_FOLDS))
+    for entry in metrics["folds"]:
+        bars = _test_bars(cv_project, entry["fold"])
+        assert entry["test_start"] == _day(bars[0])
+        assert entry["test_end"] == _day(bars[-1])
+        assert entry["checkpoint"] == folds[entry["fold"]]["checkpoint"]
+        assert entry["metrics"]["in_sample_range"] == [_day(bars[0]), _day(bars[1])]
+        assert "Total Return [%]" in entry["metrics"]["whole"]
+    assert metrics["stitched"]["in_sample_ranges"] == [
+        [_day(bars[0]), _day(bars[1])]
+        for bars in (_test_bars(cv_project, fold) for fold in range(N_FOLDS))
+    ]
+
+    # --- liquidations.json ---------------------------------------------------
+    liquidations = _strict_json(run_dir / "liquidations.json")
+    assert set(liquidations) == {"stitched", "folds"}
+    assert [entry["fold"] for entry in liquidations["folds"]] == list(range(N_FOLDS))
+
+    # --- fingerprint.json and config.json: the union window (D-27) -----------
+    fingerprint = _strict_json(run_dir / "fingerprint.json")
+    first_day = _day(cv_project.bars[FIRST_TEST_BAR])
+    last_day = _day(cv_project.bars[LAST_TEST_BAR])
+    assert _day(fingerprint["price_dataset"]["start"]) == first_day
+    assert _day(fingerprint["price_dataset"]["end"]) == last_day
+    factor = fingerprint["factor[0]:PastReturnFactor"]
+    assert _day(factor["start"]) < first_day, "the factor range must include warm-up"
+    assert _day(factor["end"]) == last_day
+
+    config = _strict_json(run_dir / "config.json")
+    assert config["cv_project_dir"] == str(cv_project.project_dir)
+    assert config["data_fingerprint"] == fingerprint
