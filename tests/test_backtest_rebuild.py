@@ -29,11 +29,14 @@ directly, never through the factories in `quantlab/config/__init__.py` (D-32).
 import ast
 import copy
 import json
+import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+import zarr
 from loguru import logger
 
 import quantlab.utils.module as module_utils
@@ -58,6 +61,15 @@ REBALANCE_PERIODS = 2
 TOP_N = 2
 INIT_CASH = 1_000_000.0
 
+#: run_cv geometry, as in tests/test_backtest_run_cv.py: `_cv_folds` with
+#: train_periods=30 over 80 bars gives 8 folds of 6 test bars, bars 30..77.
+CV_N_BARS = 80
+CV_BARS = pd.bdate_range("2024-01-01", periods=CV_N_BARS)
+CV_TRAIN_PERIODS = 30
+CV_FIRST_TEST_BAR = 30
+CV_LAST_TEST_BAR = 77
+
+#: `BaseBacktester._compare_fingerprints` starts every warning with this.
 FINGERPRINT_WARNING = "data fingerprint mismatch"
 
 
@@ -136,6 +148,23 @@ def _trained(root: Path):
 
 def _read_run_config(run_dir: Path) -> dict:
     return json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+
+
+def _assert_same_run_artifacts(first_dir: Path, second_dir: Path) -> None:
+    """Identical weights.zarr and exactly equal equity values on disk."""
+    assert first_dir != second_dir
+    xr.testing.assert_identical(
+        xr.open_zarr(first_dir / "weights.zarr").load(),
+        xr.open_zarr(second_dir / "weights.zarr").load(),
+    )
+    np.testing.assert_array_equal(
+        xr.open_zarr(first_dir / "equity.zarr")["value"].values,
+        xr.open_zarr(second_dir / "equity.zarr")["value"].values,
+    )
+
+
+def _fingerprint_warnings(messages: list[str]) -> list[str]:
+    return [m for m in messages if FINGERPRINT_WARNING in m]
 
 
 # --------------------------------------------------------------------------
@@ -239,3 +268,126 @@ def test_backtester_rebuild_imports_no_config_factories():
             if name == "quantlab.config" or name.startswith("quantlab.config.")
         )
         assert offending == [], f"{path} imports {offending}"
+
+
+# --------------------------------------------------------------------------
+# Task 2: a rebuilt config re-runs identically and notices changed data (D-25, D-27)
+# --------------------------------------------------------------------------
+
+
+def test_load_mode_rebuild_reproduces_weights_and_equity(tmp_path, warning_messages):
+    dataset_config, checkpoint = _trained(tmp_path)
+    first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+
+    rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
+    second = rebuilt.run()
+
+    _assert_same_run_artifacts(first.run_dir, second.run_dir)
+    xr.testing.assert_identical(first.weights, second.weights)
+    np.testing.assert_array_equal(
+        first.simulation.value.values, second.simulation.value.values
+    )
+    assert (
+        second.metrics["whole"]["Total Return [%]"]
+        == first.metrics["whole"]["Total Return [%]"]
+    )
+    assert rebuilt.expected_fingerprint is not None
+    assert _fingerprint_warnings(warning_messages) == []
+
+
+def test_train_mode_rebuild_retrains_and_reproduces_weights_and_equity(
+    tmp_path, warning_messages
+):
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    first = _backtester(tmp_path, dataset_config, model_mode="train").run()
+    saved = _read_run_config(first.run_dir)
+    assert saved["model_mode"] == "train"
+    assert saved["checkpoint"] is None
+
+    rebuilt = module_utils.load_backtester_from_config(saved)
+    # `BaseModel.train` names its project directory to the second
+    # (`{class}_trial_%Y%m%d_%H%M%S`) under the same model_save_dir, so a retrain
+    # inside the same second as the first run would collide with its directory.
+    time.sleep(1.1)
+    second = rebuilt.run()
+
+    checkpoints = sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib"))
+    assert len(checkpoints) == 2, "the rebuilt run must train its own model"
+    _assert_same_run_artifacts(first.run_dir, second.run_dir)
+    assert (
+        second.metrics["whole"]["Total Return [%]"]
+        == first.metrics["whole"]["Total Return [%]"]
+    )
+    assert _fingerprint_warnings(warning_messages) == []
+
+
+def test_run_cv_rebuild_reproduces_the_stitched_curve(tmp_path, warning_messages):
+    dataset_config = write_price_store(tmp_path / "store", n_bars=CV_N_BARS)
+    model_dates = dict(
+        start_date=_day(CV_BARS[0]),
+        end_date=_day(CV_BARS[CV_N_BARS - 1]),
+        train_start=_day(CV_BARS[0]),
+        train_end=_day(CV_BARS[CV_TRAIN_PERIODS - 1]),
+        test_start=_day(CV_BARS[CV_TRAIN_PERIODS]),
+        test_end=_day(CV_BARS[CV_N_BARS - 1]),
+    )
+    trainer = make_model(tmp_path / "train", dataset_config, **model_dates)
+    trainer.collect()
+    trainer.train_cv(train_periods=CV_TRAIN_PERIODS, gap_periods=0)
+    manifests = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
+    assert len(manifests) == 1, manifests
+
+    original = USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(dataset_config),
+            model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
+            model_mode="load",
+            cv_project_dir=str(manifests[0].parent),
+            start_date=_day(CV_BARS[CV_FIRST_TEST_BAR]),
+            end_date=_day(CV_BARS[CV_LAST_TEST_BAR]),
+            output_dir=str(tmp_path / "runs"),
+            rebalance_periods=REBALANCE_PERIODS,
+            direction="long_only",
+            top_n=TOP_N,
+            fees=0.0,
+            slippage=0.0,
+            init_cash=INIT_CASH,
+        )
+    )
+    first = original.run_cv()
+
+    rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
+    second = rebuilt.run_cv()
+
+    assert len(second.folds) == len(first.folds) > 1
+    _assert_same_run_artifacts(first.run_dir, second.run_dir)
+    xr.testing.assert_identical(first.weights, second.weights)
+    np.testing.assert_array_equal(
+        first.simulation.value.values, second.simulation.value.values
+    )
+    assert _fingerprint_warnings(warning_messages) == []
+
+
+def test_changed_store_rebuild_warns_and_completes(tmp_path, warning_messages):
+    dataset_config, checkpoint = _trained(tmp_path)
+    first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+    saved = _read_run_config(first.run_dir)
+
+    # Overwrite one adjusted close inside the backtest window directly in the
+    # Zarr array (group opened "r+"), the way a Tiingo re-base rewrites history.
+    bar, symbol = WINDOW_START_BAR + 5, 0
+    group = zarr.open_group(dataset_config.zarr_file_path, mode="r+")
+    old = float(group["adjClose"][bar, symbol])
+    group["adjClose"][bar, symbol] = old * 1.25
+    # Positive control: the change is visible through xarray, where the run reads.
+    assert float(
+        xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].values[bar, symbol]
+    ) == pytest.approx(old * 1.25)
+
+    rebuilt = module_utils.load_backtester_from_config(saved)
+    assert _fingerprint_warnings(warning_messages) == []
+    second = rebuilt.run()
+
+    assert second.run_dir.is_dir()
+    mismatches = _fingerprint_warnings(warning_messages)
+    assert any("'price_dataset'" in m for m in mismatches), warning_messages
