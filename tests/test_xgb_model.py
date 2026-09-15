@@ -31,6 +31,7 @@ import joblib
 import numpy as np
 import pytest
 import xarray as xr
+import xgboost as xgb
 from loguru import logger
 
 from quantlab.base.config import DLConfig, MLConfig
@@ -765,6 +766,63 @@ def test_training_without_a_recorder_writes_no_importance(tmp_path, monkeypatch)
 
     assert model._wandb_recorder is None
     assert _only_checkpoint(tmp_path / "ckpt").is_file()
+
+
+@pytest.mark.parametrize("second_label", [False, True], ids=["single-label", "two-label"])
+def test_gblinear_trains_and_writes_its_checkpoint_with_a_recorder(tmp_path, recorders, second_label):
+    """REVIEW CR-01: `booster="gblinear"` is a valid configuration, but its
+    Booster only has `weight` importance (`gain` raises XGBoostError) and, with
+    a `[T, S, L>1]` target, `get_score("weight")` returns one list per factor.
+    Importance runs inside `_fit_model`, before `_save_model`, so either case
+    used to raise and lose the trained model: no `.joblib`, no `finish()`.
+    Both ids go red on the pre-fix code."""
+    factors, labels = _importance_panels(seed=55)
+    if second_label:
+        rng = np.random.default_rng(55)
+        labels = ArrayPanel(
+            {
+                "ret_a": labels._ds["ret_a"].values,
+                "ret_b": -0.1 * factors._ds["f_second"].values + 0.05 * rng.standard_normal((N_TIMES, N_SYMBOLS)),
+            }
+        )
+
+    model = _train(tmp_path, factors, labels, hyperparameters={"booster": "gblinear", "num_boost_round": 5})
+
+    checkpoint = _only_checkpoint(tmp_path / "ckpt")
+    assert checkpoint.is_file()
+    assert (checkpoint.parent / "config.json").is_file()
+    rec = recorders[0]
+    assert rec.finished == 1
+    assert _importance_summary(rec) == {}
+    test_x, _ = _test_arrays(model)
+    assert model.predict(test_x).shape == (N_TIMES - N_TRAIN_TIMES, N_SYMBOLS, 2 if second_label else 1)
+
+
+def test_unavailable_or_non_scalar_importance_is_skipped_not_fatal(tmp_path, recorders, warnings_log, monkeypatch):
+    """REVIEW CR-01, beyond gblinear: importance is best-effort telemetry. An
+    importance type the Booster cannot report (XGBoostError) or reports as a
+    per-output list is skipped with a warning; the types that do work are
+    still written, and the checkpoint is always saved."""
+    real_get_score = xgb.Booster.get_score
+
+    def flaky_get_score(self, fmap="", importance_type="weight"):
+        if importance_type == "weight":
+            raise xgb.core.XGBoostError("weight unavailable (test)")
+        scores = real_get_score(self, fmap=fmap, importance_type=importance_type)
+        if importance_type == "gain":
+            return {key: [value, value] for key, value in scores.items()}
+        return scores
+
+    monkeypatch.setattr(xgb.Booster, "get_score", flaky_get_score)
+    factors, labels = _importance_panels(seed=56)
+
+    _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 10, "max_depth": 3})
+
+    assert _only_checkpoint(tmp_path / "ckpt").is_file()
+    importance = _importance_summary(recorders[0])
+    assert set(importance) == {f"importance_total_gain/{n}" for n in IMPORTANCE_FACTORS}
+    assert any("'weight'" in m for m in warnings_log), warnings_log
+    assert any("'gain'" in m for m in warnings_log), warnings_log
 
 
 def test_booster_stays_nameless_and_predictions_are_unchanged(tmp_path, recorders):

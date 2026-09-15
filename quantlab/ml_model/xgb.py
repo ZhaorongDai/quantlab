@@ -103,7 +103,9 @@ class XGBoostRegressor(MLModel):
         从不进逐轮曲线。Booster 不带特征名，键 `f{i}` 按列下标映射到
         `get_factor_names()[i]`；从未分裂的因子补 0.0。多标签（多输出）模型的
         重要性由 xgboost 在各输出之间汇总，不分标签。变量顺序由
-        `BaseModel.load()` 核对，不靠 xgboost 的特征名。
+        `BaseModel.load()` 核对，不靠 xgboost 的特征名。重要性尽力而为：
+        `gblinear` 整段跳过，拿不到或非标量的类型记 warning 后跳过，从不因此
+        丢掉 checkpoint（REVIEW CR-01）。
 
     交叉验证
         `train_cv` 继承自 `BaseModel`：每折在折内训练段尾部的验证段上独立做
@@ -303,13 +305,39 @@ class XGBoostRegressor(MLModel):
 
         键解析不成 `f<int>` 或下标越界时抛 `ValueError`：那说明 Booster 不是这里
         按列顺序训练出来的，悄悄丢掉会把重要性记错到别的因子上。
+
+        重要性只是遥测，尽力而为（REVIEW CR-01）：本方法在 `_fit_model` 里、
+        `_save_model` 之前运行，一个合法配置在这里抛异常就会丢掉整次训练的
+        checkpoint。所以：
+
+        - `booster="gblinear"` 没有分裂重要性（`gain` 直接 XGBoostError，多标签
+          时 `weight` 还返回每个输出一个值的列表），整段跳过，记一条 info；
+        - 某个重要性类型 `get_score` 报 XGBoostError，或返回的不是标量（多输出
+          按输出分列），记一条 warning 并跳过**该类型**，其余类型照常写入；
+          绝不对列表做 `float()`。
         """
+        booster_type = str((self._params or {}).get("booster", "gbtree"))
+        if booster_type == "gblinear":
+            logger.info(
+                f"{self.class_name}: booster='gblinear' has no split feature "
+                f"importance; importance recording skipped."
+            )
+            return
+
         names = [str(name) for name in self.get_factor_names()]
         for importance_type in _IMPORTANCE_TYPES:
+            try:
+                scores = self.model.get_score(  # type: ignore[union-attr]
+                    importance_type=importance_type
+                )
+            except xgb.core.XGBoostError as exc:
+                logger.warning(
+                    f"{self.class_name}: feature importance {importance_type!r} "
+                    f"is unavailable for this Booster and was skipped: {exc}"
+                )
+                continue
             values = {name: 0.0 for name in names}
-            scores = self.model.get_score(  # type: ignore[union-attr]
-                importance_type=importance_type
-            )
+            non_scalar_key = None
             for key, score in scores.items():
                 digits = key[1:] if key.startswith("f") else ""
                 index = int(digits) if digits.isdigit() else -1
@@ -319,7 +347,17 @@ class XGBoostRegressor(MLModel):
                         f"key {key!r}, which is not f<index> for one of the "
                         f"{len(names)} factors {names}."
                     )
+                if not np.isscalar(score):
+                    non_scalar_key = key
+                    break
                 values[names[index]] = float(score)
+            if non_scalar_key is not None:
+                logger.warning(
+                    f"{self.class_name}: feature importance {importance_type!r} "
+                    f"returned a non-scalar score for {non_scalar_key!r} "
+                    f"(one value per output); skipped."
+                )
+                continue
             self._wandb_recorder.summary.update(
                 {
                     f"importance_{importance_type}/{name}": value
@@ -328,8 +366,20 @@ class XGBoostRegressor(MLModel):
             )
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
+        """`[T, S, F]` -> `[T, S, L]`。
+
+        先走 `inplace_predict`（树模型的快路径）；`booster="gblinear"` 不支持
+        inplace 预测（xgboost 3.4.1 实测报 "Inplace predict is not supported by
+        the current booster"），此时退回 `predict(DMatrix)`。两条路径 NaN 都当
+        缺失值，树模型上结果一致。否则 gblinear 会在 `_fit` 的 `_evaluate`
+        （`_save_model` 之前）报错，照样丢掉 checkpoint（REVIEW CR-01）。
+        """
         n_times, n_symbols, n_features = x.shape
-        pred = self.model.inplace_predict(  # type: ignore[union-attr]
-            x.reshape(n_times * n_symbols, n_features)
-        )
+        rows = x.reshape(n_times * n_symbols, n_features)
+        try:
+            pred = self.model.inplace_predict(rows)  # type: ignore[union-attr]
+        except xgb.core.XGBoostError as exc:
+            if "Inplace predict is not supported" not in str(exc):
+                raise
+            pred = self.model.predict(xgb.DMatrix(rows))  # type: ignore[union-attr]
         return np.asarray(pred).reshape(n_times, n_symbols, -1)
