@@ -239,6 +239,29 @@ def test_retired_names_stay_retired():
     assert not hasattr(MLModel, "_train_one_epoch")
 
 
+def test_stale_backtest_hooks_are_deleted():
+    """D-37 (phase 03.7): the in-model backtest hooks are deleted, because
+    backtesting now lives only in `quantlab/backtest/`.
+
+    Four things were removed and must stay gone: the config setter's reset
+    method for a backtest dataset, `DLModel._fit`'s `backtest` parameter with
+    its NotImplementedError branch, and the backtest data slot on both config
+    classes. Locked with `hasattr` / `inspect.signature`, not "no longer
+    raises": a bypassed guard still answers `hasattr`. Turns red if any of
+    them returns, or if `DLModel._fit` grows any parameter beyond the abstract
+    `_fit(self, project_name, experiment_name, model_name)`.
+    """
+    assert not hasattr(BaseModel, "_reset_backtest_dataset_config")
+
+    fit_params = list(inspect.signature(DLModel._fit).parameters)
+    assert "backtest" not in fit_params
+    assert fit_params == ["self", "project_name", "experiment_name", "model_name"]
+
+    for config_cls in (DLConfig, MLConfig):
+        assert not hasattr(config_cls, "backtest_data"), config_cls.__name__
+        assert "backtest_data" not in config_cls.__dataclass_fields__, config_cls.__name__
+
+
 def test_ml_config_has_no_epochs_and_tree_friendly_early_stopping_defaults():
     """ML heads count patience in boosting rounds; an `epochs` field would
     invite an outer loop around the library's own training."""
