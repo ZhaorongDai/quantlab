@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-11-PLAN.md
-last_updated: "2026-09-15T07:19:28.827Z"
+stopped_at: Completed 03.7-13-PLAN.md
+last_updated: "2026-09-15T07:40:28.759Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: de52db77f6a3882f85adf392ba5034305465fbad
+state_head: 272c06ab87043c4ae73014a60f45226d73607a68
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 72
-  completed_plans: 69
+  completed_plans: 70
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 13 of 14
+Plan: 14 of 14
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -126,6 +126,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P09 | 17 min | 2 tasks | 5 files |
 | Phase 03.7 P10 | 17 min | 2 tasks | 3 files |
 | Phase 03.7 P11 | 9 min | 2 tasks | 2 files |
+| Phase 03.7 P13 | 15 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -285,6 +286,8 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-10: stitched metrics carry training_windows / in_sample_ranges / out_of_sample_ranges (multi-segment, no single in_sample_range); the stitched report.html is unshaded with a note; per-fold weights and equity live under folds/fold_{i}/
 - [Phase 03.7]: 03.7-11: load_backtester_from_config refuses a non-BaseBacktester name before any nested dataset/model load, pops data_fingerprint onto expected_fingerprint, and imports BaseBacktester only inside the function
 - [Phase 03.7]: 03.7-11: identical-rerun locks (load, train, run_cv) were green on arrival against the loader plus the existing get_config(); proven by loader mutations (dropped fees/slippage, wrong expected_fingerprint); quantlab/base/backtest.py needed no fix
+- [Phase 03.7]: 03.7-13: example/backtest.md minimal example is extracted from the markdown and executed; its pasted stdout is a real offline run. Its Polars classes live in __main__, so that run dir cannot be rebuilt in another process (verified AttributeError), and the guide says so.
+- [Phase 03.7]: 03.7-13: D-37 doc annotations name the commit that actually removed each hook: _do_vecbt and BaseModel._vecbt in d07f06e (2026-09-14, before 03.7), RNNClassifier._vecbt in 03.7-05, the backtest flag and backtest_data in 03.7-07.
 
 ### Pending Todos
 
@@ -342,8 +345,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T07:19:28.532Z
-Stopped at: Completed 03.7-11-PLAN.md
+Last session: 2026-09-15T07:40:13.906Z
+Stopped at: Completed 03.7-13-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
