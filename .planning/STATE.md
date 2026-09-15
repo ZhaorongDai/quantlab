@@ -5,10 +5,10 @@ current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
 stopped_at: Phase 03.7 context gathered
-last_updated: "2026-09-15T04:07:29.103Z"
-last_activity: 2026-09-14
-last_activity_desc: Phase 03.6 execution started
-state_head: d7d9c6e6ac82e9760955b17d2c4a0a2bf14a6570
+last_updated: "2026-09-15T04:09:08.939Z"
+last_activity: 2026-09-15
+last_activity_desc: Phase 03.7 execution started
+state_head: ca4c890d31b1ba743602e02905e68575e554cb05
 progress:
   total_phases: 14
   completed_phases: 1
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-04)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.6 — Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
+**Current focus:** Phase 03.7 — cross-sectional-backtester-basebacktester-abc-usequitycrosse
 
 ## Current Position
 
-Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — READY TO EXECUTE
-Plan: 4 of 11
-Status: Ready to execute
-Last activity: 2026-09-14 - Completed quick task 260914-lno: BaseModel 拆为 DLModel/MLModel 三层（通用 train/train_cv/load/predict），ml_model 下新增 XGBoostRegressor（原生早停、wandb、ML 交叉验证）
+Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
+Plan: 1 of 14
+Status: Executing Phase 03.7
+Last activity: 2026-09-15 — Phase 03.7 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
