@@ -17,6 +17,7 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import write_backtest_report
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig
 
@@ -764,7 +765,8 @@ class BaseBacktester(ABC):
         weights = self._generate_signals(predictions, prices)
         self._assert_weights_contract(weights, prices)
 
-        simulation = self._simulate(weights, prices)
+        with Timer(f"{self.class_name}: simulate"):
+            simulation = self._simulate(weights, prices)
         benchmark = self._simulate_benchmark(start_date, end_date)
         metrics = self._compute_metrics(simulation, benchmark, split)
         return _BacktestWindow(
@@ -1028,13 +1030,14 @@ class BaseBacktester(ABC):
         self, start_date: str, end_date: str, calendar: np.ndarray
     ) -> xr.Dataset:
         """改因子配置日期（含预热）-> 只算特征 -> 预测 -> 切回回测窗口（D-14）。"""
-        model = self.config.model
-        self._redate_factors(start_date, end_date, calendar)
+        with Timer(f"{self.class_name}: align_and_predict"):
+            model = self.config.model
+            self._redate_factors(start_date, end_date, calendar)
 
-        features = model._collect_all_features()
-        return model.predict_panel(features).sel(
-            timestamp=slice(start_date, end_date)
-        )
+            features = model._collect_all_features()
+            return model.predict_panel(features).sel(
+                timestamp=slice(start_date, end_date)
+            )
 
     def _load_prices(self, start_date: str, end_date: str) -> xr.Dataset:
         """回测窗口内的成交价与估值价两列，深拷贝后返回，并记录价格数据集的指纹。

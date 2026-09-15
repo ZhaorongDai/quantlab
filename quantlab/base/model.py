@@ -24,6 +24,7 @@ from quantlab.ml_model.backend import MlBackend
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.timer import Timer
 
 from .config import DLConfig, MLConfig
 
@@ -232,8 +233,9 @@ class BaseModel(ABC):
     ) -> Self:
         feature = self._collect_all_features()
         label = self._collect_all_labels()
-        d = xr.combine_by_coords([feature, label])
-        d = d.sortby(["timestamp", "symbol"])
+        with Timer(f"{self.class_name}: collect merge"):
+            d = xr.combine_by_coords([feature, label])
+            d = d.sortby(["timestamp", "symbol"])
         self.data_backend.to_internal(d)  # type: ignore
         return self
 
@@ -1447,15 +1449,16 @@ class MLModel(BaseModel):
         factors = self.get_factor_names()
         labels = self.get_label_names()
 
-        train_x_all, train_y_all, test_x, test_y = [
-            self._preprocess(self.to_array(d, names))
-            for d, names in [
-                (train_data, factors),
-                (train_data, labels),
-                (test_data, factors),
-                (test_data, labels),
+        with Timer(f"{self.class_name}: to_array"):
+            train_x_all, train_y_all, test_x, test_y = [
+                self._preprocess(self.to_array(d, names))
+                for d, names in [
+                    (train_data, factors),
+                    (train_data, labels),
+                    (test_data, factors),
+                    (test_data, labels),
+                ]
             ]
-        ]
         for d in [train_x_all, test_x]:
             self._assert_shape_match_x(d)
         for d in [train_y_all, test_y]:
@@ -1476,14 +1479,16 @@ class MLModel(BaseModel):
         else:
             val_x = val_y = None
 
-        self._fit_model(train_x, train_y, val_x, val_y)
+        with Timer(f"{self.class_name}: fit_model"):
+            self._fit_model(train_x, train_y, val_x, val_y)
 
-        self._evaluate("train", train_x, train_y)
-        if val_x is not None:
-            self._evaluate("val", val_x, val_y)
-        test_metrics = (
-            self._evaluate("test", test_x, test_y) if test_x.shape[0] > 0 else {}
-        )
+        with Timer(f"{self.class_name}: evaluate"):
+            self._evaluate("train", train_x, train_y)
+            if val_x is not None:
+                self._evaluate("val", val_x, val_y)
+            test_metrics = (
+                self._evaluate("test", test_x, test_y) if test_x.shape[0] > 0 else {}
+            )
 
         self._save_model(
             Path(self.config.model_save_dir)
