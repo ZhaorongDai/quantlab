@@ -277,6 +277,13 @@ t+1 的**原始**（未 ffill）成交价是 NaN。开头价格为 NaN、此前�
     与 `config.model` 的日期不同时 `logger.warning` 写明两对日期，然后用记录的日期；`run_cv` 每折同样核对，日期以 `cv_folds.json` 为准。
   - 没有 `config.json`（比如手工拷贝的 checkpoint）时 `logger.warning` 说明无法核对，照 `config.model` 原样继续。
 
+  **更正（2026-09-15，G-03.7-7）。** 上面「`run_cv` 每折同样核对」的实现曾把每折都与 `config.model` 比较，现已改掉：
+  `run_cv` 不再拿任何一折与 `config.model` 比较，只核对每折 checkpoint 记录的训练日期与 `cv_folds.json` 是否一致；
+  与 `config.model` 的比较只留在 `run()` 的 load 模式。两处比较都不再比日期文本，而是把每对日期解析成它在价格日历上
+  选中的 bar（与 D-17 训练段同一个切片）：日线上普通日期、`T00:00:00` 和纳秒字符串是同一个训练窗口；日内数据上
+  `2024-02-09` 包含当天全部 bar，而 `2024-02-09T00:00` 只到午夜，所以算不同。因此一次正常的 `run_cv` 不再输出任何
+  训练日期 warning。这个问题只是日志噪音，从未影响任何回测数字：`run()` 始终用记录的日期，`run_cv` 始终用清单的日期。
+
 **DL checkpoint 需要先有面板。** `DLModel` 的 `.pth` 只有权重，加载时要按 `num_symbols` 重建网络，而
 `num_symbols` 读的正是 data backend，空着会报 `Please cal 'read' or 'to_internal' first.`（Pitfall 11）。
 回测器替你做了 `model.data_backend.to_internal(model._collect_all_features())`。`MLModel` 的 `.joblib`

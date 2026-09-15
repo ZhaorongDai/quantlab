@@ -336,7 +336,13 @@ class BaseBacktester(ABC):
         return pd.Timestamp(value)
 
     def run(self) -> BacktestResult:
-        """模型回测的模板方法（D-02）。子类不覆盖。"""
+        """模型回测的模板方法（D-02）。子类不覆盖。
+
+        load 模式下 D-17 用 checkpoint 自己 `config.json` 记录的训练日期
+        （代码审查 WR-01）。记录与 `config.model` 的日期选中的训练 bar 不同时
+        （`_warn_if_config_model_dates_differ`，G-03.7-7）warning 一次，仍用
+        记录的日期。这个比较需要价格日历，所以在 `_price_calendar` 之后做。
+        """
         if self.config.model_mode == "load" and self.config.checkpoint is None:
             raise ValueError(
                 f"{self.class_name}: run() with model_mode='load' requires "
@@ -352,6 +358,9 @@ class BaseBacktester(ABC):
         # load 模式下训练日期取自 checkpoint 自己的 config.json（代码审查 WR-01）。
         train_bounds = self._prepare_model()
         calendar = self._price_calendar(end_date)
+        # 与 config.model 的日期比较按日历上选中的 bar 做（G-03.7-7），所以在日历之后。
+        if self.config.model_mode == "load":
+            self._warn_if_config_model_dates_differ(calendar, train_bounds)
         window = self._backtest_window(start_date, end_date, calendar, *train_bounds)
         self._compare_fingerprints()
 
@@ -400,6 +409,12 @@ class BaseBacktester(ABC):
 
         折日期经 `_iso_date` 规范成 ISO 日期（真实数据上是纳秒字符串），所以
         判定按日期粒度进行。
+
+        训练日期（WR-01、G-03.7-7）：每折以清单的训练日期为准。checkpoint 自己
+        记录的训练日期只与清单核对，按两对日期在价格日历上选中的 bar 比较
+        （`_same_training_bars`），不同时 warning 一次。每折的训练段本来就与
+        回测模型配置里那一段不同，所以这里从不与它比较；那个比较只属于
+        `run()` 的 load 模式。
         """
         if self.config.cv_project_dir is None:
             raise ValueError(
@@ -786,6 +801,30 @@ class BaseBacktester(ABC):
         # 记下训练出的 checkpoint（代码审查 WR-04），config.json 与 metrics.json 据此记录。
         self._trained_checkpoint = str(model.train())
         return model.config.train_start, model.config.train_end
+
+    def _warn_if_config_model_dates_differ(self, calendar, train_bounds: tuple) -> None:
+        """`run()` 的 load 模式：`train_bounds` 与 `config.model` 的训练日期选中的 bar 不同时 warning。
+
+        `config.model` 的日期可能是手工重建模型时写的、或者早就过时的：拿它们
+        判定样本内，会把真正训练过的 bar 悄悄算成样本外（代码审查 WR-01）。
+        所以 D-17 用 checkpoint 记录的日期，两者不同时写明两对日期与
+        checkpoint 路径。比较走 `_same_training_bars`（G-03.7-7），同一段训练
+        bar 换一种文本写法不算不同。
+
+        checkpoint 没有记录时 `train_bounds` 就是 `config.model` 自己的日期，
+        两对原样相同，不会 warning。只在 `run()` 调用：`run_cv` 每折只与清单比较。
+        """
+        model = self.config.model
+        configured = (model.config.train_start, model.config.train_end)
+        if self._same_training_bars(calendar, train_bounds, configured):
+            return
+        logger.warning(
+            f"{self.class_name}: checkpoint {self.config.checkpoint} was trained on "
+            f"{train_bounds[0]}..{train_bounds[1]} (its config.json), but config.model "
+            f"says train_start={configured[0]!r}, train_end={configured[1]!r}; "
+            f"using the checkpoint's dates for the effective training window "
+            f"(D-17, WR-01)"
+        )
 
     @staticmethod
     def _recorded_train_bounds(saved: dict | None) -> tuple | None:
