@@ -107,8 +107,16 @@ class Factor(ABC):
     def class_name(self) -> str:
         return self.__class__.__name__
 
-    def read(self) -> Self:
-        self.data_backend.read(self.config.file_path)
+    def read(self, overwrite: bool = False) -> Self:
+        """Read the factor store and narrow it to the configured window.
+
+        The default keeps the cached read: once the backend holds data it is
+        not re-opened, and `_auto_filter()` narrows that cached panel in place.
+        Pass `overwrite=True` to re-open the store. It is required after
+        mutating `config.start_date`/`end_date`, which is what the
+        backtester's D-14 re-dating does (RESEARCH Pitfall 1).
+        """
+        self.data_backend.read(self.config.file_path, overwrite=overwrite)
         self._auto_filter()
         return self
 
