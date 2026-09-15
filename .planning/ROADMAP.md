@@ -141,7 +141,7 @@ Plans:
 **Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
 **Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 14/14 plans executed
+**Plans:** 14/18 plans executed (4 UAT gap-closure plans pending)
 
 Plans:
 
@@ -182,6 +182,21 @@ Plans:
 **Wave 8** *(blocked on Wave 7 completion)*
 
 - [x] 03.7-12-PLAN.md — Retire `quantlab/vecbt/`, correct README/CLAUDE.md/codebase maps (links the `example/backtest.md` that 03.7-13 creates)
+
+**UAT gap closure** *(03.7-UAT.md G-03.7-7/8/9)*
+
+**Gap Wave 1**
+
+- [ ] 03.7-15-PLAN.md — G-03.7-7: no spurious run_cv checkpoint-date warning; train-date checks compare the bars each pair selects on the price calendar
+- [ ] 03.7-16-PLAN.md — G-03.7-8: DL predict_panel coords follow the symbol-sorted layout whatever the training record order; `_save_model` records sorted symbols
+
+**Gap Wave 2** *(blocked on Gap Wave 1)*
+
+- [ ] 03.7-17-PLAN.md — G-03.7-9: `load()` refuses a checkpoint trained on other or reordered factors/labels (keyed on `trained_on`); the backtester delegates
+
+**Gap Wave 3** *(blocked on Gap Wave 2)*
+
+- [ ] 03.7-18-PLAN.md — G-03.7-9 (user addition): XGBoost DMatrix feature_names, predict-time name check, zero-filled W&B feature importance
 
 ### Phase 03.1: Index Historical Constituents Data Layer (INSERTED)
 
