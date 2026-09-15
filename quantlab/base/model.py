@@ -389,8 +389,11 @@ class BaseModel(ABC):
         - 有 `trained_on` 的列表：按它严格核对；
         - 没有 `trained_on`（记录出现之前训练的 checkpoint），但每个
           `factors[]` / `labels[]` 条目都有 `factor_names`：按这份旧配置字段
-          核对，不一致照样 ValueError，另外输出**一条** warning，写明它是比
-          `trained_on` 弱的记录、适用于哪几类变量；
+          核对，另外输出**一条** warning，写明它是比 `trained_on` 弱的记录、
+          适用于哪几类变量。这个字段是用户可以任意排序的配置，证明不了训练
+          顺序（REVIEW WR-01），所以**按集合**核对：变量集合不同照样
+          ValueError；只是顺序不同时每类变量再输出一条顺序无法核对的
+          warning，照常加载；
         - 两者都没有、或者旁边根本没有 `config.json`（例如只拷走了权重文件）：
           无从核对，输出**一条** warning 后继续加载。这条 warning 刻意不含
           回测器自己那句 "has no config.json"，回测器那条只管训练日期。
@@ -430,6 +433,19 @@ class BaseModel(ABC):
                 legacy.append((kind, recorded))
                 source = f"legacy {entries_key}[].factor_names"
             if recorded == current:
+                continue
+            if source != "trained_on" and sorted(recorded) == sorted(current):
+                # 旧配置字段是用户可以任意排序的 `config.factor_names`，训练却按
+                # `_get_factor_names()` 的派生顺序建数组，所以它证明不了训练顺序：
+                # 只能按集合核对，顺序不同时 warning 而不拒收（REVIEW WR-01）。
+                self._warn_load_record_once(
+                    f"{self.class_name}: checkpoint {p}: the legacy "
+                    f"{entries_key}[].factor_names record lists {kind} variables "
+                    f"{recorded}, which differ only in order from this model's "
+                    f"declared {current}; that config field cannot certify the "
+                    f"training order, so the {kind} order is unchecked and the "
+                    f"checkpoint is loaded as given (REVIEW WR-01, G-03.7-9)"
+                )
                 continue
             consequence = (
                 "feed the model different or permuted inputs"

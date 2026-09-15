@@ -22,7 +22,10 @@ What is locked here, and what turns it red:
   names training actually used;
 - old checkpoints: a sidecar without `trained_on` is checked against the legacy
   config field with one warning, a checkpoint with no usable record warns once
-  and loads, and a caller that checks and then loads sees each warning once.
+  and loads, and a caller that checks and then loads sees each warning once;
+- the legacy field cannot certify order (REVIEW WR-01): it is compared as a
+  set, so different variables still raise, while an order-only difference
+  (e.g. a user-ordered config field) loads with an order warning.
 
 Everything is synthetic, CPU-only and offline. The stand-ins are local copies
 in the style of `tests/test_xgb_model.py` and `tests/test_model_predict_panel.py`,
@@ -326,19 +329,21 @@ def _strip_trained_on(checkpoint: Path, *, drop_config_names: bool = False) -> N
 
 
 @pytest.mark.parametrize(
-    "fresh_kwargs",
+    ("fresh_kwargs", "entries_key"),
     [
-        pytest.param({}, id="identical-warns-once"),
-        pytest.param(dict(factor_names=["f_noise", "f_second", "f_signal"]), id="reordered-raises"),
+        pytest.param({}, None, id="identical-warns-once"),
+        pytest.param(dict(factor_names=["f_signal", "f_second"]), "factors", id="different-factors-raise"),
+        pytest.param(dict(label_names=["ret_a"]), "labels", id="different-labels-raise"),
     ],
 )
-def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, fresh_kwargs):
+def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, fresh_kwargs, entries_key):
     """A sidecar written before `trained_on` existed still carries the legacy
     config field `factors[].factor_names` / `labels[].factor_names`. It is a
     weaker record (see Test M), but it is the best one such a checkpoint has:
     the identical model loads with exactly ONE warning naming both kinds, and a
-    reordered model is still refused. Before this rule the legacy field was
-    ignored at the model layer, so both ids go red."""
+    model declaring DIFFERENT variables is still refused. The legacy field
+    cannot certify order (REVIEW WR-01), so it is compared as a set; order-only
+    differences are covered by the two tests below."""
     checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
     _strip_trained_on(checkpoint)
     fresh = _ml_model(tmp_path / "fresh", **fresh_kwargs)
@@ -346,7 +351,7 @@ def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, f
     if fresh_kwargs:
         with pytest.raises(ValueError, match="was trained on") as excinfo:
             fresh.load(checkpoint)
-        assert "legacy factors[].factor_names" in str(excinfo.value)
+        assert f"legacy {entries_key}[].factor_names" in str(excinfo.value)
         assert str(checkpoint) in str(excinfo.value)
         assert fresh.model is None
         return
@@ -357,6 +362,58 @@ def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, f
     assert "legacy" in legacy[0] and "weaker" in legacy[0], legacy[0]
     assert "factor" in legacy[0] and "label" in legacy[0], legacy[0]
     assert str(checkpoint) in legacy[0]
+    assert fresh.model is not None
+
+
+def _order_warnings(messages: list[str]) -> list[str]:
+    return [m for m in _model_warnings(messages) if "cannot certify" in m]
+
+
+def test_legacy_record_with_a_permuted_config_field_loads_with_an_order_warning(tmp_path, warning_messages):
+    """REVIEW WR-01: the model's OWN pre-`trained_on` checkpoint. The factor's
+    config field says [f_noise, f_signal, f_second]; training used the derived
+    order [f_signal, f_second, f_noise]. The legacy field was compared by
+    order and this checkpoint was refused as "trained on factor variables
+    [f_noise, ...]" although it matches exactly -- the false refusal plan 17
+    said it had removed. It must load, predict exactly like the trained model,
+    and emit one order warning naming both lists and the path. Red on the
+    pre-fix code ("was trained on" ValueError)."""
+    config_names = ["f_noise", "f_signal", "f_second"]
+    trained = _ml_model(tmp_path / "train", config_names=config_names)
+    checkpoint = _train(trained, ".joblib")
+    _strip_trained_on(checkpoint)
+    assert json.loads(_sidecar(checkpoint).read_text())["factors"][0]["factor_names"] == config_names
+    fresh = _ml_model(tmp_path / "fresh", config_names=config_names)
+
+    fresh.load(checkpoint)
+
+    order = _order_warnings(warning_messages)
+    assert len(order) == 1, warning_messages
+    assert str(checkpoint) in order[0]
+    assert str(config_names) in order[0] and str(FACTORS) in order[0], order[0]
+    assert "factor variables" in order[0], order[0]
+    assert any("weaker" in m for m in _model_warnings(warning_messages)), warning_messages
+    features = fresh.config.factors[0].get_features()
+    xr.testing.assert_allclose(fresh.predict_panel(features), trained.predict_panel(features))
+
+
+def test_legacy_record_cannot_certify_order_so_a_reordered_model_only_warns(tmp_path, warning_messages):
+    """The accepted cost of REVIEW WR-01, locked so it stays visible: with only
+    the legacy field, a checkpoint trained in the derived order and a model
+    that declares the same factors in another order are indistinguishable from
+    the permuted-config case above. The load is allowed, with the order
+    warning; checkpoints that carry `trained_on` still refuse this (see
+    `test_ml_load_refuses_reordered_factors_and_labels`)."""
+    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    _strip_trained_on(checkpoint)
+    reordered = ["f_noise", "f_second", "f_signal"]
+    fresh = _ml_model(tmp_path / "fresh", factor_names=reordered)
+
+    fresh.load(checkpoint)
+
+    order = _order_warnings(warning_messages)
+    assert len(order) == 1, warning_messages
+    assert str(FACTORS) in order[0] and str(reordered) in order[0], order[0]
     assert fresh.model is not None
 
 
