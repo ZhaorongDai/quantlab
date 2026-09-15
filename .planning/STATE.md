@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-08-PLAN.md
-last_updated: "2026-09-15T06:15:51.537Z"
+stopped_at: Completed 03.7-09-PLAN.md
+last_updated: "2026-09-15T06:38:56.311Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: 430630c9565f4db6a7a81c402d9b2dd2cfdb2a15
+state_head: d4c1f974538042848182a31e0d9257c0141d1468
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 72
-  completed_plans: 66
+  completed_plans: 67
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 10 of 14
+Plan: 11 of 14
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -123,6 +123,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P14 | 6 min | 2 tasks | 1 files |
 | Phase 03.7 P07 | 8 min | 2 tasks | 6 files |
 | Phase 03.7 P08 | 15 min | 2 tasks | 4 files |
+| Phase 03.7 P09 | 17 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -274,6 +275,9 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-07: the test_model_cv.py goldens coexist with D-30 by excluding exactly BaseModel.CV_FOLDS_FILENAME from the two project-directory listings and asserting it exists; no golden value changed
 - [Phase 03.7]: 03.7-08: slice hooks take a ranges list; in/out-of-sample metrics are cut from the single simulation (sliced pf.returns plus time-filtered order/trade records), never re-simulated
 - [Phase 03.7]: 03.7-08: turnover = one-sided fill-bar notional / previous-bar portfolio value (init_cash on the first bar); window membership compared on datetime64[D]
+- [Phase 03.7]: 03.7-09: a run fingerprints every dataset it read with a NaN- and signed-zero-canonical sha256 (price_dataset over fill and valuation columns in the window, each factor dataset over its consumed columns right after the refreshed reads, so warm-up is included); a supplied expected_fingerprint only warns per differing dataset and the run continues
+- [Phase 03.7]: 03.7-09: config.json carries a top-level data_fingerprint that is not a BacktestConfig field; the D-25 loader (03.7-11) must remove it before building the config and can assign it to expected_fingerprint
+- [Phase 03.7]: 03.7-09: report.html shades the persisted in_sample_range as one band (an interval intersection is contiguous) and loads plotly.js from the CDN; wandb is called from run() only when use_wandb is true, into a separate class_backtest run
 
 ### Pending Todos
 
@@ -331,8 +335,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T06:15:51.226Z
-Stopped at: Completed 03.7-08-PLAN.md
+Last session: 2026-09-15T06:38:56.017Z
+Stopped at: Completed 03.7-09-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
