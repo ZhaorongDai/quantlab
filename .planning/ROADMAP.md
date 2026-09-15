@@ -141,7 +141,7 @@ Plans:
 **Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
 **Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 17/18 plans executed (4 UAT gap-closure plans pending)
+**Plans:** 18/18 plans executed (4 UAT gap-closure plans pending)
 
 Plans:
 
@@ -196,7 +196,7 @@ Plans:
 
 **Gap Wave 3** *(blocked on Gap Wave 2)*
 
-- [ ] 03.7-18-PLAN.md — G-03.7-9 (user addition): XGBoost DMatrix feature_names, predict-time name check, zero-filled W&B feature importance
+- [x] 03.7-18-PLAN.md — G-03.7-9 (user addition): XGBoost DMatrix feature_names, predict-time name check, zero-filled W&B feature importance
 
 ### Phase 03.1: Index Historical Constituents Data Layer (INSERTED)
 
