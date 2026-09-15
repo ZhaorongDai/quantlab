@@ -65,6 +65,46 @@ class CrossSectionTopNSelector:
         if self.top_n < 1:
             raise ValueError(f"top_n must be >= 1, got {self.top_n}")
 
+    @staticmethod
+    def _align_to_scores(
+        scores: xr.DataArray, next_fill_price: xr.DataArray
+    ) -> xr.DataArray:
+        """把下一 bar 成交价按**坐标标签**对齐到分数上（代码审查 WR-09）。
+
+        以前只比较形状，然后各取 `.values` 按位置配对：形状相同、但标的或时间
+        顺序不同的两块面板，会把每个分数配上**另一个**标的的成交价可得性，而
+        权重却挂在分数的坐标上。回测器内部靠 `reindex` 保证了轴一致，但直接
+        调用本组件的人（Phase 5 的优化器旁路、将来的兄弟回测器）不受保护。
+
+        - 任一轴有重复标签：ValueError；
+        - 两个轴的标签集合不同（缺或多）：ValueError，写明哪个轴、缺了哪些、
+          多了哪些。缺成交价不能悄悄当成「不可选」：错位的时间轴（比如移错了
+          方向的 shift）会整行变成不可选，看起来只是没选到股票；
+        - 集合相同、顺序不同：按分数的顺序重排成交价。
+        """
+        for dim in ("timestamp", "symbol"):
+            wanted = pd.Index(scores[dim].values)
+            got = pd.Index(next_fill_price[dim].values)
+            if wanted.has_duplicates or got.has_duplicates:
+                raise ValueError(
+                    f"{dim} labels must be unique in both scores and "
+                    f"next_fill_price"
+                )
+            if wanted.equals(got):
+                continue
+            missing = wanted.difference(got, sort=False)
+            extra = got.difference(wanted, sort=False)
+            if len(missing) or len(extra):
+                raise ValueError(
+                    f"next_fill_price {dim} labels differ from the scores': "
+                    f"missing {[str(v) for v in missing[:10]]}, extra "
+                    f"{[str(v) for v in extra[:10]]}; fill prices must be given "
+                    f"on exactly the scores' labels (WR-09)"
+                )
+        return next_fill_price.sel(
+            timestamp=scores.timestamp.values, symbol=scores.symbol.values
+        )
+
     def select(
         self,
         scores: xr.DataArray,
@@ -89,7 +129,9 @@ class CrossSectionTopNSelector:
           该行全 0.0，即清仓，而不是 NaN。
         """
         scores = scores.transpose("timestamp", "symbol")
-        next_fill_price = next_fill_price.transpose("timestamp", "symbol")
+        next_fill_price = self._align_to_scores(
+            scores, next_fill_price.transpose("timestamp", "symbol")
+        )
         score_values = np.asarray(scores.values, dtype=np.float64)
         fill_values = np.asarray(next_fill_price.values, dtype=np.float64)
         rebalance = np.asarray(rebalance, dtype=bool)

@@ -160,6 +160,50 @@ def test_nan_next_fill_price_is_never_selected():
     assert w[3] == 0.5 and w[5] == 0.5
 
 
+def test_fill_prices_pair_with_scores_by_label_not_position():
+    """Code review WR-09: `select` pairs each score with ITS symbol's fill price.
+
+    BBB has the top score but no fill price. The fill panel has the same
+    shape as the scores and its symbols in reverse order. Pairing by position
+    would put the NaN on EEE, select BBB and target a symbol that cannot be
+    filled. The old `select` compared shapes only and went red here. The
+    fixed selector aligns by coordinate label, so BBB is ineligible and DDD and
+    FFF are chosen, exactly as with an identically ordered fill panel.
+    """
+    scores = _panel(DISTINCT)
+    fill = _finite_fill(scores)
+    fill.loc[dict(symbol="BBB")] = NAN
+    reversed_fill = fill.isel(symbol=slice(None, None, -1))
+    assert reversed_fill.shape == scores.shape
+    assert reversed_fill.symbol.values.tolist() != scores.symbol.values.tolist()
+
+    w = _select("long_only", 2, scores, reversed_fill)[0]
+
+    assert w[1] == 0.0
+    assert w[3] == 0.5 and w[5] == 0.5
+    np.testing.assert_array_equal(w, _select("long_only", 2, scores, fill)[0])
+
+
+def test_fill_prices_on_other_labels_are_refused():
+    """Code review WR-09: a fill panel on other symbols or bars is a caller error.
+
+    Same shape, different labels: one symbol swapped for `ZZZ`, or every
+    timestamp moved by a day (a mis-applied shift). The old shape-only check
+    accepted both and paired values by position, so both cases go red. The
+    error must name the differing axis or label.
+    """
+    scores = _panel(DISTINCT)
+    other_symbols = _panel([100.0] * len(SYMBOLS), symbols=SYMBOLS[:-1] + ["ZZZ"])
+    with pytest.raises(ValueError, match="ZZZ"):
+        _select("long_only", 2, scores, other_symbols)
+
+    shifted = _finite_fill(scores).assign_coords(
+        timestamp=scores.timestamp.values + np.timedelta64(1, "D")
+    )
+    with pytest.raises(ValueError, match="timestamp"):
+        _select("long_only", 2, scores, shifted)
+
+
 def test_short_long_only_book_splits_among_available_and_warns():
     """Bar 0 has every symbol eligible; on bar 1 only CCC is. With top_n=2,
     bar 1 puts the whole book (1.0) on CCC, and exactly one WARNING fires,
