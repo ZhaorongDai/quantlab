@@ -42,9 +42,12 @@ What is locked here, the decision each lock enforces, and what turns it red:
   `quantlab/backtest/`, `quantlab/base/backtest.py` and
   `quantlab/utils/module.py` (the config loader) imports the backtest layer.
 - **vectorbt stays inside the engine (D-31).** No quantlab module other than
-  `quantlab/backtest/engine_vectorbt.py` imports vectorbt. `quantlab/vecbt/`
-  is temporarily exempt; plan 03.7-12 retires that package and removes the
-  exemption.
+  `quantlab/backtest/engine_vectorbt.py` imports vectorbt, with no exemption.
+  (Plan 03.7-14 shipped a temporary exemption for the legacy helper package;
+  plan 03.7-12 retired that package and removed the exemption.)
+- **The legacy helper package stays retired (D-31, CLEAN-02).** `quantlab.vecbt`
+  cannot be found by the import system and its directory does not exist, so
+  neither a restored module nor a stray `__pycache__`-only directory passes.
 
 Everything is static or construction-only: offline and CPU-only, with no store
 and no model.
@@ -331,13 +334,9 @@ def test_vectorbt_is_imported_only_by_the_engine():
     # importer anywhere cannot pass by being blind.
     assert "vectorbt" in _resolved_imports(engine)
 
-    # TEMPORARY ALLOWANCE: quantlab/vecbt/ is the legacy helper that D-31
-    # deletes. Plan 03.7-12 retires the package and removes this allowance.
-    legacy_vecbt = REPO_ROOT / "quantlab/vecbt"
-
     offenders = {}
     for path in _python_files(REPO_ROOT / "quantlab"):
-        if path == engine or legacy_vecbt in path.parents:
+        if path == engine:
             continue
         names = sorted(
             name for name in _resolved_imports(path) if _is_or_under(name, "vectorbt")
@@ -345,3 +344,23 @@ def test_vectorbt_is_imported_only_by_the_engine():
         if names:
             offenders[str(path.relative_to(REPO_ROOT))] = names
     assert offenders == {}, offenders
+
+
+def test_vecbt_package_is_retired():
+    """The legacy vectorbt signal helper stays deleted (D-31, CLEAN-02).
+
+    `quantlab/vecbt/bt.py:backtest_from_signals` called `from_signals` with no
+    size semantics and never reached a working state; `quantlab/backtest/`
+    replaced it. Both arms are needed: the editable install maps only the top
+    `quantlab` package, so a restored `__init__.py` makes `find_spec` succeed,
+    while a leftover directory holding only `__pycache__` is invisible to
+    `find_spec` but still misleads a reader browsing the tree.
+    """
+    import importlib.util
+
+    # Positive control: the lookup does see real subpackages, so a `None`
+    # below is evidence of absence, not a blind resolver.
+    assert importlib.util.find_spec("quantlab.backtest") is not None
+
+    assert importlib.util.find_spec("quantlab.vecbt") is None
+    assert not (REPO_ROOT / "quantlab/vecbt").exists()
