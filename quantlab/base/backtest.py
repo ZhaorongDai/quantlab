@@ -58,6 +58,8 @@ class SimulationResult:
     - `orders`：维度 `order`，变量 `timestamp`、`symbol`、`size`、`price`、`fees`、`side`；
     - `liquidations`：强制平仓记录；
     - `bar_interval`：模拟使用的 bar 间隔；
+    - `trades`：维度 `trade`，变量 `symbol`、`entry_timestamp`、`exit_timestamp`、
+      `pnl`、`return`、`status`（`Open` / `Closed`）；没有交易时是空 Dataset；
     - `native`：引擎自己的结果对象，只由产出它的引擎读取。
     """
 
@@ -66,6 +68,7 @@ class SimulationResult:
     orders: xr.Dataset
     liquidations: list[dict]
     bar_interval: np.timedelta64
+    trades: xr.Dataset | None = None
     native: object | None = None
 
 
@@ -438,6 +441,18 @@ class BaseBacktester(ABC):
     def _engine_stats(self, simulation: SimulationResult) -> dict:
         """引擎自己的整段统计指标，键为指标名。"""
 
+    @abstractmethod
+    def _period_returns_stats(
+        self, simulation: SimulationResult, ranges: list[tuple[str, str]]
+    ) -> dict:
+        """只看 `ranges` 内收益的收益类统计（D-34）。
+
+        组合对象不能按时间切片（03.7-RESEARCH.md Pitfall 5），重新模拟一段又会
+        重置资金、改变路径，所以切片统计只能取**同一次**连续模拟的收益序列，
+        截到 `ranges`（ISO 日期对，含两端）后交给引擎的收益统计。多段时把各段
+        收益按时间顺序拼起来算。
+        """
+
     def _label_horizon_bars(self) -> int:
         """模型所有标签里最大的 `n_forward_periods`，单位是 bar（D-17）。
 
@@ -566,13 +581,170 @@ class BaseBacktester(ABC):
         ]
         return split
 
+    @staticmethod
+    def _in_ranges(timestamps: np.ndarray, ranges: list[tuple[str, str]]) -> np.ndarray:
+        """`timestamps` 中落在任一 ISO 日期对内（按日期、含两端）的布尔掩码。"""
+        days = np.asarray(timestamps).astype("datetime64[ns]").astype("datetime64[D]")
+        mask = np.zeros(days.size, dtype=bool)
+        for start, end in ranges:
+            mask |= (days >= np.datetime64(start, "D")) & (days <= np.datetime64(end, "D"))
+        return mask
+
+    def _turnover(self, simulation: SimulationResult) -> xr.DataArray:
+        """每个有成交的 bar 的换手率，维度 `timestamp`（D-22，口径由本方法定义）。
+
+        换手率 = 该 bar 所有订单的单边成交额之和（`|size| x 成交价`）/ 上一个
+        bar 的组合净值；窗口第一个 bar 没有上一个 bar，用 `config.init_cash`。
+        单边口径：从空仓全仓买入约为 1，整个组合换成另一批标的（先卖后买）约为 2。
+        分母取成交前的净值而不是成交 bar 的净值，这样换手率不含成交当 bar 的盈亏。
+        没有订单时返回空数组。
+        """
+        orders = simulation.orders
+        if orders.sizes.get("order", 0) == 0:
+            return xr.DataArray(
+                np.array([], dtype=np.float64),
+                dims=("timestamp",),
+                coords={"timestamp": np.array([], dtype="datetime64[ns]")},
+            )
+
+        order_ts = orders["timestamp"].values.astype("datetime64[ns]")
+        notional = np.abs(orders["size"].values.astype(np.float64)) * orders[
+            "price"
+        ].values.astype(np.float64)
+        fill_bars, inverse = np.unique(order_ts, return_inverse=True)
+        traded = np.zeros(fill_bars.size, dtype=np.float64)
+        np.add.at(traded, inverse, notional)
+
+        value_ts = simulation.value.timestamp.values.astype("datetime64[ns]")
+        idx = np.searchsorted(value_ts, fill_bars)
+        if (idx >= value_ts.size).any() or not np.array_equal(
+            value_ts[np.minimum(idx, value_ts.size - 1)], fill_bars
+        ):
+            raise ValueError(
+                f"{self.class_name}: an order timestamp is not on the equity "
+                f"timestamp axis"
+            )
+        values = np.asarray(simulation.value.values, dtype=np.float64)
+        previous = np.where(
+            idx > 0, values[np.maximum(idx - 1, 0)], float(self.config.init_cash)
+        )
+        return xr.DataArray(
+            traded / previous, dims=("timestamp",), coords={"timestamp": fill_bars}
+        )
+
+    def _turnover_summary(self, turnover: xr.DataArray, bar_interval) -> dict:
+        """换手率汇总：每次调仓均值、总和、年化。
+
+        年化 = 每次调仓均值 x 每年 bar 数 / `rebalance_periods`；每年 bar 数取
+        `MARKET.year_freq(bar_interval) / bar_interval`。没有成交 bar 时均值与年化
+        是 NaN（落盘为 null），总和是 0。
+        """
+        values = np.asarray(turnover.values, dtype=np.float64)
+        interval = pd.Timedelta(bar_interval)
+        bars_per_year = self.MARKET.year_freq(interval) / interval  # type: ignore[union-attr]
+        mean = float(values.mean()) if values.size else float("nan")
+        return {
+            "mean_per_rebalance": mean,
+            "sum": float(values.sum()),
+            "annualized": mean * bars_per_year / self.config.rebalance_periods,
+        }
+
+    def _period_record_stats(
+        self, simulation: SimulationResult, ranges: list[tuple[str, str]]
+    ) -> dict:
+        """按时间段过滤的订单、交易与换手统计（D-34）。
+
+        - `order_count` / `fees_paid` / `traded_notional`：成交时间落在段内的订单；
+        - `closed_trade_count`：平仓时间落在段内、状态为 Closed 的交易；
+        - `open_trade_count`：段末仍未平仓的交易（入场不晚于段末，且尚未平仓
+          或平仓晚于段末）；
+        - `turnover`：段内成交 bar 的 `_turnover_summary`。
+
+        多段时：订单与已平仓交易按段求和（段互不重叠，等于逐段相加），段末
+        持仓数逐段相加，换手率汇总取所有段内成交 bar 的并集。
+        """
+        orders = simulation.orders
+        if orders.sizes.get("order", 0) > 0:
+            in_range = self._in_ranges(orders["timestamp"].values, ranges)
+            sizes = np.abs(orders["size"].values.astype(np.float64))[in_range]
+            prices = orders["price"].values.astype(np.float64)[in_range]
+            fees = orders["fees"].values.astype(np.float64)[in_range]
+            order_count = int(in_range.sum())
+            fees_paid = float(fees.sum())
+            traded_notional = float((sizes * prices).sum())
+        else:
+            order_count, fees_paid, traded_notional = 0, 0.0, 0.0
+
+        trades = simulation.trades
+        closed_trade_count = open_trade_count = 0
+        if trades is not None and trades.sizes.get("trade", 0) > 0:
+            status = trades["status"].values.astype(str)
+            closed = status == "Closed"
+            closed_trade_count = int(
+                (closed & self._in_ranges(trades["exit_timestamp"].values, ranges)).sum()
+            )
+            entry_days = (
+                trades["entry_timestamp"].values.astype("datetime64[ns]").astype("datetime64[D]")
+            )
+            exit_days = (
+                trades["exit_timestamp"].values.astype("datetime64[ns]").astype("datetime64[D]")
+            )
+            for _, end in ranges:
+                end_day = np.datetime64(end, "D")
+                open_at_end = (entry_days <= end_day) & (~closed | (exit_days > end_day))
+                open_trade_count += int(open_at_end.sum())
+
+        turnover = self._turnover(simulation)
+        turnover = turnover.isel(
+            timestamp=self._in_ranges(turnover.timestamp.values, ranges)
+        )
+        return {
+            "order_count": order_count,
+            "fees_paid": fees_paid,
+            "traded_notional": traded_notional,
+            "closed_trade_count": closed_trade_count,
+            "open_trade_count": open_trade_count,
+            "turnover": self._turnover_summary(turnover, simulation.bar_interval),
+        }
+
     def _compute_metrics(
         self,
         simulation: SimulationResult,
         benchmark: SimulationResult | None,
         split: dict,
     ) -> dict:
-        metrics = {"whole": self._engine_stats(simulation)}
+        """整段、样本内、样本外三块指标，全部取自同一次连续模拟（D-17、D-22、D-34）。
+
+        - `whole`：引擎的整段统计（不含基准）加 `turnover` 汇总；
+        - `in_sample`：样本内区间的收益统计（`_period_returns_stats`）合并按区间
+          过滤的订单/交易/换手统计（`_period_record_stats`）；没有样本内区间时 None；
+        - `out_of_sample`：同上，作用于样本外各段。两段时收益统计用拼接后的
+          样本外收益，记录统计把两段相加；没有样本外区间时 None；
+        - `benchmark`：只在有基准时出现（D-08）；
+        - `training_window` / `in_sample_range` / `out_of_sample_ranges`：`_split_window`
+          的结果原样并入顶层。
+
+        本方法与本模块的任何路径都不会发起第二次模拟：组合不能切片，切片重算
+        会重置资金、改变路径。
+        """
+        whole = self._engine_stats(simulation)
+        whole["turnover"] = self._turnover_summary(
+            self._turnover(simulation), simulation.bar_interval
+        )
+        metrics: dict = {"whole": whole}
+
+        def _slice(ranges: list[tuple[str, str]]) -> dict | None:
+            if not ranges:
+                return None
+            return {
+                **self._period_returns_stats(simulation, ranges),
+                **self._period_record_stats(simulation, ranges),
+            }
+
+        in_sample_range = split["in_sample_range"]
+        metrics["in_sample"] = _slice([in_sample_range] if in_sample_range else [])
+        metrics["out_of_sample"] = _slice(list(split["out_of_sample_ranges"]))
+
         if benchmark is not None:
             metrics["benchmark"] = self._engine_stats(benchmark)
         for key in ("training_window", "in_sample_range", "out_of_sample_ranges"):

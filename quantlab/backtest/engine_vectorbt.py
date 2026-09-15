@@ -148,6 +148,30 @@ class VectorBtBacktester(BaseBacktester):
             }
         )
 
+        trade_records = pf.trades.records_readable
+        if len(trade_records) == 0:
+            trades = xr.Dataset()
+        else:
+            trades = xr.Dataset(
+                {
+                    "symbol": ("trade", trade_records["Column"].astype(str).to_numpy()),
+                    "entry_timestamp": (
+                        "trade",
+                        pd.to_datetime(trade_records["Entry Timestamp"]).to_numpy(),
+                    ),
+                    "exit_timestamp": (
+                        "trade",
+                        pd.to_datetime(trade_records["Exit Timestamp"]).to_numpy(),
+                    ),
+                    "pnl": ("trade", trade_records["PnL"].to_numpy(dtype=np.float64)),
+                    "return": (
+                        "trade",
+                        trade_records["Return"].to_numpy(dtype=np.float64),
+                    ),
+                    "status": ("trade", trade_records["Status"].astype(str).to_numpy()),
+                }
+            )
+
         liquidations = self._forced_liquidations(
             weight_values=np.asarray(w.to_numpy(), dtype=np.float64),
             raw_fill=np.asarray(raw_fill.values, dtype=np.float64),
@@ -163,6 +187,7 @@ class VectorBtBacktester(BaseBacktester):
             orders=orders,
             liquidations=liquidations,
             bar_interval=bar_interval,
+            trades=trades,
             native=pf,
         )
 
@@ -268,4 +293,27 @@ class VectorBtBacktester(BaseBacktester):
             ),
             silence_warnings=True,
         )
+        return stats.to_dict()
+
+    def _period_returns_stats(
+        self, simulation: SimulationResult, ranges: list[tuple[str, str]]
+    ) -> dict:
+        """同一次模拟的收益截到 `ranges` 后，用 vectorbt 收益访问器算统计（D-34）。
+
+        `Portfolio` 不能按时间切片（Pitfall 5），所以只切 `pf.returns()`：每段
+        `.loc[start:end]`（按日期含两端），多段按时间顺序拼接。年化口径与整段
+        统计一致，取自市场规格。截出来是空序列时报错：切片区间来自回测窗口的
+        bar，空序列说明调用方传错了区间。
+        """
+        returns = simulation.native.returns()  # type: ignore[union-attr]
+        pieces = [returns.loc[start:end] for start, end in ranges]
+        sliced = pd.concat(pieces) if len(pieces) > 1 else pieces[0]
+        if sliced.empty:
+            raise ValueError(
+                f"{self.class_name}: no simulated returns inside {ranges}"
+            )
+        stats = sliced.vbt.returns(
+            freq=pd.Timedelta(simulation.bar_interval),
+            year_freq=self.MARKET.year_freq(simulation.bar_interval),  # type: ignore[union-attr]
+        ).stats(silence_warnings=True)
         return stats.to_dict()
