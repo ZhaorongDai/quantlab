@@ -427,6 +427,170 @@ def test_changed_store_logs_a_fingerprint_warning_and_completes(tmp_path, warnin
 
 
 # --------------------------------------------------------------------------
+# D-27 / code review WR-05: fingerprint what predictions and training really read
+# --------------------------------------------------------------------------
+
+
+def _read_strategy_backtester(root, dataset_config, checkpoint, factor_store, *, tag):
+    """Load mode whose model reads its features from a saved factor STORE."""
+    from quantlab.base.config import MLConfig, PolarsFactorConfig
+    from tests.backtest_fixtures import (
+        FirstFeatureHead,
+        ForwardReturnLabel,
+        PastReturnFactor,
+    )
+
+    factor = PastReturnFactor(
+        PolarsFactorConfig(
+            window=5,
+            dataset=make_stock_dataset(dataset_config),
+            file_path=str(factor_store),
+            kwargs={"n": 1},
+        )
+    )
+    label = ForwardReturnLabel(
+        PolarsFactorConfig(
+            window=0,
+            dataset=make_stock_dataset(dataset_config),
+            kwargs={"n_forward_periods": 1},
+        )
+    )
+    model = FirstFeatureHead(
+        MLConfig(
+            factors=[factor],
+            labels=[label],
+            model_save_dir=str(root / f"backtest_{tag}" / "models"),
+            factor_data_strategy="read",
+            label_data_strategy="cal",
+            val_size=0.0,
+            **_model_dates(),
+        )
+    )
+    return _backtester(
+        root, dataset_config, checkpoint, tag=tag,
+        window_start_bar=30, window_end_bar=50, model=model,
+    )
+
+
+def _shift_value(zarr_path, variable: str, timestamp, symbol: str, shift: float) -> None:
+    """Rewrite one value of a Zarr store, as a factor recompute or a re-base would."""
+    ds = xr.open_zarr(zarr_path).load()
+    for item in ds.variables.values():
+        item.encoding = {}
+    point = dict(timestamp=timestamp, symbol=symbol)
+    before = float(ds[variable].loc[point])
+    assert np.isfinite(before), (variable, point)
+    ds[variable].loc[point] = before + shift
+    ds.to_zarr(zarr_path, mode="w")
+
+
+def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
+    tmp_path, warnings_sink
+):
+    """Code review WR-05: under `factor_data_strategy="read"` the factor STORE is fingerprinted.
+
+    Read-strategy features come from the saved factor store, not from the raw
+    dataset. The old code hashed only the raw dataset behind each factor, so a
+    recomputed or edited factor store changed the predictions and weights
+    while the stored fingerprint still matched, with no warning. D-27 exists to
+    catch exactly that. The run must record `factor_store[0]:PastReturnFactor`
+    and warn on it, and only on it, after one stored factor value changes. Red
+    on the old code: no such key.
+    """
+    from quantlab.base.config import PolarsFactorConfig
+    from tests.backtest_fixtures import PastReturnFactor
+
+    dataset_config, checkpoint = _trained_store(tmp_path)
+    factor_store = tmp_path / "factors" / "past_ret.zarr"
+    PastReturnFactor(
+        PolarsFactorConfig(
+            window=5,
+            dataset=make_stock_dataset(dataset_config),
+            file_path=str(factor_store),
+            kwargs={"n": 1},
+        )
+    ).cal().save(mode="w")
+
+    first = _read_strategy_backtester(
+        tmp_path, dataset_config, checkpoint, factor_store, tag="a"
+    ).run()
+    expected = _strict_json(first.run_dir / "fingerprint.json")
+    assert [k for k in expected if k.startswith("factor_store[")] == [
+        "factor_store[0]:PastReturnFactor"
+    ], sorted(expected)
+
+    _shift_value(factor_store, "past_ret_1", BARS[35], SYMBOLS[0], shift=0.01)
+    rebuild = _read_strategy_backtester(
+        tmp_path, dataset_config, checkpoint, factor_store, tag="b"
+    )
+    rebuild.expected_fingerprint = expected
+    warnings_sink.clear()
+    result = rebuild.run()
+
+    assert result.run_dir.exists()
+    changed = _fingerprint_warnings(warnings_sink)
+    store_warnings = [m for m in changed if "factor_store[0]:PastReturnFactor" in m]
+    assert len(store_warnings) == 1, warnings_sink
+    assert "digest" in store_warnings[0]
+    assert not any("'price_dataset'" in m or "'factor[0]" in m for m in changed), changed
+
+
+def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warnings_sink):
+    """Code review WR-05: train mode fingerprints each factor and label dataset it trains on.
+
+    The model trains on bars 0..29, and the backtest window 30..50 warms up
+    from bar 25. A retroactive re-base at bar 10 lies inside training only.
+    The old fingerprint covered just the price window and the factors'
+    warm-up plus window, so the rebuild silently retrained a different model.
+    The run must record `train_factor[0]:PastReturnFactor` and
+    `train_label[0]:ForwardReturnLabel`, and the rebuild must warn on both
+    and on neither backtest-window key. Red on the old code: no such keys.
+    """
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+
+    def _train_mode(tag: str) -> USEquityCrossectionSelectStockVectorBt:
+        return USEquityCrossectionSelectStockVectorBt(
+            CrossSectionBacktestConfig(
+                price_dataset=make_stock_dataset(dataset_config),
+                model=make_model(
+                    tmp_path / f"backtest_{tag}", dataset_config, **_model_dates()
+                ),
+                model_mode="train",
+                start_date=_day(BARS[30]),
+                end_date=_day(BARS[50]),
+                output_dir=str(tmp_path / "runs"),
+                rebalance_periods=5,
+                direction="long_only",
+                top_n=2,
+            )
+        )
+
+    first = _train_mode("a").run()
+    expected = _strict_json(first.run_dir / "fingerprint.json")
+    assert {
+        "train_factor[0]:PastReturnFactor",
+        "train_label[0]:ForwardReturnLabel",
+    } <= set(expected), sorted(expected)
+
+    _shift_value(
+        dataset_config.zarr_file_path,
+        MARKET.valuation_price_column,
+        BARS[10],
+        SYMBOLS[0],
+        shift=0.5,
+    )
+    rebuild = _train_mode("b")
+    rebuild.expected_fingerprint = expected
+    warnings_sink.clear()
+    rebuild.run()
+
+    changed = _fingerprint_warnings(warnings_sink)
+    assert any("train_factor[0]:PastReturnFactor" in m for m in changed), warnings_sink
+    assert any("train_label[0]:ForwardReturnLabel" in m for m in changed), warnings_sink
+    assert not any("'price_dataset'" in m or "'factor[0]" in m for m in changed), changed
+
+
+# --------------------------------------------------------------------------
 # D-23 / D-21 / D-08: the report and the short-side note
 # --------------------------------------------------------------------------
 

@@ -775,6 +775,8 @@ class BaseBacktester(ABC):
             saved = self._load_model_checkpoint(self.config.checkpoint)
             return self._checkpoint_train_bounds(saved, self.config.checkpoint)
         model.collect()
+        # 训练段数据的指纹（代码审查 WR-05）：collect 刚读完、train 之前记录。
+        self._record_training_fingerprints()
         # 记下训练出的 checkpoint（代码审查 WR-04），config.json 与 metrics.json 据此记录。
         self._trained_checkpoint = str(model.train())
         return model.config.train_start, model.config.train_end
@@ -1013,21 +1015,78 @@ class BaseBacktester(ABC):
         ]
         self._fingerprints["price_dataset"] = dataset_fingerprint(prices, columns)
 
+    @staticmethod
+    def _dataset_variables_fingerprint(factor) -> dict:
+        """一个因子（或标签）背后数据集当前持有范围的指纹，覆盖它真正消费的列。
+
+        KunQuant 因子（`FactorConfig`）是 `data_columns`；Polars 因子消费整个
+        lazyframe，所以是数据集的全部数据变量。
+        """
+        ds = factor.config.dataset.get_xarray_dataset()
+        if isinstance(factor.config, FactorConfig):
+            variables = list(factor.config.data_columns)
+        else:
+            variables = list(ds.data_vars)
+        return dataset_fingerprint(ds, variables)
+
+    @staticmethod
+    def _store_fingerprint(ds: xr.Dataset) -> dict:
+        """因子库或标签库读出的面板（`get_features()` / `get_labels()`）的指纹，覆盖全部变量。"""
+        return dataset_fingerprint(ds, list(ds.data_vars))
+
     def _record_factor_fingerprints(self) -> None:
         """每个因子背后数据集的指纹，键 `factor[{i}]:{类名}`（D-27）。
 
-        覆盖的变量是因子真正消费的列：KunQuant 因子（`FactorConfig`）是
-        `data_columns`；Polars 因子消费整个 lazyframe，所以是数据集的全部数据
-        变量。时间范围是因子数据集当前持有的范围，调用时机保证它包含预热。
+        覆盖的变量口径见 `_dataset_variables_fingerprint`。时间范围是因子数据集
+        当前持有的范围，调用时机保证它包含预热。
+
+        `factor_data_strategy == "read"` 时再记一个键 `factor_store[{i}]:{类名}`
+        （代码审查 WR-05）。read 策略的特征来自**因子库**（`factor.read`），不是
+        数据集，而以前只给数据集算指纹：因子库被重算或改动后，预测和权重都变了，
+        指纹却照样匹配、没有任何警告，这正是 D-27 要抓的情况。这个键覆盖
+        `factor.get_features()` 的全部变量，调用时机保证因子库已按「预热 + 窗口」
+        重读。
         """
+        strategy = self.config.model.config.factor_data_strategy
         for i, factor in enumerate(self.config.model.config.factors):
-            ds = factor.config.dataset.get_xarray_dataset()
-            if isinstance(factor.config, FactorConfig):
-                variables = list(factor.config.data_columns)
-            else:
-                variables = list(ds.data_vars)
-            key = f"factor[{i}]:{type(factor).__name__}"
-            self._fingerprints[key] = dataset_fingerprint(ds, variables)
+            name = type(factor).__name__
+            self._fingerprints[f"factor[{i}]:{name}"] = (
+                self._dataset_variables_fingerprint(factor)
+            )
+            if strategy == "read":
+                self._fingerprints[f"factor_store[{i}]:{name}"] = (
+                    self._store_fingerprint(factor.get_features())
+                )
+
+    def _record_training_fingerprints(self) -> None:
+        """train 模式训练所用数据的指纹；在 `collect()` 之后、`train()` 之前调用（代码审查 WR-05）。
+
+        回测窗口的指纹（价格窗口、因子的「预热 + 窗口」）不含训练段。训练窗口里
+        的一次回溯重算复权会让重建时训练出另一个模型，以前不会有任何警告。所以
+        对模型的每个因子与标签各记一个键，范围是 `collect()` 刚读过的范围（模型
+        自己的 start_date..end_date，另含因子自带的日历日缓冲）：
+
+        - `cal` 策略：`train_factor[{i}]:{类名}` / `train_label[{i}]:{类名}`，
+          覆盖背后数据集真正消费的列（`_dataset_variables_fingerprint`）；
+        - `read` 策略：`train_factor_store[{i}]:{类名}` /
+          `train_label_store[{i}]:{类名}`，覆盖因子库 / 标签库读出的全部变量。
+          read 策略训练时不读数据集，只有库是训练真正用到的数据。
+        """
+        model_config = self.config.model.config
+        for prefix, items, strategy, getter in (
+            ("train_factor", model_config.factors, model_config.factor_data_strategy, "get_features"),
+            ("train_label", model_config.labels, model_config.label_data_strategy, "get_labels"),
+        ):
+            for i, item in enumerate(items):
+                name = type(item).__name__
+                if strategy == "read":
+                    self._fingerprints[f"{prefix}_store[{i}]:{name}"] = (
+                        self._store_fingerprint(getattr(item, getter)())
+                    )
+                else:
+                    self._fingerprints[f"{prefix}[{i}]:{name}"] = (
+                        self._dataset_variables_fingerprint(item)
+                    )
 
     def _compare_fingerprints(self) -> None:
         """与 `expected_fingerprint` 比对本次记录的指纹（D-27）；只 warning，不中断。
