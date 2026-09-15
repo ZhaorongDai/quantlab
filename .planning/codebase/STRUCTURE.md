@@ -8,6 +8,7 @@
 quantlab/
 ├── base/                 # Abstract base classes shared by every layer
 │   ├── backend.py         #   DataBackend ABC (storage abstraction)
+│   ├── backtest.py        #   BaseBacktester ABC (run/run_cv templates, MarketSpec, result dataclasses)
 │   ├── config.py          #   DatasetConfig/FactorConfig/DLConfig/MLConfig dataclasses
 │   ├── data.py             #   Dataset ABC (raw data -> xarray)
 │   ├── factor.py           #   FactorKunQuant ABC (KunQuant-compiled factor/label computation)
@@ -36,12 +37,12 @@ quantlab/
 ├── ml_model/                # Non-torch model persistence (no concrete MLConfig model yet)
 │   ├── backend.py                #   MlBackend (joblib-based ModelBackend)
 │   └── __init__.py                #   empty
-├── backtest/                # Nautilus Trader live/backtest strategy
-│   ├── test_strategy.py          #   Test(Strategy): loads a trained model, trades live bars
-│   └── (no __init__.py present)
-├── vecbt/                    # vectorbt-based backtesting
-│   └── bt.py                     #   backtest_from_signals (incomplete/broken, see ARCHITECTURE.md)
-│   └── (no __init__.py present)
+├── backtest/                # Cross-sectional backtester layer (phase 03.7), on base/backtest.py:BaseBacktester
+│   ├── engine_vectorbt.py        #   VectorBtBacktester (vectorbt from_orders, target percent, t+1 open fills)
+│   ├── selection.py               #   CrossSectionTopNSelector, rebalance_mask, resolve_score_label
+│   ├── us_equity.py                #   US_EQUITY_MARKET, USEquityCrossectionSelectStockVectorBt
+│   └── __init__.py                 #   empty
+│   (Nautilus test_strategy.py deleted 2026-09-07; the vecbt/ helper package was retired in phase 03.7, D-31)
 ├── config/                    # Config factories + static instrument metadata
 │   ├── __init__.py                #   spot_kline_config/alpha101_config/alpha158_config/spot_label_config (hardcoded absolute paths)
 │   └── instruments.yaml            #   Binance instrument precision/fees/margin metadata
@@ -90,9 +91,9 @@ quantlab/
 - Purpose: Model definitions and training-loop specializations. `dl_model/` is by far the more developed of the two (torch models fully implemented); `ml_model/` currently only contains a persistence backend with no concrete `MLConfig`-based model — `BaseModel._auto_train` explicitly raises `NotImplementedError` for the ML path.
 - Contains: `nn.Module` definitions plus `BaseModel` subclasses that implement the 5-method training contract.
 
-**`backtest/`, `vecbt/`:**
-- Purpose: Two independent, non-integrated approaches to evaluating a trained model's trading performance — `backtest/` for live/replay simulation via Nautilus Trader, `vecbt/` for vectorized signal backtesting via vectorbt. Neither directory has an `__init__.py`.
-- Contains: `backtest/test_strategy.py` is a full, working (if hardcoded-path-dependent) live strategy; `vecbt/bt.py` is an incomplete single-function stub.
+**`backtest/` (`quantlab/backtest/`, with `quantlab/base/backtest.py`):**
+- Purpose: The cross-sectional backtester layer. `base/backtest.py:BaseBacktester` owns the two public entry points, `run()` (backtest one model over a window) and `run_cv()` (replay a `train_cv` run's folds as one stitched curve), and writes each run to its own run directory. `backtest/` holds the vectorbt engine, the TopN selector and the US-equity composition. Event-driven (Nautilus) backtesting is reserved for Phase 6.
+- Contains: `engine_vectorbt.py:VectorBtBacktester`, `selection.py:CrossSectionTopNSelector`, `us_equity.py:USEquityCrossectionSelectStockVectorBt`, and an empty `__init__.py`. (Superseded: the Nautilus `backtest/test_strategy.py` was deleted 2026-09-07, and the `vecbt/` helper package was retired in phase 03.7, D-31.)
 
 **`config/`:**
 - Purpose: Central location for both static YAML metadata (`instruments.yaml`) and Python factory functions that build fully-populated `DatasetConfig`/`FactorConfig` objects for the three "known" pipelines (spot klines, alpha101, alpha158, spot labels).
@@ -154,9 +155,10 @@ quantlab/
 **New model architecture:**
 - Subclass `base/model.py:BaseModel`, add under `dl_model/` (torch) or `ml_model/` (non-torch — note this path is currently unimplemented in `BaseModel._auto_train`, expect to need to add ML training support there too), implementing `_init_model`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, `_preprocess` (renamed from `_*_one_epoch` on 2026-09-07 — they are called once per BATCH, and the old name had already caused an early-stopping defect).
 
-**New backtest/strategy:**
-- For live/event-driven backtests: add a new `nautilus_trader.trading.strategy.Strategy` subclass under `backtest/`, following `backtest/test_strategy.py`'s pattern (load model, subscribe bars, predict-and-trade in `on_bar`).
-- For vectorized signal backtests: fix and extend `vecbt/bt.py`, or follow the inline pattern already working in `test.py:130-141` (`vbt.Portfolio.from_signals(...)`).
+**New backtest:**
+- New engine: subclass `quantlab/base/backtest.py:BaseBacktester` under `quantlab/backtest/` (e.g. `engine_<name>.py`), implementing the engine hooks `_simulate`, `_simulate_benchmark`, `_engine_stats` and `_period_returns_stats`. `run()` and `run_cv()` stay on the base and must not be overridden (locked by `tests/test_backtest_contracts.py`).
+- New selection style or market: subclass `quantlab/backtest/engine_vectorbt.py:VectorBtBacktester`, declaring `config_cls`, a `MARKET` (`MarketSpec`), and a `_generate_signals` that composes a selector, as `us_equity.py:USEquityCrossectionSelectStockVectorBt` does with `CrossSectionTopNSelector`. Price column names live only on the `MarketSpec` (D-04). See `example/backtest.md`.
+- Event-driven (Nautilus) backtests are reserved for Phase 6. (Superseded guidance: the `backtest/test_strategy.py` pattern was deleted 2026-09-07, and the `vecbt/bt.py` helper was retired in phase 03.7, D-31.)
 
 **Utilities:**
 - Shared, domain-agnostic helpers go in `utils/`. Domain-specific helpers (e.g. Binance-only, Nautilus-only) already have dedicated files there (`utils/binance.py`, `utils/nautilus.py`) — follow that per-integration file split rather than adding to a catch-all.
@@ -176,3 +178,4 @@ quantlab/
 ---
 
 *Structure analysis: 2026-09-04*
+*Backtest entries updated 2026-09-15 (phase 03.7-12): `quantlab/backtest/` and `quantlab/base/backtest.py` described; the vecbt helper package is retired.*

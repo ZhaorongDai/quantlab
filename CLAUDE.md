@@ -37,7 +37,7 @@
 - **scikit-learn** (`sklearn.metrics`) — evaluation metrics (accuracy, F1, ROC-AUC, R², RMSE, etc.) used inside DL training loops, not for model fitting itself.
 - **KunQuant** — JIT-compiled factor computation graph library. Used throughout `base/factor.py`, `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` to build and compile (`cfake.compileit`) high-performance alpha factor pipelines (`KunRunner`, `Function`, `Builder`, `Op`, `Stage`).
 - **Nautilus Trader** (`nautilus_trader`) — currently used ONLY as a data model / `ParquetDataCatalog` for storing bar/instrument data (`base/data.py`, `dataset/spot.py`). Its live/backtest trading engine is not used by any code in the repo: the only `Strategy` subclass, `backtest/test_strategy.py`, was deleted 2026-09-07.
-- **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used in `vecbt/bt.py` (incomplete stub) and `test.py` (`vbt.Portfolio.from_signals`).
+- **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used by `quantlab/backtest/engine_vectorbt.py` (`VectorBtBacktester`: `Portfolio.from_orders` with target-percent weights) and by the ad hoc `test.py` (`vbt.Portfolio.from_signals`). The former `vecbt/bt.py` signal helper was retired in phase 03.7 (D-31).
 - None detected. No `pytest`/`unittest` configuration, no test runner dependency, no `tests/` directory. Files named `test.py` and `test_nt.ipynb` at the repo root are ad hoc exploratory scripts/notebooks, not an automated test suite.
 - No linter/formatter config detected (no `.eslintrc`, `ruff.toml`, `.flake8`, `pyproject.toml` `[tool.ruff]`/`[tool.black]` sections).
 - No CI configuration (no `.github/workflows`, no other CI YAML).
@@ -48,7 +48,7 @@
 - `scipy` — `scipy.stats.rankdata` for the cross-sectional RankIC in `utils/metrics.py`; declared directly in `pyproject.toml`.
 - `KunQuant` — compiled factor computation (`factor/*`, `base/factor.py`, `label/spot.py`, `my_ops/preprocess.py`). Appears to be a specialized/possibly local or pinned package, not a mainstream PyPI package with a standard lockfile entry.
 - `nautilus_trader` — data catalog, instrument/currency model (`dataset/spot.py`, `utils/nautilus.py`). The trading engine itself is unused.
-- `vectorbt` — signal-based backtesting (`vecbt/bt.py`, `test.py`).
+- `vectorbt` — cross-sectional backtest engine (`quantlab/backtest/engine_vectorbt.py`, the only quantlab module importing it; `Portfolio.from_orders` with target-percent weights) and `test.py`. The former `vecbt/bt.py` helper was retired in phase 03.7 (D-31).
 - `wandb` — experiment tracking, initialized in every training run (`base/model.py:_init_wandb`).
 - `loguru` — logging throughout (`base/data.py`, `base/factor.py`, `utils/timer.py`, `utils/nautilus.py`, `utils/binance.py`).
 - `joblib` — parallelism (`Parallel`/`delayed` for CV folds and nautilus bar conversion) and non-torch model persistence through `ml_model/backend.py:MlBackend` (the `.joblib` checkpoint backend of `base/model.py:MLModel`).
@@ -105,7 +105,10 @@ Conventions not yet established. Will populate as patterns emerge during develop
 | Panel metrics | Vectorized MSE/RMSE/MAE/R² and cross-sectional IC/RankIC over `[T, S]` panels | `utils/metrics.py` |
 | `MLPRegressor`, `RNNRegressor`, `RNNClassifier` | Concrete torch model heads (MLP, GRU/LSTM regressor, GRU/LSTM classifier with auxiliary-label architecture) | `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` |
 | `MlBackend` | joblib-based checkpoint persistence for `MLModel` heads | `ml_model/backend.py` |
-| `backtest_from_signals` | vectorbt-based signal backtest helper (incomplete) | `vecbt/bt.py` |
+| `BaseBacktester` (abstract) | Backtester ABC: config type guard, the two public entry points `run()` (model backtest) and `run_cv()` (replays a `train_cv` run's `cv_folds.json` as one stitched curve), bar-counted warm-up, D-17 in/out-of-sample split, metrics, run directory, data fingerprints; engine hooks `_simulate`, `_simulate_benchmark`, `_engine_stats`, `_period_returns_stats` | `quantlab/base/backtest.py` |
+| `VectorBtBacktester` (abstract) | vectorbt engine: `Portfolio.from_orders` with target-percent weights, a signal at bar t fills at bar t+1's open (D-05), forced-liquidation records for delisted holdings; the only quantlab module importing vectorbt | `quantlab/backtest/engine_vectorbt.py` |
+| `CrossSectionTopNSelector` | TopN long-only or disjoint long/short target weights on rebalance bars (D-03 weights contract) | `quantlab/backtest/selection.py` |
+| `USEquityCrossectionSelectStockVectorBt` | Concrete US-equity backtester composing `US_EQUITY_MARKET`, the selector and the vectorbt engine; rebuilt from a run's `config.json` by `quantlab/utils/module.py:load_backtester_from_config`. It replaces the `vecbt/bt.py:backtest_from_signals` helper, retired in phase 03.7 (D-31) | `quantlab/backtest/us_equity.py` |
 | Config factories | Hardcoded-path factory functions producing `DatasetConfig`/`FactorConfig` for spot klines, alpha101, alpha158, labels | `config/__init__.py` |
 | `DatasetConfig`/`FactorConfig`/`DLConfig`/`MLConfig` | Dataclass configuration objects threaded through every layer | `base/config.py` |
 ## Pattern Overview
@@ -132,10 +135,10 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Location: `base/model.py` (`BaseModel` / `DLModel` / `MLModel`), `base/config.py` (`DLConfig`/`MLConfig`), `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` (all `DLModel`), `ml_model/xgb.py` (`XGBoostRegressor`, an `MLModel`), `ml_model/backend.py` (`MlBackend`), `utils/metrics.py` (panel metrics).
 - Depends on: Factor/Label layer, `torch`, `xgboost`, `wandb`, `sklearn.metrics`, `scipy`, `joblib`.
 - Used by: Top-level scripts (`train_model.py`, `test.py`).
-- Purpose: Evaluates a trained model's trading performance via vectorbt's signal-based portfolio simulation (`vecbt/bt.py`, `test.py`). The event-driven (Nautilus) alternative is a deferred capability with no current implementation.
-- Location: `vecbt/bt.py` (helper function, currently broken — see Anti-Patterns).
-- Depends on: Model layer (loads a checkpoint), Factor/Label layer (recomputes features for prediction), `vectorbt`.
-- Used by: Nothing else — this is a terminal/output layer.
+- Purpose: Evaluates a model's trading performance on a cross-sectional universe. `BaseBacktester.run()` is the model backtest: train mode trains the model on its own dates, load mode loads a checkpoint, and the model then predicts the window through `predict_panel`. `run_cv()` is the model-CV backtest: it reads a `train_cv` run's `cv_folds.json`, backtests each fold with its own checkpoint on its own test segment, then simulates the concatenated fold weights once as a stitched curve. Signals are D-03 target weights (a `weight` variable on `(timestamp, symbol)`), and a signal formed at bar t fills at bar t+1's open (D-05). Metrics are reported for the whole window and split in-sample/out-of-sample against the model's training window (D-17). Every run writes its own run directory (`config.json`, `weights.zarr`, `equity.zarr`, `metrics.json`, `liquidations.json`, `fingerprint.json`, `report.html`), which `quantlab/utils/module.py:load_backtester_from_config` can rebuild and re-run. The event-driven (Nautilus) path is still reserved for Phase 6, with no current implementation.
+- Location: `quantlab/base/backtest.py` (`BaseBacktester`, `MarketSpec`, result dataclasses), `quantlab/backtest/engine_vectorbt.py` (`VectorBtBacktester`), `quantlab/backtest/selection.py` (`CrossSectionTopNSelector`), `quantlab/backtest/us_equity.py` (`USEquityCrossectionSelectStockVectorBt`), `quantlab/base/config.py` (`BacktestConfig`/`CrossSectionBacktestConfig`). The former `vecbt/bt.py` helper was retired in phase 03.7 (D-31). See `example/backtest.md`.
+- Depends on: Model layer (`predict_panel`, checkpoints, `cv_folds.json`), Factor/Label layer (re-dated to cover warm-up), Dataset layer (prices), `vectorbt`, `plotly`, optionally `wandb`.
+- Used by: Nothing else in quantlab except the config loader in `quantlab/utils/module.py`. This is a terminal/output layer, and `tests/test_backtest_contracts.py` locks that direction.
 ## Data Flow
 ### Primary Training Path
 ### Factor Computation Path (KunQuant)
@@ -169,14 +172,15 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - **Threading:** Single-process, but KunQuant factor computation explicitly uses a configurable multi-thread executor (`kr.createMultiThreadExecutor(self.config.njobs)`, default `njobs=128` in `FactorConfig`), and cross-validation folds can run in parallel threads via `joblib.Parallel(backend="threading")` (`base/model.py:train_cv`).
 - **Global state:** None at module level observed (no module-level singletons/mutable globals); state is instance-scoped on `Dataset`/`FactorKunQuant`/`BaseModel` objects.
 - **Hardcoded paths:** `config/__init__.py`'s factory functions (`spot_kline_config`, `alpha101_config`, `alpha158_config`, `spot_label_config`) hardcode absolute Linux paths (`/home/zhrdai/projects/crypto_quant/...`), while `train_model.py`/`test.py` hardcode different absolute macOS paths (`/Users/daizhaorong/projects/quantlab/...` and `/home/zhrdai/projects/crypto_quant/...` again for checkpoint loading). Any new environment (including this one) requires manually editing these paths before the pipeline will run.
-- **Circular imports:** None observed; the layering (`base` → `dataset`/`factor`/`label` → `dl_model`/`ml_model` → `backtest`/`vecbt`) is consistently one-directional based on import statements read.
+- **Circular imports:** None observed; the layering (`base` → `dataset`/`factor`/`label` → `dl_model`/`ml_model` → `backtest` (`quantlab/backtest/`)) is consistently one-directional based on import statements read.
 - **No `__init__.py` re-exports:** Every package's `__init__.py` (`base/`, `dataset/`, `factor/`, `label/`, `dl_model/`, `ml_model/`, `my_ops/`, `utils/`, `enums/`) is empty — all imports use full dotted paths to the implementation module (e.g. `from factor.alpha101 import Alpha101SpotKline`), never `from factor import Alpha101SpotKline`.
 ## Anti-Patterns
 ### Duplicated helper logic between script and library code
 ### Broken/incomplete backtest helper committed as-is
+**Resolved:** the helper (`vecbt/bt.py:backtest_from_signals`) was retired in phase 03.7 (D-31), and `quantlab/backtest/` replaced it. The heading is kept as history.
 ## Error Handling
 - Config setters validate/derive values eagerly (e.g. `FactorKunQuant.config` setter auto-fills `start_date`/`end_date`/`factor_names` if unset) rather than deferring to call time.
-- Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs consistently — `dataset/stock.py` uses `raise ValueError("Not finished")` for `_get_instrument`/`_xr_to_bars`/`_to_nautilus`, while `base/model.py:DLModel._fit(backtest=True)` raises `NotImplementedError` naming Phase 6 before any training runs.
+- Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs consistently — `dataset/stock.py` uses `raise ValueError("Not finished")` for `_get_instrument`/`_xr_to_bars`/`_to_nautilus`, while `quantlab/base/backtest.py:BaseBacktester`'s config setter raises `NotImplementedError` when a `benchmark_dataset` is supplied, because benchmark comparison waits for directly-downloaded index price data (D-08). (The former model-layer guard `DLModel._fit(backtest=True)` was deleted in phase 03.7, D-37.)
 - A model given the wrong config class raises `TypeError` as the first statement of the `BaseModel.config` setter, before any factor/label is touched; `load()` rejects a checkpoint whose suffix differs from the variant's `checkpoint_suffix` before building a model.
 ## Cross-Cutting Concerns
 <!-- GSD:architecture-end -->

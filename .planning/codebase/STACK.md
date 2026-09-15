@@ -29,7 +29,7 @@
 - **scikit-learn** (`sklearn.metrics`) — evaluation metrics (accuracy, F1, ROC-AUC, R², RMSE, etc.) used inside DL training loops, not for model fitting itself.
 - **KunQuant** — JIT-compiled factor computation graph library. Used throughout `base/factor.py`, `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` to build and compile (`cfake.compileit`) high-performance alpha factor pipelines (`KunRunner`, `Function`, `Builder`, `Op`, `Stage`).
 - **Nautilus Trader** (`nautilus_trader`) — dual role: (1) data model / `ParquetDataCatalog` for storing bar/instrument data (`base/data.py`, `dataset/spot.py`), and (2) live/backtest trading engine — `backtest/test_strategy.py` implements a `nautilus_trader.trading.strategy.Strategy` subclass.
-- **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used in `vecbt/bt.py` (incomplete stub) and `test.py` (`vbt.Portfolio.from_signals`).
+- **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used by `quantlab/backtest/engine_vectorbt.py` (`VectorBtBacktester`: `Portfolio.from_orders` with target-percent weights) and by the ad hoc `test.py` (`vbt.Portfolio.from_signals`). The former `vecbt/bt.py` signal helper was retired in phase 03.7 (D-31).
 
 **Testing:**
 - None detected. No `pytest`/`unittest` configuration, no test runner dependency, no `tests/` directory. Files named `test.py` and `test_nt.ipynb` at the repo root are ad hoc exploratory scripts/notebooks, not an automated test suite.
@@ -45,7 +45,7 @@
 - `torch` — model definition and training (`dl_model/*`).
 - `KunQuant` — compiled factor computation (`factor/*`, `base/factor.py`, `label/spot.py`, `my_ops/preprocess.py`). Appears to be a specialized/possibly local or pinned package, not a mainstream PyPI package with a standard lockfile entry.
 - `nautilus_trader` — trading engine, data catalog, instrument/currency model (`dataset/spot.py`, `backtest/test_strategy.py`, `utils/nautilus.py`).
-- `vectorbt` — signal-based backtesting (`vecbt/bt.py`, `test.py`).
+- `vectorbt` — cross-sectional backtest engine (`quantlab/backtest/engine_vectorbt.py`, the only quantlab module importing it; `Portfolio.from_orders` with target-percent weights) and `test.py`. The former `vecbt/bt.py` helper was retired in phase 03.7 (D-31).
 - `wandb` — experiment tracking, initialized in every training run (`base/model.py:_init_wandb`).
 - `loguru` — logging throughout (`base/data.py`, `base/factor.py`, `utils/timer.py`, `utils/nautilus.py`, `utils/binance.py`).
 - `joblib` — parallelism (`Parallel`/`delayed` for CV folds and nautilus bar conversion) and non-torch model persistence (`joblib.dump`/`load` in `base/model.py`, `ml_model/backend.py`).
@@ -83,3 +83,4 @@
 ---
 
 *Stack analysis: 2026-09-04*
+*vectorbt entries updated 2026-09-15 (phase 03.7-12): the backtester layer replaced the retired vecbt helper.*
