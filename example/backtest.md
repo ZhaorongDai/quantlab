@@ -284,6 +284,15 @@ t+1 的**原始**（未 ffill）成交价是 NaN。开头价格为 NaN、此前�
   `2024-02-09` 包含当天全部 bar，而 `2024-02-09T00:00` 只到午夜，所以算不同。因此一次正常的 `run_cv` 不再输出任何
   训练日期 warning。这个问题只是日志噪音，从未影响任何回测数字：`run()` 始终用记录的日期，`run_cv` 始终用清单的日期。
 
+  **变量核对移到模型层（2026-09-15，G-03.7-9）。** 上面第一条规则不变：变量名或顺序不一致就 `ValueError`。变的是
+  由谁核对、和什么比较。回测器不再自带变量比较，而是在任何特征计算之前调 `model._assert_trained_variables(checkpoint)`，
+  然后才对 `DLModel` 收集特征面板、再 `model.load(checkpoint)`（`load()` 自己会再核对一次，同一条 warning 只输出一次）。
+  以前回测器拿因子配置字段 `factors[].factor_names` 比较，而这个字段可以与训练真正用的名字不同：它既拒收过模型自己的
+  checkpoint（配置字段顺序与派生的名字不同时，误报），也放过过错位的输入（派生的名字漂移到恰好等于过时的配置字段时，
+  漏报）。模型层按 `trained_on` 记录核对，旧 checkpoint 与没有记录时的规则见 `example/model.md` 的「取：`load()`」。
+  没有 `config.json` 时回测器那条 "has no config.json" warning 仍然只有一条，现在只说明训练日期无法核对；变量无法核对由
+  模型层另外说明一次。
+
 **DL checkpoint 需要先有面板。** `DLModel` 的 `.pth` 只有权重，加载时要按 `num_symbols` 重建网络，而
 `num_symbols` 读的正是 data backend，空着会报 `Please cal 'read' or 'to_internal' first.`（Pitfall 11）。
 回测器替你做了 `model.data_backend.to_internal(model._collect_all_features())`。`MLModel` 的 `.joblib`

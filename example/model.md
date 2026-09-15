@@ -159,7 +159,7 @@ DL 与 ML 共用：
   - 输出的 `symbol` 坐标就是训练标的，顺序与训练时相同。（这一条的「顺序」说法有误，见下方 2026-09-15 G-03.7-8 更正。）
 
   ML 头（`XGBoostRegressor`）逐个 `(t, s)` 预测，与标的轴无关，不做这项核对。`trained_on` 是记录不是配置字段，
-  `load_model_from_config` 重建时把它丢掉。没有这项记录的旧 checkpoint 行为不变。
+  `load_model_from_config` 重建时把它丢掉。没有这项记录的旧 checkpoint 行为不变。（2026-09-15，G-03.7-9：`load()` 现在也读回它的 `factor_names` / `label_names` 核对变量，不只读 `symbols`，见「取：`load()`」。）
 
   **更正（2026-09-15，G-03.7-8）。** 上面「顺序与训练时相同」默认了训练顺序就是排序后的顺序，这个前提不成立。
   实际契约是：输出的 `symbol` 坐标是训练标的**按标的排序**后的顺序，这正是 `to_array` 与训练（`DLModel._fit` 经
@@ -1216,6 +1216,25 @@ ML 头：直接读回整个模型，不调 `_init_model`，所以**不需要先 
 
 好处是：如果因子数量变了，`load_state_dict` 会当场报形状不匹配，
 而不是带着一个错的模型继续跑。
+
+**加载前先核对变量（2026-09-15，G-03.7-9）。** `load()` 在后缀校验之后、构建模型之前调
+`_assert_trained_variables(p)`：把 checkpoint 旁 `config.json` 里的 `trained_on.factor_names` / `trained_on.label_names`
+（名字**和顺序**）与本模型的 `get_factor_names()` / `get_label_names()` 比较，不一致时 `ValueError`，写明记录的变量、
+本模型声明的变量与 checkpoint 路径，先因子后标签。以前 `load()` 只读 `trained_on.symbols`，而两类头都不会自己发现错位：
+xgboost 的 Booster 没有特征名，`inplace_predict` 只核对列数；torch 的 `state_dict` 只核对形状。所以因子或标签换了顺序的
+模型会悄悄加载，然后在错位的输入上预测，或者给输出贴上错的标签名。
+
+- 核对以 `trained_on` 为准，**不**看 `factors[].factor_names`。后者是因子自己的配置字段，用户可以自己填，顺序可以与
+  训练真正用的名字（`_get_factor_names()`，`trained_on` 记录的正是它）不同，拿它比较既会拒收模型自己的 checkpoint，
+  也会放过错位的输入。
+- 没有 `trained_on` 的旧 checkpoint，退回旧的 `factors[]` / `labels[]` 里的 `factor_names` 核对，不一致照样报错，
+  另外输出一条 warning，说明这是比 `trained_on` 弱的记录。
+- 两者都没有、或者旁边根本没有 `config.json` 时无从核对：输出一条 warning 后照常加载。也就是说，**只拷走
+  `.pth` / `.joblib` 而没带 `config.json` 的 checkpoint 不做变量核对**。
+- 核对先于 `_read_checkpoint`，所以换了因子个数的 DL checkpoint 现在拿到的是这条写明变量的 `ValueError`，
+  而不再是 torch 的 `size mismatch`。上一段说的形状报错因此只在没有变量记录的 checkpoint 上才会出现。
+- 回测器在特征计算之前也调同一个方法（见 [backtest.md](backtest.md)），`load()` 再调一次；同一个模型实例上
+  原文相同的 warning 只输出一次。
 
 ---
 
