@@ -261,3 +261,144 @@ def test_non_rebalance_rows_are_all_nan():
 
     assert np.isnan(w[1]).all() and np.isnan(w[3]).all()
     assert np.isfinite(w[0]).all() and np.isfinite(w[2]).all()
+
+
+# --------------------------------------------------------------------------
+# Task 2: schedule (D-18), score label (D-11), parameters (D-10), and the
+# D-03 invariant on randomized panels
+# --------------------------------------------------------------------------
+
+
+def test_rebalance_mask_anchors_at_first_bar_and_steps_by_period():
+    """n_bars=21, p=5: True exactly at 0, 5, 10, 15. Index 20 is a multiple of
+    5 but it is the window's last bar, whose signal has no t+1 fill bar inside
+    the window, so it is False (D-18 anchor; RESEARCH Pitfall 13). Goes red if
+    the anchor moves off bar 0 or the last-bar exclusion is dropped."""
+    mask = rebalance_mask(21, 5)
+
+    assert mask.dtype == bool and mask.shape == (21,)
+    assert np.flatnonzero(mask).tolist() == [0, 5, 10, 15]
+    assert not mask[20]
+
+
+def test_rebalance_mask_period_one_is_every_bar_but_the_last():
+    """p=1 rebalances every bar except the last one (Pitfall 13)."""
+    assert rebalance_mask(4, 1).tolist() == [True, True, True, False]
+
+
+def test_rebalance_mask_period_longer_than_window_rebalances_once():
+    """A period longer than the window still rebalances on the anchor bar, so
+    the book is built once and held (D-18)."""
+    assert rebalance_mask(4, 10).tolist() == [True, False, False, False]
+
+
+def test_rebalance_mask_rejects_non_positive_period():
+    """p=0 would make `mask[::0]` raise an opaque slicing error, and p=-1 would
+    step backwards from the anchor. Both must be a ValueError naming the
+    parameter."""
+    for period in (0, -1):
+        with pytest.raises(ValueError, match="rebalance_periods"):
+            rebalance_mask(10, period)
+
+
+def test_score_label_defaults_to_first_label():
+    """None resolves to the model's FIRST declared label, in declared order
+    rather than alphabetical order: "ret_5" before "ret_1" (D-11). An explicit
+    known label is returned unchanged."""
+    assert resolve_score_label(None, ["ret_5", "ret_1"]) == "ret_5"
+    assert resolve_score_label("ret_1", ["ret_5", "ret_1"]) == "ret_1"
+
+
+def test_unknown_score_label_raises_listing_known_labels():
+    """An unknown label raises a ValueError that names it and lists every
+    known label, so a typo is fixable from the message alone (D-11). A model
+    with no labels at all also raises instead of indexing into an empty
+    list."""
+    with pytest.raises(ValueError) as excinfo:
+        resolve_score_label("ret_20", ["ret_5", "ret_1"])
+    message = str(excinfo.value)
+    assert "ret_20" in message
+    assert "ret_5" in message and "ret_1" in message
+
+    with pytest.raises(ValueError):
+        resolve_score_label(None, [])
+
+
+def test_selector_rejects_bad_parameters():
+    """top_n=0 and an unknown direction raise at construction, before any
+    panel is touched. top_n=0 would otherwise warn on every bar and liquidate
+    the book, and "short_only" would silently fall into the long_short
+    branch."""
+    with pytest.raises(ValueError, match="top_n"):
+        CrossSectionTopNSelector(direction="long_only", top_n=0)
+    with pytest.raises(ValueError, match="direction"):
+        CrossSectionTopNSelector(direction="short_only", top_n=2)
+
+
+def test_cross_section_config_has_no_quantile_mode():
+    """D-10 fixes the pick count as `top_n`; there is no quantile mode. Goes
+    red if a quantile field is added to the config or `top_n` is removed."""
+    names = [f.name for f in fields(CrossSectionBacktestConfig)]
+
+    assert [n for n in names if "quantile" in n.lower()] == []
+    assert "top_n" in names
+
+
+def test_weights_contract_holds_on_random_panels():
+    """50 seeded panels (T=12, S=8) with random NaN holes in scores and next
+    fill prices, a random period in 1..4, a random top_n in 1..5, and the two
+    directions alternating by seed. On every panel:
+
+    - every non-rebalance row is all NaN;
+    - every rebalance row is fully finite, with sum(|w|) <= 1 + 1e-12;
+    - a long_short rebalance row with any nonzero weight nets to 0 within
+      1e-12.
+
+    Each failure message carries the seed, direction, top_n and period, so the
+    breaking panel can be rebuilt. The trailing non-vacuity checks make sure
+    the loop really exercised short books and nonzero long_short rows."""
+    n_bars, symbols = 12, [f"S{i}" for i in range(8)]
+    long_short_nonzero_rows = 0
+    short_book_rows = 0
+
+    for seed in range(50):
+        rng = np.random.default_rng(seed)
+        direction = ("long_only", "long_short")[seed % 2]
+        top_n = int(rng.integers(1, 6))
+        period = int(rng.integers(1, 5))
+        context = f"seed={seed} direction={direction} top_n={top_n} p={period}"
+
+        scores = rng.normal(size=(n_bars, len(symbols)))
+        scores[rng.random(scores.shape) < 0.3] = NAN
+        fill = rng.uniform(10.0, 100.0, size=scores.shape)
+        fill[rng.random(fill.shape) < 0.2] = NAN
+        mask = rebalance_mask(n_bars, period)
+
+        weights = _select(
+            direction,
+            top_n,
+            _panel(scores, symbols=symbols),
+            _panel(fill, symbols=symbols),
+            mask,
+        )
+
+        for t in range(n_bars):
+            row = weights[t]
+            where = f"{context} t={t}"
+            if not mask[t]:
+                assert np.isnan(row).all(), where
+                continue
+            assert np.isfinite(row).all(), where
+            assert np.abs(row).sum() <= 1.0 + 1e-12, where
+            eligible = int((np.isfinite(scores[t]) & np.isfinite(fill[t])).sum())
+            if direction == "long_short":
+                if eligible // 2 < top_n:
+                    short_book_rows += 1
+                if (row != 0.0).any():
+                    long_short_nonzero_rows += 1
+                    assert abs(row.sum()) <= 1e-12, where
+            elif eligible < top_n:
+                short_book_rows += 1
+
+    assert long_short_nonzero_rows > 0
+    assert short_book_rows > 0
