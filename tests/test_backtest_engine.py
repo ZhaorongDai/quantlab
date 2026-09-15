@@ -272,3 +272,175 @@ def test_first_equity_value_is_init_cash(tmp_path):
 
     assert float(value.values[0]) == init_cash
     assert float(value.values[-1]) != init_cash
+
+
+# --------------------------------------------------------------------------
+# Task 2: delisting (D-07, RESEARCH Pitfalls 2 and 3)
+# --------------------------------------------------------------------------
+
+DELIST_BAR = 3
+
+
+def _delisting_case():
+    """A held from a bar-0 rebalance (fill bar 1); A's prices are NaN from bar 3.
+
+    Rebalance signals: bar 0 -> A=1.0; bar 4 -> A=0.0, B=1.0; bar 8 -> B=0.0.
+    """
+    n = 10
+    ts = _timestamps(n)
+    symbols = ["A", "B"]
+    fill = np.array([[10.0 + t, 20.0 + t] for t in range(n)])
+    valuation = fill + 0.5
+    fill[DELIST_BAR:, 0] = NAN
+    valuation[DELIST_BAR:, 0] = NAN
+    rows = np.full((n, 2), NAN)
+    rows[0] = [1.0, 0.0]
+    rows[4] = [0.0, 1.0]
+    rows[8] = [0.0, 0.0]
+    return ts, symbols, fill, valuation, _weights(rows, ts, symbols)
+
+
+def test_held_symbol_that_delists_is_liquidated_at_its_last_price_and_recorded(tmp_path):
+    """D-07: one record for A, filled on bar 5 at A's last finite fill price."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    ts, symbols, fill, valuation, weights = _delisting_case()
+    last_price = float(fill[DELIST_BAR - 1, 0])
+
+    simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
+
+    assert simulation.liquidations == [
+        {
+            "symbol": "A",
+            "signal_timestamp": ts[4],
+            "fill_timestamp": ts[5],
+            "price": last_price,
+        }
+    ]
+    record = simulation.liquidations[0]
+    assert type(record["symbol"]) is str
+    assert isinstance(record["signal_timestamp"], pd.Timestamp)
+    assert isinstance(record["fill_timestamp"], pd.Timestamp)
+    assert type(record["price"]) is float
+    sells = [o for o in _orders_for(simulation.orders, "A") if o["side"] == "Sell"]
+    assert [o["timestamp"] for o in sells] == [ts[5]]
+    assert sells[0]["price"] == last_price
+
+
+def test_delisting_does_not_freeze_other_symbols(tmp_path):
+    """Pitfall 2: a NaN-priced holding must not silently freeze the whole group."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    ts, symbols, fill, valuation, weights = _delisting_case()
+
+    orders = backtester._simulate(weights, _panel(fill, valuation, ts, symbols)).orders
+
+    b_orders = _orders_for(orders, "B")
+    assert any(o["side"] == "Buy" and o["timestamp"] == ts[5] for o in b_orders)
+    assert any(o["side"] == "Sell" and o["timestamp"] == ts[9] for o in b_orders)
+
+
+def test_symbol_listing_late_fills_normally_once_listed(tmp_path):
+    """D-07 boundary: leading NaN on a never-held symbol is not a delisting."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    n = 8
+    ts = _timestamps(n)
+    symbols = ["A", "B", "C"]
+    fill = np.array([[10.0 + t, 20.0 + t, 30.0 + t] for t in range(n)])
+    valuation = fill + 0.5
+    fill[:4, 2] = NAN
+    valuation[:4, 2] = NAN
+    rows = np.full((n, 3), NAN)
+    rows[0] = [1.0, 0.0, 0.0]
+    rows[5] = [0.0, 0.0, 1.0]
+
+    simulation = backtester._simulate(
+        _weights(rows, ts, symbols), _panel(fill, valuation, ts, symbols)
+    )
+
+    c_orders = _orders_for(simulation.orders, "C")
+    assert [(o["side"], o["timestamp"]) for o in c_orders] == [("Buy", ts[6])]
+    assert c_orders[0]["price"] == float(fill[6, 2])
+    assert not [r for r in simulation.liquidations if r["symbol"] == "C"]
+
+
+def test_rebalance_row_mixing_nan_and_finite_is_refused_before_simulating(
+    tmp_path, monkeypatch
+):
+    """Pitfall 3: [1.0, NaN] would silently hold B and block A; refuse it loudly."""
+    import types
+
+    import quantlab.backtest.engine_vectorbt as engine_module
+
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    calls = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("vectorbt from_orders was reached")
+
+    monkeypatch.setattr(
+        engine_module, "vbt", types.SimpleNamespace(Portfolio=types.SimpleNamespace(from_orders=_spy))
+    )
+    ts = _timestamps(4)
+    symbols = ["A", "B"]
+    fill = [[10.0, 20.0], [11.0, 21.0], [12.0, 22.0], [13.0, 23.0]]
+    rows = [[NAN, NAN], [1.0, NAN], [NAN, NAN], [NAN, NAN]]
+
+    with pytest.raises(ValueError, match=_day(ts[1])):
+        backtester._simulate(_weights(rows, ts, symbols), _panel(fill, fill, ts, symbols))
+    assert calls == []
+
+
+def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
+    """Through run(): the selected symbol delists mid-window and is recorded."""
+    from tests.backtest_fixtures import SYMBOLS, train_checkpoint
+
+    window_start, window_end, delist_bar = 30, 50, 33
+    # The fixture store is seeded, so a probe store with the same seed tells
+    # which symbol the model picks at the window's first rebalance; delisting
+    # from bar 33 does not touch the bars that pick depends on.
+    probe = xr.open_zarr(write_price_store(tmp_path / "probe", n_bars=60).zarr_file_path).load()
+    close = probe["adjClose"].transpose("timestamp", "symbol").values
+    picked = SYMBOLS[int(np.argmax(close[window_start] / close[window_start - 1] - 1.0))]
+
+    dataset_config = write_price_store(
+        tmp_path / "store", n_bars=60, delist_at={picked: delist_bar}
+    )
+    bars = pd.bdate_range("2024-01-01", periods=60)
+    model_dates = dict(
+        start_date=_day(bars[0]),
+        end_date=_day(bars[29]),
+        train_start=_day(bars[0]),
+        train_end=_day(bars[24]),
+        test_start=_day(bars[25]),
+        test_end=_day(bars[29]),
+    )
+    checkpoint = train_checkpoint(
+        make_model(tmp_path / "train", dataset_config, **model_dates)
+    )
+    result = USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(dataset_config),
+            model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
+            model_mode="load",
+            checkpoint=str(checkpoint),
+            start_date=_day(bars[window_start]),
+            end_date=_day(bars[window_end]),
+            output_dir=str(tmp_path / "runs"),
+            rebalance_periods=5,
+            direction="long_only",
+            top_n=1,
+            fees=0.0,
+            slippage=0.0,
+        )
+    ).run()
+
+    liquidations = result.simulation.liquidations
+    assert liquidations, "the delisted holding must be recorded"
+    for record in liquidations:
+        assert set(record) == {"symbol", "signal_timestamp", "fill_timestamp", "price"}
+    first = liquidations[0]
+    assert first["symbol"] == picked
+    assert first["signal_timestamp"] == bars[window_start + 5]
+    assert first["fill_timestamp"] == bars[window_start + 6]
+    last_open = probe[MARKET.fill_price_column].sel(symbol=picked).values[delist_bar - 1]
+    assert first["price"] == pytest.approx(float(last_open), rel=1e-12)
