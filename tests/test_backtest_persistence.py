@@ -457,6 +457,17 @@ def _report_html(run: dict) -> str:
     return path.read_text()
 
 
+def _report_traces(html: str) -> dict[str, dict]:
+    """The trace list plotly embeds as `Plotly.newPlot(id, [traces], layout, ...)`, by name.
+
+    plotly 5.x serializes numpy arrays as plain JSON lists, so the persisted y
+    values can be decoded straight from the page.
+    """
+    start = html.index("[", html.index("Plotly.newPlot("))
+    traces, _ = json.JSONDecoder().raw_decode(html, start)
+    return {trace["name"]: trace for trace in traces}
+
+
 def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_run):
     html = _report_html(overlap_run)
     metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
@@ -465,6 +476,15 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
 
     assert '"name":"equity"' in html
     assert '"name":"drawdown"' in html
+    # The curves are the persisted run's values: drawdown = value / running max - 1.
+    traces = _report_traces(html)
+    assert set(traces) == {"equity", "drawdown"}
+    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
+    np.testing.assert_allclose(traces["equity"]["y"], value, rtol=1e-12)
+    expected_drawdown = value / np.maximum.accumulate(value) - 1.0
+    assert expected_drawdown.min() < 0, "the fixture run must draw down"
+    np.testing.assert_allclose(traces["drawdown"]["y"], expected_drawdown, atol=1e-12)
+    assert traces["drawdown"]["xaxis"] == "x2" and traces["equity"]["xaxis"] == "x"
     assert '"type":"rect"' in html
     # The shaded band is the persisted in-sample range, not an assumed one.
     assert f'"x0":"{in_sample_range[0]}"' in html
