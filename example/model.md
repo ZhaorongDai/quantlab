@@ -150,6 +150,16 @@ DL 与 ML 共用：
   `1.703115`），DL 头又先 `nan_to_num` 成 0，不屏蔽的话还没上市或已经退市的标的会被选股选进去。
 - 走公开的 `predict()`，所以模型没训练也没加载时照样报 `Model not initialized`；预测形状不是
   `[T, S, L]` 时 `ValueError`，写出期望与实际形状。
+- **DL 头只在训练过的标的上预测（2026-09-15，代码审查 WR-02）。** DL 头按标的**位置**编码输入：MLP 把每个 bar
+  展平成 `[S*F]`，只核对总长度；RNN 头沿标的轴递推，一个标的的预测依赖排在它前面的标的。所以训练落盘时，
+  checkpoint 旁的 `config.json` 多一个训练记录 `trained_on`（`factor_names`、`label_names`、训练面板的 `symbols`），
+  `load()` 把 `symbols` 读回，网络的 `num_symbols` 也按它建（加载前不必再 `collect()`）。之后 `predict_panel`：
+  - 面板缺任何训练标的：`ValueError`，写出缺了哪些。同样个数、换了成员的面板也在这里暴露，以前 MLP 会悄悄错位；
+  - 面板多出训练时没有的标的：`logger.warning` 写出它们并丢掉，它们没有预测；
+  - 输出的 `symbol` 坐标就是训练标的，顺序与训练时相同。
+
+  ML 头（`XGBoostRegressor`）逐个 `(t, s)` 预测，与标的轴无关，不做这项核对。`trained_on` 是记录不是配置字段，
+  `load_model_from_config` 重建时把它丢掉。没有这项记录的旧 checkpoint 行为不变。
 
 **头怎么适配：只有一个钩子 `_predict_panel_array(x)`**，`[T, S, F]` numpy 进，`[T, S, L]` numpy 出。它刻意是普通方法
 而不是抽象方法：做成抽象的话每一层的 `__abstractmethods__` 都会变，而 `tests/test_model_hierarchy.py` 锁的正是这些集合。

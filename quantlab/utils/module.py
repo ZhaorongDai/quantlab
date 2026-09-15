@@ -104,6 +104,10 @@ def load_model_from_config(config: dict):
     # (what the library actually trained with), not a config field: drop it,
     # and only it, so any other unknown key still fails loudly below.
     config.pop("resolved_hyperparameters", None)
+    # `trained_on` is the training record `BaseModel._save_model` writes into
+    # a checkpoint's config.json (factor/label names and the training symbols,
+    # code review WR-02). Also a record, not a config field.
+    config.pop("trained_on", None)
     config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
     config["labels"] = [load_factor_from_config(l) for l in config["labels"]]
     cls = get_cls_from_path(config["name"])

@@ -28,6 +28,8 @@ Everything is synthetic, CPU-only and offline. Test-local stand-ins are copied
 in the style of `tests/test_model_hierarchy.py` rather than imported from it.
 """
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -35,7 +37,9 @@ import pytest
 import torch
 import torch.nn as nn
 import xarray as xr
+from loguru import logger
 
+import quantlab.utils.module as module_utils
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import DLModel, MLModel
 from quantlab.dl_model.mlp import MLPRegressor
@@ -364,6 +368,131 @@ def test_mlp_regressor_predict_panel_reshapes_the_flat_contract(tmp_path):
     got = pred.to_dataarray().transpose("timestamp", "symbol", "variable").values
     assert got.shape == (N_TIMES, N_SYMBOLS, len(LABELS))
     np.testing.assert_allclose(got, expected, atol=1e-6)
+
+
+@pytest.fixture
+def warning_messages():
+    """Every loguru WARNING emitted during the test, as plain message text."""
+    messages: list[str] = []
+    handler_id = logger.add(
+        lambda message: messages.append(message.record["message"]), level="WARNING"
+    )
+    yield messages
+    logger.remove(handler_id)
+
+
+def _dl_train_kwargs(tmp_path) -> dict:
+    return dict(
+        **_config_kwargs(tmp_path),
+        train_start=START,
+        train_end=TRAIN_END,
+        test_start=TEST_START,
+        test_end=END,
+        epochs=1,
+        batch_size=16,
+        num_workers=0,
+    )
+
+
+def _trained_dl_checkpoint(tmp_path) -> tuple[LinearDLHead, Path]:
+    trained = LinearDLHead(DLConfig(**_dl_train_kwargs(tmp_path)))
+    trained.collect()
+    trained.train()
+    checkpoints = sorted((tmp_path / "ckpt").rglob("*.pth"))
+    assert len(checkpoints) == 1, checkpoints
+    return trained, checkpoints[0]
+
+
+def test_dl_checkpoint_records_its_symbols_and_predict_panel_aligns_onto_them(
+    tmp_path, warning_messages
+):
+    """Code review WR-02: a DL head predicts only on the symbols it was trained on.
+
+    DL heads encode symbol POSITION: the MLP flattens `[S*F]` and the RNN
+    heads recur across the symbol axis, so a panel with another symbol set
+    shifts every prediction. The checkpoint's config.json now records the
+    training symbols. A fresh instance loads them without collecting a panel
+    (the old `_read_checkpoint` sized the net from an empty data backend and
+    raised), and `predict_panel` reorders the input onto the training symbols
+    and drops, with a warning, the symbol the model never saw. The old code
+    predicted the extra symbol `S9` and passed the reversed four-symbol layout
+    to the module, so this test goes red.
+    """
+    trained, checkpoint = _trained_dl_checkpoint(tmp_path)
+    sidecar = json.loads((checkpoint.parent / "config.json").read_text())
+    assert sidecar["trained_on"]["symbols"] == SYMBOLS
+
+    fresh = LinearDLHead(DLConfig(**_dl_train_kwargs(tmp_path)))
+    fresh.load(checkpoint)
+    base = _features(trained)
+    wider = xr.concat(
+        [base, base.isel(symbol=[0]).assign_coords(symbol=["S9"])], dim="symbol"
+    ).isel(symbol=slice(None, None, -1))
+
+    pred = fresh.predict_panel(wider)
+
+    assert pred.symbol.values.tolist() == SYMBOLS
+    xr.testing.assert_allclose(pred, fresh.predict_panel(base))
+    assert any("S9" in m and "WR-02" in m for m in warning_messages), warning_messages
+
+
+@pytest.mark.parametrize(
+    "rename",
+    [{"drop": "S2"}, {"S2": "S7"}],
+    ids=["dropped-symbol", "same-count-other-member"],
+)
+def test_dl_predict_panel_refuses_a_panel_missing_a_training_symbol(tmp_path, rename):
+    """Code review WR-02: a DL head cannot predict without a training symbol's inputs.
+
+    The second case keeps the symbol COUNT and swaps one member. That is the
+    silent MLP failure the review describes: `nn.Linear(S*F)` only checks the
+    count. The error must name the missing symbol. The old code accepted both
+    panels, so both cases go red.
+    """
+    _, checkpoint = _trained_dl_checkpoint(tmp_path)
+    fresh = LinearDLHead(DLConfig(**_dl_train_kwargs(tmp_path)))
+    fresh.load(checkpoint)
+    features = _features(fresh)
+    if "drop" in rename:
+        features = features.drop_sel(symbol=rename["drop"])
+    else:
+        features = features.assign_coords(
+            symbol=[rename.get(s, s) for s in features.symbol.values.tolist()]
+        )
+
+    with pytest.raises(ValueError, match="S2"):
+        fresh.predict_panel(features)
+
+
+def test_checkpoint_config_json_with_the_training_record_rebuilds_the_model(tmp_path):
+    """Code review WR-02: the new `trained_on` record does not break the config loader.
+
+    `load_model_from_config` refuses unknown keys, so it must drop the record
+    (as it drops `resolved_hyperparameters`) and rebuild a model whose config
+    equals the one that trained. This goes red without the record, and red
+    if the loader chokes on it.
+    """
+    from tests.backtest_fixtures import make_model, train_checkpoint, write_price_store
+
+    dataset_config = write_price_store(tmp_path / "store", n_bars=40)
+    dates = dict(
+        start_date="2024-01-01",
+        end_date="2024-02-23",
+        train_start="2024-01-01",
+        train_end="2024-01-31",
+        test_start="2024-02-01",
+        test_end="2024-02-23",
+    )
+    model = make_model(tmp_path / "train", dataset_config, **dates)
+    checkpoint = train_checkpoint(model)
+    saved = json.loads((checkpoint.parent / "config.json").read_text())
+    assert saved["trained_on"]["symbols"] == sorted(model.symbols)
+
+    rebuilt = module_utils.load_model_from_config(saved)
+
+    assert json.loads(json.dumps(rebuilt.get_config())) == json.loads(
+        json.dumps(model.get_config())
+    )
 
 
 def test_tuple_returning_head_without_adapter_raises_naming_it(tmp_path):

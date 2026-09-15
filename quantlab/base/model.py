@@ -61,6 +61,9 @@ class BaseModel(ABC):
         self._set_random_seed(self.config.random_seed)
 
         self.model = None
+        # 训练面板的标的：`_save_model` 训练落盘时记下，`load` 从 checkpoint 旁的
+        # `config.json` 训练记录读回；没有记录时是 None（代码审查 WR-02）。
+        self._trained_symbols: list[str] | None = None
 
         self.data_backend = XrBackend()
         # self._pre_feature: Optional[xr.Dataset] = None
@@ -272,7 +275,19 @@ class BaseModel(ABC):
             .values
         )
 
+    #: checkpoint 旁 `config.json` 里训练记录的键（代码审查 WR-02）。它是记录
+    #: 不是配置字段，`utils/module.py:load_model_from_config` 重建时丢弃它。
+    TRAINED_ON_KEY = "trained_on"
+
     def _save_model(self, p: Path):
+        """建 checkpoint 目录，写 `config.json` 与 checkpoint。
+
+        `config.json` 是 `get_config()` 加一个训练记录 `trained_on`（代码审查
+        WR-02）：`factor_names`、`label_names` 与训练面板的 `symbols`（按面板
+        顺序）。DL 头按标的**位置**编码输入（MLP 展平 `[S*F]`，RNN 沿标的轴
+        递推），换一组标的预测会整体错位，所以必须知道训练时是哪些标的；记录
+        同时写到 `_trained_symbols` 上，训练完直接预测时也用得上。
+        """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError("Model not initialized")
 
@@ -281,10 +296,17 @@ class BaseModel(ABC):
         else:
             p.parent.mkdir(parents=True)
 
+        symbols = [str(symbol) for symbol in self.symbols]
+        record = {
+            "factor_names": [str(name) for name in self.get_factor_names()],
+            "label_names": [str(name) for name in self.get_label_names()],
+            "symbols": symbols,
+        }
         # 先保存config为json
         with open(p.parent / Path("config.json"), "w") as f:
-            json.dump(self.get_config(), f, indent=4)
+            json.dump({**self.get_config(), self.TRAINED_ON_KEY: record}, f, indent=4)
 
+        self._trained_symbols = symbols
         self._write_checkpoint(p)
 
     def load(self, p: Path | str) -> Self:
@@ -293,6 +315,11 @@ class BaseModel(ABC):
         后缀校验先于任何模型构建：把 `.pth` 交给 joblib、或把 `.joblib` 交给
         `torch.load`，失败方式要么是难懂的反序列化报错，要么是悄悄反序列化出
         一个错误类型的对象。
+
+        读 checkpoint 之前先从旁边的 `config.json` 取训练记录里的标的
+        （`_read_trained_symbols`，代码审查 WR-02）：DL 头据此确定网络的
+        `num_symbols`，`predict_panel` 据此核对输入面板的标的。没有记录时为
+        None，行为与以前一样。
         """
         if isinstance(p, str):
             p = Path(p)
@@ -306,8 +333,21 @@ class BaseModel(ABC):
                 f"checkpoints use {self.checkpoint_suffix!r} ({p})"
             )
 
+        self._trained_symbols = self._read_trained_symbols(p)
         self._read_checkpoint(p)
         return self
+
+    def _read_trained_symbols(self, p: Path) -> list[str] | None:
+        """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。"""
+        sidecar = p.parent / "config.json"
+        if not sidecar.is_file():
+            return None
+        saved = json.loads(sidecar.read_text(encoding="utf-8"))
+        record = saved.get(self.TRAINED_ON_KEY) if isinstance(saved, dict) else None
+        symbols = record.get("symbols") if isinstance(record, dict) else None
+        if not isinstance(symbols, list):
+            return None
+        return [str(symbol) for symbol in symbols]
 
     def predict(
         self, data: torch.Tensor | np.ndarray
@@ -342,7 +382,9 @@ class BaseModel(ABC):
                 f"variable(s) {missing}"
             )
 
-        feats = features[factors].sortby(["timestamp", "symbol"])
+        feats = self._align_prediction_symbols(
+            features[factors].sortby(["timestamp", "symbol"])
+        )
         x = self.to_array(feats, factors)
         y = np.asarray(self._predict_panel_array(x), dtype=np.float64)
         expected = (x.shape[0], x.shape[1], len(labels))
@@ -364,6 +406,16 @@ class BaseModel(ABC):
                 "symbol": feats.symbol.values,
             },
         )
+
+    def _align_prediction_symbols(self, feats: xr.Dataset) -> xr.Dataset:
+        """`predict_panel` 的标的轴钩子：默认原样返回（代码审查 WR-02）。
+
+        ML 头逐个 `(t, s)` 预测，与标的轴上有哪些标的、顺序如何无关，所以默认
+        不核对。按标的**位置**编码输入的变体（`DLModel`）覆盖本钩子，把面板对齐
+        到训练时的标的。刻意是普通方法而不是抽象方法，理由同
+        `_predict_panel_array`。
+        """
+        return feats
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
         """`predict_panel` 的变体钩子：`[T, S, F]` numpy 进，`[T, S, L]` numpy 出。
@@ -919,12 +971,59 @@ class DLModel(BaseModel):
 
         self.optim = None
 
+    def _align_prediction_symbols(self, feats: xr.Dataset) -> xr.Dataset:
+        """DL 头只在训练过的标的上、按训练时的顺序预测（代码审查 WR-02）。
+
+        DL 头按标的**位置**编码输入：`MLPRegressor` 把每个 bar 展平成
+        `[S*F]`，只核对总长度；RNN 头沿标的轴递推，一个标的的预测依赖排在它
+        前面的所有标的。换一组标的（追加了 ticker 的库、另一份价格或因子数据）
+        的面板会让每个预测悄悄错位。`_trained_symbols` 已知时：
+
+        - 面板缺训练标的：ValueError，写明缺了哪些（同样个数、换了成员的面板
+          也在这里暴露）；
+        - 面板多出训练时没有的标的：logger.warning 写明它们，并丢掉；它们没有
+          预测，回测器 reindex 后是 NaN，因此不可选；
+        - 面板按训练标的的顺序取出，网络看到的布局与训练时逐位相同。
+
+        `_trained_symbols` 未知（没有训练记录的旧 checkpoint）时原样返回。
+        """
+        trained = self._trained_symbols
+        if trained is None:
+            return feats
+        present = [str(symbol) for symbol in feats.symbol.values.tolist()]
+        present_set = set(present)
+        missing = [symbol for symbol in trained if symbol not in present_set]
+        if missing:
+            raise ValueError(
+                f"{self.class_name}.predict_panel: the feature panel lacks "
+                f"{len(missing)} of the {len(trained)} symbols this model was "
+                f"trained on: {missing[:20]}{' ...' if len(missing) > 20 else ''}. "
+                f"A DL head encodes symbol position, so it cannot predict "
+                f"without them (WR-02)"
+            )
+        trained_set = set(trained)
+        extra = sorted(symbol for symbol in present_set if symbol not in trained_set)
+        if extra:
+            logger.warning(
+                f"{self.class_name}.predict_panel: dropping {len(extra)} symbol(s) "
+                f"the model was not trained on, which get no prediction: "
+                f"{extra[:20]}{' ...' if len(extra) > 20 else ''} (WR-02)"
+            )
+        return feats.sel(symbol=trained)
+
     def _write_checkpoint(self, path: Path) -> None:
         torch.save(self.model.state_dict(), path)  # type: ignore[union-attr]
 
     def _read_checkpoint(self, path: Path) -> None:
+        # 网络的标的数取训练记录（代码审查 WR-02）：按当前面板建网络，标的不一致
+        # 就永远无从暴露，而且加载前还必须先 collect。没有记录时退回当前面板。
+        num_symbols = (
+            len(self._trained_symbols)
+            if self._trained_symbols is not None
+            else self.num_symbols
+        )
         self.model = self._init_model(
-            num_symbols=self.num_symbols,
+            num_symbols=num_symbols,
             num_features=self.num_factors,
             num_labels=self.num_labels,
             hyperparameters=self.config.hyperparameters,
