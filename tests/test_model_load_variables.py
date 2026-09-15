@@ -303,3 +303,120 @@ def test_trained_on_is_authoritative_over_the_factor_config_field(tmp_path, warn
 
     assert fresh.model is not None
     assert _model_warnings(warning_messages) == [], warning_messages
+
+
+# --------------------------------------------------------------------------
+# Task 2: legacy and no-record checkpoints, warning dedup
+# --------------------------------------------------------------------------
+
+
+def _strip_trained_on(checkpoint: Path, *, drop_config_names: bool = False) -> None:
+    """Rewrite a sidecar the way a checkpoint trained before `trained_on` looks.
+
+    With `drop_config_names`, the legacy config field is removed from every
+    factor and label entry too, so the sidecar records no variable names at all.
+    """
+    path = _sidecar(checkpoint)
+    saved = json.loads(path.read_text())
+    del saved["trained_on"]
+    if drop_config_names:
+        for entry in saved["factors"] + saved["labels"]:
+            entry.pop("factor_names")
+    path.write_text(json.dumps(saved, indent=4))
+
+
+@pytest.mark.parametrize(
+    "fresh_kwargs",
+    [
+        pytest.param({}, id="identical-warns-once"),
+        pytest.param(dict(factor_names=["f_noise", "f_second", "f_signal"]), id="reordered-raises"),
+    ],
+)
+def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, fresh_kwargs):
+    """A sidecar written before `trained_on` existed still carries the legacy
+    config field `factors[].factor_names` / `labels[].factor_names`. It is a
+    weaker record (see Test M), but it is the best one such a checkpoint has:
+    the identical model loads with exactly ONE warning naming both kinds, and a
+    reordered model is still refused. Before this rule the legacy field was
+    ignored at the model layer, so both ids go red."""
+    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    _strip_trained_on(checkpoint)
+    fresh = _ml_model(tmp_path / "fresh", **fresh_kwargs)
+
+    if fresh_kwargs:
+        with pytest.raises(ValueError, match="was trained on") as excinfo:
+            fresh.load(checkpoint)
+        assert "legacy factors[].factor_names" in str(excinfo.value)
+        assert str(checkpoint) in str(excinfo.value)
+        assert fresh.model is None
+        return
+
+    fresh.load(checkpoint)
+    legacy = _model_warnings(warning_messages)
+    assert len(legacy) == 1, warning_messages
+    assert "legacy" in legacy[0] and "weaker" in legacy[0], legacy[0]
+    assert "factor" in legacy[0] and "label" in legacy[0], legacy[0]
+    assert str(checkpoint) in legacy[0]
+    assert fresh.model is not None
+
+
+@pytest.mark.parametrize("case", ["no-sidecar", "no-names"])
+def test_no_record_warns_once_and_loads(tmp_path, warning_messages, case):
+    """No record at all: a checkpoint copied without its config.json, or a
+    sidecar that has neither `trained_on` nor the legacy names. The variables
+    cannot be checked, so exactly one model-level warning says so and the model
+    loads and predicts. The wording must not contain the backtester's own
+    "has no config.json" phrase, which `tests/test_backtest_dates.py` counts."""
+    trained = _ml_model(tmp_path / "train")
+    checkpoint = _train(trained, ".joblib")
+    if case == "no-sidecar":
+        _sidecar(checkpoint).unlink()
+    else:
+        _strip_trained_on(checkpoint, drop_config_names=True)
+    fresh = _ml_model(tmp_path / "fresh")
+
+    fresh.load(checkpoint)
+
+    unchecked = _model_warnings(warning_messages)
+    assert len(unchecked) == 1, warning_messages
+    assert str(checkpoint) in unchecked[0]
+    assert "cannot be checked" in unchecked[0], unchecked[0]
+    assert not any("has no config.json" in m for m in warning_messages), warning_messages
+    features = fresh.config.factors[0].get_features()
+    xr.testing.assert_allclose(fresh.predict_panel(features), trained.predict_panel(features))
+
+
+def test_check_then_load_warns_once(tmp_path, warning_messages):
+    """The backtester runs the check before feature collection, then `load()`
+    runs it again. Each model-level warning is emitted once per model instance
+    and message; a different checkpoint still warns."""
+    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    _sidecar(checkpoint).unlink()
+    fresh = _ml_model(tmp_path / "fresh")
+
+    fresh._assert_trained_variables(checkpoint)
+    fresh.load(checkpoint)
+
+    assert len(_model_warnings(warning_messages)) == 1, warning_messages
+
+    other = _train(_ml_model(tmp_path / "train_other"), ".joblib")
+    _sidecar(other).unlink()
+    fresh.load(other)
+
+    unchecked = _model_warnings(warning_messages)
+    assert len(unchecked) == 2, warning_messages
+    assert str(other) in unchecked[1]
+
+
+def test_a_sidecar_that_is_not_an_object_raises(tmp_path):
+    """Corruption is not absence: valid JSON that is not an object must not be
+    read as "no record" and silently skip the check."""
+    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    _sidecar(checkpoint).write_text(json.dumps(["not", "a", "config"]))
+    fresh = _ml_model(tmp_path / "fresh")
+
+    with pytest.raises(ValueError, match="is not a model config object") as excinfo:
+        fresh.load(checkpoint)
+
+    assert str(_sidecar(checkpoint)) in str(excinfo.value)
+    assert fresh.model is None

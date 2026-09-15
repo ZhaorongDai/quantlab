@@ -790,3 +790,76 @@ def test_dl_head_loads_after_its_feature_panel_is_collected(tmp_path):
         assert torch.equal(fresh.model.state_dict()[name].cpu(), tensor.cpu()), name
     first = result.predictions["fwd_ret_1"].isel(timestamp=0)
     assert np.isfinite(first.values).all(), first.values
+
+
+def _trained_dl_checkpoint(tmp_path: Path, dataset_config, bars) -> tuple[TinyLinearDLHead, Path]:
+    trainer = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    trainer.collect()
+    trainer.train()
+    checkpoints = sorted(Path(trainer.config.model_save_dir).rglob("*.pth"))
+    assert len(checkpoints) == 1, checkpoints
+    return trainer, checkpoints[0]
+
+
+def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypatch):
+    """G-03.7-9: one variable check, in the model layer, keyed on `trained_on`.
+
+    The backtester used to carry its own comparison against the factor config
+    field `factors[].factor_names`. It refused a model's own checkpoint when
+    that field was ordered differently from the derived names, and accepted
+    permuted inputs when the derived names had drifted. It must be gone, and
+    `_load_model_checkpoint` must call `model._assert_trained_variables` before
+    the DL-only feature collection, so a refusal still precedes any feature
+    work. The old code has both attributes and never calls the model check
+    before collection, so this goes red.
+    """
+    assert not hasattr(BaseBacktester, "_assert_checkpoint_variables")
+    assert not hasattr(BaseBacktester, "_saved_variable_names")
+
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    trainer, checkpoint = _trained_dl_checkpoint(tmp_path, dataset_config, bars)
+    fresh = TinyLinearDLHead(trainer.config)
+    events: list[str] = []
+    check, collect = fresh._assert_trained_variables, fresh._collect_all_features
+    monkeypatch.setattr(
+        fresh, "_assert_trained_variables", lambda p: events.append("check") or check(p)
+    )
+    monkeypatch.setattr(
+        fresh, "_collect_all_features", lambda: events.append("collect") or collect()
+    )
+
+    _backtester(
+        tmp_path, dataset_config, fresh, bars,
+        start_bar=30, end_bar=50, checkpoint=checkpoint,
+    ).run()
+
+    assert "check" in events and "collect" in events, events
+    assert events.index("check") < events.index("collect"), events
+
+
+def test_dl_load_without_config_json_warns_once_per_concern(tmp_path, warning_messages):
+    """A DL checkpoint with no config.json beside it: the backtester says once
+    that the training dates cannot be checked ("has no config.json"), and the
+    model says once that the variables cannot be checked (G-03.7-9), even
+    though the model check runs both before collection and again inside
+    `load()`. The run completes."""
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    trainer, checkpoint = _trained_dl_checkpoint(tmp_path, dataset_config, bars)
+    (checkpoint.parent / "config.json").unlink()
+    fresh = TinyLinearDLHead(trainer.config)
+
+    result = _backtester(
+        tmp_path, dataset_config, fresh, bars,
+        start_bar=30, end_bar=50, checkpoint=checkpoint,
+    ).run()
+
+    no_sidecar = [m for m in warning_messages if "has no config.json" in m]
+    assert len(no_sidecar) == 1, warning_messages
+    assert str(checkpoint) in no_sidecar[0]
+    unchecked = [m for m in warning_messages if "G-03.7-9" in m]
+    assert len(unchecked) == 1, warning_messages
+    assert str(checkpoint) in unchecked[0]
+    first = result.predictions["fwd_ret_1"].isel(timestamp=0)
+    assert np.isfinite(first.values).all(), first.values
