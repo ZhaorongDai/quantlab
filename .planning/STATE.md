@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
-status: verifying
-stopped_at: Completed 03.7-12-PLAN.md
-last_updated: "2026-09-15T07:55:24.229Z"
+status: executing
+stopped_at: Completed 03.7-15-PLAN.md
+last_updated: "2026-09-15T19:25:36.241Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: dbf8f5d101616c330c08251e74d081a2081f6bf7
+state_head: 8cadd06d7650d4ec749fdfe7b34e82145ec50641
 progress:
   total_phases: 14
   completed_phases: 1
-  total_plans: 72
-  completed_plans: 71
+  total_plans: 76
+  completed_plans: 72
 milestone_name: milestone
 ---
 
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 14 of 14
-Status: Phase complete — ready for verification
+Plan: 2 of 18
+Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
@@ -128,6 +128,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P11 | 9 min | 2 tasks | 2 files |
 | Phase 03.7 P13 | 15 min | 2 tasks | 3 files |
 | Phase 03.7 P12 | 9 min | 2 tasks | 9 files |
+| Phase 03.7 P15 | 12 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -291,6 +292,8 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-13: D-37 doc annotations name the commit that actually removed each hook: _do_vecbt and BaseModel._vecbt in d07f06e (2026-09-14, before 03.7), RNNClassifier._vecbt in 03.7-05, the backtest flag and backtest_data in 03.7-07.
 - [Phase 03.7]: 03.7-12: a __pycache__-only directory is a namespace package, so find_spec('quantlab.vecbt') catches it; the retirement lock keeps a filesystem existence arm for a non-package entry find_spec cannot see (mutations M2, M4)
 - [Phase 03.7]: 03.7-12: current-state docs name the retired vecbt helper or the deleted DLModel._fit(backtest) guard only inside a parenthetical saying retired/deleted; stale Nautilus-strategy statements outside the rewritten passages went to deferred-items.md
+- [Phase 03.7]: 03.7-15: run_cv compares each fold checkpoint recorded train dates only with cv_folds.json, never with config.model; only run() load mode keeps the config.model WR-01 warning — Folds legitimately train on windows other than config.model (D-16 manifest authority); a normal 8-fold run_cv logged 8 spurious warnings (G-03.7-7)
+- [Phase 03.7]: 03.7-15: every train-date agreement check resolves both pairs to the bars they select on the price calendar via _same_training_bars (pandas slice_indexer + _slice_bound, shared with _training_window); endpoints outside the calendar span must also be Timestamp-equal — Text comparison mismatched equal instants (ns vs plain ISO); bare Timestamp equality would silence a real intraday difference (plain 2024-02-09 vs ns midnight select different end bars). User-confirmed 2026-09-15
 
 ### Pending Todos
 
@@ -348,8 +351,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T07:55:23.927Z
-Stopped at: Completed 03.7-12-PLAN.md
+Last session: 2026-09-15T19:25:20.761Z
+Stopped at: Completed 03.7-15-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
