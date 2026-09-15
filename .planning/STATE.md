@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-10-PLAN.md
-last_updated: "2026-09-15T07:04:02.641Z"
+stopped_at: Completed 03.7-11-PLAN.md
+last_updated: "2026-09-15T07:19:28.827Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: 51e1a1174f7ff2bf608de91d8cd4654167be0d45
+state_head: de52db77f6a3882f85adf392ba5034305465fbad
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 72
-  completed_plans: 68
+  completed_plans: 69
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 12 of 14
+Plan: 13 of 14
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -125,6 +125,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P08 | 15 min | 2 tasks | 4 files |
 | Phase 03.7 P09 | 17 min | 2 tasks | 5 files |
 | Phase 03.7 P10 | 17 min | 2 tasks | 3 files |
+| Phase 03.7 P11 | 9 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -282,6 +283,8 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-10: run_cv refuses model_mode other than 'load', and refuses a gap or overlap between the selected folds' test segments on the price calendar before any checkpoint load or simulation (D-35, D-36)
 - [Phase 03.7]: 03.7-10: _backtest_window is the single per-window pipeline for run() and every run_cv fold; each fold's D-17 split uses that fold's own train dates, and the stitched curve is one extra simulation over the concatenated fold weights
 - [Phase 03.7]: 03.7-10: stitched metrics carry training_windows / in_sample_ranges / out_of_sample_ranges (multi-segment, no single in_sample_range); the stitched report.html is unshaded with a note; per-fold weights and equity live under folds/fold_{i}/
+- [Phase 03.7]: 03.7-11: load_backtester_from_config refuses a non-BaseBacktester name before any nested dataset/model load, pops data_fingerprint onto expected_fingerprint, and imports BaseBacktester only inside the function
+- [Phase 03.7]: 03.7-11: identical-rerun locks (load, train, run_cv) were green on arrival against the loader plus the existing get_config(); proven by loader mutations (dropped fees/slippage, wrong expected_fingerprint); quantlab/base/backtest.py needed no fix
 
 ### Pending Todos
 
@@ -339,8 +342,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T07:04:02.291Z
-Stopped at: Completed 03.7-10-PLAN.md
+Last session: 2026-09-15T07:19:28.532Z
+Stopped at: Completed 03.7-11-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
