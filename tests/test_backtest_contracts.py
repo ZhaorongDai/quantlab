@@ -53,7 +53,10 @@ from pathlib import Path
 import pytest
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.us_equity import (
+    US_EQUITY_MARKET,
+    USEquityCrossectionSelectStockVectorBt,
+)
 from quantlab.base.backtest import BaseBacktester
 from quantlab.base.config import BacktestConfig
 
@@ -141,3 +144,172 @@ def test_backtest_configs_are_constructed_with_their_own_classes():
         ),
     ):
         USEquityCrossectionSelectStockVectorBt(config)
+
+
+# --------------------------------------------------------------------------
+# Source rules (D-04, D-32, layering, vectorbt scope)
+# --------------------------------------------------------------------------
+
+
+def _python_files(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+def _backtest_layer_files() -> list[Path]:
+    return [REPO_ROOT / "quantlab/base/backtest.py"] + _python_files(
+        REPO_ROOT / "quantlab/backtest"
+    )
+
+
+def _is_or_under(name: str, module: str) -> bool:
+    return name == module or name.startswith(module + ".")
+
+
+def _resolved_imports(path: Path) -> set[str]:
+    """Every module `path` imports, as a fully qualified dotted name.
+
+    - `import a.b` contributes `a.b`;
+    - `from a.b import c` contributes `a.b` and `a.b.c`, because `c` may itself
+      be a submodule (`from quantlab import config`);
+    - a relative import is resolved against the file's own dotted module name,
+      derived from its path under the repo root, by stripping `level` trailing
+      components and appending `module`. For `quantlab/base/data.py`,
+      `from ..backtest import x` becomes `quantlab.backtest` and
+      `quantlab.backtest.x`. An `__init__.py` keeps `__init__` as its last
+      component, so `from . import x` there resolves to its own package.
+
+    Nested imports (inside a function) are included: `ast.walk` sees them.
+    """
+    module_parts = path.resolve().relative_to(REPO_ROOT).with_suffix("").parts
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = ".".join(module_parts[: max(len(module_parts) - node.level, 0)])
+                target = ".".join(part for part in (base, node.module) if part)
+            else:
+                target = node.module or ""
+            if target:
+                found.add(target)
+            found.update(
+                ".".join(part for part in (target, alias.name) if part)
+                for alias in node.names
+            )
+    return found
+
+
+def test_price_column_literals_never_appear_inside_a_method_body():
+    """D-04: methods read column names from `self.MARKET`, never spell them.
+
+    Every function body (including lambdas and nested functions) in the
+    backtest layer is walked for a string constant equal to one of the spec's
+    column names. The module-level `US_EQUITY_MARKET` constant is outside every
+    function body, so it stays allowed.
+    """
+    columns = {
+        US_EQUITY_MARKET.fill_price_column,
+        US_EQUITY_MARKET.valuation_price_column,
+    }
+    assert len(columns) == 2 and all(isinstance(c, str) and c for c in columns)
+
+    files = _backtest_layer_files()
+    assert len(files) >= 4, files
+
+    hits = set()
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            for node in ast.walk(func):
+                if isinstance(node, ast.Constant) and node.value in columns:
+                    hits.add(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
+                        f"{node.value!r}"
+                    )
+    assert hits == set(), sorted(hits)
+
+
+def test_backtest_layer_never_imports_config_factories():
+    """D-32: the backtest layer and its tests never reach `quantlab.config`."""
+    files = (
+        _backtest_layer_files()
+        + [REPO_ROOT / "tests/backtest_fixtures.py"]
+        + sorted((REPO_ROOT / "tests").glob("test_backtest_*.py"))
+    )
+    assert REPO_ROOT / "tests/test_backtest_contracts.py" in files
+
+    # Positive control on a real relative spelling: `from .config import
+    # BacktestConfig` in quantlab/base/backtest.py must resolve to the sibling
+    # module, or every relative import below would be checked as garbage.
+    assert {"quantlab.base.config", "quantlab.base.config.BacktestConfig"} <= (
+        _resolved_imports(REPO_ROOT / "quantlab/base/backtest.py")
+    )
+
+    offenders = {
+        str(path.relative_to(REPO_ROOT)): sorted(
+            name
+            for name in _resolved_imports(path)
+            if _is_or_under(name, "quantlab.config")
+        )
+        for path in files
+    }
+    offenders = {path: names for path, names in offenders.items() if names}
+    assert offenders == {}, offenders
+
+
+def test_no_lower_layer_imports_the_backtest_layer():
+    """Layering: the backtest layer is imported only by itself and by
+    `quantlab/utils/module.py`, the config loader that rebuilds a backtester
+    from its dotted path."""
+    allowed_files = {
+        REPO_ROOT / "quantlab/base/backtest.py",
+        REPO_ROOT / "quantlab/utils/module.py",
+    }
+    backtest_pkg = REPO_ROOT / "quantlab/backtest"
+
+    # Positive control: the concrete class really does import the layer, so
+    # the resolver is not blind to it.
+    assert "quantlab.backtest.engine_vectorbt" in _resolved_imports(
+        backtest_pkg / "us_equity.py"
+    )
+
+    offenders = {}
+    for path in _python_files(REPO_ROOT / "quantlab"):
+        if path in allowed_files or backtest_pkg in path.parents:
+            continue
+        names = sorted(
+            name
+            for name in _resolved_imports(path)
+            if _is_or_under(name, "quantlab.backtest")
+            or _is_or_under(name, "quantlab.base.backtest")
+        )
+        if names:
+            offenders[str(path.relative_to(REPO_ROOT))] = names
+    assert offenders == {}, offenders
+
+
+def test_vectorbt_is_imported_only_by_the_engine():
+    """vectorbt stays behind the engine layer (D-31)."""
+    engine = REPO_ROOT / "quantlab/backtest/engine_vectorbt.py"
+    # Positive control: the engine imports vectorbt, so a scan that finds no
+    # importer anywhere cannot pass by being blind.
+    assert "vectorbt" in _resolved_imports(engine)
+
+    # TEMPORARY ALLOWANCE: quantlab/vecbt/ is the legacy helper that D-31
+    # deletes. Plan 03.7-12 retires the package and removes this allowance.
+    legacy_vecbt = REPO_ROOT / "quantlab/vecbt"
+
+    offenders = {}
+    for path in _python_files(REPO_ROOT / "quantlab"):
+        if path == engine or legacy_vecbt in path.parents:
+            continue
+        names = sorted(
+            name for name in _resolved_imports(path) if _is_or_under(name, "vectorbt")
+        )
+        if names:
+            offenders[str(path.relative_to(REPO_ROOT))] = names
+    assert offenders == {}, offenders
