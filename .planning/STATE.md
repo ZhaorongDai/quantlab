@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-04-PLAN.md
-last_updated: "2026-09-15T05:03:54.799Z"
+stopped_at: Completed 03.7-05-PLAN.md
+last_updated: "2026-09-15T05:17:31.208Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: 1d7598d69439bd5fdede502fbf70a0196acb0435
+state_head: 458726029e0c6b51ba3841508b8a3acbd2b558c8
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 72
-  completed_plans: 61
+  completed_plans: 62
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 5 of 14
+Plan: 6 of 14
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -118,6 +118,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P02 | 7 min | 2 tasks | 6 files |
 | Phase 03.7 P03 | 7 min | 2 tasks | 2 files |
 | Phase 03.7 P04 | 15 min | 3 tasks | 2 files |
+| Phase 03.7 P05 | 10 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -258,6 +259,9 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-03: a sort tie lock needs an axis of at least 16 elements; below that numpy quicksort and heapsort fall back to a stable insertion sort, so a 6-symbol tie test stayed green under an unstable-sort mutation
 - [Phase 03.7]: 03.7-04: D-07 holdings come from cumulative signed order sizes (Buy +, Sell -) via VectorBtBacktester._signed_order_sizes, never a vectorbt portfolio accessor; a forced liquidation is a held symbol whose RAW fill price at t+1 is NaN, recorded with its last ffilled price
 - [Phase 03.7]: 03.7-04: the engine re-asserts all-NaN or all-finite weight rows at the top of _simulate, before any pandas conversion, because a direct caller bypasses the run() contract check (Pitfall 3)
+- [Phase 03.7]: 03.7-05: D-33's premise that MLP keeps the generic [T,S,L] path is false -- MLPRegressor's module consumes the flat [T, S*F] matrix, so MLP gets its own _predict_panel_array adapter while its public predict() is unchanged
+- [Phase 03.7]: 03.7-05: RNNClassifier's predict_panel label variables hold per-label P(up) probabilities from direct channels [2i, 2i+1], not returns; a channel count other than 2 x labels raises ValueError naming the head
+- [Phase 03.7]: 03.7-05: adapter locks are paired with shape-preserving mutations (channel-0 swaps M10/M11), because the plan's primary_pred_final mutations were caught by shape guards rather than by the tests' own assertions
 
 ### Pending Todos
 
@@ -315,8 +319,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T05:03:54.513Z
-Stopped at: Completed 03.7-04-PLAN.md
+Last session: 2026-09-15T05:17:16.065Z
+Stopped at: Completed 03.7-05-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
