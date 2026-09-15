@@ -366,12 +366,42 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
     )
     assert metrics["whole"]["Total Fees Paid"] == pytest.approx(total_fees, abs=1e-6)
 
-    notional = float(
-        (np.abs(orders["size"].values) * orders["price"].values).sum()
-    )
+    per_order_notional = np.abs(orders["size"].values) * orders["price"].values
+    notional = float(per_order_notional.sum())
     assert inside["traded_notional"] + outside["traded_notional"] == pytest.approx(
         notional, rel=1e-12
     )
+
+    # Trades: closed trades partition the run; the single out-of-sample piece
+    # ends on the window's last bar, so its open count is the run's open count.
+    whole = metrics["whole"]
+    assert whole["Total Closed Trades"] > 0 and whole["Total Open Trades"] > 0
+    assert (
+        inside["closed_trade_count"] + outside["closed_trade_count"]
+        == whole["Total Closed Trades"]
+    )
+    assert outside["open_trade_count"] == whole["Total Open Trades"]
+
+    # Turnover, recomputed here from the records on random-walk prices: traded
+    # notional on a fill bar over the equity value at the PREVIOUS bar (a
+    # fill-bar denominator would differ, since prices move every bar).
+    value = result.simulation.value
+    value_ts = value.timestamp.values.astype("datetime64[ns]")
+    order_ts = orders["timestamp"].values.astype("datetime64[ns]")
+    expected = []
+    for bar in np.unique(order_ts):
+        i = int(np.searchsorted(value_ts, bar))
+        prior = float(value.values[i - 1]) if i > 0 else backtester_init_cash(result)
+        expected.append(float(per_order_notional[order_ts == bar].sum()) / prior)
+    assert whole["turnover"]["sum"] == pytest.approx(sum(expected), rel=1e-12)
+    assert inside["turnover"]["sum"] + outside["turnover"]["sum"] == pytest.approx(
+        sum(expected), rel=1e-12
+    )
+
+
+def backtester_init_cash(result) -> float:
+    """The run's init_cash, read back from its persisted config."""
+    return float(_strict_json(result.run_dir / "config.json")["init_cash"])
 
 
 def test_turnover_is_one_for_a_full_entry_and_two_for_a_full_swap(tmp_path):
