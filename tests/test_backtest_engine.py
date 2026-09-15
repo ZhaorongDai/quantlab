@@ -491,6 +491,38 @@ def test_us_equity_year_freq_daily_is_252_days_and_minute_is_252_sessions():
     )
 
 
+def _bars_per_year(interval) -> float:
+    interval = pd.Timedelta(interval)
+    return US_EQUITY_MARKET.year_freq(interval) / interval
+
+
+def test_us_equity_year_freq_multi_day_bars_are_calendar_spans():
+    """CR-02: weekly and monthly bars annualize with about 52 and 12 bars a year.
+
+    A bar longer than one day is a calendar span (a weekly bar is stamped
+    once per calendar week, holidays or not), so bars per year is 365.25 days
+    over the interval, capped at `trading_days_per_year`: one bar can never
+    be shorter than one trading day. The old formula divided the 252
+    TRADING-day count by the CALENDAR-day interval and gave 36 bars for a
+    weekly series and 8.13 for a 31-day monthly one, understating weekly
+    Sharpe and Sortino by about sqrt(52/36). Those values go red here.
+    """
+    assert _bars_per_year("1D") == pytest.approx(252.0, rel=1e-12)
+    assert _bars_per_year("7D") == pytest.approx(365.25 / 7, rel=1e-12)
+    assert _bars_per_year("30D") == pytest.approx(365.25 / 30, rel=1e-12)
+    assert _bars_per_year("31D") == pytest.approx(365.25 / 31, rel=1e-12)
+    assert _bars_per_year("91D") == pytest.approx(365.25 / 91, rel=1e-12)
+    assert 52.0 <= _bars_per_year("7D") <= 52.2
+    assert 11.7 <= _bars_per_year("31D") <= 12.2
+
+    # Continuous and non-increasing from one day up: no interval between one
+    # day and a quarter annualizes with more bars than a shorter interval.
+    intervals = [pd.Timedelta(hours=hours) for hours in range(24, 24 * 92, 6)]
+    counts = [_bars_per_year(interval) for interval in intervals]
+    assert all(a >= b for a, b in zip(counts, counts[1:]))
+    assert max(counts) == pytest.approx(252.0, rel=1e-12)
+
+
 def test_us_equity_market_uses_adjusted_columns():
     """D-04: fills and valuation use the split/dividend-adjusted Tiingo EOD columns."""
     from quantlab.enums.data import TiingoColumns

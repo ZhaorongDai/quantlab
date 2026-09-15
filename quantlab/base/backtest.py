@@ -23,6 +23,10 @@ from .config import BacktestConfig, FactorConfig
 #: 数据指纹比较的字段（D-27）：任一不同就 warning。
 FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
 
+#: 一个日历年的平均天数。长于一天的 bar 是日历跨度（周线、月线），按它年化
+#: （`MarketSpec.year_freq`，代码审查 CR-02）。
+CALENDAR_DAYS_PER_YEAR = 365.25
+
 
 @dataclass(frozen=True)
 class MarketSpec:
@@ -39,16 +43,35 @@ class MarketSpec:
     def year_freq(self, bar_interval) -> pd.Timedelta:
         """一年的时长，用 vectorbt 的口径表示：`year_freq / freq` 即每年 bar 数。
 
-        日及以上频率：每年 bar 数 = 交易日数 x (一天 / bar 间隔)；日内频率：
-        每年 bar 数 = 交易日数 x 每日交易分钟数 / bar 分钟数。日频得 252，
-        1 分钟得 252 x 390（03.7-RESEARCH.md Pitfall 6：vectorbt 默认按 365 天）。
+        - 日内频率：每年 bar 数 = 交易日数 x 每日交易分钟数 / bar 分钟数，
+          1 分钟得 252 x 390（03.7-RESEARCH.md Pitfall 6：vectorbt 默认按 365 天）；
+        - 恰好一天：每年 bar 数 = 交易日数，日频得 252。交易日历上的日线
+          时间戳差分的众数是 1 天，一个 bar 就是一个交易日；
+        - 长于一天：一个 bar 是一段**日历**跨度（周线每个日历周一个 bar，
+          节假日不会让一周消失；月线同理），所以每年 bar 数 =
+          `CALENDAR_DAYS_PER_YEAR` / bar 天数，并以交易日数封顶：一个 bar 不会
+          短于一个交易日。周线约 52.18，30 天约 12.18，31 天约 11.78。
+
+        这个分段在一天处连续、且随间隔单调不增：`min(交易日数, 365.25 / 天数)`
+        在一天时取 252，到约 1.45 天两者相等，之后按日历跨度下降。
+
+        **代码审查 CR-02 更正。** 以前长于一天的频率用「交易日数 x (一天 /
+        间隔)」，把**交易日**计数除以**日历日**间隔：周线得 36、31 天月线得
+        8.13，周线的 Sharpe / Sortino 被低估约 sqrt(52/36) 倍，Calmar、年化
+        收益和年化换手也跟着错，而且不报任何错。被放弃的另两种做法：审查建议
+        的「日历天数 x 5/7 取整作为每 bar 交易日数」（周线 50.4、31 天月线
+        11.45，把节假日当成会删掉整周/整月的 bar），以及对长于一天的频率直接
+        报错（项目是多频率的，D-18 明确调仓与频率无关）。
         """
         interval = pd.Timedelta(bar_interval)
         if interval <= pd.Timedelta(0):
             raise ValueError(f"bar_interval must be positive, got {interval}")
         one_day = pd.Timedelta(days=1)
         if interval >= one_day:
-            bars_per_year = self.trading_days_per_year * (one_day / interval)
+            bars_per_year = min(
+                float(self.trading_days_per_year),
+                CALENDAR_DAYS_PER_YEAR * (one_day / interval),
+            )
         else:
             minutes = interval / pd.Timedelta(minutes=1)
             bars_per_year = (
