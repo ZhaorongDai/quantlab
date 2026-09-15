@@ -4,13 +4,13 @@ milestone: v1.0
 current_phase: "03.6"
 current_phase_name: Sub-Daily Chunk Granularity & Panel-Estimator Removal (INSERTED)
 status: executing
-stopped_at: Completed 03.6-10-PLAN.md
-last_updated: "2026-09-13T21:52:48.868Z"
-last_activity: 2026-09-13
+stopped_at: Phase 03.7 context gathered
+last_updated: "2026-09-15T01:58:57.739Z"
+last_activity: 2026-09-14
 last_activity_desc: Phase 03.6 execution started
-state_head: caae4d439c62ab82deb29b77d08b11dfae4bd10f
+state_head: 1bfc679dda43a2122e58f309c8f4fa12f7e004f8
 progress:
-  total_phases: 13
+  total_phases: 14
   completed_phases: 1
   total_plans: 58
   completed_plans: 57
@@ -287,6 +287,7 @@ Recent decisions affecting current work:
 - Phase 03.4 edited: boundary contract revised: writes move IN-PROCESS, superseding the 2026-09-07 subprocess-CLI lock; Requirements/Success Criteria settled from discussion; registry, ingest-script and read-side in-scope bullets rewritten; programmatic write entry point added; long-task isolation, log sink and concurrency control moved to out-of-scope
 - Phase 03.5 inserted after Phase 03.4: Registry-level raw-to-Zarr conversion entry point: the unmet upstream precondition quantlab-console Phase 8 (CVT-01/02/03) names (URGENT)
 - Phase 03.6 inserted after Phase 03.5: Frequency-keyed chunking policy: granularity from a per-frequency constant table; the RAM guard's refusing half deleted, estimating half kept
+- Phase 03.7 inserted after Phase 3: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (URGENT)
 
 ## Deferred Items
 
@@ -301,9 +302,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-13T21:52:05.755Z
-Stopped at: Completed 03.6-10-PLAN.md
+Last session: 2026-09-15T01:58:57.238Z
+Stopped at: Phase 03.7 context gathered
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: None
+Resume file: .planning/phases/03.7-cross-sectional-backtester-basebacktester-abc-usequitycrosse/03.7-CONTEXT.md
 </content>
