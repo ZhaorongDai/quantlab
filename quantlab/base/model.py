@@ -64,6 +64,10 @@ class BaseModel(ABC):
         # 训练面板的标的：`_save_model` 训练落盘时记下，`load` 从 checkpoint 旁的
         # `config.json` 训练记录读回；没有记录时是 None（代码审查 WR-02）。
         self._trained_symbols: list[str] | None = None
+        # 模型层 checkpoint 记录 warning 已经输出过的原文（G-03.7-9）：回测器在
+        # 特征计算前核对一次变量，`load()` 再核对一次，同一条 warning 只输出一次。
+        # 比较与报错从不跳过；每条 warning 都写明路径，换一个 checkpoint 仍会 warning。
+        self._emitted_load_warnings: set[str] = set()
 
         self.data_backend = XrBackend()
         # self._pre_feature: Optional[xr.Dataset] = None
@@ -380,22 +384,51 @@ class BaseModel(ABC):
         变量，先因子后标签。因子错位意味着模型吃到别的或错位的输入；标签错位
         意味着输出被贴上错的变量名。
 
+        旧 checkpoint 按 WR-01/WR-02 的策略处理，每类变量各自取最好的那份记录：
+
+        - 有 `trained_on` 的列表：按它严格核对；
+        - 没有 `trained_on`（记录出现之前训练的 checkpoint），但每个
+          `factors[]` / `labels[]` 条目都有 `factor_names`：按这份旧配置字段
+          核对，不一致照样 ValueError，另外输出**一条** warning，写明它是比
+          `trained_on` 弱的记录、适用于哪几类变量；
+        - 两者都没有、或者旁边根本没有 `config.json`（例如只拷走了权重文件）：
+          无从核对，输出**一条** warning 后继续加载。这条 warning 刻意不含
+          回测器自己那句 "has no config.json"，回测器那条只管训练日期。
+
+        先比较两类变量、先因子后标签地报错，最后才输出 warning。比较与报错
+        每次调用都执行；只有同一个模型实例上原文完全相同的 warning 才不再重复
+        输出（`_warn_load_record_once`）。回测器在特征计算前调用一次、
+        `load()` 再调用一次，同一条 warning 因此只出现一次。每条 warning 都
+        写明 checkpoint 路径与记录的变量，换一个 checkpoint 或改过的
+        `config.json` 仍会 warning。
+
         本方法只读 `config.json`，不需要任何数据，所以回测器可以在特征计算之前
         调用它；`load()` 自己也调用，直接加载的调用方同样受保护。
         """
         saved = self._read_checkpoint_sidecar(p)
-        if saved is None:
-            return
-        record = saved.get(self.TRAINED_ON_KEY)
-        for kind, key, declared in (
-            ("factor", "factor_names", self.get_factor_names()),
-            ("label", "label_names", self.get_label_names()),
+        record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
+        legacy: list[tuple[str, list[str]]] = []
+        unrecorded: list[str] = []
+        for kind, key, entries_key, declared in (
+            ("factor", "factor_names", "factors", self.get_factor_names()),
+            ("label", "label_names", "labels", self.get_label_names()),
         ):
-            recorded = record.get(key) if isinstance(record, dict) else None
-            if not isinstance(recorded, list):
-                continue
-            recorded = [str(name) for name in recorded]
             current = [str(name) for name in declared]
+            recorded = record.get(key) if isinstance(record, dict) else None
+            if isinstance(recorded, list):
+                recorded = [str(name) for name in recorded]
+                source = "trained_on"
+            else:
+                recorded = (
+                    self._legacy_variable_names(saved.get(entries_key))
+                    if saved is not None
+                    else None
+                )
+                if recorded is None:
+                    unrecorded.append(kind)
+                    continue
+                legacy.append((kind, recorded))
+                source = f"legacy {entries_key}[].factor_names"
             if recorded == current:
                 continue
             consequence = (
@@ -405,10 +438,53 @@ class BaseModel(ABC):
             )
             raise ValueError(
                 f"{self.class_name}: checkpoint {p} was trained on {kind} "
-                f"variables {recorded} (trained_on in its config.json), but this "
+                f"variables {recorded} ({source} in its config.json), but this "
                 f"model declares {current}; loading it would {consequence} "
                 f"(G-03.7-9)"
             )
+
+        if legacy:
+            kinds = " and ".join(kind for kind, _ in legacy)
+            names = "; ".join(f"{kind} {names}" for kind, names in legacy)
+            self._warn_load_record_once(
+                f"{self.class_name}: checkpoint {p} has no trained_on record for "
+                f"its {kinds} variables, so they were checked against the legacy "
+                f"factors[]/labels[] factor_names config field ({names}), a weaker "
+                f"record than trained_on: the checkpoint was trained before that "
+                f"record existed (G-03.7-9)"
+            )
+        if unrecorded:
+            kinds = " and ".join(unrecorded)
+            where = (
+                "no config.json lies beside it"
+                if saved is None
+                else "its config.json records neither trained_on nor legacy "
+                "factor_names for them"
+            )
+            self._warn_load_record_once(
+                f"{self.class_name}: checkpoint {p}: the {kinds} variables it was "
+                f"trained on cannot be checked against this model's declared "
+                f"variables because {where}; loading it as given (G-03.7-9)"
+            )
+
+    @staticmethod
+    def _legacy_variable_names(entries) -> list[str] | None:
+        """旧 `config.json` 里 `factors[]` / `labels[]` 按顺序展开的 `factor_names`；不全时 None。"""
+        if not isinstance(entries, list):
+            return None
+        names: list[str] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("factor_names") is None:
+                return None
+            names.extend(str(name) for name in entry["factor_names"])
+        return names
+
+    def _warn_load_record_once(self, message: str) -> None:
+        """同一个模型实例上原文相同的 checkpoint 记录 warning 只输出一次（G-03.7-9）。"""
+        if message in self._emitted_load_warnings:
+            return
+        self._emitted_load_warnings.add(message)
+        logger.warning(message)
 
     def _read_trained_symbols(self, p: Path) -> list[str] | None:
         """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。"""

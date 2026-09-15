@@ -897,15 +897,24 @@ class BaseBacktester(ABC):
 
         1. 先检查 checkpoint 文件存在，缺了直接报错并写明路径。这一步必须在
            任何特征计算之前，否则一个拼错的路径要白算一遍特征才暴露。
-        2. 读 checkpoint 旁的 `config.json`（`_read_checkpoint_config`），核对
-           因子与标签的变量名和顺序（`_assert_checkpoint_variables`，代码审查
-           WR-01）。同样先于任何特征计算。
-        3. 只对 `DLModel`，先把特征面板放进模型的 data backend。
+        2. 读 checkpoint 旁的 `config.json`（`_read_checkpoint_config`），调用方
+           从中取训练日期。
+        3. 核对因子与标签的变量名和顺序，交给模型层唯一的一份检查
+           `model._assert_trained_variables`（G-03.7-9）。它按 `trained_on`
+           核对，没有 `trained_on` 时退回旧的配置字段并 warning，一点记录都
+           没有时 warning 后继续。这一步同样先于任何特征计算，拒收时不白算
+           特征。回测器自己不再比较变量：以前它拿因子配置字段
+           `factors[].factor_names` 比较，既会拒收模型自己的 checkpoint（该
+           字段与训练真正用的名字顺序不同时），也会放过错位的输入（派生的
+           名字漂移到恰好等于过时的配置字段时）。
+        4. 只对 `DLModel`，先把特征面板放进模型的 data backend。
            `DLModel._read_checkpoint` 用 `num_symbols` 重建网络，而
            `num_symbols` 读的正是这个 backend，空着就会在 `load()` 里报错
            （03.7-RESEARCH.md Pitfall 11）。`MLModel` 的 checkpoint 就是完整
            模型，不调 `_init_model`，所以跳过这一步。
-        4. `model.load(checkpoint)`。
+        5. `model.load(checkpoint)`。`load()` 会再核对一次变量，直接加载的
+           调用方因此同样受保护；模型对同一条 warning 只输出一次，这里不会
+           重复。
 
         返回读到的 `config.json`（没有时 None），调用方从中取训练日期。
         """
@@ -916,8 +925,7 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: checkpoint {path} does not exist"
             )
         saved = self._read_checkpoint_config(path)
-        if saved is not None:
-            self._assert_checkpoint_variables(saved, path)
+        model._assert_trained_variables(path)
         if isinstance(model, DLModel):
             model.data_backend.to_internal(model._collect_all_features())
         model.load(path)
@@ -926,16 +934,17 @@ class BaseBacktester(ABC):
     def _read_checkpoint_config(self, path: Path) -> dict | None:
         """checkpoint 旁由 `_save_model` 写下的 `config.json`；没有时 warning 并返回 None。
 
-        没有它就无从核对因子、标签与训练日期，只能照 `config.model` 原样使用。
-        这不一定是错（比如手工拷贝的 checkpoint），所以只 warning 不中断。
+        回测器从中取训练日期。没有它就无从核对训练日期，只能照 `config.model`
+        原样使用。这不一定是错（比如手工拷贝的 checkpoint），所以只 warning
+        不中断。这条 warning 只管日期：因子与标签变量能否核对，由模型层的
+        `_assert_trained_variables` 自己说明（G-03.7-9）。
         """
         sidecar = path.parent / "config.json"
         if not sidecar.is_file():
             logger.warning(
                 f"{self.class_name}: checkpoint {path} has no config.json beside "
-                f"it, so its factors, labels and training dates cannot be checked "
-                f"against config.model (WR-01); continuing with config.model as "
-                f"given"
+                f"it, so its training dates cannot be checked against "
+                f"config.model (WR-01); continuing with config.model as given"
             )
             return None
         saved = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -944,50 +953,6 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: {sidecar} is not a model config object"
             )
         return saved
-
-    @staticmethod
-    def _saved_variable_names(entries) -> list[str] | None:
-        """`config.json` 里一组因子（或标签）配置按顺序展开的变量名；记录不全时 None。"""
-        if not isinstance(entries, list):
-            return None
-        names: list[str] = []
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("factor_names") is None:
-                return None
-            names.extend(str(name) for name in entry["factor_names"])
-        return names
-
-    def _assert_checkpoint_variables(self, saved: dict, path: Path) -> None:
-        """checkpoint 训练时的因子与标签变量（名字与顺序）必须与 `config.model` 一致。
-
-        模型只按位置消费特征：xgboost 只核对特征**个数**，DL 头连个数都只在
-        第一层才核对。一个用别的因子集、或同样因子不同顺序训练出来的
-        checkpoint，会对错位的特征悄悄给出预测（代码审查 WR-01）。标签决定
-        预测变量的名字与 `score_label` 的含义，同理。不一致时 ValueError，写明
-        两边的变量名与 checkpoint 路径；记录不全（旧的或手写的 `config.json`）
-        时对该类变量 warning 并跳过核对。
-        """
-        model = self.config.model
-        for kind, entries, declared in (
-            ("factor", saved.get("factors"), model.get_factor_names()),
-            ("label", saved.get("labels"), model.get_label_names()),
-        ):
-            recorded = self._saved_variable_names(entries)
-            current = [str(name) for name in declared]
-            if recorded is None:
-                logger.warning(
-                    f"{self.class_name}: {path.parent / 'config.json'} does not "
-                    f"record the {kind} variable names, so they cannot be checked "
-                    f"against config.model (WR-01)"
-                )
-                continue
-            if recorded != current:
-                raise ValueError(
-                    f"{self.class_name}: checkpoint {path} was trained on {kind} "
-                    f"variables {recorded}, but config.model declares {current}; "
-                    f"predicting with it would feed the model different or "
-                    f"permuted inputs (WR-01)"
-                )
 
     def _price_calendar(self, end_date: str) -> np.ndarray:
         """价格数据集自己的交易日历（截至 `end_date`），用于按 bar 计数。
