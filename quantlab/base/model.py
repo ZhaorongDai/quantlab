@@ -24,6 +24,7 @@ from quantlab.ml_model.backend import MlBackend
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.timer import Timer
 
 from .config import DLConfig, MLConfig
 
@@ -232,8 +233,9 @@ class BaseModel(ABC):
     ) -> Self:
         feature = self._collect_all_features()
         label = self._collect_all_labels()
-        d = xr.combine_by_coords([feature, label])
-        d = d.sortby(["timestamp", "symbol"])
+        with Timer(f"{self.class_name}: collect merge"):
+            d = xr.combine_by_coords([feature, label])
+            d = d.sortby(["timestamp", "symbol"])
         self.data_backend.to_internal(d)  # type: ignore
         return self
 

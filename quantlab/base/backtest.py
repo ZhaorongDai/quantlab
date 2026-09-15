@@ -17,6 +17,7 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import write_backtest_report
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig
 
@@ -764,7 +765,8 @@ class BaseBacktester(ABC):
         weights = self._generate_signals(predictions, prices)
         self._assert_weights_contract(weights, prices)
 
-        simulation = self._simulate(weights, prices)
+        with Timer(f"{self.class_name}: simulate"):
+            simulation = self._simulate(weights, prices)
         benchmark = self._simulate_benchmark(start_date, end_date)
         metrics = self._compute_metrics(simulation, benchmark, split)
         return _BacktestWindow(
