@@ -156,10 +156,17 @@ DL 与 ML 共用：
   `load()` 把 `symbols` 读回，网络的 `num_symbols` 也按它建（加载前不必再 `collect()`）。之后 `predict_panel`：
   - 面板缺任何训练标的：`ValueError`，写出缺了哪些。同样个数、换了成员的面板也在这里暴露，以前 MLP 会悄悄错位；
   - 面板多出训练时没有的标的：`logger.warning` 写出它们并丢掉，它们没有预测；
-  - 输出的 `symbol` 坐标就是训练标的，顺序与训练时相同。
+  - 输出的 `symbol` 坐标就是训练标的，顺序与训练时相同。（这一条的「顺序」说法有误，见下方 2026-09-15 G-03.7-8 更正。）
 
   ML 头（`XGBoostRegressor`）逐个 `(t, s)` 预测，与标的轴无关，不做这项核对。`trained_on` 是记录不是配置字段，
   `load_model_from_config` 重建时把它丢掉。没有这项记录的旧 checkpoint 行为不变。
+
+  **更正（2026-09-15，G-03.7-8）。** 上面「顺序与训练时相同」默认了训练顺序就是排序后的顺序，这个前提不成立。
+  实际契约是：输出的 `symbol` 坐标是训练标的**按标的排序**后的顺序，这正是 `to_array` 与训练（`DLModel._fit` 经
+  `to_tensor -> to_array`）使用的布局。训练记录 `trained_on.symbols` 只决定**成员**（缺了报错、多了丢掉），它的顺序
+  无关紧要；`predict_panel` 在钩子之后再排一次序，坐标就从 `to_array` 实际消费的那块面板读。`_save_model` 现在也按
+  排序记录标的。修复之前，记录一旦不是排好序的（没经过 `collect()` 就 `train()` / `train_cv()`，或手改过
+  `trained_on`），位置敏感的 DL 头（MLP、RNN）的预测会落到别的标的坐标上，而且不报任何错。
 
 **头怎么适配：只有一个钩子 `_predict_panel_array(x)`**，`[T, S, F]` numpy 进，`[T, S, L]` numpy 出。它刻意是普通方法
 而不是抽象方法：做成抽象的话每一层的 `__abstractmethods__` 都会变，而 `tests/test_model_hierarchy.py` 锁的正是这些集合。

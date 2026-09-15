@@ -283,10 +283,15 @@ class BaseModel(ABC):
         """建 checkpoint 目录，写 `config.json` 与 checkpoint。
 
         `config.json` 是 `get_config()` 加一个训练记录 `trained_on`（代码审查
-        WR-02）：`factor_names`、`label_names` 与训练面板的 `symbols`（按面板
-        顺序）。DL 头按标的**位置**编码输入（MLP 展平 `[S*F]`，RNN 沿标的轴
-        递推），换一组标的预测会整体错位，所以必须知道训练时是哪些标的；记录
-        同时写到 `_trained_symbols` 上，训练完直接预测时也用得上。
+        WR-02）：`factor_names`、`label_names` 与训练面板的 `symbols`。DL 头按
+        标的**位置**编码输入（MLP 展平 `[S*F]`，RNN 沿标的轴递推），换一组标的
+        预测会整体错位，所以必须知道训练时是哪些标的；记录同时写到
+        `_trained_symbols` 上，训练完直接预测时也用得上。
+
+        `symbols` 按标的**排序**记录，不是数据后端里的顺序（G-03.7-8）：`_fit`
+        经 `to_array` 训练，而 `to_array` 对标的轴排序，所以网络训练时看到的就是
+        排序后的布局。没经过 `collect()`（它会排序）就调 `train()` / `train_cv()`
+        时后端可以是乱序的，以前记录照抄后端顺序，成了一句关于训练的假话。
         """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError("Model not initialized")
@@ -296,7 +301,7 @@ class BaseModel(ABC):
         else:
             p.parent.mkdir(parents=True)
 
-        symbols = [str(symbol) for symbol in self.symbols]
+        symbols = sorted(str(symbol) for symbol in self.symbols)
         record = {
             "factor_names": [str(name) for name in self.get_factor_names()],
             "label_names": [str(name) for name in self.get_label_names()],
