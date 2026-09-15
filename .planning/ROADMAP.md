@@ -141,7 +141,7 @@ Plans:
 **Goal:** Users can turn a trained return model into a reproducible cross-sectional US-equity backtest. `run()` handles a model backtest and `run_cv()` a model-CV backtest over each fold's out-of-sample segment. The engine is vectorbt, with t+1 open fills and long-only/long-short TopN target weights. Every run reports in/out-of-sample results, persists its artifacts and data fingerprints, and rebuilds from its own config. The legacy `vecbt/bt.py` is retired.
 **Requirements**: BT-01 (vectorbt part), CFG-01 (partial), CLEAN-02 (partial)
 **Depends on:** Phase 3
-**Plans:** 3/14 plans executed
+**Plans:** 4/14 plans executed
 
 Plans:
 
@@ -153,7 +153,7 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 03.7-03-PLAN.md — Selector hardening: books, eligibility, ties, rebalance schedule, D-03 invariant
-- [ ] 03.7-04-PLAN.md — Engine hardening: fill/fee/flip facts, delisting liquidation records, market spec, D-01 sibling proof
+- [x] 03.7-04-PLAN.md — Engine hardening: fill/fee/flip facts, delisting liquidation records, market spec, D-01 sibling proof
 - [ ] 03.7-05-PLAN.md — predict_panel head adapters (MLP, RNNRegressor, RNNClassifier) and `_vecbt` removal
 - [ ] 03.7-06-PLAN.md — Model preparation and date alignment: bar-accurate warm-up, cache-proof re-dating, train/load (incl. DL)
 - [ ] 03.7-14-PLAN.md — Architecture locks: exact abstract sets, run() only on the base, price-column literals, factory imports, layering (split out of 03.7-01 for context budget)

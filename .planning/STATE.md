@@ -4,16 +4,16 @@ milestone: v1.0
 current_phase: "03.7"
 current_phase_name: cross-sectional-backtester-basebacktester-abc-usequitycrosse
 status: executing
-stopped_at: Completed 03.7-03-PLAN.md
-last_updated: "2026-09-15T04:45:09.149Z"
+stopped_at: Completed 03.7-04-PLAN.md
+last_updated: "2026-09-15T05:03:54.799Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 03.7 execution started
-state_head: 179a72ad6255b6675e36f804821005da2324a2fe
+state_head: 1d7598d69439bd5fdede502fbf70a0196acb0435
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 72
-  completed_plans: 60
+  completed_plans: 61
 milestone_name: milestone
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-04)
 ## Current Position
 
 Phase: 03.7 (cross-sectional-backtester-basebacktester-abc-usequitycrosse) — EXECUTING
-Plan: 4 of 14
+Plan: 5 of 14
 Status: Ready to execute
 Last activity: 2026-09-15 — Phase 03.7 execution started
 
@@ -117,6 +117,7 @@ Progress: [██████████] 100%
 | Phase 03.7 P01 | 10 min | 1 tasks tasks | 10 files files |
 | Phase 03.7 P02 | 7 min | 2 tasks | 6 files |
 | Phase 03.7 P03 | 7 min | 2 tasks | 2 files |
+| Phase 03.7 P04 | 15 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -255,6 +256,8 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-02: Factor.read keeps its cached narrow-read default; overwrite=True is opt-in, pinned in both directions, and required after re-dating (D-14, RESEARCH Pitfall 1)
 - [Phase 03.7]: 03.7-03: the tracer TopN selector needed no code change under 18 locks; each lock that passed on arrival was proven able to fail by mutation (M1-M7 red), so there is no feat commit
 - [Phase 03.7]: 03.7-03: a sort tie lock needs an axis of at least 16 elements; below that numpy quicksort and heapsort fall back to a stable insertion sort, so a 6-symbol tie test stayed green under an unstable-sort mutation
+- [Phase 03.7]: 03.7-04: D-07 holdings come from cumulative signed order sizes (Buy +, Sell -) via VectorBtBacktester._signed_order_sizes, never a vectorbt portfolio accessor; a forced liquidation is a held symbol whose RAW fill price at t+1 is NaN, recorded with its last ffilled price
+- [Phase 03.7]: 03.7-04: the engine re-asserts all-NaN or all-finite weight rows at the top of _simulate, before any pandas conversion, because a direct caller bypasses the run() contract check (Pitfall 3)
 
 ### Pending Todos
 
@@ -312,8 +315,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-15T04:44:56.061Z
-Stopped at: Completed 03.7-03-PLAN.md
+Last session: 2026-09-15T05:03:54.513Z
+Stopped at: Completed 03.7-04-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None
