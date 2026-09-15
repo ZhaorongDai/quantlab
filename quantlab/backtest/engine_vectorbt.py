@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import vectorbt as vbt
 import xarray as xr
+from loguru import logger
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 
@@ -24,8 +25,24 @@ class VectorBtBacktester(BaseBacktester):
       vectorbt `val_price` 的默认行为（03.7-RESEARCH.md Pitfall 4）。
     - **不计融券/空头融资成本**（D-21），所以空头一侧的收益是偏乐观的。
 
-    价格喂给引擎之前两列都做 ffill（D-07）：持仓标的的价格一旦变成 NaN，
-    vectorbt 会冻结整组之后的**所有**调仓且不报错（Pitfall 2）。
+    **退市规则（D-07）。** 价格喂给引擎之前，成交价与估值价两列都做 ffill。
+    原因：持仓标的的价格一旦变成 NaN，vectorbt 会按最后价值继续持有它，并且
+    **整组**之后的所有调仓都被悄悄跳过、不报错——冻结的是整组，不只是退市的
+    那一只（Pitfall 2）。ffill 之后，退市标的在下一个调仓 bar 按最后价格被强制
+    平仓，其余标的照常调仓。
+
+    判定一次强制平仓：调仓行 t（且 t+1 仍在窗口内），t 收盘时该标的持仓非零
+    （由订单记录累计得出，见 `_signed_order_sizes`），并且 t+1 的**原始**（未
+    ffill）成交价是 NaN。开头价格为 NaN、此前从未持有的标的（晚上市）不算退市，
+    上市后正常成交。每次强制平仓在 `SimulationResult.liquidations` 里记一条 dict：
+
+    - `symbol`：标的名（str）；
+    - `signal_timestamp`：发出平仓信号的调仓 bar（pd.Timestamp）；
+    - `fill_timestamp`：成交 bar，即 t+1（pd.Timestamp）；
+    - `price`：t+1 上 ffill 后的成交价，也就是该标的最后一个有限成交价（float）。
+
+    调仓行混有 NaN 与有限值时，在交给 vectorbt 之前直接报错（Pitfall 3）：NaN
+    在调仓行上的意思是「保持原仓位」，会占着资金悄悄挡住同一行的其余订单。
     """
 
     #: vectorbt `Portfolio.stats` 的指标名，去掉了 `benchmark_return`（D-08：
@@ -62,6 +79,10 @@ class VectorBtBacktester(BaseBacktester):
 
     def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:
         """权重 -> `Portfolio.from_orders`；pandas 只活在这个方法里。"""
+        # 基类的契约检查只在 run() 里跑；直接调 `_simulate` 的调用方会绕过它，
+        # 所以引擎边界在任何 pandas 转换之前再断言一次（Pitfall 3）。
+        self._refuse_mixed_weight_rows(weights)
+
         cfg = self.config
         market = self.MARKET
 
@@ -76,12 +97,10 @@ class VectorBtBacktester(BaseBacktester):
         )
 
         w = weights["weight"].transpose("timestamp", "symbol").to_pandas()
-        fill = (
-            prices[market.fill_price_column]  # type: ignore[union-attr]
-            .transpose("timestamp", "symbol")
-            .to_pandas()
-            .ffill()
+        raw_fill = prices[market.fill_price_column].transpose(  # type: ignore[union-attr]
+            "timestamp", "symbol"
         )
+        fill = raw_fill.to_pandas().ffill()
         valuation = (
             prices[market.valuation_price_column]  # type: ignore[union-attr]
             .transpose("timestamp", "symbol")
@@ -129,14 +148,39 @@ class VectorBtBacktester(BaseBacktester):
             }
         )
 
+        liquidations = self._forced_liquidations(
+            weight_values=np.asarray(w.to_numpy(), dtype=np.float64),
+            raw_fill=np.asarray(raw_fill.values, dtype=np.float64),
+            filled_fill=np.asarray(fill.to_numpy(), dtype=np.float64),
+            orders=orders,
+            timestamps=timestamps,
+            symbols=np.asarray(fill.columns),
+        )
+
         return SimulationResult(
             value=value_da,
             returns=returns_da,
             orders=orders,
-            liquidations=[],
+            liquidations=liquidations,
             bar_interval=bar_interval,
             native=pf,
         )
+
+    def _refuse_mixed_weight_rows(self, weights: xr.Dataset) -> None:
+        """每一行权重必须要么全 NaN（持有），要么全有限（调仓）。"""
+        values = np.asarray(
+            weights["weight"].transpose("timestamp", "symbol").values, dtype=np.float64
+        )
+        mixed = ~(np.isnan(values).all(axis=1) | np.isfinite(values).all(axis=1))
+        if mixed.any():
+            first = pd.Timestamp(weights.timestamp.values[int(np.argmax(mixed))])
+            raise ValueError(
+                f"{self.class_name}: weight row at {first} mixes NaN and finite "
+                f"values; a rebalance row must be all-finite and a hold row "
+                f"all-NaN (vectorbt reads NaN on a rebalance row as 'keep the "
+                f"position' and silently blocks the rest of the rebalance, "
+                f"03.7-RESEARCH.md Pitfall 3)"
+            )
 
     @staticmethod
     def _signed_order_sizes(
@@ -172,6 +216,42 @@ class VectorBtBacktester(BaseBacktester):
             dims=("timestamp", "symbol"),
             coords={"timestamp": ts, "symbol": syms},
         )
+
+    def _forced_liquidations(
+        self,
+        weight_values: np.ndarray,
+        raw_fill: np.ndarray,
+        filled_fill: np.ndarray,
+        orders: xr.Dataset,
+        timestamps: np.ndarray,
+        symbols: np.ndarray,
+    ) -> list[dict]:
+        """D-07 的强制平仓记录；判定规则与记录字段见类文档。"""
+        n_bars = timestamps.size
+        held = self._signed_order_sizes(orders, timestamps, symbols).values
+        sizes = np.abs(np.asarray(orders["size"].values, dtype=np.float64))
+        # 买卖相抵后的浮点残差不算持仓：容差取最大单笔成交数量的 1e-9 倍。
+        tolerance = 1e-9 * max(1.0, float(sizes.max(initial=0.0)))
+
+        records = []
+        for t in np.flatnonzero(np.isfinite(weight_values).all(axis=1)):
+            if t + 1 >= n_bars:
+                continue
+            delisted = (np.abs(held[t]) > tolerance) & np.isnan(raw_fill[t + 1])
+            for j in np.flatnonzero(delisted):
+                record = {
+                    "symbol": str(symbols[j]),
+                    "signal_timestamp": pd.Timestamp(timestamps[t]),
+                    "fill_timestamp": pd.Timestamp(timestamps[t + 1]),
+                    "price": float(filled_fill[t + 1, j]),
+                }
+                logger.info(
+                    f"{self.class_name}: forced liquidation of {record['symbol']} "
+                    f"(D-07): signal {record['signal_timestamp']}, fill "
+                    f"{record['fill_timestamp']} at last price {record['price']}"
+                )
+                records.append(record)
+        return records
 
     def _simulate_benchmark(
         self, start_date: str, end_date: str
