@@ -4,7 +4,9 @@ Locks `quantlab/my_ops/preprocess.py:CrossSectionalZScore`, a
 `GenericCrossSectionalOp` that normalizes each time point across symbols:
 `(x - nanmean) / nanstd(ddof=1)`. The reference is pandas
 `df.sub(df.mean(axis=1), axis=0).div(df.std(axis=1, ddof=1), axis=0)` computed
-in float64; outputs must match within 2e-4 with an identical NaN pattern.
+in float64; outputs must match within 2e-4 with an identical NaN pattern, in
+both TS batch and STREAM layouts, whether the op consumes a graph Input or an
+intermediate node, and when its output feeds a downstream time-series op.
 
 Cost control: compiling a KunQuant module takes several seconds, so the whole
 file compiles exactly two modules (one TS batch, one STREAM), each holding all
@@ -21,14 +23,17 @@ reliably, so the bug is documented in the class docstring instead of tested.
 `FactorKunQuant.cal`, the only batch caller in the repo, always passes start=0.
 """
 
+import inspect
+
 import numpy as np
 import pandas as pd
 import pytest
 from KunQuant.Driver import KunCompilerConfig
-from KunQuant.Op import Builder, Input, Output
+from KunQuant.Op import Builder, CompositiveOp, CrossSectionalOp, Input, Output
 from KunQuant.Stage import Function
 from KunQuant.jit import cfake
 from KunQuant.ops import WindowedAvg
+from KunQuant.ops.MiscOp import GenericCrossSectionalOp
 from KunQuant.runner import KunRunner as kr
 
 from quantlab.my_ops.preprocess import CrossSectionalZScore
@@ -38,6 +43,7 @@ _N_SYMBOLS = 16
 _ALL_NAN_ROW = 7
 _SINGLE_VALID_ROW = 9
 _CONSTANT_ROW = 11
+_DEGENERATE_ROWS = (_ALL_NAN_ROW, _SINGLE_VALID_ROW, _CONSTANT_ROW)
 _OUTPUT_NAMES = ("z_raw", "z_ma5", "ma3_of_z")
 
 
@@ -109,8 +115,109 @@ def batch_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
     return close, {name: np.array(out[name], copy=True) for name in _OUTPUT_NAMES}
 
 
+@pytest.fixture(scope="module")
+def stream_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Compile one STREAM module with all three outputs and drive it bar by bar.
+
+    `getCurrentBuffer` returns a buffer that the next `run()` overwrites, so
+    each bar is copied into a preallocated (T, S) array. The executor is kept
+    referenced for as long as the stream context lives.
+    """
+    close = _panel()
+    lib = cfake.compileit(
+        [
+            (
+                "CrossSectionalZScoreStream",
+                _build_function(),
+                KunCompilerConfig(input_layout="STREAM", output_layout="STREAM"),
+            )
+        ],
+        "test_cs_zscore_stream",
+        cfake.CppCompilerConfig(),
+    )
+    modu = lib.getModule("CrossSectionalZScoreStream")
+    executor = kr.createMultiThreadExecutor(4)
+    ctx = kr.StreamContext(executor, modu, _N_SYMBOLS)
+    h_close = ctx.queryBufferHandle("close")
+    handles = {name: ctx.queryBufferHandle(name) for name in _OUTPUT_NAMES}
+    got = {
+        name: np.empty((_N_TIMES, _N_SYMBOLS), dtype=np.float32)
+        for name in _OUTPUT_NAMES
+    }
+    for t in range(_N_TIMES):
+        ctx.pushData(h_close, np.ascontiguousarray(close[t]))
+        ctx.run()
+        for name, handle in handles.items():
+            got[name][t] = ctx.getCurrentBuffer(handle)[:_N_SYMBOLS]
+    del ctx, executor
+    return close, got
+
+
 def test_batch_start0_matches_pandas_for_graph_input(batch_outputs):
     """With the op applied directly to a graph Input, batch start=0 output
     equals the pandas cross-sectional z-score (ddof=1)."""
     close, got = batch_outputs
     _assert_matches(got["z_raw"], _pandas_reference(close)["z_raw"])
+
+
+def test_batch_start0_matches_pandas_for_intermediate_node_input(batch_outputs):
+    """With the op applied to an intermediate node (`WindowedAvg(close, 5)`),
+    batch output equals pandas, including the rolling warm-up NaN rows."""
+    close, got = batch_outputs
+    _assert_matches(got["z_ma5"], _pandas_reference(close)["z_ma5"])
+
+
+def test_batch_output_feeds_time_series_op(batch_outputs):
+    """The cross-sectional output composes with a downstream time-series op:
+    `WindowedAvg(CrossSectionalZScore(close), 3)` equals pandas."""
+    close, got = batch_outputs
+    _assert_matches(got["ma3_of_z"], _pandas_reference(close)["ma3_of_z"])
+
+
+@pytest.mark.parametrize("name", _OUTPUT_NAMES, ids=list(_OUTPUT_NAMES))
+def test_stream_matches_pandas(stream_outputs, name):
+    """STREAM layout driven bar by bar through `StreamContext` produces the
+    same values and NaN pattern as pandas for all three graph shapes."""
+    close, got = stream_outputs
+    _assert_matches(got[name], _pandas_reference(close)[name])
+
+
+def test_degenerate_cross_sections_are_all_nan(batch_outputs):
+    """An all-NaN row, a single-valid-value row and a constant row each give a
+    fully NaN output row; on every other row NaN inputs map to NaN outputs in
+    the same positions and nowhere else."""
+    close, got = batch_outputs
+    z = got["z_raw"]
+    normal_rows = [t for t in range(_N_TIMES) if t not in _DEGENERATE_ROWS]
+
+    # Guard against a vacuous pass: some non-degenerate row must hold a NaN.
+    assert np.isnan(close[normal_rows]).any()
+
+    for row in _DEGENERATE_ROWS:
+        assert np.isnan(z[row]).all(), f"row {row} should be entirely NaN"
+    np.testing.assert_array_equal(np.isnan(z[normal_rows]), np.isnan(close[normal_rows]))
+
+
+def test_valid_rows_have_zero_mean_unit_sample_std(batch_outputs):
+    """Independent of pandas: every non-degenerate output row has nanmean
+    about 0 and sample std (ddof=1) about 1, within 1e-4."""
+    _, got = batch_outputs
+    z = got["z_raw"].astype(np.float64)
+    for t in range(_N_TIMES):
+        if t in _DEGENERATE_ROWS:
+            continue
+        assert abs(np.nanmean(z[t])) < 1e-4, f"row {t} mean {np.nanmean(z[t])}"
+        sd = np.nanstd(z[t], ddof=1)
+        assert abs(sd - 1.0) < 1e-4, f"row {t} sample std {sd}"
+
+
+def test_is_a_generic_cross_sectional_op_without_attrs():
+    """Structural lock: the op is a `GenericCrossSectionalOp` (hence a
+    `CrossSectionalOp`), not a `CompositiveOp`, and its C++ body never reads
+    `self.attrs`. KunQuant's CodegenCpp dedups generated functions by class
+    name plus layout only, so an attrs-dependent body would silently share
+    code across parameter sets."""
+    assert issubclass(CrossSectionalZScore, GenericCrossSectionalOp)
+    assert issubclass(CrossSectionalZScore, CrossSectionalOp)
+    assert not issubclass(CrossSectionalZScore, CompositiveOp)
+    assert "attrs" not in inspect.getsource(CrossSectionalZScore.generate_body)
