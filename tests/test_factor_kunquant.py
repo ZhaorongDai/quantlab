@@ -22,6 +22,7 @@ from typing import Callable
 
 import numpy as np
 import xarray as xr
+from KunQuant.Op import Input
 
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
 from quantlab.base.data import MarketDataset
@@ -219,21 +220,37 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     assert np.isfinite(result["alpha001"].to_numpy()).sum() > 0
 
 
+_ADJUSTED_STOCK_COLUMNS = ["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"]
+
+
 def test_alpha158_stock_batch_cal_returns_xarray_dataset(
     stock_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
-    """D-01 / FACTOR-01 across both markets: the Alpha158 factor set now
-    computes in batch mode against US equities, not only crypto spot.
-    `Alpha158Stock` mirrors `Alpha158SpotKline`'s `AllData` wiring including
-    `amount`, which `StockDataset._to_kunquant()` supplies via the D-02
-    `volume * close` proxy.
+    """D-01 / FACTOR-01 across both markets: the Alpha158 factor set computes
+    in batch mode against US equities, not only crypto spot.
+
+    REVIEW WR-02: no stock store carries `amount`, so the old `Input("amount")`
+    wiring raised `KeyError: 'amount'` and the class never computed (hidden
+    inside the 56-failure baseline). `vwap` is now the adjusted typical price
+    `(adjHigh + adjLow + adjClose) / 3`, built inside the graph from the same
+    adjusted series as every other input. The store's `adjHigh` is widened so
+    the typical price differs from close: `VWAP0 = vwap / close` then pins that
+    construction (a `close * volume` dollar-volume proxy would give ~1.0), and
+    the raw columns are rescaled so any leak of unadjusted data would show.
     """
     dataset_config = stock_zarr(symbols=_STOCK_SYMBOLS, periods=60, seed=0)
+    store = xr.open_zarr(dataset_config.zarr_file_path).load()
+    store["adjHigh"] = store["adjClose"] * 1.10
+    for col in ("open", "high", "low", "close"):
+        store[col] = store[col] * 4.0
+    store["volume"] = store["volume"] / 4.0
+    store.to_zarr(dataset_config.zarr_file_path, mode="w")
+
     factor = Alpha158Stock(
         _factor_config(
             dataset_config,
-            factor_names=["KMID", "VOLUME0", "STD5"],
-            data_columns=["open", "high", "low", "close", "volume", "amount"],
+            factor_names=["KMID", "VOLUME0", "STD5", "VWAP0"],
+            data_columns=list(_ADJUSTED_STOCK_COLUMNS),
             tmp_path=tmp_path,
             dataset_cls=StockDataset,
         )
@@ -243,8 +260,44 @@ def test_alpha158_stock_batch_cal_returns_xarray_dataset(
 
     assert isinstance(result, xr.Dataset)
     assert dict(result.sizes) == {"timestamp": 60, "symbol": 8}
-    assert sorted(result.data_vars) == ["KMID", "STD5", "VOLUME0"]
+    assert sorted(result.data_vars) == ["KMID", "STD5", "VOLUME0", "VWAP0"]
     assert np.isfinite(result["KMID"].to_numpy()).sum() > 0
+
+    typical = (store["adjHigh"] + store["adjLow"] + store["adjClose"]) / 3.0
+    expected = (typical / store["adjClose"]).sel(
+        timestamp=result["timestamp"], symbol=result["symbol"]
+    )
+    actual = result["VWAP0"].to_numpy()
+    finite = np.isfinite(actual)
+    assert finite.sum() > 0
+    np.testing.assert_allclose(actual[finite], expected.to_numpy()[finite], rtol=1e-5)
+    assert not np.allclose(actual[finite], 1.0, atol=1e-3)
+
+
+def test_alpha158_stock_graph_reads_only_adjusted_inputs(
+    stock_zarr: Callable[..., DatasetConfig], tmp_path: Path
+) -> None:
+    """REVIEW WR-02: the compiled Alpha158Stock graph declares exactly the five
+    adjusted columns -- no `amount` (which no stock store has) and no raw
+    `open/high/low/close/volume` dead inputs suggesting unadjusted data is
+    consumed. `Function` prunes inputs no requested output reaches, so the
+    factors are chosen to touch all five: KMID (open, close), VWAP0 (high,
+    low, close) and VOLUME0 (volume)."""
+    dataset_config = stock_zarr(symbols=_STOCK_SYMBOLS, periods=60, seed=0)
+    factor = Alpha158Stock(
+        _factor_config(
+            dataset_config,
+            factor_names=["KMID", "VWAP0", "VOLUME0"],
+            data_columns=list(_ADJUSTED_STOCK_COLUMNS),
+            tmp_path=tmp_path,
+            dataset_cls=StockDataset,
+        )
+    )
+
+    func = factor._get_factor_func()
+
+    names = {op.attrs["name"] for op in func.ops if isinstance(op, Input)}
+    assert names == set(_ADJUSTED_STOCK_COLUMNS)
 
 
 # The method that actually emits each class's `Output(...)` calls. For the

@@ -90,6 +90,12 @@ class Alpha158SpotKline(FactorKunQuant):
 
 class Alpha158Stock(FactorKunQuant):
     """Alpha158 factor set over US-equity (Tiingo/`StockDataset`) data.
+
+    Reads only the adjusted series `adjOpen`/`adjHigh`/`adjLow`/`adjClose`/
+    `adjVolume` (list exactly these in `data_columns`). `vwap` is the adjusted
+    typical price `(adjHigh + adjLow + adjClose) / 3`, not `amount / volume`:
+    Tiingo supplies no dollar volume, and mixing a raw amount with adjusted
+    volume would break at every split (REVIEW WR-02).
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -103,16 +109,23 @@ class Alpha158Stock(FactorKunQuant):
         low = Input("adjLow")
         high = Input("adjHigh")
         vopen = Input("adjOpen")
-        amount = Input("amount")
         vol = Input("adjVolume")
+        # REVIEW WR-02: no stock store carries `amount`, and a raw dollar
+        # volume divided by the split-adjusted `adjVolume` would jump at every
+        # split. Use the adjusted typical price instead, so VWAP* features sit
+        # on the same adjusted scale as the rest of the graph.
+        vwap = (high + low + close) / 3.0
         all_data = Alpha158.AllData(
             low=low,
             high=high,
             close=close,
             open=vopen,
-            amount=amount,
             volume=vol,
+            vwap=vwap,
         )
+        # KunQuant's `AllData.__init__` only assigns `self.vwap` when it derives
+        # it from `amount`; a passed `vwap=` is otherwise dropped.
+        all_data.vwap = vwap
         alpha158, names = all_data.build(
             {
                 "kbar": {},  # 是否使用K线特征
@@ -144,12 +157,6 @@ class Alpha158Stock(FactorKunQuant):
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
-            close = Input("close")
-            low = Input("low")
-            high = Input("high")
-            vopen = Input("open")
-            amount = Input("amount")
-            vol = Input("volume")
             alpha158, names = self._get_func_names()
             for v, k in zip(alpha158, names):
                 if k in factor_names:
