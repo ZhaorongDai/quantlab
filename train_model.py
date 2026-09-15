@@ -4,8 +4,6 @@ import os
 import pandas as pd
 import plotly.io as pio
 import torch
-
-# from vecbt.bt import backtest_binance_crypto, print_performance
 import vectorbt as vbt
 
 from quantlab.base.config import DLConfig

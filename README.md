@@ -220,9 +220,16 @@ enum token with no fetcher -- fails there;
 - `quantlab/ml_model/` -- `MlBackend` (`backend.py`, joblib checkpoint persistence for `MLModel`)
   and `XGBoostRegressor` (`xgb.py`: future-return regression with XGBoost's native early
   stopping, supports `train_cv`).
-- `backtest/` -- Nautilus Trader live/backtest `Strategy` (`test_strategy.py`) that loads a
-  trained model checkpoint and generates/submits orders from live bars.
-- `quantlab/vecbt/` -- vectorbt-based signal backtest helper (`backtest_from_signals`).
+- `quantlab/backtest/` -- The cross-sectional backtester layer, built on
+  `quantlab/base/backtest.py:BaseBacktester` (the ABC that owns the two entry points `run()`,
+  a model backtest, and `run_cv()`, which replays a `train_cv` run's folds as one stitched
+  curve). `engine_vectorbt.py:VectorBtBacktester` is the vectorbt engine
+  (`Portfolio.from_orders` with target-percent weights, a signal at bar t fills at bar t+1's
+  open); `selection.py:CrossSectionTopNSelector` picks TopN long-only or long/short books;
+  `us_equity.py:USEquityCrossectionSelectStockVectorBt` composes the US-equity market spec,
+  the selector and the engine. A stored run rebuilds through
+  `quantlab.utils.module.load_backtester_from_config`. See
+  [example/backtest.md](example/backtest.md).
 - `quantlab/config/` -- Config factory functions (`__init__.py`) that build `DatasetConfig`/
   `FactorConfig` instances, and `instruments.yaml` -- exchange instrument metadata shipped
   as package data (declared in `[tool.setuptools.package-data]`, located at runtime
