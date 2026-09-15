@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import wandb
 import xarray as xr
 from loguru import logger
 
@@ -12,6 +13,7 @@ from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
+from quantlab.utils.backtest_report import write_backtest_report
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 
@@ -264,7 +266,11 @@ class BaseBacktester(ABC):
         simulation = self._simulate(weights, prices)
         benchmark = self._simulate_benchmark(start_date, end_date)
         metrics = self._compute_metrics(simulation, benchmark, split)
+        metrics["notes"] = self._report_notes()
         run_dir = self._report_and_persist(predictions, weights, simulation, metrics)
+        # wandb 默认关闭（D-28）：只有显式打开才会有任何数据离开本机。
+        if self.config.use_wandb:
+            self._log_to_wandb(run_dir, metrics)
 
         return BacktestResult(
             run_dir=run_dir,
@@ -842,6 +848,56 @@ class BaseBacktester(ABC):
             metrics[key] = split[key]
         return metrics
 
+    def _report_notes(self) -> list[str]:
+        """报告与 metrics.json 里附带的说明（D-21）。
+
+        默认只有一条：本阶段不模拟融券费与做空融资成本，所以空头一侧的收益偏
+        乐观。模拟了借券成本的引擎覆盖本方法，去掉或改写这条说明。
+        """
+        return [
+            "No borrow or short-financing cost is modelled, so short-side "
+            "returns are optimistic."
+        ]
+
+    @classmethod
+    def _flatten_numeric(cls, prefix: str, value, out: dict) -> None:
+        """把嵌套 dict 里有限的数值叶子摊平成 `prefix/key` 写进 `out`。
+
+        布尔、NaN、inf、时间、字符串都跳过：wandb summary 只收可比较的数。
+        """
+        if isinstance(value, dict):
+            for key, item in value.items():
+                cls._flatten_numeric(f"{prefix}/{key}", item, out)
+            return
+        if isinstance(value, (bool, np.bool_)):
+            return
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            number = float(value) if isinstance(value, (float, np.floating)) else int(value)
+            if np.isfinite(number):
+                out[prefix] = number
+
+    def _log_to_wandb(self, run_dir: Path, metrics: dict) -> None:
+        """把指标与报告记到一个单独的回测 wandb run（D-28），只在 `use_wandb` 时调用。
+
+        - project 是 `{类名}_backtest`，run 名是运行目录名，与模型训练的 run 分开；
+        - run config 是 `to_jsonable(get_config())`（含数据指纹）；
+        - summary 收 `whole` / `in_sample` / `out_of_sample` 三块里有限的数值叶子，
+          键形如 `whole/<指标>`，嵌套的换手率是 `whole/turnover/<键>`；
+        - `report` 记 report.html 的内容，然后 finish。
+        """
+        run = wandb.init(
+            project=f"{self.class_name}_backtest",
+            name=run_dir.name,
+            config=to_jsonable(self.get_config()),
+        )
+        summary: dict = {}
+        for block in ("whole", "in_sample", "out_of_sample"):
+            if metrics.get(block) is not None:
+                self._flatten_numeric(block, metrics[block], summary)
+        run.summary.update(summary)
+        run.log({"report": wandb.Html((run_dir / "report.html").read_text())})
+        run.finish()
+
     def _run_dir_name(self) -> str:
         """`{class}_{timestamp}`（D-24）；带微秒，同一秒内的两次运行不会撞名。"""
         return f"{self.class_name}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
@@ -856,8 +912,13 @@ class BaseBacktester(ABC):
         """建新的运行目录并写入 D-24 的全部产物；从不覆盖已有目录。
 
         config.json、weights.zarr、equity.zarr（value、returns）、
-        liquidations.json、metrics.json、fingerprint.json。每个 JSON 都先经
-        `to_jsonable`（NaN/inf 记为 null，时间记为 ISO 字符串）再原子写入。
+        liquidations.json、metrics.json、report.html、fingerprint.json。每个
+        JSON 都先经 `to_jsonable`（NaN/inf 记为 null，时间记为 ISO 字符串）再
+        原子写入。
+
+        report.html（D-23）：净值与回撤两栏共用时间轴，样本内区间取 metrics 里
+        实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
+        `_report_notes()`；本阶段没有基准曲线（D-08）。
         """
         run_dir = Path(self.config.output_dir) / self._run_dir_name()
         if run_dir.exists():
@@ -878,6 +939,13 @@ class BaseBacktester(ABC):
         )
         write_json_atomically(
             run_dir / "metrics.json", to_jsonable(metrics), indent=2
+        )
+        write_backtest_report(
+            simulation.value,
+            run_dir / "report.html",
+            in_sample_range=metrics.get("in_sample_range"),
+            notes=self._report_notes(),
+            title=run_dir.name,
         )
         write_json_atomically(
             run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
