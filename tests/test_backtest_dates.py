@@ -566,6 +566,113 @@ def test_load_mode_without_checkpoint_is_refused_at_construction(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "backtest_model_kwargs",
+    [{"n": 2}, {"n_forward_periods": 3}],
+    ids=["different-factor", "different-label"],
+)
+def test_load_refuses_a_checkpoint_trained_on_other_variables(
+    tmp_path, monkeypatch, backtest_model_kwargs
+):
+    """Code review WR-01: a checkpoint is checked against config.model's variables.
+
+    The checkpoint is trained on `past_ret_1` -> `fwd_ret_1`. The backtest
+    model declares the same feature COUNT but a different factor (or a
+    different label). The deterministic head only reads feature 0 by
+    position, exactly like xgboost only checks the feature count, so the old
+    `run()` predicted on the wrong inputs without complaint and this test
+    went red. The refusal must name both variable lists and come before any
+    feature is computed.
+    """
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    dates = _model_dates(bars, 0, 24, 29)
+    checkpoint = train_checkpoint(make_model(tmp_path / "train", dataset_config, **dates))
+    model = make_model(
+        tmp_path / "backtest", dataset_config, **dates, **backtest_model_kwargs
+    )
+    computed: list[int] = []
+    collect = model._collect_all_features
+    monkeypatch.setattr(
+        model, "_collect_all_features", lambda: computed.append(1) or collect()
+    )
+    backtester = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=30, end_bar=50, checkpoint=checkpoint,
+    )
+
+    with pytest.raises(ValueError, match="was trained on") as excinfo:
+        backtester.run()
+
+    message = str(excinfo.value)
+    declared = model.get_factor_names() + model.get_label_names()
+    assert any(name not in ("past_ret_1", "fwd_ret_1") and name in message for name in declared)
+    assert str(checkpoint) in message
+    assert computed == []
+
+
+def test_load_uses_the_checkpoints_train_dates_over_stale_config_dates(
+    tmp_path, warning_messages
+):
+    """Code review WR-01: D-17 classifies bars with the dates the checkpoint trained on.
+
+    The checkpoint trained through bar 24 (1-bar horizon, so bar 25 is still
+    in-sample). The backtest model carries a stale `train_end` of bar 10.
+    Trusting config.model, the old code put the training window end at bar 11
+    and reported bars 12..25, which the model had trained on, as
+    out-of-sample. It goes red here on the window, the in-sample range and the
+    missing warning that names both date pairs.
+    """
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    checkpoint = train_checkpoint(
+        make_model(tmp_path / "train", dataset_config, **_model_dates(bars, 0, 24, 29))
+    )
+    stale = make_model(
+        tmp_path / "backtest", dataset_config, **_model_dates(bars, 0, 10, 29)
+    )
+
+    result = _backtester(
+        tmp_path, dataset_config, stale, bars,
+        start_bar=20, end_bar=45, checkpoint=checkpoint,
+    ).run()
+
+    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[25]))
+    assert tuple(result.metrics["in_sample_range"]) == (_day(bars[20]), _day(bars[25]))
+    stale_warnings = [
+        m
+        for m in warning_messages
+        if "WR-01" in m and _day(bars[24]) in m and _day(bars[10]) in m
+    ]
+    assert len(stale_warnings) == 1, warning_messages
+
+
+def test_load_without_a_checkpoint_config_json_warns_and_trusts_config_model(
+    tmp_path, warning_messages
+):
+    """Code review WR-01: a checkpoint with no config.json beside it cannot be checked.
+
+    That is not necessarily an error (a hand-copied checkpoint), so the run
+    continues with config.model as given, but it must say so. The old code
+    never looked for the record and emitted no warning, so this goes red.
+    """
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    dates = _model_dates(bars, 0, 24, 29)
+    model, checkpoint = _loaded_model(tmp_path, dataset_config, dates)
+    (checkpoint.parent / "config.json").unlink()
+
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=30, end_bar=50, checkpoint=checkpoint,
+    ).run()
+
+    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[25]))
+    unchecked = [m for m in warning_messages if "has no config.json" in m]
+    assert len(unchecked) == 1, warning_messages
+    assert str(checkpoint) in unchecked[0]
+
+
 def test_dl_head_loads_after_its_feature_panel_is_collected(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)

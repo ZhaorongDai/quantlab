@@ -261,6 +261,13 @@ t+1 的**原始**（未 ffill）成交价是 NaN。开头价格为 NaN、此前�
 - `"load"`：先检查 `config.checkpoint` 文件存在（缺了直接 `FileNotFoundError`，不白算一遍特征），
   然后只对 `DLModel` 先把特征面板放进模型的 data backend，最后 `model.load(checkpoint)`。
 
+  **核对 checkpoint 自己的记录（2026-09-15，代码审查 WR-01）。** 加载前读 checkpoint 旁由训练写下的 `config.json`：
+  - 因子与标签的变量名（含顺序）必须与 `config.model` 一致，否则 `ValueError`，写明两边的变量名。
+    xgboost 只核对特征**个数**，同样个数、不同因子（或不同顺序）训练出来的 checkpoint 以前会对错位的特征悄悄给出预测。
+  - D-17 的样本内判定用**记录里**的 `train_start` / `train_end`：它们才是这个模型真正训练过的日期。
+    与 `config.model` 的日期不同时 `logger.warning` 写明两对日期，然后用记录的日期；`run_cv` 每折同样核对，日期以 `cv_folds.json` 为准。
+  - 没有 `config.json`（比如手工拷贝的 checkpoint）时 `logger.warning` 说明无法核对，照 `config.model` 原样继续。
+
 **DL checkpoint 需要先有面板。** `DLModel` 的 `.pth` 只有权重，加载时要按 `num_symbols` 重建网络，而
 `num_symbols` 读的正是 data backend，空着会报 `Please cal 'read' or 'to_internal' first.`（Pitfall 11）。
 回测器替你做了 `model.data_backend.to_internal(model._collect_all_features())`。`MLModel` 的 `.joblib`

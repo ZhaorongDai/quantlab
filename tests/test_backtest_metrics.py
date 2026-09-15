@@ -400,6 +400,11 @@ def test_disjoint_window_does_not_warn_and_has_no_in_sample_range(
 def test_model_without_train_dates_warns_and_records_null(tmp_path, warnings_sink):
     backtester = _run_backtester(tmp_path, window_start_bar=20, window_end_bar=45)
     backtester.config.model.config.train_start = None
+    # Code review WR-01: in load mode the checkpoint's own config.json records
+    # the dates it really trained on and takes precedence over config.model.
+    # The "no training dates at all" arm is therefore reached only when no such
+    # record exists, so the record is removed here.
+    (Path(backtester.config.checkpoint).parent / "config.json").unlink()
 
     result = backtester.run()
 
