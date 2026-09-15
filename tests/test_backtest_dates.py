@@ -673,6 +673,103 @@ def test_load_without_a_checkpoint_config_json_warns_and_trusts_config_model(
     assert str(checkpoint) in unchecked[0]
 
 
+def _ns(bar) -> str:
+    """The text shape `train_cv` writes: `np.datetime_as_string` of a ns bar."""
+    return np.datetime_as_string(np.asarray(bar).astype("datetime64[ns]"))
+
+
+def _ns_model_dates(bars, first: int, train_last: int, last: int) -> dict:
+    dates = _model_dates(bars, first, train_last, last)
+    dates.update(
+        train_start=_ns(bars[first]),
+        train_end=_ns(bars[train_last]),
+        test_start=_ns(bars[train_last + 1]),
+        test_end=_ns(bars[last]),
+    )
+    return dates
+
+
+def _t00_model_dates(bars, first: int, train_last: int, last: int) -> dict:
+    dates = _model_dates(bars, first, train_last, last)
+    for key in ("train_start", "train_end", "test_start", "test_end"):
+        dates[key] = dates[key] + "T00:00:00"
+    return dates
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_dates", "config_dates"),
+    [(_ns_model_dates, _model_dates), (_model_dates, _t00_model_dates)],
+    ids=["ns-checkpoint-vs-plain-config", "plain-checkpoint-vs-T00-config"],
+)
+def test_load_mode_same_train_dates_in_another_text_format_log_no_date_warning(
+    tmp_path, warning_messages, checkpoint_dates, config_dates
+):
+    """UAT gap G-03.7-7: the same training bars written differently are the same window.
+
+    The checkpoint's config.json records one text form of the dates (a train_cv
+    nanosecond string, or a plain date) and config.model carries another form
+    of the SAME instants. The old string comparison warned "using the
+    checkpoint's dates" for both. On daily bars both forms select the same
+    training bars, so nothing may warn, and the numbers stay as they were.
+    """
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    checkpoint = train_checkpoint(
+        make_model(tmp_path / "train", dataset_config, **checkpoint_dates(bars, 0, 24, 29))
+    )
+    model = make_model(
+        tmp_path / "backtest", dataset_config, **config_dates(bars, 0, 24, 29)
+    )
+
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=20, end_bar=45, checkpoint=checkpoint,
+    ).run()
+
+    stale = [m for m in warning_messages if "using the checkpoint's dates" in m]
+    assert stale == [], stale
+    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[25]))
+
+
+def test_same_training_bars_resolves_endpoints_on_the_calendar():
+    """G-03.7-7: two date pairs match iff they select the same bars (slice semantics).
+
+    Bare Timestamp equality is not enough: on intraday bars "2024-02-09"
+    includes the whole day while the nanosecond midnight stops at the previous
+    session's last bar. Endpoints past the calendar are compared as instants,
+    so a stale date that clips to the same last bar still counts as different.
+    """
+    same = BaseBacktester._same_training_bars
+
+    sessions = [
+        pd.date_range(f"{day} 09:30", f"{day} 16:00", freq="30min")
+        for day in ("2024-02-07", "2024-02-08", "2024-02-09")
+    ]
+    intraday = np.concatenate([s.values for s in sessions]).astype("datetime64[ns]")
+    assert not same(
+        intraday,
+        ("2024-02-07", "2024-02-09"),
+        ("2024-02-07", "2024-02-09T00:00:00.000000000"),
+    )
+
+    daily = pd.bdate_range("2024-01-01", "2024-03-29").values.astype("datetime64[ns]")
+    plain = ("2024-01-01", "2024-02-09")
+    assert same(
+        daily, plain, ("2024-01-01T00:00:00.000000000", "2024-02-09T00:00:00.000000000")
+    )
+    assert same(daily, plain, ("2024-01-01T00:00:00", "2024-02-09T00:00:00"))
+    assert not same(daily, plain, ("2024-01-01", "2024-02-08"))
+
+    # Both train_end endpoints lie after the calendar's last bar (2024-03-29).
+    assert same(
+        daily, ("2024-01-01", "2024-04-05"), ("2024-01-01", "2024-04-05T00:00:00.000000000")
+    )
+    assert not same(daily, ("2024-01-01", "2024-04-05"), ("2024-01-01", "2024-04-08"))
+
+    assert same(daily, (None, "2024-02-09"), (None, "2024-02-09"))
+    assert not same(daily, plain, (None, "2024-02-09"))
+
+
 def test_dl_head_loads_after_its_feature_panel_is_collected(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
