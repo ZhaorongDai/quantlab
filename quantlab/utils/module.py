@@ -81,10 +81,33 @@ def load_factor_from_config(config: dict):
     `PolarsFactorConfig`. The nested `dataset` dict is replaced by a rebuilt
     dataset object on a deep copy, never on the caller's dict (RESEARCH
     Pitfall 9).
+
+    **A factor that COMPOSES another factor rebuilds itself.** The class named
+    in `config["name"]` is resolved FIRST, and if it declares a callable
+    `from_config`, that classmethod is handed the whole config dict and owns
+    the rebuild; its nested factor goes back through this same function, so a
+    wrapper of a wrapper of a plain factor resolves recursively.
+
+    Why the protocol is needed rather than the plain path below: that path
+    requires a top-level `dataset` key and ends in `cls(config_cls(**config))`.
+    A wrapper has no dataset of its own -- the dataset belongs to the factor it
+    wraps -- so satisfying the plain path would mean duplicating the nested
+    dataset dict at the top level, constructing a SECOND dataset object that
+    reads the same store, and letting the two copies drift.
+    `quantlab/factor/universe_filter.py:UniverseFilteredFactor` is the first
+    such factor.
+
+    A class that declares no `from_config` is unaffected and takes the original
+    path unchanged, `_config_cls_of`'s refusal included.
     """
     config = copy.deepcopy(config)
-    config["dataset"] = load_dataset_from_config(config["dataset"])
     cls = get_cls_from_path(config["name"])
+
+    from_config = getattr(cls, "from_config", None)
+    if callable(from_config):
+        return from_config(config)
+
+    config["dataset"] = load_dataset_from_config(config["dataset"])
     return cls(_config_cls_of(cls)(**config))
 
 
