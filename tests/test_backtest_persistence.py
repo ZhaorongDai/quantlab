@@ -21,6 +21,16 @@ differently byte for byte. Without canonicalizing NaN (and -0.0 vs 0.0) before
 hashing, an unchanged store could report a changed digest, and a warning that
 fires on unchanged data is a warning people learn to ignore.
 
+D-23 / D-21 / D-08: report.html is a plotly page with an "equity" and a
+"drawdown" trace on a shared time axis, the in-sample range shaded when the
+window overlaps training, no benchmark trace, and the note that short-side
+returns are optimistic because no borrow cost is modelled. metrics.json carries
+the same note and no benchmark key.
+
+D-28: `use_wandb=False` never calls `wandb.init`; `use_wandb=True` logs the
+flattened numeric metrics and the report to a separate `{class}_backtest` run
+named after the run directory, then finishes it.
+
 Everything is synthetic, CPU-only and offline; wandb is disabled and any wandb
 call is asserted through a monkeypatched recorder.
 """
@@ -195,7 +205,6 @@ def overlap_run(tmp_path_factory):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="report.html is written by 03.7-09 Task 2")
 def test_run_directory_holds_every_d24_artifact(overlap_run):
     run_dir = overlap_run["result"].run_dir
     assert sorted(p.name for p in run_dir.iterdir()) == D24_ARTIFACTS
@@ -415,3 +424,176 @@ def test_changed_store_logs_a_fingerprint_warning_and_completes(tmp_path, warnin
     ]
     assert len(price_warnings) == 1, warnings_sink
     assert "digest" in price_warnings[0]
+
+
+# --------------------------------------------------------------------------
+# D-23 / D-21 / D-08: the report and the short-side note
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def disjoint_run(tmp_path_factory):
+    """One run whose window (bars 30..50) lies after the training window."""
+    root = tmp_path_factory.mktemp("disjoint")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("WANDB_MODE", "disabled")
+        mp.setenv("WANDB_SILENT", "true")
+        dataset_config, checkpoint = _trained_store(root)
+        backtester = _backtester(
+            root,
+            dataset_config,
+            checkpoint,
+            tag="disjoint",
+            window_start_bar=30,
+            window_end_bar=50,
+        )
+        result = backtester.run()
+    return {"backtester": backtester, "result": result}
+
+
+def _report_html(run: dict) -> str:
+    path = run["result"].run_dir / "report.html"
+    assert path.is_file(), sorted(p.name for p in path.parent.iterdir())
+    return path.read_text()
+
+
+def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_run):
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    in_sample_range = metrics["in_sample_range"]
+    assert in_sample_range is not None, "the fixture window must overlap training"
+
+    assert '"name":"equity"' in html
+    assert '"name":"drawdown"' in html
+    assert '"type":"rect"' in html
+    # The shaded band is the persisted in-sample range, not an assumed one.
+    assert f'"x0":"{in_sample_range[0]}"' in html
+    assert f'"x1":"{in_sample_range[1]}"' in html
+    notes = overlap_run["backtester"]._report_notes()
+    assert notes
+    for note in notes:
+        assert note in html
+
+
+def test_report_without_in_sample_overlap_has_no_shaded_range(disjoint_run):
+    html = _report_html(disjoint_run)
+    assert disjoint_run["result"].metrics["in_sample_range"] is None
+    # Control: the page really carries the curves.
+    assert '"name":"equity"' in html
+    assert '"type":"rect"' not in html
+
+
+def test_report_and_metrics_carry_no_benchmark(overlap_run):
+    html = _report_html(overlap_run)
+    assert '"name":"equity"' in html
+    assert '"name":"benchmark"' not in html
+    assert "benchmark" not in _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    assert "benchmark" not in overlap_run["result"].metrics
+
+
+def test_metrics_json_carries_the_short_side_note(overlap_run):
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    assert "notes" in metrics, sorted(metrics)
+    notes = metrics["notes"]
+    assert notes == overlap_run["backtester"]._report_notes()
+    text = " ".join(notes).lower()
+    assert "short" in text and "borrow" in text and "optimistic" in text
+
+
+# --------------------------------------------------------------------------
+# D-28: optional wandb
+# --------------------------------------------------------------------------
+
+
+class _Summary:
+    def __init__(self):
+        self.data: dict = {}
+
+    def update(self, values: dict):
+        self.data.update(values)
+
+
+class _RecordingRun:
+    def __init__(self):
+        self.summary = _Summary()
+        self.logged: list[dict] = []
+        self.finished = 0
+
+    def log(self, values: dict):
+        self.logged.append(values)
+
+    def finish(self):
+        self.finished += 1
+
+
+class _RecordingHtml:
+    def __init__(self, data):
+        self.data = data
+
+
+def test_wandb_is_never_initialized_when_disabled(tmp_path, monkeypatch):
+    def _refuse(*args, **kwargs):
+        raise AssertionError("wandb.init must not be called when use_wandb is False")
+
+    # Patched only after training: the model layer's own train() legitimately
+    # opens a wandb run; this lock is about the backtester alone.
+    dataset_config, checkpoint = _trained_store(tmp_path)
+    monkeypatch.setattr("wandb.init", _refuse)
+    backtester = _backtester(
+        tmp_path, dataset_config, checkpoint, tag="off", window_start_bar=30, window_end_bar=50
+    )
+    assert backtester.config.use_wandb is False
+    result = backtester.run()
+    assert result.run_dir.exists()
+
+
+def test_wandb_logs_metrics_and_report_to_a_separate_backtest_run(tmp_path, monkeypatch):
+    init_calls: list[dict] = []
+    runs: list[_RecordingRun] = []
+
+    def _init(**kwargs):
+        init_calls.append(kwargs)
+        run = _RecordingRun()
+        runs.append(run)
+        return run
+
+    # Patched only after training: the model layer's own train() opens its own
+    # wandb run, which is not the backtest run under test.
+    dataset_config, checkpoint = _trained_store(tmp_path)
+    monkeypatch.setattr("wandb.init", _init)
+    monkeypatch.setattr("wandb.Html", _RecordingHtml)
+    backtester = _backtester(
+        tmp_path,
+        dataset_config,
+        checkpoint,
+        tag="on",
+        window_start_bar=OVERLAP_START_BAR,
+        window_end_bar=OVERLAP_END_BAR,
+        use_wandb=True,
+    )
+    result = backtester.run()
+
+    assert len(init_calls) == 1
+    call = init_calls[0]
+    assert call["project"] == "USEquityCrossectionSelectStockVectorBt_backtest"
+    assert call["name"] == result.run_dir.name
+    json.dumps(call["config"], allow_nan=False)  # the run config is strict JSON
+
+    (run,) = runs
+    summary = run.summary.data
+    assert summary, "the summary must receive metrics"
+    for key, value in summary.items():
+        assert key.split("/")[0] in {"whole", "in_sample", "out_of_sample"}, key
+        assert isinstance(value, (int, float)) and not isinstance(value, bool), key
+        assert np.isfinite(value), key
+    assert any(key.startswith("in_sample/") for key in summary)
+    assert any(key.startswith("out_of_sample/") for key in summary)
+    assert "whole/turnover/sum" in summary
+    assert summary["whole/Total Return [%]"] == pytest.approx(
+        result.metrics["whole"]["Total Return [%]"]
+    )
+
+    reports = [entry["report"] for entry in run.logged if "report" in entry]
+    assert len(reports) == 1
+    assert reports[0].data == (result.run_dir / "report.html").read_text()
+    assert run.finished == 1
