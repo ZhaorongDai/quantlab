@@ -245,6 +245,85 @@ def test_loader_does_not_mutate_its_input(tmp_path):
     assert saved == before
 
 
+@pytest.mark.parametrize("field_name", ["init_cash", "fees", "score_label", "use_wandb"])
+def test_rebuild_refuses_a_config_missing_a_field(tmp_path, monkeypatch, field_name):
+    """Code review WR-06: a config missing a field is refused, not filled from today's defaults.
+
+    `init_cash` is the executor-reported gap; `fees`, `score_label` and
+    `use_wandb` have defaults that could change later. The old loader built
+    the config with `**config` and silently took the current default, so an
+    older config.json rebuilt into a different backtest. The refusal must
+    name the field and come before any dataset or model is built. Red on the
+    old code: no ValueError, and the stubbed loaders are called.
+    """
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    saved = _json(
+        _backtester(
+            tmp_path, dataset_config, checkpoint=tmp_path / "never_read.joblib"
+        ).get_config()
+    )
+    del saved[field_name]
+    built: list[dict] = []
+    monkeypatch.setattr(
+        module_utils, "load_dataset_from_config", lambda cfg: built.append(cfg)
+    )
+    monkeypatch.setattr(
+        module_utils, "load_model_from_config", lambda cfg: built.append(cfg)
+    )
+
+    with pytest.raises(ValueError, match=field_name):
+        module_utils.load_backtester_from_config(saved)
+
+    assert built == []
+
+
+def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
+    """Code review WR-06: every config field survives the rebuild, checked with NON-default values.
+
+    A round trip that uses a field's default cannot detect that the field was
+    dropped: the loader would fill in the same default. So every defaulted
+    field gets a value different from its default, verified at the top of
+    the test, except `benchmark_dataset` (D-08 refuses anything but None) and
+    `name` (rebuilt from the class). Every scalar field must then come back
+    equal. This is a lock rather than a red-first test: it passes before the
+    fix too, and goes red if `to_dict`/`get_config` ever drops a field or the
+    loader substitutes a default.
+    """
+    from dataclasses import MISSING, fields
+
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    original = _backtester(
+        tmp_path,
+        dataset_config,
+        model_mode="load",
+        checkpoint=tmp_path / "never_read.joblib",
+        cv_project_dir=str(tmp_path / "cv_project"),
+        fees=0.0007,
+        slippage=0.0003,
+        init_cash=250_000.0,
+        score_label="fwd_ret_1",
+        use_wandb=True,
+        rebalance_periods=3,
+        direction="long_short",
+        top_n=1,
+    )
+    for field in fields(CrossSectionBacktestConfig):
+        if field.default is MISSING or field.name in ("benchmark_dataset", "name"):
+            continue
+        assert getattr(original.config, field.name) != field.default, field.name
+
+    saved = _json(original.get_config())
+    rebuilt = module_utils.load_backtester_from_config(saved)
+
+    for field in fields(CrossSectionBacktestConfig):
+        if field.name in ("price_dataset", "model", "benchmark_dataset"):
+            continue
+        assert getattr(rebuilt.config, field.name) == getattr(
+            original.config, field.name
+        ), field.name
+    assert _json(rebuilt.get_config()) == saved
+
+
 def test_non_backtester_class_is_refused_before_building_anything(
     tmp_path, monkeypatch
 ):

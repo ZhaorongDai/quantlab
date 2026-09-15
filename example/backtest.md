@@ -448,13 +448,16 @@ result = backtester.run()          # CV 运行目录的 config.json 就调 backt
 `load_backtester_from_config(config)` 依次：
 
 1. 深拷贝输入（调用方的 dict 原样不动）；
-2. 取走 `data_fingerprint`；
+2. 取走 `data_fingerprint`（以及 train 模式运行留下的记录 `trained_checkpoint`，见下文）；
 3. 解析 `config["name"]`，**不是 `BaseBacktester` 子类就 `TypeError`**，此时还没有构造任何数据集或模型；
-4. 用 `load_dataset_from_config` 重建 `price_dataset`，用 `load_model_from_config` 重建模型（因子、标签递归重建），
+4. **配置类的每个字段都必须在 `config` 里（2026-09-15，代码审查 WR-06）**，缺任何一个就 `ValueError`，写出缺了哪些，
+   同样先于构造任何数据集或模型。以前缺的字段会被 `**config` 悄悄填成**当前**的 dataclass 默认值：
+   默认值将来一改（比如 `fees`），旧的或手改过的 `config.json` 就会重建成另一个回测，不报任何错；
+5. 用 `load_dataset_from_config` 重建 `price_dataset`，用 `load_model_from_config` 重建模型（因子、标签递归重建），
    `benchmark_dataset` 不为 `None` 时一样重建；
-5. 用该类声明的 `config_cls` 构造配置和回测器（D-26：因子、数据集、模型、回测器都各自声明 `config_cls`，
+6. 用该类声明的 `config_cls` 构造配置和回测器（D-26：因子、数据集、模型、回测器都各自声明 `config_cls`，
    Polars 因子因此不会再被建成 `FactorConfig`）；
-6. 把取走的记录设成回测器的 `expected_fingerprint`。
+7. 把取走的记录设成回测器的 `expected_fingerprint`。
 
 `tests/test_backtest_rebuild.py` 在 load、train、`run_cv` 三种情况下都锁住了：原始运行与重建运行的 `weights.zarr`
 完全相同、净值 `value` 逐位相等。

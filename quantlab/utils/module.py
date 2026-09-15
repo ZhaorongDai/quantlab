@@ -155,6 +155,26 @@ def load_backtester_from_config(config: dict):
             f"rebuilt as a backtester"
         )
 
+    # Code review WR-06: every config field must be present. Building the config
+    # class with `**config` silently fills a missing key from the CURRENT
+    # dataclass defaults, so an older or hand-edited config.json would rebuild
+    # into a different backtest (say `fees` after its default changes) with no
+    # warning, breaking D-25's "all parameters identical". Refused before any
+    # nested dataset or model is built. `name` is exempt: it was just resolved.
+    from dataclasses import fields
+
+    missing = [
+        field.name
+        for field in fields(_config_cls_of(cls))
+        if field.name != "name" and field.name not in config
+    ]
+    if missing:
+        raise ValueError(
+            f"{config['name']} config is missing field(s) {missing}; refusing to "
+            f"fill them from the current dataclass defaults, which may differ "
+            f"from the values the stored backtest ran with (D-25)"
+        )
+
     config["price_dataset"] = load_dataset_from_config(config["price_dataset"])
     config["model"] = load_model_from_config(config["model"])
     benchmark = config.get("benchmark_dataset")
