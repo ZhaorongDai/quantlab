@@ -1,0 +1,384 @@
+"""`BaseBacktester.run_cv()`, the model-CV backtest (phase 03.7, plan 10).
+
+`run_cv` answers "how well does the model's cross-validation actually trade".
+It reads the `cv_folds.json` manifest a `train_cv` run wrote into its project
+directory, backtests every fold's out-of-sample test segment with that fold's
+own checkpoint, and stitches the segments into one out-of-sample curve.
+
+What is locked here, and what turns it red:
+
+- **D-36, the manifest is a versioned persisted format.** A missing file, a
+  missing `format_version`, a version other than 1 and an empty fold list are
+  each refused with a message naming the problem. A reader that guesses at an
+  unknown version would silently misread an old or future training run.
+- **D-16, one checkpoint and one test segment per fold.** Each fold loads the
+  checkpoint the manifest names for it, in fold order, and its weights cover
+  exactly its own test bars. A fold that trades bars outside its test segment
+  trades data its model was trained on.
+- **D-17 per fold.** In/out-of-sample is decided with THAT fold's train dates.
+  With no gap and a 2-bar label horizon, the first two test bars of every fold
+  are in-sample (the label on `train_end` reads them), and each fold logs its
+  own overlap warning.
+- **D-35, contiguity before stitching.** The selected folds' test segments must
+  follow each other bar for bar on the price calendar. A gap or an overlap is
+  refused before any checkpoint is loaded or any simulation runs. Stitching
+  across a gap would silently drop the uncovered bars from the "out-of-sample"
+  curve; stitching an overlap would trade some bars twice with two different
+  models. Either way the stitched curve would describe no real trading path.
+- **Fold selection.** Only folds whose test segment lies inside the config's
+  backtest window are run.
+- **D-35, the stitched curve.** It is ONE continuous simulation over the
+  concatenated fold weights, so capital carries across fold boundaries, while
+  every fold also gets its own simulation that starts from `init_cash`.
+- **D-24 / D-35, the run directory.** The top-level artifacts describe the
+  stitched curve, and `folds/fold_{i}/` holds each fold's weights and equity.
+
+Everything is synthetic, CPU-only and offline. Configs are constructed
+directly, never through the factories in `quantlab/config/__init__.py` (D-32).
+"""
+
+import json
+import types
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+from loguru import logger
+
+import quantlab.backtest.engine_vectorbt as engine_module
+from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.base.config import CrossSectionBacktestConfig
+from tests.backtest_fixtures import (
+    make_model,
+    make_stock_dataset,
+    write_price_store,
+)
+
+N_BARS = 80
+TRAIN_PERIODS = 30
+#: `_cv_folds`: test_periods = 30 // 5 = 6, (80 - 30) // 6 = 8 folds, whose
+#: test segments cover bars 30..77 with no gap between them.
+TEST_PERIODS = 6
+N_FOLDS = 8
+FIRST_TEST_BAR = TRAIN_PERIODS
+LAST_TEST_BAR = TRAIN_PERIODS + N_FOLDS * TEST_PERIODS - 1
+HORIZON = 2
+REBALANCE_PERIODS = 2
+TOP_N = 2
+INIT_CASH = 1_000_000.0
+
+OVERLAP_WARNING = "overlaps the model's effective training window"
+
+_UNSET = object()
+
+
+@pytest.fixture(autouse=True)
+def _offline_wandb(monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+
+@pytest.fixture
+def warning_messages():
+    """Every loguru WARNING emitted during the test, as plain message text."""
+    messages: list[str] = []
+    handler_id = logger.add(messages.append, level="WARNING", format="{message}")
+    yield messages
+    logger.remove(handler_id)
+
+
+def _day(ts) -> str:
+    return pd.Timestamp(str(ts)).strftime("%Y-%m-%d")
+
+
+def _model_dates(bars) -> dict:
+    return dict(
+        start_date=_day(bars[0]),
+        end_date=_day(bars[N_BARS - 1]),
+        train_start=_day(bars[0]),
+        train_end=_day(bars[TRAIN_PERIODS - 1]),
+        test_start=_day(bars[TRAIN_PERIODS]),
+        test_end=_day(bars[N_BARS - 1]),
+    )
+
+
+@pytest.fixture(scope="module")
+def cv_project(tmp_path_factory):
+    """One real `train_cv` run, shared read-only by every test in the module.
+
+    Tests never write into this directory: edited manifests are copies in the
+    test's own tmp_path, and their checkpoint paths still point here.
+    """
+    root = tmp_path_factory.mktemp("cv_project")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("WANDB_MODE", "disabled")
+        mp.setenv("WANDB_SILENT", "true")
+        dataset_config = write_price_store(root, n_bars=N_BARS)
+        bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+        model = make_model(
+            root / "train",
+            dataset_config,
+            n_forward_periods=HORIZON,
+            **_model_dates(bars),
+        )
+        model.collect()
+        model.train_cv(train_periods=TRAIN_PERIODS, gap_periods=0)
+
+    manifests = sorted((root / "train" / "models").rglob("cv_folds.json"))
+    assert len(manifests) == 1, manifests
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert len(manifest["folds"]) == N_FOLDS
+    return types.SimpleNamespace(
+        root=root,
+        dataset_config=dataset_config,
+        bars=bars,
+        project_dir=manifests[0].parent,
+        manifest=manifest,
+    )
+
+
+def _test_bars(cv, fold: int) -> np.ndarray:
+    first = FIRST_TEST_BAR + fold * TEST_PERIODS
+    return cv.bars[first : first + TEST_PERIODS].astype("datetime64[ns]")
+
+
+def _backtester(
+    tmp_path: Path,
+    cv,
+    *,
+    cv_project_dir=_UNSET,
+    checkpoint=None,
+    start_bar: int = FIRST_TEST_BAR,
+    end_bar: int = LAST_TEST_BAR,
+) -> USEquityCrossectionSelectStockVectorBt:
+    project_dir = cv.project_dir if cv_project_dir is _UNSET else cv_project_dir
+    return USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(cv.dataset_config),
+            model=make_model(
+                tmp_path / "backtest",
+                cv.dataset_config,
+                n_forward_periods=HORIZON,
+                **_model_dates(cv.bars),
+            ),
+            model_mode="load",
+            checkpoint=None if checkpoint is None else str(checkpoint),
+            cv_project_dir=None if project_dir is None else str(project_dir),
+            start_date=_day(cv.bars[start_bar]),
+            end_date=_day(cv.bars[end_bar]),
+            output_dir=str(tmp_path / "runs"),
+            rebalance_periods=REBALANCE_PERIODS,
+            direction="long_only",
+            top_n=TOP_N,
+            fees=0.0,
+            slippage=0.0,
+            init_cash=INIT_CASH,
+        )
+    )
+
+
+def _edited_project(tmp_path: Path, payload: dict) -> Path:
+    project = tmp_path / "edited_project"
+    project.mkdir()
+    (project / "cv_folds.json").write_text(json.dumps(payload), encoding="utf-8")
+    return project
+
+
+def _spy_load(monkeypatch, backtester) -> list[str]:
+    model = backtester.config.model
+    real_load = model.load
+    loaded: list[str] = []
+
+    def _spy(p):
+        loaded.append(str(p))
+        return real_load(p)
+
+    monkeypatch.setattr(model, "load", _spy)
+    return loaded
+
+
+def _spy_from_orders(monkeypatch) -> list[pd.Index]:
+    real_from_orders = engine_module.vbt.Portfolio.from_orders
+    calls: list[pd.Index] = []
+
+    def _spy(*args, **kwargs):
+        calls.append(kwargs["close"].index)
+        return real_from_orders(*args, **kwargs)
+
+    monkeypatch.setattr(
+        engine_module,
+        "vbt",
+        types.SimpleNamespace(Portfolio=types.SimpleNamespace(from_orders=_spy)),
+    )
+    return calls
+
+
+# --------------------------------------------------------------------------
+# D-36: the manifest reader refuses bad input
+# --------------------------------------------------------------------------
+
+
+def test_run_cv_refuses_a_missing_manifest(tmp_path, cv_project):
+    empty = tmp_path / "not_a_cv_project"
+    empty.mkdir()
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=empty)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        backtester.run_cv()
+    assert str(empty / "cv_folds.json") in str(excinfo.value)
+
+
+def test_run_cv_refuses_an_unknown_format_version(tmp_path, cv_project):
+    project = _edited_project(tmp_path, {**cv_project.manifest, "format_version": 2})
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
+
+    with pytest.raises(
+        ValueError, match=r"format_version 2 is not supported \(supported: 1\)"
+    ):
+        backtester.run_cv()
+
+
+def test_run_cv_refuses_a_missing_format_version(tmp_path, cv_project):
+    payload = {"folds": cv_project.manifest["folds"]}
+    project = _edited_project(tmp_path, payload)
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
+
+    with pytest.raises(ValueError, match=r"no format_version"):
+        backtester.run_cv()
+
+
+def test_run_cv_refuses_an_empty_fold_list(tmp_path, cv_project):
+    project = _edited_project(tmp_path, {"format_version": 1, "folds": []})
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
+
+    with pytest.raises(ValueError, match=r"no folds"):
+        backtester.run_cv()
+
+
+def test_run_requires_a_checkpoint_and_run_cv_requires_a_project_dir(
+    tmp_path, cv_project
+):
+    """model_mode="load" needs a checkpoint (run) or a cv_project_dir (run_cv),
+    and each entry point refuses when its own input is the one missing."""
+    only_project = _backtester(tmp_path / "a", cv_project)
+    with pytest.raises(ValueError, match=r"run\(\).*checkpoint"):
+        only_project.run()
+
+    checkpoint = cv_project.manifest["folds"][0]["checkpoint"]
+    only_checkpoint = _backtester(
+        tmp_path / "b", cv_project, cv_project_dir=None, checkpoint=checkpoint
+    )
+    with pytest.raises(ValueError, match=r"run_cv\(\).*cv_project_dir"):
+        only_checkpoint.run_cv()
+
+    with pytest.raises(ValueError, match=r"checkpoint.*cv_project_dir"):
+        _backtester(tmp_path / "c", cv_project, cv_project_dir=None)
+
+
+# --------------------------------------------------------------------------
+# D-16 / D-17: per-fold backtests
+# --------------------------------------------------------------------------
+
+
+def test_each_fold_loads_its_own_checkpoint_and_trades_only_its_test_segment(
+    tmp_path, cv_project, monkeypatch
+):
+    backtester = _backtester(tmp_path, cv_project)
+    loaded = _spy_load(monkeypatch, backtester)
+
+    result = backtester.run_cv()
+
+    assert loaded == [fold["checkpoint"] for fold in cv_project.manifest["folds"]]
+    assert [record["fold"] for record in result.folds] == list(range(N_FOLDS))
+    for record in result.folds:
+        fold = record["fold"]
+        np.testing.assert_array_equal(
+            record["weights"].timestamp.values.astype("datetime64[ns]"),
+            _test_bars(cv_project, fold),
+        )
+        assert record["checkpoint"] == cv_project.manifest["folds"][fold]["checkpoint"]
+
+
+def test_per_fold_split_uses_the_folds_own_train_dates(
+    tmp_path, cv_project, warning_messages
+):
+    result = _backtester(tmp_path, cv_project).run_cv()
+
+    assert len(result.folds) == N_FOLDS
+    for record in result.folds:
+        bars = _test_bars(cv_project, record["fold"])
+        metrics = record["metrics"]
+        assert tuple(metrics["in_sample_range"]) == (_day(bars[0]), _day(bars[1]))
+        assert [tuple(r) for r in metrics["out_of_sample_ranges"]] == [
+            (_day(bars[2]), _day(bars[-1]))
+        ]
+        assert tuple(metrics["training_window"])[1] == _day(bars[1])
+
+    overlaps = [m for m in warning_messages if OVERLAP_WARNING in m]
+    assert len(overlaps) == N_FOLDS, overlaps
+
+
+# --------------------------------------------------------------------------
+# D-35: contiguity is asserted before anything runs
+# --------------------------------------------------------------------------
+
+
+def test_non_contiguous_folds_are_refused_before_any_simulation(
+    tmp_path, cv_project, monkeypatch
+):
+    folds = cv_project.manifest["folds"]
+    payload = {"format_version": 1, "folds": folds[:3] + folds[4:]}
+    backtester = _backtester(
+        tmp_path, cv_project, cv_project_dir=_edited_project(tmp_path, payload)
+    )
+    calls = _spy_from_orders(monkeypatch)
+    loaded = _spy_load(monkeypatch, backtester)
+
+    with pytest.raises(ValueError, match=r"gap") as excinfo:
+        backtester.run_cv()
+
+    message = str(excinfo.value)
+    assert _day(folds[2]["test_end"]) in message
+    assert _day(folds[4]["test_start"]) in message
+    assert calls == []
+    assert loaded == []
+
+
+def test_overlapping_folds_are_refused(tmp_path, cv_project, monkeypatch):
+    folds = [dict(fold) for fold in cv_project.manifest["folds"]]
+    moved_end = FIRST_TEST_BAR + 3 * TEST_PERIODS  # one bar past fold 2's end
+    folds[2]["test_end"] = np.datetime_as_string(cv_project.bars[moved_end])
+    payload = {"format_version": 1, "folds": folds}
+    backtester = _backtester(
+        tmp_path, cv_project, cv_project_dir=_edited_project(tmp_path, payload)
+    )
+    calls = _spy_from_orders(monkeypatch)
+
+    with pytest.raises(ValueError, match=r"overlap") as excinfo:
+        backtester.run_cv()
+
+    message = str(excinfo.value)
+    assert _day(folds[2]["test_end"]) in message
+    assert _day(folds[3]["test_start"]) in message
+    assert calls == []
+
+
+def test_folds_outside_the_config_window_are_skipped(
+    tmp_path, cv_project, monkeypatch
+):
+    first_kept = N_FOLDS - 3
+    backtester = _backtester(
+        tmp_path,
+        cv_project,
+        start_bar=FIRST_TEST_BAR + first_kept * TEST_PERIODS,
+        end_bar=LAST_TEST_BAR,
+    )
+    loaded = _spy_load(monkeypatch, backtester)
+
+    result = backtester.run_cv()
+
+    kept = cv_project.manifest["folds"][first_kept:]
+    assert [record["fold"] for record in result.folds] == [f["fold"] for f in kept]
+    assert loaded == [fold["checkpoint"] for fold in kept]
