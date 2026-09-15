@@ -117,6 +117,8 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
     assert sorted(p.name for p in result.run_dir.iterdir()) == [
         "config.json",
         "equity.zarr",
+        "fingerprint.json",
+        "liquidations.json",
         "metrics.json",
         "weights.zarr",
     ]

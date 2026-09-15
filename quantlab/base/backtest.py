@@ -12,9 +12,13 @@ from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
+from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 
-from .config import BacktestConfig
+from .config import BacktestConfig, FactorConfig
+
+#: 数据指纹比较的字段（D-27）：任一不同就 warning。
+FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,11 @@ class BaseBacktester(ABC):
     MARKET: MarketSpec | None = None
 
     def __init__(self, config: BacktestConfig):
+        # 指纹状态先于 config 赋值（D-27），setter 与校验钩子里都可以放心读它们。
+        # `expected_fingerprint`：从已存的 fingerprint.json（或 config.json 的
+        # `data_fingerprint`）重建回测时设置，run() 用它比对本次读到的数据。
+        self.expected_fingerprint: dict | None = None
+        self._fingerprints: dict = {}
         self.config = config
 
     @property
@@ -189,7 +198,11 @@ class BaseBacktester(ABC):
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     def get_config(self) -> dict:
-        """标量字段 + 逐个嵌套的数据集与模型配置；不对整个配置 `asdict`。"""
+        """标量字段 + 逐个嵌套的数据集与模型配置；不对整个配置 `asdict`。
+
+        跑过一次之后，顶层多一个 `data_fingerprint`（D-25、D-27）：本次读到的
+        每个数据集的指纹。落盘的 config.json 因此带着重建时比对所需的记录。
+        """
         cfg = self.config.to_dict()
         cfg["price_dataset"] = self.config.price_dataset.get_config()
         cfg["model"] = self.config.model.get_config()
@@ -198,6 +211,8 @@ class BaseBacktester(ABC):
             if self.config.benchmark_dataset is None
             else self.config.benchmark_dataset.get_config()
         )
+        if self._fingerprints:
+            cfg["data_fingerprint"] = dict(self._fingerprints)
         return cfg
 
     @staticmethod
@@ -215,6 +230,8 @@ class BaseBacktester(ABC):
         """模型回测的模板方法（D-02）。子类不覆盖。"""
         start_date = self._iso_date(self.config.start_date)
         end_date = self._iso_date(self.config.end_date)
+        # 每次运行重新记录指纹：同一个回测器跑第二次，不能带着上一次的记录。
+        self._fingerprints = {}
 
         self._prepare_model()
         calendar = self._price_calendar(end_date)
@@ -226,6 +243,7 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: no price bars between {start_date} and "
                 f"{end_date}"
             )
+        self._compare_fingerprints()
 
         # 预测铺到价格数据集的全部标的上：缺的标的是 NaN，也就不可选（D-06）。
         predictions = predictions.reindex(
@@ -350,6 +368,8 @@ class BaseBacktester(ABC):
             factor.config.end_date = end_date
             factor._reset_dataset_config()
             self._refresh_factor_reads(factor)
+        # 重读之后立刻记录：此时数据集持有的正是「预热 + 回测窗口」（D-27）。
+        self._record_factor_fingerprints()
 
         features = model._collect_all_features()
         return model.predict_panel(features).sel(
@@ -357,7 +377,7 @@ class BaseBacktester(ABC):
         )
 
     def _load_prices(self, start_date: str, end_date: str) -> xr.Dataset:
-        """回测窗口内的成交价与估值价两列，深拷贝后返回。
+        """回测窗口内的成交价与估值价两列，深拷贝后返回，并记录价格数据集的指纹。
 
         深拷贝：价格数据集对象可能与某个因子共用，之后再改日期不能改到这里。
         """
@@ -374,7 +394,78 @@ class BaseBacktester(ABC):
                     f"{self.class_name}: price column {column!r} not found in "
                     f"{dataset.config.zarr_file_path}"
                 )
-        return ds[[fill, valuation]].load().copy(deep=True)
+        prices = ds[[fill, valuation]].load().copy(deep=True)
+        self._record_price_fingerprint(prices)
+        return prices
+
+    def _record_price_fingerprint(self, prices: xr.Dataset) -> None:
+        """价格数据集的指纹，键 `price_dataset`，只覆盖成交价与估值价两列（D-27）。"""
+        columns = [
+            self.MARKET.fill_price_column,  # type: ignore[union-attr]
+            self.MARKET.valuation_price_column,  # type: ignore[union-attr]
+        ]
+        self._fingerprints["price_dataset"] = dataset_fingerprint(prices, columns)
+
+    def _record_factor_fingerprints(self) -> None:
+        """每个因子背后数据集的指纹，键 `factor[{i}]:{类名}`（D-27）。
+
+        覆盖的变量是因子真正消费的列：KunQuant 因子（`FactorConfig`）是
+        `data_columns`；Polars 因子消费整个 lazyframe，所以是数据集的全部数据
+        变量。时间范围是因子数据集当前持有的范围，调用时机保证它包含预热。
+        """
+        for i, factor in enumerate(self.config.model.config.factors):
+            ds = factor.config.dataset.get_xarray_dataset()
+            if isinstance(factor.config, FactorConfig):
+                variables = list(factor.config.data_columns)
+            else:
+                variables = list(ds.data_vars)
+            key = f"factor[{i}]:{type(factor).__name__}"
+            self._fingerprints[key] = dataset_fingerprint(ds, variables)
+
+    def _compare_fingerprints(self) -> None:
+        """与 `expected_fingerprint` 比对本次记录的指纹（D-27）；只 warning，不中断。
+
+        只在 `expected_fingerprint` 不为 None 时比对。某个键只出现在一侧，或
+        `digest` / `start` / `end` / `n_timestamps` / `n_symbols` 任一不同，都对
+        该键发一条 warning，写明键名和不同的字段。数据集会被追加，Tiingo 也会在
+        新分红后回溯重算复权价，所以重建出来的回测必须能察觉数据变了，而不是
+        悄悄得出不同的结果；但变了的数据仍然可以回测，所以继续运行。
+        """
+        expected = self.expected_fingerprint
+        if expected is None:
+            return
+        actual = to_jsonable(self._fingerprints)
+        for key in sorted(set(expected) | set(actual)):  # type: ignore[arg-type]
+            if key not in actual:
+                logger.warning(
+                    f"{self.class_name}: data fingerprint mismatch for {key!r}: "
+                    f"present in expected_fingerprint but not read by this run "
+                    f"(D-27); continuing"
+                )
+                continue
+            if key not in expected:
+                logger.warning(
+                    f"{self.class_name}: data fingerprint mismatch for {key!r}: "
+                    f"read by this run but absent from expected_fingerprint "
+                    f"(D-27); continuing"
+                )
+                continue
+            wanted, got = expected[key], actual[key]
+            differing = [
+                name
+                for name in FINGERPRINT_COMPARED_FIELDS
+                if wanted.get(name) != got.get(name)
+            ]
+            if differing:
+                details = "; ".join(
+                    f"{name}: expected {wanted.get(name)!r}, got {got.get(name)!r}"
+                    for name in differing
+                )
+                logger.warning(
+                    f"{self.class_name}: data fingerprint mismatch for {key!r} "
+                    f"(differing fields: {', '.join(differing)}): {details}. The "
+                    f"data changed since the expected run (D-27); continuing"
+                )
 
     def _assert_weights_contract(
         self, weights: xr.Dataset, prices: xr.Dataset
@@ -762,7 +853,12 @@ class BaseBacktester(ABC):
         simulation: SimulationResult,
         metrics: dict,
     ) -> Path:
-        """建新的运行目录并写入配置、权重、净值与指标（D-24）；从不覆盖已有目录。"""
+        """建新的运行目录并写入 D-24 的全部产物；从不覆盖已有目录。
+
+        config.json、weights.zarr、equity.zarr（value、returns）、
+        liquidations.json、metrics.json、fingerprint.json。每个 JSON 都先经
+        `to_jsonable`（NaN/inf 记为 null，时间记为 ISO 字符串）再原子写入。
+        """
         run_dir = Path(self.config.output_dir) / self._run_dir_name()
         if run_dir.exists():
             raise RuntimeError(f"{run_dir} already exists")
@@ -776,6 +872,14 @@ class BaseBacktester(ABC):
             xr.Dataset({"value": simulation.value, "returns": simulation.returns})
         ).write(str(run_dir / "equity.zarr"))
         write_json_atomically(
+            run_dir / "liquidations.json",
+            to_jsonable(simulation.liquidations),
+            indent=2,
+        )
+        write_json_atomically(
             run_dir / "metrics.json", to_jsonable(metrics), indent=2
+        )
+        write_json_atomically(
+            run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
         )
         return run_dir
