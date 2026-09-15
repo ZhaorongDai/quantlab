@@ -8,7 +8,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.model import BaseModel
+from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
@@ -138,6 +138,8 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: model_mode must be 'train' or 'load', got "
                 f"{config.model_mode!r}"
             )
+        # run() 的 load 需要 checkpoint 路径；run_cv 读的是 cv_project_dir。
+        # 03.7-10 把这条放宽成「二者有其一」时，只改下面这一行条件。
         if config.model_mode == "load" and config.checkpoint is None:
             raise ValueError(
                 f"{self.class_name}: model_mode='load' requires a checkpoint path"
@@ -244,10 +246,31 @@ class BaseBacktester(ABC):
         )
 
     def _prepare_model(self) -> None:
-        """train 用模型自己的训练/测试日期训练（不改写，D-13）；load 读 checkpoint。"""
+        """按 `model_mode` 准备模型（D-13）。
+
+        - `train`：`collect()` 再 `train()`，用的是**模型自己**配置里的
+          train/test 日期。回测窗口从不写进这些日期：回测窗口只决定预测区间和
+          样本内/外的划分，改写它们会让训练集跟着回测参数漂移。
+        - `load`：
+          1. 先检查 checkpoint 文件存在，缺了直接报错并写明路径。这一步必须在
+             任何特征计算之前，否则一个拼错的路径要白算一遍特征才暴露。
+          2. 只对 `DLModel`，先把特征面板放进模型的 data backend。
+             `DLModel._read_checkpoint` 用 `num_symbols` 重建网络，而
+             `num_symbols` 读的正是这个 backend，空着就会在 `load()` 里报错
+             （03.7-RESEARCH.md Pitfall 11）。`MLModel` 的 checkpoint 就是完整
+             模型，不调 `_init_model`，所以跳过这一步。
+          3. `model.load(checkpoint)`。
+        """
         model = self.config.model
         if self.config.model_mode == "load":
-            model.load(self.config.checkpoint)  # type: ignore[arg-type]
+            checkpoint = Path(self.config.checkpoint)  # type: ignore[arg-type]
+            if not checkpoint.exists():
+                raise FileNotFoundError(
+                    f"{self.class_name}: checkpoint {checkpoint} does not exist"
+                )
+            if isinstance(model, DLModel):
+                model.data_backend.to_internal(model._collect_all_features())
+            model.load(checkpoint)
         else:
             model.collect()
             model.train()
