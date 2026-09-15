@@ -440,3 +440,149 @@ def test_iso_date_normalizes_fold_style_strings():
     assert BaseBacktester._iso_date(np.str_(fold_style)) == "2026-08-07"
     assert BaseBacktester._iso_date(np.datetime64("2026-08-07")) == "2026-08-07"
     assert BaseBacktester._iso_date(pd.Timestamp("2026-08-07 15:30")) == "2026-08-07"
+
+
+# --------------------------------------------------------------------------
+# D-13: model preparation
+# --------------------------------------------------------------------------
+
+
+class TinyLinearDLHead(DLModel):
+    """The smallest trainable `DLModel`: one `nn.Linear` on the last axis."""
+
+    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
+        return nn.Linear(num_features, num_labels)
+
+    def _init_optim(self, model):
+        return torch.optim.SGD(model.parameters(), lr=1e-2)
+
+    def _preprocess(self, data):
+        return torch.nan_to_num(data, nan=0.0)
+
+    def _train_one_batch(self, epoch, x, y):
+        self.optim.zero_grad()
+        loss = F.mse_loss(self.model(x), y)
+        loss.backward()
+        self.optim.step()
+        return loss.detach()
+
+    def _val_one_batch(self, epoch, x, y):
+        return F.mse_loss(self.model(x), y)
+
+    def _test_one_batch(self, epoch, x, y):
+        return F.mse_loss(self.model(x), y)
+
+
+def _dl_model(root: Path, dataset_config, dates: dict) -> TinyLinearDLHead:
+    factor = PastReturnFactor(
+        PolarsFactorConfig(
+            window=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 1}
+        )
+    )
+    label = ForwardReturnLabel(
+        PolarsFactorConfig(
+            window=0,
+            dataset=make_stock_dataset(dataset_config),
+            kwargs={"n_forward_periods": 1},
+        )
+    )
+    return TinyLinearDLHead(
+        DLConfig(
+            factors=[factor],
+            labels=[label],
+            model_save_dir=str(root / "models"),
+            factor_data_strategy="cal",
+            label_data_strategy="cal",
+            epochs=1,
+            batch_size=16,
+            num_workers=0,
+            val_size=0.0,
+            **dates,
+        )
+    )
+
+
+def test_train_mode_uses_the_models_own_dates_and_leaves_them_unchanged(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    dates = _model_dates(bars, 0, 24, 29)
+    model = make_model(tmp_path, dataset_config, **dates)
+    fields = ("train_start", "train_end", "test_start", "test_end")
+
+    result = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=30, end_bar=50, model_mode="train",
+    ).run()
+
+    assert {f: getattr(model.config, f) for f in fields} == {f: dates[f] for f in fields}
+    checkpoints = sorted(Path(model.config.model_save_dir).rglob("*.joblib"))
+    assert len(checkpoints) == 1, checkpoints
+    first = result.predictions["fwd_ret_1"].isel(timestamp=0)
+    assert np.isfinite(first.values).all(), first.values
+
+
+def test_load_mode_with_missing_checkpoint_file_fails_before_predicting(
+    tmp_path, monkeypatch
+):
+    """A DL head is used because it is the variant that does feature work
+    before `load()`: the existence check must come first."""
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    model = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    missing = tmp_path / "never_trained" / "TinyLinearDLHead_total.pth"
+
+    calls = {"collect": 0, "predict_panel": 0}
+    collect, predict_panel = model._collect_all_features, model.predict_panel
+
+    def spy_collect():
+        calls["collect"] += 1
+        return collect()
+
+    def spy_predict_panel(features):
+        calls["predict_panel"] += 1
+        return predict_panel(features)
+
+    monkeypatch.setattr(model, "_collect_all_features", spy_collect)
+    monkeypatch.setattr(model, "predict_panel", spy_predict_panel)
+
+    backtester = _backtester(
+        tmp_path, dataset_config, model, bars,
+        start_bar=30, end_bar=50, checkpoint=missing,
+    )
+    with pytest.raises(FileNotFoundError, match="never_trained"):
+        backtester.run()
+    assert calls == {"collect": 0, "predict_panel": 0}
+
+
+def test_load_mode_without_checkpoint_is_refused_at_construction(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    model = make_model(tmp_path, dataset_config, **_model_dates(bars, 0, 24, 29))
+
+    with pytest.raises(ValueError, match="checkpoint"):
+        _backtester(
+            tmp_path, dataset_config, model, bars,
+            start_bar=30, end_bar=50, model_mode="load", checkpoint=None,
+        )
+
+
+def test_dl_head_loads_after_its_feature_panel_is_collected(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = _bars(dataset_config)
+    trainer = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    trainer.collect()
+    trainer.train()
+    checkpoints = sorted(Path(trainer.config.model_save_dir).rglob("*.pth"))
+    assert len(checkpoints) == 1, checkpoints
+
+    fresh = TinyLinearDLHead(trainer.config)
+    assert fresh.model is None
+    result = _backtester(
+        tmp_path, dataset_config, fresh, bars,
+        start_bar=30, end_bar=50, checkpoint=checkpoints[0],
+    ).run()
+
+    for name, tensor in trainer.model.state_dict().items():
+        assert torch.equal(fresh.model.state_dict()[name].cpu(), tensor.cpu()), name
+    first = result.predictions["fwd_ret_1"].isel(timestamp=0)
+    assert np.isfinite(first.values).all(), first.values
