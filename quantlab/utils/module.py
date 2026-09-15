@@ -1,7 +1,7 @@
-"""Reconstruct a dataset/factor/model object from its serialized config.
+"""Reconstruct a dataset/factor/model/backtester object from its serialized config.
 
 A config records the class to rebuild as a dotted path in `config.name`, taken
-from the `import_path` property the four base classes expose. Those paths are
+from the `import_path` property the base classes expose. Those paths are
 therefore part of the on-disk format, and the namespace migration changed all
 of them -- see `get_cls_from_path` for the decision and its evidence.
 """
@@ -108,3 +108,51 @@ def load_model_from_config(config: dict):
     config["labels"] = [load_factor_from_config(l) for l in config["labels"]]
     cls = get_cls_from_path(config["name"])
     return cls(cls.config_cls(**config))
+
+
+def load_backtester_from_config(config: dict):
+    """Rebuild a backtester from the `config.json` a backtest run wrote (D-25).
+
+    The price dataset, the model (with its factors, labels and checkpoint
+    reference), an optional benchmark dataset and every scalar parameter are
+    rebuilt, and the backtester is constructed with the config class its class
+    declares (D-26). Calling `run()` or `run_cv()` on the result re-runs the
+    stored backtest.
+
+    `data_fingerprint` is a record of what the original run read, not a config
+    field. It is removed from the config and assigned to the rebuilt
+    backtester's `expected_fingerprint`, so the re-run compares the data it
+    reads against the stored run and warns on a mismatch (D-27).
+
+    The class named in `config["name"]` must be a `BaseBacktester` subclass.
+    That is checked before any nested config is built, so a tampered name
+    cannot get a dataset or model constructed on its behalf. A config JSON is
+    otherwise trusted local input, like a checkpoint: it names classes to import
+    and paths to read.
+
+    The input is deep-copied first and comes back untouched (RESEARCH
+    Pitfall 9). `BaseBacktester` is imported inside the function: this module
+    must not import the backtest layer at import time.
+    """
+    from quantlab.base.backtest import BaseBacktester
+
+    config = copy.deepcopy(config)
+    expected = config.pop("data_fingerprint", None)
+
+    cls = get_cls_from_path(config["name"])
+    if not (isinstance(cls, type) and issubclass(cls, BaseBacktester)):
+        raise TypeError(
+            f"{config['name']} is not a BaseBacktester subclass, so it cannot be "
+            f"rebuilt as a backtester"
+        )
+
+    config["price_dataset"] = load_dataset_from_config(config["price_dataset"])
+    config["model"] = load_model_from_config(config["model"])
+    benchmark = config.get("benchmark_dataset")
+    config["benchmark_dataset"] = (
+        None if benchmark is None else load_dataset_from_config(benchmark)
+    )
+
+    backtester = cls(_config_cls_of(cls)(**config))
+    backtester.expected_fingerprint = expected
+    return backtester
