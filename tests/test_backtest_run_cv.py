@@ -355,6 +355,34 @@ def test_run_cv_resolves_fold_checkpoints_inside_the_project_dir_not_the_cwd(
     assert [record["checkpoint"] for record in result.folds] == expected
 
 
+def test_a_failed_cv_persist_leaves_no_run_directory(tmp_path, cv_project, monkeypatch):
+    """Code review WR-08: an interrupted `run_cv` persist leaves nothing that looks like a run.
+
+    `_persist_cv` used to create `output_dir/{class}_{ts}/` and write
+    config.json first, then the zarr stores, `folds/`, metrics and the report.
+    A failure in any later step (a zarr error, plotly, a full disk, Ctrl-C)
+    left a directory holding a valid config.json but no metrics or
+    fingerprint. Nobody could tell it from a finished run, and
+    `load_backtester_from_config` would happily "reproduce" it. Report
+    writing is made to fail here: `output_dir` must end up empty, with no
+    final directory and no staging leftover. Red on the old code.
+    """
+    import quantlab.base.backtest as backtest_module
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("simulated failure while writing report.html")
+
+    monkeypatch.setattr(backtest_module, "write_backtest_report", _fail)
+    backtester = _backtester(tmp_path, cv_project)
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        backtester.run_cv()
+
+    runs = tmp_path / "runs"
+    leftovers = sorted(p.name for p in runs.iterdir()) if runs.exists() else []
+    assert leftovers == []
+
+
 def test_per_fold_split_uses_the_folds_own_train_dates(
     tmp_path, cv_project, warning_messages
 ):

@@ -389,6 +389,12 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 目录已存在就 `RuntimeError`，**从不覆盖**。所有 JSON 先经 `to_jsonable`（NaN / inf 写成 `null`，时间写成 ISO 字符串）
 再原子写入，所以都是严格 JSON。
 
+**运行目录要么完整、要么不存在（2026-09-15，代码审查 WR-08）。** 以前先建目录、先写 `config.json`，之后 zarr、指标、报告、指纹
+任何一步失败（zarr 写错、plotly、磁盘满、Ctrl-C），都会留下一个带着合法 `config.json`、却没有指标和指纹的目录，
+看起来和跑完的一样，`load_backtester_from_config` 也会照样去「复现」它。现在 `run()` 与 `run_cv()` 都先把全部产物写进
+同一父目录下的隐藏暂存目录 `.{运行目录名}.partial`，写完才改名成运行目录。中途出任何异常（含 `KeyboardInterrupt`），
+都会删掉这个暂存目录再原样抛出。所以 `output_dir` 下看得到的运行目录一定带着全部产物。
+
 | 文件 | 内容 |
 |---|---|
 | `config.json` | `get_config()`：`CrossSectionBacktestConfig` 的标量字段，加上逐个嵌套的 `price_dataset`、`model`（含因子、标签、`checkpoint` 引用）、`benchmark_dataset` 配置；另有顶层 `data_fingerprint` |

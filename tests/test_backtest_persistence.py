@@ -275,6 +275,48 @@ def test_existing_run_directory_is_never_overwritten(tmp_path, monkeypatch):
     assert (existing / "metrics.json").read_text() == '{"kept": true}'
 
 
+def test_an_interrupted_persist_leaves_no_run_directory(tmp_path, monkeypatch):
+    """Code review WR-08: a run directory exists only once every D-24 artifact is written.
+
+    The old `_report_and_persist` created `output_dir/{class}_{ts}/` and wrote
+    config.json (and the zarr stores) before metrics, report and fingerprint.
+    An interruption there (Ctrl-C is simulated while report.html is written)
+    left a directory with a valid config.json and no metrics. It looked
+    finished, and a rebuild would "reproduce" it. After the interruption
+    `output_dir` must hold nothing, not even the staging directory. Once the
+    report works again, the same backtester writes one complete directory. Red
+    on the old code: the half-written directory remains.
+    """
+    import quantlab.base.backtest as backtest_module
+
+    dataset_config, checkpoint = _trained_store(tmp_path)
+    backtester = _backtester(
+        tmp_path,
+        dataset_config,
+        checkpoint,
+        tag="interrupted",
+        window_start_bar=30,
+        window_end_bar=50,
+    )
+    real_report = backtest_module.write_backtest_report
+
+    def _interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(backtest_module, "write_backtest_report", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        backtester.run()
+
+    runs = tmp_path / "runs"
+    assert (sorted(p.name for p in runs.iterdir()) if runs.exists() else []) == []
+
+    monkeypatch.setattr(backtest_module, "write_backtest_report", real_report)
+    result = backtester.run()
+
+    assert sorted(p.name for p in runs.iterdir()) == [result.run_dir.name]
+    assert sorted(p.name for p in result.run_dir.iterdir()) == D24_ARTIFACTS
+
+
 # --------------------------------------------------------------------------
 # D-27: the data fingerprint
 # --------------------------------------------------------------------------

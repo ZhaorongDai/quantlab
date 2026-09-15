@@ -1597,38 +1597,68 @@ class BaseBacktester(ABC):
         实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
         `_report_notes()`；本阶段没有基准曲线（D-08）。
         """
-        run_dir = self._new_run_dir()
-        write_json_atomically(
-            run_dir / "config.json", to_jsonable(self.get_config()), indent=2
-        )
-        self._write_weights_and_equity(run_dir, weights, simulation)
-        write_json_atomically(
-            run_dir / "liquidations.json",
-            to_jsonable(simulation.liquidations),
-            indent=2,
-        )
-        write_json_atomically(
-            run_dir / "metrics.json", to_jsonable(metrics), indent=2
-        )
-        write_backtest_report(
-            simulation.value,
-            run_dir / "report.html",
-            in_sample_range=metrics.get("in_sample_range"),
-            notes=self._report_notes(),
-            title=run_dir.name,
-        )
-        write_json_atomically(
-            run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
-        )
-        return run_dir
+        # 全部产物先写进暂存目录，写完才改名成运行目录（代码审查 WR-08）。
+        def _write(run_dir: Path, name: str) -> None:
+            write_json_atomically(
+                run_dir / "config.json", to_jsonable(self.get_config()), indent=2
+            )
+            self._write_weights_and_equity(run_dir, weights, simulation)
+            write_json_atomically(
+                run_dir / "liquidations.json",
+                to_jsonable(simulation.liquidations),
+                indent=2,
+            )
+            write_json_atomically(
+                run_dir / "metrics.json", to_jsonable(metrics), indent=2
+            )
+            write_backtest_report(
+                simulation.value,
+                run_dir / "report.html",
+                in_sample_range=metrics.get("in_sample_range"),
+                notes=self._report_notes(),
+                title=name,
+            )
+            write_json_atomically(
+                run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
+            )
 
-    def _new_run_dir(self) -> Path:
-        """建 `output_dir/{class}_{timestamp}/`（D-24）；已存在就报错，从不覆盖。"""
-        run_dir = Path(self.config.output_dir) / self._run_dir_name()
-        if run_dir.exists():
-            raise RuntimeError(f"{run_dir} already exists")
-        run_dir.mkdir(parents=True)
-        return run_dir
+        return self._persist_run_dir(_write)
+
+    def _persist_run_dir(self, write) -> Path:
+        """建 `output_dir/{class}_{timestamp}/`（D-24）并写入产物；从不覆盖，也不留下半成品。
+
+        `write(directory, name)` 往 `directory` 写全部产物，`name` 是最终的运行
+        目录名（报告标题用它）。
+
+        **先暂存，写完才改名（代码审查 WR-08）。** 以前先建运行目录、先写
+        config.json，再写 zarr、指标、报告和指纹。其中任何一步失败（zarr 写错、
+        plotly、磁盘满、Ctrl-C）都会留下一个带着合法 config.json、却没有指标或
+        指纹的目录：看起来和跑完的一样，`load_backtester_from_config` 还会照样
+        去「复现」它。现在：
+
+        1. 最终目录已存在就 RuntimeError，从不覆盖；
+        2. 在同一父目录下建隐藏的暂存目录 `.{name}.partial`，`write` 写进去；
+        3. 全部写完后再确认一次最终目录不存在，然后把暂存目录改名成最终目录
+           （同一文件系统上的 rename 是原子的）；
+        4. 任何异常（含 KeyboardInterrupt）：删掉本次自己建的暂存目录，原样
+           抛出。所以 `output_dir` 下要么是完整的运行目录，要么什么都没有。
+        """
+        import shutil
+
+        final = Path(self.config.output_dir) / self._run_dir_name()
+        if final.exists():
+            raise RuntimeError(f"{final} already exists")
+        staging = final.parent / f".{final.name}.partial"
+        staging.mkdir(parents=True)
+        try:
+            write(staging, final.name)
+            if final.exists():
+                raise RuntimeError(f"{final} already exists")
+            staging.rename(final)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return final
 
     @staticmethod
     def _write_weights_and_equity(
@@ -1695,44 +1725,46 @@ class BaseBacktester(ABC):
         样本内由 notes 说明）。每折的逐折模拟另存在 `folds/fold_{i}/` 下的
         weights.zarr 与 equity.zarr，`i` 是清单里的折号。
         """
-        run_dir = self._new_run_dir()
-        write_json_atomically(
-            run_dir / "config.json", to_jsonable(self.get_config()), indent=2
-        )
-        self._write_weights_and_equity(run_dir, weights, simulation)
-        for record in records:
-            fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
-            fold_dir.mkdir(parents=True)
-            self._write_weights_and_equity(
-                fold_dir, record["weights"], record["simulation"]
+        # 与 run() 相同：先写暂存目录，全部写完才改名（代码审查 WR-08）。
+        def _write(run_dir: Path, name: str) -> None:
+            write_json_atomically(
+                run_dir / "config.json", to_jsonable(self.get_config()), indent=2
             )
-        write_json_atomically(
-            run_dir / "liquidations.json",
-            to_jsonable(
-                {
-                    "stitched": simulation.liquidations,
-                    "folds": [
-                        {
-                            "fold": record["fold"],
-                            "liquidations": record["simulation"].liquidations,
-                        }
-                        for record in records
-                    ],
-                }
-            ),
-            indent=2,
-        )
-        write_json_atomically(
-            run_dir / "metrics.json", to_jsonable(metrics), indent=2
-        )
-        write_backtest_report(
-            simulation.value,
-            run_dir / "report.html",
-            in_sample_range=None,
-            notes=metrics["notes"],
-            title=run_dir.name,
-        )
-        write_json_atomically(
-            run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
-        )
-        return run_dir
+            self._write_weights_and_equity(run_dir, weights, simulation)
+            for record in records:
+                fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
+                fold_dir.mkdir(parents=True)
+                self._write_weights_and_equity(
+                    fold_dir, record["weights"], record["simulation"]
+                )
+            write_json_atomically(
+                run_dir / "liquidations.json",
+                to_jsonable(
+                    {
+                        "stitched": simulation.liquidations,
+                        "folds": [
+                            {
+                                "fold": record["fold"],
+                                "liquidations": record["simulation"].liquidations,
+                            }
+                            for record in records
+                        ],
+                    }
+                ),
+                indent=2,
+            )
+            write_json_atomically(
+                run_dir / "metrics.json", to_jsonable(metrics), indent=2
+            )
+            write_backtest_report(
+                simulation.value,
+                run_dir / "report.html",
+                in_sample_range=None,
+                notes=metrics["notes"],
+                title=name,
+            )
+            write_json_atomically(
+                run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
+            )
+
+        return self._persist_run_dir(_write)
