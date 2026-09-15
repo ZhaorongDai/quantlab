@@ -1,3 +1,4 @@
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -89,6 +90,36 @@ class BacktestResult:
     metrics: dict = field(default_factory=dict)
 
 
+@dataclass
+class _BacktestWindow:
+    """一个回测窗口跑完、尚未落盘的中间产物；`run()` 与 `run_cv()` 的每折共用。"""
+
+    predictions: xr.Dataset
+    prices: xr.Dataset
+    weights: xr.Dataset
+    simulation: SimulationResult
+    split: dict
+    metrics: dict
+
+
+@dataclass
+class CVBacktestResult:
+    """`run_cv()` 的返回值（D-16、D-35）。
+
+    - `run_dir`：这次 CV 回测落盘的目录；
+    - `folds`：每折一条记录，含 `fold`、四个日期、`checkpoint`，以及该折自己的
+      `predictions`、`weights`、`simulation`、`metrics`（独立的逐折模拟）；
+    - `weights` / `simulation`：拼接后的样本外权重与**一次**连续模拟；
+    - `metrics`：与 metrics.json 相同的结构，`stitched`、`folds`、`notes`。
+    """
+
+    run_dir: Path | None
+    folds: list[dict]
+    weights: xr.Dataset | None = None
+    simulation: SimulationResult | None = None
+    metrics: dict = field(default_factory=dict)
+
+
 class BaseBacktester(ABC):
     """回测层的基类（03.7 D-01、D-02）。
 
@@ -152,11 +183,16 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: model_mode must be 'train' or 'load', got "
                 f"{config.model_mode!r}"
             )
-        # run() 的 load 需要 checkpoint 路径；run_cv 读的是 cv_project_dir。
-        # 03.7-10 把这条放宽成「二者有其一」时，只改下面这一行条件。
-        if config.model_mode == "load" and config.checkpoint is None:
+        # load 模式二者至少有其一：run() 读 checkpoint，run_cv() 读 cv_project_dir。
+        # 缺的恰好是某个入口自己要的那一个时，由该入口在运行时拒绝（D-13、D-16）。
+        if (
+            config.model_mode == "load"
+            and config.checkpoint is None
+            and config.cv_project_dir is None
+        ):
             raise ValueError(
-                f"{self.class_name}: model_mode='load' requires a checkpoint path"
+                f"{self.class_name}: model_mode='load' requires a checkpoint path "
+                f"(for run()) or a cv_project_dir (for run_cv())"
             )
         if config.rebalance_periods < 1:
             raise ValueError(
@@ -230,6 +266,11 @@ class BaseBacktester(ABC):
 
     def run(self) -> BacktestResult:
         """模型回测的模板方法（D-02）。子类不覆盖。"""
+        if self.config.model_mode == "load" and self.config.checkpoint is None:
+            raise ValueError(
+                f"{self.class_name}: run() with model_mode='load' requires "
+                f"config.checkpoint; cv_project_dir is read only by run_cv()"
+            )
         start_date = self._iso_date(self.config.start_date)
         end_date = self._iso_date(self.config.end_date)
         # 每次运行重新记录指纹：同一个回测器跑第二次，不能带着上一次的记录。
@@ -237,6 +278,264 @@ class BaseBacktester(ABC):
 
         self._prepare_model()
         calendar = self._price_calendar(end_date)
+        model = self.config.model
+        window = self._backtest_window(
+            start_date,
+            end_date,
+            calendar,
+            model.config.train_start,
+            model.config.train_end,
+        )
+        self._compare_fingerprints()
+
+        metrics = window.metrics
+        metrics["notes"] = self._report_notes()
+        run_dir = self._report_and_persist(
+            window.predictions, window.weights, window.simulation, metrics
+        )
+        # wandb 默认关闭（D-28）：只有显式打开才会有任何数据离开本机。
+        if self.config.use_wandb:
+            self._log_to_wandb(run_dir, metrics)
+
+        return BacktestResult(
+            run_dir=run_dir,
+            predictions=window.predictions,
+            weights=window.weights,
+            simulation=window.simulation,
+            metrics=metrics,
+        )
+
+    def run_cv(self) -> CVBacktestResult:
+        """模型 CV 回测的模板方法（D-02、D-16、D-17、D-35、D-36）。子类不覆盖。
+
+        回放一次 `train_cv` 的交叉验证：读它在项目目录里写的 `cv_folds.json`，
+        每折用**该折自己的** checkpoint，只回测该折的样本外测试段。顺序：
+
+        1. 读清单并校验格式（`_read_cv_folds`），只留测试段落在回测窗口内的折
+           （`_select_folds`）；
+        2. 在价格日历上断言这些折的测试段首尾相接、互不重叠
+           （`_assert_contiguous_folds`）。这一步先于任何模型加载与模拟：拼接
+           一个有缺口或重叠的序列得到的曲线不对应任何真实的交易路径；
+        3. 逐折：加载该折 checkpoint，`_backtest_window` 回测该折测试段（含预热）。
+           样本内/外按**该折**的 train 日期加标签期限划分（D-17 逐折），所以
+           gap 为 0 时每折开头的期限个 bar 是样本内，并各自 warning。
+
+        折日期经 `_iso_date` 规范成 ISO 日期（真实数据上是纳秒字符串），所以
+        判定按日期粒度进行。
+        """
+        if self.config.cv_project_dir is None:
+            raise ValueError(
+                f"{self.class_name}: run_cv() requires config.cv_project_dir, the "
+                f"train_cv project directory holding "
+                f"{BaseModel.CV_FOLDS_FILENAME}"
+            )
+        if self.config.model_mode != "load":
+            raise ValueError(
+                f"{self.class_name}: run_cv() replays the checkpoints of an "
+                f"existing train_cv run and requires model_mode='load', got "
+                f"{self.config.model_mode!r}"
+            )
+        self._fingerprints = {}
+
+        folds = self._select_folds(self._read_cv_folds())
+        calendar = self._price_calendar(folds[-1]["test_end"])
+        self._assert_contiguous_folds(folds, calendar)
+
+        records: list[dict] = []
+        for fold in folds:
+            self._load_model_checkpoint(fold["checkpoint"])
+            window = self._backtest_window(
+                fold["test_start"],
+                fold["test_end"],
+                calendar,
+                fold["train_start"],
+                fold["train_end"],
+            )
+            records.append(
+                {
+                    **{key: fold[key] for key in self._CV_RECORD_KEYS},
+                    "predictions": window.predictions,
+                    "weights": window.weights,
+                    "simulation": window.simulation,
+                    "metrics": window.metrics,
+                }
+            )
+
+        return CVBacktestResult(run_dir=None, folds=records)
+
+    #: 每折记录与 metrics.json 里逐折条目共有的清单字段。
+    _CV_RECORD_KEYS = (
+        "fold",
+        "train_start",
+        "train_end",
+        "test_start",
+        "test_end",
+        "checkpoint",
+    )
+
+    def _read_cv_folds(self) -> list[dict]:
+        """读 `cv_project_dir` 下的折清单并校验（D-36），按 `fold` 排序返回。
+
+        - 文件不存在：FileNotFoundError，写明路径；
+        - 没有 `format_version`，或不等于 `BaseModel.CV_FOLDS_FORMAT_VERSION`：
+          ValueError，写明读到的值与支持的版本。清单是持久化格式，猜着读一个
+          不认识的版本会悄悄读错旧（或将来）的训练 run；
+        - `folds` 不是非空 list：ValueError；
+        - 某折缺清单字段，或测试段起点晚于终点：ValueError，写明折号。
+
+        每折的四个日期经 `_iso_date` 规范；返回的是新 dict，不改动读到的对象。
+        """
+        path = Path(self.config.cv_project_dir) / BaseModel.CV_FOLDS_FILENAME  # type: ignore[arg-type]
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"{self.class_name}: CV fold manifest {path} does not exist; "
+                f"cv_project_dir must be the project directory a train_cv run "
+                f"wrote"
+            )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        supported = BaseModel.CV_FOLDS_FORMAT_VERSION
+        if not isinstance(payload, dict) or "format_version" not in payload:
+            raise ValueError(
+                f"{self.class_name}: {path} has no format_version (supported: "
+                f"{supported}); it is not a cv_folds manifest this reader "
+                f"understands (D-36)"
+            )
+        version = payload["format_version"]
+        if isinstance(version, bool) or version != supported:
+            raise ValueError(
+                f"{self.class_name}: {path} format_version {version!r} is not "
+                f"supported (supported: {supported}) (D-36)"
+            )
+        raw_folds = payload.get("folds")
+        if not isinstance(raw_folds, list):
+            raise ValueError(
+                f"{self.class_name}: {path} 'folds' must be a list, got "
+                f"{type(raw_folds).__name__}"
+            )
+        if not raw_folds:
+            raise ValueError(
+                f"{self.class_name}: {path} lists no folds; the train_cv run "
+                f"produced no fold to backtest"
+            )
+
+        folds = []
+        for entry in raw_folds:
+            missing = [
+                key
+                for key in self._CV_RECORD_KEYS
+                if not isinstance(entry, dict) or key not in entry
+            ]
+            if missing:
+                raise ValueError(
+                    f"{self.class_name}: {path} fold entry "
+                    f"{entry.get('fold') if isinstance(entry, dict) else entry!r} "
+                    f"is missing {missing}"
+                )
+            fold = dict(entry)
+            for key in ("train_start", "train_end", "test_start", "test_end"):
+                fold[key] = self._iso_date(fold[key])
+            if fold["test_start"] > fold["test_end"]:
+                raise ValueError(
+                    f"{self.class_name}: {path} fold {fold['fold']} test segment "
+                    f"starts {fold['test_start']} after it ends {fold['test_end']}"
+                )
+            folds.append(fold)
+        return sorted(folds, key=lambda fold: fold["fold"])
+
+    def _select_folds(self, folds: list[dict]) -> list[dict]:
+        """只留测试段整段落在 `[config.start_date, config.end_date]` 内的折。
+
+        一个也不剩时 ValueError，写明回测窗口与清单测试段的覆盖范围。ISO 日期
+        字符串的字典序就是时间序。
+        """
+        start = self._iso_date(self.config.start_date)
+        end = self._iso_date(self.config.end_date)
+        selected = [
+            fold
+            for fold in folds
+            if fold["test_start"] >= start and fold["test_end"] <= end
+        ]
+        if not selected:
+            raise ValueError(
+                f"{self.class_name}: no fold's test segment lies within the "
+                f"backtest window {start}..{end}; the manifest's test segments "
+                f"span {folds[0]['test_start']}..{folds[-1]['test_end']}"
+            )
+        if len(selected) < len(folds):
+            logger.info(
+                f"{self.class_name}: run_cv backtests folds "
+                f"{[fold['fold'] for fold in selected]} of "
+                f"{[fold['fold'] for fold in folds]} (window {start}..{end})"
+            )
+        return selected
+
+    def _assert_contiguous_folds(self, folds: list[dict], calendar: np.ndarray) -> None:
+        """在价格日历上断言各折测试段首尾相接、互不重叠（D-35）。
+
+        每折测试段在日历上的首 bar 是第一个不早于 `test_start` 的 bar，末 bar
+        是最后一个不晚于 `test_end` 当天的 bar。相邻两折必须满足「后一折首 bar =
+        前一折末 bar + 1」：
+        - 更大：缺口，中间的 bar 不属于任何折，拼接曲线会悄悄跳过它们；
+        - 更小或相等：重叠，同一批 bar 会被两个模型各交易一次。
+        两种情况都 ValueError，写明两折的折号与交界处的两个日期。某折测试段在
+        日历上没有 bar 同样报错。
+        """
+        cal = np.asarray(calendar).astype("datetime64[ns]")
+        one_day = np.timedelta64(1, "D")
+
+        def _span(fold: dict) -> tuple[int, int]:
+            day_start = np.datetime64(fold["test_start"], "D").astype("datetime64[ns]")
+            day_after_end = (np.datetime64(fold["test_end"], "D") + one_day).astype(
+                "datetime64[ns]"
+            )
+            first = int(np.searchsorted(cal, day_start, side="left"))
+            last = int(np.searchsorted(cal, day_after_end, side="left")) - 1
+            if first > last:
+                raise ValueError(
+                    f"{self.class_name}: fold {fold['fold']} test segment "
+                    f"{fold['test_start']}..{fold['test_end']} has no price bars "
+                    f"on the price calendar"
+                )
+            return first, last
+
+        previous = folds[0]
+        _, previous_last = _span(previous)
+        for fold in folds[1:]:
+            first, last = _span(fold)
+            expected = previous_last + 1
+            if first > expected:
+                raise ValueError(
+                    f"{self.class_name}: fold test segments are not contiguous: "
+                    f"gap between fold {previous['fold']} ending "
+                    f"{previous['test_end']} and fold {fold['fold']} starting "
+                    f"{fold['test_start']}; {first - expected} price bar(s) in "
+                    f"between belong to no fold, so a stitched out-of-sample "
+                    f"curve would silently skip them (D-35)"
+                )
+            if first < expected:
+                raise ValueError(
+                    f"{self.class_name}: fold test segments overlap: fold "
+                    f"{fold['fold']} starts {fold['test_start']}, on or before "
+                    f"fold {previous['fold']} ends {previous['test_end']}; "
+                    f"{expected - first} price bar(s) would be traded by two "
+                    f"models (D-35)"
+                )
+            previous, previous_last = fold, last
+
+    def _backtest_window(
+        self,
+        start_date: str,
+        end_date: str,
+        calendar: np.ndarray,
+        train_start,
+        train_end,
+    ) -> _BacktestWindow:
+        """一个回测窗口的全部步骤，不落盘；`run()` 与 `run_cv()` 的每折共用。
+
+        对齐因子日期并预测 -> 读价格 -> 预测铺到价格轴（D-06）-> 按
+        `[train_start, train_end + 标签期限]` 划分样本内外（D-17）-> 生成信号 ->
+        权重契约 -> 模拟 -> 基准 -> 指标。调用前模型必须已经准备好。
+        """
         predictions = self._align_and_predict(start_date, end_date, calendar)
 
         prices = self._load_prices(start_date, end_date)
@@ -245,19 +544,15 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: no price bars between {start_date} and "
                 f"{end_date}"
             )
-        self._compare_fingerprints()
 
         # 预测铺到价格数据集的全部标的上：缺的标的是 NaN，也就不可选（D-06）。
         predictions = predictions.reindex(
             timestamp=prices.timestamp.values, symbol=prices.symbol.values
         )
 
-        model = self.config.model
         split = self._split_window(
             prices.timestamp.values,
-            self._training_window(
-                calendar, model.config.train_start, model.config.train_end
-            ),
+            self._training_window(calendar, train_start, train_end),
         )
 
         weights = self._generate_signals(predictions, prices)
@@ -266,17 +561,12 @@ class BaseBacktester(ABC):
         simulation = self._simulate(weights, prices)
         benchmark = self._simulate_benchmark(start_date, end_date)
         metrics = self._compute_metrics(simulation, benchmark, split)
-        metrics["notes"] = self._report_notes()
-        run_dir = self._report_and_persist(predictions, weights, simulation, metrics)
-        # wandb 默认关闭（D-28）：只有显式打开才会有任何数据离开本机。
-        if self.config.use_wandb:
-            self._log_to_wandb(run_dir, metrics)
-
-        return BacktestResult(
-            run_dir=run_dir,
+        return _BacktestWindow(
             predictions=predictions,
+            prices=prices,
             weights=weights,
             simulation=simulation,
+            split=split,
             metrics=metrics,
         )
 
@@ -286,29 +576,36 @@ class BaseBacktester(ABC):
         - `train`：`collect()` 再 `train()`，用的是**模型自己**配置里的
           train/test 日期。回测窗口从不写进这些日期：回测窗口只决定预测区间和
           样本内/外的划分，改写它们会让训练集跟着回测参数漂移。
-        - `load`：
-          1. 先检查 checkpoint 文件存在，缺了直接报错并写明路径。这一步必须在
-             任何特征计算之前，否则一个拼错的路径要白算一遍特征才暴露。
-          2. 只对 `DLModel`，先把特征面板放进模型的 data backend。
-             `DLModel._read_checkpoint` 用 `num_symbols` 重建网络，而
-             `num_symbols` 读的正是这个 backend，空着就会在 `load()` 里报错
-             （03.7-RESEARCH.md Pitfall 11）。`MLModel` 的 checkpoint 就是完整
-             模型，不调 `_init_model`，所以跳过这一步。
-          3. `model.load(checkpoint)`。
+        - `load`：`_load_model_checkpoint(config.checkpoint)`。
         """
         model = self.config.model
         if self.config.model_mode == "load":
-            checkpoint = Path(self.config.checkpoint)  # type: ignore[arg-type]
-            if not checkpoint.exists():
-                raise FileNotFoundError(
-                    f"{self.class_name}: checkpoint {checkpoint} does not exist"
-                )
-            if isinstance(model, DLModel):
-                model.data_backend.to_internal(model._collect_all_features())
-            model.load(checkpoint)
+            self._load_model_checkpoint(self.config.checkpoint)
         else:
             model.collect()
             model.train()
+
+    def _load_model_checkpoint(self, checkpoint) -> None:
+        """把 `checkpoint` 加载进 `config.model`；`run()` 与 `run_cv()` 的每折共用。
+
+        1. 先检查 checkpoint 文件存在，缺了直接报错并写明路径。这一步必须在
+           任何特征计算之前，否则一个拼错的路径要白算一遍特征才暴露。
+        2. 只对 `DLModel`，先把特征面板放进模型的 data backend。
+           `DLModel._read_checkpoint` 用 `num_symbols` 重建网络，而
+           `num_symbols` 读的正是这个 backend，空着就会在 `load()` 里报错
+           （03.7-RESEARCH.md Pitfall 11）。`MLModel` 的 checkpoint 就是完整
+           模型，不调 `_init_model`，所以跳过这一步。
+        3. `model.load(checkpoint)`。
+        """
+        model = self.config.model
+        path = Path(checkpoint)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{self.class_name}: checkpoint {path} does not exist"
+            )
+        if isinstance(model, DLModel):
+            model.data_backend.to_internal(model._collect_all_features())
+        model.load(path)
 
     def _price_calendar(self, end_date: str) -> np.ndarray:
         """价格数据集自己的交易日历（截至 `end_date`），用于按 bar 计数。
