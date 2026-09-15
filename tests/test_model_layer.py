@@ -32,6 +32,10 @@ Batch 3 added, for defects surfaced by the same doc pass:
      did nothing, silently. It is KEPT -- Phase 6 owns end-to-end backtesting
      and the hook must eventually serve the `MLConfig`/xgboost path too -- but
      it now says so instead of returning `None`.
+     (Superseded 2026-09-15, phase 03.7 D-37: these hooks were deleted, together
+     with the two `backtest` flag tests that locked them. Backtesting lives in
+     `quantlab/backtest/`; `tests/test_model_hierarchy.py::
+     test_stale_backtest_hooks_are_deleted` keeps them out.)
 
 Batch 3 also renamed the three per-batch hooks from `_*_one_epoch` to
 `_*_one_batch` (defect B above is what that name cost) and the two collectors
@@ -517,69 +521,6 @@ def test_num_null_is_zero_on_a_dense_panel(tmp_path):
     model.collect()
 
     assert model.num_null == 0
-
-
-# --------------------------------------------------------------------------
-# The vecbt skeleton: honest, not silent
-# --------------------------------------------------------------------------
-#
-# `_do_vecbt`, `_vecbt`, `RNNClassifier._vecbt` and `_train_dl(backtest=...)`
-# are four half-built pieces that never connect to each other. They are KEPT
-# (Phase 6 owns end-to-end backtesting, and the hook has to serve the intended
-# `MLConfig`/xgboost path as well as torch), but a caller must never be able to
-# ask for a backtest and get silence.
-
-
-def test_train_dl_rejects_a_truthy_backtest_flag(tmp_path):
-    """`_train_dl(backtest=...)` was declared and then never referenced -- a
-    caller asking for a backtest trained a model and got no backtest, with no
-    warning anywhere.
-
-    The rejection has to happen BEFORE training, which is what
-    `model.train_epochs == []` pins: on a real run this parameter is passed
-    once and the training it precedes takes hours, so discovering the gap
-    afterwards is barely better than not discovering it.
-    """
-    cfg = _make_config(
-        tmp_path,
-        factor_values={"f0": 1.0, "f1": 2.0},
-        label_values={"y0": 0.5},
-        epochs=2,
-    )
-    model = RecordingRegressor(cfg)
-    model.collect()
-
-    with pytest.raises(NotImplementedError, match="Phase 6"):
-        model._fit(
-            project_name="p",
-            experiment_name="e",
-            model_name="m.pth",
-            backtest=True,
-        )
-
-    assert model.train_epochs == [], (
-        "backtest=True must be rejected before any training runs"
-    )
-
-
-def test_train_dl_still_trains_when_backtest_is_falsy(tmp_path):
-    """The guard above must not turn the default path into a landmine:
-    `backtest=False` (the default, and what `_auto_train` passes) still trains
-    normally."""
-    cfg = _make_config(
-        tmp_path,
-        factor_values={"f0": 1.0, "f1": 2.0},
-        label_values={"y0": 0.5},
-        epochs=2,
-    )
-    model = RecordingRegressor(cfg)
-    model.collect()
-
-    model.train()
-
-    assert sorted(set(model.train_epochs)) == [0, 1]
-
-
 
 
 # --------------------------------------------------------------------------

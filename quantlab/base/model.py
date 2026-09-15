@@ -114,9 +114,6 @@ class BaseModel(ABC):
         self._reset_factors_config()
         self._reset_labels_config()
 
-        if self._config.backtest_data is not None:
-            self._reset_backtest_dataset_config()
-
     @property
     def num_times(self) -> int:
         return self.data_backend.get_xarray_dataset(
@@ -178,10 +175,6 @@ class BaseModel(ABC):
 
             # 因子类重置数据集配置
             label._reset_dataset_config()
-
-    def _reset_backtest_dataset_config(self):
-        self.config.backtest_data.start_date = self._config.start_date
-        self.config.backtest_data.end_date = self._config.end_date
 
     def _collect_all_labels(self) -> xr.Dataset:
         """把 `config.labels` 里的**每一个**标签取出来合成一块面板。
@@ -787,16 +780,7 @@ class DLModel(BaseModel):
         project_name: str,
         experiment_name: str,
         model_name: str,
-        backtest: bool = False,
     ):
-        if backtest:
-            raise NotImplementedError(
-                "_fit(backtest=True) is not supported: end-to-end "
-                "backtesting is owned by Phase 6 and _do_vecbt is still a "
-                "skeleton. Train with backtest=False and run the backtest "
-                "separately."
-            )
-
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
             self.config.train_end,

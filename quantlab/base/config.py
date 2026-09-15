@@ -125,9 +125,6 @@ class DLConfig:
     end_date: str | None = None
     num_workers: int = 4
 
-    # 回测相关
-    backtest_data = None
-
     # 训练相关
     hyperparameters: dict = field(default_factory=dict)
     lr: float = 1e-3
@@ -159,9 +156,6 @@ class MLConfig:
     label_data_strategy: Literal["read", "cal"]
     start_date: str | None = None
     end_date: str | None = None
-
-    # 回测相关
-    backtest_data = None
 
     # 训练相关
     hyperparameters: dict = field(default_factory=dict)
