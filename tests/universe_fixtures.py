@@ -353,12 +353,17 @@ def make_wrapped_model(
     n_forward_periods: int = 1,
     save_dir: str = "models",
     hyperparameters: dict | None = None,
+    config_cls=MLConfig,
     **dates,
 ):
     """A model over a WRAPPED factor and a WRAPPED label.
 
     Both are wrapped, per LS-3: masking the features alone would leave the
     label carrying out-of-universe rows.
+
+    `config_cls` selects the model variant's config: `MLConfig` for an
+    `MLModel` head, `DLConfig` for a torch head. Any extra keyword (`epochs`,
+    `batch_size`, `num_workers`, the four dates) is passed straight through.
     """
     config_kwargs = dict(
         factors=[wrap(make_rank_close_factor(dataset_config), window=window)],
@@ -377,4 +382,4 @@ def make_wrapped_model(
     )
     if hyperparameters is not None:
         config_kwargs["hyperparameters"] = hyperparameters
-    return model_cls(MLConfig(**config_kwargs))
+    return model_cls(config_cls(**config_kwargs))

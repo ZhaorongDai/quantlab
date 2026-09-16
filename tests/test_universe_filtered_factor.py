@@ -27,13 +27,29 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import FactorConfig, PolarsFactorConfig
+from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.base.config import (
+    CrossSectionBacktestConfig,
+    DLConfig,
+    FactorConfig,
+    PolarsFactorConfig,
+)
 from quantlab.dataset.stock import StockDataset
+from quantlab.dl_model.mlp import MLPRegressor
 from quantlab.factor.universe_filter import UniverseFilteredFactor
 from quantlab.ml_model.xgb import XGBoostRegressor
-from quantlab.utils.module import load_model_from_config
+from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.module import (
+    load_backtester_from_config,
+    load_model_from_config,
+)
 
-from tests.backtest_fixtures import PastReturnFactor, make_stock_dataset
+from tests.backtest_fixtures import (
+    FirstFeatureHead,
+    PastReturnFactor,
+    make_stock_dataset,
+    train_checkpoint,
+)
 from tests.universe_fixtures import (
     DROPOUT,
     ILLIQUID,
@@ -832,3 +848,309 @@ def test_lookback_is_widened_but_never_narrowed(store):
         pd.Timestamp(start) - pd.DateOffset(days=200)
     ).strftime("%Y-%m-%d")
     assert big.config.dataset.config.start_date == inner_required
+
+
+# ---------------------------------------------------------------------------
+# LS-4: the backtester runs UNCHANGED with wrapped factors
+# ---------------------------------------------------------------------------
+
+#: The model trains entirely before the drop bar; the backtest window opens
+#: after it, so a rebalance falls on either side of the drop.
+MODEL_DATES = dict(
+    start_date=day(0, N_BARS),
+    end_date=day(35, N_BARS),
+    train_start=day(0, N_BARS),
+    train_end=day(29, N_BARS),
+    test_start=day(30, N_BARS),
+    test_end=day(35, N_BARS),
+)
+BT_START_BAR, BT_END_BAR = 38, 60
+REBALANCE_PERIODS = 5
+TOP_N = 2
+
+#: Window rows that rebalance: every 5 bars from the window start. Bar 38 is
+#: row 0 and bar 43 is row 5, so the drop at bar 40 falls strictly between two
+#: rebalances -- which is what makes the "sold late" assertion meaningful.
+R1_ROW, R2_ROW = 0, 5
+
+
+def _backtester(root: Path, config, checkpoint):
+    return USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(config),
+            model=make_wrapped_model(
+                root / "backtest",
+                config,
+                model_cls=FirstFeatureHead,
+                window=WINDOW,
+                **MODEL_DATES,
+            ),
+            model_mode="load",
+            checkpoint=str(checkpoint),
+            start_date=day(BT_START_BAR, N_BARS),
+            end_date=day(BT_END_BAR, N_BARS),
+            output_dir=str(root / "runs"),
+            rebalance_periods=REBALANCE_PERIODS,
+            direction="long_only",
+            top_n=TOP_N,
+            fees=0.0,
+            slippage=0.0,
+        )
+    )
+
+
+@pytest.fixture(scope="module")
+def backtest_run(tmp_path_factory, store):
+    """One backtest over the wrapped factors, reused by three tests."""
+    _, config = store
+    root = tmp_path_factory.mktemp("universe_backtest")
+    checkpoint = train_checkpoint(
+        make_wrapped_model(
+            root / "train",
+            config,
+            model_cls=FirstFeatureHead,
+            window=WINDOW,
+            **MODEL_DATES,
+        )
+    )
+    backtester = _backtester(root, config, checkpoint)
+    return root, config, checkpoint, backtester.run()
+
+
+def test_backtester_runs_with_wrapped_factors_and_never_selects_junk(
+    backtest_run,
+):
+    """The whole backtester runs unchanged, and junk never reaches the book.
+
+    The penny name carries the HIGHEST adjusted close in the panel, so an
+    unfiltered run buys it first -- that is the +886,077,331% failure this
+    task exists to remove. Here its features are all NaN, so `predict_panel`
+    scores it NaN and the selector cannot pick it.
+    """
+    _, _, _, result = backtest_run
+
+    assert sorted(p.name for p in result.run_dir.iterdir()) == [
+        "config.json",
+        "equity.zarr",
+        "fingerprint.json",
+        "liquidations.json",
+        "metrics.json",
+        "report.html",
+        "weights.zarr",
+    ]
+
+    weights = result.weights["weight"]
+    symbols = [str(s) for s in weights["symbol"].values]
+    # D-06: predictions are reindexed onto the PRICE symbols, so the
+    # ticker-rule symbol is back on this axis -- as an unselectable NaN.
+    assert WARRANT in symbols
+
+    values = weights.transpose("timestamp", "symbol").values
+    rebalance_rows = np.flatnonzero(np.isfinite(values).all(axis=1))
+    assert rebalance_rows.size >= 2
+
+    for junk in (PENNY, ILLIQUID, WARRANT):
+        column = values[rebalance_rows, symbols.index(junk)]
+        np.testing.assert_array_equal(
+            column, np.zeros_like(column), err_msg=f"{junk} was selected"
+        )
+
+    # Teeth: something IS being bought, so the zeros above are a filter
+    # working rather than an empty book.
+    assert (values[rebalance_rows] > 0).any()
+
+    config = json.loads((result.run_dir / "config.json").read_text())
+    for kind in ("factors", "labels"):
+        entry = config["model"][kind][0]
+        assert (
+            entry["name"]
+            == "quantlab.factor.universe_filter.UniverseFilteredFactor"
+        )
+        assert "factor" in entry and "dataset" in entry["factor"]
+
+
+def test_holding_that_leaves_the_universe_is_sold_at_the_next_rebalance(
+    backtest_run,
+):
+    """LS-4: a drop-out is sold at the OPEN after the next rebalance bar.
+
+    It is held through the drop -- up to `rebalance_periods - 1` bars late --
+    because the backtester is deliberately not edited: the universe filter
+    acts through NaN features, and eligibility is only re-evaluated on a
+    rebalance bar.
+    """
+    _, _, _, result = backtest_run
+
+    weights = result.weights["weight"].transpose("timestamp", "symbol")
+    symbols = [str(s) for s in weights["symbol"].values]
+    bars = weights["timestamp"].values
+    column = symbols.index(DROPOUT)
+
+    assert float(weights.values[R1_ROW, column]) > 0, (
+        "the drop-out must be selectable at the rebalance BEFORE it drops"
+    )
+    assert float(weights.values[R2_ROW, column]) == 0.0, (
+        "it must be ineligible at the first rebalance after it drops"
+    )
+
+    orders = result.simulation.orders
+    order_symbol = orders["symbol"].values.astype(str)
+    order_side = orders["side"].values.astype(str)
+    order_time = orders["timestamp"].values.astype("datetime64[ns]")
+    sold = order_time[(order_symbol == DROPOUT) & (order_side == "Sell")]
+
+    # The sale fills at the open of the bar AFTER the rebalance (D-05).
+    #
+    # Compared as datetime64 throughout: `.tolist()` on a datetime64[ns] array
+    # yields integer NANOSECONDS, so a `np.datetime64 in set(...)` membership
+    # test is always False and would fail on correct behaviour.
+    expected_fill = bars[R2_ROW + 1].astype("datetime64[ns]")
+    assert bool((sold == expected_fill).any()), (
+        f"expected a {DROPOUT} sell at {expected_fill}, got {sold}"
+    )
+
+    # ...and NOT before: it really was held across the drop.
+    early = sold[
+        (sold > bars[R1_ROW + 1].astype("datetime64[ns]"))
+        & (sold <= bars[R2_ROW].astype("datetime64[ns]"))
+    ]
+    assert early.size == 0, f"{DROPOUT} was sold early at {early}"
+
+
+def _strip_dates(node):
+    """Recursively drop every `start_date`/`end_date` from a config subtree."""
+    if isinstance(node, dict):
+        return {
+            key: _strip_dates(value)
+            for key, value in node.items()
+            if key not in ("start_date", "end_date")
+        }
+    if isinstance(node, list):
+        return [_strip_dates(value) for value in node]
+    return node
+
+
+def _comparable(config: dict) -> dict:
+    """A run config with the dates `run()` re-derives normalised away.
+
+    `BaseBacktester.run()` re-dates every factor to "warm-up start .. window
+    end" and widens its dataset start, and `config.json` is written AFTER that
+    -- so it records the re-dated values. A rebuild constructs the model
+    afresh, and `BaseModel`'s config setter calls `_reset_factors_config`,
+    which re-derives every factor's dates from the MODEL's dates. The two
+    therefore disagree on exactly those fields once a run has happened.
+
+    MEASURED 2026-09-15 on the UNWRAPPED `tests.backtest_fixtures` backtester:
+    saved factor 2024-02-05..2024-03-11 vs rebuilt 2024-01-01..2024-02-09, and
+    saved dataset start 2024-01-31 vs rebuilt 2023-12-27 -- the same shape,
+    with no universe wrapper anywhere in it. This is pre-existing model-layer
+    bookkeeping, which is why `tests/test_backtest_rebuild.py` asserts config
+    equality only on a backtester that has NOT been run.
+
+    Everything else still compares exactly: every scalar, the price dataset,
+    the wrapper's four parameters and the inner factor's identity. The claim
+    that actually matters -- the re-run reproduces the run -- is asserted
+    separately, on weights and equity.
+    """
+    config = {k: v for k, v in config.items() if k != "data_fingerprint"}
+    model = dict(config["model"])
+    for kind in ("factors", "labels"):
+        model[kind] = _strip_dates(model[kind])
+    config["model"] = model
+    return config
+
+
+def test_rebuilt_backtester_from_run_config_reproduces_the_run(backtest_run):
+    """A run directory rebuilds into the same wrapped objects and re-runs
+    to byte-identical weights (D-25)."""
+    root, _, _, result = backtest_run
+    saved = json.loads((result.run_dir / "config.json").read_text())
+
+    rebuilt = load_backtester_from_config(saved)
+
+    for kind in ("factors", "labels"):
+        item = getattr(rebuilt.config.model.config, kind)[0]
+        assert type(item) is UniverseFilteredFactor
+        assert item.min_price == MIN_PRICE
+        assert item.min_dollar_volume == MIN_DOLLAR_VOLUME
+        assert item.window == WINDOW
+        assert item.exclude_non_common is True
+
+    rebuilt_config = json.loads(json.dumps(to_jsonable(rebuilt.get_config())))
+    assert _comparable(rebuilt_config) == _comparable(saved)
+    # The inner factor's identity survives the round trip un-normalised.
+    assert (
+        rebuilt_config["model"]["factors"][0]["factor"]["name"]
+        == "tests.universe_fixtures.RankCloseFactor"
+    )
+
+    rerun = rebuilt.run()
+    assert rerun.run_dir != result.run_dir
+    xr.testing.assert_identical(
+        xr.open_zarr(result.run_dir / "weights.zarr").load(),
+        xr.open_zarr(rerun.run_dir / "weights.zarr").load(),
+    )
+    np.testing.assert_array_equal(
+        xr.open_zarr(result.run_dir / "equity.zarr")["value"].values,
+        xr.open_zarr(rerun.run_dir / "equity.zarr")["value"].values,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DL heads work across windows -- BY DESIGN, not as a documented limitation
+# ---------------------------------------------------------------------------
+
+
+def test_dl_head_predicts_across_windows_when_a_trained_symbol_leaves_the_universe(
+    store, tmp_path
+):
+    """An `MLPRegressor` trained on window A predicts on window B, in which a
+    TRAINED symbol is out of the universe the whole time.
+
+    This is the concrete payoff of the 2026-09-15 symbol-axis decision.
+    `MLPRegressor` encodes symbol POSITION (it flattens `[S*F]`), and
+    `DLModel._align_prediction_symbols` REFUSES a panel missing a trained
+    symbol. Under the superseded "drop whole-window-NaN columns" rule the
+    drop-out would be absent from window B and this call would raise. Because
+    only the date-independent ticker rule removes symbols, it is present as an
+    all-NaN column instead, and its predictions are simply NaN.
+    """
+    _, config = store
+    model = make_wrapped_model(
+        tmp_path,
+        config,
+        model_cls=MLPRegressor,
+        window=WINDOW,
+        config_cls=DLConfig,
+        hyperparameters={"hidden_size1": 16, "hidden_size2": 8},
+        epochs=1,
+        batch_size=16,
+        num_workers=0,
+        **MODEL_DATES,
+    )
+    model.collect()
+    model.train()
+    assert DROPOUT in model._trained_symbols
+
+    # Re-date to window B exactly the way `BaseBacktester._redate_factors` does.
+    window_b = (day(50, N_BARS), day(N_BARS - 1, N_BARS))
+    for factor in model.config.factors:
+        factor.config.start_date, factor.config.end_date = window_b
+        factor._reset_dataset_config()
+        factor.config.dataset.read(overwrite=True)
+
+    features = model._collect_all_features()
+    symbols = [str(s) for s in features["symbol"].values]
+    assert DROPOUT in symbols, "the trained symbol must still be on the axis"
+    assert WARRANT not in symbols, "the ticker rule removes it in EVERY window"
+    assert np.isnan(features["rank_close"].sel(symbol=DROPOUT).values).all()
+
+    # The whole point: this does not raise.
+    predictions = model.predict_panel(features)
+
+    label = list(predictions.data_vars)[0]
+    assert np.isnan(predictions[label].sel(symbol=DROPOUT).values).all()
+    assert np.isfinite(predictions[label].values).any(), (
+        "every prediction is NaN -- the panel carried no in-universe symbol, "
+        "so the assertion above proves nothing"
+    )
