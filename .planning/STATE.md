@@ -1,17 +1,17 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: 3
-current_phase_name: Factor Computation (KunQuant + Polars)
+current_phase: "03.8"
+current_phase_name: "Backtest report: delta column, monthly-return heatmap, positions-only trade metrics"
 status: planning
-stopped_at: Phase 03.7 complete, ready to plan Phase 3
-last_updated: "2026-09-16T05:25:00.000Z"
+stopped_at: Phase 03.8 inserted (three remaining backtest-report items), ready to plan
+last_updated: "2026-09-16T18:58:21.608Z"
 last_activity: 2026-09-16
 last_activity_desc: "Completed quick task 260916-hro: valley-to-recovery span, no liquidation markers, legible axis titles"
-state_head: 4eb989b4fc5e3e6f0f0a4787152affe508076dd0
+state_head: 5af75d4098f6928c06a820a186d624682c82f62e
 progress:
-  total_phases: 14
-  completed_phases: 2
+  total_phases: 15
+  completed_phases: 1
   total_plans: 76
   completed_plans: 75
 milestone_name: milestone
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 
 ## Current Position
 
-Phase: 3 — Factor Computation (KunQuant + Polars)
+Phase: 03.8 — Backtest report: delta column, monthly-return heatmap, positions-only trade metrics
 Plan: Not started
 Status: Ready to plan
 Last activity: 2026-09-16 - Completed quick task 260916-hro: drawdown triangles now span valley to recovery, liquidation markers dropped from the chart, axis titles made legible (140 passed vs 141 baseline)
@@ -355,6 +355,7 @@ Recent decisions affecting current work:
 - Phase 03.5 inserted after Phase 03.4: Registry-level raw-to-Zarr conversion entry point: the unmet upstream precondition quantlab-console Phase 8 (CVT-01/02/03) names (URGENT)
 - Phase 03.6 inserted after Phase 03.5: Frequency-keyed chunking policy: granularity from a per-frequency constant table; the RAM guard's refusing half deleted, estimating half kept
 - Phase 03.7 inserted after Phase 3: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (URGENT)
+- Phase 03.8 inserted after Phase 3: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (URGENT)
 
 ## Deferred Items
 
