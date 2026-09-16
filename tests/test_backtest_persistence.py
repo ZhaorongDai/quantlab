@@ -36,6 +36,7 @@ call is asserted through a monkeypatched recorder.
 """
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -684,7 +685,13 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
     assert '"name":"drawdown"' in html
     # The curves are the persisted run's values: drawdown = value / running max - 1.
     traces = _report_traces(html)
-    assert set(traces) == {"equity", "drawdown"}
+    # Quick 260915-sxx grew the page from two panels to three. The fixture run
+    # liquidates, so it carries the markers too. Everything else this test
+    # proves is unchanged: the equity y values are still the persisted ones,
+    # drawdown is still value over running max minus one, the axes are still
+    # x/x2, the band is still the persisted in-sample range, and the notes
+    # still appear.
+    assert set(traces) == {"equity", "drawdown", "monthly_return", "liquidation"}
     value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
     np.testing.assert_allclose(traces["equity"]["y"], value, rtol=1e-12)
     expected_drawdown = value / np.maximum.accumulate(value) - 1.0
@@ -699,6 +706,39 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
     assert notes
     for note in notes:
         assert note in html
+
+
+def test_report_carries_the_metric_table_and_the_axis_toggle(overlap_run):
+    """Quick 260915-sxx: the page carries the numbers, not just the picture.
+
+    The metric table is rendered from whatever the metrics mapping carries, so
+    this asserts the persisted numbers reached the page rather than asserting
+    a particular metric list. The log button is what makes a curve that
+    compounded by orders of magnitude readable.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+
+    assert "<h2>Metrics</h2>" in html
+    for block in ("whole", "in_sample", "out_of_sample"):
+        assert f"<th>{block}</th>" in html
+
+    # Every finite number in the whole block reached the page, compared by
+    # value after parsing the cell back -- not by re-formatting it here.
+    rendered = dict(re.findall(r"<tr><th>([^<]+)</th><td>([^<]*)</td>", html))
+    checked = 0
+    for key, value in metrics["whole"].items():
+        if not isinstance(value, float) or not np.isfinite(value):
+            continue
+        assert key in rendered, (key, sorted(rendered))
+        assert float(rendered[key]) == pytest.approx(value, rel=1e-5)
+        checked += 1
+    assert checked >= 5, "the whole block must carry several finite numbers"
+
+    # The nested turnover group is flattened to dotted paths by walking it.
+    assert "turnover.sum" in rendered
+
+    assert '"yaxis.type":"log"' in html and '"yaxis.type":"linear"' in html
 
 
 def test_report_states_the_window_and_split_dates_as_text(overlap_run):

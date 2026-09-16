@@ -13,6 +13,9 @@ notes and from a metrics mapping, so a page that pasted them raw would turn
 whatever produced them into markup.
 """
 
+import json
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -33,6 +36,15 @@ def _value(n: int = N_BARS) -> xr.DataArray:
         1_000_000.0 * path,
         dims=("timestamp",),
         coords={"timestamp": BARS[:n]},
+    )
+
+
+def _returns(n: int = N_BARS) -> xr.DataArray:
+    """Per-bar returns of `_value`, all inside one calendar month."""
+    values = _value(n).values
+    returns = np.concatenate([[np.nan], values[1:] / values[:-1] - 1.0])
+    return xr.DataArray(
+        returns, dims=("timestamp",), coords={"timestamp": BARS[:n]}
     )
 
 
@@ -156,6 +168,247 @@ def test_the_module_is_a_leaf():
         if line.startswith(("from quantlab", "import quantlab"))
     ]
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# The metric table is generic: no metric name drives it
+# ---------------------------------------------------------------------------
+#
+# These are the behavioural proof of the rule the module docstring states. The
+# project's metric set is being replaced with vectorbt's own, and the report is
+# written inside a run's staging directory -- an exception here deletes the
+# whole run, not just the report. So "the table survives the metric set
+# changing under it" is asserted by rendering mappings the code has never seen,
+# not by reading the source for metric names.
+
+
+def _cells(html: str) -> dict[str, list[str]]:
+    """Every metric row as `name -> [cell, ...]`, parsed back off the page."""
+    rows = re.findall(r"<tr><th>([^<]+)</th>((?:<td>[^<]*</td>)+)</tr>", html)
+    return {name: re.findall(r"<td>([^<]*)</td>", cells) for name, cells in rows}
+
+
+def test_an_unknown_metric_key_renders_and_raises_nothing(tmp_path):
+    html = _write(
+        tmp_path,
+        metrics={
+            "whole": {"a_metric_nobody_has_written_yet": 1.5},
+            "in_sample": None,
+            "out_of_sample": {"a_metric_nobody_has_written_yet": 2.5},
+        },
+    )
+
+    cells = _cells(html)
+    assert cells["a_metric_nobody_has_written_yet"] == ["1.5", "—", "2.5"]
+
+
+def test_an_unseen_nested_sub_dict_is_flattened_to_dotted_paths(tmp_path):
+    html = _write(
+        tmp_path,
+        metrics={
+            "whole": {"group": {"leaf": 3.0, "deeper": {"leaf": 4.0}}},
+            "in_sample": {},
+            "out_of_sample": {},
+        },
+    )
+
+    cells = _cells(html)
+    assert cells["group.leaf"][0] == "3"
+    assert cells["group.deeper.leaf"][0] == "4"
+
+
+def test_a_mapping_with_every_shipped_key_deleted_still_renders(tmp_path):
+    """The day the metric set is replaced wholesale, the page must still write."""
+    html = _write(tmp_path, metrics={"whole": {}, "in_sample": {}, "out_of_sample": {}})
+
+    assert html.startswith("<!DOCTYPE html>")
+    assert '"name":"equity"' in html
+
+
+def test_a_key_present_in_no_block_produces_no_row(tmp_path):
+    html = _write(tmp_path, metrics={"whole": {"kept": 1.0}, "in_sample": {}})
+
+    cells = _cells(html)
+    assert "kept" in cells
+    assert not [name for name in cells if name == "dropped"]
+
+
+def test_a_null_block_is_a_column_of_dashes_rather_than_being_dropped(tmp_path):
+    """A block that exists and is empty must be visible as such."""
+    html = _write(
+        tmp_path,
+        metrics={"whole": {"x": 1.0, "y": 2.0}, "in_sample": None, "out_of_sample": {}},
+    )
+
+    assert "<th>in_sample</th>" in html
+    cells = _cells(html)
+    assert [row[1] for row in cells.values()] == ["—", "—"]
+
+
+def test_unrenderable_values_become_a_dash_never_nan_or_none(tmp_path):
+    html = _write(
+        tmp_path,
+        metrics={
+            "whole": {
+                "missing": None,
+                "not_a_number": float("nan"),
+                "infinite": float("inf"),
+                "blank": "   ",
+            }
+        },
+    )
+
+    cells = _cells(html)
+    for name in ("missing", "not_a_number", "infinite", "blank"):
+        assert cells[name][0] == "—", name
+    assert "nan" not in html.lower().split("<h2>metrics</h2>")[1].split("</table>")[0]
+
+
+def test_bools_ints_and_strings_render_as_themselves(tmp_path):
+    html = _write(
+        tmp_path,
+        metrics={"whole": {"flag": True, "count": 7, "label": "Closed"}},
+    )
+
+    cells = _cells(html)
+    assert cells["flag"][0] == "true"
+    assert cells["count"][0] == "7"
+    assert cells["label"][0] == "Closed"
+
+
+def test_metric_names_and_values_are_escaped(tmp_path):
+    """T-sxx-01 reaches the table too: metric names are data, not markup."""
+    html = _write(tmp_path, metrics={"whole": {"<b>name</b>": "<i>value</i>"}})
+
+    assert "<b>name</b>" not in html and "<i>value</i>" not in html
+    assert "&lt;b&gt;name&lt;/b&gt;" in html and "&lt;i&gt;value&lt;/i&gt;" in html
+
+
+def test_no_metrics_mapping_means_no_metrics_table(tmp_path):
+    assert "<h2>Metrics</h2>" not in _write(tmp_path, metrics=None)
+
+
+# ---------------------------------------------------------------------------
+# charts
+# ---------------------------------------------------------------------------
+
+
+def _traces(html: str) -> dict[str, dict]:
+    """The trace list plotly embeds, by name -- the run-level locks' parser."""
+    start = html.index("[", html.index("Plotly.newPlot("))
+    traces, _ = json.JSONDecoder().raw_decode(html, start)
+    return {trace["name"]: trace for trace in traces}
+
+
+def test_every_trace_carries_a_name(tmp_path):
+    """A trace without `name` raises KeyError in the persisted-report locks."""
+    html = _write(
+        tmp_path,
+        returns=_returns(),
+        liquidations=[{"symbol": "AAA", "fill_timestamp": BARS[3]}],
+    )
+
+    start = html.index("[", html.index("Plotly.newPlot("))
+    traces, _ = json.JSONDecoder().raw_decode(html, start)
+    assert traces and all("name" in trace for trace in traces)
+
+
+def test_the_equity_y_stays_the_raw_value_and_the_multiple_is_customdata(tmp_path):
+    """The page must not disagree with `equity.zarr`."""
+    value = _value()
+    html = _write(tmp_path, init_cash=1_000_000.0)
+
+    equity = _traces(html)["equity"]
+    np.testing.assert_allclose(equity["y"], value.values, rtol=1e-12)
+    np.testing.assert_allclose(
+        equity["customdata"], value.values / 1_000_000.0, rtol=1e-12
+    )
+    assert "customdata" in equity["hovertemplate"]
+
+
+def test_equity_renders_without_init_cash(tmp_path):
+    """`init_cash=None` must not turn into a division or a mislabelled axis."""
+    html = _write(tmp_path, init_cash=None)
+    equity = _traces(html)["equity"]
+
+    np.testing.assert_allclose(equity["y"], _value().values, rtol=1e-12)
+    assert "customdata" not in equity["hovertemplate"]
+
+
+def test_the_log_linear_toggle_defaults_to_linear(tmp_path):
+    html = _write(tmp_path)
+
+    assert '"yaxis.type":"linear"' in html
+    assert '"yaxis.type":"log"' in html
+    # Default: the figure's own axis is not log.
+    assert '"yaxis":{"type":"log"' not in html
+
+
+def test_monthly_returns_are_grouped_by_calendar_month(tmp_path):
+    """Compounded per calendar month, via `to_period`, not a resample alias."""
+    index = pd.to_datetime(
+        ["2024-01-10", "2024-01-20", "2024-02-05", "2024-03-01", "2024-03-20"]
+    )
+    returns = xr.DataArray(
+        np.array([0.1, 0.1, -0.5, 0.2, 0.2]),
+        dims=("timestamp",),
+        coords={"timestamp": index},
+    )
+    html = _write(tmp_path, returns=returns)
+
+    monthly = _traces(html)["monthly_return"]
+    assert len(monthly["y"]) == 3
+    np.testing.assert_allclose(
+        monthly["y"], [1.1 * 1.1 - 1.0, -0.5, 1.2 * 1.2 - 1.0], atol=1e-12
+    )
+
+
+def test_a_one_month_run_is_a_single_bar(tmp_path):
+    """A run whose whole P&L lands in one month is legible, not an error."""
+    html = _write(tmp_path, returns=_returns())
+    assert len(_traces(html)["monthly_return"]["y"]) == 1
+
+
+def test_no_returns_means_no_monthly_trace(tmp_path):
+    assert "monthly_return" not in _traces(_write(tmp_path, returns=None))
+
+
+def test_liquidation_markers_sit_on_the_equity_curve(tmp_path):
+    html = _write(
+        tmp_path,
+        liquidations=[
+            {"symbol": "AAA", "fill_timestamp": BARS[2]},
+            {"symbol": "BBB", "fill_timestamp": BARS[5]},
+        ],
+    )
+
+    markers = _traces(html)["liquidation"]
+    assert markers["text"] == ["AAA", "BBB"]
+    np.testing.assert_allclose(
+        markers["y"], [_value().values[2], _value().values[5]], rtol=1e-12
+    )
+
+
+def test_a_liquidation_off_the_equity_axis_is_dropped_not_raised(tmp_path):
+    """The report is the last step of a run that already worked.
+
+    An exception here deletes the entire staged run directory, so an
+    unexpected timestamp must not be fatal.
+    """
+    html = _write(
+        tmp_path,
+        liquidations=[
+            {"symbol": "AAA", "fill_timestamp": BARS[2]},
+            {"symbol": "GONE", "fill_timestamp": pd.Timestamp("1999-01-01")},
+        ],
+    )
+
+    assert _traces(html)["liquidation"]["text"] == ["AAA"]
+
+
+def test_no_liquidations_means_no_marker_trace(tmp_path):
+    for empty in (None, []):
+        assert "liquidation" not in _traces(_write(tmp_path, liquidations=empty))
 
 
 @pytest.mark.parametrize("n_bars", [1, 2])

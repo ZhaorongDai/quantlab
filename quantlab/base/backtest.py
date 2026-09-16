@@ -1745,6 +1745,10 @@ class BaseBacktester(ABC):
                 notes=self._report_notes(),
                 title=name,
                 summary=self._report_summary(simulation, metrics),
+                metrics=metrics,
+                returns=simulation.returns,
+                liquidations=simulation.liquidations,
+                init_cash=self.config.init_cash,
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
@@ -1891,6 +1895,10 @@ class BaseBacktester(ABC):
                 notes=metrics["notes"],
                 title=name,
                 summary=self._report_summary(simulation, metrics["stitched"]),
+                metrics=metrics["stitched"],
+                returns=simulation.returns,
+                liquidations=simulation.liquidations,
+                init_cash=self.config.init_cash,
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
