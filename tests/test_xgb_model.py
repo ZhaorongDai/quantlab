@@ -956,3 +956,122 @@ def test_early_stopping_selects_the_round_minimising_val_ccc_loss(tmp_path, reco
     assert booster.best_iteration == int(np.argmin(ccc_curve))
     assert booster.best_score == pytest.approx(ccc_curve[booster.best_iteration])
     assert int(np.argmin(rmse_curve)) != booster.best_iteration
+
+
+def test_every_round_records_both_ccc_curves(tmp_path, recorders):
+    """`train-ccc_loss` / `val-ccc_loss` reach the W&B rows beside the rmse
+    ones, on every round.
+
+    This is the proof that `_WandbEvalCallback` needed ZERO changes: it walks
+    `evals_log` generically, so a custom metric shows up by itself. If this
+    ever fails, the callback is what to look at -- and any edit to it belongs
+    in a summary with a reason, not a silent fix.
+    """
+    factors, labels = _panels(seed=61)
+    _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 12})
+
+    rec = recorders[0]
+    assert len(rec.logs) == 12
+    assert all({"train-ccc_loss", "val-ccc_loss"} <= set(row) for row, _ in rec.logs)
+    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in rec.logs)
+
+
+def test_a_better_tracking_prediction_scores_a_smaller_loss():
+    """Lower is better -- which is why `EarlyStopping` is left at its default
+    `maximize=False` and `maximize=True` is never passed."""
+    rng = np.random.default_rng(62)
+    target = rng.standard_normal(300)
+    tracks_well = target + 0.05 * rng.standard_normal(300)
+    tracks_poorly = 0.1 * target + 2.0 * rng.standard_normal(300)
+
+    assert pooled_ccc_loss(target, tracks_well) < pooled_ccc_loss(target, tracks_poorly)
+
+
+def test_a_perfect_prediction_scores_about_zero():
+    rng = np.random.default_rng(63)
+    target = rng.standard_normal(300)
+
+    assert pooled_ccc_loss(target, target) == pytest.approx(0.0, abs=1e-12)
+
+
+#: Every degenerate input must land on 1.0 -- the WORST loss. NaN would make
+#: each `EarlyStopping` comparison false (NaN compares false against
+#: everything) and silently disable early stopping; 0.0 would record a fully
+#: degenerate round as the best one. Both fail quietly, hence T-weq-03.
+DEGENERATE_CASES = [
+    ("constant-prediction", np.array([1.0, 2.0, 3.0, 4.0]), np.full(4, 0.5)),
+    ("single-row", np.array([1.0]), np.array([2.0])),
+    ("both-constant-and-equal", np.full(3, 3.0), np.full(3, 3.0)),
+    ("all-nan-prediction", np.array([1.0, 2.0, 3.0]), np.full(3, np.nan)),
+]
+
+
+@pytest.mark.parametrize(
+    "y_true, y_pred",
+    [(case[1], case[2]) for case in DEGENERATE_CASES],
+    ids=[case[0] for case in DEGENERATE_CASES],
+)
+def test_degenerate_input_returns_the_worst_loss_and_never_warns(y_true, y_pred):
+    """Must not raise and must not emit a numpy RuntimeWarning.
+
+    `np.errstate(..., "raise")` is what makes that second half real: a 0/0 that
+    happens to produce NaN cannot slip through as a pass. `quantlab/utils/
+    metrics.py` holds itself to the same "no RuntimeWarning on the empty case"
+    bar.
+    """
+    with np.errstate(invalid="raise", divide="raise", over="raise"):
+        assert pooled_ccc_loss(y_true, y_pred) == 1.0
+
+
+def test_the_adapter_scores_column_zero_of_a_two_label_dmatrix():
+    """Pins the layout measured in Task 1: `get_label()` hands back
+    `(n_rows, n_labels)` ROW-major, so column 0 is the primary label.
+
+    The expected value is computed on `stored`, the labels as the DMatrix
+    actually holds them: `xgb.DMatrix` stores labels as **float32**, so a
+    float64 array handed in comes back out rounded (measured: the two scores
+    differ in the 8th significant digit). The adapter scores what the DMatrix
+    carries; only the label side is rounded, because `predt` never round-trips
+    through xgboost.
+
+    The last assertion is what makes the orientation load-bearing. Note that
+    `reshape(-1, order="F")[:n]` is NOT a wrong reading -- it equals column 0 --
+    so the misreading asserted against is the C-order one, which is what a
+    reshape to `(n_labels, n_rows)` produces: the first `n` entries of the
+    row-major flat vector, interleaving both labels.
+    """
+    rng = np.random.default_rng(64)
+    n = 40
+    labels = np.column_stack(
+        [rng.standard_normal(n), rng.standard_normal(n) + 10.0]
+    )
+    predictions = np.column_stack(
+        [rng.standard_normal(n), rng.standard_normal(n) - 5.0]
+    )
+    dmatrix = xgb.DMatrix(rng.standard_normal((n, 3)), label=labels)
+    stored = labels.astype(np.float32).astype(np.float64)
+
+    name, value = ccc_loss_metric(predictions, dmatrix)
+
+    assert name == "ccc_loss"
+    assert value == pytest.approx(
+        _reference_ccc_loss(stored[:, 0], predictions[:, 0]), rel=1e-12
+    )
+    assert value != pytest.approx(
+        _reference_ccc_loss(stored[:, 1], predictions[:, 1])
+    )
+    assert value != pytest.approx(
+        _reference_ccc_loss(
+            stored.reshape(-1)[:n], predictions.reshape(-1)[:n]
+        )
+    )
+
+
+def test_the_adapter_refuses_a_prediction_of_the_wrong_size():
+    """Element counts that disagree are a wiring bug, not something to
+    broadcast: a broadcast score looks plausible and is computed from
+    misaligned vectors."""
+    dmatrix = xgb.DMatrix(np.zeros((4, 2)), label=np.arange(4.0))
+
+    with pytest.raises(ValueError, match="4 label values but the prediction has 3"):
+        ccc_loss_metric(np.zeros(3), dmatrix)
