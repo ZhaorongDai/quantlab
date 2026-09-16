@@ -5,9 +5,9 @@ current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
 stopped_at: Phase 03.7 complete, ready to plan Phase 3
-last_updated: "2026-09-15T20:29:16.951Z"
+last_updated: "2026-09-16T01:35:00.000Z"
 last_activity: 2026-09-15
-last_activity_desc: Phase 03.7 complete, transitioned to Phase 3
+last_activity_desc: "Completed quick task 260915-sxx: backtest report dates, generic metric table, charts"
 state_head: 4eb989b4fc5e3e6f0f0a4787152affe508076dd0
 progress:
   total_phases: 14
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-15 - Completed quick task 260915-p91: Add point-in-time universe filter as a factor wrapper (verification passed)
+Last activity: 2026-09-15 - Completed quick task 260915-sxx: Improve the backtest HTML report — dates as text, generic metric table, log toggle, monthly returns, liquidation markers (88 passed vs 56 baseline)
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -338,6 +338,7 @@ Recent decisions affecting current work:
 | 260915-o5y | Add Timer logs to key model training and backtest steps (collect merge, to_array, fit_model, evaluate, align_and_predict, simulate) — logging only, no behaviour change | 2026-09-15 | 35a4601 | [260915-o5y-add-timer-logs-to-key-model-training-and](./quick/260915-o5y-add-timer-logs-to-key-model-training-and/) |
 | 260915-ocw | Add CrossSectionalZScore KunQuant op (GenericCrossSectionalOp, NaN-aware, ddof=1) with batch/stream tests vs pandas; not wired into any factor class (US-equity factors stay raw, D-09) | 2026-09-15 | 6a8f8dd | [260915-ocw-add-crosssectionalzscore-kunquant-op](./quick/260915-ocw-add-crosssectionalzscore-kunquant-op/) |
 | 260915-p91 | Add UniverseFilteredFactor: a drop-in KunQuant factor/label wrapper applying a point-in-time universe (ticker rule + RAW price ≥ $5 + 20-bar dollar volume ≥ $1M) by rewriting cross-sectional op inputs and masking outputs at t; model layer and backtester untouched (verified 11/11) | 2026-09-15 | 0ae8e8d | [260915-p91-add-point-in-time-rule-based-universe-fi](./quick/260915-p91-add-point-in-time-rule-based-universe-fi/) |
+| 260915-sxx | Rewrite report.html: state window/split/setup dates as text matching metrics.json byte for byte, render whole/in-sample/out-of-sample metric blocks as a table derived generically from the mapping's own keys (no hardcoded metric names, so the vectorbt-only metric switch needs no report change), add equity log/linear toggle with the capital multiple as customdata, monthly-return bars and forced-liquidation markers; leaf module and run-directory file set unchanged (88 passed vs 56 baseline) | 2026-09-15 | f19bd74 | [260915-sxx-improve-the-backtest-html-report-dates-m](./quick/260915-sxx-improve-the-backtest-html-report-dates-m/) |
 
 ### Roadmap Evolution
 
