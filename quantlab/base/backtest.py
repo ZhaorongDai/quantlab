@@ -1484,6 +1484,14 @@ class BaseBacktester(ABC):
 
         多段时：订单与已平仓交易按段求和（段互不重叠，等于逐段相加），段末
         持仓数逐段相加，换手率汇总取所有段内成交 bar 的并集。
+
+        **这里的两个交易计数是 lot 级的（quick 260915-udx）。** 它们数的是
+        `simulation.trades`——模拟时按 vectorbt 默认的 exit trades 口径建出来的
+        记录，一次减仓就算一笔。整段的 `whole` 块里另有一套持仓级统计（引擎层
+        的 `positions` 子字典，一个标的从建仓到清空算一笔），但**这两个计数没有
+        跟着换口径**：换了就得让 `SimulationResult` 再带一份持仓记录，那是另一
+        件事。所以拿段内的 `closed_trade_count` 去和整段的持仓级计数对账，对不
+        上是意料之中的，不是 bug。
         """
         orders = simulation.orders
         if orders.sizes.get("order", 0) > 0:

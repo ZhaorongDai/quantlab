@@ -339,7 +339,7 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 | `training_window` | 有效训练窗口的 bar 标签对（午夜的 bar 写日期，其余写完整 ISO 时间，见本节末尾的更正），或 `null` |
 | `in_sample_range` | 重叠部分的首尾 bar（两个区间的交集，必然是一段），或 `null` |
 | `out_of_sample_ranges` | 重叠之外的连续段，0、1 或 2 段 |
-| `whole` | 引擎的整段统计：vectorbt `Portfolio.stats()` 全套指标（去掉 `benchmark_return`），加 `turnover` |
+| `whole` | 引擎的整段统计：vectorbt `Portfolio.stats()` 全套指标（去掉 `benchmark_return`），加 `turnover`，再加一个嵌套的 `positions` 子字典——同一批交易指标按**持仓级**口径重算一遍，见下文「两套交易统计」 |
 | `in_sample` / `out_of_sample` | 切片统计，没有对应区间时是 `null` |
 | `notes` | 附带说明，见下文 |
 
@@ -351,6 +351,37 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
   `Sharpe Ratio`、`Max Drawdown [%]` 等），加上按时间过滤的记录统计：`order_count`、`fees_paid`、
   `traded_notional`、`closed_trade_count`（平仓时间在段内）、`open_trade_count`（段末仍未平仓）、`turnover`。
   两段样本外时，收益按时间顺序拼接后计算，记录统计逐段相加。
+
+**切片块里的两个交易计数是 lot 级的，没有转成持仓级（quick 260915-udx）。** `closed_trade_count` 与 `open_trade_count`
+数的是 `simulation.trades`——模拟时按 vectorbt 默认的 exit trades 口径建出来的那份记录，**一次减仓算一笔**。
+整段 `whole` 块里虽然多了一套持仓级的 `positions` 统计，这两个计数**没有**跟着换：换口径要让 `SimulationResult`
+再带一份持仓记录，是另一件事。所以拿 `in_sample.closed_trade_count` 去和 `whole.positions` 里的
+`Total Closed Trades` 对账，对不上是正常的——两者口径不同，不是 bug。切片块里也没有胜率、盈亏比这类**比值**，
+只有这两个计数，所以口径差异不会污染任何比率指标。
+
+---
+
+## 两套交易统计
+
+**同一段回测，`whole` 块里并排报两套交易指标（quick 260915-udx）。** 因为 vectorbt 默认的 exit trades 口径按 **lot**
+切交易：等权调仓下，每次把赢家削掉一点都被记成一笔独立的**已平仓盈利交易**，胜率与盈亏比因此系统性偏高。
+实测一次 244 bar、`top_n=200`、`rebalance_periods=5` 的运行：lot 级胜率 57.27%，持仓级只有 50.74%。
+
+| 位置 | 口径 | 一笔交易是什么 |
+|---|---|---|
+| `whole` 顶层的 `Win Rate [%]`、`Profit Factor`、`Total Closed Trades` 等 | **lot 级**（vectorbt `exittrades`，默认） | 每一次减仓/平仓事件各算一笔 |
+| `whole.positions` 子字典里的同名键 | **持仓级**（`positions`） | 一个标的从建仓到清空算一笔 |
+
+两套都是对的，衡量的东西不同：lot 级看的是每个调仓动作赚没赚到钱，持仓级回答的才是「选股选得对不对」。
+所以并列报出，谁也不替换谁；`positions` 里只有受交易口径影响的那 13 个指标，收益、回撤、夏普这些组合级指标
+与口径无关，不重算。
+
+在 `report.html` 的指标表里，持仓级那套显示成 `positions.Win Rate [%]` 这样带前缀的行，就排在同名的 lot 级行附近；
+`metrics.json` 里则是 `whole.positions` 这个嵌套对象。报告底部的 `notes` 也写明了哪套是哪套。
+
+实现上，切换口径用的是 `Portfolio.replace(trades_type="positions")`（实例级）。`trades_type` 是 `Portfolio` 构造函数的
+参数，不是 `from_orders` 的；`stats()` 和 `get_trades()` 都**不**接受按次传入的交易口径，传了会被静默忽略，
+于是算出一份和顶层逐字节相同的假 `positions`。也不去改 vectorbt 的全局设置映射——那会波及同进程里的每一个组合对象。
 
 ~~日期比较按天做：日内数据上 `train_end` 那一天的所有 bar 都算样本内，这是偏保守的方向。~~
 
@@ -396,6 +427,7 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 - **不计融券费与做空融资成本（D-21），所以空头一侧的收益是偏乐观的。** 这句话同时写在 `metrics.json` 的
   `notes` 和 `report.html` 底部：`No borrow or short-financing cost is modelled, so short-side returns are optimistic.`
   `long_short` 的结果尤其要带着这个折扣读；
+- **两套交易统计（见上文「两套交易统计」）**，`notes` 里另有一条写明顶层的交易指标是 lot 级、`positions` 前缀的是持仓级；
 - 收益用复权价计算，拆股与分红已经体现在 `adjOpen` / `adjClose` 里；
 - 构造期校验：`rebalance_periods >= 1`、`fees` 与 `slippage` 非负、`init_cash > 0`、`start_date` 不晚于 `end_date`。
 
