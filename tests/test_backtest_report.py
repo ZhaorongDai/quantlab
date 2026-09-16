@@ -306,6 +306,7 @@ def test_every_trace_carries_a_name(tmp_path):
         tmp_path,
         returns=_returns(),
         liquidations=[{"symbol": "AAA", "fill_timestamp": BARS[3]}],
+        drawdown_span=_span(),
     )
 
     start = html.index("[", html.index("Plotly.newPlot("))
@@ -409,6 +410,149 @@ def test_a_liquidation_off_the_equity_axis_is_dropped_not_raised(tmp_path):
 def test_no_liquidations_means_no_marker_trace(tmp_path):
     for empty in (None, []):
         assert "liquidation" not in _traces(_write(tmp_path, liquidations=empty))
+
+
+# ---------------------------------------------------------------------------
+# The deepest drawdown's span (quick task 260915-v6i)
+# ---------------------------------------------------------------------------
+#
+# The report module is told WHICH episode to mark; it never selects one. So
+# these tests cover the drawing and the wording -- that the two endpoints land
+# on the equity curve with the right symbols, that the span is stated in
+# TRADING DAYS rather than as a calendar duration, that a drawdown which never
+# recovered is not described as having ended, and that an endpoint the equity
+# axis does not carry is dropped instead of raising. Choosing the deepest
+# record is the engine's job and is locked in tests/test_backtest_engine.py.
+
+
+def _span(**overrides) -> dict:
+    """The span payload the engine hands the report, with defaults."""
+    span = {
+        "start": BARS[3].strftime("%Y-%m-%d"),
+        "end": BARS[8].strftime("%Y-%m-%d"),
+        "bars": 5,
+        "depth": -0.2,
+        "recovered": True,
+    }
+    span.update(overrides)
+    return span
+
+
+def test_the_span_draws_one_triangle_at_each_end_on_the_equity_curve(tmp_path):
+    """Up triangle at the start bar, down triangle at the end bar."""
+    traces = _traces(_write(tmp_path, drawdown_span=_span()))
+
+    start = traces["deepest_drawdown_start"]
+    end = traces["deepest_drawdown_end"]
+    assert start["marker"]["symbol"] == "triangle-up"
+    assert end["marker"]["symbol"] == "triangle-down"
+    assert start["mode"] == "markers" and end["mode"] == "markers"
+    # One point each, sitting exactly on the plotted equity values.
+    assert len(start["y"]) == 1 and len(end["y"]) == 1
+    np.testing.assert_allclose(start["y"], [_value().values[3]], rtol=1e-12)
+    np.testing.assert_allclose(end["y"], [_value().values[8]], rtol=1e-12)
+    # Row 1 is the equity row; the drawdown row is x2.
+    assert start["xaxis"] == "x" and end["xaxis"] == "x"
+
+
+def test_the_end_marker_states_the_span_in_trading_days_not_calendar_days(tmp_path):
+    """D-2: the number beside the span is a BAR COUNT, worded as such.
+
+    The span runs from a Thursday to the following Thursday -- 5 trading days
+    but 7 calendar days -- so a page that rendered a timedelta would say
+    something different from what vectorbt's own duration measures. The
+    `days` count assertion is what catches a `Timedelta` leaking in: its repr
+    (`7 days 00:00:00`) carries a `days` that is not part of `trading days`.
+    """
+    traces = _traces(_write(tmp_path, drawdown_span=_span(bars=5)))
+    hover = traces["deepest_drawdown_end"]["hovertemplate"]
+
+    assert "5" in hover
+    assert "trading days" in hover
+    assert hover.count("days") == hover.count("trading days"), hover
+    assert "7" not in hover, "the calendar span must not appear anywhere"
+    # The depth is stated as a percentage, so the marker is self-describing.
+    assert "-20.00%" in hover
+
+
+def test_a_never_recovered_span_says_so_and_never_claims_it_ended(tmp_path):
+    """A drawdown still open at the last bar must not be described as recovered."""
+    traces = _traces(_write(tmp_path, drawdown_span=_span(recovered=False)))
+    hover = traces["deepest_drawdown_end"]["hovertemplate"]
+
+    assert "not recovered" in hover
+    assert "recovers" not in hover
+    # Still a bar count, still in trading days.
+    assert "trading days" in hover
+    assert hover.count("days") == hover.count("trading days"), hover
+
+
+def test_a_recovered_span_says_it_recovered(tmp_path):
+    """The other branch: the marked episode really did end at that bar."""
+    hover = _traces(_write(tmp_path, drawdown_span=_span(recovered=True)))[
+        "deepest_drawdown_end"
+    ]["hovertemplate"]
+
+    assert "not recovered" not in hover
+    assert "recovers" in hover
+
+
+def test_no_span_means_no_marker_traces(tmp_path):
+    """A run with no drawdown record renders exactly today's page."""
+    for traces in (
+        _traces(_write(tmp_path, drawdown_span=None)),
+        _traces(_write(tmp_path)),  # the argument omitted entirely
+    ):
+        assert "deepest_drawdown_start" not in traces
+        assert "deepest_drawdown_end" not in traces
+
+
+@pytest.mark.parametrize(
+    ("span", "kept"),
+    [
+        ({"start": "1999-01-01"}, "deepest_drawdown_end"),
+        ({"end": "1999-01-01"}, "deepest_drawdown_start"),
+    ],
+)
+def test_an_endpoint_off_the_equity_axis_drops_that_marker_only(tmp_path, span, kept):
+    """T-v6i-02: the report is the last step of a run that already succeeded.
+
+    It is written inside the staging directory, so an exception here deletes
+    the ENTIRE run, not just the report. An endpoint the equity axis does not
+    carry therefore drops its own marker and leaves the other one standing --
+    the `_add_liquidations` precedent.
+    """
+    traces = _traces(_write(tmp_path, drawdown_span=_span(**span)))
+
+    assert kept in traces
+    dropped = {"deepest_drawdown_start", "deepest_drawdown_end"} - {kept}
+    assert dropped.isdisjoint(traces)
+
+
+def test_a_span_missing_its_keys_renders_the_page_instead_of_raising(tmp_path):
+    """Every key is read with `.get`, so a malformed payload is not fatal."""
+    html = _write(tmp_path, drawdown_span={"bars": 3})
+
+    assert html.startswith("<!DOCTYPE html>")
+    traces = _traces(html)
+    assert "equity" in traces
+    assert "deepest_drawdown_start" not in traces
+    assert "deepest_drawdown_end" not in traces
+
+
+def test_the_span_markers_are_not_the_liquidation_colour(tmp_path):
+    """Two different meanings on one row must not share one colour."""
+    traces = _traces(
+        _write(
+            tmp_path,
+            drawdown_span=_span(),
+            liquidations=[{"symbol": "AAA", "fill_timestamp": BARS[3]}],
+        )
+    )
+
+    span_colour = traces["deepest_drawdown_start"]["marker"]["color"]
+    assert span_colour == traces["deepest_drawdown_end"]["marker"]["color"]
+    assert span_colour != traces["liquidation"]["marker"]["color"]
 
 
 @pytest.mark.parametrize("n_bars", [1, 2])
