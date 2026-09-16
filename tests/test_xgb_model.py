@@ -30,6 +30,7 @@ from types import SimpleNamespace
 import joblib
 import numpy as np
 import pytest
+import wandb
 import xarray as xr
 import xgboost as xgb
 from loguru import logger
@@ -171,6 +172,30 @@ class FakeRecorder:
         self.finished += 1
 
 
+#: Mirrors `quantlab.ml_model.xgb._IMPORTANCE_CHART_PREFIX`. Every feature
+#: importance Charts object is logged under a key starting with this, which is
+#: what tells a chart row apart from a per-round curve row.
+CHART_PREFIX = "feature_importance"
+
+
+def _curve_rows(recorder: FakeRecorder) -> list[tuple[dict, int | None]]:
+    """The per-round eval rows: every logged row carrying no chart key."""
+    return [
+        (row, step)
+        for row, step in recorder.logs
+        if not any(key.startswith(CHART_PREFIX) for key in row)
+    ]
+
+
+def _chart_rows(recorder: FakeRecorder) -> list[tuple[dict, int | None]]:
+    """The feature-importance rows: every logged row carrying a chart key."""
+    return [
+        (row, step)
+        for row, step in recorder.logs
+        if any(key.startswith(CHART_PREFIX) for key in row)
+    ]
+
+
 @pytest.fixture
 def recorders(monkeypatch) -> list[FakeRecorder]:
     """Patched on the class so deep-copied CV folds record too."""
@@ -295,10 +320,11 @@ def test_early_stopping_saves_a_truncated_booster_and_logs_the_stopping_round(tm
     assert rec.summary["best_iteration"] == best
     assert isinstance(rec.summary["best_score"], float)
 
-    steps = [step for _, step in rec.logs]
+    curve = _curve_rows(rec)
+    steps = [step for _, step in curve]
     assert steps == list(range(len(steps)))
     assert steps[-1] == best + patience
-    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in rec.logs)
+    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in curve)
 
 
 def test_early_stopping_off_trains_every_round(tmp_path, recorders):
@@ -308,7 +334,7 @@ def test_early_stopping_off_trains_every_round(tmp_path, recorders):
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     assert booster.num_boosted_rounds() == 25
     assert "best_iteration" not in recorders[0].summary
-    assert len(recorders[0].logs) == 25
+    assert len(_curve_rows(recorders[0])) == 25
 
 
 def test_early_stopping_without_a_validation_segment_trains_every_round_and_warns(
@@ -709,8 +735,15 @@ def _importance_summary(recorder: FakeRecorder) -> dict:
 def test_importance_is_written_to_the_summary_for_every_factor(tmp_path, recorders):
     """Every declared factor gets `importance_{weight,gain,total_gain}/{name}`,
     zero-filled when it never split. Turns red if importance is missing, keyed
-    by `f{i}` instead of the factor name, mapped to the wrong index (f_const
-    would inherit f_signal's gain), or written through `recorder.log`."""
+    by `f{i}` instead of the factor name, or mapped to the wrong index (f_const
+    would inherit f_signal's gain).
+
+    The last assertion guards the D-02 namespace split, not a ban on logging
+    importance at all: the per-factor SCALARS stay out of the logged rows and
+    live only in the summary, while the Charts objects added on 2026-09-16 ARE
+    logged -- under the disjoint `feature_importance*` prefix, which is exactly
+    why an `importance_` scan over the rows still reads clean.
+    """
     factors, labels = _importance_panels(seed=51)
     model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 20, "max_depth": 3})
     assert model.get_factor_names() == IMPORTANCE_FACTORS
@@ -725,6 +758,58 @@ def test_importance_is_written_to_the_summary_for_every_factor(tmp_path, recorde
     assert importance["importance_gain/f_signal"] > 0.0
     assert importance["importance_total_gain/f_signal"] > importance["importance_total_gain/f_second"]
     assert not any(key.startswith("importance_") for row, _ in recorders[0].logs for key in row)
+
+
+def test_importance_charts_reach_the_wandb_run_in_one_row_at_the_final_round_step(
+    tmp_path, recorders
+):
+    """D-01 end to end: three bar charts and three full Tables reach the run in
+    ONE logged row, merged into the final boosting round's step.
+
+    Turns red if the charts open a step of their own (the per-round curve would
+    no longer be `range(12)`), if a type is charted without its table or the
+    reverse, if the table drops the never-split `f_const`, if the rows stop
+    being sorted descending, or if a per-factor summary scalar moved (D-02).
+    """
+    factors, labels = _importance_panels(seed=57)
+    _train(
+        tmp_path,
+        factors,
+        labels,
+        early_stopping=False,
+        hyperparameters={"num_boost_round": 12, "max_depth": 3},
+    )
+
+    rec = recorders[0]
+    assert [step for _, step in _curve_rows(rec)] == list(range(12))
+
+    charts = _chart_rows(rec)
+    assert len(charts) == 1
+    chart_row, chart_step = charts[0]
+    assert chart_step == 11
+    assert set(chart_row) == {f"{CHART_PREFIX}/{t}" for t in IMPORTANCE_TYPES} | {
+        f"{CHART_PREFIX}_table/{t}" for t in IMPORTANCE_TYPES
+    }
+
+    for importance_type in IMPORTANCE_TYPES:
+        assert isinstance(
+            chart_row[f"{CHART_PREFIX}/{importance_type}"],
+            wandb.plot.custom_chart.CustomChart,
+        )
+        table = chart_row[f"{CHART_PREFIX}_table/{importance_type}"]
+        assert isinstance(table, wandb.Table)
+        assert table.columns == ["factor", "importance"]
+        # Every factor rides in the table (D-04), the never-split one included.
+        assert {name for name, _ in table.data} == set(IMPORTANCE_FACTORS)
+        values = [value for _, value in table.data]
+        assert values == sorted(values, reverse=True), values
+        assert dict(table.data)["f_const"] == 0.0
+
+    importance = _importance_summary(rec)
+    assert set(importance) == {
+        f"importance_{t}/{n}" for t in IMPORTANCE_TYPES for n in IMPORTANCE_FACTORS
+    }
+    assert all(importance[f"importance_{t}/f_const"] == 0.0 for t in IMPORTANCE_TYPES)
 
 
 def test_importance_with_early_stopping_uses_the_saved_booster(tmp_path, recorders):
@@ -754,11 +839,19 @@ def test_importance_with_early_stopping_uses_the_saved_booster(tmp_path, recorde
                 float(on_disk.get(f"f{i}", 0.0))
             )
 
-    steps = [step for _, step in rec.logs]
+    curve = _curve_rows(rec)
+    steps = [step for _, step in curve]
     assert booster.num_boosted_rounds() == booster.best_iteration + 1 < 300
     assert steps == list(range(len(steps)))
     assert steps[-1] == booster.best_iteration + patience
-    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in rec.logs)
+    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in curve)
+
+    # The charts ride in ONE extra row merged into the final round's step rather
+    # than opening a step of their own -- proved here on the early-stopping path,
+    # where the final step is `best_iteration + patience` and not `n_rounds - 1`.
+    charts = _chart_rows(rec)
+    assert len(charts) == 1
+    assert charts[0][1] == booster.best_iteration + patience == steps[-1]
 
 
 def test_training_without_a_recorder_writes_no_importance(tmp_path, monkeypatch):
@@ -950,8 +1043,9 @@ def test_early_stopping_selects_the_round_minimising_val_ccc_loss(tmp_path, reco
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     rec = recorders[0]
-    ccc_curve = [row["val-ccc_loss"] for row, _ in rec.logs]
-    rmse_curve = [row["val-rmse"] for row, _ in rec.logs]
+    curve = _curve_rows(rec)
+    ccc_curve = [row["val-ccc_loss"] for row, _ in curve]
+    rmse_curve = [row["val-rmse"] for row, _ in curve]
 
     assert booster.best_iteration == int(np.argmin(ccc_curve))
     assert booster.best_score == pytest.approx(ccc_curve[booster.best_iteration])
@@ -971,9 +1065,10 @@ def test_every_round_records_both_ccc_curves(tmp_path, recorders):
     _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 12})
 
     rec = recorders[0]
-    assert len(rec.logs) == 12
-    assert all({"train-ccc_loss", "val-ccc_loss"} <= set(row) for row, _ in rec.logs)
-    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in rec.logs)
+    curve = _curve_rows(rec)
+    assert len(curve) == 12
+    assert all({"train-ccc_loss", "val-ccc_loss"} <= set(row) for row, _ in curve)
+    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in curve)
 
 
 def test_a_better_tracking_prediction_scores_a_smaller_loss():

@@ -4,6 +4,7 @@
 """
 
 import numpy as np
+import wandb
 import xgboost as xgb
 from loguru import logger
 
@@ -28,6 +29,16 @@ _PARAM_ALIASES: dict[str, str] = {
 #: 训练结束写进 wandb summary 的 `Booster.get_score` 重要性类型：分裂次数、
 #: 平均每次分裂的增益、总增益（见 `XGBoostRegressor._record_feature_importance`）。
 _IMPORTANCE_TYPES: tuple[str, ...] = ("weight", "gain", "total_gain")
+
+#: 重要性柱状图只画前 N 个因子（D-04）。其余因子一个都没丢——它们仍然整份留在同一次
+#: `log` 发出的 `wandb.Table` 里；截断只针对图，因为几百根柱子的图没法看。
+_IMPORTANCE_CHART_TOP_N = 30
+
+#: Charts 对象的键前缀，**刻意**与 summary 标量的 `importance_` 前缀分属两个命名
+#: 空间：两者永不相撞，而且只看键名就能分辨这是 Charts 里的图表对象
+#: （`feature_importance/{类型}`、`feature_importance_table/{类型}`），还是 Overview
+#: 里的每因子标量（`importance_{类型}/{因子名}`）。
+_IMPORTANCE_CHART_PREFIX = "feature_importance"
 
 
 def pooled_ccc_loss(y_true, y_pred) -> float:
@@ -122,6 +133,11 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
     键用 xgboost 原生的连字符形式（`train-rmse`、`val-rmse`），`step` 是轮次
     （从 0 开始）；刻意与 `MLModel._evaluate` 写进 summary 的下划线形式
     （`val_rmse`）区分——前者是曲线，后者是最终值。
+
+    每轮还把刚记过的轮次写回头上的 `_last_log_step`（2026-09-16）：训练结束后
+    `_record_feature_importance` 要拿它当重要性图表那次 `log` 的 `step`，好让图表并进
+    最后一轮已有的行、不新开一步。写的同样是 `self._head`，所以交叉验证的折副本各自
+    记在自己的 run 和自己的步上。
     """
 
     def __init__(self, head: "XGBoostRegressor"):
@@ -137,6 +153,7 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
                 for metric, values in metrics.items()
             }
             recorder.log(row, step=epoch)
+            self._head._last_log_step = epoch
         return False
 
 
@@ -191,14 +208,22 @@ class XGBoostRegressor(MLModel):
         summary 里是 `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`
         （下划线），以及早停启用时的 `best_iteration` / `best_score`。
 
-        另有每个因子的重要性 `importance_{weight,gain,total_gain}/{因子名}`
-        （03.7-18，G-03.7-9）：训练结束后对 Booster 调 `get_score`，只进 summary，
-        从不进逐轮曲线。Booster 不带特征名，键 `f{i}` 按列下标映射到
-        `get_factor_names()[i]`；从未分裂的因子补 0.0。多标签（多输出）模型的
-        重要性由 xgboost 在各输出之间汇总，不分标签。变量顺序由
-        `BaseModel.load()` 核对，不靠 xgboost 的特征名。重要性尽力而为：
-        `gblinear` 整段跳过，拿不到或非标量的类型记 warning 后跳过，从不因此
-        丢掉 checkpoint（REVIEW CR-01）。
+        另有每个因子的重要性（03.7-18，G-03.7-9）：训练结束后对 Booster 调
+        `get_score`，结果同时写进两个**互不相交**的命名空间——
+
+        - Overview（summary）：每因子标量 `importance_{weight,gain,total_gain}/{因子名}`
+          （D-02），键名与数值自 03.7-18 起未变，wandb API 可按键逐个读回；
+        - Charts：`feature_importance_table/{类型}`（`wandb.Table`，含全部因子）与
+          `feature_importance/{类型}`（柱状图，只画前 `_IMPORTANCE_CHART_TOP_N` 个），
+          按重要性降序（2026-09-16，D-01/D-03/D-04）。这三对对象由**一次** `log`
+          发出，`step` 取逐轮回调记下的最后一轮，因此并进那一轮已有的行、不新开
+          一步，逐轮曲线的 step 序列与此前完全相同。
+
+        Booster 不带特征名，键 `f{i}` 按列下标映射到 `get_factor_names()[i]`；从未
+        分裂的因子补 0.0。多标签（多输出）模型的重要性由 xgboost 在各输出之间汇总，
+        不分标签。变量顺序由 `BaseModel.load()` 核对，不靠 xgboost 的特征名。重要性
+        全程尽力而为：`gblinear` 整段跳过，拿不到或非标量的类型记 warning 后跳过，
+        画图或 log 失败同样只记 warning，从不因此丢掉 checkpoint（REVIEW CR-01）。
 
     交叉验证
         `train_cv` 继承自 `BaseModel`：每折在折内训练段尾部的验证段上独立做
@@ -251,6 +276,9 @@ class XGBoostRegressor(MLModel):
         super().__init__(config)
         self._params: dict | None = None
         self._num_boost_round: int | None = None
+        #: 逐轮回调最后一次 `log` 用的 step，训练结束后给重要性图表那次 `log` 用
+        #: （见 `_WandbEvalCallback` 与 `_record_feature_importance`）。
+        self._last_log_step: int | None = None
 
     @staticmethod
     def _normalize_aliases(hyperparameters: dict) -> dict:
@@ -325,6 +353,9 @@ class XGBoostRegressor(MLModel):
         val_x: np.ndarray | None,
         val_y: np.ndarray | None,
     ) -> None:
+        # 每次训练重新记步：并行交叉验证的折副本是 deepcopy 出来的，不重置的话，一个
+        # 之前训练过的头会把它的末轮 step 带给折副本，重要性图就会记到错误的步上。
+        self._last_log_step = None
         x_rows, y_rows = self._to_rows(train_x, train_y)
         if x_rows.shape[0] == 0:
             raise ValueError(
@@ -389,13 +420,29 @@ class XGBoostRegressor(MLModel):
             self._record_feature_importance()
 
     def _record_feature_importance(self) -> None:
-        """把每个因子的重要性写进 wandb summary（03.7-18，G-03.7-9）。
+        """把每个因子的重要性写进 wandb summary，并把图表发到 Charts（03.7-18，
+        G-03.7-9；图表部分 2026-09-16）。
 
         Booster 不带特征名：`get_score` 的键是 `f{i}`，`i` 是列下标，而
         `_fit_model` 按 `get_factor_names()` 的顺序排列，所以 `f{i}` 就是第 `i`
-        个因子名。从未分裂的因子 `get_score` 不返回，这里补 0.0。只走
-        `summary.update`，从不 `log`，逐轮曲线的 step 保持连续。早停时
+        个因子名。从未分裂的因子 `get_score` 不返回，这里补 0.0。早停时
         `self.model` 已是截断后的 Booster，重要性描述的就是落盘的模型。
+
+        写到哪里（两个互不相交的命名空间）：
+
+        - **每因子标量只进 summary**：`importance_{类型}/{因子名}`（D-02）。键名和
+          数值与这次改动之前逐位一致，wandb API 仍可按键逐个读回；
+        - **另外**用**一次** `log` 发出图表对象（D-01）：每个重要性类型一张按值降序
+          （D-03）的 `wandb.Table`（`feature_importance_table/{类型}`，含**全部**因子，
+          包括补 0.0 的），和一张只画前 `_IMPORTANCE_CHART_TOP_N` 个的柱状图
+          （`feature_importance/{类型}`，D-04）。
+
+        那次 `log` 的 `step` 取逐轮回调记下的最后一轮（`_last_log_step`）：**在当前
+        step 上 log 会并进那一轮已有的行**，不新开一步，所以逐轮曲线的 step 序列与改
+        动前完全相同、依旧连续。**从不传 `commit=`**，两个独立的理由——本项目的
+        recorder 协议就是 `log(data, step=None)`（11 个调用点、两个测试替身都没有这个
+        参数），传了会直接 `TypeError`；而 `commit=False` 会把这一行挂起，等一个永远
+        不会到来的下一次 `log`。
 
         键解析不成 `f<int>` 或下标越界时抛 `ValueError`：那说明 Booster 不是这里
         按列顺序训练出来的，悄悄丢掉会把重要性记错到别的因子上。
@@ -408,7 +455,11 @@ class XGBoostRegressor(MLModel):
           时 `weight` 还返回每个输出一个值的列表），整段跳过，记一条 info；
         - 某个重要性类型 `get_score` 报 XGBoostError，或返回的不是标量（多输出
           按输出分列），记一条 warning 并跳过**该类型**，其余类型照常写入；
-          绝不对列表做 `float()`。
+          绝不对列表做 `float()`；
+        - 建图或 `log` 本身抛任何异常，记一条 warning 后跳过该类型 / 整次 log。这里
+          用 `except Exception`、比上面那侧的 `except XGBoostError` 宽，是刻意的：
+          `get_score` 的失败模式是已知且写下来的，而图表渲染没有任何声明过的异常
+          契约。图与 Table 要么一起进 payload、要么都不进，不会出现只画了一半的类型。
         """
         booster_type = str((self._params or {}).get("booster", "gbtree"))
         if booster_type == "gblinear":
@@ -419,6 +470,7 @@ class XGBoostRegressor(MLModel):
             return
 
         names = [str(name) for name in self.get_factor_names()]
+        charts: dict = {}
         for importance_type in _IMPORTANCE_TYPES:
             try:
                 scores = self.model.get_score(  # type: ignore[union-attr]
@@ -458,6 +510,52 @@ class XGBoostRegressor(MLModel):
                     for name, value in values.items()
                 }
             )
+
+            try:
+                # `sorted` 是稳定排序：值相等时保持 `values` 的插入顺序，也就是因子
+                # 顺序，所以补 0.0 的那些从未分裂的因子按因子序排在最后。
+                ordered = sorted(
+                    values.items(), key=lambda item: item[1], reverse=True
+                )
+                full_table = wandb.Table(
+                    columns=["factor", "importance"],
+                    data=[[name, value] for name, value in ordered],
+                )
+                top = ordered[:_IMPORTANCE_CHART_TOP_N]
+                top_chart = wandb.plot.bar(
+                    wandb.Table(
+                        columns=["factor", "importance"],
+                        data=[[name, value] for name, value in top],
+                    ),
+                    "factor",
+                    "importance",
+                    title=(
+                        f"feature importance ({importance_type}, "
+                        f"top {len(top)} of {len(ordered)})"
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"{self.class_name}: building the feature importance charts "
+                    f"for {importance_type!r} failed; they were skipped "
+                    f"(the summary entries are unaffected): {exc}"
+                )
+                continue
+            # 两个对象都建成了才一起进 payload——半张图比没有图更难排查。
+            charts[f"{_IMPORTANCE_CHART_PREFIX}/{importance_type}"] = top_chart
+            charts[f"{_IMPORTANCE_CHART_PREFIX}_table/{importance_type}"] = (
+                full_table
+            )
+
+        if charts:
+            try:
+                self._wandb_recorder.log(charts, step=self._last_log_step)
+            except Exception as exc:
+                logger.warning(
+                    f"{self.class_name}: logging the feature importance charts "
+                    f"failed; they were skipped (the summary entries and the "
+                    f"checkpoint are unaffected): {exc}"
+                )
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """`[T, S, F]` -> `[T, S, L]`。
