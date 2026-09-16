@@ -712,7 +712,16 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
     # drawdown is still value over running max minus one, the axes are still
     # x/x2, the band is still the persisted in-sample range, and the notes
     # still appear.
-    assert set(traces) == {"equity", "drawdown", "monthly_return", "liquidation"}
+    # Quick 260915-v6i added the deepest-drawdown triangles. This fixture run
+    # draws down (asserted below), so both markers are always present here.
+    assert set(traces) == {
+        "equity",
+        "drawdown",
+        "monthly_return",
+        "liquidation",
+        "deepest_drawdown_start",
+        "deepest_drawdown_end",
+    }
     value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
     np.testing.assert_allclose(traces["equity"]["y"], value, rtol=1e-12)
     expected_drawdown = value / np.maximum.accumulate(value) - 1.0
@@ -806,6 +815,50 @@ def test_report_without_in_sample_overlap_has_no_shaded_range(disjoint_run):
     # Control: the page really carries the curves.
     assert '"name":"equity"' in html
     assert '"type":"rect"' not in html
+
+
+def test_report_marks_the_deepest_drawdown_on_the_persisted_equity_curve(overlap_run):
+    """Quick 260915-v6i: the triangles land on the curve the run persisted.
+
+    The leaf tests prove the markers are drawn where they are told; this
+    proves a REAL run tells them the right place -- both endpoints are values
+    of `equity.zarr`, not of some re-derived curve.
+    """
+    html = _report_html(overlap_run)
+    traces = _report_traces(html)
+    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
+
+    start = traces["deepest_drawdown_start"]
+    end = traces["deepest_drawdown_end"]
+    assert start["marker"]["symbol"] == "triangle-up"
+    assert end["marker"]["symbol"] == "triangle-down"
+    for marker in (start, end):
+        assert len(marker["y"]) == 1
+        assert np.isclose(marker["y"][0], value, rtol=1e-12).any(), marker["y"]
+
+    # The span is stated in trading days, never as a calendar timedelta: a
+    # `Timedelta` repr (`7 days 00:00:00`) would add a `days` that is not
+    # part of `trading days`.
+    hover = end["hovertemplate"]
+    assert "trading days" in hover
+    assert hover.count("days") == hover.count("trading days"), hover
+
+
+def test_the_page_states_the_deepest_drawdown_span_in_words(overlap_run):
+    """The picture and the text agree: same bar labels, same units."""
+    html = _report_html(overlap_run)
+    row = re.search(r"<tr><th>Deepest drawdown span</th><td>([^<]*)</td></tr>", html)
+    assert row is not None, "the dates-and-setup block must state the span"
+
+    text = row.group(1)
+    assert "trading days" in text
+    assert text.count("days") == text.count("trading days"), text
+
+    # The same two bars the triangles sit on.
+    traces = _report_traces(html)
+    for name in ("deepest_drawdown_start", "deepest_drawdown_end"):
+        label = str(traces[name]["x"][0])[:10]
+        assert label in text, (name, label, text)
 
 
 def test_report_and_metrics_carry_no_benchmark(overlap_run):

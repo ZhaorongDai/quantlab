@@ -10,8 +10,18 @@ import pandas as pd
 import vectorbt as vbt
 import xarray as xr
 from loguru import logger
+from vectorbt.generic.enums import DrawdownStatus
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
+
+#: `Drawdowns.records` 里 `status` 的「已修复」取值。`.records` 给的是 int，只有
+#: `.records_readable` 才是 Active / Recovered 字符串，所以判定是数值比较。写成
+#: 常量而不是裸 1：vectorbt 哪天把枚举重新编号，这里跟着变，而不是悄悄把「已修复」
+#: 和「仍在回撤」标反（T-v6i-04）。
+#:
+#: 放在模块层而不是做类属性：`_drawdown_span` 因此只用到 `self._bar_label` 这一个
+#: 成员，可以脱离整个回测器单独测，测的就只是「选哪一条记录」本身。
+DRAWDOWN_RECOVERED = int(DrawdownStatus.Recovered)
 
 
 class VectorBtBacktester(BaseBacktester):
@@ -344,12 +354,71 @@ class VectorBtBacktester(BaseBacktester):
         whole["positions"] = positions.to_dict()
         return whole
 
+    def _drawdown_span(self, simulation: SimulationResult) -> dict | None:
+        """**最深**的那一次回撤的起止（quick 260915-v6i），给报告画三角用。
+
+        和 `_engine_stats` 是同一形状的钩子：读 `simulation.native`，返回纯 Python
+        值，所以「native 只由产出它的引擎读」这条规则没有被破坏。基类的默认实现
+        返回 None。
+
+        **按深度选，不按时长选。** 最深的那一次回撤和持续最久的那一次经常不是
+        同一条记录（本仓库实测的一段净值：深度 `[-36.4%, -5.2%, -5.9%]`，时长
+        `[1, 5, 1]` bar——最深的那条只有 1 个 bar，最久的那条有 5 个），所以这里
+        只看 `valley_val / peak_val - 1`，绝不去碰 `max_duration()`。指标表里的
+        Max Drawdown Duration 量的是「最久」，和这里标出来的可以是两回事，说明
+        文字里写明了这一点。
+
+        `bars` 取 `end_idx - start_idx`，也就是 **bar 数**：vectorbt 自己的
+        duration 量的就是它，而 `max_duration()` 是 bar 数乘 freq 之后的
+        Timedelta。页面上一律按交易日（bar 数）写，不写日历天。
+
+        **不包 try/except（D-6）。** 拦截条件是显式的几条：没有记录、没有有限的
+        深度、下标落在时间轴外。vectorbt 真改了 drawdowns 的形状，`_engine_stats`
+        会先炸，那一步远在写报告之前，所以报告不该是发现它的地方。
+
+        `.iloc[i]` 取一行会把整行强转成 float64（一行里混着 int 与 float 两类
+        列），而 float 没法给 DatetimeIndex 定位，所以每一列各自按列取成数组，
+        再把选中的那个元素 `int(...)`。
+        """
+        records = simulation.native.drawdowns.records  # type: ignore[union-attr]
+        if len(records) == 0:
+            return None
+
+        peak = records["peak_val"].to_numpy(dtype=np.float64)
+        valley = records["valley_val"].to_numpy(dtype=np.float64)
+        # peak <= 0 的记录算不出有意义的百分比深度；先把分母置 NaN，除出来就是
+        # NaN，既不用 try 也不会触发除零警告。
+        depth = valley / np.where(peak > 0.0, peak, np.nan) - 1.0
+        if not np.isfinite(depth).any():
+            return None
+
+        row = int(np.nanargmin(depth))
+        start = int(records["start_idx"].to_numpy()[row])
+        end = int(records["end_idx"].to_numpy()[row])
+        status = int(records["status"].to_numpy()[row])
+
+        timestamps = simulation.value.timestamp.values
+        if not (0 <= start < timestamps.size and 0 <= end < timestamps.size):
+            return None
+
+        return {
+            "start": self._bar_label(timestamps[start]),
+            "end": self._bar_label(timestamps[end]),
+            "bars": end - start,
+            "depth": float(depth[row]),
+            "recovered": status == DRAWDOWN_RECOVERED,
+        }
+
     def _report_notes(self) -> list[str]:
-        """基类那条说明，再加一条交易口径的说明（quick 260915-udx）。
+        """基类那条说明，再加两条：交易口径（quick 260915-udx）与最深回撤（260915-v6i）。
 
         报告和 metrics.json 里两套交易指标并排出现，名字又都是「胜率」「盈亏比」
         这种一看就懂的词，读的人默认会把它们当成选股胜率。这条说明就是拦住这个
         误读的：顶层那批是 lot 级，`positions` 前缀那批才是持仓级。
+
+        第二条同理拦另一个误读：净值上的三角标的是**最深**的那一次回撤，而指标表
+        里的 Max Drawdown Duration 是**最久**的那一次，两者常常不是同一段；顺带
+        写明三角之间的长度按交易日（bar 数）算，不是日历天（D-2、D-4）。
 
         **文本里不能出现尖括号、和号、双引号和单引号。** 每条说明都要过一次
         HTML 转义，而 `tests/test_backtest_persistence.py` 断言每条说明在
@@ -362,7 +431,13 @@ class VectorBtBacktester(BaseBacktester):
             "is lot level: every partial trim of a holding counts as its own "
             "closed trade, which inflates the win rate. The rows whose names "
             "begin with positions are the position level view, one entry to "
-            "flat round trip per symbol."
+            "flat round trip per symbol.",
+            "The two triangles on the equity curve mark the DEEPEST drawdown: "
+            "the up triangle is the bar it started and the down triangle the "
+            "bar it ended. Its length is counted in trading days, that is in "
+            "bars, never in calendar days. The metric named Max Drawdown "
+            "Duration measures the LONGEST drawdown instead, which is often a "
+            "different episode.",
         ]
 
     def _period_returns_stats(
