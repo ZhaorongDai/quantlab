@@ -139,9 +139,11 @@ def write_backtest_report(
     - `init_cash`: starting capital, used only to express equity as a multiple
       in the hover text;
     - `drawdown_span`: a mapping describing the DEEPEST drawdown, with keys
-      `start` and `end` (bar labels), `bars` (its length as a bar count),
-      `depth` (a negative float) and `recovered` (bool). It is drawn as an up
-      triangle at the start bar and a down triangle at the end bar. The caller
+      `valley` and `end` (bar labels), `bars` (the number of bars from the
+      valley to the end), `depth` (a negative float) and `recovered` (bool).
+      It is drawn as an up triangle at the VALLEY -- the deepest bar of that
+      drawdown -- and a down triangle at the bar it recovered, so the pair
+      spans bottom-back-to-even rather than the whole episode. The caller
       selects the episode and measures it; this module draws the one it is
       given and never picks one. An endpoint the equity axis does not carry,
       or a key that is absent, drops that marker rather than raising.
@@ -283,16 +285,22 @@ SPAN_COLOUR = "#8e44ad"
 
 
 def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
-    """Triangles on the equity row at the deepest drawdown's two end bars.
+    """Triangles on the equity row at the deepest drawdown's valley and end.
 
     The caller has already chosen the episode and measured it; this draws the
     one it is given and states its numbers in the hover text.
 
-    `bars` is a BAR COUNT -- trading days on a daily panel -- which is exactly
-    what the engine's own drawdown duration measures. The text therefore says
-    trading days, and no calendar duration is rendered here: the time axis
-    spans more calendar days than the span lasts bars, so a reader who
-    measured the axis against a timedelta would be misled.
+    The pair spans VALLEY to recovery, not start to recovery: the up triangle
+    sits on the deepest bar of that drawdown and the down triangle on the bar
+    it recovered, so the distance between them is how long it took to get from
+    the bottom back to even.
+
+    `bars` is a BAR COUNT -- trading days on a daily panel. The text therefore
+    says trading days, and no calendar duration is rendered here: the time
+    axis spans more calendar days than the span lasts bars, so a reader who
+    measured the axis against a timedelta would be misled. That count is NOT
+    the metric named Max Drawdown Duration, which measures the LONGEST
+    drawdown and counts from where that drawdown began.
 
     Every key is read with `.get` and an endpoint the equity axis does not
     carry is dropped, following `_add_liquidations`: the report is the last
@@ -313,15 +321,23 @@ def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
     depth_text = "" if depth is None else f"<br>depth {float(depth):.2%}"
 
     if span.get("recovered"):
-        tail = f"deepest drawdown recovers here<br>{length} trading days (bars) from its start"
+        tail = (
+            "deepest drawdown recovers here"
+            f"<br>{length} trading days (bars) from its deepest point"
+        )
     else:
         tail = (
             "deepest drawdown had not recovered by the last bar"
-            f"<br>{length} trading days (bars) so far"
+            f"<br>{length} trading days (bars) since its deepest point"
         )
 
     endpoints = (
-        ("start", "deepest_drawdown_start", "triangle-up", "deepest drawdown starts here"),
+        (
+            "valley",
+            "deepest_drawdown_valley",
+            "triangle-up",
+            "deepest drawdown bottoms here",
+        ),
         ("end", "deepest_drawdown_end", "triangle-down", tail),
     )
     for key, name, marker_symbol, text in endpoints:

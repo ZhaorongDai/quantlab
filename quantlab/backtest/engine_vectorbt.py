@@ -355,7 +355,7 @@ class VectorBtBacktester(BaseBacktester):
         return whole
 
     def _drawdown_span(self, simulation: SimulationResult) -> dict | None:
-        """**最深**的那一次回撤的起止（quick 260915-v6i），给报告画三角用。
+        """**最深**的那一次回撤：从**最低点**到修复（quick 260916-hro），给报告画三角用。
 
         和 `_engine_stats` 是同一形状的钩子：读 `simulation.native`，返回纯 Python
         值，所以「native 只由产出它的引擎读」这条规则没有被破坏。基类的默认实现
@@ -364,17 +364,28 @@ class VectorBtBacktester(BaseBacktester):
         **按深度选，不按时长选。** 最深的那一次回撤和持续最久的那一次经常不是
         同一条记录（本仓库实测的一段净值：深度 `[-36.4%, -5.2%, -5.9%]`，时长
         `[1, 5, 1]` bar——最深的那条只有 1 个 bar，最久的那条有 5 个），所以这里
-        只看 `valley_val / peak_val - 1`，绝不去碰 `max_duration()`。指标表里的
-        Max Drawdown Duration 量的是「最久」，和这里标出来的可以是两回事，说明
-        文字里写明了这一点。
+        只看 `valley_val / peak_val - 1`，绝不去碰 `max_duration()`。
 
-        `bars` 取 `end_idx - start_idx`，也就是 **bar 数**：vectorbt 自己的
-        duration 量的就是它，而 `max_duration()` 是 bar 数乘 freq 之后的
-        Timedelta。页面上一律按交易日（bar 数）写，不写日历天。
+        **标出来的这一段是「最低点 -> 修复」，不是「开始 -> 修复」。** 向上三角落在
+        `valley_idx`（这一段里最深的那个 bar），向下三角仍落在 `end_idx`；
+        `bars` 取 `end_idx - valley_idx`，单位是**交易日（bar 数）**，页面上一律
+        这么写，不写日历天。
+
+        **这个数不是 `Max Drawdown Duration`，而且通常比它小。** 两条理由彼此
+        独立：一是那个指标量的是「最久」的那一次回撤，和这里选中的「最深」那次
+        经常不是同一段；二是就算碰巧是同一段，那个指标从回撤**开始**算起，而这里
+        从**最低点**算起。所以这两个数对不上是正常的。
+
+        这一条**推翻了** quick 260915-v6i 自己的第三条决定：那次特意取 `start_idx`，
+        为的就是让两个三角之间的距离正好等于 `Max Drawdown Duration`。直接问过
+        之后用户选了最低点——他要看的是「从底部回到本金要多久」，而不是「这段回撤
+        是从哪个 bar 开始的」。（那条决定属于 260915-v6i 自己的编号，与本次
+        260916-hro 的 D-03 无关。）
 
         **不包 try/except（D-6）。** 拦截条件是显式的几条：没有记录、没有有限的
-        深度、下标落在时间轴外。vectorbt 真改了 drawdowns 的形状，`_engine_stats`
-        会先炸，那一步远在写报告之前，所以报告不该是发现它的地方。
+        深度、下标落在时间轴外（`valley_idx` 与 `end_idx` 都查）。vectorbt 真改了
+        drawdowns 的形状，`_engine_stats` 会先炸，那一步远在写报告之前，所以报告
+        不该是发现它的地方。
 
         `.iloc[i]` 取一行会把整行强转成 float64（一行里混着 int 与 float 两类
         列），而 float 没法给 DatetimeIndex 定位，所以每一列各自按列取成数组，
@@ -393,18 +404,21 @@ class VectorBtBacktester(BaseBacktester):
             return None
 
         row = int(np.nanargmin(depth))
-        start = int(records["start_idx"].to_numpy()[row])
+        # `valley` 上面已经被 valley_val 那一列占了名字，所以下标叫 valley_idx。
+        # `start_idx` 不再读：payload 里没有它，而对一个从不解引用的下标做边界
+        # 检查，只会让本来画得出来的一段变成 None。
+        valley_idx = int(records["valley_idx"].to_numpy()[row])
         end = int(records["end_idx"].to_numpy()[row])
         status = int(records["status"].to_numpy()[row])
 
         timestamps = simulation.value.timestamp.values
-        if not (0 <= start < timestamps.size and 0 <= end < timestamps.size):
+        if not (0 <= valley_idx < timestamps.size and 0 <= end < timestamps.size):
             return None
 
         return {
-            "start": self._bar_label(timestamps[start]),
+            "valley": self._bar_label(timestamps[valley_idx]),
             "end": self._bar_label(timestamps[end]),
-            "bars": end - start,
+            "bars": end - valley_idx,
             "depth": float(depth[row]),
             "recovered": status == DRAWDOWN_RECOVERED,
         }
@@ -416,9 +430,11 @@ class VectorBtBacktester(BaseBacktester):
         这种一看就懂的词，读的人默认会把它们当成选股胜率。这条说明就是拦住这个
         误读的：顶层那批是 lot 级，`positions` 前缀那批才是持仓级。
 
-        第二条同理拦另一个误读：净值上的三角标的是**最深**的那一次回撤，而指标表
-        里的 Max Drawdown Duration 是**最久**的那一次，两者常常不是同一段；顺带
-        写明三角之间的长度按交易日（bar 数）算，不是日历天（D-2、D-4）。
+        第二条同理拦另一个误读：净值上的三角标的是**最深**的那一次回撤，向上三角
+        是它的**最低点**、向下三角是它修复的那个 bar，所以两者之间量的是「从底部
+        回到本金要多久」。而指标表里的 Max Drawdown Duration 是**最久**的那一次、
+        且从回撤开始算起，两个数对不上是正常的；顺带写明三角之间的长度按交易日
+        （bar 数）算，不是日历天（D-2、D-4）。
 
         **文本里不能出现尖括号、和号、双引号和单引号。** 每条说明都要过一次
         HTML 转义，而 `tests/test_backtest_persistence.py` 断言每条说明在
@@ -433,11 +449,13 @@ class VectorBtBacktester(BaseBacktester):
             "begin with positions are the position level view, one entry to "
             "flat round trip per symbol.",
             "The two triangles on the equity curve mark the DEEPEST drawdown: "
-            "the up triangle is the bar it started and the down triangle the "
-            "bar it ended. Its length is counted in trading days, that is in "
-            "bars, never in calendar days. The metric named Max Drawdown "
-            "Duration measures the LONGEST drawdown instead, which is often a "
-            "different episode.",
+            "the up triangle is its deepest bar, that is its valley, and the "
+            "down triangle is the bar it recovered. The distance between them "
+            "is how long it took to get from the bottom back to even, counted "
+            "in trading days, that is in bars, never in calendar days. It is "
+            "not the metric named Max Drawdown Duration, which measures the "
+            "LONGEST drawdown and counts from where that drawdown began, so "
+            "the two numbers usually differ.",
         ]
 
     def _period_returns_stats(

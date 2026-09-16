@@ -719,7 +719,7 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
         "drawdown",
         "monthly_return",
         "liquidation",
-        "deepest_drawdown_start",
+        "deepest_drawdown_valley",
         "deepest_drawdown_end",
     }
     value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
@@ -818,23 +818,40 @@ def test_report_without_in_sample_overlap_has_no_shaded_range(disjoint_run):
 
 
 def test_report_marks_the_deepest_drawdown_on_the_persisted_equity_curve(overlap_run):
-    """Quick 260915-v6i: the triangles land on the curve the run persisted.
+    """Quick 260916-hro: the triangles land on the curve the run persisted.
 
     The leaf tests prove the markers are drawn where they are told; this
     proves a REAL run tells them the right place -- both endpoints are values
     of `equity.zarr`, not of some re-derived curve.
+
+    The up triangle is additionally checked against an INDEPENDENTLY derived
+    valley: the drawdown curve is recomputed here straight from `equity.zarr`
+    and its argmin taken, without asking the engine anything. That is what
+    goes red if the marker ever slides back to the bar the drawdown started.
     """
     html = _report_html(overlap_run)
     traces = _report_traces(html)
-    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
+    equity = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")
+    value = equity["value"].values
 
-    start = traces["deepest_drawdown_start"]
+    valley = traces["deepest_drawdown_valley"]
     end = traces["deepest_drawdown_end"]
-    assert start["marker"]["symbol"] == "triangle-up"
+    assert valley["marker"]["symbol"] == "triangle-up"
     assert end["marker"]["symbol"] == "triangle-down"
-    for marker in (start, end):
+    for marker in (valley, end):
         assert len(marker["y"]) == 1
         assert np.isclose(marker["y"][0], value, rtol=1e-12).any(), marker["y"]
+
+    # The deepest bar of the deepest drawdown is the global argmin of
+    # `value / running max - 1`, so it can be recovered from the persisted
+    # equity alone.
+    drawdown = value / np.maximum.accumulate(value) - 1.0
+    assert drawdown.min() < 0, "the fixture run must draw down"
+    valley_bar = int(np.argmin(drawdown))
+    assert str(valley["x"][0])[:10] == _day(equity["timestamp"].values[valley_bar])
+    # Non-vacuity: the valley is not the first bar of the window, so this is a
+    # real localisation rather than a marker parked at the start by accident.
+    assert valley_bar > 0
 
     # The span is stated in trading days, never as a calendar timedelta: a
     # `Timedelta` repr (`7 days 00:00:00`) would add a `days` that is not
@@ -847,7 +864,10 @@ def test_report_marks_the_deepest_drawdown_on_the_persisted_equity_curve(overlap
 def test_the_page_states_the_deepest_drawdown_span_in_words(overlap_run):
     """The picture and the text agree: same bar labels, same units."""
     html = _report_html(overlap_run)
-    row = re.search(r"<tr><th>Deepest drawdown span</th><td>([^<]*)</td></tr>", html)
+    row = re.search(
+        r"<tr><th>Deepest drawdown \(valley to recovery\)</th><td>([^<]*)</td></tr>",
+        html,
+    )
     assert row is not None, "the dates-and-setup block must state the span"
 
     text = row.group(1)
@@ -856,7 +876,7 @@ def test_the_page_states_the_deepest_drawdown_span_in_words(overlap_run):
 
     # The same two bars the triangles sit on.
     traces = _report_traces(html)
-    for name in ("deepest_drawdown_start", "deepest_drawdown_end"):
+    for name in ("deepest_drawdown_valley", "deepest_drawdown_end"):
         label = str(traces[name]["x"][0])[:10]
         assert label in text, (name, label, text)
 

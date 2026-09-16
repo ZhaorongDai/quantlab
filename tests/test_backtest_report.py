@@ -423,12 +423,17 @@ def test_no_liquidations_means_no_marker_trace(tmp_path):
 # recovered is not described as having ended, and that an endpoint the equity
 # axis does not carry is dropped instead of raising. Choosing the deepest
 # record is the engine's job and is locked in tests/test_backtest_engine.py.
+#
+# Quick 260916-hro moved the up triangle from the bar the drawdown STARTED to
+# its VALLEY, so the payload key is `valley` and the trace is
+# `deepest_drawdown_valley`. Which bar is the valley is the engine's decision
+# and is proved there; here the payload is simply taken at its word.
 
 
 def _span(**overrides) -> dict:
     """The span payload the engine hands the report, with defaults."""
     span = {
-        "start": BARS[3].strftime("%Y-%m-%d"),
+        "valley": BARS[3].strftime("%Y-%m-%d"),
         "end": BARS[8].strftime("%Y-%m-%d"),
         "bars": 5,
         "depth": -0.2,
@@ -439,20 +444,20 @@ def _span(**overrides) -> dict:
 
 
 def test_the_span_draws_one_triangle_at_each_end_on_the_equity_curve(tmp_path):
-    """Up triangle at the start bar, down triangle at the end bar."""
+    """Up triangle at the VALLEY bar, down triangle at the recovery bar."""
     traces = _traces(_write(tmp_path, drawdown_span=_span()))
 
-    start = traces["deepest_drawdown_start"]
+    valley = traces["deepest_drawdown_valley"]
     end = traces["deepest_drawdown_end"]
-    assert start["marker"]["symbol"] == "triangle-up"
+    assert valley["marker"]["symbol"] == "triangle-up"
     assert end["marker"]["symbol"] == "triangle-down"
-    assert start["mode"] == "markers" and end["mode"] == "markers"
+    assert valley["mode"] == "markers" and end["mode"] == "markers"
     # One point each, sitting exactly on the plotted equity values.
-    assert len(start["y"]) == 1 and len(end["y"]) == 1
-    np.testing.assert_allclose(start["y"], [_value().values[3]], rtol=1e-12)
+    assert len(valley["y"]) == 1 and len(end["y"]) == 1
+    np.testing.assert_allclose(valley["y"], [_value().values[3]], rtol=1e-12)
     np.testing.assert_allclose(end["y"], [_value().values[8]], rtol=1e-12)
     # Row 1 is the equity row; the drawdown row is x2.
-    assert start["xaxis"] == "x" and end["xaxis"] == "x"
+    assert valley["xaxis"] == "x" and end["xaxis"] == "x"
 
 
 def test_the_end_marker_states_the_span_in_trading_days_not_calendar_days(tmp_path):
@@ -473,6 +478,10 @@ def test_the_end_marker_states_the_span_in_trading_days_not_calendar_days(tmp_pa
     assert "7" not in hover, "the calendar span must not appear anywhere"
     # The depth is stated as a percentage, so the marker is self-describing.
     assert "-20.00%" in hover
+    # T-hro-03: since 260916-hro the count runs from the VALLEY, so it is not
+    # that metric for two independent reasons (a possibly different episode,
+    # and a different starting bar). The hover must not claim otherwise.
+    assert "Max Drawdown Duration" not in hover
 
 
 def test_a_never_recovered_span_says_so_and_never_claims_it_ended(tmp_path):
@@ -503,15 +512,15 @@ def test_no_span_means_no_marker_traces(tmp_path):
         _traces(_write(tmp_path, drawdown_span=None)),
         _traces(_write(tmp_path)),  # the argument omitted entirely
     ):
-        assert "deepest_drawdown_start" not in traces
+        assert "deepest_drawdown_valley" not in traces
         assert "deepest_drawdown_end" not in traces
 
 
 @pytest.mark.parametrize(
     ("span", "kept"),
     [
-        ({"start": "1999-01-01"}, "deepest_drawdown_end"),
-        ({"end": "1999-01-01"}, "deepest_drawdown_start"),
+        ({"valley": "1999-01-01"}, "deepest_drawdown_end"),
+        ({"end": "1999-01-01"}, "deepest_drawdown_valley"),
     ],
 )
 def test_an_endpoint_off_the_equity_axis_drops_that_marker_only(tmp_path, span, kept):
@@ -525,7 +534,7 @@ def test_an_endpoint_off_the_equity_axis_drops_that_marker_only(tmp_path, span, 
     traces = _traces(_write(tmp_path, drawdown_span=_span(**span)))
 
     assert kept in traces
-    dropped = {"deepest_drawdown_start", "deepest_drawdown_end"} - {kept}
+    dropped = {"deepest_drawdown_valley", "deepest_drawdown_end"} - {kept}
     assert dropped.isdisjoint(traces)
 
 
@@ -536,7 +545,7 @@ def test_a_span_missing_its_keys_renders_the_page_instead_of_raising(tmp_path):
     assert html.startswith("<!DOCTYPE html>")
     traces = _traces(html)
     assert "equity" in traces
-    assert "deepest_drawdown_start" not in traces
+    assert "deepest_drawdown_valley" not in traces
     assert "deepest_drawdown_end" not in traces
 
 
@@ -550,7 +559,7 @@ def test_the_span_markers_are_not_the_liquidation_colour(tmp_path):
         )
     )
 
-    span_colour = traces["deepest_drawdown_start"]["marker"]["color"]
+    span_colour = traces["deepest_drawdown_valley"]["marker"]["color"]
     assert span_colour == traces["deepest_drawdown_end"]["marker"]["color"]
     assert span_colour != traces["liquidation"]["marker"]["color"]
 
