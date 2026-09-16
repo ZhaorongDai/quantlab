@@ -5,9 +5,9 @@ current_phase: 3
 current_phase_name: Factor Computation (KunQuant + Polars)
 status: planning
 stopped_at: Phase 03.7 complete, ready to plan Phase 3
-last_updated: "2026-09-16T03:50:00.000Z"
-last_activity: 2026-09-15
-last_activity_desc: "Completed quick task 260915-weq: pooled CCC loss as the xgboost early-stopping criterion"
+last_updated: "2026-09-16T04:30:00.000Z"
+last_activity: 2026-09-16
+last_activity_desc: "Completed quick task 260916-gs8: feature importance charts on the wandb dashboard"
 state_head: 4eb989b4fc5e3e6f0f0a4787152affe508076dd0
 progress:
   total_phases: 14
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-15 - Completed quick task 260915-weq: pooled CCC loss as the xgboost early-stopping criterion, replacing RMSE as the decision metric (47 passed vs 31 baseline)
+Last activity: 2026-09-16 - Completed quick task 260916-gs8: xgboost feature importance on the wandb Charts dashboard, sorted descending, summary keys kept byte-identical (50 passed vs 47 baseline)
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -342,6 +342,7 @@ Recent decisions affecting current work:
 | 260915-v6i | Mark the deepest drawdown span on the report equity curve: up triangle at its start bar, down triangle at its end bar. The record is selected by DEPTH (nanargmin over valley/peak-1), never by duration — Max Drawdown and Max Drawdown Duration are independent aggregates and can be different episodes. Span length is stated in trading days (bar counts, end_idx - start_idx), matching vectorbt max_duration and metrics.json, never a calendar timedelta (that same record spans 140 bars but 203 calendar days). New CONCRETE engine hook _drawdown_span keeps the base layer from reading simulation.native; a never-recovered drawdown is labelled as such (141 passed vs 122 baseline) | 2026-09-15 | 29449b8 | [260915-v6i-mark-the-max-drawdown-duration-on-the-re](./quick/260915-v6i-mark-the-max-drawdown-duration-on-the-re/) |
 | 260915-udx | Report position-level trade statistics beside the existing lot-level (exit-trades) ones: TRADE_STATS_METRICS + _engine_stats via instance-scoped Portfolio.replace(trades_type="positions") producing a nested whole.positions block, plus a report note telling the two views apart. Motivated by a measured real run where the lot-level win rate reads 57.27% against a position-level 50.74%, because equal-weight target-percent rebalancing records every partial trim of a winner as its own closed trade. Downstream needed zero changes (metrics.json, report.html table, wandb summary are all generic); narrow scope — in/out-of-sample trade counts stay lot-level and are documented as such in two places (122 passed vs 116 baseline) | 2026-09-15 | d5fe808 | [260915-udx-add-positions-level-trade-metrics-alongs](./quick/260915-udx-add-positions-level-trade-metrics-alongs/) |
 | 260915-weq | Use a pooled CCC (concordance correlation coefficient) loss as the xgboost early-stopping criterion, replacing RMSE as the DECISION metric. eval_metric=rmse deliberately stays FIRST in the metric list so RMSE remains an observation curve, while custom_metric lands LAST and EarlyStopping(metric_name=None) resolves to the last entry — so ccc_loss drives round selection with no extra config, and any reordering would silently revert selection to RMSE (locked by a test pinning a seed where the two argmins diverge, plus mutation verification). Pooled rather than per-date by explicit user decision, recorded in the docstring so nobody "fixes" it later; the user's reference implementation is kept verbatim as a test oracle. Note best_score in the wandb summary is now a CCC loss and is NOT comparable to runs predating this change (47 passed vs 31 baseline; model-layer neighbours 101 passed) | 2026-09-15 | b84a5e7 | [260915-weq-use-a-ccc-based-custom-metric-as-the-xgb](./quick/260915-weq-use-a-ccc-based-custom-metric-as-the-xgb/) |
+| 260916-gs8 | Chart xgboost feature importance on the wandb Charts dashboard: per importance type (weight/gain/total_gain) a top-30 bar chart plus a full wandb.Table carrying every factor, sorted descending, with never-split factors filled in at 0.0 sorting to the bottom (itself useful signal). The importance_{type}/{name} summary scalars are kept byte-identical by user decision — the wandb API can read those back key by key while a chart object cannot — so the charts are purely additive, in a disjoint feature_importance* namespace, which is what lets the existing "no importance_ key reaches logs" guard keep working verbatim. The single log call passes the last boosting round's step so it merges into that round's row and opens no new step, keeping the per-round curves contiguous; chart building sits in a per-type try/except with both-or-neither payload assignment because this method runs before _save_model and a drawing bug must never cost a trained checkpoint (50 passed vs 47 baseline; model-layer neighbours 101 unchanged) | 2026-09-16 | 6d38b43 | [260916-gs8-log-xgboost-feature-importance-to-the-wa](./quick/260916-gs8-log-xgboost-feature-importance-to-the-wa/) |
 
 ### Roadmap Evolution
 
