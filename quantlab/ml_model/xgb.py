@@ -39,6 +39,12 @@ def pooled_ccc_loss(y_true, y_pred) -> float:
     「池化」指把传进来的两个向量当成一个整体算一次，不分时间截面——`_to_rows`
     交给它的行早就丢掉了日期归属，这个形状天然就是池化的。
 
+    **这个形式由用户明确选定，不是疏忽**；它自带两点代价，写在这里免得日后被当成
+    bug「修」掉：所有 `(t, s)` 行一起算、不做截面内比较，所以它仍然会奖励「预测对
+    每天全市场的共同涨跌」；分母里的 `var_pred + var_true` 会惩罚一个被正确收缩的
+    预测——低信噪比数据里，最优预测的方差本来就远低于标签方差。早停判据这一侧的
+    说明见 `XGBoostRegressor` 类 docstring 的「早停」段落。
+
     降级约定（对全部有限、非退化的输入不改变数值）：
 
     - 先取两边**同时有限**的位置，与 `quantlab/utils/metrics.py:_joint` 的惯例一致；
@@ -147,10 +153,20 @@ class XGBoostRegressor(MLModel):
         `xgb.callback.EarlyStopping(rounds=patience, data_name="val", save_best=True)`：
 
         - patience 按 **boosting 轮数**计，不是 epoch；
-        - 判据是验证集上的 `eval_metric`（默认 RMSE），**不是 IC**；
+        - 判据是验证集上的池化 CCC 损失 `ccc_loss`（`1 - ccc`，见 `pooled_ccc_loss`），
+          **不是 RMSE，也不是 IC**：本模块的 `ccc_loss_metric` 经
+          `xgb.train(custom_metric=...)` 注册，而内建的 `eval_metric`（默认 rmse）
+          排在每个数据集指标列表的**第一个**、只当观测曲线用，自定义指标排在
+          **最后一个**，`EarlyStopping(metric_name=None)` 解析到的正是最后一个。
+          它是**损失、越小越好**，所以不传 `maximize`（默认 `maximize=False` 正是
+          对的）；
+        - 「池化」这个形式由用户明确选定，它自带的代价记在 `pooled_ccc_loss` 的
+          docstring 里；
         - `save_best=True` 让返回的 Booster 已截断到 `best_iteration + 1` 棵树，
           落盘的 `.joblib` 就是最优模型；`best_iteration` / `best_score` 同时写进
-          wandb summary。
+          wandb summary。**注意 `best_score` 现在是一个 CCC 损失**，与本次改动之前
+          任何一次运行记录的 `best_score`（那时是 RMSE）都不可比——键名、类型都没
+          变，只有含义变了。
 
         没有可用的验证段时记一条 warning，跳过早停，训练满 `num_boost_round` 轮。
 
@@ -170,7 +186,8 @@ class XGBoostRegressor(MLModel):
         主标签，即最后一维第 0 个标签。
 
     wandb
-        逐轮曲线 `train-rmse` / `val-rmse`（连字符，`step=iteration`）；训练结束
+        逐轮曲线 `train-rmse` / `val-rmse` 与 `train-ccc_loss` / `val-ccc_loss`
+        （连字符，`step=iteration`）；训练结束
         summary 里是 `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`
         （下划线），以及早停启用时的 `best_iteration` / `best_score`。
 
