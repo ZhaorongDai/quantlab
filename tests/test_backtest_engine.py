@@ -23,10 +23,13 @@ What this file locks:
   closing them. Without that divergence the lock would be vacuous -- a
   ``positions`` block that forgot to switch the trades type would be a
   byte-for-byte copy of the exit-trades block and would still pass;
-- the deepest drawdown's span (quick 260915-v6i): the record is selected by
-  DEPTH, on a series where the deepest and the longest drawdown are different
-  records, so a hook that consulted duration instead fails here rather than
-  mislabelling an episode on the report.
+- the deepest drawdown's span (quick 260915-v6i, moved to the valley by quick
+  260916-hro): the record is selected by DEPTH, on a series where the deepest
+  and the longest drawdown are different records, so a hook that consulted
+  duration instead fails here rather than mislabelling an episode on the
+  report. The span itself runs from that record's VALLEY to its recovery, so
+  `bars` is `end_idx - valley_idx`, proved on a series whose start and valley
+  are different bars.
 
 Every engine assertion reads vectorbt's own order records (mapped onto
 ``SimulationResult.orders``), never a re-derivation of what the engine should
@@ -813,6 +816,18 @@ DEEPEST_IS_NOT_LONGEST = [
 #: would pass on this series and fail on the one above, and vice versa.
 DEEPEST_NEVER_RECOVERS = [100, 110, 105, 112, 90, 80, 70]
 
+#: The series that can tell "valley -> recovery" apart from "start ->
+#: recovery" (quick 260916-hro). Exactly ONE drawdown record, re-measured in
+#: this tree: `start_idx` 2, `valley_idx` 4, `end_idx` 7, depth -25%, status
+#: recovered. So `end - start` is 5 while `end - valley` is 3.
+#:
+#: A new series was unavoidable. On DEEPEST_IS_NOT_LONGEST the deepest record
+#: has `start_idx == valley_idx == 2`, so `end - start` and `end - valley` are
+#: both 1 and every assertion on that series passes whether or not the span
+#: was moved to the valley. Only a series where those two indices differ can
+#: tell the two rules apart.
+VALLEY_IS_NOT_START = [100, 120, 115, 110, 90, 95, 105, 125]
+
 
 class _SpanHost:
     """The hook under test, bound to the smallest object that can run it."""
@@ -860,12 +875,19 @@ def test_the_span_is_the_deepest_record_and_never_the_longest_one():
 
     span = _SpanHost()._drawdown_span(simulation)
     assert span["depth"] == pytest.approx(-0.3636363, rel=1e-5)
-    assert span["bars"] == 1, "the deepest record lasts 1 bar, the longest 5"
+    assert span["bars"] == 1, (
+        "the marked span belongs to the deepest record, not to the 5-bar longest one"
+    )
 
 
-def test_bars_is_the_chosen_records_end_minus_start_and_labels_are_bar_labels():
-    """`bars` is a bar count and the endpoints are `_bar_label` strings."""
-    simulation = _drawdown_simulation(DEEPEST_IS_NOT_LONGEST)
+def test_bars_is_the_chosen_records_end_minus_valley_and_labels_are_bar_labels():
+    """`bars` is `end_idx - valley_idx` and the endpoints are `_bar_label` strings.
+
+    Run on VALLEY_IS_NOT_START rather than DEEPEST_IS_NOT_LONGEST: on the
+    latter the deepest record's start and valley are the SAME bar, so it
+    cannot tell `end - start` from `end - valley` and would pass either way.
+    """
+    simulation = _drawdown_simulation(VALLEY_IS_NOT_START)
     records = simulation.native.drawdowns.records
     depth = (
         records["valley_val"].to_numpy(dtype=float)
@@ -874,17 +896,28 @@ def test_bars_is_the_chosen_records_end_minus_start_and_labels_are_bar_labels():
     )
     row = int(np.nanargmin(depth))
     start = int(records["start_idx"].to_numpy()[row])
+    valley = int(records["valley_idx"].to_numpy()[row])
     end = int(records["end_idx"].to_numpy()[row])
     timestamps = simulation.value.timestamp.values
 
+    # Non-vacuity, asserted against vectorbt itself: on THIS series the
+    # drawdown's start and its valley really are different bars, so the two
+    # rules give different numbers and passing by coincidence is impossible.
+    assert start != valley, "the fixture must separate the start from the valley"
+    assert end - start != end - valley
+
     span = _SpanHost()._drawdown_span(simulation)
 
-    assert span["bars"] == end - start
-    assert span["start"] == BaseBacktester._bar_label(timestamps[start])
+    assert span["bars"] == end - valley
+    assert span["bars"] != end - start
+    assert span["valley"] == BaseBacktester._bar_label(timestamps[valley])
     assert span["end"] == BaseBacktester._bar_label(timestamps[end])
     # Daily bars sit at midnight, so the labels are plain ISO dates -- the
     # same form metrics.json uses for its range endpoints.
-    assert (span["start"], span["end"]) == ("2024-01-03", "2024-01-04")
+    assert (span["valley"], span["end"]) == ("2024-01-05", "2024-01-10")
+    # The payload key was RENAMED, not added beside the old one: a stale
+    # `start` would let a consumer keep reading the pre-260916-hro meaning.
+    assert "start" not in span
 
 
 def test_a_deepest_drawdown_still_open_at_the_last_bar_is_not_recovered():
@@ -899,6 +932,10 @@ def test_a_deepest_drawdown_still_open_at_the_last_bar_is_not_recovered():
     span = _SpanHost()._drawdown_span(simulation)
     assert span["recovered"] is False
     assert span["depth"] < -0.3, "the open record must be the deepest one"
+    # The valley IS the last bar of this series (`valley_idx == end_idx == 6`),
+    # so the distance from the bottom to the end of the data is genuinely
+    # zero bars. It was 2 while the span started at `start_idx`.
+    assert span["bars"] == 0
 
 
 def test_a_deepest_drawdown_that_recovered_is_flagged_as_recovered():
@@ -935,7 +972,7 @@ def test_the_span_payload_is_plain_python_values():
     """
     span = _span_of(DEEPEST_IS_NOT_LONGEST)
 
-    assert isinstance(span["start"], str) and isinstance(span["end"], str)
+    assert isinstance(span["valley"], str) and isinstance(span["end"], str)
     assert isinstance(span["bars"], int) and not isinstance(span["bars"], np.integer)
     assert isinstance(span["depth"], float) and not isinstance(
         span["depth"], np.floating

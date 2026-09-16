@@ -9,10 +9,12 @@ One self-contained page built around a plotly div:
    picture covers;
 3. a metric table with one column per metrics block (whole / in-sample /
    out-of-sample);
-4. the figure: three rows on a shared time axis -- equity (with forced
-   liquidation markers, and a pair of triangles marking where the deepest
-   drawdown began and ended) on top, drawdown below it, per-calendar-month
-   returns at the bottom -- plus a log/linear toggle for the equity axis;
+4. the figure: three rows on a shared time axis -- equity (with a pair of
+   triangles marking the deepest drawdown's valley and the bar it recovered)
+   on top, drawdown below it, per-calendar-month returns at the bottom --
+   plus a log/linear toggle for the equity axis. Forced liquidations are NOT
+   drawn: quick 260916-hro removed those markers from the chart, while the
+   records themselves still persist to the run's `liquidations.json`;
 5. the notes.
 
 When the backtest window overlaps the model's effective training window, the
@@ -43,6 +45,12 @@ The equity trace keeps the RAW persisted portfolio value on `y`, identical to
 `customdata` and is surfaced by the hover template. Normalising `y` itself was
 rejected: it would break the page's correspondence with the persisted equity
 and would silently mislabel the axis whenever `init_cash` is unknown.
+
+The row-1 axis title is therefore just `value`. It used to carry a
+parenthetical announcing the hover text, but that merely described the
+`customdata` the trace already shows, so no information was lost when quick
+260916-hro dropped it -- and the rotated title got back the vertical room it
+needs.
 
 The page loads plotly.js from the CDN (`include_plotlyjs="cdn"`). That keeps
 each run directory at a few kilobytes instead of several megabytes per report;
@@ -105,7 +113,6 @@ def write_backtest_report(
     summary: dict[str, str] | None = None,
     metrics: dict | None = None,
     returns: xr.DataArray | None = None,
-    liquidations: list[dict] | None = None,
     init_cash: float | None = None,
     drawdown_span: dict | None = None,
 ) -> None:
@@ -133,15 +140,14 @@ def write_backtest_report(
       is shown when present;
     - `returns`: per-bar portfolio returns on `timestamp`, compounded per
       calendar month for the bottom panel;
-    - `liquidations`: forced-liquidation records (`symbol`, `fill_timestamp`),
-      drawn as markers on the equity row. Records whose timestamp is not on the
-      equity axis are dropped rather than raising;
     - `init_cash`: starting capital, used only to express equity as a multiple
       in the hover text;
     - `drawdown_span`: a mapping describing the DEEPEST drawdown, with keys
-      `start` and `end` (bar labels), `bars` (its length as a bar count),
-      `depth` (a negative float) and `recovered` (bool). It is drawn as an up
-      triangle at the start bar and a down triangle at the end bar. The caller
+      `valley` and `end` (bar labels), `bars` (the number of bars from the
+      valley to the end), `depth` (a negative float) and `recovered` (bool).
+      It is drawn as an up triangle at the VALLEY -- the deepest bar of that
+      drawdown -- and a down triangle at the bar it recovered, so the pair
+      spans bottom-back-to-even rather than the whole episode. The caller
       selects the episode and measures it; this module draws the one it is
       given and never picks one. An endpoint the equity axis does not carry,
       or a key that is absent, drops that marker rather than raising.
@@ -163,7 +169,6 @@ def write_backtest_report(
         vertical_spacing=0.04,
     )
     _add_equity(fig, equity, init_cash)
-    _add_liquidations(fig, equity, liquidations)
     _add_drawdown_span(fig, equity, drawdown_span)
     fig.add_trace(
         go.Scatter(x=drawdown.index, y=drawdown.values, name="drawdown", mode="lines"),
@@ -194,10 +199,21 @@ def write_backtest_report(
             showarrow=False,
             align="left",
         )
-    fig.update_yaxes(title_text="value (x initial capital on hover)", row=1, col=1)
+    fig.update_yaxes(title_text="value", row=1, col=1)
     fig.update_yaxes(title_text="drawdown", tickformat=".1%", row=2, col=1)
     fig.update_yaxes(title_text="monthly return", tickformat=".1%", row=3, col=1)
+    # `height` is load-bearing, not decoration (quick 260916-hro): a y-axis
+    # title is rotated 90 degrees, so its rendered length is measured against
+    # the axis HEIGHT, not the width. With no explicit height the div falls
+    # back to plotly's 450px default; the top and bottom margins take 240 of
+    # that, and `row_heights` then leaves rows 2 and 3 at roughly 44px each --
+    # shorter than `drawdown` and `monthly return` render, which is what made
+    # the three titles collide. At 900 the plotting area is
+    # 900 - 100 - 140 = 660px, so the rows are about 328 / 140 / 140px and
+    # every title fits. A left margin would not have helped: the collision is
+    # between vertically stacked titles, not between a title and its ticks.
     fig.update_layout(
+        height=900,
         margin={"b": 140},
         showlegend=False,
         updatemenus=[_axis_toggle()],
@@ -242,61 +258,39 @@ def _add_equity(fig, equity: pd.Series, init_cash: float | None) -> None:
     )
 
 
-def _add_liquidations(fig, equity: pd.Series, liquidations) -> None:
-    """Markers on the equity row at each forced liquidation's fill bar.
-
-    A record whose timestamp is not on the equity axis is dropped: the report
-    is the last step of a run that already succeeded, so it must not be the
-    thing that fails. The trace is omitted entirely when nothing was
-    liquidated, so a clean run's page carries no empty legend entry.
-    """
-    if not liquidations:
-        return
-    xs, texts = [], []
-    for record in liquidations:
-        stamp = pd.Timestamp(str(record.get("fill_timestamp")))
-        if stamp not in equity.index:
-            continue
-        xs.append(stamp)
-        texts.append(str(record.get("symbol", "")))
-    if not xs:
-        return
-    fig.add_trace(
-        go.Scatter(
-            x=xs,
-            y=[equity.loc[stamp] for stamp in xs],
-            name="liquidation",
-            mode="markers",
-            marker={"symbol": "x", "size": 9, "color": "#c0392b"},
-            text=texts,
-            hovertemplate="%{x}<br>forced liquidation: %{text}<extra></extra>",
-        ),
-        row=1,
-        col=1,
-    )
-
-
-#: The deepest drawdown's two triangles. Deliberately NOT the liquidation red
-#: (`#c0392b`): both marker kinds share the equity row and mean entirely
-#: different things, so they must not be distinguishable by shape alone.
+#: The deepest drawdown's two triangles. Both ends SHARE one colour because
+#: they are the two ends of a single measurement -- the valley and the
+#: recovery of one episode -- and are told apart by shape, up versus down.
+#:
+#: The value is unchanged from when it was picked to differ from the
+#: forced-liquidation red: those markers were removed from the chart in quick
+#: 260916-hro (the records still persist to the run's `liquidations.json`), so
+#: that contrast no longer exists on the page. Kept as it was rather than
+#: re-picked, to avoid visual churn nobody asked for.
 SPAN_COLOUR = "#8e44ad"
 
 
 def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
-    """Triangles on the equity row at the deepest drawdown's two end bars.
+    """Triangles on the equity row at the deepest drawdown's valley and end.
 
     The caller has already chosen the episode and measured it; this draws the
     one it is given and states its numbers in the hover text.
 
-    `bars` is a BAR COUNT -- trading days on a daily panel -- which is exactly
-    what the engine's own drawdown duration measures. The text therefore says
-    trading days, and no calendar duration is rendered here: the time axis
-    spans more calendar days than the span lasts bars, so a reader who
-    measured the axis against a timedelta would be misled.
+    The pair spans VALLEY to recovery, not start to recovery: the up triangle
+    sits on the deepest bar of that drawdown and the down triangle on the bar
+    it recovered, so the distance between them is how long it took to get from
+    the bottom back to even.
 
-    Every key is read with `.get` and an endpoint the equity axis does not
-    carry is dropped, following `_add_liquidations`: the report is the last
-    step of a run that already succeeded and is written inside that run's
+    `bars` is a BAR COUNT -- trading days on a daily panel. The text therefore
+    says trading days, and no calendar duration is rendered here: the time
+    axis spans more calendar days than the span lasts bars, so a reader who
+    measured the axis against a timedelta would be misled. That count is NOT
+    the metric named Max Drawdown Duration, which measures the LONGEST
+    drawdown and counts from where that drawdown began.
+
+    Every key is read with `.get`, and an endpoint the equity axis does not
+    carry drops only its own marker rather than raising: the report is the
+    last step of a run that already succeeded and is written inside that run's
     staging directory, so an exception here would delete the ENTIRE run rather
     than merely losing the markers.
 
@@ -313,15 +307,23 @@ def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
     depth_text = "" if depth is None else f"<br>depth {float(depth):.2%}"
 
     if span.get("recovered"):
-        tail = f"deepest drawdown recovers here<br>{length} trading days (bars) from its start"
+        tail = (
+            "deepest drawdown recovers here"
+            f"<br>{length} trading days (bars) from its deepest point"
+        )
     else:
         tail = (
             "deepest drawdown had not recovered by the last bar"
-            f"<br>{length} trading days (bars) so far"
+            f"<br>{length} trading days (bars) since its deepest point"
         )
 
     endpoints = (
-        ("start", "deepest_drawdown_start", "triangle-up", "deepest drawdown starts here"),
+        (
+            "valley",
+            "deepest_drawdown_valley",
+            "triangle-up",
+            "deepest drawdown bottoms here",
+        ),
         ("end", "deepest_drawdown_end", "triangle-down", tail),
     )
     for key, name, marker_symbol, text in endpoints:
