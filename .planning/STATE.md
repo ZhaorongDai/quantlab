@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.8"
-current_phase_name: "Backtest report: delta column, monthly-return heatmap, positions-only trade metrics"
-status: planning
+current_phase_name: backtest-report-in-out-of-sample-delta-column-monthly-return
+status: executing
 stopped_at: Phase 03.8 inserted (three remaining backtest-report items), ready to plan
-last_updated: "2026-09-16T18:58:21.608Z"
+last_updated: "2026-09-16T22:13:52.531Z"
 last_activity: 2026-09-16
 last_activity_desc: "Completed quick task 260916-hro: valley-to-recovery span, no liquidation markers, legible axis titles"
-state_head: 5af75d4098f6928c06a820a186d624682c82f62e
+state_head: dd11a78e63264eecbddac1a8660d2664a2619df7
 progress:
   total_phases: 15
   completed_phases: 1
-  total_plans: 76
+  total_plans: 79
   completed_plans: 75
 milestone_name: milestone
 ---
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 
 ## Current Position
 
-Phase: 03.8 — Backtest report: delta column, monthly-return heatmap, positions-only trade metrics
+Phase: 03.8 (backtest-report-in-out-of-sample-delta-column-monthly-return) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-09-16 - Completed quick task 260916-hro: drawdown triangles now span valley to recovery, liquidation markers dropped from the chart, axis titles made legible (140 passed vs 141 baseline)
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
