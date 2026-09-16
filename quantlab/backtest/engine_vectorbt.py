@@ -43,6 +43,13 @@ class VectorBtBacktester(BaseBacktester):
 
     调仓行混有 NaN 与有限值时，在交给 vectorbt 之前直接报错（Pitfall 3）：NaN
     在调仓行上的意思是「保持原仓位」，会占着资金悄悄挡住同一行的其余订单。
+
+    **两套交易统计（quick 260915-udx）。** vectorbt 默认的 exit trades 口径把每
+    一次减仓都记成一笔独立的已平仓交易：等权调仓下，赢家每被削一刀就多算一笔
+    盈利交易，胜率与盈亏比因此偏高。所以 `_engine_stats` 报两套——顶层的交易
+    指标是 **lot 级**（exit trades），嵌套的 `positions` 子字典是 **持仓级**（一个
+    标的从建仓到清空算一笔）。两套都是对的，衡量的东西不同：lot 级看的是每次
+    调仓动作的质量，持仓级才是「选股选得对不对」。所以并列报出，谁也不替换谁。
     """
 
     #: vectorbt `Portfolio.stats` 的指标名，去掉了 `benchmark_return`（D-08：
@@ -75,6 +82,26 @@ class VectorBtBacktester(BaseBacktester):
         "calmar_ratio",
         "omega_ratio",
         "sortino_ratio",
+    )
+
+    #: 只有这些指标由交易口径决定，`positions` 那一套只重算它们
+    #: （quick 260915-udx）。组合级指标——收益、回撤、夏普、卡玛、欧米伽、索提诺、
+    #: 暴露、费用、起止时间与净值——跟按 lot 还是按持仓切交易无关，重算一遍只会
+    #: 多出一份可能与顶层漂移的副本。
+    TRADE_STATS_METRICS = (
+        "total_trades",
+        "total_closed_trades",
+        "total_open_trades",
+        "open_trade_pnl",
+        "win_rate",
+        "best_trade",
+        "worst_trade",
+        "avg_winning_trade",
+        "avg_losing_trade",
+        "avg_winning_trade_duration",
+        "avg_losing_trade_duration",
+        "profit_factor",
+        "expectancy",
     )
 
     def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:
@@ -285,15 +312,37 @@ class VectorBtBacktester(BaseBacktester):
         return None
 
     def _engine_stats(self, simulation: SimulationResult) -> dict:
-        """整段的 vectorbt 统计，年化口径取自市场规格。"""
-        stats = simulation.native.stats(  # type: ignore[union-attr]
+        """整段的 vectorbt 统计，年化口径取自市场规格。
+
+        返回两套交易统计（quick 260915-udx，口径的含义见类文档）：顶层是 vectorbt
+        默认的 exit trades 口径（lot 级），`positions` 子字典是持仓级口径，只含
+        `TRADE_STATS_METRICS` 那批受交易口径影响的指标。`positions` 的键与顶层
+        同名，可以逐行对照。
+
+        **切换口径只能用 `Portfolio.replace`。** `trades_type` 是 `Portfolio`
+        构造函数的参数，不是 `from_orders` 的；`stats()` 与 `get_trades()` 都不接
+        受按次传入的交易口径，传了会被静默忽略，于是得到一份与顶层逐字节相同、
+        看起来却没问题的假 `positions`。`replace` 是实例级的，也不去动 vectorbt
+        那个进程级的全局设置映射——改它会波及同进程里的每一个组合对象。
+
+        两次 `stats()` 各自新建一个 settings dict，不共用同一个对象，免得其中一次
+        调用改掉另一次要读的东西。
+        """
+        year_freq = self.MARKET.year_freq(simulation.bar_interval)  # type: ignore[union-attr]
+        portfolio = simulation.native
+        stats = portfolio.stats(  # type: ignore[union-attr]
             metrics=list(self.STATS_METRICS),
-            settings=dict(
-                year_freq=self.MARKET.year_freq(simulation.bar_interval)  # type: ignore[union-attr]
-            ),
+            settings=dict(year_freq=year_freq),
             silence_warnings=True,
         )
-        return stats.to_dict()
+        positions = portfolio.replace(trades_type="positions").stats(  # type: ignore[union-attr]
+            metrics=list(self.TRADE_STATS_METRICS),
+            settings=dict(year_freq=year_freq),
+            silence_warnings=True,
+        )
+        whole = stats.to_dict()
+        whole["positions"] = positions.to_dict()
+        return whole
 
     def _period_returns_stats(
         self, simulation: SimulationResult, ranges: list[tuple[str, str]]

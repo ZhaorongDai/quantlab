@@ -15,7 +15,14 @@ What this file locks:
   late trades normally;
 - the market spec (D-04), construction-time score-label validation (D-11),
   the deferred benchmark hook (D-08), and that a sibling engine subclass needs
-  no change to ``BaseBacktester`` (D-01).
+  no change to ``BaseBacktester`` (D-01);
+- the position-level trade statistics reported beside the lot-level ones
+  (quick 260915-udx): the ``positions`` sub-dict of the ``whole`` block is
+  proved to be vectorbt's positions view by deriving its counts from the
+  positions accessor directly, on a fixture proved to trim holdings without
+  closing them. Without that divergence the lock would be vacuous -- a
+  ``positions`` block that forgot to switch the trades type would be a
+  byte-for-byte copy of the exit-trades block and would still pass.
 
 Every engine assertion reads vectorbt's own order records (mapped onto
 ``SimulationResult.orders``), never a re-derivation of what the engine should
@@ -630,3 +637,145 @@ def test_a_sibling_engine_subclass_runs_without_touching_the_base(tmp_path):
     assert np.isnan(weights[~mask]).all()
     assert result.simulation.orders.sizes["order"] > 0
     assert result.run_dir.is_dir()
+
+
+# --------------------------------------------------------------------------
+# Task 4: position-level trade statistics beside the lot-level ones
+# (quick 260915-udx)
+# --------------------------------------------------------------------------
+
+#: vectorbt's display names for the trade-derived metrics, written out here
+#: rather than derived from the engine's own constant: a test that asked the
+#: implementation what it should contain would agree with any answer.
+TRADE_METRIC_NAMES = (
+    "Total Trades",
+    "Total Closed Trades",
+    "Total Open Trades",
+    "Open Trade PnL",
+    "Win Rate [%]",
+    "Best Trade [%]",
+    "Worst Trade [%]",
+    "Avg Winning Trade [%]",
+    "Avg Losing Trade [%]",
+    "Avg Winning Trade Duration",
+    "Avg Losing Trade Duration",
+    "Profit Factor",
+    "Expectancy",
+)
+
+
+class RotateOneOutEqualWeight(VectorBtBacktester):
+    """A test-local sibling whose rebalances trim holdings without closing them.
+
+    On rebalance k every symbol is targeted at 1/(n-1) except symbol k % n,
+    which is targeted at zero. Two consecutive rebalances therefore RESIZE the
+    surviving holdings -- vectorbt's default exit-trades view books each resize
+    as its own closed trade -- while a symbol stays ONE continuous position
+    from entry until its turn to be dropped comes round.
+
+    That divergence is the point. On a fixture where every holding is opened
+    and closed in one go the two views coincide, and a `positions` block that
+    forgot to switch the trades type would be a byte-for-byte copy of the
+    exit-trades block and pass every assertion below. This class exists so the
+    lock cannot be satisfied vacuously.
+    """
+
+    config_cls = CrossSectionBacktestConfig
+    MARKET = US_EQUITY_MARKET
+
+    def _generate_signals(self, predictions: xr.Dataset, prices: xr.Dataset) -> xr.Dataset:
+        n_bars = prices.sizes["timestamp"]
+        n_symbols = prices.sizes["symbol"]
+        weights = np.full((n_bars, n_symbols), np.nan)
+        for k, bar in enumerate(
+            np.flatnonzero(rebalance_mask(n_bars, self.config.rebalance_periods))
+        ):
+            row = np.full(n_symbols, 1.0 / (n_symbols - 1))
+            row[k % n_symbols] = 0.0
+            weights[bar] = row
+        return xr.Dataset(
+            {"weight": (("timestamp", "symbol"), weights)},
+            coords={"timestamp": prices.timestamp.values, "symbol": prices.symbol.values},
+        )
+
+
+@pytest.fixture(scope="module")
+def rotating_run(tmp_path_factory):
+    """One real `run()` of the trimming fixture, shared by the read-only locks.
+
+    Module-scoped, so the three assertions below read one simulation instead
+    of paying for three. The autouse wandb fixture is function-scoped and
+    cannot be requested here, so the environment is set the same way
+    tests/test_backtest_persistence.py sets it for its shared runs.
+    """
+    root = tmp_path_factory.mktemp("rotating")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("WANDB_MODE", "disabled")
+        mp.setenv("WANDB_SILENT", "true")
+        config = _trained_run_config(
+            root, write_price_store(root / "store", n_bars=RUN_BARS)
+        )
+        return RotateOneOutEqualWeight(config).run()
+
+
+def test_positions_block_carries_the_trade_metrics_each_with_a_lot_level_twin(
+    rotating_run,
+):
+    """The `whole` block gains a positions sub-dict: the 13 trade metrics, no more."""
+    whole = rotating_run.metrics["whole"]
+    positions = whole["positions"]
+
+    assert isinstance(positions, dict)
+    assert set(positions) == set(TRADE_METRIC_NAMES)
+    # Every position-level row has a lot-level twin at the top level, so the
+    # two views are comparable row by row rather than being two metric sets.
+    for key in TRADE_METRIC_NAMES:
+        assert key in whole, key
+    # Portfolio-level metrics are deliberately NOT recomputed: the trades type
+    # does not affect them, so a second copy could only drift from the first.
+    for key in ("Start", "End", "Period", "Total Return [%]", "Sharpe Ratio",
+                "Max Drawdown [%]", "Total Fees Paid", "turnover"):
+        assert key not in positions, key
+    # The top level is untouched: nothing renamed, nothing removed, and D-08's
+    # no-benchmark rule still holds.
+    assert "Total Return [%]" in whole
+    assert [key for key in whole if "Benchmark" in key] == []
+
+
+def test_positions_block_is_the_positions_view_not_a_second_exit_trades_copy(
+    rotating_run,
+):
+    """The counts are re-derived from the positions accessor, independently.
+
+    This is what goes red if the implementation recomputed the exit-trades
+    stats under a new key instead of switching the trades type -- the failure
+    mode that per-call `trades_type` kwargs produce silently, because
+    `stats()` and `get_trades()` ignore them.
+    """
+    positions = rotating_run.metrics["whole"]["positions"]
+    records = rotating_run.simulation.native.positions.records_readable
+    status = records["Status"].astype(str)
+
+    assert int(positions["Total Trades"]) == len(records)
+    assert int(positions["Total Closed Trades"]) == int((status == "Closed").sum())
+    assert int(positions["Total Open Trades"]) == int((status == "Open").sum())
+
+
+def test_the_fixture_really_diverges_lot_level_from_position_level(rotating_run):
+    """Non-vacuity: on THIS run the two views genuinely disagree.
+
+    Without this the test above could pass on a fixture where each holding is
+    entered and exited once, which is precisely when an exit-trades copy is
+    indistinguishable from the positions view.
+    """
+    whole = rotating_run.metrics["whole"]
+    positions = whole["positions"]
+    lots = rotating_run.simulation.native.trades.records_readable
+    holdings = rotating_run.simulation.native.positions.records_readable
+
+    assert len(lots) > len(holdings) > 0, "the fixture must trim without closing"
+    assert int(whole["Total Closed Trades"]) > int(positions["Total Closed Trades"]) > 0
+    # The headline defect: the lot-level win rate is inflated by partial trims.
+    assert np.isfinite(whole["Win Rate [%]"])
+    assert np.isfinite(positions["Win Rate [%]"])
+    assert whole["Win Rate [%]"] != pytest.approx(positions["Win Rate [%]"])
