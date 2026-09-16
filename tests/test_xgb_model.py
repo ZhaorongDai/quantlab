@@ -36,7 +36,11 @@ from loguru import logger
 
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import BaseModel, MLModel
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.ml_model.xgb import (
+    XGBoostRegressor,
+    ccc_loss_metric,
+    pooled_ccc_loss,
+)
 from quantlab.utils.metrics import regression_panel_metrics
 
 N_TIMES = 160
@@ -366,7 +370,12 @@ def test_hyperparameters_pass_through(tmp_path, recorders):
     assert booster.num_boosted_rounds() == 7
     assert saved["learner"]["gradient_booster"]["tree_train_param"]["max_depth"] == "2"
     assert saved["learner"]["generic_param"]["nthread"] == "1"
-    assert set(recorders[0].logs[0][0]) == {"train-mae", "val-mae"}
+    assert set(recorders[0].logs[0][0]) == {
+        "train-mae",
+        "val-mae",
+        "train-ccc_loss",
+        "val-ccc_loss",
+    }
     assert "num_boost_round" not in model._params
     assert model.config.hyperparameters == hyper
 
@@ -839,3 +848,230 @@ def test_booster_stays_nameless_and_predictions_are_unchanged(tmp_path, recorder
     fresh = XGBoostRegressor(_config(tmp_path, fresh_factors, fresh_labels, save_dir="unused"))
     fresh.load(_only_checkpoint(tmp_path / "ckpt"))
     assert np.array_equal(fresh.predict(test_x), trained.predict(test_x))
+
+
+# --------------------------------------------------------------------------
+# Pooled CCC loss as the early-stopping criterion (scope addition 2026-09-15)
+# --------------------------------------------------------------------------
+#
+# `1 - ccc` on the validation set replaces RMSE as the DECISION metric, while
+# rmse stays first in the metric list and therefore stays an observation curve.
+# `EarlyStopping(metric_name=None)` resolves to the LAST metric, which is the
+# custom one -- so the wiring is what these tests have to prove, not just the
+# arithmetic.
+
+
+def _reference_ccc_loss(y_true, y_pred):
+    """The user's own implementation, pasted verbatim as an ORACLE (D-02).
+
+    It lives here and ONLY here: production code is free to be shaped
+    differently (D-04) as long as it returns this number on non-degenerate,
+    all-finite input. If the shipped helper is ever rewritten, this is the
+    fixed point it gets re-checked against.
+    """
+    mu_true = np.mean(y_true)
+    mu_pred = np.mean(y_pred)
+    var_true = np.var(y_true)
+    var_pred = np.var(y_pred)
+    cov = np.mean((y_pred - mu_pred) * (y_true - mu_true))
+    ccc = 2 * cov / (var_pred + var_true + (mu_pred - mu_true) ** 2)
+    return 1 - ccc
+
+
+@pytest.mark.parametrize(
+    "seed, n", [(0, 3), (1, 50), (2, 500), (3, 10_000)], ids=["n3", "n50", "n500", "n10k"]
+)
+def test_pooled_ccc_loss_equals_the_reference(seed, n):
+    """Several seeds and sizes: the shipped helper returns the reference's
+    number, not merely a number that correlates with it."""
+    rng = np.random.default_rng(seed)
+    y_true = rng.standard_normal(n)
+    y_pred = 0.4 * y_true + 0.6 * rng.standard_normal(n)
+
+    assert pooled_ccc_loss(y_true, y_pred) == pytest.approx(
+        _reference_ccc_loss(y_true, y_pred), rel=1e-12
+    )
+
+
+def test_pooled_ccc_loss_equals_the_reference_on_a_heavily_shrunk_prediction():
+    """Prediction variance ~1e-6 of the label's -- the regime where CCC and
+    RMSE disagree most, because RMSE rewards the shrinkage CCC punishes."""
+    rng = np.random.default_rng(4)
+    y_true = rng.standard_normal(400)
+    y_pred = 0.001 * y_true
+
+    assert pooled_ccc_loss(y_true, y_pred) == pytest.approx(
+        _reference_ccc_loss(y_true, y_pred), rel=1e-12
+    )
+
+
+def test_pooled_ccc_loss_equals_the_reference_under_a_large_mean_offset():
+    """A big location error feeds the `(mu_pred - mu_true)**2` term; an
+    implementation that dropped it would still pass the two tests above."""
+    rng = np.random.default_rng(5)
+    y_true = rng.standard_normal(400)
+    y_pred = y_true + 50.0
+
+    assert pooled_ccc_loss(y_true, y_pred) == pytest.approx(
+        _reference_ccc_loss(y_true, y_pred), rel=1e-12
+    )
+
+
+#: Pinned by a search over seeds 10..59 driving this exact harness (noise
+#: label, 300 rounds, patience 10): on seed 17 the `val-ccc_loss` argmin is
+#: round 65 while the `val-rmse` argmin is round 45 -- a 20-round gap, so the
+#: divergence assertion below is not riding on a rounding accident. Many seeds
+#: do NOT diverge (13 puts both argmins on round 1), which is why this constant
+#: is a measured choice and not an arbitrary one.
+CRITERION_SEED = 17
+CRITERION_ROUNDS = 300
+CRITERION_PATIENCE = 10
+
+
+def test_early_stopping_selects_the_round_minimising_val_ccc_loss(tmp_path, recorders):
+    """`best_iteration` is the argmin of the recorded `val-ccc_loss` series and
+    `best_score` is that minimum -- so the custom metric really is what
+    `EarlyStopping` watches (T-weq-01).
+
+    The last assertion is what stops this test being vacuous. The seed is
+    pinned precisely because on it the `val-rmse` argmin lands on a DIFFERENT
+    round: without that arm, a change that silently reverted the criterion to
+    RMSE would leave every other assertion here green.
+    """
+    factors, labels = _panels(seed=CRITERION_SEED, signal=False)
+    _train(
+        tmp_path,
+        factors,
+        labels,
+        early_stopping=True,
+        patience=CRITERION_PATIENCE,
+        hyperparameters={"num_boost_round": CRITERION_ROUNDS},
+    )
+
+    booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
+    rec = recorders[0]
+    ccc_curve = [row["val-ccc_loss"] for row, _ in rec.logs]
+    rmse_curve = [row["val-rmse"] for row, _ in rec.logs]
+
+    assert booster.best_iteration == int(np.argmin(ccc_curve))
+    assert booster.best_score == pytest.approx(ccc_curve[booster.best_iteration])
+    assert int(np.argmin(rmse_curve)) != booster.best_iteration
+
+
+def test_every_round_records_both_ccc_curves(tmp_path, recorders):
+    """`train-ccc_loss` / `val-ccc_loss` reach the W&B rows beside the rmse
+    ones, on every round.
+
+    This is the proof that `_WandbEvalCallback` needed ZERO changes: it walks
+    `evals_log` generically, so a custom metric shows up by itself. If this
+    ever fails, the callback is what to look at -- and any edit to it belongs
+    in a summary with a reason, not a silent fix.
+    """
+    factors, labels = _panels(seed=61)
+    _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 12})
+
+    rec = recorders[0]
+    assert len(rec.logs) == 12
+    assert all({"train-ccc_loss", "val-ccc_loss"} <= set(row) for row, _ in rec.logs)
+    assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in rec.logs)
+
+
+def test_a_better_tracking_prediction_scores_a_smaller_loss():
+    """Lower is better -- which is why `EarlyStopping` is left at its default
+    `maximize=False` and `maximize=True` is never passed."""
+    rng = np.random.default_rng(62)
+    target = rng.standard_normal(300)
+    tracks_well = target + 0.05 * rng.standard_normal(300)
+    tracks_poorly = 0.1 * target + 2.0 * rng.standard_normal(300)
+
+    assert pooled_ccc_loss(target, tracks_well) < pooled_ccc_loss(target, tracks_poorly)
+
+
+def test_a_perfect_prediction_scores_about_zero():
+    rng = np.random.default_rng(63)
+    target = rng.standard_normal(300)
+
+    assert pooled_ccc_loss(target, target) == pytest.approx(0.0, abs=1e-12)
+
+
+#: Every degenerate input must land on 1.0 -- the WORST loss. NaN would make
+#: each `EarlyStopping` comparison false (NaN compares false against
+#: everything) and silently disable early stopping; 0.0 would record a fully
+#: degenerate round as the best one. Both fail quietly, hence T-weq-03.
+DEGENERATE_CASES = [
+    ("constant-prediction", np.array([1.0, 2.0, 3.0, 4.0]), np.full(4, 0.5)),
+    ("single-row", np.array([1.0]), np.array([2.0])),
+    ("both-constant-and-equal", np.full(3, 3.0), np.full(3, 3.0)),
+    ("all-nan-prediction", np.array([1.0, 2.0, 3.0]), np.full(3, np.nan)),
+]
+
+
+@pytest.mark.parametrize(
+    "y_true, y_pred",
+    [(case[1], case[2]) for case in DEGENERATE_CASES],
+    ids=[case[0] for case in DEGENERATE_CASES],
+)
+def test_degenerate_input_returns_the_worst_loss_and_never_warns(y_true, y_pred):
+    """Must not raise and must not emit a numpy RuntimeWarning.
+
+    `np.errstate(..., "raise")` is what makes that second half real: a 0/0 that
+    happens to produce NaN cannot slip through as a pass. `quantlab/utils/
+    metrics.py` holds itself to the same "no RuntimeWarning on the empty case"
+    bar.
+    """
+    with np.errstate(invalid="raise", divide="raise", over="raise"):
+        assert pooled_ccc_loss(y_true, y_pred) == 1.0
+
+
+def test_the_adapter_scores_column_zero_of_a_two_label_dmatrix():
+    """Pins the layout measured in Task 1: `get_label()` hands back
+    `(n_rows, n_labels)` ROW-major, so column 0 is the primary label.
+
+    The expected value is computed on `stored`, the labels as the DMatrix
+    actually holds them: `xgb.DMatrix` stores labels as **float32**, so a
+    float64 array handed in comes back out rounded (measured: the two scores
+    differ in the 8th significant digit). The adapter scores what the DMatrix
+    carries; only the label side is rounded, because `predt` never round-trips
+    through xgboost.
+
+    The last assertion is what makes the orientation load-bearing. Note that
+    `reshape(-1, order="F")[:n]` is NOT a wrong reading -- it equals column 0 --
+    so the misreading asserted against is the C-order one, which is what a
+    reshape to `(n_labels, n_rows)` produces: the first `n` entries of the
+    row-major flat vector, interleaving both labels.
+    """
+    rng = np.random.default_rng(64)
+    n = 40
+    labels = np.column_stack(
+        [rng.standard_normal(n), rng.standard_normal(n) + 10.0]
+    )
+    predictions = np.column_stack(
+        [rng.standard_normal(n), rng.standard_normal(n) - 5.0]
+    )
+    dmatrix = xgb.DMatrix(rng.standard_normal((n, 3)), label=labels)
+    stored = labels.astype(np.float32).astype(np.float64)
+
+    name, value = ccc_loss_metric(predictions, dmatrix)
+
+    assert name == "ccc_loss"
+    assert value == pytest.approx(
+        _reference_ccc_loss(stored[:, 0], predictions[:, 0]), rel=1e-12
+    )
+    assert value != pytest.approx(
+        _reference_ccc_loss(stored[:, 1], predictions[:, 1])
+    )
+    assert value != pytest.approx(
+        _reference_ccc_loss(
+            stored.reshape(-1)[:n], predictions.reshape(-1)[:n]
+        )
+    )
+
+
+def test_the_adapter_refuses_a_prediction_of_the_wrong_size():
+    """Element counts that disagree are a wiring bug, not something to
+    broadcast: a broadcast score looks plausible and is computed from
+    misaligned vectors."""
+    dmatrix = xgb.DMatrix(np.zeros((4, 2)), label=np.arange(4.0))
+
+    with pytest.raises(ValueError, match="4 label values but the prediction has 3"):
+        ccc_loss_metric(np.zeros(3), dmatrix)

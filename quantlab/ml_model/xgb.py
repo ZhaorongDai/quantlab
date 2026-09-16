@@ -30,6 +30,88 @@ _PARAM_ALIASES: dict[str, str] = {
 _IMPORTANCE_TYPES: tuple[str, ...] = ("weight", "gain", "total_gain")
 
 
+def pooled_ccc_loss(y_true, y_pred) -> float:
+    """池化（pooled）一致性相关系数损失 `1 - ccc`，越小越好。
+
+    ccc = 2·cov / (var_pred + var_true + (mu_pred - mu_true)²)，其中 cov 与两个
+    方差都是**总体矩**（`np.var` 默认 ddof=0）。改成 ddof=1 会改变数值，别改。
+
+    「池化」指把传进来的两个向量当成一个整体算一次，不分时间截面——`_to_rows`
+    交给它的行早就丢掉了日期归属，这个形状天然就是池化的。
+
+    **这个形式由用户明确选定，不是疏忽**；它自带两点代价，写在这里免得日后被当成
+    bug「修」掉：所有 `(t, s)` 行一起算、不做截面内比较，所以它仍然会奖励「预测对
+    每天全市场的共同涨跌」；分母里的 `var_pred + var_true` 会惩罚一个被正确收缩的
+    预测——低信噪比数据里，最优预测的方差本来就远低于标签方差。早停判据这一侧的
+    说明见 `XGBoostRegressor` 类 docstring 的「早停」段落。
+
+    降级约定（对全部有限、非退化的输入不改变数值）：
+
+    - 先取两边**同时有限**的位置，与 `quantlab/utils/metrics.py:_joint` 的惯例一致；
+    - 有效位置少于 1 个，或分母恰好为 0（两个向量都是常数且相等，ccc 此时无定义）
+      时返回 `1.0`，即最差的损失。返回 NaN 会让 `EarlyStopping` 的每一次比较都为
+      假（NaN 与任何数比较都是 False），早停就此失灵；返回 0.0 更糟，会把一轮完全
+      退化的结果记成最优。两者都会安静地毁掉早停，所以退化一律取最差值。
+    """
+    true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    if true.shape != pred.shape:
+        raise ValueError(
+            f"pooled_ccc_loss expects two vectors of the same length, got "
+            f"{true.shape} vs {pred.shape}"
+        )
+
+    mask = np.isfinite(true) & np.isfinite(pred)
+    if int(mask.sum()) < 1:
+        return 1.0
+    true = true[mask]
+    pred = pred[mask]
+
+    mu_true = np.mean(true)
+    mu_pred = np.mean(pred)
+    var_true = np.var(true)
+    var_pred = np.var(pred)
+    cov = np.mean((pred - mu_pred) * (true - mu_true))
+
+    denominator = var_pred + var_true + (mu_pred - mu_true) ** 2
+    if denominator == 0.0:
+        return 1.0
+    return float(1.0 - 2.0 * cov / denominator)
+
+
+def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]:
+    """`xgb.train(custom_metric=...)` 适配器：返回 `("ccc_loss", 损失值)`。
+
+    xgboost 3.4.1 的 `custom_metric` 契约是 `(predt, dtrain) -> (名字, 数值)`，
+    标签只能从 `dtrain.get_label()` 拿，而用户的参考实现吃的是 `(y_true, y_pred)`
+    两个向量，所以这层适配是免不了的。
+
+    **多输出标签的实测布局（xgboost 3.4.1，3 行 2 标签的 DMatrix 实测）**：
+    `get_label()` 直接返回 `(n_rows, n_labels)` 的**二维**数组，行优先——标签
+    `[[10,20],[11,21],[12,22]]` 原样取回 `[[10,20],[11,21],[12,22]]`，不是先前
+    以为的展平向量。单标签时返回的是 `(n_rows,)` 一维。`reshape(num_row(), -1)`
+    把两种形状统一成 `(n_rows, n_labels)`，对二维那种是恒等操作。
+
+    只给**主标签**（最后一维第 0 个）打分，与 `MLModel._compute_metrics` 的
+    `pred[..., 0]` 以及本类「多标签」文档段落的约定一致。本项目当前是单标签，
+    第 0 列就是整个向量，数值与参考实现逐位相同。
+
+    标签与预测的元素个数对不上时抛 `ValueError` 点名两个数字，绝不广播——广播出
+    来的分数看着正常，却是拿错位的两列算的。
+    """
+    label = np.asarray(dtrain.get_label(), dtype=np.float64)
+    pred = np.asarray(predt, dtype=np.float64)
+    if label.size != pred.size:
+        raise ValueError(
+            f"ccc_loss: the DMatrix carries {label.size} label values but the "
+            f"prediction has {pred.size}; they must match."
+        )
+    n_rows = dtrain.num_row()
+    return "ccc_loss", pooled_ccc_loss(
+        label.reshape(n_rows, -1)[:, 0], pred.reshape(n_rows, -1)[:, 0]
+    )
+
+
 class _WandbEvalCallback(xgb.callback.TrainingCallback):
     """逐轮把 xgboost 的 eval 结果写进模型头**当前**的 wandb run。
 
@@ -71,10 +153,20 @@ class XGBoostRegressor(MLModel):
         `xgb.callback.EarlyStopping(rounds=patience, data_name="val", save_best=True)`：
 
         - patience 按 **boosting 轮数**计，不是 epoch；
-        - 判据是验证集上的 `eval_metric`（默认 RMSE），**不是 IC**；
+        - 判据是验证集上的池化 CCC 损失 `ccc_loss`（`1 - ccc`，见 `pooled_ccc_loss`），
+          **不是 RMSE，也不是 IC**：本模块的 `ccc_loss_metric` 经
+          `xgb.train(custom_metric=...)` 注册，而内建的 `eval_metric`（默认 rmse）
+          排在每个数据集指标列表的**第一个**、只当观测曲线用，自定义指标排在
+          **最后一个**，`EarlyStopping(metric_name=None)` 解析到的正是最后一个。
+          它是**损失、越小越好**，所以不传 `maximize`（默认 `maximize=False` 正是
+          对的）；
+        - 「池化」这个形式由用户明确选定，它自带的代价记在 `pooled_ccc_loss` 的
+          docstring 里；
         - `save_best=True` 让返回的 Booster 已截断到 `best_iteration + 1` 棵树，
           落盘的 `.joblib` 就是最优模型；`best_iteration` / `best_score` 同时写进
-          wandb summary。
+          wandb summary。**注意 `best_score` 现在是一个 CCC 损失**，与本次改动之前
+          任何一次运行记录的 `best_score`（那时是 RMSE）都不可比——键名、类型都没
+          变，只有含义变了。
 
         没有可用的验证段时记一条 warning，跳过早停，训练满 `num_boost_round` 轮。
 
@@ -94,7 +186,8 @@ class XGBoostRegressor(MLModel):
         主标签，即最后一维第 0 个标签。
 
     wandb
-        逐轮曲线 `train-rmse` / `val-rmse`（连字符，`step=iteration`）；训练结束
+        逐轮曲线 `train-rmse` / `val-rmse` 与 `train-ccc_loss` / `val-ccc_loss`
+        （连字符，`step=iteration`）；训练结束
         summary 里是 `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`
         （下划线），以及早停启用时的 `best_iteration` / `best_score`。
 
@@ -279,6 +372,7 @@ class XGBoostRegressor(MLModel):
             dtrain,
             num_boost_round=self._num_boost_round,
             evals=evals,
+            custom_metric=ccc_loss_metric,
             callbacks=callbacks,
             verbose_eval=False,
         )

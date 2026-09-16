@@ -483,7 +483,7 @@ WANDB_MODE=disabled uv run python example/min_model.py
 | 路径 | 逐步曲线（`log(step=...)`） | 训练结束写 summary | 其他 |
 |---|---|---|---|
 | DL 头 | 头自己在 `_*_one_batch` 里记，`step=epoch` | 无统一约定 | — |
-| XGB 头 | 每轮 `train-rmse` / `val-rmse`（**连字符**，xgboost 原生写法，`step=iteration`，从 0 连续） | `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`（**下划线**），早停启用时另有 `best_iteration` / `best_score`；每个因子的重要性 `importance_{weight,gain,total_gain}/{因子名}`（2026-09-15，G-03.7-9；从未分裂的因子为 0，只进 summary） | run config 里的 `resolved_hyperparameters` |
+| XGB 头 | 每轮 `train-rmse` / `val-rmse` 与 `train-ccc_loss` / `val-ccc_loss`（**连字符**，xgboost 原生写法，`step=iteration`，从 0 连续） | `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`（**下划线**），早停启用时另有 `best_iteration` / `best_score`；每个因子的重要性 `importance_{weight,gain,total_gain}/{因子名}`（2026-09-15，G-03.7-9；从未分裂的因子为 0，只进 summary） | run config 里的 `resolved_hyperparameters` |
 | `train_cv`（ML） | 每折一个 run，内容同上 | 另开一个名为 `{cls}_cv_summary` 的 run：`cv_mean_test_*` 与 `cv_n_folds` | DL 的 `_fit` 不返回指标，不开这个 run |
 
 两种键写法是刻意区分的：连字符的是曲线，下划线的是最终值。
@@ -934,7 +934,7 @@ results = cv.train_cv(train_periods=100_000, gap_periods=30, parallel=True, njob
 | `subsample` | `0.8` | |
 | `colsample_bytree` | `0.8` | |
 | `device` | `"cpu"` | |
-| `eval_metric` | `"rmse"` | 逐轮曲线与早停判据 |
+| `eval_metric` | `"rmse"` | 只进逐轮曲线；早停判据是自定义的 `ccc_loss`，见「早停判据」 |
 | `seed` | `config.random_seed` | 不在字典里，合并时注入 |
 | `nthread` | **不设** | 交给 xgboost 默认（用满全部核） |
 
@@ -989,16 +989,26 @@ config.json resolved_hyperparameters: {'objective': 'reg:squarederror', 'tree_me
 - `config.early_stopping=True` 且有可用验证段时，追加
   `xgb.callback.EarlyStopping(rounds=early_stopping_patience, data_name="val", save_best=True)`。
 - **patience 按 boosting 轮数计**，不是 epoch。
-- **判据是验证集上的 `eval_metric`，默认 RMSE**——不是 IC。对「x = 因子、y = 未来收益」的回归，
-  RMSE 是和训练目标一致的默认；IC / RankIC 只在训练结束时算出来记进 summary，**不参与早停**。
+- **判据是验证集上的池化 CCC 损失 `ccc_loss`（`1 - ccc`）**——不是 RMSE，也不是 IC。它由
+  `quantlab/ml_model/xgb.py:ccc_loss_metric` 经 `xgb.train(custom_metric=...)` 注册。
+  它是**损失，越小越好**，所以不传 `maximize`（默认的 `maximize=False` 正是对的）。
+  IC / RankIC 仍然只在训练结束时算出来记进 summary，**不参与早停**。
+- `eval_metric`（rmse）排在每个数据集指标列表的**第一个**，自定义指标排在**最后一个**，
+  所以 rmse 退化成纯观测曲线，被 `EarlyStopping` 解析到的是 `ccc_loss`（下一条）。
+- W&B summary 里的 `best_score` 现在是一个 CCC 损失，**与本次改动之前任何一次运行记录的
+  `best_score` 都不可比**——那时它是 RMSE。键名和类型都没变，只有含义变了。
+- **「池化」是用户明确选定的形式，不是疏忽。** `ccc_loss` 把验证段所有 `(t, s)` 行当成一个
+  整体算一次，不分时间截面：它因此仍然会奖励「预测对每天全市场的共同涨跌」，而且它的分母
+  会惩罚一个被正确收缩的预测（低信噪比数据里，最优预测的方差远低于标签方差）。这两点是这个
+  形式自带的代价，选定时已经知道并接受。
 - `eval_metric` 给成列表时，`EarlyStopping` 用的是**最后一个**：它的 `metric_name=None` 解析为
   `list(data_log.keys())[-1]`（xgboost 3.4.1 `xgboost/callback.py` 第 482 行）。
 - 早停触发时，逐轮曲线的最后一个 step 是 `best_iteration + patience`，即触发停止的那一轮。
   W&B 回调必须排在 `EarlyStopping` **之前**：回调容器短路调用，排在后面会漏掉这一轮（实测）。
 - `early_stopping=True` 但 `val_size=0`（或验证段标签全 NaN）：记 warning，跳过早停，跑满 `num_boost_round`。
-- 以后想按 IC 早停，路子是 xgboost 的 `custom_metric`（在验证集上算截面 IC）加
-  `EarlyStopping(metric_name=..., maximize=True)`。**现在没有实现**：截面 IC 需要知道每行属于哪个时间戳，
-  得先把分组信息带进自定义指标。
+- `custom_metric` 这个钩子**已经在用**了，就是上面的 `ccc_loss`。仍然**没有**实现的是按
+  **截面 IC** 早停：截面 IC 要知道每行属于哪个时间戳，而 `_to_rows` 展平成行时已经把日期归属
+  丢掉了，分组信息还没有带进自定义指标。
 
 ### ML 交叉验证
 
