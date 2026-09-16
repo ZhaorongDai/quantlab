@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 Phase: 3 — Factor Computation (KunQuant + Polars)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-15 - Completed quick task 260915-ocw: Add CrossSectionalZScore KunQuant op
+Last activity: 2026-09-15 - Completed quick task 260915-p91: Add point-in-time universe filter as a factor wrapper (verification passed)
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -337,6 +337,7 @@ Recent decisions affecting current work:
 | 260914-lno | Split BaseModel into DLModel/MLModel with shared public train/train_cv/load/predict and one CV fold generator; add XGBoostRegressor in ml_model (native early stopping, per-round wandb, sklearn alias normalization, resolved_hyperparameters), panel IC/RankIC metrics, and a macOS-only OMP_NUM_THREADS=1 test guard for the torch/xgboost libomp clash | 2026-09-14 | 5b01c65 | [260914-lno-basemodel-mlconfig-dl-save-load-predict-](./quick/260914-lno-basemodel-mlconfig-dl-save-load-predict-/) |
 | 260915-o5y | Add Timer logs to key model training and backtest steps (collect merge, to_array, fit_model, evaluate, align_and_predict, simulate) — logging only, no behaviour change | 2026-09-15 | 35a4601 | [260915-o5y-add-timer-logs-to-key-model-training-and](./quick/260915-o5y-add-timer-logs-to-key-model-training-and/) |
 | 260915-ocw | Add CrossSectionalZScore KunQuant op (GenericCrossSectionalOp, NaN-aware, ddof=1) with batch/stream tests vs pandas; not wired into any factor class (US-equity factors stay raw, D-09) | 2026-09-15 | 6a8f8dd | [260915-ocw-add-crosssectionalzscore-kunquant-op](./quick/260915-ocw-add-crosssectionalzscore-kunquant-op/) |
+| 260915-p91 | Add UniverseFilteredFactor: a drop-in KunQuant factor/label wrapper applying a point-in-time universe (ticker rule + RAW price ≥ $5 + 20-bar dollar volume ≥ $1M) by rewriting cross-sectional op inputs and masking outputs at t; model layer and backtester untouched (verified 11/11) | 2026-09-15 | 0ae8e8d | [260915-p91-add-point-in-time-rule-based-universe-fi](./quick/260915-p91-add-point-in-time-rule-based-universe-fi/) |
 
 ### Roadmap Evolution
 
