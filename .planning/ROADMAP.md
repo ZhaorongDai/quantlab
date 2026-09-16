@@ -138,14 +138,24 @@ Plans:
 
 ### Phase 03.8: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** A reader of a backtest report can compare in-sample against out-of-sample at a glance, see how each month of each year performed, and trust the trade statistics. The metric table gains an `out_of_sample - in_sample` delta column driven purely by value type with no hardcoded metric list; a year-by-month return heatmap joins the surviving monthly bars; and the trade metrics move wholly to the position view — one entry-to-flat round trip per symbol, ending the ~6.5-point win-rate overstatement that partial trims cause — with `order_count` added to the whole-window block so fill activity is still reported.
+**Requirements**: BT-01 (adjacent — this phase sharpens 关键指标/回测结果, it does not close BT-01). No REQ-IDs are mapped to this inserted phase; scope is CONTEXT.md items 1-3 and decisions D-01..D-05.
 **Depends on:** Phase 3
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 03.8 to break down)
+**Wave 1**
+
+- [ ] 03.8-01-PLAN.md — Tracer: positions-only trade metrics end to end (one `replace()` call, `SimulationResult.trades` follows, `whole["order_count"]`, nested `positions` block deleted, stale docstrings/note/doc rewritten)
+
+**Wave 2** *(blocked on Wave 1: shares `tests/test_backtest_persistence.py`, and the delta census needs the final metrics key set)*
+
+- [ ] 03.8-02-PLAN.md — In/out-of-sample delta column: type-based `_delta` predicate (D-01), fourth table column, leaf locks fed raw pandas objects, real-run census of both halves
+
+**Wave 3** *(blocked on Wave 2: shares `quantlab/utils/backtest_report.py` and both report test files)*
+
+- [ ] 03.8-03-PLAN.md — Monthly-return heatmap as a second plotly div (D-04), shared `_monthly_series` helper, `_second_figure_traces` parser, month/year alignment locks
 
 ### Phase 03.7: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (INSERTED)
 
