@@ -452,8 +452,16 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 | `equity.zarr` | `value`（组合净值）与 `returns`，维度 `timestamp` |
 | `liquidations.json` | 强制平仓记录的 list |
 | `metrics.json` | `whole`、`in_sample`、`out_of_sample`、`training_window`、`in_sample_range`、`out_of_sample_ranges`、`notes` |
-| `report.html` | 一个自包含的交互报告（D-23）。页首用文字写清日期与设置：回测窗口的首尾 bar 标签与 bar 数、bar 间隔、训练窗口、样本内区间、样本外各段，以及 `model_mode` / `rebalance_periods` / `top_n` / `direction` / `init_cash` / `fees`；这些日期与同目录 `metrics.json` 的字符串**逐字节相同**（页面直接取已经算好的 bar 标签，不重新格式化时间戳）。接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表。再往下是共用时间轴的三栏图：净值（含强平标记）、回撤（`value / 历史最高 - 1`）、按自然月复利的月度收益柱；净值栏带 log / 线性切换按钮，默认线性。`in_sample_range` 仍然涂灰，底部仍然印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
+| `report.html` | 一个自包含的交互报告（D-23）。页首用文字写清日期与设置：回测窗口的首尾 bar 标签与 bar 数、bar 间隔、训练窗口、样本内区间、样本外各段、最深回撤那一段（`Deepest drawdown span`：起止 bar 标签、长度、深度、有没有修复），以及 `model_mode` / `rebalance_periods` / `top_n` / `direction` / `init_cash` / `fees`；这些日期与同目录 `metrics.json` 的字符串**逐字节相同**（页面直接取已经算好的 bar 标签，不重新格式化时间戳）。接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表。再往下是共用时间轴的三栏图：净值（含强平标记，以及最深回撤的一对三角——**向上三角**标它开始的那个 bar、**向下三角**标它结束的那个 bar）、回撤（`value / 历史最高 - 1`）、按自然月复利的月度收益柱；净值栏带 log / 线性切换按钮，默认线性。`in_sample_range` 仍然涂灰，底部仍然印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
 | `fingerprint.json` | 本次读到的数据的指纹（D-27） |
+
+**净值图上那对三角标的是「最深」的那一次回撤（2026-09-15，quick 260915-v6i）。** 向上三角是它开始的 bar，向下三角是它结束的 bar。
+三角之间的长度一律按**交易日（bar 数）**计，不是日历天：时间轴跨过的日历天数比这个数大，拿轴去量会读出一个不一样的数。
+挑中的是**最深**的那一条回撤记录（按 `valley_val / peak_val - 1` 选），而**不是**持续最久的那一条——指标表里的
+`Max Drawdown Duration` 量的才是「最久」，两者经常不是同一段回撤（实测过的一段净值：三条记录深度 `[-36.4%, -5.2%, -5.9%]`、
+时长 `[1, 5, 1]` 个 bar，最深的那条只持续 1 个 bar，最久的那条有 5 个）。所以页面上这两个数对不上是正常的，`notes` 里也写了这件事。
+最深那次回撤直到最后一个 bar 都没有修复时，页首那一行和三角的悬浮文字都会写明「没有修复」，不会说成已经结束。
+整段净值一条回撤记录都没有时，报告与加这个功能之前完全一样：不画三角，页首也不多那一行。
 
 **`data_fingerprint` 不是 `BacktestConfig` 的字段。** 它是「这次跑的时候读到了什么数据」的记录，重建时由加载器取走
 （见下一节），直接 `CrossSectionBacktestConfig(**config)` 会因为这个键 `TypeError`。
