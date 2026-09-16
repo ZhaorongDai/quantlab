@@ -124,3 +124,63 @@ do not remove it.
   trade views, so it is a real full-position loss rather than a lot-accounting
   artifact — most likely one of the 11 forced liquidations. Worth checking whether
   it is an unadjusted corporate action or a genuine delisting fill.
+
+## Planning-time decisions (2026-09-16)
+
+Settled during `/gsd-plan-phase 03.8`, after `03.8-RESEARCH.md` surfaced six open
+questions. D-01 through D-03 were decided by the user; D-04 and D-05 were taken on
+the research's recommendation. These override the corresponding Assumptions Log
+entries (A1–A5) in RESEARCH.md.
+
+- **D-01 — The delta column differences everything finite and non-boolean, ratio
+  metrics included.** The predicate is purely type-based: `numbers.Real`, `bool`
+  explicitly excluded (`bool` is an `int` subclass, `True - False == 1`), and
+  `math.isfinite`. No hardcoded metric list anywhere. The column header states the
+  operation (`out_of_sample - in_sample`) so the cell reads as arithmetic, not as a
+  claim that the difference is meaningful. **This supersedes the paragraph above
+  that calls Sharpe / Calmar / Profit Factor "not meaningfully subtractable"** —
+  they are `float`s, type-indistinguishable from `Total Return [%]`, and excluding
+  them would require exactly the hardcoded list this file forbids and
+  `test_a_mapping_with_every_shipped_key_deleted_still_renders` locks. The
+  genericity constraint wins.
+
+  Note the predicate must run against the RAW in-memory objects, not the JSON
+  shape: `quantlab/base/backtest.py` writes `to_jsonable(metrics)` to
+  `metrics.json` but hands the SAME un-transformed `metrics` object to
+  `write_backtest_report`. At render time `_cell` sees live `pd.Timedelta` /
+  `pd.Timestamp` / `pd.NaT` / `np.float64('nan')` — not strings and `None`. A
+  predicate written to the JSON shape would silently fail to skip every metric it
+  exists to skip.
+
+- **D-02 — The positions switch is total: one vocabulary, page-wide.** The top
+  level, the `in_sample` / `out_of_sample` slice counts
+  (`closed_trade_count` / `open_trade_count`, today derived from
+  `SimulationResult.trades` = exit trades), and the now-redundant nested
+  `positions` block all move to the position view in the same commit. The nested
+  block is deleted. Accepted consequence: numbers the user may have been tracking
+  change (Win Rate ~57% → ~51% — the overstated figure was the one being
+  dropped). This keeps the two reconciliation identities at
+  `tests/test_backtest_metrics.py:518-522` green rather than deleting them.
+
+- **D-03 — The `_cell(pd.NaT)` / `metrics.json` `null` mismatch is OUT of scope.**
+  Pre-existing, reachable via a one-bar in-sample slice, and a two-line fix — but
+  folding it into the delta work would blur what item 1's tests prove. File it as
+  a separate quick task after this phase closes.
+
+- **D-04 — The monthly-return bar row STAYS.** The heatmap is added beside it, not
+  in place of it; the two answer different questions and the cost is ~8 KB.
+
+- **D-05 — The delta column is report-only.** It is NOT written to `metrics.json`
+  and NOT added to the wandb summary: a derived value with no consumer.
+
+Two further research findings that constrain the plans and are not decisions but
+facts:
+
+- The heatmap must be its own `go.Figure` rendered as a SECOND
+  `include_plotlyjs=False` div, **not** a fourth subplot row:
+  `make_subplots(rows=4, shared_xaxes=True)` sets `matches='x4'` on the three
+  existing time axes, binding them to the heatmap's categorical month axis.
+- Because both test files' trace parsers anchor on the FIRST `Plotly.newPlot(`,
+  the four exact-trace-set and pixel-budget locks stay green by construction —
+  which means a second-div parser (`_second_figure_traces`) is **mandatory**, or
+  the heatmap ships with zero test coverage.
