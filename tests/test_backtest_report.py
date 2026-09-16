@@ -300,6 +300,14 @@ def _traces(html: str) -> dict[str, dict]:
     return {trace["name"]: trace for trace in traces}
 
 
+def _layout(html: str) -> dict:
+    """The layout object plotly embeds: the JSON value after the trace array."""
+    start = html.index("[", html.index("Plotly.newPlot("))
+    _, end = json.JSONDecoder().raw_decode(html, start)
+    layout, _ = json.JSONDecoder().raw_decode(html, html.index("{", end))
+    return layout
+
+
 def test_every_trace_carries_a_name(tmp_path):
     """A trace without `name` raises KeyError in the persisted-report locks."""
     html = _write(
@@ -398,6 +406,42 @@ def test_the_figure_draws_exactly_these_five_traces(tmp_path):
         "deepest_drawdown_valley",
         "deepest_drawdown_end",
     }
+
+
+def test_the_layout_gives_every_axis_title_room_to_render(tmp_path):
+    """D-03: an explicit height, short titles, and a per-row pixel budget.
+
+    The overlap this locks was VERTICAL. A y-axis title is rotated 90
+    degrees, so its rendered length is measured against its own axis height.
+    Without an explicit `height` the div falls back to plotly's 450px
+    default, which leaves rows 2 and 3 about 44px tall -- shorter than the
+    titles they carry, so all three collided.
+
+    The height alone is not asserted, because a later `row_heights` or margin
+    change could re-create the collision at any height. The per-row budget is
+    what actually encodes the rule, and it goes red at the old 450px default.
+    """
+    html = _write(tmp_path, returns=_returns(), drawdown_span=_span())
+    layout = _layout(html)
+
+    assert layout.get("height") is not None, "an inherited 450px default is the bug"
+    titles = (("yaxis", "value"), ("yaxis2", "drawdown"), ("yaxis3", "monthly return"))
+    for axis, title in titles:
+        assert layout[axis]["title"]["text"] == title, axis
+
+    # The plotting area is the figure height less its margins. plotly's own
+    # defaults are t=100 / b=80; only `b` is overridden here, so the top
+    # default is what the figure really uses.
+    plot_area = layout["height"] - layout["margin"].get("t", 100) - layout["margin"]["b"]
+
+    # About 6.5px per character at the default font size, the title being
+    # rotated onto the vertical axis. Derived from the measured figures in
+    # the task's F-5: roughly 33 / 52 / 91px of text against 328 / 140 / 140px
+    # of row -- rather than a bare pixel constant with no way to re-derive it.
+    for axis, title in titles:
+        domain = layout[axis]["domain"]
+        row_px = (domain[1] - domain[0]) * plot_area
+        assert row_px >= len(title) * 6.5, (axis, row_px, title)
 
 
 # ---------------------------------------------------------------------------

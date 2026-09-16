@@ -46,6 +46,12 @@ The equity trace keeps the RAW persisted portfolio value on `y`, identical to
 rejected: it would break the page's correspondence with the persisted equity
 and would silently mislabel the axis whenever `init_cash` is unknown.
 
+The row-1 axis title is therefore just `value`. It used to carry a
+parenthetical announcing the hover text, but that merely described the
+`customdata` the trace already shows, so no information was lost when quick
+260916-hro dropped it -- and the rotated title got back the vertical room it
+needs.
+
 The page loads plotly.js from the CDN (`include_plotlyjs="cdn"`). That keeps
 each run directory at a few kilobytes instead of several megabytes per report;
 the cost is that viewing the page needs network access. The page contains only
@@ -193,10 +199,21 @@ def write_backtest_report(
             showarrow=False,
             align="left",
         )
-    fig.update_yaxes(title_text="value (x initial capital on hover)", row=1, col=1)
+    fig.update_yaxes(title_text="value", row=1, col=1)
     fig.update_yaxes(title_text="drawdown", tickformat=".1%", row=2, col=1)
     fig.update_yaxes(title_text="monthly return", tickformat=".1%", row=3, col=1)
+    # `height` is load-bearing, not decoration (quick 260916-hro): a y-axis
+    # title is rotated 90 degrees, so its rendered length is measured against
+    # the axis HEIGHT, not the width. With no explicit height the div falls
+    # back to plotly's 450px default; the top and bottom margins take 240 of
+    # that, and `row_heights` then leaves rows 2 and 3 at roughly 44px each --
+    # shorter than `drawdown` and `monthly return` render, which is what made
+    # the three titles collide. At 900 the plotting area is
+    # 900 - 100 - 140 = 660px, so the rows are about 328 / 140 / 140px and
+    # every title fits. A left margin would not have helped: the collision is
+    # between vertically stacked titles, not between a title and its ticks.
     fig.update_layout(
+        height=900,
         margin={"b": 140},
         showlegend=False,
         updatemenus=[_axis_toggle()],
