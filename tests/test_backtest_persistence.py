@@ -26,8 +26,10 @@ figure. It states its dates as TEXT -- the window and bar count, the training
 window and the in-sample/out-of-sample ranges, every string byte-identical to
 the same run's metrics.json -- carries the whole/in-sample/out-of-sample
 metrics as an HTML table, and draws named traces on three rows of a shared time
-axis: "equity" (plus "liquidation" markers when the run liquidated) on x,
-"drawdown" on x2, and "monthly_return". The in-sample range is shaded when the
+axis: "equity" on x, "drawdown" on x2, and "monthly_return". Forced
+liquidations are NOT drawn on the chart (quick 260916-hro) even for a run that
+liquidated, while liquidations.json still records them in full; that pairing
+is asserted in one place below. The in-sample range is shaded when the
 window overlaps training, there is no benchmark trace, and the note that
 short-side returns are optimistic because no borrow cost is modelled still
 appears. metrics.json carries the same note and no benchmark key.
@@ -706,19 +708,20 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
     assert '"name":"drawdown"' in html
     # The curves are the persisted run's values: drawdown = value / running max - 1.
     traces = _report_traces(html)
-    # Quick 260915-sxx grew the page from two panels to three. The fixture run
-    # liquidates, so it carries the markers too. Everything else this test
-    # proves is unchanged: the equity y values are still the persisted ones,
-    # drawdown is still value over running max minus one, the axes are still
-    # x/x2, the band is still the persisted in-sample range, and the notes
-    # still appear.
+    # Quick 260915-sxx grew the page from two panels to three. Everything this
+    # test proves is unchanged: the equity y values are still the persisted
+    # ones, drawdown is still value over running max minus one, the axes are
+    # still x/x2, the band is still the persisted in-sample range, and the
+    # notes still appear.
     # Quick 260915-v6i added the deepest-drawdown triangles. This fixture run
     # draws down (asserted below), so both markers are always present here.
+    # Quick 260916-hro removed the "liquidation" markers from the CHART. This
+    # fixture run really does liquidate, so their absence here is the point;
+    # the surviving JSON half of that split is asserted in its own test below.
     assert set(traces) == {
         "equity",
         "drawdown",
         "monthly_return",
-        "liquidation",
         "deepest_drawdown_valley",
         "deepest_drawdown_end",
     }
@@ -879,6 +882,36 @@ def test_the_page_states_the_deepest_drawdown_span_in_words(overlap_run):
     for name in ("deepest_drawdown_valley", "deepest_drawdown_end"):
         label = str(traces[name]["x"][0])[:10]
         assert label in text, (name, label, text)
+
+
+def test_the_liquidating_run_drops_the_chart_markers_and_keeps_the_json(overlap_run):
+    """D-02 in ONE test: the picture loses the markers, the data survives.
+
+    Split across two tests, either half could be deleted while the other kept
+    passing -- and that is precisely the regression worth guarding, because
+    the chart trace and liquidations.json were fed from the SAME
+    `simulation.liquidations` and only the chart was meant to lose it.
+    """
+    result = overlap_run["result"]
+    traces = _report_traces(_report_html(overlap_run))
+
+    # Non-vacuity: this run really did force a liquidation, so an absent
+    # marker cannot be explained away by there being nothing to draw.
+    assert result.simulation.liquidations, "the fixture run must liquidate"
+    assert "liquidation" not in traces
+
+    # ...and the artifact still carries every record, field for field.
+    persisted = _strict_json(result.run_dir / "liquidations.json")
+    assert len(persisted) == len(result.simulation.liquidations)
+    for stored, live in zip(persisted, result.simulation.liquidations):
+        assert set(stored) == {"symbol", "signal_timestamp", "fill_timestamp", "price"}
+        assert stored["symbol"] == live["symbol"]
+        for field in ("fill_timestamp", "signal_timestamp"):
+            assert pd.Timestamp(stored[field]) == pd.Timestamp(live[field]), field
+        assert stored["price"] == pytest.approx(live["price"], rel=1e-12)
+
+    # The run directory is untouched: still exactly the seven D-24 entries.
+    assert sorted(p.name for p in result.run_dir.iterdir()) == D24_ARTIFACTS
 
 
 def test_report_and_metrics_carry_no_benchmark(overlap_run):

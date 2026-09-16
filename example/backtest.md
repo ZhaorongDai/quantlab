@@ -452,7 +452,7 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 | `equity.zarr` | `value`（组合净值）与 `returns`，维度 `timestamp` |
 | `liquidations.json` | 强制平仓记录的 list |
 | `metrics.json` | `whole`、`in_sample`、`out_of_sample`、`training_window`、`in_sample_range`、`out_of_sample_ranges`、`notes` |
-| `report.html` | 一个自包含的交互报告（D-23）。页首用文字写清日期与设置：回测窗口的首尾 bar 标签与 bar 数、bar 间隔、训练窗口、样本内区间、样本外各段、最深回撤那一段（`Deepest drawdown (valley to recovery)`：最低点与修复这两个 bar 的标签、长度、深度、有没有修复），以及 `model_mode` / `rebalance_periods` / `top_n` / `direction` / `init_cash` / `fees`；这些日期与同目录 `metrics.json` 的字符串**逐字节相同**（页面直接取已经算好的 bar 标签，不重新格式化时间戳）。接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表。再往下是共用时间轴的三栏图：净值（含强平标记，以及最深回撤的一对三角——**向上三角**标它的**最低点**、**向下三角**标它**修复**的那个 bar）、回撤（`value / 历史最高 - 1`）、按自然月复利的月度收益柱；净值栏带 log / 线性切换按钮，默认线性。`in_sample_range` 仍然涂灰，底部仍然印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
+| `report.html` | 一个自包含的交互报告（D-23）。页首用文字写清日期与设置：回测窗口的首尾 bar 标签与 bar 数、bar 间隔、训练窗口、样本内区间、样本外各段、最深回撤那一段（`Deepest drawdown (valley to recovery)`：最低点与修复这两个 bar 的标签、长度、深度、有没有修复），以及 `model_mode` / `rebalance_periods` / `top_n` / `direction` / `init_cash` / `fees`；这些日期与同目录 `metrics.json` 的字符串**逐字节相同**（页面直接取已经算好的 bar 标签，不重新格式化时间戳）。接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表。再往下是共用时间轴的三栏图：净值（最深回撤的一对三角——**向上三角**标它的**最低点**、**向下三角**标它**修复**的那个 bar）、回撤（`value / 历史最高 - 1`）、按自然月复利的月度收益柱；净值栏带 log / 线性切换按钮，默认线性。`in_sample_range` 仍然涂灰，底部仍然印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
 | `fingerprint.json` | 本次读到的数据的指纹（D-27） |
 
 **净值图上那对三角标的是「最深」那次回撤的「最低点 -> 修复」（2026-09-16，quick 260916-hro）。**

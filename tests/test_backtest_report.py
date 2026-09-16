@@ -305,7 +305,6 @@ def test_every_trace_carries_a_name(tmp_path):
     html = _write(
         tmp_path,
         returns=_returns(),
-        liquidations=[{"symbol": "AAA", "fill_timestamp": BARS[3]}],
         drawdown_span=_span(),
     )
 
@@ -374,42 +373,31 @@ def test_no_returns_means_no_monthly_trace(tmp_path):
     assert "monthly_return" not in _traces(_write(tmp_path, returns=None))
 
 
-def test_liquidation_markers_sit_on_the_equity_curve(tmp_path):
-    html = _write(
-        tmp_path,
-        liquidations=[
-            {"symbol": "AAA", "fill_timestamp": BARS[2]},
-            {"symbol": "BBB", "fill_timestamp": BARS[5]},
-        ],
-    )
-
-    markers = _traces(html)["liquidation"]
-    assert markers["text"] == ["AAA", "BBB"]
-    np.testing.assert_allclose(
-        markers["y"], [_value().values[2], _value().values[5]], rtol=1e-12
-    )
+# Quick 260916-hro deleted three tests here -- the liquidation markers, the
+# off-axis liquidation and the no-liquidation case -- together with
+# `test_the_span_markers_are_not_the_liquidation_colour` below. All four
+# exercised the `liquidations` parameter, which no longer exists, so they can
+# no longer be WRITTEN rather than merely being redundant. What replaces them
+# is the exact-set lock below, which goes red if a marker trace reappears.
 
 
-def test_a_liquidation_off_the_equity_axis_is_dropped_not_raised(tmp_path):
-    """The report is the last step of a run that already worked.
+def test_the_figure_draws_exactly_these_five_traces(tmp_path):
+    """The whole trace set, pinned by name (quick 260916-hro).
 
-    An exception here deletes the entire staged run directory, so an
-    unexpected timestamp must not be fatal.
+    An exact set rather than a bare `not in`: it catches a liquidation trace
+    coming back AND any other trace arriving unnoticed. The two
+    `deepest_drawdown_*` traces are here because a span is passed, and
+    `monthly_return` because returns are.
     """
-    html = _write(
-        tmp_path,
-        liquidations=[
-            {"symbol": "AAA", "fill_timestamp": BARS[2]},
-            {"symbol": "GONE", "fill_timestamp": pd.Timestamp("1999-01-01")},
-        ],
-    )
+    traces = _traces(_write(tmp_path, returns=_returns(), drawdown_span=_span()))
 
-    assert _traces(html)["liquidation"]["text"] == ["AAA"]
-
-
-def test_no_liquidations_means_no_marker_trace(tmp_path):
-    for empty in (None, []):
-        assert "liquidation" not in _traces(_write(tmp_path, liquidations=empty))
+    assert set(traces) == {
+        "equity",
+        "drawdown",
+        "monthly_return",
+        "deepest_drawdown_valley",
+        "deepest_drawdown_end",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +446,12 @@ def test_the_span_draws_one_triangle_at_each_end_on_the_equity_curve(tmp_path):
     np.testing.assert_allclose(end["y"], [_value().values[8]], rtol=1e-12)
     # Row 1 is the equity row; the drawdown row is x2.
     assert valley["xaxis"] == "x" and end["xaxis"] == "x"
+    # Folded in from `test_the_span_markers_are_not_the_liquidation_colour`,
+    # deleted in quick 260916-hro: its other half compared against the
+    # liquidation marker, which no longer exists on the page. The surviving
+    # half is that the two ends share ONE colour, because they are the two
+    # ends of a single measurement and are told apart by shape.
+    assert valley["marker"]["color"] == end["marker"]["color"]
 
 
 def test_the_end_marker_states_the_span_in_trading_days_not_calendar_days(tmp_path):
@@ -528,8 +522,8 @@ def test_an_endpoint_off_the_equity_axis_drops_that_marker_only(tmp_path, span, 
 
     It is written inside the staging directory, so an exception here deletes
     the ENTIRE run, not just the report. An endpoint the equity axis does not
-    carry therefore drops its own marker and leaves the other one standing --
-    the `_add_liquidations` precedent.
+    carry therefore drops its own marker and leaves the other one standing,
+    rather than raising.
     """
     traces = _traces(_write(tmp_path, drawdown_span=_span(**span)))
 
@@ -547,21 +541,6 @@ def test_a_span_missing_its_keys_renders_the_page_instead_of_raising(tmp_path):
     assert "equity" in traces
     assert "deepest_drawdown_valley" not in traces
     assert "deepest_drawdown_end" not in traces
-
-
-def test_the_span_markers_are_not_the_liquidation_colour(tmp_path):
-    """Two different meanings on one row must not share one colour."""
-    traces = _traces(
-        _write(
-            tmp_path,
-            drawdown_span=_span(),
-            liquidations=[{"symbol": "AAA", "fill_timestamp": BARS[3]}],
-        )
-    )
-
-    span_colour = traces["deepest_drawdown_valley"]["marker"]["color"]
-    assert span_colour == traces["deepest_drawdown_end"]["marker"]["color"]
-    assert span_colour != traces["liquidation"]["marker"]["color"]
 
 
 @pytest.mark.parametrize("n_bars", [1, 2])

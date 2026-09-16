@@ -9,10 +9,12 @@ One self-contained page built around a plotly div:
    picture covers;
 3. a metric table with one column per metrics block (whole / in-sample /
    out-of-sample);
-4. the figure: three rows on a shared time axis -- equity (with forced
-   liquidation markers, and a pair of triangles marking where the deepest
-   drawdown began and ended) on top, drawdown below it, per-calendar-month
-   returns at the bottom -- plus a log/linear toggle for the equity axis;
+4. the figure: three rows on a shared time axis -- equity (with a pair of
+   triangles marking the deepest drawdown's valley and the bar it recovered)
+   on top, drawdown below it, per-calendar-month returns at the bottom --
+   plus a log/linear toggle for the equity axis. Forced liquidations are NOT
+   drawn: quick 260916-hro removed those markers from the chart, while the
+   records themselves still persist to the run's `liquidations.json`;
 5. the notes.
 
 When the backtest window overlaps the model's effective training window, the
@@ -105,7 +107,6 @@ def write_backtest_report(
     summary: dict[str, str] | None = None,
     metrics: dict | None = None,
     returns: xr.DataArray | None = None,
-    liquidations: list[dict] | None = None,
     init_cash: float | None = None,
     drawdown_span: dict | None = None,
 ) -> None:
@@ -133,9 +134,6 @@ def write_backtest_report(
       is shown when present;
     - `returns`: per-bar portfolio returns on `timestamp`, compounded per
       calendar month for the bottom panel;
-    - `liquidations`: forced-liquidation records (`symbol`, `fill_timestamp`),
-      drawn as markers on the equity row. Records whose timestamp is not on the
-      equity axis are dropped rather than raising;
     - `init_cash`: starting capital, used only to express equity as a multiple
       in the hover text;
     - `drawdown_span`: a mapping describing the DEEPEST drawdown, with keys
@@ -165,7 +163,6 @@ def write_backtest_report(
         vertical_spacing=0.04,
     )
     _add_equity(fig, equity, init_cash)
-    _add_liquidations(fig, equity, liquidations)
     _add_drawdown_span(fig, equity, drawdown_span)
     fig.add_trace(
         go.Scatter(x=drawdown.index, y=drawdown.values, name="drawdown", mode="lines"),
@@ -244,43 +241,15 @@ def _add_equity(fig, equity: pd.Series, init_cash: float | None) -> None:
     )
 
 
-def _add_liquidations(fig, equity: pd.Series, liquidations) -> None:
-    """Markers on the equity row at each forced liquidation's fill bar.
-
-    A record whose timestamp is not on the equity axis is dropped: the report
-    is the last step of a run that already succeeded, so it must not be the
-    thing that fails. The trace is omitted entirely when nothing was
-    liquidated, so a clean run's page carries no empty legend entry.
-    """
-    if not liquidations:
-        return
-    xs, texts = [], []
-    for record in liquidations:
-        stamp = pd.Timestamp(str(record.get("fill_timestamp")))
-        if stamp not in equity.index:
-            continue
-        xs.append(stamp)
-        texts.append(str(record.get("symbol", "")))
-    if not xs:
-        return
-    fig.add_trace(
-        go.Scatter(
-            x=xs,
-            y=[equity.loc[stamp] for stamp in xs],
-            name="liquidation",
-            mode="markers",
-            marker={"symbol": "x", "size": 9, "color": "#c0392b"},
-            text=texts,
-            hovertemplate="%{x}<br>forced liquidation: %{text}<extra></extra>",
-        ),
-        row=1,
-        col=1,
-    )
-
-
-#: The deepest drawdown's two triangles. Deliberately NOT the liquidation red
-#: (`#c0392b`): both marker kinds share the equity row and mean entirely
-#: different things, so they must not be distinguishable by shape alone.
+#: The deepest drawdown's two triangles. Both ends SHARE one colour because
+#: they are the two ends of a single measurement -- the valley and the
+#: recovery of one episode -- and are told apart by shape, up versus down.
+#:
+#: The value is unchanged from when it was picked to differ from the
+#: forced-liquidation red: those markers were removed from the chart in quick
+#: 260916-hro (the records still persist to the run's `liquidations.json`), so
+#: that contrast no longer exists on the page. Kept as it was rather than
+#: re-picked, to avoid visual churn nobody asked for.
 SPAN_COLOUR = "#8e44ad"
 
 
@@ -302,9 +271,9 @@ def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
     the metric named Max Drawdown Duration, which measures the LONGEST
     drawdown and counts from where that drawdown began.
 
-    Every key is read with `.get` and an endpoint the equity axis does not
-    carry is dropped, following `_add_liquidations`: the report is the last
-    step of a run that already succeeded and is written inside that run's
+    Every key is read with `.get`, and an endpoint the equity axis does not
+    carry drops only its own marker rather than raising: the report is the
+    last step of a run that already succeeded and is written inside that run's
     staging directory, so an exception here would delete the ENTIRE run rather
     than merely losing the markers.
 

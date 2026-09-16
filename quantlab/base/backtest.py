@@ -1774,8 +1774,9 @@ class BaseBacktester(ABC):
         一个自包含的页面。页首是 `_report_summary` 给出的日期与设置（窗口首尾 bar
         与 bar 数、bar 间隔、训练窗口、样本内外各段、选股设置，以及最深回撤那一
         段），接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表，然后是
-        共用时间轴的三栏图：净值（含强平标记，以及标出**最深**那次回撤起止的一对
-        三角，长度按交易日 / bar 数计）、回撤、月度收益，净值栏带 log / 线性切换。
+        共用时间轴的三栏图：净值（标出**最深**那次回撤「最低点 -> 修复」的一对
+        三角，长度按交易日 / bar 数计；强平自 260916-hro 起不再画在图上，记录仍然
+        照写 liquidations.json）、回撤、月度收益，净值栏带 log / 线性切换。
         样本内区间仍取 metrics 里实际算出的 `in_sample_range` 涂灰（两个区间的
         交集，必然是一段），并印出 `_report_notes()`；本阶段没有基准曲线（D-08）。
 
@@ -1810,7 +1811,6 @@ class BaseBacktester(ABC):
                 ),
                 metrics=metrics,
                 returns=simulation.returns,
-                liquidations=simulation.liquidations,
                 init_cash=self.config.init_cash,
                 drawdown_span=drawdown_span,
             )
@@ -1919,8 +1919,8 @@ class BaseBacktester(ABC):
         `folds`、`notes`）、liquidations.json（`stitched` 与逐折 `folds`）、
         fingerprint.json（拼接窗口）、report.html（拼接曲线，不涂样本内：多段
         样本内由 notes 说明，并由页首日期块逐段列出各折的训练窗口与样本内区间，
-        见 `_report_summary` 的复数划分键分支；拼接曲线同样标出最深那次回撤的
-        起止三角——它是同一台引擎跑出来的一次连续模拟，不需要特殊处理）。每折的逐折模拟另存在
+        见 `_report_summary` 的复数划分键分支；拼接曲线同样标出最深那次回撤
+        「最低点 -> 修复」的一对三角——它是同一台引擎跑出来的一次连续模拟，不需要特殊处理）。每折的逐折模拟另存在
         `folds/fold_{i}/` 下的 weights.zarr 与 equity.zarr，`i` 是清单里的折号。
 
         报告拿到的是 `metrics["stitched"]`，也就是描述拼接曲线的那一块，而不是
@@ -1969,7 +1969,6 @@ class BaseBacktester(ABC):
                 ),
                 metrics=metrics["stitched"],
                 returns=simulation.returns,
-                liquidations=simulation.liquidations,
                 init_cash=self.config.init_cash,
                 drawdown_span=drawdown_span,
             )
