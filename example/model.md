@@ -483,7 +483,7 @@ WANDB_MODE=disabled uv run python example/min_model.py
 | 路径 | 逐步曲线（`log(step=...)`） | 训练结束写 summary | 其他 |
 |---|---|---|---|
 | DL 头 | 头自己在 `_*_one_batch` 里记，`step=epoch` | 无统一约定 | — |
-| XGB 头 | 每轮 `train-rmse` / `val-rmse` 与 `train-ccc_loss` / `val-ccc_loss`（**连字符**，xgboost 原生写法，`step=iteration`，从 0 连续） | `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`（**下划线**），早停启用时另有 `best_iteration` / `best_score`；每个因子的重要性 `importance_{weight,gain,total_gain}/{因子名}`（2026-09-15，G-03.7-9；从未分裂的因子为 0，只进 summary） | run config 里的 `resolved_hyperparameters` |
+| XGB 头 | 每轮 `train-rmse` / `val-rmse` 与 `train-ccc_loss` / `val-ccc_loss`（**连字符**，xgboost 原生写法，`step=iteration`，从 0 连续）；**最后一轮那行**还额外带上因子重要性的 `wandb.Table` 与柱状图对象（2026-09-16，见下） | `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`（**下划线**），早停启用时另有 `best_iteration` / `best_score`；每个因子的重要性标量 `importance_{weight,gain,total_gain}/{因子名}`（2026-09-15，G-03.7-9；从未分裂的因子为 0）——**标量留在 summary**（D-02，wandb API 可按键读回），**图表进 Charts**（D-01） | run config 里的 `resolved_hyperparameters` |
 | `train_cv`（ML） | 每折一个 run，内容同上 | 另开一个名为 `{cls}_cv_summary` 的 run：`cv_mean_test_*` 与 `cv_n_folds` | DL 的 `_fit` 不返回指标，不开这个 run |
 
 两种键写法是刻意区分的：连字符的是曲线，下划线的是最终值。
@@ -693,13 +693,22 @@ checkpoint dir: /var/folders/.../T/tiny_ckpt_y35yla00
 
 ## ML / 树模型：XGBoostRegressor
 
-**W&B 里的因子重要性（2026-09-15，G-03.7-9）。** 训练结束后，只要有 W&B run，`_fit_model` 就对
-`weight`、`gain`、`total_gain` 各调一次 `Booster.get_score`，写进 summary 的
+**W&B 里的因子重要性（2026-09-15，G-03.7-9；图表部分 2026-09-16）。** 训练结束后，只要有 W&B run，
+`_fit_model` 就对 `weight`、`gain`、`total_gain` 各调一次 `Booster.get_score`，写进 summary 的
 `importance_{weight,gain,total_gain}/{因子名}`。Booster 不带特征名，`get_score` 的键是 `f{i}`；
 `_fit_model` 按 `get_factor_names()` 的顺序排列特征列，所以 `f{i}` 直接对应第 `i` 个因子名，不需要
-`feature_names`。从未分裂的因子记 0；只写 summary，不进逐轮曲线；早停时描述的是截断后落盘的那个 Booster；
+`feature_names`。从未分裂的因子记 0；早停时描述的是截断后落盘的那个 Booster；
 多标签模型的重要性由 xgboost 在各标签输出之间汇总，不分标签。变量名和顺序对不对，由 `load()` 核对
 （见「取：`load()`」一节的 G-03.7-9 段落），不靠 xgboost 的特征名。
+
+**重要性图表（2026-09-16）。** 每因子标量之外，写完 summary 后还有**一次** `log`，每个重要性类型发两个
+对象：`feature_importance/{类型}` 是柱状图，只画前 30 个因子（D-04）；`feature_importance_table/{类型}`
+是 `wandb.Table`，带**全部**因子（D-04）。两者都按重要性**降序**排（D-03），补 0 的那些从未分裂的因子
+排在最后。这次 `log` 传的是最后一个 boosting 轮次的 step，所以它**并进那一轮已有的行、不新开一步**——
+逐轮曲线的 step 序列因此保持连续，与加图表之前完全一样。键前缀 `feature_importance` 与 summary 的
+`importance_` 刻意分属两个互不相交的命名空间。画图尽力而为：某个类型画失败只记一条 warning 并跳过它
+（图和 Table 要么一起发、要么都不发），它的 summary 标量照样写、checkpoint 也照样落盘——重要性是在
+`_save_model` **之前**跑的，绝不能因为画图出错丢掉训练好的模型。
 
 `quantlab/ml_model/xgb.py:XGBoostRegressor(MLModel)` 预测未来收益：因子是 x，未来收益标签是 y，
 `predict` 返回 `[T, S, L]`。文件名刻意叫 `xgb.py`——叫 `xgboost.py` 会在包内遮蔽顶层 `xgboost` 包。
