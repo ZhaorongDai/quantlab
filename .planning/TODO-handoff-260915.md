@@ -84,7 +84,21 @@ label  = UniverseFilteredFactor(Return(label_config), **UNIVERSE)
 5. **指标只用 vectorbt 提供的**（本会话最后决定，见 F3）。
 6. **回测器不改**：持仓掉出股票池后，在下一个调仓 bar 不可选，按次日真实开盘价卖出。
 
-## 五、环境与流程注意事项
+## 五、在新窗口怎么继续（优先用 GSD 命令）
+
+| 目的 | 命令 |
+|---|---|
+| 续做报告任务 `260915-sxx` | `/gsd-quick resume improve-the-backtest-html-report-dates-m` |
+| 查看所有 quick 任务状态 | `/gsd-quick list` |
+| 看单个任务 | `/gsd-quick status improve-the-backtest-html-report-dates-m` |
+| 开新任务（引擎修复、标签、杂项） | `/gsd-quick "<任务描述>"`；要计划审核 + 执行后验证就加 `--validate` |
+| 恢复上下文 / 不确定下一步 | `/gsd-resume-work` 或 `/gsd-progress` |
+
+`/gsd-quick resume` 会自己读 PLAN.md、派执行 agent、处理 worktree 隔离与合并收尾，不需要手动走第二节那套步骤。**第二节的手动步骤只在 GSD 命令不可用时作为后备**（计划已提交并推送，所以手动路径也可以直接从 base-check 开始）。
+
+开新任务时建议在描述里带上第四节的已锁定决策，避免重新讨论。
+
+## 六、环境与流程注意事项
 
 - 包管理 `uv`；测试 `uv run pytest ...`。
 - **禁止 `git stash`**；红证据用 `git show HEAD:file` + 临时副本。
