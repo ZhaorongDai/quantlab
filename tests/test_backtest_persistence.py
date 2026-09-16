@@ -21,11 +21,23 @@ differently byte for byte. Without canonicalizing NaN (and -0.0 vs 0.0) before
 hashing, an unchanged store could report a changed digest, and a warning that
 fires on unchanged data is a warning people learn to ignore.
 
-D-23 / D-21 / D-08: report.html is a plotly page with an "equity" and a
-"drawdown" trace on a shared time axis, the in-sample range shaded when the
-window overlaps training, no benchmark trace, and the note that short-side
-returns are optimistic because no borrow cost is modelled. metrics.json carries
-the same note and no benchmark key.
+D-23 / D-21 / D-08: report.html is one self-contained page around a plotly
+figure. It states its dates as TEXT -- the window and bar count, the training
+window and the in-sample/out-of-sample ranges, every string byte-identical to
+the same run's metrics.json -- carries the whole/in-sample/out-of-sample
+metrics as an HTML table, and draws named traces on three rows of a shared time
+axis: "equity" (plus "liquidation" markers when the run liquidated) on x,
+"drawdown" on x2, and "monthly_return". The in-sample range is shaded when the
+window overlaps training, there is no benchmark trace, and the note that
+short-side returns are optimistic because no borrow cost is modelled still
+appears. metrics.json carries the same note and no benchmark key.
+
+The metric table is rendered from whatever keys the blocks carry at render
+time, never from a list written into the report module: the metric set is
+moving to vectorbt's own, and the report is written inside the staging
+directory of a run, so a report that hardcoded metric names would raise on the
+day that lands and take the entire run directory with it. That property is
+proved at the leaf level in tests/test_backtest_report.py.
 
 D-28: `use_wandb=False` never calls `wandb.init`; `use_wandb=True` logs the
 flattened numeric metrics and the report to a separate `{class}_backtest` run

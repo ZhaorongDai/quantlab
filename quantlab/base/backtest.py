@@ -1720,9 +1720,18 @@ class BaseBacktester(ABC):
         JSON 都先经 `to_jsonable`（NaN/inf 记为 null，时间记为 ISO 字符串）再
         原子写入。
 
-        report.html（D-23）：净值与回撤两栏共用时间轴，样本内区间取 metrics 里
-        实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
+        report.html（D-23，2026-09-15 quick 260915-sxx 扩写）：一个自包含的页面。
+        页首是 `_report_summary` 给出的日期与设置（窗口首尾 bar 与 bar 数、bar
+        间隔、训练窗口、样本内外各段、选股设置），接着是 `whole` / `in_sample` /
+        `out_of_sample` 三列的指标表，然后是共用时间轴的三栏图：净值（含强平
+        标记）、回撤、月度收益，净值栏带 log / 线性切换。样本内区间仍取 metrics
+        里实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
         `_report_notes()`；本阶段没有基准曲线（D-08）。
+
+        指标表由报告模块**按 mapping 里当时有什么键**现推，这里只负责把
+        `metrics` 原样递过去：不挑键、不补键、不算任何统计量。报告是在暂存目录里
+        写的，写报告抛异常会连同本次全部产物一起删掉，所以它必须对指标集的变化
+        免疫（T-sxx-03）。
         """
         # 全部产物先写进暂存目录，写完才改名成运行目录（代码审查 WR-08）。
         def _write(run_dir: Path, name: str) -> None:
@@ -1854,8 +1863,12 @@ class BaseBacktester(ABC):
         config.json、weights.zarr、equity.zarr、metrics.json（`stitched`、
         `folds`、`notes`）、liquidations.json（`stitched` 与逐折 `folds`）、
         fingerprint.json（拼接窗口）、report.html（拼接曲线，不涂样本内：多段
-        样本内由 notes 说明）。每折的逐折模拟另存在 `folds/fold_{i}/` 下的
-        weights.zarr 与 equity.zarr，`i` 是清单里的折号。
+        样本内由 notes 说明，并由页首日期块逐段列出各折的训练窗口与样本内区间，
+        见 `_report_summary` 的复数划分键分支）。每折的逐折模拟另存在
+        `folds/fold_{i}/` 下的 weights.zarr 与 equity.zarr，`i` 是清单里的折号。
+
+        报告拿到的是 `metrics["stitched"]`，也就是描述拼接曲线的那一块，而不是
+        整个 metrics（后者还套着 `folds` 与 `notes`）。
         """
         # 与 run() 相同：先写暂存目录，全部写完才改名（代码审查 WR-08）。
         def _write(run_dir: Path, name: str) -> None:
