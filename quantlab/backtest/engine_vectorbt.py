@@ -344,6 +344,27 @@ class VectorBtBacktester(BaseBacktester):
         whole["positions"] = positions.to_dict()
         return whole
 
+    def _report_notes(self) -> list[str]:
+        """基类那条说明，再加一条交易口径的说明（quick 260915-udx）。
+
+        报告和 metrics.json 里两套交易指标并排出现，名字又都是「胜率」「盈亏比」
+        这种一看就懂的词，读的人默认会把它们当成选股胜率。这条说明就是拦住这个
+        误读的：顶层那批是 lot 级，`positions` 前缀那批才是持仓级。
+
+        **文本里不能出现尖括号、和号、双引号和单引号。** 每条说明都要过一次
+        HTML 转义，而 `tests/test_backtest_persistence.py` 断言每条说明在
+        report.html 里**逐字**出现；上面那几个字符里随便哪一个，都会让这条说明
+        在页面上被改写成 HTML 实体、于是不再逐字相同，测试转红。所以英文缩写和
+        所有格一律写全。
+        """
+        return super()._report_notes() + [
+            "The trade metrics at the top level are vectorbt exit trades, that "
+            "is lot level: every partial trim of a holding counts as its own "
+            "closed trade, which inflates the win rate. The rows whose names "
+            "begin with positions are the position level view, one entry to "
+            "flat round trip per symbol."
+        ]
+
     def _period_returns_stats(
         self, simulation: SimulationResult, ranges: list[tuple[str, str]]
     ) -> dict:

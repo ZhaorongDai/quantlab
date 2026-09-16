@@ -32,6 +32,15 @@ window overlaps training, there is no benchmark trace, and the note that
 short-side returns are optimistic because no borrow cost is modelled still
 appears. metrics.json carries the same note and no benchmark key.
 
+Quick 260915-udx: a second note states that the top-level trade metrics are
+vectorbt exit trades (lot level) while the positions-prefixed rows are the
+position-level view, and the nested `whole.positions` block those rows are
+rendered from reaches both artifacts. This file locks them at the artifact
+level -- note verbatim in the page and in metrics.json, block strict-JSON
+clean, rows on the page. The proof that the block really IS the positions view
+(rather than a second copy of the exit-trades one) needs a run that trims
+without closing, and lives in tests/test_backtest_engine.py.
+
 The metric table is rendered from whatever keys the blocks carry at render
 time, never from a list written into the report module: the metric set is
 moving to vectorbt's own, and the report is written inside the staging
@@ -814,6 +823,83 @@ def test_metrics_json_carries_the_short_side_note(overlap_run):
     assert notes == overlap_run["backtester"]._report_notes()
     text = " ".join(notes).lower()
     assert "short" in text and "borrow" in text and "optimistic" in text
+
+
+# --------------------------------------------------------------------------
+# quick 260915-udx: the lot-level vs position-level note and the nested block
+# --------------------------------------------------------------------------
+
+#: The two position-level metrics vectorbt reports as a duration; `to_jsonable`
+#: renders a Timedelta as a string and NaT as null, so these two are the one
+#: pair in the block that is legitimately not a number.
+POSITION_DURATION_KEYS = {"Avg Winning Trade Duration", "Avg Losing Trade Duration"}
+
+
+def test_report_and_metrics_carry_the_lot_versus_position_note(overlap_run):
+    """Both notes reach both artifacts, and the new one survives HTML escaping.
+
+    Every note is rendered through `html.escape`, so a note containing any of
+    the five characters escaping rewrites would appear in the page in escaped
+    form and NOT verbatim. That is asserted as a property of the note text
+    rather than left to whoever edits it next.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    notes = overlap_run["backtester"]._report_notes()
+
+    assert len(notes) >= 2, notes
+    assert metrics["notes"] == notes
+    for note in notes:
+        assert note in html, note
+        assert not set(note) & set("<>&\"'"), note
+
+    text = " ".join(notes).lower()
+    # The base short-side note survives alongside the new one.
+    assert "short" in text and "borrow" in text and "optimistic" in text
+    # And the new note says which set is which.
+    for mark in ("exit trades", "lot level", "position level"):
+        assert mark in text, mark
+
+
+def test_metrics_json_carries_the_nested_positions_block(overlap_run):
+    """The nested block strict-parses: no NaN or Infinity token, no stray type."""
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    positions = metrics["whole"]["positions"]
+
+    assert isinstance(positions, dict) and positions
+    for key, value in positions.items():
+        if key in POSITION_DURATION_KEYS:
+            assert value is None or isinstance(value, str), (key, value)
+            continue
+        assert value is None or (
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+        ), (key, value)
+        if isinstance(value, float):
+            assert np.isfinite(value), key
+
+
+def test_report_shows_the_positions_rows_beside_the_lot_level_rows(overlap_run):
+    """The page carries the position-level numbers under a distinguishable name.
+
+    This is what makes the distinction legible without opening the source: the
+    reader sees `Win Rate [%]` and `positions.Win Rate [%]` as separate rows.
+    The rows come from the generic dotted-path flattening, so no report edit
+    was needed -- and that is exactly why it is worth asserting here.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    rendered = dict(re.findall(r"<tr><th>([^<]+)</th><td>([^<]*)</td>", html))
+
+    checked = 0
+    for key, value in metrics["whole"]["positions"].items():
+        row = f"positions.{key}"
+        assert row in rendered, (row, sorted(rendered))
+        # The lot-level twin is on the page too, under its bare name.
+        assert key in rendered, key
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            assert float(rendered[row]) == pytest.approx(value, rel=1e-5)
+            checked += 1
+    assert checked >= 3, "the positions block must carry several finite numbers"
 
 
 # --------------------------------------------------------------------------
