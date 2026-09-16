@@ -21,11 +21,23 @@ differently byte for byte. Without canonicalizing NaN (and -0.0 vs 0.0) before
 hashing, an unchanged store could report a changed digest, and a warning that
 fires on unchanged data is a warning people learn to ignore.
 
-D-23 / D-21 / D-08: report.html is a plotly page with an "equity" and a
-"drawdown" trace on a shared time axis, the in-sample range shaded when the
-window overlaps training, no benchmark trace, and the note that short-side
-returns are optimistic because no borrow cost is modelled. metrics.json carries
-the same note and no benchmark key.
+D-23 / D-21 / D-08: report.html is one self-contained page around a plotly
+figure. It states its dates as TEXT -- the window and bar count, the training
+window and the in-sample/out-of-sample ranges, every string byte-identical to
+the same run's metrics.json -- carries the whole/in-sample/out-of-sample
+metrics as an HTML table, and draws named traces on three rows of a shared time
+axis: "equity" (plus "liquidation" markers when the run liquidated) on x,
+"drawdown" on x2, and "monthly_return". The in-sample range is shaded when the
+window overlaps training, there is no benchmark trace, and the note that
+short-side returns are optimistic because no borrow cost is modelled still
+appears. metrics.json carries the same note and no benchmark key.
+
+The metric table is rendered from whatever keys the blocks carry at render
+time, never from a list written into the report module: the metric set is
+moving to vectorbt's own, and the report is written inside the staging
+directory of a run, so a report that hardcoded metric names would raise on the
+day that lands and take the entire run directory with it. That property is
+proved at the leaf level in tests/test_backtest_report.py.
 
 D-28: `use_wandb=False` never calls `wandb.init`; `use_wandb=True` logs the
 flattened numeric metrics and the report to a separate `{class}_backtest` run
@@ -36,6 +48,7 @@ call is asserted through a monkeypatched recorder.
 """
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -684,7 +697,13 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
     assert '"name":"drawdown"' in html
     # The curves are the persisted run's values: drawdown = value / running max - 1.
     traces = _report_traces(html)
-    assert set(traces) == {"equity", "drawdown"}
+    # Quick 260915-sxx grew the page from two panels to three. The fixture run
+    # liquidates, so it carries the markers too. Everything else this test
+    # proves is unchanged: the equity y values are still the persisted ones,
+    # drawdown is still value over running max minus one, the axes are still
+    # x/x2, the band is still the persisted in-sample range, and the notes
+    # still appear.
+    assert set(traces) == {"equity", "drawdown", "monthly_return", "liquidation"}
     value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
     np.testing.assert_allclose(traces["equity"]["y"], value, rtol=1e-12)
     expected_drawdown = value / np.maximum.accumulate(value) - 1.0
@@ -699,6 +718,77 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
     assert notes
     for note in notes:
         assert note in html
+
+
+def test_report_carries_the_metric_table_and_the_axis_toggle(overlap_run):
+    """Quick 260915-sxx: the page carries the numbers, not just the picture.
+
+    The metric table is rendered from whatever the metrics mapping carries, so
+    this asserts the persisted numbers reached the page rather than asserting
+    a particular metric list. The log button is what makes a curve that
+    compounded by orders of magnitude readable.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+
+    assert "<h2>Metrics</h2>" in html
+    for block in ("whole", "in_sample", "out_of_sample"):
+        assert f"<th>{block}</th>" in html
+
+    # Every finite number in the whole block reached the page, compared by
+    # value after parsing the cell back -- not by re-formatting it here.
+    rendered = dict(re.findall(r"<tr><th>([^<]+)</th><td>([^<]*)</td>", html))
+    checked = 0
+    for key, value in metrics["whole"].items():
+        if not isinstance(value, float) or not np.isfinite(value):
+            continue
+        assert key in rendered, (key, sorted(rendered))
+        assert float(rendered[key]) == pytest.approx(value, rel=1e-5)
+        checked += 1
+    assert checked >= 5, "the whole block must carry several finite numbers"
+
+    # The nested turnover group is flattened to dotted paths by walking it.
+    assert "turnover.sum" in rendered
+
+    assert '"yaxis.type":"log"' in html and '"yaxis.type":"linear"' in html
+
+
+def test_report_states_the_window_and_split_dates_as_text(overlap_run):
+    """Quick 260915-sxx: the page states its dates in words, not only as a band.
+
+    Before this task the report carried no date anywhere: the reader saw a
+    shaded region and had to open metrics.json separately to learn which
+    window it covered, where training ended, and which bars were in-sample.
+    Every date on the page is the string the run's OWN metrics.json carries --
+    the summary reads the persisted bar labels instead of reformatting
+    timestamps, so the page and the metrics cannot drift apart.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"]
+
+    n_bars = value.sizes["timestamp"]
+    first = _day(value.timestamp.values[0])
+    last = _day(value.timestamp.values[-1])
+    assert f"{first} .. {last} ({n_bars} bars)" in html
+
+    training_window = metrics["training_window"]
+    assert training_window is not None, "the fixture model must record train dates"
+    assert f"{training_window[0]} .. {training_window[1]}" in html
+
+    in_sample_range = metrics["in_sample_range"]
+    assert in_sample_range is not None, "the fixture window must overlap training"
+    assert f"{in_sample_range[0]} .. {in_sample_range[1]}" in html
+
+    out_of_sample_ranges = metrics["out_of_sample_ranges"]
+    assert out_of_sample_ranges, "the fixture window must have out-of-sample bars"
+    for start, end in out_of_sample_ranges:
+        assert f"{start} .. {end}" in html
+
+    # The setup those numbers were produced under is on the page too.
+    config = overlap_run["backtester"].config
+    assert f"<td>{config.model_mode}</td>" in html
+    assert f"<td>{config.direction}</td>" in html
 
 
 def test_report_without_in_sample_overlap_has_no_shaded_range(disjoint_run):

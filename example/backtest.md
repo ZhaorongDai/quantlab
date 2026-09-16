@@ -121,15 +121,17 @@ BaseBacktester                         quantlab/base/backtest.py      模板方�
 | `metrics.json` | `stitched`、`folds`、`notes` 三个键 |
 | `liquidations.json` | `{"stitched": [...], "folds": [{"fold": i, "liquidations": [...]}, ...]}` |
 | `fingerprint.json` | 拼接窗口的指纹 |
-| `report.html` | 拼接曲线 |
+| `report.html` | 拼接曲线。与 `run()` 的报告同构：页首的日期块写**每折**的训练窗口与样本内各段（复数键 `training_windows` / `in_sample_ranges`），指标表来自 `stitched` 块 |
 
 `metrics.json` 的 `stitched` 块与 `run()` 的指标同构，但划分键不同：是 `training_windows`（每折一个）、
 `in_sample_ranges`（每折开头的样本内段，**多段**）和 `out_of_sample_ranges`，**没有**单段的 `in_sample_range`，
 因为多段样本内塞不进一个日期对。`folds` 里每项是六个清单字段（`fold`、四个日期、`checkpoint`）加该折的 `metrics`，
 与 `run()` 的指标同构。
 
-**拼接报告不涂样本内。** `report.html` 只能画一段阴影，而拼接曲线的样本内是每折一小段，所以拼接报告
-一段也不涂；`notes` 里专门有一条说明样本内段记在 `metrics.json` 的 `stitched.in_sample_ranges` 里。
+**拼接报告不涂样本内，但把它们写成文字。** `report.html` 只能画一段阴影，而拼接曲线的样本内是每折一小段，
+所以拼接报告一段也不涂；`notes` 里仍有一条说明样本内段记在 `metrics.json` 的 `stitched.in_sample_ranges` 里。
+在此之上（2026-09-15，quick 260915-sxx），页首的日期块直接把各折的训练窗口与样本内各段逐段列出来 ——
+对「一段阴影画不下多段样本内」这个问题，这是比涂色严格更好的答案：读报告的人不必再去翻 `metrics.json`。
 
 ---
 
@@ -418,7 +420,7 @@ train 模式下模型先按自己的日期 collect 过，再把因子日期放�
 | `equity.zarr` | `value`（组合净值）与 `returns`，维度 `timestamp` |
 | `liquidations.json` | 强制平仓记录的 list |
 | `metrics.json` | `whole`、`in_sample`、`out_of_sample`、`training_window`、`in_sample_range`、`out_of_sample_ranges`、`notes` |
-| `report.html` | plotly 交互报告（D-23）：上面净值、下面回撤（`value / 历史最高 - 1`），共用时间轴，`in_sample_range` 涂灰，底部印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
+| `report.html` | 一个自包含的交互报告（D-23）。页首用文字写清日期与设置：回测窗口的首尾 bar 标签与 bar 数、bar 间隔、训练窗口、样本内区间、样本外各段，以及 `model_mode` / `rebalance_periods` / `top_n` / `direction` / `init_cash` / `fees`；这些日期与同目录 `metrics.json` 的字符串**逐字节相同**（页面直接取已经算好的 bar 标签，不重新格式化时间戳）。接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表。再往下是共用时间轴的三栏图：净值（含强平标记）、回撤（`value / 历史最高 - 1`）、按自然月复利的月度收益柱；净值栏带 log / 线性切换按钮，默认线性。`in_sample_range` 仍然涂灰，底部仍然印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
 | `fingerprint.json` | 本次读到的数据的指纹（D-27） |
 
 **`data_fingerprint` 不是 `BacktestConfig` 的字段。** 它是「这次跑的时候读到了什么数据」的记录，重建时由加载器取走

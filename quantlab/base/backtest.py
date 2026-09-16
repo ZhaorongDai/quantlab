@@ -14,7 +14,7 @@ from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.backtest_report import write_backtest_report
+from quantlab.utils.backtest_report import DASH, write_backtest_report
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.timer import Timer
@@ -1633,6 +1633,79 @@ class BaseBacktester(ABC):
         """`{class}_{timestamp}`（D-24）；带微秒，同一秒内的两次运行不会撞名。"""
         return f"{self.class_name}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
+    def _report_summary(self, simulation: SimulationResult, block: dict) -> dict:
+        """report.html 顶部「日期与设置」那块的展示文本（quick 260915-sxx）。
+
+        **纯展示。** 只读 `block` 与 `self.config`，不算任何统计量，也不调用
+        换手率那一类聚合助手；返回「标签 -> 已经排好版的字符串」的有序 dict，
+        报告模块只负责转义后渲染。（这里刻意不写那些助手的方法名：本仓库在
+        03.4 连着四次踩过同一个坑——写在 docstring 里的禁令会让以它做验收的
+        字面量扫描读出假阳性。）
+
+        `block` 是带划分键的那一层指标：`run()` 传 `metrics` 本身，`run_cv()`
+        传 `metrics["stitched"]`。两套划分键都认（D-17、D-35）：`run()` 的单数
+        `training_window` / `in_sample_range`，和拼接曲线的复数
+        `training_windows` / `in_sample_ranges`（拼接曲线**没有**单数的
+        `in_sample_range`，多段样本内塞不进一个日期对）。
+
+        窗口首尾 bar 的标签取自 `block` 里已经算好的区间端点，不重新格式化
+        时间戳：样本内外各段合起来正好铺满整个窗口，所以页面上的日期与同一个
+        运行目录的 metrics.json **逐字节**相同。一个区间都没有时才退回用
+        `_bar_label` 现算。
+
+        每个键都用 `.get()` 读，取不到渲染成一个破折号，从不写 None 这个词。
+        将来某个划分键改名或消失时，这里退化成破折号，而不是抛 KeyError 把
+        整个运行目录写坏（T-sxx-03：报告写在暂存目录里，任何异常都会连同本次
+        全部产物一起删掉）。
+        """
+
+        def _pair(value) -> str | None:
+            return f"{value[0]} .. {value[1]}" if value else None
+
+        def _pairs(values) -> str | None:
+            rendered = [text for text in map(_pair, values or []) if text]
+            return "; ".join(rendered) if rendered else None
+
+        def _text(value) -> str:
+            return DASH if value is None else str(value)
+
+        ranges = [block.get("in_sample_range")]
+        ranges += list(block.get("in_sample_ranges") or [])
+        ranges += list(block.get("out_of_sample_ranges") or [])
+        endpoints = [label for item in ranges if item for label in (item[0], item[1])]
+        timestamps = simulation.value.timestamp.values
+        if endpoints:
+            first = min(endpoints, key=self._label_ns)
+            last = max(endpoints, key=self._label_ns)
+        else:
+            first = self._bar_label(timestamps[0])
+            last = self._bar_label(timestamps[-1])
+
+        summary = {
+            "Backtest window": f"{first} .. {last} ({timestamps.size} bars)",
+            "Bar interval": str(pd.Timedelta(simulation.bar_interval)),
+        }
+        if "training_windows" in block:
+            summary["Training windows"] = _text(_pairs(block.get("training_windows")))
+            summary["In-sample ranges"] = _text(_pairs(block.get("in_sample_ranges")))
+        else:
+            summary["Training window"] = _text(_pair(block.get("training_window")))
+            summary["In-sample range"] = _text(_pair(block.get("in_sample_range")))
+        summary["Out-of-sample ranges"] = _text(
+            _pairs(block.get("out_of_sample_ranges"))
+        )
+        summary["Model mode"] = _text(self.config.model_mode)
+        summary["Rebalance every"] = f"{self.config.rebalance_periods} bars"
+        # 选股字段只在截面配置上（D-01 预留的时序兄弟类没有），所以用 getattr：
+        # 那种回测器的报告少两行，而不是写不出来。
+        summary["Top N"] = _text(getattr(self.config, "top_n", None))
+        summary["Direction"] = _text(getattr(self.config, "direction", None))
+        summary["Initial cash"] = f"{float(self.config.init_cash):,.2f}"
+        summary["Fees"] = _text(self.config.fees)
+        if block.get("trained_checkpoint") is not None:
+            summary["Trained checkpoint"] = _text(block["trained_checkpoint"])
+        return summary
+
     def _report_and_persist(
         self,
         predictions: xr.Dataset,
@@ -1647,9 +1720,18 @@ class BaseBacktester(ABC):
         JSON 都先经 `to_jsonable`（NaN/inf 记为 null，时间记为 ISO 字符串）再
         原子写入。
 
-        report.html（D-23）：净值与回撤两栏共用时间轴，样本内区间取 metrics 里
-        实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
+        report.html（D-23，2026-09-15 quick 260915-sxx 扩写）：一个自包含的页面。
+        页首是 `_report_summary` 给出的日期与设置（窗口首尾 bar 与 bar 数、bar
+        间隔、训练窗口、样本内外各段、选股设置），接着是 `whole` / `in_sample` /
+        `out_of_sample` 三列的指标表，然后是共用时间轴的三栏图：净值（含强平
+        标记）、回撤、月度收益，净值栏带 log / 线性切换。样本内区间仍取 metrics
+        里实际算出的 `in_sample_range` 涂灰（两个区间的交集，必然是一段），并印出
         `_report_notes()`；本阶段没有基准曲线（D-08）。
+
+        指标表由报告模块**按 mapping 里当时有什么键**现推，这里只负责把
+        `metrics` 原样递过去：不挑键、不补键、不算任何统计量。报告是在暂存目录里
+        写的，写报告抛异常会连同本次全部产物一起删掉，所以它必须对指标集的变化
+        免疫（T-sxx-03）。
         """
         # 全部产物先写进暂存目录，写完才改名成运行目录（代码审查 WR-08）。
         def _write(run_dir: Path, name: str) -> None:
@@ -1671,6 +1753,11 @@ class BaseBacktester(ABC):
                 in_sample_range=metrics.get("in_sample_range"),
                 notes=self._report_notes(),
                 title=name,
+                summary=self._report_summary(simulation, metrics),
+                metrics=metrics,
+                returns=simulation.returns,
+                liquidations=simulation.liquidations,
+                init_cash=self.config.init_cash,
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
@@ -1776,8 +1863,12 @@ class BaseBacktester(ABC):
         config.json、weights.zarr、equity.zarr、metrics.json（`stitched`、
         `folds`、`notes`）、liquidations.json（`stitched` 与逐折 `folds`）、
         fingerprint.json（拼接窗口）、report.html（拼接曲线，不涂样本内：多段
-        样本内由 notes 说明）。每折的逐折模拟另存在 `folds/fold_{i}/` 下的
-        weights.zarr 与 equity.zarr，`i` 是清单里的折号。
+        样本内由 notes 说明，并由页首日期块逐段列出各折的训练窗口与样本内区间，
+        见 `_report_summary` 的复数划分键分支）。每折的逐折模拟另存在
+        `folds/fold_{i}/` 下的 weights.zarr 与 equity.zarr，`i` 是清单里的折号。
+
+        报告拿到的是 `metrics["stitched"]`，也就是描述拼接曲线的那一块，而不是
+        整个 metrics（后者还套着 `folds` 与 `notes`）。
         """
         # 与 run() 相同：先写暂存目录，全部写完才改名（代码审查 WR-08）。
         def _write(run_dir: Path, name: str) -> None:
@@ -1816,6 +1907,11 @@ class BaseBacktester(ABC):
                 in_sample_range=None,
                 notes=metrics["notes"],
                 title=name,
+                summary=self._report_summary(simulation, metrics["stitched"]),
+                metrics=metrics["stitched"],
+                returns=simulation.returns,
+                liquidations=simulation.liquidations,
+                init_cash=self.config.init_cash,
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
