@@ -10,8 +10,9 @@ One self-contained page built around a plotly div:
 3. a metric table with one column per metrics block (whole / in-sample /
    out-of-sample);
 4. the figure: three rows on a shared time axis -- equity (with forced
-   liquidation markers) on top, drawdown below it, per-calendar-month returns
-   at the bottom -- plus a log/linear toggle for the equity axis;
+   liquidation markers, and a pair of triangles marking where the deepest
+   drawdown began and ended) on top, drawdown below it, per-calendar-month
+   returns at the bottom -- plus a log/linear toggle for the equity axis;
 5. the notes.
 
 When the backtest window overlaps the model's effective training window, the
@@ -106,6 +107,7 @@ def write_backtest_report(
     returns: xr.DataArray | None = None,
     liquidations: list[dict] | None = None,
     init_cash: float | None = None,
+    drawdown_span: dict | None = None,
 ) -> None:
     """Write the report for `value` to `path`.
 
@@ -135,7 +137,14 @@ def write_backtest_report(
       drawn as markers on the equity row. Records whose timestamp is not on the
       equity axis are dropped rather than raising;
     - `init_cash`: starting capital, used only to express equity as a multiple
-      in the hover text.
+      in the hover text;
+    - `drawdown_span`: a mapping describing the DEEPEST drawdown, with keys
+      `start` and `end` (bar labels), `bars` (its length as a bar count),
+      `depth` (a negative float) and `recovered` (bool). It is drawn as an up
+      triangle at the start bar and a down triangle at the end bar. The caller
+      selects the episode and measures it; this module draws the one it is
+      given and never picks one. An endpoint the equity axis does not carry,
+      or a key that is absent, drops that marker rather than raising.
 
     Every argument after `title` defaults to None, so the original
     five-argument call form stays legal.
@@ -155,6 +164,7 @@ def write_backtest_report(
     )
     _add_equity(fig, equity, init_cash)
     _add_liquidations(fig, equity, liquidations)
+    _add_drawdown_span(fig, equity, drawdown_span)
     fig.add_trace(
         go.Scatter(x=drawdown.index, y=drawdown.values, name="drawdown", mode="lines"),
         row=2,
@@ -264,6 +274,76 @@ def _add_liquidations(fig, equity: pd.Series, liquidations) -> None:
         row=1,
         col=1,
     )
+
+
+#: The deepest drawdown's two triangles. Deliberately NOT the liquidation red
+#: (`#c0392b`): both marker kinds share the equity row and mean entirely
+#: different things, so they must not be distinguishable by shape alone.
+SPAN_COLOUR = "#8e44ad"
+
+
+def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
+    """Triangles on the equity row at the deepest drawdown's two end bars.
+
+    The caller has already chosen the episode and measured it; this draws the
+    one it is given and states its numbers in the hover text.
+
+    `bars` is a BAR COUNT -- trading days on a daily panel -- which is exactly
+    what the engine's own drawdown duration measures. The text therefore says
+    trading days, and no calendar duration is rendered here: the time axis
+    spans more calendar days than the span lasts bars, so a reader who
+    measured the axis against a timedelta would be misled.
+
+    Every key is read with `.get` and an endpoint the equity axis does not
+    carry is dropped, following `_add_liquidations`: the report is the last
+    step of a run that already succeeded and is written inside that run's
+    staging directory, so an exception here would delete the ENTIRE run rather
+    than merely losing the markers.
+
+    Two traces rather than one, each with its own `name`: the ends say
+    different things -- only the end marker can report that the drawdown never
+    recovered -- and the persisted-report locks parse traces by name.
+    """
+    if not span:
+        return
+
+    bars = span.get("bars")
+    depth = span.get("depth")
+    length = "an unknown number of" if bars is None else str(bars)
+    depth_text = "" if depth is None else f"<br>depth {float(depth):.2%}"
+
+    if span.get("recovered"):
+        tail = f"deepest drawdown recovers here<br>{length} trading days (bars) from its start"
+    else:
+        tail = (
+            "deepest drawdown had not recovered by the last bar"
+            f"<br>{length} trading days (bars) so far"
+        )
+
+    endpoints = (
+        ("start", "deepest_drawdown_start", "triangle-up", "deepest drawdown starts here"),
+        ("end", "deepest_drawdown_end", "triangle-down", tail),
+    )
+    for key, name, marker_symbol, text in endpoints:
+        label = span.get(key)
+        if label is None:
+            continue
+        stamp = pd.Timestamp(str(label))
+        if stamp not in equity.index:
+            continue
+        suffix = depth_text if key == "end" else ""
+        fig.add_trace(
+            go.Scatter(
+                x=[stamp],
+                y=[equity.loc[stamp]],
+                name=name,
+                mode="markers",
+                marker={"symbol": marker_symbol, "size": 11, "color": SPAN_COLOUR},
+                hovertemplate=f"%{{x}}<br>{text}{suffix}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
 
 
 def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:

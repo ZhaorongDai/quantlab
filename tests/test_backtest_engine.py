@@ -22,7 +22,11 @@ What this file locks:
   positions accessor directly, on a fixture proved to trim holdings without
   closing them. Without that divergence the lock would be vacuous -- a
   ``positions`` block that forgot to switch the trades type would be a
-  byte-for-byte copy of the exit-trades block and would still pass.
+  byte-for-byte copy of the exit-trades block and would still pass;
+- the deepest drawdown's span (quick 260915-v6i): the record is selected by
+  DEPTH, on a series where the deepest and the longest drawdown are different
+  records, so a hook that consulted duration instead fails here rather than
+  mislabelling an episode on the report.
 
 Every engine assertion reads vectorbt's own order records (mapped onto
 ``SimulationResult.orders``), never a re-derivation of what the engine should
@@ -42,6 +46,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from vectorbt.generic.enums import DrawdownStatus
 
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
@@ -50,6 +55,7 @@ from quantlab.backtest.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )
+from quantlab.base.backtest import BaseBacktester, SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -779,3 +785,161 @@ def test_the_fixture_really_diverges_lot_level_from_position_level(rotating_run)
     assert np.isfinite(whole["Win Rate [%]"])
     assert np.isfinite(positions["Win Rate [%]"])
     assert whole["Win Rate [%]"] != pytest.approx(positions["Win Rate [%]"])
+
+
+# --------------------------------------------------------------------------
+# Quick 260915-v6i: the deepest drawdown's span
+# --------------------------------------------------------------------------
+#
+# These call the hook directly rather than through a backtester: it reads a
+# simulation and `self._bar_label` and nothing else -- no config, no model, no
+# store -- so binding it onto a stub keeps the tests about RECORD SELECTION,
+# which is the part that can be got wrong, instead of paying for a two-minute
+# end-to-end run to reach it. That a real run's page carries the markers is
+# locked at the artifact level in tests/test_backtest_persistence.py.
+
+#: Three drawdown records with depths [-36.36%, -5.17%, -5.88%] and durations
+#: [1, 5, 1] bars: the DEEPEST (record 0) lasts one bar while the LONGEST
+#: (record 1) lasts five, so `max_drawdown()` and `max_duration()` come from
+#: different records. Selecting by duration therefore marks a different
+#: episode than selecting by depth, which is what makes the lock below
+#: non-vacuous. Re-measured in this tree before it was written down.
+DEEPEST_IS_NOT_LONGEST = [
+    100, 110, 70, 115, 116, 114, 113, 112, 111, 110, 117, 118, 119, 112,
+]
+
+#: A series whose deepest drawdown is still open at the last bar, while an
+#: EARLIER, shallower one recovered. A hook that hardcoded `recovered: False`
+#: would pass on this series and fail on the one above, and vice versa.
+DEEPEST_NEVER_RECOVERS = [100, 110, 105, 112, 90, 80, 70]
+
+
+class _SpanHost:
+    """The hook under test, bound to the smallest object that can run it."""
+
+    _bar_label = staticmethod(BaseBacktester._bar_label)
+    _drawdown_span = VectorBtBacktester._drawdown_span
+
+
+def _drawdown_simulation(values: list[float]) -> SimulationResult:
+    """A `SimulationResult` whose `native` carries real vectorbt drawdowns."""
+    index = pd.bdate_range("2024-01-01", periods=len(values))
+    series = pd.Series(np.asarray(values, dtype=float), index=index)
+    value = xr.DataArray(
+        series.to_numpy(), dims=("timestamp",), coords={"timestamp": index}
+    )
+    return SimulationResult(
+        value=value,
+        returns=value,
+        orders=xr.Dataset(),
+        liquidations=[],
+        bar_interval=np.timedelta64(1, "D"),
+        native=types.SimpleNamespace(drawdowns=series.vbt(freq="1D").drawdowns),
+    )
+
+
+def _span_of(values: list[float]) -> dict | None:
+    return _SpanHost()._drawdown_span(_drawdown_simulation(values))
+
+
+def test_the_span_is_the_deepest_record_and_never_the_longest_one():
+    """The headline lock: the record is chosen by DEPTH.
+
+    This is the test that fails if the implementation reaches for
+    `max_duration()` -- the metric the report's own table calls Max Drawdown
+    Duration -- instead of the depth.
+    """
+    simulation = _drawdown_simulation(DEEPEST_IS_NOT_LONGEST)
+    drawdowns = simulation.native.drawdowns
+
+    # Non-vacuity, asserted against vectorbt itself: on THIS series the two
+    # rules really do disagree, so passing by coincidence is impossible.
+    assert list(drawdowns.duration.values) == [1, 5, 1]
+    assert drawdowns.max_duration() == pd.Timedelta(days=5)
+    assert drawdowns.max_drawdown() == pytest.approx(-0.3636363, rel=1e-5)
+
+    span = _SpanHost()._drawdown_span(simulation)
+    assert span["depth"] == pytest.approx(-0.3636363, rel=1e-5)
+    assert span["bars"] == 1, "the deepest record lasts 1 bar, the longest 5"
+
+
+def test_bars_is_the_chosen_records_end_minus_start_and_labels_are_bar_labels():
+    """`bars` is a bar count and the endpoints are `_bar_label` strings."""
+    simulation = _drawdown_simulation(DEEPEST_IS_NOT_LONGEST)
+    records = simulation.native.drawdowns.records
+    depth = (
+        records["valley_val"].to_numpy(dtype=float)
+        / records["peak_val"].to_numpy(dtype=float)
+        - 1.0
+    )
+    row = int(np.nanargmin(depth))
+    start = int(records["start_idx"].to_numpy()[row])
+    end = int(records["end_idx"].to_numpy()[row])
+    timestamps = simulation.value.timestamp.values
+
+    span = _SpanHost()._drawdown_span(simulation)
+
+    assert span["bars"] == end - start
+    assert span["start"] == BaseBacktester._bar_label(timestamps[start])
+    assert span["end"] == BaseBacktester._bar_label(timestamps[end])
+    # Daily bars sit at midnight, so the labels are plain ISO dates -- the
+    # same form metrics.json uses for its range endpoints.
+    assert (span["start"], span["end"]) == ("2024-01-03", "2024-01-04")
+
+
+def test_a_deepest_drawdown_still_open_at_the_last_bar_is_not_recovered():
+    simulation = _drawdown_simulation(DEEPEST_NEVER_RECOVERS)
+    status = simulation.native.drawdowns.records["status"].to_numpy()
+
+    # Non-vacuity: the series carries a recovered record too, so neither
+    # constant answer can satisfy both this test and the one below.
+    assert int(DrawdownStatus.Active) in status
+    assert int(DrawdownStatus.Recovered) in status
+
+    span = _SpanHost()._drawdown_span(simulation)
+    assert span["recovered"] is False
+    assert span["depth"] < -0.3, "the open record must be the deepest one"
+
+
+def test_a_deepest_drawdown_that_recovered_is_flagged_as_recovered():
+    assert _span_of(DEEPEST_IS_NOT_LONGEST)["recovered"] is True
+
+
+def test_the_recovered_flag_is_decoded_from_the_enum_not_a_bare_literal():
+    """A vectorbt bump that renumbered the enum must fail loudly here.
+
+    `status` is an INT in `.records` (a string only in `.records_readable`),
+    so the decode is a numeric comparison. If the numbering silently changed,
+    every report would invert the recovered flag instead of raising.
+    """
+    assert int(DrawdownStatus.Recovered) == 1
+    assert int(DrawdownStatus.Active) == 0
+
+
+def test_a_series_that_never_draws_down_has_no_span():
+    assert _span_of([1.0, 2.0, 3.0, 4.0, 5.0]) is None
+
+
+def test_the_base_hook_returns_none_so_another_engine_renders_todays_page():
+    """The base never reads `simulation.native`; it just declines."""
+    simulation = _drawdown_simulation(DEEPEST_IS_NOT_LONGEST)
+    assert BaseBacktester._drawdown_span(None, simulation) is None
+
+
+def test_the_span_payload_is_plain_python_values():
+    """The payload crosses into the engine-agnostic report module.
+
+    numpy scalars would still render, but they would put engine-shaped values
+    into a presentation payload that the leaf module and anything else
+    downstream has to cope with.
+    """
+    span = _span_of(DEEPEST_IS_NOT_LONGEST)
+
+    assert isinstance(span["start"], str) and isinstance(span["end"], str)
+    assert isinstance(span["bars"], int) and not isinstance(span["bars"], np.integer)
+    assert isinstance(span["depth"], float) and not isinstance(
+        span["depth"], np.floating
+    )
+    assert isinstance(span["recovered"], bool) and not isinstance(
+        span["recovered"], np.bool_
+    )
