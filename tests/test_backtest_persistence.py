@@ -701,6 +701,44 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
         assert note in html
 
 
+def test_report_states_the_window_and_split_dates_as_text(overlap_run):
+    """Quick 260915-sxx: the page states its dates in words, not only as a band.
+
+    Before this task the report carried no date anywhere: the reader saw a
+    shaded region and had to open metrics.json separately to learn which
+    window it covered, where training ended, and which bars were in-sample.
+    Every date on the page is the string the run's OWN metrics.json carries --
+    the summary reads the persisted bar labels instead of reformatting
+    timestamps, so the page and the metrics cannot drift apart.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"]
+
+    n_bars = value.sizes["timestamp"]
+    first = _day(value.timestamp.values[0])
+    last = _day(value.timestamp.values[-1])
+    assert f"{first} .. {last} ({n_bars} bars)" in html
+
+    training_window = metrics["training_window"]
+    assert training_window is not None, "the fixture model must record train dates"
+    assert f"{training_window[0]} .. {training_window[1]}" in html
+
+    in_sample_range = metrics["in_sample_range"]
+    assert in_sample_range is not None, "the fixture window must overlap training"
+    assert f"{in_sample_range[0]} .. {in_sample_range[1]}" in html
+
+    out_of_sample_ranges = metrics["out_of_sample_ranges"]
+    assert out_of_sample_ranges, "the fixture window must have out-of-sample bars"
+    for start, end in out_of_sample_ranges:
+        assert f"{start} .. {end}" in html
+
+    # The setup those numbers were produced under is on the page too.
+    config = overlap_run["backtester"].config
+    assert f"<td>{config.model_mode}</td>" in html
+    assert f"<td>{config.direction}</td>" in html
+
+
 def test_report_without_in_sample_overlap_has_no_shaded_range(disjoint_run):
     html = _report_html(disjoint_run)
     assert disjoint_run["result"].metrics["in_sample_range"] is None

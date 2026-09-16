@@ -1,12 +1,20 @@
 """Interactive HTML report for one backtest run (03.7 D-23, D-21, D-08).
 
-One plotly page with two panels on a shared time axis: the equity curve on top
-and the drawdown curve below. When the backtest window overlaps the model's
-effective training window, the in-sample range is shaded grey across both
-panels. The in-sample range is the intersection of two intervals, so it is
+One self-contained page built around a plotly div: an escaped `<h1>` of the run
+name, a dates-and-setup block stating the window in words, the plotly figure,
+and the notes. The figure keeps two panels on a shared time axis -- the equity
+curve on top and the drawdown curve below. When the backtest window overlaps
+the model's effective training window, the in-sample range is shaded grey across
+both panels. The in-sample range is the intersection of two intervals, so it is
 always one contiguous band (the out-of-sample part may be two pieces, but it is
-the unshaded remainder). Notes such as the short-side disclosure are printed
-below the plot.
+the unshaded remainder).
+
+The module composes its own HTML document rather than calling
+`fig.write_html`, so every value interpolated into the page passes through
+`html.escape` first: a run directory name or a note carrying angle brackets
+renders as text, never as live markup. The page title is rendered ONLY in the
+escaped `<h1>`; it is deliberately not handed to plotly's layout title, so no
+unescaped copy of it reaches the embedded JSON payload.
 
 The page loads plotly.js from the CDN (`include_plotlyjs="cdn"`). That keeps
 each run directory at a few kilobytes instead of several megabytes per report;
@@ -15,9 +23,11 @@ local backtest numbers, so the browser's CDN fetch reveals nothing about them.
 
 No benchmark trace is drawn: benchmark comparison is excluded this phase (D-08).
 
-A LEAF module: pandas, xarray and plotly only, zero project-internal imports.
+A LEAF module: stdlib, pandas, xarray and plotly only, zero project-internal
+imports.
 """
 
+import html
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -25,6 +35,22 @@ import xarray as xr
 from plotly.subplots import make_subplots
 
 __all__ = ["write_backtest_report"]
+
+#: Rendered in place of a value the run does not have. An em dash rather than a
+#: hyphen so it cannot be misread as the minus sign of a negative number.
+DASH = "—"
+
+_STYLE = """
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
+         margin: 24px; color: #1a1a1a; }
+  h1 { font-size: 20px; margin: 0 0 16px 0; }
+  h2 { font-size: 15px; margin: 24px 0 8px 0; color: #444; }
+  table.summary { border-collapse: collapse; font-size: 13px; }
+  table.summary th { text-align: left; padding: 3px 16px 3px 0;
+                     font-weight: 600; color: #444; white-space: nowrap; }
+  table.summary td { padding: 3px 0; font-variant-numeric: tabular-nums; }
+  ul.notes { font-size: 13px; color: #444; padding-left: 20px; }
+"""
 
 
 def write_backtest_report(
@@ -34,8 +60,13 @@ def write_backtest_report(
     in_sample_range: tuple[str, str] | None,
     notes: list[str],
     title: str,
+    summary: dict[str, str] | None = None,
+    metrics: dict | None = None,
+    returns: xr.DataArray | None = None,
+    liquidations: list[dict] | None = None,
+    init_cash: float | None = None,
 ) -> None:
-    """Write the equity and drawdown report for `value` to `path`.
+    """Write the report for `value` to `path`.
 
     - `value`: portfolio value on the `timestamp` dimension;
     - `in_sample_range`: bar-label pair (first, last in-sample bar), shaded
@@ -44,7 +75,17 @@ def write_backtest_report(
       plotly reads both;
     - `notes`: lines printed below the plot (e.g. what the simulation does not
       model);
-    - `title`: page title, typically the run directory name.
+    - `title`: page title, typically the run directory name;
+    - `summary`: ordered mapping of display label to already-formatted display
+      string, rendered as the dates-and-setup block. This module formats
+      nothing and computes nothing: the caller decides both the labels and the
+      text, so the page can state the same strings the run's `metrics.json`
+      carries.
+
+    `metrics`, `returns`, `liquidations` and `init_cash` are accepted and
+    reserved for the metric table and the expanded chart set; they are not read
+    yet. Every new parameter defaults to None so the original five-argument call
+    form stays legal.
 
     Drawdown is `value / running max - 1`, so it is 0 at a new high and
     negative below it.
@@ -87,5 +128,69 @@ def write_backtest_report(
         )
     fig.update_yaxes(title_text="value", row=1, col=1)
     fig.update_yaxes(title_text="drawdown", tickformat=".1%", row=2, col=1)
-    fig.update_layout(title=title, margin={"b": 120})
-    fig.write_html(str(path), include_plotlyjs="cdn")
+    fig.update_layout(margin={"b": 120})
+
+    div = fig.to_html(full_html=False, include_plotlyjs="cdn")
+    Path(path).write_text(
+        _document(title, summary, div, notes), encoding="utf-8"
+    )
+
+
+def _escape(value: object) -> str:
+    """`str(value)` with every HTML-significant character escaped (T-sxx-01)."""
+    return html.escape(str(value))
+
+
+def _summary_section(summary: dict[str, str] | None) -> str:
+    """The dates-and-setup block; empty string when the caller passed nothing."""
+    if not summary:
+        return ""
+    rows = "\n".join(
+        f"      <tr><th>{_escape(label)}</th><td>{_escape(text)}</td></tr>"
+        for label, text in summary.items()
+    )
+    return (
+        "  <h2>Dates and setup</h2>\n"
+        '  <table class="summary">\n'
+        f"{rows}\n"
+        "  </table>\n"
+    )
+
+
+def _notes_section(notes: list[str] | None) -> str:
+    """The notes list; empty string when there are none."""
+    if not notes:
+        return ""
+    items = "\n".join(f"    <li>{_escape(note)}</li>" for note in notes)
+    return (
+        "  <h2>Notes</h2>\n"
+        '  <ul class="notes">\n'
+        f"{items}\n"
+        "  </ul>\n"
+    )
+
+
+def _document(
+    title: str, summary: dict[str, str] | None, div: str, notes: list[str] | None
+) -> str:
+    """One self-contained HTML document around the plotly `div`.
+
+    `div` is plotly's own fragment and is inserted verbatim -- plotly owns its
+    escaping. Everything else on the page comes from the run and is escaped.
+    """
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '  <meta charset="utf-8">\n'
+        f"  <title>{_escape(title)}</title>\n"
+        f"  <style>{_STYLE}  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        f"  <h1>{_escape(title)}</h1>\n"
+        f"{_summary_section(summary)}"
+        f"{div}\n"
+        f"{_notes_section(notes)}"
+        "</body>\n"
+        "</html>\n"
+    )
