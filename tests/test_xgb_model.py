@@ -927,6 +927,123 @@ def test_unavailable_or_non_scalar_importance_is_skipped_not_fatal(tmp_path, rec
     assert any("'gain'" in m for m in warnings_log), warnings_log
 
 
+def test_importance_charts_are_sorted_descending_and_capped_at_the_top_30(tmp_path):
+    """35 factors with fixed scores: the table carries all 35 in descending
+    order (D-03, D-04) and the bar chart carries exactly the 30 largest.
+
+    The scores are CONSTRUCTED rather than trained because 30-of-35 is only an
+    unambiguous assertion when the correct answer is fixed in advance -- a
+    trained Booster could tie on values or leave a different number of factors
+    unsplit, and the cut would then be untestable. No training happens at all:
+    `get_factor_names()` and `class_name` read the config, so neither needs
+    `collect()`.
+    """
+    names = [f"g{i:02d}" for i in range(35)]
+    shape = (N_TIMES, N_SYMBOLS)
+    factors = ArrayPanel({name: np.zeros(shape) for name in names})
+    labels = ArrayPanel({"ret_a": np.zeros(shape)})
+
+    class _FixedScoreBooster:
+        """`f0`..`f31` score 100 down to 69; `f32`..`f34` never split."""
+
+        def get_score(self, importance_type="weight"):
+            return {f"f{i}": float(100 - i) for i in range(32)}
+
+    head = XGBoostRegressor(_config(tmp_path, factors, labels))
+    head._params = {}  # not gblinear, so the early return is not taken
+    head.model = _FixedScoreBooster()
+    head._wandb_recorder = FakeRecorder("fixed-scores")
+    head._last_log_step = 41  # a step no round count here could coincide with
+
+    head._record_feature_importance()
+
+    rec = head._wandb_recorder
+    assert len(rec.logs) == 1
+    chart_row, step = rec.logs[0]
+    assert step == 41  # passed through from the callback, not reinvented
+    assert set(chart_row) == {f"{CHART_PREFIX}/{t}" for t in IMPORTANCE_TYPES} | {
+        f"{CHART_PREFIX}_table/{t}" for t in IMPORTANCE_TYPES
+    }
+
+    # Descending by value; the 0.0-filled never-split factors ride at the bottom
+    # in factor order, which is what `sorted` being stable buys.
+    expected_full = [[names[i], float(100 - i)] for i in range(32)] + [
+        [name, 0.0] for name in names[32:]
+    ]
+    for importance_type in IMPORTANCE_TYPES:
+        table = chart_row[f"{CHART_PREFIX}_table/{importance_type}"]
+        assert table.data == expected_full
+        chart = chart_row[f"{CHART_PREFIX}/{importance_type}"]
+        assert chart.table.data == expected_full[:30]
+        assert chart.table.data[0] == ["g00", 100.0]
+        assert chart.table.data[-1] == ["g29", 71.0]
+
+    importance = _importance_summary(rec)
+    assert set(importance) == {
+        f"importance_{t}/{n}" for t in IMPORTANCE_TYPES for n in names
+    }
+    assert len(importance) == 105
+    for importance_type in IMPORTANCE_TYPES:
+        for i, name in enumerate(names):
+            assert importance[f"importance_{importance_type}/{name}"] == (
+                float(100 - i) if i < 32 else 0.0
+            )
+
+
+def test_a_chart_that_fails_to_build_is_skipped_and_the_others_still_chart(
+    tmp_path, recorders, warnings_log, monkeypatch
+):
+    """T-gs8-01: chart building is best-effort and PER TYPE. The type that
+    raises contributes neither of its two keys (both-or-neither), the other two
+    types chart normally, every summary scalar is still written, and the trained
+    model still reaches disk -- importance runs before `_save_model`, so a
+    drawing bug must never cost a checkpoint (REVIEW CR-01).
+    """
+    real_bar = wandb.plot.bar
+    calls: list[object] = []
+
+    def flaky_bar(*args, **kwargs):
+        calls.append(kwargs.get("title"))
+        # Call two is `gain`: `_IMPORTANCE_TYPES` is iterated in its declared
+        # order and each type builds exactly one bar chart. The assertions
+        # below, not this arithmetic, are what carry the proof.
+        if len(calls) == 2:
+            raise RuntimeError("chart build failed (test)")
+        return real_bar(*args, **kwargs)
+
+    monkeypatch.setattr(wandb.plot, "bar", flaky_bar)
+    factors, labels = _importance_panels(seed=58)
+
+    _train(
+        tmp_path,
+        factors,
+        labels,
+        hyperparameters={"num_boost_round": 10, "max_depth": 3},
+    )
+
+    assert _only_checkpoint(tmp_path / "ckpt").is_file()
+    rec = recorders[0]
+    assert rec.finished == 1
+
+    charts = _chart_rows(rec)
+    assert len(charts) == 1
+    assert set(charts[0][0]) == {
+        f"{CHART_PREFIX}/weight",
+        f"{CHART_PREFIX}_table/weight",
+        f"{CHART_PREFIX}/total_gain",
+        f"{CHART_PREFIX}_table/total_gain",
+    }
+
+    # The summary is written before any chart is built, so D-02 is untouched
+    # even for the type whose chart blew up.
+    assert set(_importance_summary(rec)) == {
+        f"importance_{t}/{n}" for t in IMPORTANCE_TYPES for n in IMPORTANCE_FACTORS
+    }
+    # `'gain'` with its surrounding quotes cannot match the `'total_gain'`
+    # message -- the same distinction the flaky-`get_score` test above relies on.
+    assert any("'gain'" in m for m in warnings_log), warnings_log
+
+
 def test_booster_stays_nameless_and_predictions_are_unchanged(tmp_path, recorders):
     """Scope lock (user decision 2026-09-15): no `feature_names` reach the
     DMatrix, so the saved Booster is nameless and a fresh instance loads it
