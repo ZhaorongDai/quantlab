@@ -344,6 +344,57 @@ def test_slice_statistics_compare_exact_bar_timestamps_not_days(tmp_path):
     assert records["closed_trade_count"] == 0
 
 
+def test_whole_order_count_is_zero_for_an_order_less_simulation(tmp_path, monkeypatch):
+    """`whole["order_count"]` must read `.sizes.get("order", 0)`, never `["order"]`.
+
+    A simulation that never filled carries `orders=xr.Dataset()`, which has no
+    `order` dimension at all, so a bare subscript raises KeyError. That raise
+    would happen while the run directory is still the staging directory, and
+    the failure handler deletes the ENTIRE staging directory -- so the cost of
+    this one-character mistake is every artifact of a completed backtest, not
+    just a missing metric (threat T-03.8-01-01, rated high).
+
+    Why this test exists at all: the mutation `.sizes.get("order", 0)` ->
+    `.sizes["order"]` was run against the whole of this file and ESCAPED, 17
+    passed. The neighbouring order-less test above calls `_period_record_stats`
+    and `_period_returns_stats` directly and never reaches `_compute_metrics`,
+    so nothing covered this read. `_engine_stats` is stubbed here rather than
+    driven through a real `Portfolio`: what needs proving is the order-record
+    read, and a real vectorbt portfolio would only add a way for the test to
+    fail for an unrelated reason.
+    """
+    backtester = _unit_backtester(tmp_path)
+    monkeypatch.setattr(
+        type(backtester), "_engine_stats", lambda self, simulation: {}
+    )
+    index = pd.date_range("2024-01-01", periods=3, freq="h")
+    simulation = SimulationResult(
+        value=xr.DataArray(
+            np.ones(index.size), dims="timestamp", coords={"timestamp": index.values}
+        ),
+        returns=xr.DataArray(
+            np.zeros(index.size), dims="timestamp", coords={"timestamp": index.values}
+        ),
+        orders=xr.Dataset(),
+        liquidations=[],
+        bar_interval=np.timedelta64(1, "h"),
+        trades=xr.Dataset(),
+        native=None,
+    )
+    # No in-sample and no out-of-sample range, so neither slice is computed and
+    # the assertion below can only be about the whole-window read.
+    split = {"in_sample_range": None, "out_of_sample_ranges": []}
+
+    metrics = backtester._compute_metrics(simulation, None, split)
+
+    whole = metrics["whole"]
+    assert whole["order_count"] == 0
+    assert isinstance(whole["order_count"], int) and not isinstance(
+        whole["order_count"], bool
+    )
+    assert metrics["in_sample"] is None and metrics["out_of_sample"] is None
+
+
 # --------------------------------------------------------------------------
 # D-17: overlap handling through run()
 # --------------------------------------------------------------------------
@@ -498,6 +549,17 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
     assert inside["order_count"] > 0 and outside["order_count"] > 0
     assert inside["order_count"] + outside["order_count"] == orders.sizes["order"]
 
+    # The whole-window counterpart (phase 03.8, CONTEXT item 3): the block that
+    # gave up the lot-level trade set must still answer "how many fills
+    # happened over the whole window". Both identities hold by construction,
+    # because `_split_window` tiles the window into one in-sample range plus
+    # 0-2 disjoint out-of-sample ranges covering every remaining bar. They are
+    # asserted anyway: that construction is exactly what a future refactor of
+    # the split could break silently.
+    whole = metrics["whole"]
+    assert whole["order_count"] == inside["order_count"] + outside["order_count"]
+    assert whole["order_count"] == orders.sizes["order"]
+
     total_fees = float(orders["fees"].values.sum())
     assert total_fees > 0.0
     assert inside["fees_paid"] + outside["fees_paid"] == pytest.approx(
@@ -513,7 +575,12 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
 
     # Trades: closed trades partition the run; the single out-of-sample piece
     # ends on the window's last bar, so its open count is the run's open count.
-    whole = metrics["whole"]
+    #
+    # These identities were RESTORED in phase 03.8 by unifying the trade view
+    # (D-02) -- `SimulationResult.trades` and `whole` are both the position view
+    # now -- and NOT by relaxing the assertions. If they ever go red again, the
+    # source drifted back to two trade vocabularies under names that read
+    # identically: fix the source, never the assertion.
     assert whole["Total Closed Trades"] > 0 and whole["Total Open Trades"] > 0
     assert (
         inside["closed_trade_count"] + outside["closed_trade_count"]
