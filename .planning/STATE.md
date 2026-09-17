@@ -2,13 +2,13 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.8"
-current_phase_name: backtest-report-in-out-of-sample-delta-column-monthly-return
+current_phase_name: "Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)"
 status: executing
 stopped_at: Phase 03.8 inserted (three remaining backtest-report items), ready to plan
-last_updated: "2026-09-16T22:13:52.531Z"
+last_updated: "2026-09-17T02:02:38.009Z"
 last_activity: 2026-09-16
-last_activity_desc: "Completed quick task 260916-hro: valley-to-recovery span, no liquidation markers, legible axis titles"
-state_head: dd11a78e63264eecbddac1a8660d2664a2619df7
+last_activity_desc: Phase 03.8 execution started
+state_head: b2ed1487c9ebd84a561f9365dc59e19c823e6f62
 progress:
   total_phases: 15
   completed_phases: 1
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-15)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 3 — Factor Computation (KunQuant + Polars)
+**Current focus:** Phase 03.8 — Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)
 
 ## Current Position
 
-Phase: 03.8 (backtest-report-in-out-of-sample-delta-column-monthly-return) — READY TO EXECUTE
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-09-16 - Completed quick task 260916-hro: drawdown triangles now span valley to recovery, liquidation markers dropped from the chart, axis titles made legible (140 passed vs 141 baseline)
+Phase: 03.8 (Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 03.8
+Last activity: 2026-09-16 — Phase 03.8 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
