@@ -16,13 +16,15 @@ What this file locks:
 - the market spec (D-04), construction-time score-label validation (D-11),
   the deferred benchmark hook (D-08), and that a sibling engine subclass needs
   no change to ``BaseBacktester`` (D-01);
-- the position-level trade statistics reported beside the lot-level ones
-  (quick 260915-udx): the ``positions`` sub-dict of the ``whole`` block is
-  proved to be vectorbt's positions view by deriving its counts from the
-  positions accessor directly, on a fixture proved to trim holdings without
-  closing them. Without that divergence the lock would be vacuous -- a
-  ``positions`` block that forgot to switch the trades type would be a
-  byte-for-byte copy of the exit-trades block and would still pass;
+- the single position-level trade vocabulary (phase 03.8, D-02): the trade
+  metrics of the ``whole`` block are proved to be vectorbt's positions view by
+  deriving their counts from the positions accessor directly, on a fixture
+  proved to trim holdings without closing them, and the retired nested
+  ``positions`` sub-dict is proved absent. Without that divergence the lock
+  would be vacuous -- a reported view that forgot to switch the trades type
+  would be a byte-for-byte copy of the exit-trades one and would still pass.
+  The 14 portfolio-level metrics are proved unchanged by the switch, re-derived
+  from the un-replaced portfolio rather than pinned as literals;
 - the deepest drawdown's span (quick 260915-v6i, moved to the valley by quick
   260916-hro): the record is selected by DEPTH, on a series where the deepest
   and the longest drawdown are different records, so a hook that consulted
@@ -649,8 +651,7 @@ def test_a_sibling_engine_subclass_runs_without_touching_the_base(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Task 4: position-level trade statistics beside the lot-level ones
-# (quick 260915-udx)
+# Phase 03.8 (D-02): ONE trade vocabulary -- the position-level view
 # --------------------------------------------------------------------------
 
 #: vectorbt's display names for the trade-derived metrics, written out here
@@ -672,6 +673,28 @@ TRADE_METRIC_NAMES = (
     "Expectancy",
 )
 
+#: vectorbt's metric IDs for the 14 genuinely PORTFOLIO-level metrics, i.e.
+#: `STATS_METRICS` minus the trade-derived set. Switching the trades type must
+#: not move any of them. `total_open_trades` is deliberately absent: it is a
+#: trade-view metric that merely coincided on one probe fixture, so asserting
+#: it invariant would be asserting a coincidence (RESEARCH Pattern 3).
+PORTFOLIO_METRIC_IDS = (
+    "start",
+    "end",
+    "period",
+    "start_value",
+    "end_value",
+    "total_return",
+    "max_gross_exposure",
+    "total_fees_paid",
+    "max_dd",
+    "max_dd_duration",
+    "sharpe_ratio",
+    "calmar_ratio",
+    "omega_ratio",
+    "sortino_ratio",
+)
+
 
 class RotateOneOutEqualWeight(VectorBtBacktester):
     """A test-local sibling whose rebalances trim holdings without closing them.
@@ -683,9 +706,9 @@ class RotateOneOutEqualWeight(VectorBtBacktester):
     from entry until its turn to be dropped comes round.
 
     That divergence is the point. On a fixture where every holding is opened
-    and closed in one go the two views coincide, and a `positions` block that
+    and closed in one go the two views coincide, and a reported view that
     forgot to switch the trades type would be a byte-for-byte copy of the
-    exit-trades block and pass every assertion below. This class exists so the
+    exit-trades one and pass every assertion below. This class exists so the
     lock cannot be satisfied vacuously.
     """
 
@@ -727,47 +750,41 @@ def rotating_run(tmp_path_factory):
         return RotateOneOutEqualWeight(config).run()
 
 
-def test_positions_block_carries_the_trade_metrics_each_with_a_lot_level_twin(
+def test_the_whole_block_carries_the_trade_metrics_with_no_nested_positions_block(
     rotating_run,
 ):
-    """The `whole` block gains a positions sub-dict: the 13 trade metrics, no more."""
+    """One vocabulary (D-02): the 13 trade metrics at the top level, none nested."""
     whole = rotating_run.metrics["whole"]
-    positions = whole["positions"]
 
-    assert isinstance(positions, dict)
-    assert set(positions) == set(TRADE_METRIC_NAMES)
-    # Every position-level row has a lot-level twin at the top level, so the
-    # two views are comparable row by row rather than being two metric sets.
     for key in TRADE_METRIC_NAMES:
         assert key in whole, key
-    # Portfolio-level metrics are deliberately NOT recomputed: the trades type
-    # does not affect them, so a second copy could only drift from the first.
-    for key in ("Start", "End", "Period", "Total Return [%]", "Sharpe Ratio",
-                "Max Drawdown [%]", "Total Fees Paid", "turnover"):
-        assert key not in positions, key
-    # The top level is untouched: nothing renamed, nothing removed, and D-08's
-    # no-benchmark rule still holds.
+    # The nested lot-level/position-level pair is replaced by one view
+    # page-wide, so there is no sub-dict left to compare rows against.
+    assert "positions" not in whole, sorted(whole)
+    # The rest of the top level is untouched: nothing renamed, nothing removed,
+    # and D-08's no-benchmark rule still holds.
     assert "Total Return [%]" in whole
+    assert "turnover" in whole
     assert [key for key in whole if "Benchmark" in key] == []
 
 
-def test_positions_block_is_the_positions_view_not_a_second_exit_trades_copy(
+def test_the_reported_trade_counts_are_the_positions_view_not_exit_trades(
     rotating_run,
 ):
     """The counts are re-derived from the positions accessor, independently.
 
-    This is what goes red if the implementation recomputed the exit-trades
-    stats under a new key instead of switching the trades type -- the failure
-    mode that per-call `trades_type` kwargs produce silently, because
-    `stats()` and `get_trades()` ignore them.
+    This is what goes red if the implementation kept the exit-trades stats
+    instead of switching the trades type -- the failure mode that per-call
+    `trades_type` kwargs produce silently, because `stats()` and
+    `get_trades()` ignore them.
     """
-    positions = rotating_run.metrics["whole"]["positions"]
+    whole = rotating_run.metrics["whole"]
     records = rotating_run.simulation.native.positions.records_readable
     status = records["Status"].astype(str)
 
-    assert int(positions["Total Trades"]) == len(records)
-    assert int(positions["Total Closed Trades"]) == int((status == "Closed").sum())
-    assert int(positions["Total Open Trades"]) == int((status == "Open").sum())
+    assert int(whole["Total Trades"]) == len(records)
+    assert int(whole["Total Closed Trades"]) == int((status == "Closed").sum())
+    assert int(whole["Total Open Trades"]) == int((status == "Open").sum())
 
 
 def test_the_fixture_really_diverges_lot_level_from_position_level(rotating_run):
@@ -776,18 +793,60 @@ def test_the_fixture_really_diverges_lot_level_from_position_level(rotating_run)
     Without this the test above could pass on a fixture where each holding is
     entered and exited once, which is precisely when an exit-trades copy is
     indistinguishable from the positions view.
+
+    The lot-level figures are re-derived from the UN-replaced portfolio, using
+    vectorbt's own definitions, because they are no longer reported anywhere:
+    comparing the reported numbers against a hand-rolled win rate would be
+    comparing two definitions rather than two views.
     """
+    simulation = rotating_run.simulation
     whole = rotating_run.metrics["whole"]
-    positions = whole["positions"]
-    lots = rotating_run.simulation.native.trades.records_readable
-    holdings = rotating_run.simulation.native.positions.records_readable
+    lots = simulation.native.trades.records_readable
+    holdings = simulation.native.positions.records_readable
+    lot_stats = simulation.native.stats(
+        metrics=["total_closed_trades", "win_rate"],
+        settings=dict(year_freq=US_EQUITY_MARKET.year_freq(simulation.bar_interval)),
+        silence_warnings=True,
+    ).to_dict()
 
     assert len(lots) > len(holdings) > 0, "the fixture must trim without closing"
-    assert int(whole["Total Closed Trades"]) > int(positions["Total Closed Trades"]) > 0
-    # The headline defect: the lot-level win rate is inflated by partial trims.
+    assert int(lot_stats["Total Closed Trades"]) > int(whole["Total Closed Trades"]) > 0
+    # The headline defect: the lot-level win rate is inflated by partial trims,
+    # so the reported position-level rate must not equal it.
     assert np.isfinite(whole["Win Rate [%]"])
-    assert np.isfinite(positions["Win Rate [%]"])
-    assert whole["Win Rate [%]"] != pytest.approx(positions["Win Rate [%]"])
+    assert np.isfinite(lot_stats["Win Rate [%]"])
+    assert whole["Win Rate [%]"] != pytest.approx(lot_stats["Win Rate [%]"])
+
+
+def test_the_portfolio_level_metrics_are_unchanged_by_the_positions_switch(
+    rotating_run,
+):
+    """The single `replace()` call must not move any portfolio-level number.
+
+    The before-values are re-derived from the UN-replaced portfolio rather than
+    pinned as literals: a hardcoded snapshot would need re-measuring whenever
+    the fixture changes and would go stale silently, which is exactly the kind
+    of comparison that cannot fail. `Total Open Trades` is deliberately not in
+    `PORTFOLIO_METRIC_IDS` -- see that constant's comment.
+    """
+    simulation = rotating_run.simulation
+    whole = rotating_run.metrics["whole"]
+    before = simulation.native.stats(
+        metrics=list(PORTFOLIO_METRIC_IDS),
+        settings=dict(year_freq=US_EQUITY_MARKET.year_freq(simulation.bar_interval)),
+        silence_warnings=True,
+    ).to_dict()
+
+    assert len(before) == len(PORTFOLIO_METRIC_IDS)
+    for key, expected in before.items():
+        actual = whole[key]
+        if pd.isna(expected):
+            assert pd.isna(actual), (key, expected, actual)
+            continue
+        if isinstance(expected, float):
+            assert actual == pytest.approx(expected, rel=1e-12), key
+            continue
+        assert actual == expected, (key, expected, actual)
 
 
 # --------------------------------------------------------------------------
