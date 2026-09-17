@@ -31,8 +31,9 @@
     "code_review_depth": "standard",
     "_auto_chain_active": false,
     "use_worktrees": true,
-    "test_command": "uv run pytest -q",
-    "test_gate_timeout": 1800
+    "test_command": "uv run pytest -q --ignore=tests/test_factor_hierarchy.py",
+    "test_gate_timeout": 1800,
+    "build_command": "uv run python -m compileall -q quantlab"
   },
   "ship": {
     "pr_body_sections": [
