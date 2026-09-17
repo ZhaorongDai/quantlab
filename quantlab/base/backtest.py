@@ -1485,13 +1485,11 @@ class BaseBacktester(ABC):
         多段时：订单与已平仓交易按段求和（段互不重叠，等于逐段相加），段末
         持仓数逐段相加，换手率汇总取所有段内成交 bar 的并集。
 
-        **这里的两个交易计数是 lot 级的（quick 260915-udx）。** 它们数的是
-        `simulation.trades`——模拟时按 vectorbt 默认的 exit trades 口径建出来的
-        记录，一次减仓就算一笔。整段的 `whole` 块里另有一套持仓级统计（引擎层
-        的 `positions` 子字典，一个标的从建仓到清空算一笔），但**这两个计数没有
-        跟着换口径**：换了就得让 `SimulationResult` 再带一份持仓记录，那是另一
-        件事。所以拿段内的 `closed_trade_count` 去和整段的持仓级计数对账，对不
-        上是意料之中的，不是 bug。
+        **这两个交易计数与整段的 `whole` 是同一个口径：持仓级（D-02）。** 它们数
+        的是 `simulation.trades`，而那份记录本身就是按 vectorbt 的 `positions`
+        口径建出来的（一个标的从建仓到清空算一笔）。所以段内的
+        `closed_trade_count` 逐段相加等于 `whole["Total Closed Trades"]`，段末
+        未平仓数同理——两边对得上账，这是刻意维持的性质，不是巧合。
         """
         orders = simulation.orders
         if orders.sizes.get("order", 0) > 0:
@@ -1543,7 +1541,8 @@ class BaseBacktester(ABC):
     ) -> dict:
         """整段、样本内、样本外三块指标，全部取自同一次连续模拟（D-17、D-22、D-34）。
 
-        - `whole`：引擎的整段统计（不含基准）加 `turnover` 汇总；
+        - `whole`：引擎的整段统计（不含基准），加 `turnover` 汇总与 `order_count`
+          （整段的成交笔数）；
         - `in_sample`：样本内区间的收益统计（`_period_returns_stats`）合并按区间
           过滤的订单/交易/换手统计（`_period_record_stats`）；没有样本内区间时 None；
         - `out_of_sample`：同上，作用于样本外各段。两段时收益统计用拼接后的
@@ -1563,6 +1562,12 @@ class BaseBacktester(ABC):
         whole["turnover"] = self._turnover_summary(
             self._turnover(simulation), simulation.bar_interval
         )
+        # 整段的成交笔数（CONTEXT item 3）：交易统计换成持仓级之后，`whole` 里
+        # 再没有任何「到底成交了多少次」的答案——`Total Fees Paid` 与 `turnover`
+        # 只回答成本，不回答次数。用 `.sizes.get("order", 0)` 而不是裸下标：没有
+        # 成交的模拟里 orders 是空 Dataset，压根没有 order 这个维度，裸下标会在
+        # 运行目录还处于暂存态时抛 KeyError，把整个 run 一起删掉。
+        whole["order_count"] = int(simulation.orders.sizes.get("order", 0))
         metrics: dict = {"whole": whole}
 
         def _slice(ranges: list[tuple[str, str]]) -> dict | None:

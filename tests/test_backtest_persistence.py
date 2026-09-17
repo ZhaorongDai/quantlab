@@ -34,14 +34,15 @@ window overlaps training, there is no benchmark trace, and the note that
 short-side returns are optimistic because no borrow cost is modelled still
 appears. metrics.json carries the same note and no benchmark key.
 
-Quick 260915-udx: a second note states that the top-level trade metrics are
-vectorbt exit trades (lot level) while the positions-prefixed rows are the
-position-level view, and the nested `whole.positions` block those rows are
-rendered from reaches both artifacts. This file locks them at the artifact
-level -- note verbatim in the page and in metrics.json, block strict-JSON
-clean, rows on the page. The proof that the block really IS the positions view
-(rather than a second copy of the exit-trades one) needs a run that trims
-without closing, and lives in tests/test_backtest_engine.py.
+Phase 03.8 (D-02): a second note states that the trade metrics are the
+position-level view -- one entry-to-flat round trip per symbol, so a partial
+trim is not counted as its own closed trade -- and that `whole` carries
+`order_count`, the number of fills. This file locks that at the artifact
+level: the note verbatim in the page and in metrics.json, the top-level trade
+metrics strict-JSON clean, and no nested `whole.positions` block left behind.
+The proof that the reported view really IS the positions view (rather than a
+copy of the exit-trades one) needs a run that trims without closing, and lives
+in tests/test_backtest_engine.py.
 
 The metric table is rendered from whatever keys the blocks carry at render
 time, never from a list written into the report module: the metric set is
@@ -932,16 +933,37 @@ def test_metrics_json_carries_the_short_side_note(overlap_run):
 
 
 # --------------------------------------------------------------------------
-# quick 260915-udx: the lot-level vs position-level note and the nested block
+# Phase 03.8 (D-02): the one-trade-view note and the absent nested block
 # --------------------------------------------------------------------------
 
-#: The two position-level metrics vectorbt reports as a duration; `to_jsonable`
-#: renders a Timedelta as a string and NaT as null, so these two are the one
-#: pair in the block that is legitimately not a number.
+#: The two TOP-LEVEL trade metrics vectorbt reports as a duration;
+#: `to_jsonable` renders a Timedelta as a string and NaT as null, so these two
+#: are the one legitimately non-numeric pair among the trade metrics.
 POSITION_DURATION_KEYS = {"Avg Winning Trade Duration", "Avg Losing Trade Duration"}
 
+#: vectorbt's display names for the trade-derived metrics, written out here
+#: rather than read off the engine: a test that asked the implementation what
+#: it should contain would agree with any answer. This mirrors the same literal
+#: in tests/test_backtest_engine.py deliberately -- each file states its own
+#: expectation instead of importing the other's.
+TRADE_METRIC_NAMES = (
+    "Total Trades",
+    "Total Closed Trades",
+    "Total Open Trades",
+    "Open Trade PnL",
+    "Win Rate [%]",
+    "Best Trade [%]",
+    "Worst Trade [%]",
+    "Avg Winning Trade [%]",
+    "Avg Losing Trade [%]",
+    "Avg Winning Trade Duration",
+    "Avg Losing Trade Duration",
+    "Profit Factor",
+    "Expectancy",
+)
 
-def test_report_and_metrics_carry_the_lot_versus_position_note(overlap_run):
+
+def test_report_and_metrics_carry_the_one_trade_view_note(overlap_run):
     """Both notes reach both artifacts, and the new one survives HTML escaping.
 
     Every note is rendered through `html.escape`, so a note containing any of
@@ -962,18 +984,36 @@ def test_report_and_metrics_carry_the_lot_versus_position_note(overlap_run):
     text = " ".join(notes).lower()
     # The base short-side note survives alongside the new one.
     assert "short" in text and "borrow" in text and "optimistic" in text
-    # And the new note says which set is which.
-    for mark in ("exit trades", "lot level", "position level"):
+    # And the new note says which view the trade metrics are, and names the
+    # execution-activity count that replaced the lot-level set.
+    for mark in ("position level", "round trip", "partial trim", "order_count"):
         assert mark in text, mark
 
 
-def test_metrics_json_carries_the_nested_positions_block(overlap_run):
-    """The nested block strict-parses: no NaN or Infinity token, no stray type."""
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
-    positions = metrics["whole"]["positions"]
+def test_metrics_json_carries_one_trade_view_and_no_nested_positions_block(
+    overlap_run,
+):
+    """The top-level trade metrics strict-parse, and the nested block is gone.
 
-    assert isinstance(positions, dict) and positions
-    for key, value in positions.items():
+    `test_report_shows_the_positions_rows_beside_the_lot_level_rows` was
+    deleted alongside the nested block: there are no `positions.`-prefixed rows
+    on the page any more, and the surviving metric-table test already covers
+    the top-level rows these numbers are now rendered as.
+    """
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    whole = metrics["whole"]
+
+    assert "positions" not in whole, sorted(whole)
+    # The companion change (CONTEXT item 3): dropping the lot-level set would
+    # otherwise leave the whole-window block with no execution-activity count.
+    assert isinstance(whole["order_count"], int) and not isinstance(
+        whole["order_count"], bool
+    )
+    assert whole["order_count"] > 0
+
+    for key in TRADE_METRIC_NAMES:
+        assert key in whole, key
+        value = whole[key]
         if key in POSITION_DURATION_KEYS:
             assert value is None or isinstance(value, str), (key, value)
             continue
@@ -982,30 +1022,6 @@ def test_metrics_json_carries_the_nested_positions_block(overlap_run):
         ), (key, value)
         if isinstance(value, float):
             assert np.isfinite(value), key
-
-
-def test_report_shows_the_positions_rows_beside_the_lot_level_rows(overlap_run):
-    """The page carries the position-level numbers under a distinguishable name.
-
-    This is what makes the distinction legible without opening the source: the
-    reader sees `Win Rate [%]` and `positions.Win Rate [%]` as separate rows.
-    The rows come from the generic dotted-path flattening, so no report edit
-    was needed -- and that is exactly why it is worth asserting here.
-    """
-    html = _report_html(overlap_run)
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
-    rendered = dict(re.findall(r"<tr><th>([^<]+)</th><td>([^<]*)</td>", html))
-
-    checked = 0
-    for key, value in metrics["whole"]["positions"].items():
-        row = f"positions.{key}"
-        assert row in rendered, (row, sorted(rendered))
-        # The lot-level twin is on the page too, under its bare name.
-        assert key in rendered, key
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            assert float(rendered[row]) == pytest.approx(value, rel=1e-5)
-            checked += 1
-    assert checked >= 3, "the positions block must carry several finite numbers"
 
 
 # --------------------------------------------------------------------------

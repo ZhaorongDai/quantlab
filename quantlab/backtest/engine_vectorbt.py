@@ -54,12 +54,15 @@ class VectorBtBacktester(BaseBacktester):
     调仓行混有 NaN 与有限值时，在交给 vectorbt 之前直接报错（Pitfall 3）：NaN
     在调仓行上的意思是「保持原仓位」，会占着资金悄悄挡住同一行的其余订单。
 
-    **两套交易统计（quick 260915-udx）。** vectorbt 默认的 exit trades 口径把每
-    一次减仓都记成一笔独立的已平仓交易：等权调仓下，赢家每被削一刀就多算一笔
-    盈利交易，胜率与盈亏比因此偏高。所以 `_engine_stats` 报两套——顶层的交易
-    指标是 **lot 级**（exit trades），嵌套的 `positions` 子字典是 **持仓级**（一个
-    标的从建仓到清空算一笔）。两套都是对的，衡量的东西不同：lot 级看的是每次
-    调仓动作的质量，持仓级才是「选股选得对不对」。所以并列报出，谁也不替换谁。
+    **交易统计只有一套口径：持仓级（phase 03.8，D-02）。** 一笔交易 = 一个标的
+    从建仓到清空（vectorbt 的 `positions` 口径），中途减仓不单独算一笔。为什么
+    不用 vectorbt 默认的 exit trades（lot 级）口径：它把每一次减仓都记成一笔
+    独立的已平仓交易，而等权调仓下只有**赢家**才需要被削回目标权重，于是胜率
+    被系统性抬高——本仓库两次独立的真实运行实测都偏高约 6.5 个百分点（lot 级
+    57.27%，持仓级 50.74% / 50.81%），而亏损一侧几乎不受影响（-6.28% vs
+    -6.32%），正是「只有赢家会被削」所预测的形状。所以顶层直接报持仓级，不再
+    并列报 lot 级，也不再有嵌套的 `positions` 子字典。整段「到底成交了多少次」
+    由基类写入的 `whole["order_count"]` 回答，它数的是订单记录条数。
     """
 
     #: vectorbt `Portfolio.stats` 的指标名，去掉了 `benchmark_return`（D-08：
@@ -92,26 +95,6 @@ class VectorBtBacktester(BaseBacktester):
         "calmar_ratio",
         "omega_ratio",
         "sortino_ratio",
-    )
-
-    #: 只有这些指标由交易口径决定，`positions` 那一套只重算它们
-    #: （quick 260915-udx）。组合级指标——收益、回撤、夏普、卡玛、欧米伽、索提诺、
-    #: 暴露、费用、起止时间与净值——跟按 lot 还是按持仓切交易无关，重算一遍只会
-    #: 多出一份可能与顶层漂移的副本。
-    TRADE_STATS_METRICS = (
-        "total_trades",
-        "total_closed_trades",
-        "total_open_trades",
-        "open_trade_pnl",
-        "win_rate",
-        "best_trade",
-        "worst_trade",
-        "avg_winning_trade",
-        "avg_losing_trade",
-        "avg_winning_trade_duration",
-        "avg_losing_trade_duration",
-        "profit_factor",
-        "expectancy",
     )
 
     def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:
@@ -185,7 +168,10 @@ class VectorBtBacktester(BaseBacktester):
             }
         )
 
-        trade_records = pf.trades.records_readable
+        # 持仓级口径（D-02）：与 `_engine_stats` 报的那一套、以及基类切片块里的
+        # closed / open 计数是同一个口径，三者因此能对上账。下面读的六个字段在
+        # positions 记录里同名同义，Closed / Open 状态词也一样。
+        trade_records = pf.positions.records_readable
         if len(trade_records) == 0:
             trades = xr.Dataset()
         else:
@@ -324,35 +310,29 @@ class VectorBtBacktester(BaseBacktester):
     def _engine_stats(self, simulation: SimulationResult) -> dict:
         """整段的 vectorbt 统计，年化口径取自市场规格。
 
-        返回两套交易统计（quick 260915-udx，口径的含义见类文档）：顶层是 vectorbt
-        默认的 exit trades 口径（lot 级），`positions` 子字典是持仓级口径，只含
-        `TRADE_STATS_METRICS` 那批受交易口径影响的指标。`positions` 的键与顶层
-        同名，可以逐行对照。
+        **一次 `stats()` 调用，交易统计是持仓级口径（D-02，口径的理由见类文档）。**
+        先 `replace(trades_type="positions")` 换掉交易口径，再算一次全套
+        `STATS_METRICS`。一次就够，实测依据：换成持仓口径后，那 14 个真正组合级
+        的指标（收益、回撤、夏普、卡玛、欧米伽、索提诺、暴露、费用、起止时间与
+        净值）逐字节不变，只有受交易口径影响的那批变成持仓级——既然不再报 lot
+        级那一套，第二次调用没有任何东西可买。
 
         **切换口径只能用 `Portfolio.replace`。** `trades_type` 是 `Portfolio`
         构造函数的参数，不是 `from_orders` 的；`stats()` 与 `get_trades()` 都不接
-        受按次传入的交易口径，传了会被静默忽略，于是得到一份与顶层逐字节相同、
-        看起来却没问题的假 `positions`。`replace` 是实例级的，也不去动 vectorbt
+        受按次传入的交易口径，传了会被静默忽略，于是得到一份与 exit trades 逐字节
+        相同、看起来却没问题的假结果。`replace` 是实例级的，也不去动 vectorbt
         那个进程级的全局设置映射——改它会波及同进程里的每一个组合对象。
 
-        两次 `stats()` 各自新建一个 settings dict，不共用同一个对象，免得其中一次
-        调用改掉另一次要读的东西。
+        settings dict 现场新建，不共用同一个对象。
         """
         year_freq = self.MARKET.year_freq(simulation.bar_interval)  # type: ignore[union-attr]
-        portfolio = simulation.native
-        stats = portfolio.stats(  # type: ignore[union-attr]
+        portfolio = simulation.native.replace(trades_type="positions")  # type: ignore[union-attr]
+        stats = portfolio.stats(
             metrics=list(self.STATS_METRICS),
             settings=dict(year_freq=year_freq),
             silence_warnings=True,
         )
-        positions = portfolio.replace(trades_type="positions").stats(  # type: ignore[union-attr]
-            metrics=list(self.TRADE_STATS_METRICS),
-            settings=dict(year_freq=year_freq),
-            silence_warnings=True,
-        )
-        whole = stats.to_dict()
-        whole["positions"] = positions.to_dict()
-        return whole
+        return stats.to_dict()
 
     def _drawdown_span(self, simulation: SimulationResult) -> dict | None:
         """**最深**的那一次回撤：从**最低点**到修复（quick 260916-hro），给报告画三角用。
@@ -424,11 +404,12 @@ class VectorBtBacktester(BaseBacktester):
         }
 
     def _report_notes(self) -> list[str]:
-        """基类那条说明，再加两条：交易口径（quick 260915-udx）与最深回撤（260915-v6i）。
+        """基类那条说明，再加两条：交易口径（D-02）与最深回撤（260915-v6i）。
 
-        报告和 metrics.json 里两套交易指标并排出现，名字又都是「胜率」「盈亏比」
-        这种一看就懂的词，读的人默认会把它们当成选股胜率。这条说明就是拦住这个
-        误读的：顶层那批是 lot 级，`positions` 前缀那批才是持仓级。
+        「胜率」「盈亏比」这种词一看就懂，读的人会默认它就是选股胜率，却不会想到
+        「一笔交易」还有怎么切的问题。这条说明就是把口径写在页面上：交易指标是
+        持仓级，中途减仓不单独算一笔；顺带点明 `order_count` 数的才是真实成交
+        笔数。
 
         第二条同理拦另一个误读：净值上的三角标的是**最深**的那一次回撤，向上三角
         是它的**最低点**、向下三角是它修复的那个 bar，所以两者之间量的是「从底部
@@ -443,11 +424,12 @@ class VectorBtBacktester(BaseBacktester):
         所有格一律写全。
         """
         return super()._report_notes() + [
-            "The trade metrics at the top level are vectorbt exit trades, that "
-            "is lot level: every partial trim of a holding counts as its own "
-            "closed trade, which inflates the win rate. The rows whose names "
-            "begin with positions are the position level view, one entry to "
-            "flat round trip per symbol.",
+            "The trade metrics are the position level view: one entry to flat "
+            "round trip per symbol, so a partial trim of a holding is not "
+            "counted as its own closed trade. Counting every trim as a closed "
+            "trade is what vectorbt does by default, and it inflates the win "
+            "rate. The row named order_count is the number of fills that "
+            "actually happened over the window.",
             "The two triangles on the equity curve mark the DEEPEST drawdown: "
             "the up triangle is its deepest bar, that is its valley, and the "
             "down triangle is the bar it recovered. The distance between them "

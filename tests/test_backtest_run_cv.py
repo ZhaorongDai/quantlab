@@ -587,6 +587,28 @@ def test_stitched_weights_equal_the_concatenated_fold_weights(tmp_path, cv_proje
     xr.testing.assert_identical(result.weights, expected)
 
 
+def test_the_stitched_block_carries_order_count_and_the_positions_view(
+    tmp_path, cv_project
+):
+    """The stitched block goes through the same `_compute_metrics` as `run()`.
+
+    A WIRING lock, not a second arithmetic proof: the partition identities for
+    `order_count` are proved against a real `run()` in
+    tests/test_backtest_metrics.py, and the stitched block is built by the same
+    method, so what is worth asserting on this path is that `run_cv` reaches it
+    at all and reports one trade vocabulary (D-02).
+    """
+    result = _backtester(tmp_path, cv_project).run_cv()
+    whole = result.metrics["stitched"]["whole"]
+
+    assert "order_count" in whole, sorted(whole)
+    assert isinstance(whole["order_count"], int) and not isinstance(
+        whole["order_count"], bool
+    )
+    assert whole["order_count"] >= 0
+    assert "positions" not in whole, sorted(whole)
+
+
 def test_run_cv_run_directory_contents(tmp_path, cv_project):
     result = _backtester(tmp_path, cv_project).run_cv()
     run_dir = result.run_dir
