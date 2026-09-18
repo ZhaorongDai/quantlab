@@ -199,7 +199,9 @@ def test_an_unknown_metric_key_renders_and_raises_nothing(tmp_path):
     )
 
     cells = _cells(html)
-    assert cells["a_metric_nobody_has_written_yet"] == ["1.5", "—", "2.5"]
+    # The fourth cell is the out_of_sample - in_sample delta: in_sample is None,
+    # so there is nothing to subtract and the delta is a dash.
+    assert cells["a_metric_nobody_has_written_yet"] == ["1.5", "—", "2.5", "—"]
 
 
 def test_an_unseen_nested_sub_dict_is_flattened_to_dotted_paths(tmp_path):
@@ -242,7 +244,10 @@ def test_a_null_block_is_a_column_of_dashes_rather_than_being_dropped(tmp_path):
 
     assert "<th>in_sample</th>" in html
     cells = _cells(html)
-    assert [row[1] for row in cells.values()] == ["—", "—"]
+    # The full row, not one indexed column: whole, in_sample, out_of_sample and
+    # the delta. Indexing column 1 alone would stay green whatever the column
+    # count became, so it could not lock the table's arity.
+    assert cells == {"x": ["1", "—", "—", "—"], "y": ["2", "—", "—", "—"]}
 
 
 def test_unrenderable_values_become_a_dash_never_nan_or_none(tmp_path):
@@ -286,6 +291,169 @@ def test_metric_names_and_values_are_escaped(tmp_path):
 
 def test_no_metrics_mapping_means_no_metrics_table(tmp_path):
     assert "<h2>Metrics</h2>" not in _write(tmp_path, metrics=None)
+
+
+# ---------------------------------------------------------------------------
+# The delta column: out_of_sample - in_sample, decided by type alone (03.8 D-01)
+# ---------------------------------------------------------------------------
+#
+# Every operand below is the RAW object the report receives at render time --
+# pd.Timedelta, pd.Timestamp, pd.NaT, np.float64 -- never the JSON shape
+# `to_jsonable` later writes to metrics.json. A predicate written against the
+# JSON shape (strings for durations, None for nan) would pass tests fed only
+# plain floats and still fail on a real run.
+
+
+def _delta_of(tmp_path, in_sample, out_of_sample) -> str:
+    """The delta cell of one row whose two slice values are the given objects."""
+    html = _write(
+        tmp_path,
+        metrics={
+            "whole": {"m": 0.0},
+            "in_sample": {"m": in_sample},
+            "out_of_sample": {"m": out_of_sample},
+        },
+    )
+    row = _cells(html)["m"]
+    assert len(row) == 4, f"expected whole, in_sample, out_of_sample and delta: {row}"
+    return row[3]
+
+
+def _headers(html: str) -> list[str]:
+    """The metric table's header cells, in order."""
+    head = re.search(r"<thead><tr>(.*?)</tr></thead>", html).group(1)
+    return re.findall(r"<th>([^<]*)</th>", head)
+
+
+def test_the_delta_header_states_the_arithmetic(tmp_path):
+    """The header names the operation, not a judgement such as `degradation`."""
+    html = _write(
+        tmp_path,
+        metrics={"whole": {"m": 1.0}, "in_sample": {"m": 1.0}, "out_of_sample": {"m": 2.0}},
+    )
+
+    assert _headers(html) == [
+        "metric",
+        "whole",
+        "in_sample",
+        "out_of_sample",
+        "out_of_sample - in_sample",
+    ]
+
+
+def test_the_delta_of_two_finite_floats_is_their_difference(tmp_path):
+    assert _delta_of(tmp_path, 1.0, 3.5) == "2.5"
+
+
+def test_the_delta_of_two_numpy_floats_is_their_difference(tmp_path):
+    """numpy scalars are admitted by numbers.Real without the leaf importing numpy."""
+    assert _delta_of(tmp_path, np.float64(1.25), np.float64(0.25)) == "-1"
+
+
+def test_the_delta_of_two_ints_is_their_integer_difference(tmp_path):
+    assert _delta_of(tmp_path, 7, 12) == "5"
+
+
+def test_the_delta_of_two_numpy_ints_is_their_integer_difference(tmp_path):
+    """np.int64 is not an int subclass; a (int, float) check would dash it."""
+    assert _delta_of(tmp_path, np.int64(7), np.int64(12)) == "5"
+
+
+def test_the_delta_of_a_bool_pair_is_a_dash_never_one(tmp_path):
+    """bool is an int subclass: True - False == 1 would render as a real number."""
+    assert _delta_of(tmp_path, False, True) == "—"
+    assert _delta_of(tmp_path, np.bool_(False), np.bool_(True)) == "—"
+
+
+@pytest.mark.parametrize(
+    "in_sample, out_of_sample",
+    [
+        (float("nan"), 1.0),
+        (1.0, float("nan")),
+        (float("inf"), 1.0),
+        (1.0, float("-inf")),
+        (np.float64("nan"), np.float64(1.0)),
+        (np.float64(1.0), np.float64("nan")),
+    ],
+)
+def test_the_delta_with_a_non_finite_operand_is_a_dash(tmp_path, in_sample, out_of_sample):
+    """nan - 1 is nan and inf - 1 is inf: neither is a difference a reader can use."""
+    assert _delta_of(tmp_path, in_sample, out_of_sample) == "—"
+
+
+def test_the_delta_of_a_timedelta_pair_is_a_dash(tmp_path):
+    """Durations are excluded by type, never by metric name."""
+    assert _delta_of(tmp_path, pd.Timedelta(days=3), pd.Timedelta(days=10)) == "—"
+
+
+def test_the_delta_of_a_timestamp_pair_is_a_dash(tmp_path):
+    """Timestamp - Timestamp is a Timedelta: not a difference of two metric values."""
+    assert (
+        _delta_of(tmp_path, pd.Timestamp("2024-01-01"), pd.Timestamp("2024-06-01"))
+        == "—"
+    )
+
+
+def test_the_delta_with_a_nat_operand_is_a_dash(tmp_path):
+    assert _delta_of(tmp_path, pd.NaT, pd.NaT) == "—"
+    assert _delta_of(tmp_path, pd.NaT, pd.Timestamp("2024-06-01")) == "—"
+
+
+def test_the_delta_of_a_string_pair_is_a_dash_and_raises_nothing(tmp_path):
+    """str - str raises TypeError; inside the staging directory that costs the run."""
+    assert _delta_of(tmp_path, "Closed", "Open") == "—"
+
+
+def test_the_delta_of_mixed_types_is_a_dash(tmp_path):
+    assert _delta_of(tmp_path, 1.0, pd.Timedelta(days=1)) == "—"
+    assert _delta_of(tmp_path, None, 3.0) == "—"
+
+
+def test_the_delta_of_a_key_only_in_whole_is_a_dash_and_raises_nothing(tmp_path):
+    """Both slice operands absent: None - None must never be attempted."""
+    html = _write(
+        tmp_path,
+        metrics={
+            "whole": {"only_whole": 4.0, "m": 1.0},
+            "in_sample": {"m": 1.0},
+            "out_of_sample": {"m": 2.0},
+        },
+    )
+
+    cells = _cells(html)
+    assert cells["only_whole"] == ["4", "—", "—", "—"]
+    assert cells["m"] == ["1", "1", "2", "1"]
+
+
+def test_a_null_in_sample_block_keeps_the_delta_column_all_dashes(tmp_path):
+    """A None block is still present: the column shows, and every delta is a dash."""
+    html = _write(
+        tmp_path,
+        metrics={
+            "whole": {"a": 1.0, "b": 2.0},
+            "in_sample": None,
+            "out_of_sample": {"a": 5.0, "b": 6.0},
+        },
+    )
+
+    assert html.startswith("<!DOCTYPE html>")
+    assert "out_of_sample - in_sample" in _headers(html)
+    assert [row[3] for row in _cells(html).values()] == ["—", "—"]
+
+
+def test_a_mapping_with_only_whole_grows_no_delta_column(tmp_path):
+    html = _write(tmp_path, metrics={"whole": {"m": 1.0}})
+
+    assert _headers(html) == ["metric", "whole"]
+    assert _cells(html)["m"] == ["1"]
+    assert "out_of_sample - in_sample" not in html
+
+
+def test_a_mapping_without_out_of_sample_grows_no_delta_column(tmp_path):
+    html = _write(tmp_path, metrics={"whole": {"m": 1.0}, "in_sample": {"m": 2.0}})
+
+    assert _headers(html) == ["metric", "whole", "in_sample"]
+    assert "out_of_sample - in_sample" not in html
 
 
 # ---------------------------------------------------------------------------
