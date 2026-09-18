@@ -18,7 +18,10 @@ One self-contained page built around a plotly div:
    plus a log/linear toggle for the equity axis. Forced liquidations are NOT
    drawn: quick 260916-hro removed those markers from the chart, while the
    records themselves still persist to the run's `liquidations.json`;
-5. the notes.
+5. a year-by-month heatmap of the same compounded monthly returns (03.8
+   D-04), rendered as a SECOND plotly div rather than a fourth subplot row
+   (see `_monthly_heatmap_div`), and omitted when there are no returns;
+6. the notes.
 
 When the backtest window overlaps the model's effective training window, the
 in-sample range is shaded grey across the panels. The in-sample range is the
@@ -231,8 +234,9 @@ def write_backtest_report(
     )
 
     div = fig.to_html(full_html=False, include_plotlyjs="cdn")
+    heatmap = _monthly_heatmap_div(returns)
     Path(path).write_text(
-        _document(title, summary, metrics, div, notes), encoding="utf-8"
+        _document(title, summary, metrics, div, notes, heatmap), encoding="utf-8"
     )
 
 
@@ -359,22 +363,45 @@ def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
         )
 
 
+def _monthly_series(returns: xr.DataArray | None) -> pd.Series | None:
+    """Per-calendar-month compounded return of `returns`, indexed by period.
+
+    The single place the monthly compounding rule lives: the bar row and the
+    year-by-month heatmap both consume it, so the two panels of the same
+    numbers cannot drift apart.
+
+    Grouped by converting the index to monthly periods (`to_period` with the
+    month frequency) rather than with a resample alias: the monthly alias was
+    renamed (`M` -> `ME`) across pandas versions while `to_period` reads the
+    same in both.
+
+    The NaN drop is load-bearing: `prod()` over `1 + NaN` skips the NaN, so a
+    month holding only NaN bars would compound to a flat `0.0` -- a fabricated
+    month indistinguishable at read time from a real one. Dropping first keeps
+    such a month absent instead.
+
+    Returns None when there is nothing to compute (no returns, or none left
+    after the drop).
+    """
+    if returns is None:
+        return None
+    series = returns.to_pandas().dropna()
+    if series.empty:
+        return None
+    index = pd.DatetimeIndex(series.index)
+    return (1.0 + series).groupby(index.to_period("M")).prod() - 1.0
+
+
 def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
     """Per-calendar-month compounded return of `returns`, as bars.
 
-    Grouped with `index.to_period("M")` rather than a resample alias: the
-    monthly alias was renamed (`M` -> `ME`) across pandas versions while
-    `to_period` reads the same in both. A short window legitimately produces
-    one or two bars -- that is the point, since it shows at a glance that a
-    run's whole P&L landed in a single month.
+    The numbers come from `_monthly_series`. A short window legitimately
+    produces one or two bars -- that is the point, since it shows at a glance
+    that a run's whole P&L landed in a single month.
     """
-    if returns is None:
+    monthly = _monthly_series(returns)
+    if monthly is None or monthly.empty:
         return
-    series = returns.to_pandas().dropna()
-    if series.empty:
-        return
-    index = pd.DatetimeIndex(series.index)
-    monthly = (1.0 + series).groupby(index.to_period("M")).prod() - 1.0
     fig.add_trace(
         go.Bar(
             x=[period.to_timestamp() for period in monthly.index],
@@ -385,6 +412,90 @@ def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
         row=3,
         col=1,
     )
+
+
+#: The heatmap's month columns, in calendar order. Two-digit strings so they
+#: sort and read the same way, and so plotly treats them as categories.
+MONTH_LABELS = [f"{month:02d}" for month in range(1, 13)]
+
+#: Caption above the heatmap div. A plain string, yet still escaped on the way
+#: onto the page like every other non-plotly string (T-03.8-03-04).
+HEATMAP_CAPTION = "Monthly returns by year"
+
+
+def _monthly_grid(monthly: pd.Series) -> tuple[list[int], list[list[float | None]]]:
+    """`monthly` (indexed by month periods) -> `(years, z)`, one row per year.
+
+    `years` is the sorted set of years the series covers; `z` holds one row of
+    12 cells per year, initialised to None, so a month the run did not cover
+    stays None -- it serializes to JSON null and renders as an empty cell,
+    never as a fabricated 0.0.
+
+    `period.month` is 1-BASED, so the column index is `period.month - 1`. That
+    `- 1` is the whole correctness question here, and it needs a value-level
+    lock: an off-by-one still renders every cell, still looks like a heatmap
+    and raises nothing (except on December) -- the numbers are simply in the
+    wrong month. Rows are allocated from the series' own years, so no write
+    can land outside the grid.
+    """
+    years = sorted({period.year for period in monthly.index})
+    row_of = {year: row for row, year in enumerate(years)}
+    grid: list[list[float | None]] = [[None] * 12 for _ in years]
+    for period, value in monthly.items():
+        grid[row_of[period.year]][period.month - 1] = float(value)
+    return years, grid
+
+
+def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
+    """A year-by-month heatmap of compounded monthly returns, as its own div.
+
+    Returns an HTML fragment, or the empty string when there is nothing to
+    draw. Nothing-to-draw is an early return, never an exception, mirroring
+    the bar row: the report is written inside the run's staging directory,
+    where an exception deletes the ENTIRE run.
+
+    The numbers come from `_monthly_series`, the same helper the bar row
+    uses, so the two panels cannot disagree. The bars answer "when did the
+    P&L land" on the shared time axis; the grid answers "which months of
+    which years were good" (03.8 D-04 keeps both).
+
+    **It is a SEPARATE figure, never a fourth subplot row.** The main figure
+    is three subplot rows with `shared_xaxes=True`; a fourth row makes plotly
+    set `matches='x4'` on the three datetime x axes, binding the equity,
+    drawdown and monthly-bar axes to this chart's CATEGORICAL month axis --
+    `shared_xaxes` is figure-wide with no per-row opt-out. It would also force
+    re-deriving the main figure's height and per-row pixel budget. Keep it
+    here.
+
+    `include_plotlyjs=False`: the main div already loads plotly.js from the
+    CDN, so this adds a few kilobytes rather than a second library copy.
+    """
+    monthly = _monthly_series(returns)
+    if monthly is None or monthly.empty:
+        return ""
+    years, z = _monthly_grid(monthly)
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            x=MONTH_LABELS,
+            y=[str(year) for year in years],
+            name="monthly_return_heatmap",
+            colorscale="RdBu",
+            zmid=0.0,
+            colorbar={"tickformat": ".1%"},
+            hoverongaps=False,
+            hovertemplate="%{y}-%{x}<br>%{z:.2%}<extra></extra>",
+        )
+    )
+    # About 36px per year row plus room for the axis labels and margins, with
+    # a floor so a one-year run is still a legible strip.
+    fig.update_layout(
+        height=max(220, 120 + 36 * len(years)),
+        margin={"t": 20, "b": 40},
+    )
+    fig.update_xaxes(type="category", title_text="month")
+    fig.update_yaxes(type="category", autorange="reversed", title_text="year")
+    return fig.to_html(full_html=False, include_plotlyjs=False)
 
 
 def _axis_toggle() -> dict:
@@ -579,12 +690,19 @@ def _document(
     metrics: dict | None,
     div: str,
     notes: list[str] | None,
+    heatmap: str = "",
 ) -> str:
     """One self-contained HTML document around the plotly `div`.
 
-    `div` is plotly's own fragment and is inserted verbatim -- plotly owns its
-    escaping. Everything else on the page comes from the run and is escaped.
+    `div` and `heatmap` are plotly's own fragments and are inserted verbatim
+    -- plotly owns their escaping. Everything else on the page comes from the
+    run and is escaped. The heatmap goes between the main figure and the
+    metric table (picture, picture, numbers, notes); an empty `heatmap`
+    inserts nothing, not even its caption.
     """
+    heatmap_section = (
+        f"  <h2>{_escape(HEATMAP_CAPTION)}</h2>\n{heatmap}\n" if heatmap else ""
+    )
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
@@ -597,6 +715,7 @@ def _document(
         f"  <h1>{_escape(title)}</h1>\n"
         f"{_summary_section(summary)}"
         f"{div}\n"
+        f"{heatmap_section}"
         f"{_metrics_section(metrics)}"
         f"{_notes_section(notes)}"
         "</body>\n"
