@@ -141,7 +141,7 @@ Plans:
 **Goal:** A reader of a backtest report can compare in-sample against out-of-sample at a glance, see how each month of each year performed, and trust the trade statistics. The metric table gains an `out_of_sample - in_sample` delta column driven purely by value type with no hardcoded metric list; a year-by-month return heatmap joins the surviving monthly bars; and the trade metrics move wholly to the position view — one entry-to-flat round trip per symbol, ending the ~6.5-point win-rate overstatement that partial trims cause — with `order_count` added to the whole-window block so fill activity is still reported.
 **Requirements**: BT-01 (adjacent — this phase sharpens 关键指标/回测结果, it does not close BT-01). No REQ-IDs are mapped to this inserted phase; scope is CONTEXT.md items 1-3 and decisions D-01..D-05.
 **Depends on:** Phase 3
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans executed
 
 Plans:
 
@@ -155,7 +155,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2: shares `quantlab/utils/backtest_report.py` and both report test files)*
 
-- [ ] 03.8-03-PLAN.md — Monthly-return heatmap as a second plotly div (D-04), shared `_monthly_series` helper, `_second_figure_traces` parser, month/year alignment locks
+- [x] 03.8-03-PLAN.md — Monthly-return heatmap as a second plotly div (D-04), shared `_monthly_series` helper, `_second_figure_traces` parser, month/year alignment locks
 
 ### Phase 03.7: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (INSERTED)
 
