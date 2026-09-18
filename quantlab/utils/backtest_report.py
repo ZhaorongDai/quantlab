@@ -8,7 +8,10 @@ One self-contained page built around a plotly div:
    words, so the reader never has to open `metrics.json` to learn what the
    picture covers;
 3. a metric table with one column per metrics block (whole / in-sample /
-   out-of-sample);
+   out-of-sample), plus an `out_of_sample - in_sample` column whenever both
+   slice blocks are present (03.8 D-01). Which rows get a number there is
+   decided by the values' types alone -- finite real non-booleans -- so it,
+   too, names no metric. The column is report-only (D-05);
 4. the figure: three rows on a shared time axis -- equity (with a pair of
    triangles marking the deepest drawdown's valley and the bar it recovered)
    on top, drawdown below it, per-calendar-month returns at the bottom --
@@ -65,6 +68,7 @@ imports.
 
 import html
 import math
+import numbers
 from pathlib import Path
 
 import pandas as pd
@@ -82,6 +86,13 @@ DASH = "—"
 #: (which slice of the window), never metric names: the rows inside each block
 #: are whatever that block turns out to carry.
 _BLOCKS = ("whole", "in_sample", "out_of_sample")
+
+#: Header of the fourth metric-table column (03.8 D-01). It states the
+#: ARITHMETIC rather than passing judgement: the table cannot know whether a
+#: larger number is better for a metric it has never seen, so it states the
+#: operation and lets the reader judge. That is what makes differencing ratio
+#: metrics defensible.
+DELTA_HEADER = "out_of_sample - in_sample"
 
 _STYLE = """
   body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
@@ -446,6 +457,37 @@ def _cell(value: object) -> str:
     return text if text.strip() else DASH
 
 
+def _delta(later: object, earlier: object) -> object:
+    """`later - earlier` when both are finite real non-booleans, else None.
+
+    Dispatches on TYPE and never on metric name: a rule keyed to a name would
+    be dead the day the metric set is replaced, and this table renders
+    whatever mapping arrives. The operands are the RAW objects the report
+    receives (live pandas / numpy scalars), not the JSON shape metrics.json
+    is later written in.
+
+    `bool` is tested first because it is an int subclass: `True - False == 1`
+    would render as a plausible number. `numbers.Real` rather than
+    `(int, float)` admits numpy scalars (`np.int64` is not an int) without
+    this leaf importing numpy, while still refusing `pd.Timedelta`,
+    `pd.Timestamp`, `pd.NaT`, strings and None -- every one of which either
+    raises on subtraction or yields something that is not a difference of two
+    metric values. `np.bool_` is not a `numbers.Real`, so it needs no case.
+
+    It must never raise: it runs inside the run's staging directory, where an
+    exception deletes the entire run. Returning None lets `_cell` render the
+    dash; this function never formats one itself.
+    """
+    for value in (later, earlier):
+        if isinstance(value, bool):
+            return None
+        if not isinstance(value, numbers.Real):
+            return None
+        if not math.isfinite(value):
+            return None
+    return later - earlier
+
+
 def _metrics_section(metrics: dict | None) -> str:
     """The metric table: one column per block, rows derived from the data.
 
@@ -471,15 +513,26 @@ def _metrics_section(metrics: dict | None) -> str:
         for key in column:
             if key not in seen:
                 seen.append(key)
+    # Gate on membership, not truthiness: a None block is still present (as an
+    # empty column), and must give dashed deltas rather than drop the column.
+    show_delta = "in_sample" in present and "out_of_sample" in present
     for key in seen:
         cells = "".join(
             f"<td>{_escape(_cell(columns[name].get(key)))}</td>" for name in present
         )
+        if show_delta:
+            delta = _delta(
+                columns.get("out_of_sample", {}).get(key),
+                columns.get("in_sample", {}).get(key),
+            )
+            cells += f"<td>{_escape(_cell(delta))}</td>"
         rows.append(f"      <tr><th>{_escape(key)}</th>{cells}</tr>")
     if not rows:
         return ""
 
     headers = "".join(f"<th>{_escape(name)}</th>" for name in present)
+    if show_delta:
+        headers += f"<th>{_escape(DELTA_HEADER)}</th>"
     return (
         "  <h2>Metrics</h2>\n"
         '  <table class="metrics">\n'
