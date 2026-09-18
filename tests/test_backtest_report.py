@@ -558,6 +558,223 @@ def test_no_returns_means_no_monthly_trace(tmp_path):
     assert "monthly_return" not in _traces(_write(tmp_path, returns=None))
 
 
+# ---------------------------------------------------------------------------
+# The year-by-month heatmap: a SECOND plotly div (03.8 D-04)
+# ---------------------------------------------------------------------------
+#
+# The heatmap is its own figure rendered as a second div, never a fourth
+# subplot row (RESEARCH Pitfall 6). `_traces` and `_layout` above anchor on the
+# FIRST `Plotly.newPlot(` by design -- that is what keeps the exactly-five-
+# traces and pixel-budget locks meaningful -- so the heatmap is invisible to
+# them. These tests reach it through `_second_figure_traces`.
+
+HEATMAP = "monthly_return_heatmap"
+MONTH_LABELS = [f"{month:02d}" for month in range(1, 13)]
+
+
+def _second_figure(html: str) -> tuple[list[dict], dict]:
+    """Trace list and layout of the SECOND `Plotly.newPlot(` on the page."""
+    first = html.index("Plotly.newPlot(")
+    second = html.index("Plotly.newPlot(", first + 1)
+    start = html.index("[", second)
+    traces, end = json.JSONDecoder().raw_decode(html, start)
+    layout, _ = json.JSONDecoder().raw_decode(html, html.index("{", end))
+    return traces, layout
+
+
+def _second_figure_traces(html: str) -> dict[str, dict]:
+    """Traces of the SECOND `Plotly.newPlot(` on the page, by name.
+
+    The existing parsers read the FIRST one by design -- that is what keeps
+    the three-row figure's exact-trace-set and pixel-budget locks meaningful.
+    The heatmap lives in its own div after it, so without this parser it
+    would ship with no lock at all.
+    """
+    traces, _ = _second_figure(html)
+    return {trace["name"]: trace for trace in traces}
+
+
+def _dated_returns(dates: list[str], values: list[float]) -> xr.DataArray:
+    """Returns on the given calendar dates, in `_returns`' shape."""
+    return xr.DataArray(
+        np.array(values, dtype=float),
+        dims=("timestamp",),
+        coords={"timestamp": pd.DatetimeIndex(pd.to_datetime(dates))},
+    )
+
+
+def _multi_year_returns() -> xr.DataArray:
+    """One return on the 15th of every month, November 2023 to February 2025.
+
+    Starts late in its first year and ends early in its last, so both partial
+    rows are exercised. Values are distinct per month so a cell that lands in
+    the wrong column cannot match by accident.
+    """
+    months = pd.period_range("2023-11", "2025-02", freq="M")
+    dates = [(period.to_timestamp() + pd.Timedelta(days=14)).strftime("%Y-%m-%d") for period in months]
+    values = [0.01 * (i + 1) for i in range(len(months))]
+    return _dated_returns(dates, values)
+
+
+def _non_null_cells(heatmap: dict) -> list[tuple[str, str, float]]:
+    """Every non-null cell as `(year label, month label, value)`."""
+    return [
+        (heatmap["y"][row], heatmap["x"][col], value)
+        for row, cells in enumerate(heatmap["z"])
+        for col, value in enumerate(cells)
+        if value is not None
+    ]
+
+
+def test_the_heatmap_puts_a_march_return_in_the_march_column(tmp_path):
+    """RESEARCH Pitfall 7: the month off-by-one is otherwise invisible.
+
+    ONE return in ONE known month, and the assertion is on the x LABEL of the
+    single non-null cell. Using `period.month` instead of `period.month - 1`
+    would put it at `04` with nothing else differing -- the grid's shape, row
+    count and non-null count all survive that bug, so asserting shape would
+    stay green.
+    """
+    html = _write(tmp_path, returns=_dated_returns(["2024-03-12"], [0.25]))
+    heatmap = _second_figure_traces(html)[HEATMAP]
+
+    assert heatmap["x"] == MONTH_LABELS
+    cells = _non_null_cells(heatmap)
+    assert len(cells) == 1
+    year, month, value = cells[0]
+    assert (year, month) == ("2024", "03")
+    assert value == pytest.approx(0.25)
+
+
+def test_the_heatmap_puts_the_same_month_of_two_years_in_two_rows(tmp_path):
+    """Year alignment: March 2023 and March 2024 land in their own rows."""
+    html = _write(
+        tmp_path, returns=_dated_returns(["2023-03-10", "2024-03-10"], [0.1, -0.2])
+    )
+    heatmap = _second_figure_traces(html)[HEATMAP]
+
+    assert heatmap["y"] == ["2023", "2024"]
+    assert sorted(_non_null_cells(heatmap)) == [
+        ("2023", "03", pytest.approx(0.1)),
+        ("2024", "03", pytest.approx(-0.2)),
+    ]
+
+
+def test_the_heatmap_leaves_the_months_before_a_november_start_null(tmp_path):
+    """Uncovered months are JSON null, never a fabricated 0.0.
+
+    A 0.0 cell would read as a flat month the run actually traded.
+    """
+    html = _write(tmp_path, returns=_multi_year_returns())
+    heatmap = _second_figure_traces(html)[HEATMAP]
+
+    assert heatmap["y"] == ["2023", "2024", "2025"]
+    first_year = heatmap["z"][0]
+    assert len(first_year) == 12
+    assert first_year[:10] == [None] * 10
+    assert first_year[10:] == pytest.approx([0.01, 0.02])
+
+
+def test_the_heatmap_leaves_the_months_after_a_february_end_null(tmp_path):
+    """The partial LAST year: ten trailing nulls, again never zeros."""
+    html = _write(tmp_path, returns=_multi_year_returns())
+    heatmap = _second_figure_traces(html)[HEATMAP]
+
+    last_year = heatmap["z"][2]
+    assert len(last_year) == 12
+    assert last_year[2:] == [None] * 10
+    assert last_year[:2] == pytest.approx([0.15, 0.16])
+    # The full middle year is covered end to end.
+    assert None not in heatmap["z"][1]
+
+
+@pytest.mark.parametrize(
+    "returns",
+    [
+        None,
+        _dated_returns(["2024-01-02", "2024-02-02"], [float("nan"), float("nan")]),
+        _dated_returns([], []),
+    ],
+    ids=["none", "all_nan", "empty"],
+)
+def test_no_heatmap_div_without_returns_and_the_page_is_still_written(tmp_path, returns):
+    """T-03.8-03-01: the report is written inside the run's staging directory.
+
+    An exception here would delete the whole run, so nothing-to-draw is an
+    early return: no second `Plotly.newPlot(`, no stray caption, and the page
+    is still a complete document.
+    """
+    html = _write(tmp_path, returns=returns)
+
+    assert html.startswith("<!DOCTYPE html>")
+    assert html.count("Plotly.newPlot(") == 1
+    assert "Monthly returns by year" not in html
+    assert '"name":"equity"' in html
+
+
+def test_the_heatmap_cells_equal_the_monthly_bars(tmp_path):
+    """Both panels come from one helper, so the same months carry the same numbers."""
+    html = _write(tmp_path, returns=_multi_year_returns())
+    bars = _traces(html)["monthly_return"]
+    heatmap = _second_figure_traces(html)[HEATMAP]
+
+    from_bars = {
+        (label[:4], label[5:7]): value for label, value in zip(bars["x"], bars["y"])
+    }
+    from_heatmap = {(year, month): value for year, month, value in _non_null_cells(heatmap)}
+    assert from_heatmap.keys() == from_bars.keys()
+    for key, value in from_bars.items():
+        assert from_heatmap[key] == pytest.approx(value, abs=1e-12), key
+
+
+def test_the_heatmap_trace_carries_a_name(tmp_path):
+    """Every trace on the page is parsed by name; a nameless one raises KeyError."""
+    traces, _ = _second_figure(_write(tmp_path, returns=_multi_year_returns()))
+
+    assert len(traces) == 1
+    assert traces[0].get("name") == HEATMAP
+    assert traces[0]["type"] == "heatmap"
+
+
+def test_the_heatmap_puts_the_earliest_year_on_top(tmp_path):
+    """Reading order: the y axis is reversed, and both axes are categorical."""
+    _, layout = _second_figure(_write(tmp_path, returns=_multi_year_returns()))
+
+    assert layout["yaxis"]["autorange"] == "reversed"
+    assert layout["yaxis"]["type"] == "category"
+    assert layout["xaxis"]["type"] == "category"
+
+
+def test_the_heatmap_height_grows_with_the_number_of_years(tmp_path):
+    """A six-year run must not be squashed into the height of a one-year run."""
+    one_year = _second_figure(
+        _write(tmp_path, returns=_dated_returns(["2024-03-12"], [0.25]))
+    )[1]["height"]
+    six_years = _second_figure(
+        _write(
+            tmp_path,
+            returns=_dated_returns(
+                [f"{year}-03-12" for year in range(2019, 2025)], [0.1] * 6
+            ),
+        )
+    )[1]["height"]
+
+    assert six_years > one_year
+
+
+def test_the_heatmap_div_sits_between_the_figure_and_the_metrics_table(tmp_path):
+    """Picture, picture, numbers, notes -- and it loads no second plotly.js."""
+    html = _write(
+        tmp_path, returns=_multi_year_returns(), metrics={"whole": {"m": 1.0}}
+    )
+
+    first = html.index("Plotly.newPlot(")
+    second = html.index("Plotly.newPlot(", first + 1)
+    assert first < html.index("Monthly returns by year") < second
+    assert second < html.index("<h2>Metrics</h2>") < html.index("<h2>Notes</h2>")
+    assert html.count("cdn.plot.ly") == 1
+
+
 # Quick 260916-hro deleted three tests here -- the liquidation markers, the
 # off-axis liquidation and the no-liquidation case -- together with
 # `test_the_span_markers_are_not_the_liquidation_colour` below. All four
