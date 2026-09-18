@@ -775,6 +775,108 @@ def test_report_carries_the_metric_table_and_the_axis_toggle(overlap_run):
     assert '"yaxis.type":"log"' in html and '"yaxis.type":"linear"' in html
 
 
+#: The rows of a real overlapping run whose `out_of_sample - in_sample` cell is
+#: a number (03.8 D-01). Written out, never derived from `_delta` or from the
+#: metrics mapping: a census that asks the implementation what it should
+#: contain agrees with any answer.
+DELTA_CARRYING_ROWS = {
+    # the 13 returns-accessor floats -- ratios included, per D-01
+    "Total Return [%]",
+    "Annualized Return [%]",
+    "Annualized Volatility [%]",
+    "Max Drawdown [%]",
+    "Sharpe Ratio",
+    "Calmar Ratio",
+    "Omega Ratio",
+    "Sortino Ratio",
+    "Skew",
+    "Kurtosis",
+    "Tail Ratio",
+    "Common Sense Ratio",
+    "Value at Risk",
+    # the per-slice activity counts and sums
+    "order_count",
+    "fees_paid",
+    "traded_notional",
+    "closed_trade_count",
+    "open_trade_count",
+    "turnover.mean_per_rebalance",
+    "turnover.sum",
+    "turnover.annualized",
+}
+
+#: The slice rows whose delta is a dash by TYPE: timestamps and durations.
+DELTA_DASHED_SLICE_ROWS = {"Start", "End", "Period", "Max Drawdown Duration"}
+
+
+def _flat_keys(block: dict, prefix: str = "") -> set[str]:
+    """A metrics block's keys as the report's dotted row names."""
+    keys: set[str] = set()
+    for key, value in block.items():
+        if isinstance(value, dict):
+            keys |= _flat_keys(value, f"{prefix}{key}.")
+        else:
+            keys.add(f"{prefix}{key}")
+    return keys
+
+
+def test_report_delta_census_pins_which_rows_carry_a_number(overlap_run):
+    """03.8 D-01 on a real run: exactly which rows get a delta, both halves.
+
+    "Every delta cell is a number or a dash" passes when the predicate returns
+    None for everything, and a pure count survives a predicate that differences
+    the wrong rows -- so both the carrying set and the dashed set are pinned.
+
+    If the carrying set ever shrinks, do not shrink the literal to match. Two
+    causes are legitimate and must be stated here rather than absorbed:
+    `turnover.mean_per_rebalance` and `turnover.annualized` are nan for a slice
+    with no fill bar (this fixture fills in both slices, so they are finite),
+    or the metrics key set itself changed. Anything else is a predicate defect.
+
+    Rows present only in `whole` (the engine's STATS_METRICS names) must dash:
+    that is the `None - 3.0` case, which would raise inside the staging
+    directory and delete the run. The page having been written proves it did
+    not.
+    """
+    html = _report_html(overlap_run)
+    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    assert html.startswith("<!DOCTYPE html>")
+    assert "<th>out_of_sample - in_sample</th>" in html
+
+    # All four cells per row; the first-<td> parser above cannot see column 4.
+    # Scoped to the metric table: the dates-and-setup table has the same shape.
+    table = html.split('<table class="metrics">', 1)[1].split("</table>", 1)[0]
+    rows = re.findall(r"<tr><th>([^<]+)</th>((?:<td>[^<]*</td>)+)</tr>", table)
+    cells = {name: re.findall(r"<td>([^<]*)</td>", run) for name, run in rows}
+    assert {len(row) for row in cells.values()} == {4}, cells
+
+    carrying = {name for name, row in cells.items() if row[3] != "—"}
+    dashed = {name for name, row in cells.items() if row[3] == "—"}
+    in_both_slices = _flat_keys(metrics["in_sample"]) & _flat_keys(
+        metrics["out_of_sample"]
+    )
+    whole_only = _flat_keys(metrics["whole"]) - (
+        _flat_keys(metrics["in_sample"]) | _flat_keys(metrics["out_of_sample"])
+    )
+
+    assert carrying == DELTA_CARRYING_ROWS
+    assert dashed & in_both_slices == DELTA_DASHED_SLICE_ROWS
+    assert not carrying & DELTA_DASHED_SLICE_ROWS
+    assert carrying | DELTA_DASHED_SLICE_ROWS == in_both_slices
+    for name in carrying:
+        float(cells[name][3])  # a real number, never the token nan
+
+    assert whole_only, "the whole block must carry rows the slices do not"
+    for name in whole_only:
+        assert cells[name][3] == "—", name
+
+    # D-05: the delta is report-only; metrics.json gained nothing.
+    text = (overlap_run["result"].run_dir / "metrics.json").read_text()
+    assert "out_of_sample - in_sample" not in text
+    for block in ("whole", "in_sample", "out_of_sample"):
+        assert not [k for k in _flat_keys(metrics[block]) if "delta" in k.lower()]
+
+
 def test_report_states_the_window_and_split_dates_as_text(overlap_run):
     """Quick 260915-sxx: the page states its dates in words, not only as a band.
 

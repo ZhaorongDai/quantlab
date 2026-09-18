@@ -374,10 +374,19 @@ def test_the_delta_of_a_bool_pair_is_a_dash_never_one(tmp_path):
         (1.0, float("-inf")),
         (np.float64("nan"), np.float64(1.0)),
         (np.float64(1.0), np.float64("nan")),
+        (np.float32("nan"), np.float32(1.0)),
+        (np.float32(1.0), np.float32("inf")),
     ],
 )
 def test_the_delta_with_a_non_finite_operand_is_a_dash(tmp_path, in_sample, out_of_sample):
-    """nan - 1 is nan and inf - 1 is inf: neither is a difference a reader can use."""
+    """nan - 1 is nan and inf - 1 is inf: neither is a difference a reader can use.
+
+    The np.float32 cases are the ones that make the predicate's own finiteness
+    check load-bearing. A Python or np.float64 nan result is a `float`, so
+    `_cell` would dash it anyway; np.float32 is a `numbers.Real` but not a
+    `float`, so without the check its nan result would reach `_cell`'s `str()`
+    fallback and print the token `nan` as though it were a number.
+    """
     assert _delta_of(tmp_path, in_sample, out_of_sample) == "—"
 
 
