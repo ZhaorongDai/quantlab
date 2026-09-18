@@ -359,22 +359,45 @@ def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
         )
 
 
+def _monthly_series(returns: xr.DataArray | None) -> pd.Series | None:
+    """Per-calendar-month compounded return of `returns`, indexed by period.
+
+    The single place the monthly compounding rule lives: the bar row and the
+    year-by-month heatmap both consume it, so the two panels of the same
+    numbers cannot drift apart.
+
+    Grouped by converting the index to monthly periods (`to_period` with the
+    month frequency) rather than with a resample alias: the monthly alias was
+    renamed (`M` -> `ME`) across pandas versions while `to_period` reads the
+    same in both.
+
+    The NaN drop is load-bearing: `prod()` over `1 + NaN` skips the NaN, so a
+    month holding only NaN bars would compound to a flat `0.0` -- a fabricated
+    month indistinguishable at read time from a real one. Dropping first keeps
+    such a month absent instead.
+
+    Returns None when there is nothing to compute (no returns, or none left
+    after the drop).
+    """
+    if returns is None:
+        return None
+    series = returns.to_pandas().dropna()
+    if series.empty:
+        return None
+    index = pd.DatetimeIndex(series.index)
+    return (1.0 + series).groupby(index.to_period("M")).prod() - 1.0
+
+
 def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
     """Per-calendar-month compounded return of `returns`, as bars.
 
-    Grouped with `index.to_period("M")` rather than a resample alias: the
-    monthly alias was renamed (`M` -> `ME`) across pandas versions while
-    `to_period` reads the same in both. A short window legitimately produces
-    one or two bars -- that is the point, since it shows at a glance that a
-    run's whole P&L landed in a single month.
+    The numbers come from `_monthly_series`. A short window legitimately
+    produces one or two bars -- that is the point, since it shows at a glance
+    that a run's whole P&L landed in a single month.
     """
-    if returns is None:
+    monthly = _monthly_series(returns)
+    if monthly is None or monthly.empty:
         return
-    series = returns.to_pandas().dropna()
-    if series.empty:
-        return
-    index = pd.DatetimeIndex(series.index)
-    monthly = (1.0 + series).groupby(index.to_period("M")).prod() - 1.0
     fig.add_trace(
         go.Bar(
             x=[period.to_timestamp() for period in monthly.index],
