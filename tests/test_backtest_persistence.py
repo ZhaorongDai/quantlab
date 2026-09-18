@@ -742,6 +742,58 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
         assert note in html
 
 
+def _second_figure_traces(html: str) -> dict[str, dict]:
+    """Traces of the SECOND `Plotly.newPlot(` on the page, by name.
+
+    `_report_traces` reads the FIRST one by design -- that is what keeps the
+    three-row figure's exact-trace-set lock above meaningful. The monthly
+    heatmap (03.8 D-04) lives in its own div after it, so without this parser
+    it would be invisible to every persisted-report lock. Mirrors the parser
+    in tests/test_backtest_report.py; the two test files carry their own
+    parsers by convention rather than importing across test modules.
+    """
+    first = html.index("Plotly.newPlot(")
+    second = html.index("Plotly.newPlot(", first + 1)
+    start = html.index("[", second)
+    traces, _ = json.JSONDecoder().raw_decode(html, start)
+    return {trace["name"]: trace for trace in traces}
+
+
+def test_report_carries_the_monthly_heatmap_in_a_second_div(overlap_run):
+    """03.8 D-04: a real run's page carries the year-by-month heatmap.
+
+    It is a SECOND plotly div, not a trace of the main figure (whose exact
+    set is locked above), with 12 month columns and one row per year the run
+    spans. It lives INSIDE report.html: the run directory still holds exactly
+    the D-24 artifacts, so no sibling file appeared for it.
+    """
+    run_dir = overlap_run["result"].run_dir
+    html = _report_html(overlap_run)
+
+    assert html.count("Plotly.newPlot(") == 2
+    heatmap = _second_figure_traces(html)["monthly_return_heatmap"]
+    assert heatmap["type"] == "heatmap"
+    assert heatmap["x"] == [f"{month:02d}" for month in range(1, 13)]
+
+    timestamps = pd.DatetimeIndex(xr.open_zarr(run_dir / "equity.zarr")["timestamp"].values)
+    years = sorted({str(year) for year in timestamps.year})
+    assert heatmap["y"] == years
+    assert len(heatmap["z"]) == len(years)
+    assert all(len(row) == 12 for row in heatmap["z"])
+    # The months the bar row shows are exactly the heatmap's non-null cells.
+    bars = _report_traces(html)["monthly_return"]
+    bar_months = {(label[:4], label[5:7]) for label in bars["x"]}
+    cell_months = {
+        (heatmap["y"][row], heatmap["x"][col])
+        for row, cells in enumerate(heatmap["z"])
+        for col, value in enumerate(cells)
+        if value is not None
+    }
+    assert cell_months == bar_months
+
+    assert sorted(p.name for p in run_dir.iterdir()) == D24_ARTIFACTS
+
+
 def test_report_carries_the_metric_table_and_the_axis_toggle(overlap_run):
     """Quick 260915-sxx: the page carries the numbers, not just the picture.
 
