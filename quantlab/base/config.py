@@ -57,6 +57,13 @@ class NbboDatasetConfig(DatasetConfig):
 
     `session_start` / `session_end` are US/Eastern wall-clock `HH:MM` edges of
     the panel's session window (D-09); the default is regular trading hours.
+
+    The four filter fields are the resampler's record filter (D-10), read by
+    `dataset/nbbo_resample.py:NbboFilterPolicy.from_config`. They are config
+    fields, not `kwargs`, so a rebuild from `config.json` reproduces the panel:
+    `drop_crossed` (bid > ask, both sides present), `drop_locked` (bid == ask),
+    `drop_nonpositive_price` (a present price <= 0) and `keep_qu_cond` (an
+    optional `qu_cond` allow-list; None keeps every condition).
     """
 
     market: Market = "us_equity"
@@ -65,6 +72,10 @@ class NbboDatasetConfig(DatasetConfig):
     bar_interval: BarInterval = "1m"
     session_start: str = "09:30"
     session_end: str = "16:00"
+    drop_crossed: bool = True
+    drop_locked: bool = False
+    drop_nonpositive_price: bool = True
+    keep_qu_cond: tuple[str, ...] | None = None
 
 
 @dataclass(kw_only=True)

@@ -2,17 +2,26 @@
 
 `NbboResampler` turns a stream of individually-timestamped NBBO records into
 one row per `(symbol, bar label)`, per trading session. Pure polars; no I/O,
-no quantlab imports beyond the bar-interval table.
+no quantlab imports beyond the bar-interval table and the panel's variable
+tuple (`dataset/cleaning.py`, itself a leaf module).
 
-Semantics (D-11/D-13/D-22):
+Semantics (D-10/D-11/D-13/D-22/D-25):
 
+- **Filter first** (D-10). `NbboFilterPolicy` drops records before anything
+  else, so a dropped record never becomes the seed or a member of a tie, and
+  the previous valid NBBO stays standing. Every dropped record is counted per
+  `(date, symbol)` under exactly one reason (`resample_with_stats`).
+- **A NULL side is "no quote on that side"** (D-25): that side's price and
+  size are NaN, never 0. `spread`, `mid`, `spread_bps` and `imbalance` are NaN
+  while a side is missing, and each time-weighted average divides by the time
+  its own variable was defined -- a zero would drag every average toward zero
+  and read as a real, absurdly tight quote.
 - **Right-closed bars labelled at bar end.** With session open `o` and bar
   length `d`, the labels are `o + k*d` for `k = 1..N` and bar `k` is the state
   over `(o + (k-1)*d, o + k*d]`. A record exactly on an edge belongs to the bar
   that edge labels, so a label is the time the information was available.
 - **Snapshot** = the last record at or before the label.
-- **Time-weighted** spread and sizes over the part of the bar that had a
-  quote, from cumulative duration integrals.
+- **Time-weighted** spread and sizes from cumulative duration integrals.
 - **Seed.** The last record at or before the open is moved to the open: it IS
   the NBBO in force when the session starts (the raw tier keeps the full day,
   D-04). Records after the close are dropped.
@@ -20,46 +29,156 @@ Semantics (D-11/D-13/D-22):
   NBBO stays in force until it is replaced, so an empty bar reports the
   prevailing state with `n_updates = 0` -- an observed state, not fabricated
   data. This lives here and never in `dataset/cleaning.py`, whose no-fill rule
-  stands.
-
-This first version (plan 03.9-01) is the tracer's slice: tie collapse, the
-ambiguous-tie count, the record filters and NULL-side coverage are plan 05's
-(D-10/D-19/D-25); `n_ambiguous_ties` is emitted as 0.0 until then so the D-12
-variable contract holds from day one.
+  stands. State never crosses a session date (D-13).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import polars as pl
 
+from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 
-#: The output variables, in order. Kept in step with
-#: `quantlab.dataset.cleaning.NBBO_PANEL_VARIABLES` (asserted by the Dataset's
-#: `_clean`).
-PANEL_VARIABLES = (
-    "bid",
-    "ask",
-    "bid_size",
-    "ask_size",
-    "mid",
-    "spread",
-    "spread_bps",
-    "imbalance",
-    "n_updates",
-    "tw_spread",
-    "tw_bid_size",
-    "tw_ask_size",
-    "n_ambiguous_ties",
+#: The output variables, in order: the ONE definition in `dataset/cleaning.py`
+#: that `clean_nbbo_panel` enforces, so the resampler cannot drift from it.
+PANEL_VARIABLES = NBBO_PANEL_VARIABLES
+
+#: Columns of the per-(date, symbol) filter-stats frame, all Int64 after the
+#: two keys.
+FILTER_STATS_COUNTS = (
+    "records_in",
+    "dropped_nonpositive_price",
+    "dropped_condition",
+    "dropped_crossed",
+    "dropped_locked",
+    "one_sided_kept",
+    "both_null_kept",
 )
 
 _GROUP = ["symbol", "date"]
 
+#: Drop reasons in precedence order: a record matching several is counted
+#: under the first only.
+_REASONS = ("nonpositive_price", "condition", "crossed", "locked")
+
+#: Time-weighted variables and the per-record column each integrates.
+_TW_SOURCES = {
+    "tw_spread": "spread",
+    "tw_bid_size": "bid_size",
+    "tw_ask_size": "ask_size",
+}
+
+
+@dataclass(frozen=True)
+class NbboFilterPolicy:
+    """The resampler's record filter (D-10). Defaults are the D-10 defaults.
+
+    - `drop_nonpositive_price`: drop a record whose PRESENT bid or ask is
+      `<= 0`. A NULL side is not a price and is never dropped by this rule.
+    - `keep_qu_cond`: when set, drop a record whose `qu_cond` is not in the
+      allow-list (a NULL `qu_cond` is not in any list). None keeps all.
+    - `drop_crossed`: drop `bid > ask`, evaluated only when both sides are
+      present.
+    - `drop_locked`: drop `bid == ask` (both sides present). Off by default:
+      locked quotes are 4.4% of live rows and are legitimate states.
+
+    **Precedence.** A record is counted once, under the first matching reason
+    in the order nonpositive_price > condition > crossed > locked, so the
+    per-reason counts partition the dropped records.
+    """
+
+    drop_crossed: bool = True
+    drop_locked: bool = False
+    drop_nonpositive_price: bool = True
+    keep_qu_cond: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.keep_qu_cond is None:
+            return
+        if isinstance(self.keep_qu_cond, str):
+            raise ValueError(
+                f"NbboFilterPolicy: keep_qu_cond must be a sequence of "
+                f"condition codes, got the bare string {self.keep_qu_cond!r} "
+                f"(write ({self.keep_qu_cond!r},))."
+            )
+        object.__setattr__(self, "keep_qu_cond", tuple(self.keep_qu_cond))
+
+    @classmethod
+    def from_config(cls, config) -> "NbboFilterPolicy":
+        """Read the four filter fields off an `NbboDatasetConfig`."""
+        return cls(
+            drop_crossed=config.drop_crossed,
+            drop_locked=config.drop_locked,
+            drop_nonpositive_price=config.drop_nonpositive_price,
+            keep_qu_cond=config.keep_qu_cond,
+        )
+
+    def reason(self) -> pl.Expr:
+        """Per-record drop reason (String), null for a kept record.
+
+        Expects `bid`/`ask` with a NULL side already null and a `qu_cond`
+        column.
+        """
+        bid_present = pl.col("bid").is_not_null()
+        ask_present = pl.col("ask").is_not_null()
+        both = bid_present & ask_present
+        rules: list[tuple[str, pl.Expr]] = []
+        if self.drop_nonpositive_price:
+            rules.append(
+                (
+                    "nonpositive_price",
+                    (bid_present & (pl.col("bid") <= 0))
+                    | (ask_present & (pl.col("ask") <= 0)),
+                )
+            )
+        if self.keep_qu_cond is not None:
+            rules.append(
+                (
+                    "condition",
+                    pl.col("qu_cond").is_in(list(self.keep_qu_cond)).fill_null(False).not_(),
+                )
+            )
+        if self.drop_crossed:
+            rules.append(("crossed", both & (pl.col("bid") > pl.col("ask"))))
+        if self.drop_locked:
+            rules.append(("locked", both & (pl.col("bid") == pl.col("ask"))))
+
+        expr: pl.Expr = pl.lit(None, dtype=pl.String)
+        for name, condition in reversed(rules):
+            expr = pl.when(condition.fill_null(False)).then(pl.lit(name)).otherwise(expr)
+        return expr
+
 
 class NbboResampler:
-    """Resample NBBO records onto a regular right-closed bar grid."""
+    """Resample NBBO records onto a regular right-closed bar grid.
 
-    def __init__(self, bar_interval: str) -> None:
+    **Record order (D-03/D-19).** Records are sorted by the stable total key
+    `(symbol, date, timestamp, wrds_row_ord)` with `maintain_order=True`; the
+    input frame's row order is never relied on, so shuffling the input never
+    changes the output. `wrds_row_ord` is the arrival ordinal the provider
+    records from a `COPY (SELECT ... WHERE ...)` with no ORDER BY, the only
+    tie-breaker a pre-2018 table offers.
+
+    **Ties.** All records of one instant count as updates, but only the last
+    by the key survives the collapse: it is the NBBO after that instant, and
+    its predecessors have zero duration, so time-weighted values use only the
+    last state of each instant (D-11).
+
+    **Ambiguity.** 2018+ data is unique on `(symbol, time_m, time_m_nano)`
+    (live check L-4: 2,065,354 of 2,065,354 rows), so the key fully decides
+    the order. Before 2018 there is no nanosecond field and ~5% of rows share
+    a microsecond with a DIFFERENT state, where the arrival ordinal is the
+    only evidence of order. `n_ambiguous_ties` counts, per bar, the records
+    that share their timestamp with a differently-valued record (identical
+    duplicates count 0), so downstream users can see -- and filter -- the
+    bars whose snapshot depends on that physical order.
+    """
+
+    def __init__(
+        self, bar_interval: str, policy: NbboFilterPolicy | None = None
+    ) -> None:
         if bar_interval not in BAR_INTERVAL_SECONDS:
             raise ValueError(
                 f"NbboResampler: bar_interval {bar_interval!r} is not one of "
@@ -67,6 +186,7 @@ class NbboResampler:
             )
         self.bar_interval = bar_interval
         self.seconds = BAR_INTERVAL_SECONDS[bar_interval]
+        self.policy = policy if policy is not None else NbboFilterPolicy()
 
     @property
     def _interval_ns(self) -> int:
@@ -82,13 +202,31 @@ class NbboResampler:
         )
 
     def _edges(self, sessions: pl.DataFrame) -> pl.DataFrame:
-        """Every grid edge `e_0 = open, e_1, ..., e_N = close` per session."""
+        """Every grid edge `e_0 = open, e_1, ..., e_N = close` per session.
+
+        Raises `ValueError` when a session's length is not a whole, positive
+        number of bars (D-22/D-26): a ragged last bar would differ in length
+        from every other bar, and silently truncating it would drop in-session
+        quotes from the panel.
+        """
+        sessions = sessions.with_columns(
+            pl.col("open").cast(pl.Datetime("ns")),
+            pl.col("close").cast(pl.Datetime("ns")),
+        )
+        length_ns = (pl.col("close") - pl.col("open")).dt.total_nanoseconds()
+        ragged = sessions.filter(
+            (length_ns <= 0) | (length_ns % self._interval_ns != 0)
+        )
+        if ragged.height:
+            first = ragged.row(0, named=True)
+            raise ValueError(
+                f"NbboResampler: the session of {first['date']} "
+                f"({first['open']} .. {first['close']} UTC) is not a whole, "
+                f"positive number of bar_interval {self.bar_interval!r} "
+                f"({self.seconds}s) bars; {ragged.height} session(s) affected."
+            )
         return (
             sessions.with_columns(
-                pl.col("open").cast(pl.Datetime("ns")),
-                pl.col("close").cast(pl.Datetime("ns")),
-            )
-            .with_columns(
                 pl.datetime_ranges(
                     pl.col("open"),
                     pl.col("close"),
@@ -104,30 +242,90 @@ class NbboResampler:
     def resample(
         self, records: pl.DataFrame, sessions: pl.DataFrame
     ) -> pl.DataFrame:
-        """Records -> one row per `(symbol, date, timestamp)` bar label.
+        """The panel element of `resample_with_stats`."""
+        return self.resample_with_stats(records, sessions)[0]
+
+    # ------------------------------------------------------------ pipeline --
+
+    @staticmethod
+    def _normalise(records: pl.DataFrame) -> pl.DataFrame:
+        """Typed working columns; a NULL (or NaN) side nulls its size too."""
+        qu_cond = (
+            pl.col("qu_cond").cast(pl.String)
+            if "qu_cond" in records.columns
+            else pl.lit(None, dtype=pl.String).alias("qu_cond")
+        )
+        frame = records.select(
+            pl.col("symbol").cast(pl.String),
+            pl.col("date").cast(pl.Date),
+            pl.col("timestamp").cast(pl.Datetime("ns")),
+            pl.col("wrds_row_ord").cast(pl.Int64),
+            pl.col("best_bid").cast(pl.Float64).fill_nan(None).alias("bid"),
+            pl.col("best_bidsizeshares").cast(pl.Float64).alias("bid_size"),
+            pl.col("best_ask").cast(pl.Float64).fill_nan(None).alias("ask"),
+            pl.col("best_asksizeshares").cast(pl.Float64).alias("ask_size"),
+            qu_cond,
+        )
+        # D-25: no quote on a side means no size on it either, whatever size
+        # value WRDS sent alongside the NULL price.
+        return frame.with_columns(
+            pl.when(pl.col("bid").is_not_null()).then(pl.col("bid_size")).alias("bid_size"),
+            pl.when(pl.col("ask").is_not_null()).then(pl.col("ask_size")).alias("ask_size"),
+        )
+
+    def _filter(self, records: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """(kept records, per-(date, symbol) stats)."""
+        records = records.with_columns(self.policy.reason().alias("_reason"))
+        kept = pl.col("_reason").is_null()
+        n_present = pl.col("bid").is_not_null().cast(pl.Int64) + pl.col(
+            "ask"
+        ).is_not_null().cast(pl.Int64)
+        stats = (
+            records.group_by(["date", "symbol"])
+            .agg(
+                pl.len().alias("records_in"),
+                *[
+                    (pl.col("_reason") == reason).fill_null(False).sum().alias(f"dropped_{reason}")
+                    for reason in _REASONS
+                ],
+                (kept & (n_present == 1)).sum().alias("one_sided_kept"),
+                (kept & (n_present == 0)).sum().alias("both_null_kept"),
+            )
+            .select(
+                "date",
+                "symbol",
+                *[pl.col(name).cast(pl.Int64) for name in FILTER_STATS_COUNTS],
+            )
+            .sort(["date", "symbol"])
+        )
+        return records.filter(kept).drop("_reason"), stats
+
+    def resample_with_stats(
+        self, records: pl.DataFrame, sessions: pl.DataFrame
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """Records -> (bar panel, filter stats).
 
         `records` carries `symbol`, `date` (session date), `timestamp` (naive
         UTC), `wrds_row_ord`, `best_bid`, `best_bidsizeshares`, `best_ask`,
-        `best_asksizeshares`. `sessions` carries `date`, `open`, `close`.
+        `best_asksizeshares` and optionally `qu_cond`. `sessions` carries
+        `date`, `open`, `close`.
 
-        Only `(symbol, date)` pairs that have at least one record appear in the
-        output; the Dataset reindexes onto its dense grid.
+        The panel has one row per bar label for every `(symbol, date)` present
+        in the INPUT records (a pair whose records were all filtered out still
+        gets its rows, all NaN); the Dataset reindexes onto its dense grid.
+        The stats frame has one row per input `(date, symbol)` with the
+        `FILTER_STATS_COUNTS` columns, counted over every input record.
         """
         sessions = sessions.with_columns(
             pl.col("open").cast(pl.Datetime("ns")),
             pl.col("close").cast(pl.Datetime("ns")),
         )
+        records = self._normalise(records)
+        pairs = records.select(_GROUP).unique()
+        records, stats = self._filter(records)
+
         records = (
-            records.select(
-                pl.col("symbol").cast(pl.String),
-                pl.col("date").cast(pl.Date),
-                pl.col("timestamp").cast(pl.Datetime("ns")),
-                pl.col("wrds_row_ord").cast(pl.Int64),
-                pl.col("best_bid").cast(pl.Float64).alias("bid"),
-                pl.col("best_bidsizeshares").cast(pl.Float64).alias("bid_size"),
-                pl.col("best_ask").cast(pl.Float64).alias("ask"),
-                pl.col("best_asksizeshares").cast(pl.Float64).alias("ask_size"),
-            )
+            records
             # Total order, STABLE: the arrival ordinal breaks timestamp ties
             # (D-19). Never rely on any upstream scan's order.
             .sort(
@@ -137,6 +335,47 @@ class NbboResampler:
             .join(sessions, on="date", how="inner")
             .filter(pl.col("timestamp") <= pl.col("close"))
         )
+
+        interval = self._interval_ns
+        offset_ns = (pl.col("timestamp") - pl.col("open")).dt.total_nanoseconds()
+        bar_index = (offset_ns + (interval - 1)) // interval
+        edge_of_record = pl.col("open") + pl.duration(nanoseconds=bar_index * interval)
+
+        # Ambiguity (D-19): a record is ambiguous when its (symbol, date,
+        # timestamp) group holds more than one distinct NBBO state. NULL sides
+        # compare as values, so two identical one-sided records are not
+        # ambiguous. Counted AFTER filtering, BEFORE the tie collapse.
+        state_key = pl.concat_str(
+            [
+                pl.col(name).cast(pl.String).fill_null("<null>")
+                for name in ("bid", "bid_size", "ask", "ask_size")
+            ],
+            separator="|",
+        )
+        tie = ["symbol", "date", "timestamp"]
+        records = records.with_columns(
+            (state_key.n_unique().over(tie) > 1).cast(pl.Float64).alias("_ambiguous")
+        )
+
+        # n_updates: every kept in-session record -- each tied message is one
+        # update -- counted in the bar whose right-closed span holds it. The
+        # seed is not an update inside any bar.
+        updates = (
+            records.filter(pl.col("timestamp") > pl.col("open"))
+            .with_columns(edge_of_record.alias("edge"))
+            .group_by(["symbol", "date", "edge"])
+            .agg(
+                pl.len().cast(pl.Float64).alias("n_updates"),
+                pl.col("_ambiguous").sum().alias("n_ambiguous_ties"),
+            )
+        )
+
+        # Tie collapse (D-11/D-19): the last record of each instant by the
+        # total order is the NBBO after that instant; its predecessors have
+        # zero duration and would otherwise be a candidate as-of match.
+        records = records.unique(
+            subset=tie, keep="last", maintain_order=True
+        ).drop("_ambiguous")
 
         # Seed: of the records at or before the open keep only the last, and
         # move it to the open.
@@ -156,58 +395,34 @@ class NbboResampler:
             .drop("_pre", "_next_pre")
         )
 
-        interval = self._interval_ns
-
-        # n_updates: every in-session record (the seed is not an update inside
-        # any bar) counted in the bar whose right-closed span contains it.
-        offset_ns = (pl.col("timestamp") - pl.col("open")).dt.total_nanoseconds()
-        bar_index = (offset_ns + (interval - 1)) // interval
-        updates = (
-            records.filter(pl.col("timestamp") > pl.col("open"))
-            .with_columns(
-                (
-                    pl.col("open")
-                    + pl.duration(nanoseconds=bar_index * interval)
-                ).alias("edge")
-            )
-            .group_by(["symbol", "date", "edge"])
-            .agg(pl.len().cast(pl.Float64).alias("n_updates"))
-        )
-
-        # Derived per-record state and cumulative duration integrals.
-        records = records.with_columns(
-            (pl.col("ask") - pl.col("bid")).alias("spread"),
-        )
+        records = records.with_columns((pl.col("ask") - pl.col("bid")).alias("spread"))
         next_ts = pl.col("timestamp").shift(-1).over(_GROUP)
         records = records.with_columns(
-            (
-                pl.coalesce(next_ts, pl.col("close")) - pl.col("timestamp")
-            )
+            (pl.coalesce(next_ts, pl.col("close")) - pl.col("timestamp"))
             .dt.total_nanoseconds()
             .cast(pl.Float64)
             .alias("_dur")
         )
-        integrals = {
-            "spread": "_C_spread",
-            "bid_size": "_C_bid_size",
-            "ask_size": "_C_ask_size",
-        }
+
+        # Cumulative integrals, one value integral and one COVERAGE integral
+        # per variable (D-25): the time the variable was defined.
+        def exclusive_cum(expr: pl.Expr) -> pl.Expr:
+            return expr.cum_sum().shift(1, fill_value=0.0).over(_GROUP)
+
+        sources = sorted(set(_TW_SOURCES.values()))
         records = records.with_columns(
             *[
-                (pl.col(name) * pl.col("_dur"))
-                .cum_sum()
-                .shift(1, fill_value=0.0)
-                .over(_GROUP)
-                .alias(target)
-                for name, target in integrals.items()
+                exclusive_cum(pl.col(name).fill_null(0.0) * pl.col("_dur")).alias(f"_C_{name}")
+                for name in sources
             ],
-            pl.col("_dur").cum_sum().shift(1, fill_value=0.0).over(_GROUP).alias(
-                "_C_t"
-            ),
+            *[
+                exclusive_cum(
+                    pl.col(name).is_not_null().cast(pl.Float64) * pl.col("_dur")
+                ).alias(f"_Ct_{name}")
+                for name in sources
+            ],
         )
 
-        # Grid of every edge for every (symbol, date) that has records.
-        pairs = records.select(_GROUP).unique()
         grid = pairs.join(
             self._edges(sessions).select("date", "open", "edge"),
             on="date",
@@ -226,8 +441,6 @@ class NbboResampler:
             right_on="_rec_ts",
             by=_GROUP,
             strategy="backward",
-            # Both sides were sorted on (by..., on) just above; polars cannot
-            # verify that itself when `by` is given.
             check_sortedness=False,
         ).sort(["symbol", "date", "edge"])
 
@@ -236,23 +449,33 @@ class NbboResampler:
         )
         joined = joined.with_columns(
             *[
-                (pl.col(target) + pl.col(name) * elapsed)
+                (pl.col(f"_C_{name}") + pl.col(name).fill_null(0.0) * elapsed)
                 .fill_null(0.0)
                 .alias(f"_F_{name}")
-                for name, target in integrals.items()
+                for name in sources
             ],
-            (pl.col("_C_t") + elapsed).fill_null(0.0).alias("_G"),
+            *[
+                (
+                    pl.col(f"_Ct_{name}")
+                    + pl.col(name).is_not_null().cast(pl.Float64) * elapsed
+                )
+                .fill_null(0.0)
+                .alias(f"_G_{name}")
+                for name in sources
+            ],
         )
 
         def delta(column: str) -> pl.Expr:
-            return pl.col(column) - pl.col(column).shift(1).over(_GROUP).fill_null(
-                0.0
-            )
+            return pl.col(column) - pl.col(column).shift(1).over(_GROUP).fill_null(0.0)
 
         joined = joined.with_columns(
-            (delta("_F_spread") / delta("_G")).alias("tw_spread"),
-            (delta("_F_bid_size") / delta("_G")).alias("tw_bid_size"),
-            (delta("_F_ask_size") / delta("_G")).alias("tw_ask_size"),
+            *[
+                pl.when(delta(f"_G_{source}") > 0)
+                .then(delta(f"_F_{source}") / delta(f"_G_{source}"))
+                .otherwise(None)
+                .alias(target)
+                for target, source in _TW_SOURCES.items()
+            ]
         ).filter(pl.col("edge") > pl.col("open"))
 
         mid = (pl.col("bid") + pl.col("ask")) / 2.0
@@ -269,12 +492,13 @@ class NbboResampler:
             updates, on=["symbol", "date", "edge"], how="left"
         ).with_columns(
             pl.col("n_updates").fill_null(0.0),
-            pl.lit(0.0, dtype=pl.Float64).alias("n_ambiguous_ties"),
+            pl.col("n_ambiguous_ties").fill_null(0.0),
         )
 
-        return joined.select(
+        panel = joined.select(
             "symbol",
             "date",
             pl.col("edge").alias("timestamp"),
             *[pl.col(name).cast(pl.Float64) for name in PANEL_VARIABLES],
         ).sort(["date", "timestamp", "symbol"])
+        return panel, stats

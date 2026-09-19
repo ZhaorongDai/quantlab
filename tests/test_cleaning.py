@@ -14,8 +14,10 @@ import pytest
 import xarray as xr
 
 from quantlab.dataset.cleaning import (
+    NBBO_PANEL_VARIABLES,
     REQUIRED_COLUMNS,
     clean_market_data,
+    clean_nbbo_panel,
     dedup_raw_frame,
     flag_anomalies,
     validate_schema,
@@ -538,3 +540,85 @@ def test_the_sparse_panel_is_unaffected_by_the_all_null_escalation() -> None:
     assert len(infos) == 1, records
     assert "hold no bar at all" in infos[0], infos[0]
     assert not any("trade_count" in msg for _, msg in records), records
+
+
+# ------------------------------------------------------ clean_nbbo_panel ---
+
+
+def _nbbo_panel(**overrides) -> xr.Dataset:
+    timestamps = np.array(
+        ["2024-01-24T14:31", "2024-01-24T14:32", "2024-01-24T14:33"],
+        dtype="datetime64[ns]",
+    )
+    symbols = np.array(["AAPL", "MSFT"], dtype=object)
+    data = {
+        name: (("timestamp", "symbol"), np.ones((3, 2), dtype="float64"))
+        for name in NBBO_PANEL_VARIABLES
+    }
+    data.update(overrides)
+    return xr.Dataset(data, coords={"timestamp": timestamps, "symbol": symbols})
+
+
+def test_clean_nbbo_panel_returns_a_valid_panel_as_the_same_object() -> None:
+    panel = _nbbo_panel()
+    cleaned = clean_nbbo_panel(panel)
+    assert cleaned is panel
+    assert set(cleaned.data_vars) == set(NBBO_PANEL_VARIABLES)
+
+
+def test_clean_nbbo_panel_rejects_a_missing_variable() -> None:
+    panel = _nbbo_panel().drop_vars("tw_spread")
+    with pytest.raises(ValueError, match="missing.*tw_spread"):
+        clean_nbbo_panel(panel)
+
+
+def test_clean_nbbo_panel_rejects_an_extra_variable() -> None:
+    panel = _nbbo_panel(quote_age=(("timestamp", "symbol"), np.ones((3, 2))))
+    with pytest.raises(ValueError, match="unexpected.*quote_age"):
+        clean_nbbo_panel(panel)
+
+
+def test_clean_nbbo_panel_rejects_an_anomaly_flag() -> None:
+    panel = _nbbo_panel(
+        anomaly_flag=(("timestamp", "symbol"), np.zeros((3, 2), dtype=bool))
+    )
+    with pytest.raises(ValueError, match="unexpected.*anomaly_flag"):
+        clean_nbbo_panel(panel)
+
+
+def test_clean_nbbo_panel_rejects_an_integer_variable() -> None:
+    panel = _nbbo_panel(
+        n_updates=(("timestamp", "symbol"), np.zeros((3, 2), dtype="int64"))
+    )
+    with pytest.raises(ValueError, match="'n_updates'.*float64.*int64"):
+        clean_nbbo_panel(panel)
+
+
+def test_clean_nbbo_panel_rejects_transposed_dims() -> None:
+    panel = _nbbo_panel().transpose("symbol", "timestamp")
+    with pytest.raises(ValueError, match=r"dims.*\('symbol', 'timestamp'\)"):
+        clean_nbbo_panel(panel)
+
+
+@pytest.mark.parametrize("order", ["duplicate", "decreasing"])
+def test_clean_nbbo_panel_rejects_a_non_increasing_timestamp(order: str) -> None:
+    panel = _nbbo_panel()
+    stamps = panel["timestamp"].values.copy()
+    if order == "duplicate":
+        stamps[2] = stamps[1]
+    else:
+        stamps = stamps[::-1].copy()
+    panel = panel.assign_coords(timestamp=stamps)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        clean_nbbo_panel(panel)
+
+
+def test_clean_nbbo_panel_never_modifies_or_fills_the_data() -> None:
+    values = np.full((3, 2), np.nan)
+    values[0, 0] = 100.0
+    panel = _nbbo_panel(bid=(("timestamp", "symbol"), values.copy()))
+    before = panel.copy(deep=True)
+    clean_nbbo_panel(panel)
+    xr.testing.assert_identical(panel, before)
+    assert np.isnan(panel["bid"].values[1:, 0]).all()
+    assert set(panel.data_vars) == set(NBBO_PANEL_VARIABLES)
