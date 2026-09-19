@@ -6,10 +6,9 @@
 `dataset/nbbo_resample.py:NbboResampler`. The bar size is
 `NbboDatasetConfig.bar_interval`; the raw tier's `frequency` stays `"tick"`.
 
-This first version (plan 03.9-01) is the tracer's slice: the session window
-is the config's ET wall-clock `session_start`/`session_end` localised per
-date. Plan 06 replaces `_session_bounds` with the XNYS calendar (half days)
-and adds the sidecar and multi-day hardening.
+Session edges come from `dataset/session_calendar.py:XnysSessionCalendar`
+(D-23): the one place a session's open/close is decided, half days, DST and
+non-sessions included. Nothing here localises a wall-clock time itself.
 """
 
 from __future__ import annotations
@@ -24,7 +23,8 @@ import xarray as xr
 from quantlab.base.config import DatasetConfig, NbboDatasetConfig
 from quantlab.base.data import BaseDataset
 from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
-from quantlab.dataset.nbbo_resample import NbboResampler
+from quantlab.dataset.nbbo_resample import NbboFilterPolicy, NbboResampler
+from quantlab.dataset.session_calendar import XnysSessionCalendar
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 from quantlab.utils.timer import Timer
@@ -37,6 +37,31 @@ class NbboPanelDataset(StockDataset):
     root, hive schema, single-vendor provenance check and `has_raw_data`.
     Overrides the axes, the window densifier and `_clean` (D-14: the OHLCV
     cleaner would raise on a panel that has no OHLCV).
+
+    **Session edges come from the XNYS calendar (D-23).** The window
+    (`session_start`/`session_end`, ET wall clock) defaults to regular hours
+    09:30-16:00 (D-09) and may be set anywhere inside 04:00-20:00 ET (D-29);
+    an edge outside that range is refused when the dataset is constructed.
+    On a half day only regular-hours edges are clipped to the early close;
+    extended-hours edges are unchanged, so a 04:00-20:00 panel on 2024-11-29
+    still runs to 20:00 and its post-13:00 bars carry post-close state. A
+    `date=` directory that is not an XNYS session fails the conversion with a
+    `ValueError` naming it; a session whose clipped window is empty (e.g.
+    13:30-16:00 on a half day) contributes no labels.
+
+    **Every window is seeded** from the last valid NBBO at or before its
+    start: the raw scan is by session DATE, and raw holds the whole
+    04:00-20:00 day (D-04), so the record in force at any window start is in
+    the scanned frame.
+
+    **Labels are not confined to the session date's UTC day.** An extended
+    close (20:00 ET) lands on the next UTC calendar day; nothing here maps a
+    label back to a date by its UTC calendar day -- the `date` travels with
+    each label from the resampler.
+
+    **Filter knobs** (`drop_crossed`, `drop_locked`, `drop_nonpositive_price`,
+    `keep_qu_cond`) reach the resampler as an `NbboFilterPolicy` built from
+    the config (`_resampler`, D-10).
     """
 
     #: The config class `quantlab/utils/module.py` rebuilds this dataset with.
@@ -44,9 +69,6 @@ class NbboPanelDataset(StockDataset):
 
     #: The raw tier's `data_type=` hive key this panel is built from.
     DATA_TYPE = "nbbo"
-
-    #: The time zone the session edges and the `date=` hive key are in.
-    SESSION_TIME_ZONE = "America/New_York"
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
@@ -67,6 +89,10 @@ class NbboPanelDataset(StockDataset):
                 f"{self.class_name}: bar_interval {config.bar_interval!r} is "
                 f"not one of {list(BAR_INTERVAL_SECONDS)}."
             )
+        # Constructed here so a bad window (outside 04:00-20:00 ET, malformed,
+        # or start >= end) fails at dataset construction. The exchange
+        # calendar itself loads lazily, on the first `session_bounds` call.
+        self._calendar = XnysSessionCalendar(config.session_start, config.session_end)
 
     @property
     def _tick_data_type(self) -> str:
@@ -74,7 +100,9 @@ class NbboPanelDataset(StockDataset):
 
     @property
     def _resampler(self) -> NbboResampler:
-        return NbboResampler(self.config.bar_interval)
+        return NbboResampler(
+            self.config.bar_interval, NbboFilterPolicy.from_config(self.config)
+        )
 
     # -- sessions and axes ------------------------------------------------------
 
@@ -90,36 +118,13 @@ class NbboPanelDataset(StockDataset):
         return sorted(dates)
 
     def _session_bounds(self, dates) -> pl.DataFrame:
-        """`(date, open, close)` per session date, naive UTC.
+        """`(date, open, close)` per session date, naive UTC (D-23).
 
-        The config's ET wall-clock edges are localised per date, so DST is
-        right on every day.
+        Delegates to `XnysSessionCalendar.session_bounds`: a non-session date
+        raises `ValueError` naming it, a session whose clipped window is empty
+        is omitted.
         """
-        rows = []
-        for day in dates:
-            opens = pd.Timestamp(
-                f"{day.isoformat()} {self.config.session_start}",
-                tz=self.SESSION_TIME_ZONE,
-            )
-            closes = pd.Timestamp(
-                f"{day.isoformat()} {self.config.session_end}",
-                tz=self.SESSION_TIME_ZONE,
-            )
-            rows.append(
-                {
-                    "date": day,
-                    "open": opens.tz_convert("UTC").tz_localize(None).to_pydatetime(),
-                    "close": closes.tz_convert("UTC").tz_localize(None).to_pydatetime(),
-                }
-            )
-        return pl.DataFrame(
-            rows,
-            schema={
-                "date": pl.Date,
-                "open": pl.Datetime("ns"),
-                "close": pl.Datetime("ns"),
-            },
-        )
+        return self._calendar.session_bounds(dates)
 
     def _dates_in_config_range(self) -> list[date]:
         start = date.fromisoformat(self.config.start_date)
@@ -185,7 +190,9 @@ class NbboPanelDataset(StockDataset):
             )
 
         resampler = self._resampler
-        sessions = self._session_bounds(self._session_dates())
+        # The config's range only: the same session set `_raw_axes_in_range`
+        # pinned, so a raw date outside the range is never asked about.
+        sessions = self._session_bounds(self._dates_in_config_range())
         labels = resampler.labels(sessions).filter(
             pl.col("timestamp").is_between(start, end, closed="both")
         )
@@ -205,7 +212,7 @@ class NbboPanelDataset(StockDataset):
             scan = self._assert_single_vendor_and_drop(scan)
             records = scan.collect()
             if records.height:
-                bars = resampler.resample(records, sessions)
+                bars, _stats = resampler.resample_with_stats(records, sessions)
 
         label_values = labels["timestamp"].sort().to_list()
         grid = pl.DataFrame(
