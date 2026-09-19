@@ -6,15 +6,27 @@
 `dataset/nbbo_resample.py:NbboResampler`. The bar size is
 `NbboDatasetConfig.bar_interval`; the raw tier's `frequency` stays `"tick"`.
 
-This first version (plan 03.9-01) is the tracer's slice: the session window
-is the config's ET wall-clock `session_start`/`session_end` localised per
-date. Plan 06 replaces `_session_bounds` with the XNYS calendar (half days)
-and adds the sidecar and multi-day hardening.
+Session edges come from `dataset/session_calendar.py:XnysSessionCalendar`
+(D-23): the one place a session's open/close is decided, half days, DST and
+non-sessions included. Nothing here localises a wall-clock time itself.
+
+**Filter drop counts** land in a JSON sidecar beside the store,
+`{zarr_file_path}{FILTER_STATS_SUFFIX}` (D-10): per `(session date, symbol)`
+and as totals, merged across chunk windows and across runs. It is a sibling of
+the store (never inside it: a `mode="w"` rewrite replaces the store directory)
+and never under the raw root (a stray JSON there would sit in the parquet
+scan's tree).
+
+**Chunking advice.** Convert sub-minute bars with `granularity="day"`: a 1s
+S&P 500 day is ~11.7M bar-rows (23,400 bars x 500 symbols), and one window is
+materialised in memory at a time.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -24,10 +36,20 @@ import xarray as xr
 from quantlab.base.config import DatasetConfig, NbboDatasetConfig
 from quantlab.base.data import BaseDataset
 from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
-from quantlab.dataset.nbbo_resample import NbboResampler
+from quantlab.dataset.nbbo_resample import (
+    FILTER_STATS_COUNTS,
+    NbboFilterPolicy,
+    NbboResampler,
+)
+from quantlab.dataset.session_calendar import XnysSessionCalendar
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
+from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.timer import Timer
+
+#: Appended to the store path to name the filter-stats sidecar, a SIBLING of
+#: the store directory (like `ChunkLedger.SUFFIX`).
+FILTER_STATS_SUFFIX = ".nbbo_filter_stats.json"
 
 
 class NbboPanelDataset(StockDataset):
@@ -37,6 +59,31 @@ class NbboPanelDataset(StockDataset):
     root, hive schema, single-vendor provenance check and `has_raw_data`.
     Overrides the axes, the window densifier and `_clean` (D-14: the OHLCV
     cleaner would raise on a panel that has no OHLCV).
+
+    **Session edges come from the XNYS calendar (D-23).** The window
+    (`session_start`/`session_end`, ET wall clock) defaults to regular hours
+    09:30-16:00 (D-09) and may be set anywhere inside 04:00-20:00 ET (D-29);
+    an edge outside that range is refused when the dataset is constructed.
+    On a half day only regular-hours edges are clipped to the early close;
+    extended-hours edges are unchanged, so a 04:00-20:00 panel on 2024-11-29
+    still runs to 20:00 and its post-13:00 bars carry post-close state. A
+    `date=` directory that is not an XNYS session fails the conversion with a
+    `ValueError` naming it; a session whose clipped window is empty (e.g.
+    13:30-16:00 on a half day) contributes no labels.
+
+    **Every window is seeded** from the last valid NBBO at or before its
+    start: the raw scan is by session DATE, and raw holds the whole
+    04:00-20:00 day (D-04), so the record in force at any window start is in
+    the scanned frame.
+
+    **Labels are not confined to the session date's UTC day.** An extended
+    close (20:00 ET) lands on the next UTC calendar day; nothing here maps a
+    label back to a date by its UTC calendar day -- the `date` travels with
+    each label from the resampler.
+
+    **Filter knobs** (`drop_crossed`, `drop_locked`, `drop_nonpositive_price`,
+    `keep_qu_cond`) reach the resampler as an `NbboFilterPolicy` built from
+    the config (`_resampler`, D-10).
     """
 
     #: The config class `quantlab/utils/module.py` rebuilds this dataset with.
@@ -45,8 +92,10 @@ class NbboPanelDataset(StockDataset):
     #: The raw tier's `data_type=` hive key this panel is built from.
     DATA_TYPE = "nbbo"
 
-    #: The time zone the session edges and the `date=` hive key are in.
-    SESSION_TIME_ZONE = "America/New_York"
+    #: The merged filter-stats sidecar content after the last window this
+    #: instance resampled; `None` until one has been. Windows the chunk
+    #: ledger skips leave it (and the sidecar) untouched.
+    last_filter_stats: dict | None = None
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
@@ -67,14 +116,25 @@ class NbboPanelDataset(StockDataset):
                 f"{self.class_name}: bar_interval {config.bar_interval!r} is "
                 f"not one of {list(BAR_INTERVAL_SECONDS)}."
             )
+        # Constructed here so a bad window (outside 04:00-20:00 ET, malformed,
+        # or start >= end) fails at dataset construction. The exchange
+        # calendar itself loads lazily, on the first `session_bounds` call.
+        self._calendar = XnysSessionCalendar(config.session_start, config.session_end)
 
     @property
     def _tick_data_type(self) -> str:
         return self.DATA_TYPE
 
     @property
+    def filter_stats_path(self) -> str:
+        """`{zarr_file_path}{FILTER_STATS_SUFFIX}`, a sibling of the store."""
+        return f"{self.config.zarr_file_path}{FILTER_STATS_SUFFIX}"
+
+    @property
     def _resampler(self) -> NbboResampler:
-        return NbboResampler(self.config.bar_interval)
+        return NbboResampler(
+            self.config.bar_interval, NbboFilterPolicy.from_config(self.config)
+        )
 
     # -- sessions and axes ------------------------------------------------------
 
@@ -90,36 +150,13 @@ class NbboPanelDataset(StockDataset):
         return sorted(dates)
 
     def _session_bounds(self, dates) -> pl.DataFrame:
-        """`(date, open, close)` per session date, naive UTC.
+        """`(date, open, close)` per session date, naive UTC (D-23).
 
-        The config's ET wall-clock edges are localised per date, so DST is
-        right on every day.
+        Delegates to `XnysSessionCalendar.session_bounds`: a non-session date
+        raises `ValueError` naming it, a session whose clipped window is empty
+        is omitted.
         """
-        rows = []
-        for day in dates:
-            opens = pd.Timestamp(
-                f"{day.isoformat()} {self.config.session_start}",
-                tz=self.SESSION_TIME_ZONE,
-            )
-            closes = pd.Timestamp(
-                f"{day.isoformat()} {self.config.session_end}",
-                tz=self.SESSION_TIME_ZONE,
-            )
-            rows.append(
-                {
-                    "date": day,
-                    "open": opens.tz_convert("UTC").tz_localize(None).to_pydatetime(),
-                    "close": closes.tz_convert("UTC").tz_localize(None).to_pydatetime(),
-                }
-            )
-        return pl.DataFrame(
-            rows,
-            schema={
-                "date": pl.Date,
-                "open": pl.Datetime("ns"),
-                "close": pl.Datetime("ns"),
-            },
-        )
+        return self._calendar.session_bounds(dates)
 
     def _dates_in_config_range(self) -> list[date]:
         start = date.fromisoformat(self.config.start_date)
@@ -148,8 +185,71 @@ class NbboPanelDataset(StockDataset):
             symbols = sorted(str(symbol) for symbol in self.config.symbols)
         else:
             symbols = self._raw_symbols(dates)
+        if not symbols:
+            # Refused before any store exists: an empty pinned axis would
+            # create a store whose symbol coordinate has no labels to type.
+            raise ValueError(
+                f"{self.class_name}: no symbols to convert in "
+                f"[{self.config.start_date}, {self.config.end_date}] "
+                f"(config.symbols={self.config.symbols!r}); refusing to "
+                f"write an empty panel."
+            )
         labels = self._resampler.labels(self._session_bounds(dates))
         return symbols, pd.DatetimeIndex(labels["timestamp"].to_list())
+
+    # -- filter-stats sidecar ------------------------------------------------------
+
+    def _merge_filter_stats(
+        self, dates, stats: pl.DataFrame | None, policy: NbboFilterPolicy
+    ) -> dict:
+        """Merge one window's per-(date, symbol) drop counts into the sidecar.
+
+        Every session date the window resampled is REPLACED wholesale (a
+        window resamples whole sessions over every pinned symbol, so its
+        counts for a date are complete); other dates are kept. `totals` is
+        recomputed over the merged sessions, so re-resampling a date -- an
+        extended session split across two UTC-day windows, or a rerun --
+        never double-counts.
+        """
+        path = Path(self.filter_stats_path)
+        existing = json.loads(path.read_text()) if path.exists() else {}
+        by_session: dict = dict(existing.get("by_session", {}))
+
+        fresh: dict[str, dict] = {day.isoformat(): {} for day in dates}
+        if stats is not None:
+            for row in stats.iter_rows(named=True):
+                fresh.setdefault(row["date"].isoformat(), {})[str(row["symbol"])] = {
+                    name: int(row[name]) for name in FILTER_STATS_COUNTS
+                }
+        by_session.update(fresh)
+
+        totals = {name: 0 for name in FILTER_STATS_COUNTS}
+        for per_symbol in by_session.values():
+            for counts in per_symbol.values():
+                for name in FILTER_STATS_COUNTS:
+                    totals[name] += int(counts.get(name, 0))
+
+        payload = {
+            "config": {
+                "bar_interval": self.config.bar_interval,
+                "session_start": self.config.session_start,
+                "session_end": self.config.session_end,
+                "drop_crossed": policy.drop_crossed,
+                "drop_locked": policy.drop_locked,
+                "drop_nonpositive_price": policy.drop_nonpositive_price,
+                "keep_qu_cond": (
+                    list(policy.keep_qu_cond)
+                    if policy.keep_qu_cond is not None
+                    else None
+                ),
+            },
+            "by_session": by_session,
+            "totals": totals,
+        }
+        write_json_atomically(path, payload, indent=2, sort_keys=True)
+        # Round-tripped so the in-process value is exactly the file content.
+        self.last_filter_stats = json.loads(json.dumps(payload, sort_keys=True))
+        return self.last_filter_stats
 
     # -- densify ------------------------------------------------------------------
 
@@ -185,7 +285,9 @@ class NbboPanelDataset(StockDataset):
             )
 
         resampler = self._resampler
-        sessions = self._session_bounds(self._session_dates())
+        # The config's range only: the same session set `_raw_axes_in_range`
+        # pinned, so a raw date outside the range is never asked about.
+        sessions = self._session_bounds(self._dates_in_config_range())
         labels = resampler.labels(sessions).filter(
             pl.col("timestamp").is_between(start, end, closed="both")
         )
@@ -193,6 +295,7 @@ class NbboPanelDataset(StockDataset):
         sessions = sessions.filter(pl.col("date").is_in(dates))
 
         bars = None
+        stats = None
         if dates:
             scan = pl.scan_parquet(
                 str(self._scan_root() / "**" / f"*{self.RAW_SHARD_SUFFIX}"),
@@ -205,7 +308,8 @@ class NbboPanelDataset(StockDataset):
             scan = self._assert_single_vendor_and_drop(scan)
             records = scan.collect()
             if records.height:
-                bars = resampler.resample(records, sessions)
+                bars, stats = resampler.resample_with_stats(records, sessions)
+            self._merge_filter_stats(dates, stats, resampler.policy)
 
         label_values = labels["timestamp"].sort().to_list()
         grid = pl.DataFrame(
@@ -266,5 +370,11 @@ class NbboPanelDataset(StockDataset):
         return clean_nbbo_panel(data)
 
     def _widen_fill_values(self) -> dict:
-        """No `anomaly_flag` here, so nothing to fill on a widen."""
+        """No `anomaly_flag` here, so nothing to fill on a widen.
+
+        Every panel variable is float64 and NaN is its "no data" value, which
+        is exactly what a newly widened symbol has over its pre-listing
+        history -- `n_updates` and `n_ambiguous_ties` included: NaN there
+        means "no record existed", distinct from 0 ("in force, not updated").
+        """
         return {}
