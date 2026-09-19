@@ -204,7 +204,7 @@ land raw in parquet and are resampled locally into the canonical `[timestamp, sy
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
-**Plans:** 6/8 plans executed
+**Plans:** 7/8 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -238,7 +238,7 @@ Plans:
 
 **Wave 4** *(blocked on 03, 04, 06)*
 
-- [ ] 03.9-07-PLAN.md — `scripts/ingest_wrds_taq.py` (probe + guard before pull, one session per run) + `example/wrds_taq.md`
+- [x] 03.9-07-PLAN.md — `scripts/ingest_wrds_taq.py` (probe + guard before pull, one session per run) + `example/wrds_taq.md`
 
 **Wave 5** *(blocked on 07)*
 
