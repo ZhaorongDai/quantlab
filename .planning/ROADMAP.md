@@ -138,9 +138,9 @@ Plans:
 
 ### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
 
-**Goal:** NYSE TAQ millisecond consolidated quotes (WRDS `taqm_*` `cqm_*` tables,
+**Goal:** NYSE TAQ millisecond NBBO records (WRDS `taqm_*` NBBO tables — see `03.9-CONTEXT.md` D-01; product page
 https://wrds-www.wharton.upenn.edu/pages/get-data/nyse-trade-and-quote/millisecond-trade-and-quote-daily-product-2003-present-updated-daily/consolidated-quotes/)
-reach the canonical `[timestamp, symbol]` Zarr panel as fixed-frequency NBBO snapshots, through
+land raw in parquet and are resampled locally into the canonical `[timestamp, symbol]` Zarr panel, through
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
