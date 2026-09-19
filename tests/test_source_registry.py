@@ -50,6 +50,7 @@ import pytest
 
 import quantlab.acquisition.alpaca as alpaca
 import quantlab.acquisition.tiingo as tiingo
+import quantlab.acquisition.wrds_taq as wrds_taq
 
 
 def test_the_acquisition_config_fixture_serves_both_vendors_with_a_terminated_raw_root(
@@ -122,6 +123,11 @@ def test_vendor_credential_env_names_are_module_level_constants_not_client_attri
         alpaca.SECRET_ENV,
     )
 
+    assert wrds_taq.USERNAME_ENV == "WRDS_USERNAME"
+    assert wrds_taq.WrdsTaqNbboAcquisition.CREDENTIAL_ENV_VARS == (
+        wrds_taq.USERNAME_ENV,
+    )
+
 
 def test_the_no_credentials_fixture_empties_every_declared_name(
     no_credentials,
@@ -130,7 +136,7 @@ def test_the_no_credentials_fixture_empties_every_declared_name(
 
     Every SC-3 proof in plan 04 -- "the read surface answers with NO
     credentials present" -- rests entirely on this fixture. If it silently
-    stopped deleting one of the three names on a machine where that name
+    stopped deleting one of the declared names on a machine where that name
     happens to be set, those tests would pass while proving nothing, which is
     the same green-on-nothing failure as the exit-5 trap.
 
@@ -142,6 +148,7 @@ def test_the_no_credentials_fixture_empties_every_declared_name(
         "TIINGO_API_KEY",
         "APCA_API_KEY_ID",
         "APCA_API_SECRET_KEY",
+        "WRDS_USERNAME",
     )
 
     for name in no_credentials:
@@ -401,6 +408,31 @@ def test_capabilities_match_the_vendor_class_constants() -> None:
     assert not hasattr(tiingo.TiingoAcquisition, "ENDPOINT_MAP")
 
 
+def test_wrds_descriptor_serves_exactly_the_nbbo_capability() -> None:
+    """D-17/D-27: WRDS serves ONE capability, tick NBBO, converted by
+    `NbboPanelDataset`, configured by the provider's own classmethod.
+
+    `supports(..., "quotes")` is asserted False because the Alpaca tick rows
+    share `(us_equity, tick)` with this one: a registry that matched on the
+    pair alone would hand an Alpaca quotes request a WRDS NBBO class.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.dataset.nbbo import NbboPanelDataset
+
+    source = DataSourceRegistry.get("wrds")
+
+    assert {
+        (c.market, c.frequency, c.data_type) for c in source.capabilities
+    } == {("us_equity", "tick", "nbbo")}
+    (capability,) = source.capabilities
+    assert capability.dataset_cls is NbboPanelDataset
+    assert source.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
+    assert source.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
+    assert source.required_env == ("WRDS_USERNAME",)
+    assert source.supports("us_equity", "tick", "nbbo") is True
+    assert source.supports("us_equity", "tick", "quotes") is False
+
+
 def test_direct_class_reference_is_the_class_object(isolated_registry) -> None:
     """D-03: `acquisition_cls` is the CLASS OBJECT, never a dotted string.
 
@@ -540,14 +572,15 @@ def test_enumeration_order_is_sorted_by_vendor(isolated_registry, monkeypatch) -
 
     The shipped registry cannot prove this on its own, and asserting only on it
     would be the 03.2 failure recorded in `.planning/STATE.md` -- "a lock that
-    passes on arrival is mutation-verified rather than accepted". The two real
-    descriptors happen to register in the order `alpaca`, `tiingo`, which is
+    passes on arrival is mutation-verified rather than accepted". The three real
+    descriptors happen to register in the order `alpaca`, `tiingo`, `wrds`
+    (the order of the vendor imports at the bottom of `registry.py`), which is
     ALREADY sorted, so `all()` returning `tuple(cls.SOURCES)` unsorted would
     pass a live-registry assertion unchanged. So the ordering is exercised
     against a registry whose registration order is deliberately the REVERSE of
     its sorted order; deleting the `sorted(...)` call turns this red.
     """
-    assert [d.vendor for d in DataSourceRegistry_all()] == ["alpaca", "tiingo"]
+    assert [d.vendor for d in DataSourceRegistry_all()] == ["alpaca", "tiingo", "wrds"]
 
     reversed_registration = (
         _fake_descriptor("zzz-last-alphabetically"),
@@ -640,7 +673,12 @@ def test_registry_reaches_no_zarr_writer() -> None:
 #: descriptors, for the same reason `tests/conftest.py:_CREDENTIAL_ENV_NAMES`
 #: is: a proof that reads its own subject's declaration proves only that the
 #: declaration is self-consistent.
-_CHILD_CREDENTIALS = ("TIINGO_API_KEY", "APCA_API_KEY_ID", "APCA_API_SECRET_KEY")
+_CHILD_CREDENTIALS = (
+    "TIINGO_API_KEY",
+    "APCA_API_KEY_ID",
+    "APCA_API_SECRET_KEY",
+    "WRDS_USERNAME",
+)
 
 
 def _child_env() -> dict:
@@ -691,7 +729,7 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     )
 
     assert child.returncode == 0, child.stderr
-    assert child.stdout.strip() == "['alpaca', 'tiingo']", child.stdout
+    assert child.stdout.strip() == "['alpaca', 'tiingo', 'wrds']", child.stdout
     assert "Traceback" not in child.stderr
 
 
@@ -775,7 +813,7 @@ def _no_network(monkeypatch) -> None:
     monkeypatch.setattr(socket, "create_connection", _forbidden)
 
 
-@pytest.mark.parametrize("vendor", ["alpaca", "tiingo"])
+@pytest.mark.parametrize("vendor", ["alpaca", "tiingo", "wrds"])
 def test_env_names_are_exactly_what_gates_construction(
     vendor, monkeypatch, acquisition_config
 ) -> None:
@@ -961,7 +999,7 @@ def test_the_isolated_registry_fixture_restored_every_fake_vendor() -> None:
     """
     from quantlab.acquisition.registry import DataSourceRegistry
 
-    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo"]
+    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo", "wrds"]
 
     registered = {d.vendor for d in DataSourceRegistry.SOURCES}
     for leaked in (

@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 18
+open_count: 19
 waived_count: 0
 fixed_count: 1
-total_count: 19
-last_updated: 2026-09-13T21:34:19.364Z
+total_count: 20
+last_updated: 2026-09-19T18:49:10.437Z
 ---
 
 # Broken Windows Ledger
@@ -34,6 +34,7 @@ last_updated: 2026-09-13T21:34:19.364Z
 | 17 | 03.5 | deviation | quantlab/acquisition/inspector.py | 99 | _RawTierReader._reset_symbols overrides a method df7bfe9 deleted from BaseDataset, so the override is inert and its class docstring still describes a construction-time from_raw_data() fallback that no longer happens. Same class as open window 16, one file over. Out of plan 06's scope (files_modified does not include inspector.py). | open |  | 2026-09-12T01:58:32.071Z |  |
 | 18 | 03.6 | deviation | quantlab/base/chunking.py |  | Class docstring first line corrected (Rule 1) beyond the plan's two named constructs | open |  | 2026-09-12T20:56:42.552Z |  |
 | 19 | 03.6 | deviation | quantlab/base/data.py |  | Plan 03.6-09 Rule 3: the pre-try rebuild_rolled_back seed was annotated (bool) so the plan's AST gate, which forbids any ast.Constant-valued assignment, could pass; semantics unchanged | open |  | 2026-09-13T21:34:19.364Z |  |
+| 20 | 03.9 | stub | quantlab/dataset/nbbo_resample.py | 272 | n_ambiguous_ties emitted as 0.0 until plan 03.9-05 adds tie collapse and the ambiguity count (D-19) | open |  | 2026-09-19T18:49:10.437Z |  |
 
 ````json
 [
@@ -263,6 +264,18 @@ last_updated: 2026-09-13T21:34:19.364Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-13T21:34:19.364Z",
+    "resolved_at": null
+  },
+  {
+    "id": 20,
+    "kind": "stub",
+    "phase": "03.9",
+    "file": "quantlab/dataset/nbbo_resample.py",
+    "line": 272,
+    "description": "n_ambiguous_ties emitted as 0.0 until plan 03.9-05 adds tie collapse and the ambiguity count (D-19)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-19T18:49:10.437Z",
     "resolved_at": null
   }
 ]

@@ -79,6 +79,69 @@ def _reset_data_root_override():
     config.set_data_root(None)
 
 
+def _refuse_wrds_connection(*args, **kwargs):
+    """What every PostgreSQL/WRDS connect entry point is replaced with.
+
+    Raises `AssertionError` rather than a connection error on purpose: a
+    connection error is something the code under test might catch and classify
+    as a per-batch failure, while an `AssertionError` is a test bug and must
+    surface as one. The arguments are never echoed -- they carry the username.
+    """
+    raise AssertionError("a test tried to open a WRDS/PostgreSQL connection")
+
+
+@pytest.fixture(autouse=True)
+def _forbid_wrds_network(monkeypatch, tmp_path):
+    """D-28: no automated test may ever open a connection to WRDS.
+
+    Every WRDS connection can push a Duo prompt to the developer's phone, and
+    `tests/test_acquisition_batching.py` walks EVERY concrete `Acquisition`
+    subclass and calls `download()` on it -- so one forgotten fake would reach
+    the real server from an ordinary `pytest` run. This tripwire makes that
+    impossible rather than unlikely: `psycopg2.connect` AND the C-level
+    `psycopg2._connect` it wraps both raise, in every test.
+
+    `wrds.Connection` (and the `wrds.sql.Connection` it is defined as) is
+    patched the same way when the package is installed. The provider never uses
+    it (D-20), so this is defence in depth against a future caller that does.
+
+    `PGPASSFILE` is pointed at a path that does not exist, so no test can read
+    the developer's real `~/.pgpass` even through a code path that inspects it
+    without connecting.
+
+    `psycopg2`/`wrds` are imported inside the body, keeping this file's
+    zero-import-time dependency promise (module docstring).
+    """
+    import psycopg2
+
+    monkeypatch.setattr(psycopg2, "connect", _refuse_wrds_connection)
+    monkeypatch.setattr(psycopg2, "_connect", _refuse_wrds_connection)
+    if importlib.util.find_spec("wrds") is not None:
+        import wrds
+        import wrds.sql
+
+        monkeypatch.setattr(wrds, "Connection", _refuse_wrds_connection)
+        monkeypatch.setattr(wrds.sql, "Connection", _refuse_wrds_connection)
+    monkeypatch.setenv("PGPASSFILE", str(tmp_path / "no-such-pgpass"))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _close_shared_wrds_sessions():
+    """Drop every process-level `WrdsSession` after each test.
+
+    `WrdsSession.shared()` caches one session per username for the life of the
+    process (one connection per run, D-20). Left alone, a session created by
+    one test would be handed to the next. The module is only consulted if some
+    test already imported it -- importing it here just to clean up would add a
+    `quantlab.acquisition.*` import to every test in the suite.
+    """
+    yield
+    module = sys.modules.get("quantlab.acquisition.wrds_taq")
+    if module is not None:
+        module.WrdsSession.close_shared()
+
+
 @pytest.fixture
 def isolated_registry(monkeypatch):
     """Snapshot and restore `DataSourceRegistry.SOURCES` around ONE test.
@@ -134,6 +197,7 @@ _CREDENTIAL_ENV_NAMES = (
     "TIINGO_API_KEY",
     "APCA_API_KEY_ID",
     "APCA_API_SECRET_KEY",
+    "WRDS_USERNAME",
 )
 
 
@@ -1128,6 +1192,33 @@ def mock_alpaca_client(monkeypatch, alpaca_bars_page) -> type:
     return FakeAlpacaClient
 
 
+@pytest.fixture
+def mock_wrds_session(monkeypatch) -> type:
+    """Return `tests.wrds_fixtures.FakeWrdsSession`, reset, and patch it over
+    `quantlab.acquisition.wrds_taq.WrdsSession` so `WrdsTaqNbboAcquisition`
+    never builds a real session.
+
+    The mirror of `mock_alpaca_client`: the target is patched by dotted string
+    behind the same `find_spec` guard, and `WRDS_USERNAME` is set to an
+    obviously fake value so a developer's real username never lands in a test
+    artefact. The autouse `_forbid_wrds_network` tripwire stays live underneath
+    this fixture -- if the patch ever stopped taking effect, the real session
+    would reach `psycopg2.connect` and the test would fail loudly instead of
+    pushing Duo.
+    """
+    from tests.wrds_fixtures import FakeWrdsSession
+
+    FakeWrdsSession.reset()
+    if importlib.util.find_spec("quantlab.acquisition.wrds_taq") is not None:
+        monkeypatch.setattr(
+            "quantlab.acquisition.wrds_taq.WrdsSession",
+            FakeWrdsSession,
+            raising=False,
+        )
+    monkeypatch.setenv("WRDS_USERNAME", "test-wrds-user-not-real")
+    return FakeWrdsSession
+
+
 def _hive_partition_value(row: dict, hive_key: str) -> str:
     """Derive one hive partition value from a raw row.
 
@@ -1205,6 +1296,16 @@ def hive_raw_tree() -> Callable[..., Path]:
 #: for "stopped early must not look like ground through all of them".
 _ACQUISITION_FIXTURE_SYMBOLS = ("AAPL", "MSFT")
 
+#: "Argument not supplied" for `acquisition_config`, distinct from an explicit
+#: `None` (which a caller may pass on purpose for `kwargs`).
+_VENDOR_DEFAULT = object()
+
+#: What `acquisition_config` fills in for an unsupplied `frequency`/`kwargs`.
+_GENERIC_CONFIG_DEFAULTS = {"frequency": "1d", "kwargs": None}
+_VENDOR_CONFIG_DEFAULTS = {
+    "wrds": {"frequency": "tick", "kwargs": {"data_type": "nbbo"}},
+}
+
 
 @pytest.fixture
 def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
@@ -1229,19 +1330,34 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
     expectation checks nothing -- the basename assertion above is only
     expressible because the config also says what the basename is supposed to
     be.
+
+    `frequency` and `kwargs` default PER VENDOR when not supplied: a WRDS
+    config is only valid as `frequency="tick"` with `kwargs={"data_type":
+    "nbbo"}` (WRDS serves exactly one capability, tick NBBO, and its
+    acquisition class refuses anything else at construction), so an
+    unsupplied frequency/kwargs becomes that for `vendor="wrds"`. Every other
+    vendor keeps `"1d"` / `None` exactly as before. Explicit arguments always
+    win, including an explicit `None`.
     """
 
     def _build(
         vendor: str = "tiingo",
         symbols: tuple[str, ...] = _ACQUISITION_FIXTURE_SYMBOLS,
-        frequency: str = "1d",
-        kwargs: Optional[dict] = None,
+        frequency=_VENDOR_DEFAULT,
+        kwargs=_VENDOR_DEFAULT,
         market: str = "us_equity",
         subdir: str = "nasdaq_data",
         root: Optional[Path] = None,
         start_date: str = "2024-01-01",
         end_date: str = "2024-01-31",
     ) -> AcquisitionConfig:
+        defaults = _VENDOR_CONFIG_DEFAULTS.get(vendor, _GENERIC_CONFIG_DEFAULTS)
+        if frequency is _VENDOR_DEFAULT:
+            frequency = defaults["frequency"]
+        if kwargs is _VENDOR_DEFAULT:
+            kwargs = (
+                dict(defaults["kwargs"]) if defaults["kwargs"] is not None else None
+            )
         downloads = (
             (Path(root) if root is not None else tmp_path)
             / "downloads"

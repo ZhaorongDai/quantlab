@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Literal
 
-from quantlab.enums.data import Frequency, Market, Vendor
+from quantlab.enums.data import BarInterval, Frequency, Market, Vendor
 
 if TYPE_CHECKING:
     from .data import MarketDataset
@@ -44,6 +44,27 @@ class DatasetConfig(BaseDatasetConfig):
     market: Market
     frequency: Frequency
     vendor: Vendor | None = None
+
+
+@dataclass(kw_only=True)
+class NbboDatasetConfig(DatasetConfig):
+    """Config of the WRDS TAQ NBBO bar panel (`dataset/nbbo.py`, phase 03.9).
+
+    `frequency` stays the ACQUISITION frequency (`"tick"`: the raw tier holds
+    one row per NBBO record). The PANEL's bar size is the separate
+    `bar_interval` (D-08 / D-26), so the locked `Frequency` literal is not
+    extended.
+
+    `session_start` / `session_end` are US/Eastern wall-clock `HH:MM` edges of
+    the panel's session window (D-09); the default is regular trading hours.
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "tick"
+    vendor: Vendor | None = "wrds"
+    bar_interval: BarInterval = "1m"
+    session_start: str = "09:30"
+    session_end: str = "16:00"
 
 
 @dataclass(kw_only=True)

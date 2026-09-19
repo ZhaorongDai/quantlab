@@ -1,6 +1,6 @@
 """Shared raw-market-data cleaning, reused by every Dataset subclass.
 
-Three entry points. Two are called at two different pipeline stages of the
+Four entry points. Two are called at two different pipeline stages of the
 raw-market-data path:
 - dedup_raw_frame(): tabular (polars), called by each subclass's
   _raw_data_to_xr() BEFORE the final .to_xarray() conversion — required
@@ -19,6 +19,9 @@ The third, clean_membership_panel(), is the non-OHLCV counterpart of
 clean_market_data(): it is the `_clean()` route for an index-membership
 boolean panel, which has none of the five required OHLCV columns and for
 which anomaly-flagging would be meaningless.
+
+The fourth, clean_nbbo_panel(), is the same kind of validator for the WRDS
+TAQ NBBO bar panel (phase 03.9, D-14).
 
 Do NOT add forward-fill/interpolate/fillna anywhere in this module — that
 would fabricate data the pipeline never actually observed (D-06).
@@ -346,6 +349,86 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
         raise ValueError(
             "clean_membership_panel: the 'timestamp' coordinate must be "
             "strictly increasing (no duplicates, no out-of-order rows) -- "
+            "XrBackend.filter_by_date slices it with .sel(slice(...)), which "
+            "returns wrong results silently on an unsorted index."
+        )
+
+    return data
+
+
+#: The exact variable set of an NBBO bar panel (phase 03.9, D-11/D-12/D-19),
+#: every one float64. `n_updates` and `n_ambiguous_ties` are counts but are
+#: stored as float64 from the start: `BaseDataset._pin_append_dtypes` promotes
+#: integer variables on append anyway, and a count that is NaN for a symbol
+#: added later (widen) cannot be an integer.
+NBBO_PANEL_VARIABLES = (
+    "bid",
+    "ask",
+    "bid_size",
+    "ask_size",
+    "mid",
+    "spread",
+    "spread_bps",
+    "imbalance",
+    "n_updates",
+    "tw_spread",
+    "tw_bid_size",
+    "tw_ask_size",
+    "n_ambiguous_ties",
+)
+
+
+def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
+    """NBBO-panel counterpart to `clean_market_data()`, called from
+    `dataset/nbbo.py:NbboPanelDataset._clean()` (D-14).
+
+    Validates the panel's shape and returns it unchanged. Like
+    `clean_membership_panel`, it never modifies, fills or re-sorts anything --
+    a panel that violates the contract is a bug in the resampler, and silently
+    repairing it here would hide that.
+
+    Raises `ValueError` naming the specific violation for each of:
+
+    - `data_vars` is not exactly `NBBO_PANEL_VARIABLES`;
+    - a variable's dtype is not float64;
+    - a variable's dims are not exactly `("timestamp", "symbol")`;
+    - the `timestamp` coordinate is not strictly increasing.
+
+    **No `anomaly_flag`, no OHLCV check, and no filling of any kind.** The
+    inherited `clean_market_data()` hard-raises on the five OHLCV columns an
+    NBBO panel does not have. Carry-forward over empty bars is the RESAMPLER's
+    state semantics (the prevailing NBBO stays in force until replaced), never
+    a cleaning step -- this module's no-fill rule stands.
+    """
+    variables = set(data.data_vars)
+    expected = set(NBBO_PANEL_VARIABLES)
+    if variables != expected:
+        raise ValueError(
+            f"clean_nbbo_panel: expected exactly the variables "
+            f"{sorted(expected)}, got {sorted(variables)} (missing "
+            f"{sorted(expected - variables)}, unexpected "
+            f"{sorted(variables - expected)})"
+        )
+
+    for name in NBBO_PANEL_VARIABLES:
+        variable = data[name]
+        if variable.dtype != np.dtype("float64"):
+            raise ValueError(
+                f"clean_nbbo_panel: {name!r} must have dtype float64, got "
+                f"{variable.dtype}"
+            )
+        if tuple(variable.dims) != ("timestamp", "symbol"):
+            raise ValueError(
+                f"clean_nbbo_panel: {name!r} must have dims "
+                f"('timestamp', 'symbol'), got {tuple(variable.dims)}"
+            )
+
+    timestamps = data["timestamp"].values
+    # Elementwise, as in `clean_membership_panel`, to stay dtype-agnostic.
+    if timestamps.size > 1 and not np.all(timestamps[:-1] < timestamps[1:]):
+        raise ValueError(
+            "clean_nbbo_panel: the 'timestamp' coordinate must be strictly "
+            "increasing (no duplicates, no out-of-order rows) -- "
             "XrBackend.filter_by_date slices it with .sel(slice(...)), which "
             "returns wrong results silently on an unsorted index."
         )

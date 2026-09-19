@@ -620,3 +620,4 @@ def convert(
 # ---------------------------------------------------------------------------
 from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
+from quantlab.acquisition import wrds_taq as _wrds_taq  # noqa: E402,F401
