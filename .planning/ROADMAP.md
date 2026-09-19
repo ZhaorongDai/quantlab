@@ -144,7 +144,7 @@ land raw in parquet and are resampled locally into the canonical `[timestamp, sy
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
-**Plans:** 0 plans
+**Plans:** 8 plans
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -161,7 +161,28 @@ the existing Acquisition → Dataset layering.
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 03.9 to break down)
+**Wave 1**
+
+- [ ] 03.9-01-PLAN.md — Tracer: one WRDS symbol-day end to end (fake session -> raw shards -> registry.convert -> NbboPanelDataset -> 1m Zarr), D-28 test tripwire, third vendor wired into the registry/subclass-walk suites
+- [ ] 03.9-02-PLAN.md — D-23 dependency gate (human-verify exchange_calendars) + XnysSessionCalendar (DST, half days, non-sessions)
+- [ ] 03.9-03-PLAN.md — SQL-shaped volume guard `SqlVolumeGuard` (20 GiB / row ceilings, force contract, fitting date segment) + CLI renderer
+
+**Wave 2** *(blocked on 01)*
+
+- [ ] 03.9-04-PLAN.md — WRDS provider hardening: credential/connection contract, entitlement preflight, raw schema eras, SQL shape, symbol notation, day-page resume, per-batch count probe
+- [ ] 03.9-05-PLAN.md — Resampler semantics: filters + NULL sides + drop counts, total order / ties / ambiguity count, grid, right-closed labels, within-day carry, clean_nbbo_panel
+
+**Wave 3** *(blocked on 02, 05)*
+
+- [ ] 03.9-06-PLAN.md — NBBO Dataset integration: XNYS session bounds, filter policy + stats sidecar, multi-day chunked/resumable conversion, rebuild
+
+**Wave 4** *(blocked on 03, 04, 06)*
+
+- [ ] 03.9-07-PLAN.md — `scripts/ingest_wrds_taq.py` (probe + guard before pull, one session per run) + `example/wrds_taq.md`
+
+**Wave 5** *(blocked on 07)*
+
+- [ ] 03.9-08-PLAN.md — Main-tree no-new-failures gate + user-run live WRDS smoke (Duo push)
 
 ### Phase 03.8: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)
 
