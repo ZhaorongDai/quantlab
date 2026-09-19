@@ -463,3 +463,130 @@ def test_distinct_nanosecond_timestamps_have_no_ambiguous_ties() -> None:
     assert panel["n_ambiguous_ties"].to_list() == [0.0] * panel.height
     assert _bar(panel, "09:31:00")["bid"] == pytest.approx(100.00, abs=1e-9)
     assert _bar(panel, "09:31:00")["n_updates"] == 3
+
+
+# ------------- Task 3: grid, right-closed labels, carry, variable contract ---
+
+
+@pytest.mark.parametrize(
+    ("bar_interval", "expected_bars"),
+    [("1s", 23400), ("5s", 4680), ("1m", 390), ("5m", 78), ("30m", 13)],
+)
+def test_bar_interval_yields_a_regular_right_closed_grid(bar_interval, expected_bars) -> None:
+    from quantlab.enums.data import BAR_INTERVAL_SECONDS
+
+    panel, _ = _run([SEED], bar_interval=bar_interval)
+    stamps = panel.filter(pl.col("symbol") == "AAPL")["timestamp"]
+    assert stamps.len() == expected_bars
+    step = BAR_INTERVAL_SECONDS[bar_interval]
+    open_, close = _label(DAY, "09:30:00"), _label(DAY, "16:00:00")
+    assert (stamps[0] - open_).total_seconds() == step  # first label = open + d
+    assert stamps[-1] == close  # last label = close
+    assert stamps.diff().drop_nulls().dt.total_seconds().unique().to_list() == [step]
+    labels = NbboResampler(bar_interval).labels(_sessions(DAY))
+    assert labels["timestamp"].to_list() == stamps.to_list()
+
+
+def test_bar_interval_that_does_not_divide_the_session_raises() -> None:
+    sessions = _sessions(DAY, close="15:59:59")
+    with pytest.raises(ValueError, match=r"2024-01-24.*1m|1m.*2024-01-24"):
+        NbboResampler("1m").resample(_frame([SEED]), sessions)
+    with pytest.raises(ValueError, match=r"2024-01-24.*1m|1m.*2024-01-24"):
+        NbboResampler("1m").labels(sessions)
+
+
+def test_unknown_bar_interval_lists_the_accepted_tokens() -> None:
+    with pytest.raises(ValueError, match=r"'7m'.*'1s'.*'1m'"):
+        NbboResampler("7m")
+
+
+def test_right_closed_label_edges_seed_and_after_close() -> None:
+    panel, _ = _run(
+        [
+            SEED,
+            # Exactly at the open: this is the seed, an update in no bar.
+            _q("09:30:00", 100.01, 100, 100.02, 100),
+            # Exactly on the 09:31 edge: bar 14:31Z, not 14:32Z.
+            _q("09:31:00", 100.02, 100, 100.03, 100),
+            # After the close: in no bar.
+            _q("16:00:00.000001", 99.00, 100, 99.10, 100),
+        ]
+    )
+    first = _bar(panel, "09:31:00")
+    assert first["n_updates"] == 1
+    assert first["bid"] == pytest.approx(100.02, abs=1e-9)
+    # The seed at the open (spread 0.01) held for the whole bar; the edge
+    # record has zero duration inside it.
+    assert first["tw_spread"] == pytest.approx(0.01 * 60 / 60, abs=1e-9)
+    assert _bar(panel, "09:32:00")["n_updates"] == 0
+    assert panel["n_updates"].sum() == 1
+    last = _bar(panel, "16:00:00")
+    assert last["bid"] == pytest.approx(100.02, abs=1e-9)  # not 99.00
+
+
+def test_carry_never_crosses_a_session_date() -> None:
+    next_day = "2024-01-25"
+    panel, _ = _run(
+        [
+            SEED,
+            _q("15:59:00", 100.05, 100, 100.07, 100),
+            # Next day: no pre-open record; the first arrives mid-bar.
+            _q("10:00:30", 101.00, 100, 101.04, 300, day=next_day),
+        ],
+        sessions=_sessions(DAY, next_day),
+    )
+    day_two = panel.filter(pl.col("date") == date.fromisoformat(next_day))
+    assert day_two.height == 390
+    before = day_two.filter(pl.col("timestamp") <= _label(next_day, "10:00:00"))
+    assert before.height == 30
+    for name in (
+        "bid", "ask", "bid_size", "ask_size", "mid", "spread",
+        "tw_spread", "tw_bid_size", "tw_ask_size",
+    ):
+        assert before[name].is_null().all(), name
+    assert before["n_updates"].to_list() == [0.0] * 30
+    first = _bar(panel, "10:01:00", day=next_day)
+    assert first["n_updates"] == 1
+    assert first["bid"] == pytest.approx(101.00, abs=1e-9)
+    # Covered only for the last 30 s of the bar: the TW is that state alone.
+    assert first["tw_spread"] == pytest.approx(0.04 * 30 / 30, abs=1e-9)
+    assert first["tw_ask_size"] == pytest.approx(300 * 30 / 30, abs=1e-9)
+    # Day one's last state stood to its own close.
+    assert _bar(panel, "16:00:00")["bid"] == pytest.approx(100.05, abs=1e-9)
+
+
+def test_carry_rows_exist_for_a_symbol_whose_every_record_was_dropped() -> None:
+    panel, stats = _run(
+        [SEED, _q("09:45:00", 51.00, 100, 50.00, 100, symbol="MSFT")]
+    )
+    msft = panel.filter(pl.col("symbol") == "MSFT")
+    assert msft.height == 390
+    assert msft["bid"].is_null().all()
+    assert msft["tw_spread"].is_null().all()
+    assert msft["n_updates"].to_list() == [0.0] * 390
+    assert _stats_row(stats, symbol="MSFT")["dropped_crossed"] == 1
+
+
+def test_panel_variables_are_exactly_the_cleaning_contract_as_float64() -> None:
+    from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+
+    panel, _ = _run(
+        [
+            SEED,
+            _q("09:30:30", 100.01, 300, 100.05, 100),
+            _q("09:31:30", 100.02, 200, 100.03, 600, symbol="MSFT"),
+        ]
+    )
+    assert panel.columns == ["symbol", "date", "timestamp", *NBBO_PANEL_VARIABLES]
+    for name in NBBO_PANEL_VARIABLES:
+        assert panel.schema[name] == pl.Float64, name
+
+    bar = _bar(panel, "09:31:00")
+    bid, ask, bid_size, ask_size = 100.01, 100.05, 300.0, 100.0
+    mid = (bid + ask) / 2
+    assert bar["mid"] == pytest.approx(mid, abs=1e-9)
+    assert bar["spread"] == pytest.approx(ask - bid, abs=1e-9)
+    assert bar["spread_bps"] == pytest.approx(1e4 * (ask - bid) / mid, abs=1e-9)
+    assert bar["imbalance"] == pytest.approx(
+        (bid_size - ask_size) / (bid_size + ask_size), abs=1e-9
+    )
