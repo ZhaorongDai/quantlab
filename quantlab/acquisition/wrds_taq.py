@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import io
 import os
+import stat
 import tempfile
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import psycopg2
@@ -56,6 +58,48 @@ from quantlab.dataset.nbbo import NbboPanelDataset
 #: that does not define the name. `CREDENTIAL_ENV_VARS` below is built from
 #: this constant, never from the session class.
 USERNAME_ENV = "WRDS_USERNAME"
+
+
+class WrdsSessionError(RuntimeError):
+    """The single WRDS session cannot be used: it could not be opened safely,
+    the driver reported an error on it, or it broke earlier in this run.
+
+    A GLOBAL condition (D-21): `WrdsTaqNbboAcquisition._classify_error` maps it
+    to "quota", which stops dispatch for the whole run and keeps every symbol
+    out of the failure manifest. It is never retried batch by batch, because a
+    retry would mean a reconnect and every connection can push Duo (D-20).
+    """
+
+
+class WrdsEntitlementError(RuntimeError):
+    """The WRDS account's TAQ subscription does not cover a requested year
+    (`taqm_YYYY` without USAGE). Global, like `WrdsSessionError` (D-21)."""
+
+
+def _pgpass_fields(line: str) -> list[str]:
+    """The first FOUR `:`-separated fields of one pgpass line, `\\`-escapes
+    resolved.
+
+    Parsing stops at the fourth unescaped colon: the fifth field -- the
+    password -- is never collected into any name (D-07, T-03.9-10).
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+            if len(fields) == 4:
+                break
+        else:
+            current.append(char)
+    return fields
 
 
 class WrdsSession:
@@ -83,12 +127,29 @@ class WrdsSession:
     #: temporary file.
     COPY_SPOOL_BYTES = 256 * 2**20
 
+    #: libpq environment variables that would route the connection, or its
+    #: parameters, around the pinned host: `PGHOSTADDR` overrides the address
+    #: `host` resolves to, and a service file can supply host/port/user
+    #: (T-03.9-11). Any of them set -> refuse before connecting. `PGHOST` is
+    #: harmless because `host` is always passed explicitly.
+    REFUSED_ENV = ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE")
+
+    #: The pgpass line shape a fix message shows. `<password>` is a
+    #: placeholder; the real password is never read into this code.
+    PGPASS_LINE_HINT = (
+        "wrds-pgdata.wharton.upenn.edu:9737:wrds:$WRDS_USERNAME:<password>"
+    )
+
     #: Process-level cache, username -> session.
     _shared: dict[str, "WrdsSession"] = {}
 
     def __init__(self, username: str) -> None:
         self.username = username
         self._conn = None
+        # Set BEFORE `psycopg2.connect` is called, so a failed connect is
+        # never retried by this object (each attempt can push Duo, D-20).
+        self._connect_attempted = False
+        self._broken = False
 
     @classmethod
     def shared(cls) -> "WrdsSession":
@@ -124,26 +185,122 @@ class WrdsSession:
         if conn is not None:
             conn.close()
 
+    # -- credential pre-checks (D-07, D-20) ---------------------------------------
+
+    @staticmethod
+    def _pgpass_path() -> Path:
+        """`$PGPASSFILE` when set, else `~/.pgpass` -- the file libpq reads."""
+        override = os.environ.get("PGPASSFILE")
+        return Path(override) if override else Path.home() / ".pgpass"
+
+    def _assert_refused_env_unset(self) -> None:
+        for name in self.REFUSED_ENV:
+            if os.environ.get(name):
+                raise WrdsSessionError(
+                    f"{name} is set in the environment. libpq would use it to "
+                    f"route the WRDS connection or its parameters away from "
+                    f"the pinned host {self.HOST}:{self.PORT}; unset {name} "
+                    f"before running a WRDS acquisition."
+                )
+
+    def _assert_pgpass_entry(self) -> None:
+        """Fail fast, BEFORE any connection attempt, when libpq would not find
+        a password for this connection.
+
+        Without this, libpq would connect with no password, the server would
+        refuse it, and the operator would see a bare authentication error --
+        after a Duo push. Checked: the file exists, is a regular file, is not
+        group/world accessible (libpq ignores such a file), and has a line
+        whose host, port, database and user fields match (`*` wildcards,
+        `\\:` escapes). Only fields 1-4 are parsed; the password field is
+        never bound to a name, and no message quotes a line. The username is
+        written as `$WRDS_USERNAME`, never its value (T-03.9-10).
+        """
+        path = self._pgpass_path()
+        fix = (
+            f"Create it with the single line `{self.PGPASS_LINE_HINT}` and run "
+            f"`chmod 600 {path}`."
+        )
+        if not path.exists():
+            raise WrdsSessionError(f"The password file {path} does not exist. {fix}")
+        mode = path.stat().st_mode
+        if not stat.S_ISREG(mode):
+            raise WrdsSessionError(f"The password file {path} is not a regular file. {fix}")
+        if mode & 0o077:
+            raise WrdsSessionError(
+                f"The password file {path} is group/world accessible (mode "
+                f"{stat.S_IMODE(mode):o}); libpq ignores it. Run "
+                f"`chmod 600 {path}`."
+            )
+        wanted = (self.HOST, str(self.PORT), self.DBNAME, self.username)
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.rstrip("\r\n")
+                if not line or line.lstrip().startswith("#"):
+                    continue
+                fields = _pgpass_fields(line)
+                if len(fields) == 4 and all(
+                    field in ("*", want) for field, want in zip(fields, wanted)
+                ):
+                    return
+        raise WrdsSessionError(
+            f"The password file {path} has no line for "
+            f"{self.HOST}:{self.PORT}:{self.DBNAME} and $WRDS_USERNAME. "
+            f"Add `{self.PGPASS_LINE_HINT}` to it (mode 600)."
+        )
+
     def _connection(self):
         """Open the connection ONCE, read-only, and return it.
 
         Called through the module attribute `psycopg2.connect` so the test
         suite's D-28 tripwire sees every attempt. No password argument: libpq
-        resolves it from `~/.pgpass`.
+        resolves it from the pgpass file checked above. The refused-env and
+        pgpass checks run before the attempt; the attempt flag is set before
+        the call, so neither a failed connect nor a broken session is ever
+        followed by a second connect from this object.
         """
-        if self._conn is None:
-            conn = psycopg2.connect(
-                host=self.HOST,
-                port=self.PORT,
-                dbname=self.DBNAME,
-                user=self.username,
-                sslmode=self.SSLMODE,
-                application_name=self.APPLICATION_NAME,
-                connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+        if self._conn is not None and not self._broken:
+            return self._conn
+        if self._broken or self._connect_attempted:
+            raise WrdsSessionError(
+                "the WRDS session broke earlier in this run and is not reopened "
+                "(every new connection can push Duo); re-run to resume from "
+                "the recorded pages."
             )
-            conn.set_session(readonly=True, autocommit=True)
-            self._conn = conn
-        return self._conn
+        self._assert_refused_env_unset()
+        self._assert_pgpass_entry()
+        self._connect_attempted = True
+        conn = psycopg2.connect(
+            host=self.HOST,
+            port=self.PORT,
+            dbname=self.DBNAME,
+            user=self.username,
+            sslmode=self.SSLMODE,
+            application_name=self.APPLICATION_NAME,
+            connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+        )
+        conn.set_session(readonly=True, autocommit=True)
+        self._conn = conn
+        return conn
+
+    def _query(self, work):
+        """Run `work(connection)`, turning any driver error into a
+        `WrdsSessionError` and marking the session broken.
+
+        The message carries the driver's text with the username replaced by
+        `$WRDS_USERNAME`; libpq errors never carry the password.
+        """
+        try:
+            return work(self._connection())
+        except psycopg2.Error as exc:
+            self._broken = True
+            detail = f"{type(exc).__name__}: {exc}".strip()
+            if self.username:
+                detail = detail.replace(self.username, "$WRDS_USERNAME")
+            raise WrdsSessionError(
+                f"the WRDS session failed ({detail}); it is not reopened in "
+                f"this run -- re-run to resume from the recorded pages."
+            ) from exc
 
     # -- pure SQL builders (no connection needed) ----------------------------
 
@@ -199,14 +356,18 @@ class WrdsSession:
         catching a missing-table error would make a missing table look the
         same as a holiday.
         """
-        with self._connection().cursor() as cursor:
-            cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = %s "
-                "AND table_name ~ '^complete_nbbo_[0-9]{8}$'",
-                (f"taqm_{year}",),
-            )
-            names = [row[0] for row in cursor.fetchall()]
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = %s "
+                    "AND table_name ~ '^complete_nbbo_[0-9]{8}$'",
+                    (f"taqm_{year}",),
+                )
+                return [row[0] for row in cursor.fetchall()]
+
+        names = self._query(work)
         days = [
             date(int(name[-8:-4]), int(name[-4:-2]), int(name[-2:]))
             for name in names
@@ -216,26 +377,38 @@ class WrdsSession:
     def table_columns(self, day: date) -> tuple[str, ...]:
         """The day table's columns in server order (sorted locally on
         `ordinal_position`)."""
-        with self._connection().cursor() as cursor:
-            cursor.execute(
-                "SELECT column_name, ordinal_position "
-                "FROM information_schema.columns "
-                "WHERE table_schema = %s AND table_name = %s",
-                (f"taqm_{day:%Y}", f"complete_nbbo_{day:%Y%m%d}"),
-            )
-            rows = cursor.fetchall()
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT column_name, ordinal_position "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s",
+                    (f"taqm_{day:%Y}", f"complete_nbbo_{day:%Y%m%d}"),
+                )
+                return cursor.fetchall()
+
+        rows = self._query(work)
         return tuple(name for name, _ in sorted(rows, key=lambda row: row[1]))
 
     def copy_nbbo_csv(self, day: date, pairs, columns) -> bytes:
-        """Run `copy_query` and return the CSV bytes (header included)."""
-        conn = self._connection()
+        """Run `copy_query` and return the CSV bytes (header included).
+
+        The composed statement goes to `copy_expert` as-is (psycopg2 renders a
+        `Composable` against the cursor's own connection), so no SQL text is
+        ever assembled outside `psycopg2.sql`.
+        """
         query = self.copy_query(day, pairs, columns)
-        with tempfile.SpooledTemporaryFile(
-            max_size=self.COPY_SPOOL_BYTES
-        ) as buffer, conn.cursor() as cursor:
-            cursor.copy_expert(query.as_string(conn), buffer)
-            buffer.seek(0)
-            return buffer.read()
+
+        def work(conn):
+            with tempfile.SpooledTemporaryFile(
+                max_size=self.COPY_SPOOL_BYTES
+            ) as buffer, conn.cursor() as cursor:
+                cursor.copy_expert(query, buffer)
+                buffer.seek(0)
+                return buffer.read()
+
+        return self._query(work)
 
 
 class WrdsTaqNbboAcquisition(Acquisition):
@@ -379,6 +552,32 @@ class WrdsTaqNbboAcquisition(Acquisition):
                 f"hive key and the watermark namespace."
             )
         return data_type
+
+    # -- failure policy (D-21) ------------------------------------------------------
+
+    #: Exceptions that mean "the one session, or the account, is unusable".
+    GLOBAL_STOP_ERRORS = (
+        WrdsSessionError,
+        WrdsEntitlementError,
+        psycopg2.OperationalError,
+        psycopg2.InterfaceError,
+    )
+
+    def _classify_error(self, exc: BaseException) -> str:
+        """In this vendor `"quota"` means GLOBAL STOP, not an allocation.
+
+        A dead single session or a missing entitlement is never one symbol's
+        fault (D-21): recording it in the failure manifest would defame every
+        symbol of every remaining batch, and retrying batch by batch would
+        reconnect -- one Duo push per batch (D-20). So the session and
+        entitlement errors, and the raw driver errors that mean the
+        connection is gone, stop dispatch for the whole run and stay out of
+        the manifest. Everything else (a malformed page, a stranger symbol, a
+        count mismatch) is a per-batch "failed", retried next run.
+        """
+        if isinstance(exc, self.GLOBAL_STOP_ERRORS):
+            return "quota"
+        return super()._classify_error(exc)
 
     # -- symbols (D-15) --------------------------------------------------------
 
