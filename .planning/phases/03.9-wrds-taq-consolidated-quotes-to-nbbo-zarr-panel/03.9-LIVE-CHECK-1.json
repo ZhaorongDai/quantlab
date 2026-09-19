@@ -1,0 +1,626 @@
+{
+  "L0_entitlement": {
+    "ok": true,
+    "cols": [
+      "has_schema_privilege"
+    ],
+    "rows": [
+      [
+        "True"
+      ]
+    ],
+    "secs": 0.03
+  },
+  "L1_tables": {
+    "ok": true,
+    "cols": [
+      "table_schema",
+      "table_name",
+      "table_type"
+    ],
+    "rows": [
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "BASE TABLE"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "BASE TABLE"
+      ],
+      [
+        "taqmsec",
+        "complete_nbbo_20240124",
+        "VIEW"
+      ],
+      [
+        "taqmsec",
+        "nbbom_20240124",
+        "VIEW"
+      ]
+    ],
+    "secs": 0.03
+  },
+  "L2_columns": {
+    "ok": true,
+    "cols": [
+      "table_schema",
+      "table_name",
+      "column_name",
+      "data_type"
+    ],
+    "rows": [
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "date",
+        "date"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "time_m",
+        "time without time zone"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "sym_root",
+        "text"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "sym_suffix",
+        "text"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "natbbo_ind",
+        "character varying"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "qu_source",
+        "character varying"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "nbbo_qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "best_bid",
+        "numeric"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "best_bidsizeshares",
+        "integer"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "best_ask",
+        "numeric"
+      ],
+      [
+        "taqm_2012",
+        "complete_nbbo_20120103",
+        "best_asksizeshares",
+        "integer"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "date",
+        "date"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "time_m",
+        "time without time zone"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "sym_root",
+        "text"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "sym_suffix",
+        "text"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "natbbo_ind",
+        "character varying"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "qu_source",
+        "character varying"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "nbbo_qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "best_bid",
+        "numeric"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "best_bidsizeshares",
+        "integer"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "best_ask",
+        "numeric"
+      ],
+      [
+        "taqm_2016",
+        "complete_nbbo_20161207",
+        "best_asksizeshares",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "date",
+        "date"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "time_m",
+        "time without time zone"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "time_m_nano",
+        "smallint"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "sym_root",
+        "text"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "sym_suffix",
+        "text"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "natbbo_ind",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "qu_source",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "nbbo_qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "best_bid",
+        "numeric"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "best_bidsizeshares",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "best_ask",
+        "numeric"
+      ],
+      [
+        "taqm_2024",
+        "complete_nbbo_20240124",
+        "best_asksizeshares",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "date",
+        "date"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "time_m",
+        "time without time zone"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "time_m_nano",
+        "smallint"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "ex",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "sym_root",
+        "text"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "sym_suffix",
+        "text"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "bid",
+        "numeric"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "bidsiz",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "ask",
+        "numeric"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "asksiz",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "qu_seqnum",
+        "bigint"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "natbbo_ind",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "finra_bbo_ind",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "finra_adf_mpid",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "qu_cancel",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "qu_source",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "nbbo_qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_bidex",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_bid",
+        "numeric"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_bidsiz",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_bid_finra_mmid",
+        "text"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_ask_qu_cond",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_askex",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_ask",
+        "numeric"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_asksiz",
+        "integer"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "best_ask_finra_mmid",
+        "text"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "luld_bbo_ind",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "luld_nbbo_indicator",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "sip_message_id",
+        "character varying"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "part_time",
+        "time without time zone"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "part_time_nano",
+        "smallint"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "finra_adf_time",
+        "time without time zone"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "finra_adf_time_nano",
+        "smallint"
+      ],
+      [
+        "taqm_2024",
+        "nbbom_20240124",
+        "secstat_ind",
+        "text"
+      ]
+    ],
+    "secs": 0.04
+  },
+  "L3_nano_range": {
+    "ok": true,
+    "cols": [
+      "min",
+      "max",
+      "count"
+    ],
+    "rows": [
+      [
+        "0",
+        "999",
+        "1243426"
+      ]
+    ],
+    "secs": 0.83
+  },
+  "L4_key_unique_2024": {
+    "ok": true,
+    "cols": [
+      "n",
+      "n_key",
+      "n_ts"
+    ],
+    "rows": [
+      [
+        "2065354",
+        "2065354",
+        "2065354"
+      ]
+    ],
+    "secs": 5.29
+  },
+  "L4_key_unique_2016": {
+    "ok": false,
+    "error": "UndefinedColumn: column \"time_m_nano\" does not exist\nLINE 1: ...TINCT (sym_root, coalesce(sym_suffix,''), time_m, time_m_nan...\n                                                             ^\n",
+    "secs": 0.03
+  },
+  "L5_volume_2024": {
+    "ok": true,
+    "cols": [
+      "sym_root",
+      "count"
+    ],
+    "rows": [
+      [
+        "AAPL",
+        "1243426"
+      ],
+      [
+        "BRK",
+        "152801"
+      ],
+      [
+        "JNJ",
+        "157359"
+      ],
+      [
+        "MSFT",
+        "669127"
+      ],
+      [
+        "XOM",
+        "760575"
+      ]
+    ],
+    "secs": 0.8
+  },
+  "L6_copy": {
+    "ok": true,
+    "sample_csv": "date,time_m,time_m_nano,sym_root,sym_suffix,qu_cond,natbbo_ind,qu_source,nbbo_qu_cond,best_bid,best_bidsizeshares,best_ask,best_asksizeshares\n2024-01-24,04:00:00.005984,226,AAPL,,R,4,N,,180,100,,\n2024-01-24,04:00:00.006053,463,AAPL,,R,4,N,,,,,\n2024-01-24,04:00:00.006286,979,AAPL,,R,4,N,,187.1,100,,\n2024-01-24,04:00:00.006393,385,AAPL,,R,4,N,,189.1,100,,\n2024-01-24,04:00:00.006417,816,AAPL,,R,4,N,,193.1,100,195.2,300\n",
+    "secs": 0.09
+  },
+  "L7_conn_limit": {
+    "ok": true,
+    "cols": [
+      "rolconnlimit"
+    ],
+    "rows": [
+      [
+        "7"
+      ]
+    ],
+    "secs": 0.03
+  },
+  "L8_index": {
+    "ok": true,
+    "cols": [
+      "QUERY PLAN"
+    ],
+    "rows": [
+      [
+        "Aggregate  (cost=3918.03..3918.04 rows=1 width=8)"
+      ],
+      [
+        "  ->  Custom Scan (ColumnarScan) on complete_nbbo_20240124  (cost=0.00..646.46 rows=1308627 width=0)"
+      ],
+      [
+        "        Filter: (sym_root = ANY ('{AAPL}'::text[]))"
+      ],
+      [
+        "        Columnar Projected Columns: sym_root"
+      ],
+      [
+        "        Columnar Chunk Group Filters: (sym_root = ANY ('{AAPL}'::text[]))"
+      ]
+    ],
+    "secs": 0.03
+  },
+  "L9_suffix": {
+    "ok": true,
+    "cols": [
+      "sym_root",
+      "sym_suffix"
+    ],
+    "rows": [
+      [
+        "BF",
+        "A"
+      ],
+      [
+        "BF",
+        "B"
+      ],
+      [
+        "BRK",
+        "A"
+      ],
+      [
+        "BRK",
+        "B"
+      ]
+    ],
+    "secs": 0.21
+  },
+  "_meta": {
+    "has_qu_seqnum_2024": false
+  }
+}
