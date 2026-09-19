@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 10 plans
+**Plans:** 11 plans
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -169,28 +169,32 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03.10-01-PLAN.md — Tracer: one PERMNO-month (AAPL Aug-2020) fake WRDS -> raw PERMNO shards -> registry.convert -> drop-in CRSP panel with hand-checked adjClose; WRDS_SOURCE moves to acquisition/wrds.py with a second (crsp_daily) capability; per-capability acquisition_cls/config_factory
+- [ ] 03.10-01-PLAN.md — WRDS vendor seam: per-capability acquisition_cls/config_factory with resolver (run() through it), WRDS_SOURCE moved to acquisition/wrds.py (no import cycle), generic WrdsSession helpers (schema_usable/fetch_rows/copy_csv)
 
 **Wave 2** *(blocked on 01)*
 
-- [ ] 03.10-02-PLAN.md — CRSP provider hardening: annual product end refuse/clip, vintage stamp, entitlement order, page contract (pinned schema, uniqueness, ownership, counts, resume), SQL shape, per-year volume probe
-- [ ] 03.10-03-PLAN.md — Reference tables writer: stksecurityinfohist, stkdelists, stkdistributions, dsp500list_v2, Compustat idxcst_his + CCM links into _reference/ with a vintage manifest
-- [ ] 03.10-04-PLAN.md — Symbology: renames, share classes (BRK.B, BF.A/BF.B), NULL-ticker and delisting carry, overrides, collision resolution with report
-- [ ] 03.10-05-PLAN.md — Return/event semantics: Tiingo variables + CRSP extras, bid/ask and missing returns, delisting once, events, global anchor + anchor sidecar, Alpha158/Return drop-in
-- [ ] 03.10-06-PLAN.md — PERMNO membership: CRSP S&P 500 (dsp500list_v2) and Compustat Nasdaq-100 via CCM (iid-exact, clipped, unlinked refused)
+- [ ] 03.10-02-PLAN.md — Tracer: one PERMNO-month (AAPL Aug-2020) fake WRDS -> raw PERMNO shards -> registry.convert -> drop-in CRSP panel with hand-checked adjClose; crsp_daily capability added to WRDS_SOURCE
 
-**Wave 3** *(blocked on 04, 05, 06)*
+**Wave 3** *(blocked on 02)*
 
-- [ ] 03.10-07-PLAN.md — Dataset identity: equity_common / shrcd_10_11 filter + report, collision tie-break, PERMNO seams + report, QQQ benchmark store (data only)
-- [ ] 03.10-08-PLAN.md — CRSP S&P 500 and Compustat Nasdaq-100 constituent panels in the price panel's tickers
+- [ ] 03.10-03-PLAN.md — CRSP provider hardening: annual product end refuse/clip, vintage stamp, entitlement order, page contract (pinned schema, uniqueness, ownership, counts, resume), SQL shape, per-year volume probe
+- [ ] 03.10-04-PLAN.md — Reference tables writer: stksecurityinfohist, stkdelists, stkdistributions, dsp500list_v2, Compustat idxcst_his + CCM links into _reference/ with a vintage manifest
+- [ ] 03.10-05-PLAN.md — Symbology: renames, share classes (BRK.B, BF.A/BF.B), NULL-ticker and delisting carry, overrides, collision resolution with report
+- [ ] 03.10-06-PLAN.md — Return/event semantics: Tiingo variables + CRSP extras, bid/ask and missing returns, delisting once, events, global anchor + anchor sidecar, Alpha158/Return drop-in
+- [ ] 03.10-07-PLAN.md — PERMNO membership: CRSP S&P 500 (dsp500list_v2) and Compustat Nasdaq-100 via CCM (iid-exact, clipped, unlinked refused)
 
-**Wave 4** *(blocked on 02, 03, 07, 08)*
+**Wave 4** *(blocked on 05, 06, 07)*
 
-- [ ] 03.10-09-PLAN.md — `scripts/ingest_wrds_crsp.py` (entitlement, clip, references, roster, probe + guard before pull, one session) + guard unit label
+- [ ] 03.10-08-PLAN.md — Dataset identity: equity_common / shrcd_10_11 filter + report, collision tie-break, PERMNO seams + report, QQQ benchmark store (data only)
+- [ ] 03.10-09-PLAN.md — CRSP S&P 500 and Compustat Nasdaq-100 constituent panels in the price panel's tickers
 
-**Wave 5** *(blocked on 09)*
+**Wave 5** *(blocked on 03, 04, 08, 09)*
 
-- [ ] 03.10-10-PLAN.md — `example/wrds_crsp.md`, main-tree no-new-failures gate, user-run live WRDS smoke (Duo push)
+- [ ] 03.10-10-PLAN.md — `scripts/ingest_wrds_crsp.py` (entitlement, clip, references, roster, probe + guard before pull, one session) + guard unit label
+
+**Wave 6** *(blocked on 10)*
+
+- [ ] 03.10-11-PLAN.md — `example/wrds_crsp.md`, main-tree no-new-failures gate, user-run live WRDS smoke (Duo push)
 
 ### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
 
