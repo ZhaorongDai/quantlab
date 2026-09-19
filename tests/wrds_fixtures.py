@@ -150,7 +150,16 @@ class FakeWrdsSession:
     - `trading_days_by_year` -- what `trading_days(year)` returns;
     - `rows` -- `(day, universe symbol) -> [record, ...]` in PHYSICAL order,
       which is the order `copy_nbbo_csv` emits them in;
-    - `copy_calls` -- every `copy_nbbo_csv` call, recorded as a dict;
+    - `copy_calls` -- every `copy_nbbo_csv` call, recorded as a dict whose
+      `sql` is the REAL `WrdsSession.copy_query`, rendered;
+    - `count_calls` -- every `count_rows` call, likewise with the real
+      `WrdsSession.count_query` rendered;
+    - `schema_checks` -- every year `has_schema_usage` was asked about;
+    - `entitled_years` -- the years the fake account may read (`None` = all);
+    - `raise_on` -- `{copy call index: exception}`; that COPY call is recorded
+      and then raises, consuming no data;
+    - `count_adjust` -- `{day: delta}` added to that day's `count_rows`
+      answer, to fake a page whose COPY disagrees with its count;
     - `connections` -- how many sessions were constructed (a real one would be
       a connection, and each connection can push Duo);
     - `instance` -- the shared instance, or `None`.
@@ -159,6 +168,11 @@ class FakeWrdsSession:
     trading_days_by_year: dict[int, list[date]] = {}
     rows: dict[tuple[date, str], list[dict[str, str | None]]] = {}
     copy_calls: list[dict] = []
+    count_calls: list[dict] = []
+    schema_checks: list[int] = []
+    entitled_years: set[int] | None = None
+    raise_on: dict[int, BaseException] = {}
+    count_adjust: dict[date, int] = {}
     connections: int = 0
     instance: "FakeWrdsSession | None" = None
 
@@ -171,6 +185,11 @@ class FakeWrdsSession:
         cls.trading_days_by_year = {2024: [date(2024, 1, 24), date(2024, 1, 25)]}
         cls.rows = _default_rows()
         cls.copy_calls = []
+        cls.count_calls = []
+        cls.schema_checks = []
+        cls.entitled_years = None
+        cls.raise_on = {}
+        cls.count_adjust = {}
         cls.connections = 0
         cls.instance = None
 
@@ -198,6 +217,34 @@ class FakeWrdsSession:
             return TAQ_COLUMNS_2018_ON
         return TAQ_COLUMNS_PRE_2018
 
+    def has_schema_usage(self, year: int) -> bool:
+        FakeWrdsSession.schema_checks.append(int(year))
+        return self.entitled_years is None or int(year) in self.entitled_years
+
+    def assert_entitled(self, years) -> None:
+        # The REAL method, run against this fake's `has_schema_usage`: one
+        # implementation of the refusal and its message.
+        RealWrdsSession.assert_entitled(self, years)
+
+    def _stored(self, day: date, pairs) -> list[dict[str, str | None]]:
+        wanted = {_pair_to_symbol(root, suffix) for root, suffix in pairs}
+        return [
+            record
+            for (row_day, symbol), stored in self.rows.items()
+            if row_day == day and symbol in wanted
+            for record in stored
+        ]
+
+    def count_rows(self, day: date, pairs) -> int:
+        FakeWrdsSession.count_calls.append(
+            {
+                "day": day,
+                "pairs": list(pairs),
+                "sql": render_composed(RealWrdsSession.count_query(day, pairs)),
+            }
+        )
+        return len(self._stored(day, pairs)) + self.count_adjust.get(day, 0)
+
     def copy_nbbo_csv(
         self,
         day: date,
@@ -205,6 +252,7 @@ class FakeWrdsSession:
         columns: tuple[str, ...] | list[str],
     ) -> bytes:
         columns = tuple(columns)
+        index = len(FakeWrdsSession.copy_calls)
         FakeWrdsSession.copy_calls.append(
             {
                 "day": day,
@@ -215,12 +263,12 @@ class FakeWrdsSession:
                 ),
             }
         )
-        wanted = {_pair_to_symbol(root, suffix) for root, suffix in pairs}
+        failure = self.raise_on.get(index)
+        if failure is not None:
+            raise failure
         records = [
             {name: record.get(name) for name in columns}
-            for (row_day, symbol), stored in self.rows.items()
-            if row_day == day and symbol in wanted
-            for record in stored
+            for record in self._stored(day, pairs)
         ]
         schema = {name: pl.String for name in columns}
         frame = (

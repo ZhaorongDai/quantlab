@@ -623,3 +623,240 @@ def test_crossed_and_locked_records_are_kept_in_raw(
     assert frame.height == 3
     assert (frame["best_bid"] > frame["best_ask"]).to_list() == [True, False, False]
     assert (frame["best_bid"] == frame["best_ask"]).to_list() == [False, True, False]
+
+
+# -- D-06/D-21/D-24: day-page resume, entitlement preflight, count probe -----------
+
+D24, D25, D26 = date(2024, 1, 24), date(2024, 1, 25), date(2024, 1, 26)
+
+
+def _three_day_window(fake) -> None:
+    fake.trading_days_by_year = {2024: [D24, D25, D26]}
+    for symbol, price in (("AAPL", 194.0), ("MSFT", 400.0)):
+        fake.rows[(D26, symbol)] = [
+            taq_row(
+                "10:00:00.000000", price, 100, price + 0.02, 100,
+                nano=0, day="2024-01-26", root=symbol,
+            )
+        ]
+
+
+def _raw_rows(acq) -> pl.DataFrame:
+    files = sorted(Path(acq.config.raw_data_dir_path).rglob("*.pqt"))
+    assert files
+    frame = pl.concat(
+        [
+            pl.read_parquet(path).with_columns(
+                pl.lit(path.parent.name).alias("_partition"),
+                pl.lit(path.parent.parent.name).alias("_date"),
+            )
+            for path in files
+        ],
+        how="vertical",
+    )
+    return frame.sort(frame.columns)
+
+
+def test_resume_pages_one_copy_per_trading_day_for_the_whole_batch(
+    mock_wrds_session, acquisition_config
+):
+    _three_day_window(mock_wrds_session)
+    acq = _acq(acquisition_config, start="2024-01-24", end="2024-01-26")
+    acq.download()
+    calls = mock_wrds_session.copy_calls
+    assert [call["day"] for call in calls] == [D24, D25, D26]
+    for call in calls:
+        assert call["pairs"] == [("AAPL", None), ("MSFT", None)]
+    dates = {path.name for path in Path(acq.config.raw_data_dir_path).rglob("date=*")}
+    assert dates == {"date=2024-01-24", "date=2024-01-25", "date=2024-01-26"}
+    for symbol in ("AAPL", "MSFT"):
+        assert acq._watermark_path(symbol).exists()
+
+
+def test_resume_per_batch_failure_resumes_at_the_failed_day(
+    mock_wrds_session, acquisition_config, tmp_path
+):
+    _three_day_window(mock_wrds_session)
+    mock_wrds_session.raise_on = {1: RuntimeError("synthetic")}
+    acq = _acq(acquisition_config, start="2024-01-24", end="2024-01-26")
+    acq.download()
+    assert set(acq.last_result.failures) == {"AAPL", "MSFT"}
+    assert not acq.last_result.quota_aborted
+    assert not acq._watermark_path("AAPL").exists()
+
+    mock_wrds_session.raise_on = {}
+    before = len(mock_wrds_session.copy_calls)
+    rerun = _acq(acquisition_config, start="2024-01-24", end="2024-01-26")
+    rerun.download()
+    assert [c["day"] for c in mock_wrds_session.copy_calls[before:]] == [D25, D26]
+    assert rerun.last_result.failures == {}
+
+    clean = _acq(
+        lambda **kw: acquisition_config(root=tmp_path / "clean", **kw),
+        start="2024-01-24",
+        end="2024-01-26",
+    )
+    clean.download()
+    assert _raw_rows(rerun).drop("_partition").equals(
+        _raw_rows(clean).drop("_partition")
+    )
+
+
+def test_resume_session_error_is_a_global_stop_with_no_manifest_entry(
+    mock_wrds_session, acquisition_config
+):
+    from quantlab.acquisition.wrds_taq import WrdsSessionError
+
+    _three_day_window(mock_wrds_session)
+    mock_wrds_session.raise_on = {1: WrdsSessionError("the WRDS session broke")}
+    acq = _acq(acquisition_config, start="2024-01-24", end="2024-01-26")
+    acq.download()
+    assert acq.last_result.quota_aborted is True
+    assert acq.last_result.failures == {}
+    manifest = acq._coverage.failure_manifest_path
+    assert not manifest.exists() or "AAPL" not in manifest.read_text()
+
+    mock_wrds_session.raise_on = {}
+    before = len(mock_wrds_session.copy_calls)
+    _acq(acquisition_config, start="2024-01-24", end="2024-01-26").download()
+    assert [c["day"] for c in mock_wrds_session.copy_calls[before:]] == [D25, D26]
+
+
+def test_resume_more_than_one_worker_is_refused(mock_wrds_session, acquisition_config):
+    with pytest.raises(ValueError, match="max_workers"):
+        _acq(acquisition_config, kwargs={"max_workers": 4})
+
+
+def test_entitlement_unentitled_year_fails_before_any_copy(
+    mock_wrds_session, acquisition_config
+):
+    from quantlab.acquisition.wrds_taq import WrdsEntitlementError
+
+    mock_wrds_session.entitled_years = {2016, 2024}
+    mock_wrds_session.trading_days_by_year = {
+        2012: [date(2012, 1, 3), date(2012, 1, 4), date(2012, 1, 5)]
+    }
+    acq = _acq(acquisition_config, start="2012-01-03", end="2012-01-05")
+    with pytest.raises(WrdsEntitlementError, match="taqm_2012") as excinfo:
+        acq.download()
+    assert "subscription" in str(excinfo.value)
+    assert mock_wrds_session.copy_calls == []
+    assert mock_wrds_session.count_calls == []
+    assert not acq._coverage.failure_manifest_path.exists()
+
+
+def test_entitlement_window_spanning_a_year_boundary_checks_both_years(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.trading_days_by_year = {
+        2023: [date(2023, 12, 29)],
+        2024: [date(2024, 1, 2), date(2024, 1, 3)],
+    }
+    _acq(acquisition_config, start="2023-12-29", end="2024-01-03").download()
+    assert sorted(set(mock_wrds_session.schema_checks)) == [2023, 2024]
+
+
+def test_entitlement_real_session_probes_has_schema_privilege(
+    live_session, pgpass
+):
+    from quantlab.acquisition.wrds_taq import WrdsEntitlementError
+
+    session, connections = live_session
+    pgpass()
+    assert session.has_schema_usage(2024) is True
+    connections[0].entitled = False
+    assert session.has_schema_usage(2012) is False
+    text, params = connections[0].executed[-1]
+    assert "has_schema_privilege" in text
+    assert params == ("taqm_2012",)
+    with pytest.raises(WrdsEntitlementError, match="taqm_2012"):
+        session.assert_entitled([2012])
+
+
+def test_page_count_mismatch_fails_the_batch_and_the_next_run_refetches_it(
+    mock_wrds_session, acquisition_config
+):
+    _three_day_window(mock_wrds_session)
+    mock_wrds_session.count_adjust = {D25: 1}
+    acq = _acq(acquisition_config, start="2024-01-24", end="2024-01-26")
+    acq.download()
+    message = acq.last_result.failures["AAPL"]
+    assert "2024-01-25" in message
+    assert "6" in message and "5" in message
+    assert set(acq.last_result.failures) == {"AAPL", "MSFT"}
+
+    mock_wrds_session.count_adjust = {}
+    before = len(mock_wrds_session.copy_calls)
+    _acq(acquisition_config, start="2024-01-24", end="2024-01-26").download()
+    assert [c["day"] for c in mock_wrds_session.copy_calls[before:]] == [D25, D26]
+
+
+def test_page_counts_can_be_switched_off(mock_wrds_session, acquisition_config):
+    acq = _acq(acquisition_config, kwargs={"verify_page_counts": False})
+    acq.download()
+    assert mock_wrds_session.copy_calls
+    assert mock_wrds_session.count_calls == []
+
+
+def test_probe_counts_rows_per_day_summed_over_symbol_batches(mock_wrds_session):
+    from quantlab.acquisition.wrds_taq import WrdsNbboVolumeProbe, WrdsSession
+
+    mock_wrds_session.rows[(D24, "BRK.B")] = [
+        taq_row("09:30:00.000000", 1.0, 1, 1.1, 1, nano=0, root="BRK", suffix="B"),
+        taq_row("09:31:00.000000", 1.0, 1, 1.1, 1, nano=0, root="BRK", suffix="B"),
+    ]
+    mock_wrds_session.rows[(D25, "BRK.B")] = [
+        taq_row(
+            "09:30:00.000000", 1.0, 1, 1.1, 1,
+            nano=0, day="2024-01-25", root="BRK", suffix="B",
+        ),
+    ]
+    probe = WrdsNbboVolumeProbe(mock_wrds_session.shared(), batch_size=1)
+    counts = probe.count_rows_by_day(["AAPL", "BRK.B"], "2024-01-24", "2024-01-25")
+    assert counts == {"2024-01-24": 5, "2024-01-25": 4}
+    assert len(mock_wrds_session.count_calls) == 4
+    assert mock_wrds_session.copy_calls == []
+    for call in mock_wrds_session.count_calls:
+        assert "sym_root = ANY(" in call["sql"]
+        assert call["sql"].startswith("SELECT count(*) FROM")
+        where = render_composed(WrdsSession.where_clause(call["pairs"]))
+        copy = render_composed(
+            WrdsSession.copy_query(call["day"], call["pairs"], ("date",))
+        )
+        assert call["sql"].endswith("WHERE " + where)
+        assert "WHERE " + where + ")" in copy
+        for token in FORBIDDEN_SQL_TOKENS:
+            assert token not in call["sql"].upper()
+
+
+def test_probe_checks_entitlement_before_counting(mock_wrds_session):
+    from quantlab.acquisition.wrds_taq import (
+        WrdsEntitlementError,
+        WrdsNbboVolumeProbe,
+    )
+
+    mock_wrds_session.entitled_years = {2016}
+    probe = WrdsNbboVolumeProbe(mock_wrds_session.shared())
+    with pytest.raises(WrdsEntitlementError, match="taqm_2024"):
+        probe.count_rows_by_day(["AAPL"], "2024-01-24", "2024-01-25")
+    assert mock_wrds_session.count_calls == []
+
+
+def test_probe_never_counts_a_table_without_a_symbol_predicate():
+    from quantlab.acquisition.wrds_taq import WrdsSession
+
+    with pytest.raises(ValueError):
+        WrdsSession.count_query(D24, [])
+    with pytest.raises(ValueError):
+        WrdsSession.where_clause([])
+
+
+def test_probe_real_session_count_rows_reads_the_count(live_session, pgpass):
+    session, connections = live_session
+    pgpass()
+    session.trading_days(2024)
+    connections[0].count_value = 42
+    assert session.count_rows(D24, [("AAPL", None)]) == 42
+    text, _ = connections[0].executed[-1]
+    assert text.startswith('SELECT count(*) FROM "taqm_2024"."complete_nbbo_20240124"')
+    assert "sym_root = ANY(ARRAY['AAPL'])" in text
