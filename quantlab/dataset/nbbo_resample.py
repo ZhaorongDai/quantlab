@@ -2,7 +2,8 @@
 
 `NbboResampler` turns a stream of individually-timestamped NBBO records into
 one row per `(symbol, bar label)`, per trading session. Pure polars; no I/O,
-no quantlab imports beyond the bar-interval table.
+no quantlab imports beyond the bar-interval table and the panel's variable
+tuple (`dataset/cleaning.py`, itself a leaf module).
 
 Semantics (D-10/D-11/D-13/D-22/D-25):
 
@@ -37,26 +38,12 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 
-#: The output variables, in order. Kept in step with
-#: `quantlab.dataset.cleaning.NBBO_PANEL_VARIABLES` (asserted by the Dataset's
-#: `_clean`).
-PANEL_VARIABLES = (
-    "bid",
-    "ask",
-    "bid_size",
-    "ask_size",
-    "mid",
-    "spread",
-    "spread_bps",
-    "imbalance",
-    "n_updates",
-    "tw_spread",
-    "tw_bid_size",
-    "tw_ask_size",
-    "n_ambiguous_ties",
-)
+#: The output variables, in order: the ONE definition in `dataset/cleaning.py`
+#: that `clean_nbbo_panel` enforces, so the resampler cannot drift from it.
+PANEL_VARIABLES = NBBO_PANEL_VARIABLES
 
 #: Columns of the per-(date, symbol) filter-stats frame, all Int64 after the
 #: two keys.
@@ -215,13 +202,31 @@ class NbboResampler:
         )
 
     def _edges(self, sessions: pl.DataFrame) -> pl.DataFrame:
-        """Every grid edge `e_0 = open, e_1, ..., e_N = close` per session."""
+        """Every grid edge `e_0 = open, e_1, ..., e_N = close` per session.
+
+        Raises `ValueError` when a session's length is not a whole, positive
+        number of bars (D-22/D-26): a ragged last bar would differ in length
+        from every other bar, and silently truncating it would drop in-session
+        quotes from the panel.
+        """
+        sessions = sessions.with_columns(
+            pl.col("open").cast(pl.Datetime("ns")),
+            pl.col("close").cast(pl.Datetime("ns")),
+        )
+        length_ns = (pl.col("close") - pl.col("open")).dt.total_nanoseconds()
+        ragged = sessions.filter(
+            (length_ns <= 0) | (length_ns % self._interval_ns != 0)
+        )
+        if ragged.height:
+            first = ragged.row(0, named=True)
+            raise ValueError(
+                f"NbboResampler: the session of {first['date']} "
+                f"({first['open']} .. {first['close']} UTC) is not a whole, "
+                f"positive number of bar_interval {self.bar_interval!r} "
+                f"({self.seconds}s) bars; {ragged.height} session(s) affected."
+            )
         return (
             sessions.with_columns(
-                pl.col("open").cast(pl.Datetime("ns")),
-                pl.col("close").cast(pl.Datetime("ns")),
-            )
-            .with_columns(
                 pl.datetime_ranges(
                     pl.col("open"),
                     pl.col("close"),
