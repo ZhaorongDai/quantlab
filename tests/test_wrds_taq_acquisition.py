@@ -799,7 +799,9 @@ def test_page_counts_can_be_switched_off(mock_wrds_session, acquisition_config):
 
 
 def test_probe_counts_rows_per_day_summed_over_symbol_batches(mock_wrds_session):
-    from quantlab.acquisition.wrds_taq import WrdsNbboVolumeProbe, WrdsSession
+    from quantlab.acquisition.wrds_taq import WrdsNbboVolumeProbe
+    # The module attribute is the fake under `mock_wrds_session`.
+    from tests.wrds_fixtures import RealWrdsSession as WrdsSession
 
     mock_wrds_session.rows[(D24, "BRK.B")] = [
         taq_row("09:30:00.000000", 1.0, 1, 1.1, 1, nano=0, root="BRK", suffix="B"),

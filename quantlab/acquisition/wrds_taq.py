@@ -38,6 +38,7 @@ from pathlib import Path
 
 import polars as pl
 import psycopg2
+from loguru import logger
 from psycopg2 import sql
 
 from quantlab.acquisition.registry import (
@@ -49,6 +50,7 @@ from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.nbbo import NbboPanelDataset
+from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: The one environment variable the WRDS username is read from.
 #:
@@ -319,6 +321,14 @@ class WrdsSession:
         `sql.Literal`, never interpolated text (T-03.9-03).
         """
         pairs = [(str(root), str(suffix or "")) for root, suffix in pairs]
+        if not pairs:
+            # Without pairs there is no `sym_root` predicate, and a query over
+            # a whole day table is exactly the ~76 s full scan (or the
+            # multi-GB COPY) this class must never issue (D-24).
+            raise ValueError(
+                "WrdsSession.where_clause: no (sym_root, sym_suffix) pairs; "
+                "refusing to build a query over a whole complete_nbbo table."
+            )
         roots = sorted({root for root, _ in pairs})
         pair_list = sql.SQL(", ").join(
             sql.SQL("({}, {})").format(sql.Literal(root), sql.Literal(suffix))
@@ -346,7 +356,76 @@ class WrdsSession:
             where=cls.where_clause(pairs),
         )
 
+    @classmethod
+    def count_query(cls, day: date, pairs) -> sql.Composed:
+        """`SELECT count(*) FROM <day table> WHERE <where_clause(pairs)>`.
+
+        The SAME WHERE as `copy_query`, so a count and the pull it prices (or
+        checks) cannot select different rows. `count(*)` is an aggregate
+        without GROUP BY; no ORDER BY / DISTINCT / LIMIT exists here either.
+        """
+        return sql.SQL("SELECT count(*) FROM {table} WHERE {where}").format(
+            table=cls.table_identifier(day),
+            where=cls.where_clause(pairs),
+        )
+
     # -- network methods -------------------------------------------------------
+
+    def has_schema_usage(self, year: int) -> bool:
+        """Whether this role may read `taqm_{year}` (USAGE on the schema).
+
+        Asked through `pg_namespace` rather than as
+        `has_schema_privilege('taqm_YYYY', 'USAGE')` on the name: the name form
+        raises for a schema that does not exist, and a driver error breaks the
+        session. A missing schema returns no row, i.e. not entitled (D-21).
+        """
+        schema = f"taqm_{int(year)}"
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT has_schema_privilege(oid, 'USAGE') "
+                    "FROM pg_namespace WHERE nspname = %s",
+                    (schema,),
+                )
+                return cursor.fetchone()
+
+        row = self._query(work)
+        return bool(row and row[0])
+
+    def assert_entitled(self, years) -> None:
+        """Raise `WrdsEntitlementError` naming EVERY requested `taqm_YYYY` this
+        account cannot read.
+
+        Run before the first data query of a pull or a probe, so an
+        unentitled year stops the run with zero COPY calls instead of failing
+        every batch of every day (D-21).
+        """
+        missing = [
+            f"taqm_{int(year)}"
+            for year in sorted({int(year) for year in years})
+            if not self.has_schema_usage(year)
+        ]
+        if missing:
+            raise WrdsEntitlementError(
+                f"The WRDS account has no access to {', '.join(missing)}: its "
+                f"WRDS NYSE TAQ millisecond subscription does not cover "
+                f"{'that year' if len(missing) == 1 else 'those years'}. "
+                f"Narrow the window to entitled years or extend the "
+                f"subscription; nothing was downloaded."
+            )
+
+    def count_rows(self, day: date, pairs) -> int:
+        """Rows `copy_query(day, pairs, ...)` would return."""
+        query = self.count_query(day, pairs)
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchone()
+
+        row = self._query(work)
+        return int(row[0])
 
     def trading_days(self, year: int) -> list[date]:
         """Every day that has a `complete_nbbo_YYYYMMDD` table in `taqm_{year}`,
@@ -411,6 +490,19 @@ class WrdsSession:
         return self._query(work)
 
 
+def trading_days_between(session, start: date, end: date) -> list[date]:
+    """The trading days in `[start, end]`, ascending: the days that have a
+    `complete_nbbo` table, listed per year through `session.trading_days`.
+
+    Shared by the acquisition and the volume probe so both walk exactly the
+    same days.
+    """
+    days: set[date] = set()
+    for year in range(start.year, end.year + 1):
+        days.update(session.trading_days(year))
+    return sorted(day for day in days if start <= day <= end)
+
+
 class WrdsTaqNbboAcquisition(Acquisition):
     """WRDS TAQ `complete_nbbo` acquisition behind the shared `Acquisition` base.
 
@@ -440,6 +532,11 @@ class WrdsTaqNbboAcquisition(Acquisition):
     #: One shared connection, so one worker (D-20). A different value is
     #: refused in `__init__`.
     DEFAULT_MAX_WORKERS = 1
+
+    #: Count every page with the COPY's own WHERE before pulling it, and fail
+    #: the page on a mismatch. Overridable via `kwargs["verify_page_counts"]`;
+    #: the count is < 1 s per (day, batch) on the columnar chunk filters.
+    DEFAULT_VERIFY_PAGE_COUNTS = True
 
     CREDENTIAL_ENV_VARS = (USERNAME_ENV,)
     REDACTION = "<WRDS CREDENTIAL REDACTED>"
@@ -626,12 +723,26 @@ class WrdsTaqNbboAcquisition(Acquisition):
         cached = self._trading_days_cache.get(key)
         if cached is not None:
             return cached
-        days: set[date] = set()
-        for year in range(start.year, end.year + 1):
-            days.update(self._session.trading_days(year))
-        result = sorted(day for day in days if start <= day <= end)
+        result = trading_days_between(self._session, start, end)
         self._trading_days_cache[key] = result
         return result
+
+    # -- entitlement preflight (D-21) ---------------------------------------------
+
+    def _run(self, symbols: list[str] | None, from_watermark: bool):
+        """Check the TAQ entitlement for every year of the window, THEN run.
+
+        The check happens before the base runner dispatches a single batch, so
+        an unentitled year (the live account has no `taqm_2012`) raises
+        `WrdsEntitlementError` out of `download()`/`refresh()` with zero COPY
+        calls and no failure-manifest write, instead of failing every batch of
+        every day of that year one by one (D-21). The window checked is the
+        config's: a refresh's per-symbol start is never earlier than it.
+        """
+        start = self._as_date(self.config.start_date)
+        end = self._as_date(self.config.end_date)
+        self._session.assert_entitled(range(start.year, end.year + 1))
+        return super()._run(symbols, from_watermark)
 
     # -- one page = one day-table query --------------------------------------
 
@@ -694,6 +805,15 @@ class WrdsTaqNbboAcquisition(Acquisition):
                 f"{sorted(server_columns)}."
             )
 
+        # Completeness check (RESEARCH Pattern 6): the same WHERE, counted
+        # before the COPY. A page that parses to a different number of rows
+        # fails as a per-batch "failed" and is re-fetched by the next run.
+        expected_rows = (
+            self._session.count_rows(day, pairs)
+            if self._knob("verify_page_counts", self.DEFAULT_VERIFY_PAGE_COUNTS)
+            else None
+        )
+
         raw = self._session.copy_nbbo_csv(day, pairs, columns)
 
         frame = pl.read_csv(io.BytesIO(raw), infer_schema=False)
@@ -701,6 +821,13 @@ class WrdsTaqNbboAcquisition(Acquisition):
         frame = frame.with_columns(
             pl.int_range(pl.len(), dtype=pl.Int64).alias("wrds_row_ord")
         )
+        if expected_rows is not None and frame.height != expected_rows:
+            raise ValueError(
+                f"{self.class_name}: {table} (trading day {day.isoformat()}) "
+                f"COPY returned {frame.height} row(s) but count(*) with the "
+                f"same WHERE reported {expected_rows}; the page is incomplete "
+                f"and is not recorded, so the next run re-fetches this day."
+            )
         if frame.height == 0:
             return self._empty_page(), next_token
         if tuple(frame.columns[:-1]) != columns:
@@ -834,6 +961,80 @@ class WrdsTaqNbboAcquisition(Acquisition):
             end_date=end_date,
             kwargs=merged,
         )
+
+
+class WrdsNbboVolumeProbe:
+    """Counts the `complete_nbbo` rows a pull WOULD fetch, per trading day,
+    for the SQL volume guard (D-16, D-24).
+
+    One `count(*)` per (trading day, symbol batch), with the batches chunked
+    exactly like `Acquisition._batches` and the WHERE clause built by the same
+    `WrdsSession.where_clause` the COPY uses -- so the numbers the guard prices
+    are the rows the pull will move. Each count is < 1 s on the server's
+    columnar chunk-group filters (the D-24 calibration); a whole-table count
+    takes ~76 s and is never issued (`where_clause` refuses an empty batch).
+
+    Not adopted from RESEARCH Pattern 6: a JSON cache of these counts under the
+    watermark root. It would only save the re-count seconds on a re-run, and it
+    would be a second state file beside the watermarks that can disagree with
+    them. The pull re-counts each page anyway (`verify_page_counts`).
+    """
+
+    #: Log progress every this many trading days.
+    LOG_EVERY_DAYS = 20
+
+    def __init__(
+        self,
+        session,
+        batch_size: int = WrdsTaqNbboAcquisition.DEFAULT_BATCH_SIZE,
+    ) -> None:
+        self.session = session
+        self.batch_size = max(1, int(batch_size))
+
+    def _batches(self, symbols: list[str]) -> list[list[str]]:
+        return [
+            symbols[index : index + self.batch_size]
+            for index in range(0, len(symbols), self.batch_size)
+        ]
+
+    def count_rows_by_day(
+        self, symbols, start_date: str, end_date: str
+    ) -> dict[str, int]:
+        """`{ISO trading day: rows}` over `[start_date, end_date]`, summed over
+        the symbol batches. Entitlement is checked first, so an unentitled year
+        raises `WrdsEntitlementError` before any count is issued (D-21)."""
+        symbols = [str(symbol) for symbol in symbols]
+        if not symbols:
+            raise ValueError(
+                "WrdsNbboVolumeProbe.count_rows_by_day: no symbols; refusing to "
+                "count a table without a sym_root predicate."
+            )
+        for symbol in symbols:
+            if not TRADEABLE_TICKER_PATTERN.fullmatch(symbol):
+                raise ValueError(
+                    f"WrdsNbboVolumeProbe: {symbol!r} is not a tradeable ticker."
+                )
+        batches = [
+            [WrdsTaqNbboAcquisition.symbol_to_pair(symbol) for symbol in batch]
+            for batch in self._batches(symbols)
+        ]
+        start = date.fromisoformat(str(start_date)[:10])
+        end = date.fromisoformat(str(end_date)[:10])
+        self.session.assert_entitled(range(start.year, end.year + 1))
+
+        days = trading_days_between(self.session, start, end)
+        counts: dict[str, int] = {}
+        for position, day in enumerate(days, start=1):
+            counts[day.isoformat()] = sum(
+                self.session.count_rows(day, pairs) for pairs in batches
+            )
+            if position % self.LOG_EVERY_DAYS == 0 or position == len(days):
+                logger.info(
+                    f"WRDS NBBO volume probe: {position}/{len(days)} trading "
+                    f"day(s) counted ({len(batches)} batch(es) per day, "
+                    f"{sum(counts.values()):,} rows so far)."
+                )
+        return counts
 
 
 #: The registry descriptor for WRDS -- "who I am", beside the class that is
