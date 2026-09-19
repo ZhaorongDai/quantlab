@@ -27,6 +27,34 @@ class BinanceCSVHeaders:
 Market = Literal["us_equity", "crypto_spot"]
 Frequency = Literal["1d", "1m", "tick"]
 
+# The bar size of a panel RESAMPLED LOCALLY from tick records -- a separate
+# noun from `Frequency` above, which stays the ACQUISITION frequency and stays
+# locked. This is the D-08 option "separate panel frequency parameter", chosen
+# by 03.9 D-26: extending `Frequency` would break every table keyed on it
+# (`RAW_HIVE_KEYS`, `StockDataset.HIVE_SCHEMA_BY_FREQUENCY`, the ingest
+# scripts' choices) for tokens only one Dataset understands. Carried by
+# `NbboDatasetConfig.bar_interval`.
+#
+# Every token divides BOTH a 390-minute regular session and a 210-minute
+# half day, so a bar never straddles the close on either kind of day.
+BarInterval = Literal[
+    "1s", "5s", "10s", "15s", "30s", "1m", "5m", "10m", "15m", "30m"
+]
+
+#: `BarInterval` token -> its length in seconds.
+BAR_INTERVAL_SECONDS: dict[str, int] = {
+    "1s": 1,
+    "5s": 5,
+    "10s": 10,
+    "15s": 15,
+    "30s": 30,
+    "1m": 60,
+    "5m": 300,
+    "10m": 600,
+    "15m": 900,
+    "30m": 1800,
+}
+
 # US-equity universe reference categories (02-08-PLAN.md / 02-CONTEXT.md D-12).
 # "nasdaq_all" = every symbol ever listed on NASDAQ as Common Stock priced in
 # USD per Tiingo's supported_tickers.csv (current + delisted, via

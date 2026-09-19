@@ -69,7 +69,10 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
     )
     assert raw.height == 7
     assert raw["wrds_row_ord"].to_list() == list(range(7))
-    assert raw["timestamp"][4] == pd.Timestamp("2024-01-24T14:32:15.000000500")
+    # Via pandas: a polars scalar comes back as a microsecond `datetime`.
+    assert raw["timestamp"].to_pandas().iloc[4] == pd.Timestamp(
+        "2024-01-24T14:32:15.000000500"
+    )
     assert raw["timestamp"].dtype == pl.Datetime("ns")
     assert raw["best_ask"][0] is None
     assert set(raw.columns) == set(WrdsTaqNbboAcquisition.RAW_COLUMNS) - {"symbol"}
