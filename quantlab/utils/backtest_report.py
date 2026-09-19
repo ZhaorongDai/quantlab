@@ -20,7 +20,8 @@ One self-contained page built around a plotly div:
    records themselves still persist to the run's `liquidations.json`;
 5. a year-by-month heatmap of the same compounded monthly returns (03.8
    D-04), rendered as a SECOND plotly div rather than a fourth subplot row
-   (see `_monthly_heatmap_div`), and omitted when there are no returns;
+   (see `_monthly_heatmap_div`), and omitted when there are no returns. It is
+   red for a loss, green for a gain and grey at zero (G-03.8-1);
 6. the notes.
 
 When the backtest window overlaps the model's effective training window, the
@@ -414,6 +415,38 @@ def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
     )
 
 
+#: The colours of a monthly return's sign, shared by the monthly bars and the
+#: year-by-month heatmap (G-03.8-1).
+#:
+#: Green means up and red means down. The user chose this Western convention
+#: on 2026-09-19; it is deliberately NOT the East-Asian red-up convention.
+#:
+#: Both panels read these constants, so the two views of the same numbers
+#: cannot disagree about colour.
+#:
+#: The midpoint is a neutral grey, not a hue: a diverging scale's centre must
+#: read as "nothing happened", and the heatmap's `zmid=0.0` pins zero to it.
+#:
+#: The two poles have matched luminance (about 0.19 each), so neither sign
+#: looks heavier. The pair passes the dataviz palette validator, including
+#: red-green colour-vision separation (deutan dE 9.4, above the 8 target).
+#: That matters because red/green is the classic colour-blind confusion pair.
+#: Sign is also carried without colour: bars point up or down, and every
+#: heatmap cell states its percentage on hover.
+GAIN_COLOUR = "#1b8a5a"
+LOSS_COLOUR = "#e03b30"
+NEUTRAL_COLOUR = "#f0efec"
+
+#: The heatmap's diverging colorscale, built from the three constants above:
+#: the most negative value is red, zero (via `zmid=0.0`) is grey, the most
+#: positive value is green.
+RETURN_COLOURSCALE = (
+    (0.0, LOSS_COLOUR),
+    (0.5, NEUTRAL_COLOUR),
+    (1.0, GAIN_COLOUR),
+)
+
+
 #: The heatmap's month columns, in calendar order. Two-digit strings so they
 #: sort and read the same way, and so plotly treats them as categories.
 MONTH_LABELS = [f"{month:02d}" for month in range(1, 13)]
@@ -459,6 +492,10 @@ def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
     P&L land" on the shared time axis; the grid answers "which months of
     which years were good" (03.8 D-04 keeps both).
 
+    The palette is `RETURN_COLOURSCALE`: red for a loss month, green for a
+    gain month, and a neutral grey at zero, which `zmid=0.0` pins to the
+    scale's midpoint whatever the run's range.
+
     **It is a SEPARATE figure, never a fourth subplot row.** The main figure
     is three subplot rows with `shared_xaxes=True`; a fourth row makes plotly
     set `matches='x4'` on the three datetime x axes, binding the equity,
@@ -480,7 +517,7 @@ def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
             x=MONTH_LABELS,
             y=[str(year) for year in years],
             name="monthly_return_heatmap",
-            colorscale="RdBu",
+            colorscale=RETURN_COLOURSCALE,
             zmid=0.0,
             colorbar={"tickformat": ".1%"},
             hoverongaps=False,
