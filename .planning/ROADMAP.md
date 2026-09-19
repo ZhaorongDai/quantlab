@@ -175,7 +175,7 @@ land raw in parquet and are resampled locally into the canonical `[timestamp, sy
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
-**Plans:** 8 plans
+**Plans:** 3/8 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -194,9 +194,9 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03.9-01-PLAN.md — Tracer: one WRDS symbol-day end to end (fake session -> raw shards -> registry.convert -> NbboPanelDataset -> 1m Zarr), D-28 test tripwire, third vendor wired into the registry/subclass-walk suites
-- [ ] 03.9-02-PLAN.md — D-23 dependency gate (human-verify exchange_calendars) + XnysSessionCalendar (DST, half days, non-sessions)
-- [ ] 03.9-03-PLAN.md — SQL-shaped volume guard `SqlVolumeGuard` (20 GiB / row ceilings, force contract, fitting date segment) + CLI renderer
+- [x] 03.9-01-PLAN.md — Tracer: one WRDS symbol-day end to end (fake session -> raw shards -> registry.convert -> NbboPanelDataset -> 1m Zarr), D-28 test tripwire, third vendor wired into the registry/subclass-walk suites
+- [x] 03.9-02-PLAN.md — D-23 dependency gate (human-verify exchange_calendars) + XnysSessionCalendar (DST, half days, non-sessions)
+- [x] 03.9-03-PLAN.md — SQL-shaped volume guard `SqlVolumeGuard` (20 GiB / row ceilings, force contract, fitting date segment) + CLI renderer
 
 **Wave 2** *(blocked on 01)*
 
