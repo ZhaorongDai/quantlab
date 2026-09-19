@@ -31,11 +31,14 @@ from __future__ import annotations
 
 import io
 import os
+import stat
 import tempfile
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import psycopg2
+from loguru import logger
 from psycopg2 import sql
 
 from quantlab.acquisition.registry import (
@@ -47,6 +50,7 @@ from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.nbbo import NbboPanelDataset
+from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: The one environment variable the WRDS username is read from.
 #:
@@ -56,6 +60,48 @@ from quantlab.dataset.nbbo import NbboPanelDataset
 #: that does not define the name. `CREDENTIAL_ENV_VARS` below is built from
 #: this constant, never from the session class.
 USERNAME_ENV = "WRDS_USERNAME"
+
+
+class WrdsSessionError(RuntimeError):
+    """The single WRDS session cannot be used: it could not be opened safely,
+    the driver reported an error on it, or it broke earlier in this run.
+
+    A GLOBAL condition (D-21): `WrdsTaqNbboAcquisition._classify_error` maps it
+    to "quota", which stops dispatch for the whole run and keeps every symbol
+    out of the failure manifest. It is never retried batch by batch, because a
+    retry would mean a reconnect and every connection can push Duo (D-20).
+    """
+
+
+class WrdsEntitlementError(RuntimeError):
+    """The WRDS account's TAQ subscription does not cover a requested year
+    (`taqm_YYYY` without USAGE). Global, like `WrdsSessionError` (D-21)."""
+
+
+def _pgpass_fields(line: str) -> list[str]:
+    """The first FOUR `:`-separated fields of one pgpass line, `\\`-escapes
+    resolved.
+
+    Parsing stops at the fourth unescaped colon: the fifth field -- the
+    password -- is never collected into any name (D-07, T-03.9-10).
+    """
+    fields: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+            if len(fields) == 4:
+                break
+        else:
+            current.append(char)
+    return fields
 
 
 class WrdsSession:
@@ -83,12 +129,29 @@ class WrdsSession:
     #: temporary file.
     COPY_SPOOL_BYTES = 256 * 2**20
 
+    #: libpq environment variables that would route the connection, or its
+    #: parameters, around the pinned host: `PGHOSTADDR` overrides the address
+    #: `host` resolves to, and a service file can supply host/port/user
+    #: (T-03.9-11). Any of them set -> refuse before connecting. `PGHOST` is
+    #: harmless because `host` is always passed explicitly.
+    REFUSED_ENV = ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE")
+
+    #: The pgpass line shape a fix message shows. `<password>` is a
+    #: placeholder; the real password is never read into this code.
+    PGPASS_LINE_HINT = (
+        "wrds-pgdata.wharton.upenn.edu:9737:wrds:$WRDS_USERNAME:<password>"
+    )
+
     #: Process-level cache, username -> session.
     _shared: dict[str, "WrdsSession"] = {}
 
     def __init__(self, username: str) -> None:
         self.username = username
         self._conn = None
+        # Set BEFORE `psycopg2.connect` is called, so a failed connect is
+        # never retried by this object (each attempt can push Duo, D-20).
+        self._connect_attempted = False
+        self._broken = False
 
     @classmethod
     def shared(cls) -> "WrdsSession":
@@ -124,26 +187,122 @@ class WrdsSession:
         if conn is not None:
             conn.close()
 
+    # -- credential pre-checks (D-07, D-20) ---------------------------------------
+
+    @staticmethod
+    def _pgpass_path() -> Path:
+        """`$PGPASSFILE` when set, else `~/.pgpass` -- the file libpq reads."""
+        override = os.environ.get("PGPASSFILE")
+        return Path(override) if override else Path.home() / ".pgpass"
+
+    def _assert_refused_env_unset(self) -> None:
+        for name in self.REFUSED_ENV:
+            if os.environ.get(name):
+                raise WrdsSessionError(
+                    f"{name} is set in the environment. libpq would use it to "
+                    f"route the WRDS connection or its parameters away from "
+                    f"the pinned host {self.HOST}:{self.PORT}; unset {name} "
+                    f"before running a WRDS acquisition."
+                )
+
+    def _assert_pgpass_entry(self) -> None:
+        """Fail fast, BEFORE any connection attempt, when libpq would not find
+        a password for this connection.
+
+        Without this, libpq would connect with no password, the server would
+        refuse it, and the operator would see a bare authentication error --
+        after a Duo push. Checked: the file exists, is a regular file, is not
+        group/world accessible (libpq ignores such a file), and has a line
+        whose host, port, database and user fields match (`*` wildcards,
+        `\\:` escapes). Only fields 1-4 are parsed; the password field is
+        never bound to a name, and no message quotes a line. The username is
+        written as `$WRDS_USERNAME`, never its value (T-03.9-10).
+        """
+        path = self._pgpass_path()
+        fix = (
+            f"Create it with the single line `{self.PGPASS_LINE_HINT}` and run "
+            f"`chmod 600 {path}`."
+        )
+        if not path.exists():
+            raise WrdsSessionError(f"The password file {path} does not exist. {fix}")
+        mode = path.stat().st_mode
+        if not stat.S_ISREG(mode):
+            raise WrdsSessionError(f"The password file {path} is not a regular file. {fix}")
+        if mode & 0o077:
+            raise WrdsSessionError(
+                f"The password file {path} is group/world accessible (mode "
+                f"{stat.S_IMODE(mode):o}); libpq ignores it. Run "
+                f"`chmod 600 {path}`."
+            )
+        wanted = (self.HOST, str(self.PORT), self.DBNAME, self.username)
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.rstrip("\r\n")
+                if not line or line.lstrip().startswith("#"):
+                    continue
+                fields = _pgpass_fields(line)
+                if len(fields) == 4 and all(
+                    field in ("*", want) for field, want in zip(fields, wanted)
+                ):
+                    return
+        raise WrdsSessionError(
+            f"The password file {path} has no line for "
+            f"{self.HOST}:{self.PORT}:{self.DBNAME} and $WRDS_USERNAME. "
+            f"Add `{self.PGPASS_LINE_HINT}` to it (mode 600)."
+        )
+
     def _connection(self):
         """Open the connection ONCE, read-only, and return it.
 
         Called through the module attribute `psycopg2.connect` so the test
         suite's D-28 tripwire sees every attempt. No password argument: libpq
-        resolves it from `~/.pgpass`.
+        resolves it from the pgpass file checked above. The refused-env and
+        pgpass checks run before the attempt; the attempt flag is set before
+        the call, so neither a failed connect nor a broken session is ever
+        followed by a second connect from this object.
         """
-        if self._conn is None:
-            conn = psycopg2.connect(
-                host=self.HOST,
-                port=self.PORT,
-                dbname=self.DBNAME,
-                user=self.username,
-                sslmode=self.SSLMODE,
-                application_name=self.APPLICATION_NAME,
-                connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+        if self._conn is not None and not self._broken:
+            return self._conn
+        if self._broken or self._connect_attempted:
+            raise WrdsSessionError(
+                "the WRDS session broke earlier in this run and is not reopened "
+                "(every new connection can push Duo); re-run to resume from "
+                "the recorded pages."
             )
-            conn.set_session(readonly=True, autocommit=True)
-            self._conn = conn
-        return self._conn
+        self._assert_refused_env_unset()
+        self._assert_pgpass_entry()
+        self._connect_attempted = True
+        conn = psycopg2.connect(
+            host=self.HOST,
+            port=self.PORT,
+            dbname=self.DBNAME,
+            user=self.username,
+            sslmode=self.SSLMODE,
+            application_name=self.APPLICATION_NAME,
+            connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+        )
+        conn.set_session(readonly=True, autocommit=True)
+        self._conn = conn
+        return conn
+
+    def _query(self, work):
+        """Run `work(connection)`, turning any driver error into a
+        `WrdsSessionError` and marking the session broken.
+
+        The message carries the driver's text with the username replaced by
+        `$WRDS_USERNAME`; libpq errors never carry the password.
+        """
+        try:
+            return work(self._connection())
+        except psycopg2.Error as exc:
+            self._broken = True
+            detail = f"{type(exc).__name__}: {exc}".strip()
+            if self.username:
+                detail = detail.replace(self.username, "$WRDS_USERNAME")
+            raise WrdsSessionError(
+                f"the WRDS session failed ({detail}); it is not reopened in "
+                f"this run -- re-run to resume from the recorded pages."
+            ) from exc
 
     # -- pure SQL builders (no connection needed) ----------------------------
 
@@ -162,6 +321,14 @@ class WrdsSession:
         `sql.Literal`, never interpolated text (T-03.9-03).
         """
         pairs = [(str(root), str(suffix or "")) for root, suffix in pairs]
+        if not pairs:
+            # Without pairs there is no `sym_root` predicate, and a query over
+            # a whole day table is exactly the ~76 s full scan (or the
+            # multi-GB COPY) this class must never issue (D-24).
+            raise ValueError(
+                "WrdsSession.where_clause: no (sym_root, sym_suffix) pairs; "
+                "refusing to build a query over a whole complete_nbbo table."
+            )
         roots = sorted({root for root, _ in pairs})
         pair_list = sql.SQL(", ").join(
             sql.SQL("({}, {})").format(sql.Literal(root), sql.Literal(suffix))
@@ -189,7 +356,76 @@ class WrdsSession:
             where=cls.where_clause(pairs),
         )
 
+    @classmethod
+    def count_query(cls, day: date, pairs) -> sql.Composed:
+        """`SELECT count(*) FROM <day table> WHERE <where_clause(pairs)>`.
+
+        The SAME WHERE as `copy_query`, so a count and the pull it prices (or
+        checks) cannot select different rows. `count(*)` is an aggregate
+        without GROUP BY; no ORDER BY / DISTINCT / LIMIT exists here either.
+        """
+        return sql.SQL("SELECT count(*) FROM {table} WHERE {where}").format(
+            table=cls.table_identifier(day),
+            where=cls.where_clause(pairs),
+        )
+
     # -- network methods -------------------------------------------------------
+
+    def has_schema_usage(self, year: int) -> bool:
+        """Whether this role may read `taqm_{year}` (USAGE on the schema).
+
+        Asked through `pg_namespace` rather than as
+        `has_schema_privilege('taqm_YYYY', 'USAGE')` on the name: the name form
+        raises for a schema that does not exist, and a driver error breaks the
+        session. A missing schema returns no row, i.e. not entitled (D-21).
+        """
+        schema = f"taqm_{int(year)}"
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT has_schema_privilege(oid, 'USAGE') "
+                    "FROM pg_namespace WHERE nspname = %s",
+                    (schema,),
+                )
+                return cursor.fetchone()
+
+        row = self._query(work)
+        return bool(row and row[0])
+
+    def assert_entitled(self, years) -> None:
+        """Raise `WrdsEntitlementError` naming EVERY requested `taqm_YYYY` this
+        account cannot read.
+
+        Run before the first data query of a pull or a probe, so an
+        unentitled year stops the run with zero COPY calls instead of failing
+        every batch of every day (D-21).
+        """
+        missing = [
+            f"taqm_{int(year)}"
+            for year in sorted({int(year) for year in years})
+            if not self.has_schema_usage(year)
+        ]
+        if missing:
+            raise WrdsEntitlementError(
+                f"The WRDS account has no access to {', '.join(missing)}: its "
+                f"WRDS NYSE TAQ millisecond subscription does not cover "
+                f"{'that year' if len(missing) == 1 else 'those years'}. "
+                f"Narrow the window to entitled years or extend the "
+                f"subscription; nothing was downloaded."
+            )
+
+    def count_rows(self, day: date, pairs) -> int:
+        """Rows `copy_query(day, pairs, ...)` would return."""
+        query = self.count_query(day, pairs)
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchone()
+
+        row = self._query(work)
+        return int(row[0])
 
     def trading_days(self, year: int) -> list[date]:
         """Every day that has a `complete_nbbo_YYYYMMDD` table in `taqm_{year}`,
@@ -199,14 +435,18 @@ class WrdsSession:
         catching a missing-table error would make a missing table look the
         same as a holiday.
         """
-        with self._connection().cursor() as cursor:
-            cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = %s "
-                "AND table_name ~ '^complete_nbbo_[0-9]{8}$'",
-                (f"taqm_{year}",),
-            )
-            names = [row[0] for row in cursor.fetchall()]
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = %s "
+                    "AND table_name ~ '^complete_nbbo_[0-9]{8}$'",
+                    (f"taqm_{year}",),
+                )
+                return [row[0] for row in cursor.fetchall()]
+
+        names = self._query(work)
         days = [
             date(int(name[-8:-4]), int(name[-4:-2]), int(name[-2:]))
             for name in names
@@ -216,26 +456,51 @@ class WrdsSession:
     def table_columns(self, day: date) -> tuple[str, ...]:
         """The day table's columns in server order (sorted locally on
         `ordinal_position`)."""
-        with self._connection().cursor() as cursor:
-            cursor.execute(
-                "SELECT column_name, ordinal_position "
-                "FROM information_schema.columns "
-                "WHERE table_schema = %s AND table_name = %s",
-                (f"taqm_{day:%Y}", f"complete_nbbo_{day:%Y%m%d}"),
-            )
-            rows = cursor.fetchall()
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT column_name, ordinal_position "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s",
+                    (f"taqm_{day:%Y}", f"complete_nbbo_{day:%Y%m%d}"),
+                )
+                return cursor.fetchall()
+
+        rows = self._query(work)
         return tuple(name for name, _ in sorted(rows, key=lambda row: row[1]))
 
     def copy_nbbo_csv(self, day: date, pairs, columns) -> bytes:
-        """Run `copy_query` and return the CSV bytes (header included)."""
-        conn = self._connection()
+        """Run `copy_query` and return the CSV bytes (header included).
+
+        The composed statement goes to `copy_expert` as-is (psycopg2 renders a
+        `Composable` against the cursor's own connection), so no SQL text is
+        ever assembled outside `psycopg2.sql`.
+        """
         query = self.copy_query(day, pairs, columns)
-        with tempfile.SpooledTemporaryFile(
-            max_size=self.COPY_SPOOL_BYTES
-        ) as buffer, conn.cursor() as cursor:
-            cursor.copy_expert(query.as_string(conn), buffer)
-            buffer.seek(0)
-            return buffer.read()
+
+        def work(conn):
+            with tempfile.SpooledTemporaryFile(
+                max_size=self.COPY_SPOOL_BYTES
+            ) as buffer, conn.cursor() as cursor:
+                cursor.copy_expert(query, buffer)
+                buffer.seek(0)
+                return buffer.read()
+
+        return self._query(work)
+
+
+def trading_days_between(session, start: date, end: date) -> list[date]:
+    """The trading days in `[start, end]`, ascending: the days that have a
+    `complete_nbbo` table, listed per year through `session.trading_days`.
+
+    Shared by the acquisition and the volume probe so both walk exactly the
+    same days.
+    """
+    days: set[date] = set()
+    for year in range(start.year, end.year + 1):
+        days.update(session.trading_days(year))
+    return sorted(day for day in days if start <= day <= end)
 
 
 class WrdsTaqNbboAcquisition(Acquisition):
@@ -267,6 +532,11 @@ class WrdsTaqNbboAcquisition(Acquisition):
     #: One shared connection, so one worker (D-20). A different value is
     #: refused in `__init__`.
     DEFAULT_MAX_WORKERS = 1
+
+    #: Count every page with the COPY's own WHERE before pulling it, and fail
+    #: the page on a mismatch. Overridable via `kwargs["verify_page_counts"]`;
+    #: the count is < 1 s per (day, batch) on the columnar chunk filters.
+    DEFAULT_VERIFY_PAGE_COUNTS = True
 
     CREDENTIAL_ENV_VARS = (USERNAME_ENV,)
     REDACTION = "<WRDS CREDENTIAL REDACTED>"
@@ -380,13 +650,58 @@ class WrdsTaqNbboAcquisition(Acquisition):
             )
         return data_type
 
+    # -- failure policy (D-21) ------------------------------------------------------
+
+    #: Exceptions that mean "the one session, or the account, is unusable".
+    GLOBAL_STOP_ERRORS = (
+        WrdsSessionError,
+        WrdsEntitlementError,
+        psycopg2.OperationalError,
+        psycopg2.InterfaceError,
+    )
+
+    def _classify_error(self, exc: BaseException) -> str:
+        """In this vendor `"quota"` means GLOBAL STOP, not an allocation.
+
+        A dead single session or a missing entitlement is never one symbol's
+        fault (D-21): recording it in the failure manifest would defame every
+        symbol of every remaining batch, and retrying batch by batch would
+        reconnect -- one Duo push per batch (D-20). So the session and
+        entitlement errors, and the raw driver errors that mean the
+        connection is gone, stop dispatch for the whole run and stay out of
+        the manifest. Everything else (a malformed page, a stranger symbol, a
+        count mismatch) is a per-batch "failed", retried next run.
+        """
+        if isinstance(exc, self.GLOBAL_STOP_ERRORS):
+            return "quota"
+        return super()._classify_error(exc)
+
     # -- symbols (D-15) --------------------------------------------------------
 
     @classmethod
     def symbol_to_pair(cls, symbol: str) -> tuple[str, str | None]:
-        """`"BRK.B"` -> `("BRK", "B")`; `"AAPL"` -> `("AAPL", None)`."""
-        root, delimiter, suffix = str(symbol).partition(cls.SUFFIX_DELIMITER)
-        return root, (suffix if delimiter and suffix else None)
+        """`"BRK.B"` -> `("BRK", "B")`; `"AAPL"` -> `("AAPL", None)`.
+
+        A hyphenated symbol (`BRK-B`, the Tiingo roster's form) is REFUSED
+        rather than guessed at: `TRADEABLE_TICKER_PATTERN` admits both
+        delimiters, and silently querying `sym_root = 'BRK-B'` would return
+        nothing and look like a symbol with no data (D-15). More than one dot,
+        or an empty root/suffix, is refused too.
+        """
+        text = str(symbol)
+        if "-" in text:
+            raise ValueError(
+                f"WRDS/TAQ symbol {text!r} uses a hyphen. WRDS TAQ queries use "
+                f"the constituent universes' dot notation (e.g. BRK.B for "
+                f"root BRK, suffix B); pass the dotted form."
+            )
+        root, delimiter, suffix = text.partition(cls.SUFFIX_DELIMITER)
+        if not root or cls.SUFFIX_DELIMITER in suffix or (delimiter and not suffix):
+            raise ValueError(
+                f"WRDS/TAQ symbol {text!r} is not ROOT or ROOT.SUFFIX in dot "
+                f"notation (exactly one dot, both parts non-empty)."
+            )
+        return root, (suffix or None)
 
     @classmethod
     def pair_to_symbol(cls, root: str, suffix: str | None) -> str:
@@ -408,12 +723,26 @@ class WrdsTaqNbboAcquisition(Acquisition):
         cached = self._trading_days_cache.get(key)
         if cached is not None:
             return cached
-        days: set[date] = set()
-        for year in range(start.year, end.year + 1):
-            days.update(self._session.trading_days(year))
-        result = sorted(day for day in days if start <= day <= end)
+        result = trading_days_between(self._session, start, end)
         self._trading_days_cache[key] = result
         return result
+
+    # -- entitlement preflight (D-21) ---------------------------------------------
+
+    def _run(self, symbols: list[str] | None, from_watermark: bool):
+        """Check the TAQ entitlement for every year of the window, THEN run.
+
+        The check happens before the base runner dispatches a single batch, so
+        an unentitled year (the live account has no `taqm_2012`) raises
+        `WrdsEntitlementError` out of `download()`/`refresh()` with zero COPY
+        calls and no failure-manifest write, instead of failing every batch of
+        every day of that year one by one (D-21). The window checked is the
+        config's: a refresh's per-symbol start is never earlier than it.
+        """
+        start = self._as_date(self.config.start_date)
+        end = self._as_date(self.config.end_date)
+        self._session.assert_entitled(range(start.year, end.year + 1))
+        return super()._run(symbols, from_watermark)
 
     # -- one page = one day-table query --------------------------------------
 
@@ -437,6 +766,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
         other operation touches the frame (D-19).
         """
         symbols = self._validate_symbols(symbols)
+        # Before ANY query: a hyphenated or malformed symbol is refused here.
+        pairs = [self.symbol_to_pair(symbol) for symbol in symbols]
         days = self._trading_days(start_date, end_date)
         if not days:
             return self._empty_page(), None
@@ -454,31 +785,56 @@ class WrdsTaqNbboAcquisition(Acquisition):
             days[position + 1].isoformat() if position + 1 < len(days) else None
         )
 
-        server_columns = self._session.table_columns(day)
-        columns = [name for name in server_columns if name in self.TAQ_COLUMNS]
+        server_columns = set(self._session.table_columns(day))
+        table = f"taqm_{day:%Y}.{self.TABLE_PATTERN.format(ymd=f'{day:%Y%m%d}')}"
+        # TAQ_COLUMNS order, NOT server order: the SELECT, and so the frame,
+        # is identical for every day of every era (D-18).
+        columns = tuple(name for name in self.TAQ_COLUMNS if name in server_columns)
         missing = [
             name
             for name in self.TAQ_COLUMNS
-            if name not in columns and name not in self.OPTIONAL_TAQ_COLUMNS
+            if name not in server_columns and name not in self.OPTIONAL_TAQ_COLUMNS
         ]
         if missing:
+            # A drift the D-18 evidence did not show fails loudly; it is never
+            # null-filled.
             raise ValueError(
-                f"{self.class_name}: {self.TABLE_PATTERN.format(ymd=f'{day:%Y%m%d}')} "
-                f"reports no {missing} column(s); the table layout no longer "
-                f"matches the one this class was verified against (D-18). "
-                f"Columns seen: {list(server_columns)}."
+                f"{self.class_name}: {table} reports no {missing} column(s); "
+                f"the table layout no longer matches the one this class was "
+                f"verified against (D-18). Columns seen: "
+                f"{sorted(server_columns)}."
             )
 
-        pairs = [self.symbol_to_pair(symbol) for symbol in symbols]
-        raw = self._session.copy_nbbo_csv(day, pairs, tuple(columns))
+        # Completeness check (RESEARCH Pattern 6): the same WHERE, counted
+        # before the COPY. A page that parses to a different number of rows
+        # fails as a per-batch "failed" and is re-fetched by the next run.
+        expected_rows = (
+            self._session.count_rows(day, pairs)
+            if self._knob("verify_page_counts", self.DEFAULT_VERIFY_PAGE_COUNTS)
+            else None
+        )
+
+        raw = self._session.copy_nbbo_csv(day, pairs, columns)
 
         frame = pl.read_csv(io.BytesIO(raw), infer_schema=False)
         # FIRST, before anything can reorder the rows (D-19).
         frame = frame.with_columns(
             pl.int_range(pl.len(), dtype=pl.Int64).alias("wrds_row_ord")
         )
+        if expected_rows is not None and frame.height != expected_rows:
+            raise ValueError(
+                f"{self.class_name}: {table} (trading day {day.isoformat()}) "
+                f"COPY returned {frame.height} row(s) but count(*) with the "
+                f"same WHERE reported {expected_rows}; the page is incomplete "
+                f"and is not recorded, so the next run re-fetches this day."
+            )
         if frame.height == 0:
             return self._empty_page(), next_token
+        if tuple(frame.columns[:-1]) != columns:
+            raise ValueError(
+                f"{self.class_name}: {table} COPY returned columns "
+                f"{frame.columns[:-1]}, not the requested {list(columns)}."
+            )
 
         if "time_m_nano" not in frame.columns:
             frame = frame.with_columns(
@@ -520,8 +876,50 @@ class WrdsTaqNbboAcquisition(Acquisition):
             .alias("symbol"),
             pl.lit(self.VENDOR).alias("vendor"),
         )
+        self._assert_page_belongs(frame, day, pairs, table)
         frame = frame.cast(self.RAW_SCHEMA)
         return frame.select(self.RAW_COLUMNS), next_token
+
+    def _assert_page_belongs(
+        self, frame: pl.DataFrame, day: date, pairs, table: str
+    ) -> None:
+        """Every returned row is for the table's day and a REQUESTED share
+        class; otherwise the page (and so the batch) fails.
+
+        Checks, never filters: dropping a stranger row would hide a WHERE
+        clause that stopped doing what it says (D-15), and a row dated off the
+        table day would land under the wrong `date=` partition. The ET session
+        date of the reconstructed `timestamp` is checked as well as the raw
+        `date` field, so the hive key `_write_shard` derives cannot disagree
+        with the table the row came from.
+        """
+        wanted = {(root, suffix or "") for root, suffix in pairs}
+        seen = frame.select(
+            pl.col("sym_root"), pl.col("sym_suffix").fill_null("")
+        ).unique()
+        strangers = sorted(
+            f"{root}/{suffix}" if suffix else root
+            for root, suffix in seen.iter_rows()
+            if (root, suffix) not in wanted
+        )
+        if strangers:
+            raise ValueError(
+                f"{self.class_name}: {table} returned rows for {strangers}, "
+                f"which were not requested (requested pairs: "
+                f"{sorted(wanted)}). Refusing the page rather than filing "
+                f"another share class under a requested symbol (D-15)."
+            )
+        off_day = frame.filter(
+            (pl.col("taq_date") != day)
+            | (self._session_date(pl.col("timestamp")) != day)
+        )
+        if off_day.height:
+            dates = sorted({str(value) for value in off_day["taq_date"].to_list()})
+            raise ValueError(
+                f"{self.class_name}: {table} (trading day {day.isoformat()}) "
+                f"returned {off_day.height} row(s) dated {dates}; a day table "
+                f"must only hold its own day."
+            )
 
     # -- config (D-27) -----------------------------------------------------------
 
@@ -563,6 +961,80 @@ class WrdsTaqNbboAcquisition(Acquisition):
             end_date=end_date,
             kwargs=merged,
         )
+
+
+class WrdsNbboVolumeProbe:
+    """Counts the `complete_nbbo` rows a pull WOULD fetch, per trading day,
+    for the SQL volume guard (D-16, D-24).
+
+    One `count(*)` per (trading day, symbol batch), with the batches chunked
+    exactly like `Acquisition._batches` and the WHERE clause built by the same
+    `WrdsSession.where_clause` the COPY uses -- so the numbers the guard prices
+    are the rows the pull will move. Each count is < 1 s on the server's
+    columnar chunk-group filters (the D-24 calibration); a whole-table count
+    takes ~76 s and is never issued (`where_clause` refuses an empty batch).
+
+    Not adopted from RESEARCH Pattern 6: a JSON cache of these counts under the
+    watermark root. It would only save the re-count seconds on a re-run, and it
+    would be a second state file beside the watermarks that can disagree with
+    them. The pull re-counts each page anyway (`verify_page_counts`).
+    """
+
+    #: Log progress every this many trading days.
+    LOG_EVERY_DAYS = 20
+
+    def __init__(
+        self,
+        session,
+        batch_size: int = WrdsTaqNbboAcquisition.DEFAULT_BATCH_SIZE,
+    ) -> None:
+        self.session = session
+        self.batch_size = max(1, int(batch_size))
+
+    def _batches(self, symbols: list[str]) -> list[list[str]]:
+        return [
+            symbols[index : index + self.batch_size]
+            for index in range(0, len(symbols), self.batch_size)
+        ]
+
+    def count_rows_by_day(
+        self, symbols, start_date: str, end_date: str
+    ) -> dict[str, int]:
+        """`{ISO trading day: rows}` over `[start_date, end_date]`, summed over
+        the symbol batches. Entitlement is checked first, so an unentitled year
+        raises `WrdsEntitlementError` before any count is issued (D-21)."""
+        symbols = [str(symbol) for symbol in symbols]
+        if not symbols:
+            raise ValueError(
+                "WrdsNbboVolumeProbe.count_rows_by_day: no symbols; refusing to "
+                "count a table without a sym_root predicate."
+            )
+        for symbol in symbols:
+            if not TRADEABLE_TICKER_PATTERN.fullmatch(symbol):
+                raise ValueError(
+                    f"WrdsNbboVolumeProbe: {symbol!r} is not a tradeable ticker."
+                )
+        batches = [
+            [WrdsTaqNbboAcquisition.symbol_to_pair(symbol) for symbol in batch]
+            for batch in self._batches(symbols)
+        ]
+        start = date.fromisoformat(str(start_date)[:10])
+        end = date.fromisoformat(str(end_date)[:10])
+        self.session.assert_entitled(range(start.year, end.year + 1))
+
+        days = trading_days_between(self.session, start, end)
+        counts: dict[str, int] = {}
+        for position, day in enumerate(days, start=1):
+            counts[day.isoformat()] = sum(
+                self.session.count_rows(day, pairs) for pairs in batches
+            )
+            if position % self.LOG_EVERY_DAYS == 0 or position == len(days):
+                logger.info(
+                    f"WRDS NBBO volume probe: {position}/{len(days)} trading "
+                    f"day(s) counted ({len(batches)} batch(es) per day, "
+                    f"{sum(counts.values()):,} rows so far)."
+                )
+        return counts
 
 
 #: The registry descriptor for WRDS -- "who I am", beside the class that is
