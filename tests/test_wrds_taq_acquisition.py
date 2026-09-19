@@ -13,13 +13,21 @@ import ast
 import builtins
 import getpass
 import os
+from datetime import date, datetime
 from pathlib import Path
 
+import polars as pl
 import psycopg2
 import pytest
 from loguru import logger
 
-from tests.wrds_fixtures import fake_connect
+from tests.wrds_fixtures import (
+    L6_SAMPLE_ROWS,
+    TAQ_COLUMNS_2018_ON,
+    fake_connect,
+    render_composed,
+    taq_row,
+)
 
 WRDS_TAQ_SOURCE = (
     Path(__file__).resolve().parents[1] / "quantlab" / "acquisition" / "wrds_taq.py"
@@ -126,7 +134,7 @@ def test_pgpass_valid_entry_connects_once_with_pinned_parameters(
     assert connections[0].sessions == [{"readonly": True, "autocommit": True}]
 
     session.trading_days(2024)
-    session.table_columns(__import__("datetime").date(2024, 1, 24))
+    session.table_columns(date(2024, 1, 24))
     session.trading_days(2023)
     assert len(connections) == 1, "one session object must connect at most once"
     assert all(SENTINEL_PW not in record for record in log_records)
@@ -310,3 +318,308 @@ def test_ast_provider_never_imports_wrds_or_names_connection():
                 offenders.append(f"call {node.func.id}()")
     assert not offenders, offenders
     assert "psycopg2.connect(" in WRDS_TAQ_SOURCE.read_text()
+
+
+# -- D-02/D-03/D-05/D-18/D-19/D-25: raw schema, order and SQL shape ----------------
+
+D2016 = date(2016, 12, 7)
+D2024 = date(2024, 1, 24)
+FORBIDDEN_SQL_TOKENS = ("ORDER BY", "GROUP BY", "DISTINCT", "LIMIT", "OVER(", "OVER (")
+
+
+def _acq(
+    acquisition_config,
+    *,
+    start="2024-01-24",
+    end="2024-01-25",
+    kwargs=None,
+    symbols=("AAPL", "MSFT"),
+):
+    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+
+    merged = {"data_type": "nbbo", **(kwargs or {})}
+    cfg = acquisition_config(
+        vendor="wrds",
+        symbols=tuple(symbols),
+        start_date=start,
+        end_date=end,
+        kwargs=merged,
+    )
+    return WrdsTaqNbboAcquisition(cfg)
+
+
+def _page(acq, symbols, day: date):
+    frame, _ = acq._fetch_page(list(symbols), day.isoformat(), day.isoformat())
+    return frame
+
+
+def test_era_schema_2016_and_2024_pages_are_identical(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.trading_days_by_year = {2016: [D2016], 2024: [D2024]}
+    mock_wrds_session.rows = {
+        (D2016, "AAPL"): [
+            taq_row("09:30:00.100000", 110.0, 100, 110.1, 200, day="2016-12-07")
+        ],
+        (D2024, "AAPL"): [
+            taq_row("09:30:00.100000", 194.0, 100, 194.1, 200, nano=5, day="2024-01-24")
+        ],
+    }
+    acq = _acq(acquisition_config)
+    old = _page(acq, ["AAPL"], D2016)
+    new = _page(acq, ["AAPL"], D2024)
+
+    assert old.schema == new.schema
+    assert old.schema["time_m_nano"] == pl.Int16
+    assert old["time_m_nano"].null_count() == old.height == 1
+    assert new["time_m_nano"].to_list() == [5]
+    requested_2016 = mock_wrds_session.copy_calls[0]
+    assert "time_m_nano" not in requested_2016["columns"]
+    assert "time_m_nano" not in requested_2016["sql"]
+    assert "time_m_nano" in mock_wrds_session.copy_calls[1]["sql"]
+
+
+def test_schema_select_follows_taq_columns_order_not_server_order(
+    mock_wrds_session, acquisition_config, monkeypatch
+):
+    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+
+    shuffled = tuple(reversed(TAQ_COLUMNS_2018_ON)) + ("extra_column",)
+    monkeypatch.setattr(
+        mock_wrds_session, "table_columns", lambda self, day: shuffled
+    )
+    acq = _acq(acquisition_config)
+    _page(acq, ["AAPL"], D2024)
+    assert (
+        mock_wrds_session.copy_calls[0]["columns"]
+        == WrdsTaqNbboAcquisition.TAQ_COLUMNS
+    )
+
+
+def test_schema_drift_missing_required_column_fails_loudly(
+    mock_wrds_session, acquisition_config, monkeypatch
+):
+    drifted = tuple(c for c in TAQ_COLUMNS_2018_ON if c != "best_bid")
+    monkeypatch.setattr(mock_wrds_session, "table_columns", lambda self, day: drifted)
+    acq = _acq(acquisition_config)
+    with pytest.raises(ValueError, match="best_bid"):
+        _page(acq, ["AAPL"], D2024)
+    assert mock_wrds_session.copy_calls == []
+
+
+def test_tie_pre2018_same_microsecond_records_all_kept_in_arrival_order(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.trading_days_by_year = {2016: [D2016]}
+    same = "10:00:00.123456"
+    mock_wrds_session.rows = {
+        (D2016, "AAPL"): [
+            taq_row(same, 110.03, 300, 110.10, 100, day="2016-12-07"),  # C
+            taq_row(same, 110.01, 100, 110.10, 100, day="2016-12-07"),  # A
+            taq_row(same, 110.02, 200, 110.10, 100, day="2016-12-07"),  # B
+        ]
+    }
+    frame = _page(_acq(acquisition_config), ["AAPL"], D2016)
+    assert frame["best_bid"].to_list() == [110.03, 110.01, 110.02]
+    assert frame["wrds_row_ord"].to_list() == [0, 1, 2]
+    assert frame["timestamp"].n_unique() == 1
+
+
+def test_timestamp_parses_with_and_without_fraction(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.rows = {
+        (D2024, "AAPL"): [
+            taq_row("09:30:00", 1.0, 1, 1.1, 1, nano=0),
+            taq_row("09:30:00.026490", 1.0, 1, 1.1, 1, nano=0),
+        ]
+    }
+    frame = _page(_acq(acquisition_config), ["AAPL"], D2024)
+    assert frame["timestamp"].to_list() == [
+        datetime(2024, 1, 24, 14, 30, 0),
+        datetime(2024, 1, 24, 14, 30, 0, 26490),
+    ]
+
+
+def test_timestamp_reconstruction_with_nanoseconds_across_dst(
+    mock_wrds_session, acquisition_config
+):
+    day = date(2024, 3, 11)
+    mock_wrds_session.trading_days_by_year = {2024: [day]}
+    mock_wrds_session.rows = {
+        (day, "AAPL"): [
+            taq_row("09:30:00.000000", 1.0, 1, 1.1, 1, nano=7, day="2024-03-11")
+        ]
+    }
+    acq = _acq(acquisition_config, start="2024-03-11", end="2024-03-11")
+    frame = _page(acq, ["AAPL"], day)
+    assert frame.schema["timestamp"] == pl.Datetime("ns")
+    base = (
+        pl.Series([datetime(2024, 3, 11, 13, 30)])
+        .cast(pl.Datetime("ns"))
+        .cast(pl.Int64)
+        .item()
+    )
+    assert frame["timestamp"].cast(pl.Int64).item() == base + 7
+
+
+def test_timestamp_row_date_differing_from_table_day_fails_the_page(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.rows = {
+        (D2024, "AAPL"): [
+            taq_row("09:30:00.000000", 1.0, 1, 1.1, 1, nano=0, day="2024-01-23")
+        ]
+    }
+    with pytest.raises(ValueError, match="2024-01-24"):
+        _page(_acq(acquisition_config), ["AAPL"], D2024)
+
+
+def test_sql_every_composed_wrds_query_is_where_only(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.trading_days_by_year = {2016: [D2016], 2024: [D2024]}
+    mock_wrds_session.rows = {
+        (D2016, "AAPL"): [
+            taq_row("09:30:00.100000", 110.0, 100, 110.1, 200, day="2016-12-07")
+        ],
+        (D2024, "AAPL"): [taq_row("09:30:00.100000", 194.0, 100, 194.1, 200, nano=0)],
+    }
+    acq = _acq(
+        acquisition_config,
+        start="2016-12-07",
+        end="2024-01-24",
+        symbols=("AAPL", "BRK.B"),
+    )
+    acq.download()
+    calls = list(mock_wrds_session.copy_calls) + list(
+        getattr(mock_wrds_session, "count_calls", [])
+    )
+    assert len(mock_wrds_session.copy_calls) == 2
+    for call in calls:
+        text = call["sql"].upper()
+        for token in FORBIDDEN_SQL_TOKENS:
+            assert token not in text, (token, call["sql"])
+        assert " WHERE " in text
+    first = mock_wrds_session.copy_calls[0]["sql"]
+    assert '"taqm_2016"."complete_nbbo_20161207"' in first
+    assert "sym_root = ANY(ARRAY['AAPL', 'BRK'])" in first
+    assert "coalesce(sym_suffix, '')" in first
+    assert "('AAPL', '')" in first and "('BRK', 'B')" in first
+
+
+def test_sql_values_reach_the_query_only_as_literals():
+    from psycopg2 import sql
+
+    from quantlab.acquisition.wrds_taq import WrdsSession
+
+    composed = WrdsSession.copy_query(
+        D2016, [("BRK", "B"), ("AAPL", None)], ("date", "time_m")
+    )
+
+    def walk(node):
+        if isinstance(node, sql.Composed):
+            for part in node.seq:
+                yield from walk(part)
+        else:
+            yield node
+
+    parts = list(walk(composed))
+    assert sql.Identifier("taqm_2016", "complete_nbbo_20161207") in parts
+    plain = " ".join(part.string for part in parts if isinstance(part, sql.SQL))
+    for value in ("BRK", "AAPL", "2016"):
+        assert value not in plain
+    literals = [part.wrapped for part in parts if isinstance(part, sql.Literal)]
+    assert ["AAPL", "BRK"] in literals, "the roots must arrive as ONE list literal"
+
+
+def test_symbol_notation_round_trip_and_refusals():
+    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition as W
+
+    assert W.symbol_to_pair("BRK.B") == ("BRK", "B")
+    assert W.symbol_to_pair("AAPL") == ("AAPL", None)
+    assert W.pair_to_symbol("BRK", "B") == "BRK.B"
+    assert W.pair_to_symbol("AAPL", None) == "AAPL"
+    assert W.pair_to_symbol("AAPL", "") == "AAPL"
+    with pytest.raises(ValueError, match="dot"):
+        W.symbol_to_pair("BRK-B")
+    with pytest.raises(ValueError):
+        W.symbol_to_pair("A.B.C")
+    with pytest.raises(ValueError):
+        W.symbol_to_pair("BRK.")
+
+
+def test_symbol_suffix_rows_map_back_to_universe_symbols(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.rows = {
+        (D2024, "AAPL"): [taq_row("09:30:00.000000", 1.0, 1, 1.1, 1, nano=0)],
+        (D2024, "BRK.B"): [
+            taq_row(
+                "09:30:01.000000", 2.0, 1, 2.1, 1, nano=0, root="BRK", suffix="B"
+            )
+        ],
+    }
+    frame = _page(_acq(acquisition_config), ["AAPL", "BRK.B"], D2024)
+    assert frame["symbol"].to_list() == ["AAPL", "BRK.B"]
+    assert mock_wrds_session.copy_calls[0]["pairs"] == [("AAPL", None), ("BRK", "B")]
+
+
+def test_symbol_suffix_stranger_row_fails_the_page(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.rows = {
+        (D2024, "BRK.B"): [
+            taq_row(
+                "09:30:01.000000", 2.0, 1, 2.1, 1, nano=0, root="BRK", suffix="A"
+            )
+        ],
+    }
+    with pytest.raises(ValueError, match="BRK"):
+        _page(_acq(acquisition_config), ["BRK.B"], D2024)
+
+
+def test_symbol_hyphenated_request_is_refused_before_any_query(
+    mock_wrds_session, acquisition_config
+):
+    with pytest.raises(ValueError, match="dot"):
+        _page(_acq(acquisition_config), ["BRK-B"], D2024)
+    assert mock_wrds_session.copy_calls == []
+
+
+def test_null_sides_stay_null_in_raw(mock_wrds_session, acquisition_config):
+    rows = [
+        taq_row(
+            row["time_m"],
+            row["best_bid"],
+            row["best_bidsizeshares"],
+            row["best_ask"],
+            row["best_asksizeshares"],
+            nano=row["time_m_nano"],
+        )
+        for row in L6_SAMPLE_ROWS
+    ]
+    mock_wrds_session.rows = {(D2024, "AAPL"): rows}
+    frame = _page(_acq(acquisition_config), ["AAPL"], D2024)
+    assert frame.height == 5
+    assert frame["best_ask"].to_list()[:4] == [None] * 4
+    assert frame["best_asksizeshares"].to_list()[:4] == [None] * 4
+    assert frame["best_bid"].to_list()[1] is None
+    assert frame["best_bid"].to_list()[0] == 180.0
+    assert frame["best_ask"].to_list()[4] == 195.2
+
+
+def test_crossed_and_locked_records_are_kept_in_raw(
+    mock_wrds_session, acquisition_config
+):
+    mock_wrds_session.rows = {
+        (D2024, "AAPL"): [
+            taq_row("09:30:00.000000", 194.10, 100, 194.05, 100, nano=0),  # crossed
+            taq_row("09:30:01.000000", 194.05, 100, 194.05, 100, nano=0),  # locked
+            taq_row("09:30:02.000000", 194.00, 100, 194.05, 100, nano=0),
+        ]
+    }
+    frame = _page(_acq(acquisition_config), ["AAPL"], D2024)
+    assert frame.height == 3
+    assert (frame["best_bid"] > frame["best_ask"]).to_list() == [True, False, False]
+    assert (frame["best_bid"] == frame["best_ask"]).to_list() == [False, True, False]

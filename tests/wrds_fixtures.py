@@ -19,6 +19,12 @@ from datetime import date
 
 import polars as pl
 
+# The REAL session class, captured at import time: `mock_wrds_session` patches
+# `quantlab.acquisition.wrds_taq.WrdsSession` with `FakeWrdsSession` AFTER this
+# module is imported, and the fake builds its SQL through the real static
+# builders so the shape tests cover what the acquisition actually requests.
+from quantlab.acquisition.wrds_taq import WrdsSession as RealWrdsSession
+
 #: `taqm_{YYYY}.complete_nbbo_{YYYYMMDD}` columns, in server order, for tables
 #: from 2018-01-02 on (LIVE-CHECK-1 L2).
 TAQ_COLUMNS_2018_ON: tuple[str, ...] = (
@@ -200,7 +206,14 @@ class FakeWrdsSession:
     ) -> bytes:
         columns = tuple(columns)
         FakeWrdsSession.copy_calls.append(
-            {"day": day, "pairs": list(pairs), "columns": columns}
+            {
+                "day": day,
+                "pairs": list(pairs),
+                "columns": columns,
+                "sql": render_composed(
+                    RealWrdsSession.copy_query(day, pairs, columns)
+                ),
+            }
         )
         wanted = {_pair_to_symbol(root, suffix) for root, suffix in pairs}
         records = [
