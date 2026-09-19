@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.8"
-current_phase_name: "Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)"
-status: executing
-stopped_at: Phase 03.9 context gathered
-last_updated: "2026-09-19T14:59:11.693Z"
-last_activity: 2026-09-16
-last_activity_desc: Phase 03.8 execution started
-state_head: bfea39d192a13127b148d8cbc1c19a8f7e286f2b
+current_phase: 3
+current_phase_name: Factor Computation (KunQuant + Polars)
+status: planning
+stopped_at: Phase 03.8 complete, ready to plan Phase 3
+last_updated: "2026-09-19T15:16:23.618Z"
+last_activity: 2026-09-19
+last_activity_desc: Phase 03.8 complete, transitioned to Phase 3
+state_head: a2e3c92e706ee0ec89bb7317ce3cfe520fb7347b
 progress:
-  total_phases: 9
-  completed_phases: 1
-  total_plans: 47
-  completed_plans: 47
+  total_phases: 16
+  completed_phases: 2
+  total_plans: 80
+  completed_plans: 79
 milestone_name: milestone
 ---
 
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 
 ## Current Position
 
-Phase: 03.8 (Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 03.8
-Last activity: 2026-09-16 — Phase 03.8 execution started
+Phase: 3 — Factor Computation (KunQuant + Polars)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-19 — Phase 03.8 complete, transitioned to Phase 3
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -41,7 +41,7 @@ Progress: [██████████] 99% (75/76 plans)
 
 **Velocity:**
 
-- Total plans completed: 30
+- Total plans completed: 34
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -52,6 +52,7 @@ Progress: [██████████] 99% (75/76 plans)
 | 03.2 | 7 | - | - |
 | 03.1 | 5 | - | - |
 | 03.7 | 18 | - | - |
+| 03.8 | 4 | - | - |
 
 **Recent Trend:**
 
@@ -372,7 +373,7 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-09-19T14:59:10.956Z
-Stopped at: Phase 03.9 context gathered
+Stopped at: Phase 03.8 complete, ready to plan Phase 3
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: .planning/phases/03.9-wrds-taq-consolidated-quotes-to-nbbo-zarr-panel/03.9-CONTEXT.md
