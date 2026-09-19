@@ -165,7 +165,29 @@ class NbboFilterPolicy:
 
 
 class NbboResampler:
-    """Resample NBBO records onto a regular right-closed bar grid."""
+    """Resample NBBO records onto a regular right-closed bar grid.
+
+    **Record order (D-03/D-19).** Records are sorted by the stable total key
+    `(symbol, date, timestamp, wrds_row_ord)` with `maintain_order=True`; the
+    input frame's row order is never relied on, so shuffling the input never
+    changes the output. `wrds_row_ord` is the arrival ordinal the provider
+    records from a `COPY (SELECT ... WHERE ...)` with no ORDER BY, the only
+    tie-breaker a pre-2018 table offers.
+
+    **Ties.** All records of one instant count as updates, but only the last
+    by the key survives the collapse: it is the NBBO after that instant, and
+    its predecessors have zero duration, so time-weighted values use only the
+    last state of each instant (D-11).
+
+    **Ambiguity.** 2018+ data is unique on `(symbol, time_m, time_m_nano)`
+    (live check L-4: 2,065,354 of 2,065,354 rows), so the key fully decides
+    the order. Before 2018 there is no nanosecond field and ~5% of rows share
+    a microsecond with a DIFFERENT state, where the arrival ordinal is the
+    only evidence of order. `n_ambiguous_ties` counts, per bar, the records
+    that share their timestamp with a differently-valued record (identical
+    duplicates count 0), so downstream users can see -- and filter -- the
+    bars whose snapshot depends on that physical order.
+    """
 
     def __init__(
         self, bar_interval: str, policy: NbboFilterPolicy | None = None
@@ -314,14 +336,41 @@ class NbboResampler:
         bar_index = (offset_ns + (interval - 1)) // interval
         edge_of_record = pl.col("open") + pl.duration(nanoseconds=bar_index * interval)
 
-        # n_updates: every kept in-session record (the seed is not an update
-        # inside any bar) counted in the bar whose right-closed span holds it.
+        # Ambiguity (D-19): a record is ambiguous when its (symbol, date,
+        # timestamp) group holds more than one distinct NBBO state. NULL sides
+        # compare as values, so two identical one-sided records are not
+        # ambiguous. Counted AFTER filtering, BEFORE the tie collapse.
+        state_key = pl.concat_str(
+            [
+                pl.col(name).cast(pl.String).fill_null("<null>")
+                for name in ("bid", "bid_size", "ask", "ask_size")
+            ],
+            separator="|",
+        )
+        tie = ["symbol", "date", "timestamp"]
+        records = records.with_columns(
+            (state_key.n_unique().over(tie) > 1).cast(pl.Float64).alias("_ambiguous")
+        )
+
+        # n_updates: every kept in-session record -- each tied message is one
+        # update -- counted in the bar whose right-closed span holds it. The
+        # seed is not an update inside any bar.
         updates = (
             records.filter(pl.col("timestamp") > pl.col("open"))
             .with_columns(edge_of_record.alias("edge"))
             .group_by(["symbol", "date", "edge"])
-            .agg(pl.len().cast(pl.Float64).alias("n_updates"))
+            .agg(
+                pl.len().cast(pl.Float64).alias("n_updates"),
+                pl.col("_ambiguous").sum().alias("n_ambiguous_ties"),
+            )
         )
+
+        # Tie collapse (D-11/D-19): the last record of each instant by the
+        # total order is the NBBO after that instant; its predecessors have
+        # zero duration and would otherwise be a candidate as-of match.
+        records = records.unique(
+            subset=tie, keep="last", maintain_order=True
+        ).drop("_ambiguous")
 
         # Seed: of the records at or before the open keep only the last, and
         # move it to the open.
@@ -438,7 +487,7 @@ class NbboResampler:
             updates, on=["symbol", "date", "edge"], how="left"
         ).with_columns(
             pl.col("n_updates").fill_null(0.0),
-            pl.lit(0.0, dtype=pl.Float64).alias("n_ambiguous_ties"),
+            pl.col("n_ambiguous_ties").fill_null(0.0),
         )
 
         panel = joined.select(
