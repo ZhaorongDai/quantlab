@@ -204,7 +204,7 @@ land raw in parquet and are resampled locally into the canonical `[timestamp, sy
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
-**Plans:** 5/8 plans executed
+**Plans:** 6/8 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -234,7 +234,7 @@ Plans:
 
 **Wave 3** *(blocked on 02, 05)*
 
-- [ ] 03.9-06-PLAN.md — NBBO Dataset integration: XNYS session bounds, filter policy + stats sidecar, multi-day chunked/resumable conversion, rebuild
+- [x] 03.9-06-PLAN.md — NBBO Dataset integration: XNYS session bounds, filter policy + stats sidecar, multi-day chunked/resumable conversion, rebuild
 
 **Wave 4** *(blocked on 03, 04, 06)*
 
