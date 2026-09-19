@@ -136,6 +136,37 @@ Plans:
 - [ ] 03-06-PLAN.md — Close CR-01: resolve Polars factor names on the `read()` path so `factor_data_strategy="read"` is backend-independent (D-03), plus the two-backend read-strategy lock
 - [ ] 03-07-PLAN.md — Close CR-02: US-equity `amount` becomes typical-price dollar volume (GAP-D-01) so `vwap` is no longer identically `close`, plus the VWAP non-degeneracy lock
 
+### Phase 03.10: CRSP Stock v2 Daily Data via WRDS (INSERTED)
+
+**Goal:** CRSP US Stock Database, Version 2 (CIZ format, WRDS annual-update product,
+https://wrds-www.wharton.upenn.edu/pages/get-data/center-research-security-prices-crsp/annual-update/stock-version-2/)
+reaches quantlab as a drop-in `us_equity` / `1d` data source: daily security data, security
+information / ticker history, and delisting & distribution events, landing in the canonical
+`[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
+**Requirements**: TBD
+**Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
+**Plans:** 0 plans
+
+**User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
+
+- Scope: CRSP v2 **daily** security data (prices, returns incl. distributions, volume, shares
+  outstanding, adjustment factors), **security information & ticker/name history** (PERMNO → ticker
+  over time, exchange, share type, industry), and **delisting & distribution events**. Monthly data
+  is out of scope.
+- Identifier: the panel `symbol` dimension stays the **ticker** valid at each date (matching the
+  universes, factors and backtester); **PERMNO is kept as a data variable**, mapped via the CRSP
+  ticker history. This also offers a fix for the pending "no ticker-rename mapping" todo.
+- Role: **first** a drop-in replacement vendor for `us_equity` / `1d` (same variables as
+  `StockDataset` — OHLCV + adjusted columns — so factors/models switch without changes, with
+  CRSP-specific fields as extra variables); **later** (a follow-up phase) a standalone CRSP dataset
+  that keeps CRSP fields as-is.
+- Infrastructure: reuse Phase 03.9's WRDS session (psycopg2 + `~/.pgpass`, `WRDS_USERNAME`, one
+  connection per run), entitlement probe, and SQL-shaped volume guard.
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.10 to break down)
+
 ### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
 
 **Goal:** NYSE TAQ millisecond NBBO records (WRDS `taqm_*` NBBO tables — see `03.9-CONTEXT.md` D-01; product page

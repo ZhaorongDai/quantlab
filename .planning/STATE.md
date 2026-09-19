@@ -5,12 +5,12 @@ current_phase: "03.9"
 current_phase_name: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel
 status: executing
 stopped_at: Phase 03.9 planned (8 plans, checker passed iteration 2)
-last_updated: "2026-09-19T18:32:34.623Z"
+last_updated: "2026-09-19T18:51:21.067Z"
 last_activity: 2026-09-19
 last_activity_desc: Phase 03.9 execution started
-state_head: 49dd9f169bfd67ab58fe9c0e6be2fa724978e905
+state_head: 3402faeb91cbcab3ac7821ceb8dcb45c8cba3457
 progress:
-  total_phases: 16
+  total_phases: 17
   completed_phases: 2
   total_plans: 88
   completed_plans: 79
@@ -358,6 +358,7 @@ Recent decisions affecting current work:
 - Phase 03.7 inserted after Phase 3: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (URGENT)
 - Phase 03.8 inserted after Phase 3: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (URGENT)
 - Phase 03.9 inserted after Phase 3: WRDS TAQ consolidated quotes to NBBO zarr panel
+- Phase 03.10 inserted after Phase 3: CRSP Stock v2 daily data via WRDS (drop-in us_equity/1d vendor, ticker symbol + PERMNO variable)
 
 ## Deferred Items
 
