@@ -14,13 +14,15 @@ One self-contained page built around a plotly div:
    too, names no metric. The column is report-only (D-05);
 4. the figure: three rows on a shared time axis -- equity (with a pair of
    triangles marking the deepest drawdown's valley and the bar it recovered)
-   on top, drawdown below it, per-calendar-month returns at the bottom --
+   on top, drawdown below it, per-calendar-month returns at the bottom
+   (green bars for a gain, red for a loss, matching the heatmap below) --
    plus a log/linear toggle for the equity axis. Forced liquidations are NOT
    drawn: quick 260916-hro removed those markers from the chart, while the
    records themselves still persist to the run's `liquidations.json`;
 5. a year-by-month heatmap of the same compounded monthly returns (03.8
    D-04), rendered as a SECOND plotly div rather than a fourth subplot row
-   (see `_monthly_heatmap_div`), and omitted when there are no returns;
+   (see `_monthly_heatmap_div`), and omitted when there are no returns. It is
+   red for a loss, green for a gain and grey at zero (G-03.8-1);
 6. the notes.
 
 When the backtest window overlaps the model's effective training window, the
@@ -398,6 +400,10 @@ def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
     The numbers come from `_monthly_series`. A short window legitimately
     produces one or two bars -- that is the point, since it shows at a glance
     that a run's whole P&L landed in a single month.
+
+    Each bar is coloured by its sign through `_sign_colour`, from the same
+    constants the heatmap's colorscale is built from (G-03.8-1), so a month
+    reads the same colour in both panels.
     """
     monthly = _monthly_series(returns)
     if monthly is None or monthly.empty:
@@ -406,12 +412,67 @@ def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
         go.Bar(
             x=[period.to_timestamp() for period in monthly.index],
             y=monthly.values,
+            marker={"color": [_sign_colour(value) for value in monthly.values]},
             name="monthly_return",
             hovertemplate="%{x|%Y-%m}<br>%{y:.2%}<extra></extra>",
         ),
         row=3,
         col=1,
     )
+
+
+#: The colours of a monthly return's sign, shared by the monthly bars and the
+#: year-by-month heatmap (G-03.8-1).
+#:
+#: Green means up and red means down. The user chose this Western convention
+#: on 2026-09-19; it is deliberately NOT the East-Asian red-up convention.
+#:
+#: Both panels read these constants, so the two views of the same numbers
+#: cannot disagree about colour.
+#:
+#: The midpoint is a neutral grey, not a hue: a diverging scale's centre must
+#: read as "nothing happened", and the heatmap's `zmid=0.0` pins zero to it.
+#:
+#: The two poles have matched luminance (about 0.19 each), so neither sign
+#: looks heavier. The pair passes the dataviz palette validator, including
+#: red-green colour-vision separation (deutan dE 9.4, above the 8 target).
+#: That matters because red/green is the classic colour-blind confusion pair.
+#: Sign is also carried without colour: bars point up or down, and every
+#: heatmap cell states its percentage on hover.
+GAIN_COLOUR = "#1b8a5a"
+LOSS_COLOUR = "#e03b30"
+NEUTRAL_COLOUR = "#f0efec"
+
+#: The heatmap's diverging colorscale, built from the three constants above:
+#: the most negative value is red, zero (via `zmid=0.0`) is grey, the most
+#: positive value is green.
+RETURN_COLOURSCALE = (
+    (0.0, LOSS_COLOUR),
+    (0.5, NEUTRAL_COLOUR),
+    (1.0, GAIN_COLOUR),
+)
+
+
+def _sign_colour(value: float) -> str:
+    """The colour of one monthly return's sign: gain, loss, or neutral.
+
+    Above 0 is `GAIN_COLOUR`, below 0 is `LOSS_COLOUR`, and exactly 0 is
+    `NEUTRAL_COLOUR`. The zero rule follows the heatmap: a month that
+    compounds to exactly 0.0 (one spent wholly in cash, say) lands on the
+    heatmap's grey midpoint under `zmid=0`, so its bar takes the same grey.
+    The bar has zero height, so the grey is invisible there, but pinning the
+    rule keeps the two panels identical by construction.
+
+    A NaN fails both comparisons and falls through to neutral rather than
+    raising. `_monthly_series` already drops NaN, so none should arrive, but
+    this module must never raise: the report is written inside the run's
+    staging directory, where an exception deletes the ENTIRE run.
+    """
+    if value > 0:
+        return GAIN_COLOUR
+    if value < 0:
+        return LOSS_COLOUR
+    return NEUTRAL_COLOUR
 
 
 #: The heatmap's month columns, in calendar order. Two-digit strings so they
@@ -459,6 +520,10 @@ def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
     P&L land" on the shared time axis; the grid answers "which months of
     which years were good" (03.8 D-04 keeps both).
 
+    The palette is `RETURN_COLOURSCALE`: red for a loss month, green for a
+    gain month, and a neutral grey at zero, which `zmid=0.0` pins to the
+    scale's midpoint whatever the run's range.
+
     **It is a SEPARATE figure, never a fourth subplot row.** The main figure
     is three subplot rows with `shared_xaxes=True`; a fourth row makes plotly
     set `matches='x4'` on the three datetime x axes, binding the equity,
@@ -480,7 +545,7 @@ def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
             x=MONTH_LABELS,
             y=[str(year) for year in years],
             name="monthly_return_heatmap",
-            colorscale="RdBu",
+            colorscale=RETURN_COLOURSCALE,
             zmid=0.0,
             colorbar={"tickformat": ".1%"},
             hoverongaps=False,

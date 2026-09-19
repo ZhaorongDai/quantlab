@@ -616,6 +616,23 @@ def _multi_year_returns() -> xr.DataArray:
     return _dated_returns(dates, values)
 
 
+def _rgb(colour: str) -> tuple[int, int, int]:
+    """`#rrggbb` or `rgb(r, g, b)` -> `(r, g, b)`.
+
+    Both forms are accepted because plotly serializes a list colorscale as
+    written (hex here) but EXPANDS a named scale into `rgb(...)` strings, so a
+    parse that knew only hex would fail on the named scale with a parse error
+    instead of on the colour assertion that actually matters.
+    """
+    colour = colour.strip()
+    hex_match = re.fullmatch(r"#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})", colour)
+    if hex_match:
+        return tuple(int(part, 16) for part in hex_match.groups())
+    rgb_match = re.fullmatch(r"rgb\((\d+),\s*(\d+),\s*(\d+)\)", colour)
+    assert rgb_match, f"unparseable colour {colour!r}"
+    return tuple(int(part) for part in rgb_match.groups())
+
+
 def _non_null_cells(heatmap: dict) -> list[tuple[str, str, float]]:
     """Every non-null cell as `(year label, month label, value)`."""
     return [
@@ -725,6 +742,87 @@ def test_the_heatmap_cells_equal_the_monthly_bars(tmp_path):
     assert from_heatmap.keys() == from_bars.keys()
     for key, value in from_bars.items():
         assert from_heatmap[key] == pytest.approx(value, abs=1e-12), key
+
+
+def test_the_heatmap_colours_losses_red_gains_green_and_zero_grey(tmp_path):
+    """G-03.8-1: red for a loss month, green for a gain month, grey at zero.
+
+    The user chose the Western convention (green up, red down) and asked to
+    keep the zero-centred diverging scale and the blank uncovered months.
+
+    The hue checks assert the DIRECTION of the scale -- red at the low end,
+    green at the high end, a light grey in the middle -- not particular hex
+    values, so a later re-tune of the shades stays green while a swapped pair
+    or a return to plotly's red-blue scale goes red. `zmid` pins zero to the
+    grey midpoint, and `connectgaps` must stay off or the null cells would be
+    interpolated over.
+    """
+    html = _write(tmp_path, returns=_multi_year_returns())
+    heatmap = _second_figure_traces(html)[HEATMAP]
+
+    stops = heatmap["colorscale"]
+    # The two ends first: their hue is the user-visible claim, so a wrong
+    # palette fails here, naming the offending stop, before any shape check.
+    red, green, blue = _rgb(stops[0][1])
+    assert red > green and red > blue, f"the 0.0 (loss) stop is not red: {stops[0]}"
+    red, green, blue = _rgb(stops[-1][1])
+    assert green > red and green > blue, f"the 1.0 (gain) stop is not green: {stops[-1]}"
+
+    assert [float(position) for position, _ in stops] == [0.0, 0.5, 1.0]
+    middle = _rgb(stops[1][1])
+    assert max(middle) - min(middle) <= 16, f"the 0.5 stop is not grey: {stops[1]}"
+    assert min(middle) >= 200, f"the 0.5 stop is not light: {stops[1]}"
+
+    assert heatmap["zmid"] == 0
+    assert not heatmap.get("connectgaps")
+
+
+def _sign_colours_of_the_heatmap(html: str) -> tuple[str, str, str]:
+    """`(gain, loss, neutral)` colours, read from the heatmap's OWN stops.
+
+    Read from the page rather than imported from the module: comparing the
+    bars against the other figure is what locks the two panels together.
+    """
+    stops = _second_figure_traces(html)[HEATMAP]["colorscale"]
+    by_position = {float(position): colour for position, colour in stops}
+    return by_position.get(1.0), by_position.get(0.0), by_position.get(0.5)
+
+
+def test_each_monthly_bar_takes_the_heatmap_colour_of_its_sign(tmp_path):
+    """G-03.8-1: a gain bar is the heatmap's gain colour, a loss bar its loss colour.
+
+    A month compounding to exactly 0.0 lands on the heatmap's grey midpoint
+    under `zmid=0`, so its bar takes the same grey.
+    """
+    html = _write(
+        tmp_path,
+        returns=_dated_returns(
+            ["2024-01-10", "2024-02-12", "2024-03-11"], [0.05, -0.03, 0.0]
+        ),
+    )
+    gain, loss, neutral = _sign_colours_of_the_heatmap(html)
+    bars = _traces(html)["monthly_return"]
+
+    assert bars.get("marker", {}).get("color") == [gain, loss, neutral]
+
+
+def test_every_monthly_bar_colour_follows_the_sign_of_its_value(tmp_path):
+    """A longer mixed-sign run: every bar's colour matches its own value's sign."""
+    months = pd.period_range("2023-01", "2024-12", freq="M")
+    dates = [(period.to_timestamp() + pd.Timedelta(days=9)).strftime("%Y-%m-%d") for period in months]
+    values = [(-1) ** i * 0.01 * (i + 1) for i in range(len(months))]
+    values[5] = 0.0
+    values[17] = 0.0
+    html = _write(tmp_path, returns=_dated_returns(dates, values))
+    gain, loss, neutral = _sign_colours_of_the_heatmap(html)
+    bars = _traces(html)["monthly_return"]
+
+    colours = bars.get("marker", {}).get("color")
+    assert isinstance(colours, list)
+    assert len(colours) == len(bars["y"]) == len(months)
+    for value, colour in zip(bars["y"], colours):
+        expected = gain if value > 0 else loss if value < 0 else neutral
+        assert colour == expected, (value, colour)
 
 
 def test_the_heatmap_trace_carries_a_name(tmp_path):
