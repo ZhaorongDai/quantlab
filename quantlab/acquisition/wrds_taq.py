@@ -583,9 +583,28 @@ class WrdsTaqNbboAcquisition(Acquisition):
 
     @classmethod
     def symbol_to_pair(cls, symbol: str) -> tuple[str, str | None]:
-        """`"BRK.B"` -> `("BRK", "B")`; `"AAPL"` -> `("AAPL", None)`."""
-        root, delimiter, suffix = str(symbol).partition(cls.SUFFIX_DELIMITER)
-        return root, (suffix if delimiter and suffix else None)
+        """`"BRK.B"` -> `("BRK", "B")`; `"AAPL"` -> `("AAPL", None)`.
+
+        A hyphenated symbol (`BRK-B`, the Tiingo roster's form) is REFUSED
+        rather than guessed at: `TRADEABLE_TICKER_PATTERN` admits both
+        delimiters, and silently querying `sym_root = 'BRK-B'` would return
+        nothing and look like a symbol with no data (D-15). More than one dot,
+        or an empty root/suffix, is refused too.
+        """
+        text = str(symbol)
+        if "-" in text:
+            raise ValueError(
+                f"WRDS/TAQ symbol {text!r} uses a hyphen. WRDS TAQ queries use "
+                f"the constituent universes' dot notation (e.g. BRK.B for "
+                f"root BRK, suffix B); pass the dotted form."
+            )
+        root, delimiter, suffix = text.partition(cls.SUFFIX_DELIMITER)
+        if not root or cls.SUFFIX_DELIMITER in suffix or (delimiter and not suffix):
+            raise ValueError(
+                f"WRDS/TAQ symbol {text!r} is not ROOT or ROOT.SUFFIX in dot "
+                f"notation (exactly one dot, both parts non-empty)."
+            )
+        return root, (suffix or None)
 
     @classmethod
     def pair_to_symbol(cls, root: str, suffix: str | None) -> str:
@@ -636,6 +655,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
         other operation touches the frame (D-19).
         """
         symbols = self._validate_symbols(symbols)
+        # Before ANY query: a hyphenated or malformed symbol is refused here.
+        pairs = [self.symbol_to_pair(symbol) for symbol in symbols]
         days = self._trading_days(start_date, end_date)
         if not days:
             return self._empty_page(), None
@@ -653,23 +674,27 @@ class WrdsTaqNbboAcquisition(Acquisition):
             days[position + 1].isoformat() if position + 1 < len(days) else None
         )
 
-        server_columns = self._session.table_columns(day)
-        columns = [name for name in server_columns if name in self.TAQ_COLUMNS]
+        server_columns = set(self._session.table_columns(day))
+        table = f"taqm_{day:%Y}.{self.TABLE_PATTERN.format(ymd=f'{day:%Y%m%d}')}"
+        # TAQ_COLUMNS order, NOT server order: the SELECT, and so the frame,
+        # is identical for every day of every era (D-18).
+        columns = tuple(name for name in self.TAQ_COLUMNS if name in server_columns)
         missing = [
             name
             for name in self.TAQ_COLUMNS
-            if name not in columns and name not in self.OPTIONAL_TAQ_COLUMNS
+            if name not in server_columns and name not in self.OPTIONAL_TAQ_COLUMNS
         ]
         if missing:
+            # A drift the D-18 evidence did not show fails loudly; it is never
+            # null-filled.
             raise ValueError(
-                f"{self.class_name}: {self.TABLE_PATTERN.format(ymd=f'{day:%Y%m%d}')} "
-                f"reports no {missing} column(s); the table layout no longer "
-                f"matches the one this class was verified against (D-18). "
-                f"Columns seen: {list(server_columns)}."
+                f"{self.class_name}: {table} reports no {missing} column(s); "
+                f"the table layout no longer matches the one this class was "
+                f"verified against (D-18). Columns seen: "
+                f"{sorted(server_columns)}."
             )
 
-        pairs = [self.symbol_to_pair(symbol) for symbol in symbols]
-        raw = self._session.copy_nbbo_csv(day, pairs, tuple(columns))
+        raw = self._session.copy_nbbo_csv(day, pairs, columns)
 
         frame = pl.read_csv(io.BytesIO(raw), infer_schema=False)
         # FIRST, before anything can reorder the rows (D-19).
@@ -678,6 +703,11 @@ class WrdsTaqNbboAcquisition(Acquisition):
         )
         if frame.height == 0:
             return self._empty_page(), next_token
+        if tuple(frame.columns[:-1]) != columns:
+            raise ValueError(
+                f"{self.class_name}: {table} COPY returned columns "
+                f"{frame.columns[:-1]}, not the requested {list(columns)}."
+            )
 
         if "time_m_nano" not in frame.columns:
             frame = frame.with_columns(
@@ -719,8 +749,50 @@ class WrdsTaqNbboAcquisition(Acquisition):
             .alias("symbol"),
             pl.lit(self.VENDOR).alias("vendor"),
         )
+        self._assert_page_belongs(frame, day, pairs, table)
         frame = frame.cast(self.RAW_SCHEMA)
         return frame.select(self.RAW_COLUMNS), next_token
+
+    def _assert_page_belongs(
+        self, frame: pl.DataFrame, day: date, pairs, table: str
+    ) -> None:
+        """Every returned row is for the table's day and a REQUESTED share
+        class; otherwise the page (and so the batch) fails.
+
+        Checks, never filters: dropping a stranger row would hide a WHERE
+        clause that stopped doing what it says (D-15), and a row dated off the
+        table day would land under the wrong `date=` partition. The ET session
+        date of the reconstructed `timestamp` is checked as well as the raw
+        `date` field, so the hive key `_write_shard` derives cannot disagree
+        with the table the row came from.
+        """
+        wanted = {(root, suffix or "") for root, suffix in pairs}
+        seen = frame.select(
+            pl.col("sym_root"), pl.col("sym_suffix").fill_null("")
+        ).unique()
+        strangers = sorted(
+            f"{root}/{suffix}" if suffix else root
+            for root, suffix in seen.iter_rows()
+            if (root, suffix) not in wanted
+        )
+        if strangers:
+            raise ValueError(
+                f"{self.class_name}: {table} returned rows for {strangers}, "
+                f"which were not requested (requested pairs: "
+                f"{sorted(wanted)}). Refusing the page rather than filing "
+                f"another share class under a requested symbol (D-15)."
+            )
+        off_day = frame.filter(
+            (pl.col("taq_date") != day)
+            | (self._session_date(pl.col("timestamp")) != day)
+        )
+        if off_day.height:
+            dates = sorted({str(value) for value in off_day["taq_date"].to_list()})
+            raise ValueError(
+                f"{self.class_name}: {table} (trading day {day.isoformat()}) "
+                f"returned {off_day.height} row(s) dated {dates}; a day table "
+                f"must only hold its own day."
+            )
 
     # -- config (D-27) -----------------------------------------------------------
 
