@@ -414,12 +414,13 @@ def test_no_concrete_acquisition_subclass_carries_a_not_implemented_placeholder(
 
 
 def test_every_concrete_acquisition_subclass_reaches_the_vendor_via_fetch_batch(
-    mock_tiingo_client, mock_alpaca_client, acquisition_config
+    mock_tiingo_client, mock_alpaca_client, mock_wrds_session, acquisition_config
 ):
     """SC-1's positive direction: one shared path, walked per subclass.
 
-    Both vendor transports are mocked by the two fixtures, so this issues no
-    request and needs no credential. The spy is installed on the INSTANCE, so
+    Every vendor transport is mocked by its fixture (the WRDS session by
+    `mock_wrds_session`, with the autouse `_forbid_wrds_network` tripwire live
+    underneath), so this issues no request and needs no credential. The spy is installed on the INSTANCE, so
     nothing global is mutated and the vendors cannot interfere with each other.
     """
     classes = _concrete_acquisition_subclasses()
@@ -451,10 +452,14 @@ def test_every_concrete_acquisition_subclass_reaches_the_vendor_via_fetch_batch(
 
         # ...and it actually landed: one watermark per symbol, and a shard
         # tree that is not empty.
+        # Through the acquisition's own path: a tick vendor's sidecars are
+        # namespaced by data type (`<watermark_path>/nbbo/AAPL.json`), see
+        # `CoverageLedger.watermark_root`. For `1d` the two are identical.
         for symbol in roster:
-            assert (Path(cfg.watermark_path) / f"{symbol}.json").exists(), (
+            assert acq._watermark_path(symbol).exists(), (
                 f"{cls.__qualname__} wrote no watermark for {symbol}"
             )
+            assert Path(cfg.watermark_path) in acq._watermark_path(symbol).parents
         assert sorted(Path(cfg.raw_data_dir_path).rglob("*.pqt")), (
             f"{cls.__qualname__} wrote no raw shard"
         )

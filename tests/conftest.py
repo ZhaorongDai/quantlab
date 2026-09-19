@@ -1296,6 +1296,16 @@ def hive_raw_tree() -> Callable[..., Path]:
 #: for "stopped early must not look like ground through all of them".
 _ACQUISITION_FIXTURE_SYMBOLS = ("AAPL", "MSFT")
 
+#: "Argument not supplied" for `acquisition_config`, distinct from an explicit
+#: `None` (which a caller may pass on purpose for `kwargs`).
+_VENDOR_DEFAULT = object()
+
+#: What `acquisition_config` fills in for an unsupplied `frequency`/`kwargs`.
+_GENERIC_CONFIG_DEFAULTS = {"frequency": "1d", "kwargs": None}
+_VENDOR_CONFIG_DEFAULTS = {
+    "wrds": {"frequency": "tick", "kwargs": {"data_type": "nbbo"}},
+}
+
 
 @pytest.fixture
 def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
@@ -1320,19 +1330,34 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
     expectation checks nothing -- the basename assertion above is only
     expressible because the config also says what the basename is supposed to
     be.
+
+    `frequency` and `kwargs` default PER VENDOR when not supplied: a WRDS
+    config is only valid as `frequency="tick"` with `kwargs={"data_type":
+    "nbbo"}` (WRDS serves exactly one capability, tick NBBO, and its
+    acquisition class refuses anything else at construction), so an
+    unsupplied frequency/kwargs becomes that for `vendor="wrds"`. Every other
+    vendor keeps `"1d"` / `None` exactly as before. Explicit arguments always
+    win, including an explicit `None`.
     """
 
     def _build(
         vendor: str = "tiingo",
         symbols: tuple[str, ...] = _ACQUISITION_FIXTURE_SYMBOLS,
-        frequency: str = "1d",
-        kwargs: Optional[dict] = None,
+        frequency=_VENDOR_DEFAULT,
+        kwargs=_VENDOR_DEFAULT,
         market: str = "us_equity",
         subdir: str = "nasdaq_data",
         root: Optional[Path] = None,
         start_date: str = "2024-01-01",
         end_date: str = "2024-01-31",
     ) -> AcquisitionConfig:
+        defaults = _VENDOR_CONFIG_DEFAULTS.get(vendor, _GENERIC_CONFIG_DEFAULTS)
+        if frequency is _VENDOR_DEFAULT:
+            frequency = defaults["frequency"]
+        if kwargs is _VENDOR_DEFAULT:
+            kwargs = (
+                dict(defaults["kwargs"]) if defaults["kwargs"] is not None else None
+            )
         downloads = (
             (Path(root) if root is not None else tmp_path)
             / "downloads"
