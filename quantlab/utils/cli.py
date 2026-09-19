@@ -812,6 +812,50 @@ def print_volume_estimate(
     return estimate
 
 
+def print_sql_volume_estimate(
+    estimate: dict, *, forced: bool = False, print_fn=print
+) -> dict:
+    """Print an admitted `SqlVolumeGuard` estimate (D-16).
+
+    The WRDS twin of `print_volume_estimate`, under the same rule: it is
+    reached only when the guard ADMITTED the pull -- a refusal carries its own
+    numbers (and a date segment that fits) in the exception message. It takes
+    the returned dict alone, so this module imports nothing new and needs no
+    connection; it prints counts, dates and ceilings, never a credential.
+    """
+    # Imported at call time for the reason `apply_data_dir` defers `config`:
+    # this module's module-scope project imports stay pinned at quantlab.base.*.
+    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+
+    bytes_per_row = estimate["bytes_per_row"]
+    assumed = (
+        " (ASSUMPTION: default, not a measured shard size)"
+        if bytes_per_row == SqlVolumeGuard.DEFAULT_BYTES_PER_ROW
+        else ""
+    )
+    print_fn(
+        "Pre-flight WRDS volume estimate (counted with count(*) per symbol "
+        "batch, no data pulled):"
+    )
+    print_fn(f"  symbols:           {estimate['symbols']:,}")
+    print_fn(f"  window:            {estimate['start_date']} .. {estimate['end_date']}")
+    print_fn(f"  trading days:      {estimate['trading_days']:,}")
+    print_fn(f"  rows:              {estimate['rows']:,}")
+    print_fn(f"  bytes/row:         {bytes_per_row}{assumed}")
+    print_fn(f"  raw on disk (~):   {estimate['raw_bytes'] / _GIB:.2f} GiB")
+    print_fn(
+        f"  ceilings:          raw-bytes {estimate['max_raw_bytes'] / _GIB:.2f} "
+        f"GiB, raw-rows {estimate['max_raw_rows']:,}"
+    )
+    if forced:
+        crossed = ", ".join(estimate.get("crossed") or []) or "none"
+        print_fn(
+            f"  --force-volume:    ON -- crossed ceiling(s) [{crossed}] were NOT "
+            f"enforced. The arithmetic still ran; only the refusal was skipped."
+        )
+    return estimate
+
+
 def print_conversion_result(result, *, print_fn=print):
     """Render the `ConversionResult` `quantlab.acquisition.registry.convert()`
     returns.
