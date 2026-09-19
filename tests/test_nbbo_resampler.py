@@ -320,3 +320,146 @@ def test_filter_policy_defaults_follow_d10_and_come_from_the_config() -> None:
 def test_filter_policy_rejects_a_bare_string_condition_list() -> None:
     with pytest.raises(ValueError, match="keep_qu_cond"):
         NbboFilterPolicy(keep_qu_cond="R")
+
+
+# ------------------------------- Task 2: total order, ties and ambiguity ---
+
+DAY_2016 = "2016-12-07"
+
+
+def _q16(clock, bid, bid_size, ask, ask_size, ordinal, **kwargs):
+    return _q(clock, bid, bid_size, ask, ask_size, day=DAY_2016, ordinal=ordinal, **kwargs)
+
+
+def _tie_fixture(sa_ordinal: int = 1) -> list[dict]:
+    """2016-12-07 AAPL, microsecond timestamps, the D-19 tie cases."""
+    return [
+        _q16("09:29:00", 110.00, 100, 110.02, 100, 0),  # S0 seed
+        # Bar 14:31Z: a three-way tie with three different states.
+        _q16("09:30:10.000001", 110.01, 200, 110.03, 100, sa_ordinal),  # Sa
+        _q16("09:30:10.000001", 110.02, 300, 110.03, 100, 2),  # Sb
+        _q16("09:30:10.000001", 110.00, 100, 110.03, 100, 3),  # Sc
+        _q16("09:30:40", 110.01, 100, 110.02, 200, 4),  # Sd
+        # Bar 14:32Z: two IDENTICAL records exactly on the edge.
+        _q16("09:32:00", 110.02, 100, 110.04, 100, 5),  # Se
+        _q16("09:32:00", 110.02, 100, 110.04, 100, 6),  # Se
+        # Bar 14:33Z: two different records exactly on the edge.
+        _q16("09:33:00", 110.05, 100, 110.06, 100, 7),  # X
+        _q16("09:33:00", 110.04, 100, 110.06, 100, 8),  # Y
+        # Bar 14:34Z: empty.
+    ]
+
+
+def _run16(quotes, policy=None):
+    return _run(quotes, policy, sessions=_sessions(DAY_2016))
+
+
+def test_tie_collapse_keeps_the_last_record_by_ordinal_and_counts_ambiguity() -> None:
+    panel, _ = _run16(_tie_fixture())
+    bar = _bar(panel, "09:31:00", day=DAY_2016)
+    assert bar["n_updates"] == 4
+    assert bar["n_ambiguous_ties"] == 3
+    # Snapshot = Sd.
+    assert (bar["bid"], bar["bid_size"], bar["ask"], bar["ask_size"]) == pytest.approx(
+        (110.01, 100, 110.02, 200), abs=1e-9
+    )
+    # S0 holds 10.000001 s, then only Sc (the last of the tie) holds until
+    # 09:30:40; Sa and Sb have zero duration. Sd holds the last 20 s.
+    assert bar["tw_spread"] == pytest.approx(
+        (0.02 * 10.000001 + 0.03 * 29.999999 + 0.01 * 20) / 60, abs=1e-9
+    )
+
+
+def test_identical_tie_on_an_edge_counts_no_ambiguity_and_has_zero_duration() -> None:
+    panel, _ = _run16(_tie_fixture())
+    bar = _bar(panel, "09:32:00", day=DAY_2016)
+    assert bar["n_updates"] == 2
+    assert bar["n_ambiguous_ties"] == 0
+    assert (bar["bid"], bar["ask"]) == pytest.approx((110.02, 110.04), abs=1e-9)
+    # Se arrives exactly at the label, so Sd's spread fills the whole bar.
+    assert bar["tw_spread"] == pytest.approx(0.01 * 60 / 60, abs=1e-9)
+
+
+def test_different_tie_on_an_edge_snapshots_the_higher_ordinal() -> None:
+    panel, _ = _run16(_tie_fixture())
+    bar = _bar(panel, "09:33:00", day=DAY_2016)
+    assert bar["n_updates"] == 2
+    assert bar["n_ambiguous_ties"] == 2
+    assert bar["bid"] == pytest.approx(110.04, abs=1e-9)  # Y, not X
+    assert bar["tw_spread"] == pytest.approx(0.02 * 60 / 60, abs=1e-9)  # Se
+
+    empty = _bar(panel, "09:34:00", day=DAY_2016)
+    assert empty["n_updates"] == 0
+    assert empty["n_ambiguous_ties"] == 0
+    assert empty["bid"] == pytest.approx(110.04, abs=1e-9)  # Y carried
+    assert empty["tw_spread"] == pytest.approx(0.02, abs=1e-9)
+
+
+def test_ordinal_not_frame_position_decides_the_tie() -> None:
+    original, _ = _run16(_tie_fixture())
+    relabelled, _ = _run16(_tie_fixture(sa_ordinal=10))
+    before = _bar(original, "09:31:00", day=DAY_2016)["tw_spread"]
+    after = _bar(relabelled, "09:31:00", day=DAY_2016)["tw_spread"]
+    # Sa (spread 0.02) is now the last of the tie.
+    assert after == pytest.approx(
+        (0.02 * 10.000001 + 0.02 * 29.999999 + 0.01 * 20) / 60, abs=1e-9
+    )
+    assert after != pytest.approx(before, abs=1e-9)
+
+
+def test_permuting_input_rows_never_changes_the_panel() -> None:
+    from polars.testing import assert_frame_equal
+
+    quotes = _tie_fixture() + [
+        _q16("09:29:30", 50.00, 10, 50.10, 10, 0, symbol="MSFT"),
+        _q16("09:31:10", 50.01, 10, 50.10, 10, 1, symbol="MSFT"),
+        _q16("09:31:10", 50.02, 20, 50.10, 10, 2, symbol="MSFT"),
+    ]
+    frame = _frame(quotes)
+    resampler = NbboResampler("1m")
+    sessions = _sessions(DAY_2016)
+    expected, expected_stats = resampler.resample_with_stats(frame, sessions)
+    for seed in range(20):
+        shuffled = frame.sample(fraction=1.0, shuffle=True, seed=seed)
+        panel, stats = resampler.resample_with_stats(shuffled, sessions)
+        assert_frame_equal(panel, expected)
+        assert_frame_equal(stats, expected_stats)
+
+
+def test_tie_ambiguity_compares_null_sides_as_values_and_ignores_dropped_records() -> None:
+    panel, _ = _run16(
+        [
+            _q16("09:29:00", 110.00, 100, 110.02, 100, 0),
+            # Identical one-sided pair -> not ambiguous.
+            _q16("09:30:20", 110.01, 100, None, None, 1),
+            _q16("09:30:20", 110.01, 100, None, None, 2),
+            # A one-sided and a two-sided record -> ambiguous (2).
+            _q16("09:31:20", 110.01, 100, None, None, 3),
+            _q16("09:31:20", 110.01, 100, 110.03, 100, 4),
+            # A crossed record tied with a valid one: filtered before the
+            # tie, so the survivor stands alone.
+            _q16("09:32:20", 110.01, 100, 110.03, 100, 5),
+            _q16("09:32:20", 111.00, 100, 110.03, 100, 6),
+        ]
+    )
+    assert _bar(panel, "09:31:00", day=DAY_2016)["n_ambiguous_ties"] == 0
+    assert _bar(panel, "09:32:00", day=DAY_2016)["n_ambiguous_ties"] == 2
+    third = _bar(panel, "09:33:00", day=DAY_2016)
+    assert third["n_ambiguous_ties"] == 0
+    assert third["n_updates"] == 1
+    assert third["bid"] == pytest.approx(110.01, abs=1e-9)
+
+
+def test_distinct_nanosecond_timestamps_have_no_ambiguous_ties() -> None:
+    panel, _ = _run(
+        [
+            SEED,
+            _q("09:30:10.000000001", 100.01, 100, 100.03, 100),
+            _q("09:30:10.000000002", 100.02, 100, 100.03, 100),
+            _q("09:30:10.000000003", 100.00, 100, 100.03, 100),
+            _q("09:31:00.000000001", 100.01, 100, 100.02, 100),
+        ]
+    )
+    assert panel["n_ambiguous_ties"].to_list() == [0.0] * panel.height
+    assert _bar(panel, "09:31:00")["bid"] == pytest.approx(100.00, abs=1e-9)
+    assert _bar(panel, "09:31:00")["n_updates"] == 3
