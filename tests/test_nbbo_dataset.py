@@ -160,3 +160,264 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
     assert b["n_updates"] == 1
     assert b["bid"] == _approx(193.90)
     assert b["ask"] == _approx(193.95)
+
+
+# ---------------------------------------------------------------------------
+# Plan 03.9-06: XNYS session edges, windows and the filter policy.
+# ---------------------------------------------------------------------------
+
+
+def _acquire(tmp_path, rows: dict, *, symbols=("AAPL",)):
+    """Land `rows` (`{(day, symbol): [taq_row, ...]}`) in raw through the real
+    acquisition path and return the acquisition config."""
+    import quantlab.config as config
+    from quantlab.acquisition import registry
+    from quantlab.acquisition.wrds_taq import WRDS_SOURCE, WrdsTaqNbboAcquisition
+    from tests.wrds_fixtures import FakeWrdsSession
+
+    days = sorted({day for day, _ in rows})
+    by_year: dict[int, list[date]] = {}
+    for day in days:
+        by_year.setdefault(day.year, []).append(day)
+    FakeWrdsSession.trading_days_by_year = by_year
+    FakeWrdsSession.rows = {key: list(value) for key, value in rows.items()}
+
+    config.set_data_root(tmp_path)
+    cfg = WrdsTaqNbboAcquisition.build_config(
+        tuple(symbols),
+        start_date=days[0].isoformat(),
+        end_date=days[-1].isoformat(),
+    )
+    registry.run(WRDS_SOURCE, cfg)
+    return cfg
+
+
+def _dataset_config(tmp_path, acq_cfg, start, end, *, name="nbbo.zarr", **kwargs):
+    from quantlab.base.config import NbboDatasetConfig
+
+    symbols = kwargs.pop("symbols", ("AAPL",))
+    return NbboDatasetConfig(
+        zarr_file_path=str(tmp_path / name),
+        raw_data_dir_path=acq_cfg.raw_data_dir_path,
+        catalog_path=str(tmp_path / "catalog"),
+        start_date=start,
+        end_date=end,
+        symbols=symbols,
+        **kwargs,
+    )
+
+
+def _panel(dataset_config):
+    from quantlab.dataset.nbbo import NbboPanelDataset
+
+    return NbboPanelDataset(dataset_config).from_raw_data().get_xarray_dataset()
+
+
+def _bar(panel, label: str, symbol: str = "AAPL") -> dict[str, float]:
+    from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+
+    row = panel.sel(timestamp=pd.Timestamp(label), symbol=symbol)
+    return {name: float(row[name].values) for name in NBBO_PANEL_VARIABLES}
+
+
+HALF_DAY = date(2024, 11, 29)
+HALF_DAY_ROWS = [
+    taq_row("09:00:00.000000", 230.00, 100, 230.10, 100, nano=0, day="2024-11-29"),
+    taq_row("12:59:30.000000", 231.00, 200, 231.20, 300, nano=0, day="2024-11-29"),
+    # After the 13:00 early close: post-close state.
+    taq_row("14:00:00.000000", 232.00, 100, 232.50, 100, nano=0, day="2024-11-29"),
+]
+
+
+def test_half_day_rth_panel_ends_at_the_early_close(mock_wrds_session, tmp_path):
+    acq = _acquire(tmp_path, {(HALF_DAY, "AAPL"): HALF_DAY_ROWS})
+    panel = _panel(_dataset_config(tmp_path, acq, "2024-11-29", "2024-11-29"))
+
+    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
+    assert len(timestamps) == 210
+    assert timestamps[0] == pd.Timestamp("2024-11-29T14:31:00")
+    assert timestamps[-1] == pd.Timestamp("2024-11-29T18:00:00")
+
+    last = _bar(panel, "2024-11-29T18:00:00")
+    assert last["n_updates"] == 1
+    assert last["bid"] == _approx(231.00)
+    assert last["ask"] == _approx(231.20)
+    # The 14:00 ET record changes no bar: no bar anywhere carries its prices.
+    assert not np.any(panel["bid"].values == 232.00)
+
+
+def test_dst_day_rth_panel_starts_at_13_31_utc(mock_wrds_session, tmp_path):
+    day = date(2024, 3, 11)
+    acq = _acquire(
+        tmp_path,
+        {
+            (day, "AAPL"): [
+                taq_row("09:29:00.000000", 170.0, 100, 170.1, 100, nano=0, day="2024-03-11"),
+                taq_row("10:00:00.000000", 170.2, 100, 170.3, 100, nano=0, day="2024-03-11"),
+            ]
+        },
+    )
+    panel = _panel(_dataset_config(tmp_path, acq, "2024-03-11", "2024-03-11"))
+    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
+    assert len(timestamps) == 390
+    assert timestamps[0] == pd.Timestamp("2024-03-11T13:31:00")
+    assert timestamps[-1] == pd.Timestamp("2024-03-11T20:00:00")
+
+
+def test_non_session_raw_date_fails_the_conversion_naming_it(
+    mock_wrds_session, tmp_path
+):
+    from quantlab.dataset.nbbo import NbboPanelDataset
+
+    thanksgiving = date(2024, 11, 28)
+    acq = _acquire(
+        tmp_path,
+        {
+            (thanksgiving, "AAPL"): [
+                taq_row("10:00:00.000000", 230.0, 100, 230.1, 100, nano=0, day="2024-11-28"),
+            ],
+            (HALF_DAY, "AAPL"): HALF_DAY_ROWS,
+        },
+    )
+    cfg = _dataset_config(tmp_path, acq, "2024-11-28", "2024-11-29")
+    with pytest.raises(ValueError, match="2024-11-28"):
+        NbboPanelDataset(cfg).from_raw_data_chunked(granularity="day")
+    assert not Path(cfg.zarr_file_path).exists()
+
+
+def test_session_window_inside_rth_and_out_of_range_edges(
+    mock_wrds_session, tmp_path
+):
+    from quantlab.dataset.nbbo import NbboPanelDataset
+
+    acq = _acquire(tmp_path, {(DAY, "AAPL"): list(TRACER_ROWS)})
+    panel = _panel(
+        _dataset_config(
+            tmp_path, acq, "2024-01-24", "2024-01-24",
+            session_start="10:00", session_end="15:30",
+        )
+    )
+    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
+    assert len(timestamps) == 330
+    assert timestamps[0] == pd.Timestamp("2024-01-24T15:01:00")
+    assert timestamps[-1] == pd.Timestamp("2024-01-24T20:30:00")
+
+    for edges in ({"session_start": "03:59"}, {"session_end": "20:01"}):
+        with pytest.raises(ValueError):
+            NbboPanelDataset(
+                _dataset_config(tmp_path, acq, "2024-01-24", "2024-01-24", **edges)
+            )
+
+
+def test_extended_window_covers_pre_and_after_hours(mock_wrds_session, tmp_path):
+    rows = [
+        # The real L6 one-sided row (ask NULL).
+        taq_row("04:00:00.005984", "180", "100", None, None, nano=226),
+        taq_row("07:15:00.000000", 190.00, 100, 190.10, 100, nano=0),
+        taq_row("17:30:00.000000", 195.00, 100, 195.20, 100, nano=0),
+    ]
+    acq = _acquire(tmp_path, {(DAY, "AAPL"): rows})
+    panel = _panel(
+        _dataset_config(
+            tmp_path, acq, "2024-01-24", "2024-01-24",
+            session_start="04:00", session_end="20:00",
+        )
+    )
+    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
+    assert len(timestamps) == 960
+    assert timestamps[0] == pd.Timestamp("2024-01-24T09:01:00")
+    assert timestamps[-1] == pd.Timestamp("2024-01-25T01:00:00")
+
+    first = _bar(panel, "2024-01-24T09:01:00")
+    assert first["bid"] == _approx(180)
+    assert np.isnan(first["ask"])
+    assert np.isnan(first["spread"])
+    assert first["n_updates"] == 1
+
+    pre = _bar(panel, "2024-01-24T12:15:00")
+    assert pre["n_updates"] == 1
+    assert pre["bid"] == _approx(190.00)
+    carried = _bar(panel, "2024-01-24T14:31:00")
+    assert carried["n_updates"] == 0
+    assert carried["bid"] == _approx(190.00)
+
+    post = _bar(panel, "2024-01-24T22:30:00")
+    assert post["n_updates"] == 1
+    assert post["bid"] == _approx(195.00)
+    end = _bar(panel, "2024-01-25T01:00:00")
+    assert end["n_updates"] == 0
+    assert end["bid"] == _approx(195.00)
+
+
+def test_extended_window_is_seeded_from_before_its_start(
+    mock_wrds_session, tmp_path
+):
+    rows = [
+        taq_row("03:59:59.000000", 185.00, 100, 185.10, 100, nano=0),
+        taq_row("05:00:30.000000", 186.00, 100, 186.10, 100, nano=0),
+    ]
+    acq = _acquire(tmp_path, {(DAY, "AAPL"): rows})
+    panel = _panel(
+        _dataset_config(
+            tmp_path, acq, "2024-01-24", "2024-01-24",
+            session_start="04:00", session_end="20:00",
+        )
+    )
+    seeded = panel.sel(
+        timestamp=slice(
+            pd.Timestamp("2024-01-24T09:01"), pd.Timestamp("2024-01-24T10:00")
+        )
+    )
+    assert seeded.sizes["timestamp"] == 60
+    assert np.allclose(seeded["bid"].values, 185.00)
+    assert np.all(seeded["n_updates"].values == 0)
+    assert _bar(panel, "2024-01-24T10:01:00")["bid"] == _approx(186.00)
+
+
+def test_extended_window_on_a_half_day_is_not_truncated(
+    mock_wrds_session, tmp_path
+):
+    acq = _acquire(tmp_path, {(HALF_DAY, "AAPL"): HALF_DAY_ROWS})
+    extended = _panel(
+        _dataset_config(
+            tmp_path, acq, "2024-11-29", "2024-11-29",
+            session_start="04:00", session_end="20:00",
+        )
+    )
+    timestamps = pd.DatetimeIndex(extended["timestamp"].values)
+    assert len(timestamps) == 960
+    assert timestamps[-1] == pd.Timestamp("2024-11-30T01:00:00")
+    post = _bar(extended, "2024-11-29T19:00:00")
+    assert post["n_updates"] == 1
+    assert post["bid"] == _approx(232.00)
+
+    rth = _panel(_dataset_config(tmp_path, acq, "2024-11-29", "2024-11-29"))
+    rth_ts = pd.DatetimeIndex(rth["timestamp"].values)
+    assert len(rth_ts) == 210
+    assert rth_ts[-1] == pd.Timestamp("2024-11-29T18:00:00")
+    assert not np.any(rth["bid"].values == 232.00)
+
+
+def test_filter_policy_from_config_reaches_the_resampler(
+    mock_wrds_session, tmp_path
+):
+    rows = [
+        taq_row("09:29:00.000000", 194.00, 100, 194.02, 100, nano=0),
+        # Crossed: bid > ask.
+        taq_row("09:30:30.000000", 194.10, 100, 194.05, 100, nano=0),
+    ]
+    acq = _acquire(tmp_path, {(DAY, "AAPL"): rows})
+
+    kept = _panel(
+        _dataset_config(tmp_path, acq, "2024-01-24", "2024-01-24", drop_crossed=False)
+    )
+    b = _bar(kept, "2024-01-24T14:31:00")
+    assert b["bid"] == _approx(194.10)
+    assert b["ask"] == _approx(194.05)
+    assert b["n_updates"] == 1
+
+    dropped = _panel(_dataset_config(tmp_path, acq, "2024-01-24", "2024-01-24"))
+    b = _bar(dropped, "2024-01-24T14:31:00")
+    assert b["bid"] == _approx(194.00)
+    assert b["ask"] == _approx(194.02)
+    assert b["n_updates"] == 0
