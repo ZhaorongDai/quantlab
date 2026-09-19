@@ -777,6 +777,54 @@ def test_the_heatmap_colours_losses_red_gains_green_and_zero_grey(tmp_path):
     assert not heatmap.get("connectgaps")
 
 
+def _sign_colours_of_the_heatmap(html: str) -> tuple[str, str, str]:
+    """`(gain, loss, neutral)` colours, read from the heatmap's OWN stops.
+
+    Read from the page rather than imported from the module: comparing the
+    bars against the other figure is what locks the two panels together.
+    """
+    stops = _second_figure_traces(html)[HEATMAP]["colorscale"]
+    by_position = {float(position): colour for position, colour in stops}
+    return by_position.get(1.0), by_position.get(0.0), by_position.get(0.5)
+
+
+def test_each_monthly_bar_takes_the_heatmap_colour_of_its_sign(tmp_path):
+    """G-03.8-1: a gain bar is the heatmap's gain colour, a loss bar its loss colour.
+
+    A month compounding to exactly 0.0 lands on the heatmap's grey midpoint
+    under `zmid=0`, so its bar takes the same grey.
+    """
+    html = _write(
+        tmp_path,
+        returns=_dated_returns(
+            ["2024-01-10", "2024-02-12", "2024-03-11"], [0.05, -0.03, 0.0]
+        ),
+    )
+    gain, loss, neutral = _sign_colours_of_the_heatmap(html)
+    bars = _traces(html)["monthly_return"]
+
+    assert bars.get("marker", {}).get("color") == [gain, loss, neutral]
+
+
+def test_every_monthly_bar_colour_follows_the_sign_of_its_value(tmp_path):
+    """A longer mixed-sign run: every bar's colour matches its own value's sign."""
+    months = pd.period_range("2023-01", "2024-12", freq="M")
+    dates = [(period.to_timestamp() + pd.Timedelta(days=9)).strftime("%Y-%m-%d") for period in months]
+    values = [(-1) ** i * 0.01 * (i + 1) for i in range(len(months))]
+    values[5] = 0.0
+    values[17] = 0.0
+    html = _write(tmp_path, returns=_dated_returns(dates, values))
+    gain, loss, neutral = _sign_colours_of_the_heatmap(html)
+    bars = _traces(html)["monthly_return"]
+
+    colours = bars.get("marker", {}).get("color")
+    assert isinstance(colours, list)
+    assert len(colours) == len(bars["y"]) == len(months)
+    for value, colour in zip(bars["y"], colours):
+        expected = gain if value > 0 else loss if value < 0 else neutral
+        assert colour == expected, (value, colour)
+
+
 def test_the_heatmap_trace_carries_a_name(tmp_path):
     """Every trace on the page is parsed by name; a nameless one raises KeyError."""
     traces, _ = _second_figure(_write(tmp_path, returns=_multi_year_returns()))
