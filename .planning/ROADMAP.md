@@ -175,7 +175,7 @@ land raw in parquet and are resampled locally into the canonical `[timestamp, sy
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
-**Plans:** 3/8 plans executed
+**Plans:** 5/8 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -200,8 +200,8 @@ Plans:
 
 **Wave 2** *(blocked on 01)*
 
-- [ ] 03.9-04-PLAN.md — WRDS provider hardening: credential/connection contract, entitlement preflight, raw schema eras, SQL shape, symbol notation, day-page resume, per-batch count probe
-- [ ] 03.9-05-PLAN.md — Resampler semantics: filters + NULL sides + drop counts, total order / ties / ambiguity count, grid, right-closed labels, within-day carry, clean_nbbo_panel
+- [x] 03.9-04-PLAN.md — WRDS provider hardening: credential/connection contract, entitlement preflight, raw schema eras, SQL shape, symbol notation, day-page resume, per-batch count probe
+- [x] 03.9-05-PLAN.md — Resampler semantics: filters + NULL sides + drop counts, total order / ties / ambiguity count, grid, right-closed labels, within-day carry, clean_nbbo_panel
 
 **Wave 3** *(blocked on 02, 05)*
 
