@@ -5,15 +5,15 @@ current_phase: "03.8"
 current_phase_name: "Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)"
 status: executing
 stopped_at: Phase 03.8 inserted (three remaining backtest-report items), ready to plan
-last_updated: "2026-09-17T02:02:38.009Z"
+last_updated: "2026-09-19T14:41:09.044Z"
 last_activity: 2026-09-16
 last_activity_desc: Phase 03.8 execution started
-state_head: b2ed1487c9ebd84a561f9365dc59e19c823e6f62
+state_head: f5ac2a219f5c2b6537eddb6bf73de7678e5b4cb3
 progress:
-  total_phases: 15
+  total_phases: 16
   completed_phases: 1
-  total_plans: 79
-  completed_plans: 75
+  total_plans: 80
+  completed_plans: 79
 milestone_name: milestone
 ---
 
@@ -356,6 +356,7 @@ Recent decisions affecting current work:
 - Phase 03.6 inserted after Phase 03.5: Frequency-keyed chunking policy: granularity from a per-frequency constant table; the RAM guard's refusing half deleted, estimating half kept
 - Phase 03.7 inserted after Phase 3: Cross-sectional backtester: BaseBacktester ABC + USEquityCrossectionSelectStockVectorBt (vectorbt, t+1 open fills, long-only/long-short, run/run_cv with in/out-of-sample split), model-layer predict_panel + cv_folds.json, retire vecbt/bt.py (URGENT)
 - Phase 03.8 inserted after Phase 3: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (URGENT)
+- Phase 03.9 inserted after Phase 3: WRDS TAQ consolidated quotes to NBBO zarr panel
 
 ## Deferred Items
 

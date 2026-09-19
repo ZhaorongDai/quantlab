@@ -136,6 +136,37 @@ Plans:
 - [ ] 03-06-PLAN.md — Close CR-01: resolve Polars factor names on the `read()` path so `factor_data_strategy="read"` is backend-independent (D-03), plus the two-backend read-strategy lock
 - [ ] 03-07-PLAN.md — Close CR-02: US-equity `amount` becomes typical-price dollar volume (GAP-D-01) so `vwap` is no longer identically `close`, plus the VWAP non-degeneracy lock
 
+### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
+
+**Goal:** NYSE TAQ millisecond consolidated quotes (WRDS `taqm_*` `cqm_*` tables,
+https://wrds-www.wharton.upenn.edu/pages/get-data/nyse-trade-and-quote/millisecond-trade-and-quote-daily-product-2003-present-updated-daily/consolidated-quotes/)
+reach the canonical `[timestamp, symbol]` Zarr panel as fixed-frequency NBBO snapshots, through
+the existing Acquisition → Dataset layering.
+**Requirements**: TBD
+**Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
+**Plans:** 0 plans
+
+**User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
+
+- Storage grain: ticks are aggregated to **fixed-frequency NBBO snapshots** (bid / ask / spread /
+  mid / depth-style fields) and land as the dense `[timestamp, symbol]` panel. Raw-tick storage on a
+  non-dense event axis stays Phase 03.3's scope, not this phase's.
+- Universe: **reuse the existing point-in-time universes** (`sp500_constituent` /
+  `nasdaq100_constituent`); date range via CLI arguments.
+- Credentials: WRDS account with TAQ access; username from the `WRDS_USERNAME` environment variable,
+  password in `~/.pgpass`. Never a config field, never in logs (same rules as `CREDENTIAL_ENV_VARS`).
+- Layering: a new vendor provider under `quantlab/acquisition/` writes raw parquet shards only (never
+  Zarr); a Dataset class converts them to Zarr — matching `example/acquisition.md`'s hard boundary.
+
+**Open for discuss-phase:** snapshot frequency and exact field set, where aggregation runs (WRDS
+server-side SQL vs local), NBBO construction (WRDS `nbbom` tables vs rebuilding from `cqm`), symbol
+mapping (TAQ `sym_root`/`sym_suffix` vs universe tickers / permno), session filter (RTH only?),
+quote-condition filtering, `wrds` library vs direct PostgreSQL, registry (03.4) integration.
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.9 to break down)
+
 ### Phase 03.8: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)
 
 **Goal:** A reader of a backtest report can compare in-sample against out-of-sample at a glance, see how each month of each year performed, and trust the trade statistics. The metric table gains an `out_of_sample - in_sample` delta column driven purely by value type with no hardcoded metric list; a year-by-month return heatmap joins the surviving monthly bars; and the trade metrics move wholly to the position view — one entry-to-flat round trip per symbol, ending the ~6.5-point win-rate overstatement that partial trims cause — with `order_count` added to the whole-window block so fill activity is still reported.
