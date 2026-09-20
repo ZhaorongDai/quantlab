@@ -148,6 +148,51 @@ def _daily_frame(records) -> pl.DataFrame:
     )
 
 
+def _labelled_frame(records) -> pl.DataFrame:
+    """Rows as `resolve_collisions` receives them -- `label_rows` has already
+    run, so `symbol` is present."""
+    return pl.DataFrame(
+        records,
+        schema={
+            "permno": pl.Int64,
+            "timestamp": pl.String,
+            "dlydelflg": pl.String,
+            "symbol": pl.String,
+        },
+        orient="row",
+    ).with_columns(
+        pl.col("timestamp").str.to_date(strict=False).cast(pl.Datetime("us"))
+    )
+
+
+def _member_frame(records) -> pl.DataFrame:
+    """`(permno, start_date, end_date)` membership intervals, closed on both
+    ends -- the shape plan 09's universes produce."""
+    return pl.DataFrame(
+        records,
+        schema={
+            "permno": pl.Int64,
+            "start_date": pl.String,
+            "end_date": pl.String,
+        },
+        orient="row",
+    ).with_columns(
+        pl.col("start_date").str.to_date(strict=False),
+        pl.col("end_date").str.to_date(strict=False),
+    )
+
+
+#: SYNTHETIC: a PERMNO whose last `stksecurityinfohist` interval ends
+#: 2010-05-14 while its delisting row is dated 2010-05-17. That gap is the
+#: VERBATIM Lehman shape of `03.10-LIVE-CHECK-2.json` key `L3_2`
+#: (`delistingdt 2008-09-17`, `deldlydt 2008-09-18` -- the delisting row is
+#: dated the trading day AFTER the delisting), restated on an invented PERMNO
+#: so the interval can be made to stop short, which Lehman's does not.
+DELISTED_SECINFO_ROWS = [
+    secinfo_row(55001, "2009-01-02", "2010-05-14", "DLT", "DLT", None),
+]
+
+
 # ---------------------------------------------------------------------------
 # Task 1 -- the intervals
 # ---------------------------------------------------------------------------
@@ -327,3 +372,165 @@ def test_a_symbol_that_already_spells_its_class_is_not_suffixed_twice():
     # The two issues STILL collide -- that is left for `resolve_collisions`,
     # which refuses per (date, symbol) cell rather than inventing a spelling.
     assert set(intervals["permno"]) == {70001, 70002}
+
+
+# ---------------------------------------------------------------------------
+# Task 2 -- row labelling and row-level collisions
+# ---------------------------------------------------------------------------
+
+
+def test_every_lehman_row_carries_leh_including_the_delisting_row():
+    """VERBATIM L3_1 + L3_3 (D-10, D-19). The 2008-09-18 row is the delisting
+    return -- a -60% day. It is labelled through the NULL-ticker interval, so
+    it keeps LEH and stays in the panel; dropping it would hand the backtest a
+    security that simply stopped trading at 0.13, which is survivorship bias
+    reintroduced one row at a time."""
+    symbology = _symbology()
+    labelled = symbology.label_rows(_daily_frame(LEHMAN_2008_ROWS))
+
+    assert labelled.height == len(LEHMAN_2008_ROWS)
+    assert set(labelled["symbol"]) == {"LEH"}
+    assert symbology.report["unlabelled"] == {}
+
+
+def test_a_delisting_row_past_the_last_interval_carries_the_last_symbol():
+    """Pitfall 3: `DelDlyDt` lies AFTER the last `secinfoenddt`, so the as-of
+    join alone yields nothing for the one row that matters most."""
+    symbology = _symbology(DELISTED_SECINFO_ROWS)
+    labelled = symbology.label_rows(
+        _daily_frame(
+            [
+                dsf_row(55001, "2010-05-13", dlydelflg="N", ticker="DLT"),
+                dsf_row(55001, "2010-05-17", dlydelflg="Y", ticker=None),
+            ]
+        )
+    )
+
+    assert labelled.sort("timestamp")["symbol"].to_list() == ["DLT", "DLT"]
+    carried = symbology.report["delisting_carried"]["55001"]
+    assert carried["rows"] == 1
+    assert carried["symbol"] == "DLT"
+    assert carried["first"] == "2010-05-17" == carried["last"]
+
+
+def test_a_live_row_past_the_last_interval_is_dropped_into_report_unlabelled():
+    """The carry is for DELISTING rows only. An ordinary row with no covering
+    interval has no column to live in, and a placeholder label would put an
+    unidentified security into someone else's series -- so it is dropped, and
+    the drop is reported (T-03.10-17)."""
+    symbology = _symbology(DELISTED_SECINFO_ROWS)
+    labelled = symbology.label_rows(
+        _daily_frame(
+            [
+                dsf_row(55001, "2010-05-17", dlydelflg="Y", ticker=None),
+                dsf_row(55001, "2010-05-17", dlydelflg="N", ticker=None),
+            ]
+        )
+    )
+
+    assert labelled.height == 1
+    assert labelled["symbol"].to_list() == ["DLT"]
+    assert symbology.report["unlabelled"] == {
+        "55001": {"rows": 1, "first": "2010-05-17", "last": "2010-05-17"}
+    }
+
+
+def test_ticker_reuse_keeps_the_active_permno_over_the_delisting_row():
+    """SYNTHETIC ticker reuse: one security's delisting row and another's
+    first active row land on one `(date, symbol)` cell. Rule 1 keeps the
+    active one -- the ticker belongs to whoever is still trading under it."""
+    symbology = _symbology()
+    frame = _labelled_frame(
+        [
+            (11111, "2010-05-17", "Y", "XYZ"),
+            (22222, "2010-05-17", "N", "XYZ"),
+        ]
+    )
+    resolved = symbology.resolve_collisions(frame)
+
+    assert resolved["permno"].to_list() == [22222]
+    assert symbology.report["collisions"] == [
+        {
+            "date": "2010-05-17",
+            "symbol": "XYZ",
+            "kept": 22222,
+            "dropped": [11111],
+            "rule": "active_over_delisting",
+        }
+    ]
+
+
+def test_a_collision_between_two_active_permnos_uses_universe_membership():
+    """Rule 2: when both are trading, the one the configured universe holds
+    on that date is the one the panel is being built for."""
+    symbology = _symbology()
+    frame = _labelled_frame(
+        [
+            (33333, "2011-01-03", "N", "XYZ"),
+            (44444, "2011-01-03", "N", "XYZ"),
+        ]
+    )
+    members = _member_frame([(33333, "2010-01-04", "2012-12-31")])
+    resolved = symbology.resolve_collisions(frame, member_intervals=members)
+
+    assert resolved["permno"].to_list() == [33333]
+    assert symbology.report["collisions"][0]["rule"] == "universe_member"
+    assert symbology.report["collisions"][0]["kept"] == 33333
+
+
+def test_an_unresolvable_collision_refuses_and_names_the_cells():
+    """Rule 3 is REFUSAL, never a pick. Averaging, summing or taking the
+    first row would put two companies' prices in one series and leave no
+    trace (T-03.10-16); a raise stops the conversion with the exact cell
+    named, which the user can fix by restricting `permnos` or supplying a
+    universe."""
+    symbology = _symbology()
+    frame = _labelled_frame(
+        [
+            (33333, "2011-01-03", "N", "XYZ"),
+            (44444, "2011-01-03", "N", "XYZ"),
+        ]
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        symbology.resolve_collisions(frame)
+
+    message = str(excinfo.value)
+    for fragment in ("2011-01-03", "XYZ", "33333", "44444", "1 "):
+        assert fragment in message, fragment
+    assert "permnos" in message and "collision_universe" in message
+
+
+def test_a_frame_with_no_collision_comes_back_unchanged():
+    """The common case must be a no-op: same rows, same ORDER (the caller's
+    sort is load-bearing for the adjustment anchor), and an empty report."""
+    symbology = _symbology()
+    frame = _labelled_frame(
+        [
+            (11111, "2010-05-18", "N", "XYZ"),
+            (22222, "2010-05-17", "N", "ABC"),
+            (11111, "2010-05-17", "N", "XYZ"),
+        ]
+    )
+    resolved = symbology.resolve_collisions(frame)
+
+    assert resolved.equals(frame)
+    assert symbology.report["collisions"] == []
+
+
+def test_collision_resolution_leaves_timestamp_and_symbol_unique():
+    """The point of the whole exercise: `(timestamp, symbol)` is the panel's
+    key, so after resolution it must identify exactly one row."""
+    symbology = _symbology()
+    frame = _labelled_frame(
+        [
+            (11111, "2010-05-17", "Y", "XYZ"),
+            (22222, "2010-05-17", "N", "XYZ"),
+            (22222, "2010-05-18", "N", "XYZ"),
+            (33333, "2010-05-17", "N", "ABC"),
+        ]
+    )
+    resolved = symbology.resolve_collisions(frame)
+
+    key = resolved.select("timestamp", "symbol")
+    assert key.height == key.unique().height == 3
