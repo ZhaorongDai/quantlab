@@ -424,10 +424,23 @@ class CrspStockDataset(StockDataset):
 
         Computed once per instance and cached. Every window densifier slices
         this, so every chunk of one conversion shares one anchor per PERMNO.
+
+        **Also the ANCHOR GATE** (WR-02). It sits here, on the FIRST derivation
+        of an instance, because this is the one method BOTH conversion entry
+        points call: `from_raw_data_chunked` reaches it through
+        `_raw_axes_in_range`, and `from_raw_data` through `_raw_data_to_xr`.
+        While the gate lived in `_raw_axes_in_range` only the chunked path was
+        gated, so `from_raw_data().save()` could extend a store in place onto a
+        second anchor -- and, having written no sidecar, latched that store into
+        a permanent refusal for every later chunked run. The cache check above
+        keeps it once per instance: a re-dated config resets the cache in the
+        `config` setter, which is exactly when the anchor must be re-checked.
         """
         cached = getattr(self, "_derivation_cache", None)
         if cached is not None:
             return cached
+
+        self._assert_anchor_unchanged(self._adjustment_record())
 
         frame = self._scan_raw()
         if self.config.permnos:
@@ -1061,16 +1074,16 @@ class CrspStockDataset(StockDataset):
         store is pinned to is the TICKER axis, and it only exists after
         symbology has run.
 
-        Also the ANCHOR GATE. `from_raw_data_chunked` calls this method ONCE,
-        before `ChunkLedger.assert_consistent` and before any append, which
-        makes it the only point in the conversion where a refusal is
-        guaranteed to leave the store untouched.
+        Also where the chunked path RECORDS its provenance -- the gate itself
+        now lives in `_derivation()`, which both entry points call (WR-02). This
+        method is still the right place for the two WRITES: `from_raw_data_chunked`
+        calls it ONCE, before `ChunkLedger.assert_consistent` and before any
+        append, so the records land before the first irreversible write and are
+        never written eleven times by an eleven-window run.
         """
         import pandas as pd
 
         record = self._adjustment_record()
-        self._assert_anchor_unchanged(record)
-
         derivation = self._derivation()
         symbols = sorted(
             str(value)
@@ -1090,13 +1103,35 @@ class CrspStockDataset(StockDataset):
         return symbols, pd.DatetimeIndex(sorted(timestamps))
 
     def _write_identity_reports(self) -> None:
-        """Write the filter and symbology sidecars, ONCE per conversion.
+        """Write the filter and symbology sidecars, ONCE per conversion, and
+        only when the store does not exist yet.
 
-        This hook is the only point `from_raw_data_chunked` calls exactly once
-        per run, which is what keeps a windowed conversion from writing eleven
-        copies of the same report -- or worse, eleven DIFFERENT ones, each
-        describing a single window as if it described the store.
+        Called once per run by each entry point, which is what keeps a windowed
+        conversion from writing eleven copies of the same report -- or worse,
+        eleven DIFFERENT ones, each describing a single window as if it
+        described the store.
+
+        **The store-exists guard is WR-03**, and it is a deliberate trade. Both
+        writes run before `ChunkLedger.assert_consistent`, before
+        `_reconcile_new_listings`' `on_new_listing='refuse'` arm and before the
+        per-window axis check -- any of which still aborts the run after these
+        files are on disk. Without the guard, a refused re-conversion replaced
+        the SURVIVING store's `.crsp_filter_report.json` (the D-17 audit
+        artifact whose whole purpose is to say what the store dropped) with
+        numbers for a panel that was never written, and the report describing
+        the real store was gone.
+
+        The cost: an APPEND no longer refreshes the reports, so they describe
+        the panel as it was FIRST written rather than as it stands. That is the
+        lesser harm -- a slightly stale audit trail beats a confidently wrong
+        one, and the anchor sidecar has carried exactly this guard since it was
+        introduced. The STRONGER form, considered and not taken here because it
+        needs a success signal this method cannot see: write to a temp name and
+        `os.replace` after the append loop reports success, which would keep the
+        reports fresh on every completed run and untouched on every aborted one.
         """
+        if Path(str(self.config.zarr_file_path)).exists():
+            return
         if self._filter_report is not None:
             write_json_atomically(
                 self.filter_report_path(),
@@ -1144,9 +1179,29 @@ class CrspStockDataset(StockDataset):
         return data
 
     def _raw_data_to_xr(self) -> xr.Dataset:
-        return self._raw_data_to_xr_window(
+        """The WHOLE window, densified in one go -- and its provenance (WR-02).
+
+        `BaseDataset.from_raw_data()` calls this and nothing else, so it is the
+        non-chunked path's only chance to leave the records `_raw_axes_in_range`
+        leaves on the chunked one. Overridden rather than left inherited because
+        the omission was LATCHED: `_assert_anchor_unchanged` refuses any store
+        that exists without an adjustment sidecar, so a store written by
+        `from_raw_data().save()` could never be appended to again, and the user
+        met a refusal naming a file they had never heard of.
+
+        The writes happen AFTER the derivation has succeeded -- a run that fails
+        on a symbology collision must leave no record of a store that was never
+        created -- and before the densified window is returned, which is before
+        `save()` creates the store. Both writers skip a path that already
+        exists, so this is a first-write only.
+        """
+        record = self._adjustment_record()
+        window = self._raw_data_to_xr_window(
             self.config.start_date, self.config.end_date, symbols=None
         )
+        self._write_identity_reports()
+        self._write_adjustment_record(record)
+        return window
 
     def _assert_unique_panel_keys(self, window: pl.DataFrame) -> None:
         """`(timestamp, symbol)` is unique, or the conversion fails.
