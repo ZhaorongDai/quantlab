@@ -32,9 +32,24 @@ chunk seam. The cached derivation is the reason `granularity="year"` and
   first row;
 - `divCash_t = dlyorddivamt_t + dlynonorddivamt_t`, on the ex-date.
 
+**`abs()` is a GUARD, not a transform** (D-09). Legacy CRSP encoded "no trade,
+this is a bid/ask midpoint" as a NEGATIVE price; CIZ does not -- the live check
+counted ZERO negative `dlyprc` against 122,471 `BA` rows in 2000 (`L10_1`), so
+`abs()` is a no-op on every row this pipeline will meet. It stays because a
+legacy-shaped row entering the panel as a negative price would invert every
+ratio downstream in silence. The no-trade SIGNAL is therefore
+`dlyprcflg == 'BA'`, surfaced as `prc_is_bidask` (D-19) -- a sign test would
+flag nothing at all.
+
+**A missing return is NaN, never 0** (D-09). `ret` keeps the null; only the
+internal cumulative product treats it as a factor of 1, because CIZ returns
+span gaps back to `DlyPrevDt` (`DlyRetDurFlg` D3/D4) and the next valid return
+already covers the missing day.
+
 The delisting return needs no special case: CIZ already puts it on its own
 daily row, so chaining `dlyret` carries it. Adding `stkdelists.delret` on top
-would apply the loss twice (D-10).
+would apply the loss twice (D-10) -- Lehman's 2008-09-18 row already holds
+`dlyret = -0.6`, and `stkdelists` stays EVENT data that nothing compounds.
 """
 
 from __future__ import annotations
@@ -48,6 +63,57 @@ from quantlab.dataset.crsp_reference import CrspReference
 from quantlab.dataset.crsp_symbology import CrspSymbology
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
+
+#: Everything this panel carries BEYOND the Tiingo twelve, with its CRSP source
+#: and the unit the panel states it in. FLOAT64 like every other variable
+#: (RESEARCH Pitfall 7): a dense `[timestamp, symbol]` panel is a cartesian
+#: product, so a symbol that did not exist yet needs a NaN to say so -- which
+#: an integer `permno` or a boolean flag has no room for.
+#:
+#: - ``permno``/``permco``  -- CRSP's security and company ids, the stable
+#:   identity behind a ticker column that renames and gets reused.
+#: - ``ret``                -- ``dlyret``, the daily TOTAL return (dividends
+#:   included, and the delisting return on its own row). NaN where CRSP has
+#:   none; never 0 (D-09).
+#: - ``retx``               -- ``dlyretx``, the same return WITHOUT dividends.
+#: - ``shrout``             -- ``shrout`` x 1000. CRSP stores thousands of
+#:   shares; the panel states shares.
+#: - ``market_cap``         -- ``dlycap`` x 1000. CRSP stores thousands of
+#:   USD; the panel states USD.
+#: - ``bid``/``ask``        -- ``dlybid``/``dlyask``, the quote the midpoint
+#:   came from on a no-trade day.
+#: - ``prc_is_bidask``      -- 1.0 when ``dlyprcflg == "BA"`` (the price is a
+#:   bid/ask midpoint, i.e. NO TRADE), 0.0 for any other flag, NaN when the
+#:   flag itself is null. The D-19 no-trade indicator.
+#: - ``is_delisting``       -- 1.0 when ``dlydelflg == "Y"`` (this row carries
+#:   the delisting return), 0.0 otherwise, NaN when the flag is null.
+#: - ``numtrd``             -- ``dlynumtrd``, the trade count.
+#: - ``cumfacpr``/``cumfacshr`` -- ``dlycumfacpr``/``dlycumfacshr``, CRSP's own
+#:   cumulative price and share factors (1.0 on the last trading day).
+#: - ``facprc``             -- ``dlyfacprc``, the day's price factor: 1.0 on an
+#:   ordinary day, 4.0 on AAPL's 2020-08-31 4:1 split (unlike legacy ``facpr``,
+#:   which is 0 on ordinary days).
+#: - ``close_trade``        -- ``dlyclose``, the CLOSING-TRADE price. Null on
+#:   bid/ask days, through the whole pre-1992 Nasdaq era and on delisting rows,
+#:   which is exactly why `close` is ``abs(dlyprc)`` and this is a separate
+#:   variable rather than the panel's close.
+CRSP_EXTRA_VARIABLES: tuple[str, ...] = (
+    "permno",
+    "permco",
+    "ret",
+    "retx",
+    "shrout",
+    "market_cap",
+    "bid",
+    "ask",
+    "prc_is_bidask",
+    "is_delisting",
+    "numtrd",
+    "cumfacpr",
+    "cumfacshr",
+    "facprc",
+    "close_trade",
+)
 
 
 class CrspStockDataset(StockDataset):
@@ -69,11 +135,10 @@ class CrspStockDataset(StockDataset):
     #: promise is checked against the thing it promises compatibility with.
     TIINGO_VARIABLES: tuple[str, ...] = tuple(TiingoColumns.EOD.split(","))
 
-    #: Extra variables this panel adds beyond the Tiingo twelve. FLOAT64 like
-    #: everything else (Pitfall 7): a dense xarray panel is one dtype per
-    #: variable, and an integer `permno` would have no NaN to express "this
-    #: symbol did not exist yet".
-    EXTRA_VARIABLES: tuple[str, ...] = ("permno", "permco")
+    #: Extra variables this panel adds beyond the Tiingo twelve -- the
+    #: module-level `CRSP_EXTRA_VARIABLES`, bound here so a subclass can
+    #: narrow or extend the set without the module constant moving.
+    EXTRA_VARIABLES: tuple[str, ...] = CRSP_EXTRA_VARIABLES
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
@@ -200,6 +265,49 @@ class CrspStockDataset(StockDataset):
                 pl.col("_prev_cumfacpr") / pl.col("dlycumfacpr"),
                 pl.lit(1.0),
             ).alias("splitFactor"),
+            # -- the CRSP extras, in `CRSP_EXTRA_VARIABLES` order ------------
+            # `permno`/`permco` are already named; `close` came from the
+            # derivation above. Everything else is renamed or rescaled here.
+            #
+            # NO `fill_null` on `ret`: the stored return keeps CRSP's null as
+            # a NaN (D-09). The `fill_null(0.0)` that DOES exist lives inside
+            # `_derivation`'s cumulative product and nowhere else, because a
+            # gap-spanning return already covers the missing day.
+            pl.col("dlyret").alias("ret"),
+            pl.col("dlyretx").alias("retx"),
+            # CRSP states both in THOUSANDS; the panel states shares and USD,
+            # so the x1000 happens once here rather than at every call site.
+            (pl.col("shrout") * 1000).alias("shrout"),
+            (pl.col("dlycap") * 1000.0).alias("market_cap"),
+            pl.col("dlybid").alias("bid"),
+            pl.col("dlyask").alias("ask"),
+            # The no-trade indicator (D-19), read off the FLAG rather than off
+            # the sign of the price: CIZ carries no negative prices, so a sign
+            # test would flag nothing. A null flag stays null -- "unknown" is
+            # not "was a trade".
+            pl.when(pl.col("dlyprcflg").is_null())
+            .then(None)
+            .when(pl.col("dlyprcflg") == pl.lit("BA"))
+            .then(pl.lit(1.0))
+            .otherwise(pl.lit(0.0))
+            .alias("prc_is_bidask"),
+            # 1.0 marks the row whose `dlyret` IS the delisting return. It is
+            # a MARKER, not an instruction: nothing multiplies by it, because
+            # the return is already in the chain (D-10).
+            pl.when(pl.col("dlydelflg").is_null())
+            .then(None)
+            .when(pl.col("dlydelflg") == pl.lit("Y"))
+            .then(pl.lit(1.0))
+            .otherwise(pl.lit(0.0))
+            .alias("is_delisting"),
+            pl.col("dlynumtrd").alias("numtrd"),
+            pl.col("dlycumfacpr").alias("cumfacpr"),
+            pl.col("dlycumfacshr").alias("cumfacshr"),
+            pl.col("dlyfacprc").alias("facprc"),
+            # The closing TRADE price, kept beside `close = abs(dlyprc)` so a
+            # caller who needs "was there a trade, and at what price" has it
+            # without re-deriving it from the flag.
+            pl.col("dlyclose").alias("close_trade"),
         )
         columns = ["timestamp", "symbol", *self.TIINGO_VARIABLES, *self.EXTRA_VARIABLES]
         frame = frame.select(
