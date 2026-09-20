@@ -79,6 +79,41 @@ class NbboDatasetConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True)
+class CrspDatasetConfig(DatasetConfig):
+    """Config of the CRSP Stock v2 daily panel (`dataset/crsp.py`, phase 03.10).
+
+    The three market fields default rather than being asked for: CRSP Stock v2
+    is US equity, daily, and reached through the `wrds` account. They stay
+    FIELDS (not constants on the dataset) because `registry.convert()` resolves
+    its capability from `(market, frequency, data_type)` read off this object,
+    and a config that could not state them would not be resolvable.
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "wrds"
+
+    #: The CRSP reference tier (`stksecurityinfohist` and friends) this
+    #: conversion reads its symbology from. REQUIRED, and deliberately not
+    #: derived from `raw_data_dir_path`: the reference tier is a SIBLING of
+    #: the raw root, pulled by a different step, and a conversion pointed at a
+    #: raw tree whose sibling was never filled must fail saying so rather than
+    #: guessing a path.
+    reference_dir: str
+
+    #: Restrict the conversion to these PERMNOs (digit strings). `None` means
+    #: every PERMNO present in the raw tier. This is the RAW-side filter; the
+    #: inherited `symbols` is the TICKER-side one, applied after symbology.
+    permnos: tuple[str, ...] | None = None
+
+    #: `{PERMNO: symbol}`, applied BEFORE every symbology rule. The live case
+    #: is QQQ (PERMNO 86755), whose ticker really was `QQQQ` from 2004-12-01
+    #: to 2011-03-22 -- a rename an index panel does not want to see, because
+    #: the instrument never changed.
+    symbol_overrides: dict[str, str] | None = None
+
+
+@dataclass(kw_only=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     cache_dir: str
     as_of: str | None = None
