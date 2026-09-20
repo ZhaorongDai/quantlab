@@ -1161,3 +1161,355 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
     assert rebuilt.config.security_filter["securitytype"] == ("EQTY",)
     assert rebuilt.config.nan_adj_at_permno_seam is False
     assert rebuilt.config.collision_universe == "crsp_sp500"
+
+
+# ---------------------------------------------------------------------------
+# GAP-C: an explicit roster is never overruled by the type filter
+# ---------------------------------------------------------------------------
+#
+# The operator's decision, 2026-09-20 (`03.10-11-SUMMARY.md`):
+# 「优先保证成分股不缺」 -- index constituents must never be missing. The
+# security filter screens an UNSPECIFIED population; it must not overrule an
+# explicit roster. `--universe` means the index provider already decided
+# membership; `--permnos` means the user named the securities. A broad screen
+# with NO explicit roster keeps today's behaviour, because excluding ADRs and
+# units is meaningful there.
+#
+# The live damage this pins (`03.10-11-SUMMARY.md` GAP-1): `equity_common`
+# rejects `sharetype='UG'`, which in CRSP marks the publicly traded PARTNERSHIP
+# era of a security -- and that era belongs to real S&P 500 members. Blackstone
+# (PERMNO 92108) loses 2007-06-22..2019-06-30, KKR 2010..2018, Carnival
+# everything from 2003. The truncation happens MID-SECURITY, so downstream it is
+# indistinguishable from a late IPO.
+
+#: SYNTHETIC throughout. The Blackstone SHAPE -- a rejected partnership era
+#: inside a membership spell, then an ordinary common era -- on invented digits
+#: and a short window. 92108's own security-info intervals are not in
+#: `tests/crsp_fixtures.py`, and inventing them under a real PERMNO would make a
+#: fixture look like live evidence.
+ROSTER_PERMNO = "55501"
+ROSTER_SYMBOL = "LPCO"
+ROSTER_WINDOW_START = "2010-01-01"
+ROSTER_WINDOW_END = "2010-01-29"
+
+#: The partnership era: `sharetype='UG'`, which `equity_common` and
+#: `shrcd_10_11` both reject. INSIDE the membership spell.
+ROSTER_LP_DAYS = (
+    "2010-01-04",
+    "2010-01-05",
+    "2010-01-06",
+    "2010-01-07",
+    "2010-01-08",
+)
+
+#: The ordinary common era: every preset keeps it, roster or no roster. OUTSIDE
+#: the membership spell, which is what makes the two halves separable.
+ROSTER_COM_DAYS = (
+    "2010-01-11",
+    "2010-01-12",
+    "2010-01-13",
+    "2010-01-14",
+    "2010-01-15",
+)
+
+#: The `dsp500list_v2` spell, covering exactly the partnership era.
+ROSTER_SPELL_END = "2010-01-08"
+
+
+def _roster_rows():
+    """SYNTHETIC: one security, a rejected `UG` era then an ordinary `NS` era.
+
+    **The era lives on the `dsf_v2` DAILY rows, not only on the security-info
+    intervals**, because `_apply_security_filter` reads `dsf_v2`'s own per-day
+    type columns (D-17's per-date verdict) and never the reference tier. A
+    fixture that carried the rejected era ONLY in `stksecurityinfohist` would
+    leave every daily row an ordinary `NS` common share, nothing would be
+    truncated, and the tests below would be green with and without the
+    exemption -- proving nothing. The two secinfo intervals are written as well,
+    because that is the shape CRSP really has, and a fixture that disagreed with
+    itself would mislead the next reader.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    price = 30.0
+    for day in ROSTER_LP_DAYS + ROSTER_COM_DAYS:
+        price *= 1.01
+        rows.append(
+            dsf_row(
+                ROSTER_PERMNO,
+                day,
+                sharetype="UG" if day in ROSTER_LP_DAYS else "NS",
+                dlyprc=f"{price:.6f}",
+                dlyclose=f"{price:.6f}",
+                dlyret="0.010000",
+                dlyretx="0.010000",
+                ticker=ROSTER_SYMBOL,
+            )
+        )
+    return rows
+
+
+def _roster_secinfo():
+    """Two intervals over one security: the partnership era, then common."""
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(
+            int(ROSTER_PERMNO),
+            "2000-01-01",
+            ROSTER_SPELL_END,
+            ROSTER_SYMBOL,
+            ROSTER_SYMBOL,
+            None,
+            sharetype="UG",
+            securitybegdt="2000-01-01",
+            securityenddt="2025-12-31",
+        ),
+        secinfo_row(
+            int(ROSTER_PERMNO),
+            "2010-01-09",
+            "2025-12-31",
+            ROSTER_SYMBOL,
+            ROSTER_SYMBOL,
+            None,
+            securitybegdt="2000-01-01",
+            securityenddt="2025-12-31",
+        ),
+    ]
+
+
+def _roster_dsp500_rows():
+    """`dsp500list_v2` making the security an S&P 500 member for the LP era."""
+    return [
+        {
+            "permno": ROSTER_PERMNO,
+            "indno": "1000500",
+            "mbrstartdt": "2000-01-01",
+            "mbrenddt": ROSTER_SPELL_END,
+            "mbrflg": "NORM",
+            "indfam": "1100500",
+        }
+    ]
+
+
+def _roster_store(tmp_path, *, store="roster.zarr", **config_overrides):
+    """Pull and convert the roster scenario.
+
+    Written out rather than routed through `_build_store`, whose `permnos`
+    parameter is the ACQUISITION roster: the tests below need `config.permnos`
+    on the DATASET config, and one keyword cannot be both.
+    """
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _roster_rows(),
+        [ROSTER_PERMNO],
+        start=ROSTER_WINDOW_START,
+        end=ROSTER_WINDOW_END,
+        extra_secinfo=_roster_secinfo(),
+        dsp500_rows=_roster_dsp500_rows(),
+    )
+    dataset_config = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start=ROSTER_WINDOW_START,
+        end=ROSTER_WINDOW_END,
+        store=store,
+        **config_overrides,
+    )
+    _convert(dataset_config)
+    return dataset_config
+
+
+def _finite_close_days(panel, symbol, days):
+    """Which of `days` carry an observed `close` for `symbol` in the panel.
+
+    A day the filter removed for the ONLY security in the store is absent from
+    the panel's timestamp axis entirely, so this cannot be written as a bare
+    `.sel()` -- that would raise instead of counting zero.
+    """
+    import numpy as np
+
+    if symbol not in _symbols(panel):
+        return []
+    axis = set(_timestamps(panel))
+    return [
+        day
+        for day in days
+        if day in axis and np.isfinite(_at(panel, "close", day, symbol))
+    ]
+
+
+def test_a_member_is_not_dropped_by_the_filter_during_its_spell(
+    mock_crsp_session, tmp_path
+):
+    """GAP-C: a `--universe` member keeps its history through its spell.
+
+    The load-bearing assertion is the row-count EQUALITY against a
+    `security_filter='none'` conversion of the same rows. "The member is
+    present" is not the property that matters -- the security IS present in the
+    broken behaviour too, by way of its later common-stock era, and a panel that
+    merely has the symbol is exactly what makes a mid-security truncation look
+    like a late IPO.
+    """
+    default = _panel(
+        _roster_store(
+            tmp_path,
+            store="member_default.zarr",
+            collision_universe="crsp_sp500",
+        )
+    )
+    unfiltered = _panel(
+        _roster_store(
+            tmp_path, store="member_none.zarr", security_filter="none"
+        )
+    )
+
+    baseline = _finite_close_days(unfiltered, ROSTER_SYMBOL, ROSTER_LP_DAYS)
+    kept = _finite_close_days(default, ROSTER_SYMBOL, ROSTER_LP_DAYS)
+
+    assert baseline == list(ROSTER_LP_DAYS), baseline
+    assert kept == baseline, kept
+    # The era the preset accepts on its own merits is untouched either way.
+    assert _finite_close_days(default, ROSTER_SYMBOL, ROSTER_COM_DAYS) == list(
+        ROSTER_COM_DAYS
+    )
+
+
+def test_an_explicitly_named_permno_is_not_dropped_by_the_filter(
+    mock_crsp_session, tmp_path
+):
+    """GAP-C: a `--permnos` run named the securities, so none of them is
+    screened out -- on any of its dates, membership spell or not.
+
+    `config.permnos` is unconditional where `collision_universe` is per-date:
+    the user named the security, not a window of it.
+    """
+    panel = _panel(
+        _roster_store(
+            tmp_path,
+            store="named_permno.zarr",
+            permnos=(ROSTER_PERMNO,),
+        )
+    )
+
+    assert _finite_close_days(panel, ROSTER_SYMBOL, ROSTER_LP_DAYS) == list(
+        ROSTER_LP_DAYS
+    )
+    assert _finite_close_days(panel, ROSTER_SYMBOL, ROSTER_COM_DAYS) == list(
+        ROSTER_COM_DAYS
+    )
+
+
+def test_without_a_roster_the_filter_still_truncates_the_rejected_era(
+    mock_crsp_session, tmp_path
+):
+    """The MIRROR IMAGE of the two tests above, over the SAME fixture.
+
+    Together the three prove the exemption is SCOPED rather than a blanket
+    widening: with neither `permnos` nor `collision_universe` set there is no
+    explicit roster, the population is unspecified, and excluding a partnership
+    era is exactly what the filter is for (D-06, D-17). This test goes red if
+    the exemption ever widens to the unspecified population -- the failure mode
+    T-03.10-48 names.
+    """
+    panel = _panel(_roster_store(tmp_path, store="no_roster.zarr"))
+
+    truncated = _finite_close_days(panel, ROSTER_SYMBOL, ROSTER_LP_DAYS)
+    assert truncated == [], truncated
+    assert len(truncated) < len(ROSTER_LP_DAYS)
+    # Still the same security, still in the panel -- which is why the
+    # truncation is invisible without the comparison Test A makes.
+    assert _finite_close_days(panel, ROSTER_SYMBOL, ROSTER_COM_DAYS) == list(
+        ROSTER_COM_DAYS
+    )
+
+
+def test_the_filter_report_names_the_roster_rescue(mock_crsp_session, tmp_path):
+    """The override is REPORTABLE or it is a silent widening (T-03.10-49).
+
+    `roster_overrides` answers exactly "what would have been dropped and was
+    not": the sources in play, the row count, and per PERMNO the symbol, the
+    rejected type combination and the date range. A rescued PERMNO is NOT in
+    `dropped_permnos` -- it was not dropped.
+    """
+    dataset_config = _roster_store(
+        tmp_path, store="report.zarr", collision_universe="crsp_sp500"
+    )
+
+    report = _filter_report(dataset_config)
+    overrides = report["roster_overrides"]
+
+    assert overrides["rows_rescued"] == len(ROSTER_LP_DAYS), overrides
+    assert any(
+        "crsp_sp500" in str(source) for source in overrides["sources"]
+    ), overrides["sources"]
+
+    rescued = overrides["permnos"][ROSTER_PERMNO]
+    assert rescued["symbol"] == ROSTER_SYMBOL, rescued
+    assert rescued["types"] == ["UG/EQTY/COM/CORP/Y"], rescued
+    assert rescued["rows"] == len(ROSTER_LP_DAYS), rescued
+    assert rescued["first"] == ROSTER_LP_DAYS[0], rescued
+    assert rescued["last"] == ROSTER_LP_DAYS[-1], rescued
+
+    assert ROSTER_PERMNO not in report["dropped_permnos"], report[
+        "dropped_permnos"
+    ]
+    assert report["rows_total"] == report["rows_kept"] + report["rows_dropped"]
+    assert report["rows_kept"] == len(ROSTER_LP_DAYS) + len(ROSTER_COM_DAYS)
+
+
+@pytest.mark.parametrize("preset", ["equity_common", "shrcd_10_11"])
+def test_every_member_survives_every_preset_on_its_member_dates(
+    mock_crsp_session, tmp_path, preset
+):
+    """The DURABLE invariant, across every preset: a member on a date is in the
+    panel on that date.
+
+    Read straight off `CrspMembership.permno_intervals` -- the same interval
+    frame the filter's exemption and the collision tie-break both consult -- so
+    it goes red the instant the unconditional filter returns, whatever preset a
+    later change makes the default.
+
+    The expected days come from the FIXTURE rows rather than from the panel's own
+    timestamp axis: a filter that truncated the only security in the store would
+    shrink that axis too, and an assertion quantified over it would pass
+    vacuously.
+    """
+    import numpy as np
+
+    from quantlab.dataset.crsp_membership import CrspMembership
+    from quantlab.dataset.crsp_reference import CrspReference
+
+    dataset_config = _roster_store(
+        tmp_path,
+        store=f"invariant_{preset}.zarr",
+        security_filter=preset,
+        collision_universe="crsp_sp500",
+    )
+    panel = _panel(dataset_config)
+    intervals = CrspMembership(
+        CrspReference(dataset_config.reference_dir)
+    ).permno_intervals("crsp_sp500")
+
+    observed = {ROSTER_PERMNO: ROSTER_LP_DAYS + ROSTER_COM_DAYS}
+    axis = set(_timestamps(panel))
+    symbols = set(_symbols(panel))
+
+    missing = []
+    for record in intervals.to_dicts():
+        permno = str(record["permno"])
+        start = str(record["start_date"])[:10]
+        end = str(record["end_date"])[:10]
+        for day in observed.get(permno, ()):
+            if not start <= day <= end:
+                continue
+            if (
+                ROSTER_SYMBOL not in symbols
+                or day not in axis
+                or not np.isfinite(_at(panel, "close", day, ROSTER_SYMBOL))
+            ):
+                missing.append((permno, day))
+
+    assert missing == [], missing
