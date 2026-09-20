@@ -79,3 +79,44 @@ that "the join returned something" would be exactly such a test.
 `2026-09-07-normalize-ticker-delimiter-between-membership-panel-and-pric.md` covers the
 `BF.B`/`BRK.B` notation half of the same 89-symbol gap. It is a separate, much smaller fix
 and does not address renames.
+
+## 2026-09-20 — how the CRSP vendor sidesteps this (phase 03.10)
+
+**This todo stays OPEN.** Phase 03.10 did not fix it; it added one vendor for which the
+problem cannot arise, which is a different thing and is worth recording so the next reader
+does not mistake a green CRSP panel for a closed defect.
+
+The CRSP/WRDS vendor (`example/wrds_crsp.md`) has **one PERMNO-keyed symbology shared by
+its prices and its universes**. PERMNO is CRSP's permanent security identifier; a rename
+(FB → META) does not change it. The raw tier is keyed by PERMNO and carries no ticker at
+all — the period-correct ticker is derived at CONVERSION time from
+`crsp_a_stock.stksecurityinfohist` by `quantlab/dataset/crsp_symbology.py:CrspSymbology`.
+
+Both halves that disagree for Tiingo/Wikipedia are then produced by the SAME object:
+
+- the price panel's row labels — `CrspStockDataset._derivation` calls
+  `CrspSymbology.label_rows`;
+- the membership intervals — `CrspMembership.symbol_intervals` intersects PERMNO
+  membership with `CrspSymbology.symbol_intervals`.
+
+So the two vocabularies agree **by construction** rather than by a mapping that could be
+incomplete: `FB` is `FB` through 2022-06-08 and `META` from 2022-06-09 on BOTH sides, and
+`BRK.B` is spelled one way on both sides. This is proved end to end rather than asserted —
+`tests/test_crsp_constituent.py::test_membership_symbols_agree_with_the_crsp_price_panel`
+runs a real pull, a real conversion, and compares `(date, symbol)` sets per PERMNO.
+
+Two things this does NOT do:
+
+1. **It does not help the Tiingo/Alpaca + Wikipedia path**, which is where the measured
+   89/876 gap lives. Those vendors have no permanent identifier in the feeds this project
+   reads, so the "Solution" options above are still the open design decision.
+2. **It does not give the failure the loud behaviour this todo asks for.** The
+   verification requirement — an unresolvable membership symbol must RAISE rather than
+   yield an empty column — remains unmet for the Wikipedia-based universes. (The CRSP side
+   does behave that way: a membership day no CRSP ticker covers is dropped into
+   `report['unlabelled_members']` with a warning, and an unlinked Nasdaq-100 spell raises
+   by default.)
+
+If option 1 (a vendor identity key) is eventually chosen, the CRSP implementation is the
+worked example of what it buys: the whole class of problem disappears, and no rename map
+has to be maintained.
