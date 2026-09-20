@@ -22,7 +22,7 @@
 - [ ] **DATA-02**: 用户可以复用/整理现有币安现货数据接入，写入同一套存储抽象
 - [ ] **DATA-03**: 数据层抽象（`Dataset`/`DataBackend`）在设计上支持按市场（美股/加密...）与频率（日频/分钟频/tick）扩展——新增一种市场或频率不需要改动上层因子/模型/回测代码；v1 至少用两种不同的市场或频率组合验证该扩展性（如美股日频 + 币安现货）
 - [ ] **DATA-04**: 提供数据清洗/预处理模块（复用现有 `my_ops` 标准化算子），输出统一的 `xarray.Dataset`
-- [x] **DATA-05**: 用户可以获得标普 500 与纳斯达克 100 的日频 point-in-time 成分面板（`xarray.Dataset`，dims `timestamp`/`symbol`，布尔变量 `is_member`），在各自可回溯区间内无幸存者偏差；超出可回溯起点的查询必须显式报错而非静默返回不完整名单
+- [x] **DATA-05**: 用户可以获得标普 500 与纳斯达克 100 的日频 point-in-time 成分面板（`xarray.Dataset`，dims `timestamp`/`symbol`，布尔变量 `is_member`），在各自可回溯区间内无幸存者偏差；超出可回溯起点的查询必须显式报错而非静默返回不完整名单。自 Phase 03.10 起，除既有的 Wikipedia 来源外还有一条 CRSP 原生来源：标普 500 成分来自 CRSP 的 `dsp500list_v2`（按 PERMNO），纳斯达克 100 经 Compustat 的 CCM gvkey→PERMNO 链接得到，两者都以价格面板自身的期内正确 ticker 表达（该来源的可回溯区间由 CRSP 年度更新产品的截止日期界定）
 - [x] **DATA-06**: 成分股数据类与行情数据类共享同一 `BaseDataset` 抽象——成分股类不继承任何 OHLCV 专用成员（`_to_kunquant`/`_to_nautilus`），新增一类指数不需要改动上层代码
 - [ ] **DATA-07**: 外部调用方可以不指名 vendor 类、`Dataset` 子类或 `ingest_*.py` 脚本，就通过注册表把已落盘的 raw parquet 层转换为 Zarr 层，并拿到一个描述本次转换结果的对象（写入/跳过的窗口、pinned 符号数、存储路径、是否续跑或被取消）
 - [~] **DATA-08**: 任何调用方可以在任何内存被分配之前，问出一次转换的预测峰值内存与每个超预算窗口的补救建议；该答案是一个可被调用方渲染的值，而不是这一层打印的日志行
@@ -136,9 +136,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-01 | Phase 1 | Pending |
 | DATA-01 | Phase 2 | Pending |
 | DATA-02 | Phase 2 | Pending |
-| DATA-03 | Phase 2 | Pending |
+| DATA-03 | Phase 2 | Pending — advanced by Phase 03.10, which added a second `us_equity`/`1d` vendor (WRDS CRSP Stock v2) through the registry's per-capability resolver, consumed by the factor, label and backtest layers without a change in any of them: the extensibility this requirement asks for, exercised but not yet signed off by its owning phase |
 | DATA-04 | Phase 2 | Pending |
-| DATA-05 | Phase 03.1 | Complete |
+| DATA-05 | Phase 03.1 | Complete — also advanced by Phase 03.10, which added CRSP-native point-in-time S&P 500 membership (`dsp500list_v2`, by PERMNO) and a Compustat Nasdaq-100 universe via the CCM gvkey→PERMNO link, expressed in the price panel's own period-correct tickers |
 | DATA-06 | Phase 03.1 | Complete |
 | DATA-07 | Phase 03.5 | Pending |
 | DATA-08 | Phase 03.5 | Withdrawn — phase 03.6 SC-3 deleted the capability (the dense-panel estimator/guard group on `UniverseCatalog`); never delivered, and not outstanding work. See the DATA-08 annotation in the Data section |
