@@ -204,7 +204,7 @@ land raw in parquet and are resampled locally into the canonical `[timestamp, sy
 the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.2 (Acquisition abstraction), Phase 03.1 (point-in-time universes)
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -242,7 +242,7 @@ Plans:
 
 **Wave 5** *(blocked on 07)*
 
-- [ ] 03.9-08-PLAN.md — Main-tree no-new-failures gate + user-run live WRDS smoke (Duo push)
+- [x] 03.9-08-PLAN.md — Main-tree no-new-failures gate + user-run live WRDS smoke (Duo push)
 
 ### Phase 03.8: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (INSERTED)
 
