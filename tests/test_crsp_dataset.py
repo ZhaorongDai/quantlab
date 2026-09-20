@@ -1385,3 +1385,223 @@ def test_a_store_without_the_sidecar_is_refused(mock_crsp_session, tmp_path):
 
     message = str(raised.value)
     assert sidecar.name in message, message
+
+
+# ---------------------------------------------------------------------------
+# WR-02 / WR-03: both entry points gate and record, and a refused run keeps
+# the audit trail of the store that survived it
+# ---------------------------------------------------------------------------
+
+#: A second real PERMNO (Oracle), used only to WIDEN a roster -- the one
+#: refusal that fires AFTER the identity reports have been written.
+SECOND_PERMNO = "10104"
+SECOND_SYMBOL = "ORCL"
+
+
+def _second_secinfo():
+    """A `stksecurityinfohist` interval for `SECOND_PERMNO`.
+
+    SYNTHETIC, like `_synthetic_secinfo`: the live check never sampled 10104's
+    security info, and the span only has to cover the anchor window.
+    """
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(
+            int(SECOND_PERMNO),
+            "1986-03-12",
+            "2025-12-31",
+            SECOND_SYMBOL,
+            SECOND_SYMBOL,
+            None,
+        )
+    ]
+
+
+def _second_security_rows():
+    """SYNTHETIC: a handful of ordinary days for `SECOND_PERMNO`."""
+    import pandas as pd
+
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    value = 25.0
+    for index, day in enumerate(pd.bdate_range(ANCHOR_START, ANCHOR_END)):
+        value *= 1.001
+        rows.append(
+            dsf_row(
+                SECOND_PERMNO,
+                day.date().isoformat(),
+                dlyprc=f"{value:.6f}",
+                dlyclose=f"{value:.6f}",
+                dlyopen=f"{value * 0.99:.6f}",
+                dlyhigh=f"{value * 1.01:.6f}",
+                dlylow=f"{value * 0.98:.6f}",
+                dlyret="0.001000" if index else None,
+            )
+        )
+    return rows
+
+
+def _crsp_config(tmp_path, cfg, reference_dir, *, permnos, store="crsp.zarr"):
+    """`_dataset_config` with an explicit PERMNO roster."""
+    from quantlab.base.config import CrspDatasetConfig
+
+    return CrspDatasetConfig(
+        zarr_file_path=str(tmp_path / store),
+        raw_data_dir_path=cfg.raw_data_dir_path,
+        catalog_path=str(tmp_path / "catalog"),
+        reference_dir=str(reference_dir),
+        start_date=ANCHOR_START,
+        end_date=ANCHOR_END,
+        permnos=permnos,
+    )
+
+
+def _report_paths(dataset_config):
+    from pathlib import Path
+
+    from quantlab.dataset.crsp import (
+        FILTER_REPORT_SUFFIX,
+        SYMBOLOGY_REPORT_SUFFIX,
+    )
+
+    base = str(dataset_config.zarr_file_path)
+    return (
+        Path(base + FILTER_REPORT_SUFFIX),
+        Path(base + SYMBOLOGY_REPORT_SUFFIX),
+    )
+
+
+def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path):
+    """WR-02: the NON-chunked entry point records its provenance too.
+
+    `from_raw_data().save()` is the idiom every other dataset in this repo
+    supports, and `scripts/ingest_wrds_crsp.py` uses it four lines from the CRSP
+    call. Until this plan the anchor sidecar and both identity reports were
+    written only from `_raw_axes_in_range`, which ONLY the chunked path calls --
+    so that idiom produced a store with no provenance at all, and the failure
+    was LATCHED: `_assert_anchor_unchanged` refuses any store that exists
+    without an adjustment sidecar, so every later `registry.convert` on that
+    path raised about a sidecar the user had never heard of and could never
+    satisfy.
+
+    What this pins is the latch being gone. A later chunked conversion may still
+    refuse -- a store written in one `mode="w"` shot has no CHUNK ledger, and
+    appending blind to a store whose written windows are unrecorded is refused
+    for every dataset in the repo, CRSP included. That refusal names the ledger
+    and states its remedy. What must never come back is the CRSP-specific
+    refusal about a missing `.crsp_adjustment.json`.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+    dataset_config = _dataset_config(
+        tmp_path, cfg, reference_dir, start=ANCHOR_START, end=ANCHOR_END
+    )
+
+    CrspStockDataset(dataset_config).from_raw_data().save()
+
+    sidecar = _sidecar_path(dataset_config)
+    filter_report, symbology_report = _report_paths(dataset_config)
+    for path in (sidecar, filter_report, symbology_report):
+        assert path.exists(), sorted(item.name for item in tmp_path.iterdir())
+
+    try:
+        _convert(dataset_config)
+    except ValueError as exc:
+        message = str(exc)
+        assert "chunk ledger" in message, message
+        assert sidecar.name not in message, message
+
+
+def test_from_raw_data_runs_the_anchor_gate_too(mock_crsp_session, tmp_path):
+    """WR-02's other half: the GATE is no longer chunked-path-only.
+
+    The gate and the record are one mechanism -- a record nothing checks is
+    decoration, and a check nothing records can never fire. Moving the write
+    into the non-chunked path without the check would let
+    `from_raw_data().save()` extend a store IN PLACE onto a second anchor,
+    which is the exact splice `_assert_anchor_unchanged` exists to refuse.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+    dataset_config = _dataset_config(
+        tmp_path, cfg, reference_dir, start=ANCHOR_START, end=ANCHOR_END
+    )
+    _convert(dataset_config)
+
+    extended = _dataset_config(
+        tmp_path, cfg, reference_dir, start=ANCHOR_START, end="2020-12-31"
+    )
+    with pytest.raises(ValueError) as raised:
+        CrspStockDataset(extended).from_raw_data()
+
+    message = str(raised.value)
+    assert ANCHOR_END in message, message
+    assert "2020-12-31" in message, message
+    assert "crsp_adjustment" in message, message
+
+
+def test_a_refused_reconversion_keeps_the_existing_identity_reports(
+    mock_crsp_session, tmp_path
+):
+    """WR-03: a run that refuses must not erase the SURVIVING store's audit
+    trail.
+
+    `.crsp_filter_report.json` is the D-17 artifact whose whole purpose is to
+    say what the store on disk dropped. `_write_identity_reports` ran
+    unconditionally from `_raw_axes_in_range`, i.e. BEFORE
+    `_reconcile_new_listings`' `on_new_listing='refuse'` arm and before
+    `ChunkLedger.assert_consistent` -- either of which still aborts the run.
+    So a wider-roster re-conversion overwrote both reports with the NEW roster's
+    numbers, then refused and appended nothing: the store was unchanged and its
+    two provenance sidecars now described a panel that was never written.
+
+    The scenario has to be a refusal that fires AFTER those writes. Extending
+    `end_date` does not: the anchor gate refuses inside the derivation, before
+    any report is written, so it would pass this test with or without the guard.
+    Widening the roster on the SAME window does -- the anchor record is
+    identical, so the gate lets the run through to the axis reconciliation.
+    """
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _anchor_series_rows() + _second_security_rows(),
+        [SYNTHETIC_PERMNO, SECOND_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo() + _second_secinfo(),
+    )
+
+    narrow = _crsp_config(
+        tmp_path, cfg, reference_dir, permnos=(SYNTHETIC_PERMNO,)
+    )
+    _convert(narrow)
+
+    filter_report, symbology_report = _report_paths(narrow)
+    filter_bytes = filter_report.read_bytes()
+    symbology_bytes = symbology_report.read_bytes()
+
+    widened = _crsp_config(
+        tmp_path, cfg, reference_dir, permnos=(SYNTHETIC_PERMNO, SECOND_PERMNO)
+    )
+    with pytest.raises(ValueError):
+        _convert(widened)
+
+    assert filter_report.read_bytes() == filter_bytes
+    assert symbology_report.read_bytes() == symbology_bytes
