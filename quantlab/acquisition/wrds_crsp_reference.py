@@ -50,6 +50,7 @@ from pathlib import Path
 
 import polars as pl
 from loguru import logger
+from psycopg2 import sql
 
 from quantlab.acquisition.wrds_crsp import CrspQueries
 from quantlab.dataset.crsp_reference import (
@@ -260,11 +261,33 @@ class CrspReferenceTables:
     def _where_for(self, spec: ReferenceTableSpec, gvkeys):
         """`(sql WHERE or None, human-readable description or None)`.
 
+        Four of the six tables are pulled WHOLE and have no WHERE at all. The
+        two Compustat-side ones are predicated, and both predicates are built
+        with `psycopg2.sql` only: the index id is a `sql.Literal`, the gvkeys
+        are a `sql.Literal` LIST (server-returned values going back into a
+        query, T-03.10-13), and every column name is a `sql.Identifier` --
+        which is also what quotes `idxcst_his`'s reserved `from` (Pitfall 8).
+
         The description is what the manifest records. Deliberately NOT the
         rendered statement: rendering `sql.Composed` needs a live connection's
         quoting context, and the manifest is read by `CrspReference` on
         machines with no driver at all.
         """
+        if spec.name == "idxcst_his":
+            where = sql.SQL("{column} = {value}").format(
+                column=sql.Identifier("gvkeyx"),
+                value=sql.Literal(self.NDX_GVKEYX),
+            )
+            return where, f"gvkeyx = '{self.NDX_GVKEYX}'"
+        if spec.name == "ccmxpf_lnkhist":
+            values = list(gvkeys or ())
+            where = sql.SQL("{column} = ANY({values})").format(
+                column=sql.Identifier("gvkey"), values=sql.Literal(values)
+            )
+            return where, (
+                f"gvkey in the {len(values)} gvkey(s) comp.idxcst_his returned "
+                f"for gvkeyx '{self.NDX_GVKEYX}'"
+            )
         return None, None
 
     def _write_parquet_atomically(self, frame: pl.DataFrame, path: Path) -> None:
@@ -294,14 +317,49 @@ class CrspReferenceTables:
     # -- Nasdaq-100 (plan 03.10-04 Task 2) ----------------------------------
 
     def _gvkeys_of(self, frame: pl.DataFrame) -> list[str]:
-        raise NotImplementedError(
-            f"{type(self).__name__}: the Nasdaq-100 tables are not wired yet."
+        """The membership's distinct gvkeys, sorted; empty is a FAILURE.
+
+        An empty set would make the CCM predicate `= ANY(ARRAY[])`, which
+        matches nothing, and the pull would quietly write two empty tables.
+        That surfaces much later as a Nasdaq-100 universe with no members --
+        indistinguishable from a roster that legitimately selected nothing,
+        and by then the vintage manifest says the tier is complete.
+        """
+        gvkeys = sorted(
+            {
+                str(value)
+                for value in frame.get_column("gvkey").drop_nulls().to_list()
+            }
         )
+        if not gvkeys:
+            raise ValueError(
+                f"{type(self).__name__}: comp.idxcst_his returned no rows for "
+                f"gvkeyx {self.NDX_GVKEYX!r} (Nasdaq 100), so there is no "
+                f"membership to link. Refusing to query "
+                f"crsp_a_ccm.ccmxpf_lnkhist for an empty gvkey set and "
+                f"refusing to publish a manifest for an empty universe; check "
+                f"the Compustat index id before re-running."
+            )
+        return gvkeys
 
     def _gvkeys_on_disk(self) -> list[str]:
-        raise NotImplementedError(
-            f"{type(self).__name__}: the Nasdaq-100 tables are not wired yet."
-        )
+        """The gvkeys of an `idxcst_his` already pulled in a previous run.
+
+        Reached only in the incremental case -- a vintage whose membership
+        table is on disk but whose CCM table is not, e.g. a pull that was
+        interrupted between the two, or one that gained `include_nasdaq100`
+        after the fact. Re-reading the parquet is cheaper and more honest than
+        re-COPYing a table this vintage already has.
+        """
+        path = self.path_for("idxcst_his")
+        if not path.exists():
+            raise ValueError(
+                f"{type(self).__name__}: crsp_a_ccm.ccmxpf_lnkhist is pulled "
+                f"for the gvkeys comp.idxcst_his returned, but no "
+                f"{path.name} is on disk under {str(self.reference_dir)!r}. "
+                f"Pull the Nasdaq-100 membership first (or pass refresh=True)."
+            )
+        return self._gvkeys_of(pl.read_parquet(path))
 
 
 def _schemas_of(specs) -> tuple[str, ...]:
