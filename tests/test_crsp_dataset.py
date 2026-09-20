@@ -533,6 +533,45 @@ def test_a_modern_delisting_keeps_a_real_adjusted_level(
     assert _at(panel, "is_delisting", "2024-07-08", WESTROCK_SYMBOL) == 1.0
 
 
+def test_the_delisting_fixture_corpus_covers_both_ciz_shapes():
+    """The corpus must never again carry only ONE delisting shape.
+
+    Until this plan, `tests/crsp_fixtures.py` encoded exactly one: Lehman
+    2008-09-18, `dlyprcflg='DP'`, `dlyprc = 0.052`, a REAL delisting price with
+    ordinary factor and volume columns. That shape is **0 of 5** delisting rows
+    in the raw tier this phase actually pulled; the delisting-AMOUNT shape --
+    `dlyprcflg='DA'`, `dlyprc = 0.000000` as a no-price sentinel,
+    `dlycumfacshr` NULL -- is **5 of 5**. Two blockers (GAP-A, GAP-B) shipped
+    green across 179 passing CRSP tests for precisely that reason: the suite was
+    complete about a shape the data no longer produces.
+
+    This is the durable guard, not part of this plan's red set. It is GREEN as
+    soon as the fixture rows land, and it fails the moment either shape is
+    dropped from the corpus -- which is the only way this class of defect can
+    become invisible again.
+    """
+    from tests.crsp_fixtures import LEHMAN_2008_ROWS, WESTROCK_2024_ROWS
+
+    delisting_rows = [
+        row
+        for row in list(LEHMAN_2008_ROWS) + list(WESTROCK_2024_ROWS)
+        if row["dlydelflg"] == "Y"
+    ]
+    assert delisting_rows
+
+    flags = {row["dlyprcflg"] for row in delisting_rows}
+    # Both CIZ delisting flags: PRICE (a real price) and AMOUNT (a sentinel).
+    assert "DP" in flags, flags
+    assert "DA" in flags, flags
+
+    assert any(row["dlyprc"] == "0.000000" for row in delisting_rows), delisting_rows
+    assert any(row["dlycumfacshr"] is None for row in delisting_rows)
+    assert any(
+        row["dlyprc"] is not None and float(row["dlyprc"]) > 0.0
+        for row in delisting_rows
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 2: events on their ex-dates, and the drop-in check
 # ---------------------------------------------------------------------------
