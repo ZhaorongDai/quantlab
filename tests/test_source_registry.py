@@ -415,20 +415,36 @@ def test_wrds_descriptor_serves_exactly_the_nbbo_capability() -> None:
     `supports(..., "quotes")` is asserted False because the Alpaca tick rows
     share `(us_equity, tick)` with this one: a registry that matched on the
     pair alone would hand an Alpaca quotes request a WRDS NBBO class.
+
+    As of 03.10-01 the descriptor is defined in the NEUTRAL module
+    `quantlab.acquisition.wrds` (so plan 02's CRSP provider can join the same
+    vendor without an import cycle), and the capability carries its own
+    `acquisition_cls` / `config_factory` -- which is the field plan 02's row
+    will differ in. The descriptor-level default is still the TAQ pair, so
+    every shell reading `SOURCE.acquisition_cls` is unaffected. The move itself
+    is pinned in `tests/test_wrds_vendor_seam.py`.
     """
     from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.dataset.nbbo import NbboPanelDataset
 
     source = DataSourceRegistry.get("wrds")
+    assert source is WRDS_SOURCE
 
     assert {
         (c.market, c.frequency, c.data_type) for c in source.capabilities
     } == {("us_equity", "tick", "nbbo")}
     (capability,) = source.capabilities
     assert capability.dataset_cls is NbboPanelDataset
+    assert capability.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
+    assert capability.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
     assert source.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
     assert source.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
     assert source.required_env == ("WRDS_USERNAME",)
+    assert (
+        source.acquisition_cls_for("us_equity", "tick", "nbbo")
+        is wrds_taq.WrdsTaqNbboAcquisition
+    )
     assert source.supports("us_equity", "tick", "nbbo") is True
     assert source.supports("us_equity", "tick", "quotes") is False
 
