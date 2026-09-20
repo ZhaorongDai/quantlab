@@ -198,7 +198,7 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 
 | 预设 | 保留什么 | 说明 |
 |---|---|---|
-| `equity_common`（默认） | `securitytype='EQTY'` + `securitysubtype='COM'` + `sharetype ∈ (NS, SB, CE)` | 保留 REIT（含 8 个 `SB` 的）和非美国注册发行人；丢掉 ADR、unit、基金/ETF、类型未知 |
+| `equity_common`（默认） | `securitytype='EQTY'` + `securitysubtype='COM'` + `sharetype ∈ (NS, SB, CE)` | 保留 REIT（含 8 个 `SB` 的）和非美国注册发行人；丢掉 ADR（`AD`）、unit（`UG`）、基金/ETF、类型未知。**⚠️ 这条默认预设有一个已知缺陷，会截断真实指数成分的历史，见下文[已知问题 GAP-1](#gap-1equity_common-会安静地截断真实指数成分的历史)** |
 | `shrcd_10_11` | 上面再加 `usincflg='Y'`、`issuertype ∈ (ACOR, CORP)`，`sharetype` 只留 `NS` | 复刻传统 `shrcd in (10,11)`；**会丢掉 REIT 和非美国发行人**，而它们是合法的 S&P 500 / Nasdaq-100 成分 |
 | `none` | 全部 | QQQ 基准 store 用的就是它 |
 
@@ -207,11 +207,18 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 一个 ADR 读作 `AD/EQTY/COM/CORP/N`，一个 unit 读作 `UG/EQTY/COM/CORP/N`，
 两者都**满足**那个两列谓词。所以 `equity_common` 额外带了 `sharetype` 白名单
 （CRSP flag 字典里定义的每一个 ShareType 代码，**除了** `AD` 和 `UG`），
-这样才恰好给出 D-17 列举的每一条「丢」和每一条「留」。
+这样才给出 D-17 列举的每一条「丢」和每一条「留」。
 
-这个读法**可逆且零成本**：把字面的两列谓词
+**但 2026-09-20 的 live 跑推翻了「恰好」这两个字。** 在 CRSP 里 `UG` 同时标着一只证券的
+**公开上市有限合伙（LP）时期**，而那些时期属于货真价实的指数成分——黑石、KKR、嘉年华都在内；
+`AD` 则覆盖了皇家荷兰石油的**全部生命周期**。把它们从默认预设里排除，
+换来的不是「少了一只 ADR」，而是**一只保留下来的证券被从中间截断**，下游完全看不出来。
+细节、证据和已经定下的修复方向见下文[已知问题 GAP-1](#gap-1equity_common-会安静地截断真实指数成分的历史)。
+
+这个读法本身**可逆且零成本**：把字面的两列谓词
 `{"securitytype": ["EQTY"], "securitysubtype": ["COM"]}` 作为 `security_filter` 字典传进去就行，
-而过滤报告两种情况下都会把差别摆出来。
+而过滤报告两种情况下都会把差别摆出来。但这只是一个 escape hatch，
+**不是** GAP-1 已经选定的修复方向（用户的决定是「优先保证成分股不缺」，见下文）。
 
 三条更细的规则：
 - 判定是**逐日**的，读 `dsf_v2` 自己的当日类型列——一只后来变成封闭式基金的股票，
@@ -326,6 +333,9 @@ CCM 的连接是 `gvkey` **且** `iid = liid`，**不是** `linkprim`。常见�
 （那个位置仍然 `NotImplementedError`，phase 03.7 D-08），这一点由两半测试锁着——
 标识符扫描证明没有 CRSP 模块去碰 `benchmark_dataset`，AST 检查证明那个守卫还在。
 
+**⚠️ 目前 `--qqq` 单独配 `--to-zarr` 会在转换这一步崩掉**（原始拉取是好的，崩在转 Zarr）。
+QQQ store 暂时拿不到，见下文[已知问题 GAP-2](#gap-2--qqq-单独配---to-zarr-会崩在权益面板转换上)。
+
 ---
 
 ## 它是怎么工作的
@@ -425,8 +435,13 @@ live check（`03.10-LIVE-CHECK*.json`）量到的真实规模：
   **20 GiB 原始字节**和 **7 亿行**。
 - 打印出来的估算里 bucket 叫 **`year buckets:`**（TAQ 那边叫 `trading days:`），
   因为 CRSP 的一页就是一个日历年——这样被拒绝时给出的边界是一个重跑命令**真的能用**的边界。
-- **每行字节数 `DEFAULT_BYTES_PER_ROW = 150` 是假设值，不是量出来的**，
-  打印的估算会标明 `ASSUMPTION`。在一次真实拉取量到分片的字节/行之前，这个估算可能偏大或偏小；
+- **每行字节数 `DEFAULT_BYTES_PER_ROW = 150` 是假设值**，打印的估算会标明 `ASSUMPTION`。
+  2026-09-20 的 live 跑第一次把它量了出来：在 S&P 500 规模上（96 个分片、134,054 行、
+  10,495,581 字节）实测 **78.3 字节/行**，也就是 150 这个假设**高估了约 1.9 倍**。
+  对一个体量护栏来说高估是**安全**的方向（宁可提前拦住，不要事后爆盘），所以它不是 bug，
+  代码没有改；想收紧成实测值是一个可选的后续项。
+  注意只拉 3 个 PERMNO 时量到的是 381 字节/行——那是 60 个极小分片上的 parquet 元数据开销，
+  不是有代表性的数字，别拿它去调常量。
   行数上限是独立的第二道线。
 - `--force-volume` 跳过**拒绝**，不跳过**算术**：估算照算照打印，并额外说明是被强制放行的。
   没有环境变量、也没有配置项能整体关掉护栏。
@@ -455,7 +470,7 @@ WRDS_USERNAME environment variable must be set to your WRDS username. The passwo
 整条链路（权限探测、产品边界、参考表、名册、护栏、拉取、转换、单连接）在
 `tests/test_ingest_wrds_crsp.py` 里用离线的 `FakeCrspSession` 端到端跑过（29 个测试）。
 
-### 例 2：真实拉取（**此例未实际运行**，需要 WRDS 凭证，每条命令会触发一次 Duo 推送）
+### 例 2：真实拉取（**这 6 条命令 2026-09-20 由账号持有人真实跑过**，每条一次 Duo 推送）
 
 ```bash
 export WRDS_USERNAME=<你的 WRDS 用户名>
@@ -481,9 +496,32 @@ uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 \
 #   若因未链接的 spell 停下，确认后再加 --allow-unlinked-ndx
 
 # QQQ 基准，单独一个 store；窗口会被裁到产品末日并打印裁剪行
+# ⚠️ 原始拉取正常，但转 Zarr 这一步目前会崩，见「已知问题 GAP-2」
 uv run python scripts/ingest_wrds_crsp.py --qqq \
     --start-date 2024-01-01 --end-date 2026-06-30 --to-zarr
+
+# 起点就在产品末日之后：在任何拉取之前被拒绝，点名 2025-12-31
+uv run python scripts/ingest_wrds_crsp.py --permnos 14593 \
+    --start-date 2026-01-05 --end-date 2026-06-30
 ```
+
+live 跑出来的关键数字（全部与离线契约一致）：
+
+| 检查点 | 实测 |
+|---|---|
+| AAPL（14593）2020 年日行数 | **253** |
+| 三个 PERMNO 在 2019-01-01…2023-12-31 的行数 | 各 1,258，合计 3,774（估算打印 `year buckets: 5`） |
+| 第二次同参数重跑 | `Resume: skipping 3/3 symbols already covering ...; 0 remaining.`，参考表也整体跳过，零次查询 |
+| AAPL `adjClose` 2020-08-31 ÷ 2020-08-28 | **1.033912**（原始 close 499.23 → 129.04，四拆一） |
+| FB / META 交接 | FB 866 个非空交易日止于 2022-06-08，META 392 个起于 2022-06-09，无重叠 |
+| `--universe crsp_sp500` 2024 名册 | **520** 个 PERMNO（>500 是因为区间重叠保留了年中离开指数的证券——正是反幸存者偏差的设计），520/520 成功，面板 522 列 |
+| `wrds_crsp_sp500_membership.zarr` | dims `{timestamp: 366, symbol: 2003}`，首日和末日都是 **503** 个成分 |
+| S&P 过滤报告 | 130,280 行进，130,028 行留，丢 **252** 行，全部来自 `UG/EQTY/COM/CORP/N`（PERMNO 75154 = CCL 嘉年华）——**这就是 GAP-1** |
+| S&P 符号学报告 | 加类别后缀 466 处，撞车 0、seam 0、退市 carry 0、不合规 symbol 0、未贴标签 0 |
+| `--universe comp_nasdaq100` 2024 | 默认因 6 条未链接 spell 退出（exit 1）；`--allow-unlinked-ndx` 后名册 **108** 个 PERMNO、27,017 行，其中只有 **18** 个是新拉的（另外 90 个已被 S&P 那次覆盖——跨股票池增量续跑生效） |
+| QQQ（86755） | 裁剪行逐字打印 `clipped end 2026-06-30 -> 2025-12-31 (crsp_a_stock annual product end)`；拉到 502 行（2024-01-02…2025-12-31），2025-12-31 收盘 **614.31** |
+| 2026 起点 | 在任何拉取之前拒绝，点名 `2025-12-31` 和「annual update 产品」 |
+| 落盘 | 原始层 31M（132 分片）+ `_reference` 18M + `_watermarks` 2.1M；`wrds_crsp_sp500_1d.zarr` 9.9M；版本戳 `{"product_end": "2025-12-31"}` |
 
 原始数据已经在盘上、只想换过滤预设或分块粒度重新转换时，**不需要连 WRDS**：
 在 Python 里直接构造 `CrspDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录，
@@ -507,11 +545,79 @@ uv run python scripts/ingest_wrds_crsp.py --qqq \
 - **Nasdaq-100 停在未链接的 spell 上不是 bug。** 先看报错列出的 spell 和未覆盖区间，
   确认那确实是链接表的缺口而不是你的窗口选错了，再用 `--allow-unlinked-ndx`；
   用了之后这件事会记进面板自己的 `config.json`。
+  注意这个检查看的是**整段成分史**，不是你请求的窗口：live 上拒绝时列出的 6 条 spell
+  （gvkey 012884 / 063180 / 064606 / 065068 / 065489 / 106368）未覆盖区间全都落在
+  **1999–2008**，离请求的 2024 窗口十万八千里。这是故意的保守，但代价是
+  一个只要 2024 数据的人也得先看懂一段 1999 年的缺口——按窗口收窄这个判断是一个可选的后续项。
 - **`--universe` 只有 `crsp_sp500` 和 `comp_nasdaq100`。** 这是 CRSP 厂商自己的两个池；
   Wikipedia 那套 `sp500` / `nasdaq100` 仍然服务于其他厂商，两者不互通。
 - **显式名册的 store 叫 `custom`，不叫 `sp500`。** 就算你列的 PERMNO 恰好都是 S&P 成分，
   你也没有建出一个 S&P 面板，而 store 的名字会跟它一辈子。
 - **两个日期都必填。** 窗口要先数行数、过护栏、对产品边界，没有默认窗口。
 - **`--rows-per-symbol-day` 在这里没有意义。** 它是 Alpaca tick 护栏用的；传了会报错。
-- **150 B/行是假设。** 在实测分片字节/行之前，护栏的字节估算可能偏大或偏小。
+- **150 B/行是假设，实测是 78.3。** 护栏的字节估算偏大约 1.9 倍，是安全的方向，没改。
 - **会话断了不会自动重连**（每次重连都可能推送 Duo）；重跑即可从「某批次的某一年」续上。
+
+---
+
+## 已知问题
+
+2026-09-20 由账号持有人跑完 7 条 live 命令后发现的两个问题，**都还没修**。
+它们被记录在 `03.10-11-SUMMARY.md` 里，留给后续的缺口修复计划。
+
+### GAP-1：`equity_common` 会安静地截断真实指数成分的历史
+
+**严重程度：高（数据正确性）。**
+
+默认预设排除 `AD` 和 `UG` 两个 `sharetype`。问题在于 CRSP 用 `UG` 标一只证券的
+**公开上市有限合伙（LP）时期**，而这些时期属于实打实的大盘指数成分；`AD` 也不只是「外国 ADR」。
+后果**不是**「这只证券不见了」，而是**一只保留下来的证券被从中间截断**——
+截断后的序列和「这家公司上市得晚」在下游长得一模一样，没有任何东西会提示你。
+
+从 live 的 `_reference/stksecurityinfohist.parquet` 里查出来的证据：
+1,956 个历史 S&P 500 成分 PERMNO 里有 **7 个**中招。
+
+| PERMNO | 名字 | 被丢掉的区间 |
+|---|---|---|
+| 92108 | Blackstone（`BLACKSTONE GROUP LP`） | 2007-06-22 … 2019-06-30（**12 年**，序列看起来从 2019-07 才开始） |
+| 11990 | KKR（`K K R & CO LP`） | 2010-07-15 … 2018-07-01（**8 年**） |
+| 75154 | Carnival（CCL） | 2003-04-21 … 2025-12-31（**2003 年之后全没了**；就是 2024 S&P 那次丢掉的 252 行） |
+| 75592 | Plum Creek Timber | 1989-06-02 … 1999-01-03 |
+| 14617 | Ares Management | 2014-05-02 … 2018-03-01 |
+| 75241 | Pioneer / Parker & Parsley | 1987-12-22 … 1991-02-19 |
+| 25267 | Royal Dutch Petroleum | `AD` 覆盖它 1954–2005 的**全部生命周期**，整只证券消失，尽管它做了几十年 S&P 500 成分 |
+
+同一张表里 `EQTY/COM` 行按 `sharetype` 的分布：
+`NS` 127,317 行 / 30,263 permno，`AD` 6,696 / 1,379，`UG` 1,508 / 394，`SB` 1,134 / 298，`CE` 43 / 18。
+
+**已定的修复方向（用户 2026-09-20 明确拍板）：「优先保证成分股不缺」。** 原则是
+*证券过滤筛的是一个没有明说边界的总体，它不能推翻一份显式名册*：
+
+- `--universe` 跑：成分由指数提供方定了 → 一个成分在它的成分区间内**永远不会**被过滤掉；
+- `--permnos` 跑：证券是用户点名的 → 不过滤；
+- 没有显式名册的宽筛：过滤照旧，排除 `AD`/`UG` 在那里仍然有意义。
+
+而且这个豁免必须**可审计**：`crsp_filter_report.json` 要记下被豁免保留了多少行、哪些 PERMNO，
+不能有任何静默。这条方向**取代**了 `03.10-08-SUMMARY.md` 里
+「传字面两列谓词字典即可回退」那条注记作为选定方案——那只是个临时 escape hatch。
+
+**在修好之前怎么办：** 需要完整历史（尤其是上面 7 只）时，
+给 `CrspDatasetConfig.security_filter` 传字面的两列谓词
+`{"securitytype": ["EQTY"], "securitysubtype": ["COM"]}`，或者传 `"none"`，
+然后自己读 `crsp_filter_report.json` 核对。
+
+### GAP-2：`--qqq` 单独配 `--to-zarr` 会崩在权益面板转换上
+
+**严重程度：中（命令行缺陷，不影响数据正确性）。**
+
+只给 `--qqq`、不给 `--permnos` / `--universe` 时，权益名册是空的，
+但 `scripts/ingest_wrds_crsp.py` 仍然去调权益面板那次 `convert()`（会打印 `Converting 0 PERMNO(s)`）。
+空名册解析出来的 store 名是 `custom`，于是撞上之前用别的窗口建好的
+`wrds_crsp_custom_1d.zarr`（锚点 `end_date=2023-12-31`），`_assert_anchor_unchanged` 抛 `ValueError`，
+**整条命令 exit 1，QQQ 那个 store 根本没被写出来**——尽管 QQQ 的原始拉取是成功的、数据也是对的
+（502 行，2025-12-31 收盘 614.31，已核对）。
+
+锚点守卫的行为是**正确**的；错的是 CLI：权益名册为空时就该跳过权益那次转换。
+
+**在修好之前怎么办：** 把 `--qqq` 和一个真实的 `--permnos` / `--universe` 一起跑，
+或者先把旧的 `wrds_crsp_custom_1d.zarr` 连同它的三个 `.crsp_*.json` 旁车删掉再跑。
