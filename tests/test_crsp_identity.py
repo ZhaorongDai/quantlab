@@ -1513,3 +1513,154 @@ def test_every_member_survives_every_preset_on_its_member_dates(
                 missing.append((permno, day))
 
     assert missing == [], missing
+
+
+# ---------------------------------------------------------------------------
+# WR-07: a symbol-restricted conversion pins BOTH axes from one frame
+# ---------------------------------------------------------------------------
+
+#: Two securities whose trading days overlap in 2010 and diverge afterwards --
+#: one continues into 2011, the other into 2012. SYNTHETIC. The YEARS matter:
+#: `from_raw_data_chunked` plans its windows from the pinned timestamp axis at
+#: `granularity='year'`, so a year only the OTHER security traded in becomes a
+#: window the requested symbol has no rows for.
+AXIS_KEPT_PERMNO = "60001"
+AXIS_KEPT_SYMBOL = "AONLY"
+AXIS_OTHER_PERMNO = "60002"
+AXIS_OTHER_SYMBOL = "BONLY"
+
+AXIS_SHARED_DAYS = ("2010-01-04", "2010-01-05", "2010-01-06")
+AXIS_KEPT_ONLY_DAYS = ("2011-01-03", "2011-01-04")
+AXIS_OTHER_ONLY_DAYS = ("2012-01-03", "2012-01-04")
+
+
+def _axis_rows():
+    """SYNTHETIC daily rows for the two partially-overlapping securities."""
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    for permno, symbol, days in (
+        (
+            AXIS_KEPT_PERMNO,
+            AXIS_KEPT_SYMBOL,
+            AXIS_SHARED_DAYS + AXIS_KEPT_ONLY_DAYS,
+        ),
+        (
+            AXIS_OTHER_PERMNO,
+            AXIS_OTHER_SYMBOL,
+            AXIS_SHARED_DAYS + AXIS_OTHER_ONLY_DAYS,
+        ),
+    ):
+        price = 40.0
+        for day in days:
+            price *= 1.01
+            rows.append(
+                dsf_row(
+                    permno,
+                    day,
+                    dlyprc=f"{price:.6f}",
+                    dlyclose=f"{price:.6f}",
+                    dlyret="0.010000",
+                    dlyretx="0.010000",
+                    ticker=symbol,
+                )
+            )
+    return rows
+
+
+def _axis_secinfo():
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(int(permno), "2000-01-01", "2025-12-31", symbol, symbol, None)
+        for permno, symbol in (
+            (AXIS_KEPT_PERMNO, AXIS_KEPT_SYMBOL),
+            (AXIS_OTHER_PERMNO, AXIS_OTHER_SYMBOL),
+        )
+    ]
+
+
+def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
+    mock_crsp_session, tmp_path
+):
+    """WR-07: `config.symbols` must restrict the TIMESTAMP axis too.
+
+    `_raw_axes_in_range` filtered the symbol axis and took the timestamp axis
+    from the UNFILTERED derivation, so a symbol-restricted conversion planned its
+    windows over every day ANY security traded, and handed
+    `_reconcile_new_listings` an `append_dim_size` the store will never reach --
+    after which a `widen` rewrite pins a chunk grid against a size that is not on
+    disk.
+
+    **What is and is not evidence here.** The converted store's own timestamp
+    axis is NOT evidence: a window in which the requested symbol has no rows
+    densifies to zero rows and appends nothing, so the store's axis is that
+    symbol's days with the bug and without it. It is asserted below anyway, as a
+    guard that the fix did not narrow the axis further. The two assertions that
+    FAIL on the defect are the PINNED axis `_raw_axes_in_range` returns -- the
+    D-02 once-resolved axis every caller reads, including the
+    `append_dim_size` one -- and the CHUNK LEDGER, which persists a completed
+    window over a year the requested symbol never traded. That phantom window is
+    the defect written to disk: a resume trusts the ledger.
+    """
+    import json
+    from pathlib import Path
+
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _axis_rows(),
+        [AXIS_KEPT_PERMNO, AXIS_OTHER_PERMNO],
+        start="2010-01-01",
+        end="2012-12-31",
+        extra_secinfo=_axis_secinfo(),
+    )
+    expected = list(AXIS_SHARED_DAYS + AXIS_KEPT_ONLY_DAYS)
+
+    # The pinned axis itself, on a store that does not exist yet, so nothing
+    # about an existing store can be what makes this pass.
+    probe = CrspStockDataset(
+        _dataset_config(
+            tmp_path,
+            cfg,
+            reference_dir,
+            start="2010-01-01",
+            end="2012-12-31",
+            store="axis_probe.zarr",
+            symbols=(AXIS_KEPT_SYMBOL,),
+        )
+    )
+    pinned_symbols, pinned_timestamps = probe._raw_axes_in_range()
+    assert pinned_symbols == [AXIS_KEPT_SYMBOL], pinned_symbols
+    assert [str(value)[:10] for value in pinned_timestamps] == expected, [
+        str(value)[:10] for value in pinned_timestamps
+    ]
+
+    dataset_config = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start="2010-01-01",
+        end="2012-12-31",
+        store="axis.zarr",
+        symbols=(AXIS_KEPT_SYMBOL,),
+    )
+    _convert(dataset_config)
+
+    panel = _panel(dataset_config)
+    assert _symbols(panel) == [AXIS_KEPT_SYMBOL], _symbols(panel)
+    assert _timestamps(panel) == expected, _timestamps(panel)
+
+    ledger = json.loads(
+        Path(str(dataset_config.zarr_file_path) + ".chunks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [window["rows"] for window in ledger["windows"]] == [3, 2], ledger[
+        "windows"
+    ]
+    assert all(
+        str(window["start"])[:4] in ("2010", "2011")
+        for window in ledger["windows"]
+    ), ledger["windows"]
