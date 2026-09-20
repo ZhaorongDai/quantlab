@@ -416,6 +416,12 @@ class CrspStockDataset(StockDataset):
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
         self._symbology_report: dict | None = None
+        # The membership spells of `collision_universe`, memoised because they
+        # now have TWO readers in one derivation (the roster exemption and the
+        # collision tie-break). Reset here for the same reason the derivation
+        # is: a re-dated or re-rostered config must not reuse the previous
+        # universe's spells.
+        self._member_intervals_cache: pl.DataFrame | None = None
 
     # -- the global derivation ---------------------------------------------
 
@@ -653,15 +659,9 @@ class CrspStockDataset(StockDataset):
         The opt-out (`nan_adj_at_permno_seam=False`) removes the NaN, never
         the RECORD: the seam is reported either way.
         """
-        member_intervals = None
-        if self.config.collision_universe is not None:
-            from quantlab.dataset.crsp_membership import CrspMembership
-
-            member_intervals = CrspMembership(
-                CrspReference(self.config.reference_dir)
-            ).permno_intervals(self.config.collision_universe)
-
-        frame = self._symbology.resolve_collisions(derived, member_intervals)
+        frame = self._symbology.resolve_collisions(
+            derived, self._member_intervals()
+        )
 
         frame = frame.sort(["symbol", "timestamp"])
         frame = frame.with_columns(
@@ -723,6 +723,164 @@ class CrspStockDataset(StockDataset):
 
     # -- the security filter (D-06, D-17) -----------------------------------
 
+    def _member_intervals(self) -> pl.DataFrame | None:
+        """`permno_intervals(collision_universe)`, read ONCE per instance.
+
+        `None` when no universe is configured, which is also "there is no
+        membership fact to consult" for both of this frame's readers.
+
+        **Memoised because it now has TWO readers inside one derivation**: the
+        roster exemption in `_apply_security_filter` and the collision tie-break
+        in `_resolve_identity`. Saving the second read of the reference tier is
+        the smaller reason. The larger one is that two independent reads could
+        disagree -- a reference tier rewritten under a long conversion would let
+        the filter and the tie-break hold different opinions about who was a
+        member, and nothing at runtime would notice a panel built from two
+        rosters. One read, one opinion.
+
+        Invalidated in the `config` setter beside `_derivation_cache`.
+        """
+        if self.config.collision_universe is None:
+            return None
+        cached = getattr(self, "_member_intervals_cache", None)
+        if cached is None:
+            from quantlab.dataset.crsp_membership import CrspMembership
+
+            cached = CrspMembership(
+                CrspReference(self.config.reference_dir)
+            ).permno_intervals(self.config.collision_universe)
+            self._member_intervals_cache = cached
+        return cached
+
+    def _roster_sources(self) -> list[str]:
+        """Which EXPLICIT ROSTERS are in play, for the filter report.
+
+        Computed separately from the exemption expression so the `'none'` preset
+        -- which rejects nothing, so can rescue nothing -- still records that a
+        roster WAS configured without paying for the per-row membership join.
+        """
+        sources: list[str] = []
+        if self.config.permnos:
+            sources.append(
+                f"config.permnos: {len(self.config.permnos)} PERMNO(s) named "
+                f"explicitly, exempt on every date"
+            )
+        if self.config.collision_universe is not None:
+            intervals = self._member_intervals()
+            spells = 0 if intervals is None else intervals.height
+            members = (
+                0
+                if intervals is None
+                else intervals.get_column("permno").n_unique()
+            )
+            sources.append(
+                f"config.collision_universe={self.config.collision_universe!r}: "
+                f"{members} member PERMNO(s) over {spells} membership spell(s), "
+                f"exempt on the dates inside a spell"
+            )
+        return sources
+
+    def _roster_exemption(
+        self, derived: pl.DataFrame
+    ) -> tuple[pl.Expr, list[str]]:
+        """`(the rows an explicit roster exempts from the type filter, sources)`.
+
+        **The rule this implements** (GAP-C, the operator's decision of
+        2026-09-20, `03.10-11-SUMMARY.md`: 「优先保证成分股不缺」). The security
+        filter screens an UNSPECIFIED population; it must not overrule an
+        explicit roster:
+
+        - `config.permnos` -- the user NAMED these securities, so every date of
+          each is exempt. A `--permnos` run is a roster, not a screen.
+        - `config.collision_universe` -- the index provider already decided
+          membership, so a member is exempt on the dates INSIDE its membership
+          spell and on no others. Scoping the exemption to the spell is what
+          keeps it from becoming a blanket widening: a PERMNO's pre-membership
+          or post-membership era is still an unspecified population.
+        - neither -- a literal false. Nothing is exempt, and the filter behaves
+          exactly as it did before this method existed.
+
+        **Why this is not a filter bug but a specification one.** `equity_common`
+        rejects `sharetype='UG'`, which in CRSP marks the publicly traded
+        PARTNERSHIP era of a security -- and that era belongs to real S&P 500
+        members: Blackstone 2007-06-22..2019-06-30, KKR 2010..2018, Carnival
+        everything from 2003, Royal Dutch Petroleum (`AD`) its entire life. Seven
+        of the 1,956 historical S&P 500 member PERMNOs are hit, and the loss is
+        MID-SECURITY, which downstream is indistinguishable from a late IPO.
+
+        **The universe arm is materialised as a Series literal, deliberately.**
+        A per-date interval test is a join, and the two join-free alternatives
+        are both worse: a disjunction over every spell is O(spells) passes over
+        the frame (thousands, for a real index history), and a `(permno, date)`
+        membership set is millions of pairs for a decade-long panel. So the join
+        happens here, once, and its boolean result is returned as
+        `pl.lit(series)` -- which keeps the contract a plain polars expression
+        the caller folds into `_keep`. It is aligned to the row order of the
+        `derived` argument, so the caller must evaluate it against THAT frame.
+        """
+        sources = self._roster_sources()
+        terms: list[pl.Expr] = []
+
+        if self.config.permnos:
+            # `permno` is the identity column (Int64); the config holds the
+            # digit STRINGS the CLI and the raw tier speak, normalised by the
+            # config setter, so the cast is the whole of the comparison.
+            terms.append(
+                pl.col("permno")
+                .cast(pl.String)
+                .is_in(list(self.config.permnos))
+                .fill_null(False)
+            )
+
+        intervals = self._member_intervals()
+        if intervals is not None:
+            terms.append(pl.lit(self._member_days(derived, intervals)))
+
+        if not terms:
+            return pl.lit(False), sources
+
+        expression = terms[0]
+        for term in terms[1:]:
+            expression = expression | term
+        return expression, sources
+
+    @staticmethod
+    def _member_days(
+        derived: pl.DataFrame, intervals: pl.DataFrame
+    ) -> pl.Series:
+        """Per ROW of `derived`: is this `(permno, timestamp)` inside a spell?
+
+        Both ends inclusive, which is `permno_intervals`' own contract. A row
+        whose PERMNO appears in no spell at all falls out of the inner join and
+        reads False through the left join back, rather than null -- "not a
+        member" and "no membership data for this security" are the same answer
+        to the only question the filter asks.
+        """
+        rows = derived.select(
+            pl.col("permno").cast(pl.Int64),
+            pl.col("timestamp").cast(pl.Date).alias("_day"),
+        ).with_row_index("_row")
+        spells = intervals.select(
+            pl.col("permno").cast(pl.Int64),
+            pl.col("start_date"),
+            pl.col("end_date"),
+        )
+        hit = (
+            rows.join(spells, on="permno", how="inner")
+            .filter(
+                (pl.col("_day") >= pl.col("start_date"))
+                & (pl.col("_day") <= pl.col("end_date"))
+            )
+            .select(pl.col("_row").unique())
+            .with_columns(pl.lit(True).alias("_member"))
+        )
+        return (
+            rows.join(hit, on="_row", how="left")
+            .sort("_row")
+            .get_column("_member")
+            .fill_null(False)
+        )
+
     def _apply_security_filter(self, derived: pl.DataFrame) -> pl.DataFrame:
         """Drop the rows the configured filter rejects, and say what went.
 
@@ -738,6 +896,12 @@ class CrspStockDataset(StockDataset):
         in through the filter, one row at a time, immediately after symbology's
         carry rule had rescued the same row from a NULL ticker.
 
+        **An EXPLICIT ROSTER overrides the verdict** (GAP-C, `_roster_exemption`).
+        The exemption is OR-ed in AFTER the delisting carry, which is the only
+        ordering that leaves both mechanisms whole: a rescued delisting row is
+        still rescued by the carry it inherited, and a rescued ordinary row does
+        not become its PERMNO's carried verdict for the next day.
+
         The report is BUILT here and WRITTEN once per conversion from
         `_raw_axes_in_range`, for the same reason the anchor record is: that
         hook runs exactly once, after the derivation has succeeded.
@@ -745,7 +909,8 @@ class CrspStockDataset(StockDataset):
         rows_total = derived.height
         if not self._security_filter:
             self._filter_report = self._build_filter_report(
-                rows_total, derived.head(0)
+                rows_total, derived.head(0), derived.head(0),
+                self._roster_sources(),
             )
             return derived
 
@@ -770,11 +935,27 @@ class CrspStockDataset(StockDataset):
                 )
             )
             .otherwise(pl.col("_keep_raw"))
-            .alias("_keep")
+            .alias("_carried")
         )
 
+        exemption, sources = self._roster_exemption(derived)
+        derived = derived.with_columns(
+            exemption.fill_null(False).alias("_roster_exempt")
+        )
+        derived = derived.with_columns(
+            (pl.col("_carried") | pl.col("_roster_exempt")).alias("_keep")
+        )
+
+        # Exactly "what would have been dropped and was not": the carried
+        # verdict is the whole of the pre-exemption decision, so a row the
+        # delisting carry already rescued is NOT a roster rescue.
+        rescued = derived.filter(
+            ~pl.col("_carried") & pl.col("_roster_exempt")
+        )
         dropped = derived.filter(~pl.col("_keep"))
-        self._filter_report = self._build_filter_report(rows_total, dropped)
+        self._filter_report = self._build_filter_report(
+            rows_total, dropped, rescued, sources
+        )
         if dropped.height:
             logger.warning(
                 f"{self.class_name}: the security filter dropped "
@@ -783,7 +964,19 @@ class CrspStockDataset(StockDataset):
                 f"{FILTER_REPORT_SUFFIX} beside the store for the per-type and "
                 f"per-PERMNO breakdown."
             )
-        return derived.filter(pl.col("_keep")).drop(["_keep_raw", "_keep"])
+        if rescued.height:
+            logger.warning(
+                f"{self.class_name}: an explicit roster KEPT {rescued.height} "
+                f"row(s) across {rescued['permno'].n_unique()} PERMNO(s) that "
+                f"the security filter would have dropped; see "
+                f"{FILTER_REPORT_SUFFIX} beside the store, key "
+                f"'roster_overrides', for the per-PERMNO date ranges. The "
+                f"filter screens an unspecified population and does not "
+                f"overrule a named roster."
+            )
+        return derived.filter(pl.col("_keep")).drop(
+            ["_keep_raw", "_carried", "_roster_exempt", "_keep"]
+        )
 
     @staticmethod
     def _type_combination() -> pl.Expr:
@@ -802,9 +995,26 @@ class CrspStockDataset(StockDataset):
         return expression.alias("_types")
 
     def _build_filter_report(
-        self, rows_total: int, dropped: pl.DataFrame
+        self,
+        rows_total: int,
+        dropped: pl.DataFrame,
+        rescued: pl.DataFrame | None = None,
+        sources: list[str] | tuple[str, ...] = (),
     ) -> dict:
-        """The `{zarr}.crsp_filter_report.json` payload."""
+        """The `{zarr}.crsp_filter_report.json` payload.
+
+        **`roster_overrides` is always present**, with zero counts when no
+        roster is configured, rather than omitted. A reader can then tell "no
+        override happened" from "this store predates the feature" by the key's
+        presence alone -- omitting it would make a store written before GAP-C was
+        closed indistinguishable from one written after it with nothing rescued,
+        and those two need different actions.
+
+        Every pre-existing key keeps its pre-existing meaning: a rescued row is
+        counted in `rows_kept` (it IS kept) and appears in neither
+        `dropped_by_type` nor `dropped_permnos` (it was not dropped), so
+        `rows_kept + rows_dropped == rows_total` still holds.
+        """
         report: dict = {
             "filter": {
                 "requested": self._jsonable_filter(self.config.security_filter),
@@ -818,7 +1028,16 @@ class CrspStockDataset(StockDataset):
             "rows_dropped": int(dropped.height),
             "dropped_by_type": {},
             "dropped_permnos": {},
+            "roster_overrides": {
+                "sources": [str(source) for source in sources],
+                "rows_rescued": 0 if rescued is None else int(rescued.height),
+                "permnos": {},
+            },
         }
+        if rescued is not None and not rescued.is_empty():
+            report["roster_overrides"]["permnos"] = self._permno_breakdown(
+                rescued
+            )
         if dropped.is_empty():
             return report
 
@@ -833,6 +1052,18 @@ class CrspStockDataset(StockDataset):
             for record in by_type.to_dicts()
         }
 
+        report["dropped_permnos"] = self._permno_breakdown(dropped)
+        return report
+
+    def _permno_breakdown(self, frame: pl.DataFrame) -> dict:
+        """`{PERMNO: {symbol, types, rows, first, last}}` for a set of rows.
+
+        ONE rendering, used for the rows the filter dropped and for the rows a
+        roster rescued: "which PERMNO, spelled how, over which dates, on which
+        type combination" is the same question in both directions, and two
+        renderings of it could drift apart while both looked right.
+        """
+        typed = frame.with_columns(self._type_combination())
         per_permno = (
             typed.sort(["permno", "timestamp"])
             .group_by("permno")
@@ -845,7 +1076,7 @@ class CrspStockDataset(StockDataset):
             )
             .sort("permno")
         )
-        report["dropped_permnos"] = {
+        return {
             str(record["permno"]): {
                 "symbol": None
                 if record["symbol"] is None
@@ -857,7 +1088,6 @@ class CrspStockDataset(StockDataset):
             }
             for record in per_permno.to_dicts()
         }
-        return report
 
     @staticmethod
     def _jsonable_filter(value):
@@ -1085,13 +1315,27 @@ class CrspStockDataset(StockDataset):
 
         record = self._adjustment_record()
         derivation = self._derivation()
+        # ONE frame decides BOTH axes (WR-07). The `config.symbols` restriction
+        # is applied to the derivation FIRST, and the symbol axis and the
+        # timestamp axis are then read off that same filtered frame. Do not
+        # separate them again: `_raw_data_to_xr_window` applies the restriction
+        # too, so a timestamp axis taken from the unrestricted frame made
+        # `from_raw_data_chunked` plan windows over every day ANY security
+        # traded. A window the requested symbol has no rows in densifies to a
+        # zero-length `timestamp` dimension and appends nothing, while
+        # `_reconcile_new_listings` was handed `len(timestamps)` from the wider
+        # frame -- so a later `widen` rewrite pins the on-disk chunk grid against
+        # an extent the store will never reach, and the chunk ledger persists a
+        # completed window over days that symbol never traded.
+        if self.config.symbols:
+            wanted = {str(symbol) for symbol in self.config.symbols}
+            derivation = derivation.filter(
+                pl.col("symbol").is_in(sorted(wanted))
+            )
         symbols = sorted(
             str(value)
             for value in derivation.get_column("symbol").unique().to_list()
         )
-        if self.config.symbols:
-            wanted = {str(symbol) for symbol in self.config.symbols}
-            symbols = [symbol for symbol in symbols if symbol in wanted]
         timestamps = derivation.get_column("timestamp").unique().to_list()
 
         # Written LAST, after the derivation has succeeded: a run that fails
