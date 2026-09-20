@@ -620,3 +620,119 @@ def test_the_daily_table_constant_is_the_one_line_d19_fallback_switch(
         )
     )
     assert f'"crsp_a_stock"."{fallback}"' in rendered, rendered
+
+
+# -- T-03.10-07: pricing the pull before it runs -----------------------------------
+
+
+def probe_rows() -> list[dict]:
+    """SYNTHETIC daily rows with a DIFFERENT count per year.
+
+    Deliberately uneven: a probe that merged two year buckets, or that keyed
+    a bucket by the wrong end, would still produce plausible-looking totals
+    against a uniform grid. 2019 has two days per PERMNO, 2020 three, 2021
+    one -- so 6 / 9 / 3 over three PERMNOs, and any mis-bucketing shows.
+    """
+    days_by_year = {
+        2019: ("04-01", "07-01"),
+        2020: ("02-03", "05-04", "08-03"),
+        2021: ("03-01",),
+    }
+    return [
+        dsf_row(permno, f"{year}-{day}")
+        for permno in (AAPL, MSFT, LEHMAN)
+        for year, days in days_by_year.items()
+        for day in days
+    ]
+
+
+def test_the_volume_probe_counts_per_year_with_the_pulls_own_batching(
+    mock_crsp_session,
+):
+    """The probe's numbers are only worth quoting if they are the pull's own
+    numbers: the SAME `year_pages`, the SAME batching, the SAME WHERE."""
+    FakeCrspSession.daily_rows = probe_rows()
+    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)
+
+    counts = probe.count_rows_by_year(
+        [AAPL, MSFT, LEHMAN], "2019-03-01", "2021-06-30"
+    )
+
+    assert counts == {"2019-12-31": 6, "2020-12-31": 9, "2021-06-30": 3}
+    assert list(counts) == ["2019-12-31", "2020-12-31", "2021-06-30"]
+
+    # 3 years x 2 batches, and nothing else.
+    assert len(FakeCrspSession.crsp_count_calls) == 6, (
+        FakeCrspSession.crsp_count_calls
+    )
+    batches = [[AAPL, MSFT], [LEHMAN]]
+    expected = [
+        render_composed(
+            wrds_crsp.CrspQueries.daily_where(batch, page_start, page_end)
+        )
+        for page_start, page_end in wrds_crsp.year_pages(
+            date(2019, 3, 1), date(2021, 6, 30)
+        )
+        for batch in batches
+    ]
+    assert [
+        count_where(call["sql"]) for call in FakeCrspSession.crsp_count_calls
+    ] == expected
+
+
+def test_the_volume_probe_checks_entitlement_before_any_count(mock_crsp_session):
+    FakeCrspSession.usable_schemas = set()
+    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared())
+
+    with pytest.raises(wrds_taq.WrdsEntitlementError, match="crsp_a_stock"):
+        probe.count_rows_by_year([AAPL], "2019-01-01", "2019-12-31")
+
+    assert FakeCrspSession.crsp_count_calls == [], (
+        FakeCrspSession.crsp_count_calls
+    )
+
+
+def test_the_volume_probe_refuses_an_empty_roster_and_a_ticker(mock_crsp_session):
+    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared())
+
+    with pytest.raises(ValueError, match="PERMNO"):
+        probe.count_rows_by_year([], "2019-01-01", "2019-12-31")
+
+    with pytest.raises(ValueError) as excinfo:
+        probe.count_rows_by_year(["AAPL"], "2019-01-01", "2019-12-31")
+    assert "AAPL" in str(excinfo.value)
+
+    assert FakeCrspSession.crsp_count_calls == [], (
+        FakeCrspSession.crsp_count_calls
+    )
+
+
+def test_the_volume_probes_counts_feed_the_sql_volume_guard_unchanged(
+    mock_crsp_session,
+):
+    """The guard is REUSED, not re-implemented (D-03). Its per-"day" wording
+    means per-YEAR against these keys; plan 10 adds the unit label to the
+    printed estimate."""
+    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+
+    FakeCrspSession.daily_rows = probe_rows()
+    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)
+    counts = probe.count_rows_by_year(
+        [AAPL, MSFT, LEHMAN], "2019-03-01", "2021-06-30"
+    )
+
+    estimate = SqlVolumeGuard(
+        {"bytes_per_row": 150}
+    ).assert_acquisition_volume_fits(
+        counts, symbols=3, start_date="2019-03-01", end_date="2021-06-30"
+    )
+    assert estimate["rows"] == sum(counts.values())
+    assert estimate["crossed"] == [], estimate
+
+    with pytest.raises(ValueError) as excinfo:
+        SqlVolumeGuard(
+            {"bytes_per_row": 150, "max_raw_rows": counts["2019-12-31"]}
+        ).assert_acquisition_volume_fits(
+            counts, symbols=3, start_date="2019-03-01", end_date="2021-06-30"
+        )
+    assert "--end-date 2019-12-31" in str(excinfo.value), str(excinfo.value)
