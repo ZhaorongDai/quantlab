@@ -4,6 +4,30 @@ Every index binds itself to the shared densification machinery in
 `base/constituent.py` by implementing exactly two hooks. Nothing else lives
 here, and nothing index-specific lives in `base/` -- which is what makes
 adding an index a `dataset/` change only (DATA-06).
+
+**Four classes, two SOURCES of the same two indexes.** The Wikipedia-based
+pair replays a public change log; the CRSP-vendor pair reads the CRSP/
+Compustat reference tier. They are separate classes with separate stores
+rather than a source switch on one class, because their coverage starts and
+their SYMBOL AXES differ: the CRSP pair spells tickers with
+`CrspSymbology`, the same rule `CrspStockDataset` labels its price rows
+with, so a CRSP mask lines up with a CRSP panel across renames and share
+classes -- and a Wikipedia mask does not.
+
+**`cache_dir` means "the local directory this universe is answered from",
+and that is two different directories.** For the Wikipedia pair it is where
+the fetcher caches scraped HTML; for the CRSP pair it is the reference tier
+at `{downloads}/us_equity/1d/wrds_crsp/_reference/`. One field rather than
+two, because a second directory field would have to be null for half the
+classes.
+
+**The CRSP pair reaches no acquisition module.** `CrspMembership` and
+`CrspReference` are dataset-layer leaves over parquet, so a CRSP universe
+resolves with no WRDS credential and no database driver. That is also why
+`quantlab/acquisition/universe.py` gained no category: its vocabulary is
+Tiingo/Wikipedia-shaped (tickers, exchange filters) and its "imports no
+acquisition module" rule is AST-enforced, so a CRSP category would have
+coupled two vocabularies for no gain.
 """
 
 import polars as pl
@@ -14,6 +38,8 @@ from quantlab.acquisition.universe import (
 )
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
+from quantlab.dataset.crsp_membership import CrspMembership
+from quantlab.dataset.crsp_reference import CrspReference
 
 
 class SP500ConstituentDataset(IndexConstituentDataset):
@@ -90,3 +116,95 @@ class Nasdaq100ConstituentDataset(IndexConstituentDataset):
         return Nasdaq100MembershipFetcher(
             cache_dir=self.config.cache_dir
         ).build_intervals()
+
+
+class CrspSP500ConstituentDataset(IndexConstituentDataset):
+    """Daily point-in-time S&P 500 membership from CRSP itself (D-05).
+
+    Source: `crsp_a_indexes.dsp500list_v2`, CRSP's OWN membership spells by
+    PERMNO, read out of the reference tier at `config.cache_dir`. Coverage
+    starts 1925-12-31, the start of index family 1100500 -- fifty years
+    earlier than `SP500ConstituentDataset`'s Wikipedia change log, which is
+    the whole reason both exist.
+
+    **Its tickers are the CRSP PRICE PANEL'S tickers**, because both sides
+    derive them from one `CrspSymbology` rule (see
+    `CrspMembership.symbol_intervals`). A mask built here and applied to a
+    `CrspStockDataset` panel therefore lines up symbol for symbol across
+    renames (FB -> META) and share classes (BRK.B). It is NOT interchangeable
+    with the Wikipedia panel's symbol axis, which is why this is a separate
+    class and a separate store rather than a source switch on that one.
+
+    **The right edge is the CRSP annual product end, never today.** Every
+    interval `CrspMembership` produces carries an explicit end bounded by
+    `CrspReference.product_end`, so `_densify`'s open-interval branch -- which
+    extends to wall-clock today -- is never taken. A universe that ran past
+    CRSP's price coverage would be True over a stretch with no prices at all.
+    """
+
+    #: The `CrspMembership` universe this class binds to. A class attribute
+    #: rather than a literal in two method bodies, so the pair cannot drift.
+    INDEX = CrspMembership.SP500
+
+    def __init__(self, dataset_config: ConstituentDatasetConfig):
+        super().__init__(dataset_config)
+
+    def _pit_coverage_start(self) -> str:
+        return CrspMembership.PIT_COVERAGE_START[self.INDEX]
+
+    def _build_intervals(self) -> pl.DataFrame:
+        return CrspMembership(
+            CrspReference(self.config.cache_dir)
+        ).symbol_intervals(
+            self.INDEX,
+            allow_unlinked=bool(
+                (self.config.kwargs or {}).get("allow_unlinked", False)
+            ),
+        )
+
+
+class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
+    """Daily point-in-time Nasdaq-100 membership from Compustat + CCM (D-14).
+
+    Source: `comp.idxcst_his` at `gvkeyx = '000208'`, whose `(gvkey, iid)`
+    spells become PERMNOs through `crsp_a_ccm.ccmxpf_lnkhist`. The link join
+    is on `gvkey` AND `iid = liid`, never on `linkprim`: both Alphabet classes
+    are members under one gvkey (160329, iid 01 -> GOOGL 90319 and iid 03 ->
+    GOOG 14542), and the conventional `linkprim IN ('P','C')` filter would
+    keep the primary issue only, silently dropping a real index member.
+
+    **Left-censored at 1995-01-01, twelve years earlier than
+    `Nasdaq100ConstituentDataset`'s 2007-02-01.** That date is a CENSOR rather
+    than a start: a hundred spells begin exactly there because that is where
+    Compustat's history begins, not where those memberships did. The panel
+    still never starts earlier, for the same reason every coverage clamp
+    exists -- all-False and unknown are indistinguishable in a boolean panel.
+
+    **An unlinked spell REFUSES by default.** A membership day with no PERMNO
+    has no security and therefore no symbol; dropping it would remove a real
+    index member from the universe, which reads downstream as a slightly
+    smaller universe rather than as an error. Pass
+    `kwargs={"allow_unlinked": True}` to proceed with the linked days and read
+    the rest from the membership `report["unlinked"]` -- the opt-out lives in
+    the config, so a run that tolerated the gap says so in its own
+    `config.json`.
+    """
+
+    #: The `CrspMembership` universe this class binds to.
+    INDEX = CrspMembership.NASDAQ100
+
+    def __init__(self, dataset_config: ConstituentDatasetConfig):
+        super().__init__(dataset_config)
+
+    def _pit_coverage_start(self) -> str:
+        return CrspMembership.PIT_COVERAGE_START[self.INDEX]
+
+    def _build_intervals(self) -> pl.DataFrame:
+        return CrspMembership(
+            CrspReference(self.config.cache_dir)
+        ).symbol_intervals(
+            self.INDEX,
+            allow_unlinked=bool(
+                (self.config.kwargs or {}).get("allow_unlinked", False)
+            ),
+        )
