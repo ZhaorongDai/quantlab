@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 11 plans
+**Plans:** 1/11 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -169,7 +169,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03.10-01-PLAN.md — WRDS vendor seam: per-capability acquisition_cls/config_factory with resolver (run() through it), WRDS_SOURCE moved to acquisition/wrds.py (no import cycle), generic WrdsSession helpers (schema_usable/fetch_rows/copy_csv)
+- [x] 03.10-01-PLAN.md — WRDS vendor seam: per-capability acquisition_cls/config_factory with resolver (run() through it), WRDS_SOURCE moved to acquisition/wrds.py (no import cycle), generic WrdsSession helpers (schema_usable/fetch_rows/copy_csv)
 
 **Wave 2** *(blocked on 01)*
 
