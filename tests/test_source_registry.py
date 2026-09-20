@@ -980,6 +980,260 @@ def test_is_configured_on_a_descriptor_with_no_required_env(
 
 
 # ---------------------------------------------------------------------------
+# 03.10-01 Task 1 -- per-CAPABILITY acquisition class and config factory
+#
+# One vendor, several products: the `wrds` account serves TAQ NBBO through one
+# acquisition class and (plan 02) CRSP daily through another. D-12 keeps that
+# as ONE descriptor, so the class a request resolves to becomes a property of
+# the CAPABILITY rather than of the vendor.
+#
+# The fields are OPTIONAL and the descriptor-level pair stays REQUIRED -- the
+# `add-alongside` decision recorded in 03.10-01-PLAN.md. Four ingest shells
+# read `SOURCE.acquisition_cls` / `SOURCE.config_factory` directly
+# (`DEFAULT_BATCH_SIZE`, `TICK_DATA_TYPES`, ...), and making the descriptor
+# field optional would ripple through all of them for no behavioural gain.
+# ---------------------------------------------------------------------------
+
+
+def _resolver_descriptor(**overrides):
+    """An UNREGISTERED descriptor whose two capabilities differ in exactly the
+    way the resolver has to tell apart.
+
+    Built here rather than borrowed from a shipped vendor deliberately: today
+    no shipped descriptor has two capabilities on one `(market, frequency)`
+    with different classes, so a test written against the live registry would
+    pass against a resolver that always returned the descriptor default. The
+    ambiguity is created by construction.
+
+    Not registered, so no `isolated_registry` is needed and nothing can leak.
+    """
+    from quantlab.acquisition.registry import Capability, SourceDescriptor
+
+    fields = {
+        "vendor": "resolvervendor",
+        "display_name": "Fake resolver vendor",
+        "acquisition_cls": _A0,
+        "config_factory": _f0,
+        "capabilities": (
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="x",
+                acquisition_cls=_A1,
+                config_factory=_f1,
+            ),
+            Capability(market="us_equity", frequency="1d", data_type="y"),
+        ),
+        "required_env": (),
+    }
+    fields.update(overrides)
+    return SourceDescriptor(**fields)  # type: ignore[arg-type]
+
+
+def _recording_acquisition(name: str):
+    """A minimal CONCRETE `Acquisition` recording every construction.
+
+    Its `_fetch_page` returns an EMPTY frame and no next token, so `run()`
+    completes without a vendor request, a credential or a socket. The class
+    carries a `constructed` list so a test can assert WHICH class `run()`
+    reached rather than inferring it from a side effect.
+    """
+    from quantlab.base.acquisition import Acquisition
+
+    class _Recording(Acquisition):
+        VENDOR = "tiingo"
+        RAW_COLUMNS = ("timestamp", "symbol", "vendor")
+        label = name
+        constructed: list = []
+
+        def __init__(self, config):
+            super().__init__(config)
+            type(self).constructed.append(config)
+
+        def _fetch_page(self, symbols, start_date, end_date, page_token=None):
+            import polars as pl
+
+            frame = pl.DataFrame(
+                schema={
+                    "timestamp": pl.Datetime,
+                    "symbol": pl.String,
+                    "vendor": pl.String,
+                }
+            )
+            return frame.select(self.RAW_COLUMNS), None
+
+    _Recording.__name__ = name
+    return _Recording
+
+
+_A0 = _recording_acquisition("_A0")
+_A1 = _recording_acquisition("_A1")
+
+
+def _f0(**kwargs):
+    return "f0"
+
+
+def _f1(**kwargs):
+    return "f1"
+
+
+def test_capability_resolution_prefers_the_capability_over_the_descriptor_default() -> (
+    None
+):
+    """D-12: a capability that names its own class/factory wins; one that
+    leaves them `None` falls back to the descriptor's default.
+
+    Both directions are asserted on the SAME descriptor, because either half
+    alone passes for the wrong reason: a resolver that always returned the
+    capability field would fail the `"y"` case, and one that always returned
+    the descriptor default would fail the `"x"` case.
+
+    The third arm -- a request matching NO capability -- is today's behaviour,
+    and it must stay today's behaviour: every existing `run()` call site
+    reaches the descriptor default through this path.
+    """
+    descriptor = _resolver_descriptor()
+
+    assert descriptor.acquisition_cls_for("us_equity", "1d", "x") is _A1
+    assert descriptor.config_factory_for("us_equity", "1d", "x") is _f1
+
+    assert descriptor.acquisition_cls_for("us_equity", "1d", "y") is _A0
+    assert descriptor.config_factory_for("us_equity", "1d", "y") is _f0
+
+    # No capability matches -> the vendor default, unchanged.
+    assert descriptor.acquisition_cls_for("us_equity", "1m", None) is _A0
+    assert descriptor.config_factory_for("us_equity", "1m", None) is _f0
+
+
+def test_ambiguous_capability_resolution_refuses_rather_than_picking_by_order() -> None:
+    """D-12 / T-03.10-41: two matches that DISAGREE raise, naming the request.
+
+    Picking `matches[0]` would let capability declaration order -- an authoring
+    detail invisible at the call site -- decide which vendor class receives the
+    config, and so which credential is demanded. `convert()` already states
+    this rule one axis over; the message is built the same way, from the
+    descriptor's own data.
+
+    The second half is the case that must NOT refuse: when both matches resolve
+    to the same value there is no ambiguity to report, and raising would make a
+    legitimate `data_type=None` request fail for a vendor that happens to
+    serve two shapes through one class.
+    """
+    from quantlab.acquisition.registry import Capability
+
+    descriptor = _resolver_descriptor()
+
+    for resolve in (descriptor.acquisition_cls_for, descriptor.config_factory_for):
+        with pytest.raises(ValueError) as excinfo:
+            resolve("us_equity", "1d", None)
+        message = str(excinfo.value)
+        assert "x" in message
+        assert "y" in message
+        assert descriptor.display_name in message
+        assert "data_type" in message
+
+    agreeing = _resolver_descriptor(
+        capabilities=(
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="x",
+                acquisition_cls=_A0,
+                config_factory=_f0,
+            ),
+            Capability(market="us_equity", frequency="1d", data_type="y"),
+        )
+    )
+    assert agreeing.acquisition_cls_for("us_equity", "1d", None) is _A0
+    assert agreeing.config_factory_for("us_equity", "1d", None) is _f0
+
+
+def test_run_constructs_the_capabilitys_acquisition_class(acquisition_config) -> None:
+    """D-12: `run()` resolves through the capability, not
+    `descriptor.acquisition_cls`.
+
+    The resolver being correct proves nothing on its own -- the failure this
+    guards against is a resolver that exists and is never called, which is
+    exactly how plan 02's CRSP request would silently construct the TAQ class
+    and demand a TAQ entitlement.
+
+    The key comes off the config: `(market, frequency, kwargs["data_type"])`,
+    which is `Capability`'s own key. Asserted on the RECORDED construction, so
+    a `run()` that resolved correctly and then constructed the default anyway
+    still fails here.
+    """
+    from quantlab.acquisition.registry import run
+
+    _A0.constructed.clear()
+    _A1.constructed.clear()
+
+    descriptor = _resolver_descriptor()
+    config = acquisition_config(vendor="tiingo", kwargs={"data_type": "x"})
+
+    result = run(descriptor, config)
+
+    assert result.vendor == "tiingo"
+    assert len(_A1.constructed) == 1
+    assert _A1.constructed[0] is config
+    assert _A0.constructed == []
+
+
+def test_capability_defaults_leave_the_new_fields_none() -> None:
+    """D-12: `Capability` is still constructible from market + frequency alone,
+    and the two new fields default to `None`.
+
+    `None` means "the descriptor's default", never "no class" -- which is what
+    makes the change ADDITIVE: every capability declared before this plan keeps
+    resolving exactly as it did. Asserted on a bare construction rather than on
+    a shipped capability, so a shipped descriptor that starts filling the
+    fields cannot mask a lost default.
+
+    The field ORDER is pinned too: the new fields come after `dataset_cls`, so
+    no positional construction of an existing capability changes meaning.
+    """
+    import dataclasses
+
+    from quantlab.acquisition.registry import Capability
+
+    capability = Capability(market="us_equity", frequency="1d")
+
+    assert capability.acquisition_cls is None
+    assert capability.config_factory is None
+    assert capability.data_type is None
+    assert capability.dataset_cls is None
+
+    names = [field.name for field in dataclasses.fields(Capability)]
+    assert names.index("acquisition_cls") > names.index("dataset_cls")
+    assert names.index("config_factory") > names.index("acquisition_cls")
+
+
+def test_every_registered_capability_resolves_to_its_own_class_or_the_default() -> None:
+    """The INVARIANT, over the LIVE registry: for every descriptor and every
+    capability it declares, resolving that capability's own triple returns
+    `capability.<field> or descriptor.<field>`.
+
+    This is the arm that keeps the resolver honest as vendors are added: a new
+    capability whose class disagrees with what its own triple resolves to is a
+    registry an operator surface cannot reason about. It also catches the
+    ambiguity case for free -- two capabilities sharing a triple with different
+    classes make their own lookup raise, and the raise is not caught here.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    for descriptor in DataSourceRegistry.all():
+        for capability in descriptor.capabilities:
+            key = (capability.market, capability.frequency, capability.data_type)
+
+            assert descriptor.acquisition_cls_for(*key) is (
+                capability.acquisition_cls or descriptor.acquisition_cls
+            ), (descriptor.vendor, key)
+            assert descriptor.config_factory_for(*key) == (
+                capability.config_factory or descriptor.config_factory
+            ), (descriptor.vendor, key)
+
+
+# ---------------------------------------------------------------------------
 # LAST in file order, deliberately: the teardown half of every isolated test
 # ---------------------------------------------------------------------------
 
