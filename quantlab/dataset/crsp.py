@@ -255,12 +255,24 @@ class CrspStockDataset(StockDataset):
             (pl.col("dlyhigh") * pl.col("_factor")).alias("adjHigh"),
             (pl.col("dlylow") * pl.col("_factor")).alias("adjLow"),
             (pl.col("dlyvol") * pl.col("_volume_factor")).alias("adjVolume"),
+            # UNADJUSTED cash per share, on the EX-DATE -- the Tiingo
+            # convention, so a consumer reading `divCash` needs no CRSP
+            # vocabulary. CRSP splits the day's cash into an ordinary and a
+            # non-ordinary component; Tiingo states one number, so they are
+            # summed. Both null is 0.0, not NaN: a day with no distribution
+            # paid a KNOWN amount of nothing. Anything finer than the daily
+            # total (declaration/record/pay dates, distribution codes) stays
+            # available raw in `stkdistributions` under `_reference/`.
             (
                 pl.col("dlyorddivamt").fill_null(0.0)
                 + pl.col("dlynonorddivamt").fill_null(0.0)
             ).alias("divCash"),
-            # 1.0 on the PERMNO's first row: there is no previous factor to
-            # divide by, and an ordinary day's split factor IS 1.0.
+            # 1.0 on the PERMNO's FIRST ROW INSIDE THE WINDOW: there is no
+            # previous `dlycumfacpr` to divide by there, and an ordinary day's
+            # split factor IS 1.0. So a split that fell on a window's opening
+            # day reads 1.0 rather than its real ratio -- the same edge every
+            # differenced series has, and the reason `facprc` (CRSP's own
+            # per-day factor, which needs no previous row) sits beside it.
             pl.coalesce(
                 pl.col("_prev_cumfacpr") / pl.col("dlycumfacpr"),
                 pl.lit(1.0),
