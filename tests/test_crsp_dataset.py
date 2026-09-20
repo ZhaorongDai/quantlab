@@ -157,7 +157,7 @@ def _panel(dataset_config):
     return xr.open_zarr(dataset_config.zarr_file_path).load()
 
 
-def _build(
+def _build_store(
     tmp_path,
     rows,
     permnos,
@@ -168,7 +168,7 @@ def _build(
     extra_secinfo=(),
     product_end="2025-12-31",
 ):
-    """Pull, convert and open -- the common three-line preamble."""
+    """Pull, convert, and return the CONVERTED store's config."""
     cfg, reference_dir = _pull(
         tmp_path,
         rows,
@@ -182,7 +182,12 @@ def _build(
         tmp_path, cfg, reference_dir, start=start, end=end
     )
     _convert(dataset_config, granularity=granularity)
-    return _panel(dataset_config)
+    return dataset_config
+
+
+def _build(tmp_path, rows, permnos, **kwargs):
+    """`_build_store`, opened -- the common three-line preamble."""
+    return _panel(_build_store(tmp_path, rows, permnos, **kwargs))
 
 
 def _at(panel, variable, day, symbol):
@@ -438,3 +443,374 @@ def test_lehman_delisting_loss_is_counted_exactly_once(mock_crsp_session, tmp_pa
     assert _at(panel, "adjClose", "2008-09-18", "LEH") / _at(
         panel, "adjClose", "2008-09-15", "LEH"
     ) == pytest.approx(1.428571 * 0.433333 * 0.4, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: events on their ex-dates, and the drop-in check
+# ---------------------------------------------------------------------------
+
+#: Where the SYNTHETIC 2:1 split falls inside `_split_series_rows`.
+SPLIT_INDEX = 20
+SERIES_DAYS = 40
+
+#: SYNTHETIC filler securities, present for ONE structural reason: KunQuant's
+#: `"TS"` input layout refuses a symbol axis whose length is not a multiple of
+#: the SIMD width. Measured on this machine (arm64): 4, 8 and 16 symbols run;
+#: 1, 2, 3 and 5 raise `RuntimeError: Bad shape at <column>`. Eight rather
+#: than four because the width is 8 on x86 AVX2 and 4 on arm64 NEON, and a
+#: suite that passes on one host must pass on the other.
+#:
+#: They pad the panel and nothing else -- every assertion below reads the
+#: security the scenario is about (`MSFT` or `LEH`), never a companion.
+COMPANIONS: tuple[tuple[int, str], ...] = tuple(
+    (90000 + index, f"TST{index}") for index in range(1, 8)
+)
+
+
+def _companion_secinfo():
+    """A `stksecurityinfohist` interval per companion. SYNTHETIC throughout."""
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(permno, "1900-01-01", "2025-12-31", ticker, ticker, None)
+        for permno, ticker in COMPANIONS
+    ]
+
+
+def _companion_rows(days):
+    """One ordinary `dsf_v2` row per companion per day. SYNTHETIC throughout."""
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    for offset, (permno, _ticker) in enumerate(COMPANIONS):
+        price = 20.0 + offset
+        for index, day in enumerate(days):
+            daily_return = round(0.03 - 0.05 * (index % 2) + 0.001 * offset, 6)
+            price *= 1.0 + daily_return
+            rows.append(
+                dsf_row(
+                    permno,
+                    day,
+                    dlyprc=f"{price:.6f}",
+                    dlyclose=f"{price:.6f}",
+                    dlyopen=f"{price * 0.99:.6f}",
+                    dlyhigh=f"{price * 1.02:.6f}",
+                    dlylow=f"{price * 0.98:.6f}",
+                    dlyret=f"{daily_return:.6f}",
+                    dlyretx=f"{daily_return:.6f}",
+                )
+            )
+    return rows
+
+
+def _companion_permnos():
+    return [str(permno) for permno, _ in COMPANIONS]
+
+
+def _split_series_rows():
+    """SYNTHETIC: `SERIES_DAYS` business days with one 2:1 split, self-consistent.
+
+    Returns `(rows, days, returns)`. The raw close is `2 x value` before the
+    split and `value` from the split day on, where `value` compounds the
+    return path -- so the RAW price ratio across the split is
+    `(1 + r) / 2`, exactly as CRSP records it, while the total return is
+    plain `r`. That is what makes "the label equals the next day's `ret`
+    ACROSS the split" a real assertion rather than an arithmetic identity.
+
+    Returns alternate around +-4% rather than +-0.4% deliberately: KunQuant
+    computes in float32, and `close(t+1)/close(t) - 1` loses absolute
+    precision to cancellation, so a tiny return would be compared at a
+    relative tolerance float32 cannot hold.
+    """
+    import pandas as pd
+
+    from tests.crsp_fixtures import dsf_row
+
+    days = pd.bdate_range("2020-01-02", periods=SERIES_DAYS)
+    returns = [
+        round(0.05 - 0.09 * (index % 2) + 0.002 * (index % 5), 6)
+        for index in range(SERIES_DAYS)
+    ]
+
+    rows = []
+    value = 50.0
+    for index, (day, daily_return) in enumerate(zip(days, returns)):
+        value *= 1.0 + daily_return
+        raw = value * (2.0 if index < SPLIT_INDEX else 1.0)
+        split_day = index == SPLIT_INDEX
+        rows.append(
+            dsf_row(
+                SYNTHETIC_PERMNO,
+                day.date().isoformat(),
+                dlyprc=f"{raw:.6f}",
+                dlyclose=f"{raw:.6f}",
+                dlyopen=f"{raw * 0.99:.6f}",
+                dlyhigh=f"{raw * 1.02:.6f}",
+                dlylow=f"{raw * 0.98:.6f}",
+                dlyret=f"{daily_return:.6f}",
+                dlyretx=f"{daily_return:.6f}",
+                dlyfacprc="2.000000" if split_day else "1.000000",
+                dlycumfacpr=(
+                    "2.000000000000" if index < SPLIT_INDEX else "1.000000000000"
+                ),
+                dlycumfacshr=(
+                    "2.000000000000" if index < SPLIT_INDEX else "1.000000000000"
+                ),
+            )
+        )
+    return rows, [day.date().isoformat() for day in days], returns
+
+
+def _split_series_store(tmp_path, *, with_companions=False):
+    """The split series, optionally padded to the eight-symbol KunQuant width."""
+    rows, days, returns = _split_series_rows()
+    permnos = [SYNTHETIC_PERMNO]
+    extra_secinfo = list(_synthetic_secinfo())
+    if with_companions:
+        rows = rows + _companion_rows(days)
+        permnos = permnos + _companion_permnos()
+        extra_secinfo = extra_secinfo + _companion_secinfo()
+    dataset_config = _build_store(
+        tmp_path,
+        rows,
+        permnos,
+        start=days[0],
+        end=days[-1],
+        extra_secinfo=extra_secinfo,
+    )
+    return dataset_config, days, returns
+
+
+def _factor_config(dataset_config, *, factor_names, data_columns, tmp_path, **kwargs):
+    """A `FactorConfig` over a CRSP store, built exactly as a Tiingo one is.
+
+    `factor_names` is always explicit so the compiled graph stays tiny (the
+    169-name Alpha158 default would compile for minutes), and `njobs=4` keeps
+    the KunQuant executor from spawning the config default's 128 threads.
+    """
+    from quantlab.base.config import FactorConfig
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    return FactorConfig(
+        window=kwargs.pop("window", 10),
+        dataset=CrspStockDataset(dataset_config),
+        mode="batch",
+        data_columns=tuple(data_columns),
+        factor_names=tuple(factor_names),
+        file_path=str(tmp_path / "factors" / "out.zarr"),
+        njobs=4,
+        **kwargs,
+    )
+
+
+def test_events_land_on_their_ex_dates(mock_crsp_session, tmp_path):
+    """D-11: `divCash` on the ex-date, `splitFactor` and `facprc` on the split.
+
+    VERBATIM `L4_1`: AAPL's 2020-08-07 dividend (0.82) and its 2020-08-31 4:1
+    split, where `dlycumfacpr` steps 4 -> 1 and `dlyfacprc` reads 4. The
+    panel says the same three things in Tiingo's vocabulary, so a consumer
+    reading `divCash`/`splitFactor` needs no CRSP knowledge.
+    """
+    from tests.crsp_fixtures import AAPL_AUG_2020_ROWS
+
+    panel = _build(
+        tmp_path,
+        AAPL_AUG_2020_ROWS,
+        [AAPL_PERMNO],
+        start="2020-08-01",
+        end="2020-08-31",
+    )
+
+    assert _at(panel, "divCash", "2020-08-07", "AAPL") == pytest.approx(0.82)
+    for day in ("2020-08-06", "2020-08-28", "2020-08-31"):
+        assert _at(panel, "divCash", day, "AAPL") == pytest.approx(0.0), day
+
+    assert _at(panel, "splitFactor", "2020-08-31", "AAPL") == pytest.approx(4.0)
+    assert _at(panel, "facprc", "2020-08-31", "AAPL") == pytest.approx(4.0)
+    # 1.0 on an ordinary day -- and on 08-06, the PERMNO's FIRST row in the
+    # window, where there is no previous `dlycumfacpr` to divide by.
+    for day in ("2020-08-06", "2020-08-07", "2020-08-28"):
+        assert _at(panel, "splitFactor", day, "AAPL") == pytest.approx(1.0), day
+        assert _at(panel, "facprc", day, "AAPL") == pytest.approx(1.0), day
+
+
+def test_divcash_sums_ordinary_and_non_ordinary_distributions(
+    mock_crsp_session, tmp_path
+):
+    """`divCash = dlyorddivamt + dlynonorddivamt`, unadjusted, on the ex-date.
+
+    CRSP splits a day's cash into an ORDINARY and a NON-ORDINARY component;
+    Tiingo's `divCash` is one number. Summing is therefore the drop-in answer,
+    and both-null is 0.0 rather than NaN -- a day with no distribution paid
+    nothing, which is a known amount, not a missing one.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [  # SYNTHETIC: a special dividend beside an ordinary one.
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-02",
+            dlyprc="100.000000",
+            dlyret="0.010000",
+            dlyorddivamt="0.200000",
+            dlynonorddivamt="1.500000",
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-03",
+            dlyprc="101.000000",
+            dlyret="0.010000",
+            dlyorddivamt=None,
+            dlynonorddivamt=None,
+        ),
+    ]
+    panel = _build(
+        tmp_path,
+        rows,
+        [SYNTHETIC_PERMNO],
+        start="2020-03-01",
+        end="2020-03-31",
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    assert _at(panel, "divCash", "2020-03-02", SYNTHETIC_SYMBOL) == pytest.approx(1.7)
+    assert _at(panel, "divCash", "2020-03-03", SYNTHETIC_SYMBOL) == pytest.approx(0.0)
+
+
+def test_splitfactor_and_facprc_mark_the_split_day(mock_crsp_session, tmp_path):
+    """The synthetic 2:1 split shows up as 2.0 in both event variables.
+
+    `splitFactor` is DERIVED (the previous `dlycumfacpr` over today's) while
+    `facprc` is CRSP's own per-day factor. Asserting both on the same row is
+    what would catch a derivation that drifted off by one day.
+    """
+    dataset_config, days, _ = _split_series_store(tmp_path)
+    panel = _panel(dataset_config)
+
+    split_day = days[SPLIT_INDEX]
+    assert _at(panel, "splitFactor", split_day, SYNTHETIC_SYMBOL) == pytest.approx(2.0)
+    assert _at(panel, "facprc", split_day, SYNTHETIC_SYMBOL) == pytest.approx(2.0)
+    for index in (SPLIT_INDEX - 1, SPLIT_INDEX + 1):
+        assert _at(panel, "splitFactor", days[index], SYNTHETIC_SYMBOL) == (
+            pytest.approx(1.0)
+        ), days[index]
+
+
+def test_alpha158_computes_over_a_crsp_panel_with_no_consumer_change(
+    mock_crsp_session, tmp_path
+):
+    """D-07's whole point: `Alpha158Stock` runs on a CRSP store unmodified.
+
+    The factor class is constructed exactly as `tests/test_factor_kunquant.py`
+    constructs it over a Tiingo store -- same `FactorConfig`, same five
+    adjusted `data_columns` -- with only the `Dataset` subclass swapped. No
+    CRSP branch exists in `quantlab/factor`, and this test is what would fail
+    if one were needed.
+    """
+    import numpy as np
+
+    from quantlab.factor.alpha158 import Alpha158Stock
+
+    dataset_config, days, _ = _split_series_store(tmp_path, with_companions=True)
+    factor = Alpha158Stock(
+        _factor_config(
+            dataset_config,
+            factor_names=["KMID", "ROC5", "STD5"],
+            data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"],
+            tmp_path=tmp_path,
+        )
+    )
+
+    result = factor.cal().get_features()
+
+    assert dict(result.sizes) == {"timestamp": SERIES_DAYS, "symbol": 8}
+    assert sorted(result.data_vars) == ["KMID", "ROC5", "STD5"]
+    series = result.sel(symbol=SYNTHETIC_SYMBOL)
+    for name in ("KMID", "ROC5", "STD5"):
+        finite = np.isfinite(series[name].to_numpy())
+        # Rolling factors burn their window at the head; everything after it
+        # must be a real number.
+        assert finite.sum() >= SERIES_DAYS - 6, (name, finite.sum())
+
+
+def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_path):
+    """The `Return` label over a CRSP panel IS CRSP's own next-day `dlyret`.
+
+    Not a tautology: the label is computed by KunQuant from `adjClose`, while
+    `ret` is the vendor's number carried through untouched. They agree only if
+    the total-return adjustment reproduces the return chain exactly -- across
+    the 2:1 split included, where the RAW price ratio is `(1 + r) / 2`.
+    """
+    import numpy as np
+
+    from quantlab.label.fret import Return
+
+    dataset_config, days, returns = _split_series_store(tmp_path, with_companions=True)
+    label = Return(
+        _factor_config(
+            dataset_config,
+            factor_names=["ret_1"],
+            data_columns=["adjClose"],
+            tmp_path=tmp_path,
+            window=0,
+            kwargs={"n_forward_periods": 1},
+        )
+    )
+
+    labels = label.cal().get_labels().load()
+    series = labels["ret_1"].sel(symbol=SYNTHETIC_SYMBOL).to_numpy()
+
+    assert len(series) == SERIES_DAYS
+    for index in range(SERIES_DAYS - 1):
+        assert series[index] == pytest.approx(returns[index + 1], rel=1e-5), (
+            index,
+            days[index],
+        )
+    # The last bar has no next day, so it has no label.
+    assert np.isnan(series[-1])
+
+
+def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
+    """The label on 2008-09-17 is the -60% delisting loss.
+
+    This is the survivorship-bias test stated in the vocabulary a model
+    actually trains on. If the delisting row were dropped, or its return
+    double-counted, this cell would hold NaN or -0.84 instead.
+    """
+    from quantlab.label.fret import Return
+    from tests.crsp_fixtures import LEHMAN_2008_ROWS
+
+    # Lehman's five VERBATIM rows, padded to the eight-symbol KunQuant width
+    # by companions trading on the SAME five days. The padding changes no
+    # value of `LEH`'s own series -- the panel is a cartesian product.
+    days = [
+        "2008-09-12",
+        "2008-09-15",
+        "2008-09-16",
+        "2008-09-17",
+        "2008-09-18",
+    ]
+    dataset_config = _build_store(
+        tmp_path,
+        list(LEHMAN_2008_ROWS) + _companion_rows(days),
+        [LEHMAN_PERMNO] + _companion_permnos(),
+        start="2008-09-12",
+        end="2008-09-30",
+        extra_secinfo=_companion_secinfo(),
+    )
+    label = Return(
+        _factor_config(
+            dataset_config,
+            factor_names=["ret_1"],
+            data_columns=["adjClose"],
+            tmp_path=tmp_path,
+            window=0,
+            kwargs={"n_forward_periods": 1},
+        )
+    )
+
+    labels = label.cal().get_labels().load()
+    value = float(
+        labels["ret_1"].sel(timestamp="2008-09-17", symbol="LEH").values
+    )
+    assert value == pytest.approx(-0.6, rel=1e-5)
