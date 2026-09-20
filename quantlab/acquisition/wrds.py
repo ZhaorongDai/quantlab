@@ -29,12 +29,13 @@ The providers therefore stay free of the registry, and the shared
 row naming its own `acquisition_cls` and `config_factory`.
 """
 
-from quantlab.acquisition import wrds_taq
+from quantlab.acquisition import wrds_crsp, wrds_taq
 from quantlab.acquisition.registry import (
     Capability,
     SourceDescriptor,
     register_source,
 )
+from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.nbbo import NbboPanelDataset
 
 #: The registry descriptor for WRDS -- "who I am" for the whole account.
@@ -47,13 +48,15 @@ from quantlab.dataset.nbbo import NbboPanelDataset
 #: the capability that answers it rather than off whichever product happened to
 #: be the default.
 #:
-#: `display_name` still names TAQ alone: it is what an operator sees for this
-#: source today, and widening it before a second capability exists would
-#: advertise something the descriptor cannot serve.
+#: `display_name` now names BOTH products, because as of 03.10 the descriptor
+#: serves both: an operator picking this source is picking an ACCOUNT, and a
+#: name mentioning only one of its two capabilities would under-advertise it
+#: exactly as a name mentioning CRSP before plan 02 would have over-advertised
+#: it.
 WRDS_SOURCE = register_source(
     SourceDescriptor(
         vendor="wrds",
-        display_name="WRDS NYSE TAQ millisecond NBBO",
+        display_name="WRDS (NYSE TAQ millisecond NBBO; CRSP Stock v2 daily)",
         acquisition_cls=wrds_taq.WrdsTaqNbboAcquisition,
         config_factory=wrds_taq.WrdsTaqNbboAcquisition.build_config,
         capabilities=(
@@ -66,6 +69,28 @@ WRDS_SOURCE = register_source(
                 entitlement="WRDS NYSE TAQ millisecond subscription",
                 acquisition_cls=wrds_taq.WrdsTaqNbboAcquisition,
                 config_factory=wrds_taq.WrdsTaqNbboAcquisition.build_config,
+            ),
+            #: CRSP Stock v2 daily (03.10). A SECOND acquisition class and a
+            #: SECOND config factory under the SAME vendor -- which is the
+            #: whole point of plan 01's per-capability resolution: the
+            #: descriptor-level pair stays the TAQ one (four ingest shells
+            #: read `SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE` directly), and
+            #: a `crsp_daily` request resolves off this row instead.
+            #:
+            #: `earliest_available` is the table's own first day, live-verified
+            #: (`C4_range_crsp_a_stock.dsf_v2`); it is advisory, as the field's
+            #: docstring says, and nothing gates on it.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="crsp_daily",
+                dataset_cls=CrspStockDataset,
+                earliest_available="1925-12-31",
+                entitlement=(
+                    "WRDS CRSP annual-update Stock v2 (crsp_a_stock)"
+                ),
+                acquisition_cls=wrds_crsp.WrdsCrspDailyAcquisition,
+                config_factory=wrds_crsp.WrdsCrspDailyAcquisition.build_config,
             ),
         ),
         #: A LITERAL, restated rather than derived from `CREDENTIAL_ENV_VARS`

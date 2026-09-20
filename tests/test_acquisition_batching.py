@@ -413,22 +413,63 @@ def test_no_concrete_acquisition_subclass_carries_a_not_implemented_placeholder(
     )
 
 
+#: Per-CLASS config overrides for the walk, keyed by `__qualname__`.
+#:
+#: `conftest.acquisition_config`'s own defaults are keyed by VENDOR, which
+#: stopped being enough the moment one vendor served two products: the `wrds`
+#: account carries BOTH `WrdsTaqNbboAcquisition` (tick/nbbo) and
+#: `WrdsCrspDailyAcquisition` (1d/crsp_daily), and each refuses the other's
+#: frequency and `data_type` at construction. A vendor-keyed default can only
+#: satisfy one of them.
+#:
+#: Keyed by class rather than by (vendor, data_type) so the entry reads as
+#: "this class needs this", and a new class is one row rather than a rule.
+#: A class with no entry is built exactly as before.
+#:
+#: The CRSP window and roster are chosen to be non-empty against
+#: `FakeCrspSession`'s default rows: 80599 is Lehman (2008-09) and 14593 is
+#: AAPL (2020-08), so both PERMNOs have data inside 2008-09-01..2020-08-31 and
+#: the walk's "it actually landed" assertions have something to land.
+_WALK_CONFIG_OVERRIDES = {
+    "WrdsCrspDailyAcquisition": {
+        "frequency": "1d",
+        "kwargs": {"data_type": "crsp_daily"},
+        "symbols": ("14593", "80599"),
+        "start_date": "2008-09-01",
+        "end_date": "2020-08-31",
+    },
+}
+
+
 def test_every_concrete_acquisition_subclass_reaches_the_vendor_via_fetch_batch(
-    mock_tiingo_client, mock_alpaca_client, mock_wrds_session, acquisition_config
+    mock_tiingo_client, mock_alpaca_client, mock_crsp_session, acquisition_config
 ):
     """SC-1's positive direction: one shared path, walked per subclass.
 
-    Every vendor transport is mocked by its fixture (the WRDS session by
-    `mock_wrds_session`, with the autouse `_forbid_wrds_network` tripwire live
-    underneath), so this issues no request and needs no credential. The spy is installed on the INSTANCE, so
-    nothing global is mutated and the vendors cannot interfere with each other.
+    Every vendor transport is mocked by its fixture. The WRDS one is
+    `mock_crsp_session`, not `mock_wrds_session`: `FakeCrspSession` SUBCLASSES
+    `FakeWrdsSession` and patches the SAME target, so one fixture serves both
+    WRDS providers -- which is what this walk needs now that the vendor has
+    two concrete classes. The autouse `_forbid_wrds_network` tripwire stays
+    live underneath, so this issues no request and needs no credential. The
+    spy is installed on the INSTANCE, so nothing global is mutated and the
+    vendors cannot interfere with each other.
     """
     classes = _concrete_acquisition_subclasses()
     assert len(classes) >= 2, len(classes)
 
-    roster = ["AAPL", "MSFT"]
     for cls in classes:
-        cfg = acquisition_config(vendor=cls.VENDOR, symbols=tuple(roster))
+        override = _WALK_CONFIG_OVERRIDES.get(cls.__qualname__, {})
+        roster = list(override.get("symbols", ("AAPL", "MSFT")))
+        cfg = acquisition_config(
+            vendor=cls.VENDOR,
+            symbols=tuple(roster),
+            **{
+                key: value
+                for key, value in override.items()
+                if key != "symbols"
+            },
+        )
         acq = cls(cfg)
 
         batched: list[list[str]] = []

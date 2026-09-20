@@ -162,10 +162,19 @@ def test_wrds_descriptor_lives_in_the_neutral_module() -> None:
     imported from the other -- fails here rather than as a mystifying duplicate
     row much later.
 
-    The capability now carries its own `acquisition_cls` / `config_factory`
-    (plan 01 Task 1), which is what plan 02's CRSP row will differ in. The
-    descriptor DEFAULT is still the same pair, so every ingest shell reading
+    The capability carries its own `acquisition_cls` / `config_factory` (plan
+    01 Task 1), which is what plan 02's CRSP row differs in. The descriptor
+    DEFAULT is still the same pair, so every ingest shell reading
     `SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE` keeps working.
+
+    **This test does NOT pin the capability SET**, and that is deliberate: the
+    subject here is the MOVE (one descriptor object, reached from the neutral
+    module, defaults intact), and the whole point of the move was to let the
+    vendor grow a second capability. The inventory is owned by
+    `tests/test_source_registry.py:
+    test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities`, which
+    asserts the exact set -- so nothing is unpinned, it is pinned in the one
+    place that is about inventory.
     """
     from quantlab.acquisition.registry import DataSourceRegistry
     from quantlab.acquisition.wrds import WRDS_SOURCE
@@ -173,11 +182,11 @@ def test_wrds_descriptor_lives_in_the_neutral_module() -> None:
     from quantlab.dataset.nbbo import NbboPanelDataset
 
     assert WRDS_SOURCE is DataSourceRegistry.get("wrds")
-    assert {
+    assert ("us_equity", "tick", "nbbo") in {
         (c.market, c.frequency, c.data_type) for c in WRDS_SOURCE.capabilities
-    } == {("us_equity", "tick", "nbbo")}
+    }
 
-    (capability,) = WRDS_SOURCE.capabilities
+    (capability,) = WRDS_SOURCE.capabilities_for("us_equity", "tick", "nbbo")
     assert capability.dataset_cls is NbboPanelDataset
     assert capability.acquisition_cls is WrdsTaqNbboAcquisition
     assert capability.config_factory == WrdsTaqNbboAcquisition.build_config

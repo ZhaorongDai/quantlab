@@ -1219,6 +1219,41 @@ def mock_wrds_session(monkeypatch) -> type:
     return FakeWrdsSession
 
 
+@pytest.fixture
+def mock_crsp_session(monkeypatch) -> type:
+    """Return `tests.crsp_fixtures.FakeCrspSession`, reset, and patch it over
+    `quantlab.acquisition.wrds_taq.WrdsSession` (phase 03.10).
+
+    The exact mirror of `mock_wrds_session` above, and deliberately the SAME
+    patch target: one WRDS account serves several products through ONE shared
+    session (D-20), so `quantlab/acquisition/wrds_crsp.py` reaches it as
+    `wrds_taq.WrdsSession.shared()` through the module attribute -- never by
+    a `from ... import WrdsSession` binding, which would escape this patch and
+    hide the bug behind a tripwire failure (RESEARCH Pattern 1).
+
+    `FakeCrspSession` SUBCLASSES `FakeWrdsSession`, so this fixture serves the
+    TAQ provider too; that is what lets the subclass walk in
+    `tests/test_acquisition_batching.py` exercise both WRDS classes in one
+    run. The autouse `_forbid_wrds_network` tripwire stays live underneath.
+
+    No module-scope quantlab import is added by this fixture (the docstring
+    rule at the top of this file): the fixture module is imported inside the
+    body, and the target is patched by dotted string behind the same
+    `find_spec` guard.
+    """
+    from tests.crsp_fixtures import FakeCrspSession
+
+    FakeCrspSession.reset()
+    if importlib.util.find_spec("quantlab.acquisition.wrds_taq") is not None:
+        monkeypatch.setattr(
+            "quantlab.acquisition.wrds_taq.WrdsSession",
+            FakeCrspSession,
+            raising=False,
+        )
+    monkeypatch.setenv("WRDS_USERNAME", "test-wrds-user-not-real")
+    return FakeCrspSession
+
+
 def _hive_partition_value(row: dict, hive_key: str) -> str:
     """Derive one hive partition value from a raw row.
 
