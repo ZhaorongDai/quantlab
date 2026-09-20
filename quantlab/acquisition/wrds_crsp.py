@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import json
 from datetime import date, datetime
 from pathlib import Path
 
@@ -57,6 +58,7 @@ from quantlab.acquisition import wrds_taq as _wrds
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
+from quantlab.utils.atomic import write_json_atomically
 
 
 class CrspProductEndError(ValueError):
@@ -66,6 +68,20 @@ class CrspProductEndError(ValueError):
     connection or the subscription -- the data simply does not exist yet,
     because `crsp_a_stock` is the ANNUAL-update product (D-01). It is raised
     BEFORE any COPY, so the message can promise that nothing was downloaded.
+    """
+
+
+class CrspVintageError(ValueError):
+    """The raw tier already holds a DIFFERENT CRSP annual vintage.
+
+    A `ValueError` for the same reason `CrspProductEndError` is one: nothing
+    is wrong with the connection or the subscription. The account simply now
+    holds a later annual release than the one this raw tier was built from,
+    and CRSP REVISES history between releases -- a restated delisting return,
+    a corrected price, a re-used PERMNO. Two vintages sharing one raw root
+    would therefore produce a panel that is neither, with nothing on disk
+    recording the seam. Raised BEFORE any COPY, so the message can promise
+    that nothing was downloaded.
     """
 
 
@@ -305,6 +321,9 @@ class WrdsCrspDailyAcquisition(Acquisition):
     #: The reference tier's directory name, a SIBLING of the raw root.
     REFERENCE_DIR_NAME = "_reference"
 
+    #: The vintage stamp's directory name, a SIBLING of BOTH roots (D-01).
+    VINTAGE_DIR_NAME = "_vintage"
+
     #: The 50 `dsf_v2` columns this class reads, in server order (live check
     #: `C3_columns`). PINNED: the SELECT, and therefore every shard, is
     #: identical for every page of every era. A column the server stops
@@ -456,30 +475,51 @@ class WrdsCrspDailyAcquisition(Acquisition):
     ) -> tuple[date, date, date | None]:
         """`(start, effective_end, clipped_product_end_or_None)`.
 
-        `crsp_a_stock` is the ANNUAL-update product, so its last day is a hard
+        Probes the product end and hands it to `window_for_product_end` below.
+        `_run` does NOT call this: it probes ONCE and reuses the answer for
+        both the window and the vintage stamp, because a second `max(dlycaldt)`
+        per run would be a second full-table aggregate for a value that cannot
+        change mid-run.
+        """
+        return cls.window_for_product_end(
+            CrspQueries.product_end(session), start, end, clip=clip
+        )
+
+    @classmethod
+    def window_for_product_end(
+        cls, product_end, start, end, *, clip: bool
+    ) -> tuple[date, date, date | None]:
+        """The same answer as `resolve_window`, from an ALREADY-probed end.
+
+        `crsp_a_stock` is the annual update product, so its last day is a hard
         edge rather than "data not in yet". Both arms below refuse rather than
         return an empty result: a silent empty pull over a 2026 window looks
         exactly like a roster with no members, and the operator would go
         looking for the wrong bug.
+
+        PURE -- it touches no session, which is what lets `_run` reuse one
+        probe and lets a test pin the arithmetic without a server.
         """
         start = CrspQueries._as_date(start)
         end = CrspQueries._as_date(end)
-        product_end = CrspQueries.product_end(session)
+        product_end = CrspQueries._as_date(product_end)
 
         if start > product_end:
             raise CrspProductEndError(
                 f"start_date {start.isoformat()} is past the CRSP product end "
                 f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is the "
-                f"ANNUAL-update product, so its last day moves once a year at "
-                f"the WRDS refresh, not daily. Choose a start inside the "
-                f"covered range; nothing was downloaded."
+                f"ANNUAL UPDATE product, so its last day moves once a year at "
+                f"the WRDS refresh, not daily. Clipping cannot help: the whole "
+                f"window is past the edge, so there is nothing to clip it to. "
+                f"Choose a start inside the covered range; nothing was "
+                f"downloaded."
             )
         if end > product_end:
             if not clip:
                 raise CrspProductEndError(
                     f"end_date {end.isoformat()} is past the CRSP product end "
                     f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is "
-                    f"the ANNUAL-update product and gains a year at the WRDS "
+                    f"the ANNUAL UPDATE product and gains a year at the WRDS "
                     f"refresh. Lower --end-date to "
                     f"{product_end.isoformat()}, or pass "
                     f"kwargs['clip_to_product_end']=True to have the window "
@@ -488,17 +528,90 @@ class WrdsCrspDailyAcquisition(Acquisition):
             return start, product_end, product_end
         return start, end, None
 
-    def _run(self, symbols: list[str] | None, from_watermark: bool):
-        """Check entitlement and the product end, THEN run.
+    @classmethod
+    def vintage_path_for(cls, config: AcquisitionConfig) -> Path:
+        """`.../{subdir}/_vintage/wrds.json`, a SIBLING of both roots.
 
-        Both happen before the base runner dispatches a single batch, so an
-        unsubscribed account or a window past the vintage raises out of
-        `download()`/`refresh()` with zero COPY calls.
+        Not under the WATERMARK root, and that is the load-bearing half:
+        `CoverageLedger.iter_watermark_symbols` lists every `*.json` there and
+        reads its stem as a symbol, so a `wrds.json` parked beside the
+        watermarks would become a phantom PERMNO in every coverage report --
+        and, worse, one whose "watermark" has no `last_date`. Not under the RAW
+        root either, for the reason `reference_dir_for` gives: `_scan_raw`
+        walks every file below it.
         """
+        return (
+            Path(config.raw_data_dir_path).parent
+            / cls.VINTAGE_DIR_NAME
+            / f"{cls.VENDOR}.json"
+        )
+
+    def _assert_one_vintage(self, product_end: date) -> None:
+        """Stamp the probed vintage, or refuse a raw tier built from another.
+
+        Read-then-write rather than write-always: the stamp is the raw tier's
+        PROVENANCE, so overwriting it with whatever this run happened to probe
+        would destroy the only record that the shards on disk came from an
+        earlier release.
+        """
+        path = self.vintage_path_for(self.config)
+        if path.exists():
+            try:
+                stamped = json.loads(path.read_text(encoding="utf-8")).get(
+                    "product_end"
+                )
+            except (OSError, ValueError) as exc:
+                raise CrspVintageError(
+                    f"{self.class_name}: the vintage stamp {path} could not be "
+                    f"read ({exc}). It records which CRSP annual release this "
+                    f"raw tier was built from, so a run cannot proceed without "
+                    f"it; nothing was downloaded."
+                ) from exc
+            if stamped and CrspQueries._as_date(stamped) != product_end:
+                raise CrspVintageError(
+                    f"{self.class_name}: this raw tier was built from the CRSP "
+                    f"vintage ending {CrspQueries._as_date(stamped).isoformat()}"
+                    f", but the account now reads the vintage ending "
+                    f"{product_end.isoformat()}. CRSP REVISES history between "
+                    f"annual releases -- restated delisting returns, corrected "
+                    f"prices -- so two vintages must never share one raw tier: "
+                    f"the panel built from it would be neither, with nothing on "
+                    f"disk recording the seam. Start a FRESH raw tier by "
+                    f"passing a new subdir to build_config (e.g. "
+                    f"subdir='wrds_crsp_{product_end:%Y}'), or delete the raw "
+                    f"root {self.config.raw_data_dir_path} together with its "
+                    f"_watermarks/{self.VENDOR} and {self.VINTAGE_DIR_NAME} "
+                    f"siblings and pull again. Nothing was downloaded."
+                )
+            return
+        write_json_atomically(
+            path, {"product_end": product_end.isoformat()}, indent=2, sort_keys=True
+        )
+
+    def _run(self, symbols: list[str] | None, from_watermark: bool):
+        """Check the roster, the entitlement, the product end and the vintage,
+        THEN run.
+
+        All four happen before the base runner dispatches a single batch, so a
+        ticker-shaped roster, an unsubscribed account, a window past the
+        vintage or a second vintage over one raw tier raises out of
+        `download()`/`refresh()` with zero COPY calls.
+
+        The ORDER is not incidental. The PERMNO check is first because it
+        costs nothing; entitlement is next because the product-end probe is
+        itself a query against the schema the account may not read, so probing
+        first would report a missing subscription as a broken session; the
+        vintage check is last because it needs the probed end.
+        """
+        self._assert_permnos(
+            self._validate_symbols(list(symbols or self.config.symbols))
+        )
         CrspQueries.assert_entitled(self._session, (CrspQueries.STOCK_SCHEMA,))
+
+        product_end = CrspQueries.product_end(self._session)
         clip = bool(self._knob("clip_to_product_end", False))
-        start, end, clipped = self.resolve_window(
-            self._session,
+        start, end, clipped = self.window_for_product_end(
+            product_end,
             self.config.start_date,
             self.config.end_date,
             clip=clip,
@@ -506,13 +619,34 @@ class WrdsCrspDailyAcquisition(Acquisition):
         if clipped is not None:
             logger.warning(
                 f"{self.class_name}: end_date {self.config.end_date} is past "
-                f"the CRSP product end {clipped.isoformat()}; the window was "
-                f"clipped to it (kwargs['clip_to_product_end'])."
+                f"the {CrspQueries.STOCK_SCHEMA} product end "
+                f"{clipped.isoformat()}; the window was clipped to it "
+                f"(kwargs['clip_to_product_end'])."
             )
             self.config = dataclasses.replace(
                 self.config, end_date=end.isoformat()
             )
+
+        self._assert_one_vintage(product_end)
         return super()._run(symbols, from_watermark)
+
+    def _assert_permnos(self, symbols) -> None:
+        """Every raw symbol is a PERMNO (a digit string), or the run refuses.
+
+        Checked at the TOP of `_run` as well as inside `_fetch_page`, because
+        a ticker roster is an operator mistake about the whole run, not one
+        batch's bad luck: recorded per batch it would land in the failure
+        manifest as if WRDS had rejected those securities.
+        """
+        for symbol in symbols:
+            if not str(symbol).isdigit():
+                raise ValueError(
+                    f"{self.class_name}: symbol {symbol!r} is not a PERMNO. "
+                    f"The CRSP raw tier is keyed by PERMNO (a digit string), "
+                    f"not by ticker -- a ticker is derived at conversion time, "
+                    f"so that a rename never invalidates a watermark. Resolve "
+                    f"the roster to PERMNOs first; nothing was downloaded."
+                )
 
     # -- one page = one calendar year ---------------------------------------
 
@@ -547,15 +681,10 @@ class WrdsCrspDailyAcquisition(Acquisition):
         """
         symbols = self._validate_symbols(symbols)
         # Before ANY query: raw symbols are PERMNOs, and a non-digit value
-        # would become a SQL literal and a shard path segment.
-        for symbol in symbols:
-            if not str(symbol).isdigit():
-                raise ValueError(
-                    f"{self.class_name}: symbol {symbol!r} is not a PERMNO. "
-                    f"The CRSP raw tier is keyed by PERMNO (a digit string), "
-                    f"not by ticker -- a ticker is derived at conversion time, "
-                    f"so that a rename never invalidates a watermark."
-                )
+        # would become a SQL literal and a shard path segment. `_run` checks
+        # the same thing for the whole roster; this is the guard for the
+        # direct `_fetch_page` call, which no roster check precedes.
+        self._assert_permnos(symbols)
 
         start = CrspQueries._as_date(start_date)
         end = CrspQueries._as_date(end_date)
