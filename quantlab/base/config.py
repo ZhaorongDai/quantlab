@@ -111,6 +111,15 @@ class CrspDatasetConfig(DatasetConfig):
     #: Restrict the conversion to these PERMNOs (digit strings). `None` means
     #: every PERMNO present in the raw tier. This is the RAW-side filter; the
     #: inherited `symbols` is the TICKER-side one, applied after symbology.
+    #:
+    #: **Also an EXPLICIT ROSTER, which overrides `security_filter`** (GAP-C,
+    #: the operator's decision of 2026-09-20). Setting this says "I named these
+    #: securities", so every row of every PERMNO listed here survives the type
+    #: filter regardless of its `sharetype` / `securitytype` / `securitysubtype`
+    #: -- on every one of its dates, not only inside some window. The type filter
+    #: screens an UNSPECIFIED population; it does not overrule a roster. The
+    #: override is recorded under `roster_overrides` in
+    #: `{zarr}.crsp_filter_report.json`, never applied silently.
     permnos: tuple[str, ...] | None = None
 
     #: `{PERMNO: symbol}`, applied BEFORE every symbology rule. The live case
@@ -143,11 +152,33 @@ class CrspDatasetConfig(DatasetConfig):
     #: `permno` are untouched, and the seam is reported either way.
     nan_adj_at_permno_seam: bool = True
 
-    #: The universe that breaks a same-day ticker collision, one of
-    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. `None`
-    #: means the tie-break is unavailable, and a collision no other rule
-    #: resolves REFUSES the conversion rather than merging two securities into
-    #: one column.
+    #: **THE INDEX THIS CONVERSION IS SCOPED TO**, one of
+    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. It has two
+    #: uses, and the second is the larger one:
+    #:
+    #: 1. It breaks a same-day ticker collision (D-04). `None` means that
+    #:    tie-break is unavailable, and a collision no other rule resolves
+    #:    REFUSES the conversion rather than merging two securities into one
+    #:    column.
+    #: 2. It is an EXPLICIT ROSTER that overrides `security_filter` (GAP-C, the
+    #:    operator's decision of 2026-09-20). The index provider already decided
+    #:    membership, so a member is never dropped by the type filter during its
+    #:    membership spell -- per DATE, from the same `permno_intervals` frame
+    #:    the tie-break reads. Outside its spells a PERMNO is an unspecified
+    #:    population again and the filter applies normally. The override is
+    #:    recorded under `roster_overrides` in
+    #:    `{zarr}.crsp_filter_report.json`, never applied silently.
+    #:
+    #: **The NAME is narrower than the responsibility, and was not changed.**
+    #: Every store this phase has already written carries a serialized
+    #: `config.json` that `quantlab/utils/module.py:load_backtester_from_config`
+    #: and the dataset rebuild path read back BY KEY, so a rename breaks the
+    #: round trip for data that exists on disk today. A SECOND field naming the
+    #: same universe would be worse: two fields carrying one fact can disagree,
+    #: and nothing at runtime would notice. A rename becomes forced the first
+    #: time a conversion legitimately needs a roster universe DIFFERENT from its
+    #: collision tie-break universe; at that point the field splits and both
+    #: names become accurate.
     collision_universe: str | None = None
 
     @classmethod
