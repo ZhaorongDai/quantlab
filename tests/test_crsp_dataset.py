@@ -690,6 +690,12 @@ def test_splitfactor_and_facprc_mark_the_split_day(mock_crsp_session, tmp_path):
     split_day = days[SPLIT_INDEX]
     assert _at(panel, "splitFactor", split_day, SYNTHETIC_SYMBOL) == pytest.approx(2.0)
     assert _at(panel, "facprc", split_day, SYNTHETIC_SYMBOL) == pytest.approx(2.0)
+    # On a day that DID trade, `close_trade` (`dlyclose`) and `close`
+    # (`abs(dlyprc)`) agree -- the two diverge only where there was no trade,
+    # which is what makes `dlyprc` the right source for the panel's close.
+    assert _at(panel, "close_trade", split_day, SYNTHETIC_SYMBOL) == pytest.approx(
+        _at(panel, "close", split_day, SYNTHETIC_SYMBOL)
+    )
     for index in (SPLIT_INDEX - 1, SPLIT_INDEX + 1):
         assert _at(panel, "splitFactor", days[index], SYNTHETIC_SYMBOL) == (
             pytest.approx(1.0)
