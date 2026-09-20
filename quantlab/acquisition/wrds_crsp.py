@@ -946,3 +946,109 @@ class WrdsCrspDailyAcquisition(Acquisition):
         custom root keeps its reference tier beside its own raw tier.
         """
         return Path(config.raw_data_dir_path).parent / cls.REFERENCE_DIR_NAME
+
+
+class CrspVolumeProbe:
+    """Counts the `dsf_v2` rows a pull WOULD fetch, per calendar YEAR, for the
+    SQL volume guard (D-03, T-03.10-07).
+
+    The TAQ sibling `WrdsNbboVolumeProbe` counts per trading DAY because a TAQ
+    page is a day table; a CRSP page is a calendar year, so this counts per
+    year. That is the whole difference, and it is deliberate: the probe's unit
+    is the PULL's unit, because the point of a pre-flight estimate is that a
+    refusal names a window the operator can actually re-run. A refusal that
+    said "stop at 2019-06-14" would name a boundary no page has.
+
+    One `count(*)` per `(year page, PERMNO batch)`, with the pages from
+    `year_pages` and the WHERE from `CrspQueries.daily_where` -- the same two
+    functions `WrdsCrspDailyAcquisition._fetch_page` uses, so the rows priced
+    here are the rows that will move. `daily_where` refuses an empty batch, so
+    this class cannot issue a count over the whole 110-million-row table.
+
+    **The guard itself is REUSED UNCHANGED** (D-03). `SqlVolumeGuard` speaks
+    of `rows_by_day` and `trading_days`; against this dict those words mean
+    per-YEAR and year-count. The keys are the ISO page END (a December 31, or
+    the window's own end for the final year), which is what makes the guard's
+    `fitting_end_date` -- and therefore its `--end-date` suggestion -- a date
+    a re-run can be given verbatim. Plan 10 puts the unit label on the printed
+    estimate; renaming the guard's fields is NOT the fix, because the guard is
+    shared with the TAQ path where "day" is literally true.
+
+    Not adopted, for the reason the TAQ probe gives: a JSON cache of these
+    counts beside the watermarks. It would save only the re-count seconds and
+    would be a second state file that can disagree with the watermarks, while
+    the pull re-counts every page anyway (`verify_page_counts`).
+    """
+
+    #: Log progress every this many year pages.
+    LOG_EVERY_PAGES = 5
+
+    def __init__(
+        self,
+        session,
+        batch_size: int = WrdsCrspDailyAcquisition.DEFAULT_BATCH_SIZE,
+    ) -> None:
+        self.session = session
+        self.batch_size = max(1, int(batch_size))
+
+    def _batches(self, permnos: list[str]) -> list[list[str]]:
+        """`Acquisition._batches`'s chunking, in INPUT ORDER.
+
+        Restated rather than imported because that method is an instance
+        method reading `config.kwargs`, and this probe deliberately has no
+        config: it is asked a question before any pull exists. The chunk
+        arithmetic is pinned against the acquisition's by
+        `tests/test_wrds_crsp_acquisition.py`.
+        """
+        return [
+            permnos[index : index + self.batch_size]
+            for index in range(0, len(permnos), self.batch_size)
+        ]
+
+    def count_rows_by_year(
+        self, permnos, start_date: str, end_date: str
+    ) -> dict[str, int]:
+        """`{ISO page end: rows}` over `[start_date, end_date]`.
+
+        Keys are YEAR buckets -- `2019-12-31`, `2020-12-31`, and the window's
+        own end for the last, partial year -- summed over the PERMNO batches.
+        Entitlement is checked first, so an unsubscribed account raises
+        `WrdsEntitlementError` before any count is issued (D-21).
+        """
+        permnos = [str(permno) for permno in permnos]
+        if not permnos:
+            raise ValueError(
+                "CrspVolumeProbe.count_rows_by_year: no PERMNOs; refusing to "
+                "count the daily table without a PERMNO predicate."
+            )
+        for permno in permnos:
+            if not permno.isdigit():
+                raise ValueError(
+                    f"CrspVolumeProbe: {permno!r} is not a PERMNO. The CRSP "
+                    f"raw tier is keyed by PERMNO (a digit string), not by "
+                    f"ticker; resolve the roster to PERMNOs first."
+                )
+
+        batches = self._batches(permnos)
+        pages = year_pages(start_date, end_date)
+
+        CrspQueries.assert_entitled(self.session, (CrspQueries.STOCK_SCHEMA,))
+
+        counts: dict[str, int] = {}
+        for position, (page_start, page_end) in enumerate(pages, start=1):
+            counts[page_end.isoformat()] = sum(
+                CrspQueries.count(
+                    self.session,
+                    CrspQueries.STOCK_SCHEMA,
+                    CrspQueries.DAILY_TABLE,
+                    CrspQueries.daily_where(batch, page_start, page_end),
+                )
+                for batch in batches
+            )
+            if position % self.LOG_EVERY_PAGES == 0 or position == len(pages):
+                logger.info(
+                    f"CRSP daily volume probe: {position}/{len(pages)} year "
+                    f"page(s) counted ({len(batches)} batch(es) per page, "
+                    f"{sum(counts.values()):,} rows so far)."
+                )
+        return counts
