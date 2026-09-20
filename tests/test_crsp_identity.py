@@ -340,6 +340,16 @@ def _filter_report(dataset_config):
     )
 
 
+def _symbology_report(dataset_config):
+    from pathlib import Path
+
+    from quantlab.dataset.crsp import SYMBOLOGY_REPORT_SUFFIX
+
+    return _read_json(
+        Path(str(dataset_config.zarr_file_path) + SYMBOLOGY_REPORT_SUFFIX)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 1: the security filter, per date, with a delisting carry and a report
 # ---------------------------------------------------------------------------
@@ -563,3 +573,388 @@ def test_the_filter_report_says_what_was_dropped_and_why(
     assert qqq["rows"] == len(SCENARIO_DAYS), qqq
     assert qqq["first"] == SCENARIO_DAYS[0], qqq
     assert qqq["last"] == SCENARIO_DAYS[-1], qqq
+
+
+# ---------------------------------------------------------------------------
+# Task 2: collisions, PERMNO seams and the symbology report
+# ---------------------------------------------------------------------------
+
+#: The reused ticker, and the two PERMNOs that wear it in turn. SYNTHETIC
+#: throughout: the live check sampled no ticker-reuse pair, and inventing the
+#: DATES is the whole point of the scenario.
+REUSE_SYMBOL = "XYZ"
+OLD_PERMNO = 11111
+NEW_PERMNO = 22222
+REUSE_SEAM_DAY = "2010-05-18"
+
+#: The two PERMNOs that are BOTH active under one ticker on one day.
+TIE_MEMBER_PERMNO = 33333
+TIE_OUTSIDER_PERMNO = 44444
+TIE_DAY = "2011-01-03"
+
+
+def _reuse_rows(*, new_permno_first_day=REUSE_SEAM_DAY):
+    """SYNTHETIC: `OLD_PERMNO` delists as XYZ, `NEW_PERMNO` takes the ticker.
+
+    `new_permno_first_day` moves the incoming security's first row onto the
+    delisting day itself, which turns the scenario from a SEAM into a same-day
+    COLLISION -- the two halves of ticker reuse, from the same fixture.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [
+        dsf_row(
+            OLD_PERMNO,
+            day,
+            dlyprc=f"{price:.6f}",
+            dlyclose=f"{price:.6f}",
+            dlyopen=f"{price * 0.99:.6f}",
+            dlyhigh=f"{price * 1.02:.6f}",
+            dlylow=f"{price * 0.98:.6f}",
+            dlyret="0.010000",
+            dlyretx="0.010000",
+            ticker=REUSE_SYMBOL,
+        )
+        for day, price in (
+            ("2010-05-12", 10.0),
+            ("2010-05-13", 10.1),
+            ("2010-05-14", 10.201),
+        )
+    ]
+    rows.append(
+        dsf_row(
+            OLD_PERMNO,
+            "2010-05-17",
+            dlydelflg="Y",
+            dlyprc="4.080400",
+            dlyprcflg="DP",
+            dlyret="-0.600000",
+            ticker=None,
+        )
+    )
+    rows.extend(
+        dsf_row(
+            NEW_PERMNO,
+            day,
+            dlyprc=f"{price:.6f}",
+            dlyclose=f"{price:.6f}",
+            dlyopen=f"{price * 0.99:.6f}",
+            dlyhigh=f"{price * 1.02:.6f}",
+            dlylow=f"{price * 0.98:.6f}",
+            dlyret="0.020000",
+            dlyretx="0.020000",
+            ticker=REUSE_SYMBOL,
+        )
+        for day, price in (
+            (new_permno_first_day, 50.0),
+            ("2010-05-19", 51.0),
+            ("2010-05-20", 52.02),
+        )
+    )
+    return rows
+
+
+def _reuse_secinfo(*, new_permno_start=REUSE_SEAM_DAY):
+    """One interval each. The old PERMNO's ENDS before the delisting row, which
+    is why that row reaches the panel only through symbology's carry rule."""
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(OLD_PERMNO, "2000-01-01", "2010-05-14", REUSE_SYMBOL,
+                    REUSE_SYMBOL, None),
+        secinfo_row(NEW_PERMNO, new_permno_start, "2025-12-31", REUSE_SYMBOL,
+                    REUSE_SYMBOL, None),
+    ]
+
+
+def _reuse_store(tmp_path, **config_overrides):
+    return _build_store(
+        tmp_path,
+        _reuse_rows(),
+        [str(OLD_PERMNO), str(NEW_PERMNO)],
+        start="2010-05-01",
+        end="2010-05-31",
+        extra_secinfo=_reuse_secinfo(),
+        **config_overrides,
+    )
+
+
+def _tie_rows():
+    """SYNTHETIC: two ACTIVE PERMNOs under one ticker on the same days."""
+    from tests.crsp_fixtures import dsf_row
+
+    return [
+        dsf_row(
+            permno,
+            day,
+            dlyprc=f"{price:.6f}",
+            dlyclose=f"{price:.6f}",
+            dlyret="0.010000",
+            ticker=REUSE_SYMBOL,
+        )
+        for permno, price in (
+            (TIE_MEMBER_PERMNO, 30.0),
+            (TIE_OUTSIDER_PERMNO, 70.0),
+        )
+        for day in (TIE_DAY, "2011-01-04")
+    ]
+
+
+def _tie_secinfo():
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(permno, "2000-01-01", "2025-12-31", REUSE_SYMBOL,
+                    REUSE_SYMBOL, None)
+        for permno in (TIE_MEMBER_PERMNO, TIE_OUTSIDER_PERMNO)
+    ]
+
+
+def _tie_dsp500_rows():
+    """`dsp500list_v2` covering ONLY the member of the colliding pair."""
+    return [
+        {
+            "permno": str(TIE_MEMBER_PERMNO),
+            "indno": "1000500",
+            "mbrstartdt": "2000-01-01",
+            "mbrenddt": "2025-12-31",
+            "mbrflg": "NORM",
+            "indfam": "1100500",
+        }
+    ]
+
+
+def test_a_permno_seam_nans_the_incoming_first_row(mock_crsp_session, tmp_path):
+    """D-18 / T-03.10-26: a ticker column that changes company breaks there.
+
+    Without the break, `adjClose(2010-05-18) / adjClose(2010-05-17)` would be a
+    finite number computed from two DIFFERENT companies' anchors -- a return
+    that never happened, indistinguishable from a real one, and silently
+    inherited by every rolling factor and forward label spanning the day.
+
+    Raw prices and `permno` are untouched: the seam removes the FABRICATED
+    quantity, not the observation.
+    """
+    import numpy as np
+
+    panel = _panel(_reuse_store(tmp_path))
+
+    assert _symbols(panel) == [REUSE_SYMBOL], _symbols(panel)
+    assert _at(panel, "permno", "2010-05-17", REUSE_SYMBOL) == pytest.approx(
+        float(OLD_PERMNO)
+    )
+    assert _at(panel, "permno", REUSE_SEAM_DAY, REUSE_SYMBOL) == pytest.approx(
+        float(NEW_PERMNO)
+    )
+
+    for name in ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"):
+        assert np.isnan(_at(panel, name, REUSE_SEAM_DAY, REUSE_SYMBOL)), name
+    assert np.isfinite(_at(panel, "close", REUSE_SEAM_DAY, REUSE_SYMBOL))
+
+    # The day AFTER the seam is an ordinary adjusted day again: the break is
+    # one row wide, not the end of the column.
+    assert np.isfinite(_at(panel, "adjClose", "2010-05-19", REUSE_SYMBOL))
+
+
+def test_the_seam_is_reported_whether_or_not_it_is_nanned(
+    mock_crsp_session, tmp_path
+):
+    """The opt-out removes the NaN, never the RECORD.
+
+    A user who wants a continuous column (say, to study the ticker rather than
+    the company) may have one, but the panel must never be able to hide that
+    the column changed hands.
+    """
+    import numpy as np
+
+    expected = [
+        {
+            "date": REUSE_SEAM_DAY,
+            "symbol": REUSE_SYMBOL,
+            "old_permno": OLD_PERMNO,
+            "new_permno": NEW_PERMNO,
+        }
+    ]
+
+    on = _reuse_store(tmp_path)
+    assert _symbology_report(on)["seams"] == expected
+
+    off = _reuse_store(
+        tmp_path, nan_adj_at_permno_seam=False, store="crsp_continuous.zarr"
+    )
+    assert _symbology_report(off)["seams"] == expected
+    assert np.isfinite(
+        _at(_panel(off), "adjClose", REUSE_SEAM_DAY, REUSE_SYMBOL)
+    )
+
+
+def test_a_same_permno_rename_is_not_a_seam(mock_crsp_session, tmp_path):
+    """FB -> META is ONE company, so the adjusted series must not break.
+
+    PERMNO 13407 throughout (VERBATIM `C5` security-info intervals). The two
+    symbols are two COLUMNS of the panel, and the ratio across them is a real
+    return -- which is exactly what a PERMNO-keyed seam rule has to get right,
+    because a ticker-keyed one could not tell this case from ticker reuse.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    days = ("2022-06-06", "2022-06-07", "2022-06-08", "2022-06-09", "2022-06-10")
+    daily_return = 0.02
+    rows = []
+    price = 180.0
+    for day in days:  # SYNTHETIC daily rows; the secinfo intervals are live.
+        price *= 1.0 + daily_return
+        rows.append(
+            dsf_row(
+                13407,
+                day,
+                dlyprc=f"{price:.6f}",
+                dlyclose=f"{price:.6f}",
+                dlyret=f"{daily_return:.6f}",
+                dlyretx=f"{daily_return:.6f}",
+                ticker="FB" if day <= "2022-06-08" else "META",
+            )
+        )
+
+    dataset_config = _build_store(
+        tmp_path, rows, ["13407"], start="2022-06-01", end="2022-06-30"
+    )
+    panel = _panel(dataset_config)
+
+    assert _symbols(panel) == ["FB", "META"], _symbols(panel)
+    assert _symbology_report(dataset_config)["seams"] == []
+    assert _at(panel, "adjClose", "2022-06-09", "META") / _at(
+        panel, "adjClose", "2022-06-08", "FB"
+    ) == pytest.approx(1.0 + daily_return, rel=1e-9)
+
+
+def test_a_collision_is_broken_by_the_configured_universe(
+    mock_crsp_session, tmp_path
+):
+    """D-04 rule 2: when both securities are trading, the universe decides.
+
+    The panel is being built FOR that universe, so its member is the one whose
+    prices the panel is about. Without a universe there is no such fact, which
+    is why `collision_universe` is a config field and not a default.
+    """
+    dataset_config = _build_store(
+        tmp_path,
+        _tie_rows(),
+        [str(TIE_MEMBER_PERMNO), str(TIE_OUTSIDER_PERMNO)],
+        start="2011-01-01",
+        end="2011-01-31",
+        extra_secinfo=_tie_secinfo(),
+        dsp500_rows=_tie_dsp500_rows(),
+        collision_universe="crsp_sp500",
+    )
+    panel = _panel(dataset_config)
+
+    assert _at(panel, "permno", TIE_DAY, REUSE_SYMBOL) == pytest.approx(
+        float(TIE_MEMBER_PERMNO)
+    )
+
+    resolutions = _symbology_report(dataset_config)["collisions"]
+    assert [record["rule"] for record in resolutions] == ["universe_member"] * 2
+    first = resolutions[0]
+    assert first["date"] == TIE_DAY, first
+    assert first["symbol"] == REUSE_SYMBOL, first
+    assert first["kept"] == TIE_MEMBER_PERMNO, first
+    assert first["dropped"] == [TIE_OUTSIDER_PERMNO], first
+
+
+def test_an_unresolvable_collision_refuses_before_anything_is_written(
+    mock_crsp_session, tmp_path
+):
+    """T-03.10-16: two securities are never merged into one column.
+
+    Without a universe, nothing distinguishes the two active PERMNOs. Picking
+    one by row order, or averaging them, would leave a well-formed panel in
+    which every return across the join is fabricated. The refusal happens in
+    the once-per-run axes hook, so the store does not exist afterwards.
+    """
+    from pathlib import Path
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _tie_rows(),
+        [str(TIE_MEMBER_PERMNO), str(TIE_OUTSIDER_PERMNO)],
+        start="2011-01-01",
+        end="2011-01-31",
+        extra_secinfo=_tie_secinfo(),
+        dsp500_rows=_tie_dsp500_rows(),
+    )
+    dataset_config = _dataset_config(
+        tmp_path, cfg, reference_dir, start="2011-01-01", end="2011-01-31"
+    )
+
+    with pytest.raises(ValueError) as raised:
+        _convert(dataset_config)
+
+    message = str(raised.value)
+    assert TIE_DAY in message, message
+    assert REUSE_SYMBOL in message, message
+    assert str(TIE_MEMBER_PERMNO) in message, message
+    assert str(TIE_OUTSIDER_PERMNO) in message, message
+    assert not Path(dataset_config.zarr_file_path).exists(), message
+
+
+def test_a_collision_between_a_delisting_and_an_active_row_keeps_the_active(
+    mock_crsp_session, tmp_path
+):
+    """D-04 rule 1, the shape ticker reuse actually takes.
+
+    The outgoing security's delisting row and the incoming security's first row
+    land on the SAME day. The ticker belongs to whoever is still trading under
+    it, and the rule needs no universe -- which is what keeps ordinary ticker
+    reuse from requiring one.
+    """
+    dataset_config = _build_store(
+        tmp_path,
+        _reuse_rows(new_permno_first_day="2010-05-17"),
+        [str(OLD_PERMNO), str(NEW_PERMNO)],
+        start="2010-05-01",
+        end="2010-05-31",
+        extra_secinfo=_reuse_secinfo(new_permno_start="2010-05-17"),
+    )
+    panel = _panel(dataset_config)
+
+    assert _at(panel, "permno", "2010-05-17", REUSE_SYMBOL) == pytest.approx(
+        float(NEW_PERMNO)
+    )
+
+    resolutions = _symbology_report(dataset_config)["collisions"]
+    assert len(resolutions) == 1, resolutions
+    assert resolutions[0] == {
+        "date": "2010-05-17",
+        "symbol": REUSE_SYMBOL,
+        "kept": NEW_PERMNO,
+        "dropped": [OLD_PERMNO],
+        "rule": "active_over_delisting",
+    }
+
+
+def test_the_symbology_report_carries_every_identity_key(
+    mock_crsp_session, tmp_path
+):
+    """One sidecar holds every identity decision, not five scattered logs.
+
+    `delisting_carried` is the one to read twice: it says the panel's XYZ
+    column owes its 2010-05-17 row to the carry rule rather than to an
+    interval, which is the difference between a -60% day in the series and a
+    -60% day that quietly never happened.
+    """
+    report = _symbology_report(_reuse_store(tmp_path))
+
+    assert set(report) >= {
+        "seams",
+        "collisions",
+        "unlabelled",
+        "delisting_carried",
+        "class_suffixed",
+        "nonconforming_symbols",
+    }, sorted(report)
+    carried = report["delisting_carried"][str(OLD_PERMNO)]
+    assert carried["symbol"] == REUSE_SYMBOL, carried
+    assert carried["rows"] == 1, carried
+    assert report["unlabelled"] == {}, report["unlabelled"]
+    assert report["nonconforming_symbols"] == [], report["nonconforming_symbols"]
