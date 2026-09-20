@@ -298,6 +298,55 @@ LEHMAN_2008_ROWS: list[dict[str, str | None]] = [
     ),
 ]
 
+#: WestRock (PERMNO 21186) through its 2024-07-08 delisting -- the MODERN CIZ
+#: delisting shape, which is a DIFFERENT shape from Lehman's above.
+#:
+#: The two delisting shapes, plainly:
+#:
+#: - `dlyprcflg='DP'` (delisting PRICE) carries a REAL price. Lehman 2008-09-18
+#:   is `dlyprc = 0.052`, an actual value a holding was worth. Its factor and
+#:   volume columns are ordinary.
+#: - `dlyprcflg='DA'` (delisting AMOUNT) carries NO price. CRSP writes
+#:   `dlyprc = 0.000000` there as a NO-PRICE SENTINEL, and leaves `dlyclose`,
+#:   `dlyvol`, `dlycumfacpr` and `dlycumfacshr` NULL. Reading that 0.0 as a
+#:   close both publishes a fabricated $0.00 trade and -- because 0.0 is not
+#:   NULL -- lets the sentinel row become the adjustment anchor.
+#:
+#: `DA` is **5 of 5** delisting rows in the raw tier this phase actually pulled
+#: (flag distribution `TR` 138,888 / `DA` 5 / `DP` 0). The corpus carried only
+#: the `DP` shape, which is why 179 CRSP tests passed green over two blockers.
+#:
+#: VERIFIED against that raw tier: the three rows below are the values
+#: 03.10-REVIEW.md CR-01 reproduced read-only from
+#: `data/downloads/us_equity/1d/wrds_crsp/wrds/` for PERMNO 21186 -- `dlycaldt`,
+#: `dlyprc`, `dlyprcflg`, `dlyret`, `dlycumfacpr`, `dlycumfacshr` and `dlyvol`,
+#: `dlyvol` included (so these are LIVE volumes, not `dsf_row`'s SYNTHETIC
+#: default). `dlyopen` is the same table's open on those two days. The NULL type
+#: columns on the delisting row are live too, and they are not decoration: they
+#: are what makes that row exercise the D-10 filter carry.
+WESTROCK_2024_ROWS: list[dict[str, str | None]] = [
+    dsf_row(
+        21186, "2024-07-03", dlydelflg="N", dlyprc="49.750000", dlyprcflg="TR",
+        dlyret="0.019676", dlyretmissflg="NA", dlyopen="49.550000",
+        dlyvol="4435075", dlycumfacpr="1.000000000000",
+        dlycumfacshr="1.000000000000", ticker="WRK",
+    ),
+    dsf_row(
+        21186, "2024-07-05", dlydelflg="N", dlyprc="51.510000", dlyprcflg="TR",
+        dlyret="0.035377", dlyretmissflg="NA", dlyopen="50.780000",
+        dlyvol="11862010", dlycumfacpr="1.000000000000",
+        dlycumfacshr="1.000000000000", ticker="WRK",
+    ),
+    # The modern delisting row: a no-price sentinel, not a trade.
+    dsf_row(
+        21186, "2024-07-08", dlydelflg="Y", dlyprc="0.000000", dlyprcflg="DA",
+        dlyret="-0.005630", dlyretmissflg="NA", dlyclose=None, dlyvol=None,
+        dlyopen=None, dlycumfacpr=None, dlycumfacshr=None, ticker=None,
+        sharetype=None, securitytype=None, securitysubtype=None,
+        usincflg=None, issuertype=None,
+    ),
+]
+
 #: AAPL's first three trading days, all 50 columns VERBATIM from
 #: `03.10-LIVE-CHECK.json` key `C4_sample_crsp_a_stock.dsf_v2`. The pre-1992
 #: era has no OHLC and no volume, which is why every such field is NULL here.
@@ -486,6 +535,15 @@ SECINFO_ROWS: list[dict[str, str | None]] = [
     secinfo_row(80599, "2006-07-11", "2008-06-26", "LEH", None, None),
     secinfo_row(80599, "2008-06-27", "2008-09-17", "LEH", None, None),
     secinfo_row(80599, "2008-09-18", "2008-09-18", None, None, None),
+    # -- WestRock 21186, the MODERN delisting shape's intervals. Mirrors the
+    #    Lehman block: a long trading interval, then a NULL-ticker interval on
+    #    the delisting day itself, so the symbol on that row survives only
+    #    through symbology's carry rule.
+    # SYNTHETIC start: the live projection sampled 21186's DAILY rows (CR-01),
+    #    never its security info, so the 2015-07-01 start is invented. The
+    #    ticker and the 2024-07-05 end are the live values.
+    secinfo_row(21186, "2015-07-01", "2024-07-05", "WRK", "WRK", None),
+    secinfo_row(21186, "2024-07-08", "2024-07-08", None, None, None),
     # -- Brown-Forman / BF share classes, VERBATIM L6_1 (the live projection
     #    selected permno, secinfostartdt, secinfoenddt, ticker, tradingsymbol,
     #    shareclass only)
