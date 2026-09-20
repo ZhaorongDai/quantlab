@@ -958,3 +958,206 @@ def test_the_symbology_report_carries_every_identity_key(
     assert carried["rows"] == 1, carried
     assert report["unlabelled"] == {}, report["unlabelled"]
     assert report["nonconforming_symbols"] == [], report["nonconforming_symbols"]
+
+
+# ---------------------------------------------------------------------------
+# Task 3: the QQQ benchmark store, the benchmark lock and the config round trip
+# ---------------------------------------------------------------------------
+
+QQQ_WINDOW_START = "1999-01-01"
+QQQ_WINDOW_END = "2025-12-31"
+
+#: The three VERBATIM QQQ rows' dates (`03.10-LIVE-CHECK-NDX-QQQ.json` key
+#: `C3_qqq_daily_sample`). The middle one falls inside the 2004-2011 spell when
+#: CRSP's ticker was QQQQ, which is the whole reason for the symbol override.
+QQQ_DAYS = ("1999-03-10", "2010-06-01", "2025-12-31")
+
+
+def _repo_root():
+    """This worktree's root, from THIS file rather than from a captured cwd.
+
+    A path built from the orchestrator's working directory would point at the
+    main checkout, and a structural test would then read code this branch
+    never changed.
+    """
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[1]
+
+
+def _qqq_raw(tmp_path):
+    """A raw tier holding QQQ's three VERBATIM rows and AAPL's August 2020."""
+    from tests.crsp_fixtures import AAPL_AUG_2020_ROWS, QQQ_ROWS
+
+    return _pull(
+        tmp_path,
+        list(QQQ_ROWS) + list(AAPL_AUG_2020_ROWS),
+        [QQQ_PERMNO_TEXT, AAPL_PERMNO],
+        start=QQQ_WINDOW_START,
+        end=QQQ_WINDOW_END,
+    )
+
+
+def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
+    mock_crsp_session, tmp_path
+):
+    """D-15: QQQ gets its OWN store, filter off, ticker pinned.
+
+    `qqq_benchmark` states all three facts at once -- `permnos=('86755',)`,
+    `security_filter='none'` and `symbol_overrides={'86755': 'QQQ'}` -- so a
+    caller cannot accidentally build it with the equity panel's filter (which
+    drops `FUND`/`ETF`) or with CRSP's period-correct `QQQQ` ticker splitting
+    the series into two columns.
+
+    The numbers are the drop-in promise applied to an ETF: the anchor row's
+    adjusted close IS its raw close, and 1999's volume scales by the
+    `dlycumfacshr` ratio 2 -> 1.
+    """
+    from quantlab.base.config import QQQ_PERMNO, CrspDatasetConfig
+
+    cfg, reference_dir = _qqq_raw(tmp_path)
+    benchmark = CrspDatasetConfig.qqq_benchmark(
+        zarr_file_path=str(tmp_path / "qqq.zarr"),
+        raw_data_dir_path=cfg.raw_data_dir_path,
+        catalog_path=str(tmp_path / "catalog"),
+        reference_dir=reference_dir,
+        start_date=QQQ_WINDOW_START,
+        end_date=QQQ_WINDOW_END,
+    )
+
+    assert QQQ_PERMNO == QQQ_PERMNO_TEXT
+    assert benchmark.permnos == (QQQ_PERMNO,)
+    assert benchmark.security_filter == "none"
+    assert benchmark.symbol_overrides == {QQQ_PERMNO: "QQQ"}
+
+    _convert(benchmark)
+    panel = _panel(benchmark)
+
+    assert _symbols(panel) == ["QQQ"], _symbols(panel)
+    assert _timestamps(panel) == list(QQQ_DAYS), _timestamps(panel)
+    assert _at(panel, "permno", "2025-12-31", "QQQ") == pytest.approx(86755.0)
+
+    assert _at(panel, "close", "2025-12-31", "QQQ") == pytest.approx(614.31)
+    assert _at(panel, "adjClose", "2025-12-31", "QQQ") == pytest.approx(614.31)
+    assert _at(panel, "adjVolume", "1999-03-10", "QQQ") == pytest.approx(
+        2616100 * 2.0
+    )
+
+
+def test_the_equity_store_over_the_same_raw_tier_drops_qqq(
+    mock_crsp_session, tmp_path
+):
+    """The two stores are two READINGS of one raw tier, not two downloads.
+
+    That is what keeps QQQ out of the equity panel without keeping it out of
+    the data: anything in the equity panel enters cross-sectional ranking and
+    model training, and an ETF ranked against its own constituents is not a
+    stock pick. The filter report is where the removal is stated.
+    """
+    cfg, reference_dir = _qqq_raw(tmp_path)
+    equity = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start=QQQ_WINDOW_START,
+        end=QQQ_WINDOW_END,
+        store="equity.zarr",
+    )
+    _convert(equity)
+
+    assert _symbols(_panel(equity)) == ["AAPL"], _symbols(_panel(equity))
+
+    report = _filter_report(equity)
+    assert QQQ_PERMNO_TEXT in report["dropped_permnos"], report["dropped_permnos"]
+    assert report["dropped_permnos"][QQQ_PERMNO_TEXT]["symbol"] == "QQQ"
+    assert report["dropped_by_type"]["NS/FUND/ETF/ACOR/Y"] == len(QQQ_DAYS)
+
+
+def test_qqq_is_data_only_benchmark_untouched(mock_crsp_session, tmp_path):
+    """D-16: this phase produces QQQ DATA and wires nothing.
+
+    Two halves, because either alone would pass while the promise was broken.
+    The identifier scan proves no CRSP module reaches for the backtester's
+    config slot; the AST check proves the slot is still refused, so a later
+    phase cannot find the guard quietly deleted and assume benchmarking works.
+    """
+    import ast
+
+    root = _repo_root()
+    crsp_files = sorted(root.glob("quantlab/dataset/crsp*.py")) + sorted(
+        root.glob("quantlab/acquisition/wrds*.py")
+    )
+    cli = root / "scripts" / "ingest_wrds_crsp.py"
+    if cli.exists():
+        crsp_files.append(cli)
+    assert crsp_files, root
+
+    for path in crsp_files:
+        assert "benchmark_dataset" not in path.read_text(encoding="utf-8"), path
+
+    backtest = root / "quantlab" / "base" / "backtest.py"
+    tree = ast.parse(backtest.read_text(encoding="utf-8"))
+    refusals = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(inner, ast.Attribute) and inner.attr == "benchmark_dataset"
+            for inner in ast.walk(node.test)
+        )
+        and any(
+            isinstance(inner, ast.Raise)
+            and isinstance(inner.exc, ast.Call)
+            and isinstance(inner.exc.func, ast.Name)
+            and inner.exc.func.id == "NotImplementedError"
+            for inner in ast.walk(node)
+        )
+    ]
+    assert refusals, ast.dump(tree)[:400]
+
+
+def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
+    """D-12: a store rebuilds from its own `config.json`, every field included.
+
+    The JSON hop is the test, not decoration: `json.dumps` turns every tuple
+    into a list, so a config that came back with `permnos` or a filter's allowed
+    values as LISTS would compare unequal and, worse, would silently be a
+    different object to `dataclasses.asdict` on the next save.
+    """
+    import copy
+    import json
+
+    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.crsp import CrspStockDataset
+    from quantlab.utils.module import load_dataset_from_config
+
+    dataset = CrspStockDataset(
+        CrspDatasetConfig(
+            zarr_file_path=str(tmp_path / "crsp.zarr"),
+            raw_data_dir_path=str(tmp_path / "raw"),
+            catalog_path=str(tmp_path / "catalog"),
+            reference_dir=str(tmp_path / "_reference"),
+            start_date="2010-01-01",
+            end_date="2020-12-31",
+            permnos=("10107", "14593"),
+            symbol_overrides={"86755": "QQQ"},
+            security_filter={
+                "securitytype": ["EQTY"],
+                "securitysubtype": ["COM"],
+            },
+            nan_adj_at_permno_seam=False,
+            collision_universe="crsp_sp500",
+        )
+    )
+    saved = dataset.get_config()
+    serialized = json.loads(json.dumps(copy.deepcopy(saved)))
+
+    rebuilt = load_dataset_from_config(serialized)
+
+    assert type(rebuilt) is CrspStockDataset
+    assert type(rebuilt.config) is CrspDatasetConfig
+    assert rebuilt.get_config() == saved
+    assert rebuilt.config.permnos == ("10107", "14593")
+    assert rebuilt.config.security_filter["securitytype"] == ("EQTY",)
+    assert rebuilt.config.nan_adj_at_permno_seam is False
+    assert rebuilt.config.collision_universe == "crsp_sp500"
