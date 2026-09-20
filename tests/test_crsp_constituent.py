@@ -429,3 +429,243 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
             if symbol in owned and start <= day <= end
         }
         assert priced == member, (permno, priced ^ member)
+
+
+# ---------------------------------------------------------------------------
+# D-05 / D-14 -- the two universes as ordinary constituent panels
+# ---------------------------------------------------------------------------
+
+
+def _panel_config(tmp_path, reference_dir, name, **overrides):
+    """Module-local config constructor (03.1-PATTERNS.md section 6)."""
+    from quantlab.base.config import ConstituentDatasetConfig
+
+    params = dict(
+        zarr_file_path=str(Path(tmp_path) / "us_equity" / f"{name}.zarr"),
+        cache_dir=str(reference_dir),
+    )
+    params.update(overrides)
+    return ConstituentDatasetConfig(**params)  # type: ignore[arg-type]
+
+
+def _is_member(panel, symbol: str, day: str) -> bool:
+    return bool(panel["is_member"].sel(timestamp=day, symbol=symbol).values)
+
+
+def test_crsp_sp500_panel_marks_the_fb_meta_rename_on_the_right_days(tmp_path):
+    """The rename is a COLUMN HANDOVER in the panel, on the exact day.
+
+    `FB` is a member through 2022-06-08 and `META` from 2022-06-09 -- the same
+    security throughout, in the two tickers the price panel uses on either
+    side of the seam. Both days are asserted on both columns, because a mask
+    that switched a day early or a day late would silently hold the wrong
+    column for one rebalance.
+    """
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(tmp_path)
+    config = _panel_config(
+        tmp_path,
+        reference_dir,
+        "crsp_sp500_constituent",
+        start_date="2022-06-01",
+        end_date="2022-06-30",
+    )
+
+    panel = CrspSP500ConstituentDataset(config).from_raw_data().get_xarray_dataset()
+
+    assert set(panel["symbol"].values.tolist()) == {"FB", "META", "BRK.B"}
+    assert _is_member(panel, "FB", "2022-06-08") is True
+    assert _is_member(panel, "FB", "2022-06-09") is False
+    assert _is_member(panel, "META", "2022-06-08") is False
+    assert _is_member(panel, "META", "2022-06-09") is True
+    # The share-class line is a member across the whole window, untouched by
+    # the rename happening beside it.
+    assert _is_member(panel, "BRK.B", "2022-06-08") is True
+    assert _is_member(panel, "BRK.B", "2022-06-09") is True
+
+
+def test_crsp_sp500_panel_edges_are_the_coverage_clamp_and_the_product_end(tmp_path):
+    """Left edge 1925-12-31, right edge 2025-12-31 -- NEITHER from the clock.
+
+    The left edge is `PIT_COVERAGE_START`, so the inherited 1900-01-01 default
+    cannot prepend 25 years of all-False rows that read as "nobody was a
+    member" rather than "unknown".
+
+    The right edge is the CRSP product end, and it is asserted against a
+    LITERAL rather than against `pd.Timestamp.today()`. That is the whole
+    point of T-03.10-30: `_densify` extends an OPEN interval to wall-clock
+    today, so a membership panel that stopped at today would be True over a
+    stretch where CRSP has no prices at all -- look-ahead written into the
+    universe. Every end this universe produces is explicit, so today never
+    enters the arithmetic, and a test that read the clock could not tell the
+    difference.
+    """
+    import pandas as pd
+
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(tmp_path)
+    dataset = CrspSP500ConstituentDataset(
+        _panel_config(tmp_path, reference_dir, "crsp_sp500_constituent")
+    )
+
+    assert dataset.config.start_date == _SP500_COVERAGE_START
+
+    panel = dataset.from_raw_data().get_xarray_dataset()
+
+    assert pd.Timestamp(panel["timestamp"].values[0]) == pd.Timestamp(
+        _SP500_COVERAGE_START
+    )
+    assert pd.Timestamp(panel["timestamp"].values[-1]) == pd.Timestamp("2025-12-31")
+
+
+def test_compustat_nasdaq100_clamps_to_1995_and_holds_goog_and_googl(tmp_path):
+    """The Nasdaq-100 universe starts 1995-01-01, twelve years before Wikipedia's.
+
+    `CompustatNasdaq100ConstituentDataset`'s left edge is a CENSOR, not a
+    start: Compustat's own history begins 1995-01-01 and 100 spells begin
+    exactly there. A caller asking for 1990 gets 1995 and a warning, never
+    five years of all-False.
+
+    Both Alphabet lines are members on 2015-01-02, which is the arm the
+    conventional `linkprim IN ('P','C')` join drops (D-14).
+    """
+    import pandas as pd
+
+    from quantlab.dataset.constituent import CompustatNasdaq100ConstituentDataset
+
+    reference_dir = _ndx_reference(tmp_path)
+    dataset = CompustatNasdaq100ConstituentDataset(
+        _panel_config(
+            tmp_path,
+            reference_dir,
+            "comp_nasdaq100_constituent",
+            start_date="1990-01-01",
+        )
+    )
+
+    assert dataset.config.start_date == _NDX_COVERAGE_START
+
+    panel = dataset.from_raw_data().get_xarray_dataset()
+
+    assert pd.Timestamp(panel["timestamp"].values[0]) == pd.Timestamp(
+        _NDX_COVERAGE_START
+    )
+    assert pd.Timestamp(panel["timestamp"].values[-1]) == pd.Timestamp("2025-12-31")
+    assert set(panel["symbol"].values.tolist()) == {"GOOG", "GOOGL"}
+    assert _is_member(panel, "GOOG", "2015-01-02") is True
+    assert _is_member(panel, "GOOGL", "2015-01-02") is True
+    # GOOGL did not exist as a ticker before the 2014-04-03 split.
+    assert _is_member(panel, "GOOGL", "2014-04-02") is False
+    assert _is_member(panel, "GOOG", "2014-04-02") is True
+
+
+def test_an_unlinked_nasdaq100_spell_stops_the_panel_unless_allow_unlinked(tmp_path):
+    """A membership spell with no CRSP link REFUSES to become a universe.
+
+    Dropping it would be survivorship bias written into the mask and visible
+    downstream only as a slightly smaller universe -- which looks like data,
+    not like an error (T-03.10-32). The opt-out is explicit and lives in the
+    config, so a run that tolerated the gap says so in its own `config.json`.
+    """
+    from quantlab.dataset.constituent import CompustatNasdaq100ConstituentDataset
+    from tests.crsp_fixtures import IDXCST_ROWS
+
+    # SYNTHETIC: gvkey 999999 appears in no CCM link table row, which is the
+    # shape of a real Compustat issue CRSP never linked to a PERMNO.
+    spells = list(IDXCST_ROWS) + [
+        _ndx_spell("999999", "01", "2016-01-04", "2016-12-30")
+    ]
+    reference_dir = _ndx_reference(tmp_path, spells=spells)
+
+    with pytest.raises(ValueError) as refusal:
+        CompustatNasdaq100ConstituentDataset(
+            _panel_config(tmp_path, reference_dir, "comp_nasdaq100_constituent")
+        ).from_raw_data()
+    assert "999999" in str(refusal.value)
+
+    panel = (
+        CompustatNasdaq100ConstituentDataset(
+            _panel_config(
+                tmp_path,
+                reference_dir,
+                "comp_nasdaq100_allowed",
+                kwargs={"allow_unlinked": True},
+            )
+        )
+        .from_raw_data()
+        .get_xarray_dataset()
+    )
+
+    assert set(panel["symbol"].values.tolist()) == {"GOOG", "GOOGL"}
+
+
+def test_both_crsp_universes_round_trip_through_their_saved_config(tmp_path):
+    """D-26: each class rebuilds itself from the JSON its own config serialises.
+
+    Offline by construction -- rebuilding a dataset performs no read; only
+    `from_raw_data()` touches the reference tier, and nothing here calls it.
+    """
+    import json
+
+    from quantlab.base.config import ConstituentDatasetConfig
+    from quantlab.dataset.constituent import (
+        CompustatNasdaq100ConstituentDataset,
+        CrspSP500ConstituentDataset,
+    )
+    from quantlab.utils.module import load_dataset_from_config
+
+    for cls, name in (
+        (CrspSP500ConstituentDataset, "crsp_sp500_constituent"),
+        (CompustatNasdaq100ConstituentDataset, "comp_nasdaq100_constituent"),
+    ):
+        dataset = cls(_panel_config(tmp_path, tmp_path / "_reference", name))
+        saved = json.loads(json.dumps(dataset.get_config(), default=str))
+
+        rebuilt = load_dataset_from_config(json.loads(json.dumps(saved)))
+
+        assert type(rebuilt) is cls
+        assert type(rebuilt.config) is ConstituentDatasetConfig
+        assert json.loads(json.dumps(rebuilt.get_config(), default=str)) == saved
+
+
+def test_the_crsp_classes_add_only_the_two_hooks_and_leave_wikipedia_alone(tmp_path):
+    """DATA-06 again, and the plan's own prohibition.
+
+    Two more indexes cost exactly what the second one cost: two methods in
+    `dataset/`. Neither class overrides any shared machinery, and neither
+    touches the two Wikipedia-based classes that were already here -- which
+    still answer with their own coverage starts, from their own fetchers.
+    """
+    from quantlab.base.constituent import IndexConstituentDataset
+    from quantlab.dataset.constituent import (
+        CompustatNasdaq100ConstituentDataset,
+        CrspSP500ConstituentDataset,
+        Nasdaq100ConstituentDataset,
+        SP500ConstituentDataset,
+    )
+
+    shared_machinery = {
+        "_raw_data_to_xr",
+        "_densify",
+        "_clean",
+        "_reset_symbols",
+        "config",
+        "_clamp_coverage_start",
+    }
+    for cls in (CrspSP500ConstituentDataset, CompustatNasdaq100ConstituentDataset):
+        assert issubclass(cls, IndexConstituentDataset)
+        own_members = set(vars(cls))
+        assert own_members & shared_machinery == set(), cls.__name__
+        assert {"_pit_coverage_start", "_build_intervals"} <= own_members
+
+    # The Wikipedia pair is untouched: same left edges, still theirs.
+    wikipedia = _panel_config(tmp_path, tmp_path / "_cache", "wikipedia")
+    assert SP500ConstituentDataset(wikipedia)._pit_coverage_start() == "1976-07-01"
+    assert (
+        Nasdaq100ConstituentDataset(
+            _panel_config(tmp_path, tmp_path / "_cache", "wikipedia_ndx")
+        )._pit_coverage_start()
+        == "2007-02-01"
+    )
