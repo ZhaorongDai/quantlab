@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 1/11 plans executed
+**Plans:** 2/11 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -173,7 +173,7 @@ Plans:
 
 **Wave 2** *(blocked on 01)*
 
-- [ ] 03.10-02-PLAN.md — Tracer: one PERMNO-month (AAPL Aug-2020) fake WRDS -> raw PERMNO shards -> registry.convert -> drop-in CRSP panel with hand-checked adjClose; crsp_daily capability added to WRDS_SOURCE
+- [x] 03.10-02-PLAN.md — Tracer: one PERMNO-month (AAPL Aug-2020) fake WRDS -> raw PERMNO shards -> registry.convert -> drop-in CRSP panel with hand-checked adjClose; crsp_daily capability added to WRDS_SOURCE
 
 **Wave 3** *(blocked on 02)*
 
