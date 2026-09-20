@@ -22,11 +22,17 @@ proves nothing about the behaviour (TDD gate #3770).
 
 from __future__ import annotations
 
+import ast
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+WRDS_CRSP_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "wrds_crsp.py"
 
 #: The PERMNO the whole tracer travels on: Apple Inc.
 AAPL_PERMNO = "14593"
@@ -194,3 +200,94 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
 
     for day in ("2020-08-06", "2020-08-07", "2020-08-28", "2020-08-31"):
         assert at("permno", day) == pytest.approx(14593.0)
+
+def test_wrds_crsp_reaches_the_session_only_through_the_wrds_taq_module():
+    """`wrds_crsp.py` must NOT bind `WrdsSession` by name (D-03).
+
+    `tests/conftest.py:mock_crsp_session` patches the dotted target
+    `"quantlab.acquisition.wrds_taq.WrdsSession"`. A
+    `from quantlab.acquisition.wrds_taq import WrdsSession` in the provider
+    would capture the REAL class at import time, so the patch would not reach
+    it -- and the failure mode is the dangerous direction: the autouse
+    tripwire fires only in tests, while a production run works, so the bug
+    reads as a test problem rather than as a provider that bypassed its seam.
+
+    Asserted structurally with `ast`, because an import that is present but
+    unused is exactly as dangerous as one that is used: the next edit reaches
+    for the already-imported name.
+    """
+    tree = ast.parse(WRDS_CRSP_SOURCE.read_text(encoding="utf-8"))
+
+    by_name = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "quantlab.acquisition.wrds_taq"
+        for alias in node.names
+    ]
+    assert "WrdsSession" not in by_name, (
+        f"quantlab/acquisition/wrds_crsp.py imports WrdsSession by NAME "
+        f"({by_name}). tests/conftest.py:mock_crsp_session patches "
+        f"'quantlab.acquisition.wrds_taq.WrdsSession', so a by-name binding "
+        f"escapes the fake and the provider reaches the real session. Import "
+        f"the MODULE (`from quantlab.acquisition import wrds_taq as _wrds`) "
+        f"and read `_wrds.WrdsSession` at call time."
+    )
+
+    module_imports = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "quantlab.acquisition"
+        for alias in node.names
+    ]
+    assert "wrds_taq" in module_imports, (
+        f"quantlab/acquisition/wrds_crsp.py must reach the session through "
+        f"the wrds_taq MODULE object (`from quantlab.acquisition import "
+        f"wrds_taq as _wrds`); it imports {module_imports} from "
+        f"quantlab.acquisition instead."
+    )
+
+
+def test_importing_wrds_crsp_first_registers_both_capabilities():
+    """A cold interpreter that touches the CRSP provider FIRST still sees both
+    WRDS capabilities.
+
+    The import graph plan 01 built is `registry -> wrds -> {wrds_taq,
+    wrds_crsp}`, and the providers import nothing from the registry. Importing
+    a provider first therefore must not leave a half-initialised module behind
+    -- which is the failure a descriptor living inside a provider would have.
+
+    A SUBPROCESS is required rather than fastidious: this pytest session has
+    already imported the registry and every WRDS module for other reasons, so
+    an in-process assertion about import ORDER would measure what earlier
+    tests left in `sys.modules`. Same idiom as
+    `tests/test_wrds_vendor_seam.py:_run_child`, `WRDS_USERNAME` stripped so
+    this doubles as proof that enumeration needs no credential.
+    """
+    env = dict(os.environ)
+    env.pop("WRDS_USERNAME", None)
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json\n"
+            "import quantlab.acquisition.wrds_crsp\n"
+            "from quantlab.acquisition.registry import DataSourceRegistry\n"
+            "d = DataSourceRegistry.get('wrds')\n"
+            "print(json.dumps(sorted(\n"
+            "    [c.market, c.frequency, c.data_type] for c in d.capabilities\n"
+            ")))\n",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+    )
+
+    assert child.returncode == 0, child.stderr
+    assert "Traceback" not in child.stderr, child.stderr
+    assert json.loads(child.stdout) == [
+        ["us_equity", "1d", "crsp_daily"],
+        ["us_equity", "tick", "nbbo"],
+    ], child.stdout

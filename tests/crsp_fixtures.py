@@ -771,8 +771,20 @@ class FakeCrspSession(FakeWrdsSession):
         increments the BASE `connections`. The counter a test reads off
         `FakeWrdsSession` and the one this class resets would then be two
         different attributes, and the connection count would look frozen at 0.
+
+        The `instance` shadow is deleted for the same reason, one step
+        further on. `FakeWrdsSession.shared()` assigns `cls.instance`, so
+        calling it THROUGH this subclass (which every WRDS test now does --
+        the conftest patches this class over `wrds_taq.WrdsSession`) leaves a
+        subclass-level `instance` that the base `reset()` cannot see. The next
+        test would then be handed the PREVIOUS test's session object, no
+        `__init__` would run, and `FakeWrdsSession.connections` would read 0
+        for a run that did open a session. Deleting the shadow restores a
+        single storage location for `instance`, on the base.
         """
         FakeWrdsSession.reset()
+        if "instance" in vars(cls):
+            delattr(cls, "instance")
         cls.daily_rows = (
             list(AAPL_AUG_2020_ROWS)
             + list(LEHMAN_2008_ROWS)

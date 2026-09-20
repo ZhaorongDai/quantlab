@@ -408,24 +408,29 @@ def test_capabilities_match_the_vendor_class_constants() -> None:
     assert not hasattr(tiingo.TiingoAcquisition, "ENDPOINT_MAP")
 
 
-def test_wrds_descriptor_serves_exactly_the_nbbo_capability() -> None:
-    """D-17/D-27: WRDS serves ONE capability, tick NBBO, converted by
-    `NbboPanelDataset`, configured by the provider's own classmethod.
+def test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities() -> None:
+    """D-17/D-27 + 03.10 D-12: ONE `wrds` descriptor, TWO capabilities.
+
+    This is the shape plan 01's per-capability resolution existed for, now
+    actually populated: a WRDS subscription is an ACCOUNT, not a product, and
+    the two products it serves -- NYSE TAQ millisecond NBBO and CRSP Stock v2
+    daily -- have different tables, different entitlements, different
+    acquisition classes and differently-shaped configs. D-01 keeps that as one
+    descriptor, so "which class downloads this" is answered per CAPABILITY.
+
+    The descriptor-level pair is asserted to be STILL the TAQ one. That is not
+    an arbitrary tie-break: four ingest shells read
+    `SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE` (and friends) directly, and
+    `add-alongside` (plan 01's recorded decision) is what keeps them working.
 
     `supports(..., "quotes")` is asserted False because the Alpaca tick rows
-    share `(us_equity, tick)` with this one: a registry that matched on the
-    pair alone would hand an Alpaca quotes request a WRDS NBBO class.
-
-    As of 03.10-01 the descriptor is defined in the NEUTRAL module
-    `quantlab.acquisition.wrds` (so plan 02's CRSP provider can join the same
-    vendor without an import cycle), and the capability carries its own
-    `acquisition_cls` / `config_factory` -- which is the field plan 02's row
-    will differ in. The descriptor-level default is still the TAQ pair, so
-    every shell reading `SOURCE.acquisition_cls` is unaffected. The move itself
-    is pinned in `tests/test_wrds_vendor_seam.py`.
+    share `(us_equity, tick)` with the NBBO one: a registry that matched on
+    the pair alone would hand an Alpaca quotes request a WRDS NBBO class.
     """
+    from quantlab.acquisition import wrds_crsp
     from quantlab.acquisition.registry import DataSourceRegistry
     from quantlab.acquisition.wrds import WRDS_SOURCE
+    from quantlab.dataset.crsp import CrspStockDataset
     from quantlab.dataset.nbbo import NbboPanelDataset
 
     source = DataSourceRegistry.get("wrds")
@@ -433,18 +438,49 @@ def test_wrds_descriptor_serves_exactly_the_nbbo_capability() -> None:
 
     assert {
         (c.market, c.frequency, c.data_type) for c in source.capabilities
-    } == {("us_equity", "tick", "nbbo")}
-    (capability,) = source.capabilities
-    assert capability.dataset_cls is NbboPanelDataset
-    assert capability.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
-    assert capability.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
-    assert source.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
-    assert source.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
-    assert source.required_env == ("WRDS_USERNAME",)
+    } == {("us_equity", "tick", "nbbo"), ("us_equity", "1d", "crsp_daily")}
+
+    by_key = {
+        (c.market, c.frequency, c.data_type): c for c in source.capabilities
+    }
+    nbbo = by_key[("us_equity", "tick", "nbbo")]
+    crsp = by_key[("us_equity", "1d", "crsp_daily")]
+
+    assert nbbo.dataset_cls is NbboPanelDataset
+    assert crsp.dataset_cls is CrspStockDataset
+
+    assert nbbo.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
+    assert nbbo.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
+    assert crsp.acquisition_cls is wrds_crsp.WrdsCrspDailyAcquisition
+    assert crsp.config_factory == wrds_crsp.WrdsCrspDailyAcquisition.build_config
+
+    # Resolved through the PUBLIC resolvers, per triple, not read off the row:
+    # that is the path `registry.run()` takes.
     assert (
         source.acquisition_cls_for("us_equity", "tick", "nbbo")
         is wrds_taq.WrdsTaqNbboAcquisition
     )
+    assert (
+        source.config_factory_for("us_equity", "tick", "nbbo")
+        == wrds_taq.WrdsTaqNbboAcquisition.build_config
+    )
+    assert (
+        source.acquisition_cls_for("us_equity", "1d", "crsp_daily")
+        is wrds_crsp.WrdsCrspDailyAcquisition
+    )
+    assert (
+        source.config_factory_for("us_equity", "1d", "crsp_daily")
+        == wrds_crsp.WrdsCrspDailyAcquisition.build_config
+    )
+
+    # The DESCRIPTOR default is unchanged (the `add-alongside` decision).
+    assert source.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
+    assert source.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
+
+    # One account, one credential name, whichever product is requested.
+    assert source.required_env == ("WRDS_USERNAME",)
+
+    assert source.supports("us_equity", "1d", "crsp_daily") is True
     assert source.supports("us_equity", "tick", "nbbo") is True
     assert source.supports("us_equity", "tick", "quotes") is False
 
