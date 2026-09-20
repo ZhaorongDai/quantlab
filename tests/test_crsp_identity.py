@@ -1664,3 +1664,143 @@ def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
         str(window["start"])[:4] in ("2010", "2011")
         for window in ledger["windows"]
     ), ledger["windows"]
+
+
+# ---------------------------------------------------------------------------
+# WR-01: an EMPTY roster means nothing, and is refused
+# ---------------------------------------------------------------------------
+#
+# `_derivation` gated the roster filter with `if self.config.permnos:` -- a
+# TRUTHINESS test. An empty tuple is falsy, so `permnos=()` converted the WHOLE
+# raw tier: "no securities" and "every security" were the same spelling, and the
+# widening was silent. The store carried a name chosen for the empty roster, an
+# anchor over the whole tier and a filter report describing it.
+#
+# The fix is two-sided on purpose, and each side is pinned separately below:
+#
+# 1. the config setter REFUSES `()`, naming both meanings, so the ambiguity
+#    cannot be expressed by a caller at all;
+# 2. `_derivation` tests `is not None`, so a path that reaches it WITHOUT the
+#    setter's branch -- a `dataclasses.replace`, a JSON round trip, a future
+#    field default -- still means "no securities" rather than "all of them".
+#
+# Test 2 is the one that fails on the gate itself; without it the `is not None`
+# change would be unpinned, because the setter's refusal hides the gate from
+# every path that goes through a constructor.
+
+
+def test_an_empty_permnos_roster_is_refused_naming_both_meanings(
+    mock_crsp_session, tmp_path
+):
+    """WR-01: `permnos=()` is refused at config assignment, naming BOTH meanings.
+
+    The message is the deliverable, not just the raise: the defect was that an
+    empty tuple could mean "no security" or "every PERMNO in the raw tier" and
+    nothing said which. A refusal that did not name both would leave the caller
+    guessing which one they had asked for.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    with pytest.raises(ValueError) as excinfo:
+        CrspStockDataset(_bare_config(tmp_path, permnos=()))
+
+    message = str(excinfo.value)
+    assert "permnos" in message, message
+    # Meaning A: an empty tuple selects nothing.
+    assert "EMPTY" in message or "empty" in message, message
+    assert "no security" in message, message
+    # Meaning B: `None` is the spelling for "everything".
+    assert "None" in message, message
+    assert "every PERMNO" in message, message
+
+
+def test_an_empty_roster_reaching_derivation_selects_no_security(
+    mock_crsp_session, tmp_path
+):
+    """WR-01: the `_derivation` gate is `is not None`, not truthiness.
+
+    **Why the setter's refusal is not enough, and why this test exists.** The
+    refusal above guards the CONSTRUCTOR path. `_derivation` is also reachable
+    with a config the setter never inspected -- a field mutated after
+    assignment, a `dataclasses.replace`, a JSON round trip into an object whose
+    branch did not run, a future change of the field's default. On the truthiness
+    gate every one of those paths converts the ENTIRE raw tier while the config
+    says the roster is empty, and nothing warns. So the gate is pinned here
+    directly, against a config that bypasses the setter exactly as those paths
+    do.
+
+    Two PERMNOs are in the raw tier; the assertion is that an empty roster
+    admits ZERO rows of it. On the defect the derivation holds every row of both
+    securities.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _axis_rows(),
+        [AXIS_KEPT_PERMNO, AXIS_OTHER_PERMNO],
+        start="2010-01-01",
+        end="2012-12-31",
+        extra_secinfo=_axis_secinfo(),
+    )
+    dataset = CrspStockDataset(
+        _dataset_config(
+            tmp_path,
+            cfg,
+            reference_dir,
+            start="2010-01-01",
+            end="2012-12-31",
+            store="empty_roster.zarr",
+        )
+    )
+    # The whole tier is visible with the roster unset -- so a zero-height
+    # derivation below cannot be an empty raw tier masquerading as a filter.
+    assert dataset._derivation().height == 10, dataset._derivation().height
+
+    # Now reach `_derivation` with an EMPTY roster the setter never saw. The
+    # field is assigned on the CONFIG object, not through the dataset's `config`
+    # property, which is precisely the shape of the paths named above.
+    dataset.config.permnos = ()
+    dataset._derivation_cache = None
+
+    assert dataset._derivation().height == 0, dataset._derivation().height
+
+
+def test_a_none_permnos_roster_converts_the_whole_raw_tier(
+    mock_crsp_session, tmp_path
+):
+    """The MIRROR IMAGE: `permnos=None` still means every PERMNO in the tier.
+
+    Green before the fix as well as after, by design -- it pins the meaning of
+    the COMMON case, so an `is not None` change that inverted it (or a refusal
+    written one condition too wide) fails the suite. It is a guard, not a target
+    test.
+
+    Written out rather than routed through `_build_store` for the reason
+    `_roster_store`'s docstring gives: that helper's `permnos` parameter is the
+    ACQUISITION roster, and this test needs `config.permnos` on the DATASET
+    config -- one keyword cannot be both.
+    """
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _axis_rows(),
+        [AXIS_KEPT_PERMNO, AXIS_OTHER_PERMNO],
+        start="2010-01-01",
+        end="2012-12-31",
+        extra_secinfo=_axis_secinfo(),
+    )
+    dataset_config = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start="2010-01-01",
+        end="2012-12-31",
+        store="none_roster.zarr",
+        permnos=None,
+    )
+    _convert(dataset_config)
+
+    panel = _panel(dataset_config)
+    assert sorted(_symbols(panel)) == sorted(
+        [AXIS_KEPT_SYMBOL, AXIS_OTHER_SYMBOL]
+    ), _symbols(panel)
