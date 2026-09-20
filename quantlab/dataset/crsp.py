@@ -30,14 +30,26 @@ remedy is a rebuild, which is cheap: CRSP publishes once a year.
 
 **The arithmetic**, per PERMNO, sorted by date (D-08):
 
-- `close = abs(dlyprc)`. Not `dlyclose`: that is null on bid/ask days, through
-  the whole pre-1992 Nasdaq era and on delisting rows, while `dlyret` is
-  computed from `dlyprc` -- so using `dlyclose` would put a return chain and a
-  price series that disagree into one panel.
+- `close = abs(dlyprc)`, with CRSP's NO-PRICE sentinel excluded BEFORE the
+  `abs()`: a delisting-AMOUNT row (`dlyprcflg` in `_NO_PRICE_FLAGS`, or a bare
+  `dlyprc == 0.0`) carries a settlement amount rather than a market price, and
+  `abs(0.0)` is still 0.0 -- so an unguarded `abs()` publishes a $0.00 trade on
+  a day that had none. Not `dlyclose` either: that is null on bid/ask days,
+  through the whole pre-1992 Nasdaq era and on delisting rows, while `dlyret`
+  is computed from `dlyprc` -- so using `dlyclose` would put a return chain and
+  a price series that disagree into one panel.
 - `G_t = prod_{s<=t}(1 + dlyret_s)`, a NULL return contributing 1. CIZ returns
   span gaps back to `DlyPrevDt` (`DlyRetDurFlg`), so the next valid return
   already covers the missing day; filling a null with 0 would double-count it.
-- the anchor `A` is the PERMNO's LAST row with a non-null close;
+- the anchor `A` is the PERMNO's LAST row carrying a USABLE LEVEL: a strictly
+  positive `close` AND a non-null `dlycumfacshr`, so every quantity read off the
+  anchor comes from ONE row that carries all of them. A non-null test alone was
+  the loophole -- the sentinel above is the NUMBER 0.0, which is not null, so it
+  became the anchor and zeroed the security's whole adjusted history, while the
+  same row's NULL `dlycumfacshr` made its whole `adjVolume` NaN. A PERMNO with
+  no qualifying row, or one whose `G_A` is 0.0 or non-finite (a `dlyret` of
+  -1.0), makes the conversion REFUSE by PERMNO rather than publish a zeroed,
+  all-NaN or infinite column -- nothing downstream would raise on any of them;
 - `adjClose_t = close_A * G_t / G_A`, `factor_t = adjClose_t / close_t`,
   `adjOpen/High/Low = raw * factor_t`;
 - `adjVolume_t = volume_t * dlycumfacshr_t / dlycumfacshr_A`;
@@ -53,6 +65,11 @@ legacy-shaped row entering the panel as a negative price would invert every
 ratio downstream in silence. The no-trade SIGNAL is therefore
 `dlyprcflg == 'BA'`, surfaced as `prc_is_bidask` (D-19) -- a sign test would
 flag nothing at all.
+
+**The sentinel guard, by contrast, is NOT a no-op** (`_NO_PRICE_FLAGS`). The
+delisting-AMOUNT shape is what modern CIZ writes -- 5 of 5 delisting rows in the
+tier this phase pulled -- and it is the one row per delisted security that the
+old `abs(dlyprc)` turned into a fabricated $0.00 close and an anchor of zero.
 
 **A missing return is NaN, never 0** (D-09). `ret` keeps the null; only the
 internal cumulative product treats it as a factor of 1, because CIZ returns
@@ -209,6 +226,23 @@ SYMBOLOGY_REPORT_SUFFIX: str = ".crsp_symbology_report.json"
 
 #: The `dsf_v2` flag marking the row that carries the delisting return.
 _DELISTING_FLAG = "Y"
+
+#: The `dlyprcflg` values that mean "this row carries NO market price".
+#:
+#: CIZ writes two delisting shapes, and only one of them is a price:
+#:
+#: - `DP` (delisting PRICE) is a REAL price -- Lehman 2008-09-18 is
+#:   `dlyprc = 0.052`, an actual value a holding was worth. It stays a price.
+#: - `DA` (delisting AMOUNT) carries a settlement AMOUNT, not a market price.
+#:   CRSP writes `dlyprc = 0.000000` there as a SENTINEL and leaves `dlyclose`,
+#:   `dlyvol`, `dlycumfacpr` and `dlycumfacshr` all NULL.
+#:
+#: `DA` is the shape modern CIZ actually writes: **5 of 5** delisting rows in
+#: the raw tier this phase pulled (`TR` 138,888 / `DA` 5 / `DP` 0). Reading its
+#: 0.0 as a close publishes a fabricated $0.00 trade AND -- because 0.0 is not
+#: NULL -- lets the sentinel row become the adjustment anchor, which zeroes the
+#: security's whole adjusted history (03.10-REVIEW.md CR-01/CR-02).
+_NO_PRICE_FLAGS: tuple[str, ...] = ("DA",)
 
 #: The order the report spells a type combination in.
 _TYPE_COLUMNS: tuple[str, ...] = (
@@ -415,17 +449,47 @@ class CrspStockDataset(StockDataset):
 
         frame = frame.sort(["permno", "timestamp"])
         derived = frame.with_columns(
-            pl.col("dlyprc").abs().alias("close"),
+            # The SENTINEL is excluded BEFORE the abs, not after: a
+            # delisting-AMOUNT row (`_NO_PRICE_FLAGS`) carries no market price,
+            # and CRSP's way of saying so is `dlyprc = 0.000000`. `abs(0.0)` is
+            # still 0.0, so an `abs()` that ran first would publish a $0.00
+            # trade on a day that had none. The flag test is case-insensitive
+            # and whitespace-stripped, exactly as `_apply_security_filter`
+            # treats `dlydelflg`; the bare `== 0.0` arm catches a sentinel
+            # written under a flag this tuple does not yet name.
+            pl.when(
+                pl.col("dlyprcflg")
+                .str.strip_chars()
+                .str.to_uppercase()
+                .is_in(list(_NO_PRICE_FLAGS))
+                .fill_null(False)
+                | (pl.col("dlyprc") == 0.0).fill_null(False)
+            )
+            .then(None)
+            .otherwise(pl.col("dlyprc").abs())
+            .alias("close"),
             (1.0 + pl.col("dlyret").fill_null(0.0))
             .cum_prod()
             .over("permno")
             .alias("_G"),
         )
-        # The anchor is the LAST row with a non-null close, not simply the last
-        # row: a PERMNO whose final row has no price would otherwise anchor the
-        # entire series on a null and make every adjusted value NaN.
+        # The anchor is the PERMNO's last row carrying a USABLE LEVEL -- a
+        # strictly positive close AND the share factor every adjusted volume is
+        # scaled by -- not simply its last row, and not merely its last
+        # non-null one. "Non-null" was the loophole: CRSP's no-price sentinel is
+        # the number 0.0, which passes `is_not_null()` and then makes
+        # `adjClose = 0.0 * _G / _G_anchor` exactly 0.0 on every day of that
+        # security's history (CR-01). `dlycumfacshr` is in the SAME predicate so
+        # that every quantity read off the anchor comes from ONE row that
+        # carries all of them; selecting on `close` alone and then reading a
+        # NULL `dlycumfacshr` off that row is what made `adjVolume` NaN for a
+        # whole delisted history while raw `volume` was fully populated (CR-02).
         anchor = (
-            derived.filter(pl.col("close").is_not_null())
+            derived.filter(
+                pl.col("close").is_not_null()
+                & (pl.col("close") > 0.0)
+                & pl.col("dlycumfacshr").is_not_null()
+            )
             .group_by("permno")
             .agg(
                 pl.col("close").last().alias("_close_anchor"),
@@ -434,6 +498,7 @@ class CrspStockDataset(StockDataset):
             )
         )
         derived = derived.join(anchor, on="permno", how="left")
+        self._assert_anchor_usable(derived)
 
         derived = derived.with_columns(
             # NaN wherever there is no close. The chain `_G` is defined on a
@@ -465,6 +530,85 @@ class CrspStockDataset(StockDataset):
         derived = self._apply_security_filter(derived)
         derived = self._resolve_identity(derived)
         return self._finalise(derived)
+
+    def _assert_anchor_usable(self, derived: pl.DataFrame) -> None:
+        """Refuse, by PERMNO, rather than publish an unusable adjusted column.
+
+        Two DISTINCT causes, two messages, because they need different
+        remedies:
+
+        1. **No usable anchor row.** No row of the PERMNO inside the window
+           carries both a strictly positive `dlyprc` and a non-null
+           `dlycumfacshr`, so `_close_anchor` is null and every `adj*` value
+           would be NaN -- or, before the sentinel guard above existed, exactly
+           0.0. The remedy is a different window or a different roster.
+        2. **A return chain that reaches zero.** `_G` is `cum_prod(1 + dlyret)`,
+           so a `dlyret` of exactly -1.0 -- a legal CRSP total loss -- makes
+           `_G_anchor` exactly 0.0 and `close_A * _G_t / 0.0` `inf` before the
+           loss and `NaN` after it, under IEEE semantics and with nothing
+           raised. The remedy is to inspect that security's returns.
+
+        **Why a refusal and not a NaN column.** `alpha158` and `fret` read the
+        five `adj*` names and nothing else. A zeroed column turns into `0/0 ->
+        NaN` returns, `x/0 -> inf` ratios and a cross-sectional rank pinned to
+        the bottom every day; an all-NaN `adjVolume` silently drops the security
+        from every liquidity screen. Both happen for exactly the securities that
+        delisted, which is the survivorship bias D-10 exists to remove coming
+        back through a different door -- and neither raises anywhere downstream.
+
+        The messages carry `class_name`, PERMNO digits, the configured dates and
+        CRSP column names only: no credential, no path outside the configured
+        store, and never the frame.
+        """
+        missing = (
+            derived.filter(pl.col("_close_anchor").is_null())
+            .get_column("permno")
+            .unique()
+            .sort()
+            .to_list()
+        )
+        if missing:
+            raise ValueError(
+                f"{self.class_name}: {len(missing)} PERMNO(s) have NO usable "
+                f"adjustment anchor in [{self.config.start_date}, "
+                f"{self.config.end_date}]: {missing[:10]}. The anchor is a "
+                f"PERMNO's last row inside that window carrying BOTH a strictly "
+                f"positive dlyprc AND a non-null dlycumfacshr. CRSP writes "
+                f"dlyprc = 0.000000 on a delisting-AMOUNT row "
+                f"(dlyprcflg in {list(_NO_PRICE_FLAGS)}) as a NO-PRICE "
+                f"sentinel, and leaves dlycumfacshr NULL there, so such a row "
+                f"is not a level and cannot anchor a series. Refusing rather "
+                f"than publishing an all-zero adjClose or an all-NaN adjVolume "
+                f"for these securities. Widen [start_date, end_date] to include "
+                f"a day on which they traded, or drop them from config.permnos."
+            )
+
+        degenerate = (
+            derived.filter(
+                (
+                    (pl.col("_G_anchor") == 0.0)
+                    | pl.col("_G_anchor").is_infinite()
+                    | pl.col("_G_anchor").is_nan()
+                ).fill_null(True)
+            )
+            .get_column("permno")
+            .unique()
+            .sort()
+            .to_list()
+        )
+        if degenerate:
+            raise ValueError(
+                f"{self.class_name}: {len(degenerate)} PERMNO(s) have an "
+                f"adjustment anchor whose cumulative return chain is 0.0 or "
+                f"non-finite in [{self.config.start_date}, "
+                f"{self.config.end_date}]: {degenerate[:10]}. adjClose is "
+                f"close_anchor * G_t / G_anchor with G = cum_prod(1 + dlyret), "
+                f"so a dlyret of exactly -1.0 -- a legal CRSP total loss -- "
+                f"makes G_anchor 0.0, every earlier day inf and every later day "
+                f"NaN, without raising anywhere downstream. Refusing rather "
+                f"than publishing an infinite adjusted series. Inspect dlyret "
+                f"for these PERMNO(s) in the raw tier."
+            )
 
     # -- ticker ownership and PERMNO seams (D-04, D-18) ---------------------
 
