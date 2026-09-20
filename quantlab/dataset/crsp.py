@@ -1315,13 +1315,27 @@ class CrspStockDataset(StockDataset):
 
         record = self._adjustment_record()
         derivation = self._derivation()
+        # ONE frame decides BOTH axes (WR-07). The `config.symbols` restriction
+        # is applied to the derivation FIRST, and the symbol axis and the
+        # timestamp axis are then read off that same filtered frame. Do not
+        # separate them again: `_raw_data_to_xr_window` applies the restriction
+        # too, so a timestamp axis taken from the unrestricted frame made
+        # `from_raw_data_chunked` plan windows over every day ANY security
+        # traded. A window the requested symbol has no rows in densifies to a
+        # zero-length `timestamp` dimension and appends nothing, while
+        # `_reconcile_new_listings` was handed `len(timestamps)` from the wider
+        # frame -- so a later `widen` rewrite pins the on-disk chunk grid against
+        # an extent the store will never reach, and the chunk ledger persists a
+        # completed window over days that symbol never traded.
+        if self.config.symbols:
+            wanted = {str(symbol) for symbol in self.config.symbols}
+            derivation = derivation.filter(
+                pl.col("symbol").is_in(sorted(wanted))
+            )
         symbols = sorted(
             str(value)
             for value in derivation.get_column("symbol").unique().to_list()
         )
-        if self.config.symbols:
-            wanted = {str(symbol) for symbol in self.config.symbols}
-            symbols = [symbol for symbol in symbols if symbol in wanted]
         timestamps = derivation.get_column("timestamp").unique().to_list()
 
         # Written LAST, after the derivation has succeeded: a run that fails
