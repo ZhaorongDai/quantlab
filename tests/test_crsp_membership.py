@@ -302,3 +302,280 @@ def test_every_sp500_end_date_is_explicit_and_within_the_product_end(tmp_path):
     assert (
         intervals.filter(pl.col("start_date") > pl.col("end_date")).height == 0
     )
+
+
+# ---------------------------------------------------------------------------
+# D-14 -- Nasdaq-100 through Compustat + the CCM link table
+# ---------------------------------------------------------------------------
+
+
+def test_nasdaq100_verbatim_alphabet_spells_link_to_both_permnos(tmp_path):
+    """Alphabet's two share classes are two members under ONE gvkey.
+
+    VERBATIM `03.10-LIVE-CHECK-2.json` keys `L8_2` (the spells) and `L7_4`
+    (the links). The join is on `iid = liid`, never on `linkprim`: filtering
+    `linkprim` would keep one Alphabet class and silently lose the other. The
+    two `NR` links contribute nothing -- their `lpermno` is NULL and their
+    linktype is not in `LINK_TYPES`.
+    """
+    from tests.crsp_fixtures import CCM_ROWS, IDXCST_ROWS
+
+    membership = _ndx_tier(tmp_path, list(IDXCST_ROWS), list(CCM_ROWS))
+    intervals = membership.permno_intervals(membership.NASDAQ100)
+
+    assert intervals.to_dicts() == [
+        {  # GOOG, liid 03
+            "permno": 14542,
+            "start_date": date(2014, 4, 3),
+            "end_date": date(2025, 12, 31),
+        },
+        {  # GOOGL, liid 01
+            "permno": 90319,
+            "start_date": date(2005, 12, 21),
+            "end_date": date(2025, 12, 31),
+        },
+    ]
+    assert membership.report["unlinked"] == []
+
+
+def test_nasdaq100_spell_covered_by_an_lu_link_keeps_its_own_end(tmp_path):
+    """A closed spell inside a wider `LU` link keeps the SPELL's dates.
+
+    The link bounds the mapping, not the membership: intersecting is what
+    keeps a link that outlives a membership from extending it.
+    """
+    spells = [_spell("100001", "01", "2003-01-02", "2010-06-30")]  # SYNTHETIC
+    links = [
+        # SYNTHETIC: an LU link that starts before and ends after the spell.
+        _link("100001", "01", "81001.0", "2002-01-01", "2012-12-31", linktype="LU"),
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+    intervals = membership.permno_intervals(membership.NASDAQ100)
+
+    assert intervals.to_dicts() == [
+        {
+            "permno": 81001,
+            "start_date": date(2003, 1, 2),
+            "end_date": date(2010, 6, 30),
+        }
+    ]
+    assert membership.report["unlinked"] == []
+
+
+def test_nasdaq100_spell_after_the_product_end_is_dropped_and_an_open_one_clipped(
+    tmp_path,
+):
+    """The two coverage edges at once (D-14: 10 spells start after 2025-12-31).
+
+    A spell that starts after CRSP's price coverage is dropped and counted; an
+    open spell whose link is also open ends at the product end and is counted.
+    Neither may raise as "unlinked": a dropped spell is out of coverage, not
+    unlinkable.
+    """
+    spells = [
+        _spell("100002", "01", "2026-01-05", None),  # SYNTHETIC: after coverage
+        _spell("100003", "01", "2019-05-02", None),  # SYNTHETIC: open spell
+    ]
+    links = [
+        _link("100002", "01", "81002.0", "2010-01-01", None),  # SYNTHETIC
+        _link("100003", "01", "81003.0", "2010-01-01", None),  # SYNTHETIC
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+    intervals = membership.permno_intervals(membership.NASDAQ100)
+
+    assert intervals.to_dicts() == [
+        {
+            "permno": 81003,
+            "start_date": date(2019, 5, 2),
+            "end_date": date(2025, 12, 31),
+        }
+    ]
+    assert membership.report["dropped_after_product_end"] == 1
+    assert membership.report["clipped_to_product_end"] == 1
+    assert membership.report["unlinked"] == []
+
+
+def test_nasdaq100_spell_with_no_link_raises_naming_the_spell_and_the_remedy(
+    tmp_path,
+):
+    """A membership day with no PERMNO is REFUSED, not dropped (T-03.10-23).
+
+    Silently dropping it removes a real member from the universe -- exactly
+    the survivorship bias this layer exists to prevent, and invisible
+    downstream because the missing security looks like a data gap.
+    """
+    spells = [_spell("100004", "01", "2008-02-01", "2012-12-31")]  # SYNTHETIC
+    links = [
+        # SYNTHETIC: a link for a DIFFERENT gvkey -- nothing covers 100004.
+        _link("999999", "01", "81999.0", "2000-01-01", None),
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+
+    with pytest.raises(ValueError) as excinfo:
+        membership.permno_intervals(membership.NASDAQ100)
+
+    message = str(excinfo.value)
+    assert "100004" in message
+    assert "2008-02-01" in message
+    assert "2012-12-31" in message
+    assert "allow_unlinked" in message
+
+
+def test_nasdaq100_unlinked_tail_is_reported_when_allow_unlinked(tmp_path):
+    """With the opt-in, the linked part is returned and the gap is RECORDED.
+
+    The opt-in changes where the fact is written, never whether it exists.
+    """
+    spells = [_spell("100005", "01", "2015-01-02", None)]  # SYNTHETIC: open
+    links = [
+        # SYNTHETIC: the link ends long before the membership does.
+        _link("100005", "01", "81005.0", "2010-01-01", "2020-06-30"),
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+
+    intervals = membership.permno_intervals(
+        membership.NASDAQ100, allow_unlinked=True
+    )
+
+    assert intervals.to_dicts() == [
+        {
+            "permno": 81005,
+            "start_date": date(2015, 1, 2),
+            "end_date": date(2020, 6, 30),
+        }
+    ]
+    assert membership.report["unlinked"] == [
+        {
+            "gvkey": "100005",
+            "iid": "01",
+            "from": "2015-01-02",
+            "thru": "2025-12-31",
+            "uncovered": [["2020-07-01", "2025-12-31"]],
+        }
+    ]
+
+
+def test_nasdaq100_link_gap_within_tolerance_is_tolerated_and_reported(tmp_path):
+    """A few calendar days between two links of the SAME PERMNO is not a hole.
+
+    Link A ends on a Friday and link B starts the following Tuesday: three
+    calendar days, none of them a trading day. Tolerated, and still listed --
+    the tolerance suppresses the refusal, never the record.
+    """
+    spells = [_spell("100006", "01", "2012-01-02", "2012-12-31")]  # SYNTHETIC
+    links = [
+        # SYNTHETIC: ends Friday 2012-06-01.
+        _link("100006", "01", "81006.0", "2010-01-01", "2012-06-01"),
+        # SYNTHETIC: resumes Tuesday 2012-06-05, same PERMNO.
+        _link("100006", "01", "81006.0", "2012-06-05", "2013-12-31"),
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+    intervals = membership.permno_intervals(membership.NASDAQ100)
+
+    assert membership.report["tolerated_gaps"] == [
+        {
+            "gvkey": "100006",
+            "iid": "01",
+            "start": "2012-06-02",
+            "end": "2012-06-04",
+            "days": 3,
+        }
+    ]
+    assert membership.report["unlinked"] == []
+    # The gap is wider than a touch, so the two pieces stay two intervals.
+    assert intervals.to_dicts() == [
+        {
+            "permno": 81006,
+            "start_date": date(2012, 1, 2),
+            "end_date": date(2012, 6, 1),
+        },
+        {
+            "permno": 81006,
+            "start_date": date(2012, 6, 5),
+            "end_date": date(2012, 12, 31),
+        },
+    ]
+
+
+def test_nasdaq100_ambiguous_links_for_one_iid_raise_naming_both_permnos(tmp_path):
+    """One `(gvkey, iid)` cannot be two securities on one day (T-03.10-25)."""
+    spells = [_spell("100007", "01", "2012-01-03", "2012-06-29")]  # SYNTHETIC
+    links = [
+        _link("100007", "01", "81007.0", "2011-01-01", "2012-03-30"),  # SYNTHETIC
+        _link("100007", "01", "81008.0", "2012-01-03", "2012-12-31"),  # SYNTHETIC
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+
+    with pytest.raises(ValueError) as excinfo:
+        membership.permno_intervals(membership.NASDAQ100)
+
+    message = str(excinfo.value)
+    assert "81007" in message
+    assert "81008" in message
+    assert "2012-01-03" in message
+    assert "2012-03-30" in message
+
+
+def test_nasdaq100_left_censored_spells_are_counted_and_coverage_starts_in_1995(
+    tmp_path,
+):
+    """1995-01-01 is a CENSOR date, not 100 simultaneous index additions.
+
+    `03.10-LIVE-CHECK-2.json` key `L8_3`: 100 of the Nasdaq-100 spells start
+    that exact day, which is where Compustat's history begins rather than
+    where those memberships did.
+    """
+    spells = [
+        _spell("100008", "01", "1995-01-01", "1999-12-31"),  # SYNTHETIC
+        _spell("100009", "01", "1995-01-01", None),  # SYNTHETIC
+        _spell("100010", "01", "2005-06-01", None),  # SYNTHETIC
+    ]
+    links = [
+        _link("100008", "01", "81008.0", "1990-01-01", None),  # SYNTHETIC
+        _link("100009", "01", "81009.0", "1990-01-01", None),  # SYNTHETIC
+        _link("100010", "01", "81010.0", "1990-01-01", None),  # SYNTHETIC
+    ]
+    membership = _ndx_tier(tmp_path, spells, links)
+    membership.permno_intervals(membership.NASDAQ100)
+
+    assert membership.report["left_censored_spells"] == 2
+    assert membership.PIT_COVERAGE_START[membership.NASDAQ100] == "1995-01-01"
+    assert membership.PIT_COVERAGE_START[membership.SP500] == "1925-12-31"
+
+
+def test_ccm_float_lpermno_becomes_int64_and_a_non_integral_one_raises(tmp_path):
+    """`lpermno` is `double precision` on the server; a PERMNO is an integer.
+
+    Casting blindly would turn a corrupt `81009.5` into `81009` or `81010` --
+    a real, different security -- so a non-integral value raises instead.
+    """
+    from tests.crsp_fixtures import CCM_ROWS, IDXCST_ROWS
+
+    membership = _ndx_tier(tmp_path, list(IDXCST_ROWS), list(CCM_ROWS))
+    intervals = membership.permno_intervals(membership.NASDAQ100)
+    assert intervals.schema["permno"] == pl.Int64
+    assert 90319 in intervals["permno"].to_list()
+
+    spells = [_spell("100011", "01", "2012-01-03", "2012-12-31")]  # SYNTHETIC
+    links = [_link("100011", "01", "81009.5", "2010-01-01", None)]  # SYNTHETIC
+    broken = _ndx_tier(tmp_path / "broken", spells, links)
+
+    with pytest.raises(ValueError) as excinfo:
+        broken.permno_intervals(broken.NASDAQ100)
+
+    assert "81009.5" in str(excinfo.value)
+
+
+def test_nasdaq100_roster_in_range_resolves_the_alphabet_permnos(tmp_path):
+    """The roster the CLI pulls for `--universe comp_nasdaq100`."""
+    from tests.crsp_fixtures import CCM_ROWS, IDXCST_ROWS
+
+    membership = _ndx_tier(tmp_path, list(IDXCST_ROWS), list(CCM_ROWS))
+
+    assert membership.permnos_in_range(
+        membership.NASDAQ100, "2015-01-01", "2015-12-31"
+    ) == ["14542", "90319"]
+    # GOOG (14542) joined 2014-04-03, so a 2010 window holds only GOOGL.
+    assert membership.permnos_in_range(
+        membership.NASDAQ100, "2010-01-01", "2010-12-31"
+    ) == ["90319"]
