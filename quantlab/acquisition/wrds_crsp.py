@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import json
 from datetime import date, datetime
 from pathlib import Path
 
@@ -57,6 +58,7 @@ from quantlab.acquisition import wrds_taq as _wrds
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
+from quantlab.utils.atomic import write_json_atomically
 
 
 class CrspProductEndError(ValueError):
@@ -66,6 +68,20 @@ class CrspProductEndError(ValueError):
     connection or the subscription -- the data simply does not exist yet,
     because `crsp_a_stock` is the ANNUAL-update product (D-01). It is raised
     BEFORE any COPY, so the message can promise that nothing was downloaded.
+    """
+
+
+class CrspVintageError(ValueError):
+    """The raw tier already holds a DIFFERENT CRSP annual vintage.
+
+    A `ValueError` for the same reason `CrspProductEndError` is one: nothing
+    is wrong with the connection or the subscription. The account simply now
+    holds a later annual release than the one this raw tier was built from,
+    and CRSP REVISES history between releases -- a restated delisting return,
+    a corrected price, a re-used PERMNO. Two vintages sharing one raw root
+    would therefore produce a panel that is neither, with nothing on disk
+    recording the seam. Raised BEFORE any COPY, so the message can promise
+    that nothing was downloaded.
     """
 
 
@@ -255,6 +271,35 @@ class CrspQueries:
         return date.fromisoformat(str(value)[:10])
 
 
+def year_pages(start, end) -> list[tuple[date, date]]:
+    """Each CALENDAR YEAR of `[start, end]`, clipped to the window, ascending.
+
+    `[(2018-06-01, 2018-12-31), (2019-01-01, 2019-12-31), (2020-01-01,
+    2020-03-31)]` for `2018-06-01..2020-03-31`; `[]` for an inverted window.
+
+    MODULE-LEVEL, and that is the point of it existing at all. Two callers
+    need "which rows does this page cover": `_fetch_page`, which pulls them,
+    and `CrspVolumeProbe`, which prices them BEFORE the pull. Two inline
+    copies of the arithmetic would be two definitions that can drift, and the
+    drift is invisible in the dangerous direction -- an estimate quoted
+    against slightly different bounds than the pull uses is an estimate that
+    silently understates the disk it is about to consume.
+
+    Why a YEAR and not a month or the whole window: the window is the unit of
+    resume (a failed page re-runs whole), so a year bounds a retry at roughly
+    250 trading days per PERMNO while keeping the page count for a 26-year
+    S&P backfill to ~26 per batch rather than ~312.
+    """
+    start = CrspQueries._as_date(start)
+    end = CrspQueries._as_date(end)
+    if start > end:
+        return []
+    return [
+        (max(start, date(year, 1, 1)), min(end, date(year, 12, 31)))
+        for year in range(start.year, end.year + 1)
+    ]
+
+
 class WrdsCrspDailyAcquisition(Acquisition):
     """CRSP Stock v2 daily bars behind the shared `Acquisition` base.
 
@@ -304,6 +349,15 @@ class WrdsCrspDailyAcquisition(Acquisition):
 
     #: The reference tier's directory name, a SIBLING of the raw root.
     REFERENCE_DIR_NAME = "_reference"
+
+    #: The vintage stamp's directory name, a SIBLING of BOTH roots (D-01).
+    VINTAGE_DIR_NAME = "_vintage"
+
+    #: How many offending values a page refusal names. BOUNDED because a
+    #: malformed page can be malformed in every row: an unbounded list would
+    #: put a 250,000-entry repr into the failure manifest, which is a JSON
+    #: file an operator has to read.
+    SAMPLE_LIMIT = 10
 
     #: The 50 `dsf_v2` columns this class reads, in server order (live check
     #: `C3_columns`). PINNED: the SELECT, and therefore every shard, is
@@ -456,30 +510,51 @@ class WrdsCrspDailyAcquisition(Acquisition):
     ) -> tuple[date, date, date | None]:
         """`(start, effective_end, clipped_product_end_or_None)`.
 
-        `crsp_a_stock` is the ANNUAL-update product, so its last day is a hard
+        Probes the product end and hands it to `window_for_product_end` below.
+        `_run` does NOT call this: it probes ONCE and reuses the answer for
+        both the window and the vintage stamp, because a second `max(dlycaldt)`
+        per run would be a second full-table aggregate for a value that cannot
+        change mid-run.
+        """
+        return cls.window_for_product_end(
+            CrspQueries.product_end(session), start, end, clip=clip
+        )
+
+    @classmethod
+    def window_for_product_end(
+        cls, product_end, start, end, *, clip: bool
+    ) -> tuple[date, date, date | None]:
+        """The same answer as `resolve_window`, from an ALREADY-probed end.
+
+        `crsp_a_stock` is the annual update product, so its last day is a hard
         edge rather than "data not in yet". Both arms below refuse rather than
         return an empty result: a silent empty pull over a 2026 window looks
         exactly like a roster with no members, and the operator would go
         looking for the wrong bug.
+
+        PURE -- it touches no session, which is what lets `_run` reuse one
+        probe and lets a test pin the arithmetic without a server.
         """
         start = CrspQueries._as_date(start)
         end = CrspQueries._as_date(end)
-        product_end = CrspQueries.product_end(session)
+        product_end = CrspQueries._as_date(product_end)
 
         if start > product_end:
             raise CrspProductEndError(
                 f"start_date {start.isoformat()} is past the CRSP product end "
                 f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is the "
-                f"ANNUAL-update product, so its last day moves once a year at "
-                f"the WRDS refresh, not daily. Choose a start inside the "
-                f"covered range; nothing was downloaded."
+                f"ANNUAL UPDATE product, so its last day moves once a year at "
+                f"the WRDS refresh, not daily. Clipping cannot help: the whole "
+                f"window is past the edge, so there is nothing to clip it to. "
+                f"Choose a start inside the covered range; nothing was "
+                f"downloaded."
             )
         if end > product_end:
             if not clip:
                 raise CrspProductEndError(
                     f"end_date {end.isoformat()} is past the CRSP product end "
                     f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is "
-                    f"the ANNUAL-update product and gains a year at the WRDS "
+                    f"the ANNUAL UPDATE product and gains a year at the WRDS "
                     f"refresh. Lower --end-date to "
                     f"{product_end.isoformat()}, or pass "
                     f"kwargs['clip_to_product_end']=True to have the window "
@@ -488,17 +563,90 @@ class WrdsCrspDailyAcquisition(Acquisition):
             return start, product_end, product_end
         return start, end, None
 
-    def _run(self, symbols: list[str] | None, from_watermark: bool):
-        """Check entitlement and the product end, THEN run.
+    @classmethod
+    def vintage_path_for(cls, config: AcquisitionConfig) -> Path:
+        """`.../{subdir}/_vintage/wrds.json`, a SIBLING of both roots.
 
-        Both happen before the base runner dispatches a single batch, so an
-        unsubscribed account or a window past the vintage raises out of
-        `download()`/`refresh()` with zero COPY calls.
+        Not under the WATERMARK root, and that is the load-bearing half:
+        `CoverageLedger.iter_watermark_symbols` lists every `*.json` there and
+        reads its stem as a symbol, so a `wrds.json` parked beside the
+        watermarks would become a phantom PERMNO in every coverage report --
+        and, worse, one whose "watermark" has no `last_date`. Not under the RAW
+        root either, for the reason `reference_dir_for` gives: `_scan_raw`
+        walks every file below it.
         """
+        return (
+            Path(config.raw_data_dir_path).parent
+            / cls.VINTAGE_DIR_NAME
+            / f"{cls.VENDOR}.json"
+        )
+
+    def _assert_one_vintage(self, product_end: date) -> None:
+        """Stamp the probed vintage, or refuse a raw tier built from another.
+
+        Read-then-write rather than write-always: the stamp is the raw tier's
+        PROVENANCE, so overwriting it with whatever this run happened to probe
+        would destroy the only record that the shards on disk came from an
+        earlier release.
+        """
+        path = self.vintage_path_for(self.config)
+        if path.exists():
+            try:
+                stamped = json.loads(path.read_text(encoding="utf-8")).get(
+                    "product_end"
+                )
+            except (OSError, ValueError) as exc:
+                raise CrspVintageError(
+                    f"{self.class_name}: the vintage stamp {path} could not be "
+                    f"read ({exc}). It records which CRSP annual release this "
+                    f"raw tier was built from, so a run cannot proceed without "
+                    f"it; nothing was downloaded."
+                ) from exc
+            if stamped and CrspQueries._as_date(stamped) != product_end:
+                raise CrspVintageError(
+                    f"{self.class_name}: this raw tier was built from the CRSP "
+                    f"vintage ending {CrspQueries._as_date(stamped).isoformat()}"
+                    f", but the account now reads the vintage ending "
+                    f"{product_end.isoformat()}. CRSP REVISES history between "
+                    f"annual releases -- restated delisting returns, corrected "
+                    f"prices -- so two vintages must never share one raw tier: "
+                    f"the panel built from it would be neither, with nothing on "
+                    f"disk recording the seam. Start a FRESH raw tier by "
+                    f"passing a new subdir to build_config (e.g. "
+                    f"subdir='wrds_crsp_{product_end:%Y}'), or delete the raw "
+                    f"root {self.config.raw_data_dir_path} together with its "
+                    f"_watermarks/{self.VENDOR} and {self.VINTAGE_DIR_NAME} "
+                    f"siblings and pull again. Nothing was downloaded."
+                )
+            return
+        write_json_atomically(
+            path, {"product_end": product_end.isoformat()}, indent=2, sort_keys=True
+        )
+
+    def _run(self, symbols: list[str] | None, from_watermark: bool):
+        """Check the roster, the entitlement, the product end and the vintage,
+        THEN run.
+
+        All four happen before the base runner dispatches a single batch, so a
+        ticker-shaped roster, an unsubscribed account, a window past the
+        vintage or a second vintage over one raw tier raises out of
+        `download()`/`refresh()` with zero COPY calls.
+
+        The ORDER is not incidental. The PERMNO check is first because it
+        costs nothing; entitlement is next because the product-end probe is
+        itself a query against the schema the account may not read, so probing
+        first would report a missing subscription as a broken session; the
+        vintage check is last because it needs the probed end.
+        """
+        self._assert_permnos(
+            self._validate_symbols(list(symbols or self.config.symbols))
+        )
         CrspQueries.assert_entitled(self._session, (CrspQueries.STOCK_SCHEMA,))
+
+        product_end = CrspQueries.product_end(self._session)
         clip = bool(self._knob("clip_to_product_end", False))
-        start, end, clipped = self.resolve_window(
-            self._session,
+        start, end, clipped = self.window_for_product_end(
+            product_end,
             self.config.start_date,
             self.config.end_date,
             clip=clip,
@@ -506,13 +654,34 @@ class WrdsCrspDailyAcquisition(Acquisition):
         if clipped is not None:
             logger.warning(
                 f"{self.class_name}: end_date {self.config.end_date} is past "
-                f"the CRSP product end {clipped.isoformat()}; the window was "
-                f"clipped to it (kwargs['clip_to_product_end'])."
+                f"the {CrspQueries.STOCK_SCHEMA} product end "
+                f"{clipped.isoformat()}; the window was clipped to it "
+                f"(kwargs['clip_to_product_end'])."
             )
             self.config = dataclasses.replace(
                 self.config, end_date=end.isoformat()
             )
+
+        self._assert_one_vintage(product_end)
         return super()._run(symbols, from_watermark)
+
+    def _assert_permnos(self, symbols) -> None:
+        """Every raw symbol is a PERMNO (a digit string), or the run refuses.
+
+        Checked at the TOP of `_run` as well as inside `_fetch_page`, because
+        a ticker roster is an operator mistake about the whole run, not one
+        batch's bad luck: recorded per batch it would land in the failure
+        manifest as if WRDS had rejected those securities.
+        """
+        for symbol in symbols:
+            if not str(symbol).isdigit():
+                raise ValueError(
+                    f"{self.class_name}: symbol {symbol!r} is not a PERMNO. "
+                    f"The CRSP raw tier is keyed by PERMNO (a digit string), "
+                    f"not by ticker -- a ticker is derived at conversion time, "
+                    f"so that a rename never invalidates a watermark. Resolve "
+                    f"the roster to PERMNOs first; nothing was downloaded."
+                )
 
     # -- one page = one calendar year ---------------------------------------
 
@@ -547,21 +716,17 @@ class WrdsCrspDailyAcquisition(Acquisition):
         """
         symbols = self._validate_symbols(symbols)
         # Before ANY query: raw symbols are PERMNOs, and a non-digit value
-        # would become a SQL literal and a shard path segment.
-        for symbol in symbols:
-            if not str(symbol).isdigit():
-                raise ValueError(
-                    f"{self.class_name}: symbol {symbol!r} is not a PERMNO. "
-                    f"The CRSP raw tier is keyed by PERMNO (a digit string), "
-                    f"not by ticker -- a ticker is derived at conversion time, "
-                    f"so that a rename never invalidates a watermark."
-                )
+        # would become a SQL literal and a shard path segment. `_run` checks
+        # the same thing for the whole roster; this is the guard for the
+        # direct `_fetch_page` call, which no roster check precedes.
+        self._assert_permnos(symbols)
 
-        start = CrspQueries._as_date(start_date)
-        end = CrspQueries._as_date(end_date)
-        if start > end:
+        # The SHARED page definition (`year_pages`), never a second inline
+        # copy: `CrspVolumeProbe` prices exactly these bounds.
+        pages = year_pages(start_date, end_date)
+        if not pages:
             return self._empty_page(), None
-        years = list(range(start.year, end.year + 1))
+        years = [page_start.year for page_start, _ in pages]
 
         year = int(page_token) if page_token else years[0]
         if year not in years:
@@ -575,9 +740,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
         next_token = (
             str(years[position + 1]) if position + 1 < len(years) else None
         )
-
-        page_start = max(start, date(year, 1, 1))
-        page_end = min(end, date(year, 12, 31))
+        page_start, page_end = pages[position]
 
         schema, table = CrspQueries.STOCK_SCHEMA, CrspQueries.DAILY_TABLE
         server_columns = set(self._server_columns(schema, table))
@@ -614,11 +777,11 @@ class WrdsCrspDailyAcquisition(Acquisition):
             )
         if expected_rows is not None and frame.height != expected_rows:
             raise ValueError(
-                f"{self.class_name}: {schema}.{table} ({page_start.isoformat()}"
-                f"..{page_end.isoformat()}) COPY returned {frame.height} row(s) "
-                f"but count(*) with the same WHERE reported {expected_rows}; "
-                f"the page is incomplete and is not recorded, so the next run "
-                f"re-fetches it."
+                f"{self.class_name}: {schema}.{table} page {year} "
+                f"({page_start.isoformat()}..{page_end.isoformat()}) COPY "
+                f"returned {frame.height} row(s) but count(*) with the same "
+                f"WHERE reported {expected_rows}; the page is incomplete and "
+                f"is not recorded, so the next run re-fetches year {year}."
             )
         if frame.height == 0:
             return self._empty_page(), next_token
@@ -669,14 +832,16 @@ class WrdsCrspDailyAcquisition(Acquisition):
         if duplicates.height:
             sample = [
                 f"{record['permno']}@{record['dlycaldt']}x{record['rows']}"
-                for record in duplicates.head(5).to_dicts()
+                for record in duplicates.head(self.SAMPLE_LIMIT).to_dicts()
             ]
             raise ValueError(
                 f"{self.class_name}: {schema}.{table} returned "
-                f"{duplicates.height} duplicated (permno, dlycaldt) key(s), "
-                f"first {sample}. The table is unique on that pair (D-19), so "
-                f"this page is refused rather than de-duplicated -- a silent "
-                f"dedup would drop one of two prices with no record."
+                f"{duplicates.height} duplicated (permno, dlycaldt) key(s) "
+                f"across {frame.height} row(s), first "
+                f"{len(sample)} of them {sample}. The table is unique on that "
+                f"pair (D-19), so this page is refused rather than "
+                f"de-duplicated -- a silent dedup would drop one of two prices "
+                f"with no record."
             )
 
     def _assert_page_belongs(
@@ -702,10 +867,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
         strangers = sorted(seen - wanted)
         if strangers:
             raise ValueError(
-                f"{self.class_name}: the daily COPY returned rows for PERMNOs "
-                f"{strangers}, which were not requested (requested: "
-                f"{sorted(wanted)}). Refusing the page rather than filing "
-                f"another security's prices under a requested PERMNO."
+                f"{self.class_name}: the daily COPY returned rows for "
+                f"{len(strangers)} PERMNO(s) that were not requested, first "
+                f"{strangers[: self.SAMPLE_LIMIT]} (requested "
+                f"{len(wanted)}: {sorted(wanted)[: self.SAMPLE_LIMIT]}). "
+                f"Refusing the page rather than filing another security's "
+                f"prices under a requested PERMNO."
             )
         off_page = frame.filter(
             (pl.col("dlycaldt") < pl.lit(page_start))
@@ -717,8 +884,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
             )
             raise ValueError(
                 f"{self.class_name}: the daily COPY returned "
-                f"{off_page.height} row(s) dated {dates}, outside the page "
-                f"bounds [{page_start.isoformat()}, {page_end.isoformat()}]."
+                f"{off_page.height} row(s) dated outside the page bounds "
+                f"[{page_start.isoformat()}, {page_end.isoformat()}], on "
+                f"{len(dates)} date(s), first {dates[: self.SAMPLE_LIMIT]}. "
+                f"Such a row would land under a month= partition this page "
+                f"does not own, where the next run's deterministic overwrite "
+                f"would never reach it."
             )
 
     # -- config -------------------------------------------------------------
@@ -775,3 +946,109 @@ class WrdsCrspDailyAcquisition(Acquisition):
         custom root keeps its reference tier beside its own raw tier.
         """
         return Path(config.raw_data_dir_path).parent / cls.REFERENCE_DIR_NAME
+
+
+class CrspVolumeProbe:
+    """Counts the `dsf_v2` rows a pull WOULD fetch, per calendar YEAR, for the
+    SQL volume guard (D-03, T-03.10-07).
+
+    The TAQ sibling `WrdsNbboVolumeProbe` counts per trading DAY because a TAQ
+    page is a day table; a CRSP page is a calendar year, so this counts per
+    year. That is the whole difference, and it is deliberate: the probe's unit
+    is the PULL's unit, because the point of a pre-flight estimate is that a
+    refusal names a window the operator can actually re-run. A refusal that
+    said "stop at 2019-06-14" would name a boundary no page has.
+
+    One `count(*)` per `(year page, PERMNO batch)`, with the pages from
+    `year_pages` and the WHERE from `CrspQueries.daily_where` -- the same two
+    functions `WrdsCrspDailyAcquisition._fetch_page` uses, so the rows priced
+    here are the rows that will move. `daily_where` refuses an empty batch, so
+    this class cannot issue a count over the whole 110-million-row table.
+
+    **The guard itself is REUSED UNCHANGED** (D-03). `SqlVolumeGuard` speaks
+    of `rows_by_day` and `trading_days`; against this dict those words mean
+    per-YEAR and year-count. The keys are the ISO page END (a December 31, or
+    the window's own end for the final year), which is what makes the guard's
+    `fitting_end_date` -- and therefore its `--end-date` suggestion -- a date
+    a re-run can be given verbatim. Plan 10 puts the unit label on the printed
+    estimate; renaming the guard's fields is NOT the fix, because the guard is
+    shared with the TAQ path where "day" is literally true.
+
+    Not adopted, for the reason the TAQ probe gives: a JSON cache of these
+    counts beside the watermarks. It would save only the re-count seconds and
+    would be a second state file that can disagree with the watermarks, while
+    the pull re-counts every page anyway (`verify_page_counts`).
+    """
+
+    #: Log progress every this many year pages.
+    LOG_EVERY_PAGES = 5
+
+    def __init__(
+        self,
+        session,
+        batch_size: int = WrdsCrspDailyAcquisition.DEFAULT_BATCH_SIZE,
+    ) -> None:
+        self.session = session
+        self.batch_size = max(1, int(batch_size))
+
+    def _batches(self, permnos: list[str]) -> list[list[str]]:
+        """`Acquisition._batches`'s chunking, in INPUT ORDER.
+
+        Restated rather than imported because that method is an instance
+        method reading `config.kwargs`, and this probe deliberately has no
+        config: it is asked a question before any pull exists. The chunk
+        arithmetic is pinned against the acquisition's by
+        `tests/test_wrds_crsp_acquisition.py`.
+        """
+        return [
+            permnos[index : index + self.batch_size]
+            for index in range(0, len(permnos), self.batch_size)
+        ]
+
+    def count_rows_by_year(
+        self, permnos, start_date: str, end_date: str
+    ) -> dict[str, int]:
+        """`{ISO page end: rows}` over `[start_date, end_date]`.
+
+        Keys are YEAR buckets -- `2019-12-31`, `2020-12-31`, and the window's
+        own end for the last, partial year -- summed over the PERMNO batches.
+        Entitlement is checked first, so an unsubscribed account raises
+        `WrdsEntitlementError` before any count is issued (D-21).
+        """
+        permnos = [str(permno) for permno in permnos]
+        if not permnos:
+            raise ValueError(
+                "CrspVolumeProbe.count_rows_by_year: no PERMNOs; refusing to "
+                "count the daily table without a PERMNO predicate."
+            )
+        for permno in permnos:
+            if not permno.isdigit():
+                raise ValueError(
+                    f"CrspVolumeProbe: {permno!r} is not a PERMNO. The CRSP "
+                    f"raw tier is keyed by PERMNO (a digit string), not by "
+                    f"ticker; resolve the roster to PERMNOs first."
+                )
+
+        batches = self._batches(permnos)
+        pages = year_pages(start_date, end_date)
+
+        CrspQueries.assert_entitled(self.session, (CrspQueries.STOCK_SCHEMA,))
+
+        counts: dict[str, int] = {}
+        for position, (page_start, page_end) in enumerate(pages, start=1):
+            counts[page_end.isoformat()] = sum(
+                CrspQueries.count(
+                    self.session,
+                    CrspQueries.STOCK_SCHEMA,
+                    CrspQueries.DAILY_TABLE,
+                    CrspQueries.daily_where(batch, page_start, page_end),
+                )
+                for batch in batches
+            )
+            if position % self.LOG_EVERY_PAGES == 0 or position == len(pages):
+                logger.info(
+                    f"CRSP daily volume probe: {position}/{len(pages)} year "
+                    f"page(s) counted ({len(batches)} batch(es) per page, "
+                    f"{sum(counts.values()):,} rows so far)."
+                )
+        return counts
