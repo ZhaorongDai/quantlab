@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 9/11 plans executed
+**Plans:** 10/11 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -190,7 +190,7 @@ Plans:
 
 **Wave 5** *(blocked on 03, 04, 08, 09)*
 
-- [ ] 03.10-10-PLAN.md — `scripts/ingest_wrds_crsp.py` (entitlement, clip, references, roster, probe + guard before pull, one session) + guard unit label
+- [x] 03.10-10-PLAN.md — `scripts/ingest_wrds_crsp.py` (entitlement, clip, references, roster, probe + guard before pull, one session) + guard unit label
 
 **Wave 6** *(blocked on 10)*
 
