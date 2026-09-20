@@ -143,7 +143,20 @@ https://wrds-www.wharton.upenn.edu/pages/get-data/center-research-security-price
 reaches quantlab as a drop-in `us_equity` / `1d` data source: daily security data, security
 information / ticker history, and delisting & distribution events, landing in the canonical
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
-**Requirements**: TBD
+**Requirements**: DATA-03 (advanced), DATA-05 (advanced) — DATA-03 gains a second production
+`us_equity`/`1d` vendor for the same market and frequency, registered as a `SourceDescriptor` with its
+own per-capability resolver and reached without a `quantlab/config` factory, consumed by the factor,
+label and backtest layers without a change in any of them; DATA-05 gains CRSP-native point-in-time
+S&P 500 membership from `dsp500list_v2` (by PERMNO) and a Compustat Nasdaq-100 universe via the CCM
+gvkey→PERMNO link, expressed in the price panel's own period-correct tickers beside the existing
+Wikipedia-derived panels — both bounded by the CRSP annual-update product end this phase refuses past.
+**Neither requirement is COMPLETED by this phase.** DATA-03's delivery belongs to Phase 2 and stays
+Pending; DATA-05 was already Complete in Phase 03.1. Phase 03.10 advances both, and claims no more.
+**On the plans' own `requirements:` ids.** Every plan below declares `requirements: [D-01 … D-19]` in
+its frontmatter. Those are `03.10-CONTEXT.md` implementation-decision ids — phase-local, and NOT
+REQUIREMENTS.md ids (that file's vocabulary is `DATA-*` / `SEC-*` / `CLEAN-*`). That is why
+`requirements.mark-complete` correctly reported them `not_found` and REQUIREMENTS.md was rightly left
+untouched by the eleven executed plans; the two vocabularies are joined here, not merged.
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
 **Plans:** 11/11 executed, plus 6 gap-closure plans (12-17) from 03.10-VERIFICATION.md
 
