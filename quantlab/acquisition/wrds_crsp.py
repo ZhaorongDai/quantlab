@@ -271,6 +271,35 @@ class CrspQueries:
         return date.fromisoformat(str(value)[:10])
 
 
+def year_pages(start, end) -> list[tuple[date, date]]:
+    """Each CALENDAR YEAR of `[start, end]`, clipped to the window, ascending.
+
+    `[(2018-06-01, 2018-12-31), (2019-01-01, 2019-12-31), (2020-01-01,
+    2020-03-31)]` for `2018-06-01..2020-03-31`; `[]` for an inverted window.
+
+    MODULE-LEVEL, and that is the point of it existing at all. Two callers
+    need "which rows does this page cover": `_fetch_page`, which pulls them,
+    and `CrspVolumeProbe`, which prices them BEFORE the pull. Two inline
+    copies of the arithmetic would be two definitions that can drift, and the
+    drift is invisible in the dangerous direction -- an estimate quoted
+    against slightly different bounds than the pull uses is an estimate that
+    silently understates the disk it is about to consume.
+
+    Why a YEAR and not a month or the whole window: the window is the unit of
+    resume (a failed page re-runs whole), so a year bounds a retry at roughly
+    250 trading days per PERMNO while keeping the page count for a 26-year
+    S&P backfill to ~26 per batch rather than ~312.
+    """
+    start = CrspQueries._as_date(start)
+    end = CrspQueries._as_date(end)
+    if start > end:
+        return []
+    return [
+        (max(start, date(year, 1, 1)), min(end, date(year, 12, 31)))
+        for year in range(start.year, end.year + 1)
+    ]
+
+
 class WrdsCrspDailyAcquisition(Acquisition):
     """CRSP Stock v2 daily bars behind the shared `Acquisition` base.
 
@@ -323,6 +352,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
 
     #: The vintage stamp's directory name, a SIBLING of BOTH roots (D-01).
     VINTAGE_DIR_NAME = "_vintage"
+
+    #: How many offending values a page refusal names. BOUNDED because a
+    #: malformed page can be malformed in every row: an unbounded list would
+    #: put a 250,000-entry repr into the failure manifest, which is a JSON
+    #: file an operator has to read.
+    SAMPLE_LIMIT = 10
 
     #: The 50 `dsf_v2` columns this class reads, in server order (live check
     #: `C3_columns`). PINNED: the SELECT, and therefore every shard, is
@@ -686,11 +721,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
         # direct `_fetch_page` call, which no roster check precedes.
         self._assert_permnos(symbols)
 
-        start = CrspQueries._as_date(start_date)
-        end = CrspQueries._as_date(end_date)
-        if start > end:
+        # The SHARED page definition (`year_pages`), never a second inline
+        # copy: `CrspVolumeProbe` prices exactly these bounds.
+        pages = year_pages(start_date, end_date)
+        if not pages:
             return self._empty_page(), None
-        years = list(range(start.year, end.year + 1))
+        years = [page_start.year for page_start, _ in pages]
 
         year = int(page_token) if page_token else years[0]
         if year not in years:
@@ -704,9 +740,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
         next_token = (
             str(years[position + 1]) if position + 1 < len(years) else None
         )
-
-        page_start = max(start, date(year, 1, 1))
-        page_end = min(end, date(year, 12, 31))
+        page_start, page_end = pages[position]
 
         schema, table = CrspQueries.STOCK_SCHEMA, CrspQueries.DAILY_TABLE
         server_columns = set(self._server_columns(schema, table))
@@ -743,11 +777,11 @@ class WrdsCrspDailyAcquisition(Acquisition):
             )
         if expected_rows is not None and frame.height != expected_rows:
             raise ValueError(
-                f"{self.class_name}: {schema}.{table} ({page_start.isoformat()}"
-                f"..{page_end.isoformat()}) COPY returned {frame.height} row(s) "
-                f"but count(*) with the same WHERE reported {expected_rows}; "
-                f"the page is incomplete and is not recorded, so the next run "
-                f"re-fetches it."
+                f"{self.class_name}: {schema}.{table} page {year} "
+                f"({page_start.isoformat()}..{page_end.isoformat()}) COPY "
+                f"returned {frame.height} row(s) but count(*) with the same "
+                f"WHERE reported {expected_rows}; the page is incomplete and "
+                f"is not recorded, so the next run re-fetches year {year}."
             )
         if frame.height == 0:
             return self._empty_page(), next_token
@@ -798,14 +832,16 @@ class WrdsCrspDailyAcquisition(Acquisition):
         if duplicates.height:
             sample = [
                 f"{record['permno']}@{record['dlycaldt']}x{record['rows']}"
-                for record in duplicates.head(5).to_dicts()
+                for record in duplicates.head(self.SAMPLE_LIMIT).to_dicts()
             ]
             raise ValueError(
                 f"{self.class_name}: {schema}.{table} returned "
-                f"{duplicates.height} duplicated (permno, dlycaldt) key(s), "
-                f"first {sample}. The table is unique on that pair (D-19), so "
-                f"this page is refused rather than de-duplicated -- a silent "
-                f"dedup would drop one of two prices with no record."
+                f"{duplicates.height} duplicated (permno, dlycaldt) key(s) "
+                f"across {frame.height} row(s), first "
+                f"{len(sample)} of them {sample}. The table is unique on that "
+                f"pair (D-19), so this page is refused rather than "
+                f"de-duplicated -- a silent dedup would drop one of two prices "
+                f"with no record."
             )
 
     def _assert_page_belongs(
@@ -831,10 +867,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
         strangers = sorted(seen - wanted)
         if strangers:
             raise ValueError(
-                f"{self.class_name}: the daily COPY returned rows for PERMNOs "
-                f"{strangers}, which were not requested (requested: "
-                f"{sorted(wanted)}). Refusing the page rather than filing "
-                f"another security's prices under a requested PERMNO."
+                f"{self.class_name}: the daily COPY returned rows for "
+                f"{len(strangers)} PERMNO(s) that were not requested, first "
+                f"{strangers[: self.SAMPLE_LIMIT]} (requested "
+                f"{len(wanted)}: {sorted(wanted)[: self.SAMPLE_LIMIT]}). "
+                f"Refusing the page rather than filing another security's "
+                f"prices under a requested PERMNO."
             )
         off_page = frame.filter(
             (pl.col("dlycaldt") < pl.lit(page_start))
@@ -846,8 +884,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
             )
             raise ValueError(
                 f"{self.class_name}: the daily COPY returned "
-                f"{off_page.height} row(s) dated {dates}, outside the page "
-                f"bounds [{page_start.isoformat()}, {page_end.isoformat()}]."
+                f"{off_page.height} row(s) dated outside the page bounds "
+                f"[{page_start.isoformat()}, {page_end.isoformat()}], on "
+                f"{len(dates)} date(s), first {dates[: self.SAMPLE_LIMIT]}. "
+                f"Such a row would land under a month= partition this page "
+                f"does not own, where the next run's deterministic overwrite "
+                f"would never reach it."
             )
 
     # -- config -------------------------------------------------------------
