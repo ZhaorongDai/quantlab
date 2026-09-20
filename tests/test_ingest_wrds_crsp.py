@@ -417,3 +417,258 @@ def test_parser_refusals_cost_no_connection(
     assert code == 2, out.out
     assert needle in out.err
     assert mock_crsp_session.connections == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 3: structural locks on the script
+#
+# These are the protections an end-to-end test CANNOT see. A run whose guard
+# had moved BELOW the pull would still pass every test above -- the fake
+# always admits -- while a real over-ceiling pull would have already moved
+# bytes by the time it was refused. The ordering, the single session, the
+# absent credential argument and the absent factory call are therefore
+# asserted on the SOURCE, and every failure message names the line numbers it
+# compared so the fix is obvious from the report alone.
+#
+# The helpers below are re-implemented rather than imported from
+# `tests/test_ingest_wrds_taq.py`: that is another plan's test module, and
+# importing its private helpers would tie two locks that must be free to move
+# independently.
+# ---------------------------------------------------------------------------
+
+
+def _source() -> str:
+    return SCRIPT.read_text(encoding="utf-8")
+
+
+def _tree() -> ast.Module:
+    return ast.parse(_source())
+
+
+def _main_body(tree: ast.Module) -> ast.If:
+    for node in tree.body:
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__name__"
+        ):
+            return node
+    raise AssertionError(f"{SCRIPT} has no `if __name__ == '__main__':` block")
+
+
+def _call_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _call_linenos(node: ast.AST, name: str) -> list[int]:
+    return sorted(
+        call.lineno
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and _call_name(call) == name
+    )
+
+
+def test_the_crsp_guard_is_called_by_name_in_main():
+    lines = _call_linenos(_main_body(_tree()), "assert_acquisition_volume_fits")
+    assert lines, (
+        f"{SCRIPT.name}: no assert_acquisition_volume_fits(...) call in the "
+        f"__main__ body; the SQL volume guard must run before the pull"
+    )
+
+
+def test_the_crsp_guard_follows_the_probe_and_precedes_run():
+    main = _main_body(_tree())
+    guard = _call_linenos(main, "assert_acquisition_volume_fits")
+    probe = _call_linenos(main, "count_rows_by_year")
+    runs = _call_linenos(main, "run")
+    constructions = _call_linenos(main, "acquisition_cls") + _call_linenos(
+        main, "ACQ"
+    )
+    assert guard and probe and runs, (
+        f"guard lines {guard}, probe lines {probe}, run lines {runs}: each "
+        f"must be present in __main__"
+    )
+    assert max(probe) < min(guard), (
+        f"the per-year count probe (lines {probe}) must feed the guard "
+        f"(lines {guard})"
+    )
+    later = [line for line in runs + constructions if line <= max(guard)]
+    assert not later, (
+        f"the guard (lines {guard}) must precede every run(...) (lines {runs}) "
+        f"and every acquisition construction (lines {constructions}); "
+        f"offending: {later}"
+    )
+
+
+def test_the_reference_pull_precedes_the_roster_and_the_probe():
+    """The roster CANNOT be resolved before the tables that answer it.
+
+    `WrdsCrspDailyAcquisition._assert_permnos` refuses the whole run on a
+    ticker roster (03.10-03), so a universe must be resolved to PERMNOs before
+    it reaches the config -- and it can only be resolved from the reference
+    tier. The probe then prices exactly that roster.
+    """
+    main = _main_body(_tree())
+    pull = _call_linenos(main, "pull")
+    roster = _call_linenos(main, "permnos_in_range")
+    probe = _call_linenos(main, "count_rows_by_year")
+    assert pull and roster and probe, (
+        f"pull lines {pull}, permnos_in_range lines {roster}, "
+        f"count_rows_by_year lines {probe}: each must be present in __main__"
+    )
+    assert max(pull) < min(roster), (
+        f"the reference pull (lines {pull}) must precede the roster "
+        f"resolution (lines {roster})"
+    )
+    assert max(roster) < min(probe), (
+        f"the roster (lines {roster}) must precede the volume probe "
+        f"(lines {probe}); the probe prices exactly the roster that will pull"
+    )
+
+
+def test_force_volume_is_a_typed_flag_only():
+    source = _source()
+    assert "force=args.force_volume" in source
+    assert "add_volume_guard_args" in source
+    for forbidden in (
+        "FORCE_VOLUME",
+        "getenv",
+        'environ.get("FORCE',
+        "environ.get('FORCE",
+    ):
+        lines = [
+            number
+            for number, line in enumerate(source.splitlines(), start=1)
+            if forbidden in line
+        ]
+        assert not lines, f"{forbidden!r} appears at lines {lines}"
+
+
+def test_the_crsp_cli_names_no_acquisition_class_and_calls_one_factory():
+    """The vendor class is RESOLVED, never named (D-12).
+
+    The name is read off the registry rather than written here, so renaming
+    the class cannot quietly turn this lock into a check for a string nothing
+    uses any more.
+    """
+    from quantlab.acquisition.registry import DataSourceRegistry
+
+    acquisition_name = DataSourceRegistry.get("wrds").acquisition_cls_for(
+        "us_equity", "1d", "crsp_daily"
+    ).__name__
+    source = _source()
+    named = [
+        number
+        for number, line in enumerate(source.splitlines(), start=1)
+        if acquisition_name in line
+    ]
+    assert not named, (
+        f"{acquisition_name} is named at lines {named}; resolve it through "
+        f"SOURCE.acquisition_cls_for(*CAPABILITY) instead"
+    )
+    assert "acquisition_cls_for" in source
+
+    factory = _call_linenos(_tree(), "config_factory_for")
+    assert len(factory) == 1, (
+        f"config_factory_for(...) called at lines {factory}; the acquisition "
+        f"config is built exactly once"
+    )
+
+
+def _quantlab_config_factories() -> set[str]:
+    module = ast.parse(
+        (REPO_ROOT / "quantlab" / "config" / "__init__.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    return {
+        node.name for node in module.body if isinstance(node, ast.FunctionDef)
+    } - {"get_data_root", "set_data_root"}
+
+
+def test_the_crsp_cli_calls_no_quantlab_config_factory():
+    """D-12, and a standing user instruction: configs are constructed, never
+    fetched from the hardcoded-absolute-path factories in quantlab/config."""
+    factories = _quantlab_config_factories()
+    assert "stock_kline_config" in factories, "the factory scan found nothing"
+    tree = _tree()
+    called = sorted(
+        (_call_name(call), call.lineno)
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call) and _call_name(call) in factories
+    )
+    imported = sorted(
+        (alias.name, node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in factories
+    )
+    assert not called and not imported, (
+        f"quantlab/config factory calls {called} / imports {imported}; "
+        f"construct the configs directly"
+    )
+
+
+def test_apply_data_dir_precedes_every_path_derivation():
+    main = _main_body(_tree())
+    apply = _call_linenos(main, "apply_data_dir")
+    derivations = _call_linenos(main, "get_data_root") + _call_linenos(
+        main, "config_factory_for"
+    )
+    assert apply, "apply_data_dir(args) is not called in __main__"
+    assert derivations, (
+        "no get_data_root()/config_factory_for call found in __main__"
+    )
+    early = [line for line in derivations if line <= min(apply)]
+    assert not early, (
+        f"apply_data_dir (line {min(apply)}) must precede every "
+        f"get_data_root()/config_factory_for call; offending lines {early}"
+    )
+
+
+def test_no_credential_argument():
+    offending = []
+    for call in ast.walk(_tree()):
+        if isinstance(call, ast.Call) and _call_name(call) == "add_argument":
+            for arg in call.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    flag = arg.value.lower()
+                    if any(
+                        word in flag
+                        for word in ("password", "passwd", "user", "pgpass")
+                    ):
+                        offending.append((arg.value, call.lineno))
+    assert not offending, f"credential-shaped arguments: {offending}"
+
+
+def test_one_session_per_run():
+    tree = _tree()
+    shared = [
+        call.lineno
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "shared"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "WrdsSession"
+    ]
+    assert len(shared) == 1, (
+        f"WrdsSession.shared() called at lines {shared}; one WRDS connection "
+        f"per run (D-20), because every extra one can push a Duo prompt"
+    )
+    in_finally = [
+        call.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        for stmt in node.finalbody
+        for call in ast.walk(stmt)
+        if isinstance(call, ast.Call) and _call_name(call) == "close_shared"
+    ]
+    assert in_finally, "WrdsSession.close_shared() is not called inside a finally"
