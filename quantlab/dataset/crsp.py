@@ -15,6 +15,19 @@ would give every chunk its OWN anchor and put a fabricated return at every
 chunk seam. The cached derivation is the reason `granularity="year"` and
 `granularity="month"` produce the same store.
 
+**The anchor MOVES when the window is extended, so a store records its own**
+(D-08, RESEARCH Pitfall 2). Pushing `end_date` forward gives every
+still-listed PERMNO a later last priced day, which multiplies all of its
+earlier `adj*` values by a constant -- ratios survive, levels do not. Tiingo
+restates adjusted history the same way. What differs here is the WRITER: the
+chunk ledger appends windows and never rewrites a finished one, so extending
+a store in place would leave its old windows on the old anchor and the new
+ones on the new anchor, with a fabricated return at the join that no reader
+could see. Every conversion therefore writes `{zarr}.crsp_adjustment.json`
+beside the store before the first append and compares it on every later run;
+a mismatch -- or a missing sidecar -- REFUSES before anything is written. The
+remedy is a rebuild, which is cheap: CRSP publishes once a year.
+
 **The arithmetic**, per PERMNO, sorted by date (D-08):
 
 - `close = abs(dlyprc)`. Not `dlyclose`: that is null on bid/ask days, through
@@ -54,6 +67,8 @@ would apply the loss twice (D-10) -- Lehman's 2008-09-18 row already holds
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 import xarray as xr
 
@@ -63,6 +78,7 @@ from quantlab.dataset.crsp_reference import CrspReference
 from quantlab.dataset.crsp_symbology import CrspSymbology
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
+from quantlab.utils.atomic import write_json_atomically
 
 #: Everything this panel carries BEYOND the Tiingo twelve, with its CRSP source
 #: and the unit the panel states it in. FLOAT64 like every other variable
@@ -139,6 +155,18 @@ class CrspStockDataset(StockDataset):
     #: module-level `CRSP_EXTRA_VARIABLES`, bound here so a subclass can
     #: narrow or extend the set without the module constant moving.
     EXTRA_VARIABLES: tuple[str, ...] = CRSP_EXTRA_VARIABLES
+
+    #: The sidecar recording WHICH anchor a store's `adj*` columns were built
+    #: against. A SIBLING of the store, exactly like `ChunkLedger`'s
+    #: `.chunks.json` -- not a file inside the zarr directory, which a
+    #: `mode="w"` rewrite would drop and a zarr reader would surface as a
+    #: stray array.
+    ADJUSTMENT_SIDECAR_SUFFIX: str = ".crsp_adjustment.json"
+
+    #: The rule the sidecar names. Written into the file rather than only
+    #: implied by it, so a future change of rule is visible to a reader of an
+    #: OLD store instead of only in this module's history.
+    ADJUSTMENT_RULE: str = "total_return_backward_from_last_close"
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
@@ -228,7 +256,16 @@ class CrspStockDataset(StockDataset):
         derived = derived.join(anchor, on="permno", how="left")
 
         derived = derived.with_columns(
-            (pl.col("_close_anchor") * pl.col("_G") / pl.col("_G_anchor"))
+            # NaN wherever there is no close. The chain `_G` is defined on a
+            # priceless day (a null return contributes 1), so without this
+            # mask the anchor's level would be published as that day's
+            # adjusted price -- inventing a price on a day that had none, and
+            # one that a return series would then diff against.
+            pl.when(pl.col("close").is_null())
+            .then(None)
+            .otherwise(
+                pl.col("_close_anchor") * pl.col("_G") / pl.col("_G_anchor")
+            )
             .alias("adjClose")
         )
         derived = derived.with_columns(
@@ -333,6 +370,108 @@ class CrspStockDataset(StockDataset):
         self._derivation_cache = frame
         return frame
 
+    # -- the adjustment anchor, and its sidecar ------------------------------
+
+    @classmethod
+    def adjustment_sidecar_path(cls, config: CrspDatasetConfig) -> Path:
+        """`{zarr_file_path}.crsp_adjustment.json`, a SIBLING of the store."""
+        return Path(str(config.zarr_file_path) + cls.ADJUSTMENT_SIDECAR_SUFFIX)
+
+    def _adjustment_record(self) -> dict:
+        """What this conversion's `adj*` columns are anchored to.
+
+        The anchor is a PERMNO's last priced day inside
+        `[start_date, end_date]`, so the WINDOW identifies it. `product_end`
+        rides along because the same window read against a newer CRSP vintage
+        can have a later last row for a security that kept trading -- the
+        vintage is part of "which anchor", not decoration.
+        """
+        reference = CrspReference(self.config.reference_dir)
+        return {
+            "start_date": str(self.config.start_date),
+            "end_date": str(self.config.end_date),
+            "product_end": str(reference.product_end),
+            "rule": self.ADJUSTMENT_RULE,
+        }
+
+    def _assert_anchor_unchanged(self, record: dict) -> None:
+        """Refuse to write into a store built against a DIFFERENT anchor.
+
+        **Why a refusal rather than a rescale.** Extending `end_date` moves
+        every still-listed PERMNO's anchor, which multiplies every earlier
+        `adj*` value of that PERMNO by a constant (ratios within a series
+        survive; levels do not). That is the same thing Tiingo does when it
+        restates adjusted history. The difference is the WRITER: the chunk
+        ledger APPENDS windows and never rewrites a finished one, so an
+        in-place extension would leave the old windows on the old anchor and
+        the new ones on the new anchor -- one column, two anchors, and a
+        fabricated return at the join that no reader could see.
+
+        Rebuilding is the remedy because it is cheap: CRSP publishes once a
+        year, and a full daily S&P panel re-converts in minutes.
+
+        Runs BEFORE the derivation and before any append -- the one place a
+        refusal cannot be half-done.
+        """
+        import json
+
+        store = Path(str(self.config.zarr_file_path))
+        if not store.exists():
+            return
+
+        sidecar = self.adjustment_sidecar_path(self.config)
+        if not sidecar.exists():
+            raise ValueError(
+                f"{self.class_name}: the store at {str(store)!r} exists but "
+                f"its adjustment sidecar {sidecar.name!r} is missing, so "
+                f"which anchor its adjusted columns were computed against is "
+                f"unknown. A store written against a different anchor is "
+                f"indistinguishable from this one, and appending would splice "
+                f"two anchors into one column. Convert into a NEW "
+                f"zarr_file_path, or delete {str(store)!r} together with its "
+                f"'.crsp_*.json' sidecars and rebuild."
+            )
+
+        try:
+            recorded = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"{self.class_name}: the adjustment sidecar {str(sidecar)!r} "
+                f"could not be read ({type(exc).__name__}: {exc}). It records "
+                f"which anchor {str(store)!r} was built against; without it "
+                f"an append could splice two anchors. Delete the store and "
+                f"its '.crsp_*.json' sidecars and rebuild, or convert into a "
+                f"new zarr_file_path."
+            ) from exc
+
+        if recorded != record:
+            raise ValueError(
+                f"{self.class_name}: {str(store)!r} was built against the "
+                f"adjustment anchor {recorded} (recorded in "
+                f"{str(sidecar)!r}) and this conversion would use "
+                f"{record}. The anchor is each PERMNO's last priced day in "
+                f"the configured window, so a different window (here "
+                f"end_date {recorded.get('end_date')!r} -> "
+                f"{record.get('end_date')!r}) rescales every earlier adjusted "
+                f"value. The chunk ledger appends and never rewrites, so the "
+                f"result would be ONE column holding TWO anchors, with a "
+                f"fabricated return at the seam. Choose a new "
+                f"zarr_file_path, or delete {str(store)!r} together with its "
+                f"'.crsp_*.json' sidecars and rebuild the whole window."
+            )
+
+    def _write_adjustment_record(self, record: dict) -> None:
+        """Record the anchor before the first append, so a store cannot exist
+        without it."""
+        if Path(str(self.config.zarr_file_path)).exists():
+            return
+        write_json_atomically(
+            self.adjustment_sidecar_path(self.config),
+            record,
+            indent=2,
+            sort_keys=True,
+        )
+
     # -- axes and windows ---------------------------------------------------
 
     def _raw_axes_in_range(self):
@@ -342,8 +481,16 @@ class CrspStockDataset(StockDataset):
         reads the raw `symbol` column, which here is the PERMNO. The axis this
         store is pinned to is the TICKER axis, and it only exists after
         symbology has run.
+
+        Also the ANCHOR GATE. `from_raw_data_chunked` calls this method ONCE,
+        before `ChunkLedger.assert_consistent` and before any append, which
+        makes it the only point in the conversion where a refusal is
+        guaranteed to leave the store untouched.
         """
         import pandas as pd
+
+        record = self._adjustment_record()
+        self._assert_anchor_unchanged(record)
 
         derivation = self._derivation()
         symbols = sorted(
@@ -354,6 +501,12 @@ class CrspStockDataset(StockDataset):
             wanted = {str(symbol) for symbol in self.config.symbols}
             symbols = [symbol for symbol in symbols if symbol in wanted]
         timestamps = derivation.get_column("timestamp").unique().to_list()
+
+        # Written LAST, after the derivation has succeeded: a run that fails
+        # on a symbology collision must not leave an anchor record for a
+        # store that was never created. A store, on the other hand, can never
+        # exist without one -- the first append happens after this returns.
+        self._write_adjustment_record(record)
         return symbols, pd.DatetimeIndex(sorted(timestamps))
 
     def _raw_data_to_xr_window(
