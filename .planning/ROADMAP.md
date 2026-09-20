@@ -229,7 +229,7 @@ Plans:
 
 **Wave 5** *(blocked on 15)*
 
-- [ ] 03.10-16-PLAN.md — GAP-E: resolve the ROADMAP Requirements placeholder and record Phase 03.10 against DATA-03 and DATA-05 in REQUIREMENTS.md, with no id invented and no count disturbed
+- [x] 03.10-16-PLAN.md — GAP-E: resolve the ROADMAP Requirements placeholder and record Phase 03.10 against DATA-03 and DATA-05 in REQUIREMENTS.md, with no id invented and no count disturbed
 
 **Wave 6** *(blocked on 13, 14, 15, 16)*
 
