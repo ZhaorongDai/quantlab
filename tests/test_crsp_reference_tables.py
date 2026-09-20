@@ -166,6 +166,25 @@ def _raw_root_files(raw_root: Path) -> list[Path]:
     return [path for path in raw_root.rglob("*") if path.is_file()]
 
 
+def _sql_for(calls: list[dict], table: str) -> str:
+    """The one recorded statement for `schema.table`, or a loud failure."""
+    matches = [call["sql"] for call in calls if call["table"] == table]
+    assert len(matches) == 1, (table, [call["table"] for call in calls])
+    return matches[0]
+
+
+def _where_of(statement: str) -> str:
+    """The WHERE clause of a rendered COPY or count, `""` when there is none.
+
+    A COPY wraps its SELECT, so the clause ends at the closing paren before
+    `TO STDOUT`; a count runs to the end of the statement.
+    """
+    if " WHERE " not in statement:
+        return ""
+    where = statement.split(" WHERE ", 1)[1]
+    return where.rsplit(") TO STDOUT", 1)[0].strip()
+
+
 # ---------------------------------------------------------------------------
 # Task 1 -- whole tables, manifest, vintage skip, ceiling, atomicity
 # ---------------------------------------------------------------------------
@@ -410,3 +429,217 @@ def test_a_failed_copy_leaves_no_manifest_and_the_next_pull_is_complete(
     assert all(
         (reference_dir / f"{name}.parquet").exists() for name in SP500_PULL_TABLES
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 2 -- Nasdaq-100, entitlement scope and SQL shape
+# ---------------------------------------------------------------------------
+
+
+def test_nasdaq100_pull_writes_the_idxcst_and_ccm_tables(session, dirs):
+    """`include_nasdaq100=True` adds the two Compustat-side tables, typed.
+
+    `lpermno` is `double precision` on the server (live check L7_2) and is
+    typed Float64 here on purpose: an Int64 cast would turn the NULL on a
+    `linktype='NR'` row into a spurious PERMNO 0, i.e. a link to a security
+    that does not exist.
+    """
+    import polars as pl
+
+    from quantlab.dataset.crsp_reference import CrspReference
+
+    reference_dir, raw_root = dirs
+    manifest = _tables(session, reference_dir).pull(
+        product_end=PRODUCT_END, include_nasdaq100=True
+    )
+    reference = CrspReference(reference_dir)
+
+    assert set(manifest["tables"]) == set(SP500_PULL_TABLES) | {
+        "idxcst_his",
+        "ccmxpf_lnkhist",
+    }
+    assert not raw_root.exists() or _raw_root_files(raw_root) == []
+
+    idxcst = reference.table("idxcst_his")
+    assert idxcst.schema["from"] == pl.Date
+    assert idxcst.select("gvkey", "iid", "from", "thru").to_dicts() == [
+        {"gvkey": "160329", "iid": "01", "from": date(2005, 12, 21), "thru": None},
+        {"gvkey": "160329", "iid": "03", "from": date(2014, 4, 3), "thru": None},
+    ]
+
+    ccm = reference.table("ccmxpf_lnkhist")
+    assert ccm.height == 5
+    assert ccm.schema["lpermno"] == pl.Float64
+    assert ccm["lpermno"].to_list() == [None, 90319.0, None, 14542.0, None]
+    assert ccm["linkenddt"].to_list()[1] is None
+
+
+def test_nasdaq100_sql_pins_the_gvkeyx_and_quotes_the_reserved_from(session, dirs):
+    """`comp.idxcst_his` is read for ONE index, with `from` quoted.
+
+    `from` and `thru` are reserved SQL words, so the projection must go
+    through `sql.Identifier` -- which quotes them -- rather than through any
+    text that happens to look right (Pitfall 8). Asserted on the RENDERED
+    statement, because that is what the server would receive.
+    """
+    reference_dir, _ = dirs
+    _tables(session, reference_dir).pull(
+        product_end=PRODUCT_END, include_nasdaq100=True
+    )
+
+    copy_sql = _sql_for(FakeCrspSession.crsp_copy_calls, "comp.idxcst_his")
+    assert "\"gvkeyx\" = '000208'" in copy_sql
+    assert '"from"' in copy_sql
+    assert '"thru"' in copy_sql
+    # The count must select the same rows the COPY does, or the row-count
+    # check it feeds is checking something else.
+    assert "\"gvkeyx\" = '000208'" in _sql_for(
+        FakeCrspSession.crsp_count_calls, "comp.idxcst_his"
+    )
+
+
+def test_ccm_is_queried_for_exactly_the_gvkeys_idxcst_returned(session, dirs):
+    """The CCM link table is read for the membership's gvkeys and no others.
+
+    `ccmxpf_lnkhist` covers all of Compustat; pulling it whole to find 436
+    Nasdaq-100 companies would be an unbounded download for a bounded
+    question. The gvkeys are server-returned values fed back into a query
+    (T-03.10-13), so they travel as a `sql.Literal` list -- never as text
+    spliced into the statement.
+    """
+    reference_dir, _ = dirs
+    _tables(session, reference_dir).pull(
+        product_end=PRODUCT_END, include_nasdaq100=True
+    )
+
+    copy_sql = _sql_for(FakeCrspSession.crsp_copy_calls, "crsp_a_ccm.ccmxpf_lnkhist")
+    assert "\"gvkey\" = ANY(ARRAY['160329'])" in copy_sql
+    # idxcst_his is pulled BEFORE the CCM table, because the CCM predicate is
+    # derived from its rows.
+    tables_in_order = [call["table"] for call in FakeCrspSession.crsp_copy_calls]
+    assert tables_in_order.index("comp.idxcst_his") < tables_in_order.index(
+        "crsp_a_ccm.ccmxpf_lnkhist"
+    )
+
+
+def test_entitlement_scope_follows_the_requested_tables(session, dirs):
+    """An S&P-only pull never asks whether this account can read comp/CCM.
+
+    Most CRSP subscriptions do not include Compustat, and a probe whose "no"
+    is irrelevant to the pull in hand would either break it or teach the
+    operator to ignore the warning.
+    """
+    reference_dir, _ = dirs
+    FakeCrspSession.usable_schemas = {"crsp_a_stock", "crsp_a_indexes"}
+
+    _tables(session, reference_dir).pull(product_end=PRODUCT_END)
+
+    assert set(FakeCrspSession.schema_probes) == {"crsp_a_stock", "crsp_a_indexes"}
+    assert "comp" not in FakeCrspSession.schema_probes
+    assert "crsp_a_ccm" not in FakeCrspSession.schema_probes
+
+
+def test_a_nasdaq100_pull_without_entitlement_names_comp_and_ccm_before_any_copy(
+    session, dirs
+):
+    """Missing entitlement stops the pull with zero COPYs, naming every gap.
+
+    One error listing both schemas, not one failure per table: the operator
+    needs to know what to ask WRDS for, and finding out one subscription at a
+    time costs a round trip and a Duo prompt each.
+    """
+    from quantlab.acquisition.wrds_taq import WrdsEntitlementError
+
+    reference_dir, _ = dirs
+    FakeCrspSession.usable_schemas = {"crsp_a_stock", "crsp_a_indexes"}
+
+    with pytest.raises(WrdsEntitlementError) as excinfo:
+        _tables(session, reference_dir).pull(
+            product_end=PRODUCT_END, include_nasdaq100=True
+        )
+
+    message = str(excinfo.value)
+    assert "comp" in message
+    assert "crsp_a_ccm" in message
+    assert FakeCrspSession.crsp_copy_calls == []
+    assert FakeCrspSession.crsp_count_calls == []
+    assert not (reference_dir / "manifest.json").exists()
+
+
+def test_an_empty_nasdaq100_membership_raises_before_any_ccm_query(session, dirs):
+    """No membership rows for gvkeyx 000208 is a failure, not an empty tier.
+
+    An empty `idxcst_his` would produce an empty CCM predicate, and a pull
+    that quietly wrote two empty tables would surface much later as a
+    Nasdaq-100 universe with no members -- indistinguishable from a roster
+    that legitimately selected nothing.
+    """
+    reference_dir, _ = dirs
+    FakeCrspSession.reference_rows["comp.idxcst_his"] = []
+
+    with pytest.raises(ValueError) as excinfo:
+        _tables(session, reference_dir).pull(
+            product_end=PRODUCT_END, include_nasdaq100=True
+        )
+
+    message = str(excinfo.value)
+    assert "000208" in message
+    assert "idxcst_his" in message
+    queried = [call["table"] for call in FakeCrspSession.crsp_copy_calls] + [
+        call["table"] for call in FakeCrspSession.crsp_count_calls
+    ]
+    assert "crsp_a_ccm.ccmxpf_lnkhist" not in queried
+    assert not (reference_dir / "manifest.json").exists()
+
+
+def test_no_reference_sql_orders_groups_dedups_or_limits(session, dirs):
+    """D-03 on the reference tier: nothing is ordered, grouped or truncated.
+
+    Asserted on the rendered text of every statement the pull issued, so a
+    builder that started adding an `ORDER BY` "for stable output" fails here
+    rather than quietly asking the server to sort a million-row table. The
+    count's WHERE must also equal its COPY's, or the two are looking at
+    different row sets and the completeness check proves nothing.
+    """
+    reference_dir, _ = dirs
+    _tables(session, reference_dir).pull(
+        product_end=PRODUCT_END, include_nasdaq100=True
+    )
+
+    statements = FakeCrspSession.crsp_copy_calls + FakeCrspSession.crsp_count_calls
+    assert len(FakeCrspSession.crsp_copy_calls) == 6
+    for call in statements:
+        upper = call["sql"].upper()
+        for clause in ("ORDER BY", "GROUP BY", "DISTINCT", "LIMIT"):
+            assert clause not in upper, (clause, call["sql"])
+
+    for call in FakeCrspSession.crsp_copy_calls:
+        count = _sql_for(FakeCrspSession.crsp_count_calls, call["table"])
+        assert _where_of(count) == _where_of(call["sql"]), call["table"]
+
+
+def test_an_sp500_manifest_then_a_nasdaq100_pull_adds_only_the_two_new_tables(
+    session, dirs
+):
+    """Asking for more tables of the SAME vintage pulls only what is missing.
+
+    The four already on disk are still this vintage's, so re-pulling them
+    would be four needless COPYs; the manifest simply grows to list all six.
+    """
+    reference_dir, _ = dirs
+    tables = _tables(session, reference_dir)
+    tables.pull(product_end=PRODUCT_END)
+    _clear_recorders()
+
+    manifest = tables.pull(product_end=PRODUCT_END, include_nasdaq100=True)
+
+    assert [call["table"] for call in FakeCrspSession.crsp_copy_calls] == [
+        "comp.idxcst_his",
+        "crsp_a_ccm.ccmxpf_lnkhist",
+    ]
+    assert set(manifest["tables"]) == set(SP500_PULL_TABLES) | {
+        "idxcst_his",
+        "ccmxpf_lnkhist",
+    }
+    assert manifest["tables"]["idxcst_his"]["where"] == "gvkeyx = '000208'"
+    assert manifest["tables"]["stkdelists"]["rows"] == len(DELISTS_ROWS)
