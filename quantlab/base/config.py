@@ -112,6 +112,37 @@ class CrspDatasetConfig(DatasetConfig):
     #: the instrument never changed.
     symbol_overrides: dict[str, str] | None = None
 
+    #: WHICH SECURITIES the panel holds (D-06, D-17). Either the name of a
+    #: preset in `quantlab/dataset/crsp.py:SECURITY_FILTER_PRESETS`
+    #: (`"equity_common"`, `"shrcd_10_11"`, `"none"`) or an explicit
+    #: `{column: allowed values}` mapping over
+    #: `quantlab/dataset/crsp.py:FILTERABLE_COLUMNS`.
+    #:
+    #: The default is `"equity_common"`, D-17's common-stock panel: REITs
+    #: (share type `SB` included) and non-US-incorporated issuers stay; ADRs,
+    #: units, funds/ETFs and unknown types go. The predicate is evaluated PER
+    #: DATE against `dsf_v2`'s own per-day type columns, so a security that
+    #: changed what it is keeps only the era in which it qualified.
+    #:
+    #: The filter lives HERE and never in the SQL or the raw tier: raw stays
+    #: CRSP-complete, and re-filtering a panel is a re-conversion rather than
+    #: a re-download.
+    security_filter: str | dict = "equity_common"
+
+    #: Break the adjusted series where a ticker column changes COMPANY (D-18).
+    #: When True (the default) the incoming PERMNO's first row in a symbol
+    #: column gets NaN `adjOpen/adjHigh/adjLow/adjClose/adjVolume`, so no
+    #: return and no rolling window spans two securities. Raw prices and
+    #: `permno` are untouched, and the seam is reported either way.
+    nan_adj_at_permno_seam: bool = True
+
+    #: The universe that breaks a same-day ticker collision, one of
+    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. `None`
+    #: means the tie-break is unavailable, and a collision no other rule
+    #: resolves REFUSES the conversion rather than merging two securities into
+    #: one column.
+    collision_universe: str | None = None
+
 
 @dataclass(kw_only=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
