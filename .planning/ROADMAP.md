@@ -233,7 +233,7 @@ Plans:
 
 **Wave 6** *(blocked on 13, 14, 15, 16)*
 
-- [ ] 03.10-17-PLAN.md — closing gate: main-tree no-new-failures run, operator-run OFFLINE re-conversion proving CTLT/MRO/PXD/WRK recover on the real raw tier, and a recorded human decision on WR-05 and WR-06
+- [x] 03.10-17-PLAN.md — closing gate: main-tree no-new-failures run, operator-run OFFLINE re-conversion proving CTLT/MRO/PXD/WRK recover on the real raw tier, and a recorded human decision on WR-05 and WR-06
 
 ### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
 
