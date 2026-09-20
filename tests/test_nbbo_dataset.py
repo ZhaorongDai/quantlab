@@ -43,7 +43,8 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
 ):
     import quantlab.config as config
     from quantlab.acquisition import registry
-    from quantlab.acquisition.wrds_taq import WRDS_SOURCE, WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds import WRDS_SOURCE
+    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
     from quantlab.base.config import NbboDatasetConfig
     from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.nbbo import NbboPanelDataset
@@ -172,7 +173,8 @@ def _acquire(tmp_path, rows: dict, *, symbols=("AAPL",)):
     acquisition path and return the acquisition config."""
     import quantlab.config as config
     from quantlab.acquisition import registry
-    from quantlab.acquisition.wrds_taq import WRDS_SOURCE, WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds import WRDS_SOURCE
+    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
     from tests.wrds_fixtures import FakeWrdsSession
 
     days = sorted({day for day, _ in rows})
@@ -473,7 +475,7 @@ def test_multi_day_chunked_conversion_is_granularity_independent_and_resumable(
 
     from conftest import stored_symbol_encoding
     from quantlab.acquisition import registry
-    from quantlab.acquisition.wrds_taq import WRDS_SOURCE
+    from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.nbbo import FILTER_STATS_SUFFIX
 
@@ -566,7 +568,7 @@ def test_extended_window_store_is_granularity_independent(
     import xarray as xr
 
     from quantlab.acquisition import registry
-    from quantlab.acquisition.wrds_taq import WRDS_SOURCE
+    from quantlab.acquisition.wrds import WRDS_SOURCE
 
     acq = _acquire(tmp_path, _two_day_rows(), symbols=("AAPL", "BRK.B"))
     common = dict(
