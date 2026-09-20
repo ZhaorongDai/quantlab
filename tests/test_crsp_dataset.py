@@ -1075,6 +1075,154 @@ def test_the_anchor_is_the_last_non_null_close(mock_crsp_session, tmp_path):
     )
 
 
+def test_a_permno_with_only_sentinel_prices_is_refused_by_name(
+    mock_crsp_session, tmp_path
+):
+    """GAP-A: "non-null" is not "usable". A 0.0 sentinel is not a level.
+
+    The anchor guard above tests `close.is_not_null()`, and CRSP's no-price
+    sentinel is `dlyprc = 0.000000` -- a number, not a NULL. A PERMNO whose only
+    priced rows are sentinels therefore anchors on 0.0, and
+    `adjClose = 0.0 * _G / _G_anchor` is exactly 0.0 on every day it existed.
+
+    A refusal is the right outcome rather than a NaN column, let alone a zero
+    one. Zero is a legal float that no consumer rejects: `alpha158` reads the
+    five `adj*` columns and turns a zeroed column into `0/0 -> NaN` returns,
+    `x/0 -> inf` ratios and a cross-sectional rank pinned to the bottom on every
+    day -- silently, for exactly the securities that delisted. The conversion
+    cannot compute an adjusted series here, and saying so by name is the only
+    answer that cannot be mistaken for data.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [  # SYNTHETIC: every priced row is a no-price sentinel.
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-02",
+            dlyprc="0.000000",
+            dlyprcflg="DA",
+            dlyret="0.010000",
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-03",
+            dlyprc="0.000000",
+            dlyprcflg="DA",
+            dlyret="-0.005000",
+        ),
+    ]
+
+    with pytest.raises(ValueError) as excinfo:
+        _build_store(
+            tmp_path,
+            rows,
+            [SYNTHETIC_PERMNO],
+            start="2020-03-01",
+            end="2020-03-31",
+            extra_secinfo=_synthetic_secinfo(),
+        )
+
+    assert SYNTHETIC_PERMNO in str(excinfo.value)
+
+
+def test_a_permno_whose_priced_rows_lack_cumfacshr_is_refused_by_name(
+    mock_crsp_session, tmp_path
+):
+    """GAP-B: every quantity read OFF the anchor row must be present ON it.
+
+    The anchor is chosen on `close` alone, and `dlycumfacshr` is then read off
+    that same row. When it is NULL there, `_cumfacshr_anchor` is null,
+    `_volume_factor = dlycumfacshr / null` is null for every row of the PERMNO,
+    and `adjVolume` is NaN for the security's whole history -- while raw
+    `volume` is fully populated. This is an independent mechanism from GAP-A:
+    fixing `close` does not fix it.
+
+    A refusal beats an all-NaN column because of who reads it. Any liquidity
+    screen, turnover factor or volume-weighted signal built on `adjVolume`
+    silently drops every security whose anchor row lacked the factor -- which is
+    every delisted security -- reintroducing the survivorship bias D-10 exists
+    to remove, through a different door. A NaN column looks like "no data"; it is
+    actually "the data was there and the adjustment lost it".
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [  # SYNTHETIC: real prices, but no share-adjustment factor anywhere.
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-02",
+            dlyprc="100.000000",
+            dlyret="0.010000",
+            dlycumfacshr=None,
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-03",
+            dlyprc="102.000000",
+            dlyret="0.020000",
+            dlycumfacshr=None,
+        ),
+    ]
+
+    with pytest.raises(ValueError) as excinfo:
+        _build_store(
+            tmp_path,
+            rows,
+            [SYNTHETIC_PERMNO],
+            start="2020-03-01",
+            end="2020-03-31",
+            extra_secinfo=_synthetic_secinfo(),
+        )
+
+    message = str(excinfo.value)
+    assert SYNTHETIC_PERMNO in message
+    # Named by its CRSP column, so the refusal says WHICH quantity is missing.
+    assert "dlycumfacshr" in message
+
+
+def test_a_total_loss_return_chain_is_refused_rather_than_made_infinite(
+    mock_crsp_session, tmp_path
+):
+    """GAP-A's third mechanism: a zero DENOMINATOR, not a zero anchor price.
+
+    `_G` is `cum_prod(1 + dlyret)`. A `dlyret` of exactly -1.0 -- a total loss,
+    which is a legal CRSP return -- makes `_G` exactly 0.0 from that row onward,
+    so `_G_anchor` is 0.0 too. `adjClose = _close_anchor * _G / 0.0` is then
+    `inf` on every row before the loss and `0/0 -> NaN` on every row after it,
+    under IEEE semantics and with no exception raised.
+
+    No such row exists in the raw tier this phase pulled, and nothing in
+    `_derivation` prevents one: the guard is being demanded here precisely
+    because the defect is latent rather than observed. An infinite adjusted
+    series is worse than a refusal for the same reason a zeroed one is -- `inf`
+    propagates through every factor and every rank without ever raising.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [  # SYNTHETIC: the middle row is a total loss, priced.
+        dsf_row(
+            SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="0.010000"
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO, "2020-03-03", dlyprc="50.000000", dlyret="-1.000000"
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO, "2020-03-04", dlyprc="49.000000", dlyret="0.020000"
+        ),
+    ]
+
+    with pytest.raises(ValueError) as excinfo:
+        _build_store(
+            tmp_path,
+            rows,
+            [SYNTHETIC_PERMNO],
+            start="2020-03-01",
+            end="2020-03-31",
+            extra_secinfo=_synthetic_secinfo(),
+        )
+
+    assert SYNTHETIC_PERMNO in str(excinfo.value)
+
+
 def test_the_sidecar_records_the_anchor_beside_the_store(mock_crsp_session, tmp_path):
     """A store never exists without the record of WHICH anchor built it.
 
