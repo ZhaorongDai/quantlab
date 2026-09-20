@@ -212,7 +212,7 @@ Plans:
 
 **Wave 4** *(blocked on 14)*
 
-- [ ] 03.10-15-PLAN.md — GAP-D + WR-01: `--qqq` alone skips the empty equity conversion and writes the QQQ store over a stale `custom` store; `permnos=()` refused at config assignment
+- [x] 03.10-15-PLAN.md — GAP-D + WR-01: `--qqq` alone skips the empty equity conversion and writes the QQQ store over a stale `custom` store; `permnos=()` refused at config assignment
 
 **Wave 5** *(blocked on 15)*
 
