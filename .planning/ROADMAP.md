@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 11/11 plans executed
+**Plans:** 11/11 executed, plus 6 gap-closure plans (12-17) from 03.10-VERIFICATION.md
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -195,6 +195,32 @@ Plans:
 **Wave 6** *(blocked on 10)*
 
 - [x] 03.10-11-PLAN.md — `example/wrds_crsp.md`, main-tree no-new-failures gate, user-run live WRDS smoke (Duo push)
+
+**Gap closure** *(from 03.10-VERIFICATION.md: status gaps_found, 64/69 must-haves; closure order GAP-0 → GAP-A+GAP-B → GAP-C → GAP-D → GAP-E)*
+
+**Wave 1**
+
+- [ ] 03.10-12-PLAN.md — GAP-0 tracer: the modern CIZ delisting fixture (no-price sentinel, NULL factor columns) and four RED tests holding GAP-A/GAP-B red end to end, plus a corpus-coverage guard
+
+**Wave 2** *(blocked on 12)*
+
+- [ ] 03.10-13-PLAN.md — GAP-A + GAP-B: no-price sentinel is never a price nor an anchor, anchor requires a positive close AND dlycumfacshr, refusal by PERMNO name; WR-02/WR-03; corrected delisting and adjustment sections in `example/wrds_crsp.md`
+
+**Wave 3** *(blocked on 13)*
+
+- [ ] 03.10-14-PLAN.md — GAP-C: an explicit roster (`--permnos`, or a `--universe` membership spell) overrides the security filter, reportably via `roster_overrides`; the cross-preset member invariant; WR-07
+
+**Wave 4** *(blocked on 14)*
+
+- [ ] 03.10-15-PLAN.md — GAP-D + WR-01: `--qqq` alone skips the empty equity conversion and writes the QQQ store over a stale `custom` store; `permnos=()` refused at config assignment
+
+**Wave 5** *(blocked on 15)*
+
+- [ ] 03.10-16-PLAN.md — GAP-E: resolve the ROADMAP Requirements placeholder and record Phase 03.10 against DATA-03 and DATA-05 in REQUIREMENTS.md, with no id invented and no count disturbed
+
+**Wave 6** *(blocked on 13, 14, 15, 16)*
+
+- [ ] 03.10-17-PLAN.md — closing gate: main-tree no-new-failures run, operator-run OFFLINE re-conversion proving CTLT/MRO/PXD/WRK recover on the real raw tier, and a recorded human decision on WR-05 and WR-06
 
 ### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
 
