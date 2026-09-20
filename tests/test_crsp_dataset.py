@@ -41,6 +41,13 @@ SYNTHETIC_SYMBOL = "MSFT"
 AAPL_PERMNO = "14593"
 LEHMAN_PERMNO = "80599"
 
+#: WestRock, whose 2024 delisting row is the MODERN CIZ shape: `dlyprcflg='DA'`
+#: with `dlyprc = 0.0` as a NO-PRICE sentinel and the factor/volume columns
+#: NULL. That shape is 5 of 5 delisting rows in the raw tier this phase pulled;
+#: Lehman's `DP` shape is 0 of 5.
+WESTROCK_PERMNO = "21186"
+WESTROCK_SYMBOL = "WRK"
+
 
 # ---------------------------------------------------------------------------
 # Helpers: raw tier -> reference tier -> converted store
@@ -443,6 +450,87 @@ def test_lehman_delisting_loss_is_counted_exactly_once(mock_crsp_session, tmp_pa
     assert _at(panel, "adjClose", "2008-09-18", "LEH") / _at(
         panel, "adjClose", "2008-09-15", "LEH"
     ) == pytest.approx(1.428571 * 0.433333 * 0.4, rel=1e-9)
+
+
+def test_a_modern_delisting_keeps_a_real_adjusted_level(
+    mock_crsp_session, tmp_path
+):
+    """GAP-0: the OTHER delisting shape -- the one that is 5 of 5 in the data.
+
+    Lehman's row above is `dlyprcflg='DP'`, a delisting PRICE: 0.052 is a real
+    value. WestRock's 2024-07-08 row is `dlyprcflg='DA'`, a delisting AMOUNT:
+    CRSP writes `dlyprc = 0.000000` there as a NO-PRICE SENTINEL and leaves
+    `dlyclose`, `dlyvol`, `dlycumfacpr` and `dlycumfacshr` NULL.
+
+    Reading that sentinel as a close breaks the panel twice over, through two
+    independent mechanisms:
+
+    - the anchor filter tests `close.is_not_null()`, and 0.0 is not null, so the
+      sentinel row BECOMES the anchor; `_close_anchor = 0.0` makes `adjClose`,
+      `_factor` and therefore `adjOpen/adjHigh/adjLow` exactly 0.0 for the
+      security's WHOLE history (GAP-A);
+    - `dlycumfacshr` is NULL on that same row, so `_cumfacshr_anchor` is null and
+      `adjVolume = dlyvol * (dlycumfacshr / null)` is NaN for the whole history,
+      while raw `volume` is fully populated -- survivorship bias through the
+      volume column (GAP-B).
+
+    The delisting RETURN is not in question: -0.005630 stays in `ret` and in the
+    cumulative chain either way. What the fix changes is the LEVEL the chain is
+    anchored to, which is why the ratio between the two priced days below is
+    asserted alongside the levels themselves.
+
+    Every number here is VERIFIED: 03.10-REVIEW.md CR-01 reproduced these raw
+    rows read-only from the pulled tier, and the expected adjusted values follow
+    from them by hand -- 51.51 is the last real close, so it IS the anchor, and
+    2024-07-03 sits one 3.5377% day below it.
+    """
+    import numpy as np
+
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+
+    panel = _build(
+        tmp_path,
+        WESTROCK_2024_ROWS,
+        [WESTROCK_PERMNO],
+        start="2024-07-01",
+        end="2024-07-31",
+    )
+
+    assert [str(value) for value in panel["symbol"].values] == [WESTROCK_SYMBOL]
+
+    # (a) the adjusted LEVEL is real, and is not the zeroed column.
+    anchor_day = _at(panel, "adjClose", "2024-07-05", WESTROCK_SYMBOL)
+    previous_day = _at(panel, "adjClose", "2024-07-03", WESTROCK_SYMBOL)
+    assert anchor_day == pytest.approx(51.51, rel=1e-9)
+    assert previous_day == pytest.approx(51.51 / 1.035377, rel=1e-9)
+    assert anchor_day != 0.0
+    assert previous_day != 0.0
+    assert anchor_day / previous_day == pytest.approx(1.035377, rel=1e-9)
+
+    adj_open = _at(panel, "adjOpen", "2024-07-05", WESTROCK_SYMBOL)
+    assert adj_open == pytest.approx(50.78 * (51.51 / 51.51), rel=1e-9)
+    assert adj_open != 0.0
+
+    # (b) adjVolume is finite wherever raw volume is -- `dlycumfacshr` is 1.0 on
+    #     both priced days, so the adjusted volume IS the raw volume.
+    for day, raw_volume in (("2024-07-03", 4435075.0), ("2024-07-05", 11862010.0)):
+        adj_volume = _at(panel, "adjVolume", day, WESTROCK_SYMBOL)
+        assert np.isfinite(adj_volume), day
+        assert adj_volume == pytest.approx(raw_volume, rel=1e-9)
+        assert _at(panel, "volume", day, WESTROCK_SYMBOL) == pytest.approx(
+            raw_volume, rel=1e-9
+        )
+
+    # (c) the sentinel is not a trade: raw `close` is NaN, never 0.0.
+    delisting_close = _at(panel, "close", "2024-07-08", WESTROCK_SYMBOL)
+    assert np.isnan(delisting_close), delisting_close
+
+    # The chain itself is untouched, and the row is still the delisting row
+    # carrying WestRock's symbol through a NULL ticker.
+    assert _at(panel, "ret", "2024-07-08", WESTROCK_SYMBOL) == pytest.approx(
+        -0.005630, rel=1e-9
+    )
+    assert _at(panel, "is_delisting", "2024-07-08", WESTROCK_SYMBOL) == 1.0
 
 
 # ---------------------------------------------------------------------------
