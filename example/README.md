@@ -16,6 +16,7 @@
 | [registry.md](registry.md) | 数据源登记表：一个厂商一个描述符（能力、凭证变量名、采集类），程序化 `run()`、进度事件、取消令牌，以及无凭证的只读检视器 | 想知道能下载哪些源、想在程序里发起采集、或没凭证只想看盘上有什么时 |
 | [pageledger.md](pageledger.md) | 分页台账：一次多页抓取中途崩了，凭什么能接着跑而不重复不遗漏 | 想搞懂断点续跑，或看到 `_pages/` 里的文件时 |
 | [wrds_taq.md](wrds_taq.md) | WRDS TAQ NBBO：逐笔最优报价原样落盘、本地重采样成右闭 bar 面板；凭证（`WRDS_USERNAME` + `~/.pgpass`）、一次运行一次 Duo、`count(*)` 体量护栏与分段、2018 年前的并列记录、会话窗口与半日市、过滤旁车文件 | 要拉盘口/价差数据、或 WRDS 拉取被拒时 |
+| [wrds_crsp.md](wrds_crsp.md) | WRDS CRSP Stock v2 日频：按 PERMNO 落盘、转换时才派生时点 ticker，可直接替换 Tiingo 的面板；总收益复权与锚点保护、退市收益只算一次、股份类别与同日撞车、证券过滤预设、年度产品边界与版本戳、CRSP S&P 500 与 Compustat Nasdaq-100 两个时点股票池、QQQ 单独 store、三个旁车文件 | 要拉美股日频研究级数据、要避免幸存者偏差、或 CRSP 拉取被拒时 |
 | [constituent.md](constituent.md) | 时点成分与标的池：怎么避免幸存者偏差，四个 category 分别是什么 | 要选标的池、要做回测时 |
 
 ### 第二步：数据是怎么变成面板的
