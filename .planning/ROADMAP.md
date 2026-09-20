@@ -200,7 +200,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03.10-12-PLAN.md — GAP-0 tracer: the modern CIZ delisting fixture (no-price sentinel, NULL factor columns) and four RED tests holding GAP-A/GAP-B red end to end, plus a corpus-coverage guard
+- [x] 03.10-12-PLAN.md — GAP-0 tracer: the modern CIZ delisting fixture (no-price sentinel, NULL factor columns) and four RED tests holding GAP-A/GAP-B red end to end, plus a corpus-coverage guard
 
 **Wave 2** *(blocked on 12)*
 
