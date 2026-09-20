@@ -25,6 +25,16 @@ Live-verified facts this module is built on (`03.9-LIVE-CHECK-{1,2}.json`):
   password never passes through this code (libpq reads `~/.pgpass`). One
   connection per process run, read-only, because every connection can push a
   Duo prompt to the user's phone and the role's connection limit is 7.
+
+**This module REGISTERS NOTHING** (03.10 D-12). The `wrds` descriptor lives in
+`quantlab/acquisition/wrds.py`, a neutral module that imports the WRDS provider
+modules, and this one imports nothing from the registry. One WRDS account
+serves several products, so a registration placed inside a provider would have
+to name the OTHER provider's classes -- and then importing either provider
+first would cycle through the registry. `WrdsSession` accordingly offers
+GENERIC `schema_usable` / `fetch_rows` / `copy_csv`, which the other providers
+build on; the TAQ-named methods here are thin statements of "which SQL",
+delegating "how to run it" to those three.
 """
 
 from __future__ import annotations
@@ -41,15 +51,9 @@ import psycopg2
 from loguru import logger
 from psycopg2 import sql
 
-from quantlab.acquisition.registry import (
-    Capability,
-    SourceDescriptor,
-    register_source,
-)
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
-from quantlab.dataset.nbbo import NbboPanelDataset
 from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: The one environment variable the WRDS username is read from.
@@ -369,29 +373,94 @@ class WrdsSession:
             where=cls.where_clause(pairs),
         )
 
-    # -- network methods -------------------------------------------------------
+    # -- generic query helpers (03.10 D-03) ----------------------------------
+    #
+    # PROVIDER-NEUTRAL by design. One WRDS account serves several products
+    # (NYSE TAQ millisecond, CRSP daily, Compustat), and they all reach the
+    # server through the ONE session this class is -- a second connection can
+    # push Duo and the role allows seven. So a second provider must not have to
+    # add its own CRSP-shaped methods to a TAQ module, and does not: it asks
+    # for a schema by NAME, hands over a `psycopg2.sql` composable, and gets
+    # rows or CSV bytes back.
+    #
+    # All three go through `self._query`, which is what applies the username
+    # scrub and the broken-session rule. A helper that reached
+    # `self._connection()` directly would put the role name into an exception
+    # message (T-03.10-43) and would leave a driver-errored session reusable,
+    # so the next call reconnects and pushes Duo.
 
-    def has_schema_usage(self, year: int) -> bool:
-        """Whether this role may read `taqm_{year}` (USAGE on the schema).
+    def schema_usable(self, schema: str) -> bool:
+        """Whether this role may read `schema` (USAGE on it).
 
         Asked through `pg_namespace` rather than as
-        `has_schema_privilege('taqm_YYYY', 'USAGE')` on the name: the name form
+        `has_schema_privilege('<name>', 'USAGE')` on the name: the name form
         raises for a schema that does not exist, and a driver error breaks the
-        session. A missing schema returns no row, i.e. not entitled (D-21).
+        session. A missing schema returns no row, i.e. not entitled (D-21) --
+        so "no such schema" and "not subscribed" both read as `False`, which is
+        the answer a caller can act on either way.
+
+        The schema travels as a QUERY PARAMETER, never interpolated into the
+        statement text.
         """
-        schema = f"taqm_{int(year)}"
 
         def work(conn):
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT has_schema_privilege(oid, 'USAGE') "
                     "FROM pg_namespace WHERE nspname = %s",
-                    (schema,),
+                    (str(schema),),
                 )
                 return cursor.fetchone()
 
         row = self._query(work)
         return bool(row and row[0])
+
+    def fetch_rows(self, query) -> list[tuple]:
+        """Execute `query` (a `psycopg2.sql` composable, or text) and return
+        every row.
+
+        For catalogue and metadata reads -- the shapes that fit in memory. A
+        data pull uses `copy_csv` below instead, because `COPY ... TO STDOUT`
+        moves a full day of records without materialising them as Python
+        tuples.
+        """
+
+        def work(conn):
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchall()
+
+        return self._query(work)
+
+    def copy_csv(self, query) -> bytes:
+        """Run a `COPY ... TO STDOUT` statement and return the CSV bytes.
+
+        The composed statement goes to `copy_expert` as-is (psycopg2 renders a
+        `Composable` against the cursor's own connection), so no SQL text is
+        ever assembled outside `psycopg2.sql`. Up to `COPY_SPOOL_BYTES` stay in
+        memory before the buffer spills to a temporary file.
+        """
+
+        def work(conn):
+            with tempfile.SpooledTemporaryFile(
+                max_size=self.COPY_SPOOL_BYTES
+            ) as buffer, conn.cursor() as cursor:
+                cursor.copy_expert(query, buffer)
+                buffer.seek(0)
+                return buffer.read()
+
+        return self._query(work)
+
+    # -- network methods -------------------------------------------------------
+
+    def has_schema_usage(self, year: int) -> bool:
+        """Whether this role may read `taqm_{year}` (USAGE on the schema).
+
+        The TAQ-shaped name over the generic `schema_usable` above: the
+        statement, its parameter and its answer are unchanged, and the only
+        thing stated here is which schema a TAQ year lives in.
+        """
+        return self.schema_usable(f"taqm_{int(year)}")
 
     def assert_entitled(self, years) -> None:
         """Raise `WrdsEntitlementError` naming EVERY requested `taqm_YYYY` this
@@ -473,21 +542,13 @@ class WrdsSession:
     def copy_nbbo_csv(self, day: date, pairs, columns) -> bytes:
         """Run `copy_query` and return the CSV bytes (header included).
 
-        The composed statement goes to `copy_expert` as-is (psycopg2 renders a
-        `Composable` against the cursor's own connection), so no SQL text is
-        ever assembled outside `psycopg2.sql`.
+        The TAQ-shaped name over the generic `copy_csv` above: this states
+        which statement to run, `copy_csv` states how to run it. The composed
+        statement is unchanged, which matters more here than anywhere -- the
+        live-verified NBBO pull depends on the COPY carrying no ORDER BY, no
+        GROUP BY, no DISTINCT and no time predicate (D-19).
         """
-        query = self.copy_query(day, pairs, columns)
-
-        def work(conn):
-            with tempfile.SpooledTemporaryFile(
-                max_size=self.COPY_SPOOL_BYTES
-            ) as buffer, conn.cursor() as cursor:
-                cursor.copy_expert(query, buffer)
-                buffer.seek(0)
-                return buffer.read()
-
-        return self._query(work)
+        return self.copy_csv(self.copy_query(day, pairs, columns))
 
 
 def trading_days_between(session, start: date, end: date) -> list[date]:
@@ -1035,29 +1096,3 @@ class WrdsNbboVolumeProbe:
                     f"{sum(counts.values()):,} rows so far)."
                 )
         return counts
-
-
-#: The registry descriptor for WRDS -- "who I am", beside the class that is
-#: "how I download" (03.4 D-05, 03.9 D-17).
-WRDS_SOURCE = register_source(
-    SourceDescriptor(
-        vendor="wrds",
-        display_name="WRDS NYSE TAQ millisecond NBBO",
-        acquisition_cls=WrdsTaqNbboAcquisition,
-        config_factory=WrdsTaqNbboAcquisition.build_config,
-        capabilities=(
-            Capability(
-                market="us_equity",
-                frequency="tick",
-                data_type="nbbo",
-                dataset_cls=NbboPanelDataset,
-                earliest_available="2003-09-10",
-                entitlement="WRDS NYSE TAQ millisecond subscription",
-            ),
-        ),
-        #: A LITERAL, restated rather than derived from `CREDENTIAL_ENV_VARS`
-        #: (the D-04 pinning test would otherwise be `x == x`).
-        required_env=("WRDS_USERNAME",),
-        universe_categories=("sp500_constituent", "nasdaq100_constituent"),
-    )
-)

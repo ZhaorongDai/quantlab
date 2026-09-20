@@ -744,9 +744,15 @@ def convert(
 # `from quantlab.acquisition.tiingo import TiingoAcquisition`: when a caller
 # imports `tiingo` first, this module runs while `tiingo` is only partially
 # initialised, and binding the module object is safe where reading an attribute
-# off it would raise. Order between the two lines is irrelevant -- `all()`
+# off it would raise. Order between the three lines is irrelevant -- `all()`
 # sorts.
+#
+# `wrds` is a NEUTRAL module rather than a provider (03.10 D-12): it holds the
+# one `wrds` descriptor and imports the WRDS PROVIDER modules itself, because
+# one WRDS account serves several products through several acquisition classes.
+# A descriptor placed inside one provider would have to name the other
+# provider's classes, and that edge -- plus this import -- would cycle.
 # ---------------------------------------------------------------------------
 from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
-from quantlab.acquisition import wrds_taq as _wrds_taq  # noqa: E402,F401
+from quantlab.acquisition import wrds as _wrds  # noqa: E402,F401
