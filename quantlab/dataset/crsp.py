@@ -384,6 +384,24 @@ class CrspStockDataset(StockDataset):
                     f"config.symbols -- permnos selects the raw tier, before "
                     f"symbology has run."
                 )
+            # WR-01. An empty tuple carried TWO possible meanings and no way to
+            # tell them apart, so it is refused by NAME rather than given one of
+            # them: it selects no security, and the roster gate that reads it
+            # would otherwise have read it as "every PERMNO in the raw tier".
+            # The refusal names both, because the defect was that they were
+            # indistinguishable -- a caller who saw only "empty roster refused"
+            # would still not know which one they had written.
+            if not permnos:
+                raise ValueError(
+                    f"{self.class_name}: config.permnos is an EMPTY tuple, "
+                    f"which selects no security -- and which would otherwise "
+                    f"be read as 'every PERMNO in the raw tier', silently "
+                    f"widening the panel to every security on disk under a "
+                    f"store name chosen for none of them. The two meanings are "
+                    f"not distinguishable from '()', so neither is assumed: "
+                    f"pass None to mean 'every PERMNO in the raw tier', or a "
+                    f"non-empty roster to name the securities you want."
+                )
             config.permnos = permnos
 
         # The filter is validated HERE, at assignment, rather than where it is
@@ -449,7 +467,17 @@ class CrspStockDataset(StockDataset):
         self._assert_anchor_unchanged(self._adjustment_record())
 
         frame = self._scan_raw()
-        if self.config.permnos:
+        # `is not None`, NOT truthiness (WR-01). The config setter above already
+        # refuses an empty tuple, so on every path through a constructor the two
+        # spellings agree -- and the explicit test is kept anyway, because
+        # `_derivation` is reachable with a config the setter never inspected: a
+        # field assigned after construction, a `dataclasses.replace`, a JSON
+        # round trip into an object whose branch did not run, a future change of
+        # the field's default. On a truthiness gate every one of those paths
+        # converts the ENTIRE raw tier while the config says the roster is
+        # empty, and nothing warns. That is the class of bug that comes back
+        # silently, so the gate states the condition it means.
+        if self.config.permnos is not None:
             frame = frame.filter(
                 pl.col("symbol").is_in(list(self.config.permnos))
             )
@@ -760,7 +788,12 @@ class CrspStockDataset(StockDataset):
         roster WAS configured without paying for the per-row membership join.
         """
         sources: list[str] = []
-        if self.config.permnos:
+        # `is not None` for the same reason `_derivation`'s gate is (WR-01): a
+        # roster field is either unset or a list of names, and "unset" is
+        # spelled None. An empty tuple reaching here through a setter-bypassing
+        # path reports a roster of zero PERMNOs, which is what it is, rather
+        # than reporting no roster at all.
+        if self.config.permnos is not None:
             sources.append(
                 f"config.permnos: {len(self.config.permnos)} PERMNO(s) named "
                 f"explicitly, exempt on every date"
@@ -821,7 +854,11 @@ class CrspStockDataset(StockDataset):
         sources = self._roster_sources()
         terms: list[pl.Expr] = []
 
-        if self.config.permnos:
+        # `is not None`, as everywhere this field is read (WR-01). An empty
+        # roster contributes a term that matches nothing, which is the honest
+        # reading of "these securities, of which there are none" -- never the
+        # blanket exemption a truthiness test's else-branch would give it.
+        if self.config.permnos is not None:
             # `permno` is the identity column (Int64); the config holds the
             # digit STRINGS the CLI and the raw tier speak, normalised by the
             # config setter, so the cast is the whole of the comparison.
