@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 7/11 plans executed
+**Plans:** 9/11 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -185,8 +185,8 @@ Plans:
 
 **Wave 4** *(blocked on 05, 06, 07)*
 
-- [ ] 03.10-08-PLAN.md — Dataset identity: equity_common / shrcd_10_11 filter + report, collision tie-break, PERMNO seams + report, QQQ benchmark store (data only)
-- [ ] 03.10-09-PLAN.md — CRSP S&P 500 and Compustat Nasdaq-100 constituent panels in the price panel's tickers
+- [x] 03.10-08-PLAN.md — Dataset identity: equity_common / shrcd_10_11 filter + report, collision tie-break, PERMNO seams + report, QQQ benchmark store (data only)
+- [x] 03.10-09-PLAN.md — CRSP S&P 500 and Compustat Nasdaq-100 constituent panels in the price panel's tickers
 
 **Wave 5** *(blocked on 03, 04, 08, 09)*
 
