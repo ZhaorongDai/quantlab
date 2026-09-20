@@ -13,6 +13,17 @@ nothing here that could open a connection, whatever the call order. The
 counts come from `WrdsNbboVolumeProbe` (plan 04), which counts per symbol batch
 and never over a whole daily table (D-24).
 
+**One guard, two bucket units.** `rows_by_day` is really rows-per-BUCKET, and
+what a bucket is depends on what a page is. A TAQ page is a trading day
+(`WrdsNbboVolumeProbe.count_rows_by_day`), so "day" is literally true there
+and stays the default. A CRSP page is a calendar YEAR
+(`CrspVolumeProbe.count_rows_by_year`, 03.10-03), so its counts arrive keyed
+by year end and its refusal must say so -- the `unit=` keyword is that word
+and only that word, since the arithmetic and the dict keys are identical
+either way. Calling a CRSP bucket a "trading day" would put a boundary in
+the refusal (and in its `--end-date` suggestion) that no page has and no
+re-run can honour.
+
 **Segmented backfills (D-24).** At the calibrated 2024 volumes (AAPL ~1.24M
 NBBO rows/day, full market ~313M rows/day) the default 20 GiB ceiling admits
 only a few days of an S&P 500 pull. Large backfills therefore run as several
@@ -101,6 +112,10 @@ class SqlVolumeGuard:
             if actual[key] > limits[keyword]
         ]
 
+    #: What one key of `rows_by_day` counts, as the word a message puts in
+    #: front of `(s)`. The default is TAQ's, where a page IS a trading day.
+    DEFAULT_UNIT = "trading day"
+
     def estimate(
         self,
         rows_by_day: Mapping[str, int],
@@ -108,13 +123,25 @@ class SqlVolumeGuard:
         symbols: int,
         start_date: str,
         end_date: str,
+        unit: str = DEFAULT_UNIT,
     ) -> dict:
-        """Price a pull from its per-trading-day row counts. Pure arithmetic.
+        """Price a pull from its per-bucket row counts. Pure arithmetic.
 
-        `fitting_end_date` is the last day of the longest ASCENDING prefix of
-        `rows_by_day` whose cumulative rows and bytes stay within both
-        ceilings, or `None` when not even the first day fits. Day keys are
-        ISO dates, so a string sort is a date sort.
+        `fitting_end_date` is the last bucket of the longest ASCENDING prefix
+        of `rows_by_day` whose cumulative rows and bytes stay within both
+        ceilings, or `None` when not even the first bucket fits. Bucket keys
+        are ISO dates, so a string sort is a date sort.
+
+        `unit` is the WORD a refusal uses for one key, and nothing else: the
+        arithmetic is identical either way and the returned key stays
+        `trading_days`. It exists because one guard prices two different
+        pulls. A TAQ page is a trading day (`WrdsNbboVolumeProbe`), so "day"
+        is literally true there. A CRSP page is a calendar YEAR
+        (`CrspVolumeProbe.count_rows_by_year`, 03.10-03), so a CRSP refusal
+        reading "trading day(s)" would name a boundary no page has and no
+        re-run can be given -- and its `--end-date` suggestion is a year end.
+        The default is TAQ's wording, so every pre-existing caller and every
+        pre-existing message is byte-identical.
         """
         days = sorted(rows_by_day)
         rows = 0
@@ -132,6 +159,7 @@ class SqlVolumeGuard:
             "start_date": start_date,
             "end_date": end_date,
             "trading_days": len(days),
+            "unit": unit,
             "rows": rows,
             "bytes_per_row": self.bytes_per_row,
             "raw_bytes": raw_bytes,
@@ -150,6 +178,7 @@ class SqlVolumeGuard:
         start_date: str,
         end_date: str,
         force: bool = False,
+        unit: str = DEFAULT_UNIT,
     ) -> dict:
         """Raise if the pull is over either ceiling; otherwise return the
         estimate.
@@ -161,7 +190,11 @@ class SqlVolumeGuard:
         and `--force-volume`. Never touches the network.
         """
         estimate = self.estimate(
-            rows_by_day, symbols=symbols, start_date=start_date, end_date=end_date
+            rows_by_day,
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
+            unit=unit,
         )
         crossed = estimate["crossed"]
         if not crossed:
@@ -197,8 +230,8 @@ class SqlVolumeGuard:
             )
         raise ValueError(
             f"Refusing to pull {estimate['symbols']:,} symbol(s) over "
-            f"{start_date}..{end_date}: {estimate['trading_days']:,} trading "
-            f"day(s), {estimate['rows']:,} row(s) (counted with count(*)) x "
+            f"{start_date}..{end_date}: {estimate['trading_days']:,} "
+            f"{unit}(s), {estimate['rows']:,} row(s) (counted with count(*)) x "
             f"{estimate['bytes_per_row']} B/row = "
             f"{estimate['raw_bytes'] / _GIB:.2f} GiB. {reasons}. {cure} Or "
             f"pass --force-volume to proceed anyway."

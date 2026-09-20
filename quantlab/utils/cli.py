@@ -822,6 +822,12 @@ def print_sql_volume_estimate(
     numbers (and a date segment that fits) in the exception message. It takes
     the returned dict alone, so this module imports nothing new and needs no
     connection; it prints counts, dates and ceilings, never a credential.
+
+    The bucket line is labelled from `estimate['unit']` -- `trading days:`
+    for a TAQ pull (whose pages ARE days), `year buckets:` for a CRSP one
+    (whose pages are calendar years). An estimate with no `unit` key comes
+    from a caller older than 03.10-10 and is a TAQ estimate by construction,
+    so it reads `trading days:` exactly as it always did.
     """
     # Imported at call time for the reason `apply_data_dir` defers `config`:
     # this module's module-scope project imports stay pinned at quantlab.base.*.
@@ -839,7 +845,8 @@ def print_sql_volume_estimate(
     )
     print_fn(f"  symbols:           {estimate['symbols']:,}")
     print_fn(f"  window:            {estimate['start_date']} .. {estimate['end_date']}")
-    print_fn(f"  trading days:      {estimate['trading_days']:,}")
+    bucket_label = f"{estimate.get('unit', 'trading day')}s:"
+    print_fn(f"  {bucket_label:<19}{estimate['trading_days']:,}")
     print_fn(f"  rows:              {estimate['rows']:,}")
     print_fn(f"  bytes/row:         {bytes_per_row}{assumed}")
     print_fn(f"  raw on disk (~):   {estimate['raw_bytes'] / _GIB:.2f} GiB")
