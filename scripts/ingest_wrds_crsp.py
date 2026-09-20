@@ -477,39 +477,71 @@ if __name__ == "__main__":
                 for permno in roster
                 if not (args.qqq and permno == QQQ_PERMNO)
             )
-            ds_config = CrspDatasetConfig(
-                zarr_file_path=str(data_dir / STORE_TEMPLATE.format(name=short_name)),
-                raw_data_dir_path=acq_config.raw_data_dir_path,
-                catalog_path=catalog_path,
-                reference_dir=str(reference_dir),
-                start_date=window["start_date"],
-                end_date=window["end_date"],
-                permnos=equity_permnos,
-                security_filter=args.security_filter,
-                collision_universe=args.universe,
-            )
-            probe_dataset = CrspStockDataset(replace(ds_config, symbols=None))
-            refuse_conversion_without_raw_data(probe_dataset, result)
-            print(
-                f"Converting {len(equity_permnos)} PERMNO(s) to the equity "
-                f"panel in {args.chunk} windows (resumable), filter "
-                f"{args.security_filter!r}"
-            )
-            print_conversion_result(
-                convert(
-                    SOURCE,
-                    ds_config,
-                    data_type="crsp_daily",
-                    granularity=args.chunk,
-                    on_new_listing=args.on_new_listing,
+            # GAP-D. An EMPTY equity roster is not a conversion (WR-01): `--qqq`
+            # with no --permnos and no --universe leaves nothing here but the
+            # benchmark, and running the equity path anyway named its store
+            # `custom` (the fallback), collided with whatever earlier run had
+            # written that name, and died on the anchor gate BEFORE the QQQ
+            # block -- which is why `--qqq --to-zarr` has never produced a
+            # benchmark store. The skip is PRINTED because an empty roster is an
+            # outcome the operator has to be able to see: a silent one is
+            # indistinguishable from a conversion that quietly wrote nothing.
+            if equity_permnos:
+                ds_config = CrspDatasetConfig(
+                    zarr_file_path=str(
+                        data_dir / STORE_TEMPLATE.format(name=short_name)
+                    ),
+                    raw_data_dir_path=acq_config.raw_data_dir_path,
+                    catalog_path=catalog_path,
+                    reference_dir=str(reference_dir),
+                    start_date=window["start_date"],
+                    end_date=window["end_date"],
+                    permnos=equity_permnos,
+                    security_filter=args.security_filter,
+                    collision_universe=args.universe,
                 )
-            )
-            print(
-                f"Adjustment anchor sidecar: "
-                f"{CrspStockDataset.adjustment_sidecar_path(ds_config)}"
-            )
-            print(f"Security filter sidecar:   {probe_dataset.filter_report_path()}")
-            print(f"Symbology sidecar:         {probe_dataset.symbology_report_path()}")
+                # `ds_config` directly: the former `replace(ds_config,
+                # symbols=None)` was a no-op, since `symbols` is already None on
+                # this config, and each construction re-runs the config setter
+                # and re-resolves the security filter (IN-06).
+                probe_dataset = CrspStockDataset(ds_config)
+                refuse_conversion_without_raw_data(probe_dataset, result)
+                print(
+                    f"Converting {len(equity_permnos)} PERMNO(s) to the equity "
+                    f"panel in {args.chunk} windows (resumable), filter "
+                    f"{args.security_filter!r}"
+                )
+                print_conversion_result(
+                    convert(
+                        SOURCE,
+                        ds_config,
+                        data_type="crsp_daily",
+                        granularity=args.chunk,
+                        on_new_listing=args.on_new_listing,
+                    )
+                )
+                print(
+                    f"Adjustment anchor sidecar: "
+                    f"{CrspStockDataset.adjustment_sidecar_path(ds_config)}"
+                )
+                print(
+                    f"Security filter sidecar:   "
+                    f"{probe_dataset.filter_report_path()}"
+                )
+                print(
+                    f"Symbology sidecar:         "
+                    f"{probe_dataset.symbology_report_path()}"
+                )
+            else:
+                print(
+                    f"Skipping the equity conversion: the roster holds no "
+                    f"equity PERMNO -- all {len(roster)} of it is the QQQ "
+                    f"benchmark (PERMNO {QQQ_PERMNO}), which gets its own "
+                    f"store and is never an equity column (D-15). No "
+                    f"'{STORE_TEMPLATE.format(name=short_name)}' is read or "
+                    f"written. The QQQ store and the universe membership panel "
+                    f"still run below; they are independent outputs."
+                )
 
             if args.qqq:
                 qqq_config = CrspDatasetConfig.qqq_benchmark(

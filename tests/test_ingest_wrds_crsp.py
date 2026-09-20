@@ -369,6 +369,157 @@ def test_qqq_gets_its_own_benchmark_store(
     ] == ["QQQ"]
 
 
+#: The stable prefix the script prints when the equity roster holds no equity
+#: PERMNO. Restated here so a reworded line fails this test rather than silently
+#: turning the skip back into an unreported one (GAP-D).
+SKIP_PREFIX = "Skipping the equity conversion:"
+
+
+def _plant_stale_equity_store(tmp_path, *, end_date="2020-12-31"):
+    """The trap the live `--qqq --to-zarr` run fell into (GAP-2 / GAP-D).
+
+    A `wrds_crsp_custom_1d.zarr` left by an EARLIER run under a DIFFERENT window,
+    with its adjustment sidecar recording that window. `_assert_anchor_unchanged`
+    is right to refuse an append onto it -- the defect was that a QQQ-only run
+    reached that gate at all, because an empty equity roster fell back to the
+    `custom` store name and converted the whole raw tier into it.
+
+    Returns `(store_path, sidecar_path, sidecar_bytes, store_entries)` so the
+    caller can prove the planted files were left UNTOUCHED rather than merely
+    still present.
+    """
+    import json
+    from types import SimpleNamespace
+
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    store = _equity_store(tmp_path)
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "zarr.json").write_text('{"planted": true}', encoding="utf-8")
+
+    # The sidecar NAME comes from the production classmethod, not from a literal
+    # repeated here: a rename of the suffix must move this trap with it, or the
+    # test would plant a file the anchor gate no longer looks for and pass for
+    # the wrong reason. The classmethod reads one attribute.
+    sidecar = CrspStockDataset.adjustment_sidecar_path(
+        SimpleNamespace(zarr_file_path=str(store))
+    )
+    sidecar.write_text(
+        json.dumps(
+            {
+                "start_date": "1999-01-01",
+                "end_date": end_date,
+                "product_end": end_date,
+                "rule": CrspStockDataset.ADJUSTMENT_RULE,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return (
+        store,
+        sidecar,
+        sidecar.read_bytes(),
+        sorted(path.name for path in store.iterdir()),
+    )
+
+
+def test_qqq_alone_writes_only_the_benchmark_store_over_a_stale_custom_store(
+    mock_crsp_session, tmp_path, monkeypatch, capsys
+):
+    """GAP-D: `--qqq` with no roster flag writes the BENCHMARK store and nothing else.
+
+    This command has never produced `wrds_crsp_qqq_1d.zarr`. With `--qqq` and no
+    `--permnos`/`--universe` the roster is exactly the QQQ PERMNO, so
+    `equity_permnos` is the EMPTY tuple -- and the equity conversion ran anyway,
+    under the fallback store name `custom`, against a store an earlier run had
+    written under a different window. `_assert_anchor_unchanged` refused it
+    (correctly) and the run died BEFORE the QQQ block, which is why truths 08-T6
+    and 10-T6 both claim a store that is not on disk.
+
+    The stale store is PLANTED rather than assumed absent: "no equity store was
+    written" is proved by the planted sidecar's bytes being unchanged, so a
+    conversion that ran and happened to fail cannot pass this test either.
+    """
+    import xarray as xr
+
+    store, sidecar, planted_bytes, planted_entries = _plant_stale_equity_store(
+        tmp_path
+    )
+
+    code = _run_script(
+        monkeypatch,
+        [
+            "--qqq",
+            "--start-date", "1999-01-01", "--end-date", PRODUCT_END,
+            "--data-dir", str(tmp_path), "--to-zarr",
+        ],
+    )
+    out = capsys.readouterr()
+    assert code == 0, out.err
+
+    # The skip is REPORTED, not silent: an empty roster is an outcome the
+    # operator has to be able to see in the log.
+    assert SKIP_PREFIX in out.out, out.out
+
+    # The benchmark store exists and holds exactly the one symbol.
+    benchmark = tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_qqq_1d.zarr"
+    assert benchmark.exists(), out.out
+    assert [
+        str(value) for value in xr.open_zarr(benchmark).load()["symbol"].values
+    ] == ["QQQ"]
+
+    # The planted equity store was not written into -- byte-unchanged sidecar
+    # and no new files in the directory.
+    assert sidecar.read_bytes() == planted_bytes
+    assert sorted(path.name for path in store.iterdir()) == planted_entries
+
+
+def test_a_universe_with_qqq_writes_all_three_stores(
+    mock_crsp_session, tmp_path, monkeypatch, capsys
+):
+    """The MIRROR IMAGE of the test above: a NON-empty equity roster still converts.
+
+    The GAP-D guard skips the equity path when its roster is empty. This asserts
+    it is scoped to that condition -- with `--universe` supplying equity PERMNOs
+    and `--qqq` supplying the benchmark, all three outputs are written and QQQ is
+    still absent from the equity panel (D-15). Without this the guard could widen
+    to "skip whenever --qqq is passed" and no test would notice.
+
+    The WIDE window is not cosmetic: `crsp_fixtures.QQQ_ROWS` carries three days
+    (1999-03-10, 2010-06-01, 2025-12-31), so the August-2020 window every other
+    universe test uses leaves the benchmark conversion with an empty timestamp
+    axis, which `TimeChunkPlanner` refuses by design.
+    """
+    import xarray as xr
+
+    code = _run_script(
+        monkeypatch,
+        [
+            "--universe", "crsp_sp500", "--qqq",
+            "--start-date", "1999-01-01", "--end-date", PRODUCT_END,
+            "--data-dir", str(tmp_path), "--to-zarr",
+        ],
+    )
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert SKIP_PREFIX not in out.out, out.out
+
+    equity = xr.open_zarr(_equity_store(tmp_path, "sp500")).load()
+    assert "QQQ" not in [str(value) for value in equity["symbol"].values]
+
+    benchmark = tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_qqq_1d.zarr"
+    assert [
+        str(value) for value in xr.open_zarr(benchmark).load()["symbol"].values
+    ] == ["QQQ"]
+
+    membership = (
+        tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_sp500_membership.zarr"
+    )
+    assert "is_member" in xr.open_zarr(membership).load().data_vars
+
+
 def test_the_universe_conversion_also_writes_the_membership_panel(
     mock_crsp_session, tmp_path, monkeypatch, capsys
 ):

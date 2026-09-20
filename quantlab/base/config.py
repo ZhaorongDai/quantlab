@@ -112,6 +112,14 @@ class CrspDatasetConfig(DatasetConfig):
     #: every PERMNO present in the raw tier. This is the RAW-side filter; the
     #: inherited `symbols` is the TICKER-side one, applied after symbology.
     #:
+    #: **`None` is the ONLY spelling of "every PERMNO"; an EMPTY TUPLE is
+    #: REFUSED** at config assignment (WR-01). `()` could mean "no security" or
+    #: "every security", the roster gate that reads it used to give it the
+    #: second by accident, and nothing said which had been asked for -- so
+    #: neither is assumed and `CrspStockDataset`'s config setter raises a
+    #: `ValueError` naming both meanings. Pass `None` for everything, or a
+    #: non-empty roster to name the securities you want.
+    #:
     #: **Also an EXPLICIT ROSTER, which overrides `security_filter`** (GAP-C,
     #: the operator's decision of 2026-09-20). Setting this says "I named these
     #: securities", so every row of every PERMNO listed here survives the type
