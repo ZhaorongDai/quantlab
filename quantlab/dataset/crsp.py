@@ -71,6 +71,7 @@ from pathlib import Path
 
 import polars as pl
 import xarray as xr
+from loguru import logger
 
 from quantlab.base.config import CrspDatasetConfig, DatasetConfig
 from quantlab.base.data import BaseDataset
@@ -130,6 +131,159 @@ CRSP_EXTRA_VARIABLES: tuple[str, ...] = (
     "facprc",
     "close_trade",
 )
+
+#: The `dsf_v2` columns a security filter may name. Every one of them is a
+#: per-day TYPE column: it says what the security WAS on that date, which is
+#: what makes a per-date verdict possible at all.
+#:
+#: The list is CLOSED on purpose (T-03.10-28). `ticker`, `permno` or a price
+#: column would also filter, but a ticker-picked panel that looks like a
+#: type-filtered one is exactly the silent substitution the report cannot
+#: catch -- the roster filter is `config.permnos`, the ticker filter is
+#: `config.symbols`, and this is the TYPE filter.
+#:
+#: The last four (`primaryexch`, `conditionaltype`, `tradingstatusflg`,
+#: `exchangetier`) are filterable but appear in NO preset: they change over a
+#: security's life, so filtering on them punches holes in a series and can
+#: drop the delisting row (RESEARCH Q3). A user who wants an NYSE-only panel
+#: may still ask for one explicitly.
+FILTERABLE_COLUMNS: tuple[str, ...] = (
+    "sharetype",
+    "securitytype",
+    "securitysubtype",
+    "usincflg",
+    "issuertype",
+    "primaryexch",
+    "conditionaltype",
+    "tradingstatusflg",
+    "exchangetier",
+)
+
+#: The named security filters. A value is `{column: allowed values}`; every
+#: listed column must match, and a NULL value never matches.
+#:
+#: **Why `equity_common` also carries a `sharetype` allow-list** (the flagged
+#: D-17 reading). D-17 states the predicate `securitytype='EQTY' AND
+#: securitysubtype='COM'` AND states that the filter drops ADRs and units. The
+#: live S&P rows show those two goals disagree: an ADR reads
+#: `AD/EQTY/COM/CORP/N` and a unit reads `UG/EQTY/COM/CORP/N`
+#: (`03.10-LIVE-CHECK-2.json` key `L11_1`), so both SATISFY the two-column
+#: predicate. Adding `sharetype in (NS, SB, CE)` -- every ShareType code the
+#: CRSP flag dictionary defines (`L2_2`) except `AD` and `UG` -- delivers
+#: every drop and every keep D-17 lists: REITs stay (including the eight with
+#: `SB`), non-US-incorporated common stays, ADRs/units/funds/ETFs/unknown
+#: types go.
+#:
+#: The reading is REVERSIBLE and costs nothing to undo: the literal two-column
+#: predicate is `{"securitytype": ["EQTY"], "securitysubtype": ["COM"]}` as a
+#: `security_filter` dict, and the filter report makes the difference visible
+#: either way.
+#:
+#: `shrcd_10_11` is the legacy `shrcd in (10, 11)` replication, which is NOT
+#: the default precisely because it drops REITs and non-US issuers that are
+#: legitimate S&P 500 and Nasdaq-100 members (RESEARCH Pitfall 5).
+SECURITY_FILTER_PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
+    "equity_common": {
+        "securitytype": ("EQTY",),
+        "securitysubtype": ("COM",),
+        "sharetype": ("NS", "SB", "CE"),
+    },
+    "shrcd_10_11": {
+        "sharetype": ("NS",),
+        "securitytype": ("EQTY",),
+        "securitysubtype": ("COM",),
+        "usincflg": ("Y",),
+        "issuertype": ("ACOR", "CORP"),
+    },
+    "none": {},
+}
+
+#: `{zarr_file_path}.crsp_filter_report.json` -- what the security filter
+#: removed, by type combination and by PERMNO (D-17).
+FILTER_REPORT_SUFFIX: str = ".crsp_filter_report.json"
+
+#: `{zarr_file_path}.crsp_symbology_report.json` -- every identity decision:
+#: resolved collisions, PERMNO seams, carried delisting labels, class
+#: respellings and rows no interval could label (D-04, D-18).
+SYMBOLOGY_REPORT_SUFFIX: str = ".crsp_symbology_report.json"
+
+#: The `dsf_v2` flag marking the row that carries the delisting return.
+_DELISTING_FLAG = "Y"
+
+#: The order the report spells a type combination in.
+_TYPE_COLUMNS: tuple[str, ...] = (
+    "sharetype",
+    "securitytype",
+    "securitysubtype",
+    "issuertype",
+    "usincflg",
+)
+
+
+def resolve_security_filter(
+    value: str | dict, *, owner: str = "CrspStockDataset"
+) -> dict[str, tuple[str, ...]]:
+    """`config.security_filter` -> `{column: allowed values}`, or `ValueError`.
+
+    A preset NAME resolves to its entry in `SECURITY_FILTER_PRESETS`; a
+    mapping is validated against `FILTERABLE_COLUMNS` and returned with its
+    value lists frozen into tuples.
+
+    Every refusal names BOTH the offending value and the legal ones. An
+    unknown preset must never fall back to the default or to "keep
+    everything": both would be a silently different panel, and a panel that is
+    silently different is indistinguishable from one that is right.
+    """
+    if isinstance(value, str):
+        try:
+            preset = SECURITY_FILTER_PRESETS[value]
+        except KeyError:
+            raise ValueError(
+                f"{owner}: security_filter {value!r} is not a preset. The "
+                f"presets are {sorted(SECURITY_FILTER_PRESETS)}. Pass one of "
+                f"those names, or an explicit "
+                f"{{column: allowed values}} mapping over "
+                f"{list(FILTERABLE_COLUMNS)}."
+            ) from None
+        return {column: tuple(allowed) for column, allowed in preset.items()}
+
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{owner}: security_filter must be a preset name "
+            f"({sorted(SECURITY_FILTER_PRESETS)}) or a "
+            f"{{column: allowed values}} mapping over "
+            f"{list(FILTERABLE_COLUMNS)}; got {type(value).__name__}."
+        )
+
+    resolved: dict[str, tuple[str, ...]] = {}
+    for column, allowed in value.items():
+        if column not in FILTERABLE_COLUMNS:
+            raise ValueError(
+                f"{owner}: security_filter names the column {column!r}, which "
+                f"is not filterable. The filterable columns are "
+                f"{list(FILTERABLE_COLUMNS)} -- all per-day TYPE columns, so "
+                f"the verdict can be a per-date one. To restrict the ROSTER "
+                f"use config.permnos; to restrict the TICKERS use "
+                f"config.symbols."
+            )
+        if isinstance(allowed, (str, bytes)) or not isinstance(
+            allowed, (list, tuple, set, frozenset)
+        ):
+            raise ValueError(
+                f"{owner}: security_filter[{column!r}] must be a list of "
+                f"allowed values, got {allowed!r}. A bare string would be "
+                f"iterated CHARACTER by character and match nothing."
+            )
+        values = tuple(str(item) for item in allowed)
+        if not values:
+            raise ValueError(
+                f"{owner}: security_filter[{column!r}] is an empty allow-list, "
+                f"which matches no row and would silently empty the panel. "
+                f"Drop the key to stop filtering on {column!r}, or use the "
+                f"'none' preset to keep every security."
+            )
+        resolved[column] = values
+    return resolved
 
 
 class CrspStockDataset(StockDataset):
@@ -197,11 +351,37 @@ class CrspStockDataset(StockDataset):
                     f"symbology has run."
                 )
             config.permnos = permnos
+
+        # The filter is validated HERE, at assignment, rather than where it is
+        # first applied: a malformed filter is a config error, and a config
+        # error that only surfaces after a raw tier has been scanned is one the
+        # user pays for twice. `_security_filter` holds the RESOLVED mapping;
+        # `config.security_filter` keeps what the user wrote (a preset NAME
+        # stays a name), so a round-tripped config reads back as it was
+        # written. A dict value is normalised in place to tuples, which is
+        # what makes the JSON round trip exact (D-12).
+        self._security_filter = resolve_security_filter(
+            config.security_filter, owner=self.class_name
+        )
+        if isinstance(config.security_filter, dict):
+            config.security_filter = dict(self._security_filter)
+        if config.collision_universe is not None:
+            from quantlab.dataset.crsp_membership import CrspMembership
+
+            if config.collision_universe not in CrspMembership.INDEXES:
+                raise ValueError(
+                    f"{self.class_name}: collision_universe "
+                    f"{config.collision_universe!r} is not a CRSP universe; "
+                    f"this vendor serves {CrspMembership.INDEXES}."
+                )
+
         # Invalidated on every config assignment: the derivation is scoped to
         # `[start_date, end_date]`, so a re-dated config must not reuse the
         # previous window's anchor.
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
+        self._filter_report: dict | None = None
+        self._symbology_report: dict | None = None
 
     # -- the global derivation ---------------------------------------------
 
@@ -279,7 +459,262 @@ class CrspStockDataset(StockDataset):
             .over("permno")
             .alias("_prev_cumfacpr")
         )
+        # AFTER the chain, never before: dropping a filtered day before the
+        # cumulative product would make the next kept day's adjusted move span
+        # a return the panel no longer shows.
+        derived = self._apply_security_filter(derived)
+        derived = self._resolve_identity(derived)
         return self._finalise(derived)
+
+    # -- ticker ownership and PERMNO seams (D-04, D-18) ---------------------
+
+    def _resolve_identity(self, derived: pl.DataFrame) -> pl.DataFrame:
+        """Make every `(timestamp, symbol)` cell ONE security, and break the
+        adjusted series where a symbol column changes company.
+
+        Two steps, in this order and no other:
+
+        1. **Collisions** (D-04). Two PERMNOs on one `(date, symbol)` cell are
+           resolved by `CrspSymbology.resolve_collisions` -- active over
+           delisting, then the configured universe -- or the conversion
+           refuses. Nothing is merged: two companies' prices in one column
+           would fabricate every return across the join while leaving a
+           perfectly well-formed panel behind (T-03.10-16).
+        2. **Seams** (D-18). What survives step 1 can still hand a column from
+           one company to the next on consecutive days -- ordinary ticker
+           reuse. The incoming PERMNO's FIRST row in that column gets NaN
+           adjusted values, so no return and no rolling window spans the two.
+           Raw prices, `permno` and every CRSP extra stay exactly as observed:
+           the seam removes the fabricated quantity, not the observation.
+
+        A RENAME is deliberately not a seam. FB -> META is PERMNO 13407 on
+        both sides, so `META`'s first row follows `FB`'s last within one
+        security and the ratio between them is a real return. A ticker-keyed
+        rule could not tell that case from reuse, which is why the test is on
+        the PERMNO.
+
+        The opt-out (`nan_adj_at_permno_seam=False`) removes the NaN, never
+        the RECORD: the seam is reported either way.
+        """
+        member_intervals = None
+        if self.config.collision_universe is not None:
+            from quantlab.dataset.crsp_membership import CrspMembership
+
+            member_intervals = CrspMembership(
+                CrspReference(self.config.reference_dir)
+            ).permno_intervals(self.config.collision_universe)
+
+        frame = self._symbology.resolve_collisions(derived, member_intervals)
+
+        frame = frame.sort(["symbol", "timestamp"])
+        frame = frame.with_columns(
+            pl.col("permno").shift(1).over("symbol").alias("_prev_permno")
+        )
+        frame = frame.with_columns(
+            (
+                pl.col("_prev_permno").is_not_null()
+                & (pl.col("permno") != pl.col("_prev_permno"))
+            ).alias("_seam")
+        )
+
+        seams = frame.filter(pl.col("_seam")).sort(["timestamp", "symbol"])
+        self._symbology_report = {
+            "seams": [
+                {
+                    "date": str(record["timestamp"])[:10],
+                    "symbol": str(record["symbol"]),
+                    "old_permno": int(record["_prev_permno"]),
+                    "new_permno": int(record["permno"]),
+                }
+                for record in seams.to_dicts()
+            ],
+            **dict(self._symbology.report),
+        }
+        if seams.height:
+            logger.warning(
+                f"{self.class_name}: {seams.height} PERMNO seam(s) in the "
+                f"panel -- a symbol column changes company there. Adjusted "
+                f"values on the incoming row are "
+                f"{'NaN' if self.config.nan_adj_at_permno_seam else 'KEPT'}; "
+                f"see {SYMBOLOGY_REPORT_SUFFIX} beside the store."
+            )
+
+        if self.config.nan_adj_at_permno_seam and seams.height:
+            null = pl.lit(None, dtype=pl.Float64)
+            frame = frame.with_columns(
+                # `adjClose` is computed directly from the anchor, while the
+                # other four come from these two factors -- so all three must
+                # be nulled for all five variables to be NaN.
+                pl.when(pl.col("_seam"))
+                .then(null)
+                .otherwise(pl.col("adjClose"))
+                .alias("adjClose"),
+                pl.when(pl.col("_seam"))
+                .then(null)
+                .otherwise(pl.col("_factor"))
+                .alias("_factor"),
+                pl.when(pl.col("_seam"))
+                .then(null)
+                .otherwise(pl.col("_volume_factor"))
+                .alias("_volume_factor"),
+            )
+        return frame.drop(["_prev_permno", "_seam"])
+
+    def symbology_report_path(self) -> Path:
+        """`{zarr_file_path}.crsp_symbology_report.json`, beside the store."""
+        return Path(str(self.config.zarr_file_path) + SYMBOLOGY_REPORT_SUFFIX)
+
+    # -- the security filter (D-06, D-17) -----------------------------------
+
+    def _apply_security_filter(self, derived: pl.DataFrame) -> pl.DataFrame:
+        """Drop the rows the configured filter rejects, and say what went.
+
+        The verdict is PER ROW, read off `dsf_v2`'s own per-day type columns,
+        so a security that stopped being common stock keeps exactly the era in
+        which it was (D-17). Every listed column must match and a NULL never
+        matches -- "unknown type" is not "the type you asked for".
+
+        **The delisting row inherits its PERMNO's previous verdict** (D-10).
+        A delisted security's last row is precisely where CRSP's type columns
+        go blank, and that row carries the delisting RETURN. Judging it on its
+        own blank types would drop the -60% day and let survivorship bias back
+        in through the filter, one row at a time, immediately after symbology's
+        carry rule had rescued the same row from a NULL ticker.
+
+        The report is BUILT here and WRITTEN once per conversion from
+        `_raw_axes_in_range`, for the same reason the anchor record is: that
+        hook runs exactly once, after the derivation has succeeded.
+        """
+        rows_total = derived.height
+        if not self._security_filter:
+            self._filter_report = self._build_filter_report(
+                rows_total, derived.head(0)
+            )
+            return derived
+
+        predicate = pl.lit(True)
+        for column, allowed in self._security_filter.items():
+            predicate = predicate & pl.col(column).is_in(list(allowed)).fill_null(
+                False
+            )
+
+        derived = derived.sort(["permno", "timestamp"]).with_columns(
+            predicate.alias("_keep_raw")
+        )
+        derived = derived.with_columns(
+            pl.when(
+                pl.col("dlydelflg").str.strip_chars().str.to_uppercase()
+                == pl.lit(_DELISTING_FLAG)
+            )
+            .then(
+                pl.coalesce(
+                    pl.col("_keep_raw").shift(1).over("permno"),
+                    pl.col("_keep_raw"),
+                )
+            )
+            .otherwise(pl.col("_keep_raw"))
+            .alias("_keep")
+        )
+
+        dropped = derived.filter(~pl.col("_keep"))
+        self._filter_report = self._build_filter_report(rows_total, dropped)
+        if dropped.height:
+            logger.warning(
+                f"{self.class_name}: the security filter dropped "
+                f"{dropped.height} of {rows_total} row(s) across "
+                f"{dropped['permno'].n_unique()} PERMNO(s); see "
+                f"{FILTER_REPORT_SUFFIX} beside the store for the per-type and "
+                f"per-PERMNO breakdown."
+            )
+        return derived.filter(pl.col("_keep")).drop(["_keep_raw", "_keep"])
+
+    @staticmethod
+    def _type_combination() -> pl.Expr:
+        """`"sharetype/securitytype/securitysubtype/issuertype/usincflg"`.
+
+        A null component renders as `"None"` rather than turning the whole key
+        null, because "which combination was dropped" is exactly the question
+        a row with missing types needs answered.
+        """
+        parts = [
+            pl.col(name).fill_null(pl.lit("None")) for name in _TYPE_COLUMNS
+        ]
+        expression = parts[0]
+        for part in parts[1:]:
+            expression = expression + pl.lit("/") + part
+        return expression.alias("_types")
+
+    def _build_filter_report(
+        self, rows_total: int, dropped: pl.DataFrame
+    ) -> dict:
+        """The `{zarr}.crsp_filter_report.json` payload."""
+        report: dict = {
+            "filter": {
+                "requested": self._jsonable_filter(self.config.security_filter),
+                "resolved": {
+                    column: list(allowed)
+                    for column, allowed in self._security_filter.items()
+                },
+            },
+            "rows_total": int(rows_total),
+            "rows_kept": int(rows_total - dropped.height),
+            "rows_dropped": int(dropped.height),
+            "dropped_by_type": {},
+            "dropped_permnos": {},
+        }
+        if dropped.is_empty():
+            return report
+
+        typed = dropped.with_columns(self._type_combination())
+        by_type = (
+            typed.group_by("_types")
+            .agg(pl.len().alias("rows"))
+            .sort("_types")
+        )
+        report["dropped_by_type"] = {
+            str(record["_types"]): int(record["rows"])
+            for record in by_type.to_dicts()
+        }
+
+        per_permno = (
+            typed.sort(["permno", "timestamp"])
+            .group_by("permno")
+            .agg(
+                pl.col("symbol").last().alias("symbol"),
+                pl.col("_types").unique().sort().alias("types"),
+                pl.len().alias("rows"),
+                pl.col("timestamp").min().alias("first"),
+                pl.col("timestamp").max().alias("last"),
+            )
+            .sort("permno")
+        )
+        report["dropped_permnos"] = {
+            str(record["permno"]): {
+                "symbol": None
+                if record["symbol"] is None
+                else str(record["symbol"]),
+                "types": [str(value) for value in record["types"]],
+                "rows": int(record["rows"]),
+                "first": str(record["first"])[:10],
+                "last": str(record["last"])[:10],
+            }
+            for record in per_permno.to_dicts()
+        }
+        return report
+
+    @staticmethod
+    def _jsonable_filter(value):
+        """The configured filter as JSON: a preset name, or lists not tuples."""
+        if isinstance(value, dict):
+            return {
+                str(column): [str(item) for item in allowed]
+                for column, allowed in value.items()
+            }
+        return value
+
+    def filter_report_path(self) -> Path:
+        """`{zarr_file_path}.crsp_filter_report.json`, a SIBLING of the store."""
+        return Path(str(self.config.zarr_file_path) + FILTER_REPORT_SUFFIX)
 
     def _finalise(self, derived: pl.DataFrame) -> pl.DataFrame:
         """Project the derivation onto the panel's variables and cache it."""
@@ -506,8 +941,32 @@ class CrspStockDataset(StockDataset):
         # on a symbology collision must not leave an anchor record for a
         # store that was never created. A store, on the other hand, can never
         # exist without one -- the first append happens after this returns.
+        self._write_identity_reports()
         self._write_adjustment_record(record)
         return symbols, pd.DatetimeIndex(sorted(timestamps))
+
+    def _write_identity_reports(self) -> None:
+        """Write the filter and symbology sidecars, ONCE per conversion.
+
+        This hook is the only point `from_raw_data_chunked` calls exactly once
+        per run, which is what keeps a windowed conversion from writing eleven
+        copies of the same report -- or worse, eleven DIFFERENT ones, each
+        describing a single window as if it described the store.
+        """
+        if self._filter_report is not None:
+            write_json_atomically(
+                self.filter_report_path(),
+                self._filter_report,
+                indent=2,
+                sort_keys=True,
+            )
+        if self._symbology_report is not None:
+            write_json_atomically(
+                self.symbology_report_path(),
+                self._symbology_report,
+                indent=2,
+                sort_keys=True,
+            )
 
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: list[str] | None = None
@@ -548,12 +1007,18 @@ class CrspStockDataset(StockDataset):
     def _assert_unique_panel_keys(self, window: pl.DataFrame) -> None:
         """`(timestamp, symbol)` is unique, or the conversion fails.
 
-        Two PERMNOs that resolve to ONE symbol on overlapping dates is a real
-        CRSP situation (ticker reuse, an unsuffixed share class), and the
-        inherited `dedup_raw_frame(keep="last")` would collapse them
-        arbitrarily into one price series. Refusing here keeps that from
-        happening silently; plan 05 turns the refusal into resolution RULES,
-        which is a decision a phase makes rather than a dedup makes.
+        **Now a BACKSTOP, not the mechanism.** `_resolve_identity` runs
+        `CrspSymbology.resolve_collisions` over the whole derivation, which
+        either resolves every crowded `(date, symbol)` cell by a stated rule
+        or refuses naming the cells -- so a duplicate should be unreachable
+        here, and the refusal a user meets is the one that says WHICH PERMNOs
+        collided and how to break the tie.
+
+        It stays because the cost of being wrong is invisible: the inherited
+        `dedup_raw_frame(keep="last")` would collapse two securities into one
+        price series and leave a well-formed panel behind. A duplicate that
+        survives resolution is a bug in resolution, and this is where it stops
+        rather than where it gets averaged.
         """
         duplicates = (
             window.group_by(["timestamp", "symbol"])

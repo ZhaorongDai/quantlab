@@ -78,6 +78,13 @@ class NbboDatasetConfig(DatasetConfig):
     keep_qu_cond: tuple[str, ...] | None = None
 
 
+#: QQQ's PERMNO (`03.10-LIVE-CHECK-NDX-QQQ.json` key `C1_qqq_names`). A module
+#: constant rather than a literal inside the classmethod below, because the
+#: same number is the one a user passes to `permnos` when they want the ETF in
+#: some other window.
+QQQ_PERMNO: str = "86755"
+
+
 @dataclass(kw_only=True)
 class CrspDatasetConfig(DatasetConfig):
     """Config of the CRSP Stock v2 daily panel (`dataset/crsp.py`, phase 03.10).
@@ -111,6 +118,91 @@ class CrspDatasetConfig(DatasetConfig):
     #: to 2011-03-22 -- a rename an index panel does not want to see, because
     #: the instrument never changed.
     symbol_overrides: dict[str, str] | None = None
+
+    #: WHICH SECURITIES the panel holds (D-06, D-17). Either the name of a
+    #: preset in `quantlab/dataset/crsp.py:SECURITY_FILTER_PRESETS`
+    #: (`"equity_common"`, `"shrcd_10_11"`, `"none"`) or an explicit
+    #: `{column: allowed values}` mapping over
+    #: `quantlab/dataset/crsp.py:FILTERABLE_COLUMNS`.
+    #:
+    #: The default is `"equity_common"`, D-17's common-stock panel: REITs
+    #: (share type `SB` included) and non-US-incorporated issuers stay; ADRs,
+    #: units, funds/ETFs and unknown types go. The predicate is evaluated PER
+    #: DATE against `dsf_v2`'s own per-day type columns, so a security that
+    #: changed what it is keeps only the era in which it qualified.
+    #:
+    #: The filter lives HERE and never in the SQL or the raw tier: raw stays
+    #: CRSP-complete, and re-filtering a panel is a re-conversion rather than
+    #: a re-download.
+    security_filter: str | dict = "equity_common"
+
+    #: Break the adjusted series where a ticker column changes COMPANY (D-18).
+    #: When True (the default) the incoming PERMNO's first row in a symbol
+    #: column gets NaN `adjOpen/adjHigh/adjLow/adjClose/adjVolume`, so no
+    #: return and no rolling window spans two securities. Raw prices and
+    #: `permno` are untouched, and the seam is reported either way.
+    nan_adj_at_permno_seam: bool = True
+
+    #: The universe that breaks a same-day ticker collision, one of
+    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. `None`
+    #: means the tie-break is unavailable, and a collision no other rule
+    #: resolves REFUSES the conversion rather than merging two securities into
+    #: one column.
+    collision_universe: str | None = None
+
+    @classmethod
+    def qqq_benchmark(
+        cls,
+        *,
+        zarr_file_path: str,
+        raw_data_dir_path: str,
+        catalog_path: str,
+        reference_dir: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> "CrspDatasetConfig":
+        """The QQQ benchmark store: its OWN store, filter off, ticker pinned.
+
+        **Why a separate store rather than one more symbol** (D-15). Everything
+        in the equity panel enters cross-sectional ranking and model training,
+        and an ETF ranked against the very constituents it holds is not a stock
+        pick -- it is the index competing with itself in the same cross
+        section. Keeping QQQ in its own store means the benchmark can be read
+        beside the panel without ever being read INSIDE it.
+
+        The three settings are stated here rather than left to the caller
+        because getting any one of them wrong is silent:
+
+        - `permnos=(QQQ_PERMNO,)` -- the ETF alone;
+        - `security_filter="none"` -- QQQ is `FUND`/`ETF`, which the equity
+          panel's default filter drops by design (D-06/D-17), so a benchmark
+          store built with that filter would come out EMPTY;
+        - `symbol_overrides={QQQ_PERMNO: "QQQ"}` -- CRSP's period-correct
+          ticker really was `QQQQ` from 2004-12-01 to 2011-03-22, so without
+          the override one instrument's history would arrive as two columns
+          with a hole in each.
+
+        **This store is DATA ONLY in phase 03.10** (D-16). Nothing here, and
+        nothing in the CRSP dataset or acquisition modules, touches
+        `BacktestConfig.benchmark_dataset` -- that slot still raises
+        `NotImplementedError` (phase 03.7 D-08), and wiring it is a separate
+        task with its own decisions about alignment and warm-up.
+
+        A CLASSMETHOD on the config, deliberately not a `quantlab/config`
+        factory function: this project's config factories hardcode absolute
+        per-machine paths, and every path here is an argument.
+        """
+        return cls(
+            zarr_file_path=zarr_file_path,
+            raw_data_dir_path=raw_data_dir_path,
+            catalog_path=catalog_path,
+            reference_dir=reference_dir,
+            start_date=start_date,
+            end_date=end_date,
+            permnos=(QQQ_PERMNO,),
+            security_filter="none",
+            symbol_overrides={QQQ_PERMNO: "QQQ"},
+        )
 
 
 @dataclass(kw_only=True)
