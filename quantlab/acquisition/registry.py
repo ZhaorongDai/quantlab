@@ -107,6 +107,33 @@ class Capability:
     #: the classes they describe. The concrete class reference is DIRECT
     #: (03.4 D-03), never a dotted path resolved at runtime.
     dataset_cls: type[MarketDataset] | None = None
+    #: The `Acquisition` subclass that downloads THIS capability's raw tier, or
+    #: `None` to mean "the descriptor's own `acquisition_cls`" (03.10 D-12).
+    #:
+    #: One VENDOR may serve several products through several classes: the WRDS
+    #: account carries both NYSE TAQ millisecond NBBO and CRSP daily stock, and
+    #: D-01 keeps that as ONE descriptor, so "which class downloads this" stops
+    #: being a vendor-level fact and becomes a capability-level one -- exactly
+    #: the move this class's own docstring argues for ("a field only some rows
+    #: can populate is a signal to move the field down").
+    #:
+    #: `None` is the ABSENCE of an override, never "no class": a capability
+    #: declared before this field existed keeps resolving to the vendor
+    #: default, which is what makes the field purely additive. The
+    #: descriptor-level pair stays REQUIRED and is the default rather than a
+    #: fallback of last resort, because four ingest shells read
+    #: `SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE` (and friends) directly.
+    #:
+    #: A DIRECT class reference (03.4 D-03), never a dotted path, and annotated
+    #: with the `Acquisition` ABC for the reason `SourceDescriptor` states
+    #: below: the top of this module must stay vendor-free.
+    acquisition_cls: type[Acquisition] | None = None
+    #: The config factory for THIS capability, or `None` for the descriptor's
+    #: own `config_factory`. The companion of `acquisition_cls` above and
+    #: resolved by the same rule: a vendor whose two products need differently
+    #: shaped `AcquisitionConfig`s (different raw roots, different required
+    #: `kwargs`) would otherwise have to pick one factory for both.
+    config_factory: Callable[..., AcquisitionConfig] | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +234,94 @@ class SourceDescriptor:
             if capability.market == market
             and capability.frequency == frequency
             and (data_type is None or capability.data_type == data_type)
+        )
+
+    def _resolve_capability_field(
+        self,
+        field: str,
+        market: Market,
+        frequency: Frequency,
+        data_type: str | None = None,
+    ) -> object:
+        """`field` for `(market, frequency[, data_type])`, capability first.
+
+        The ONE resolution rule behind `acquisition_cls_for` and
+        `config_factory_for`, stated once so the two cannot drift -- the same
+        reason `supports()` defers its predicate to `capabilities_for()`.
+
+        Three arms, in the order a caller meets them:
+
+        - **no match** -> the descriptor's own field. That is today's behaviour
+          exactly, and it is what keeps this change additive: every `run()`
+          call site that predates the per-capability fields reaches the vendor
+          default through this arm, unchanged.
+        - **matches that AGREE** -> the single value. A capability leaving the
+          field `None` contributes the descriptor default, so a vendor serving
+          two shapes through one class is not an ambiguity.
+        - **matches that DISAGREE** -> `ValueError`. Refusing is the only
+          honest answer, for the reason `convert()` states one axis over:
+          picking `matches[0]` would let capability declaration ORDER -- an
+          authoring detail invisible at the call site -- decide which vendor
+          class receives the config, and so which credential is demanded
+          (T-03.10-41).
+
+        There is no vendor literal and no frequency literal in this body: every
+        message is built from the descriptor's own data, which is what keeps
+        the capability list, not this method, the place a new combination is
+        added.
+        """
+        matches = self.capabilities_for(market, frequency, data_type)
+        if not matches:
+            return getattr(self, field)
+
+        resolved = [
+            getattr(capability, field) or getattr(self, field)
+            for capability in matches
+        ]
+        # Identity-then-equality: a class reference compares by identity, a
+        # `functools.partial` config factory does not, and both must count as
+        # "the same value" here.
+        first = resolved[0]
+        if any(value is not first and value != first for value in resolved[1:]):
+            requested = (market, frequency, data_type)
+            raise ValueError(
+                f"{self.display_name}: {requested!r} matched {len(matches)} "
+                f"capabilities carrying different {field} values, with "
+                f"data_type={[c.data_type for c in matches]!r}. Pass "
+                f"data_type= to say which one you mean; this layer will not "
+                f"choose for you, because the wrong choice reaches a different "
+                f"vendor product."
+            )
+        return first
+
+    def acquisition_cls_for(
+        self,
+        market: Market,
+        frequency: Frequency,
+        data_type: str | None = None,
+    ) -> type[Acquisition]:
+        """The `Acquisition` subclass serving `(market, frequency[, data_type])`.
+
+        The capability's own `acquisition_cls` when it names one, this
+        descriptor's default otherwise. Raises when two matching capabilities
+        disagree -- see `_resolve_capability_field` for the rule.
+        """
+        return self._resolve_capability_field(  # type: ignore[return-value]
+            "acquisition_cls", market, frequency, data_type
+        )
+
+    def config_factory_for(
+        self,
+        market: Market,
+        frequency: Frequency,
+        data_type: str | None = None,
+    ) -> Callable[..., AcquisitionConfig]:
+        """The config factory serving `(market, frequency[, data_type])`.
+
+        The `acquisition_cls_for` companion, same rule, same refusal.
+        """
+        return self._resolve_capability_field(  # type: ignore[return-value]
+            "config_factory", market, frequency, data_type
         )
 
 
@@ -362,9 +477,20 @@ def run(
 ) -> AcquisitionResult:
     """Start an acquisition IN-PROCESS and return its outcome (D-12 / D-14).
 
-    The vendor is reached through `descriptor.acquisition_cls`, so no caller
-    names an acquisition class. `download()` and `refresh()` keep their
+    The vendor is reached through `descriptor.acquisition_cls_for(...)`, so no
+    caller names an acquisition class. `download()` and `refresh()` keep their
     `-> Self` chaining contract; the outcome is read off `last_result`.
+
+    **The class comes from the CAPABILITY, never from a vendor branch**
+    (03.10 D-12). The lookup key is
+    `(config.market, config.frequency, config.kwargs["data_type"])` -- exactly
+    `Capability`'s own key, the same triple `convert()` resolves a conversion
+    target through. A capability that names no `acquisition_cls` resolves to
+    the descriptor's default, so every call site that predates the
+    per-capability fields constructs precisely the class it constructed
+    before; a request matching two capabilities that disagree is REFUSED
+    rather than resolved by declaration order, because the wrong class demands
+    the wrong credential.
 
     **What the returned object says, and what it does not.** Its `failures`
     are the ones THIS run discovered, always inside its own `requested`. The
@@ -392,9 +518,9 @@ def run(
     `run()` returning an `AcquisitionResult` while `convert()` returns a
     `ConversionResult` is that difference stated in the type system.
 
-    Constructing `descriptor.acquisition_cls(config)` is the FIRST point a
-    credential is demanded, deliberately: that is the vendor class's own
-    fail-fast guard, and moving it later would turn fail-fast into fail-late.
+    Constructing the resolved class is the FIRST point a credential is
+    demanded, deliberately: that is the vendor class's own fail-fast guard, and
+    moving it later would turn fail-fast into fail-late.
 
     **`reporter` and `cancel` are the console's two handles on a running
     acquisition** (03.4 D-16 / D-17). Both are KEYWORD-ONLY with `None`
@@ -413,7 +539,10 @@ def run(
     return the right value -- and a reporter that raises cannot end the run
     either (`Acquisition._emit` catches and logs).
     """
-    acquisition = descriptor.acquisition_cls(config)
+    acquisition_cls = descriptor.acquisition_cls_for(
+        config.market, config.frequency, (config.kwargs or {}).get("data_type")
+    )
+    acquisition = acquisition_cls(config)
     acquisition.attach(reporter=reporter, cancel=cancel)
     if refresh:
         acquisition.refresh()
