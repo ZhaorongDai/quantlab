@@ -206,3 +206,65 @@ def test_print_never_renders_a_credential(monkeypatch):
     )
     assert planted not in _captured(estimate, forced=True)
     assert planted not in _captured(_guard().estimate(ROWS_BY_DAY, **WINDOW))
+
+
+# ---------------------------------------------------------------------------
+# The bucket UNIT (03.10-10 task 1)
+#
+# The same guard prices two different pulls. TAQ counts per trading DAY,
+# because a TAQ page IS a day table. CRSP counts per calendar-YEAR bucket
+# (`CrspVolumeProbe.count_rows_by_year`, plan 03), because a CRSP page is a
+# calendar year -- so a CRSP refusal that said "trading day(s)" would name a
+# boundary no page has. The label is a keyword on the estimate, defaulting to
+# the TAQ wording so every existing caller and every existing message is
+# byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_defaults_to_the_trading_day_unit():
+    estimate = _guard().estimate(ROWS_BY_DAY, **WINDOW)
+    assert estimate["unit"] == "trading day"
+    # The dict KEY stays `trading_days` for every unit: it is the bucket
+    # count, and renaming it would break the TAQ callers the label exists to
+    # leave alone.
+    assert estimate["trading_days"] == 2
+
+
+def test_the_default_unit_leaves_the_taq_refusal_text_unchanged():
+    guard = _guard(max_raw_rows=TOTAL_ROWS - 1)
+    with pytest.raises(ValueError) as excinfo:
+        guard.assert_acquisition_volume_fits(ROWS_BY_DAY, **WINDOW)
+    assert "2 trading day(s)" in str(excinfo.value)
+
+
+def test_a_year_bucket_unit_is_carried_into_the_estimate_and_the_refusal():
+    guard = _guard(max_raw_rows=TOTAL_ROWS - 1)
+    estimate = guard.estimate(ROWS_BY_DAY, **WINDOW, unit="year bucket")
+    assert estimate["unit"] == "year bucket"
+    assert estimate["trading_days"] == 2
+    with pytest.raises(ValueError) as excinfo:
+        guard.assert_acquisition_volume_fits(
+            ROWS_BY_DAY, **WINDOW, unit="year bucket"
+        )
+    message = str(excinfo.value)
+    assert "2 year bucket(s)" in message
+    assert "trading day" not in message
+
+
+def test_print_renders_the_year_bucket_unit_label():
+    estimate = _guard().assert_acquisition_volume_fits(
+        ROWS_BY_DAY, **WINDOW, unit="year bucket"
+    )
+    output = _captured(estimate)
+    assert "  year buckets:" in output
+    assert "trading days:" not in output
+    # Same column as every other label in the block.
+    line = next(l for l in output.splitlines() if "year buckets:" in l)
+    assert line == f"  {'year buckets:':<19}{2:,}"
+
+
+def test_print_without_a_unit_key_falls_back_to_trading_days():
+    estimate = _guard().assert_acquisition_volume_fits(ROWS_BY_DAY, **WINDOW)
+    estimate.pop("unit", None)
+    output = _captured(estimate)
+    assert "  trading days:" in output
