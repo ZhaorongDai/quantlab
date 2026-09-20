@@ -208,7 +208,7 @@ Plans:
 
 **Wave 3** *(blocked on 13)*
 
-- [ ] 03.10-14-PLAN.md — GAP-C: an explicit roster (`--permnos`, or a `--universe` membership spell) overrides the security filter, reportably via `roster_overrides`; the cross-preset member invariant; WR-07
+- [x] 03.10-14-PLAN.md — GAP-C: an explicit roster (`--permnos`, or a `--universe` membership spell) overrides the security filter, reportably via `roster_overrides`; the cross-preset member invariant; WR-07
 
 **Wave 4** *(blocked on 14)*
 
