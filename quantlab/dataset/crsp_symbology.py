@@ -24,18 +24,33 @@ a per-row read of the daily table.
    symbol for that PERMNO. Lehman's 2008-09-18 delisting interval is exactly
    this (live `L3_3`): without the carry, the delisting return -- the single
    most consequential row a delisted security has -- would silently lose its
-   symbol and vanish from the panel.
+   symbol and vanish from the panel;
+6. the COLLISION PASS, last. Two DIFFERENT PERMNOs whose symbols came out
+   equal over overlapping dates are two securities heading for one column.
+   Every colliding interval whose row carries a share class is respelled
+   `base.cls`; the ones with no class keep the bare symbol. That is the only
+   rule that can separate BRK.A from BRK.B before 2002-01-02, when NEITHER
+   row has a `tradingsymbol` (live `C5`), and the WIN pair of `L5_1`, where
+   one issue has a class and the other has none.
 
-**What this module deliberately does NOT do yet.** Plan 05 adds the collision
-pass (two PERMNOs mapping to one symbol on overlapping dates), the carry past
-a PERMNO's last interval, and row-level resolution. The two public signatures
-below -- `symbol_intervals()` and `label_rows()` -- are the seam those land
-behind, and are meant to stay stable across that change.
+**The same function feeds the price panel AND the membership panels.** Plan 08
+labels `dsf_v2` rows with it and plan 09 labels `dsp500list_v2` / Nasdaq-100
+spells with it. If they derived symbols separately, a universe mask could name
+`BRK.B` on a day the price panel called that column `BRK`, and the mask would
+silently select nothing.
+
+**What this module deliberately does NOT do.** It never MERGES two PERMNOs. The
+interval pass respells what it can; whatever still lands on one `(date, symbol)`
+cell goes to `resolve_collisions`, which resolves by stated rule or refuses.
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 import polars as pl
+
+from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: The delimiter between a base ticker and its share class. The same `.` the
 #: constituent universes use and the same one
@@ -49,6 +64,12 @@ SUFFIX_DELIMITER = "."
 #: not nulls: the live tables carry both a real SQL NULL and, on some rows,
 #: the four-character string.
 _NO_CLASS = ("", "None", "NONE")
+
+#: Stands in for an open interval's missing `secinfoenddt` while the collision
+#: pass tests overlaps. An open interval overlaps everything that starts after
+#: it, which is what a null end MEANS; comparing against a null would instead
+#: make every such pair silently non-overlapping.
+_OPEN_END = date(9999, 12, 31)
 
 
 class CrspSymbology:
@@ -70,15 +91,35 @@ class CrspSymbology:
         self.overrides = {
             str(permno): str(symbol) for permno, symbol in (overrides or {}).items()
         }
-        #: What `label_rows` could not label, for the caller to surface.
-        #: Per PERMNO: `{"rows": n, "first": date, "last": date}`.
-        self.report: dict[str, dict] = {"unlabelled": {}}
+        #: Everything this module CHANGED or COULD NOT DO, for the caller to
+        #: write beside the panel (the plan-08 `{zarr}.crsp_symbols.json`
+        #: sidecar). All five values are JSON-serializable, dates as ISO text:
+        #:
+        #: - `class_suffixed` -- intervals the collision pass respelled;
+        #: - `nonconforming_symbols` -- symbols outside
+        #:   `TRADEABLE_TICKER_PATTERN`, kept but listed;
+        #: - `unlabelled` -- per PERMNO, rows dropped for want of a symbol;
+        #: - `delisting_carried` -- per PERMNO, delisting rows labelled from
+        #:   the PERMNO's last interval;
+        #: - `collisions` -- every `(date, symbol)` cell resolved, and by
+        #:   which rule.
+        self.report: dict[str, object] = {
+            "class_suffixed": [],
+            "nonconforming_symbols": [],
+            "unlabelled": {},
+            "delisting_carried": {},
+            "collisions": [],
+        }
         self._intervals: pl.DataFrame | None = None
 
     # -- intervals ----------------------------------------------------------
 
     def symbol_intervals(self) -> pl.DataFrame:
         """`(permno, symbol, start_date, end_date)`, one row per interval.
+
+        Sorted by `(permno, start_date)`; `permno` Int64, `symbol` String,
+        both dates Date. Computed once and cached, because the price panel
+        and every membership panel ask the same instance for it.
 
         `symbol` is null only where a PERMNO's FIRST interval already has no
         ticker -- there is then no previous interval to carry, and inventing
@@ -141,13 +182,105 @@ class CrspSymbology:
                 pl.coalesce(override, pl.col("_symbol")).alias("_symbol")
             )
 
+        frame = self._class_collision_pass(frame)
+
         self._intervals = frame.select(
             pl.col("permno"),
             pl.col("_symbol").alias("symbol"),
             pl.col("start_date"),
             pl.col("end_date"),
         ).sort(["permno", "start_date"])
+
+        self.report["nonconforming_symbols"] = [
+            symbol
+            for symbol in sorted(
+                set(self._intervals["symbol"].drop_nulls().to_list())
+            )
+            if not TRADEABLE_TICKER_PATTERN.match(symbol)
+        ]
         return self._intervals
+
+    def _class_collision_pass(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """Respell the intervals of DIFFERENT PERMNOs that came out with one
+        symbol over overlapping dates (rule 6).
+
+        Deterministic and single-pass: the overlapping set is computed once,
+        off the symbols rules 1-5 produced, and each colliding interval is
+        respelled from its OWN share class. It is never iterated to a fixed
+        point -- a second round could only rename an interval a first round
+        already separated, and "the symbol depends on how many times we
+        looked" is not a property a panel axis may have.
+
+        Three deliberate exemptions:
+
+        - an interval with NO class keeps the bare symbol. CRSP did not give
+          it a class, and inventing one would rename a security (`WIN` and
+          `BF`, live `L5_1`/`L6_1`, are exactly this);
+        - an OVERRIDDEN PERMNO is untouched: `symbol_overrides` is a fixed
+          symbol for a whole history (D-15), which a suffix would contradict;
+        - a symbol that ALREADY ends in its own class is left alone, so a
+          pair that rules 1-4 spelled `ABC.B` cannot become `ABC.B.B`. Such a
+          pair is still a collision; it is `resolve_collisions`'s to refuse,
+          because the spelling cannot separate them.
+        """
+        named = frame.filter(pl.col("_symbol").is_not_null())
+        if self.overrides:
+            named = named.filter(
+                ~pl.col("permno").cast(pl.String).is_in(list(self.overrides))
+            )
+        if named.height < 2:
+            return frame
+
+        windows = named.select(
+            pl.col("permno"),
+            pl.col("_symbol"),
+            pl.col("start_date"),
+            pl.col("end_date").fill_null(_OPEN_END).alias("_end"),
+        )
+        overlaps = windows.join(windows, on="_symbol", how="inner", suffix="_r")
+        overlaps = overlaps.filter(
+            (pl.col("permno") != pl.col("permno_r"))
+            & (pl.col("start_date") <= pl.col("_end_r"))
+            & (pl.col("start_date_r") <= pl.col("_end"))
+        )
+        if overlaps.is_empty():
+            return frame
+
+        colliding = overlaps.select(
+            "permno", "_symbol", "start_date"
+        ).unique().with_columns(pl.lit(True).alias("_collides"))
+
+        frame = frame.join(
+            colliding, on=["permno", "_symbol", "start_date"], how="left"
+        ).with_columns(pl.col("_collides").fill_null(False))
+
+        suffix = pl.lit(SUFFIX_DELIMITER) + pl.col("_cls")
+        frame = frame.with_columns(
+            pl.when(
+                pl.col("_collides")
+                & pl.col("_cls").is_not_null()
+                & ~pl.col("_symbol").str.ends_with(suffix)
+            )
+            .then(pl.col("_symbol") + suffix)
+            .otherwise(pl.col("_symbol"))
+            .alias("_respelled")
+        )
+
+        moved = frame.filter(pl.col("_respelled") != pl.col("_symbol"))
+        self.report["class_suffixed"] = [
+            {
+                "permno": int(record["permno"]),
+                "symbol": str(record["_respelled"]),
+                "start_date": str(record["start_date"]),
+                "end_date": None
+                if record["end_date"] is None
+                else str(record["end_date"]),
+            }
+            for record in moved.sort(["permno", "start_date"]).to_dicts()
+        ]
+        return frame.with_columns(
+            pl.col("_respelled").alias("_symbol")
+        ).drop(["_collides", "_respelled"])
 
     # -- labelling ----------------------------------------------------------
 
