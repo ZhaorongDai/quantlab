@@ -287,10 +287,226 @@ class CrspMembership:
     def _nasdaq100_pieces(
         self, *, allow_unlinked: bool
     ) -> list[tuple[int, date, date]]:
-        """Compustat spells x CCM links -> PERMNO pieces. Task 2 of plan 07."""
-        raise NotImplementedError(
-            f"{type(self).__name__}: the {self.NASDAQ100} branch is implemented "
-            f"in plan 03.10-07 Task 2."
+        """Compustat spells x CCM links -> `(permno, start, end)` pieces.
+
+        **The join is `gvkey` AND `iid = liid`, never `linkprim`.** Both
+        Alphabet classes are Nasdaq-100 members under ONE gvkey (160329, iid
+        01 -> GOOGL 90319 and iid 03 -> GOOG 14542, live check `L8_2`/`L7_4`).
+        The conventional `linkprim IN ('P','C')` filter keeps the primary
+        issue only, which would silently drop one of the two -- a member of
+        the index simply missing from the universe, and invisible downstream
+        because a missing security looks like a data gap.
+
+        **Every membership day must end up with a PERMNO.** After
+        intersecting the clipped spell with each matched link, the days no
+        piece covers are computed explicitly. Short stretches
+        (`LINK_GAP_TOLERANCE_DAYS`) between two links are recorded as
+        tolerated gaps; anything longer is UNLINKED and raises by default.
+        Refusing rather than dropping is the whole point: a dropped spell is
+        survivorship bias written into the universe (T-03.10-23), and
+        `allow_unlinked=True` moves the fact into `report["unlinked"]` rather
+        than making it disappear.
+
+        A spell with NO matching link at all is always unlinked, however short
+        it is: the tolerance bridges a seam BETWEEN two links, and with no
+        link there is nothing to bridge.
+        """
+        product_end = self.reference.product_end
+        spells = (
+            self.reference.table("idxcst_his")
+            .filter(pl.col("gvkeyx") == self.NDX_GVKEYX)
+            .select(
+                pl.col("gvkey").cast(pl.String),
+                pl.col("iid").cast(pl.String),
+                pl.col("from").cast(pl.Date).alias("start"),
+                pl.col("thru").cast(pl.Date).alias("thru"),
+            )
+            .sort(["gvkey", "iid", "start"])
+        )
+        censor = _as_date(self.PIT_COVERAGE_START[self.NASDAQ100])
+        self.report["left_censored_spells"] = int(
+            spells.filter(pl.col("start") == censor).height
+        )
+
+        links_by_key = self._ccm_links_by_key()
+
+        pieces: list[tuple[int, date, date]] = []
+        unlinked: list[dict] = []
+        for spell in spells.to_dicts():
+            gvkey, iid, start = spell["gvkey"], spell["iid"], spell["start"]
+            if gvkey is None or iid is None or start is None:
+                raise ValueError(
+                    f"{type(self).__name__}: an idxcst_his row has a null "
+                    f"gvkey, iid or from ({spell!r}); it cannot be linked to "
+                    f"a security or placed on a calendar."
+                )
+            if start > product_end:
+                # Out of CRSP price coverage entirely -- not an unlinkable
+                # spell, so it must not reach the refusal below.
+                self.report["dropped_after_product_end"] += 1
+                continue
+            end = spell["thru"]
+            if end is None or end > product_end:
+                self.report["clipped_to_product_end"] += 1
+                end = product_end
+            if end < start:
+                raise ValueError(
+                    f"{type(self).__name__}: idxcst_his gvkey {gvkey} iid "
+                    f"{iid} has thru {end} before from {start}."
+                )
+
+            matched: list[tuple[int, date, date]] = []
+            for link in links_by_key.get((gvkey, iid), []):
+                link_end = link["linkenddt"] or product_end
+                link_end = min(link_end, product_end)
+                piece_start = max(start, link["linkdt"])
+                piece_end = min(end, link_end)
+                if piece_start <= piece_end:
+                    matched.append((link["permno"], piece_start, piece_end))
+
+            self._assert_unambiguous(gvkey, iid, matched)
+            pieces.extend(matched)
+
+            gaps = _uncovered(
+                start, end, [(piece[1], piece[2]) for piece in matched]
+            )
+            uncovered: list[tuple[date, date]] = []
+            for gap_start, gap_end in gaps:
+                days = (gap_end - gap_start).days + 1
+                if matched and days <= self.LINK_GAP_TOLERANCE_DAYS:
+                    self.report["tolerated_gaps"].append(
+                        {
+                            "gvkey": gvkey,
+                            "iid": iid,
+                            "start": str(gap_start),
+                            "end": str(gap_end),
+                            "days": days,
+                        }
+                    )
+                else:
+                    uncovered.append((gap_start, gap_end))
+            if uncovered:
+                unlinked.append(
+                    {
+                        "gvkey": gvkey,
+                        "iid": iid,
+                        "from": str(start),
+                        "thru": str(end),
+                        "uncovered": [
+                            [str(gap_start), str(gap_end)]
+                            for gap_start, gap_end in uncovered
+                        ],
+                    }
+                )
+
+        if unlinked and not allow_unlinked:
+            raise ValueError(self._unlinked_message(unlinked))
+        if unlinked:
+            self.report["unlinked"] = unlinked
+            logger.warning(
+                f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 membership "
+                f"spell(s) have days no CRSP/Compustat link covers; those days "
+                f"are absent from the universe. allow_unlinked=True was passed, "
+                f"so they are listed in report['unlinked'] instead of raising."
+            )
+        return pieces
+
+    def _ccm_links_by_key(self) -> dict[tuple[str, str], list[dict]]:
+        """`(gvkey, liid) -> links`, keeping only real, dated identity links.
+
+        `lpermno` is `double precision` on the server (live check `L7_2`), so
+        it arrives as a float and a PERMNO is an integer. A non-integral value
+        would silently become a DIFFERENT, real security under a plain cast,
+        so it raises instead.
+
+        A link with a null `linkdt` is not used: it has no start, so no
+        interval can be intersected with it. It is not "dropped silently" --
+        the days it would have covered simply stay uncovered and reach the
+        unlinked refusal, which is the loud path.
+        """
+        links = self.reference.table("ccmxpf_lnkhist").filter(
+            pl.col("linktype").is_in(self.LINK_TYPES)
+            & pl.col("lpermno").is_not_null()
+            & pl.col("linkdt").is_not_null()
+        )
+        non_integral = links.filter(
+            pl.col("lpermno").cast(pl.Float64)
+            != pl.col("lpermno").cast(pl.Float64).floor()
+        )
+        if non_integral.height:
+            offenders = non_integral["lpermno"].to_list()[:_MAX_LISTED]
+            raise ValueError(
+                f"{type(self).__name__}: {non_integral.height} ccmxpf_lnkhist "
+                f"row(s) carry a non-integral lpermno "
+                f"({', '.join(str(value) for value in offenders)}). A PERMNO is "
+                f"an integer; rounding one would name a DIFFERENT, real "
+                f"security, so the link table is refused instead."
+            )
+
+        by_key: dict[tuple[str, str], list[dict]] = {}
+        rows = links.select(
+            pl.col("gvkey").cast(pl.String),
+            pl.col("liid").cast(pl.String),
+            pl.col("lpermno").cast(pl.Float64).cast(pl.Int64).alias("permno"),
+            pl.col("linkdt").cast(pl.Date),
+            pl.col("linkenddt").cast(pl.Date),
+        ).to_dicts()
+        for row in rows:
+            by_key.setdefault((row["gvkey"], row["liid"]), []).append(row)
+        return by_key
+
+    def _assert_unambiguous(
+        self, gvkey: str, iid: str, matched: list[tuple[int, date, date]]
+    ) -> None:
+        """One `(gvkey, iid)` is ONE security; two PERMNOs on one day is not.
+
+        Left unchecked, both PERMNOs would be emitted as members and the
+        universe would hold a security the index never contained
+        (T-03.10-25).
+        """
+        for index, (permno, start, end) in enumerate(matched):
+            for other_permno, other_start, other_end in matched[index + 1 :]:
+                if other_permno == permno:
+                    continue
+                overlap_start = max(start, other_start)
+                overlap_end = min(end, other_end)
+                if overlap_start <= overlap_end:
+                    raise ValueError(
+                        f"{type(self).__name__}: gvkey {gvkey} iid {iid} links "
+                        f"to TWO PERMNOs over the same dates -- {permno} and "
+                        f"{other_permno} both cover {overlap_start}.."
+                        f"{overlap_end}. One Compustat issue is one security, "
+                        f"so this is a link-table conflict, not a choice this "
+                        f"module may make on your behalf."
+                    )
+
+    def _unlinked_message(self, unlinked: list[dict]) -> str:
+        """The refusal: what is unlinked, how much of it, and the remedy."""
+        listed = []
+        for record in unlinked[:_MAX_LISTED]:
+            ranges = ", ".join(
+                f"{gap_start}..{gap_end}" for gap_start, gap_end in record["uncovered"]
+            )
+            listed.append(
+                f"  gvkey={record['gvkey']} iid={record['iid']} "
+                f"from={record['from']} thru={record['thru']} uncovered=[{ranges}]"
+            )
+        more = (
+            f"\n  ... and {len(unlinked) - _MAX_LISTED} more"
+            if len(unlinked) > _MAX_LISTED
+            else ""
+        )
+        return (
+            f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 membership "
+            f"spell(s) have days that no CRSP/Compustat link covers, so those "
+            f"membership days have no PERMNO:\n"
+            + "\n".join(listed)
+            + more
+            + f"\nDropping them would remove real index members from the "
+            f"universe -- survivorship bias that reads downstream as a data "
+            f"gap rather than an error. Pass allow_unlinked=True (the CLI's "
+            f"--allow-unlinked-ndx) to proceed with the linked days and read "
+            f"the rest from report['unlinked']."
         )
 
     # -- shared --------------------------------------------------------------
