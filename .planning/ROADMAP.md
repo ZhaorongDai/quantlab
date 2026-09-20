@@ -204,7 +204,7 @@ Plans:
 
 **Wave 2** *(blocked on 12)*
 
-- [ ] 03.10-13-PLAN.md — GAP-A + GAP-B: no-price sentinel is never a price nor an anchor, anchor requires a positive close AND dlycumfacshr, refusal by PERMNO name; WR-02/WR-03; corrected delisting and adjustment sections in `example/wrds_crsp.md`
+- [x] 03.10-13-PLAN.md — GAP-A + GAP-B: no-price sentinel is never a price nor an anchor, anchor requires a positive close AND dlycumfacshr, refusal by PERMNO name; WR-02/WR-03; corrected delisting and adjustment sections in `example/wrds_crsp.md`
 
 **Wave 3** *(blocked on 13)*
 
