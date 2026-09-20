@@ -463,7 +463,106 @@ class CrspStockDataset(StockDataset):
         # cumulative product would make the next kept day's adjusted move span
         # a return the panel no longer shows.
         derived = self._apply_security_filter(derived)
+        derived = self._resolve_identity(derived)
         return self._finalise(derived)
+
+    # -- ticker ownership and PERMNO seams (D-04, D-18) ---------------------
+
+    def _resolve_identity(self, derived: pl.DataFrame) -> pl.DataFrame:
+        """Make every `(timestamp, symbol)` cell ONE security, and break the
+        adjusted series where a symbol column changes company.
+
+        Two steps, in this order and no other:
+
+        1. **Collisions** (D-04). Two PERMNOs on one `(date, symbol)` cell are
+           resolved by `CrspSymbology.resolve_collisions` -- active over
+           delisting, then the configured universe -- or the conversion
+           refuses. Nothing is merged: two companies' prices in one column
+           would fabricate every return across the join while leaving a
+           perfectly well-formed panel behind (T-03.10-16).
+        2. **Seams** (D-18). What survives step 1 can still hand a column from
+           one company to the next on consecutive days -- ordinary ticker
+           reuse. The incoming PERMNO's FIRST row in that column gets NaN
+           adjusted values, so no return and no rolling window spans the two.
+           Raw prices, `permno` and every CRSP extra stay exactly as observed:
+           the seam removes the fabricated quantity, not the observation.
+
+        A RENAME is deliberately not a seam. FB -> META is PERMNO 13407 on
+        both sides, so `META`'s first row follows `FB`'s last within one
+        security and the ratio between them is a real return. A ticker-keyed
+        rule could not tell that case from reuse, which is why the test is on
+        the PERMNO.
+
+        The opt-out (`nan_adj_at_permno_seam=False`) removes the NaN, never
+        the RECORD: the seam is reported either way.
+        """
+        member_intervals = None
+        if self.config.collision_universe is not None:
+            from quantlab.dataset.crsp_membership import CrspMembership
+
+            member_intervals = CrspMembership(
+                CrspReference(self.config.reference_dir)
+            ).permno_intervals(self.config.collision_universe)
+
+        frame = self._symbology.resolve_collisions(derived, member_intervals)
+
+        frame = frame.sort(["symbol", "timestamp"])
+        frame = frame.with_columns(
+            pl.col("permno").shift(1).over("symbol").alias("_prev_permno")
+        )
+        frame = frame.with_columns(
+            (
+                pl.col("_prev_permno").is_not_null()
+                & (pl.col("permno") != pl.col("_prev_permno"))
+            ).alias("_seam")
+        )
+
+        seams = frame.filter(pl.col("_seam")).sort(["timestamp", "symbol"])
+        self._symbology_report = {
+            "seams": [
+                {
+                    "date": str(record["timestamp"])[:10],
+                    "symbol": str(record["symbol"]),
+                    "old_permno": int(record["_prev_permno"]),
+                    "new_permno": int(record["permno"]),
+                }
+                for record in seams.to_dicts()
+            ],
+            **dict(self._symbology.report),
+        }
+        if seams.height:
+            logger.warning(
+                f"{self.class_name}: {seams.height} PERMNO seam(s) in the "
+                f"panel -- a symbol column changes company there. Adjusted "
+                f"values on the incoming row are "
+                f"{'NaN' if self.config.nan_adj_at_permno_seam else 'KEPT'}; "
+                f"see {SYMBOLOGY_REPORT_SUFFIX} beside the store."
+            )
+
+        if self.config.nan_adj_at_permno_seam and seams.height:
+            null = pl.lit(None, dtype=pl.Float64)
+            frame = frame.with_columns(
+                # `adjClose` is computed directly from the anchor, while the
+                # other four come from these two factors -- so all three must
+                # be nulled for all five variables to be NaN.
+                pl.when(pl.col("_seam"))
+                .then(null)
+                .otherwise(pl.col("adjClose"))
+                .alias("adjClose"),
+                pl.when(pl.col("_seam"))
+                .then(null)
+                .otherwise(pl.col("_factor"))
+                .alias("_factor"),
+                pl.when(pl.col("_seam"))
+                .then(null)
+                .otherwise(pl.col("_volume_factor"))
+                .alias("_volume_factor"),
+            )
+        return frame.drop(["_prev_permno", "_seam"])
+
+    def symbology_report_path(self) -> Path:
+        """`{zarr_file_path}.crsp_symbology_report.json`, beside the store."""
+        return Path(str(self.config.zarr_file_path) + SYMBOLOGY_REPORT_SUFFIX)
 
     # -- the security filter (D-06, D-17) -----------------------------------
 
@@ -861,6 +960,13 @@ class CrspStockDataset(StockDataset):
                 indent=2,
                 sort_keys=True,
             )
+        if self._symbology_report is not None:
+            write_json_atomically(
+                self.symbology_report_path(),
+                self._symbology_report,
+                indent=2,
+                sort_keys=True,
+            )
 
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: list[str] | None = None
@@ -901,12 +1007,18 @@ class CrspStockDataset(StockDataset):
     def _assert_unique_panel_keys(self, window: pl.DataFrame) -> None:
         """`(timestamp, symbol)` is unique, or the conversion fails.
 
-        Two PERMNOs that resolve to ONE symbol on overlapping dates is a real
-        CRSP situation (ticker reuse, an unsuffixed share class), and the
-        inherited `dedup_raw_frame(keep="last")` would collapse them
-        arbitrarily into one price series. Refusing here keeps that from
-        happening silently; plan 05 turns the refusal into resolution RULES,
-        which is a decision a phase makes rather than a dedup makes.
+        **Now a BACKSTOP, not the mechanism.** `_resolve_identity` runs
+        `CrspSymbology.resolve_collisions` over the whole derivation, which
+        either resolves every crowded `(date, symbol)` cell by a stated rule
+        or refuses naming the cells -- so a duplicate should be unreachable
+        here, and the refusal a user meets is the one that says WHICH PERMNOs
+        collided and how to break the tie.
+
+        It stays because the cost of being wrong is invisible: the inherited
+        `dedup_raw_frame(keep="last")` would collapse two securities into one
+        price series and leave a well-formed panel behind. A duplicate that
+        survives resolution is a bug in resolution, and this is where it stops
+        rather than where it gets averaged.
         """
         duplicates = (
             window.group_by(["timestamp", "symbol"])
