@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 10/11 plans executed
+**Plans:** 11/11 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -194,7 +194,7 @@ Plans:
 
 **Wave 6** *(blocked on 10)*
 
-- [ ] 03.10-11-PLAN.md — `example/wrds_crsp.md`, main-tree no-new-failures gate, user-run live WRDS smoke (Duo push)
+- [x] 03.10-11-PLAN.md — `example/wrds_crsp.md`, main-tree no-new-failures gate, user-run live WRDS smoke (Duo push)
 
 ### Phase 03.9: WRDS TAQ Consolidated Quotes to NBBO Zarr Panel (INSERTED)
 
