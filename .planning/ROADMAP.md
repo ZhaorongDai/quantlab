@@ -145,7 +145,7 @@ information / ticker history, and delisting & distribution events, landing in th
 `[timestamp, symbol]` Zarr panel through the existing Acquisition → Dataset layering.
 **Requirements**: TBD
 **Depends on:** Phase 03.9 (WRDS connection/credential/volume-guard infrastructure), Phase 03.1 (point-in-time universes)
-**Plans:** 2/11 plans executed
+**Plans:** 7/11 plans executed
 
 **User decisions already made (2026-09-19, do NOT re-ask in discuss-phase):**
 
@@ -177,11 +177,11 @@ Plans:
 
 **Wave 3** *(blocked on 02)*
 
-- [ ] 03.10-03-PLAN.md — CRSP provider hardening: annual product end refuse/clip, vintage stamp, entitlement order, page contract (pinned schema, uniqueness, ownership, counts, resume), SQL shape, per-year volume probe
-- [ ] 03.10-04-PLAN.md — Reference tables writer: stksecurityinfohist, stkdelists, stkdistributions, dsp500list_v2, Compustat idxcst_his + CCM links into _reference/ with a vintage manifest
-- [ ] 03.10-05-PLAN.md — Symbology: renames, share classes (BRK.B, BF.A/BF.B), NULL-ticker and delisting carry, overrides, collision resolution with report
-- [ ] 03.10-06-PLAN.md — Return/event semantics: Tiingo variables + CRSP extras, bid/ask and missing returns, delisting once, events, global anchor + anchor sidecar, Alpha158/Return drop-in
-- [ ] 03.10-07-PLAN.md — PERMNO membership: CRSP S&P 500 (dsp500list_v2) and Compustat Nasdaq-100 via CCM (iid-exact, clipped, unlinked refused)
+- [x] 03.10-03-PLAN.md — CRSP provider hardening: annual product end refuse/clip, vintage stamp, entitlement order, page contract (pinned schema, uniqueness, ownership, counts, resume), SQL shape, per-year volume probe
+- [x] 03.10-04-PLAN.md — Reference tables writer: stksecurityinfohist, stkdelists, stkdistributions, dsp500list_v2, Compustat idxcst_his + CCM links into _reference/ with a vintage manifest
+- [x] 03.10-05-PLAN.md — Symbology: renames, share classes (BRK.B, BF.A/BF.B), NULL-ticker and delisting carry, overrides, collision resolution with report
+- [x] 03.10-06-PLAN.md — Return/event semantics: Tiingo variables + CRSP extras, bid/ask and missing returns, delisting once, events, global anchor + anchor sidecar, Alpha158/Return drop-in
+- [x] 03.10-07-PLAN.md — PERMNO membership: CRSP S&P 500 (dsp500list_v2) and Compustat Nasdaq-100 via CCM (iid-exact, clipped, unlinked refused)
 
 **Wave 4** *(blocked on 05, 06, 07)*
 
