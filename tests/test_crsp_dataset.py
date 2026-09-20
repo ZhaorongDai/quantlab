@@ -814,3 +814,293 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
         labels["ret_1"].sel(timestamp="2008-09-17", symbol="LEH").values
     )
     assert value == pytest.approx(-0.6, rel=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: one anchor per window, whatever the chunking
+# ---------------------------------------------------------------------------
+
+ANCHOR_START = "2019-11-01"
+ANCHOR_END = "2020-09-30"
+#: The 4:1 split and the dividend inside the anchor window.
+ANCHOR_SPLIT_DAY = "2020-08-31"
+ANCHOR_DIVIDEND_DAY = "2020-08-07"
+ANCHOR_DIVIDEND = 0.82
+
+
+def _anchor_series_rows():
+    """SYNTHETIC: ~11 months of daily rows with one 4:1 split and a dividend.
+
+    Long enough that `granularity="year"` plans TWO windows and
+    `granularity="month"` plans ELEVEN -- which is the whole point. If the
+    adjustment anchor were computed per window rather than once over
+    `[start_date, end_date]`, the two stores would disagree at every window
+    seam (RESEARCH Pitfall 1), and the warning sign named there is exactly
+    "the year and month granularity stores differ".
+    """
+    import pandas as pd
+
+    from tests.crsp_fixtures import dsf_row
+
+    days = pd.bdate_range(ANCHOR_START, ANCHOR_END)
+    rows = []
+    value = 60.0
+    previous_raw = None
+    for index, day in enumerate(days):
+        iso = day.date().isoformat()
+        daily_return = round(0.02 - 0.035 * (index % 2) + 0.0005 * (index % 11), 6)
+        value *= 1.0 + daily_return
+        pre_split = 4.0 if iso < ANCHOR_SPLIT_DAY else 1.0
+        raw = value * pre_split
+
+        without_dividend = daily_return
+        if iso == ANCHOR_DIVIDEND_DAY and previous_raw:
+            without_dividend = round(daily_return - ANCHOR_DIVIDEND / previous_raw, 6)
+
+        rows.append(
+            dsf_row(
+                SYNTHETIC_PERMNO,
+                iso,
+                dlyprc=f"{raw:.6f}",
+                dlyclose=f"{raw:.6f}",
+                dlyopen=f"{raw * 0.99:.6f}",
+                dlyhigh=f"{raw * 1.02:.6f}",
+                dlylow=f"{raw * 0.98:.6f}",
+                dlyret=f"{daily_return:.6f}",
+                dlyretx=f"{without_dividend:.6f}",
+                dlyorddivamt=(
+                    f"{ANCHOR_DIVIDEND:.6f}"
+                    if iso == ANCHOR_DIVIDEND_DAY
+                    else "0.000000"
+                ),
+                dlyfacprc="4.000000" if iso == ANCHOR_SPLIT_DAY else "1.000000",
+                dlycumfacpr=(
+                    "4.000000000000" if iso < ANCHOR_SPLIT_DAY else "1.000000000000"
+                ),
+                dlycumfacshr=(
+                    "4.000000000000" if iso < ANCHOR_SPLIT_DAY else "1.000000000000"
+                ),
+            )
+        )
+        previous_raw = raw
+    return rows
+
+
+def _sidecar_path(dataset_config):
+    from pathlib import Path
+
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    return Path(
+        str(dataset_config.zarr_file_path)
+        + CrspStockDataset.ADJUSTMENT_SIDECAR_SUFFIX
+    )
+
+
+def test_year_and_month_granularity_produce_identical_stores(
+    mock_crsp_session, tmp_path
+):
+    """D-08: the anchor is GLOBAL to the configured window, so chunking is
+    invisible in the output.
+
+    Two converts of the SAME raw tier into two paths, one planning two
+    year-windows and one planning eleven month-windows. `assert_identical`
+    compares every variable, coordinate and name -- a per-window anchor would
+    put a fabricated return at each of the ten extra seams, so this is the
+    test Pitfall 1's warning sign was written for.
+    """
+    import xarray as xr
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    stores = {}
+    for granularity in ("year", "month"):
+        dataset_config = _dataset_config(
+            tmp_path,
+            cfg,
+            reference_dir,
+            start=ANCHOR_START,
+            end=ANCHOR_END,
+            store=f"crsp_{granularity}.zarr",
+        )
+        result = _convert(dataset_config, granularity=granularity)
+        stores[granularity] = _panel(dataset_config)
+        assert result.granularity == granularity
+
+    xr.testing.assert_identical(stores["year"], stores["month"])
+    assert stores["year"].sizes["timestamp"] > 200, stores["year"].sizes
+
+
+def test_the_anchor_is_the_last_non_null_close(mock_crsp_session, tmp_path):
+    """The anchor is the last row WITH A PRICE, not simply the last row.
+
+    A PERMNO whose final row in the window is a Missing-Price day would
+    otherwise anchor its entire series on a null and every adjusted value
+    would be NaN. The null row itself keeps a NaN `adjClose`: there is no
+    price that day, and publishing the anchor's level there would invent one.
+    """
+    import numpy as np
+
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [  # SYNTHETIC: the window's LAST row has no price.
+        dsf_row(SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="0.010000"),
+        dsf_row(SYNTHETIC_PERMNO, "2020-03-03", dlyprc="102.000000", dlyret="0.020000"),
+        dsf_row(
+            SYNTHETIC_PERMNO,
+            "2020-03-04",
+            dlyprc=None,
+            dlyprcflg=None,
+            dlyret=None,
+            dlyretmissflg="MP",
+        ),
+    ]
+    panel = _build(
+        tmp_path,
+        rows,
+        [SYNTHETIC_PERMNO],
+        start="2020-03-01",
+        end="2020-03-31",
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    assert _at(panel, "adjClose", "2020-03-03", SYNTHETIC_SYMBOL) == pytest.approx(
+        102.0
+    )
+    assert np.isnan(_at(panel, "adjClose", "2020-03-04", SYNTHETIC_SYMBOL))
+    # And the rest of the series is still anchored on that close, not on NaN.
+    assert _at(panel, "adjClose", "2020-03-02", SYNTHETIC_SYMBOL) == pytest.approx(
+        102.0 / 1.02
+    )
+
+
+def test_the_sidecar_records_the_anchor_beside_the_store(mock_crsp_session, tmp_path):
+    """A store never exists without the record of WHICH anchor built it.
+
+    `{zarr}.crsp_adjustment.json` is a SIBLING of the store, like the chunk
+    ledger -- not a file inside it, which a `mode="w"` rewrite would drop and
+    a zarr reader would surface as a stray array.
+    """
+    import json
+
+    dataset_config = _build_store(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    sidecar = _sidecar_path(dataset_config)
+    assert sidecar.exists(), sorted(p.name for p in tmp_path.iterdir())
+    assert sidecar.parent == tmp_path, sidecar
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "start_date": ANCHOR_START,
+        "end_date": ANCHOR_END,
+        "product_end": "2025-12-31",
+        "rule": "total_return_backward_from_last_close",
+    }
+
+
+def test_a_second_convert_with_the_same_anchor_resumes(mock_crsp_session, tmp_path):
+    """The refusal must not fire on the honest case: the SAME window again.
+
+    A resumed or re-run conversion reads the same anchor record it wrote, so
+    every window is already in the ledger and the run is a no-op.
+    """
+    dataset_config = _build_store(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    again = _convert(dataset_config, granularity="year")
+
+    assert again.windows_written == 0, again
+    assert again.windows_skipped == again.windows_planned, again
+    assert again.resumed is True, again
+
+
+def test_extending_the_window_is_refused_naming_both_anchors(
+    mock_crsp_session, tmp_path
+):
+    """D-08 / T-03.10-19: extending `end_date` in place would SPLICE anchors.
+
+    Extending the window moves every still-listed PERMNO's anchor, which
+    rescales every earlier adjusted value by a per-PERMNO constant. The chunk
+    ledger appends windows and never rewrites finished ones, so the new
+    windows would land beside old ones computed against the OLD anchor -- one
+    column, two anchors, and a fabricated return at the join. Refusing BEFORE
+    any write is the only place that cannot be half-done.
+    """
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+    dataset_config = _dataset_config(
+        tmp_path, cfg, reference_dir, start=ANCHOR_START, end=ANCHOR_END
+    )
+    _convert(dataset_config)
+
+    before = _panel(dataset_config)
+    ledger = tmp_path / "crsp.zarr.chunks.json"
+    ledger_before = ledger.read_text(encoding="utf-8")
+
+    extended = _dataset_config(
+        tmp_path, cfg, reference_dir, start=ANCHOR_START, end="2020-12-31"
+    )
+    with pytest.raises(ValueError) as raised:
+        _convert(extended)
+
+    message = str(raised.value)
+    assert ANCHOR_END in message, message
+    assert "2020-12-31" in message, message
+    assert "crsp_adjustment" in message, message
+    # The remedy, not only the diagnosis.
+    assert "zarr_file_path" in message, message
+
+    import xarray as xr
+
+    xr.testing.assert_identical(before, _panel(dataset_config))
+    assert ledger.read_text(encoding="utf-8") == ledger_before
+
+
+def test_a_store_without_the_sidecar_is_refused(mock_crsp_session, tmp_path):
+    """No sidecar, no proof of which anchor the store holds -- so no append.
+
+    A store written before this record existed, or one whose sidecar was
+    deleted, is indistinguishable from a store built against a different
+    anchor. Guessing "probably the same one" is exactly the assumption the
+    sidecar exists to stop being an assumption.
+    """
+    dataset_config = _build_store(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+    sidecar = _sidecar_path(dataset_config)
+    sidecar.unlink()
+
+    with pytest.raises(ValueError) as raised:
+        _convert(dataset_config)
+
+    message = str(raised.value)
+    assert sidecar.name in message, message
