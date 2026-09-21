@@ -1224,19 +1224,35 @@ class CrspStockDataset(StockDataset):
         )
 
     def _permno_breakdown(self, frame: pl.DataFrame) -> dict:
-        """`{PERMNO: {symbol, types, rows, first, last}}` for a set of rows.
+        """`{PERMNO: {types, rows, first, last}}` for a set of rows.
 
         ONE rendering, used for the rows the filter dropped and for the rows a
-        roster rescued: "which PERMNO, spelled how, over which dates, on which
-        type combination" is the same question in both directions, and two
+        roster rescued: "which PERMNO, over which dates, on which type
+        combination" is the same question in both directions, and two
         renderings of it could drift apart while both looked right.
+
+        **There is no `symbol` field, deliberately** (G-03.11-2). The record
+        used to carry `pl.col("symbol").last()`, but after the PERMNO-axis
+        migration (D-01) the derivation's `symbol` column IS the PERMNO, so
+        that field repeated the JSON key byte for byte:
+        `{"75154": {"symbol": "75154", ...}}`. The operator ruled in
+        `03.11-UAT.md` test 2 to DELETE it rather than restore a ticker --
+        the key answers "who was dropped" and `types` answers "why", which is
+        the whole of the audit question this report exists to answer; a
+        human-readable ticker is convenience, not audit correctness.
+
+        If a later phase does want a human-readable name here, the source is
+        `self._symbology` -- NOT `{zarr}.crsp_tickers.json`. That sidecar is
+        built by `_build_ticker_intervals` AFTER `_apply_security_filter`, so
+        it carries only the panel's own PERMNOs by design; looking a dropped
+        PERMNO up in it necessarily yields nothing. Stating that here so the
+        next reader does not walk a path already measured as a dead end.
         """
         typed = frame.with_columns(self._type_combination())
         per_permno = (
             typed.sort(["permno", "timestamp"])
             .group_by("permno")
             .agg(
-                pl.col("symbol").last().alias("symbol"),
                 pl.col("_types").unique().sort().alias("types"),
                 pl.len().alias("rows"),
                 pl.col("timestamp").min().alias("first"),
@@ -1246,9 +1262,6 @@ class CrspStockDataset(StockDataset):
         )
         return {
             str(record["permno"]): {
-                "symbol": None
-                if record["symbol"] is None
-                else str(record["symbol"]),
                 "types": [str(value) for value in record["types"]],
                 "rows": int(record["rows"]),
                 "first": str(record["first"])[:10],
@@ -1284,12 +1297,13 @@ class CrspStockDataset(StockDataset):
         ends INCLUSIVE -- the same convention `symbol_intervals()` and
         `_member_intervals` already use.
 
-        **An interval table, deliberately not `_permno_breakdown`'s shape.**
-        That method aggregates with `pl.col("symbol").last()`, keeping one name
-        per PERMNO. It is the right answer to its own question ("which rows did
-        the filter drop, spelled how") and the wrong one here: 13407 is FB
-        until 2022-06-08 and META after, and a last-name-wins map answers
-        "META" for 2012. That is precisely the defect D-03 rejected a 1-D
+        **An interval table, deliberately not a name-per-PERMNO map.**
+        `_permno_breakdown` answers its own question -- which PERMNOs the
+        filter dropped and why -- and carries no name at all (G-03.11-2). A
+        map that DID keep one name per PERMNO would be the wrong shape here
+        for the reason that shape is always wrong: 13407 is FB until
+        2022-06-08 and META after, and a last-name-wins map answers "META"
+        for 2012. That is precisely the defect D-03 rejected a 1-D
         `ticker(symbol)` coord for, so copying the shape would reintroduce it
         one layer out. The only thing kept in common is the JSON key spelling,
         `str(permno)`, because JSON object keys can only be strings and two
