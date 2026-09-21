@@ -528,10 +528,6 @@ if __name__ == "__main__":
                     f"Security filter sidecar:   "
                     f"{probe_dataset.filter_report_path()}"
                 )
-                print(
-                    f"Symbology sidecar:         "
-                    f"{probe_dataset.symbology_report_path()}"
-                )
             else:
                 print(
                     f"Skipping the equity conversion: the roster holds no "
