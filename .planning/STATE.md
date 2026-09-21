@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.11"
-current_phase_name: crsp-permno-symbol-axis-migration-and-tiingo-era-dead-code-r
+current_phase_name: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 status: executing
-stopped_at: Phase 03.9 complete, ready to plan Phase 3
-last_updated: "2026-09-21T22:27:27.367Z"
+stopped_at: Completed 03.11-14-PLAN.md
+last_updated: "2026-09-21T22:49:54.625Z"
 last_activity: 2026-09-21
-last_activity_desc: Phase 03.11 execution resumed (wave continue)
-state_head: ec96d29ad62b040c25290cdbbc61452dbba12f1d
+last_activity_desc: Phase 03.11 execution started
+state_head: f3284bc39e82e328ef84b89b519e6a1929d4c4e9
 progress:
   total_phases: 19
   completed_phases: 1
   total_plans: 123
-  completed_plans: 115
+  completed_plans: 118
 milestone_name: milestone
 ---
 
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 
 ## Current Position
 
-Phase: 03.11 (crsp-permno-symbol-axis-migration-and-tiingo-era-dead-code-r) — READY TO EXECUTE
-Plan: 1 of 11
+Phase: 03.11 (CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)) — EXECUTING
+Plan: 2 of 18
 Status: Ready to execute
-Last activity: 2026-09-21 — Phase 03.11 execution resumed (wave continue)
+Last activity: 2026-09-21 — Phase 03.11 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -135,6 +135,7 @@ Progress: [██████████] 99% (75/76 plans)
 | Phase 03.7 P16 | 9 min | 2 tasks | 4 files |
 | Phase 03.7 P17 | 16 min | 3 tasks | 6 files |
 | Phase 03.7 P18 | 8 min | 1 tasks | 3 files |
+| Phase 03.11 P14 | 15 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -304,6 +305,8 @@ Recent decisions affecting current work:
 - [Phase 03.7]: 03.7-17: one model-level variable check, BaseModel._assert_trained_variables, keyed on trained_on.factor_names/label_names (never the factor config field factors[].factor_names), called by load() before _read_checkpoint; BaseBacktester delegates before DL feature collection and lost _assert_checkpoint_variables/_saved_variable_names — The config field can differ from the names training used, so the old backtester check had a measured false positive and false negative; one source of truth protects direct load() callers too (G-03.7-9)
 - [Phase 03.7]: 03.7-17: old checkpoints: legacy factors[]/labels[] factor_names checked with one weaker-record warning (mismatch still raises); no record warns once and loads; warnings deduplicated per model instance by exact text, comparisons and raises never skipped — WR-01/WR-02 policy preserved without losing protection; the backtester checks before collection and load() re-checks, so dedup keeps each warning to one
 - [Phase 03.11]: D-08 REVERSES Phase 03.10's locked identity-axis decision ("the panel `symbol` dimension stays the ticker valid at each date; PERMNO is kept as a data variable"). New state: the CRSP panel's `symbol` dimension IS the **int64 PERMNO**, `permno` is no longer a data variable (28 → 27 data_vars), and `ticker` left the panel entirely for the `{zarr}.crsp_tickers.json` as-of interval sidecar (read side: `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`) — evidence measured only after 03.10 shipped: 8,719 of 36,990 tickers (23.6%) have been used by ≥2 PERMNOs and 18,850 of 39,506 PERMNOs (47.7%) share a ticker with another security, while `resolve_collisions` detected contention with `group_by(["timestamp","symbol"])` — same-day only — so in a 2000-2024 window 3,095 of 3,205 reused tickers (96.6%) were pure sequential succession, concatenated across two companies with no check, no report entry and no warning. 03.10's history text is left word-for-word; the reversal is recorded BELOW it in ROADMAP.md, here, and in `example/wrds_crsp.md`, because recording the reversal is itself a deliverable of this phase (03.11-CONTEXT.md D-08). Consequence: the collision-resolution, class-suffix, delisting-symbol-carry, PERMNO-seam and `symbol_overrides` machinery were DELETED rather than kept behind a compatibility branch.
+- [Phase 03.11]: [Phase 03.11-14]: 清场后的终态判据是「每个缓存 .pyc 对得上它源码的新鲜编译」，而不是「__pycache__ 目录数为 0」—— 后者与 verify 自身顺序矛盾（跑 pytest 必然重建缓存） — 目录计数只证明清场发生过；181 个缓存文件逐一比对才是与运行顺序无关的无幽灵证据。marshal 字节相等只能当快路径，需结构化比较兜底。
+- [Phase 03.11]: [Phase 03.11-14]: tests/conftest.py 的字节码陷阱只写散文、不加运行时守卫；可执行部分全部放进 tests/test_stale_bytecode_lesson.py — 没有便宜且无误报的运行时检测；半吊子守卫制造的假信号正是本 gap 的本体。
 
 ### Pending Todos
 
@@ -319,6 +322,7 @@ Recent decisions affecting current work:
 - **Phase 03.4 not sealed.** All 11 plans executed and UAT is 4/4 passed (`03.4-UAT.md`), but `03.4-VERIFICATION.md` is STALE (the quick-260909-idh commits landed after its `verified:` timestamp) and no `*-SECURITY.md` was ever produced, so the active verify:post security hook blocks advancement. Phase 03.5 was opened on top of it by explicit user decision on 2026-09-11. Re-run verification and `/gsd-secure-phase 03.4` before closing the milestone.
 - Tiingo API key currently leaked in `scripts/download_stock_data_from_tiingo.py` and pushed to `origin/main` — user should revoke/rotate the key in the Tiingo dashboard independent of the git-history reset planned in Phase 1.
 - tests/test_tiingo_quota.py does not pin that _attempt_batch's first statement honours the vendor abort: mutating _should_stop to consult only the cancel token leaves all 24 tests green (max_workers=2 means joblib pre_dispatch withholds most batches). Only the structural abort_is_first guard catches it. Pre-existing, surfaced by 03.4-05 mutation M6; recorded in WINDOWS.md.
+- deferred-items.md D-03.11-12-A 的散文声称 55 条前置失败「全是 ingest_tiingo/ingest_binance_spot 导入失败」，实测另含 refresh_us_equity_universe/ingest_us_equity/ingest_alpaca 同类失败与三条 test_factor_kunquant.py 的 KeyError amount；逐文件计数与该表完全一致，措辞待单独修正（不在 03.11-14 的 files_modified 内）
 
 ### Quick Tasks Completed
 
@@ -379,9 +383,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-09-19T20:15:12.240Z
-Stopped at: Phase 03.9 complete, ready to plan Phase 3
+Last session: 2026-09-21T22:49:30.315Z
+Stopped at: Completed 03.11-14-PLAN.md
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
-Resume file: .planning/phases/03.10-crsp-stock-v2-daily-data-via-wrds/03.10-01-PLAN.md
+Resume file: None
 </content>

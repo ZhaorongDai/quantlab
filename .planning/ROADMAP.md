@@ -249,7 +249,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 13/13 plans executed, plus 2 gap-closure plans from `03.11-UAT.md` and 5 more from
+**Plans:** 14/18 plans executed, plus 2 gap-closure plans from `03.11-UAT.md` and 5 more from
 `03.11-VERIFICATION.md` (2026-09-21 re-verification, 88/91) + `03.11-REVIEW.md` (WR-01..WR-04,
 IN-01..IN-04):
 
@@ -258,7 +258,7 @@ IN-01..IN-04):
   could crash
 - [x] 03.11-13-PLAN.md — G-03.11-1 + G-03.11-2: bring `quantlab/base/backtest.py` inside the core-layer
   purity gate, and delete `_permno_breakdown`'s degenerate `symbol` field from both call sites
-- [ ] 03.11-14-PLAN.md — **G-03.11-4 (BLOCKER, wave 0)**: purge the poisoned-but-fresh-looking bytecode
+- [x] 03.11-14-PLAN.md — **G-03.11-4 (BLOCKER, wave 0)**: purge the poisoned-but-fresh-looking bytecode
   cache, re-record an admissible regression baseline, and lock the "equal-length edit + restored mtime
   ⇒ the `.pyc` never invalidates" lesson as an executable test
 - [ ] 03.11-15-PLAN.md — G-03.11-3 (WR-01 + WR-02) + IN-01: contain `RecursionError` in the `payload`
