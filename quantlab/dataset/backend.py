@@ -10,7 +10,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.backend import DataBackend
-from quantlab.utils.symbol_axis import normalize_to_axis_dtype
+from quantlab.utils.symbol_axis import normalize_to_axis_dtype, sort_symbol_axis
 
 
 class XrBackend(DataBackend):
@@ -1228,10 +1228,27 @@ class XrBackend(DataBackend):
         if not Path(path).exists():
             return self.append(path, append_dim, **kwargs)
 
+        # Both sides in their OWN spelling, and the union ordered by the one
+        # numeric-order implementation this repo has (03.11-04). These two
+        # comprehensions used to `str()` unconditionally, which on an int64
+        # PERMNO axis did TWO things, neither of them visible:
+        #
+        #   - `union` came out in LEXICOGRAPHIC order, so a store whose axis
+        #     was pinned numerically ('[7000, 10107]') was rewritten to
+        #     '[10107, 7000]' by the widen below -- the four-digit fork
+        #     `sort_symbol_axis` exists to close, reached through this door;
+        #   - `self.data.reindex({dim: union})` was handed digit strings
+        #     against an int64 coordinate, matched NOTHING, and returned a
+        #     full-shape, full-dtype, entirely-NaN window, which the closing
+        #     `append()` then wrote.
+        #
+        # On a ticker axis `.tolist()` already yields `str` and
+        # `sort_symbol_axis` falls back to `str` comparison, so this is
+        # byte-for-byte the old behaviour there.
         stored = xr.open_zarr(path)
         try:
             stored_labels = (
-                [str(label) for label in stored[dim].values.tolist()]
+                list(stored[dim].values.tolist())
                 if dim in stored.coords
                 else []
             )
@@ -1240,7 +1257,7 @@ class XrBackend(DataBackend):
             stored.close()
 
         incoming = (
-            [str(label) for label in self.data[dim].values.tolist()]
+            list(self.data[dim].values.tolist())
             if dim in self.data.coords
             else []
         )
@@ -1251,7 +1268,7 @@ class XrBackend(DataBackend):
             str(name): variable.dtype
             for name, variable in self.data.data_vars.items()
         }
-        union = sorted(set(stored_labels) | set(incoming))
+        union = sort_symbol_axis(set(stored_labels) | set(incoming))
         unstored = [
             name for name in incoming_names if name not in stored_names
         ]

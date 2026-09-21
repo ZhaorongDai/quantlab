@@ -20,6 +20,7 @@ from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.dataset.backend import XrBackend
 from quantlab.dataset.cleaning import clean_market_data
 from quantlab.enums.constant import Date
+from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
 
@@ -318,12 +319,26 @@ class BaseDataset(ABC):
         self.data_backend.to_internal(data)  # type: ignore
         return self
 
-    def _raw_axes_in_range(self) -> tuple[list[str], "pd.DatetimeIndex"]:
+    def _raw_axes_in_range(self) -> tuple[list, "pd.DatetimeIndex"]:
         """Return `(pinned_symbols, observed_timestamps)` for the config's
         whole date range, from ONE scan of the raw source.
+
+        One of THREE places the pinned symbol axis is decided -- the others
+        being `StockDataset._raw_axes_in_range` and
+        `CrspDataset._raw_axes_in_range`. Its ORDER comes from
+        `quantlab/utils/symbol_axis.py:sort_symbol_axis`, which is where that
+        contract is stated and argued; do not restate it here. Its element
+        TYPE is the raw panel's own (03.11-04): an unconditional `str()` here
+        was handed straight back to `_raw_data_to_xr_window`'s `reindex`,
+        which matches nothing against an int64 coordinate and densifies a
+        whole window of NaN without raising.
+
+        This site did not sort at all before -- it leaned on whatever
+        `_raw_data_to_xr()` happened to produce. Sorting explicitly is what
+        makes all three sites answer the same question the same way.
         """
         data = self._raw_data_to_xr()
-        symbols = [str(symbol) for symbol in data["symbol"].values.tolist()]
+        symbols = sort_symbol_axis(data["symbol"].values.tolist())
         return symbols, pd.DatetimeIndex(data["timestamp"].values)
 
     def _raw_data_to_xr_window(

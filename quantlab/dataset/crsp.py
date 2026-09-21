@@ -1471,9 +1471,16 @@ class CrspStockDataset(StockDataset):
         """Both axes of the CONVERTED panel, from the cached derivation.
 
         Overridden rather than inherited because `StockDataset`'s version
-        reads the raw `symbol` column, which here is the PERMNO. The axis this
-        store is pinned to is the TICKER axis, and it only exists after
-        symbology has run.
+        reads the raw `symbol` column as text, and this panel's axis is the
+        int64 PERMNO (D-01) -- the same labels, cast, and read off the
+        DERIVATION rather than off raw so the `config.symbols` restriction and
+        the security filter have already been applied.
+
+        One of THREE places the pinned symbol axis is decided -- the others
+        being `StockDataset._raw_axes_in_range` and
+        `BaseDataset._raw_axes_in_range`. All three take their ORDER from
+        `quantlab/utils/symbol_axis.py:sort_symbol_axis`, which is where that
+        contract is stated and argued; it is deliberately not restated here.
 
         Also where the chunked path RECORDS its provenance -- the gate itself
         now lives in `_derivation()`, which both entry points call (WR-02). This
