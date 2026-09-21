@@ -537,11 +537,20 @@ def test_a_payload_with_no_intervals_key_keeps_its_current_behaviour(tmp_path):
     """An ABSENT `intervals` key is not damage: `.get("intervals", {})` has
     always answered "this sidecar knows no names" and both entry points already
     have a good answer for that. Tightening it into a refusal would break a
-    sidecar written for a roster this store does not carry."""
+    sidecar written for a roster this store does not carry.
+
+    `{}` is one of THREE spellings of "empty" this file keeps apart, and the
+    third entry point has to stay legible on all of them: `product_end` is
+    `None` here because "this sidecar records no vintage" is an answer, not
+    damage. `[]` (top level is not an object) and a zero-byte file (never
+    parsed) are the other two, and each gets a shaped refusal instead -- see
+    the two `product_end` parametrisations below.
+    """
     lookup, _ = _written(tmp_path, "{}")
 
     assert lookup.as_of(13407, date(2022, 6, 9)) is None
     assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
+    assert lookup.product_end is None
 
 
 #: Sidecars that never get as far as a shape at all -- the OTHER half of
@@ -783,6 +792,87 @@ def test_product_end_is_parsed_from_the_recorded_vintage(converted):
     lookup = _lookup(converted)
 
     assert lookup.product_end == date(2025, 12, 31)
+
+
+# ---------------------------------------------------------------------------
+# G-03.11-6 / WR-04 -- the third entry point uses the same shape check
+# ---------------------------------------------------------------------------
+
+
+def test_product_end_refuses_a_non_object_payload_with_a_shaped_error(tmp_path):
+    """The bare `AttributeError` 03.11-12 set out to delete, on 03.11-12's own
+    input.
+
+    `_intervals()` called itself "the one place the payload's top-level shape
+    is checked" while `product_end` read the payload directly, so a `[]`
+    sidecar answered with `AttributeError: 'list' object has no attribute
+    'get'` -- naming neither the file nor the way out, from an entry point the
+    module docstring already promised a shaped refusal for. `[]` was one of the
+    three inputs in `MALFORMED_SIDECARS` the whole time; the plan reproduced it
+    and fixed two of the three public methods that consume it.
+    """
+    lookup, path = _written(tmp_path, "[]")
+
+    with pytest.raises(ValueError) as excinfo:
+        lookup.product_end
+
+    message = str(excinfo.value)
+    assert "CrspTickerLookup:" in message
+    assert str(path) in message
+    assert ".crsp_*.json" in message
+
+
+@pytest.mark.parametrize("text", MALFORMED_SIDECARS)
+def test_product_end_never_answers_with_a_bare_exception(tmp_path, text):
+    """The same three inputs, through the THIRD entry point.
+
+    The conclusions differ by input and that is the point: `[]` fails the
+    top-level shape check and is refused, while the other two have a perfectly
+    good top level and simply record no vintage, so `None` is the right answer
+    for them. `product_end` has no opinion about `intervals` -- a sidecar whose
+    interval table is wrong can still say honestly which CRSP vintage it was
+    read against, and turning that into a refusal would be `product_end`
+    inventing a second shape check of its own.
+
+    What must hold for ALL three is that neither conclusion is a BARE
+    exception: every answer is either a value or a refusal that names the
+    class, the path and the rebuild. An `AttributeError` escaping here fails
+    this test on both branches, which is exactly how the defect presented.
+    """
+    lookup, path = _written(tmp_path, text)
+
+    try:
+        answer = lookup.product_end
+    except ValueError as exc:
+        message = str(exc)
+        assert "CrspTickerLookup:" in message
+        assert str(path) in message
+        assert ".crsp_*.json" in message
+    else:
+        assert answer is None
+
+
+@pytest.mark.parametrize("payload", UNPARSEABLE_SIDECARS)
+def test_product_end_refuses_an_unparseable_sidecar_too(tmp_path, payload):
+    """The parse stage reaches the third entry point exactly as it reaches the
+    other two.
+
+    Nothing new happens here -- `product_end` goes through the `payload`
+    property like everything else, and that property has raised shaped
+    refusals since 03.11-15. It is pinned because the "three entry points,
+    three deliberate postures" claim in the module docstring is only checkable
+    if all three are actually checked, and a zero-byte sidecar is one of the
+    three spellings of "empty" this file keeps apart.
+    """
+    lookup, path = _written_bytes(tmp_path, payload)
+
+    with pytest.raises(ValueError) as excinfo:
+        lookup.product_end
+
+    message = str(excinfo.value)
+    assert "CrspTickerLookup:" in message
+    assert str(path) in message
+    assert ".crsp_*.json" in message
 
 
 def test_beside_store_builds_the_lookup_from_a_store_path(converted):
