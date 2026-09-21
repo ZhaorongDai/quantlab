@@ -27,7 +27,13 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from quantlab.base.config import CrspDatasetConfig
 from quantlab.base.rebuild import BaseStoreRebuilder, RebuildMeasurement
+from quantlab.dataset.cleaning import REQUIRED_COLUMNS
+from quantlab.dataset.crsp_rebuild import (
+    CRSP_SIDECAR_SUFFIXES,
+    CrspStoreRebuilder,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +267,221 @@ def test_rebuild_measurement_data_root_is_an_absolute_path_string(
     assert Path(measurement.data_root).is_absolute()
     assert measurement.store_path == str(store)
     assert measurement.backup_path is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2 -- CrspStoreRebuilder
+# ---------------------------------------------------------------------------
+
+
+def _crsp_config(root: Path, *, store_name: str = "crsp.zarr") -> CrspDatasetConfig:
+    """A CRSP config built DIRECTLY, never through `quantlab/config`.
+
+    The layout mirrors the real tree exactly, including its two traps:
+    `raw_data_dir_path` TERMINATES at the `/wrds` vendor segment, and
+    `reference_dir` is a SIBLING of `wrds_crsp`, not a child of `wrds`.
+    """
+    return CrspDatasetConfig(
+        zarr_file_path=str(root / "data" / "data" / "us_equity" / "1d" / store_name),
+        raw_data_dir_path=str(
+            root / "data" / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "wrds"
+        ),
+        catalog_path=str(root / "data" / "data" / "catalog"),
+        reference_dir=str(
+            root
+            / "data"
+            / "downloads"
+            / "us_equity"
+            / "1d"
+            / "wrds_crsp"
+            / "_reference"
+        ),
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        security_filter="equity_common",
+        collision_universe="crsp_sp500",
+    )
+
+
+def _write_measurable_panel(store: Path, *, with_anomaly_flag: bool = True) -> None:
+    """A 3x2 panel whose seven measurements are all known by construction.
+
+    One cell -- `(t2, s1)` -- is a STRUCTURAL gap: null in every one of
+    `cleaning.REQUIRED_COLUMNS`, which is the dense panel's cartesian product
+    (D-06), not a defect. `adjClose` is null exactly there (so its null count
+    equals the structural count) while `adjVolume` carries one EXTRA null at
+    `(t1, s0)` -- deliberately different, so a `_measure()` that conflated the
+    two counts could not pass.
+    """
+    nan = np.nan
+    ohlcv = np.array(
+        [
+            [10.0, 11.0],
+            [0.0, 12.0],  # close == 0 at (t1, s0)
+            [13.0, nan],  # structural gap at (t2, s1)
+        ]
+    )
+    variables = {name: (["timestamp", "symbol"], ohlcv.copy()) for name in REQUIRED_COLUMNS}
+    variables["adjClose"] = (
+        ["timestamp", "symbol"],
+        np.array([[10.0, -1.0], [9.0, 12.0], [13.0, nan]]),
+    )
+    variables["adjVolume"] = (
+        ["timestamp", "symbol"],
+        np.array([[100.0, 200.0], [nan, 300.0], [400.0, nan]]),
+    )
+    if with_anomaly_flag:
+        variables["anomaly_flag"] = (
+            ["timestamp", "symbol"],
+            np.array([[False, True], [True, False], [False, False]]),
+        )
+
+    panel = xr.Dataset(
+        variables,
+        coords={
+            "timestamp": pd.date_range("2024-01-02", periods=3, freq="D"),
+            "symbol": [10107, 14593],
+        },
+    )
+    store.parent.mkdir(parents=True, exist_ok=True)
+    panel.to_zarr(store, mode="w")
+
+
+def test_crsp_sidecar_suffixes_are_exactly_the_four_audit_files():
+    """All four, and the symbology report is deliberately among them.
+
+    `.crsp_symbology_report.json` stops being GENERATED later in this phase,
+    which is exactly why it must stay on the CLEARING list: a suffix dropped
+    from here leaves a file describing a mechanism that no longer exists
+    sitting beside a store it never described.
+    """
+    assert CRSP_SIDECAR_SUFFIXES == (
+        ".chunks.json",
+        ".crsp_adjustment.json",
+        ".crsp_filter_report.json",
+        ".crsp_symbology_report.json",
+    )
+    assert CrspStoreRebuilder.SIDECAR_SUFFIXES == CRSP_SIDECAR_SUFFIXES
+
+
+def test_required_inputs_are_the_raw_vendor_and_reference_directories(
+    tmp_path: Path,
+):
+    config = _crsp_config(tmp_path)
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    raw, reference = rebuilder._required_inputs()
+
+    assert raw == Path(config.raw_data_dir_path)
+    assert reference == Path(config.reference_dir)
+    assert raw.name == "wrds", "raw path must terminate at the vendor segment"
+    assert reference.parent == raw.parent, "_reference is a SIBLING of wrds"
+
+
+def test_required_inputs_resolve_relative_config_paths_under_data_root(
+    tmp_path: Path,
+):
+    """A relative config path is joined onto `data_root`, never onto the cwd."""
+    config = _crsp_config(tmp_path)
+    config.raw_data_dir_path = "data/downloads/us_equity/1d/wrds_crsp/wrds"
+    config.reference_dir = "data/downloads/us_equity/1d/wrds_crsp/_reference"
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    raw, reference = rebuilder._required_inputs()
+
+    assert raw == tmp_path / "data/downloads/us_equity/1d/wrds_crsp/wrds"
+    assert reference == tmp_path / "data/downloads/us_equity/1d/wrds_crsp/_reference"
+
+
+def test_rebuild_refuses_a_missing_raw_tier_before_deleting_anything(
+    tmp_path: Path,
+):
+    """T-03.11-01: the destructive step is unreachable on a bad input.
+
+    The store and all four sidecars must still be on disk after the refusal --
+    a rebuild that cleared first and discovered the missing raw tier second
+    would have destroyed the only panel there was.
+    """
+    config = _crsp_config(tmp_path)
+    store = Path(config.zarr_file_path)
+    sidecars = _make_store(store, CRSP_SIDECAR_SUFFIXES)
+    Path(config.reference_dir).mkdir(parents=True, exist_ok=True)
+    # raw_data_dir_path deliberately NOT created
+
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        rebuilder.rebuild(backup_dir=tmp_path / "backup")
+
+    assert config.raw_data_dir_path in str(excinfo.value)
+    assert store.exists()
+    for sidecar in sidecars:
+        assert sidecar.exists()
+
+
+def test_measure_reports_the_seven_contract_keys(tmp_path: Path):
+    config = _crsp_config(tmp_path)
+    _write_measurable_panel(Path(config.zarr_file_path))
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    metrics = rebuilder._measure()
+
+    assert set(metrics) == {
+        "anomaly_flag_true",
+        "adj_close_le_zero",
+        "close_eq_zero",
+        "adj_close_nan",
+        "adj_volume_nan",
+        "structural_gaps",
+        "symbol_count",
+    }
+    assert metrics["anomaly_flag_true"] == 2
+    assert metrics["adj_close_le_zero"] == 1
+    assert metrics["close_eq_zero"] == 1
+    assert metrics["adj_close_nan"] == 1
+    assert metrics["adj_volume_nan"] == 2
+    assert metrics["structural_gaps"] == 1
+    assert metrics["symbol_count"] == 2
+
+
+def test_measure_counts_structural_gaps_from_cleaning_required_columns(
+    tmp_path: Path,
+):
+    """The structural rule is `cleaning.REQUIRED_COLUMNS`, not a second copy.
+
+    The panel's one all-null cell is the only structural gap, and `adjClose`
+    is null exactly there -- so `adj_close_nan == structural_gaps` is the
+    "no surplus NaN" statement the real gate asserts, reproduced in miniature.
+    """
+    config = _crsp_config(tmp_path)
+    _write_measurable_panel(Path(config.zarr_file_path))
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    metrics = rebuilder._measure()
+
+    assert metrics["structural_gaps"] == metrics["adj_close_nan"]
+    assert metrics["adj_volume_nan"] > metrics["structural_gaps"]
+
+
+def test_measure_reports_zero_anomalies_when_the_variable_is_absent(
+    tmp_path: Path,
+):
+    """A panel with no `anomaly_flag` measures 0, it does not raise KeyError."""
+    config = _crsp_config(tmp_path)
+    _write_measurable_panel(
+        Path(config.zarr_file_path), with_anomaly_flag=False
+    )
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    assert rebuilder._measure()["anomaly_flag_true"] == 0
+
+
+def test_measure_dims_reports_sizes_and_data_var_count(tmp_path: Path):
+    config = _crsp_config(tmp_path)
+    _write_measurable_panel(Path(config.zarr_file_path))
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    dims, data_var_count = rebuilder._measure_dims()
+
+    assert dims == {"timestamp": 3, "symbol": 2}
+    # 5 required columns + adjClose + adjVolume + anomaly_flag
+    assert data_var_count == len(REQUIRED_COLUMNS) + 3
