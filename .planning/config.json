@@ -29,7 +29,7 @@
     "skip_discuss": false,
     "code_review": true,
     "code_review_depth": "standard",
-    "_auto_chain_active": true,
+    "_auto_chain_active": false,
     "use_worktrees": true,
     "test_command": "uv run pytest -q --ignore=tests/test_factor_hierarchy.py --ignore=tests/test_crsp_rebuild_measurements.py",
     "test_gate_timeout": 1800,
