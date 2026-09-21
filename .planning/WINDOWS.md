@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 21
+open_count: 18
 waived_count: 0
-fixed_count: 7
+fixed_count: 10
 total_count: 28
-last_updated: 2026-09-21T10:55:47.471Z
+last_updated: 2026-09-21T16:24:00.443Z
 ---
 
 # Broken Windows Ledger
@@ -36,9 +36,9 @@ last_updated: 2026-09-21T10:55:47.471Z
 | 19 | 03.6 | deviation | quantlab/base/data.py |  | Plan 03.6-09 Rule 3: the pre-try rebuild_rolled_back seed was annotated (bool) so the plan's AST gate, which forbids any ast.Constant-valued assignment, could pass; semantics unchanged | open |  | 2026-09-13T21:34:19.364Z |  |
 | 20 | 03.9 | stub | quantlab/dataset/nbbo_resample.py | 272 | n_ambiguous_ties emitted as 0.0 until plan 03.9-05 adds tie collapse and the ambiguity count (D-19) | fixed |  | 2026-09-19T18:49:10.437Z | 2026-09-19T19:14:23.404Z |
 | 21 | 03.11 | deviation | tests/test_crsp_constituent.py |  | test_membership_symbols_agree_with_the_crsp_price_panel red between 03.11-03 and 03.11-05: price panel is on the int64 PERMNO axis, the membership panel is still ticker-keyed. Owned by plan 03.11-05. | fixed |  | 2026-09-21T04:00:24.635Z | 2026-09-21T04:36:55.739Z |
-| 22 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | 4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08. | open |  | 2026-09-21T04:00:30.770Z |  |
-| 23 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited. | open |  | 2026-09-21T04:37:01.261Z |  |
-| 24 | 03.11 | deviation | tests/test_no_identity_residue.py |  | strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07 | open |  | 2026-09-21T05:57:52.914Z |  |
+| 22 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | 4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08. | fixed | UAT 03.11 test 6 裁定为 fixed。交棒 owner plan 03.11-08 已执行，现场复核：`uv run pytest tests/test_ingest_wrds_crsp.py tests/test_no_identity_residue.py -q` = 32 passed；strict-xfail 分组 `DELETED_IN_03_11_08` 已不存在，`symbol_overrides` / `nan_adj_at_permno_seam` 已提升进 `tests/test_no_identity_residue.py:58` 的 `DELETED_IN_03_11_07`，该处注释记录了提升来由。 | 2026-09-21T04:00:30.770Z | 2026-09-21T16:24:00.204Z |
+| 23 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited. | fixed | UAT 03.11 test 6 裁定为 fixed。交棒 owner plan 03.11-08 已执行，现场复核：`uv run pytest tests/test_ingest_wrds_crsp.py tests/test_no_identity_residue.py -q` = 32 passed；strict-xfail 分组 `DELETED_IN_03_11_08` 已不存在，`symbol_overrides` / `nan_adj_at_permno_seam` 已提升进 `tests/test_no_identity_residue.py:58` 的 `DELETED_IN_03_11_07`，该处注释记录了提升来由。 | 2026-09-21T04:37:01.261Z | 2026-09-21T16:24:00.323Z |
+| 24 | 03.11 | deviation | tests/test_no_identity_residue.py |  | strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07 | fixed | UAT 03.11 test 6 裁定为 fixed。交棒 owner plan 03.11-08 已执行，现场复核：`uv run pytest tests/test_ingest_wrds_crsp.py tests/test_no_identity_residue.py -q` = 32 passed；strict-xfail 分组 `DELETED_IN_03_11_08` 已不存在，`symbol_overrides` / `nan_adj_at_permno_seam` 已提升进 `tests/test_no_identity_residue.py:58` 的 `DELETED_IN_03_11_07`，该处注释记录了提升来由。 | 2026-09-21T05:57:52.914Z | 2026-09-21T16:24:00.443Z |
 | 25 | 03.11 | deviation | example/wrds_crsp.md | 364 | 03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited. | fixed |  | 2026-09-21T07:19:31.356Z | 2026-09-21T07:53:48.709Z |
 | 26 | 03.11 | deviation | example/backtest.md | 227 | 03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass. | fixed |  | 2026-09-21T07:19:36.837Z | 2026-09-21T07:53:54.261Z |
 | 27 | 03.11 | deviation | example/constituent.md | 468 | 03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass. | fixed |  | 2026-09-21T07:19:42.728Z | 2026-09-21T07:53:54.380Z |
@@ -305,10 +305,10 @@ last_updated: 2026-09-21T10:55:47.471Z
     "file": "tests/test_ingest_wrds_crsp.py",
     "line": null,
     "description": "4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T04:00:30.770Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T16:24:00.204Z"
   },
   {
     "id": 23,
@@ -317,10 +317,10 @@ last_updated: 2026-09-21T10:55:47.471Z
     "file": "tests/test_ingest_wrds_crsp.py",
     "line": null,
     "description": "test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T04:37:01.261Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T16:24:00.323Z"
   },
   {
     "id": 24,
@@ -329,10 +329,10 @@ last_updated: 2026-09-21T10:55:47.471Z
     "file": "tests/test_no_identity_residue.py",
     "line": null,
     "description": "strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T05:57:52.914Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T16:24:00.443Z"
   },
   {
     "id": 25,
