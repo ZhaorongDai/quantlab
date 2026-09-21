@@ -262,3 +262,158 @@ def test_an_existing_store_blocks_the_write(tmp_path):
     dataset._write_identity_reports()
 
     assert not dataset.ticker_sidecar_path().exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 2 -- the read side
+# ---------------------------------------------------------------------------
+
+
+def _lookup(converted):
+    from quantlab.dataset.crsp import CrspStockDataset
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    return CrspTickerLookup(CrspStockDataset(converted).ticker_sidecar_path())
+
+
+def test_as_of_answers_fb_and_meta_on_either_side_of_the_rename(converted):
+    """The sidecar's whole reason for existing: a PERMNO's PERIOD-CORRECT name.
+
+    2022-06-08 is FB and 2022-06-09 is META for the same 13407, so an audit
+    record dated inside the FB era cannot be labelled META.
+    """
+    lookup = _lookup(converted)
+
+    assert lookup.as_of(13407, date(2022, 6, 8)) == "FB"
+    assert lookup.as_of(13407, date(2022, 6, 9)) == "META"
+
+
+def test_as_of_answers_aapl_for_a_single_name_permno(converted):
+    lookup = _lookup(converted)
+
+    assert lookup.as_of(14593, date(2020, 1, 1)) == "AAPL"
+
+
+def test_as_of_returns_none_when_no_interval_covers_the_day(converted):
+    """A day before the security existed is an ABSENCE, not an error: the
+    caller is a display layer and has a perfectly good fallback."""
+    lookup = _lookup(converted)
+
+    assert lookup.as_of(13407, date(1990, 1, 1)) is None
+
+
+def test_as_of_returns_none_for_a_permno_the_sidecar_never_heard_of(converted):
+    lookup = _lookup(converted)
+
+    assert lookup.as_of(99999, date(2022, 6, 9)) is None
+
+
+def test_label_is_positional_and_falls_back_to_the_permno(converted):
+    """`label` returns one string per input, in order, and spells an unknown
+    PERMNO as its own digits -- a display layer wants a readable line, not a
+    `KeyError` in the middle of a log message."""
+    lookup = _lookup(converted)
+
+    assert lookup.label([13407, 14593, 99999], date(2022, 6, 9)) == [
+        "META",
+        "AAPL",
+        "99999",
+    ]
+
+
+def test_a_missing_sidecar_is_raised_on_first_query_not_on_construction(
+    tmp_path,
+):
+    """Lazy, like `CrspReference.manifest`: constructing the lookup touches no
+    disk, and the refusal names the class, the path and what to do about it."""
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    missing = tmp_path / "crsp.zarr.crsp_tickers.json"
+    lookup = CrspTickerLookup(missing)  # must not raise
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        lookup.as_of(13407, date(2022, 6, 9))
+
+    message = str(excinfo.value)
+    assert "CrspTickerLookup:" in message
+    assert str(missing) in message
+    assert ".crsp_*.json" in message
+
+
+def test_a_corrupt_sidecar_names_the_exception_type_and_the_way_out(tmp_path):
+    """The shape `_assert_anchor_unchanged` uses for the adjustment sidecar:
+    `type(exc).__name__`, what the file records, and the rebuild route."""
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    corrupt = tmp_path / "crsp.zarr.crsp_tickers.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        CrspTickerLookup(corrupt).as_of(13407, date(2022, 6, 9))
+
+    message = str(excinfo.value)
+    assert "JSONDecodeError" in message
+    assert ".crsp_*.json" in message
+
+
+def test_the_sidecar_is_read_once_per_instance(converted, monkeypatch):
+    """The `None`-sentinel cache `CrspSymbology._intervals` and
+    `CrspReference.manifest` both use: repeated display lookups must not
+    re-read and re-parse the file once per logged line."""
+    from pathlib import Path
+
+    lookup = _lookup(converted)
+    reads: list[str] = []
+    original = Path.read_text
+
+    def counting_read_text(self, *args, **kwargs):
+        reads.append(str(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    lookup.as_of(13407, date(2022, 6, 9))
+    lookup.as_of(14593, date(2022, 6, 9))
+    lookup.label([13407, 14593], date(2022, 6, 9))
+
+    assert len(reads) == 1, reads
+
+
+def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
+    """The display contract (T-03.11-30): six human-visible points call
+    `label()`, and NONE of them may break because an audit file is missing.
+
+    `as_of` still raises -- it is the strict, single-value question. `label` is
+    the display entry point and answers with the digits.
+    """
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    lookup = CrspTickerLookup(tmp_path / "absent.crsp_tickers.json")
+
+    assert lookup.label([13407, 99999], date(2022, 6, 9)) == ["13407", "99999"]
+
+
+def test_label_falls_back_without_raising_when_the_sidecar_is_corrupt(tmp_path):
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    corrupt = tmp_path / "crsp.zarr.crsp_tickers.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+
+    assert CrspTickerLookup(corrupt).label([13407], date(2022, 6, 9)) == ["13407"]
+
+
+def test_product_end_is_parsed_from_the_recorded_vintage(converted):
+    """A derived value behind a `@property`, like `CrspReference.product_end`."""
+    lookup = _lookup(converted)
+
+    assert lookup.product_end == date(2025, 12, 31)
+
+
+def test_beside_store_builds_the_lookup_from_a_store_path(converted):
+    """The one place the suffix is appended for a reader, so the three display
+    points do not each spell `".crsp_tickers.json"` for themselves."""
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    lookup = CrspTickerLookup.beside_store(converted.zarr_file_path)
+
+    assert lookup.as_of(13407, date(2022, 6, 9)) == "META"
