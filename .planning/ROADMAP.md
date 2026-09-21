@@ -160,8 +160,19 @@ same-day contention via `group_by(["timestamp","symbol"])`. The recorded reversa
 deliverable of this phase.
 
 **Required reading before planning** (measured, line-precise, do not re-derive):
+- `03.11-CONTEXT.md` in this phase's directory — **the locked decisions D-01..D-13.** `discuss-phase`
+  was not run; the operator made every decision in a 2026-09-20 session and CONTEXT.md is the record.
+  Do not re-ask them.
 - `.planning/research/permno-symbol-axis-migration.md`
 - `.planning/research/tiingo-era-cleaning-audit.md`
+
+**⚠ W0 is a hard prerequisite, not a convenience task.** Every CRSP store on disk is a PRE-FIX
+artifact: the sp500 store's sidecars are dated 2026-09-20 13:46/13:47, while the commit that fixed
+the no-price-sentinel adjustment anchor (`3cbe787`) landed at 16:03. So **every measurement anyone
+has of "how clean is CRSP" was taken on stale output** — the 699 `anomaly_flag` hits, the 686
+`adjClose <= 0` cells, the 2,202 `adjVolume` NaNs. Rebuild and re-measure FIRST; let the post-fix
+numbers drive the later waves. A plan that reasons from the pre-fix numbers is reasoning from an
+artifact that no longer matches the code.
 
 **User decisions already made (2026-09-20, do NOT re-ask in discuss-phase):**
 
