@@ -571,6 +571,60 @@ def test_as_of_refuses_an_unparseable_sidecar_with_a_shaped_error(
     assert ".crsp_*.json" in message
 
 
+def test_a_bug_inside_as_of_reaches_the_caller_instead_of_becoming_digits(
+    converted,
+):
+    """G-03.11-3 / WR-02: the guard must not swallow THIS module's own bugs.
+
+    `label()`'s docstring has always said `except Exception` is deliberately
+    avoided "so a genuine programming bug in this module still reaches the
+    caller". Once 03.11-12's structural guards landed, `KeyError` /
+    `AttributeError` / `TypeError` could no longer come from data damage at all
+    -- every structural defect funnels through `_malformed` (a `ValueError`) or
+    the `payload` property (`FileNotFoundError` / `ValueError`) -- so the only
+    thing those three could still catch was the bug the rationale says they
+    exist to surface.
+
+    Injected into a SUBCLASS rather than the module, and over a VALID sidecar
+    on purpose: a damaged sidecar would leave "did the guard swallow it, or was
+    the data simply unreadable?" undecidable, which is exactly the ambiguity
+    that let this survive. Here the sidecar is known good, so a digit in the
+    output can only mean the guard ate a bug.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    class TypoInAsOf(CrspTickerLookup):
+        def as_of(self, permno, day):
+            raise KeyError("tikcer")  # a one-character typo in a span index
+
+    lookup = TypoInAsOf(CrspStockDataset(converted).ticker_sidecar_path())
+
+    with pytest.raises(KeyError):
+        lookup.label([13407], date(2022, 6, 9))
+
+
+def test_a_bug_inside_intervals_reaches_the_caller_too(converted):
+    """The other half of the same path.
+
+    Damage arrives by two routes and so does a bug: `label()` has TWO `except`
+    sites, one around the intervals read and one around the per-PERMNO `as_of`.
+    Narrowing one and not the other would leave a typo in `_intervals`
+    (`self.paylaod` -> `AttributeError`) still degrading silently to digits.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    class TypoInIntervals(CrspTickerLookup):
+        def _intervals(self):
+            raise AttributeError("paylaod")  # a typo in an attribute name
+
+    lookup = TypoInIntervals(CrspStockDataset(converted).ticker_sidecar_path())
+
+    with pytest.raises(AttributeError):
+        lookup.label([13407], date(2022, 6, 9))
+
+
 def test_product_end_is_parsed_from_the_recorded_vintage(converted):
     """A derived value behind a `@property`, like `CrspReference.product_end`."""
     lookup = _lookup(converted)
