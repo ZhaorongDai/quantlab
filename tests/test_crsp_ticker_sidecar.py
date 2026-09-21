@@ -485,6 +485,92 @@ def test_a_payload_with_no_intervals_key_keeps_its_current_behaviour(tmp_path):
     assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
 
 
+#: Sidecars that never get as far as a shape at all -- the OTHER half of
+#: "corrupt", and a DIFFERENT path from `MALFORMED_SIDECARS` above.
+#:
+#: The dividing line between the two lists is one question: **did `json.loads`
+#: return?** If it returned and handed back something that is not shaped like a
+#: sidecar, the damage is structural and is caught downstream by `_intervals()`
+#: or by the per-PERMNO `as_of` -- that is `MALFORMED_SIDECARS`. If it never
+#: returned, the failure happened in the `payload` property, strictly upstream
+#: of every structural guard, and none of those guards is even reached. Keeping
+#: the two lists apart is what keeps `MALFORMED_SIDECARS`' path table honest;
+#: merging them would make that table describe rows it does not cover.
+#:
+#: Bytes, not `str`, because one of the three is not decodable text.
+#:
+#: | payload | what `payload` sees |
+#: |---|---|
+#: | 20,000 nested `[` | `RecursionError` out of `json.loads` (G-03.11-3 / WR-01) |
+#: | an isolated UTF-8 continuation byte | `UnicodeDecodeError` out of `read_text` (a `ValueError`) |
+#: | zero bytes | `JSONDecodeError` out of `json.loads` (a `ValueError`) |
+#:
+#: The zero-byte row is deliberately NOT the same case as `{}` in
+#: `test_a_payload_with_no_intervals_key_keeps_its_current_behaviour` above:
+#: `{}` is a sidecar that parsed and knows no names, an empty FILE is a sidecar
+#: that could not be read at all, and the two entry points answer them
+#: differently on the `as_of` side. Both spellings of "empty" are pinned so the
+#: difference stays visible.
+UNPARSEABLE_SIDECARS = [
+    pytest.param(b"[" * 20000 + b"]" * 20000, id="nested-past-the-parser"),
+    pytest.param(b"\x80\x81\x82", id="not-valid-utf-8"),
+    pytest.param(b"", id="zero-bytes"),
+]
+
+
+def _written_bytes(tmp_path, payload: bytes):
+    """A lookup over a sidecar whose exact BYTES the test chose, and its path.
+
+    The `bytes` twin of `_written`: `write_text` cannot express a file that is
+    not decodable as UTF-8, and that is one of the three cases here.
+    """
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    path = tmp_path / "crsp.zarr.crsp_tickers.json"
+    path.write_bytes(payload)
+    return CrspTickerLookup(path), path
+
+
+@pytest.mark.parametrize("payload", UNPARSEABLE_SIDECARS)
+def test_label_falls_back_when_the_sidecar_never_parses(tmp_path, payload):
+    """The display contract holds for the parse stage too, not just for shapes.
+
+    `RecursionError` is the one that was escaping (G-03.11-3 / WR-01): it is a
+    `RuntimeError` subclass, so neither the `payload` property's original
+    `(OSError, ValueError)` nor `label()`'s tuple caught it, and it walked out
+    of all three bare call sites -- `dataset/masking.py:262`,
+    `backtest/engine_vectorbt.py:303` mid-simulation, and `base/model.py:1315`
+    via `_spell` on the happy path.
+    """
+    lookup, _ = _written_bytes(tmp_path, payload)
+
+    assert lookup.label([13407], date(2020, 1, 1)) == ["13407"]
+
+
+@pytest.mark.parametrize("payload", UNPARSEABLE_SIDECARS)
+def test_as_of_refuses_an_unparseable_sidecar_with_a_shaped_error(
+    tmp_path, payload
+):
+    """Strict stays strict, and the refusal is SHAPED -- the module docstring's
+    "each refusal names the class, the path and the rebuild" has to hold for
+    the parse stage as well, or it is simply false.
+
+    A bare `RecursionError: maximum recursion depth exceeded while decoding a
+    JSON array` names neither the file nor the way out; the same three
+    assertions the structural refusal already carries are what make it an
+    answer a reader can act on.
+    """
+    lookup, path = _written_bytes(tmp_path, payload)
+
+    with pytest.raises(ValueError) as excinfo:
+        lookup.as_of(13407, date(2020, 1, 1))
+
+    message = str(excinfo.value)
+    assert "CrspTickerLookup:" in message
+    assert str(path) in message
+    assert ".crsp_*.json" in message
+
+
 def test_product_end_is_parsed_from_the_recorded_vintage(converted):
     """A derived value behind a `@property`, like `CrspReference.product_end`."""
     lookup = _lookup(converted)
