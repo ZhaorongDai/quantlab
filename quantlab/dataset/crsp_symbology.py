@@ -31,7 +31,7 @@ reference tier rather than a per-row read of the daily one.
 4. an interval whose ticker is null or empty CARRIES the previous interval's
    symbol for that PERMNO. Lehman's 2008-09-18 delisting interval is exactly
    this (live `L3_3`). On a PERMNO axis this carry no longer decides whether
-   that row is in the panel -- the row is keyed on 12570 either way -- it
+   that row is in the panel -- the row is keyed on 80599 either way -- it
    decides only whether the sidecar can put a NAME on a dead security's last
    day.
 
