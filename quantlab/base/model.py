@@ -1305,7 +1305,10 @@ class DLModel(BaseModel):
 
         没装 `symbol_labeller`（单独训练、非 CRSP 面板、没有 sidecar 的库）时
         返回标签自己的拼写，也就是这两条消息在 03.11-09 之前一直打的东西。
-        查表**从不**抛错：一条日志不该因为审计文件缺失而变成一次崩溃。
+        查表**从不**抛错：一条日志不该因为审计文件缺失**或格式损坏**而变成一次
+        崩溃。这里是裸调用、且在快乐路径上——面板多出未训练标的本来只是丢弃加
+        一条 warning、预测照常完成——所以守卫落在查表层（`CrspTickerLookup.label`），
+        而不是给这六个展示点各包一个 try。
         """
         if self.symbol_labeller is None or as_of is None:
             return [str(symbol) for symbol in symbols]

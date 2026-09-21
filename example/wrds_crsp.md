@@ -244,7 +244,7 @@ WRDS 提供了一张预连接的宽视图 `wrds_dsfv2_query`（98 列，带分�
 那正是 D-03 否决掉 1-D `ticker(symbol)` coord 的那个缺陷。旁车**只写这个面板自己的 PERMNO**
 （参考表里有 40,518 个），读侧是 `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`：
 `as_of(permno, day)` 是严格的单值提问（缺文件会抛），`label(permnos, day)` 是展示层的批量入口
-（**永不抛**，缺旁车就原样回落成数字）。强平日志、模型的 missing/extra 清单、
+（**永不抛**，旁车缺失或损坏——含解析不了与解析得了但形状不对——都原样回落成数字）。强平日志、模型的 missing/extra 清单、
 `UniverseMask.report()`、`browse_zarr` 的拒绝文案都走后者。
 
 判据是**盘上有没有那个旁车文件**，不是面板属于哪个厂商——所以 Tiingo / Alpaca 的面板输出一字未变。

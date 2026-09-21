@@ -402,6 +402,90 @@ def test_label_falls_back_without_raising_when_the_sidecar_is_corrupt(tmp_path):
     assert CrspTickerLookup(corrupt).label([13407], date(2022, 6, 9)) == ["13407"]
 
 
+#: Sidecars that PARSE as JSON and are still unusable -- the half of "corrupt"
+#: the contract claimed to cover and did not (G-03.11-3). All three were
+#: reproduced by hand against the shipped 03.11-09 code.
+#:
+#: They travel TWO DIFFERENT paths, which is the whole reason the guard has to
+#: be in two places rather than one:
+#:
+#: | payload | reading `intervals` | the per-PERMNO `as_of` call |
+#: |---|---|---|
+#: | `{"intervals": [1, 2, 3]}` | breaks here (`list.get`) | never reached |
+#: | `[]` | breaks here (`list.get`) | never reached |
+#: | `{"intervals": {"13407": [{"ticker": "FB"}]}}` | PASSES, returns a non-empty dict | breaks here (`span["start"]`) |
+#:
+#: A guard on the first step alone leaves the third one crashing, which is what
+#: `label()`'s single `try` around the intervals read used to do. Do not delete
+#: either half of the guard thinking the other one already covers it.
+MALFORMED_SIDECARS = [
+    pytest.param('{"intervals": [1, 2, 3]}', id="intervals-is-a-list"),
+    pytest.param(
+        '{"intervals": {"13407": [{"ticker": "FB"}]}}', id="span-has-no-start"
+    ),
+    pytest.param("[]", id="payload-is-a-list"),
+]
+
+
+def _written(tmp_path, text):
+    """A lookup over a sidecar whose exact bytes the test chose, and its path."""
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    path = tmp_path / "crsp.zarr.crsp_tickers.json"
+    path.write_text(text, encoding="utf-8")
+    return CrspTickerLookup(path), path
+
+
+@pytest.mark.parametrize("text", MALFORMED_SIDECARS)
+def test_label_falls_back_when_the_sidecar_parses_but_is_shaped_wrong(
+    tmp_path, text
+):
+    """The display contract says "missing OR CORRUPT", and corrupt includes
+    "parsed fine, shaped wrong" -- not just "not JSON".
+
+    The worst caller is `base/model.py:1281`: a BARE `_spell` on the happy path,
+    where a panel carrying untrained symbols is merely dropped with a warning
+    and the prediction completes. A malformed audit sidecar used to turn that
+    successful `predict_panel` into a crash.
+    """
+    lookup, _ = _written(tmp_path, text)
+
+    assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
+
+
+@pytest.mark.parametrize("text", MALFORMED_SIDECARS)
+def test_as_of_refuses_a_structurally_broken_sidecar_with_a_shaped_error(
+    tmp_path, text
+):
+    """The strict entry point stays strict -- but its refusal is READABLE.
+
+    A bare `AttributeError: 'list' object has no attribute 'get'` names neither
+    the file nor the way out. Structural damage must NOT be rounded down to
+    `None` here either: "this sidecar cannot be read" and "that PERMNO had no
+    name that day" are different answers and `as_of` is the question that cares.
+    """
+    lookup, path = _written(tmp_path, text)
+
+    with pytest.raises(ValueError) as excinfo:
+        lookup.as_of(13407, date(2022, 6, 9))
+
+    message = str(excinfo.value)
+    assert "CrspTickerLookup:" in message
+    assert str(path) in message
+    assert ".crsp_*.json" in message
+
+
+def test_a_payload_with_no_intervals_key_keeps_its_current_behaviour(tmp_path):
+    """An ABSENT `intervals` key is not damage: `.get("intervals", {})` has
+    always answered "this sidecar knows no names" and both entry points already
+    have a good answer for that. Tightening it into a refusal would break a
+    sidecar written for a roster this store does not carry."""
+    lookup, _ = _written(tmp_path, "{}")
+
+    assert lookup.as_of(13407, date(2022, 6, 9)) is None
+    assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
+
+
 def test_product_end_is_parsed_from_the_recorded_vintage(converted):
     """A derived value behind a `@property`, like `CrspReference.product_end`."""
     lookup = _lookup(converted)

@@ -607,28 +607,40 @@ def test_ticker_trained_symbols_still_align_unchanged(tmp_path, warning_messages
     ), warning_messages
 
 
-def _ticker_lookup(tmp_path, *, write: bool):
-    """A `CrspTickerLookup` over a hand-written sidecar, or over a missing one.
+def _ticker_lookup(tmp_path, *, sidecar: str):
+    """A `CrspTickerLookup` over a hand-written sidecar in one of three states.
 
     Hand-written rather than produced by a conversion: this file is about what
     the MODEL does with a labeller, and `tests/test_crsp_ticker_sidecar.py`
     already owns whether a conversion writes the file correctly.
+
+    `sidecar` is a three-state string rather than the `write: bool` this helper
+    started with, because "not written" now has two meanings that behave
+    differently inside the lookup:
+
+    - `"valid"`   -- a well-formed sidecar; 99999 spells GHOST
+    - `"absent"`  -- no file at all; the `payload` property's `FileNotFoundError`
+    - `"corrupt"` -- a file that PARSES and whose spans lack `start`/`end`
+
+    `"corrupt"` is deliberately not `"{not json"`: that is a parse failure,
+    guarded by the `payload` property since 03.11-09 and already covered in
+    `tests/test_crsp_ticker_sidecar.py`. It could never have reached the span
+    indexing that G-03.11-3 is about.
     """
     from quantlab.dataset.crsp_tickers import CrspTickerLookup
 
+    spans = {
+        "valid": [{"ticker": "GHOST", "start": "1990-01-01", "end": "2025-12-31"}],
+        "corrupt": [{"ticker": "GHOST"}],
+    }
     path = tmp_path / "prices.zarr.crsp_tickers.json"
-    if write:
+    if sidecar != "absent":
         path.write_text(
             json.dumps(
                 {
                     "generated_from": "stksecurityinfohist",
                     "vintage_product_end": "2025-12-31",
-                    "intervals": {
-                        "99999": [
-                            {"ticker": "GHOST", "start": "1990-01-01",
-                             "end": "2025-12-31"}
-                        ]
-                    },
+                    "intervals": {"99999": spans[sidecar]},
                 }
             ),
             encoding="utf-8",
@@ -648,7 +660,7 @@ def test_a_symbol_labeller_spells_the_dropped_permnos(tmp_path, warning_messages
     trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
     fresh = _permno_head(tmp_path)
     fresh.load(checkpoint)
-    fresh.symbol_labeller = _ticker_lookup(tmp_path, write=True).label
+    fresh.symbol_labeller = _ticker_lookup(tmp_path, sidecar="valid").label
     base = _features(trained)
     wider = xr.concat(
         [base, base.isel(symbol=[0]).assign_coords(symbol=[99999])],
@@ -675,7 +687,7 @@ def test_a_missing_ticker_sidecar_leaves_the_warning_working(
     trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
     fresh = _permno_head(tmp_path)
     fresh.load(checkpoint)
-    fresh.symbol_labeller = _ticker_lookup(tmp_path, write=False).label
+    fresh.symbol_labeller = _ticker_lookup(tmp_path, sidecar="absent").label
     base = _features(trained)
     wider = xr.concat(
         [base, base.isel(symbol=[0]).assign_coords(symbol=[99999])],
@@ -688,6 +700,48 @@ def test_a_missing_ticker_sidecar_leaves_the_warning_working(
     assert any(
         "99999" in m and "WR-02" in m for m in warning_messages
     ), warning_messages
+
+
+def test_a_corrupt_ticker_sidecar_leaves_the_warning_working(
+    tmp_path, warning_messages
+):
+    """G-03.11-3: a sidecar that PARSES and is shaped wrong must not crash a
+    prediction that was going to succeed.
+
+    The worst call site in the repo is the `_spell` in `predict_panel`'s
+    `extra` branch: it is a BARE call, inside no `try`, and it sits on the
+    HAPPY PATH -- a panel carrying symbols the model never trained on is merely
+    dropped with a `logger.warning` and the prediction completes normally. Until
+    03.11-12 a half-written audit file -- a file whose only job is to put
+    letters in a log line -- turned that successful `predict_panel` into an
+    `AttributeError`/`KeyError`.
+
+    The missing-sidecar twin above only exercised the `payload` property's
+    guard. This one gets past it: the JSON parses, `intervals` is a real dict,
+    and the damage only surfaces when a span is indexed for `start`.
+
+    This test does NOT touch `quantlab/base/model.py`, and that is the point.
+    The contract belongs to the lookup, where it is written down; wrapping each
+    of the six display points in its own `try` would be the same guard copied
+    six times, with six chances to forget the seventh.
+    """
+    trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+    fresh.symbol_labeller = _ticker_lookup(tmp_path, sidecar="corrupt").label
+    base = _features(trained)
+    wider = xr.concat(
+        [base, base.isel(symbol=[0]).assign_coords(symbol=[99999])],
+        dim="symbol",
+    ).isel(symbol=slice(None, None, -1))
+
+    pred = fresh.predict_panel(wider)
+
+    assert pred.symbol.values.tolist() == SORTED_PERMNOS
+    assert any(
+        "99999" in m and "WR-02" in m for m in warning_messages
+    ), warning_messages
+    assert not any("GHOST" in m for m in warning_messages), warning_messages
 
 
 def test_int64_checkpoint_records_json_integers(tmp_path):
