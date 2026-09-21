@@ -1610,7 +1610,15 @@ def _axis_secinfo():
 def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
     mock_crsp_session, tmp_path
 ):
-    """WR-07: `config.symbols` must restrict the TIMESTAMP axis too.
+    """WR-07: a roster restriction must restrict the TIMESTAMP axis too.
+
+    **The restriction is spelled `config.permnos` since 03.11-08.** It was
+    `config.symbols` when this test was written; that field is now refused on
+    this vendor (RULING 3, the tests at the foot of this module), and `permnos`
+    is the roster field that survives. The DEFECT CLASS is unchanged and is
+    what this test is for -- a frame filtered for the symbol axis while the
+    timestamp axis is read off the unfiltered one -- so the test moves to the
+    surviving field rather than being deleted with the old one.
 
     `_raw_axes_in_range` filtered the symbol axis and took the timestamp axis
     from the UNFILTERED derivation, so a symbol-restricted conversion planned its
@@ -1655,7 +1663,7 @@ def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
             start="2010-01-01",
             end="2012-12-31",
             store="axis_probe.zarr",
-            symbols=(AXIS_KEPT_PERMNO,),
+            permnos=(AXIS_KEPT_PERMNO,),
         )
     )
     pinned_symbols, pinned_timestamps = probe._raw_axes_in_range()
@@ -1671,7 +1679,7 @@ def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
         start="2010-01-01",
         end="2012-12-31",
         store="axis.zarr",
-        symbols=(AXIS_KEPT_PERMNO,),
+        permnos=(AXIS_KEPT_PERMNO,),
     )
     _convert(dataset_config)
 
@@ -1831,3 +1839,123 @@ def test_a_none_permnos_roster_converts_the_whole_raw_tier(
     assert sorted(_symbols(panel)) == sorted(
         [int(AXIS_KEPT_PERMNO), int(AXIS_OTHER_PERMNO)]
     ), _symbols(panel)
+
+
+# ---------------------------------------------------------------------------
+# RULING 3: `config.symbols` is REFUSED on a CRSP panel
+# ---------------------------------------------------------------------------
+#
+# `symbols` is a BASE-class field (`BaseDatasetConfig.symbols`) with a dozen
+# non-CRSP readers -- Alpaca and WRDS TAQ key on a ticker and have no PERMNO at
+# all -- so it is neither deleted nor renamed. What changes is what it means on
+# THIS vendor: the CRSP panel's symbol axis is the int64 PERMNO (D-01), so a
+# ticker roster handed to `symbols` describes an axis that does not exist.
+#
+# The refusal happens at CONFIG ASSIGNMENT and names `permnos`, because the
+# failure it replaces was a mid-run one: `symbols=('AAPL',)` used to survive
+# construction, survive the pull, and then either filter the derivation down to
+# zero rows or raise a `KeyError` from a `.sel` against an integer index --
+# pointing at "not in the index" when the real fact is that the caller named the
+# wrong field.
+
+
+def test_a_ticker_roster_in_config_symbols_is_refused_at_assignment(tmp_path):
+    """`symbols=('AAPL',)` raises at assignment and points at `permnos`."""
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    with pytest.raises(ValueError) as excinfo:
+        CrspStockDataset(_bare_config(tmp_path, symbols=("AAPL",)))
+
+    message = str(excinfo.value)
+    assert "config.symbols" in message, message
+    # The whole point of refusing at assignment is to hand back the field the
+    # caller should have used. A refusal that only says "not supported" leaves
+    # them exactly as stuck as the KeyError did.
+    assert "permnos" in message, message
+    # And the value, so someone who mistyped one entry of a long roster can see
+    # which one they wrote.
+    assert "AAPL" in message, message
+
+
+def test_config_symbols_none_is_the_only_accepted_spelling(tmp_path):
+    """The default is untouched: `None` constructs exactly as before."""
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    dataset = CrspStockDataset(_bare_config(tmp_path))
+    assert dataset.config.symbols is None
+
+    explicit = CrspStockDataset(_bare_config(tmp_path, symbols=None))
+    assert explicit.config.symbols is None
+
+
+def test_an_empty_config_symbols_tuple_is_refused_too(tmp_path):
+    """`()` is refused as well -- NON-None is the condition, not truthiness.
+
+    Deliberately NOT the `permnos` treatment. `permnos` refuses `()` because
+    its two readings ("no security" / "every security") were indistinguishable
+    and one of them silently widened the panel (WR-01); there the emptiness is
+    the defect. Here the FIELD is wrong on this vendor whatever it holds, so
+    the gate is `is not None` and an empty tuple is refused for the same reason
+    a full one is.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    with pytest.raises(ValueError) as excinfo:
+        CrspStockDataset(_bare_config(tmp_path, symbols=()))
+
+    assert "permnos" in str(excinfo.value), str(excinfo.value)
+
+
+def test_a_non_crsp_dataset_still_accepts_config_symbols(tmp_path):
+    """CONTROL ARM: the base field is unchanged for every other vendor.
+
+    PERMNO is a CRSP-only identifier. Binance and Alpaca will never have one,
+    so a refusal installed on `BaseDatasetConfig` -- or a rename of the field,
+    or of the `symbol` DIMENSION -- would break a dozen readers to tidy up one
+    vendor. This test is what makes that regression loud.
+    """
+    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.stock import StockDataset
+
+    dataset = StockDataset(
+        DatasetConfig(
+            zarr_file_path=str(tmp_path / "stock.zarr"),
+            raw_data_dir_path=str(tmp_path / "raw"),
+            catalog_path=str(tmp_path / "catalog"),
+            market="us_equity",
+            frequency="1d",
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+            symbols=("AAPL", "MSFT"),
+        )
+    )
+    assert dataset.config.symbols == ("AAPL", "MSFT")
+
+
+def test_crsp_has_no_reader_of_config_symbols():
+    """Nothing in `crsp.py` READS `config.symbols` any more.
+
+    The refusal is only half the change. Two readers filtered on the field --
+    the pinned-axis restriction and the window restriction -- and leaving
+    either one in place would mean the field still had a live meaning on this
+    vendor that the setter claims it does not. Asserted over the SOURCE rather
+    than by behaviour because "no reader" is a statement about the file, and a
+    behavioural test could only ever sample the paths it happens to walk.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "quantlab"
+        / "dataset"
+        / "crsp.py"
+    )
+    readers = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if re.search(r"self\.config\.symbols", line)
+    ]
+    assert readers == [], readers
