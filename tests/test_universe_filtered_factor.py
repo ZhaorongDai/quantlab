@@ -61,7 +61,6 @@ from tests.universe_fixtures import (
     REENTRY,
     REENTRY_OUT,
     SYMBOLS16,
-    WARRANT,
     RankCloseFactor,
     day,
     hand_panel,
@@ -72,24 +71,6 @@ from tests.universe_fixtures import (
     wrap,
     write_universe_store,
 )
-
-#: Measured against `data/data/reference/universe.parquet` on 2026-09-15; see
-#: the comment block above `UniverseFilteredFactor.NON_COMMON_TICKER_PATTERNS`.
-SURVIVE_LOCKS = [
-    "BRK-A", "BRK-B", "BF-A", "BF-B", "HEI-A", "LEN-B", "MOG-A", "UA-C",
-    "MKC-V", "CWEN-A", "PBR-A", "GOOGL", "AAPL", "MSFT", "ACIW", "AAWW",
-    "ACHR", "AMKR", "ALTR",
-    # 5-letter and dotted commons that are INDEX CONSTITUENTS, so a rule that
-    # excluded any of them would be provably wrong (falsifier 1).
-    "BATRA", "BATRK", "CMCSA", "CMCSK", "DISCA", "DISCK", "LBTYA", "LBTYK",
-    "LILAK", "QRTEA", "RYAAY", "STRZA", "BRK.B", "BF.B",
-]
-
-EXCLUDE_LOCKS = [
-    "AACIW", "AAC-WS", "AACBR", "AACBU", "AAC-U", "ACP-R", "ACP-R-W",
-    "HYZNW", "GNS-R", "SST-WS", "FINS-R-W", "EMISU", "BARK-WS", "AACTWS",
-    "ZWZZT", "ZVZZT", "ZXZZT", "NTEST-A", "CTEST", "JNJ-WD", "AAM-P-A",
-]
 
 N_BARS = 80
 DROP_BAR = 40
@@ -152,9 +133,9 @@ def test_tracer_xgb_trains_on_wrapped_factor_and_label_and_config_rebuilds(
 
     A wrapped factor and a wrapped label drop into an `MLConfig`, `collect()`
     and `train()` run unchanged, and the checkpoint's `config.json` rebuilds
-    into an equivalent wrapper. The symbol-axis assertions are the 2026-09-15
-    user decision: the ticker-rule symbol leaves the axis, the two
-    threshold-failing symbols STAY as all-NaN columns.
+    into an equivalent wrapper. The symbol axis is the 2026-09-21 state: NO
+    symbol ever leaves it, the threshold-failing symbols STAY as all-NaN
+    columns.
     """
     _, config = store
     model = make_wrapped_model(
@@ -181,9 +162,8 @@ def test_tracer_xgb_trains_on_wrapped_factor_and_label_and_config_rebuilds(
     panel = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
     symbols = [str(symbol) for symbol in panel["symbol"].values]
 
-    # Ticker rule: gone from the axis entirely.
-    assert WARRANT not in symbols
-    # Threshold failures: KEPT, as all-NaN columns.
+    # Nothing leaves the axis; threshold failures are KEPT as all-NaN columns.
+    assert set(symbols) == set(SYMBOLS16)
     assert PENNY in symbols and ILLIQUID in symbols
     for symbol in (PENNY, ILLIQUID):
         for variable in ("rank_close", "ma_close", "ret_1"):
@@ -203,7 +183,6 @@ def test_tracer_xgb_trains_on_wrapped_factor_and_label_and_config_rebuilds(
         assert rebuilt_item.min_price == original.min_price
         assert rebuilt_item.min_dollar_volume == original.min_dollar_volume
         assert rebuilt_item.window == original.window
-        assert rebuilt_item.exclude_non_common == original.exclude_non_common
 
     original_config = _normalized(model.get_config())
     rebuilt_config = _normalized(rebuilt.get_config())
@@ -313,15 +292,6 @@ def mask_factor(store):
     return wrap(make_rank_close_factor(config), window=WINDOW)
 
 
-@pytest.fixture(scope="module")
-def unfiltered_mask_factor(store):
-    """The same, with the static ticker rule switched off."""
-    _, config = store
-    return wrap(
-        make_rank_close_factor(config), window=WINDOW, exclude_non_common=False
-    )
-
-
 def test_mask_price_threshold_is_inclusive(mask_factor):
     """RAW close exactly at `min_price` is IN; a hair below is OUT."""
     close = np.array([[MIN_PRICE, MIN_PRICE - 0.001]] * 6)
@@ -408,23 +378,6 @@ def test_mask_ignores_adjusted_columns(mask_factor):
     xr.testing.assert_identical(baseline, flipped)
 
 
-def test_mask_excludes_a_warrant_ticker_unless_the_rule_is_disabled(
-    mask_factor, unfiltered_mask_factor
-):
-    """A rich, liquid warrant is still out -- the ticker rule is static and
-    independent of the data. With `exclude_non_common=False` it is in."""
-    close = np.full((8, 2), 50.0)
-    volume = np.full((8, 2), 1_000_000.0)
-    panel = hand_panel(close, volume, symbols=["AAPL", WARRANT])
-
-    mask = mask_factor.compute_universe_mask(panel)
-    assert np.isnan(mask.sel(symbol=WARRANT).values).all()
-    assert (mask.sel(symbol="AAPL").values[WINDOW - 1 :] == 1.0).all()
-
-    unfiltered = unfiltered_mask_factor.compute_universe_mask(panel)
-    assert (unfiltered.sel(symbol=WARRANT).values[WINDOW - 1 :] == 1.0).all()
-
-
 @pytest.mark.parametrize("cut", [6, 10, 14])
 def test_mask_is_point_in_time(mask_factor, cut):
     """Changing bars AFTER `cut` never changes the mask at or before `cut`.
@@ -452,34 +405,6 @@ def test_mask_is_point_in_time(mask_factor, cut):
         np.testing.assert_array_equal(
             baseline.values[: cut + 1], perturbed.values[: cut + 1]
         )
-
-
-# ---------------------------------------------------------------------------
-# The measured ticker rule
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("ticker", SURVIVE_LOCKS)
-def test_common_tickers_survive_the_rule(ticker):
-    """Class shares, 5-letter commons and dotted commons are COMMON STOCK.
-
-    A rule that merely looked for "has a hyphen" or "is five letters" would
-    delete Berkshire Hathaway and Comcast from the roster, silently.
-    """
-    assert UniverseFilteredFactor.is_common_ticker(ticker), ticker
-
-
-@pytest.mark.parametrize("ticker", EXCLUDE_LOCKS)
-def test_non_common_tickers_are_excluded(ticker):
-    """Warrants, rights, units, when-issued lines, preferreds and the
-    exchange test symbols are all removed."""
-    assert not UniverseFilteredFactor.is_common_ticker(ticker), ticker
-
-
-def test_is_common_ticker_is_case_insensitive():
-    assert not UniverseFilteredFactor.is_common_ticker("aaciw")
-    assert not UniverseFilteredFactor.is_common_ticker("aac-ws")
-    assert UniverseFilteredFactor.is_common_ticker("brk-b")
 
 
 # ---------------------------------------------------------------------------
@@ -689,27 +614,27 @@ def test_read_path_reproduces_the_cal_path(store, tmp_path):
 
     xr.testing.assert_allclose(read_back, computed)
     symbols = [str(s) for s in read_back["symbol"].values]
-    assert WARRANT not in symbols
     assert PENNY in symbols
     assert np.isnan(read_back["rank_close"].sel(symbol=PENNY).values).all()
 
 
 # ---------------------------------------------------------------------------
-# LS-3 symbol axis: ticker-rule symbols leave, threshold failures stay
+# LS-3 symbol axis: nothing ever leaves it
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("strategy", ["cal", "read"])
-def test_ticker_rule_symbols_absent_in_every_window_threshold_failures_kept(
+def test_the_symbol_axis_is_the_same_in_two_disjoint_date_windows(
     store, tmp_path, strategy
 ):
-    """The symbol axis must NOT depend on the date window (2026-09-15 decision).
+    """The symbol axis must NOT depend on the date window.
 
     Window B lies entirely after the drop-out leaves the universe, so under the
     superseded "drop a whole-window-NaN column" rule its axis would be narrower
     than window A's -- and `DLModel._align_prediction_symbols` raises when a
-    trained symbol is missing from a later window. Only the STATIC ticker rule
-    removes symbols, so the two axes are identical.
+    trained symbol is missing from a later window. Since 2026-09-21 NO rule
+    removes a symbol at all (condition (a) was the last one that could), so the
+    two axes are identical and carry the whole fixture roster.
     """
     _, config = store
     window_a = (day(0, N_BARS), day(35, N_BARS))
@@ -739,8 +664,7 @@ def test_ticker_rule_symbols_absent_in_every_window_threshold_failures_kept(
         symbols = [str(s) for s in features["symbol"].values]
         axes.append(symbols)
 
-        assert WARRANT not in symbols, "the ticker rule symbol must be gone"
-        assert PENNY in symbols and ILLIQUID in symbols
+        assert set(symbols) == set(SYMBOLS16), "no symbol may leave the axis"
         assert np.isnan(features["rank_close"].sel(symbol=PENNY).values).all()
 
     assert axes[0] == axes[1], (
@@ -750,17 +674,6 @@ def test_ticker_rule_symbols_absent_in_every_window_threshold_failures_kept(
 
     # Window B is entirely after the drop: the drop-out is kept as a NaN column.
     assert DROPOUT in axes[1]
-
-
-def test_exclude_non_common_false_drops_no_symbol(store):
-    _, config = store
-    factor = wrap(
-        make_rank_close_factor(config), window=WINDOW, exclude_non_common=False
-    )
-
-    features = factor.cal().get_features().load()
-
-    assert set(str(s) for s in features["symbol"].values) == set(SYMBOLS16)
 
 
 # ---------------------------------------------------------------------------
@@ -941,15 +854,12 @@ def test_backtester_runs_with_wrapped_factors_and_never_selects_junk(
 
     weights = result.weights["weight"]
     symbols = [str(s) for s in weights["symbol"].values]
-    # D-06: predictions are reindexed onto the PRICE symbols, so the
-    # ticker-rule symbol is back on this axis -- as an unselectable NaN.
-    assert WARRANT in symbols
 
     values = weights.transpose("timestamp", "symbol").values
     rebalance_rows = np.flatnonzero(np.isfinite(values).all(axis=1))
     assert rebalance_rows.size >= 2
 
-    for junk in (PENNY, ILLIQUID, WARRANT):
+    for junk in (PENNY, ILLIQUID):
         column = values[rebalance_rows, symbols.index(junk)]
         np.testing.assert_array_equal(
             column, np.zeros_like(column), err_msg=f"{junk} was selected"
@@ -1074,7 +984,6 @@ def test_rebuilt_backtester_from_run_config_reproduces_the_run(backtest_run):
         assert item.min_price == MIN_PRICE
         assert item.min_dollar_volume == MIN_DOLLAR_VOLUME
         assert item.window == WINDOW
-        assert item.exclude_non_common is True
 
     rebuilt_config = json.loads(json.dumps(to_jsonable(rebuilt.get_config())))
     assert _comparable(rebuilt_config) == _comparable(saved)
@@ -1142,7 +1051,6 @@ def test_dl_head_predicts_across_windows_when_a_trained_symbol_leaves_the_univer
     features = model._collect_all_features()
     symbols = [str(s) for s in features["symbol"].values]
     assert DROPOUT in symbols, "the trained symbol must still be on the axis"
-    assert WARRANT not in symbols, "the ticker rule removes it in EVERY window"
     assert np.isnan(features["rank_close"].sel(symbol=DROPOUT).values).all()
 
     # The whole point: this does not raise.
