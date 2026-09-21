@@ -160,6 +160,7 @@ same-day contention via `group_by(["timestamp","symbol"])`. The recorded reversa
 deliverable of this phase.
 
 **Required reading before planning** (measured, line-precise, do not re-derive):
+
 - `03.11-CONTEXT.md` in this phase's directory — **the locked decisions D-01..D-13.** `discuss-phase`
   was not run; the operator made every decision in a 2026-09-20 session and CONTEXT.md is the record.
   Do not re-ask them.
@@ -237,11 +238,12 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 11 plans
+**Plans:** 2/11 plans executed
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
 planner decisions (D-17..D-22) that close CONTEXT.md's `## Still open` list:
+
 - **D-14 (amends D-10):** never-ticker PERMNOs are **ADMITTED**; only a count report field is added.
   No type predicate is possible (1,003/1,012 are `EQTY/COM/NS`), and `securityactiveflg` is absent
   from the daily raw tier. No date gate either.
@@ -260,8 +262,8 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03.11-01-PLAN.md — W0 前置：`BaseStoreRebuilder` ABC + `CrspStoreRebuilder`（两层、config 驱动、不走工厂）、备份→清场→离线 convert→七项测量，在主仓库 data/ 上锁定 post-fix 四个数（D-15）
-- [ ] 03.11-02-PLAN.md — `widen_symbol_axis` 的 int64 静默清空修复（先红后绿）+ `quantlab/utils/symbol_axis.py` 的数值序与 dtype 归一化契约 + conftest 的第三个编码 arm
+- [x] 03.11-01-PLAN.md — W0 前置：`BaseStoreRebuilder` ABC + `CrspStoreRebuilder`（两层、config 驱动、不走工厂）、备份→清场→离线 convert→七项测量，在主仓库 data/ 上锁定 post-fix 四个数（D-15）
+- [x] 03.11-02-PLAN.md — `widen_symbol_axis` 的 int64 静默清空修复（先红后绿）+ `quantlab/utils/symbol_axis.py` 的数值序与 dtype 归一化契约 + conftest 的第三个编码 arm
 
 **Wave 2** *(blocked on 01, 02)*
 
