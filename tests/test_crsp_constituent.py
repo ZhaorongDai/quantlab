@@ -364,6 +364,81 @@ def test_every_end_is_explicit_and_within_the_product_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 03.11 Pitfall 2 -- the axis DTYPE and the axis ORDER, claimed separately
+# ---------------------------------------------------------------------------
+#
+# These two are deliberately NOT one test, and neither of them is "the mask can
+# be computed". A mask computes perfectly well when both sides have quietly
+# fallen back to a lexicographic STRING axis -- that is the "looks right"
+# failure (T-03.11-15), and it is reachable by removing `_build_intervals`'s
+# cast alone, or by leaving any one of `_densify`'s three `str()` calls in
+# place. Only dtype and order together rule it out, and splitting them says
+# which half regressed when one of them goes red.
+
+
+def _crsp_sp500_panel(tmp_path, spells, **overrides):
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(tmp_path, spells=spells)
+    config = _panel_config(
+        tmp_path, reference_dir, "crsp_sp500_axis", **overrides
+    )
+    return CrspSP500ConstituentDataset(config).from_raw_data().get_xarray_dataset()
+
+
+def test_the_constituent_panel_symbol_coord_is_int64(tmp_path):
+    """Half one of Pitfall 2: the axis carries INTEGERS, not digit strings.
+
+    A digit-string axis selects nothing against the int64 price panel
+    03.11-03 produced, and `UniverseMask` would report the ENTIRE universe as
+    missing rather than raise (T-03.11-16).
+
+    Asserted by dtype KIND rather than by an exact dtype literal, following
+    `tests/conftest.py:stored_symbol_encoding`'s own never-by-a-width-literal
+    rule: int32 would be an integer axis too, and pinning `int64` would make
+    this test about a width nobody chose.
+    """
+    panel = _crsp_sp500_panel(
+        tmp_path,
+        [
+            _sp500_spell("13407", "2013-12-23", _PRODUCT_END),  # SYNTHETIC
+            _sp500_spell("83443", "2010-02-16", _PRODUCT_END),  # SYNTHETIC
+        ],
+        start_date="2022-06-01",
+        end_date="2022-06-30",
+    )
+
+    assert panel["symbol"].dtype.kind == "i", panel["symbol"].dtype
+
+
+def test_the_constituent_panel_symbol_coord_is_numerically_ordered(tmp_path):
+    """Half two of Pitfall 2: the ORDER is numeric, and it actually diverges.
+
+    Historical PERMNOs happen to be five digits (~10000-93436), so numeric and
+    lexicographic order COINCIDE on today's universe -- a regression to
+    `sorted(str(...))` would be invisible. PERMNO 7000 is a real four-digit
+    security (`tests/crsp_fixtures.py:SECINFO_ROWS`), and it is here for
+    exactly that reason: with it on the axis the two orders fork, so the second
+    assertion below proves this test could fail.
+    """
+    panel = _crsp_sp500_panel(
+        tmp_path,
+        [
+            _sp500_spell("13407", "2013-12-23", _PRODUCT_END),  # SYNTHETIC
+            _sp500_spell("7000", "2013-12-23", _PRODUCT_END),  # SYNTHETIC
+            _sp500_spell("83443", "2010-02-16", _PRODUCT_END),  # SYNTHETIC
+        ],
+        start_date="2022-06-01",
+        end_date="2022-06-30",
+    )
+
+    labels = panel["symbol"].values.tolist()
+
+    assert labels == [7000, 13407, 83443]
+    assert labels != sorted(labels, key=str)
+
+
+# ---------------------------------------------------------------------------
 # T-03.10-31 -- the mask's symbols ARE the price panel's symbols
 # ---------------------------------------------------------------------------
 
