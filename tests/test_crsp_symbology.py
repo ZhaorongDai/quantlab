@@ -1,24 +1,23 @@
-"""PERMNO -> period-correct ticker: the CRSP symbology (D-04, D-10, D-15, D-19).
+"""PERMNO -> ticker intervals: what is LEFT of the CRSP symbology (D-04, D-18).
 
-Every naming case below is a LIVE CRSP row. The provenance rule of
+This file used to hold 21 tests, and 16 of them tested machinery that 03.11-07
+deleted: the share-class collision pass, `resolve_collisions`, the delisting
+SYMBOL carry, the `symbol_overrides` pin, the nonconforming-symbol report. None
+of that is missing coverage -- the PERMNO axis (D-01) made those mechanisms
+unreachable, not untested. Two securities can no longer land in one column, so
+there is no tie to break and no suffix to invent.
+
+What survives is the one thing a PERMNO-keyed panel still cannot say for
+itself: which HUMAN-READABLE name a security wore on a given date. The two
+tests below are that contract -- the interval table's schema and a rename -- and
+they are the schema the plan-09 ticker sidecar is built on.
+
+Every naming case is a LIVE CRSP row. The provenance rule of
 `tests/crsp_fixtures.py` holds here too: a value transcribed from a live check
 names the JSON key it came from, and a value invented for the test carries a
-`# SYNTHETIC` comment on the spot.
-
-The live sources:
-
-- `03.10-LIVE-CHECK.json` key `C5_ticker_hist_crsp_a_stock.stksecurityinfohist`
-  -- FB -> META (13407), BRK (83443), GOOG -> GOOGL (90319), AAPL (14593);
-- `03.10-LIVE-CHECK-2.json` key `L3_3` (Lehman's NULL-ticker delisting
-  interval), key `L5_1` (the ticker OVERLAPS between two PERMNOs: LYB, WIN),
-  key `L6_1` (the three BF lines);
-- `03.10-LIVE-CHECK-NDX-QQQ.json` key `C1_qqq_names` (QQQ -> QQQQ -> QQQ).
-
-Why the overlap cases matter more than the rename cases: a rename moves a
-PERMNO from one column to another, which is visible. Two PERMNOs landing in
-ONE column is invisible -- the panel still has a `BF` series, it just holds two
-different companies' prices. That is the failure D-04 exists to prevent, and it
-is what the collision pass and `resolve_collisions` are tested for here.
+`# SYNTHETIC` comment on the spot. The live source used here is
+`03.10-LIVE-CHECK.json` key `C5_ticker_hist_crsp_a_stock.stksecurityinfohist`
+-- FB -> META (13407).
 """
 
 from __future__ import annotations
@@ -26,70 +25,15 @@ from __future__ import annotations
 from datetime import date
 
 import polars as pl
-import pytest
 
 from quantlab.dataset.crsp_reference import REFERENCE_TABLES_BY_NAME
 from quantlab.dataset.crsp_symbology import CrspSymbology
-from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
-from tests.crsp_fixtures import LEHMAN_2008_ROWS, SECINFO_ROWS, dsf_row, secinfo_row
+from tests.crsp_fixtures import SECINFO_ROWS
 
 _SECINFO_SPEC = REFERENCE_TABLES_BY_NAME["stksecurityinfohist"]
-_DSF_COLUMNS = ("permno", "dlycaldt", "dlydelflg", "ticker")
-
-
-# ---------------------------------------------------------------------------
-# Extra `stksecurityinfohist` intervals
-# ---------------------------------------------------------------------------
-
-#: Alphabet's class-C issue. SYNTHETIC as a `stksecurityinfohist` row: the
-#: PERMNO 14542 and the 2014-04-03 start are VERBATIM `03.10-LIVE-CHECK-2.json`
-#: key `L7_4` (the CCM link `lpermno 14542.0` from 2014-04-03), but that live
-#: query read the LINK table, not the security history -- restating the spell
-#: as an interval here is the invention. `ticker='GOOG'` with
-#: `tradingsymbol='GOOG'` is what makes it the interesting case: a PERMNO that
-#: CARRIES a class (C) and must nevertheless stay plain `GOOG`, because it
-#: overlaps nothing.
-GOOG_C_ROWS = [
-    secinfo_row(14542, "2014-04-03", "2025-12-31", "GOOG", "GOOG", "C"),
-]
-
-#: Berkshire's class-A issue. SYNTHETIC: PERMNO 17778 and the interval edges
-#: are invented. The SHAPE is verbatim 83443's own C5 rows -- `ticker='BRK'`
-#: with a NULL `tradingsymbol` before 2002-01-02 and `BRK?` after -- which is
-#: the point: before 2002 NEITHER issue can be spelled from its own row, and
-#: only the overlap says they are two securities.
-BRK_A_ROWS = [
-    secinfo_row(17778, "1996-05-09", "2002-01-01", "BRK", None, "A"),
-    secinfo_row(17778, "2002-01-02", "2025-12-31", "BRK", "BRKA", "A"),
-]
-
-#: LyondellBasell's two classes. The PERMNOs (12345, 12346), the shared ticker
-#: `LYB`, the classes (A, B), the tradingsymbols (LYB, LYBB) and the overlap
-#: window 2010-10-14..2010-12-06 are all VERBATIM `03.10-LIVE-CHECK-2.json`
-#: key `L5_1` (that query projected `greatest(start)`/`least(end)`, i.e. the
-#: overlap, which is exactly what is restated here).
-LYB_ROWS = [
-    secinfo_row(12345, "2010-10-14", "2010-12-06", "LYB", "LYB", "A"),
-    secinfo_row(12346, "2010-10-14", "2010-12-06", "LYB", "LYBB", "B"),
-]
-
-#: The WIN overlap, VERBATIM `L5_1`: PERMNO 24803 with NO class and PERMNO
-#: 59475 with class B share the ticker `WIN` over 1969-03-17..1981-04-16, and
-#: BOTH have a NULL tradingsymbol. Nothing on either row can separate them --
-#: only the overlap plus the class can.
-WIN_ROWS = [
-    secinfo_row(24803, "1969-03-17", "1981-04-16", "WIN", None, None),
-    secinfo_row(59475, "1969-03-17", "1981-04-16", "WIN", None, "B"),
-]
 
 #: Every interval the naming tests run against.
-ALL_SECINFO_ROWS = (
-    list(SECINFO_ROWS) + GOOG_C_ROWS + BRK_A_ROWS + LYB_ROWS + WIN_ROWS
-)
-
-#: The QQQ override (D-15), VERBATIM the `symbol_overrides` value RESEARCH
-#: § D-15/D-16 prescribes for the benchmark store.
-QQQ_OVERRIDES = {"86755": "QQQ"}
+ALL_SECINFO_ROWS = list(SECINFO_ROWS)
 
 
 # ---------------------------------------------------------------------------
@@ -111,9 +55,10 @@ def _secinfo_frame(rows) -> pl.DataFrame:
     return _SECINFO_SPEC.cast(frame)
 
 
-def _symbology(rows=None, overrides=None) -> CrspSymbology:
-    return CrspSymbology(_secinfo_frame(ALL_SECINFO_ROWS if rows is None else rows),
-                         overrides)
+def _symbology(rows=None) -> CrspSymbology:
+    return CrspSymbology(
+        _secinfo_frame(ALL_SECINFO_ROWS if rows is None else rows)
+    )
 
 
 def _symbol_on(intervals: pl.DataFrame, permno: int, day: str) -> str | None:
@@ -133,72 +78,14 @@ def _symbol_on(intervals: pl.DataFrame, permno: int, day: str) -> str | None:
     return None if hit.is_empty() else hit["symbol"][0]
 
 
-def _daily_frame(records) -> pl.DataFrame:
-    """Daily rows as `label_rows` receives them: `permno` Int64, `timestamp`
-    Datetime, `dlydelflg` String -- the shape `CrspStockDataset._scan_raw`
-    produces (`quantlab/dataset/crsp.py`)."""
-    return pl.DataFrame(
-        [{name: record.get(name) for name in _DSF_COLUMNS} for record in records],
-        schema={name: pl.String for name in _DSF_COLUMNS},
-    ).select(
-        pl.col("permno").cast(pl.Int64),
-        pl.col("dlycaldt").str.to_date(strict=False).cast(pl.Datetime("us"))
-        .alias("timestamp"),
-        pl.col("dlydelflg"),
-    )
-
-
-def _labelled_frame(records) -> pl.DataFrame:
-    """Rows as `resolve_collisions` receives them -- `label_rows` has already
-    run, so `symbol` is present."""
-    return pl.DataFrame(
-        records,
-        schema={
-            "permno": pl.Int64,
-            "timestamp": pl.String,
-            "dlydelflg": pl.String,
-            "symbol": pl.String,
-        },
-        orient="row",
-    ).with_columns(
-        pl.col("timestamp").str.to_date(strict=False).cast(pl.Datetime("us"))
-    )
-
-
-def _member_frame(records) -> pl.DataFrame:
-    """`(permno, start_date, end_date)` membership intervals, closed on both
-    ends -- the shape plan 09's universes produce."""
-    return pl.DataFrame(
-        records,
-        schema={
-            "permno": pl.Int64,
-            "start_date": pl.String,
-            "end_date": pl.String,
-        },
-        orient="row",
-    ).with_columns(
-        pl.col("start_date").str.to_date(strict=False),
-        pl.col("end_date").str.to_date(strict=False),
-    )
-
-
-#: SYNTHETIC: a PERMNO whose last `stksecurityinfohist` interval ends
-#: 2010-05-14 while its delisting row is dated 2010-05-17. That gap is the
-#: VERBATIM Lehman shape of `03.10-LIVE-CHECK-2.json` key `L3_2`
-#: (`delistingdt 2008-09-17`, `deldlydt 2008-09-18` -- the delisting row is
-#: dated the trading day AFTER the delisting), restated on an invented PERMNO
-#: so the interval can be made to stop short, which Lehman's does not.
-DELISTED_SECINFO_ROWS = [
-    secinfo_row(55001, "2009-01-02", "2010-05-14", "DLT", "DLT", None),
-]
-
-
 # ---------------------------------------------------------------------------
-# Task 1 -- the intervals
+# The interval table -- the ticker sidecar's schema
 # ---------------------------------------------------------------------------
 
 
 def test_intervals_are_sorted_typed_and_one_row_per_input_interval():
+    """The four columns, their dtypes and the sort order plan 09's sidecar
+    reads. One row IN, one row OUT: nothing merges intervals any more."""
     intervals = _symbology().symbol_intervals()
 
     assert intervals.columns == ["permno", "symbol", "start_date", "end_date"]
@@ -211,7 +98,13 @@ def test_intervals_are_sorted_typed_and_one_row_per_input_interval():
 
 
 def test_rename_13407_is_fb_through_2022_06_08_and_meta_after():
-    """VERBATIM C5: one PERMNO, two names, a hard boundary between them."""
+    """VERBATIM C5: one PERMNO, two names, a hard boundary between them.
+
+    On the PERMNO axis this is no longer about which COLUMN the rows land in
+    -- 13407 is one column on both sides of 2022-06-09. It is about which name
+    a reader of the sidecar is told the security wore that day, and the
+    boundary has to be exact for that answer to be worth anything.
+    """
     intervals = _symbology().symbol_intervals()
 
     assert _symbol_on(intervals, 13407, "2012-05-18") == "FB"
@@ -221,316 +114,3 @@ def test_rename_13407_is_fb_through_2022_06_08_and_meta_after():
 
     fb = intervals.filter((pl.col("permno") == 13407) & (pl.col("symbol") == "FB"))
     assert fb["end_date"].max() == date(2022, 6, 8)
-
-
-def test_share_class_a_alone_never_suffixes_goog_or_googl():
-    """90319 carries class A throughout and is still plain GOOG/GOOGL, and the
-    class-C issue 14542 is plain GOOG because it overlaps nobody."""
-    intervals = _symbology().symbol_intervals()
-
-    assert _symbol_on(intervals, 90319, "2014-04-02") == "GOOG"
-    assert _symbol_on(intervals, 90319, "2014-04-03") == "GOOGL"
-    assert _symbol_on(intervals, 14542, "2014-04-03") == "GOOG"
-    # The two GOOG spells must not overlap, or the panel would hold two
-    # companies in one column on at least one day.
-    assert _symbol_on(intervals, 14542, "2014-04-02") is None
-
-
-def test_brk_classes_are_suffixed_before_and_after_2002():
-    """Before 2002-01-02 BOTH Berkshire issues have a NULL `tradingsymbol`
-    (VERBATIM C5 for 83443), so the class suffix can only come from the
-    overlap. After it, the tradingsymbol rule reaches the same answer."""
-    intervals = _symbology().symbol_intervals()
-
-    assert _symbol_on(intervals, 83443, "1996-05-09") == "BRK.B"
-    assert _symbol_on(intervals, 17778, "1996-05-09") == "BRK.A"
-    assert _symbol_on(intervals, 83443, "2002-01-02") == "BRK.B"
-    assert _symbol_on(intervals, 17778, "2002-01-02") == "BRK.A"
-    assert _symbol_on(intervals, 83443, "2025-12-31") == "BRK.B"
-
-
-def test_bf_three_lines_are_bf_a_bf_b_and_bf_on_both_sides_of_2002():
-    """VERBATIM L6_1: 29938 (A), 29946 (B) and 88279 (no class) all ticker
-    `BF`. The unclassed line keeps the bare ticker on both sides."""
-    intervals = _symbology().symbol_intervals()
-
-    for day in ("2001-06-01", "2002-01-02", "2004-07-27"):
-        assert _symbol_on(intervals, 29938, day) == "BF.A", day
-        assert _symbol_on(intervals, 29946, day) == "BF.B", day
-    for day in ("2001-06-01", "2002-01-02", "2004-06-10"):
-        assert _symbol_on(intervals, 88279, day) == "BF", day
-
-
-def test_lyb_uses_the_tradingsymbol_rule_for_the_b_line_only():
-    """VERBATIM L5_1: `tradingsymbol='LYBB'` spells the class, `'LYB'` does
-    not -- so the A line stays `LYB` even though it carries a class."""
-    intervals = _symbology().symbol_intervals()
-
-    assert _symbol_on(intervals, 12345, "2010-10-14") == "LYB"
-    assert _symbol_on(intervals, 12346, "2010-10-14") == "LYB.B"
-
-
-def test_win_overlap_suffixes_only_the_permno_that_carries_a_class():
-    """VERBATIM L5_1: 24803 has NO class, 59475 has class B, both NULL
-    tradingsymbols. The classed one moves; the unclassed one keeps `WIN`,
-    because inventing a suffix for it would rename a security CRSP never
-    renamed."""
-    intervals = _symbology().symbol_intervals()
-
-    assert _symbol_on(intervals, 24803, "1969-03-17") == "WIN"
-    assert _symbol_on(intervals, 59475, "1969-03-17") == "WIN.B"
-
-
-def test_a_null_ticker_interval_carries_the_previous_symbol():
-    """VERBATIM L3_3: Lehman's 2008-09-18 interval has NO ticker at all, and
-    it is the interval the delisting return falls in (D-10/D-19)."""
-    intervals = _symbology().symbol_intervals()
-
-    assert _symbol_on(intervals, 80599, "2008-09-17") == "LEH"
-    assert _symbol_on(intervals, 80599, "2008-09-18") == "LEH"
-
-
-def test_a_first_interval_with_a_null_ticker_has_no_symbol():
-    """There is nothing to carry from, and inventing a label would be a guess
-    about identity -- so the symbol is null and the rows become reported
-    drops rather than a wrong column."""
-    rows = [
-        # SYNTHETIC: a PERMNO whose history OPENS with an unnamed interval.
-        secinfo_row(99999, "2009-01-02", "2009-01-05", None, None, None),
-        secinfo_row(99999, "2009-01-06", "2009-12-31", "ZZZ", "ZZZ", None),
-    ]
-    intervals = _symbology(rows).symbol_intervals()
-
-    assert _symbol_on(intervals, 99999, "2009-01-02") is None
-    assert _symbol_on(intervals, 99999, "2009-01-06") == "ZZZ"
-
-
-def test_override_pins_qqq_across_the_qqqq_span():
-    """D-15: PERMNO 86755 is `QQQ` for its whole history, including the
-    2004-12-01..2011-03-22 spell when CRSP called it QQQQ
-    (VERBATIM NDX-QQQ `C1_qqq_names`)."""
-    intervals = _symbology(overrides=QQQ_OVERRIDES).symbol_intervals()
-
-    for day in ("1999-03-10", "2004-12-01", "2010-06-01", "2011-03-22",
-                "2025-12-31"):
-        assert _symbol_on(intervals, 86755, day) == "QQQ", day
-    assert "QQQQ" not in set(intervals["symbol"].drop_nulls())
-
-
-def test_every_symbol_matches_the_tradeable_ticker_pattern():
-    """The symbol becomes a Zarr coordinate label, so it must be spellable in
-    the same alphabet every other quantlab symbol uses. Anything that is not
-    is REPORTED rather than silently accepted (T-03.10-18)."""
-    symbology = _symbology(overrides=QQQ_OVERRIDES)
-    intervals = symbology.symbol_intervals()
-
-    bad = [
-        symbol
-        for symbol in intervals["symbol"].drop_nulls().unique()
-        if not TRADEABLE_TICKER_PATTERN.match(symbol)
-    ]
-    assert bad == []
-    assert symbology.report["nonconforming_symbols"] == []
-
-
-def test_class_suffixed_report_lists_every_interval_the_collision_pass_moved():
-    """T-03.10-17: a symbol this module CHANGED must leave a trace, so the
-    plan-08 sidecar can show which column a security actually landed in."""
-    symbology = _symbology()
-    symbology.symbol_intervals()
-
-    suffixed = symbology.report["class_suffixed"]
-    moved = {(entry["permno"], entry["symbol"]) for entry in suffixed}
-    assert (83443, "BRK.B") in moved
-    assert (17778, "BRK.A") in moved
-    assert (59475, "WIN.B") in moved
-    assert (29938, "BF.A") in moved
-    assert (29946, "BF.B") in moved
-    # The unclassed lines were never moved, so they are not in the report.
-    assert 24803 not in {entry["permno"] for entry in suffixed}
-    assert 88279 not in {entry["permno"] for entry in suffixed}
-    # Every entry carries its own window, as ISO text (the report is written
-    # to a JSON sidecar).
-    entry = next(e for e in suffixed if e["permno"] == 59475)
-    assert entry["start_date"] == "1969-03-17"
-    assert entry["end_date"] == "1981-04-16"
-
-
-def test_a_symbol_that_already_spells_its_class_is_not_suffixed_twice():
-    """Two intervals that ALREADY read `BRK.B` (the tradingsymbol rule) and
-    overlap must not become `BRK.B.B` -- the suffix is a spelling, not a
-    counter."""
-    rows = [
-        # SYNTHETIC: two PERMNOs whose tradingsymbols both spell class B on
-        # one ticker. Contrived, and the exact shape the guard exists for.
-        secinfo_row(70001, "2005-01-03", "2006-12-29", "ABC", "ABCB", "B"),
-        secinfo_row(70002, "2005-01-03", "2006-12-29", "ABC", "ABCB", "B"),
-    ]
-    intervals = _symbology(rows).symbol_intervals()
-
-    assert set(intervals["symbol"]) == {"ABC.B"}
-    # The two issues STILL collide -- that is left for `resolve_collisions`,
-    # which refuses per (date, symbol) cell rather than inventing a spelling.
-    assert set(intervals["permno"]) == {70001, 70002}
-
-
-# ---------------------------------------------------------------------------
-# Task 2 -- row labelling and row-level collisions
-# ---------------------------------------------------------------------------
-
-
-def test_every_lehman_row_carries_leh_including_the_delisting_row():
-    """VERBATIM L3_1 + L3_3 (D-10, D-19). The 2008-09-18 row is the delisting
-    return -- a -60% day. It is labelled through the NULL-ticker interval, so
-    it keeps LEH and stays in the panel; dropping it would hand the backtest a
-    security that simply stopped trading at 0.13, which is survivorship bias
-    reintroduced one row at a time."""
-    symbology = _symbology()
-    labelled = symbology.label_rows(_daily_frame(LEHMAN_2008_ROWS))
-
-    assert labelled.height == len(LEHMAN_2008_ROWS)
-    assert set(labelled["symbol"]) == {"LEH"}
-    assert symbology.report["unlabelled"] == {}
-
-
-def test_a_delisting_row_past_the_last_interval_carries_the_last_symbol():
-    """Pitfall 3: `DelDlyDt` lies AFTER the last `secinfoenddt`, so the as-of
-    join alone yields nothing for the one row that matters most."""
-    symbology = _symbology(DELISTED_SECINFO_ROWS)
-    labelled = symbology.label_rows(
-        _daily_frame(
-            [
-                dsf_row(55001, "2010-05-13", dlydelflg="N", ticker="DLT"),
-                dsf_row(55001, "2010-05-17", dlydelflg="Y", ticker=None),
-            ]
-        )
-    )
-
-    assert labelled.sort("timestamp")["symbol"].to_list() == ["DLT", "DLT"]
-    carried = symbology.report["delisting_carried"]["55001"]
-    assert carried["rows"] == 1
-    assert carried["symbol"] == "DLT"
-    assert carried["first"] == "2010-05-17" == carried["last"]
-
-
-def test_a_live_row_past_the_last_interval_is_dropped_into_report_unlabelled():
-    """The carry is for DELISTING rows only. An ordinary row with no covering
-    interval has no column to live in, and a placeholder label would put an
-    unidentified security into someone else's series -- so it is dropped, and
-    the drop is reported (T-03.10-17)."""
-    symbology = _symbology(DELISTED_SECINFO_ROWS)
-    labelled = symbology.label_rows(
-        _daily_frame(
-            [
-                dsf_row(55001, "2010-05-17", dlydelflg="Y", ticker=None),
-                dsf_row(55001, "2010-05-17", dlydelflg="N", ticker=None),
-            ]
-        )
-    )
-
-    assert labelled.height == 1
-    assert labelled["symbol"].to_list() == ["DLT"]
-    assert symbology.report["unlabelled"] == {
-        "55001": {"rows": 1, "first": "2010-05-17", "last": "2010-05-17"}
-    }
-
-
-def test_ticker_reuse_keeps_the_active_permno_over_the_delisting_row():
-    """SYNTHETIC ticker reuse: one security's delisting row and another's
-    first active row land on one `(date, symbol)` cell. Rule 1 keeps the
-    active one -- the ticker belongs to whoever is still trading under it."""
-    symbology = _symbology()
-    frame = _labelled_frame(
-        [
-            (11111, "2010-05-17", "Y", "XYZ"),
-            (22222, "2010-05-17", "N", "XYZ"),
-        ]
-    )
-    resolved = symbology.resolve_collisions(frame)
-
-    assert resolved["permno"].to_list() == [22222]
-    assert symbology.report["collisions"] == [
-        {
-            "date": "2010-05-17",
-            "symbol": "XYZ",
-            "kept": 22222,
-            "dropped": [11111],
-            "rule": "active_over_delisting",
-        }
-    ]
-
-
-def test_a_collision_between_two_active_permnos_uses_universe_membership():
-    """Rule 2: when both are trading, the one the configured universe holds
-    on that date is the one the panel is being built for."""
-    symbology = _symbology()
-    frame = _labelled_frame(
-        [
-            (33333, "2011-01-03", "N", "XYZ"),
-            (44444, "2011-01-03", "N", "XYZ"),
-        ]
-    )
-    members = _member_frame([(33333, "2010-01-04", "2012-12-31")])
-    resolved = symbology.resolve_collisions(frame, member_intervals=members)
-
-    assert resolved["permno"].to_list() == [33333]
-    assert symbology.report["collisions"][0]["rule"] == "universe_member"
-    assert symbology.report["collisions"][0]["kept"] == 33333
-
-
-def test_an_unresolvable_collision_refuses_and_names_the_cells():
-    """Rule 3 is REFUSAL, never a pick. Averaging, summing or taking the
-    first row would put two companies' prices in one series and leave no
-    trace (T-03.10-16); a raise stops the conversion with the exact cell
-    named, which the user can fix by restricting `permnos` or supplying a
-    universe."""
-    symbology = _symbology()
-    frame = _labelled_frame(
-        [
-            (33333, "2011-01-03", "N", "XYZ"),
-            (44444, "2011-01-03", "N", "XYZ"),
-        ]
-    )
-
-    with pytest.raises(ValueError) as excinfo:
-        symbology.resolve_collisions(frame)
-
-    message = str(excinfo.value)
-    for fragment in ("2011-01-03", "XYZ", "33333", "44444", "1 "):
-        assert fragment in message, fragment
-    assert "permnos" in message and "collision_universe" in message
-
-
-def test_a_frame_with_no_collision_comes_back_unchanged():
-    """The common case must be a no-op: same rows, same ORDER (the caller's
-    sort is load-bearing for the adjustment anchor), and an empty report."""
-    symbology = _symbology()
-    frame = _labelled_frame(
-        [
-            (11111, "2010-05-18", "N", "XYZ"),
-            (22222, "2010-05-17", "N", "ABC"),
-            (11111, "2010-05-17", "N", "XYZ"),
-        ]
-    )
-    resolved = symbology.resolve_collisions(frame)
-
-    assert resolved.equals(frame)
-    assert symbology.report["collisions"] == []
-
-
-def test_collision_resolution_leaves_timestamp_and_symbol_unique():
-    """The point of the whole exercise: `(timestamp, symbol)` is the panel's
-    key, so after resolution it must identify exactly one row."""
-    symbology = _symbology()
-    frame = _labelled_frame(
-        [
-            (11111, "2010-05-17", "Y", "XYZ"),
-            (22222, "2010-05-17", "N", "XYZ"),
-            (22222, "2010-05-18", "N", "XYZ"),
-            (33333, "2010-05-17", "N", "ABC"),
-        ]
-    )
-    resolved = symbology.resolve_collisions(frame)
-
-    key = resolved.select("timestamp", "symbol")
-    assert key.height == key.unique().height == 3

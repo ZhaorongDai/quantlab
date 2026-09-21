@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 20
+open_count: 21
 waived_count: 0
 fixed_count: 3
-total_count: 23
-last_updated: 2026-09-21T04:37:01.261Z
+total_count: 24
+last_updated: 2026-09-21T05:57:52.914Z
 ---
 
 # Broken Windows Ledger
@@ -38,6 +38,7 @@ last_updated: 2026-09-21T04:37:01.261Z
 | 21 | 03.11 | deviation | tests/test_crsp_constituent.py |  | test_membership_symbols_agree_with_the_crsp_price_panel red between 03.11-03 and 03.11-05: price panel is on the int64 PERMNO axis, the membership panel is still ticker-keyed. Owned by plan 03.11-05. | fixed |  | 2026-09-21T04:00:24.635Z | 2026-09-21T04:36:55.739Z |
 | 22 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | 4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08. | open |  | 2026-09-21T04:00:30.770Z |  |
 | 23 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited. | open |  | 2026-09-21T04:37:01.261Z |  |
+| 24 | 03.11 | deviation | tests/test_no_identity_residue.py |  | strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07 | open |  | 2026-09-21T05:57:52.914Z |  |
 
 ````json
 [
@@ -315,6 +316,18 @@ last_updated: 2026-09-21T04:37:01.261Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-21T04:37:01.261Z",
+    "resolved_at": null
+  },
+  {
+    "id": 24,
+    "kind": "deviation",
+    "phase": "03.11",
+    "file": "tests/test_no_identity_residue.py",
+    "line": null,
+    "description": "strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-21T05:57:52.914Z",
     "resolved_at": null
   }
 ]

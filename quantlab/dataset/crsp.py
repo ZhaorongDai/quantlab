@@ -224,11 +224,6 @@ SECURITY_FILTER_PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
 #: removed, by type combination and by PERMNO (D-17).
 FILTER_REPORT_SUFFIX: str = ".crsp_filter_report.json"
 
-#: `{zarr_file_path}.crsp_symbology_report.json` -- every identity decision:
-#: resolved collisions, PERMNO seams, carried delisting labels, class
-#: respellings and rows no interval could label (D-04, D-18).
-SYMBOLOGY_REPORT_SUFFIX: str = ".crsp_symbology_report.json"
-
 #: The `dsf_v2` flag marking the row that carries the delisting return.
 _DELISTING_FLAG = "Y"
 
@@ -438,12 +433,10 @@ class CrspStockDataset(StockDataset):
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
-        self._symbology_report: dict | None = None
-        # The membership spells of `collision_universe`, memoised because they
-        # now have TWO readers in one derivation (the roster exemption and the
-        # collision tie-break). Reset here for the same reason the derivation
-        # is: a re-dated or re-rostered config must not reuse the previous
-        # universe's spells.
+        # The membership spells of `collision_universe`, memoised for the
+        # roster exemption in `_apply_security_filter` -- its one reader. Reset
+        # here for the same reason the derivation is: a re-dated or re-rostered
+        # config must not reuse the previous universe's spells.
         self._member_intervals_cache: pl.DataFrame | None = None
 
     # -- the global derivation ---------------------------------------------
@@ -490,8 +483,7 @@ class CrspStockDataset(StockDataset):
 
         reference = CrspReference(self.config.reference_dir)
         self._symbology = CrspSymbology(
-            reference.table("stksecurityinfohist"),
-            self.config.symbol_overrides,
+            reference.table("stksecurityinfohist")
         )
         # The panel's `symbol` IS the PERMNO (D-01), and the raw frame's
         # `symbol` column ALREADY holds it -- `wrds_crsp.py:317-319` verbatim:
@@ -587,13 +579,12 @@ class CrspStockDataset(StockDataset):
         # cumulative product would make the next kept day's adjusted move span
         # a return the panel no longer shows.
         derived = self._apply_security_filter(derived)
-        # `_resolve_identity` is NOT called any more (D-01). Both of the things
-        # it existed for are impossible on a PERMNO axis: a same-day collision
-        # needs two PERMNOs in one `(date, symbol)` cell, and the raw tier
-        # already asserts `(permno, dlycaldt)` uniqueness
-        # (`wrds_crsp.py:818-840`); a seam needs a symbol column to change
-        # company, and a PERMNO column never does. The method body stays for
-        # now and is removed in plan 07.
+        # There is no identity-resolution step here, and no place one could go
+        # (D-01). Both things the deleted one existed for are unspellable on a
+        # PERMNO axis: a same-day collision needs two PERMNOs in one
+        # `(date, symbol)` cell, and the raw tier already asserts
+        # `(permno, dlycaldt)` uniqueness (`wrds_crsp.py:818-840`); a seam needs
+        # a symbol column to change company, and a PERMNO column never does.
         return self._finalise(derived)
 
     def _assert_anchor_usable(self, derived: pl.DataFrame) -> None:
@@ -675,114 +666,24 @@ class CrspStockDataset(StockDataset):
                 f"for these PERMNO(s) in the raw tier."
             )
 
-    # -- ticker ownership and PERMNO seams (D-04, D-18) ---------------------
-
-    def _resolve_identity(self, derived: pl.DataFrame) -> pl.DataFrame:
-        """Make every `(timestamp, symbol)` cell ONE security, and break the
-        adjusted series where a symbol column changes company.
-
-        Two steps, in this order and no other:
-
-        1. **Collisions** (D-04). Two PERMNOs on one `(date, symbol)` cell are
-           resolved by `CrspSymbology.resolve_collisions` -- active over
-           delisting, then the configured universe -- or the conversion
-           refuses. Nothing is merged: two companies' prices in one column
-           would fabricate every return across the join while leaving a
-           perfectly well-formed panel behind (T-03.10-16).
-        2. **Seams** (D-18). What survives step 1 can still hand a column from
-           one company to the next on consecutive days -- ordinary ticker
-           reuse. The incoming PERMNO's FIRST row in that column gets NaN
-           adjusted values, so no return and no rolling window spans the two.
-           Raw prices, `permno` and every CRSP extra stay exactly as observed:
-           the seam removes the fabricated quantity, not the observation.
-
-        A RENAME is deliberately not a seam. FB -> META is PERMNO 13407 on
-        both sides, so `META`'s first row follows `FB`'s last within one
-        security and the ratio between them is a real return. A ticker-keyed
-        rule could not tell that case from reuse, which is why the test is on
-        the PERMNO.
-
-        The opt-out (`nan_adj_at_permno_seam=False`) removes the NaN, never
-        the RECORD: the seam is reported either way.
-        """
-        frame = self._symbology.resolve_collisions(
-            derived, self._member_intervals()
-        )
-
-        frame = frame.sort(["symbol", "timestamp"])
-        frame = frame.with_columns(
-            pl.col("permno").shift(1).over("symbol").alias("_prev_permno")
-        )
-        frame = frame.with_columns(
-            (
-                pl.col("_prev_permno").is_not_null()
-                & (pl.col("permno") != pl.col("_prev_permno"))
-            ).alias("_seam")
-        )
-
-        seams = frame.filter(pl.col("_seam")).sort(["timestamp", "symbol"])
-        self._symbology_report = {
-            "seams": [
-                {
-                    "date": str(record["timestamp"])[:10],
-                    "symbol": str(record["symbol"]),
-                    "old_permno": int(record["_prev_permno"]),
-                    "new_permno": int(record["permno"]),
-                }
-                for record in seams.to_dicts()
-            ],
-            **dict(self._symbology.report),
-        }
-        if seams.height:
-            logger.warning(
-                f"{self.class_name}: {seams.height} PERMNO seam(s) in the "
-                f"panel -- a symbol column changes company there. Adjusted "
-                f"values on the incoming row are "
-                f"{'NaN' if self.config.nan_adj_at_permno_seam else 'KEPT'}; "
-                f"see {SYMBOLOGY_REPORT_SUFFIX} beside the store."
-            )
-
-        if self.config.nan_adj_at_permno_seam and seams.height:
-            null = pl.lit(None, dtype=pl.Float64)
-            frame = frame.with_columns(
-                # `adjClose` is computed directly from the anchor, while the
-                # other four come from these two factors -- so all three must
-                # be nulled for all five variables to be NaN.
-                pl.when(pl.col("_seam"))
-                .then(null)
-                .otherwise(pl.col("adjClose"))
-                .alias("adjClose"),
-                pl.when(pl.col("_seam"))
-                .then(null)
-                .otherwise(pl.col("_factor"))
-                .alias("_factor"),
-                pl.when(pl.col("_seam"))
-                .then(null)
-                .otherwise(pl.col("_volume_factor"))
-                .alias("_volume_factor"),
-            )
-        return frame.drop(["_prev_permno", "_seam"])
-
-    def symbology_report_path(self) -> Path:
-        """`{zarr_file_path}.crsp_symbology_report.json`, beside the store."""
-        return Path(str(self.config.zarr_file_path) + SYMBOLOGY_REPORT_SUFFIX)
-
     # -- the security filter (D-06, D-17) -----------------------------------
 
     def _member_intervals(self) -> pl.DataFrame | None:
         """`permno_intervals(collision_universe)`, read ONCE per instance.
 
         `None` when no universe is configured, which is also "there is no
-        membership fact to consult" for both of this frame's readers.
+        membership fact to consult" for this frame's reader.
 
-        **Memoised because it now has TWO readers inside one derivation**: the
-        roster exemption in `_apply_security_filter` and the collision tie-break
-        in `_resolve_identity`. Saving the second read of the reference tier is
-        the smaller reason. The larger one is that two independent reads could
-        disagree -- a reference tier rewritten under a long conversion would let
-        the filter and the tie-break hold different opinions about who was a
-        member, and nothing at runtime would notice a panel built from two
-        rosters. One read, one opinion.
+        **One reader, since 03.11-07**: the roster exemption in
+        `_apply_security_filter` (GAP-C, operator P8 -- a named roster is not
+        overruled by a type filter). The memo once served a second reader as
+        well, a collision tie-break that asked which of two PERMNOs sharing a
+        `(date, symbol)` cell was the universe member; that question cannot be
+        asked on a PERMNO axis and its machinery is gone. The memo stays
+        anyway, for the reason it was worth having with one reader too: the
+        reference tier is read from disk, and a conversion that read it twice
+        could be handed two different answers if it were rewritten underneath a
+        long run. One read, one opinion about who was a member.
 
         Invalidated in the `config` setter beside `_derivation_cache`.
         """
@@ -948,8 +849,25 @@ class CrspStockDataset(StockDataset):
         A delisted security's last row is precisely where CRSP's type columns
         go blank, and that row carries the delisting RETURN. Judging it on its
         own blank types would drop the -60% day and let survivorship bias back
-        in through the filter, one row at a time, immediately after symbology's
-        carry rule had rescued the same row from a NULL ticker.
+        in through the filter, one row at a time.
+
+        The PERMNO axis (D-01) did NOT make this inheritance redundant, and the
+        distinction is worth stating because a neighbouring mechanism WAS made
+        redundant by it and deleted in 03.11-07. That one was about the NAME: a
+        delisting row's `ticker` also goes blank, and on a ticker axis a row
+        with no name had no column to live in, so symbology carried the
+        previous interval's symbol onto it. Keyed on the PERMNO, the row has
+        its column regardless -- nothing needs carrying to keep it in the
+        panel. What still goes blank is the row's TYPE columns, and this filter
+        reads those, so without the inheritance below every delisted
+        security silently loses its final, largest-magnitude day and the panel
+        stays perfectly well-formed while it happens (T-03.11-09). The
+        alternative considered and rejected: exempt `dlydelflg == 'Y'` rows
+        from the filter outright. That is wider than the fact warrants -- a
+        security legitimately excluded by type on its last trading day would be
+        readmitted on its delisting day -- whereas inheriting says exactly what
+        is true, that the verdict has not changed because nothing observable
+        about the security did.
 
         **An EXPLICIT ROSTER overrides the verdict** (GAP-C, `_roster_exemption`).
         The exemption is OR-ed in AFTER the delisting carry, which is the only
@@ -1128,21 +1046,25 @@ class CrspStockDataset(StockDataset):
 
         `{"permnos": [...numeric order...], "rows": N}` (D-14 / RULING 1).
 
-        **The predicate is `label_rows`' own, reproduced exactly**, because the
-        question is counterfactual: "would the ticker axis have admitted this
-        row". `CrspSymbology.label_rows` as-of joined each row's date onto
-        `symbol_intervals().drop_nulls("symbol")` and DROPPED whatever it could
-        not label, so a PERMNO none of whose panel days falls inside an
-        interval that CARRIES a ticker is one the old axis never let in. Using
-        the full interval table instead (nulls included) would answer a
-        different question and count nobody: a never-ticker PERMNO does have
-        intervals, they just have no name on them.
+        **The predicate is the retired ticker labeller's own, reproduced
+        exactly here**, because the question is counterfactual: "would the
+        ticker axis have admitted this row". That labeller (deleted with the
+        rest of the ticker-identity machinery in 03.11-07 -- this method is the
+        only place its behaviour still has to be stated) as-of joined each
+        row's date onto the NAMED intervals, `symbol_intervals()` with the null
+        symbols dropped, and discarded whatever it could not label. So a PERMNO
+        none of whose panel days falls inside an interval that CARRIES a ticker
+        is one the old axis never let in. Using the full interval table instead
+        (nulls included) would answer a different question and count nobody: a
+        never-ticker PERMNO does have intervals, they just have no name on
+        them.
 
         A PERMNO is counted only when NONE of its panel days is covered.
         Partial coverage is not this field's subject -- a security that had a
         ticker for part of the window was admitted for that part on either
-        axis, and the rows the ticker axis would have dropped mid-history are
-        the `unlabelled` count that goes away with symbology in plan 07.
+        axis, and the rows the ticker axis would have dropped mid-history were
+        counted by a separate `unlabelled` tally that went away with the
+        labeller.
 
         **What this is NOT.** It is not a filter. Nothing is excluded here, and
         `FILTERABLE_COLUMNS` stays at its nine TYPE columns. D-10 originally
@@ -1179,7 +1101,7 @@ class CrspStockDataset(StockDataset):
         )
         # A backward as-of join alone attaches the last interval to every later
         # row; the END is what says the row is actually inside it. Same two
-        # steps, same order, as `label_rows`.
+        # steps, same order, as the retired labeller's.
         labelled = labelled.with_columns(
             pl.when(
                 pl.col("end_date").is_not_null()
@@ -1522,16 +1444,26 @@ class CrspStockDataset(StockDataset):
         timestamps = derivation.get_column("timestamp").unique().to_list()
 
         # Written LAST, after the derivation has succeeded: a run that fails
-        # on a symbology collision must not leave an anchor record for a
-        # store that was never created. A store, on the other hand, can never
-        # exist without one -- the first append happens after this returns.
+        # in the derivation (an unusable adjustment anchor, a changed anchor)
+        # must not leave an anchor record for a store that was never created.
+        # A store, on the other hand, can never exist without one -- the first
+        # append happens after this returns.
         self._write_identity_reports()
         self._write_adjustment_record(record)
         return symbols, pd.DatetimeIndex(sorted(timestamps))
 
     def _write_identity_reports(self) -> None:
-        """Write the filter and symbology sidecars, ONCE per conversion, and
-        only when the store does not exist yet.
+        """Write the identity sidecars, ONCE per conversion, and only when the
+        store does not exist yet.
+
+        One sidecar as of 03.11-07: `.crsp_filter_report.json`. The symbology
+        report that sat beside it is gone -- all six of its keys were
+        statements about a ticker axis (resolved collisions, PERMNO seams,
+        carried labels, class respellings, unlabelled rows), and a sidecar that
+        can only ever say "nothing happened" reads like evidence a check ran.
+        Plan 09 puts a ticker sidecar here, which answers a different question:
+        not what identity resolution DID, but what the numbers are CALLED. The
+        plural in this method's name is kept for that arrival.
 
         Called once per run by each entry point, which is what keeps a windowed
         conversion from writing eleven copies of the same report -- or worse,
@@ -1563,13 +1495,6 @@ class CrspStockDataset(StockDataset):
             write_json_atomically(
                 self.filter_report_path(),
                 self._filter_report,
-                indent=2,
-                sort_keys=True,
-            )
-        if self._symbology_report is not None:
-            write_json_atomically(
-                self.symbology_report_path(),
-                self._symbology_report,
                 indent=2,
                 sort_keys=True,
             )
@@ -1625,8 +1550,8 @@ class CrspStockDataset(StockDataset):
         `from_raw_data().save()` could never be appended to again, and the user
         met a refusal naming a file they had never heard of.
 
-        The writes happen AFTER the derivation has succeeded -- a run that fails
-        on a symbology collision must leave no record of a store that was never
+        The writes happen AFTER the derivation has succeeded -- a run that
+        fails in the derivation must leave no record of a store that was never
         created -- and before the densified window is returned, which is before
         `save()` creates the store. Both writers skip a path that already
         exists, so this is a first-write only.
@@ -1642,18 +1567,19 @@ class CrspStockDataset(StockDataset):
     def _assert_unique_panel_keys(self, window: pl.DataFrame) -> None:
         """`(timestamp, symbol)` is unique, or the conversion fails.
 
-        **Now a BACKSTOP, not the mechanism.** `_resolve_identity` runs
-        `CrspSymbology.resolve_collisions` over the whole derivation, which
-        either resolves every crowded `(date, symbol)` cell by a stated rule
-        or refuses naming the cells -- so a duplicate should be unreachable
-        here, and the refusal a user meets is the one that says WHICH PERMNOs
-        collided and how to break the tie.
+        **A BACKSTOP, not the mechanism.** `symbol` IS the PERMNO here (D-01),
+        so this pair is `(dlycaldt, permno)` under two other names, and
+        `WrdsCrspAcquisition._assert_unique_keys` (`wrds_crsp.py:818-840`)
+        already refuses any raw page that duplicates it. A duplicate reaching
+        this point therefore means something between the raw tier and here
+        MULTIPLIED rows -- a join that fanned out, a window read twice -- not
+        that two securities were confused for one.
 
         It stays because the cost of being wrong is invisible: the inherited
-        `dedup_raw_frame(keep="last")` would collapse two securities into one
-        price series and leave a well-formed panel behind. A duplicate that
-        survives resolution is a bug in resolution, and this is where it stops
-        rather than where it gets averaged.
+        `dedup_raw_frame(keep="last")` would collapse the duplicates into one
+        price series and leave a well-formed panel behind, with nothing
+        recording that a choice was made. This is where that stops rather than
+        where it gets silently resolved.
         """
         duplicates = (
             window.group_by(["timestamp", "symbol"])
@@ -1669,8 +1595,14 @@ class CrspStockDataset(StockDataset):
             ]
             raise ValueError(
                 f"{self.class_name}: {duplicates.height} (timestamp, symbol) "
-                f"collision(s) in the window, first {sample}. Two PERMNOs "
-                f"resolved to one symbol on one day; refusing rather than "
-                f"collapsing two securities' prices into one series. Use "
-                f"config.symbol_overrides to separate them."
+                f"collision(s) in the window, first {sample}. `symbol` IS the "
+                f"PERMNO (D-01), so this is a duplicated "
+                f"(permno, dlycaldt) key -- the raw tier asserts that pair is "
+                f"unique on every page it fetches "
+                f"(WrdsCrspAcquisition._assert_unique_keys, "
+                f"wrds_crsp.py:818-840), so these rows were multiplied AFTER "
+                f"acquisition, not confused between two securities. Refusing "
+                f"rather than collapsing them into one series. Inspect the raw "
+                f"parquet for these (permno, date) pairs; if the raw tier is "
+                f"clean, the fault is in the derivation between them."
             )

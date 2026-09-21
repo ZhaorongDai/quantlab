@@ -1475,17 +1475,22 @@ def _crsp_config(tmp_path, cfg, reference_dir, *, permnos, store="crsp.zarr"):
 
 
 def _report_paths(dataset_config):
+    """`(filter report, symbology report)` paths beside the store.
+
+    The symbology suffix is spelled as a LITERAL here, not imported: its
+    constant was deleted with the rest of the ticker-identity machinery in
+    03.11-07, and the tests below assert that this file is NOT written. A test
+    that the file is absent must be able to name the file without the code
+    under test agreeing that the name exists.
+    """
     from pathlib import Path
 
-    from quantlab.dataset.crsp import (
-        FILTER_REPORT_SUFFIX,
-        SYMBOLOGY_REPORT_SUFFIX,
-    )
+    from quantlab.dataset.crsp import FILTER_REPORT_SUFFIX
 
     base = str(dataset_config.zarr_file_path)
     return (
         Path(base + FILTER_REPORT_SUFFIX),
-        Path(base + SYMBOLOGY_REPORT_SUFFIX),
+        Path(base + ".crsp_symbology_report.json"),
     )
 
 
@@ -1642,9 +1647,9 @@ def test_a_refused_reconversion_keeps_the_existing_identity_reports(
 # ---------------------------------------------------------------------------
 #
 # On the ticker axis, a PERMNO whose security-info intervals carried no ticker
-# on a given day could not enter the panel at all: `CrspSymbology.label_rows`
-# as-of joins onto `symbol_intervals().drop_nulls("symbol")` and DROPS every
-# row it cannot label. That was an admission rule nobody had written down --
+# on a given day could not enter the panel at all: the daily labeller (deleted
+# in 03.11-07) as-of joined onto the NAMED symbol intervals and DROPPED every
+# row it could not label. That was an admission rule nobody had written down --
 # "must have a ticker" was a side effect of needing a column name.
 #
 # On the PERMNO axis the rule simply stops applying, and the panel gets wider.

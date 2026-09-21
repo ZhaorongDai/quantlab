@@ -468,10 +468,11 @@ def test_a_recycled_ticker_yields_two_columns(mock_crsp_session, tmp_path):
     This is the invariant the whole migration exists for. 8,719 of the 36,990
     tickers in the raw tier have been worn by two or more PERMNOs, and 3,095 of
     the 3,205 recycled tickers inside the 2000-2024 window were recycled by
-    ORDERED SUCCESSION rather than on a shared day -- which
-    `CrspSymbology.resolve_collisions`, keyed on
-    `group_by(["timestamp", "symbol"])`, could not see at all. On the ticker
-    axis those pairs were silently concatenated into one column, and every
+    ORDERED SUCCESSION rather than on a shared day -- which the old symbology's
+    same-day tie-break, keyed on `group_by(["timestamp", "symbol"])`, could not
+    see at all (it was deleted in 03.11-07 along with the rest of the
+    ticker-identity machinery). On the ticker axis those pairs were silently
+    concatenated into one column, and every
     return across the join was fabricated while the panel stayed perfectly
     well-formed.
 

@@ -358,16 +358,6 @@ def _filter_report(dataset_config):
     )
 
 
-def _symbology_report(dataset_config):
-    from pathlib import Path
-
-    from quantlab.dataset.crsp import SYMBOLOGY_REPORT_SUFFIX
-
-    return _read_json(
-        Path(str(dataset_config.zarr_file_path) + SYMBOLOGY_REPORT_SUFFIX)
-    )
-
-
 # ---------------------------------------------------------------------------
 # Task 1: the security filter, per date, with a delisting carry and a report
 # ---------------------------------------------------------------------------
@@ -527,7 +517,13 @@ def test_a_delisting_row_inherits_the_previous_verdict(mock_crsp_session, tmp_pa
     Lehman's 2008-09-18 row is the delisting row, and a delisted security's
     last row is exactly where CRSP's type columns go blank. Filtering it on its
     OWN types would drop the -60% day and restore survivorship bias through the
-    filter after symbology's carry rule had just rescued it from the ticker.
+    filter, one row at a time, while leaving a perfectly well-formed panel.
+
+    The PERMNO axis did not make this inheritance redundant. The ticker CARRY
+    that used to keep the same row in the panel -- a different mechanism, for a
+    different blank column -- was deleted in 03.11-07 precisely because the
+    axis made it redundant; this one is not, and the distinction is why the two
+    are asserted separately.
     """
     from tests.crsp_fixtures import LEHMAN_2008_ROWS
 
@@ -598,8 +594,15 @@ def test_the_filter_report_says_what_was_dropped_and_why(
 
 
 # ---------------------------------------------------------------------------
-# Task 2: collisions, PERMNO seams and the symbology report
+# Ticker reuse and renames on a PERMNO axis: the failures that cannot happen
 # ---------------------------------------------------------------------------
+#
+# The machinery this section used to exercise -- same-day tie-breaking, the
+# PERMNO seam and its NaN, the symbology report -- was deleted in 03.11-07.
+# These tests were NOT deleted with it: each one now asserts, on the SAME
+# fixture, that the outcome the machinery existed to prevent is structurally
+# unreachable rather than defended against. A deletion that removes the guard
+# AND its test leaves nothing saying the danger is gone.
 
 #: The reused ticker, and the two PERMNOs that wear it in turn. SYNTHETIC
 #: throughout: the live check sampled no ticker-reuse pair, and inventing the
@@ -677,8 +680,14 @@ def _reuse_rows(*, new_permno_first_day=REUSE_SEAM_DAY):
 
 
 def _reuse_secinfo(*, new_permno_start=REUSE_SEAM_DAY):
-    """One interval each. The old PERMNO's ENDS before the delisting row, which
-    is why that row reaches the panel only through symbology's carry rule."""
+    """One interval each. The old PERMNO's ENDS before its delisting row.
+
+    That gap is the live Lehman shape (`L3_1`/`L3_2`) and it is deliberately
+    kept: on a ticker axis the uncovered delisting row had no column to live in
+    and reached the panel only through a carry rule. Keyed on the PERMNO it
+    needs no rule -- which is the point of keeping the awkward fixture rather
+    than tidying the interval to cover the row.
+    """
     from tests.crsp_fixtures import secinfo_row
 
     return [
@@ -756,7 +765,7 @@ def test_a_recycled_ticker_is_two_columns_with_no_seam_to_break(
     `adjClose(2010-05-18) / adjClose(2010-05-17)` being a return between two
     different companies was a seam rule that NaN-ed the incoming row. The
     defence was real but narrow: it fired only where the panel had already
-    decided the two were one column, and `resolve_collisions` could not see a
+    decided the two were one column, and the same-day tie-break could not see a
     reuse that happened by ORDERED SUCCESSION rather than on a shared day
     (3,095 of 3,205 recycled tickers in the 2000-2024 window).
 
@@ -800,19 +809,20 @@ def test_no_symbology_report_is_written_on_a_permno_axis(
     checks ran. The audit trail that DOES still mean something,
     `{zarr}.crsp_filter_report.json`, is asserted to be present in the same
     breath so this cannot pass by writing no sidecars at all.
+
+    The suffix is a LITERAL here, not an import: its constant was deleted with
+    the writer in 03.11-07, and a test that a file is absent must be able to
+    name the file without the code under test agreeing the name exists.
     """
     from pathlib import Path
 
-    from quantlab.dataset.crsp import (
-        FILTER_REPORT_SUFFIX,
-        SYMBOLOGY_REPORT_SUFFIX,
-    )
+    from quantlab.dataset.crsp import FILTER_REPORT_SUFFIX
 
     dataset_config = _reuse_store(tmp_path)
     base = str(dataset_config.zarr_file_path)
 
     assert Path(base + FILTER_REPORT_SUFFIX).exists(), base
-    assert not Path(base + SYMBOLOGY_REPORT_SUFFIX).exists(), base
+    assert not Path(base + ".crsp_symbology_report.json").exists(), base
 
 
 def test_a_same_permno_rename_is_one_column(mock_crsp_session, tmp_path):
