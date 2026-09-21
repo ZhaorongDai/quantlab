@@ -1459,6 +1459,11 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
 #: equality so the parametrisation cannot be quietly reduced to one arm.
 SYMBOL_COORD_ENCODINGS = ("fixed_width", "variable_length")
 
+#: RED skeleton (03.11-02): the name exists so the realism pin fails on its
+#: ASSERTION rather than on an import error. Its membership lands with the
+#: third arm.
+SYMBOL_COORD_STRING_ENCODINGS = ("fixed_width", "variable_length")
+
 
 def symbol_coord(symbols: Sequence[str], encoding: str) -> np.ndarray:
     """Build a `symbol` coordinate that survives a zarr round trip AS
