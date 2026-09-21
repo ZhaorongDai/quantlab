@@ -238,7 +238,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 2/11 plans executed
+**Plans:** 3/11 plans executed
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
@@ -267,7 +267,7 @@ Plans:
 
 **Wave 2** *(blocked on 01, 02)*
 
-- [ ] 03.11-03-PLAN.md — **TRACER**：`crsp.py:492-495` 两行换成 PERMNO 轴，端到端打穿到 int64 zarr；`admitted_without_ticker` 报告字段（D-14）；两家公司两列 / 退市行仍在 / vectorbt int 列索引三条行为断言
+- [x] 03.11-03-PLAN.md — **TRACER**：`crsp.py:492-495` 两行换成 PERMNO 轴，端到端打穿到 int64 zarr；`admitted_without_ticker` 报告字段（D-14）；两家公司两列 / 退市行仍在 / vectorbt int 列索引三条行为断言
 
 **Wave 3** *(blocked on 03)*
 
