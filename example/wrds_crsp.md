@@ -4,7 +4,10 @@
 > `CrspVolumeProbe`、`CrspProductEndError`、`CrspVintageError`），参考表采集
 > `quantlab/acquisition/wrds_crsp_reference.py:CrspReferenceTables`，
 > 数据源描述符 `quantlab/acquisition/wrds.py`，体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
-> 参考表读取 `quantlab/dataset/crsp_reference.py`，符号学 `quantlab/dataset/crsp_symbology.py:CrspSymbology`，
+> 参考表读取 `quantlab/dataset/crsp_reference.py`，
+> PERMNO → ticker 区间表 `quantlab/dataset/crsp_symbology.py:CrspSymbology`
+> （**它现在只喂 ticker 旁车，不再决定面板的列叫什么**）与旁车读侧
+> `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`，
 > 面板 `quantlab/dataset/crsp.py:CrspStockDataset`，成分 `quantlab/dataset/crsp_membership.py:CrspMembership`
 > 与 `quantlab/dataset/constituent.py`（`CrspSP500ConstituentDataset`、`CompustatNasdaq100ConstituentDataset`），
 > 命令行入口 `scripts/ingest_wrds_crsp.py`。
@@ -19,7 +22,9 @@
 从 WRDS 的 **CRSP US Stock Database Version 2（CIZ 格式，annual update 产品）** 把日频证券数据
 按 **PERMNO** 原样拉到本地 parquet，再在本地把它转换成和 `StockDataset` 变量完全一致的
 `[timestamp, symbol]` Zarr 面板——**同一套因子、标签、模型和回测代码不改一行就能换厂商**。
-代价是一整套 CRSP 特有的数据语义（退市收益、总收益复权、同日同代码撞车、股份类别、年度产品边界），
+**这个面板的 `symbol` 轴就是 int64 的 PERMNO 本身**（D-01，phase 03.11），不是 ticker：
+名字不进面板，而是写在旁车 `{zarr}.crsp_tickers.json` 里，人要读的时候按日期查。
+代价是一整套 CRSP 特有的数据语义（退市收益、总收益复权、股份类别、年度产品边界），
 这篇文档就是把每一条语义写清楚。
 
 一条命令跑完整条链路：
@@ -79,50 +84,71 @@ CIZ 的做法是：退市收益**本身就是一条日行**（雷曼 PERMNO 8059
 一直是对的，`adj*` 那五列在 2026-09-20 之前不是**。上面这些规则是把保证收窄到代码真正
 交付的范围（GAP-A / GAP-B 的详细复盘见 `03.10-REVIEW.md` CR-01 / CR-02）。
 
-麻烦在于那条退市行的 **ticker 是 NULL**，它的 security-info 区间也是 NULL ticker。
-如果按 ticker 贴标签，这条唯一带着 -60% 的行会因为「没有名字」被丢掉——幸存者偏差刚被
-CIZ 修好，又被我们自己的标签规则放了回来。所以有一条**退市 carry** 规则：
-`dlydelflg='Y'` 且日期超出该 PERMNO 最后一个区间的行，继承那个区间的 symbol。
-证券过滤那一步也有同样的继承规则（见下文），因为退市行的类型列同样是空的。
+那条退市行的 **ticker 是 NULL**，它的 security-info 区间也是 NULL ticker。
+**这件事曾经有一半是致命的，现在只剩另一半。**
 
-### 2. 一个代码被两家公司先后用过 → 凭空捏出一个跨公司收益
+- **死掉的那一半：「没有名字就进不了面板」。** 在 ticker 轴上，这条唯一带着 -60% 的行会因为
+  贴不上标签而被丢掉——幸存者偏差刚被 CIZ 修好，又被我们自己的标签规则放了回来。
+  PERMNO 轴上这个问题**不存在**：这条行的键是 80599，有没有名字都在。
+  （替换掉的那条「退市 symbol carry」规则连同符号学的另外三个机制一起，
+  在 phase 03.11-07 被**删除**而不是留作守卫——见下文「原始层按 PERMNO」一节。
+  它唯一剩下的作用是让旁车能给一只死掉的证券的最后一天写上名字。）
+- **还活着的那一半：类型列也是空的。** 退市行的 `sharetype` / `securitytype` /
+  `securitysubtype` 同样为 NULL，于是证券过滤会判它「类型未知 → 丢」。
+  所以 `quantlab/dataset/crsp.py` 里有一条**判决继承**规则：`dlydelflg='Y'` 的行
+  继承前一天的过滤判决。这一条**必须留着**，它就是这一节的反幸存者偏差论证本身。
+  两条规则在代码里曾经挨着写，这正是第二条容易被连坐删掉的原因。
+
+### 2. 一个代码被两家公司先后用过 → 凭空捏出一个跨公司收益（**已从根上消掉**）
 
 ticker 是会被回收的。如果面板的 `symbol` 轴上「ABC」这一列前半段是 A 公司、后半段是 B 公司，
 那么交接那一天的「收益」= B 公司的首日价 / A 公司的末日价——一个两家公司之间的比值，
 **在数学上完全合法，在金融上毫无意义**，而且没有任何迹象表明它不对。
+更糟的是两个 PERMNO 在**同一天**顶着同一个 symbol：一个格子里塞了两条记录，
+继承来的 `dedup_raw_frame(keep="last")` 会把两家公司压成一条价格序列，不留痕迹。
 
-做法（D-18）：接手方 PERMNO 的**第一行**，五个复权变量（`adjOpen/adjHigh/adjLow/adjClose/adjVolume`）
-全部置 NaN，收益和因子窗口在这里断开。判据是 `permno != permno.shift(1).over(symbol)`——
-一个 **PERMNO** 判断，不是 ticker 判断。这是唯一能区分「代码回收」（两家公司，要断）
-和「改名」（FB → META，PERMNO 都是 13407，跨两列的比值是真收益，不能断）的写法。
-原始价格和 `permno` 变量不动：断的是被捏造出来的量，不是观测本身。
-可以用 `nan_adj_at_permno_seam=False` 关掉这个修正——但**记录关不掉**，seam 照样写进旁车文件。
+**这两种故障在 PERMNO 轴上都不是「被防住了」，而是不可拼写。** 一列换东家需要
+`symbol` 列能改指一家公司，而 PERMNO 列永远不会；同日撞车需要两个 PERMNO 落进同一个
+`(date, symbol)` 格子，而原始层本身就断言 `(permno, dlycaldt)` 唯一
+（`quantlab/acquisition/wrds_crsp.py`）。所以 phase 03.11-07 把为这两件事而生的机制
+**整套删掉**，而不是留成永远只会说「没发生」的守卫：
 
-更糟的情况是两个 PERMNO 在**同一天**顶着同一个 symbol。这时不是断不断的问题，是一个格子里
-塞了两条记录。继承来的 `dedup_raw_frame(keep="last")` 会把两家公司压成一条价格序列，不留痕迹。
-所以这里**拒绝而不是去重**：`resolve_collisions` 只有三条规则，没有兜底——
-活的优先于退市的、指数成分优先于非成分，还分不开就 `ValueError` 点名
-`(日期, symbol, [两个 permno])`，整个 store 不会被写出来。
+| 曾经的机制 | 它防的是什么 | 现状 |
+|---|---|---|
+| PERMNO seam：接手方第一行把五个 `adj*` 置 NaN | 代码回收造出的跨公司收益 | **删除**（连同它的 opt-out 开关） |
+| 同日撞车拒绝：活的优先于退市的、成分优先于非成分，分不开就 `ValueError` | 一个格子两条记录 | **删除** |
+| 类别撞车 pass：重叠区间上重名的两个 PERMNO 各自重拼 `base.cls` | 伯克希尔 A/B 撞同一列 | **删除**（见下一节） |
+| 退市 symbol carry | 没名字的退市行进不了面板 | **删除**（判决继承是另一条规则，仍在，见上一节） |
 
-### 3. `BRK.B` 在股票池里和价格里拼法不一样
+改名（FB → META，PERMNO 全程 13407）在 PERMNO 轴上**本来就是一列**，不需要任何规则去
+「区分它和代码回收」——那个区分曾经是 seam 判据存在的全部理由。
+两个名字都没丢：它们是旁车 `{zarr}.crsp_tickers.json` 里 13407 名下的两条区间。
+
+### 3. `BRK.B`：类别后缀现在只是**拼法**，不再是身份
 
 `stksecurityinfohist.ticker` 存的是**词根**（`BRK`、`BF`），A 类和 B 类**两条线拼出来一模一样**。
-如果就这么用，伯克希尔两个 PERMNO 会撞在同一列上；而如果只信 `tradingsymbol`
-（`BRKB`、`BFB`），2002-01-02 之前它是 NULL，整个 90 年代分不开。
+在 ticker 轴上这是致命的：伯克希尔两个 PERMNO 会撞在同一列上，两家（严格说两个类别）的价格
+被压成一条序列。所以当时有一整套重拼规则，包括一条**类别撞车 pass**——
+重叠区间上重名的两个 PERMNO 各自按自己的 `shareclass` 重拼成 `base.cls`。
 
-规则按顺序是：override → 词根 ticker → `tradingsymbol == 词根 + 类别` 时加类别后缀 →
-NULL ticker 继承上一段 → **类别撞车 pass**（两个不同 PERMNO 的 symbol 在重叠区间上相等时，
-各自按**自己的** `shareclass` 重拼成 `base.cls`）。最后一条是唯一能在 1996–2002
-把 `BRK.A` 和 `BRK.B` 分开的规则，也是让 live 上那三条 `BF` 线在 2002 两侧都读作
-`BF.A` / `BF.B` / `BF` 的规则。
+**PERMNO 轴上撞不了。** `BRK.A` 是 17778，`BRK.B` 是 83443，它们在面板上是两列整数，
+不管 CRSP 把它们的 ticker 词根写成什么。于是「把两个类别分开」这件事不再需要任何规则，
+那条撞车 pass 在 phase 03.11-07 被删掉了。
 
-三个故意的例外，每一个都是「CRSP 从没改过这个名字」：没有股份类别的区间保留裸 ticker
-（`WIN` 24803、`BF` 88279）；被 override 钉住的 PERMNO 不参与（D-15）；
-已经带类别的不会被加第二次（不会出现 `ABC.B.B`）。
+类别后缀**仍然存在**，但只活在 ticker 的**拼写**里，也就是旁车里那个给人读的名字。
+`CrspSymbology` 现在只剩四条规则，而且它的唯一下游是旁车：
 
-**关键在于股票池和价格用的是同一个 `CrspSymbology` 实例。** 成分面板的区间和价格面板的行
-由同一条规则贴标签，所以两边对 `BRK.B` 的拼法**按构造**就一致——这正是待办事项
-`2026-09-07-no-ticker-rename-mapping-...` 记录的那个 89/876 缺口，在这个厂商身上不存在。
+1. `base = ticker.strip().upper()`；
+2. `cls = shareclass`（为空/`None` 时视为没有类别）；
+3. `cls` 有值且 `tradingsymbol == base + cls` 时拼成 `base.cls`（`BRK` + `BRKB` + `B` → `BRK.B`），
+   否则就是 `base`（GOOGL、META、FB）；
+4. ticker 为空的区间继承该 PERMNO 上一段的拼写——雷曼（80599）2008-09-18 那条退市区间就是这一条。
+   在 PERMNO 轴上它**不再决定那一行在不在面板里**（行的键是 80599，怎样都在），
+   只决定旁车能不能给一只死掉的证券的最后一天写上名字。
+
+**股票池和价格仍然用同一个 `CrspSymbology` 实例**，所以两边对 `BRK.B` 的拼法按构造一致；
+而且现在连这一致性都不承重了——面板和成分面板都按 PERMNO 对齐，拼法只影响人看到的字符串。
+待办事项 `2026-09-07-no-ticker-rename-mapping-...` 记的那个 89/876 缺口，在这个厂商身上不存在。
 
 ### 4. 两个 CRSP 年度版本混进同一个原始目录
 
@@ -178,7 +204,7 @@ WRDS 提供了一张预连接的宽视图 `wrds_dsfv2_query`（98 列，带分�
 
 | 表 | 每行是什么 | 本阶段 |
 |---|---|---|
-| `crsp_a_stock.dsf_v2` | 一个 PERMNO 的一天，带当日 `ticker`/`sharetype`/`securitytype`/`shrout`/`dlycumfacpr` 等 | **使用**（`(permno, dlycaldt)` 唯一） |
+| `crsp_a_stock.dsf_v2` | 一个 PERMNO 的一天，带当日 `sharetype`/`securitytype`/`shrout`/`dlycumfacpr` 等（`ticker` 也在，但面板不读它——名字走旁车） | **使用**（`(permno, dlycaldt)` 唯一，这条唯一性正是同日撞车不可拼写的原因） |
 | `crsp_a_stock.stkdlysecuritydata` | 同上但不含每日类型/身份列 | 不用（还要自己连 security-info） |
 | `crsp_a_stock.wrds_dsfv2_query` | 预连接宽视图，98 列 | 不用（2020 年有 360 条重复） |
 | `crsp.*` | 上面这些表的同名视图 | 不用（同一份数据） |
@@ -186,26 +212,81 @@ WRDS 提供了一张预连接的宽视图 `wrds_dsfv2_query`（98 列，带分�
 
 一行代码的回退开关：`WrdsCrspDailyAcquisition.DAILY_TABLE`。
 
-### 原始层按 PERMNO，ticker 在转换时才产生
+### 原始层按 PERMNO，面板也按 PERMNO，ticker 只进旁车
 
-这是整条链路里最重要的一条分界线。原始分片的 `symbol` 列是 **PERMNO 字符串**（`"14593"`），
+这是整条链路里最重要的一条分界线，而且 phase 03.11 之后它**贯通了**：
+原始分片的 `symbol` 列是 **PERMNO 字符串**（`"14593"`），面板的 `symbol` 轴是
+**int64 PERMNO**（`14593`），两端同一个身份，中间不再有一次 ticker 转译。
 目录是 `<数据根>/downloads/us_equity/1d/wrds_crsp/wrds/month=YYYY-MM/`，水位线在
 `.../_watermarks/wrds/`，版本戳在 `.../_vintage/wrds.json`，参考表在 `.../_reference/`
 （三者都是原始根的**兄弟**，不在它下面）。
 
-所以一次改名（FB → META，同一个 PERMNO 13407）**不碰任何水位线、任何分片路径、任何续跑点**。
-ticker 是在 `registry.convert` 时由 `stksecurityinfohist` 派生出来的，改一次符号学规则
-不需要重新拉一行数据。
+所以一次改名（FB → META，同一个 PERMNO 13407）**不碰任何水位线、任何分片路径、任何续跑点**，
+**也不碰面板的任何一列**：13407 从头到尾是同一列。
+
+**名字去哪了。** `registry.convert` 仍然从 `stksecurityinfohist` 派生 period-correct ticker，
+但它不再产生任何面板上的东西——它写成一份旁车 `{zarr}.crsp_tickers.json`，形态是**区间表**：
+
+```json
+{
+  "generated_from": "stksecurityinfohist",
+  "vintage_product_end": "2025-12-31",
+  "intervals": {
+    "13407": [
+      {"ticker": "FB",   "start": "2012-05-18", "end": "2022-06-08"},
+      {"ticker": "META", "start": "2022-06-09", "end": "2025-12-31"}
+    ]
+  }
+}
+```
+
+区间而不是「每个 PERMNO 的最后一个 ticker」，是因为后者会把 13407 的 2012 年也答成 META——
+那正是 D-03 否决掉 1-D `ticker(symbol)` coord 的那个缺陷。旁车**只写这个面板自己的 PERMNO**
+（参考表里有 40,518 个），读侧是 `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`：
+`as_of(permno, day)` 是严格的单值提问（缺文件会抛），`label(permnos, day)` 是展示层的批量入口
+（**永不抛**，缺旁车就原样回落成数字）。强平日志、模型的 missing/extra 清单、
+`UniverseMask.report()`、`browse_zarr` 的拒绝文案都走后者。
+
+判据是**盘上有没有那个旁车文件**，不是面板属于哪个厂商——所以 Tiingo / Alpaca 的面板输出一字未变。
 
 一页 = **一个 PERMNO 批次 × 一个日历年**，续跑粒度就是「某个 PERMNO 批次的某一年」。
 页的边界由 `year_pages()` 这一个函数定义，拉取和体量估算共用它——两份内联拷贝会漂移，
 而漂移在危险的方向上是看不见的（估算用的边界和实际拉的边界略有不同，磁盘占用被低估）。
 
+### 身份轴决策的反转（Phase 03.10 → 03.11，D-08）
+
+这一节记录的是一次**被推翻的决策**，不是历史背景。Phase 03.10 曾经明确拍板：
+
+> Identifier: the panel `symbol` dimension stays the **ticker** valid at each date
+> (matching the universes, factors and backtester); **PERMNO is kept as a data variable**,
+> mapped via the CRSP ticker history.
+
+**REVERSED by Phase 03.11（D-08）。** 现在的事实与它逐条相反：面板的 `symbol` 轴是
+int64 的 PERMNO；`permno` 不再是一个数据变量（它就是轴本身，所以重建后面板的变量从 28 变成 27）；
+period-correct ticker 不再进面板，只进旁车。
+
+反转的理由，按证据强弱排：
+
+1. **「贴不上标签就丢行」是一条没人声明过的准入规则。** ticker 轴要求每一行都能贴上名字，
+   于是 `label_rows` 会**丢掉**任何 ticker 区间覆盖不到的行。在完整参考层上实测：
+   191,048 条区间行里 34,839 条（18.2%）ticker 为 NULL，牵涉 40,518 个 PERMNO 中的 30,197 个；
+   **1,012 个 PERMNO（2.5%）从来没有过任何 ticker**——它们在 ticker 轴上永远进不了面板，
+   而没有任何配置项、任何报告说过这件事。这不是删掉死代码，是把一条隐式责任翻到台面上：
+   替代它的是一条写明的准入条件，折进既有的 `security_filter`，并且把反事实计数写进
+   `crsp_filter_report.json` 的 `admitted_without_ticker`。
+2. **撞车 / seam / 类别重拼这三套机制的存在理由全是 ticker 轴。** 换轴之后它们防的故障
+   不是变得不太可能，而是**不可拼写**（见上文「不用它会怎样 / 2」「/ 3」）。
+3. **原始层本来就是 PERMNO。** 保留 ticker 轴意味着在一条两端都是 PERMNO 的链路中间
+   插一次转译，而那次转译正是 1、2 两条的来源。
+
+被反转的不是「ticker 有用」——它当然有用，只是它是**名字**不是**身份**，
+所以它去了旁车。另外两处反转记录在 `.planning/ROADMAP.md` 与 `.planning/STATE.md`。
+
 ### 六张参考表
 
 | 表 | 用途 | 什么时候拉 |
 |---|---|---|
-| `crsp_a_stock.stksecurityinfohist` | PERMNO → period-correct ticker、股份类别、每日类型列 | 总是 |
+| `crsp_a_stock.stksecurityinfohist` | **ticker 旁车 `{zarr}.crsp_tickers.json` 的唯一数据源**（PERMNO → period-correct ticker 区间、股份类别）；另供每日类型列 | 总是 |
 | `crsp_a_stock.stkdelists` | 退市事件（`delret`、`deldlydt`…），**只作事件数据** | 总是 |
 | `crsp_a_stock.stkdistributions` | 分派事件（除息日、金额、因子） | 总是 |
 | `crsp_a_indexes.dsp500list_v2` | CRSP 自己的 S&P 500 时点成分 | `--universe crsp_sp500` |
@@ -221,18 +302,12 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 只在 `crsp_sp500` 时探，`comp` + `crsp_a_ccm` 只在 `comp_nasdaq100` 时探。
 大多数 CRSP 订阅**不含** Compustat，为一次 S&P 运行去探 `comp` 只会得到一个这次运行不需要的「否」。
 
-### PERMNO seam（D-18）与它的开关
-
-见上文「不用它会怎样 / 2」。opt-out 是 `CrspDatasetConfig.nan_adj_at_permno_seam=False`：
-**去掉修正，不去掉记录**。想研究「这个代码」而不是「这家公司」的人拿到连续序列，
-而面板永远无法隐瞒某一列换过东家——seam 照样进 `crsp_symbology_report.json`。
-
 ### 证券过滤：预设，以及 D-17 的那个读法
 
 **先说规则，它比预设表更重要：过滤筛的是一个「没有明说边界的总体」，它不会推翻一份显式名册。**
 用户 2026-09-20 拍板的原话是「优先保证成分股不缺」。落到代码里是三种情况：
 
-- **`--universe` 跑**（`CrspDatasetConfig.collision_universe`）：成分由指数提供方定了，
+- **`--universe` 跑**（`CrspDatasetConfig.roster_universe`）：成分由指数提供方定了，
   所以一个成分在它的**成分区间内**（逐日判定，读 `dsp500list_v2` 的 membership spell）
   永远不会被类型过滤丢掉。区间**之外**它又回到「未指定的总体」，过滤照常生效——
   豁免是有范围的，不是一刀切放宽。
@@ -253,6 +328,28 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 可以靠 key 在不在区分开。`rows_rescued` 非 0 时还会打一条 `logger.warning`。
 被豁免的行不出现在 `dropped_permnos` 里（它没被丢），
 `rows_kept + rows_dropped == rows_total` 依旧成立。
+
+**手上拿着 phase 03.11 之前的 `config.json`？它读不回来了**，这是 D-04 接受的后果
+（项目未进生产，不写迁移也不写兼容层；出路是重建 store，而 CRSP 一年才发一次数据）。
+`CrspDatasetConfig` 现在**只认这四个**名册/过滤字段，其余都已删除：
+
+| 字段 | 作用 | 备注 |
+|---|---|---|
+| `permnos` | 转换限定在这些 PERMNO（数字串）；`None` = 原始层里的每一个 | 同时是**显式名册**，覆盖 `security_filter`；空元组 `()` 在赋值时被拒（它可能指「一只都不要」也可能指「全都要」） |
+| `roster_universe` | 哪个指数的成分是这次转换的显式名册 | 它做且只做这一件事：在成分区间内覆盖 `security_filter`。字段名在 03.11-08 改过，因为它原先那个名字取自一份**第二职责**——判定同一格里的两个 PERMNO 谁是成分——而 PERMNO 轴上两个证券永不同格，那个问题不可拼写 |
+| `security_filter` | 面板收哪些证券 | 预设名或显式谓词字典 |
+| `reference_dir` | 参考层位置 | 必填，不从原始根推导 |
+
+基类继承下来的 ticker 侧名册字段 `symbols` **在 CRSP 上被拒绝**，拒绝发生在 **config 赋值**
+那一刻并点名 `permnos`。它命名的是一个 CRSP 面板上不存在的轴；替换掉的旧故障是跑到一半时
+`.sel(list[str])` 撞上整数索引抛 `KeyError`——一条看起来在怪数据、实际在怪字段选错了的报错。
+基类字段本身没动：十几个非 CRSP 读者还在用它，而 PERMNO 是 Binance / Alpaca / WRDS TAQ
+永远不会有的标识符。
+
+03.11-08 还删掉了另外两个字段：一个 per-PERMNO 的 ticker 钉子（见下文 QQQ 一节）和一个
+「在换东家处置 NaN」的开关（见上文「不用它会怎样 / 2」）——它们各自防的情形在 PERMNO 轴上
+都不可拼写，所以是删除而不是留成惰性字段。逐字的旧名 → 新名对照在
+`.planning/phases/03.11-*/03.11-08-SUMMARY.md` 里。
 
 | 预设 | 保留什么 | 说明 |
 |---|---|---|
@@ -361,11 +458,13 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 写入在派生成功之后、第一次落盘之前，每次运行一次。
 锚点不一致或旁车文件缺失，在任何写入之前就拒绝，store 和分块台账保持字节不变。
 
-两个旁车审计文件（`crsp_filter_report.json` / `crsp_symbology_report.json`）
-在 store **已存在**时不再重写，和锚点旁车一样。代价是：一次追加不会刷新这两份报告，
+两个旁车文件（`crsp_filter_report.json` / `crsp_tickers.json`）
+在 store **已存在**时不再重写，和锚点旁车一样。后者不是审计报告而是一张
+PERMNO → ticker 的**区间表**（见上文「原始层按 PERMNO」）。
+代价是：一次追加不会刷新这两份文件，
 它们描述的是 store **最初**写成时的那个面板；换来的是一次**被拒绝**的转换
 （比如换了更宽的名册、撞上 `on_new_listing='refuse'`）不会把活着的那个 store 的
-D-17 审计记录换成一个从没被写出来过的面板的数字。
+D-17 审计记录、或者它那份名字表，换成一个从没被写出来过的面板的数字。
 
 所以**把 `--end-date` 往后延、在原有 store 上原地扩展是被拒绝的**。
 Tiingo 的做法是整体重新缩放，算术上没问题；这里不行，因为分块台账只追加、从不重写，
@@ -402,8 +501,12 @@ CCM 的连接是 `gvkey` **且** `iid = liid`，**不是** `linkprim`。常见�
 ### QQQ：只是数据
 
 `--qqq` 拉 PERMNO **86755**，写进**它自己的** store `wrds_crsp_qqq_1d.zarr`，
-`symbol_overrides` 把它在 2004-12-01…2011-03-22 的 `QQQQ` 时期也钉成 `QQQ`，
-一个标的一列。`security_filter="none"` 是**承重**的：QQQ 是 `FUND`/`ETF`，
+一个标的一列——而且现在是**按构造**的一列：轴就是 86755。
+（在 ticker 轴上这里曾经要一个 per-PERMNO 的 ticker 钉子，因为 CRSP 给 86755 的
+period-correct ticker 在 2004-12-01…2011-03-22 真的是 `QQQQ`，会把一只工具的历史劈成
+带洞的两列。PERMNO 轴上没有东西需要钉，那个字段在 03.11-08 被删掉而不是留成惰性字段；
+`QQQQ` 那段没丢，它是 ticker 旁车里的一条区间。）
+`security_filter="none"` 是**承重**的：QQQ 是 `FUND`/`ETF`，
 用股票默认过滤建的基准 store 会是**空的**，而不是看起来不对。
 
 它**不是**权益面板的一列——一个 ETF 和它自己持有的成分在同一个截面里排序，
@@ -450,11 +553,11 @@ registry.run(SOURCE, ...)   每 (年, 批次) 一次 COPY；核对行数、     
   ▼   （仅 --to-zarr）                                                     │
 registry.convert(...)  → CrspStockDataset                                 │
   │   全局复权（每 PERMNO 一个锚点，缓存在实例上）                            │
-  │   → 符号学贴标签 → 撞车解决 → PERMNO seam → 证券过滤                      │
+  │   → PERMNO 轴（symbol = int64 permno）→ 证券过滤 → ticker 区间表          │
   ▼                                                                       │
 data/us_equity/1d/wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr               │
   + .crsp_adjustment.json  +  .crsp_filter_report.json                     │
-  + .crsp_symbology_report.json                                            │
+  + .crsp_tickers.json     （+ .chunks.json，分块台账）                      │
   ├─ （--qqq）      wrds_crsp_qqq_1d.zarr                                   │
   └─ （--universe） wrds_crsp_{sp500|nasdaq100}_membership.zarr             │
                                                         finally: close_shared()
@@ -470,7 +573,7 @@ data/us_equity/1d/wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr               │
   **之前**就已经是 PERMNO——否则一个 ticker 名册会被记成「WRDS 拒绝了这些证券」的逐批失败。
 - **复权锚点在一次转换里只算一次**，按整个配置窗口算，然后切片给每个分块窗口用。
   按 `year` 和按 `month` 转出来的 store 是 `assert_identical` 相等的。
-- **三个旁车文件是审计线索**，不是日志。「S&P 面板少了那个 ADR 成分」现在是文件里的一行，
+- **旁车文件是审计线索**，不是日志。「S&P 面板少了那个 ADR 成分」现在是文件里的一行，
   而不是一列没人注意到它不见了。
 
 ---
@@ -550,6 +653,19 @@ $ env -u WRDS_USERNAME uv run python scripts/ingest_wrds_crsp.py --permnos 14593
 WRDS_USERNAME environment variable must be set to your WRDS username. The password is never read from config or from this code: libpq reads it from ~/.pgpass (chmod 600), so store it there before running a WRDS acquisition.
 ```
 
+第一条拒绝在 phase 03.11 之后**更强了一层**，而且它现在有一个同形的兄弟：CRSP 面板的
+`symbol` 轴就是 PERMNO，所以 ticker 在这条链路上**没有任何入口**。
+
+| 你写的 | 什么时候被拒 | 该用什么 |
+|---|---|---|
+| `--permnos AAPL` | 参数解析时，建连接之前 | `--permnos 14593`，或 `--universe crsp_sp500` |
+| `CrspDatasetConfig(symbols=("AAPL",))` | **config 赋值那一刻**（不是运行到一半） | `permnos=("14593",)`。`symbols` 是基类的 **ticker 侧**名册，它命名的轴在 CRSP 面板上不存在；拒绝消息直接点名 `permnos` |
+
+第二条替换掉的旧故障值得记一笔：它从前不报错，而是一路跑到 `.sel(list[str])` 撞上整数索引才抛
+`KeyError`——一条看起来在说数据有问题、实际在说字段选错了的报错。
+想按名字找 PERMNO 就去查 ticker 旁车（`CrspTickerLookup.as_of`），那是名字唯一的住处；
+**不要**拿名字去 `.sel()`。
+
 整条链路（权限探测、产品边界、参考表、名册、护栏、拉取、转换、单连接）在
 `tests/test_ingest_wrds_crsp.py` 里用离线的 `FakeCrspSession` 端到端跑过（29 个测试）。
 
@@ -565,7 +681,7 @@ uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407,83443 \
 
 # 同一条命令再跑一次：每个 PERMNO 都按水位线跳过
 
-# 加上转换，得到面板和三个旁车文件
+# 加上转换，得到面板和它的旁车文件
 uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407,83443 \
     --start-date 2019-01-01 --end-date 2023-12-31 --to-zarr
 
@@ -600,11 +716,31 @@ live 跑出来的关键数字（全部与离线契约一致）：
 | `--universe crsp_sp500` 2024 名册 | **520** 个 PERMNO（>500 是因为区间重叠保留了年中离开指数的证券——正是反幸存者偏差的设计），520/520 成功，面板 522 列 |
 | `wrds_crsp_sp500_membership.zarr` | dims `{timestamp: 366, symbol: 2003}`，首日和末日都是 **503** 个成分 |
 | S&P 过滤报告 | 130,280 行进，130,028 行留，丢 **252** 行，全部来自 `UG/EQTY/COM/CORP/N`（PERMNO 75154 = CCL 嘉年华）——**这就是 GAP-1** |
-| S&P 符号学报告 | 加类别后缀 466 处，撞车 0、seam 0、退市 carry 0、不合规 symbol 0、未贴标签 0 |
+| S&P 准入反事实（`admitted_without_ticker`） | `{"permnos": [], "rows": 0}`——2024 这一窗内没有任何一行是「只有 PERMNO 轴才收得进来」的；这个字段**始终写入**，所以「没发生」和「这个 store 比该字段更早」分得开 |
 | `--universe comp_nasdaq100` 2024 | 默认因 6 条未链接 spell 退出（exit 1）；`--allow-unlinked-ndx` 后名册 **108** 个 PERMNO、27,017 行，其中只有 **18** 个是新拉的（另外 90 个已被 S&P 那次覆盖——跨股票池增量续跑生效） |
 | QQQ（86755） | 裁剪行逐字打印 `clipped end 2026-06-30 -> 2025-12-31 (crsp_a_stock annual product end)`；拉到 502 行（2024-01-02…2025-12-31），2025-12-31 收盘 **614.31** |
 | 2026 起点 | 在任何拉取之前拒绝，点名 `2025-12-31` 和「annual update 产品」 |
 | 落盘 | 原始层 31M（132 分片）+ `_reference` 18M + `_watermarks` 2.1M；`wrds_crsp_sp500_1d.zarr` 9.9M；版本戳 `{"product_end": "2025-12-31"}` |
+
+> **2026-09-21 追记（phase 03.11-10，PERMNO 轴最终重建）。** 上面这张表是 2026-09-20 那次
+> live 拉取 + 转换的实测，**面板那几行描述的是 ticker 轴的 store**。盘上的
+> `wrds_crsp_sp500_1d.zarr` 已用当前代码在同一窗口（2024-01-01…2024-12-31）重建过，
+> 下表是重建后的实测，两张表**并存**：上表是拉取与厂商事实，下表是当前面板的事实。
+
+| 指标 | ticker 轴（2026-09-20） | **PERMNO 轴（2026-09-21 重建）** | 说明 |
+|---|---|---|---|
+| dims | 252 × **523** | 252 × **520** | 少 3 列，逐个可数：2024 窗口内发生的三次改名 `FLT→CPAY`(12449)、`CDAY→DAY`(17700)、`PEAK→DOC`(67598) 在 ticker 轴上各占两列，在 PERMNO 轴上各是一列 |
+| `data_vars` | 28 | **27** | 少的那个是 `permno`——它不再是数据变量，它就是轴 |
+| `symbol` 落盘 dtype | `StringDType` | **`int64`** | 读的是 zarr 原始 dtype，不是解码后的值 |
+| `anomaly_flag` True | 13 | **13** | 12 个拆股日误报 + `GL 2024-04-11` 的真实 −53%；换轴不改变这些事实 |
+| `adjClose <= 0` | 0 | **0** | |
+| `close == 0` | 0 | **0** | |
+| `adjClose` NaN == `adjVolume` NaN == 结构性空格 | 1520 | **764** | 数变小是因为格子变少（252×520 = 131,040，而非 131,796）且合并的列互相补上了对方的空格。**成立的是那个等式**，不是那个数：没有一个多余的 NaN |
+| 旁车文件个数 | 4（含一份 58 KB 的符号学审计） | **4**（那份审计没了，ticker 区间表顶上） | 那份审计的六个字段全是关于 ticker 轴的陈述，在 PERMNO 轴上只可能永远报「没发生」；机制与文件一并删除，重建会把盘上残留的旧文件清掉 |
+| 旁车 `.crsp_tickers.json` | 不存在 | **存在，520 个 PERMNO** | 区间表的 PERMNO 与面板列**按集合**相等，不只是个数相等 |
+
+这几条由真实数据门 `tests/test_crsp_rebuild_measurements.py` 自动锁定；它**不挂在日常回归上**
+（挂上去就等于每跑一次测试重建一次真实面板），跑法写在那个文件的模块 docstring 里。
 
 原始数据已经在盘上、只想换过滤预设或分块粒度重新转换时，**不需要连 WRDS**：
 在 Python 里直接构造 `CrspDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录，
@@ -616,13 +752,18 @@ live 跑出来的关键数字（全部与离线契约一致）：
 
 ## 常见坑
 
-- **改名会让一列结束、另一列开始。** FB 的最后一行是 2022-06-08，META 的第一行是 2022-06-09。
-  这是 period-correct 股票池的正确行为，但一个只看「这一列还有没有数据」的回测会把它读成退市。
-  要跨改名追同一家公司，用 `permno` 变量，不要用 symbol。
+- **改名不再劈列，但列名是数字。** FB → META 在面板上**始终是 13407 这一列**，
+  没有一列结束、没有一列开始（phase 03.11 之前不是这样，那时它是两列，会被只看
+  「这一列还有没有数据」的回测读成退市）。代价是 `symbol` 轴上全是整数：
+  想知道 13407 在某一天叫什么，查 `{zarr}.crsp_tickers.json`
+  （`CrspTickerLookup.as_of(13407, day)`），**不要**拿名字去 `.sel()`。
+  强平日志、模型的 missing/extra 清单、`UniverseMask.report()` 已经替你查过了。
 - **1992 年以前的 Nasdaq 行没有 OHLC。** `dlyopen/high/low` 在那之前普遍为空，
   `close_trade` 也是；`close`（= `abs(dlyprc)`）还在。用到最高最低价的因子在那段历史上会大面积 NaN。
 - **窗口一旦定下就别原地改。** 延长 `--end-date` 重跑会在写入之前被拒绝，
-  报错点名两个锚点、旁车文件路径和原因。出路是删掉 store 连同它的三个 `.crsp_*.json` 旁车重建。
+  报错点名两个锚点、旁车文件路径和原因。出路是删掉 store **连同它全部的旁车**重建——
+  `quantlab/dataset/crsp_rebuild.py:CrspStoreRebuilder` 就是这件事的执行者，
+  它的清场清单是唯一一份权威列表（只删 `.zarr` 目录会留下描述**上一个**面板的审计文件）。
 - **换 CRSP 年度版本 = 换原始目录。** 版本戳不匹配同样在 COPY 之前拒绝，
   两条出路（换 `subdir` / 删原始根及其 `_watermarks`、`_vintage` 兄弟）都写在报错里。
 - **Nasdaq-100 停在未链接的 spell 上不是 bug。** 先看报错列出的 spell 和未覆盖区间，
@@ -713,7 +854,7 @@ live 跑出来的关键数字（全部与离线契约一致）：
 
 - `--universe` 跑：成分由指数提供方定了 → 一个成分在它的成分区间内**永远不会**被过滤掉，
   逐日判定，读的是 `CrspMembership.permno_intervals` ——
-  和撞车 tie-break 用的是**同一份** interval 表，所以两处不可能对「谁是成分」有不同意见；
+  和成分面板用的是**同一份** interval 表，所以两处不可能对「谁是成分」有不同意见；
 - `--permnos` 跑：证券是用户点名的 → 它的每一天都不过滤；
 - 没有显式名册的宽筛：过滤照旧，排除 `AD`/`UG` 在那里仍然有意义。
 
@@ -749,7 +890,7 @@ live 跑出来的关键数字（全部与离线契约一致）：
 
 1. **CLI：权益名册为空时不转换，并且把这件事打出来。** `--to-zarr` 里整条权益路径
    （`ds_config`、探针、原始数据缺失的拒绝、`Converting N PERMNO(s)` 那行、`convert()`、
-   三个旁车路径）现在都在「`equity_permnos` 非空」这个条件里面。为空时打一行以
+   旁车路径）现在都在「`equity_permnos` 非空」这个条件里面。为空时打一行以
    `Skipping the equity conversion:` 开头的话，说清名册里只有那只基准、以及 QQQ 和成分
    掩码两步照常跑。**为什么要打印**：空名册是一个需要被看见的结果，
    不打印的跳过和「转了但什么都没写」在日志里长得一样。
