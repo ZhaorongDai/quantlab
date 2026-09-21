@@ -531,10 +531,14 @@ class BaseDataset(ABC):
                     continue
 
                 window = self._raw_data_to_xr_window(start, end, symbols)
-                actual = [
-                    str(symbol) for symbol in window["symbol"].values.tolist()
-                ]
-                if actual != symbols:
+                # Compared in the PINNED axis's own spelling, not coerced to
+                # text. A `str()` here read every int64 PERMNO axis (D-01) as
+                # `['14593']` against a pinned `[14593]` and refused every
+                # window of a CRSP conversion; on a ticker axis `.tolist()`
+                # already yields the same `str` the pinned list holds, so this
+                # is byte-identical there.
+                actual = list(window["symbol"].values.tolist())
+                if actual != list(symbols):
                     raise ValueError(
                         f"{self.class_name}: window {start.date()}..{end.date()} "
                         f"came back on a symbol axis of {len(actual)} label(s), "

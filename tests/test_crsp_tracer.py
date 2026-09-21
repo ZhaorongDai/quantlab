@@ -6,8 +6,14 @@ ONE path, end to end, entirely offline:
       -> registry.run(WRDS_SOURCE, cfg)        # the new crsp_daily capability
       -> PERMNO-keyed raw shards under month=2020-08/
       -> registry.convert(WRDS_SOURCE, CrspDatasetConfig, ...)
-      -> a [timestamp, symbol] Zarr panel whose symbol axis is ['AAPL'] and
-         whose total-return adjClose matches a hand calculation
+      -> a [timestamp, symbol] Zarr panel whose symbol axis is the int64
+         PERMNO [14593] and whose total-return adjClose matches a hand
+         calculation
+
+The axis is the PERMNO, not the ticker (D-01, phase 03.11). That is the whole
+point of the migration: a ticker is a DERIVED, date-valid label that two
+companies can share across time, while a PERMNO is the security's permanent
+identity. `AAPL` now lives only in the human-readable sidecar.
 
 The window is chosen so the arithmetic is checkable by hand: AAPL's 4:1 split
 took effect on 2020-08-31, and 2020-08-07 is a dividend ex-date. Both are
@@ -54,11 +60,12 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
        carries the PERMNO array and the date BETWEEN, and contains no
        `ORDER BY` / `GROUP BY` / `DISTINCT` -- the D-03 prohibition, asserted
        on the rendered text rather than on the builder's arguments.
-    3. **The panel.** The ticker is derived at CONVERSION time (so the raw
-       tier never had to know it), and the total-return `adjClose` reproduces
-       the split and the dividend exactly.
+    3. **The panel.** The symbol axis IS the raw tier's PERMNO, cast to int64
+       and in numeric order, stored on disk as an integer dtype; and the
+       total-return `adjClose` reproduces the split and the dividend exactly.
     """
     import xarray as xr
+    import zarr
 
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
@@ -156,19 +163,37 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
         "2020-08-28",
         "2020-08-31",
     ]
-    assert [str(value) for value in panel["symbol"].values] == ["AAPL"]
+    # The axis is the PERMNO ITSELF, as an integer -- not its digits.
+    assert panel["symbol"].values.tolist() == [int(AAPL_PERMNO)]
+
+    # Read the ON-DISK dtype straight from zarr rather than the decoded one:
+    # `tests/conftest.py:stored_symbol_dtype` states verbatim why the decoded
+    # value is the wrong observable (xarray decodes an object-encoded
+    # coordinate to `StringDType()` in memory, so a whole suite can pass every
+    # value assertion while the store underneath carries another encoding).
+    stored = zarr.open_group(dataset_config.zarr_file_path, mode="r")["symbol"]
+    assert stored.dtype.kind == "i", stored.dtype
+    # ... and in strictly increasing NUMERIC order (D-19). One label cannot
+    # show an ordering, so the real order lock is the recycled-ticker and
+    # multi-PERMNO tests; this is the invariant stated where the axis is born.
+    axis = panel["symbol"].values.tolist()
+    assert axis == sorted(axis) and len(set(axis)) == len(axis), axis
 
     expected_variables = {
         "open", "high", "low", "close", "volume",
         "adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume",
-        "divCash", "splitFactor", "permno", "permco",
+        "divCash", "splitFactor", "permco",
     }
     assert expected_variables <= set(panel.data_vars), sorted(panel.data_vars)
+    # `permno` is NOT a data variable any more: it IS the coordinate (D-01).
+    assert "permno" not in panel.data_vars, sorted(panel.data_vars)
     for name in sorted(expected_variables):
         assert str(panel[name].dtype) == "float64", (name, panel[name].dtype)
 
     def at(variable: str, day: str) -> float:
-        return float(panel[variable].sel(timestamp=day, symbol="AAPL").values)
+        return float(
+            panel[variable].sel(timestamp=day, symbol=int(AAPL_PERMNO)).values
+        )
 
     # The split day is the anchor: its adjusted close IS its close.
     assert at("close", "2020-08-31") == pytest.approx(129.04)
@@ -198,8 +223,14 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     assert at("splitFactor", "2020-08-31") == pytest.approx(4.0)
     assert at("splitFactor", "2020-08-28") == pytest.approx(1.0)
 
-    for day in ("2020-08-06", "2020-08-07", "2020-08-28", "2020-08-31"):
-        assert at("permno", day) == pytest.approx(14593.0)
+    # The identity is reached by the PERMNO and by nothing else. The ticker is
+    # not a second spelling of the axis any more -- it is not on the axis at
+    # all, so asking for it is a KeyError rather than a silent empty slice.
+    assert float(
+        panel["close"].sel(timestamp="2020-08-31", symbol=int(AAPL_PERMNO))
+    ) == pytest.approx(129.04)
+    with pytest.raises(KeyError):
+        panel["close"].sel(symbol="AAPL")
 
 def test_wrds_crsp_reaches_the_session_only_through_the_wrds_taq_module():
     """`wrds_crsp.py` must NOT bind `WrdsSession` by name (D-03).

@@ -97,6 +97,7 @@ from quantlab.dataset.crsp_symbology import CrspSymbology
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
 from quantlab.utils.atomic import write_json_atomically
+from quantlab.utils.symbol_axis import sort_symbol_axis
 
 #: Everything this panel carries BEYOND the Tiingo twelve, with its CRSP source
 #: and the unit the panel states it in. FLOAT64 like every other variable
@@ -104,9 +105,14 @@ from quantlab.utils.atomic import write_json_atomically
 #: product, so a symbol that did not exist yet needs a NaN to say so -- which
 #: an integer `permno` or a boolean flag has no room for.
 #:
-#: - ``permno``/``permco``  -- CRSP's security and company ids, the stable
-#:   identity behind a ticker column that renames and gets reused.
-#: - ``ret``                -- ``dlyret``, the daily TOTAL return (dividends
+#: `permno` is NOT here, and its absence is the point (D-01): the panel's
+#: `symbol` COORDINATE is the int64 PERMNO, so a `permno` data variable would
+#: be the same number twice -- once as the axis and once as a float64 copy of
+#: it that nothing keeps in step.
+#:
+#: - ``permco``             -- CRSP's COMPANY id. It survives because it is a
+#:   different identity from the axis: one company, several securities.
+#: - ``ret``              -- ``dlyret``, the daily TOTAL return (dividends
 #:   included, and the delisting return on its own row). NaN where CRSP has
 #:   none; never 0 (D-09).
 #: - ``retx``               -- ``dlyretx``, the same return WITHOUT dividends.
@@ -132,7 +138,6 @@ from quantlab.utils.atomic import write_json_atomically
 #:   which is exactly why `close` is ``abs(dlyprc)`` and this is a separate
 #:   variable rather than the panel's close.
 CRSP_EXTRA_VARIABLES: tuple[str, ...] = (
-    "permno",
     "permco",
     "ret",
     "retx",
@@ -488,11 +493,18 @@ class CrspStockDataset(StockDataset):
             reference.table("stksecurityinfohist"),
             self.config.symbol_overrides,
         )
-        # `symbol` on the raw frame is the PERMNO string; the panel's `symbol`
-        # is the ticker, so the raw one is dropped rather than overwritten --
-        # `permno` (Int64) already carries the identity.
-        frame = frame.drop("symbol")
-        frame = self._symbology.label_rows(frame)
+        # The panel's `symbol` IS the PERMNO (D-01), and the raw frame's
+        # `symbol` column ALREADY holds it -- `wrds_crsp.py:317-319` verbatim:
+        # "Raw `symbol` is the PERMNO as a string, and a typed `permno` Int64
+        # column rides along." So the panel's identity axis is reached by a
+        # CAST of the column the raw tier already wrote, not by dropping it and
+        # labelling the rows with a date-valid ticker.
+        #
+        # One column, one spelling, from here on: the int64 `symbol` and the
+        # Int64 `permno` are now the same number, which is why `permno` leaves
+        # `CRSP_EXTRA_VARIABLES` -- a float64 copy of the coordinate is not an
+        # extra variable, it is a second source of truth.
+        frame = frame.with_columns(pl.col("symbol").cast(pl.Int64))
 
         frame = frame.sort(["permno", "timestamp"])
         derived = frame.with_columns(
@@ -575,7 +587,13 @@ class CrspStockDataset(StockDataset):
         # cumulative product would make the next kept day's adjusted move span
         # a return the panel no longer shows.
         derived = self._apply_security_filter(derived)
-        derived = self._resolve_identity(derived)
+        # `_resolve_identity` is NOT called any more (D-01). Both of the things
+        # it existed for are impossible on a PERMNO axis: a same-day collision
+        # needs two PERMNOs in one `(date, symbol)` cell, and the raw tier
+        # already asserts `(permno, dlycaldt)` uniqueness
+        # (`wrds_crsp.py:818-840`); a seam needs a symbol column to change
+        # company, and a PERMNO column never does. The method body stays for
+        # now and is removed in plan 07.
         return self._finalise(derived)
 
     def _assert_anchor_usable(self, derived: pl.DataFrame) -> None:
@@ -1365,12 +1383,17 @@ class CrspStockDataset(StockDataset):
         # an extent the store will never reach, and the chunk ledger persists a
         # completed window over days that symbol never traded.
         if self.config.symbols:
-            wanted = {str(symbol) for symbol in self.config.symbols}
+            wanted = {int(symbol) for symbol in self.config.symbols}
             derivation = derivation.filter(
                 pl.col("symbol").is_in(sorted(wanted))
             )
-        symbols = sorted(
-            str(value)
+        # The ONE place the CRSP panel's symbol axis is decided -- its dtype
+        # (int64 PERMNO, D-01) and its ORDER (numeric, D-19) both. `sorted()`
+        # on the string spelling put 5-digit PERMNOs before 4-digit ones
+        # ('10107' < '7000'); `sort_symbol_axis` is the single implementation
+        # of "numeric order" this repo has (`quantlab/utils/symbol_axis.py`).
+        symbols = sort_symbol_axis(
+            int(value)
             for value in derivation.get_column("symbol").unique().to_list()
         )
         timestamps = derivation.get_column("timestamp").unique().to_list()
@@ -1429,23 +1452,32 @@ class CrspStockDataset(StockDataset):
             )
 
     def _raw_data_to_xr_window(
-        self, start_date, end_date, symbols: list[str] | None = None
+        self, start_date, end_date, symbols: list[int] | None = None
     ) -> xr.Dataset:
-        """Densify ONE window of the cached derivation."""
+        """Densify ONE window of the cached derivation.
+
+        `symbols` is a list of int64 PERMNOs here, not tickers (D-01) -- the
+        base signature says `list[str]` because most vendors key on a ticker,
+        and CRSP narrows it.
+        """
         start = self._as_datetime(start_date)
         end = self._as_datetime(end_date)
         window = self._derivation().filter(
             (pl.col("timestamp") >= pl.lit(start))
             & (pl.col("timestamp") <= pl.lit(end))
         )
+        # `int(...)`, not `str(...)`: the derivation's `symbol` column is Int64
+        # (D-01), and `is_in` on a list of strings matches NOTHING against an
+        # integer column -- it would filter every window down to zero rows
+        # without raising.
         if symbols is not None:
             window = window.filter(
-                pl.col("symbol").is_in([str(symbol) for symbol in symbols])
+                pl.col("symbol").is_in([int(symbol) for symbol in symbols])
             )
         elif self.config.symbols:
             window = window.filter(
                 pl.col("symbol").is_in(
-                    [str(symbol) for symbol in self.config.symbols]
+                    [int(symbol) for symbol in self.config.symbols]
                 )
             )
         self._assert_unique_panel_keys(window)
