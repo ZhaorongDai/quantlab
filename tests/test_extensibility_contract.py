@@ -3,7 +3,7 @@ a new market or frequency only requires a new `Dataset` subclass + config --
 no changes needed in factor/model/backtest code."
 
 Two complementary checks live here:
-- `test_no_market_specific_logic_in_core_layers`: a grep-style purity check
+- `test_core_layer_purity_no_market_specific_logic`: a grep-style purity check
   proving the four core layers (`base/factor.py`, `base/model.py`,
   `base/backend.py`, `base/backtest.py`) contain no literal reference to a
   concrete `Dataset` subclass name or market-specific literal.
@@ -48,6 +48,18 @@ CORE_LAYER_FILES = (
 # Measured fact at the time of the ruling: none of the four substrings below
 # occurs in `quantlab/base/backtest.py`, so widening the gate is green today
 # rather than an owed debt.
+#
+# What this gate sees, and what it does not. It sees exactly the four legacy
+# market literals listed below, on non-comment lines -- nothing else. It does
+# NOT see either of the two concrete couplings `quantlab/base/backtest.py`
+# already carries: the named vendor import at `:15` (excluded on purpose per
+# ruling (b) above), nor the concrete market class name that appears in prose
+# at `:153`. Docstring lines ARE scanned, but that class name is CamelCase
+# while the corresponding entry below is a lowercase dotted module path, so
+# the two never match. Both facts are outside this gate's reach by
+# construction. "This gate is green" and "this file is proven free of
+# market-specific coupling" are therefore two different claims: the first is
+# true, the second is not, and widening the gate did not make it true.
 FORBIDDEN_SUBSTRINGS = (
     "SpotKlineDataset",
     "StockDataset",
