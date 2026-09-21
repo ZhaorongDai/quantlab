@@ -322,7 +322,11 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 |---|---|
 | `sources` | 哪几份名册在起作用，各自覆盖多少 PERMNO / 多少 membership spell |
 | `rows_rescued` | 「本来会被丢、结果留下来了」的行数 |
-| `permnos` | 每个被豁免的 PERMNO：`symbol`、被拒绝的类型组合、行数、首末日期 |
+| `permnos` | 每个被豁免的 PERMNO：被拒绝的类型组合、行数、首末日期（JSON key 本身就是 PERMNO） |
+
+这份清单里**没有 ticker/名字字段**：D-01 把面板的 `symbol` 轴换成 PERMNO 之后，
+原先那个字段逐字节重复 JSON key，于是在 G-03.11-2 删掉了 ——
+「丢/留的是谁」由 key 回答，「为什么」由类型组合回答，审计链是完整的。
 
 没有配名册时这个 key **也在**，只是计数为 0——这样「没发生豁免」和「这个 store 比该功能更早」
 可以靠 key 在不在区分开。`rows_rescued` 非 0 时还会打一条 `logger.warning`。
@@ -859,7 +863,7 @@ live 跑出来的关键数字（全部与离线契约一致）：
 - 没有显式名册的宽筛：过滤照旧，排除 `AD`/`UG` 在那里仍然有意义。
 
 豁免是**可审计**的：`crsp_filter_report.json` 的 `roster_overrides` 段记着
-`sources` / `rows_rescued` / `permnos`（每个 PERMNO 的 symbol、被拒绝的类型组合、行数、首末日期），
+`sources` / `rows_rescued` / `permnos`（每个 PERMNO 的被拒绝的类型组合、行数、首末日期；PERMNO 本身就是 JSON key），
 `rows_rescued` 非 0 时还会打一条 `logger.warning`。没配名册时这个 key 也在，计数为 0。
 这**取代**了 `03.10-08-SUMMARY.md` 里「传字面两列谓词字典即可回退」那条注记作为解法——
 那个字典仍然是个合法的 escape hatch，但不再是成分股缺失的答案。

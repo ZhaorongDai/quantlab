@@ -8,8 +8,8 @@ hold ONE name per PERMNO -- which silently discards FB -> META, the exact case
 this file pins twice.
 
 So the sidecar is an INTERVAL TABLE, not a `{PERMNO: ticker}` map. That
-distinction is the whole design: `_permno_breakdown` in `crsp.py` aggregates
-with `pl.col("symbol").last()` and is deliberately NOT the shape copied here.
+distinction is the whole design: any last-name-wins mapping keeps one name per
+PERMNO and is deliberately NOT the shape copied here.
 
 **Every quantlab import is INSIDE a test or helper body**, following
 `tests/test_crsp_dataset.py`: these tests are written before the names they
@@ -163,9 +163,8 @@ def test_permno_13407_is_two_intervals_fb_then_meta(converted):
     """VERBATIM C5, and the reason this sidecar is not a `{PERMNO: ticker}` map.
 
     One PERMNO, two names, a hard boundary. A shape that kept only the LAST
-    ticker -- `_permno_breakdown`'s `pl.col("symbol").last()` -- would answer
-    "META" for 2012, which is the same defect D-03 rejected a 1-D
-    `ticker(symbol)` coord for.
+    ticker per PERMNO would answer "META" for 2012, which is the same defect
+    D-03 rejected a 1-D `ticker(symbol)` coord for.
     """
     intervals = _payload(converted)["intervals"][META_PERMNO]
 

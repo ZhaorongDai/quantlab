@@ -4,9 +4,9 @@ no changes needed in factor/model/backtest code."
 
 Two complementary checks live here:
 - `test_no_market_specific_logic_in_core_layers`: a grep-style purity check
-  proving the three core layers (`base/factor.py`, `base/model.py`,
-  `base/backend.py`) contain no literal reference to a concrete `Dataset`
-  subclass name or market-specific literal.
+  proving the four core layers (`base/factor.py`, `base/model.py`,
+  `base/backend.py`, `base/backtest.py`) contain no literal reference to a
+  concrete `Dataset` subclass name or market-specific literal.
 - `test_fake_dataset_lifecycle`: a genuinely novel, test-only `FakeDataset`
   subclass (never registered anywhere else in the codebase) that runs the
   full `from_raw_data()` -> `save()` -> `read()` lifecycle successfully,
@@ -32,8 +32,22 @@ CORE_LAYER_FILES = (
     "quantlab/base/factor.py",
     "quantlab/base/model.py",
     "quantlab/base/backend.py",
+    "quantlab/base/backtest.py",
 )
 
+# Why `CrspTickerLookup` is deliberately NOT in this tuple (G-03.11-1):
+# `quantlab/base/backtest.py:15` carries a named vendor import
+# (`from quantlab.dataset.crsp_tickers import CrspTickerLookup`) -- a concrete
+# dataset-layer class name living in `base/`. `base/factor.py` solved the same
+# problem the other way (the dataset declares a constant, `base/` only reads
+# it, zero vendor class names), so one phase ended up with two patterns. The
+# operator ruled (b) in `03.11-UAT.md` test 1: ACCEPT that dependency as-is,
+# do NOT refactor it in this phase (option (a), refactoring the import, was
+# rejected), and instead put the file behind this gate so *future*
+# market-literal leaks into `base/backtest.py` turn red.
+# Measured fact at the time of the ruling: none of the four substrings below
+# occurs in `quantlab/base/backtest.py`, so widening the gate is green today
+# rather than an owed debt.
 FORBIDDEN_SUBSTRINGS = (
     "SpotKlineDataset",
     "StockDataset",
@@ -43,8 +57,9 @@ FORBIDDEN_SUBSTRINGS = (
 
 
 def test_core_layer_purity_no_market_specific_logic() -> None:
-    """base/factor.py, base/model.py, base/backend.py must never reference a
-    concrete `Dataset` subclass name or a market-specific literal -- doing so
+    """base/factor.py, base/model.py, base/backend.py and base/backtest.py
+    must never reference a concrete `Dataset` subclass name or a
+    market-specific literal in live code -- doing so
     would mean the core layers depend on which market/frequency is in use,
     breaking the "new market = new Dataset subclass, zero core-layer changes"
     contract (DATA-03).

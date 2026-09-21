@@ -560,9 +560,9 @@ def test_the_filter_report_says_what_was_dropped_and_why(
 
     The sidecar carries the RESOLVED filter (so a preset name is not the only
     record of what ran), the row arithmetic, a count per dropped type
-    combination, and a line per dropped PERMNO with its last symbol -- which is
-    what makes "the S&P panel lost its ADR member" a readable fact rather than
-    a missing column nobody notices.
+    combination, and a line keyed by dropped PERMNO carrying its rejected type
+    combination -- which is what makes "the S&P panel lost its ADR member" a
+    readable fact rather than a missing column nobody notices.
     """
     dataset_config = _scenario_store(tmp_path)
 
@@ -583,10 +583,12 @@ def test_the_filter_report_says_what_was_dropped_and_why(
     assert report["dropped_by_type"]["NS/FUND/ETF/ACOR/Y"] == len(SCENARIO_DAYS)
 
     qqq = report["dropped_permnos"][QQQ_PERMNO_TEXT]
-    # `symbol` is read off the derivation's `symbol` column, which IS the
-    # PERMNO now (D-01). Restoring a human-readable ticker to the report is
-    # plan 09's ticker sidecar, not a thing to reconstruct here.
-    assert qqq["symbol"] == QQQ_PERMNO_TEXT, qqq
+    # There is no `symbol` field: after the PERMNO-axis migration (D-01) the
+    # derivation's `symbol` column IS the PERMNO, so the field repeated the
+    # JSON key byte for byte and was deleted (G-03.11-2). The key answers
+    # "who", `types` answers "why" -- that is the whole audit question.
+    assert "symbol" not in qqq, qqq
+    assert set(qqq) == {"types", "rows", "first", "last"}, qqq
     assert qqq["types"] == ["NS/FUND/ETF/ACOR/Y"], qqq
     assert qqq["rows"] == len(SCENARIO_DAYS), qqq
     assert qqq["first"] == SCENARIO_DAYS[0], qqq
@@ -1094,7 +1096,9 @@ def test_the_equity_store_over_the_same_raw_tier_drops_qqq(
 
     report = _filter_report(equity)
     assert QQQ_PERMNO_TEXT in report["dropped_permnos"], report["dropped_permnos"]
-    assert report["dropped_permnos"][QQQ_PERMNO_TEXT]["symbol"] == QQQ_PERMNO_TEXT
+    assert "symbol" not in report["dropped_permnos"][QQQ_PERMNO_TEXT], report[
+        "dropped_permnos"
+    ]
     assert report["dropped_by_type"]["NS/FUND/ETF/ACOR/Y"] == len(QQQ_DAYS)
 
 
@@ -1454,8 +1458,8 @@ def test_the_filter_report_names_the_roster_rescue(mock_crsp_session, tmp_path):
     """The override is REPORTABLE or it is a silent widening (T-03.10-49).
 
     `roster_overrides` answers exactly "what would have been dropped and was
-    not": the sources in play, the row count, and per PERMNO the symbol, the
-    rejected type combination and the date range. A rescued PERMNO is NOT in
+    not": the sources in play, the row count, and per PERMNO the rejected type
+    combination and the date range. A rescued PERMNO is NOT in
     `dropped_permnos` -- it was not dropped.
     """
     dataset_config = _roster_store(
@@ -1471,10 +1475,11 @@ def test_the_filter_report_names_the_roster_rescue(mock_crsp_session, tmp_path):
     ), overrides["sources"]
 
     rescued = overrides["permnos"][ROSTER_PERMNO]
-    # The breakdown's `symbol` is the derivation's `symbol` column, which IS
-    # the PERMNO now (D-01); plan 09's ticker sidecar is what restores a
-    # human-readable name to this report.
-    assert rescued["symbol"] == ROSTER_PERMNO, rescued
+    # Same shape as the dropped branch -- one rendering serves both call sites
+    # -- so the deleted `symbol` field (G-03.11-2) is gone from here too. The
+    # JSON key is the PERMNO; no ticker is reconstructed into this report.
+    assert "symbol" not in rescued, rescued
+    assert set(rescued) == {"types", "rows", "first", "last"}, rescued
     assert rescued["types"] == ["UG/EQTY/COM/CORP/Y"], rescued
     assert rescued["rows"] == len(ROSTER_LP_DAYS), rescued
     assert rescued["first"] == ROSTER_LP_DAYS[0], rescued
