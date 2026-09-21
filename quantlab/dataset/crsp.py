@@ -335,6 +335,29 @@ class CrspStockDataset(StockDataset):
     #: The config class `quantlab/utils/module.py` rebuilds this dataset with.
     config_cls = CrspDatasetConfig
 
+    #: RULING 3, the FACTOR-side half of the refusal this class installs on
+    #: its own config setter. `BaseFactorConfig.symbols` is a DIFFERENT field
+    #: from `BaseDatasetConfig.symbols` -- same name, different dataclass, and
+    #: it filters at a different stage: `Factor._auto_filter` hands it to
+    #: `XrBackend.filter_by_symbol`, one bare `.sel`. Against this panel's
+    #: int64 PERMNO axis (D-01) that raises a mid-run `KeyError` reading like
+    #: missing data, when the fact is that the caller named the wrong field.
+    #:
+    #: DECLARED here and READ by `quantlab/base/factor.py`, so the factor base
+    #: never learns this class's name and the layering stays one-directional.
+    #: The sentence is this vendor's, because the reason is this vendor's.
+    REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {
+        "symbols": (
+            "This panel's symbol axis is the int64 PERMNO (D-01), while that "
+            "field is the base-class TICKER-side roster. Restrict the "
+            "CONVERSION with config.permnos on the dataset instead -- it is "
+            "the raw-side PERMNO roster, and it doubles as the explicit "
+            "roster that overrides config.security_filter. A period-correct "
+            "ticker for a PERMNO is READ from the ticker sidecar; it is not "
+            "something this panel selects on."
+        )
+    }
+
     #: The twelve variables a Tiingo daily panel carries, in `TiingoColumns.EOD`
     #: order. Derived from that constant rather than restated, so the drop-in
     #: promise is checked against the thing it promises compatibility with.

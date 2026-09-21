@@ -56,6 +56,10 @@ class Factor(ABC):
         self._config = config
         self._config.name = self.import_path
 
+        # FIRST, before names are resolved (which probes the store) and before
+        # anything is filtered. See `_reject_declared_config_fields`.
+        self._reject_declared_config_fields()
+
         # 初始化时间
         if self._config.start_date is None:
             self._config.start_date = Date.START_DATE
@@ -68,6 +72,52 @@ class Factor(ABC):
         # 重置数据集配置
         # batch模式下, 数据集实例化时会初始化数据集文件(若不存在), 存在则会读取
         self._reset_dataset_config()
+
+    def _reject_declared_config_fields(self) -> None:
+        """Refuse config fields the underlying dataset declares unusable.
+
+        The declaration is `BaseDataset.REJECTED_FACTOR_CONFIG_FIELDS`, a
+        `{field: why}` mapping each vendor writes for itself. This method only
+        READS it. That direction is deliberate: an `isinstance` check against
+        a concrete vendor class here would add a `base -> dataset` dependency
+        on a specific subclass, against this repository's one-directional
+        layering. (`base/factor.py` already imports `XrBackend` from
+        `quantlab.dataset.backend`, a known approximation of that rule --
+        depending on a storage backend and depending on a vendor `Dataset`
+        subclass are not the same order of coupling, and this method is
+        written so the second never happens.)
+
+        **Why at ASSIGNMENT rather than at first use.** The live case is a
+        factor over a CRSP panel with `config.symbols` set: that value reaches
+        `XrBackend.filter_by_symbol`'s bare `.sel` and meets an int64 PERMNO
+        axis, so the run dies MID-FLIGHT with a `KeyError` that points at the
+        index and says nothing about the field being the wrong one. Refusing
+        at assignment turns a misleading runtime error into a clear one, and
+        it happens before `_maybe_resolve_factor_names` probes any store --
+        so no disk is touched on the way to being told what to fix.
+
+        The message SHAPE deliberately matches the refusal a declaring vendor
+        installs on its OWN config setter, so the two read as two installation
+        points of one discipline rather than two ad-hoc patches. For the live
+        declarer that discipline is: a ticker roster cannot select a PERMNO
+        axis, and `config.permnos` is the field that does.
+
+        No vendor class is NAMED anywhere in this file, including here --
+        `tests/test_extensibility_contract.py` scans these core modules for
+        concrete `Dataset` subclass names and counts a docstring line as a
+        live reference (only `#`-prefixed lines are exempt). That gate is the
+        machine-checked form of the rule this method is written around.
+        """
+        dataset = getattr(self._config, "dataset", None)
+        rejected = getattr(dataset, "REJECTED_FACTOR_CONFIG_FIELDS", None) or {}
+        for name, reason in rejected.items():
+            value = getattr(self._config, name, None)
+            if value is None:
+                continue
+            raise ValueError(
+                f"{self.class_name}: config.{name} is not selectable on a "
+                f"{type(dataset).__name__} panel; got {value!r}. {reason}"
+            )
 
     def _maybe_resolve_factor_names(self) -> None:
         """
