@@ -1769,3 +1769,70 @@ def test_no_permno_is_admitted_without_a_ticker_after_1990_08_20(
     assert report["admitted_without_ticker"] == {"permnos": [], "rows": 0}, report[
         "admitted_without_ticker"
     ]
+
+
+def test_a_delisted_permno_keeps_its_last_row(mock_crsp_session, tmp_path):
+    """The delisting row survives the security filter, and MUST keep doing so.
+
+    **This is a prohibition guard, not a feature test.** The filter's verdict
+    inheritance (`quantlab/dataset/crsp.py`, `_apply_security_filter`) and
+    `CrspSymbology`'s ticker carry are described side by side in one docstring
+    paragraph. The symbology half is deleted in plan 07; the filter half must
+    NOT be, and the two are one edit apart.
+
+    What is lost if it goes: a delisted security's last row is exactly where
+    CRSP's type columns go blank, AND it is the row carrying the delisting
+    RETURN. Judged on its own blank types the row is dropped, every delisting
+    loss silently disappears, survivorship bias walks back in one row at a
+    time -- and the panel stays completely well-formed while it happens.
+
+    WestRock's 2024-07-08 row is the modern CIZ shape, verbatim from the raw
+    tier: `dlydelflg='Y'`, a `dlyprc = 0.0` no-price sentinel, and every one of
+    the five TYPE columns NULL. The nullness is asserted from the fixture
+    itself first, so this test cannot pass by accident on a row the filter
+    would have kept on its own merits.
+    """
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+
+    delisting_row = next(
+        row for row in WESTROCK_2024_ROWS if row["dlycaldt"] == "2024-07-08"
+    )
+    assert delisting_row["dlydelflg"] == "Y", delisting_row
+    for column in (
+        "sharetype",
+        "securitytype",
+        "securitysubtype",
+        "issuertype",
+        "usincflg",
+    ):
+        # If this ever stops being None the test below proves nothing: the row
+        # would be kept on its own types, carry or no carry.
+        assert delisting_row[column] is None, (column, delisting_row[column])
+
+    dataset_config = _build_store(
+        tmp_path,
+        WESTROCK_2024_ROWS,
+        [WESTROCK_PERMNO],
+        start="2024-07-01",
+        end="2024-07-31",
+    )
+    panel = _panel(dataset_config)
+
+    assert "2024-07-08" in [
+        str(value)[:10] for value in panel["timestamp"].values
+    ], panel["timestamp"].values
+
+    assert _at(panel, "is_delisting", "2024-07-08", WESTROCK_AXIS) == pytest.approx(
+        1.0
+    )
+    assert _at(panel, "ret", "2024-07-08", WESTROCK_AXIS) == pytest.approx(
+        -0.005630
+    )
+
+    # And the report agrees it was not dropped -- the row count is the other
+    # half, because a row could be absent from `dropped_permnos` while never
+    # having reached the filter at all.
+    report = _filter_report(dataset_config)
+    assert report["rows_dropped"] == 0, report
+    assert report["dropped_permnos"] == {}, report["dropped_permnos"]
+    assert report["rows_kept"] == len(WESTROCK_2024_ROWS), report
