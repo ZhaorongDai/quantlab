@@ -398,6 +398,177 @@ def test_widening_refuses_a_target_axis_that_would_drop_a_stored_symbol(
 
 
 # ---------------------------------------------------------------------------
+# The int64 (PERMNO) axis -- 03.11-02
+#
+# These take `symbol_encoding` like every other test in this module, but
+# OVERRIDE the shared fixture with an explicit parametrisation, so they keep
+# the `[int64]` id in the same namespace as `[fixed_width]` and
+# `[variable_length]`. The shared fixture cannot carry the arm itself: its
+# ~33 consumers label panels with tickers, and a ticker has no int64
+# spelling. See `conftest.SYMBOL_COORD_STRING_ENCODINGS`.
+#
+# `_PERMNOS` is four dates x three PERMNOs = twelve cells ON PURPOSE. That is
+# the exact shape RESEARCH 03.11 R2-A measured the defect on, and its output
+# is the expected value these tests invert:
+#
+#     superset guard 'dropped': [] -> guard passes: True
+#     widened symbol coord: ['10107' '14593' '93436'] <U5
+#     non-NaN cells after widen: 0 of 12
+#
+# i.e. the store was rewritten to ALL NaN, the superset guard compared
+# `str(...)` on both sides and so reported nothing dropped, and `os.replace`
+# then made the empty store authoritative and `rmtree`d the original. No
+# exception, no log line.
+# ---------------------------------------------------------------------------
+
+#: Three real PERMNOs, spelled as the digit STRINGS the 03.10-era axis and
+#: today's `config.symbols` still use. `symbol_coord(..., "int64")` converts
+#: them, so the STORE is int64 while the caller's spelling stays the one the
+#: defect is reachable from.
+_PERMNOS = ["10107", "14593", "93436"]
+
+#: A FOUR-digit PERMNO for the new column. Not decorative: it is the only
+#: label width at which numeric and lexicographic order disagree, so a widen
+#: that quietly re-sorted its axis lexicographically would be visible here and
+#: invisible on any five-digit universe (RESEARCH R2-H).
+_NEW_PERMNO = "7000"
+
+_INT64_ONLY = pytest.mark.parametrize("symbol_encoding", ["int64"])
+
+
+@_INT64_ONLY
+@pytest.mark.parametrize("spelling", ["digit_strings", "integers"])
+def test_widening_an_int64_axis_preserves_every_stored_cell(
+    tmp_path: Path, symbol_encoding: str, spelling: str
+) -> None:
+    """THE defect this plan exists for: on an int64 axis the widen did not
+    merely fail, it DESTROYED the store -- and silently.
+
+    `widen_symbol_axis` stringified its request unconditionally, so `reindex`
+    matched none of the stored integer labels and produced an all-NaN panel;
+    `os.replace` then promoted that panel to authoritative and `rmtree`d the
+    original. Measured 2026-09-20: 0 of 12 cells survived.
+
+    Both caller spellings are exercised because both are live: digit strings
+    are what `config.symbols` and the CLI carry today, integers are what the
+    migrated axis hands down.
+
+    RED under: `requested = [str(symbol) for symbol in symbols]` -- i.e.
+    `quantlab/dataset/backend.py:451` as it stood before 03.11-02. Under that
+    mutation the non-NaN count goes to 0 while every other assertion about
+    shape and dtype still passes.
+    """
+    path = str(tmp_path / "permno.zarr")
+    XrBackend().to_internal(
+        _panel(
+            ["2022-01-04", "2022-03-15", "2022-06-15", "2022-09-15"],
+            _PERMNOS,
+            0.0,
+            encoding=symbol_encoding,
+        )
+    ).append(path)
+
+    before = _stored(path)
+    before_cells = int(before["close"].notnull().sum())
+    assert before_cells == 12, before_cells
+
+    superset = [_NEW_PERMNO, *_PERMNOS]
+    if spelling == "integers":
+        superset = [int(label) for label in superset]
+
+    XrBackend().widen_symbol_axis(path, superset)
+
+    after = _stored(path)
+    assert int(after["close"].notnull().sum()) == before_cells
+
+    # The axis itself is still integer-keyed, and still carries the labels the
+    # caller asked for -- in the order asked for.
+    assert_stored_symbol_encoding(path, "int64")
+    assert after["symbol"].values.tolist() == [int(label) for label in superset]
+
+    # Every pre-existing PERMNO's history is bit-identical, matched BY LABEL.
+    for permno in _PERMNOS:
+        np.testing.assert_array_equal(
+            after["close"].sel(symbol=int(permno)).values,
+            before["close"].sel(symbol=int(permno)).values,
+        )
+
+    # ... and the genuinely new column is the only NaN in the store.
+    assert np.isnan(after["close"].sel(symbol=int(_NEW_PERMNO)).values).all()
+
+
+@_INT64_ONLY
+def test_the_superset_guard_actually_guards_an_int64_axis(
+    tmp_path: Path, symbol_encoding: str
+) -> None:
+    """A REGRESSION LOCK, and it is labelled one deliberately: it was GREEN
+    before 03.11-02 as well as after, measured.
+
+    The pre-03.11-02 guard stringified BOTH sides, so on a digit-string
+    request the comparison was at least self-consistent and a true subset did
+    fire the refusal. What it could not do was say anything about the reindex
+    that followed -- its `dropped: []` verdict was measured TRUE at the same
+    moment the rewrite emptied the store (that is the sibling test above).
+    "Decoration" is about what passing the guard GUARANTEED, not about whether
+    it fired.
+
+    Which makes this the assertion that matters while the guard is rewritten
+    to compare normalised int64 values: normalising must not cost the refusal
+    it already had. A rewrite is exactly where a working guard gets lost.
+
+    RED under: comparing `pd.Index(requested)` against the stored index
+    WITHOUT normalising the request first -- `Index(['10107'])` and
+    `Index([10107])` share no members, so `difference` reports every stored
+    label dropped and the method refuses every request, including good ones.
+    Also RED under dropping the check entirely.
+    """
+    path = str(tmp_path / "subset.zarr")
+    XrBackend().to_internal(
+        _panel(
+            ["2022-01-04", "2022-06-15"], _PERMNOS, 0.0, encoding=symbol_encoding
+        )
+    ).append(path)
+    before = _stored(path)
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().widen_symbol_axis(path, ["10107", "14593"])
+
+    message = str(excinfo.value)
+    assert message.startswith("XrBackend.widen_symbol_axis: refusing to widen")
+    assert "93436" in message
+    xr.testing.assert_identical(_stored(path), before)
+
+
+@_INT64_ONLY
+def test_a_label_with_no_int64_spelling_is_refused_rather_than_missed(
+    tmp_path: Path, symbol_encoding: str
+) -> None:
+    """A ticker handed to a PERMNO axis has no int64 spelling at all.
+
+    Left to `reindex` it does not raise -- it MISSES, and a miss on this path
+    is a NaN column written into the authoritative store. Refusing up front is
+    the difference between an error a caller can read and a store nobody
+    notices has changed.
+
+    RED under: normalising with a `try/except` that falls back to `str()`, or
+    to dropping the unconvertible label.
+    """
+    path = str(tmp_path / "mixed.zarr")
+    XrBackend().to_internal(
+        _panel(
+            ["2022-01-04", "2022-06-15"], _PERMNOS, 0.0, encoding=symbol_encoding
+        )
+    ).append(path)
+    before = _stored(path)
+
+    with pytest.raises(ValueError) as excinfo:
+        XrBackend().widen_symbol_axis(path, [*_PERMNOS, "AAPL"])
+
+    assert "AAPL" in str(excinfo.value)
+    xr.testing.assert_identical(_stored(path), before)
+
+
+# ---------------------------------------------------------------------------
 # The rewrite itself: chunk grid, crash safety, and the cheap path
 # ---------------------------------------------------------------------------
 

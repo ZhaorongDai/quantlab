@@ -10,6 +10,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.backend import DataBackend
+from quantlab.utils.symbol_axis import normalize_to_axis_dtype
 
 
 class XrBackend(DataBackend):
@@ -396,6 +397,46 @@ class XrBackend(DataBackend):
         the budget, whole-store does not run at all. Chunking unconditionally
         would tax every routine widen ~4x to buy nothing.
 
+        **The request is normalised to the STORED axis's dtype, and that is
+        not a compatibility nicety -- it closes a SILENT DATA-DESTRUCTION
+        path.** Until 03.11-02 this method stringified the request
+        unconditionally (`[str(symbol) for symbol in symbols]`) before the
+        store was even open, so on an integer `symbol` axis -- the PERMNO axis
+        phase 03.11 migrates to -- `reindex` matched not one stored label and
+        produced an ALL-NaN panel. The two `os.replace` calls below then made
+        that panel authoritative and `shutil.rmtree`d the original. **No
+        exception was raised and not one line was logged.** Measured
+        2026-09-20 (xarray 2026.7.0 / zarr 3.3.0) on a 4x3 store::
+
+            superset guard 'dropped': [] -> guard passes: True
+            widened symbol coord: ['7000' '10107' '14593' '93436'] <U5
+            non-NaN cells after widen: 0 of 12
+
+        Read the first line together with the third. The superset guard
+        reported nothing dropped AT THE SAME MOMENT the rewrite emptied the
+        store, because it stringified both sides too: `str(10107) ==
+        "10107"`, so it compared a question the reindex was never asked.
+        Passing that guard guaranteed nothing, which is why it now compares
+        `stored[dim].to_index()` against the NORMALISED request.
+
+        How loud the failure is depends on whether the store carries pinned
+        `symbol` encoding metadata, which is the measurement above's one
+        subtlety: a store written by `append()` does carry it, and there the
+        widened `<U5` coordinate fails the closing write with
+        ``TypeError: ufunc 'rint' not supported for the input types`` --
+        noisy, and harmless, since the sidecar is discarded and `path` stays
+        authoritative. A store written by a plain `to_zarr` does NOT, and
+        there the emptied panel is written out and promoted in silence. The
+        same defect, two volumes; only one of them is survivable.
+
+        A label with no spelling in the stored dtype (a ticker handed to a
+        PERMNO axis) raises rather than being coerced or dropped: the error
+        from `quantlab/utils/symbol_axis.normalize_to_axis_dtype` is allowed
+        to BUBBLE rather than being re-wrapped here, because that function
+        already names the offending labels and the target dtype, and a wrapper
+        would only restate them one frame further from where they were
+        rejected.
+
         **`on_new_listing="rebuild"` is still worth reaching for, for a
         DIFFERENT reason than it used to be.** Not memory -- that argument is
         gone, and it never applied to `Factor` anyway, which has no raw tier
@@ -448,15 +489,23 @@ class XrBackend(DataBackend):
         if not target.exists():
             raise FileNotFoundError(f"File {path} does not exist.")
 
-        requested = [str(symbol) for symbol in symbols]
         fills = dict(fill_values or {})
 
         stored = xr.open_zarr(path)
         try:
-            stored_labels = [str(label) for label in stored[dim].values.tolist()]
-            dropped = [
-                label for label in stored_labels if label not in set(requested)
-            ]
+            # `requested` CANNOT be computed before this point: normalising it
+            # needs the stored axis's dtype, and that needs the store open.
+            # Until 03.11-02 it was built by a bare `str()` comprehension over
+            # `symbols`, placed ABOVE the open -- which is precisely why it
+            # could not consult the dtype, and so was blind to it.
+            stored_index = stored[dim].to_index()
+            requested = normalize_to_axis_dtype(symbols, stored_index)
+
+            # Compared on the NORMALISED values. Both sides used to be
+            # `str()`ed here, which made the comparison self-consistent but
+            # unrelated to what `reindex` would actually match -- see this
+            # method's docstring.
+            dropped = stored_index.difference(pd.Index(requested)).tolist()
             if dropped:
                 raise ValueError(
                     f"XrBackend.widen_symbol_axis: refusing to widen {path} -- "

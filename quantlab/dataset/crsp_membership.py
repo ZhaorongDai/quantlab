@@ -53,6 +53,7 @@ from loguru import logger
 
 from quantlab.dataset.crsp_reference import CrspReference
 from quantlab.dataset.crsp_symbology import CrspSymbology
+from quantlab.utils.symbol_axis import sort_symbol_axis
 
 _ONE_DAY = timedelta(days=1)
 
@@ -323,12 +324,13 @@ class CrspMembership:
         every security that left the index INSIDE the window -- dropping them
         is precisely the survivorship bias this layer removes.
 
-        **The order is part of the contract, and it is NUMERIC.** PERMNOs are
-        integers rendered as strings, so `sorted()` on the text would put
-        `"14593"` before `"7000"`. `quantlab/utils/cli.py:resolve_symbols`
-        slices this list for `--limit`; an unstable or surprising order
-        truncates to a different batch on every run, and the second run never
-        meets the watermarks the first one wrote.
+        **The order is part of the contract, and it is NUMERIC** -- the
+        argument for why MOVED to
+        `quantlab/utils/symbol_axis.py:sort_symbol_axis` in 03.11-02, which is
+        now the single source of that contract and which this method calls.
+        It used to be stated here, and only here, while eight other call sites
+        each spelled their own bare `sorted()`; a contract stated in one place
+        and re-derived in eight is eight things that can drift apart.
         """
         start = _as_date(start_date)
         end = _as_date(end_date)
@@ -342,7 +344,10 @@ class CrspMembership:
         overlapping = intervals.filter(
             (pl.col("start_date") <= end) & (pl.col("end_date") >= start)
         )
-        return [str(permno) for permno in sorted(set(overlapping["permno"].to_list()))]
+        return [
+            str(permno)
+            for permno in sort_symbol_axis(set(overlapping["permno"].to_list()))
+        ]
 
     # -- S&P 500 (D-05) ------------------------------------------------------
 

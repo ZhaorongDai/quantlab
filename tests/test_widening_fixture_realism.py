@@ -29,7 +29,7 @@ Imported as `from conftest import ...` for the reason stated at the top of
 import ast
 from pathlib import Path
 
-from conftest import SYMBOL_COORD_ENCODINGS
+from conftest import SYMBOL_COORD_ENCODINGS, SYMBOL_COORD_STRING_ENCODINGS
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -151,19 +151,24 @@ def test_every_store_touching_test_in_the_owning_suites_requests_the_encoding_fi
         f"touch a store, add it to _EXEMPT with the reason in its docstring, "
         f"the way {sorted(_EXEMPT)[0]!r} does."
     )
-    # Non-vacuity: the guard must actually be looking at the family. 40 of the
-    # 42 tests across the three suites touch a store. Of the other two, ONE is
+    # Non-vacuity: the guard must actually be looking at the family. 43 of the
+    # 45 tests across the three suites touch a store. Of the other two, ONE is
     # in `_EXEMPT` (pure `inspect.signature` introspection) and the other,
     # `test_the_block_size_rule_floors_onto_the_chunk_grid`, is not counted at
     # all: it exercises `_widen_block_rows` as integer arithmetic, builds no
     # panel and opens no store, so the detector above never reaches it and it
-    # needs no exemption. That distinction is the reason this literal is 40
-    # rather than 41.
+    # needs no exemption. That distinction is the reason this literal is not
+    # simply the test count.
     #
     # Re-derived 2026-09-08 from this assertion's own failure message after
     # 260908-g30 added its router locks, rather than reasoned to; `_EXEMPT`
-    # gained no new name.
-    assert checked == 40, checked
+    # gained no new name. Re-derived the same way 2026-09-20 (40 -> 43) when
+    # 03.11-02 added the three int64 cases to
+    # `tests/test_symbol_axis_widening.py`. Those three DO request
+    # `symbol_encoding` -- they override the shared fixture with an explicit
+    # `[int64]` parametrisation rather than declining the axis -- so they are
+    # counted here exactly like their neighbours, which is the point.
+    assert checked == 43, checked
 
 
 def test_no_owning_suite_builds_a_symbol_coordinate_from_a_bare_sequence() -> None:
@@ -218,32 +223,69 @@ def test_no_owning_suite_builds_a_symbol_coordinate_from_a_bare_sequence() -> No
     assert found == 5, found
 
 
-def test_the_shared_fixture_offers_exactly_the_two_live_production_encodings() -> None:
+def test_the_shared_fixture_offers_exactly_the_three_modelled_encodings() -> None:
     """`SYMBOL_COORD_ENCODINGS` is pinned by LITERAL equality, following the
     D-09 precedent in this repository.
 
-    Reducing the tuple to one name would leave every other test in the
-    repository green while halving the coverage of all 33 parametrised tests at
-    once -- the parametrisation would simply stop generating the second id.
-    Nothing else can see that; the per-suite id counts in the task gates run at
-    execution time and are gone afterwards.
+    Reducing the tuple would leave every other test in the repository green
+    while cutting the coverage of all 33 parametrised tests at once -- the
+    parametrisation would simply stop generating the missing id. Nothing else
+    can see that; the per-suite id counts in the task gates run at execution
+    time and are gone afterwards.
 
-    Both names are load-bearing beyond their count: they become the pytest ids
-    `[fixed_width]` and `[variable_length]`, which is what lets a mutation's red
-    set be attributed to an ENCODING rather than to churn.
+    Every name is load-bearing beyond its count: they become the pytest ids
+    `[fixed_width]`, `[variable_length]` and `[int64]`, which is what lets a
+    mutation's red set be attributed to an ENCODING rather than to churn.
 
-    RED under: M7 -- reducing `SYMBOL_COORD_ENCODINGS` to one name, or
-    renaming either arm.
+    `"int64"` joined in 03.11-02, when the PERMNO axis made an INTEGER symbol
+    coordinate a live store shape. Before it, `stored_symbol_encoding` raised
+    `AssertionError` on such a store -- so the helper family could not even
+    describe the axis the phase was migrating to.
+
+    RED under: M7 -- reducing `SYMBOL_COORD_ENCODINGS` to fewer names, or
+    renaming any arm.
     """
-    assert SYMBOL_COORD_ENCODINGS == ("fixed_width", "variable_length"), (
-        f"expected exactly the two symbol encodings measured live on this "
-        f"machine 2026-09-08 -- fixed-width unicode (BytesCodec, as in "
+    assert SYMBOL_COORD_ENCODINGS == (
+        "fixed_width",
+        "variable_length",
+        "int64",
+    ), (
+        f"expected the two string encodings measured live on this machine "
+        f"2026-09-08 -- fixed-width unicode (BytesCodec, as in "
         f"data/data/us_equity/1d/us_all.zarr) and object-encoded "
         f"variable-length (VLenUTF8Codec, as in "
         f"data/data/us_equity/1m/stock_alpaca.zarr, which is what the current "
-        f"chunked ingest writes) -- but got {SYMBOL_COORD_ENCODINGS!r}. The "
-        f"third dtype on disk, float64 on 1d/stock_alpaca.zarr, is a "
-        f"degenerate 0x0 EMPTY store rather than a string encoding; see "
+        f"chunked ingest writes) -- plus the integer coordinate a PERMNO axis "
+        f"writes (03.11-02), but got {SYMBOL_COORD_ENCODINGS!r}. The float64 "
+        f"dtype on 1d/stock_alpaca.zarr is still NOT a fourth arm: it is a "
+        f"degenerate 0x0 EMPTY store rather than an encoding; see "
         f".planning/todos/pending/"
         f"2026-09-08-an-empty-zarr-store-records-symbol-as-float64.md."
     )
+
+
+def test_the_shared_fixture_parametrises_only_the_string_encodings() -> None:
+    """The `symbol_encoding` FIXTURE is deliberately narrower than the
+    encoding MODEL, and the gap is not an oversight.
+
+    Every test the fixture serves labels its panels with tickers (`"A"`,
+    `"MSFT"`, `"SATX-WS-A"`). Those labels have no int64 spelling at all, so
+    parametrising the fixture over the full tuple would not widen coverage --
+    it would make `symbol_coord` raise inside roughly 33 previously-passing
+    tests. The int64 arm is opted into explicitly, by the suites whose labels
+    are PERMNO-shaped (`tests/test_symbol_axis_widening.py`).
+
+    So: `SYMBOL_COORD_ENCODINGS` answers "what encodings does this helper
+    family MODEL", and `SYMBOL_COORD_STRING_ENCODINGS` answers "which of them
+    can carry an arbitrary ticker". Keeping both named stops a later reader
+    from "fixing" the narrower fixture into the wider tuple.
+
+    RED under: pointing the `symbol_encoding` fixture at the full tuple, or
+    letting the string subset drift out of the model.
+    """
+    assert SYMBOL_COORD_STRING_ENCODINGS == ("fixed_width", "variable_length")
+    assert set(SYMBOL_COORD_STRING_ENCODINGS) < set(SYMBOL_COORD_ENCODINGS)
+    assert [
+        name for name in SYMBOL_COORD_ENCODINGS
+        if name not in SYMBOL_COORD_STRING_ENCODINGS
+    ] == ["int64"]
