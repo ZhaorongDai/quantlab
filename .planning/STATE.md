@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.10"
-current_phase_name: CRSP Stock v2 Daily Data via WRDS (INSERTED)
+current_phase: "03.11"
+current_phase_name: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal
 status: executing
 stopped_at: Phase 03.9 complete, ready to plan Phase 3
-last_updated: "2026-09-21T00:09:55.771Z"
+last_updated: "2026-09-21T02:33:21.860Z"
 last_activity: 2026-09-20
 last_activity_desc: Phase 03.10 execution started
-state_head: 295ca512eaefa311143fa996852336b982ccda1b
+state_head: 80e36c6e458936a224ca9314f0c04357b2bacf7d
 progress:
   total_phases: 18
   completed_phases: 1
-  total_plans: 105
+  total_plans: 116
   completed_plans: 104
 milestone_name: milestone
 ---
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 
 ## Current Position
 
-Phase: 03.10 (CRSP Stock v2 Daily Data via WRDS (INSERTED)) — EXECUTING
+Phase: 03.11 (CRSP PERMNO symbol axis migration and Tiingo-era dead code removal) — READY TO EXECUTE
 Plan: 1 of 17
-Status: Executing Phase 03.10
+Status: Ready to execute
 Last activity: 2026-09-20 — Phase 03.10 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
