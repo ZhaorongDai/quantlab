@@ -48,6 +48,15 @@ LEHMAN_PERMNO = "80599"
 WESTROCK_PERMNO = "21186"
 WESTROCK_SYMBOL = "WRK"
 
+#: The SAME securities, spelled the way the PANEL spells them: its symbol axis
+#: is the int64 PERMNO (D-01, phase 03.11), never the ticker. The `*_SYMBOL`
+#: constants above stay because the reference-tier fixtures are keyed on the
+#: ticker -- `stksecurityinfohist` is where a ticker legitimately lives.
+SYNTHETIC_AXIS = int(SYNTHETIC_PERMNO)
+AAPL_AXIS = int(AAPL_PERMNO)
+LEHMAN_AXIS = int(LEHMAN_PERMNO)
+WESTROCK_AXIS = int(WESTROCK_PERMNO)
+
 
 # ---------------------------------------------------------------------------
 # Helpers: raw tier -> reference tier -> converted store
@@ -212,7 +221,7 @@ def test_the_panel_carries_the_tiingo_variables_plus_the_crsp_extras(
     """D-07: the variable set is exactly Tiingo's twelve, the CRSP extras and
     `anomaly_flag`, and every variable but the flag is float64.
 
-    Float64 for EVERY extra, `permno` and the two 1.0/0.0 indicators included,
+    Float64 for EVERY extra, the two 1.0/0.0 indicators included,
     is RESEARCH Pitfall 7: a dense `[timestamp, symbol]` panel is a cartesian
     product, so a symbol that did not exist yet needs a NaN to say so -- which
     an integer or boolean column has no room for.
@@ -230,7 +239,12 @@ def test_the_panel_carries_the_tiingo_variables_plus_the_crsp_extras(
         end="1980-12-31",
     )
 
-    assert len(CRSP_EXTRA_VARIABLES) == 15, CRSP_EXTRA_VARIABLES
+    # 14, not 15: `permno` left the variable set when it BECAME the axis
+    # (D-01). A float64 copy of the symbol coordinate is a second source of
+    # truth for the same number, and nothing keeps the two in step.
+    assert len(CRSP_EXTRA_VARIABLES) == 14, CRSP_EXTRA_VARIABLES
+    assert "permno" not in CRSP_EXTRA_VARIABLES, CRSP_EXTRA_VARIABLES
+    assert "permco" in CRSP_EXTRA_VARIABLES, CRSP_EXTRA_VARIABLES
     assert set(panel.data_vars) == (
         set(CrspStockDataset.TIINGO_VARIABLES)
         | set(CRSP_EXTRA_VARIABLES)
@@ -263,23 +277,25 @@ def test_aapl_1980_carries_the_crsp_extra_variables_in_panel_units(
         end="1980-12-31",
     )
 
-    assert _at(panel, "close", "1980-12-12", "AAPL") == pytest.approx(28.8125)
-    assert _at(panel, "market_cap", "1980-12-12", "AAPL") == pytest.approx(
+    assert _at(panel, "close", "1980-12-12", AAPL_AXIS) == pytest.approx(28.8125)
+    assert _at(panel, "market_cap", "1980-12-12", AAPL_AXIS) == pytest.approx(
         1588606.0 * 1000
     )
-    assert _at(panel, "shrout", "1980-12-12", "AAPL") == pytest.approx(55136 * 1000)
-    assert _at(panel, "cumfacpr", "1980-12-12", "AAPL") == pytest.approx(224.0)
-    assert _at(panel, "cumfacshr", "1980-12-12", "AAPL") == pytest.approx(224.0)
-    assert _at(panel, "permno", "1980-12-12", "AAPL") == pytest.approx(14593.0)
+    assert _at(panel, "shrout", "1980-12-12", AAPL_AXIS) == pytest.approx(55136 * 1000)
+    assert _at(panel, "cumfacpr", "1980-12-12", AAPL_AXIS) == pytest.approx(224.0)
+    assert _at(panel, "cumfacshr", "1980-12-12", AAPL_AXIS) == pytest.approx(224.0)
+    # The security id is not READ off a variable any more -- it is the label
+    # the row was selected by (D-01).
+    assert panel["symbol"].values.tolist() == [AAPL_AXIS]
 
     for name in ("open", "high", "low", "volume", "close_trade", "numtrd"):
-        assert np.isnan(_at(panel, name, "1980-12-12", "AAPL")), name
+        assert np.isnan(_at(panel, name, "1980-12-12", AAPL_AXIS)), name
 
     # The return chain itself: the first row has no return, the second has the
     # live -5.2061% one.
-    assert np.isnan(_at(panel, "ret", "1980-12-12", "AAPL"))
-    assert _at(panel, "ret", "1980-12-15", "AAPL") == pytest.approx(-0.052061)
-    assert _at(panel, "retx", "1980-12-15", "AAPL") == pytest.approx(-0.052061)
+    assert np.isnan(_at(panel, "ret", "1980-12-12", AAPL_AXIS))
+    assert _at(panel, "ret", "1980-12-15", AAPL_AXIS) == pytest.approx(-0.052061)
+    assert _at(panel, "retx", "1980-12-15", AAPL_AXIS) == pytest.approx(-0.052061)
 
 
 def test_a_bidask_midpoint_day_is_priced_and_flagged(mock_crsp_session, tmp_path):
@@ -302,10 +318,10 @@ def test_a_bidask_midpoint_day_is_priced_and_flagged(mock_crsp_session, tmp_path
         end="1980-12-31",
     )
 
-    assert _at(panel, "prc_is_bidask", "1980-12-12", "AAPL") == pytest.approx(1.0)
-    assert _at(panel, "bid", "1980-12-12", "AAPL") == pytest.approx(28.75)
-    assert _at(panel, "ask", "1980-12-12", "AAPL") == pytest.approx(28.875)
-    assert _at(panel, "is_delisting", "1980-12-12", "AAPL") == pytest.approx(0.0)
+    assert _at(panel, "prc_is_bidask", "1980-12-12", AAPL_AXIS) == pytest.approx(1.0)
+    assert _at(panel, "bid", "1980-12-12", AAPL_AXIS) == pytest.approx(28.75)
+    assert _at(panel, "ask", "1980-12-12", AAPL_AXIS) == pytest.approx(28.875)
+    assert _at(panel, "is_delisting", "1980-12-12", AAPL_AXIS) == pytest.approx(0.0)
 
 
 def test_a_negative_price_becomes_a_positive_close_and_keeps_its_flag(
@@ -339,11 +355,11 @@ def test_a_negative_price_becomes_a_positive_close_and_keeps_its_flag(
         extra_secinfo=_synthetic_secinfo(),
     )
 
-    assert _at(panel, "close", "2020-03-03", SYNTHETIC_SYMBOL) == pytest.approx(10.5)
-    assert _at(panel, "prc_is_bidask", "2020-03-03", SYNTHETIC_SYMBOL) == (
+    assert _at(panel, "close", "2020-03-03", SYNTHETIC_AXIS) == pytest.approx(10.5)
+    assert _at(panel, "prc_is_bidask", "2020-03-03", SYNTHETIC_AXIS) == (
         pytest.approx(1.0)
     )
-    assert _at(panel, "prc_is_bidask", "2020-03-02", SYNTHETIC_SYMBOL) == (
+    assert _at(panel, "prc_is_bidask", "2020-03-02", SYNTHETIC_AXIS) == (
         pytest.approx(0.0)
     )
 
@@ -393,12 +409,12 @@ def test_a_missing_ret_stays_nan_and_contributes_a_factor_of_one(
         extra_secinfo=_synthetic_secinfo(),
     )
 
-    assert np.isnan(_at(panel, "ret", "2020-03-04", SYNTHETIC_SYMBOL))
-    assert np.isnan(_at(panel, "close", "2020-03-04", SYNTHETIC_SYMBOL))
-    assert np.isnan(_at(panel, "prc_is_bidask", "2020-03-04", SYNTHETIC_SYMBOL))
+    assert np.isnan(_at(panel, "ret", "2020-03-04", SYNTHETIC_AXIS))
+    assert np.isnan(_at(panel, "close", "2020-03-04", SYNTHETIC_AXIS))
+    assert np.isnan(_at(panel, "prc_is_bidask", "2020-03-04", SYNTHETIC_AXIS))
 
-    spanning = _at(panel, "adjClose", "2020-03-05", SYNTHETIC_SYMBOL) / _at(
-        panel, "adjClose", "2020-03-03", SYNTHETIC_SYMBOL
+    spanning = _at(panel, "adjClose", "2020-03-05", SYNTHETIC_AXIS) / _at(
+        panel, "adjClose", "2020-03-03", SYNTHETIC_AXIS
     )
     assert spanning == pytest.approx(1.03, rel=1e-9)
 
@@ -427,9 +443,9 @@ def test_lehman_delisting_loss_is_counted_exactly_once(mock_crsp_session, tmp_pa
         end="2008-09-30",
     )
 
-    assert [str(value) for value in panel["symbol"].values] == ["LEH"]
+    assert panel["symbol"].values.tolist() == [LEHMAN_AXIS]
     assert [
-        _at(panel, "is_delisting", day, "LEH")
+        _at(panel, "is_delisting", day, LEHMAN_AXIS)
         for day in (
             "2008-09-12",
             "2008-09-15",
@@ -439,16 +455,16 @@ def test_lehman_delisting_loss_is_counted_exactly_once(mock_crsp_session, tmp_pa
         )
     ] == [0.0, 0.0, 0.0, 0.0, 1.0]
 
-    assert _at(panel, "ret", "2008-09-18", "LEH") == pytest.approx(-0.6)
-    assert _at(panel, "close", "2008-09-18", "LEH") == pytest.approx(0.052)
+    assert _at(panel, "ret", "2008-09-18", LEHMAN_AXIS) == pytest.approx(-0.6)
+    assert _at(panel, "close", "2008-09-18", LEHMAN_AXIS) == pytest.approx(0.052)
     # The delisting row is the last row with a price, so it IS the anchor.
-    assert _at(panel, "adjClose", "2008-09-18", "LEH") == pytest.approx(0.052)
+    assert _at(panel, "adjClose", "2008-09-18", LEHMAN_AXIS) == pytest.approx(0.052)
 
-    assert _at(panel, "adjClose", "2008-09-18", "LEH") / _at(
-        panel, "adjClose", "2008-09-17", "LEH"
+    assert _at(panel, "adjClose", "2008-09-18", LEHMAN_AXIS) / _at(
+        panel, "adjClose", "2008-09-17", LEHMAN_AXIS
     ) == pytest.approx(0.4)
-    assert _at(panel, "adjClose", "2008-09-18", "LEH") / _at(
-        panel, "adjClose", "2008-09-15", "LEH"
+    assert _at(panel, "adjClose", "2008-09-18", LEHMAN_AXIS) / _at(
+        panel, "adjClose", "2008-09-15", LEHMAN_AXIS
     ) == pytest.approx(1.428571 * 0.433333 * 0.4, rel=1e-9)
 
 
@@ -496,41 +512,41 @@ def test_a_modern_delisting_keeps_a_real_adjusted_level(
         end="2024-07-31",
     )
 
-    assert [str(value) for value in panel["symbol"].values] == [WESTROCK_SYMBOL]
+    assert panel["symbol"].values.tolist() == [WESTROCK_AXIS]
 
     # (a) the adjusted LEVEL is real, and is not the zeroed column.
-    anchor_day = _at(panel, "adjClose", "2024-07-05", WESTROCK_SYMBOL)
-    previous_day = _at(panel, "adjClose", "2024-07-03", WESTROCK_SYMBOL)
+    anchor_day = _at(panel, "adjClose", "2024-07-05", WESTROCK_AXIS)
+    previous_day = _at(panel, "adjClose", "2024-07-03", WESTROCK_AXIS)
     assert anchor_day == pytest.approx(51.51, rel=1e-9)
     assert previous_day == pytest.approx(51.51 / 1.035377, rel=1e-9)
     assert anchor_day != 0.0
     assert previous_day != 0.0
     assert anchor_day / previous_day == pytest.approx(1.035377, rel=1e-9)
 
-    adj_open = _at(panel, "adjOpen", "2024-07-05", WESTROCK_SYMBOL)
+    adj_open = _at(panel, "adjOpen", "2024-07-05", WESTROCK_AXIS)
     assert adj_open == pytest.approx(50.78 * (51.51 / 51.51), rel=1e-9)
     assert adj_open != 0.0
 
     # (b) adjVolume is finite wherever raw volume is -- `dlycumfacshr` is 1.0 on
     #     both priced days, so the adjusted volume IS the raw volume.
     for day, raw_volume in (("2024-07-03", 4435075.0), ("2024-07-05", 11862010.0)):
-        adj_volume = _at(panel, "adjVolume", day, WESTROCK_SYMBOL)
+        adj_volume = _at(panel, "adjVolume", day, WESTROCK_AXIS)
         assert np.isfinite(adj_volume), day
         assert adj_volume == pytest.approx(raw_volume, rel=1e-9)
-        assert _at(panel, "volume", day, WESTROCK_SYMBOL) == pytest.approx(
+        assert _at(panel, "volume", day, WESTROCK_AXIS) == pytest.approx(
             raw_volume, rel=1e-9
         )
 
     # (c) the sentinel is not a trade: raw `close` is NaN, never 0.0.
-    delisting_close = _at(panel, "close", "2024-07-08", WESTROCK_SYMBOL)
+    delisting_close = _at(panel, "close", "2024-07-08", WESTROCK_AXIS)
     assert np.isnan(delisting_close), delisting_close
 
     # The chain itself is untouched, and the row is still the delisting row
     # carrying WestRock's symbol through a NULL ticker.
-    assert _at(panel, "ret", "2024-07-08", WESTROCK_SYMBOL) == pytest.approx(
+    assert _at(panel, "ret", "2024-07-08", WESTROCK_AXIS) == pytest.approx(
         -0.005630, rel=1e-9
     )
-    assert _at(panel, "is_delisting", "2024-07-08", WESTROCK_SYMBOL) == 1.0
+    assert _at(panel, "is_delisting", "2024-07-08", WESTROCK_AXIS) == 1.0
 
 
 def test_the_delisting_fixture_corpus_covers_both_ciz_shapes():
@@ -748,17 +764,17 @@ def test_events_land_on_their_ex_dates(mock_crsp_session, tmp_path):
         end="2020-08-31",
     )
 
-    assert _at(panel, "divCash", "2020-08-07", "AAPL") == pytest.approx(0.82)
+    assert _at(panel, "divCash", "2020-08-07", AAPL_AXIS) == pytest.approx(0.82)
     for day in ("2020-08-06", "2020-08-28", "2020-08-31"):
-        assert _at(panel, "divCash", day, "AAPL") == pytest.approx(0.0), day
+        assert _at(panel, "divCash", day, AAPL_AXIS) == pytest.approx(0.0), day
 
-    assert _at(panel, "splitFactor", "2020-08-31", "AAPL") == pytest.approx(4.0)
-    assert _at(panel, "facprc", "2020-08-31", "AAPL") == pytest.approx(4.0)
+    assert _at(panel, "splitFactor", "2020-08-31", AAPL_AXIS) == pytest.approx(4.0)
+    assert _at(panel, "facprc", "2020-08-31", AAPL_AXIS) == pytest.approx(4.0)
     # 1.0 on an ordinary day -- and on 08-06, the PERMNO's FIRST row in the
     # window, where there is no previous `dlycumfacpr` to divide by.
     for day in ("2020-08-06", "2020-08-07", "2020-08-28"):
-        assert _at(panel, "splitFactor", day, "AAPL") == pytest.approx(1.0), day
-        assert _at(panel, "facprc", day, "AAPL") == pytest.approx(1.0), day
+        assert _at(panel, "splitFactor", day, AAPL_AXIS) == pytest.approx(1.0), day
+        assert _at(panel, "facprc", day, AAPL_AXIS) == pytest.approx(1.0), day
 
 
 def test_divcash_sums_ordinary_and_non_ordinary_distributions(
@@ -800,8 +816,8 @@ def test_divcash_sums_ordinary_and_non_ordinary_distributions(
         extra_secinfo=_synthetic_secinfo(),
     )
 
-    assert _at(panel, "divCash", "2020-03-02", SYNTHETIC_SYMBOL) == pytest.approx(1.7)
-    assert _at(panel, "divCash", "2020-03-03", SYNTHETIC_SYMBOL) == pytest.approx(0.0)
+    assert _at(panel, "divCash", "2020-03-02", SYNTHETIC_AXIS) == pytest.approx(1.7)
+    assert _at(panel, "divCash", "2020-03-03", SYNTHETIC_AXIS) == pytest.approx(0.0)
 
 
 def test_splitfactor_and_facprc_mark_the_split_day(mock_crsp_session, tmp_path):
@@ -815,16 +831,16 @@ def test_splitfactor_and_facprc_mark_the_split_day(mock_crsp_session, tmp_path):
     panel = _panel(dataset_config)
 
     split_day = days[SPLIT_INDEX]
-    assert _at(panel, "splitFactor", split_day, SYNTHETIC_SYMBOL) == pytest.approx(2.0)
-    assert _at(panel, "facprc", split_day, SYNTHETIC_SYMBOL) == pytest.approx(2.0)
+    assert _at(panel, "splitFactor", split_day, SYNTHETIC_AXIS) == pytest.approx(2.0)
+    assert _at(panel, "facprc", split_day, SYNTHETIC_AXIS) == pytest.approx(2.0)
     # On a day that DID trade, `close_trade` (`dlyclose`) and `close`
     # (`abs(dlyprc)`) agree -- the two diverge only where there was no trade,
     # which is what makes `dlyprc` the right source for the panel's close.
-    assert _at(panel, "close_trade", split_day, SYNTHETIC_SYMBOL) == pytest.approx(
-        _at(panel, "close", split_day, SYNTHETIC_SYMBOL)
+    assert _at(panel, "close_trade", split_day, SYNTHETIC_AXIS) == pytest.approx(
+        _at(panel, "close", split_day, SYNTHETIC_AXIS)
     )
     for index in (SPLIT_INDEX - 1, SPLIT_INDEX + 1):
-        assert _at(panel, "splitFactor", days[index], SYNTHETIC_SYMBOL) == (
+        assert _at(panel, "splitFactor", days[index], SYNTHETIC_AXIS) == (
             pytest.approx(1.0)
         ), days[index]
 
@@ -858,7 +874,7 @@ def test_alpha158_computes_over_a_crsp_panel_with_no_consumer_change(
 
     assert dict(result.sizes) == {"timestamp": SERIES_DAYS, "symbol": 8}
     assert sorted(result.data_vars) == ["KMID", "ROC5", "STD5"]
-    series = result.sel(symbol=SYNTHETIC_SYMBOL)
+    series = result.sel(symbol=SYNTHETIC_AXIS)
     for name in ("KMID", "ROC5", "STD5"):
         finite = np.isfinite(series[name].to_numpy())
         # Rolling factors burn their window at the head; everything after it
@@ -891,7 +907,7 @@ def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_p
     )
 
     labels = label.cal().get_labels().load()
-    series = labels["ret_1"].sel(symbol=SYNTHETIC_SYMBOL).to_numpy()
+    series = labels["ret_1"].sel(symbol=SYNTHETIC_AXIS).to_numpy()
 
     assert len(series) == SERIES_DAYS
     for index in range(SERIES_DAYS - 1):
@@ -944,7 +960,7 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
 
     labels = label.cal().get_labels().load()
     value = float(
-        labels["ret_1"].sel(timestamp="2008-09-17", symbol="LEH").values
+        labels["ret_1"].sel(timestamp="2008-09-17", symbol=LEHMAN_AXIS).values
     )
     assert value == pytest.approx(-0.6, rel=1e-5)
 
@@ -1104,12 +1120,12 @@ def test_the_anchor_is_the_last_non_null_close(mock_crsp_session, tmp_path):
         extra_secinfo=_synthetic_secinfo(),
     )
 
-    assert _at(panel, "adjClose", "2020-03-03", SYNTHETIC_SYMBOL) == pytest.approx(
+    assert _at(panel, "adjClose", "2020-03-03", SYNTHETIC_AXIS) == pytest.approx(
         102.0
     )
-    assert np.isnan(_at(panel, "adjClose", "2020-03-04", SYNTHETIC_SYMBOL))
+    assert np.isnan(_at(panel, "adjClose", "2020-03-04", SYNTHETIC_AXIS))
     # And the rest of the series is still anchored on that close, not on NaN.
-    assert _at(panel, "adjClose", "2020-03-02", SYNTHETIC_SYMBOL) == pytest.approx(
+    assert _at(panel, "adjClose", "2020-03-02", SYNTHETIC_AXIS) == pytest.approx(
         102.0 / 1.02
     )
 
@@ -1511,8 +1527,19 @@ def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path
 
     sidecar = _sidecar_path(dataset_config)
     filter_report, symbology_report = _report_paths(dataset_config)
-    for path in (sidecar, filter_report, symbology_report):
+    for path in (sidecar, filter_report):
         assert path.exists(), sorted(item.name for item in tmp_path.iterdir())
+
+    # The SYMBOLOGY report is not part of the set any more (D-01, phase
+    # 03.11). Every one of its six keys -- collisions, seams, class_suffixed,
+    # nonconforming_symbols, unlabelled, delisting_carried -- describes
+    # something that can only happen while the panel is keyed on a ticker. On
+    # a PERMNO axis they are all structurally empty, and a sidecar that can
+    # only ever say "nothing happened" is worse than no sidecar: it reads like
+    # evidence that the checks ran.
+    assert not symbology_report.exists(), sorted(
+        item.name for item in tmp_path.iterdir()
+    )
 
     try:
         _convert(dataset_config)
@@ -1595,7 +1622,9 @@ def test_a_refused_reconversion_keeps_the_existing_identity_reports(
 
     filter_report, symbology_report = _report_paths(narrow)
     filter_bytes = filter_report.read_bytes()
-    symbology_bytes = symbology_report.read_bytes()
+    # No symbology report to preserve on a PERMNO axis -- see
+    # `test_from_raw_data_leaves_a_complete_sidecar_set` for why it is gone.
+    assert not symbology_report.exists(), symbology_report
 
     widened = _crsp_config(
         tmp_path, cfg, reference_dir, permnos=(SYNTHETIC_PERMNO, SECOND_PERMNO)
@@ -1604,4 +1633,4 @@ def test_a_refused_reconversion_keeps_the_existing_identity_reports(
         _convert(widened)
 
     assert filter_report.read_bytes() == filter_bytes
-    assert symbology_report.read_bytes() == symbology_bytes
+    assert not symbology_report.exists(), symbology_report
