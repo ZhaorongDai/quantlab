@@ -265,20 +265,26 @@ class CrspTickerLookup:
                 f"once per lookup, not once per name."
             )
 
-    def _intervals(self) -> dict:
-        """The `{PERMNO: [span, ...]}` table, or a refusal naming what is off.
+    def _object_payload(self) -> dict:
+        """The payload, once it is known to be a JSON OBJECT.
 
-        The one place the payload's top-level shape is checked, so `as_of` can
-        index it without a second thought.
+        THE ONE PLACE the payload's top-level shape is checked, so every reader
+        below can index it without a second thought.
 
-        A MISSING `intervals` key is not damage -- `.get("intervals", {})` has
-        always answered "this sidecar knows no names", and both entry points
-        already have a good answer for that. Only a key present with the wrong
-        TYPE is a refusal.
+        This claim used to sit on `_intervals()` and be false: `product_end`
+        read `self.payload` directly, so a `[]` sidecar answered it with a bare
+        `AttributeError: 'list' object has no attribute 'get'` -- from an entry
+        point the module docstring had already promised a shaped refusal for,
+        on an input that was sitting in this module's own malformed-sidecar
+        fixtures the whole time (G-03.11-6 / WR-04). The fix is a shared helper
+        rather than a second `isinstance` inside `product_end`, because a
+        second copy would only move the false sentence somewhere else and would
+        leave the NEXT reader of the payload free to open the same hole again.
+        Any future third reader goes through here.
 
-        `FileNotFoundError` and `ValueError` out of `self.payload` (absent file,
-        unparseable bytes) travel through untouched: those two refusals are the
-        existing contract and this method has nothing to add to them.
+        `FileNotFoundError` and `ValueError` out of `self.payload` (absent
+        file, unparseable bytes) travel through untouched: those two refusals
+        are the existing contract and this method has nothing to add to them.
         """
         payload = self.payload
         if not isinstance(payload, dict):
@@ -286,7 +292,20 @@ class CrspTickerLookup:
                 f"its top level is a {type(payload).__name__}, not a JSON "
                 f"object"
             )
-        intervals = payload.get("intervals", {})
+        return payload
+
+    def _intervals(self) -> dict:
+        """The `{PERMNO: [span, ...]}` table, or a refusal naming what is off.
+
+        The `intervals` LAYER's shape is checked here; the top level is
+        `_object_payload`'s job, and this method is one of its two readers.
+
+        A MISSING `intervals` key is not damage -- `.get("intervals", {})` has
+        always answered "this sidecar knows no names", and both entry points
+        already have a good answer for that. Only a key present with the wrong
+        TYPE is a refusal.
+        """
+        intervals = self._object_payload().get("intervals", {})
         if not isinstance(intervals, dict):
             raise self._malformed(
                 f"its 'intervals' is a {type(intervals).__name__}, not a JSON "
@@ -301,8 +320,19 @@ class CrspTickerLookup:
         `None` when the sidecar does not record one. A derived value behind a
         `@property`, matching `CrspReference.product_end` -- the parse belongs
         beside the field it parses, not at each reader.
+
+        The THIRD public entry point, and the second reader of
+        `_object_payload`: a structurally broken sidecar is refused here with
+        the same shaped message `as_of` gives, rather than with whatever
+        `AttributeError` falls out of indexing a list.
+
+        "Records no vintage" and "is broken" stay different answers, and the
+        difference is worth keeping: a sidecar written before the vintage was
+        recorded, or for a roster that predates it, is perfectly usable and
+        gets `None`. Only a payload that is not a JSON object at all is
+        refused. Do not round the first case down to the second.
         """
-        recorded = self.payload.get("vintage_product_end")
+        recorded = self._object_payload().get("vintage_product_end")
         if not recorded:
             return None
         return date.fromisoformat(str(recorded)[:10])
