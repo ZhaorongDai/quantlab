@@ -129,15 +129,19 @@ def test_end_to_end_permnos_pull_and_convert_uses_one_connection(
 
     store = _equity_store(tmp_path)
     assert str(store) in out.out
+    # Two sidecars, not three. The symbology report was the third until
+    # 03.11-07 deleted the machinery that produced it; the script stopped
+    # printing its path in the same commit, so listing it here would assert a
+    # line no code can emit.
     for suffix in (
         ".crsp_adjustment.json",
         ".crsp_filter_report.json",
-        ".crsp_symbology_report.json",
     ):
         assert f"{store}{suffix}" in out.out, suffix
 
     panel = xr.open_zarr(store).load()
-    assert [str(value) for value in panel["symbol"].values] == ["AAPL"]
+    # The axis is the int64 PERMNO (D-01), so the column is 14593, not "AAPL".
+    assert [str(value) for value in panel["symbol"].values] == [AAPL_PERMNO]
 
     assert mock_crsp_session.connections == 1
     assert mock_crsp_session.instance is None, "close_shared was not called"
@@ -360,13 +364,14 @@ def test_qqq_gets_its_own_benchmark_store(
     assert code == 0, out.err
 
     equity = xr.open_zarr(_equity_store(tmp_path)).load()
-    assert "QQQ" not in [str(value) for value in equity["symbol"].values]
+    # On the PERMNO axis (D-01) the ETF's absence is spelled 86755, not "QQQ".
+    assert QQQ_PERMNO not in [str(value) for value in equity["symbol"].values]
 
     benchmark = tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_qqq_1d.zarr"
     assert str(benchmark) in out.out
     assert [
         str(value) for value in xr.open_zarr(benchmark).load()["symbol"].values
-    ] == ["QQQ"]
+    ] == [QQQ_PERMNO]
 
 
 #: The stable prefix the script prints when the equity roster holds no equity
@@ -463,12 +468,13 @@ def test_qqq_alone_writes_only_the_benchmark_store_over_a_stale_custom_store(
     # operator has to be able to see in the log.
     assert SKIP_PREFIX in out.out, out.out
 
-    # The benchmark store exists and holds exactly the one symbol.
+    # The benchmark store exists and holds exactly the one symbol -- the int64
+    # PERMNO 86755 (D-01), which is what the axis carries now.
     benchmark = tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_qqq_1d.zarr"
     assert benchmark.exists(), out.out
     assert [
         str(value) for value in xr.open_zarr(benchmark).load()["symbol"].values
-    ] == ["QQQ"]
+    ] == [QQQ_PERMNO]
 
     # The planted equity store was not written into -- byte-unchanged sidecar
     # and no new files in the directory.
@@ -507,12 +513,13 @@ def test_a_universe_with_qqq_writes_all_three_stores(
     assert SKIP_PREFIX not in out.out, out.out
 
     equity = xr.open_zarr(_equity_store(tmp_path, "sp500")).load()
-    assert "QQQ" not in [str(value) for value in equity["symbol"].values]
+    # D-15 on the PERMNO axis: the ETF's PERMNO is what must be absent.
+    assert QQQ_PERMNO not in [str(value) for value in equity["symbol"].values]
 
     benchmark = tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_qqq_1d.zarr"
     assert [
         str(value) for value in xr.open_zarr(benchmark).load()["symbol"].values
-    ] == ["QQQ"]
+    ] == [QQQ_PERMNO]
 
     membership = (
         tmp_path / "data" / "us_equity" / "1d" / "wrds_crsp_sp500_membership.zarr"
@@ -537,7 +544,9 @@ def test_the_universe_conversion_also_writes_the_membership_panel(
     assert str(membership) in out.out
     panel = xr.open_zarr(membership).load()
     assert "is_member" in panel.data_vars
-    assert "AAPL" in [str(value) for value in panel["symbol"].values]
+    # The membership panel moved onto the PERMNO axis with the price panel
+    # (03.11-05), so membership is asserted by PERMNO.
+    assert AAPL_PERMNO in [str(value) for value in panel["symbol"].values]
 
     # The equity store carries the universe's own name, not "custom".
     assert _equity_store(tmp_path, "sp500").exists()

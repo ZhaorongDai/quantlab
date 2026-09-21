@@ -918,7 +918,7 @@ def test_two_active_securities_under_one_ticker_convert_without_a_universe(
 def test_a_configured_universe_no_longer_decides_who_owns_a_ticker(
     mock_crsp_session, tmp_path
 ):
-    """`collision_universe` does not silence the non-member any more.
+    """`roster_universe` does not silence the non-member any more.
 
     It used to be the tie-break: the member kept the column and the outsider
     was DROPPED from the panel. That is a real loss of data driven by a naming
@@ -936,7 +936,7 @@ def test_a_configured_universe_no_longer_decides_who_owns_a_ticker(
         end="2011-01-31",
         extra_secinfo=_tie_secinfo(),
         dsp500_rows=_tie_dsp500_rows(),
-        collision_universe="crsp_sp500",
+        roster_universe="crsp_sp500",
     )
     panel = _panel(dataset_config)
 
@@ -1019,18 +1019,19 @@ def _qqq_raw(tmp_path):
 def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     mock_crsp_session, tmp_path
 ):
-    """D-15: QQQ gets its OWN store, filter off, ticker pinned.
+    """D-15: QQQ gets its OWN store, filter off, ONE column across the years.
 
-    `qqq_benchmark` states all three facts at once -- `permnos=('86755',)`,
-    `security_filter='none'` and `symbol_overrides={'86755': 'QQQ'}` -- so a
-    caller cannot accidentally build it with the equity panel's filter, which
-    drops `FUND`/`ETF`.
+    `qqq_benchmark` states both surviving facts at once -- `permnos=('86755',)`
+    and `security_filter='none'` -- so a caller cannot accidentally build it
+    with the equity panel's filter, which drops `FUND`/`ETF`.
 
-    The `symbol_overrides` half is now INERT as far as the axis goes: CRSP's
-    period-correct `QQQQ` ticker could split the series into two columns only
-    while the axis WAS the ticker, and PERMNO 86755 is one column across all
-    of it with or without the override. The field is removed in plan 08; the
-    factory still writes it today, which is what this asserts.
+    It used to state a THIRD: a per-PERMNO ticker pin over CRSP's
+    period-correct `QQQQ` era (2004-12-01..2011-03-22). That era could split
+    one instrument into two columns only while the axis WAS the ticker; on the
+    PERMNO axis (D-01) 86755 is one column across all of it, so 03.11-08
+    deleted the field rather than keep it inert. This test now asserts the
+    OUTCOME the pin used to buy -- one symbol across the QQQQ years -- which is
+    the assertion that survives the field, and the reason the deletion is safe.
 
     The numbers are the drop-in promise applied to an ETF: the anchor row's
     adjusted close IS its raw close, and 1999's volume scales by the
@@ -1051,7 +1052,6 @@ def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     assert QQQ_PERMNO == QQQ_PERMNO_TEXT
     assert benchmark.permnos == (QQQ_PERMNO,)
     assert benchmark.security_filter == "none"
-    assert benchmark.symbol_overrides == {QQQ_PERMNO: "QQQ"}
 
     _convert(benchmark)
     panel = _panel(benchmark)
@@ -1165,13 +1165,11 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
             start_date="2010-01-01",
             end_date="2020-12-31",
             permnos=("10107", "14593"),
-            symbol_overrides={"86755": "QQQ"},
             security_filter={
                 "securitytype": ["EQTY"],
                 "securitysubtype": ["COM"],
             },
-            nan_adj_at_permno_seam=False,
-            collision_universe="crsp_sp500",
+            roster_universe="crsp_sp500",
         )
     )
     saved = dataset.get_config()
@@ -1184,8 +1182,7 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
     assert rebuilt.get_config() == saved
     assert rebuilt.config.permnos == ("10107", "14593")
     assert rebuilt.config.security_filter["securitytype"] == ("EQTY",)
-    assert rebuilt.config.nan_adj_at_permno_seam is False
-    assert rebuilt.config.collision_universe == "crsp_sp500"
+    assert rebuilt.config.roster_universe == "crsp_sp500"
 
 
 # ---------------------------------------------------------------------------
@@ -1384,7 +1381,7 @@ def test_a_member_is_not_dropped_by_the_filter_during_its_spell(
         _roster_store(
             tmp_path,
             store="member_default.zarr",
-            collision_universe="crsp_sp500",
+            roster_universe="crsp_sp500",
         )
     )
     unfiltered = _panel(
@@ -1410,7 +1407,7 @@ def test_an_explicitly_named_permno_is_not_dropped_by_the_filter(
     """GAP-C: a `--permnos` run named the securities, so none of them is
     screened out -- on any of its dates, membership spell or not.
 
-    `config.permnos` is unconditional where `collision_universe` is per-date:
+    `config.permnos` is unconditional where `roster_universe` is per-date:
     the user named the security, not a window of it.
     """
     panel = _panel(
@@ -1435,7 +1432,7 @@ def test_without_a_roster_the_filter_still_truncates_the_rejected_era(
     """The MIRROR IMAGE of the two tests above, over the SAME fixture.
 
     Together the three prove the exemption is SCOPED rather than a blanket
-    widening: with neither `permnos` nor `collision_universe` set there is no
+    widening: with neither `permnos` nor `roster_universe` set there is no
     explicit roster, the population is unspecified, and excluding a partnership
     era is exactly what the filter is for (D-06, D-17). This test goes red if
     the exemption ever widens to the unspecified population -- the failure mode
@@ -1462,7 +1459,7 @@ def test_the_filter_report_names_the_roster_rescue(mock_crsp_session, tmp_path):
     `dropped_permnos` -- it was not dropped.
     """
     dataset_config = _roster_store(
-        tmp_path, store="report.zarr", collision_universe="crsp_sp500"
+        tmp_path, store="report.zarr", roster_universe="crsp_sp500"
     )
 
     report = _filter_report(dataset_config)
@@ -1516,7 +1513,7 @@ def test_every_member_survives_every_preset_on_its_member_dates(
         tmp_path,
         store=f"invariant_{preset}.zarr",
         security_filter=preset,
-        collision_universe="crsp_sp500",
+        roster_universe="crsp_sp500",
     )
     panel = _panel(dataset_config)
     intervals = CrspMembership(

@@ -299,7 +299,7 @@ def _crsp_config(root: Path, *, store_name: str = "crsp.zarr") -> CrspDatasetCon
         start_date="2024-01-01",
         end_date="2024-12-31",
         security_filter="equity_common",
-        collision_universe="crsp_sp500",
+        roster_universe="crsp_sp500",
     )
 
 

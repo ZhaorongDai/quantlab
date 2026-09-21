@@ -417,13 +417,13 @@ class CrspStockDataset(StockDataset):
         )
         if isinstance(config.security_filter, dict):
             config.security_filter = dict(self._security_filter)
-        if config.collision_universe is not None:
+        if config.roster_universe is not None:
             from quantlab.dataset.crsp_membership import CrspMembership
 
-            if config.collision_universe not in CrspMembership.INDEXES:
+            if config.roster_universe not in CrspMembership.INDEXES:
                 raise ValueError(
-                    f"{self.class_name}: collision_universe "
-                    f"{config.collision_universe!r} is not a CRSP universe; "
+                    f"{self.class_name}: roster_universe "
+                    f"{config.roster_universe!r} is not a CRSP universe; "
                     f"this vendor serves {CrspMembership.INDEXES}."
                 )
 
@@ -433,7 +433,7 @@ class CrspStockDataset(StockDataset):
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
-        # The membership spells of `collision_universe`, memoised for the
+        # The membership spells of `roster_universe`, memoised for the
         # roster exemption in `_apply_security_filter` -- its one reader. Reset
         # here for the same reason the derivation is: a re-dated or re-rostered
         # config must not reuse the previous universe's spells.
@@ -669,7 +669,7 @@ class CrspStockDataset(StockDataset):
     # -- the security filter (D-06, D-17) -----------------------------------
 
     def _member_intervals(self) -> pl.DataFrame | None:
-        """`permno_intervals(collision_universe)`, read ONCE per instance.
+        """`permno_intervals(roster_universe)`, read ONCE per instance.
 
         `None` when no universe is configured, which is also "there is no
         membership fact to consult" for this frame's reader.
@@ -687,7 +687,7 @@ class CrspStockDataset(StockDataset):
 
         Invalidated in the `config` setter beside `_derivation_cache`.
         """
-        if self.config.collision_universe is None:
+        if self.config.roster_universe is None:
             return None
         cached = getattr(self, "_member_intervals_cache", None)
         if cached is None:
@@ -695,7 +695,7 @@ class CrspStockDataset(StockDataset):
 
             cached = CrspMembership(
                 CrspReference(self.config.reference_dir)
-            ).permno_intervals(self.config.collision_universe)
+            ).permno_intervals(self.config.roster_universe)
             self._member_intervals_cache = cached
         return cached
 
@@ -717,7 +717,7 @@ class CrspStockDataset(StockDataset):
                 f"config.permnos: {len(self.config.permnos)} PERMNO(s) named "
                 f"explicitly, exempt on every date"
             )
-        if self.config.collision_universe is not None:
+        if self.config.roster_universe is not None:
             intervals = self._member_intervals()
             spells = 0 if intervals is None else intervals.height
             members = (
@@ -726,7 +726,7 @@ class CrspStockDataset(StockDataset):
                 else intervals.get_column("permno").n_unique()
             )
             sources.append(
-                f"config.collision_universe={self.config.collision_universe!r}: "
+                f"config.roster_universe={self.config.roster_universe!r}: "
                 f"{members} member PERMNO(s) over {spells} membership spell(s), "
                 f"exempt on the dates inside a spell"
             )
@@ -744,7 +744,7 @@ class CrspStockDataset(StockDataset):
 
         - `config.permnos` -- the user NAMED these securities, so every date of
           each is exempt. A `--permnos` run is a roster, not a screen.
-        - `config.collision_universe` -- the index provider already decided
+        - `config.roster_universe` -- the index provider already decided
           membership, so a member is exempt on the dates INSIDE its membership
           spell and on no others. Scoping the exemption to the spell is what
           keeps it from becoming a blanket widening: a PERMNO's pre-membership
