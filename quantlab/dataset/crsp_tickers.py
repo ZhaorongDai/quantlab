@@ -14,7 +14,12 @@ not wear. The names therefore live in a SIDECAR, as INTERVALS, and this module
 is the as-of query over them. `quantlab/dataset/crsp.py` writes the file;
 nothing else reads it.
 
-**Two entry points, deliberately different about failure.**
+**Three entry points, deliberately different about failure.** `as_of` and
+`product_end` are strict, `label` is not, and the split is not about how
+important the caller is -- it is about whether the caller has a good answer of
+its own. A caller asking one precise question has none, and must be told. A
+caller rendering a line of text has one it was already printing before this
+sidecar existed.
 
 - `as_of(permno, day)` is the strict, single-value question. All THREE ways the
   sidecar can fail RAISE, and each refusal is shaped -- it names the class, the
@@ -28,6 +33,13 @@ nothing else reads it.
   on a specific day, and "I could not read the file" is not an answer that may
   be silently rounded to `None` -- rounding it down would make "this sidecar is
   unreadable" and "that PERMNO had no name that day" the same answer.
+- `product_end` is strict for the same reason and by the same route: it reads
+  the payload through `_object_payload()`, so a sidecar whose top level is not
+  a JSON object is refused with the identical shaped message rather than with a
+  bare `AttributeError` (G-03.11-6 / WR-04). It is NOT strict about `intervals`
+  -- a sidecar with a broken interval table can still say honestly which CRSP
+  vintage it was read against -- and a sidecar that simply records no vintage
+  answers `None`, which is a value, not a refusal.
 - `label(permnos, day)` is the DISPLAY entry point, and it never raises -- for
   all three of those failures alike. There are exactly three call sites, and
   every one of them is BARE -- inside no `try`, on the strength of this
@@ -47,10 +59,18 @@ nothing else reads it.
   absent or half-written would make the readability layer more fragile than the
   thing it annotates (T-03.11-30), so an unusable sidecar degrades to the
   digits, which is exactly what those messages printed before this sidecar
-  existed.
+  existed. Never raising is not the same as never SPEAKING: each degradation
+  emits one WARNING per lookup instance (`_degrade`), because those same digits
+  are also the healthy output of a store that has no sidecar at all, and a
+  console that cannot tell the two apart never gets the broken one rebuilt.
 
-A LEAF module: stdlib only, no project-internal imports at module scope, so any
-layer may import it. The one name it needs from `crsp.py` -- the suffix -- is
+A LEAF module: the standard library plus `loguru` at module scope, and no
+project-internal imports at all, so any layer may import it. It is the second
+half of that sentence that is load-bearing -- what would make this module
+un-importable from some layer is a quantlab dependency of its own, not a
+third-party one, and `loguru` is already imported by all three of its
+consumers (`dataset/masking.py`, `backtest/engine_vectorbt.py`,
+`base/model.py`). The one name it needs from `crsp.py` -- the suffix -- is
 imported inside `beside_store`, because appending a string must not drag the
 whole converter (polars, xarray, the reference tier) into a display path.
 
@@ -69,6 +89,8 @@ import json
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
+
+from loguru import logger
 
 __all__ = ["CrspTickerLookup"]
 
@@ -110,6 +132,16 @@ class CrspTickerLookup:
     def __init__(self, sidecar_path: str | Path) -> None:
         self.sidecar_path = Path(sidecar_path)
         self._payload: dict | None = None
+        #: Has this instance already said its sidecar is unusable? Purely a
+        #: log-throttle (see `_degrade`), never read by any query.
+        #:
+        #: INSTANCE-level and not module-level on purpose. The unit that gets
+        #: one warning is one FILE: a forced-liquidation batch builds a lookup
+        #: and renders hundreds of records through it, so per-call would spam,
+        #: while a module-level flag would let the first broken store silence
+        #: the report for every other store in the same process -- and a run
+        #: that backtests two panels would be told about one of them.
+        self._degraded = False
 
     def __repr__(self) -> str:
         return f"CrspTickerLookup({str(self.sidecar_path)!r})"
@@ -204,20 +236,70 @@ class CrspTickerLookup:
             f"to get a well-formed one."
         )
 
-    def _intervals(self) -> dict:
-        """The `{PERMNO: [span, ...]}` table, or a refusal naming what is off.
+    def _degrade(self, exc: BaseException) -> None:
+        """Note an unusable sidecar ONCE, then let the caller fall back.
 
-        The one place the payload's top-level shape is checked, so `as_of` can
-        index it without a second thought.
+        `label()` never raises, and that is the contract three bare call sites
+        rest on -- but "never raises" was implemented as "never says anything",
+        and those are different promises. The digits this module falls back to
+        are ALSO the normal, documented, supported output of a store that has
+        no sidecar at all (a Tiingo or Alpaca panel, or a CRSP store built
+        before 03.11-09, see `label`'s docstring below). The two states are
+        byte-identical on a console, so the one that needs a rebuild was
+        invisible: nothing in a log, a `liquidations.json` or a
+        `UniverseMask.report()` distinguished "this audit file is broken" from
+        "this vendor never had one" (T-03.11-57). This line is that
+        distinction, and it is why the ABSENT branch warns too rather than
+        only the corrupt one.
 
-        A MISSING `intervals` key is not damage -- `.get("intervals", {})` has
-        always answered "this sidecar knows no names", and both entry points
-        already have a good answer for that. Only a key present with the wrong
-        TYPE is a refusal.
+        The posture is the repo's own: `quantlab/base/config.py:142` and `:176`
+        both annotate the filter report with "never applied silently", and a
+        degradation of an AUDIT artefact is the case where silence costs most.
 
-        `FileNotFoundError` and `ValueError` out of `self.payload` (absent file,
-        unparseable bytes) travel through untouched: those two refusals are the
-        existing contract and this method has nothing to add to them.
+        ONCE PER INSTANCE, via the `_degraded` flag. The worst caller hands a
+        whole forced-liquidation batch to a single `label()` call
+        mid-simulation, and a payload whose damage only shows up inside the
+        per-PERMNO `as_of` would arrive here once per record -- 500 identical
+        lines that bury the signal they exist to raise (T-03.11-61).
+
+        Returns `None` and raises nothing: this is a log-throttle, not a state
+        machine. The `_degraded` flag is written here and in `__init__`, read
+        only here, and never participates in any query's answer -- so the
+        read-write race under a threading backend can at worst cost a few
+        duplicate lines and can never cost a label, a cached payload or a
+        return value.
+        """
+        if not self._degraded:
+            self._degraded = True
+            logger.warning(
+                f"{type(self).__name__}: the ticker sidecar "
+                f"{str(self.sidecar_path)!r} is unusable, falling back to "
+                f"PERMNO digits for this store ({type(exc).__name__}: {exc}). "
+                f"The digits are also what a store with no sidecar prints, so "
+                f"this line is the only thing that tells the two apart. Said "
+                f"once per lookup, not once per name."
+            )
+
+    def _object_payload(self) -> dict:
+        """The payload, once it is known to be a JSON OBJECT.
+
+        THE ONE PLACE the payload's top-level shape is checked, so every reader
+        below can index it without a second thought.
+
+        This claim used to sit on `_intervals()` and be false: `product_end`
+        read `self.payload` directly, so a `[]` sidecar answered it with a bare
+        `AttributeError: 'list' object has no attribute 'get'` -- from an entry
+        point the module docstring had already promised a shaped refusal for,
+        on an input that was sitting in this module's own malformed-sidecar
+        fixtures the whole time (G-03.11-6 / WR-04). The fix is a shared helper
+        rather than a second `isinstance` inside `product_end`, because a
+        second copy would only move the false sentence somewhere else and would
+        leave the NEXT reader of the payload free to open the same hole again.
+        Any future third reader goes through here.
+
+        `FileNotFoundError` and `ValueError` out of `self.payload` (absent
+        file, unparseable bytes) travel through untouched: those two refusals
+        are the existing contract and this method has nothing to add to them.
         """
         payload = self.payload
         if not isinstance(payload, dict):
@@ -225,7 +307,20 @@ class CrspTickerLookup:
                 f"its top level is a {type(payload).__name__}, not a JSON "
                 f"object"
             )
-        intervals = payload.get("intervals", {})
+        return payload
+
+    def _intervals(self) -> dict:
+        """The `{PERMNO: [span, ...]}` table, or a refusal naming what is off.
+
+        The `intervals` LAYER's shape is checked here; the top level is
+        `_object_payload`'s job, and this method is one of its two readers.
+
+        A MISSING `intervals` key is not damage -- `.get("intervals", {})` has
+        always answered "this sidecar knows no names", and both entry points
+        already have a good answer for that. Only a key present with the wrong
+        TYPE is a refusal.
+        """
+        intervals = self._object_payload().get("intervals", {})
         if not isinstance(intervals, dict):
             raise self._malformed(
                 f"its 'intervals' is a {type(intervals).__name__}, not a JSON "
@@ -240,8 +335,19 @@ class CrspTickerLookup:
         `None` when the sidecar does not record one. A derived value behind a
         `@property`, matching `CrspReference.product_end` -- the parse belongs
         beside the field it parses, not at each reader.
+
+        The THIRD public entry point, and the second reader of
+        `_object_payload`: a structurally broken sidecar is refused here with
+        the same shaped message `as_of` gives, rather than with whatever
+        `AttributeError` falls out of indexing a list.
+
+        "Records no vintage" and "is broken" stay different answers, and the
+        difference is worth keeping: a sidecar written before the vintage was
+        recorded, or for a roster that predates it, is perfectly usable and
+        gets `None`. Only a payload that is not a JSON object at all is
+        refused. Do not round the first case down to the second.
         """
-        recorded = self.payload.get("vintage_product_end")
+        recorded = self._object_payload().get("vintage_product_end")
         if not recorded:
             return None
         return date.fromisoformat(str(recorded)[:10])
@@ -313,6 +419,14 @@ class CrspTickerLookup:
         03.11-09) reads exactly as it did. `as_of` keeps the strict behaviour
         for callers who want the refusal.
 
+        Never raises, and no longer SILENT either. Every fall-back that came
+        off the disk -- the absent file included -- passes through `_degrade`,
+        which says so ONCE per instance and never again. Without that line the
+        two readings of the same digits, "this sidecar is broken" and "this
+        vendor never had one", are indistinguishable, and only one of them is
+        something to act on. The narrow `int(value)` guard below is NOT one of
+        those fall-backs and deliberately stays quiet.
+
         The guard is in TWO places because damage arrives by two routes:
         `{"intervals": [1, 2, 3]}` breaks while the table is being read, while
         `{"intervals": {"13407": [{"ticker": "FB"}]}}` reads a perfectly good
@@ -333,7 +447,8 @@ class CrspTickerLookup:
         """
         try:
             intervals = self._intervals()
-        except _UNUSABLE:
+        except _UNUSABLE as exc:
+            self._degrade(exc)
             intervals = {}
 
         labels: list[str] = []
@@ -353,10 +468,19 @@ class CrspTickerLookup:
                 # the sidecar, so it is a separate concern from `_UNUSABLE` and
                 # is not a third copy of it: `int("QQQ")` raising `ValueError`
                 # says nothing about whether the file on disk is readable.
+                #
+                # Which is also why there is NO `_degrade` call here, and why
+                # this is not a third site somebody forgot to update: nothing
+                # degraded. A string symbol axis reaching a shared display path
+                # is supported and healthy, and warning on it would fire on
+                # every Tiingo panel that renders a symbol list -- teaching
+                # operators to ignore the one warning that means "rebuild this
+                # store".
                 labels.append(spelled)
                 continue
             try:
                 labels.append(self.as_of(permno, day) or spelled)
-            except _UNUSABLE:
+            except _UNUSABLE as exc:
+                self._degrade(exc)
                 labels.append(spelled)
         return labels
