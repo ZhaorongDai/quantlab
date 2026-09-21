@@ -238,7 +238,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 6/11 plans executed
+**Plans:** 7/11 plans executed
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
@@ -277,7 +277,7 @@ Plans:
 
 **Wave 4** *(blocked on 03, 04, 05, 06)*
 
-- [ ] 03.11-07-PLAN.md — 死代码删除：`crsp_symbology.py` 收缩成区间提供者（D-18）、`crsp.py` 身份解析清空、三处 docstring 重写、仓库级零残留 grep gate（计入注释）
+- [x] 03.11-07-PLAN.md — 死代码删除：`crsp_symbology.py` 收缩成区间提供者（D-18）、`crsp.py` 身份解析清空、三处 docstring 重写、仓库级零残留 grep gate（计入注释）
 
 **Wave 5** *(blocked on 07)*
 
