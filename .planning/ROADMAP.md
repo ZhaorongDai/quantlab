@@ -238,7 +238,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 10/11 plans executed
+**Plans:** 11/11 plans executed
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
@@ -293,7 +293,7 @@ Plans:
 
 **Wave 8** *(blocked on 10)*
 
-- [ ] 03.11-11-PLAN.md — 03.10 决策反转记录三处（不改历史文本）+ REQUIREMENTS 只追加 + 全套回归门 + D-21/D-20 两个 operator 决策点
+- [x] 03.11-11-PLAN.md — 03.10 决策反转记录三处（不改历史文本）+ REQUIREMENTS 只追加 + 全套回归门 + D-21/D-20 两个 operator 决策点
 
 ### Phase 03.10: CRSP Stock v2 Daily Data via WRDS (INSERTED)
 
