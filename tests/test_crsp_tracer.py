@@ -6,8 +6,14 @@ ONE path, end to end, entirely offline:
       -> registry.run(WRDS_SOURCE, cfg)        # the new crsp_daily capability
       -> PERMNO-keyed raw shards under month=2020-08/
       -> registry.convert(WRDS_SOURCE, CrspDatasetConfig, ...)
-      -> a [timestamp, symbol] Zarr panel whose symbol axis is ['AAPL'] and
-         whose total-return adjClose matches a hand calculation
+      -> a [timestamp, symbol] Zarr panel whose symbol axis is the int64
+         PERMNO [14593] and whose total-return adjClose matches a hand
+         calculation
+
+The axis is the PERMNO, not the ticker (D-01, phase 03.11). That is the whole
+point of the migration: a ticker is a DERIVED, date-valid label that two
+companies can share across time, while a PERMNO is the security's permanent
+identity. `AAPL` now lives only in the human-readable sidecar.
 
 The window is chosen so the arithmetic is checkable by hand: AAPL's 4:1 split
 took effect on 2020-08-31, and 2020-08-07 is a dividend ex-date. Both are
@@ -54,11 +60,12 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
        carries the PERMNO array and the date BETWEEN, and contains no
        `ORDER BY` / `GROUP BY` / `DISTINCT` -- the D-03 prohibition, asserted
        on the rendered text rather than on the builder's arguments.
-    3. **The panel.** The ticker is derived at CONVERSION time (so the raw
-       tier never had to know it), and the total-return `adjClose` reproduces
-       the split and the dividend exactly.
+    3. **The panel.** The symbol axis IS the raw tier's PERMNO, cast to int64
+       and in numeric order, stored on disk as an integer dtype; and the
+       total-return `adjClose` reproduces the split and the dividend exactly.
     """
     import xarray as xr
+    import zarr
 
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
@@ -156,19 +163,37 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
         "2020-08-28",
         "2020-08-31",
     ]
-    assert [str(value) for value in panel["symbol"].values] == ["AAPL"]
+    # The axis is the PERMNO ITSELF, as an integer -- not its digits.
+    assert panel["symbol"].values.tolist() == [int(AAPL_PERMNO)]
+
+    # Read the ON-DISK dtype straight from zarr rather than the decoded one:
+    # `tests/conftest.py:stored_symbol_dtype` states verbatim why the decoded
+    # value is the wrong observable (xarray decodes an object-encoded
+    # coordinate to `StringDType()` in memory, so a whole suite can pass every
+    # value assertion while the store underneath carries another encoding).
+    stored = zarr.open_group(dataset_config.zarr_file_path, mode="r")["symbol"]
+    assert stored.dtype.kind == "i", stored.dtype
+    # ... and in strictly increasing NUMERIC order (D-19). One label cannot
+    # show an ordering, so the real order lock is the recycled-ticker and
+    # multi-PERMNO tests; this is the invariant stated where the axis is born.
+    axis = panel["symbol"].values.tolist()
+    assert axis == sorted(axis) and len(set(axis)) == len(axis), axis
 
     expected_variables = {
         "open", "high", "low", "close", "volume",
         "adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume",
-        "divCash", "splitFactor", "permno", "permco",
+        "divCash", "splitFactor", "permco",
     }
     assert expected_variables <= set(panel.data_vars), sorted(panel.data_vars)
+    # `permno` is NOT a data variable any more: it IS the coordinate (D-01).
+    assert "permno" not in panel.data_vars, sorted(panel.data_vars)
     for name in sorted(expected_variables):
         assert str(panel[name].dtype) == "float64", (name, panel[name].dtype)
 
     def at(variable: str, day: str) -> float:
-        return float(panel[variable].sel(timestamp=day, symbol="AAPL").values)
+        return float(
+            panel[variable].sel(timestamp=day, symbol=int(AAPL_PERMNO)).values
+        )
 
     # The split day is the anchor: its adjusted close IS its close.
     assert at("close", "2020-08-31") == pytest.approx(129.04)
@@ -198,8 +223,14 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     assert at("splitFactor", "2020-08-31") == pytest.approx(4.0)
     assert at("splitFactor", "2020-08-28") == pytest.approx(1.0)
 
-    for day in ("2020-08-06", "2020-08-07", "2020-08-28", "2020-08-31"):
-        assert at("permno", day) == pytest.approx(14593.0)
+    # The identity is reached by the PERMNO and by nothing else. The ticker is
+    # not a second spelling of the axis any more -- it is not on the axis at
+    # all, so asking for it is a KeyError rather than a silent empty slice.
+    assert float(
+        panel["close"].sel(timestamp="2020-08-31", symbol=int(AAPL_PERMNO))
+    ) == pytest.approx(129.04)
+    with pytest.raises(KeyError):
+        panel["close"].sel(symbol="AAPL")
 
 def test_wrds_crsp_reaches_the_session_only_through_the_wrds_taq_module():
     """`wrds_crsp.py` must NOT bind `WrdsSession` by name (D-03).
@@ -291,3 +322,275 @@ def test_importing_wrds_crsp_first_registers_both_capabilities():
         ["us_equity", "1d", "crsp_daily"],
         ["us_equity", "tick", "nbbo"],
     ], child.stdout
+
+
+# ---------------------------------------------------------------------------
+# The two invariants the PERMNO axis exists for (phase 03.11, D-01)
+# ---------------------------------------------------------------------------
+#
+# These are the tests that go RED if anyone reintroduces the assumption that a
+# ticker is an identity. `tests/test_crsp_identity.py` asserts the same two
+# principles on its own XYZ / tie fixtures; these are stated here, in the
+# tracer, because they are what the end-to-end slice is FOR -- and because the
+# identity module is pruned heavily in plan 07 while the tracer is not.
+
+#: SYNTHETIC. Two companies, twenty years apart, one ticker. The live check
+#: sampled no reuse pair, and inventing the DATES is the whole point.
+RECYCLED_TICKER = "XYZ"
+RECYCLED_OLD_PERMNO = 11101
+RECYCLED_NEW_PERMNO = 88801
+RECYCLED_OLD_DAYS = ("1989-12-28", "1989-12-29", "1990-01-02")
+RECYCLED_NEW_DAYS = ("2010-06-01", "2010-06-02", "2010-06-03")
+
+#: PERMNO 13407, whose ticker changed FB -> META on 2022-06-09. The
+#: security-info intervals are VERBATIM `03.10-LIVE-CHECK.json` key `C5`
+#: (see `tests/crsp_fixtures.py:SECINFO_ROWS`); the daily rows are SYNTHETIC.
+META_PERMNO = 13407
+META_RENAME_DAY = "2022-06-09"
+META_DAYS = (
+    "2022-06-06",
+    "2022-06-07",
+    "2022-06-08",
+    META_RENAME_DAY,
+    "2022-06-10",
+)
+META_DAILY_RETURN = 0.02
+
+
+def _convert_to_panel(
+    tmp_path, rows, permnos, *, start, end, extra_secinfo=(), store="crsp.zarr"
+):
+    """Serve `rows` through the fake session and convert them to a panel.
+
+    Production's own path throughout: the registry pulls, the real reference
+    writer lands the reference tier, and `registry.convert` builds the store.
+    """
+    import xarray as xr
+
+    from quantlab.acquisition import registry
+    from quantlab.acquisition.wrds import WRDS_SOURCE
+    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.base.config import CrspDatasetConfig
+    from tests.crsp_fixtures import (
+        CCM_ROWS,
+        DELISTS_ROWS,
+        DISTRIBUTION_ROWS,
+        DSP500_ROWS,
+        IDXCST_ROWS,
+        SECINFO_ROWS,
+        FakeCrspSession,
+        run_crsp_pull,
+        write_reference_tables,
+    )
+
+    FakeCrspSession.daily_rows = list(rows)
+    cfg, result = run_crsp_pull(
+        tmp_path, permnos, start_date=start, end_date=end
+    )
+    assert result.failures == {}, result.failures
+
+    reference_dir = WrdsCrspDailyAcquisition.reference_dir_for(cfg)
+    write_reference_tables(
+        reference_dir,
+        {
+            "crsp_a_stock.stksecurityinfohist": (
+                list(SECINFO_ROWS) + list(extra_secinfo)
+            ),
+            "crsp_a_stock.stkdelists": list(DELISTS_ROWS),
+            "crsp_a_stock.stkdistributions": list(DISTRIBUTION_ROWS),
+            "crsp_a_indexes.dsp500list_v2": list(DSP500_ROWS),
+            "comp.idxcst_his": list(IDXCST_ROWS),
+            "crsp_a_ccm.ccmxpf_lnkhist": list(CCM_ROWS),
+        },
+    )
+
+    dataset_config = CrspDatasetConfig(
+        zarr_file_path=str(tmp_path / store),
+        raw_data_dir_path=cfg.raw_data_dir_path,
+        catalog_path=str(tmp_path / "catalog"),
+        reference_dir=str(reference_dir),
+        start_date=start,
+        end_date=end,
+    )
+    registry.convert(
+        WRDS_SOURCE, dataset_config, data_type="crsp_daily", granularity="year"
+    )
+    return xr.open_zarr(dataset_config.zarr_file_path).load()
+
+
+def _recycled_ticker_rows():
+    """SYNTHETIC: `XYZ` is PERMNO 11101 until 1990, PERMNO 88801 from 2010."""
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    for permno, days, opening in (
+        (RECYCLED_OLD_PERMNO, RECYCLED_OLD_DAYS, 10.0),
+        (RECYCLED_NEW_PERMNO, RECYCLED_NEW_DAYS, 50.0),
+    ):
+        price = opening
+        for day in days:
+            price *= 1.01
+            rows.append(
+                dsf_row(
+                    permno,
+                    day,
+                    dlyprc=f"{price:.6f}",
+                    dlyclose=f"{price:.6f}",
+                    dlyret="0.010000",
+                    dlyretx="0.010000",
+                    ticker=RECYCLED_TICKER,
+                )
+            )
+    return rows
+
+
+def _recycled_ticker_secinfo():
+    """One interval each, twenty years apart, both spelling `XYZ`."""
+    from tests.crsp_fixtures import secinfo_row
+
+    return [
+        secinfo_row(
+            RECYCLED_OLD_PERMNO, "1980-01-02", "1990-01-02",
+            RECYCLED_TICKER, RECYCLED_TICKER, None,
+            securitybegdt="1980-01-02", securityenddt="1990-01-02",
+        ),
+        secinfo_row(
+            RECYCLED_NEW_PERMNO, "2010-01-04", "2025-12-31",
+            RECYCLED_TICKER, RECYCLED_TICKER, None,
+            securitybegdt="2010-01-04", securityenddt="2025-12-31",
+        ),
+    ]
+
+
+def test_a_recycled_ticker_yields_two_columns(mock_crsp_session, tmp_path):
+    """Two companies that wore one ticker are TWO columns, twenty years apart.
+
+    This is the invariant the whole migration exists for. 8,719 of the 36,990
+    tickers in the raw tier have been worn by two or more PERMNOs, and 3,095 of
+    the 3,205 recycled tickers inside the 2000-2024 window were recycled by
+    ORDERED SUCCESSION rather than on a shared day -- which
+    `CrspSymbology.resolve_collisions`, keyed on
+    `group_by(["timestamp", "symbol"])`, could not see at all. On the ticker
+    axis those pairs were silently concatenated into one column, and every
+    return across the join was fabricated while the panel stayed perfectly
+    well-formed.
+
+    The assertions are deliberately about the CELLS, not only the axis: a panel
+    with two labels but one company's prices copied into both would satisfy an
+    axis-only check.
+    """
+    import numpy as np
+
+    panel = _convert_to_panel(
+        tmp_path,
+        _recycled_ticker_rows(),
+        [str(RECYCLED_OLD_PERMNO), str(RECYCLED_NEW_PERMNO)],
+        start="1985-01-01",
+        end="2015-12-31",
+        extra_secinfo=_recycled_ticker_secinfo(),
+    )
+
+    assert panel["symbol"].values.tolist() == [
+        RECYCLED_OLD_PERMNO,
+        RECYCLED_NEW_PERMNO,
+    ], panel["symbol"].values.tolist()
+
+    # Each column is observed on ITS OWN days and nowhere else. Stated as the
+    # exact day sets rather than as spot checks, so a cell leaking across the
+    # twenty-year gap fails here whichever day it leaks onto.
+    def observed_days(permno):
+        column = panel["close"].sel(symbol=permno)
+        finite = np.isfinite(column.values)
+        return [
+            str(value)[:10]
+            for value, keep in zip(panel["timestamp"].values, finite)
+            if keep
+        ]
+
+    assert observed_days(RECYCLED_OLD_PERMNO) == list(RECYCLED_OLD_DAYS)
+    assert observed_days(RECYCLED_NEW_PERMNO) == list(RECYCLED_NEW_DAYS)
+
+    # No cell is observed for BOTH companies on any day: there is no join for
+    # a return to be fabricated across. This is the property the seam rule used
+    # to approximate by blanking one row of a shared column.
+    assert set(observed_days(RECYCLED_OLD_PERMNO)).isdisjoint(
+        observed_days(RECYCLED_NEW_PERMNO)
+    )
+    # The incoming security's first row is an ORDINARY adjusted row -- it opens
+    # its own column, so nothing needs blanking.
+    assert np.isfinite(
+        float(
+            panel["adjClose"].sel(
+                timestamp=RECYCLED_NEW_DAYS[0], symbol=RECYCLED_NEW_PERMNO
+            )
+        )
+    )
+
+    # The price LEVELS are an order of magnitude apart, so a column carrying
+    # the other company's prices cannot pass by coincidence.
+    assert float(
+        panel["close"].sel(
+            timestamp=RECYCLED_OLD_DAYS[0], symbol=RECYCLED_OLD_PERMNO
+        )
+    ) == pytest.approx(10.0 * 1.01)
+    assert float(
+        panel["close"].sel(
+            timestamp=RECYCLED_NEW_DAYS[0], symbol=RECYCLED_NEW_PERMNO
+        )
+    ) == pytest.approx(50.0 * 1.01)
+
+
+def test_permno_13407_is_one_column_across_the_fb_meta_rename(
+    mock_crsp_session, tmp_path
+):
+    """A RENAME is one company, and therefore one column.
+
+    The mirror image of the test above, and the reason the axis had to be the
+    PERMNO rather than "the first ticker we saw": FB -> META is PERMNO 13407 on
+    both sides, so the ratio across 2022-06-08 -> 2022-06-09 is a real daily
+    return. On the ticker axis this was two columns whose relationship had to
+    be argued about; a ticker-keyed rule could not tell it apart from the reuse
+    case above, which is precisely why this pair of tests is stated together.
+
+    It carries the semantics of `tests/test_crsp_symbology.py`'s FB/META test,
+    which plan 07 removes with the module.
+    """
+    import numpy as np
+
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    price = 180.0
+    for day in META_DAYS:  # SYNTHETIC rows; the secinfo intervals are LIVE.
+        price *= 1.0 + META_DAILY_RETURN
+        rows.append(
+            dsf_row(
+                META_PERMNO,
+                day,
+                dlyprc=f"{price:.6f}",
+                dlyclose=f"{price:.6f}",
+                dlyret=f"{META_DAILY_RETURN:.6f}",
+                dlyretx=f"{META_DAILY_RETURN:.6f}",
+                ticker="FB" if day < META_RENAME_DAY else "META",
+            )
+        )
+
+    panel = _convert_to_panel(
+        tmp_path,
+        rows,
+        [str(META_PERMNO)],
+        start="2022-06-01",
+        end="2022-06-30",
+    )
+
+    assert panel["symbol"].values.tolist() == [META_PERMNO]
+    assert [str(value)[:10] for value in panel["timestamp"].values] == list(
+        META_DAYS
+    )
+
+    adj = panel["adjClose"].sel(symbol=META_PERMNO).values
+    assert np.all(np.isfinite(adj)), adj
+    rename_index = META_DAYS.index(META_RENAME_DAY)
+    assert adj[rename_index] / adj[rename_index - 1] == pytest.approx(
+        1.0 + META_DAILY_RETURN, rel=1e-9
+    )

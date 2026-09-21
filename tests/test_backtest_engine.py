@@ -1039,3 +1039,60 @@ def test_the_span_payload_is_plain_python_values():
     assert isinstance(span["recovered"], bool) and not isinstance(
         span["recovered"], np.bool_
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 03.11: the PERMNO axis reaches the engine as an int64 column index
+# --------------------------------------------------------------------------
+
+
+def test_int64_column_index_round_trips_through_vectorbt(tmp_path):
+    """vectorbt accepts an int64 column index, and PERMNOs survive it.
+
+    The CRSP panel's symbol axis is the int64 PERMNO (D-01, phase 03.11), so
+    every price frame this engine hands to `Portfolio.from_orders` now carries
+    `pd.Index([...], dtype='int64', name='symbol')` where it used to carry
+    tickers. Two things had to be true and are asserted here rather than
+    assumed:
+
+    1. the simulation runs at all -- vectorbt indexes columns positionally but
+       reads the index for its records, and a non-string column index is a
+       shape this engine had never been given;
+    2. `records_readable['Column'].astype(str)`, which
+       `engine_vectorbt._simulate` uses verbatim to build `orders['symbol']`,
+       yields the PERMNO's DIGITS -- i.e. `str(np.int64(permno))` -- so the
+       identity is losslessly recoverable by the caller. Plan 09's ticker
+       sidecar depends on exactly this.
+
+    Measured against the engine's own parameters by driving `_simulate`, not
+    by re-deriving them: a change to `size_type`, `direction`, `group_by`,
+    `cash_sharing` or `call_seq` is inside what this test covers.
+    """
+    permnos = [10107, 14593, 93436]
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    ts = _timestamps(3)
+    fill = [[10.0, 20.0, 30.0], [11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]
+    valuation = [[10.5, 20.5, 30.5], [11.5, 21.5, 31.5], [12.5, 22.5, 32.5]]
+    weights = _weights(
+        [[0.5, 0.5, 0.0], [0.0, 0.0, 1.0], [NAN, NAN, NAN]], ts, permnos
+    )
+    panel = _panel(fill, valuation, ts, permnos)
+
+    # The frames really do reach vectorbt on an int64 index -- otherwise this
+    # test would be about a string axis wearing integer labels.
+    assert panel["symbol"].dtype == np.dtype("int64"), panel["symbol"].dtype
+    assert weights["symbol"].dtype == np.dtype("int64"), weights["symbol"].dtype
+
+    result = backtester._simulate(weights, panel)
+
+    assert result.orders.sizes["order"] > 0, result.orders
+    observed = [str(value) for value in result.orders["symbol"].values]
+    # Every order names a PERMNO, spelled exactly as `str(np.int64(permno))`,
+    # and all three columns are reached -- so this cannot pass on a single
+    # lucky label.
+    assert set(observed) == {str(np.int64(permno)) for permno in permnos}, observed
+
+    # The round trip itself (RESEARCH R3): `int()` inverts the engine's
+    # `astype(str)` for every PERMNO, so no identity is lost on the way into
+    # the order record. Plan 09's ticker sidecar is what reads it back.
+    assert sorted({int(value) for value in observed}) == sorted(permnos), observed
