@@ -29,11 +29,21 @@ nothing else reads it.
   be silently rounded to `None` -- rounding it down would make "this sidecar is
   unreadable" and "that PERMNO had no name that day" the same answer.
 - `label(permnos, day)` is the DISPLAY entry point, and it never raises -- for
-  all three of those failures alike. The six human-visible points that call it
-  -- the forced-liquidation log and `liquidations.json`, the model's
-  missing/extra symbol lists, `UniverseMask.report()`'s missing-member list,
-  `browse_zarr`'s refusal and the `--symbols` CLI help -- are all trying to make
-  an EXISTING message readable. Breaking a backtest because an audit sidecar is
+  all three of those failures alike. There are exactly three call sites, and
+  every one of them is BARE -- inside no `try`, on the strength of this
+  paragraph: `quantlab/dataset/masking.py:262`,
+  `quantlab/backtest/engine_vectorbt.py:303` (mid-simulation, the most
+  expensive place a refusal could land) and `quantlab/base/model.py:1315`,
+  reached twice through `_spell` in `predict_panel`'s `missing` and `extra`
+  branches. Between them they render six human-visible messages -- the
+  forced-liquidation log and `liquidations.json`, the model's missing and extra
+  symbol lists, and `UniverseMask.report()`'s missing-member list -- all of
+  them trying to make an EXISTING message readable. (Two further messages,
+  `browse_zarr`'s refusal in `quantlab/acquisition/inspector.py` and the
+  `--symbols` CLI help, only NAME this class in prose: they neither construct a
+  lookup nor call it, and must not be counted as call sites, because the design
+  argument below -- the guard lives in the lookup rather than at each caller --
+  is built on that count.) Breaking a backtest because an audit sidecar is
   absent or half-written would make the readability layer more fragile than the
   thing it annotates (T-03.11-30), so an unusable sidecar degrades to the
   digits, which is exactly what those messages printed before this sidecar
@@ -110,7 +120,10 @@ class CrspTickerLookup:
 
         The ONE place the suffix is appended on the read side, so the display
         points do not each spell `".crsp_tickers.json"` for themselves -- a
-        literal repeated at four call sites is a rename waiting to go half-done.
+        literal repeated at the two production construction sites
+        (`quantlab/dataset/masking.py:115`, `quantlab/base/backtest.py:198`) is
+        a rename waiting to go half-done, and a third one is a `beside_store`
+        call away.
 
         The import is function-local on purpose: `crsp.py` owns the constant
         and pulls in polars, the reference tier and the whole converter with
@@ -281,10 +294,13 @@ class CrspTickerLookup:
     def label(self, permnos: Sequence, day: date) -> list[str]:
         """`permnos` spelled for a human, one string per input, in order.
 
-        The single entry point the six display points use, and the reason it is
+        The single entry point the three call sites use, and the reason it is
         BATCH: every one of them is rendering a LIST (a missing-member report,
         a dropped-symbol warning, a run of liquidation records on one date), so
-        a per-item call would re-enter the payload once per name.
+        a per-item call would re-enter the payload once per name. Between them
+        those three render the six human-visible messages the module docstring
+        enumerates -- the count of MESSAGES and the count of CALLERS are
+        different numbers and this module needs both.
 
         **Never raises.** An unknown PERMNO falls back to its own digits, and
         so does every PERMNO when the sidecar is missing or CORRUPT -- where

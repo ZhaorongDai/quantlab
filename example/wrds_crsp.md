@@ -244,8 +244,12 @@ WRDS 提供了一张预连接的宽视图 `wrds_dsfv2_query`（98 列，带分�
 那正是 D-03 否决掉 1-D `ticker(symbol)` coord 的那个缺陷。旁车**只写这个面板自己的 PERMNO**
 （参考表里有 40,518 个），读侧是 `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`：
 `as_of(permno, day)` 是严格的单值提问（缺文件会抛），`label(permnos, day)` 是展示层的批量入口
-（**永不抛**，旁车缺失或损坏——含解析不了与解析得了但形状不对——都原样回落成数字）。强平日志、模型的 missing/extra 清单、
-`UniverseMask.report()`、`browse_zarr` 的拒绝文案都走后者。
+（**永不抛**，旁车缺失或损坏——含解析不了与解析得了但形状不对——都原样回落成数字）。
+「解析不了」是三种：字节不是合法 **UTF-8**、字节不是 JSON、以及**嵌套**深到解析器自己爆栈
+（`RecursionError` 是 `RuntimeError` 子类，03.11-15 之前从这里逃出去过，G-03.11-3 / WR-01）；
+这三种在 `as_of` 侧对应的都是一次 shaped 拒绝——点名类名、旁车绝对路径与重建补救的 `ValueError`。
+强平日志、模型的 missing/extra 清单、`UniverseMask.report()` 三个调用点都走后者；
+`browse_zarr` 的拒绝文案只是在散文里点名这个类，并不调用它。
 
 判据是**盘上有没有那个旁车文件**，不是面板属于哪个厂商——所以 Tiingo / Alpaca 的面板输出一字未变。
 

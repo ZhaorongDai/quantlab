@@ -379,8 +379,16 @@ def test_the_sidecar_is_read_once_per_instance(converted, monkeypatch):
 
 
 def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
-    """The display contract (T-03.11-30): six human-visible points call
-    `label()`, and NONE of them may break because an audit file is missing.
+    """The display contract (T-03.11-30): three call sites reach `label()`, and
+    NONE of them may break because an audit file is missing.
+
+    The three are `quantlab/dataset/masking.py:262`,
+    `quantlab/backtest/engine_vectorbt.py:303` and `quantlab/base/model.py`'s
+    `_spell` (entered from both the `missing` and the `extra` branch of
+    `predict_panel`); between them they render six human-visible messages. The
+    two counts are different numbers, and it is the CALL SITE count the design
+    rests on -- `browse_zarr`'s refusal and the `--symbols` CLI help name this
+    class in prose without ever calling it.
 
     `as_of` still raises -- it is the strict, single-value question. `label` is
     the display entry point and answers with the digits.
@@ -633,8 +641,10 @@ def test_product_end_is_parsed_from_the_recorded_vintage(converted):
 
 
 def test_beside_store_builds_the_lookup_from_a_store_path(converted):
-    """The one place the suffix is appended for a reader, so the three display
-    points do not each spell `".crsp_tickers.json"` for themselves."""
+    """The one place the suffix is appended for a reader, so the two production
+    construction sites (`quantlab/dataset/masking.py:115`,
+    `quantlab/base/backtest.py:198`) do not each spell `".crsp_tickers.json"`
+    for themselves."""
     from quantlab.dataset.crsp_tickers import CrspTickerLookup
 
     lookup = CrspTickerLookup.beside_store(converted.zarr_file_path)
