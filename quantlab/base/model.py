@@ -24,6 +24,7 @@ from quantlab.ml_model.backend import MlBackend
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
 from .config import DLConfig, MLConfig
@@ -64,7 +65,9 @@ class BaseModel(ABC):
         self.model = None
         # 训练面板的标的：`_save_model` 训练落盘时记下，`load` 从 checkpoint 旁的
         # `config.json` 训练记录读回；没有记录时是 None（代码审查 WR-02）。
-        self._trained_symbols: list[str] | None = None
+        # 元素类型跟着面板的 symbol 轴走：int64 PERMNO 轴是 `int`，ticker 轴是
+        # `str`（03.11-04）。这里不是 `list[str]`。
+        self._trained_symbols: list | None = None
         # 模型层 checkpoint 记录 warning 已经输出过的原文（G-03.7-9）：回测器在
         # 特征计算前核对一次变量，`load()` 再核对一次，同一条 warning 只输出一次。
         # 比较与报错从不跳过；每条 warning 都写明路径，换一个 checkpoint 仍会 warning。
@@ -285,6 +288,25 @@ class BaseModel(ABC):
     #: 不是配置字段，`utils/module.py:load_model_from_config` 重建时丢弃它。
     TRAINED_ON_KEY = "trained_on"
 
+    @staticmethod
+    def _jsonable_symbol(symbol):
+        """把一个标的标签变成 `json.dump` 认识的值，**不改变它的类别**。
+
+        `numpy.int64` 不是 `int` 的子类，`json.dump` 直接 `TypeError`；而
+        `.values.tolist()` 出来的已经是 python `int`/`str`，所以这里通常是恒等
+        的。它存在只为堵住「面板不经 `collect()`、后端交回 numpy 标量」这一路。
+
+        关键在于**分派而不是统一**：整数走 `int()`、其余走 `str()`。统一成
+        `str()` 正是 03.11-04 要拆掉的那行——它让 PERMNO 记录成了字符串，而面板
+        坐标是 int64。
+        """
+        if isinstance(symbol, bool):
+            # `bool` 是 `int` 的子类，但一个布尔标的轴是上游缺陷，不是整数轴。
+            return str(symbol)
+        if isinstance(symbol, (int, np.integer)):
+            return int(symbol)
+        return str(symbol)
+
     def _save_model(self, p: Path):
         """建 checkpoint 目录，写 `config.json` 与 checkpoint。
 
@@ -298,6 +320,16 @@ class BaseModel(ABC):
         经 `to_array` 训练，而 `to_array` 对标的轴排序，所以网络训练时看到的就是
         排序后的布局。没经过 `collect()`（它会排序）就调 `train()` / `train_cv()`
         时后端可以是乱序的，以前记录照抄后端顺序，成了一句关于训练的假话。
+
+        记录的元素**保留面板轴自己的拼写**（03.11-04）：int64 PERMNO 轴写出
+        JSON 整数数组，ticker 轴写出字符串数组。以前这里把 `self.symbols` 的
+        每个元素先 `str()` 再 `sorted()`，一个无条件的强转
+        ——在 ticker 轴上是恒等变换，所以三端（写 / 读 / 对齐）靠巧合一致；
+        在 PERMNO 轴上它把记录变成 `['10107', '14593', '7000']`，读回来的
+        字符串最终交给 `.sel()`，在 int64 坐标上抛
+        `KeyError: "not all values found in index 'symbol'"`
+        （03.11-RESEARCH B 实跑）。顺序走 `sort_symbol_axis`，与全仓其余钉轴点
+        同一个数值序来源（`quantlab/utils/symbol_axis.py`）。
         """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError("Model not initialized")
@@ -307,7 +339,10 @@ class BaseModel(ABC):
         else:
             p.parent.mkdir(parents=True)
 
-        symbols = sorted(str(symbol) for symbol in self.symbols)
+        symbols = [
+            self._jsonable_symbol(symbol)
+            for symbol in sort_symbol_axis(self.symbols)
+        ]
         record = {
             "factor_names": [str(name) for name in self.get_factor_names()],
             "label_names": [str(name) for name in self.get_label_names()],
@@ -504,14 +539,26 @@ class BaseModel(ABC):
         self._emitted_load_warnings.add(message)
         logger.warning(message)
 
-    def _read_trained_symbols(self, p: Path) -> list[str] | None:
-        """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。"""
+    def _read_trained_symbols(self, p: Path) -> list | None:
+        """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。
+
+        **原样返回，不做类型转换**（03.11-04）。JSON 已经决定了类别：整数数组
+        读回 `list[int]`，字符串数组读回 `list[str]`。以前最后一行是
+        `[str(symbol) for symbol in symbols]`，于是一个 int64 面板训练出来的
+        记录在读回时又变成字符串，`_align_prediction_symbols` 拿它去 `.sel()`
+        一个 int64 坐标——这是写侧强转之外的**第二个**独立的破坏点，单修写侧
+        并不能让这条链路走通。
+
+        顺序经 `sort_symbol_axis` 归一：记录里只有**成员**是权威的
+        （见 `DLModel._align_prediction_symbols`），顺序由数值序契约决定，而
+        手改过或由别的生产者写出的记录可以是乱序的。
+        """
         saved = self._read_checkpoint_sidecar(p)
         record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
         symbols = record.get("symbols") if isinstance(record, dict) else None
         if not isinstance(symbols, list):
             return None
-        return [str(symbol) for symbol in symbols]
+        return sort_symbol_axis(symbols)
 
     def predict(
         self, data: torch.Tensor | np.ndarray
@@ -1194,11 +1241,18 @@ class DLModel(BaseModel):
           （G-03.7-8）。
 
         `_trained_symbols` 未知（没有训练记录的旧 checkpoint）时原样返回。
+
+        标的标签**按面板轴自己的拼写**比较（03.11-04）：以前 `present` 是
+        `[str(symbol) for symbol in ...]`，于是 int64 PERMNO 面板与字符串记录
+        两边都成了字符串，成员检查一路通过，直到最后一行 `.sel()` 才在 int64
+        坐标上抛 `KeyError`——而那条错误说的是「索引里找不到」，不是「dtype 不
+        对」。类型守卫因此放在成员检查**之前**，见 `_assert_symbol_types_match`。
         """
         trained = self._trained_symbols
         if trained is None:
             return feats
-        present = [str(symbol) for symbol in feats.symbol.values.tolist()]
+        present = list(feats.symbol.values.tolist())
+        self._assert_symbol_types_match(trained, present, feats)
         present_set = set(present)
         missing = [symbol for symbol in trained if symbol not in present_set]
         if missing:
@@ -1210,14 +1264,76 @@ class DLModel(BaseModel):
                 f"without them (WR-02)"
             )
         trained_set = set(trained)
-        extra = sorted(symbol for symbol in present_set if symbol not in trained_set)
+        # `missing` / `extra` 在 PERMNO 轴上会打出裸数字而不是 ticker。本任务
+        # 刻意不动：人类可读的 ticker 还原是 03.11-09 的 sidecar 的事，在这里
+        # 各自查一次符号学就是把那份逻辑复制到第七个地方。
+        extra = sort_symbol_axis(
+            symbol for symbol in present_set if symbol not in trained_set
+        )
         if extra:
             logger.warning(
                 f"{self.class_name}.predict_panel: dropping {len(extra)} symbol(s) "
                 f"the model was not trained on, which get no prediction: "
                 f"{extra[:20]}{' ...' if len(extra) > 20 else ''} (WR-02)"
             )
-        return feats.sel(symbol=sorted(trained))
+        return feats.sel(symbol=sort_symbol_axis(trained))
+
+    @staticmethod
+    def _symbol_type_name(symbol) -> str:
+        """标的标签的**类别**名：整数一律叫 `int`，其余叫它自己的类型名。
+
+        比较的是类别不是具体类型：`numpy.int64` 与 python `int` 在 `.sel()`
+        面前等价，把它们报成两种类型只会制造一条假的不匹配。
+        """
+        if isinstance(symbol, bool):
+            return type(symbol).__name__
+        if isinstance(symbol, (int, np.integer)):
+            return "int"
+        return type(symbol).__name__
+
+    def _assert_symbol_types_match(
+        self, trained: list, present: list, feats: xr.Dataset
+    ) -> None:
+        """训练记录与面板轴的标签类别必须一致，否则在**入口**拒绝（03.11-04）。
+
+        这道守卫必须在成员检查之前，因为成员检查看不见这个缺陷：两边都
+        `str()` 之后 `'10107' in {'10107', ...}` 为真，检查通过，错误一路拖到
+        最后一行 `.sel()`。03.11-RESEARCH B 的实跑输出是
+
+            membership check at model.py:1201-1203 passes: True
+            KeyError: "not all values found in index 'symbol'"
+
+        那条 `KeyError` 说的是「索引里没有这些值」，于是操作者去查面板少了哪个
+        标的——而面板一个都不少，少的是类型的一致。**不做硬转**：把字符串记录
+        转成 int 会让一份 ticker 轴的旧 checkpoint 悄悄对上 PERMNO 列，那不是
+        兼容，是静默的张冠李戴（D-04 不写兼容层）。
+        """
+        if not trained or not present:
+            return
+        trained_kinds = {self._symbol_type_name(symbol) for symbol in trained}
+        present_kinds = {self._symbol_type_name(symbol) for symbol in present}
+        if trained_kinds == present_kinds:
+            return
+        raise ValueError(
+            f"{self.class_name}._align_prediction_symbols: refusing to align "
+            f"the feature panel onto this checkpoint's training record -- the "
+            f"two disagree on the TYPE of a symbol label. The checkpoint "
+            f"records {sorted(trained_kinds)} (e.g. {trained[0]!r}), the "
+            f"panel's 'symbol' coordinate is dtype "
+            f"{feats.symbol.dtype!r} carrying {sorted(present_kinds)} "
+            f"(e.g. {present[0]!r}). This is checked HERE, before the "
+            f"membership check below, because the membership check cannot "
+            f"see it: str() both sides and every label is 'found', so the "
+            f"failure surfaces only on the closing .sel() as "
+            f"KeyError: \"not all values found in index 'symbol'\" -- an "
+            f"error about a missing index entry for a panel that is missing "
+            f"nothing (measured, 03.11-RESEARCH B). Coercing one side to the "
+            f"other is deliberately NOT done: a ticker-era record coerced "
+            f"onto a PERMNO axis would match the WRONG columns silently. "
+            f"Either retrain on the current panel, or rewrite the "
+            f"checkpoint's '{self.TRAINED_ON_KEY}.symbols' in the panel's own "
+            f"spelling."
+        )
 
     def _write_checkpoint(self, path: Path) -> None:
         torch.save(self.model.state_dict(), path)  # type: ignore[union-attr]

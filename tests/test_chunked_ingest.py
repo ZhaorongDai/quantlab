@@ -2621,3 +2621,296 @@ def test_agreeing_axes_still_go_through_the_unchanged_append_guard(
     xr.testing.assert_identical(
         _panel(config.zarr_file_path), _panel(scratch.zarr_file_path)
     )
+
+
+# ---------------------------------------------------------------------------
+# 03.11-04: the two remaining pinning sites share one order source
+#
+# The pinned whole-range symbol axis is decided in THREE places -- CRSP's own
+# `_raw_axes_in_range` (on `sort_symbol_axis` since 03.11-03),
+# `StockDataset._raw_axes_in_range`, and `BaseDataset._raw_axes_in_range`.
+# Each of the latter two ran the labels through `str()` and, in the stock
+# case, a bare `sorted()`, so each was an independent re-statement of an order
+# contract that lives in `quantlab/utils/symbol_axis.py`.
+#
+# Two things then go wrong on an int64 panel, and only the first is loud: the
+# order silently forks from the other two sites the moment a four-digit PERMNO
+# appears, and the stringified axis is handed straight back to
+# `_raw_data_to_xr_window`'s `reindex`, which matches nothing against an int64
+# coordinate and densifies an ENTIRE window of NaN without raising.
+# ---------------------------------------------------------------------------
+
+
+def _permno_ohlcv_panel(symbols: list) -> xr.Dataset:
+    dates = pd.to_datetime(
+        [f"{year}-{day}" for year in _YEARS for day in _DAYS_PER_YEAR]
+    )
+    values = np.full((len(dates), len(symbols)), 100.0)
+    return xr.Dataset(
+        {
+            name: (["timestamp", "symbol"], values.copy())
+            for name in ("open", "high", "low", "close", "volume")
+        },
+        coords={"timestamp": dates, "symbol": list(symbols)},
+    )
+
+
+def test_base_raw_axes_pins_an_int64_axis_in_numeric_order(tmp_path: Path) -> None:
+    """`BaseDataset._raw_axes_in_range` keeps the panel's own labels, sorted.
+
+    RED on both halves at once: the labels came back as `str`, and they came
+    back in the panel's own arrival order because this site did not sort at
+    all -- it leaned on whatever `_raw_data_to_xr()` happened to produce.
+    """
+    config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "pinned.zarr"))
+    dataset = _UnboundedDataset(
+        config, _permno_ohlcv_panel([10107, 7000, 14593])
+    )
+
+    symbols, timestamps = dataset._raw_axes_in_range()
+
+    assert symbols == [7000, 10107, 14593]
+    assert all(type(value) is int for value in symbols), symbols
+    assert len(timestamps) == len(_YEARS) * len(_DAYS_PER_YEAR)
+
+
+def test_a_chunked_int64_run_does_not_densify_a_window_of_nan(
+    tmp_path: Path,
+) -> None:
+    """The consequence, end to end: a stringified pinned axis empties every window.
+
+    `_raw_data_to_xr_window` reindexes onto the pinned axis. Handed digit
+    strings against an int64 coordinate, `reindex` matches nothing and fills
+    NaN -- the store comes back the right shape, the right dtype and entirely
+    empty, with no exception and no log line. The same failure shape 03.11-02
+    measured inside `widen_symbol_axis`, reached through a different door.
+    """
+    config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "chunked.zarr"))
+    _UnboundedDataset(
+        config, _permno_ohlcv_panel([10107, 7000, 14593])
+    ).from_raw_data_chunked()
+
+    store = _panel(config.zarr_file_path)
+
+    assert store["symbol"].values.tolist() == [7000, 10107, 14593]
+    assert store["symbol"].dtype.kind == "i"
+    assert store.sizes["timestamp"] == len(_YEARS) * len(_DAYS_PER_YEAR)
+    assert not bool(store["close"].isnull().any()), (
+        "the pinned axis did not match the window's own labels, so the whole "
+        "store densified to NaN"
+    )
+
+
+def test_stock_raw_axes_pins_in_numeric_order_without_recasting(
+    tmp_path: Path,
+    stock_pqt_row: Callable[..., dict],
+    hive_raw_tree: Callable[..., Path],
+) -> None:
+    """`StockDataset._raw_axes_in_range` lets the raw column decide the type.
+
+    Tiingo's raw `symbol` column is text, so the elements stay `str` here --
+    what changes is that the ORDER now comes from `sort_symbol_axis` rather
+    than a bare `sorted()`. Digit-string labels are the shape that tells the
+    two apart, and they are not hypothetical: CRSP's raw tier spells its
+    PERMNOs exactly this way (`wrds_crsp.py:317-319`).
+
+    RED: the old spelling returned `['10107', '7000']`.
+    """
+    raw_dir = tmp_path / "raw"
+    rows = [
+        stock_pqt_row(f"{year}-{day}", symbol)
+        for year in _YEARS
+        for day in _DAYS_PER_YEAR
+        for symbol in ("10107", "7000")
+    ]
+    hive_raw_tree(raw_dir, "tiingo", rows, batch_key="panel")
+    config = DatasetConfig(
+        raw_data_dir_path=str(raw_dir / "tiingo"),
+        zarr_file_path=str(tmp_path / "stock.zarr"),
+        catalog_path=str(tmp_path / "catalog"),
+        market="us_equity",
+        frequency="1d",
+        vendor="tiingo",
+    )
+
+    symbols, _ = StockDataset(config)._raw_axes_in_range()
+
+    assert symbols == ["7000", "10107"]
+    assert all(type(value) is str for value in symbols), symbols
+    assert sorted(symbols) == ["10107", "7000"], (
+        "the fixture lost its digit-string labels, so this test can no longer "
+        "distinguish numeric order from lexicographic order"
+    )
+
+
+def test_ticker_pinning_is_unchanged(
+    tmp_path: Path,
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    """CONTROL ARM (D-02): both pinning sites are byte-identical on tickers.
+
+    `sort_symbol_axis` falls back to `str` comparison for a non-integer axis,
+    so a ticker universe pins to exactly `sorted(...)` -- asserted here rather
+    than assumed, on both the stock path and the base path.
+    """
+    config = three_year_stock_config()
+    stock_symbols, _ = StockDataset(config)._raw_axes_in_range()
+    assert stock_symbols == ["A", "B", "C"]
+    assert stock_symbols == sorted(stock_symbols)
+
+    base_config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "base.zarr"))
+    base_symbols, _ = _UnboundedDataset(
+        base_config, _ohlcv_panel()
+    )._raw_axes_in_range()
+    assert base_symbols == ["A", "B"]
+    assert all(type(value) is str for value in base_symbols), base_symbols
+
+
+# ---------------------------------------------------------------------------
+# 03.11-04: the STORED symbol axis is read in the store's own spelling
+#
+# `_stored_symbol_axis` answers ONE question -- "what is the store's symbol
+# axis?" -- and `_reconcile_new_listings` subtracts that answer from the
+# pinned whole-range axis to decide whether the axes drifted. Normalising the
+# answer to text made the subtraction compare two different alphabets on an
+# int64 store: EVERY pinned PERMNO looked added and EVERY stored one looked
+# removed. `on_new_listing="refuse"` then halts for a reason that is simply
+# untrue, and `"widen"` hands `widen_symbol_axis` a target axis that is not a
+# superset of the stored one.
+#
+# The ticker arms below are CONTROLS: the same assertions with string labels,
+# which is what proves the Tiingo/Alpaca path is byte-for-byte unchanged.
+# ---------------------------------------------------------------------------
+
+#: Four-digit `7000` on purpose -- see `quantlab/utils/symbol_axis.py`. The
+#: axis is given already in numeric order, because that is what a pinned axis
+#: coming out of `sort_symbol_axis` looks like.
+_PERMNO_AXIS = [7000, 10107, 14593]
+_AXIS_DATES = ["2022-01-04", "2022-06-15", "2022-12-28"]
+
+
+class _RecordsTheDrift(_UnboundedDataset):
+    """Captures the `(added, removed)` `_reconcile_new_listings` computed.
+
+    The strategy resolver is the FIRST consumer of those two lists, so
+    recording its arguments observes them without having to reach into the
+    method. Returning `"refuse"` makes the call a no-op afterwards: that
+    branch logs and returns the ledger untouched.
+    """
+
+    def __init__(self, config: BaseDatasetConfig, panel: xr.Dataset):
+        super().__init__(config, panel)
+        self.drift_calls: list[tuple[list, list]] = []
+
+    def _resolve_new_listing_strategy(
+        self, added, removed, store_path, append_dim
+    ):
+        self.drift_calls.append((list(added), list(removed)))
+        return "refuse"
+
+
+def _axis_store(tmp_path: Path, name: str, symbols: list) -> str:
+    path = str(tmp_path / name)
+    XrBackend().to_internal(_small_panel(_AXIS_DATES, symbols, 0.0)).append(path)
+    return path
+
+
+def _drift_against(tmp_path: Path, name: str, stored: list, pinned: list):
+    """Build a store on `stored`, reconcile it against `pinned`, return the spy.
+
+    The ledger is a bare sentinel: both branches this helper can reach (the
+    identical-axes early return and `"refuse"`) hand it straight back without
+    touching it, so a real `ChunkLedger` would only add noise.
+    """
+    path = _axis_store(tmp_path, name, stored)
+    dataset = _RecordsTheDrift(
+        BaseDatasetConfig(zarr_file_path=path),
+        _small_panel(_AXIS_DATES, stored, 0.0),
+    )
+    sentinel = object()
+    ledger, asides = dataset._reconcile_new_listings(
+        list(pinned), sentinel, "timestamp", BaseDataset._AUTOMATIC
+    )
+    assert ledger is sentinel
+    assert asides is None
+    return dataset
+
+
+@pytest.mark.parametrize(
+    "symbols, element_type",
+    [(_PERMNO_AXIS, int), (["A", "B", "C"], str)],
+    ids=["int64", "tickers"],
+)
+def test_stored_symbol_axis_keeps_the_stores_own_spelling(
+    tmp_path: Path, symbols: list, element_type: type
+) -> None:
+    """`_stored_symbol_axis` reports what the store HOLDS, not a rendering of it.
+
+    Normalising here is not a formatting choice, it is a type decision taken
+    on the caller's behalf -- and the caller (`_reconcile_new_listings`) then
+    compares the result against an axis in a different alphabet.
+
+    RED on the int64 arm: `['7000', '10107', '14593']` of `str`.
+    """
+    path = _axis_store(tmp_path, "stored_axis.zarr", symbols)
+
+    stored = BaseDataset._stored_symbol_axis(path)
+
+    assert stored == list(symbols)
+    assert all(type(value) is element_type for value in stored), stored
+
+
+def test_stored_int_axis_does_not_report_every_symbol_as_added(
+    tmp_path: Path,
+) -> None:
+    """One added PERMNO is ONE added PERMNO, not the whole universe.
+
+    RED: the stored axis came back as digit strings, so the set difference
+    against the int64 pinned axis reported `added == [7000, 10107, 14593,
+    93436]` and `removed == ['7000', '10107', '14593']` -- every symbol on
+    both sides at once. Downstream that is either a `refuse` for a reason
+    that is false, or a `widen` handed a target axis that does not contain
+    the stored one.
+    """
+    dataset = _drift_against(
+        tmp_path, "added_one.zarr", _PERMNO_AXIS, [*_PERMNO_AXIS, 93436]
+    )
+
+    assert dataset.drift_calls == [([93436], [])]
+
+
+def test_an_unchanged_int_axis_short_circuits_before_the_drift_probe(
+    tmp_path: Path,
+) -> None:
+    """Identical axes return before the strategy resolver is ever consulted.
+
+    This is the common case -- every rerun against an up-to-date store -- and
+    it is the one the stringified read broke most loudly: the resolver's raw
+    probe would be paid on every run, and `refuse` (the default) would halt a
+    run that had nothing to reconcile.
+    """
+    dataset = _drift_against(
+        tmp_path, "unchanged.zarr", _PERMNO_AXIS, list(_PERMNO_AXIS)
+    )
+
+    assert dataset.drift_calls == []
+
+
+@pytest.mark.parametrize(
+    "pinned, expected",
+    [(["A", "B", "C"], []), (["A", "B", "C", "D"], [(["D"], [])])],
+    ids=["unchanged", "one-added"],
+)
+def test_ticker_axis_drift_is_unchanged(
+    tmp_path: Path, pinned: list, expected: list
+) -> None:
+    """CONTROL ARM (D-02): the string axis behaves exactly as it did.
+
+    On a ticker axis the removed `str()` was the identity, so both arms above
+    must hold here too -- and did before the change.
+    """
+    dataset = _drift_against(
+        tmp_path, "tickers.zarr", ["A", "B", "C"], pinned
+    )
+
+    assert dataset.drift_calls == expected

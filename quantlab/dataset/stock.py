@@ -15,6 +15,7 @@ from quantlab.base.data import MarketDataset
 from quantlab.dataset.cleaning import dedup_raw_frame
 from quantlab.enums.data import RAW_HIVE_KEYS, BinanceCSVHeaders
 from quantlab.utils.file import file_date_filter
+from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
 
@@ -498,17 +499,26 @@ class StockDataset(MarketDataset):
         """
         return pd.Timestamp(value).to_pydatetime()
 
-    def _raw_axes_in_range(self) -> tuple[list[str], pd.DatetimeIndex]:
+    def _raw_axes_in_range(self) -> tuple[list, pd.DatetimeIndex]:
         """Both axes for the config's whole range, from one scan, WITHOUT
         densifying anything (D-02).
+
+        One of THREE places the pinned symbol axis is decided -- the others
+        being `BaseDataset._raw_axes_in_range` and
+        `CrspDataset._raw_axes_in_range`, which overrides this one. Its ORDER
+        comes from `quantlab/utils/symbol_axis.py:sort_symbol_axis`, the
+        single implementation of "numeric order" in this repo; the argument
+        for it lives there and is deliberately not restated here.
+
+        The element TYPE is the raw `symbol` column's own (03.11-04). Tiingo's
+        is text, so on that path nothing changes; the cast is gone so that a
+        future vendor whose raw tier keys on an integer cannot silently fall
+        back to lexicographic order on a stringified axis -- and so that this
+        site has the same shape as the other two.
         """
         scan = self._scan_raw()
-        symbols = sorted(
-            str(symbol)
-            for symbol in scan.select("symbol")
-            .unique()
-            .collect()["symbol"]
-            .to_list()
+        symbols = sort_symbol_axis(
+            scan.select("symbol").unique().collect()["symbol"].to_list()
         )
         timestamps = (
             scan.select("timestamp").unique().collect()["timestamp"].to_list()
@@ -521,6 +531,16 @@ class StockDataset(MarketDataset):
         """
         The hive-pruned answer to the evidence question -- how many raw rows
         each of `added` carries in the CLOSED window `[start, end]`.
+
+        The `str()` below is DELIBERATE and must stay, for the same reason as
+        in `BaseDataset._added_symbols_with_raw_history` (03.11-04): it
+        compares against the RAW tier's `symbol` column, not against the
+        pinned axis, and CRSP's raw `symbol` is the PERMNO in its STRING form
+        (`quantlab/acquisition/wrds_crsp.py:317-319`). `str(10107)` is exactly
+        `"10107"`, so the cast is what makes the `is_in` meet. Removing it
+        would make the probe find zero raw rows for every added PERMNO and
+        steer the widen-vs-rebuild resolver to `widen`, backfilling NaN over
+        history the vendor already has.
         """
         wanted = [str(symbol) for symbol in added]
         if not wanted:

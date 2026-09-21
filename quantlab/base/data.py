@@ -20,6 +20,7 @@ from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.dataset.backend import XrBackend
 from quantlab.dataset.cleaning import clean_market_data
 from quantlab.enums.constant import Date
+from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
 
@@ -318,12 +319,26 @@ class BaseDataset(ABC):
         self.data_backend.to_internal(data)  # type: ignore
         return self
 
-    def _raw_axes_in_range(self) -> tuple[list[str], "pd.DatetimeIndex"]:
+    def _raw_axes_in_range(self) -> tuple[list, "pd.DatetimeIndex"]:
         """Return `(pinned_symbols, observed_timestamps)` for the config's
         whole date range, from ONE scan of the raw source.
+
+        One of THREE places the pinned symbol axis is decided -- the others
+        being `StockDataset._raw_axes_in_range` and
+        `CrspDataset._raw_axes_in_range`. Its ORDER comes from
+        `quantlab/utils/symbol_axis.py:sort_symbol_axis`, which is where that
+        contract is stated and argued; do not restate it here. Its element
+        TYPE is the raw panel's own (03.11-04): an unconditional `str()` here
+        was handed straight back to `_raw_data_to_xr_window`'s `reindex`,
+        which matches nothing against an int64 coordinate and densifies a
+        whole window of NaN without raising.
+
+        This site did not sort at all before -- it leaned on whatever
+        `_raw_data_to_xr()` happened to produce. Sorting explicitly is what
+        makes all three sites answer the same question the same way.
         """
         data = self._raw_data_to_xr()
-        symbols = [str(symbol) for symbol in data["symbol"].values.tolist()]
+        symbols = sort_symbol_axis(data["symbol"].values.tolist())
         return symbols, pd.DatetimeIndex(data["timestamp"].values)
 
     def _raw_data_to_xr_window(
@@ -794,6 +809,23 @@ class BaseDataset(ABC):
         Opened the way `ChunkLedger._store_tail` opens it -- lazily, coordinate
         only, closed in a `finally`. Reading the data variables to answer an
         axis question would defeat the whole point of chunking.
+
+        **The labels come back in the store's OWN spelling** (03.11-04). This
+        method answers "what IS the store's axis", and rendering the answer as
+        text is not a formatting choice -- it is a type decision taken on the
+        caller's behalf, and the caller cannot see it was taken. The one
+        caller, `_reconcile_new_listings`, subtracts this list from the pinned
+        whole-range axis: against an int64 PERMNO store the stringified answer
+        put the two sides in different alphabets, so `added` became the ENTIRE
+        pinned axis and `removed` the ENTIRE stored one, at the same time.
+        Downstream that is either an `on_new_listing="refuse"` halt for a
+        reason that is not true, or a `"widen"` handed a target axis that is
+        not a superset of the stored one -- the exact input
+        `XrBackend.widen_symbol_axis` used to answer by silently emptying the
+        store (fixed in 03.11-02, which now refuses it instead).
+
+        On a ticker axis `.tolist()` already yields `str`, so this is
+        byte-for-byte what the old spelling produced.
         """
         if not Path(store_path).exists():
             return None
@@ -801,7 +833,7 @@ class BaseDataset(ABC):
         try:
             if dim not in store.coords:
                 return None
-            return [str(label) for label in store[dim].values.tolist()]
+            return list(store[dim].values.tolist())
         finally:
             store.close()
 
@@ -831,6 +863,21 @@ class BaseDataset(ABC):
         """Which of `added` already carry raw rows in the CLOSED window
         `[start, end]`, and how many -- the EVIDENCE `update()` resolves the
         widen-vs-rebuild choice from.
+
+        **The `str()` below is DELIBERATE and must stay** (03.11-04). It looks
+        like the sibling strong-cast removed from `_stored_symbol_axis`, and it
+        is not: that one compared against the PINNED axis (int64 on a PERMNO
+        panel), this one compares against the RAW tier's `symbol` column, and
+        CRSP's raw `symbol` is the PERMNO in its STRING form -- see
+        `quantlab/acquisition/wrds_crsp.py:317-319`, which writes it that way
+        and which D-11 forbids this phase from touching. `str(10107)` is
+        exactly `"10107"`, so the cast is what makes the two sides meet.
+        Removing it would make the probe find zero raw rows for every added
+        PERMNO, and the widen-vs-rebuild resolver would silently choose
+        `widen` -- backfilling NaN over history the vendor already has.
+
+        Written down because this is a place that LOOKS like it should change
+        and must not; the next person through would otherwise fix it.
         """
         wanted = [str(symbol) for symbol in added]
         if not wanted:
