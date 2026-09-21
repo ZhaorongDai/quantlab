@@ -965,7 +965,7 @@ class CrspStockDataset(StockDataset):
         if not self._security_filter:
             self._filter_report = self._build_filter_report(
                 rows_total, derived.head(0), derived.head(0),
-                self._roster_sources(),
+                self._roster_sources(), kept=derived,
             )
             return derived
 
@@ -1009,7 +1009,8 @@ class CrspStockDataset(StockDataset):
         )
         dropped = derived.filter(~pl.col("_keep"))
         self._filter_report = self._build_filter_report(
-            rows_total, dropped, rescued, sources
+            rows_total, dropped, rescued, sources,
+            kept=derived.filter(pl.col("_keep")),
         )
         if dropped.height:
             logger.warning(
@@ -1055,6 +1056,7 @@ class CrspStockDataset(StockDataset):
         dropped: pl.DataFrame,
         rescued: pl.DataFrame | None = None,
         sources: list[str] | tuple[str, ...] = (),
+        kept: pl.DataFrame | None = None,
     ) -> dict:
         """The `{zarr}.crsp_filter_report.json` payload.
 
@@ -1064,6 +1066,15 @@ class CrspStockDataset(StockDataset):
         presence alone -- omitting it would make a store written before GAP-C was
         closed indistinguishable from one written after it with nothing rescued,
         and those two need different actions.
+
+        **`admitted_without_ticker` follows the same rule, and for the same
+        reason** (D-14 / RULING 1). It is always written, empty or not, so that
+        "nobody was admitted without a ticker" and "this store predates the
+        count" stay distinguishable. It is the only place the panel says out
+        loud that the PERMNO axis widened the admission rule, so the WARNING
+        beside it fires here rather than at a call site -- both branches of
+        `_apply_security_filter` reach this method exactly once per conversion,
+        and neither of them could emit it without duplicating the other.
 
         Every pre-existing key keeps its pre-existing meaning: a rescued row is
         counted in `rows_kept` (it IS kept) and appears in neither
@@ -1088,7 +1099,9 @@ class CrspStockDataset(StockDataset):
                 "rows_rescued": 0 if rescued is None else int(rescued.height),
                 "permnos": {},
             },
+            "admitted_without_ticker": self._admitted_without_ticker(kept),
         }
+        self._warn_admitted_without_ticker(report["admitted_without_ticker"])
         if rescued is not None and not rescued.is_empty():
             report["roster_overrides"]["permnos"] = self._permno_breakdown(
                 rescued
@@ -1109,6 +1122,109 @@ class CrspStockDataset(StockDataset):
 
         report["dropped_permnos"] = self._permno_breakdown(dropped)
         return report
+
+    def _admitted_without_ticker(self, kept: pl.DataFrame | None) -> dict:
+        """Which admitted PERMNOs could NOT have entered a ticker-keyed panel.
+
+        `{"permnos": [...numeric order...], "rows": N}` (D-14 / RULING 1).
+
+        **The predicate is `label_rows`' own, reproduced exactly**, because the
+        question is counterfactual: "would the ticker axis have admitted this
+        row". `CrspSymbology.label_rows` as-of joined each row's date onto
+        `symbol_intervals().drop_nulls("symbol")` and DROPPED whatever it could
+        not label, so a PERMNO none of whose panel days falls inside an
+        interval that CARRIES a ticker is one the old axis never let in. Using
+        the full interval table instead (nulls included) would answer a
+        different question and count nobody: a never-ticker PERMNO does have
+        intervals, they just have no name on them.
+
+        A PERMNO is counted only when NONE of its panel days is covered.
+        Partial coverage is not this field's subject -- a security that had a
+        ticker for part of the window was admitted for that part on either
+        axis, and the rows the ticker axis would have dropped mid-history are
+        the `unlabelled` count that goes away with symbology in plan 07.
+
+        **What this is NOT.** It is not a filter. Nothing is excluded here, and
+        `FILTERABLE_COLUMNS` stays at its nine TYPE columns. D-10 originally
+        asked for an explicit `securitytype`/`sharetype` predicate to replace
+        the implicit "must have a ticker" rule; RESEARCH R5c measured that
+        1,003 of the 1,012 never-ticker PERMNOs read `EQTY/COM/NS` -- the
+        ordinary-common-stock combination -- so no type predicate can separate
+        them from real common stock. RULING 1: admit them, and count them.
+        """
+        empty: dict = {"permnos": [], "rows": 0}
+        if kept is None or kept.is_empty() or self._symbology is None:
+            return empty
+
+        intervals = self._symbology.symbol_intervals().drop_nulls("symbol")
+        rows = (
+            kept.select("permno", "timestamp")
+            .with_columns(pl.col("timestamp").dt.date().alias("_as_of"))
+            .sort(["permno", "_as_of"])
+        )
+        if intervals.is_empty():
+            # No named interval anywhere: every admitted PERMNO is one the
+            # ticker axis would have dropped entirely.
+            per_permno = rows.group_by("permno").agg(pl.len().alias("rows"))
+            return self._render_admitted_without_ticker(per_permno)
+
+        labelled = rows.join_asof(
+            intervals.select("permno", "symbol", "start_date", "end_date").sort(
+                ["permno", "start_date"]
+            ),
+            left_on="_as_of",
+            right_on="start_date",
+            by="permno",
+            strategy="backward",
+        )
+        # A backward as-of join alone attaches the last interval to every later
+        # row; the END is what says the row is actually inside it. Same two
+        # steps, same order, as `label_rows`.
+        labelled = labelled.with_columns(
+            pl.when(
+                pl.col("end_date").is_not_null()
+                & (pl.col("_as_of") > pl.col("end_date"))
+            )
+            .then(None)
+            .otherwise(pl.col("symbol"))
+            .alias("symbol")
+        )
+        per_permno = labelled.group_by("permno").agg(
+            pl.col("symbol").is_not_null().any().alias("_ever_labelled"),
+            pl.len().alias("rows"),
+        )
+        return self._render_admitted_without_ticker(
+            per_permno.filter(~pl.col("_ever_labelled"))
+        )
+
+    @staticmethod
+    def _render_admitted_without_ticker(per_permno: pl.DataFrame) -> dict:
+        """`{"permnos": [...], "rows": N}` from a `(permno, rows)` frame."""
+        if per_permno.is_empty():
+            return {"permnos": [], "rows": 0}
+        permnos = sort_symbol_axis(
+            int(value) for value in per_permno.get_column("permno").to_list()
+        )
+        return {
+            "permnos": permnos,
+            "rows": int(per_permno.get_column("rows").sum()),
+        }
+
+    def _warn_admitted_without_ticker(self, admitted: dict) -> None:
+        """Say out loud that the admission rule widened, when it did."""
+        if not admitted["permnos"]:
+            return
+        logger.warning(
+            f"{self.class_name}: {len(admitted['permnos'])} PERMNO(s) "
+            f"({admitted['rows']} row(s)) were ADMITTED to the panel with no "
+            f"ticker on any of their days. On the old ticker axis these "
+            f"securities could never enter a panel at all -- a row with no "
+            f"symbol had no column to live in -- so this is a widening of the "
+            f"ADMISSION RULE (D-14), not a filter that stopped working. The "
+            f"security filter's verdict is unchanged for every one of them. "
+            f"See {FILTER_REPORT_SUFFIX} beside the store, key "
+            f"'admitted_without_ticker', for the PERMNO list."
+        )
 
     def _permno_breakdown(self, frame: pl.DataFrame) -> dict:
         """`{PERMNO: {symbol, types, rows, first, last}}` for a set of rows.
