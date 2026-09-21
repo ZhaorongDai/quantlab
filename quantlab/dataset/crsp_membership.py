@@ -11,16 +11,23 @@ Wikipedia change log:
   PERMNOs through the CRSP/Compustat Merged link table
   `crsp_a_ccm.ccmxpf_lnkhist` (D-14).
 
-**Keyed by PERMNO, deliberately.** A universe answered in tickers has to be
-re-answered every time a security is renamed, and the rename is exactly where
-a membership panel and a price panel stop agreeing (the standing `no ticker
-rename mapping between membership history and prices` todo). The PERMNO does
-not change on a rename, so the roster the CLI pulls and the collision
-tie-break plan 08 applies both work in an identifier that is stable across the
-event. `symbol_intervals()` then maps those PERMNO intervals onto
-`CrspSymbology`'s symbol intervals for the PANEL side, where period-correct
-tickers are what a mask needs -- through the same symbology instance the price
-panel labels its rows with, so the two can never spell one security two ways.
+**Keyed by PERMNO, and that is now the ONLY key.** A universe answered in
+tickers has to be re-answered every time a security is renamed, and the rename
+is exactly where a membership panel and a price panel stop agreeing. The
+PERMNO does not change on a rename, so the roster the CLI pulls and the
+intervals a constituent panel densifies are both in an identifier that is
+stable across the event.
+
+This module used to carry a second, ticker-keyed answer -- `symbol_intervals()`
+-- which mapped these PERMNO intervals onto the ticker intervals
+`quantlab/dataset/crsp_symbology.py` derives, because the price panel's columns
+were tickers at the time. Since
+03.11-03 the price panel's `symbol` IS the int64 PERMNO, so that branch became
+a way to build a universe that intersects a price panel to NOTHING, and an
+empty universe reads downstream as "no positions" rather than as an error. It
+was deleted in 03.11-05 rather than deprecated:
+`quantlab/dataset/constituent.py` renames the `permno` column to `symbol` and
+hands the frame to `_densify` unchanged.
 
 **Intervals are CLOSED on both ends, and the end is ALWAYS explicit.** Closed
 matches `IndexConstituentDataset`'s convention verbatim
@@ -38,10 +45,11 @@ an AST scan, its categories are Tiingo/Wikipedia-shaped (tickers, exchange
 filters), and this one is a dataset-layer reader over parquet. Adding a
 category would have coupled two vocabularies for no gain.
 
-**A LEAF module.** polars, loguru, stdlib, `crsp_reference` and
-`crsp_symbology` only -- no psycopg2, no acquisition import. Both of those
-dataset-layer siblings are themselves leaves, so the universes still resolve
-on a machine with no WRDS credential and no database driver.
+**A LEAF module.** polars, loguru, stdlib and `crsp_reference` only -- no
+psycopg2, no acquisition import, and since 03.11-05 no `crsp_symbology` either
+(it was imported for the deleted ticker branch alone). That sibling is itself a
+leaf, so the universes still resolve on a machine with no WRDS credential and
+no database driver.
 """
 
 from __future__ import annotations
@@ -52,18 +60,16 @@ import polars as pl
 from loguru import logger
 
 from quantlab.dataset.crsp_reference import CrspReference
-from quantlab.dataset.crsp_symbology import CrspSymbology
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 _ONE_DAY = timedelta(days=1)
 
-#: What an interval list is keyed by. `permno_intervals` merges by PERMNO
-#: (`int`); `symbol_intervals` merges the SAME way by ticker (`str`), and the
-#: merge rule -- overlapping or touching pieces of one key become one
-#: membership -- is identical for both. One function, two key types, rather
-#: than two copies of the boundary arithmetic this module can be silently
-#: wrong in.
-_Key = int | str
+#: What an interval list is keyed by: a PERMNO, and nothing else. It was
+#: `int | str` while `symbol_intervals()` merged the SAME way by ticker, so the
+#: boundary arithmetic below could be written once for both; on the PERMNO axis
+#: there is only one kind of key, and a union type would advertise a choice
+#: that no longer exists.
+_Key = int
 
 #: How many unlinked spells the refusal lists before summarising the rest.
 #: A full listing of a systematically broken link table would bury the remedy
@@ -126,9 +132,7 @@ class CrspMembership:
     Holds no connection: `reference` is a `CrspReference`, i.e. parquet on
     disk. Every public method reports what it excluded through `self.report`,
     which describes the MOST RECENT `permno_intervals()` call -- the six keys
-    below are reset on entry, and any key another method owns
-    (`symbol_intervals`' `unlabelled_members`) survives, because that method
-    calls `permno_intervals` first and then resets its own key.
+    below are reset on entry.
     """
 
     #: CRSP's own S&P 500 membership (D-05).
@@ -207,106 +211,6 @@ class CrspMembership:
         else:
             pieces = self._nasdaq100_pieces(allow_unlinked=allow_unlinked)
         return self._frame(_merge_intervals(pieces))
-
-    def symbol_intervals(
-        self, index: str, *, allow_unlinked: bool = False
-    ) -> pl.DataFrame:
-        """`(symbol String, start_date Date, end_date Date)`, sorted.
-
-        The same point-in-time membership `permno_intervals` answers, said in
-        the PRICE PANEL'S OWN TICKERS -- which is what a universe mask needs,
-        because a mask is applied to a panel by symbol. A mask naming `FB` on
-        a day the panel calls that column `META` selects nothing, and an empty
-        selection is indistinguishable from a universe that really held
-        nothing.
-
-        **The symbols come from `CrspSymbology`, the one rule the price panel
-        uses.** Not a second spelling of the same idea: `CrspStockDataset`
-        labels `dsf_v2` rows with `CrspSymbology(...).label_rows()`, and this
-        method intersects the SAME `symbol_intervals()` with the membership
-        windows. If the two derived symbols separately they could disagree at
-        exactly the events that matter -- renames and share classes -- and
-        nothing at runtime would notice.
-
-        **No `overrides`.** `symbol_overrides` (D-15) is a PRICE-STORE option:
-        it pins one PERMNO to one symbol for a particular conversion. A
-        universe is a fact about an index, not about a store, so it is
-        answered in CRSP's own period-correct tickers. A caller pinning QQQ in
-        its panel and reading a universe here gets the panel's `QQQ` column
-        either way, because the override only ever COLLAPSES a rename.
-
-        **A ticker held by two PERMNOs in turn is ONE membership.** Alphabet's
-        `GOOG` passed from PERMNO 90319 to 14542 on 2014-04-03, with no day
-        between; on the symbol axis those two halves touch and merge, so the
-        universe reads one continuous `GOOG` membership. The handover is not
-        lost -- the PRICE panel marks it, because `permno` is a variable on
-        the panel and it changes across that seam (D-18).
-
-        Membership days that no interval can label -- a PERMNO with no ticker
-        over part of its membership -- are DROPPED and recorded, per uncovered
-        range, in `report["unlabelled_members"]`. They cannot enter a
-        symbol-keyed panel at all (there is no column for them), but dropping
-        them silently would read downstream as "not a member", which is a
-        different and unfalsifiable claim.
-
-        Every `end_date` is explicit and no later than
-        `CrspReference.product_end`, inherited from `permno_intervals`: a null
-        end would make `IndexConstituentDataset._densify` extend the panel to
-        WALL-CLOCK today, months past the CRSP price coverage that bounds it.
-        """
-        members = self.permno_intervals(index, allow_unlinked=allow_unlinked)
-        # `_reset_report` owns the six `permno_intervals` keys only, so this
-        # one is reset HERE -- after that call, or it would be wiped by it.
-        self.report["unlabelled_members"] = []
-
-        by_permno: dict[int, list[dict]] = {}
-        symbology = CrspSymbology(self.reference.table("stksecurityinfohist"))
-        for record in symbology.symbol_intervals().to_dicts():
-            by_permno.setdefault(int(record["permno"]), []).append(record)
-
-        pieces: list[tuple[_Key, date, date]] = []
-        unlabelled: list[dict] = []
-        for member in members.to_dicts():
-            permno = int(member["permno"])
-            start, end = member["start_date"], member["end_date"]
-            covered: list[tuple[date, date]] = []
-            for interval in by_permno.get(permno, []):
-                symbol = interval["symbol"]
-                interval_start = interval["start_date"]
-                if symbol is None or interval_start is None:
-                    # A null symbol is a PERMNO's first interval with no
-                    # ticker at all, and a null start cannot be placed on a
-                    # calendar. Neither COVERS anything, so both fall through
-                    # to the uncovered pass below and are reported there
-                    # rather than dropped here without a trace.
-                    continue
-                interval_end = interval["end_date"]
-                piece_start = max(start, interval_start)
-                # A null interval end is OPEN, so it reaches the membership's
-                # own end -- which is itself explicit and product-bounded.
-                piece_end = end if interval_end is None else min(end, interval_end)
-                if piece_start <= piece_end:
-                    pieces.append((str(symbol), piece_start, piece_end))
-                    covered.append((piece_start, piece_end))
-            for gap_start, gap_end in _uncovered(start, end, covered):
-                unlabelled.append(
-                    {
-                        "permno": permno,
-                        "start": str(gap_start),
-                        "end": str(gap_end),
-                    }
-                )
-
-        if unlabelled:
-            self.report["unlabelled_members"] = unlabelled
-            logger.warning(
-                f"{type(self).__name__}: {len(unlabelled)} unlabelled "
-                f"membership range(s) in {index!r} have no CRSP ticker and "
-                f"were dropped from the symbol-level universe; see "
-                f"report['unlabelled_members'] for the per-PERMNO windows."
-            )
-
-        return self._symbol_frame(_merge_intervals(pieces))
 
     def permnos_in_range(
         self,
@@ -628,27 +532,6 @@ class CrspMembership:
         )
 
     # -- shared --------------------------------------------------------------
-
-    @staticmethod
-    def _symbol_frame(intervals: list[tuple[_Key, date, date]]) -> pl.DataFrame:
-        """`symbol_intervals`' frame shape, typed even when it is empty.
-
-        The column names are `IndexConstituentDataset._densify`'s own input
-        contract -- `(symbol, start_date, end_date)` -- so a
-        `_build_intervals()` hook can return this frame unchanged.
-        """
-        return pl.DataFrame(
-            {
-                "symbol": [str(symbol) for symbol, _, _ in intervals],
-                "start_date": [start for _, start, _ in intervals],
-                "end_date": [end for _, _, end in intervals],
-            },
-            schema={
-                "symbol": pl.String,
-                "start_date": pl.Date,
-                "end_date": pl.Date,
-            },
-        )
 
     @staticmethod
     def _frame(intervals: list[tuple[int, date, date]]) -> pl.DataFrame:
