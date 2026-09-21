@@ -238,7 +238,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 3/11 plans executed
+**Plans:** 6/11 plans executed
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
@@ -271,9 +271,9 @@ Plans:
 
 **Wave 3** *(blocked on 03)*
 
-- [ ] 03.11-04-PLAN.md — checkpoint 符号契约三端同步 + `_stored_symbol_axis` 不再强转（本次新发现的破坏点）+ 三个钉轴点统一数值序
-- [ ] 03.11-05-PLAN.md — `_build_intervals` 换 `permno_intervals()`、`base/constituent._densify` 三处强转、`UniverseMask` 三处强转；验收写 dtype+序
-- [ ] 03.11-06-PLAN.md — `universe_filter.py` 只删条件 (a)（十一个位置），(b)(c) 与图改写机制保留；`_mask_panel` 永不删列的红利断言（D-22）
+- [x] 03.11-04-PLAN.md — checkpoint 符号契约三端同步 + `_stored_symbol_axis` 不再强转（本次新发现的破坏点）+ 三个钉轴点统一数值序
+- [x] 03.11-05-PLAN.md — `_build_intervals` 换 `permno_intervals()`、`base/constituent._densify` 三处强转、`UniverseMask` 三处强转；验收写 dtype+序
+- [x] 03.11-06-PLAN.md — `universe_filter.py` 只删条件 (a)（十一个位置），(b)(c) 与图改写机制保留；`_mask_panel` 永不删列的红利断言（D-22）
 
 **Wave 4** *(blocked on 03, 04, 05, 06)*
 
