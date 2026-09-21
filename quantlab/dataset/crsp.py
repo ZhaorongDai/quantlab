@@ -490,8 +490,7 @@ class CrspStockDataset(StockDataset):
 
         reference = CrspReference(self.config.reference_dir)
         self._symbology = CrspSymbology(
-            reference.table("stksecurityinfohist"),
-            self.config.symbol_overrides,
+            reference.table("stksecurityinfohist")
         )
         # The panel's `symbol` IS the PERMNO (D-01), and the raw frame's
         # `symbol` column ALREADY holds it -- `wrds_crsp.py:317-319` verbatim:
