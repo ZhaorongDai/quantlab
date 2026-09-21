@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 21
+open_count: 24
 waived_count: 0
 fixed_count: 3
-total_count: 24
-last_updated: 2026-09-21T05:57:52.914Z
+total_count: 27
+last_updated: 2026-09-21T07:19:42.728Z
 ---
 
 # Broken Windows Ledger
@@ -39,6 +39,9 @@ last_updated: 2026-09-21T05:57:52.914Z
 | 22 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | 4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08. | open |  | 2026-09-21T04:00:30.770Z |  |
 | 23 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited. | open |  | 2026-09-21T04:37:01.261Z |  |
 | 24 | 03.11 | deviation | tests/test_no_identity_residue.py |  | strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07 | open |  | 2026-09-21T05:57:52.914Z |  |
+| 25 | 03.11 | deviation | example/wrds_crsp.md | 364 | 03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited. | open |  | 2026-09-21T07:19:31.356Z |  |
+| 26 | 03.11 | deviation | example/backtest.md | 227 | 03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass. | open |  | 2026-09-21T07:19:36.837Z |  |
+| 27 | 03.11 | deviation | example/constituent.md | 468 | 03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass. | open |  | 2026-09-21T07:19:42.728Z |  |
 
 ````json
 [
@@ -328,6 +331,42 @@ last_updated: 2026-09-21T05:57:52.914Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-21T05:57:52.914Z",
+    "resolved_at": null
+  },
+  {
+    "id": 25,
+    "kind": "deviation",
+    "phase": "03.11",
+    "file": "example/wrds_crsp.md",
+    "line": 364,
+    "description": "03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-21T07:19:31.356Z",
+    "resolved_at": null
+  },
+  {
+    "id": 26,
+    "kind": "deviation",
+    "phase": "03.11",
+    "file": "example/backtest.md",
+    "line": 227,
+    "description": "03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-21T07:19:36.837Z",
+    "resolved_at": null
+  },
+  {
+    "id": 27,
+    "kind": "deviation",
+    "phase": "03.11",
+    "file": "example/constituent.md",
+    "line": 468,
+    "description": "03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-21T07:19:42.728Z",
     "resolved_at": null
   }
 ]
