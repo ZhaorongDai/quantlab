@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 22
+open_count: 21
 waived_count: 0
-fixed_count: 6
+fixed_count: 7
 total_count: 28
-last_updated: 2026-09-21T07:53:54.380Z
+last_updated: 2026-09-21T10:55:47.471Z
 ---
 
 # Broken Windows Ledger
@@ -42,7 +42,7 @@ last_updated: 2026-09-21T07:53:54.380Z
 | 25 | 03.11 | deviation | example/wrds_crsp.md | 364 | 03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited. | fixed |  | 2026-09-21T07:19:31.356Z | 2026-09-21T07:53:48.709Z |
 | 26 | 03.11 | deviation | example/backtest.md | 227 | 03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass. | fixed |  | 2026-09-21T07:19:36.837Z | 2026-09-21T07:53:54.261Z |
 | 27 | 03.11 | deviation | example/constituent.md | 468 | 03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass. | fixed |  | 2026-09-21T07:19:42.728Z | 2026-09-21T07:53:54.380Z |
-| 28 | 03.11 | deviation | data/data/us_equity/1d/wrds_crsp_custom_1d.zarr |  | The custom CRSP store is still a ticker-axis panel written 2026-09-20 by pre-migration code, and its stale .crsp_symbology_report.json sidecar survives beside it. Plan 03.11-10's D-15 scope was sp500/2024 only, and rebuilding custom needs a window/roster this phase never specified. data/ is gitignored, so this blocks nothing in git -- but any read of that store returns a panel the current tree cannot reproduce. | open |  | 2026-09-21T07:53:10.814Z |  |
+| 28 | 03.11 | deviation | data/data/us_equity/1d/wrds_crsp_custom_1d.zarr |  | The custom CRSP store is still a ticker-axis panel written 2026-09-20 by pre-migration code, and its stale .crsp_symbology_report.json sidecar survives beside it. Plan 03.11-10's D-15 scope was sp500/2024 only, and rebuilding custom needs a window/roster this phase never specified. data/ is gitignored, so this blocks nothing in git -- but any read of that store returns a panel the current tree cannot reproduce. | fixed | Operator 裁定删除（03.11-11 Task 2 checkpoint）。编排器已在主仓库工作树备份至 data/_backup_deleted_custom_store_03.11/（784K，zarr 本体 + 四个 sidecar，含 58,846 B 的 .crsp_symbology_report.json），随后删除 wrds_crsp_custom_1d.zarr 及其 .chunks.json / .crsp_adjustment.json / .crsp_filter_report.json / .crsp_symbology_report.json。删除后实测 1d/ 目录内 crsp_symbology_report 命中数为 0，symbology 旁车归零；这顺带关闭了 plan 03.11-10 记录的那条返回 1 的未满足验收条件。 | 2026-09-21T07:53:10.814Z | 2026-09-21T10:55:47.471Z |
 
 ````json
 [
@@ -377,10 +377,10 @@ last_updated: 2026-09-21T07:53:54.380Z
     "file": "data/data/us_equity/1d/wrds_crsp_custom_1d.zarr",
     "line": null,
     "description": "The custom CRSP store is still a ticker-axis panel written 2026-09-20 by pre-migration code, and its stale .crsp_symbology_report.json sidecar survives beside it. Plan 03.11-10's D-15 scope was sp500/2024 only, and rebuilding custom needs a window/roster this phase never specified. data/ is gitignored, so this blocks nothing in git -- but any read of that store returns a panel the current tree cannot reproduce.",
-    "status": "open",
-    "reason": "",
+    "status": "fixed",
+    "reason": "Operator 裁定删除（03.11-11 Task 2 checkpoint）。编排器已在主仓库工作树备份至 data/_backup_deleted_custom_store_03.11/（784K，zarr 本体 + 四个 sidecar，含 58,846 B 的 .crsp_symbology_report.json），随后删除 wrds_crsp_custom_1d.zarr 及其 .chunks.json / .crsp_adjustment.json / .crsp_filter_report.json / .crsp_symbology_report.json。删除后实测 1d/ 目录内 crsp_symbology_report 命中数为 0，symbology 旁车归零；这顺带关闭了 plan 03.11-10 记录的那条返回 1 的未满足验收条件。",
     "recorded_at": "2026-09-21T07:53:10.814Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T10:55:47.471Z"
   }
 ]
 ````

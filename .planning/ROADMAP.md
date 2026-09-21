@@ -328,6 +328,15 @@ untouched by the eleven executed plans; the two vocabularies are joined here, no
 - Identifier: the panel `symbol` dimension stays the **ticker** valid at each date (matching the
   universes, factors and backtester); **PERMNO is kept as a data variable**, mapped via the CRSP
   ticker history. This also offers a fix for the pending "no ticker-rename mapping" todo.
+
+  **REVERSED by Phase 03.11** — the decision above is 03.10's own record and is left word-for-word;
+  it no longer describes the code. It is reversed on evidence measured only after 03.10 shipped: a
+  recycled ticker concatenates two companies into one column, and `resolve_collisions` detects
+  contention with `group_by(["timestamp","symbol"])` — same-day only — so in a 2000-2024 window
+  3,095 of 3,205 reused tickers (96.6%) are pure sequential succession it cannot see at all. The
+  panel `symbol` dimension is now the **int64 PERMNO**; `ticker` left the panel entirely and lives
+  in the `{zarr}.crsp_tickers.json` as-of sidecar. See **D-08** in
+  `.planning/phases/03.11-crsp-permno-symbol-axis-migration-and-tiingo-era-dead-code-r/03.11-CONTEXT.md`.
 - Role: **first** a drop-in replacement vendor for `us_equity` / `1d` (same variables as
   `StockDataset` — OHLCV + adjusted columns — so factors/models switch without changes, with
   CRSP-specific fields as extra variables); **later** (a follow-up phase) a standalone CRSP dataset
