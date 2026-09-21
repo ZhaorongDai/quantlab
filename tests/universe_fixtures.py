@@ -28,11 +28,6 @@ from quantlab.label.fret import Return
 
 from tests.backtest_fixtures import make_stock_dataset, write_price_store
 
-#: A never-in-universe ticker: five letters ending in `W` is the NASDAQ
-#: fifth-character warrant convention, so the STATIC ticker rule removes it in
-#: every window regardless of its price or volume.
-WARRANT = "JUNKW"
-
 #: RAW close below `min_price` on every bar, while its ADJUSTED close is the
 #: highest of the whole panel -- so an unfiltered cross-section ranks it first
 #: and an unfiltered backtest buys it. This is the `ZWZZT 0.007 -> 10.05` shape
@@ -57,11 +52,16 @@ REENTRY_OUT = (20, 30)
 
 #: The symbols that are NEVER in the universe, for any reason. Perturbing
 #: their data must not move any in-universe output.
-NEVER_IN_UNIVERSE = (WARRANT, PENNY, ILLIQUID)
+#:
+#: Both are threshold exclusions. There is no ticker-shaped member any more:
+#: condition (a) -- the nine static ticker regexes -- was deleted on
+#: 2026-09-21, so a warrant-shaped ticker is now an ordinary symbol to this
+#: class and the fixture no longer carries one.
+NEVER_IN_UNIVERSE = (PENNY, ILLIQUID)
 
-#: Twelve plain commons plus the four special symbols above. SIXTEEN, because
-#: KunQuant requires the symbol count to align with its SIMD block width -- on
-#: this aarch64 machine 16 works and 13 does not (see
+#: Thirteen plain commons plus the three special symbols above. SIXTEEN,
+#: because KunQuant requires the symbol count to align with its SIMD block
+#: width -- on this aarch64 machine 16 works and 13 does not (see
 #: `quantlab/my_ops/preprocess.py:CrossSectionalZScore` 坑 3).
 PLAIN_COMMONS = [
     "AAPL",
@@ -76,21 +76,21 @@ PLAIN_COMMONS = [
     "CSCO",
     "QCOM",
     "TXN",
+    "AMD",
 ]
-SYMBOLS16 = PLAIN_COMMONS + [WARRANT, PENNY, ILLIQUID, DROPOUT]
+SYMBOLS16 = PLAIN_COMMONS + [PENNY, ILLIQUID, DROPOUT]
 
 #: The universe thresholds every fixture and test below is written against.
 MIN_PRICE = 5.0
 MIN_DOLLAR_VOLUME = 1_000_000.0
 
-#: Adjusted-close levels for the three symbols whose ADJUSTED series must be
+#: Adjusted-close levels for the two symbols whose ADJUSTED series must be
 #: high enough that an UNFILTERED ranking prefers them. The ordering matters:
-#: the penny name outranks everything, the drop-out outranks every common, and
-#: the warrant is wild -- so any test that still selects them is reading the
-#: adjusted column where it should be reading the raw one.
+#: the penny name outranks everything and the drop-out outranks every common,
+#: so any test that still selects them is reading the adjusted column where it
+#: should be reading the raw one.
 PENNY_ADJ_CLOSE = 900.0
 DROPOUT_ADJ_CLOSE = 700.0
-WARRANT_ADJ_CLOSE = 1000.0
 
 FIRST_BAR = "2024-01-01"
 
@@ -117,11 +117,11 @@ def write_universe_store(
     seed: int = 0,
     perturb_never_in_universe: float = 1.0,
 ) -> DatasetConfig:
-    """Write a Tiingo-shaped store with junk/penny/illiquid/drop-out symbols.
+    """Write a Tiingo-shaped store with penny/illiquid/drop-out symbols.
 
     Builds on `tests.backtest_fixtures.write_price_store`, which already emits
     both the adjusted group and a RAW group at 1.7x the adjusted one, then
-    overwrites the RAW `close`/`volume` (and the adjusted close) of the four
+    overwrites the RAW `close`/`volume` (and the adjusted close) of the three
     special symbols. The adjusted and raw groups are deliberately INCONSISTENT
     for those symbols: the mask reads raw, the factor reads adjusted, so a
     raw-vs-adjusted mix-up in either direction flips results rather than
@@ -163,10 +163,6 @@ def write_universe_store(
     # The illiquid name: ordinary price, RAW dollar volume 85.0 * 100 = 8,500,
     # far under min_dollar_volume.
     put("volume", ILLIQUID, 100.0)
-
-    # The warrant: perfectly tradeable on price and volume, wild adjusted
-    # close. Only the STATIC ticker rule removes it.
-    put("adjClose", WARRANT, WARRANT_ADJ_CLOSE)
 
     # The drop-out: in the universe until `drop_bar`, RAW close 1.0 from there
     # on, ADJUSTED close the highest among the commons throughout.
@@ -233,13 +229,15 @@ def pandas_universe_mask(
     window: int = 5,
     min_price: float = MIN_PRICE,
     min_dollar_volume: float = MIN_DOLLAR_VOLUME,
-    exclude_non_common: bool = True,
 ) -> pd.DataFrame:
     """The universe mask recomputed INDEPENDENTLY with pandas.
 
     Deliberately not a call into `UniverseFilteredFactor`: it is the reference
     the implementation is checked against, so it restates LS-1 from the store
     rather than sharing code with the thing under test. `True` means in.
+
+    Two conditions, not three: condition (a) -- the static ticker regexes --
+    was deleted on 2026-09-21, so the mask is purely price and liquidity.
     """
     panel = xr.open_dataset(Path(dataset_config.zarr_file_path)).load()
     panel.close()
@@ -248,12 +246,7 @@ def pandas_universe_mask(
 
     dollar = close * volume
     average = dollar.rolling(window, min_periods=window).mean()
-    in_universe = (close >= min_price) & (average >= min_dollar_volume)
-    if exclude_non_common:
-        for symbol in in_universe.columns:
-            if not UniverseFilteredFactor.is_common_ticker(str(symbol)):
-                in_universe[symbol] = False
-    return in_universe
+    return (close >= min_price) & (average >= min_dollar_volume)
 
 
 class RankCloseFactor(FactorKunQuant):

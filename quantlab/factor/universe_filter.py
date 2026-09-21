@@ -11,10 +11,14 @@
 `ZWZZT` 0.007 -> 10.05）——57 次强平里约 50 次是这类标的。用一个真实交易员会用的
 点时点规则过滤股票池，就能把它们同时从**截面**和**交易清单**里去掉。
 
+**证券类型这一半的职责，2026-09-21 起不再由本类承担**（见 LS-1 下方那段）：
+本类现在只做**价格与流动性**两条阈值，证券类型由数据采集侧的 CRSP
+`security_filter`（`equity_common`）按日期判定。两者叠加之后覆盖的是同一批垃圾
+标的，而且 CRSP 那一侧连正则排不掉的 ADR / ETF / CEF 也一并排除。
+
 锁定语义（LS-1..LS-5，用户已锁，不要重新讨论）：
 
 LS-1 股票池掩码，点时点。标的在 t 时刻在池内，当且仅当：
-  (a) 代码是普通股（一条与日期无关的静态规则）；
   (b) **原始** `close[t] >= min_price`（默认 5）；
   (c) 截至 t 的 `window` 根（默认 20）**原始** `close*volume` 均值
       `>= min_dollar_volume`（默认 1,000,000）；窗口不满即出池。
@@ -23,6 +27,16 @@ LS-1 股票池掩码，点时点。标的在 t 时刻在池内，当且仅当：
   掩码在池内为 1.0、出池为 NaN，铺在 `(timestamp, symbol)` 上。
   t 之后的任何一根 bar 都不会改变 t 时刻的掩码。
 
+  **原先还有一条 (a)「代码是普通股」的静态正则规则，2026-09-21 删除**（字母编号
+  刻意保留为 (b)(c)，这样引用这两条的文档和注释不必跟着改）。删而不是关的理由是
+  机制性的：那九条正则（`^[A-Z]{4}[WRU]$`、`^Z[A-Z]ZZT$`、`-(?:WD|WI|CL)$` …）
+  **全部要求字母**，而标的轴现在是 CRSP 的 int64 PERMNO，`"10107"` 这样的数字串
+  一条都不匹配——那条静态判定恒返回 True，整条过滤**无声地变成 no-op**，
+  却**看起来**在工作。它不是被取代，它是失效。职责由 CRSP 的 `security_filter`
+  （`equity_common`，`quantlab/dataset/crsp.py`）承接，而且更强：按**日期**判定、
+  带审计报告，且 CRSP 的类型词表里根本不存在 warrant / right / preferred /
+  test-code 的编码。详见 `example/universe.md`「为什么是删而不是关」。
+
 LS-2 截面算子只看池内标的，时序算子看完整历史。图改写：每个
   `CrossSectionalOp` 的每个输入 v 换成 `Div(v, universe_mask)`，掩码作为一个额外
   的图 `Input`，批量（`runGraph`）与流式（`StreamContext`）两条路都要喂。
@@ -30,12 +44,13 @@ LS-2 截面算子只看池内标的，时序算子看完整历史。图改写：
 
 LS-3 算完之后，因子输出**和标签**在掩码为 NaN 的位置置 NaN。标签来自**未过滤**的
   价格，且只看标签**自己那个时间戳 t** 的掩码，绝不看 t+h 的池状态。
-  标的轴（2026-09-15 用户决定，取代原先的「整窗 NaN 就删列」）：**只删**被静态
-  代码规则排除的标的（权证、单位、权利、测试代码），且在**每一个**窗口里都删；
-  仅仅因为价格或成交额阈值而整窗 NaN 的标的**保留**为 NaN 列。
-  为什么：按「整窗 NaN」删列会让标的轴依赖日期窗口，而
-  `DLModel._align_prediction_symbols` 在面板缺少训练过的标的时会直接报错。代码
-  规则与日期无关，所以它删掉的标的在任何窗口里都不存在，也就不可能被训练过。
+  标的轴：**永不删列**。任何窗口下 `_mask_panel` 输出的 symbol 轴与输入的逐元素
+  相等；整窗 NaN 的标的保留为 NaN 列。
+  为什么：删列会让标的轴依赖日期窗口，而 `DLModel._align_prediction_symbols`
+  在面板缺少训练过的标的时会直接报错。2026-09-15 的用户决定先把删列收窄到「只删
+  被静态代码规则排除的标的」，2026-09-21 条件 (a) 整体删除之后，连那一个删列的
+  出口也消失了——于是「符号轴与日期窗口无关」变成**平凡成立**，不再依赖任何
+  「代码规则与日期无关」的论证。
 
 LS-4 回测器不改，`price_dataset` 保持未过滤。掉出池的持仓拿到全 NaN 特征，
   `predict_panel` 于是给出 NaN 预测，下一个调仓日不再被选中，并在再下一根 bar 的
@@ -58,7 +73,6 @@ LS-5 已接受的代价：截面算子之上的时序算子（如 `correlation(r
 """
 
 import collections
-import re
 from typing import Self
 
 import KunQuant.runner.KunRunner as kr
@@ -69,10 +83,6 @@ from KunQuant.Op import Builder, CrossSectionalOp, Input, OpBase
 from KunQuant.ops import Div
 from KunQuant.Stage import Function
 
-from quantlab.acquisition.universe import (
-    _BABY_BOND_PATTERN,
-    _PREFERRED_SHARE_PATTERN,
-)
 from quantlab.base.factor import FactorKunQuant
 from quantlab.dataset.backend import XrBackend
 from quantlab.utils.module import load_factor_from_config
@@ -140,6 +150,12 @@ class UniverseFilteredFactor(FactorKunQuant):
     模型层与回测层写日期（`_reset_factors_config`、`_redate_factors`）、读
     `config.window`（预热按 bar 计数）、读 `config.kwargs["n_forward_periods"]`
     （样本内外划分）、读 `config.data_columns`（数据指纹）时，全部落到内层上。
+
+    **标的轴永不删列（2026-09-21 的红利）。** 条件 (a)（九条 ticker 正则）删除
+    之后，`_mask_panel` 里唯一一条会删列的分支随之消失，本类成为**纯阈值**过滤：
+    任意窗口、任意标的集合下，输出的 symbol 轴与输入逐元素相等，出池只表现为
+    NaN 格子。于是 LS-3 的「符号轴与日期窗口无关」变成平凡成立，
+    `DLModel._align_prediction_symbols` 少一个风险来源。
     """
 
     #: 掩码读的**原始**列名（LS-1）。绝不是 `adjClose` / `adjVolume`。
@@ -156,77 +172,12 @@ class UniverseFilteredFactor(FactorKunQuant):
     LOOKBACK_DAYS_PER_BAR = 2
     LOOKBACK_PAD_DAYS = 10
 
-    #: 非普通股代码规则（LS-1 的 (a)）。`(标签, 正则)` 对，对**大写**代码做
-    #: `re.search`。
-    #:
-    #: **测量**（2026-09-15，`data/data/reference/universe.parquet` 里
-    #: `category == "us_all"` 的 14,481 个不同代码）：
-    #:
-    #:     nasdaq_fifth_letter    2310   AACIW AACBR AACBU ABEOW ...
-    #:     six_char_warrant         13   AACTWS ACNDWS EONRWS GRAFWS ...
-    #:     delimited_suffix       1056   AAC-WS AAC-U ACP-R ACP-R-W ...
-    #:     when_issued_or_called    71   DD-WD JNJ-WD AED-CL DSXN-CL ...
-    #:     test_symbol_zzzt          7   ZAZZT ZBZZT ZCZZT ZJZZT ZVZZT ZWZZT ZXZZT
-    #:     test_symbol_xtest        72   ATEST-* CTEST-* MTEST-* NTEST-* PTEST-*
-    #:     test_symbol_zxyz          1   ZXYZ-A
-    #:     preferred_share           0   （us_all 采集期已剔除；nasdaq_all 建的库仍需要）
-    #:     baby_bond                 0   （同上，A4/D-02）
-    #:
-    #: 并集 3,519 / 14,481（24.3%），剩下 10,962 个普通股。
-    #:
-    #: **证伪一（机械）**：把每一组与 `sp500_constituent` + `nasdaq100_constituent`
-    #: 的 966 个不同代码求交——九组**全部为 0**。指数成分股必然是普通股，所以任何
-    #: 一个命中都会是一次错误排除。
-    #:
-    #: **证伪二（人工复核）**：2,310 个五字母命中里有 284 个在名单里找不到佐证
-    #: （没有 4 字母词根、没有同词根的其他 W/R/U、也没有 `ROOT-WS`/`-U`/`-R`
-    #: 兄弟），中位挂牌 1.9 年，其中 36 个 ≥ 5 年。逐个按 NASDAQ 第五字符约定
-    #: （R=权利、U=单位、W=认股权证）判读：**没有一个是普通股**，所以**不设**
-    #: `COMMON_TICKER_ALLOWLIST`。挂牌最久的那批恰好是「3 字符词根 + 双写后缀」
-    #: 这一形状，而上面那条佐证规则按 4 字符词根去找，结构上就看不见它们——
-    #: TMCWW/TMC、HTZWW/HTZ、VLYWW/VLY、XOSWW/XOS、RNWWW/RNW、SMXWW/SMX、
-    #: ZEOWW/ZEO、BNCWW/BNC、FGIWW/FGI、UHGWW/UHG、WGSWW/WGS、AUROW/AUR、
-    #: QSIAW/QSI，13 个短词根 13 个都在 us_all 里。其余（THWWW、GSMGW、CMPOW、
-    #: SBNYW、ETHZW、MCAGR、IMAQU…）的普通股已退市或被并购，不在 us_all 里，与
-    #: 「SPAC 权证/单位」完全吻合。
-    #:
-    #: 未被任何规则命中的带分隔符代码共 45 个，尾巴只有 6 种：`-A`(21)、`-B`(15)、
-    #: `-1`(3)、`-C`(3)、`-V`(2)、`-T`(1)——全是普通股或类别股，正是下面这段陷阱
-    #: 说的那批。
-    #:
-    #: **这条规则要避开的陷阱**：`BRK-A`、`BRK-B`、`BF-A`、`BF-B`、`HEI-A`、
-    #: `LEN-B`、`MOG-A`、`UA-C`、`MKC-V`、`CWEN-A`、`PBR-A` 都是**带连字符的普通
-    #: 股**，`GOOGL`、`CMCSA`、`RYAAY` 都是**五个字母的普通股**。只看「有连字符」
-    #: 或「五个字母」的规则会把伯克希尔从全市场名单里悄悄删掉。
-    NON_COMMON_TICKER_PATTERNS: tuple[tuple[str, str], ...] = (
-        # NASDAQ 第五字符约定：W=warrant, R=right, U=unit。只对**恰好五个字母**
-        # 生效，所以 4 字母的 ACIW / AAWW / ACHR / AMKR / ALTR 不受影响。
-        ("nasdaq_fifth_letter", r"^[A-Z]{4}[WRU]$"),
-        # 六字符权证：AACTWS、ACNDWS。
-        ("six_char_warrant", r"^[A-Z]{4}WS$"),
-        # 带分隔符的后缀：AAC-WS、AAC-U、ACP-R、ACP-R-W、FINS-R-W。
-        ("delimited_suffix", r"[-.](?:WS|WT|W|U|UN|R|RT)(?:[-.]|$)"),
-        # 已宣告/待发行：DD-WD、JNJ-WD、IAA-WI、SITC-WI、AED-CL。
-        ("when_issued_or_called", r"-(?:WD|WI|CL)$"),
-        # 交易所测试代码：ZWZZT / ZVZZT / ZXZZT。
-        ("test_symbol_zzzt", r"^Z[A-Z]ZZT$"),
-        # 测试代码家族：ATEST / CTEST / MTEST / NTEST / PTEST（可带后缀）。
-        ("test_symbol_xtest", r"^[A-Z]TEST(?:-|$)"),
-        ("test_symbol_zxyz", r"^ZXYZ(?:-|$)"),
-        # 优先股与小额债券。`us_all` 里已在采集期被剔除（计数 0），但按 A4/D-02，
-        # 用 `nasdaq_all` 建的库里仍然有，所以这两条必须在。单一真源：直接引用
-        # `quantlab/acquisition/universe.py` 的常量，不在这里抄一份。
-        ("preferred_share", _PREFERRED_SHARE_PATTERN),
-        ("baby_bond", _BABY_BOND_PATTERN),
-    )
-
     def __init__(
         self,
         factor: FactorKunQuant,
         min_price: float = 5.0,
         min_dollar_volume: float = 1_000_000.0,
         window: int = 20,
-        exclude_non_common: bool = True,
     ):
         if not isinstance(factor, FactorKunQuant):
             raise TypeError(
@@ -259,7 +210,6 @@ class UniverseFilteredFactor(FactorKunQuant):
         self.min_price = float(min_price)
         self.min_dollar_volume = float(min_dollar_volume)
         self.window = int(window)
-        self.exclude_non_common = bool(exclude_non_common)
 
         self.data_backend = XrBackend()
         self._stream_context: kr.StreamContext = None
@@ -279,8 +229,7 @@ class UniverseFilteredFactor(FactorKunQuant):
             f"UniverseFilteredFactor({self.factor!r}, "
             f"min_price={self.min_price}, "
             f"min_dollar_volume={self.min_dollar_volume}, "
-            f"window={self.window}, "
-            f"exclude_non_common={self.exclude_non_common})"
+            f"window={self.window})"
         )
 
     # ------------------------------------------------------------------
@@ -352,15 +301,6 @@ class UniverseFilteredFactor(FactorKunQuant):
     # 掩码本身（LS-1）
     # ------------------------------------------------------------------
 
-    @classmethod
-    def is_common_ticker(cls, symbol) -> bool:
-        """代码看起来是不是普通股（与日期无关的静态规则）。"""
-        ticker = str(symbol).upper()
-        return not any(
-            re.search(pattern, ticker)
-            for _, pattern in cls.NON_COMMON_TICKER_PATTERNS
-        )
-
     def compute_universe_mask(self, panel: xr.Dataset) -> xr.DataArray:
         """按 LS-1 从**原始** close/volume 算出 `(timestamp, symbol)` 掩码。
 
@@ -404,20 +344,6 @@ class UniverseFilteredFactor(FactorKunQuant):
         in_universe = (close >= self.min_price) & (
             average >= self.min_dollar_volume
         )
-
-        if self.exclude_non_common:
-            common = xr.DataArray(
-                np.array(
-                    [
-                        self.is_common_ticker(symbol)
-                        for symbol in panel["symbol"].values
-                    ],
-                    dtype=bool,
-                ),
-                dims=["symbol"],
-                coords={"symbol": panel["symbol"]},
-            )
-            in_universe = in_universe & common
 
         return xr.where(in_universe, 1.0, np.nan).rename(self.MASK_INPUT)
 
@@ -541,11 +467,6 @@ class UniverseFilteredFactor(FactorKunQuant):
         in_universe = (close >= self.min_price) & (
             average >= self.min_dollar_volume
         )
-        if self.exclude_non_common:
-            in_universe = in_universe & np.array(
-                [self.is_common_ticker(symbol) for symbol in symbols],
-                dtype=bool,
-            )
         row = np.where(in_universe, 1.0, np.nan).astype(np.float32)
 
         if self._stream_context is None:
@@ -591,28 +512,25 @@ class UniverseFilteredFactor(FactorKunQuant):
         return super()._get_xarray_dataset()
 
     def _mask_panel(self, data: xr.Dataset) -> xr.Dataset:
-        """在掩码为 NaN 的位置置 NaN，然后**只**删掉被代码规则排除的标的。
+        """在掩码为 NaN 的位置置 NaN。**标的轴原样返回，永不删列。**
 
-        标的轴规则见模块 docstring 的 LS-3（2026-09-15 用户决定）：
-        **绝不**在标的轴上 `dropna`。只因为价格/成交额阈值而整窗 NaN 的标的保留为
-        NaN 列，这样标的轴就与日期窗口无关，DL 头跨窗口预测才不会因为缺少训练过的
-        标的而报错。
+        这是条件 (a) 被删除（2026-09-21）之后拿到的红利：唯一一条会删列的分支就是
+        按代码规则剔除标的那一条，它没了之后本方法成为**纯阈值**——任意窗口、任意
+        标的集合下，输出的 symbol 轴与输入逐元素相等。
+
+        于是 LS-3 的「符号轴与日期窗口无关」变成**平凡成立**，不再靠「代码规则与
+        日期无关，所以它删掉的标的不可能被训练过」这个论证撑着；
+        `DLModel._align_prediction_symbols`（面板缺少训练过的标的时会直接报错）
+        因此少一个风险来源。
+
+        仍然**绝不**在标的轴上 `dropna`：整窗 NaN 的标的保留为 NaN 列。
         """
         self._assert_computed()
 
         mask = self._universe_mask.reindex(
             timestamp=data["timestamp"], symbol=data["symbol"]
         )
-        data = data.where(mask.notnull())
-
-        if self.exclude_non_common:
-            keep = [
-                symbol
-                for symbol in data["symbol"].values
-                if self.is_common_ticker(str(symbol))
-            ]
-            data = data.sel(symbol=keep)
-        return data
+        return data.where(mask.notnull())
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
         return self._mask_panel(self.factor._get_features(data))
@@ -643,13 +561,10 @@ class UniverseFilteredFactor(FactorKunQuant):
             "min_price": float(self.min_price),
             "min_dollar_volume": float(self.min_dollar_volume),
             "window": int(self.window),
-            "exclude_non_common": bool(self.exclude_non_common),
         }
 
     #: `get_config()` 里除 `name` / `factor` 之外的参数键。
-    _PARAMETER_KEYS = frozenset(
-        {"min_price", "min_dollar_volume", "window", "exclude_non_common"}
-    )
+    _PARAMETER_KEYS = frozenset({"min_price", "min_dollar_volume", "window"})
 
     @classmethod
     def from_config(cls, config: dict) -> "UniverseFilteredFactor":
