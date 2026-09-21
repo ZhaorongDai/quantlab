@@ -18,8 +18,11 @@ nothing else reads it.
 
 - `as_of(permno, day)` is the strict, single-value question. All THREE ways the
   sidecar can fail RAISE, and each refusal is shaped -- it names the class, the
-  path and the rebuild that fixes it: the file is MISSING, its bytes are not
-  JSON, or it parses and is STRUCTURALLY WRONG (the top level is not an object,
+  path and the rebuild that fixes it: the file is MISSING, its bytes DO NOT
+  PARSE (they are not decodable as UTF-8, they are not JSON at all, or they are
+  nested deeper than the parser's own stack -- see the `payload` property, where
+  that last one is why `RecursionError` is caught alongside `OSError` and
+  `ValueError`), or it parses and is STRUCTURALLY WRONG (the top level is not an object,
   `intervals` is not an object, a span is not an object or lacks
   `start`/`end`/`ticker`). The caller asked which name a specific security wore
   on a specific day, and "I could not read the file" is not an answer that may
@@ -104,6 +107,18 @@ class CrspTickerLookup:
         missing manifest: which class is complaining, which path it looked at,
         and what to do -- because this file is written BY a conversion and
         cannot be created by hand, the remedy is a rebuild, not an edit.
+
+        A failure of the READ or the PARSE becomes the second shaped refusal,
+        and "the parse failed" includes the case where the parser itself runs
+        out of stack: deeply nested JSON raises `RecursionError`, which is a
+        `RuntimeError` subclass and therefore caught by neither `OSError` nor
+        `ValueError`. It used to escape from here past every structural guard
+        downstream and out of BOTH entry points -- unshaped out of `as_of` and,
+        worse, out of `label`, which the display sites call bare (G-03.11-3 /
+        WR-01). Re-raising it here is what makes this the single place where an
+        unreadable sidecar turns into a refusal a reader can act on. Building
+        the message after a `RecursionError` is safe: CPython restores stack
+        headroom once the exception unwinds.
         """
         if self._payload is None:
             if not self.sidecar_path.exists():
@@ -119,7 +134,7 @@ class CrspTickerLookup:
                 self._payload = json.loads(
                     self.sidecar_path.read_text(encoding="utf-8")
                 )
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, RecursionError) as exc:
                 raise ValueError(
                     f"{type(self).__name__}: the ticker sidecar "
                     f"{str(self.sidecar_path)!r} could not be read "
@@ -249,9 +264,10 @@ class CrspTickerLookup:
 
         **Never raises.** An unknown PERMNO falls back to its own digits, and
         so does every PERMNO when the sidecar is missing or CORRUPT -- where
-        corrupt means both halves of it: bytes that are not JSON at all, and
-        bytes that parse fine but are not shaped like a sidecar (`intervals`
-        holding a list, a span with no `start`). The digits are precisely the
+        corrupt means both halves of it: bytes that never reach a shape at all
+        (undecodable, not JSON, or nested past the parser's stack), and bytes
+        that parse fine but are not shaped like a sidecar (`intervals` holding
+        a list, a span with no `start`). The digits are precisely the
         output these messages produced before the sidecar existed, so a panel
         with no sidecar (a Tiingo or Alpaca store, or a CRSP store built before
         03.11-09) reads exactly as it did. `as_of` keeps the strict behaviour
