@@ -136,7 +136,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-01 | Phase 1 | Pending |
 | DATA-01 | Phase 2 | Pending |
 | DATA-02 | Phase 2 | Pending |
-| DATA-03 | Phase 2 | Pending — advanced by Phase 03.10, which added a second `us_equity`/`1d` vendor (WRDS CRSP Stock v2) through the registry's per-capability resolver, consumed by the factor, label and backtest layers without a change in any of them: the extensibility this requirement asks for, exercised but not yet signed off by its owning phase |
+| DATA-03 | Phase 2 | Pending — advanced by Phase 03.10, which added a second `us_equity`/`1d` vendor (WRDS CRSP Stock v2) through the registry's per-capability resolver, consumed by the factor, label and backtest layers without a change in any of them: the extensibility this requirement asks for, exercised but not yet signed off by its owning phase. Further advanced by Phase 03.11, which swapped that same vendor seam's identity axis to the int64 PERMNO — `ticker` left the panel for the `{zarr}.crsp_tickers.json` as-of sidecar — so the seam can no longer silently fabricate a return where a recycled ticker concatenated two companies (03.11 D-08, reversing an 03.10 locked decision). Status unchanged: still Pending, still owned by Phase 2 |
 | DATA-04 | Phase 2 | Pending |
 | DATA-05 | Phase 03.1 | Complete — also advanced by Phase 03.10, which added CRSP-native point-in-time S&P 500 membership (`dsp500list_v2`, by PERMNO) and a Compustat Nasdaq-100 universe via the CCM gvkey→PERMNO link, expressed in the price panel's own period-correct tickers |
 | DATA-06 | Phase 03.1 | Complete |
