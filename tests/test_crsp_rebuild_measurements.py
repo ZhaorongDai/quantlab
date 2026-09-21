@@ -2,9 +2,18 @@
 
 **This is not a unit test.** It DELETES and re-converts the real
 `wrds_crsp_sp500_1d.zarr` under the repository's `data/` tree, then asserts the
-five post-fix measurements phase 03.11 reasons from. Everything synthetic lives
-in `tests/test_crsp_rebuild.py`; this file exists because a synthetic fixture
+post-fix measurements phase 03.11 reasons from. Everything synthetic lives in
+`tests/test_crsp_rebuild.py`; this file exists because a synthetic fixture
 cannot tell you what the SHIPPED panel actually contains.
+
+As of 03.11-10 it also gates the PERMNO-axis migration on the written store:
+the `symbol` array's RAW Zarr dtype is integral, `.crsp_symbology_report.json`
+is absent (its six keys were all statements about a ticker axis) and
+`.crsp_tickers.json` is present and covers exactly the panel's own PERMNOs. The
+four cleanliness assertions are stated as INVARIANTS (`adjClose <= 0 == 0`,
+`close == 0 == 0`, both NaN counts `== structural_gaps`) rather than as counts,
+which is why they survive the axis change unmodified; `symbol_count` is the one
+number that may legitimately move, and it is reported rather than pinned.
 
 **It is deliberately EXCLUDED from the full regression command**, and excluded
 by NOT BEING COLLECTED rather than by being skipped. Two independent reasons,
@@ -47,19 +56,18 @@ impossible to produce by accident (T-03.11-03).
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
 
 import pytest
+import zarr
 
 from quantlab.base.config import CrspDatasetConfig
 from quantlab.dataset.crsp_membership import CrspMembership
 from quantlab.dataset.crsp_reference import CrspReference
-from quantlab.dataset.crsp_rebuild import (
-    CRSP_SIDECAR_SUFFIXES,
-    CrspStoreRebuilder,
-)
+from quantlab.dataset.crsp_rebuild import CrspStoreRebuilder
 
 #: The window this gate rebuilds (03.11 D-15 / operator RULING 2). ONLY 2024,
 #: not the raw tier's full 2019-2025 span: `03.11-RESEARCH.md` section R1 took
@@ -78,6 +86,48 @@ END_DATE = "2024-12-31"
 #: changed -- a different raw vintage, a different roster, a different cleaning
 #: rule -- and relaxing the assertion would convert that signal into silence.
 EXPECTED_ANOMALY_FLAG_TRUE = 13
+
+#: The `symbol_count` W0 measured on the TICKER axis (03.11-01's rebuild table).
+#: Kept only to be PRINTED beside the current number, never asserted against.
+#: On a PERMNO axis the column count may legitimately move in either direction:
+#: a rename inside the window (FB -> META) merged two ticker columns into one
+#: PERMNO column, and a ticker recycled inside the window split one ticker
+#: column into two PERMNO columns. An equality here would flag a correct
+#: migration as a regression.
+W0_TICKER_AXIS_SYMBOL_COUNT = 523
+
+#: The band a one-year S&P 500 roster plausibly occupies. Wide enough that the
+#: rename/recycle arithmetic above cannot breach it, narrow enough that a
+#: roster that silently collapsed (or swallowed the whole raw tier) does. A
+#: value outside it is a signal to investigate, not a number to widen the band
+#: around.
+SYMBOL_COUNT_BAND = (500, 540)
+
+#: The sidecars a rebuild must WRITE, each newer than the moment it started.
+#:
+#: This is deliberately NOT `CRSP_SIDECAR_SUFFIXES`. That tuple is the CLEARING
+#: list -- what must be deleted before a rebuild -- and it still carries
+#: `.crsp_symbology_report.json` precisely because that file is no longer
+#: generated and may be lying around from an older store. The two lists answer
+#: different questions, and conflating them would either stop clearing a stale
+#: file or demand a file the current tree has no code to write.
+EXPECTED_WRITTEN_SIDECARS: tuple[str, ...] = (
+    ".chunks.json",
+    ".crsp_adjustment.json",
+    ".crsp_filter_report.json",
+    ".crsp_tickers.json",
+)
+
+#: The audit file whose six keys were all statements about a TICKER axis
+#: (resolved collisions, PERMNO seams, carried labels, class respellings,
+#: unlabelled rows). On a PERMNO axis every one of them can only ever say
+#: "nothing happened", which reads like evidence a check ran. 03.11-07 deleted
+#: the mechanism and 03.11-09 replaced the sidecar; a rebuild must therefore
+#: leave NO such file beside the store.
+DEAD_SYMBOLOGY_SIDECAR = ".crsp_symbology_report.json"
+
+#: The interval table that replaced it: PERMNO -> period-correct ticker.
+TICKER_SIDECAR = ".crsp_tickers.json"
 
 
 def _data_root() -> Path:
@@ -181,13 +231,21 @@ def rebuilt():
     delete and re-convert the panel twice for no additional evidence. The
     `started_at` companion is captured BEFORE the rebuild so the sidecar
     freshness assertion has a lower bound it can trust.
+
+    **The backup directory is per-rebuild, and that matters.** `backup()` copies
+    with `dirs_exist_ok=True`, so pointing two different rebuilds at one
+    directory overwrites the older copy in place. `data/_backup_pre_03.11` holds
+    the PRE-PHASE (pre-fix) store -- the only surviving record of what the 699 /
+    686 / 2202 numbers were measured on, and unreproducible because the code
+    that wrote it is deleted. This rebuild therefore writes its own
+    `data/_backup_pre_03.11_10`, preserving both generations.
     """
     root = _data_root()
     started_at = time.time()
     config = _config(root)
     rebuilder = CrspStoreRebuilder(config, data_root=root)
     measurement = rebuilder.rebuild(
-        backup_dir=root / "data" / "_backup_pre_03.11"
+        backup_dir=root / "data" / "_backup_pre_03.11_10"
     )
     return measurement, started_at, config
 
@@ -231,11 +289,103 @@ def test_sp500_2024_rebuild_matches_post_fix_measurements(rebuilt):
     assert metrics["adj_close_nan"] == metrics["structural_gaps"]
     assert metrics["adj_volume_nan"] == metrics["structural_gaps"]
 
+    # `symbol_count` is REPORTED against W0's number, not asserted equal to it.
+    # See W0_TICKER_AXIS_SYMBOL_COUNT: on a PERMNO axis a rename inside the
+    # window merges two ticker columns and a recycled ticker splits one, so
+    # equality would report a correct migration as a regression. The band is
+    # what still catches a roster that collapsed or swallowed the raw tier.
+    low, high = SYMBOL_COUNT_BAND
+    print(
+        f"symbol_count: {metrics['symbol_count']} "
+        f"(W0 ticker axis: {W0_TICKER_AXIS_SYMBOL_COUNT}, band: {low}-{high})"
+    )
+    assert low <= metrics["symbol_count"] <= high, (
+        f"symbol_count {metrics['symbol_count']} falls outside the plausible "
+        f"one-year S&P 500 band {low}-{high} (W0 measured "
+        f"{W0_TICKER_AXIS_SYMBOL_COUNT} on the ticker axis). Do NOT widen the "
+        f"band -- a count this far off means the roster or the security "
+        f"filter changed, and which one is the question to answer."
+    )
+
     # The rebuild read the MAIN repository, not the worktree it ran from.
     assert measurement.data_root.endswith("/quantlab")
     assert Path(measurement.data_root).is_absolute()
     assert measurement.backup_path is not None
     assert (Path(measurement.backup_path) / "wrds_crsp_sp500_1d.zarr").exists()
+
+
+def test_the_written_axis_is_int64_permnos(rebuilt):
+    """The identity axis on disk is integers, read from Zarr's OWN dtype.
+
+    `xr.open_zarr` would hand back whatever the decoders made of the array, and
+    a `VLenUTF8`-encoded axis of digit strings decodes into something that
+    prints identically to an int64 axis in every log line an operator reads.
+    Asking `zarr.open_group` for the raw `dtype` is the only form of this
+    question that a string axis cannot pass by accident (D-01).
+    """
+    measurement, _started_at, _config_used = rebuilt
+
+    stored = zarr.open_group(measurement.store_path, mode="r")["symbol"]
+    print(f"symbol dtype: {stored.dtype} (kind {stored.dtype.kind!r})")
+    assert stored.dtype.kind == "i", (
+        f"the symbol axis is stored as {stored.dtype!r}, whose kind is "
+        f"{stored.dtype.kind!r}, not 'i'. The panel's identity axis is the "
+        f"PERMNO (D-01); a string axis here means the migration did not reach "
+        f"the written store."
+    )
+
+
+def test_the_symbology_report_is_gone_and_the_ticker_table_arrived(rebuilt):
+    """The dead sidecar is absent; the interval table names the panel.
+
+    Both halves are needed. Asserting only the absence would pass on a rebuild
+    that wrote no sidecars at all; asserting only the arrival would leave a file
+    describing a deleted mechanism sitting beside the store it never described,
+    which is the confidently-wrong audit trail the clearing rule exists to
+    prevent.
+    """
+    measurement, _started_at, _config_used = rebuilt
+    store = Path(measurement.store_path)
+
+    dead = Path(str(store) + DEAD_SYMBOLOGY_SIDECAR)
+    assert not dead.exists(), (
+        f"{dead} still exists after the rebuild. All six of its keys were "
+        f"statements about a ticker AXIS (resolved collisions, PERMNO seams, "
+        f"carried labels, class respellings, unlabelled rows); 03.11-07 "
+        f"deleted the mechanism, so nothing in the current tree can write it "
+        f"and the clearing list must have removed it."
+    )
+
+    ticker_sidecar = Path(str(store) + TICKER_SIDECAR)
+    assert ticker_sidecar.exists(), (
+        f"{ticker_sidecar} was not written. An int64 axis cannot say what its "
+        f"numbers are CALLED; this interval table is the only thing that can."
+    )
+
+    payload = json.loads(ticker_sidecar.read_text())
+    intervals = payload["intervals"]
+    print(f"ticker intervals: {len(intervals)} PERMNO(s)")
+    print(f"vintage_product_end: {payload['vintage_product_end']}")
+
+    # Only the PANEL's PERMNOs. `stksecurityinfohist` carries 40,518 of them;
+    # writing the whole table would put megabytes of names for securities this
+    # store has never heard of beside it.
+    assert len(intervals) == measurement.metrics["symbol_count"], (
+        f"the ticker sidecar names {len(intervals)} PERMNO(s) while the panel "
+        f"carries {measurement.metrics['symbol_count']}. The sidecar is "
+        f"supposed to cover exactly the panel's own axis -- more means it "
+        f"leaked the reference table, fewer means some column on the axis has "
+        f"no name the reference tier can supply."
+    )
+    axis = {
+        str(int(label))
+        for label in zarr.open_group(measurement.store_path, mode="r")["symbol"][:]
+    }
+    assert set(intervals) == axis, (
+        f"the sidecar's PERMNOs and the panel's axis are the same SIZE but not "
+        f"the same SET; symmetric difference: "
+        f"{sorted(set(intervals) ^ axis)[:10]}"
+    )
 
 
 def test_rebuild_refreshed_every_sidecar(rebuilt):
@@ -245,18 +395,15 @@ def test_rebuild_refreshed_every_sidecar(rebuilt):
     alone, so a rebuild that cleared only the store would finish with audit
     files describing the previous panel. Asserting each one's mtime is later
     than the moment the rebuild started is what makes that failure visible.
+
+    The list iterated is `EXPECTED_WRITTEN_SIDECARS`, not the clearing list --
+    see that constant for why the two must not be the same tuple.
     """
     measurement, started_at, _config_used = rebuilt
     store = Path(measurement.store_path)
 
-    for suffix in CRSP_SIDECAR_SUFFIXES:
+    for suffix in EXPECTED_WRITTEN_SIDECARS:
         sidecar = Path(str(store) + suffix)
-        if suffix == ".crsp_symbology_report.json" and not sidecar.exists():
-            # Later plans in this phase stop GENERATING this report. It stays
-            # on the clearing list regardless (a stale file describing a
-            # deleted mechanism is exactly what clearing prevents), so its
-            # absence after a rebuild is correct, not a failure.
-            continue
         assert sidecar.exists(), f"{sidecar} was not written by the rebuild"
         assert sidecar.stat().st_mtime >= started_at, (
             f"{sidecar} has mtime {sidecar.stat().st_mtime} which predates "
