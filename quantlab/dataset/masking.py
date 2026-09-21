@@ -20,6 +20,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
+from quantlab.dataset.crsp_tickers import CrspTickerLookup
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 if TYPE_CHECKING:  # import-cycle-free type hints only
@@ -59,7 +60,19 @@ class UniverseMask:
     that is a finding to act on, not a hole to paper over here.
     """
 
-    def __init__(self, market: xr.Dataset, membership: xr.Dataset) -> None:
+    def __init__(
+        self,
+        market: xr.Dataset,
+        membership: xr.Dataset,
+        ticker_lookup: Optional[CrspTickerLookup] = None,
+    ) -> None:
+        """`ticker_lookup` only ever spells `report()`'s warning for a human.
+
+        Optional because this class is deliberately constructible from two bare
+        panels with no store behind them -- that is what makes it testable
+        offline. `from_datasets` supplies one; a direct construction gets
+        `None` and the report reads exactly as it did before 03.11-09.
+        """
         if "is_member" not in membership.data_vars:
             raise ValueError(
                 f"UniverseMask: the membership panel must carry an "
@@ -69,6 +82,7 @@ class UniverseMask:
             )
         self.market = market
         self.membership = membership
+        self.ticker_lookup = ticker_lookup
 
     def __repr__(self) -> str:
         return (
@@ -86,10 +100,21 @@ class UniverseMask:
 
         The pipeline-facing constructor, keeping this usable as a component
         in a config-driven run rather than only in a test.
+
+        This is also the ONE place a ticker lookup can be attached, because it
+        is the only constructor that knows where the market panel LIVES -- and
+        the sidecar is a sibling of the store, not a property of the panel in
+        memory. A market store with no `.crsp_tickers.json` beside it (Tiingo,
+        Alpaca, a CRSP store converted before 03.11-09) yields a lookup that
+        falls back to the axis's own spelling, so nothing here branches on a
+        vendor.
         """
         return cls(
             market_dataset.read().get_xarray_dataset(),
             constituent_dataset.read().get_xarray_dataset(),
+            ticker_lookup=CrspTickerLookup.beside_store(
+                market_dataset.config.zarr_file_path
+            ),
         )
 
     @property
@@ -180,9 +205,23 @@ class UniverseMask:
         That promise survived the PERMNO migration unchanged (03.11-05), and
         the temptation it had to survive was real: a list of bare integers
         reads worse than a list of tickers, and shortening it is the obvious
-        way to make the log tidy again. Readability is restored by mapping
-        PERMNOs back to period-correct tickers for DISPLAY, not by printing
-        fewer of them.
+        way to make the log tidy again. 03.11-09 pays that debt the right way
+        round: readability is restored by mapping PERMNOs back to
+        period-correct tickers for DISPLAY (`missing_labels`, and the warning),
+        not by printing fewer of them. Both lists are the SAME length as
+        `missing_symbols` and in the same order -- an entry that cannot be
+        named keeps its digits rather than dropping out.
+
+        `missing_symbols` keeps the axis's own labels, unchanged. It is the
+        machine half of this report: a caller that wants to `.sel()` those
+        symbols out of a panel needs the identity, and a name looked up as of
+        one day is not an identity -- that is the whole reason the names went
+        into a sidecar instead of a coord.
+
+        The as-of day is the LAST overlapping timestamp: this report is about
+        the window being aligned, so the newest spelling in that window is the
+        one its reader is looking at. With no overlap at all there is nothing
+        to name and the labels are the digits.
         """
         members = self.in_window_members
         missing = self.missing_members
@@ -190,6 +229,7 @@ class UniverseMask:
             "in_window_members": len(members),
             "missing_count": len(missing),
             "missing_symbols": missing,
+            "missing_labels": self._label(missing),
         }
 
         if missing:
@@ -198,7 +238,7 @@ class UniverseMask:
                 f"index member(s) are absent from the market panel entirely "
                 f"and are dropped by the alignment. Every dropped name is a "
                 f"survivorship-bias hole, so the COMPLETE list follows: "
-                f"{missing}"
+                f"{report['missing_labels']}"
             )
         else:
             logger.info(
@@ -206,6 +246,20 @@ class UniverseMask:
                 f"all {len(members)} in-window index member(s)."
             )
         return report
+
+    def _label(self, symbols: list) -> list[str]:
+        """`symbols` spelled for a human -- one label per input, never fewer.
+
+        Never raises and never shortens. With no lookup, no overlap, or an
+        unreadable sidecar, every entry falls back to its own spelling, which
+        is what this report printed before the sidecar existed.
+        """
+        if not symbols:
+            return []
+        overlap = self.timestamps
+        if self.ticker_lookup is None or len(overlap) == 0:
+            return [str(symbol) for symbol in symbols]
+        return self.ticker_lookup.label(symbols, overlap[-1].date())
 
     def apply(self) -> xr.Dataset:
         """The market panel on the intersected axes, non-member cells NaN.

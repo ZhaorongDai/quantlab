@@ -347,19 +347,26 @@ def _write_measurable_panel(store: Path, *, with_anomaly_flag: bool = True) -> N
     panel.to_zarr(store, mode="w")
 
 
-def test_crsp_sidecar_suffixes_are_exactly_the_four_audit_files():
-    """All four, and the symbology report is deliberately among them.
+def test_crsp_sidecar_suffixes_are_exactly_the_five_audit_files():
+    """All five, and the symbology report is deliberately among them.
 
-    `.crsp_symbology_report.json` stops being GENERATED later in this phase,
-    which is exactly why it must stay on the CLEARING list: a suffix dropped
-    from here leaves a file describing a mechanism that no longer exists
-    sitting beside a store it never described.
+    `.crsp_symbology_report.json` stopped being GENERATED in 03.11-07, which is
+    exactly why it must stay on the CLEARING list: a suffix dropped from here
+    leaves a file describing a mechanism that no longer exists sitting beside a
+    store it never described.
+
+    `.crsp_tickers.json` arrived in 03.11-09 and is on the list for the
+    complementary reason -- it is generated, it names the PANEL's PERMNOs, and
+    the store-exists guard in `_write_identity_reports` means a rebuild never
+    overwrites it. Left behind, it would spell the NEW store's numbers with the
+    OLD store's roster.
     """
     assert CRSP_SIDECAR_SUFFIXES == (
         ".chunks.json",
         ".crsp_adjustment.json",
         ".crsp_filter_report.json",
         ".crsp_symbology_report.json",
+        ".crsp_tickers.json",
     )
     assert CrspStoreRebuilder.SIDECAR_SUFFIXES == CRSP_SIDECAR_SUFFIXES
 

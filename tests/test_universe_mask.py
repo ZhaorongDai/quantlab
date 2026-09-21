@@ -174,7 +174,12 @@ def test_timestamps_are_inner_joined_and_deliberately_not_reported() -> None:
     finally:
         logger.remove(sink_id)
 
-    assert set(report) == {"in_window_members", "missing_count", "missing_symbols"}
+    assert set(report) == {
+        "in_window_members",
+        "missing_count",
+        "missing_symbols",
+        "missing_labels",
+    }
     joined = "\n".join(messages)
     assert "2024-01-06" not in joined
     assert "2024-01-07" not in joined
@@ -358,8 +363,9 @@ def test_the_complete_missing_list_survives_the_int64_axis() -> None:
 
     PERMNOs read worse than tickers, and truncating the list is the obvious
     way to make the log tidier. It is also the one thing that docstring
-    forbids: a truncated list looks like a complete answer. Restoring readable
-    labels is a later plan's job, not a reason to shorten this one.
+    forbids: a truncated list looks like a complete answer. 03.11-09 restored
+    the readable labels -- see the test below -- which is the right way round:
+    name them all, do not print fewer.
     """
     permnos = list(range(80000, 80020))
     values = np.ones((len(_CALENDAR_DAYS), len(permnos)), dtype=bool)
@@ -386,10 +392,121 @@ def test_the_complete_missing_list_survives_the_int64_axis() -> None:
 
     assert report["missing_count"] == 19
     assert report["missing_symbols"] == permnos[1:]
+    # No lookup was attached (this mask was built from two bare panels), so
+    # the display half falls back to the digits -- same length, same order,
+    # nothing dropped. That fallback is the CONTRACT, not a degradation: the
+    # coverage report must not become breakable by a missing audit file
+    # (T-03.11-30, 03.11-09).
+    assert report["missing_labels"] == [str(permno) for permno in permnos[1:]]
     joined = "\n".join(messages)
     for permno in permnos[1:]:
         assert str(permno) in joined
     assert "..." not in joined
+
+
+def test_a_ticker_sidecar_spells_the_missing_permnos_without_shortening_them(
+    tmp_path,
+) -> None:
+    """03.11-09: the digits get NAMES, and the list stays complete.
+
+    `missing_symbols` keeps the int64 identities -- a caller that wants to
+    `.sel()` them needs the number, and a name is only true as of a day.
+    `missing_labels` is the same list, same order, spelled for a human, with an
+    un-named PERMNO keeping its digits rather than vanishing.
+    """
+    import json
+
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    sidecar = tmp_path / "crsp.zarr.crsp_tickers.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "generated_from": "stksecurityinfohist",
+                "vintage_product_end": "2025-12-31",
+                "intervals": {
+                    "80001": [
+                        {"ticker": "OLD", "start": "1990-01-01",
+                         "end": "2020-12-31"},
+                        {"ticker": "NEW", "start": "2021-01-01",
+                         "end": "2025-12-31"},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    permnos = [80000, 80001, 80002]
+    membership = xr.Dataset(
+        {
+            "is_member": (
+                ["timestamp", "symbol"],
+                np.ones((len(_CALENDAR_DAYS), len(permnos)), dtype=bool),
+            )
+        },
+        coords={
+            "timestamp": _CALENDAR_DAYS,
+            "symbol": np.asarray(permnos, dtype="int64"),
+        },
+    )
+    market = xr.Dataset(
+        {"close": (["timestamp", "symbol"], np.ones((len(_MARKET_DAYS), 1)))},
+        coords={
+            "timestamp": _MARKET_DAYS,
+            "symbol": np.asarray([80000], dtype="int64"),
+        },
+    )
+
+    report = UniverseMask(
+        market, membership, ticker_lookup=CrspTickerLookup(sidecar)
+    ).report()
+
+    assert report["missing_symbols"] == [80001, 80002]
+    # The window is in 2024, so 80001 is NEW -- not OLD, the name it wore
+    # until 2020. 80002 is not in the sidecar and keeps its digits.
+    assert report["missing_labels"] == ["NEW", "80002"]
+    assert len(report["missing_labels"]) == len(report["missing_symbols"])
+
+
+def test_a_missing_ticker_sidecar_leaves_the_report_working(tmp_path) -> None:
+    """T-03.11-30: a display layer must not be able to break the report.
+
+    The mask is handed a lookup pointing at a file that does not exist, which
+    is what every non-CRSP store produces. `report()` answers with the digits
+    instead of raising.
+    """
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    permnos = [80000, 80001]
+    membership = xr.Dataset(
+        {
+            "is_member": (
+                ["timestamp", "symbol"],
+                np.ones((len(_CALENDAR_DAYS), len(permnos)), dtype=bool),
+            )
+        },
+        coords={
+            "timestamp": _CALENDAR_DAYS,
+            "symbol": np.asarray(permnos, dtype="int64"),
+        },
+    )
+    market = xr.Dataset(
+        {"close": (["timestamp", "symbol"], np.ones((len(_MARKET_DAYS), 1)))},
+        coords={
+            "timestamp": _MARKET_DAYS,
+            "symbol": np.asarray([80000], dtype="int64"),
+        },
+    )
+
+    report = UniverseMask(
+        market,
+        membership,
+        ticker_lookup=CrspTickerLookup(tmp_path / "absent.crsp_tickers.json"),
+    ).report()
+
+    assert report["missing_symbols"] == [80001]
+    assert report["missing_labels"] == ["80001"]
 
 
 def test_a_permno_panel_against_a_ticker_universe_is_still_refused() -> None:

@@ -499,6 +499,16 @@ class SourceInspector:
         `validate_symbols` all raise `ValueError`) and because `KeyError`'s
         `str()` reprs its argument, mangling a multi-line operator message. The
         original `KeyError` is kept in the exception chain.
+
+        **The refusal says WHICH KIND of label the store's axis holds**
+        (03.11-09). The behaviour above is unchanged, but its message was not
+        enough on a CRSP store: that axis is the int64 PERMNO (D-01), so a
+        perfectly legitimate ticker arrives as a string the index cannot match
+        and the operator is told "the store does not carry AAPL" -- true,
+        correctly refused, and pointing at the wrong conclusion. The message
+        therefore names the axis's dtype, and where the tickers went:
+        `{zarr}.crsp_tickers.json`, queried as-of through
+        `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`.
         """
         listed = self._require_symbols(symbols, "browse_zarr")
         # NOT validated against TRADEABLE_TICKER_PATTERN, unlike `browse_raw`.
@@ -516,14 +526,38 @@ class SourceInspector:
         except KeyError as exc:
             carried = int(dataset.sizes.get("symbol", 0))
             known = set()
+            axis_dtype = None
             if "symbol" in dataset.coords:
                 known = {str(value) for value in dataset["symbol"].values}
+                axis_dtype = dataset["symbol"].dtype
             missing = sorted(symbol for symbol in listed if symbol not in known)
             dataset.close()
+            # An INTEGER symbol axis is the CRSP panel's PERMNO axis (D-01).
+            # Saying only "does not carry AAPL" there is true and misleading:
+            # the store may well hold that security, under the number the
+            # sidecar beside it maps the ticker to.
+            axis_note = ""
+            if axis_dtype is not None and axis_dtype.kind in "iu":
+                # Local: `crsp.py` owns the constant and drags the whole
+                # converter in with it, and this inspector must stay importable
+                # for a vendor that has no CRSP tier at all.
+                from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
+
+                axis_note = (
+                    f" This store's symbol axis is INTEGER "
+                    f"(dtype {axis_dtype}), i.e. CRSP PERMNOs, not tickers "
+                    f"(D-01) -- a ticker can never match it, whether or not "
+                    f"the security is present. The tickers live in "
+                    f"'{path.name}{TICKER_SIDECAR_SUFFIX}' beside the store "
+                    f"and are queried as-of through "
+                    f"quantlab/dataset/crsp_tickers.py:CrspTickerLookup; ask "
+                    f"for the PERMNO it gives you."
+                )
             raise ValueError(
                 f"{self.__class__.__name__}.browse_zarr: the Zarr store at "
                 f"{str(path)!r} does not carry {missing} (requested "
-                f"{sorted(listed)}). The store carries {carried} symbol(s). "
+                f"{sorted(listed)}). The store carries {carried} symbol(s)."
+                f"{axis_note} "
                 f"This is refused rather than reindexed on purpose: a "
                 f"NaN-filled column for a symbol the store has never heard of "
                 f"is indistinguishable from a symbol with a genuinely empty "

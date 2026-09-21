@@ -12,6 +12,7 @@ from loguru import logger
 
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.backend import XrBackend
+from quantlab.dataset.crsp_tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import DASH, write_backtest_report
@@ -175,7 +176,29 @@ class BaseBacktester(ABC):
         # train 模式下本次 run() 训练出的 checkpoint 绝对路径；load 模式与未运行时
         # 为 None（代码审查 WR-04）。get_config 与 metrics 据此记录。
         self._trained_checkpoint: str | None = None
+        # 价格库旁边那份 ticker sidecar 的读取器，惰性构造（`ticker_lookup`）。
+        self._ticker_lookup: "CrspTickerLookup | None" = None
         self.config = config
+
+    @property
+    def ticker_lookup(self) -> CrspTickerLookup:
+        """价格库旁边那份 `.crsp_tickers.json` 的读取器。
+
+        **回测器是这条链上唯一知道价格库在哪的层**，所以标的名的还原从这里发源：
+        引擎拿它打强平日志与 `liquidations.json`，模型拿它的 `label` 打
+        missing/extra 清单。三处各自构造一遍，就是把「sidecar 在哪」这件事
+        复制三份。
+
+        **这不是「CRSP 专用分支」。** 判据是**盘上有没有那个文件**，不是面板
+        属于哪个厂商：Tiingo / Alpaca 的库旁边没有 sidecar，`label()` 于是原样
+        回落成标的自己的拼写，那几行日志一个字不变（control arm）。
+        `as_of` 的严格失败留给想要拒绝的调用者，展示层一律走 `label`。
+        """
+        if self._ticker_lookup is None:
+            self._ticker_lookup = CrspTickerLookup.beside_store(
+                self.config.price_dataset.config.zarr_file_path
+            )
+        return self._ticker_lookup
 
     @property
     @abstractmethod
@@ -256,6 +279,9 @@ class BaseBacktester(ABC):
 
         self._config = config
         self._config.name = self.import_path
+        # 与 `_fingerprints` 同一个理由：缓存是对**这份**配置的价格库说的话，
+        # 换了价格库就不能留着上一份 sidecar 的名字。
+        self._ticker_lookup = None
         self._validate_config()
 
     def _validate_config(self) -> None:
@@ -1032,6 +1058,10 @@ class BaseBacktester(ABC):
         """改因子配置日期（含预热）-> 只算特征 -> 预测 -> 切回回测窗口（D-14）。"""
         with Timer(f"{self.class_name}: align_and_predict"):
             model = self.config.model
+            # 模型的 missing/extra 清单在 PERMNO 轴上是一串裸数字。模型层拿不到
+            # 价格库的路径（它只认因子库），所以由这里把还原函数递过去——模型自己
+            # 不认识任何厂商，只认识一个 `(symbols, day) -> list[str]` 的可调用。
+            model.symbol_labeller = self.ticker_lookup.label
             self._redate_factors(start_date, end_date, calendar)
 
             features = model._collect_all_features()

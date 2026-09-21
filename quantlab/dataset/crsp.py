@@ -225,6 +225,15 @@ SECURITY_FILTER_PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
 #: removed, by type combination and by PERMNO (D-17).
 FILTER_REPORT_SUFFIX: str = ".crsp_filter_report.json"
 
+#: `{zarr_file_path}.crsp_tickers.json` -- a PERMNO -> period-correct ticker
+#: INTERVAL table, so a display layer can spell the panel's int64 axis for a
+#: human by as-of query (D-03). An interval table rather than one name per
+#: PERMNO because FB and META are the same 13407, and a single name would file
+#: 2012 under the 2022 spelling -- the very defect that ruled out a 1-D
+#: `ticker(symbol)` coord. Read by
+#: `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`.
+TICKER_SIDECAR_SUFFIX: str = ".crsp_tickers.json"
+
 #: The `dsf_v2` flag marking the row that carries the delisting return.
 _DELISTING_FLAG = "Y"
 
@@ -488,6 +497,11 @@ class CrspStockDataset(StockDataset):
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
+        # The ticker sidecar's payload, built in `_derivation()` and written
+        # once by `_write_identity_reports`. Reset here with the derivation it
+        # is derived FROM: a re-dated or re-rostered config selects a different
+        # set of PERMNOs, and the sidecar names exactly the panel's own.
+        self._ticker_intervals: dict | None = None
         # The membership spells of `roster_universe`, memoised for the
         # roster exemption in `_apply_security_filter` -- its one reader. Reset
         # here for the same reason the derivation is: a re-dated or re-rostered
@@ -634,6 +648,12 @@ class CrspStockDataset(StockDataset):
         # cumulative product would make the next kept day's adjusted move span
         # a return the panel no longer shows.
         derived = self._apply_security_filter(derived)
+        # Built from the KEPT rows, so the sidecar names exactly the PERMNOs
+        # the panel carries -- and built here rather than in
+        # `_write_identity_reports` for the same reason the filter report is:
+        # the write hook runs once per conversion and must not have to recover
+        # a frame the derivation already has in hand.
+        self._ticker_intervals = self._build_ticker_intervals(derived)
         # There is no identity-resolution step here, and no place one could go
         # (D-01). Both things the deleted one existed for are unspellable on a
         # PERMNO axis: a same-day collision needs two PERMNOs in one
@@ -1251,6 +1271,82 @@ class CrspStockDataset(StockDataset):
         """`{zarr_file_path}.crsp_filter_report.json`, a SIBLING of the store."""
         return Path(str(self.config.zarr_file_path) + FILTER_REPORT_SUFFIX)
 
+    def ticker_sidecar_path(self) -> Path:
+        """`{zarr_file_path}.crsp_tickers.json`, a SIBLING of the store."""
+        return Path(str(self.config.zarr_file_path) + TICKER_SIDECAR_SUFFIX)
+
+    def _build_ticker_intervals(self, derived: pl.DataFrame) -> dict:
+        """The `{zarr}.crsp_tickers.json` payload for the rows `derived` keeps.
+
+        `{"generated_from", "vintage_product_end", "intervals"}`, where
+        `intervals` maps `str(permno)` to that PERMNO's named spells in
+        ascending `start` order, each `{"ticker", "start", "end"}` and both
+        ends INCLUSIVE -- the same convention `symbol_intervals()` and
+        `_member_intervals` already use.
+
+        **An interval table, deliberately not `_permno_breakdown`'s shape.**
+        That method aggregates with `pl.col("symbol").last()`, keeping one name
+        per PERMNO. It is the right answer to its own question ("which rows did
+        the filter drop, spelled how") and the wrong one here: 13407 is FB
+        until 2022-06-08 and META after, and a last-name-wins map answers
+        "META" for 2012. That is precisely the defect D-03 rejected a 1-D
+        `ticker(symbol)` coord for, so copying the shape would reintroduce it
+        one layer out. The only thing kept in common is the JSON key spelling,
+        `str(permno)`, because JSON object keys can only be strings and two
+        sidecars disagreeing about how to spell a PERMNO would be worse than
+        either choice.
+
+        **Only the panel's own PERMNOs.** `stksecurityinfohist` carries 40,518
+        of them; the panel carries whatever the roster and the security filter
+        left. Writing the whole table would put megabytes of names for
+        securities this store has never heard of beside a store that has three
+        -- and the existing symbology report reached 58 KB on 466 rows, so the
+        arithmetic is not hypothetical.
+
+        `vintage_product_end` rides along for the same reason the adjustment
+        anchor records it: the same PERMNO read against a newer CRSP vintage
+        can carry a later interval, so "which name" is only answerable together
+        with "as of which vintage".
+
+        Null-symbol intervals are dropped. `symbol_intervals()` keeps them so
+        that "this PERMNO never had a ticker" stays a distinguishable fact
+        rather than an absent row; this sidecar is asked only "what is it
+        called", and `None` is the same answer whether the interval is absent
+        or present-and-nameless. A carried delisting-day interval is NOT one of
+        these -- the carry already gave it the previous spell.
+        """
+        empty: dict = {
+            "generated_from": "stksecurityinfohist",
+            "vintage_product_end": str(CrspReference(
+                self.config.reference_dir
+            ).product_end),
+            "intervals": {},
+        }
+        if self._symbology is None or derived.is_empty():
+            return empty
+
+        panel_permnos = set(
+            int(value) for value in derived.get_column("permno").unique().to_list()
+        )
+        intervals = (
+            self._symbology.symbol_intervals()
+            .drop_nulls("symbol")
+            .filter(pl.col("permno").is_in(sorted(panel_permnos)))
+            .sort(["permno", "start_date"])
+        )
+
+        payload: dict[str, list[dict]] = {}
+        for record in intervals.to_dicts():
+            payload.setdefault(str(int(record["permno"])), []).append(
+                {
+                    "ticker": str(record["symbol"]),
+                    "start": str(record["start_date"])[:10],
+                    "end": str(record["end_date"])[:10],
+                }
+            )
+        empty["intervals"] = payload
+        return empty
+
     def _finalise(self, derived: pl.DataFrame) -> pl.DataFrame:
         """Project the derivation onto the panel's variables and cache it."""
         frame = derived.with_columns(
@@ -1512,14 +1608,16 @@ class CrspStockDataset(StockDataset):
         """Write the identity sidecars, ONCE per conversion, and only when the
         store does not exist yet.
 
-        One sidecar as of 03.11-07: `.crsp_filter_report.json`. The symbology
-        report that sat beside it is gone -- all six of its keys were
-        statements about a ticker axis (resolved collisions, PERMNO seams,
-        carried labels, class respellings, unlabelled rows), and a sidecar that
-        can only ever say "nothing happened" reads like evidence a check ran.
-        Plan 09 puts a ticker sidecar here, which answers a different question:
-        not what identity resolution DID, but what the numbers are CALLED. The
-        plural in this method's name is kept for that arrival.
+        TWO sidecars as of 03.11-09: `.crsp_filter_report.json` and
+        `.crsp_tickers.json`. The symbology report that used to sit beside them
+        is gone -- all six of its keys were statements about a ticker AXIS
+        (resolved collisions, PERMNO seams, carried labels, class respellings,
+        unlabelled rows), and on a PERMNO axis a sidecar that can only ever say
+        "nothing happened" reads like evidence a check ran. The ticker sidecar
+        that replaced it answers a different question: not what identity
+        resolution DID, but what the numbers are CALLED, which is the one thing
+        an int64 axis cannot say for itself. The plural in this method's name
+        was kept through 03.11-07 for exactly this arrival.
 
         Called once per run by each entry point, which is what keeps a windowed
         conversion from writing eleven copies of the same report -- or worse,
@@ -1540,10 +1638,21 @@ class CrspStockDataset(StockDataset):
         the panel as it was FIRST written rather than as it stands. That is the
         lesser harm -- a slightly stale audit trail beats a confidently wrong
         one, and the anchor sidecar has carried exactly this guard since it was
-        introduced. The STRONGER form, considered and not taken here because it
-        needs a success signal this method cannot see: write to a temp name and
-        `os.replace` after the append loop reports success, which would keep the
-        reports fresh on every completed run and untouched on every aborted one.
+        introduced. It is also why a REBUILD must delete the sidecars before it
+        starts rather than expect them to be overwritten:
+        `quantlab/dataset/crsp_rebuild.py:CrspStoreRebuilder` is the executor
+        of that rule, and its `.crsp_*.json` cleanup list is what keeps a fresh
+        store from inheriting the previous store's names. The STRONGER form,
+        considered and not taken here because it needs a success signal this
+        method cannot see: write to a temp name and `os.replace` after the
+        append loop reports success, which would keep the reports fresh on
+        every completed run and untouched on every aborted one.
+
+        Both writes pass `indent=2, sort_keys=True` EXPLICITLY.
+        `quantlab/utils/atomic.py` forwards `**json_kwargs` verbatim precisely
+        so each caller keeps its own formatting; taking a default here would
+        make this sidecar's shape a property of the writer, and changing the
+        writer would then silently re-format every sidecar already on disk.
         """
         if Path(str(self.config.zarr_file_path)).exists():
             return
@@ -1551,6 +1660,13 @@ class CrspStockDataset(StockDataset):
             write_json_atomically(
                 self.filter_report_path(),
                 self._filter_report,
+                indent=2,
+                sort_keys=True,
+            )
+        if self._ticker_intervals is not None:
+            write_json_atomically(
+                self.ticker_sidecar_path(),
+                self._ticker_intervals,
                 indent=2,
                 sort_keys=True,
             )

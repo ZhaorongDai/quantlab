@@ -1475,22 +1475,31 @@ def _crsp_config(tmp_path, cfg, reference_dir, *, permnos, store="crsp.zarr"):
 
 
 def _report_paths(dataset_config):
-    """`(filter report, symbology report)` paths beside the store.
+    """`(filter report, symbology report, ticker sidecar)` paths beside the store.
 
     The symbology suffix is spelled as a LITERAL here, not imported: its
     constant was deleted with the rest of the ticker-identity machinery in
     03.11-07, and the tests below assert that this file is NOT written. A test
     that the file is absent must be able to name the file without the code
     under test agreeing that the name exists.
+
+    The other two ARE imported, for the mirror-image reason: they must be
+    written, so their constants necessarily exist, and importing them means a
+    renamed suffix is a failing assertion here rather than a silently skipped
+    one.
     """
     from pathlib import Path
 
-    from quantlab.dataset.crsp import FILTER_REPORT_SUFFIX
+    from quantlab.dataset.crsp import (
+        FILTER_REPORT_SUFFIX,
+        TICKER_SIDECAR_SUFFIX,
+    )
 
     base = str(dataset_config.zarr_file_path)
     return (
         Path(base + FILTER_REPORT_SUFFIX),
         Path(base + ".crsp_symbology_report.json"),
+        Path(base + TICKER_SIDECAR_SUFFIX),
     )
 
 
@@ -1531,8 +1540,10 @@ def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path
     CrspStockDataset(dataset_config).from_raw_data().save()
 
     sidecar = _sidecar_path(dataset_config)
-    filter_report, symbology_report = _report_paths(dataset_config)
-    for path in (sidecar, filter_report):
+    filter_report, symbology_report, ticker_sidecar = _report_paths(
+        dataset_config
+    )
+    for path in (sidecar, filter_report, ticker_sidecar):
         assert path.exists(), sorted(item.name for item in tmp_path.iterdir())
 
     # The SYMBOLOGY report is not part of the set any more (D-01, phase
@@ -1625,8 +1636,9 @@ def test_a_refused_reconversion_keeps_the_existing_identity_reports(
     )
     _convert(narrow)
 
-    filter_report, symbology_report = _report_paths(narrow)
+    filter_report, symbology_report, ticker_sidecar = _report_paths(narrow)
     filter_bytes = filter_report.read_bytes()
+    ticker_bytes = ticker_sidecar.read_bytes()
     # No symbology report to preserve on a PERMNO axis -- see
     # `test_from_raw_data_leaves_a_complete_sidecar_set` for why it is gone.
     assert not symbology_report.exists(), symbology_report
@@ -1638,6 +1650,10 @@ def test_a_refused_reconversion_keeps_the_existing_identity_reports(
         _convert(widened)
 
     assert filter_report.read_bytes() == filter_bytes
+    # The ticker sidecar is under the same guard and for the same reason: the
+    # widened roster would have named SECOND_PERMNO in a file sitting beside a
+    # store that never carried it (03.11-09).
+    assert ticker_sidecar.read_bytes() == ticker_bytes
     assert not symbology_report.exists(), symbology_report
 
 

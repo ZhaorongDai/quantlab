@@ -33,8 +33,12 @@ from quantlab.dataset.cleaning import REQUIRED_COLUMNS
 #: - `.crsp_filter_report.json` -- what the security filter dropped and what an
 #:   explicit roster overrode (`roster_overrides`). The D-17 audit artefact.
 #: - `.crsp_symbology_report.json` -- every ticker identity decision.
+#: - `.crsp_tickers.json` -- the PERMNO -> period-correct ticker interval table
+#:   a display layer reads to spell the int64 axis for a human (03.11-09,
+#:   D-03). It names the PANEL's PERMNOs, so a rebuild that narrowed or widened
+#:   the roster leaves the previous panel's names behind unless it is cleared.
 #:
-#: **All four must be DELETED before a rebuild, not just the store.**
+#: **All five must be DELETED before a rebuild, not just the store.**
 #: `dataset/crsp.py:_write_identity_reports` opens with a store-exists guard
 #: (crsp.py:1414): when the store is already on disk it returns without
 #: rewriting the reports. That guard is correct for an append -- it stops a
@@ -52,6 +56,7 @@ CRSP_SIDECAR_SUFFIXES: tuple[str, ...] = (
     ".crsp_adjustment.json",
     ".crsp_filter_report.json",
     ".crsp_symbology_report.json",
+    ".crsp_tickers.json",
 )
 
 
