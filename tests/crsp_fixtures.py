@@ -576,6 +576,18 @@ SECINFO_ROWS: list[dict[str, str | None]] = [
     secinfo_row(86755, "2011-03-23", "2025-12-31", "QQQ", None, None,
                 securitytype="FUND", securitysubtype="ETF", issuertype="ACOR",
                 securitynm="INVESCO QQQ TRUST"),
+    # -- 7000, a PERMNO that NEVER had a ticker. SYNTHETIC in its digits, LIVE
+    #    in its shape (RESEARCH R5c): 1,012 PERMNOs in the raw tier carry no
+    #    ticker on ANY of their intervals, 1,003 of them read `EQTY/COM/NS` --
+    #    the ordinary-common-stock combination, which is why no type predicate
+    #    can pick them out (RULING 1). Every such interval ends before
+    #    1983-04-13; this one ends on that date, which is what makes the
+    #    "zero admissions after 1990-08-20" boundary testable.
+    #
+    #    Four digits on purpose: 7000 also puts the numeric-vs-lexicographic
+    #    axis order (D-19) into the corpus, since '10107' < '7000' as text.
+    secinfo_row(7000, "1970-01-02", "1983-04-13", None, None, None,
+                securitybegdt="1970-01-02", securityenddt="1983-04-13"),
 ]
 
 #: `stkdelists`, VERBATIM `03.10-LIVE-CHECK-2.json` key `L3_2` (Lehman).

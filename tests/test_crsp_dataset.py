@@ -1634,3 +1634,138 @@ def test_a_refused_reconversion_keeps_the_existing_identity_reports(
 
     assert filter_report.read_bytes() == filter_bytes
     assert not symbology_report.exists(), symbology_report
+
+
+
+# ---------------------------------------------------------------------------
+# D-14 / RULING 1: admission without a ticker is COUNTED, not predicated away
+# ---------------------------------------------------------------------------
+#
+# On the ticker axis, a PERMNO whose security-info intervals carried no ticker
+# on a given day could not enter the panel at all: `CrspSymbology.label_rows`
+# as-of joins onto `symbol_intervals().drop_nulls("symbol")` and DROPS every
+# row it cannot label. That was an admission rule nobody had written down --
+# "must have a ticker" was a side effect of needing a column name.
+#
+# On the PERMNO axis the rule simply stops applying, and the panel gets wider.
+# D-10 originally asked for the implicit rule to be replaced by an explicit
+# `securitytype`/`sharetype` predicate. RESEARCH R5c measured that this cannot
+# be done: 1,003 of the 1,012 never-ticker PERMNOs read `EQTY/COM/NS`, the same
+# combination as ordinary common stock, so any type predicate either excludes
+# none of them or excludes real common stock with them. `securityactiveflg` is
+# not a column of the daily raw tier at all.
+#
+# The operator's RULING 1 is therefore: LET THEM IN, and make the widening
+# VISIBLE. `{zarr}.crsp_filter_report.json` carries an `admitted_without_ticker`
+# key -- always, even when empty -- and a warning fires when it is not.
+#
+# The measured boundary: every never-ticker interval in the raw tier ends
+# before 1983-04-13, so the widening for any window starting on or after
+# 1990-08-20 is exactly zero. Both halves are asserted below.
+
+TICKERLESS_PERMNO = "7000"
+TICKERLESS_DAYS = ("1982-06-01", "1982-06-02", "1982-06-03")
+MODERN_DAYS = ("1990-08-21", "1990-08-22", "1990-08-23")
+
+
+def _filter_report(dataset_config):
+    """The `{zarr}.crsp_filter_report.json` payload beside a converted store."""
+    import json
+    from pathlib import Path
+
+    from quantlab.dataset.crsp import FILTER_REPORT_SUFFIX
+
+    path = Path(str(dataset_config.zarr_file_path) + FILTER_REPORT_SUFFIX)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _plain_rows(permnos_and_days):
+    """SYNTHETIC ordinary daily rows: `[(permno, days), ...]`."""
+    from tests.crsp_fixtures import dsf_row
+
+    rows = []
+    for permno, days in permnos_and_days:
+        price = 20.0
+        for day in days:
+            price *= 1.01
+            rows.append(
+                dsf_row(
+                    permno,
+                    day,
+                    dlyprc=f"{price:.6f}",
+                    dlyclose=f"{price:.6f}",
+                    dlyret="0.010000",
+                    dlyretx="0.010000",
+                )
+            )
+    return rows
+
+
+def test_a_permno_that_never_had_a_ticker_is_admitted_and_counted(
+    mock_crsp_session, tmp_path
+):
+    """RULING 1: it is IN the panel, and the report says how much that cost.
+
+    PERMNO 7000's single interval carries a NULL ticker (see `SECINFO_ROWS`),
+    so on the ticker axis every one of its rows was dropped as `unlabelled`.
+    Here it is a column like any other -- and the widening is a counted,
+    warned-about fact rather than a silent one.
+
+    The four-digit PERMNO is deliberate on a second count: `[7000, 14593]` is
+    the numeric axis order (D-19), while the lexicographic order this code used
+    until plan 03 would have produced `['14593', '7000']`.
+    """
+    dataset_config = _build_store(
+        tmp_path,
+        _plain_rows(
+            [(TICKERLESS_PERMNO, TICKERLESS_DAYS), (AAPL_PERMNO, TICKERLESS_DAYS)]
+        ),
+        [TICKERLESS_PERMNO, AAPL_PERMNO],
+        start="1982-06-01",
+        end="1982-06-30",
+    )
+    panel = _panel(dataset_config)
+
+    # Admitted, not excluded -- and in numeric order.
+    assert panel["symbol"].values.tolist() == [
+        int(TICKERLESS_PERMNO),
+        AAPL_AXIS,
+    ], panel["symbol"].values.tolist()
+
+    report = _filter_report(dataset_config)
+    assert "admitted_without_ticker" in report, sorted(report)
+    admitted = report["admitted_without_ticker"]
+    assert admitted["permnos"] == [int(TICKERLESS_PERMNO)], admitted
+    assert admitted["rows"] == len(TICKERLESS_DAYS), admitted
+    # AAPL HAS a ticker on these days, so it is not counted -- without this the
+    # field could pass by naming every PERMNO in the panel.
+    assert AAPL_AXIS not in admitted["permnos"], admitted
+
+
+def test_no_permno_is_admitted_without_a_ticker_after_1990_08_20(
+    mock_crsp_session, tmp_path
+):
+    """The measured boundary (RESEARCH R5c), and the key's UNCONDITIONAL
+    presence.
+
+    Every never-ticker interval in the raw tier ends before 1983-04-13, so a
+    window starting on or after 1990-08-20 admits nobody without a ticker --
+    which is why the two stores already on disk are untouched by RULING 1.
+
+    The key is written anyway. Absence and zero must stay distinguishable: a
+    reader of a store built before this field existed would otherwise be unable
+    to tell "nothing was admitted without a ticker" from "nobody counted".
+    """
+    dataset_config = _build_store(
+        tmp_path,
+        _plain_rows([(AAPL_PERMNO, MODERN_DAYS)]),
+        [AAPL_PERMNO],
+        start="1990-08-20",
+        end="1990-09-30",
+    )
+
+    report = _filter_report(dataset_config)
+    assert "admitted_without_ticker" in report, sorted(report)
+    assert report["admitted_without_ticker"] == {"permnos": [], "rows": 0}, report[
+        "admitted_without_ticker"
+    ]
