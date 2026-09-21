@@ -1419,8 +1419,8 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
 # Symbol-coordinate encoding (260908-dvv)
 # ---------------------------------------------------------------------------
 
-#: The two symbol-coordinate encodings that are LIVE on real stores today, and
-#: therefore the two a test exercising a widening method has to run under.
+#: The symbol-coordinate encodings that are LIVE on real stores, and therefore
+#: the ones a test exercising a widening method has to run under.
 #:
 #: Measured on this machine 2026-09-08 (numpy 2.5.2 / xarray 2026.7.0 /
 #: zarr 3.3.0):
@@ -1453,15 +1453,45 @@ def acquisition_config(tmp_path: Path) -> Callable[..., AcquisitionConfig]:
 #: `<U9` behaved IDENTICALLY across the whole widening battery once the label
 #: widths were natural, so it would be cost without coverage.
 #:
-#: These two names are load-bearing: they become the pytest parametrisation
-#: ids `[fixed_width]` and `[variable_length]` that the task gates count, and
-#: `tests/test_widening_fixture_realism.py` pins this tuple by literal
-#: equality so the parametrisation cannot be quietly reduced to one arm.
-SYMBOL_COORD_ENCODINGS = ("fixed_width", "variable_length")
+#: A THIRD arm joined in 03.11-02, and it is not a string encoding at all:
+#:
+#:   "int64"            the coordinate a PERMNO symbol axis writes. Measured
+#:                      2026-09-20 (numpy 2.5.3 / xarray 2026.7.0 / zarr
+#:                      3.3.0): on-disk `int64`, decoded `int64` (kind `i`),
+#:                      `encoding['dtype']` `int64`, serializer `BytesCodec`.
+#:                      Unlike the two string arms it has NO object-vs-
+#:                      StringDType round-trip ambiguity -- what goes in comes
+#:                      back, which is one of the reasons D-01 chose an
+#:                      integer axis.
+#:
+#:                      It exists because `stored_symbol_encoding` raised
+#:                      `AssertionError` on such a store before it, so this
+#:                      helper family could not describe the very axis phase
+#:                      03.11 migrates to. Its urgency is
+#:                      `XrBackend.widen_symbol_axis`, which silently emptied
+#:                      an int64 store (0 of 12 cells survived) with no
+#:                      exception and no log line.
+#:
+#: All three names are load-bearing: they become the pytest parametrisation
+#: ids `[fixed_width]`, `[variable_length]` and `[int64]` that the task gates
+#: count, and `tests/test_widening_fixture_realism.py` pins this tuple by
+#: literal equality so the parametrisation cannot be quietly reduced.
+SYMBOL_COORD_ENCODINGS = ("fixed_width", "variable_length", "int64")
 
-#: RED skeleton (03.11-02): the name exists so the realism pin fails on its
-#: ASSERTION rather than on an import error. Its membership lands with the
-#: third arm.
+#: The subset of `SYMBOL_COORD_ENCODINGS` that can carry an ARBITRARY label.
+#:
+#: This is what the shared `symbol_encoding` fixture parametrises over, and
+#: the narrowing is deliberate: every test that fixture serves labels its
+#: panels with tickers (`"A"`, `"MSFT"`, `"SATX-WS-A"`), and a ticker has no
+#: int64 spelling. Widening the fixture to the full tuple would not add
+#: coverage, it would make `symbol_coord` raise inside ~33 previously-passing
+#: tests. Suites whose labels are PERMNO-shaped opt into the int64 arm
+#: explicitly instead (`tests/test_symbol_axis_widening.py`).
+#:
+#: So the two names answer two different questions: `SYMBOL_COORD_ENCODINGS`
+#: is "what does this helper family MODEL", this one is "which of those can
+#: hold any label". `tests/test_widening_fixture_realism.py` pins the
+#: relationship so neither can drift into the other.
 SYMBOL_COORD_STRING_ENCODINGS = ("fixed_width", "variable_length")
 
 
@@ -1480,6 +1510,7 @@ def symbol_coord(symbols: Sequence[str], encoding: str) -> np.ndarray:
         np.array(list, dtype=object)          StringDType()   VLenUTF8Codec
         np.array(list, dtype=StringDType())   <U{n}           BytesCodec
         pd.Index(list)                        StringDType()   VLenUTF8Codec
+        np.asarray([int(s) ...], np.int64)    int64           BytesCodec
 
     READ ROW FOUR TWICE. `np.dtypes.StringDType()` is the dtype
     `xr.open_zarr` DECODES a production coordinate to, so it is the spelling
@@ -1495,15 +1526,37 @@ def symbol_coord(symbols: Sequence[str], encoding: str) -> np.ndarray:
     the natural `<U` width. That is deliberately byte-identical to what the
     owning suites' list literals already produced, so that arm is an
     unchanged CONTROL rather than a new case.
+
+    ROW SIX is the 03.11-02 addition, measured 2026-09-20 on this machine
+    (numpy 2.5.3 / xarray 2026.7.0 / zarr 3.3.0): `int64` in, `int64` on disk,
+    `int64` decoded, `BytesCodec`. The integer arm has NO round-trip ambiguity
+    to fall into -- the whole `object` vs `StringDType()` hazard that rows
+    three and four exist to document simply does not arise -- so the reason to
+    spell it explicitly is different: a caller may hand this helper digit
+    STRINGS (`"10107"`, the 03.10-era axis spelling) or ints, and
+    `np.asarray(["10107"], dtype=np.int64)` raises. The `int(s)` pass makes
+    both callers land on one coordinate.
+
+    A label that is not an integer at all (a ticker) raises here, by design:
+    `symbol_coord(["AAPL"], "int64")` has no answer, and inventing one would
+    put a fabricated PERMNO into a test fixture. That is also why the
+    `symbol_encoding` fixture parametrises only
+    `SYMBOL_COORD_STRING_ENCODINGS` -- see that constant.
     """
     if encoding == "fixed_width":
         return np.asarray(list(symbols))
     if encoding == "variable_length":
         return np.array(list(symbols), dtype=object)
+    if encoding == "int64":
+        return np.asarray([int(symbol) for symbol in symbols], dtype=np.int64)
+    # Traversed, never indexed. This message hardcoded `[0]` and `[1]` until
+    # 03.11-02, so the day a third arm arrived it would have gone on listing
+    # two of three accepted values -- a lie that only shows up to whoever
+    # already got the spelling wrong.
     raise ValueError(
         f"unknown symbol coordinate encoding {encoding!r}; "
-        f"accepted values are {SYMBOL_COORD_ENCODINGS[0]!r} and "
-        f"{SYMBOL_COORD_ENCODINGS[1]!r}"
+        f"accepted values are "
+        f"{', '.join(repr(name) for name in SYMBOL_COORD_ENCODINGS)}"
     )
 
 
@@ -1524,19 +1577,26 @@ def stored_symbol_encoding(path: str) -> str:
     `SYMBOL_COORD_ENCODINGS`.
 
     By dtype KIND -- `"U"` for numpy's fixed-width unicode, `"T"` for
-    `StringDType()` -- never by a width literal. The fixed-width arm's width
-    is a property of the LABELS (`<U1` for `A`/`B`/`C`, `<U9` for
-    `SATX-WS-A`), so any assertion pinned to a particular width reproduces at
-    one label set and nowhere else.
+    `StringDType()`, `"i"` for the integer axis -- never by a width literal.
+    The fixed-width arm's width is a property of the LABELS (`<U1` for
+    `A`/`B`/`C`, `<U9` for `SATX-WS-A`), so any assertion pinned to a
+    particular width reproduces at one label set and nowhere else. The integer
+    arm follows the SAME rule for the same reason and is therefore `kind ==
+    "i"` -- never an equality against the concrete 64-bit dtype object. A
+    store written on a 32-bit build, or one a future ingest narrows to
+    `int32`, is still the integer encoding, and a helper that answered
+    `AssertionError` there would be pinning a width all over again.
     """
     dtype = stored_symbol_dtype(path)
     if dtype == np.dtypes.StringDType():
         return "variable_length"
     if getattr(dtype, "kind", None) == "U":
         return "fixed_width"
+    if getattr(dtype, "kind", None) == "i":
+        return "int64"
     raise AssertionError(
         f"store {path!r} carries a symbol dtype this helper does not model: "
-        f"{dtype!r}. The two modelled encodings are "
+        f"{dtype!r}. The modelled encodings are "
         f"{SYMBOL_COORD_ENCODINGS!r}."
     )
 
@@ -1556,13 +1616,16 @@ def assert_stored_symbol_encoding(path: str, encoding: str) -> None:
     actual = stored_symbol_encoding(path)
     if actual == encoding:
         return
-    expected_dtype = (
-        np.dtypes.StringDType()
-        if encoding == "variable_length"
-        else np.asarray(
+    if encoding == "variable_length":
+        expected_dtype = np.dtypes.StringDType()
+    elif encoding == "int64":
+        expected_dtype = np.dtype(np.int64)
+    else:
+        # Reconstructed from the labels rather than named, because the
+        # fixed-width arm's WIDTH is a property of those labels.
+        expected_dtype = np.asarray(
             [str(label) for label in zarr.open_group(path, mode="r")["symbol"][:]]
         ).dtype
-    )
     raise AssertionError(
         f"store {path!r} was built with the {encoding!r} symbol encoding but "
         f"now carries {actual!r}: on-disk dtype is "
@@ -1572,9 +1635,9 @@ def assert_stored_symbol_encoding(path: str, encoding: str) -> None:
     )
 
 
-@pytest.fixture(params=SYMBOL_COORD_ENCODINGS)
+@pytest.fixture(params=SYMBOL_COORD_STRING_ENCODINGS)
 def symbol_encoding(request) -> str:
-    """Run a store-touching test once per LIVE production symbol encoding.
+    """Run a store-touching test once per LIVE production STRING encoding.
 
     This fixture is what makes realism the DEFAULT rather than something each
     individual test remembers to arrange. The three suites owning
@@ -1585,5 +1648,10 @@ def symbol_encoding(request) -> str:
     The ids are literally `[fixed_width]` and `[variable_length]`, which is
     what lets a mutation's red set be attributed to an ENCODING rather than to
     the tests merely being new.
+
+    **It parametrises `SYMBOL_COORD_STRING_ENCODINGS`, not the full
+    `SYMBOL_COORD_ENCODINGS`**, and the gap is deliberate: every test served
+    here labels its panels with tickers, and a ticker has no int64 spelling.
+    The reasoning is written out once, at that constant.
     """
     return request.param

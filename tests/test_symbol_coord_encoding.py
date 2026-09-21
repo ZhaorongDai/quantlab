@@ -41,11 +41,13 @@ from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 import zarr
 
 from conftest import (
     SYMBOL_COORD_ENCODINGS,
+    SYMBOL_COORD_STRING_ENCODINGS,
     stored_symbol_dtype,
     symbol_coord,
 )
@@ -307,11 +309,19 @@ def test_a_bare_python_list_reproduces_only_the_fixed_width_arm(
     assert stored_symbol_dtype(from_list) == stored_symbol_dtype(from_helper)
     assert stored_symbol_dtype(from_list) != stored_symbol_dtype(variable)
 
-    # Exactly one of the two live encodings is reachable from a list literal,
-    # which is the whole of the blind spot in one line.
+    # Exactly one of the two live STRING encodings is reachable from a list
+    # literal, which is the whole of the blind spot in one line.
+    #
+    # Probed over `SYMBOL_COORD_STRING_ENCODINGS` rather than the full
+    # `SYMBOL_COORD_ENCODINGS` since 03.11-02: `_LABELS` are tickers, and the
+    # int64 arm added there has no spelling for `"A"` -- `symbol_coord` raises
+    # rather than fabricate a PERMNO. Probing it here would replace this
+    # test's finding with a `ValueError` about the FIXTURE, which says nothing
+    # about what a list literal reproduces. The claim under test is about
+    # string encodings, and this is the constant that names them.
     reachable = [
         name
-        for name in SYMBOL_COORD_ENCODINGS
+        for name in SYMBOL_COORD_STRING_ENCODINGS
         if stored_symbol_dtype(
             _write_panel(
                 tmp_path / f"probe_{name}.zarr", symbol_coord(_LABELS, name)
@@ -320,3 +330,15 @@ def test_a_bare_python_list_reproduces_only_the_fixed_width_arm(
         == stored_symbol_dtype(from_list)
     ]
     assert reachable == ["fixed_width"], reachable
+
+    # And the exclusion is load-bearing rather than a quiet narrowing: the one
+    # arm left out of the probe is left out because it REFUSES these labels,
+    # not because looping it was inconvenient.
+    excluded = [
+        name
+        for name in SYMBOL_COORD_ENCODINGS
+        if name not in SYMBOL_COORD_STRING_ENCODINGS
+    ]
+    assert excluded == ["int64"], excluded
+    with pytest.raises(ValueError):
+        symbol_coord(_LABELS, "int64")
