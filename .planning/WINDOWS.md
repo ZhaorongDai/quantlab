@@ -306,7 +306,7 @@ last_updated: 2026-09-21T16:24:00.443Z
     "line": null,
     "description": "4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08.",
     "status": "fixed",
-    "reason": "",
+    "reason": "UAT 03.11 test 6 裁定为 fixed。交棒 owner plan 03.11-08 已执行，现场复核：`uv run pytest tests/test_ingest_wrds_crsp.py tests/test_no_identity_residue.py -q` = 32 passed；strict-xfail 分组 `DELETED_IN_03_11_08` 已不存在，`symbol_overrides` / `nan_adj_at_permno_seam` 已提升进 `tests/test_no_identity_residue.py:58` 的 `DELETED_IN_03_11_07`，该处注释记录了提升来由。",
     "recorded_at": "2026-09-21T04:00:30.770Z",
     "resolved_at": "2026-09-21T16:24:00.204Z"
   },
@@ -318,7 +318,7 @@ last_updated: 2026-09-21T16:24:00.443Z
     "line": null,
     "description": "test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited.",
     "status": "fixed",
-    "reason": "",
+    "reason": "UAT 03.11 test 6 裁定为 fixed。交棒 owner plan 03.11-08 已执行，现场复核：`uv run pytest tests/test_ingest_wrds_crsp.py tests/test_no_identity_residue.py -q` = 32 passed；strict-xfail 分组 `DELETED_IN_03_11_08` 已不存在，`symbol_overrides` / `nan_adj_at_permno_seam` 已提升进 `tests/test_no_identity_residue.py:58` 的 `DELETED_IN_03_11_07`，该处注释记录了提升来由。",
     "recorded_at": "2026-09-21T04:37:01.261Z",
     "resolved_at": "2026-09-21T16:24:00.323Z"
   },
@@ -330,7 +330,7 @@ last_updated: 2026-09-21T16:24:00.443Z
     "line": null,
     "description": "strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07",
     "status": "fixed",
-    "reason": "",
+    "reason": "UAT 03.11 test 6 裁定为 fixed。交棒 owner plan 03.11-08 已执行，现场复核：`uv run pytest tests/test_ingest_wrds_crsp.py tests/test_no_identity_residue.py -q` = 32 passed；strict-xfail 分组 `DELETED_IN_03_11_08` 已不存在，`symbol_overrides` / `nan_adj_at_permno_seam` 已提升进 `tests/test_no_identity_residue.py:58` 的 `DELETED_IN_03_11_07`，该处注释记录了提升来由。",
     "recorded_at": "2026-09-21T05:57:52.914Z",
     "resolved_at": "2026-09-21T16:24:00.443Z"
   },
