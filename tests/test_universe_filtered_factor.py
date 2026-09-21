@@ -676,6 +676,66 @@ def test_the_symbol_axis_is_the_same_in_two_disjoint_date_windows(
     assert DROPOUT in axes[1]
 
 
+@pytest.mark.parametrize(
+    "symbols",
+    [
+        pytest.param(["AAPL", "JUNKW", "ZVZZT", "AAC-WS"], id="ticker_axis"),
+        pytest.param([10107, 14593, 93436, 84788], id="permno_axis"),
+    ],
+)
+def test_mask_panel_never_drops_a_column(mask_factor, symbols):
+    """THE dividend of deleting condition (a): `_mask_panel` never narrows the
+    symbol axis, for any window and any symbol set.
+
+    `_mask_panel`'s only column-dropping branch was the static ticker rule.
+    With condition (a) gone it is a pure threshold, so out-of-universe shows up
+    as NaN CELLS and never as a missing column -- which makes LS-3's "the
+    symbol axis is independent of the date window" hold TRIVIALLY instead of
+    resting on the argument that the ticker rule happened to be date-
+    independent. `DLModel._align_prediction_symbols` raises when a trained
+    symbol is missing from a later window, so that is one risk source removed.
+
+    Both axes are parametrized on purpose. The `ticker_axis` case carries
+    exactly the shapes the nine deleted regexes matched (`JUNKW` the
+    fifth-letter warrant, `ZVZZT` an exchange test code, `AAC-WS` a delimited
+    warrant) -- the pre-deletion implementation drops all three here. The
+    `permno_axis` case is the CRSP reality that made the rule pointless: none
+    of the nine regexes can match a digit string, so even the pre-deletion
+    implementation drops nothing from it. The filter was not replaced, it had
+    silently stopped doing anything.
+    """
+    n_bars = 12
+    close = np.full((n_bars, len(symbols)), 50.0)
+    volume = np.full((n_bars, len(symbols)), 1_000_000.0)
+    # The second symbol is below `min_price` on EVERY bar, so its column is
+    # all-NaN in every window below -- teeth against a "drop whole-window-NaN
+    # columns" rule as well as against the ticker rule.
+    close[:, 1] = 1.0
+    panel = hand_panel(close, volume, symbols=symbols)
+
+    mask_factor._universe_mask = mask_factor.compute_universe_mask(panel)
+
+    windows = {
+        "full": slice(None),
+        # Shorter than the dollar-volume window: EVERY cell is NaN here.
+        "incomplete_window": slice(0, WINDOW - 1),
+        "tail": slice(n_bars - 2, None),
+    }
+    for label, window in windows.items():
+        masked = mask_factor._mask_panel(panel.isel(timestamp=window))
+        np.testing.assert_array_equal(
+            masked["symbol"].values,
+            panel["symbol"].values,
+            err_msg=f"the symbol axis was narrowed in the {label!r} window",
+        )
+
+    # Teeth: the masking itself still happened, so the equality above is a
+    # column being KEPT as NaN rather than the mask failing to apply.
+    full = mask_factor._mask_panel(panel)
+    assert np.isnan(full["close"].isel(symbol=1).values).all()
+    assert np.isfinite(full["close"].isel(symbol=0).values[WINDOW - 1 :]).all()
+
+
 # ---------------------------------------------------------------------------
 # Refusals and lookback widening
 # ---------------------------------------------------------------------------
@@ -706,6 +766,46 @@ def test_a_zero_window_is_refused(store):
 
     with pytest.raises(ValueError, match="window"):
         wrap(make_rank_close_factor(config), window=0)
+
+
+def test_the_static_ticker_rule_is_not_a_constructor_knob_any_more(store):
+    """Condition (a) was DELETED, not switched off.
+
+    A default-`False` flag would still be serialized by `get_config()`, still
+    be described in the docs and still do nothing -- the exact shape of dead
+    code this removal exists to avoid. Passing the old keyword must fail
+    loudly rather than be silently accepted and ignored.
+    """
+    _, config = store
+
+    with pytest.raises(TypeError, match="exclude_non_common"):
+        UniverseFilteredFactor(
+            make_rank_close_factor(config), exclude_non_common=False
+        )
+
+
+def test_get_config_carries_exactly_the_three_threshold_parameters(store):
+    """The serialized parameter set is `min_price` / `min_dollar_volume` /
+    `window`, and it round-trips.
+
+    `from_config` refuses an unknown key (D-25/WR-06), so a stored config
+    written before the deletion is rejected by name instead of rebuilding into
+    a wrapper with a parameter that no longer means anything.
+    """
+    _, config = store
+    factor = wrap(make_rank_close_factor(config), window=WINDOW)
+
+    saved = factor.get_config()
+    assert set(saved) == {
+        "name",
+        "factor",
+        "min_price",
+        "min_dollar_volume",
+        "window",
+    }
+
+    rebuilt = UniverseFilteredFactor.from_config(saved)
+    assert _normalized(rebuilt.get_config()) == _normalized(saved)
 
 
 def test_from_config_refuses_a_missing_or_unknown_parameter(store):
