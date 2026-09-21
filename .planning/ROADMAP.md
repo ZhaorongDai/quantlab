@@ -238,7 +238,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 7/11 plans executed
+**Plans:** 8/11 plans executed
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
@@ -281,7 +281,7 @@ Plans:
 
 **Wave 5** *(blocked on 07)*
 
-- [ ] 03.11-08-PLAN.md — 删 `symbol_overrides` / `nan_adj_at_permno_seam`、`collision_universe` → `roster_universe`（D-17）、两个 config setter 各装一条 `symbols` 拒绝（D-16）
+- [x] 03.11-08-PLAN.md — 删 `symbol_overrides` / `nan_adj_at_permno_seam`、`collision_universe` → `roster_universe`（D-17）、两个 config setter 各装一条 `symbols` 拒绝（D-16）
 
 **Wave 6** *(blocked on 08)*
 
