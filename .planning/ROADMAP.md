@@ -249,12 +249,12 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 12/13 plans executed, plus 2 gap-closure plans from `03.11-UAT.md`:
+**Plans:** 13/13 plans executed, plus 2 gap-closure plans from `03.11-UAT.md`:
 
 - [x] 03.11-12-PLAN.md — G-03.11-3: make `CrspTickerLookup.label()`'s "never raises" contract true for
   structurally CORRUPT sidecars, and pin the `predict_panel` happy path that a malformed audit file
   could crash
-- [ ] 03.11-13-PLAN.md — G-03.11-1 + G-03.11-2: bring `quantlab/base/backtest.py` inside the core-layer
+- [x] 03.11-13-PLAN.md — G-03.11-1 + G-03.11-2: bring `quantlab/base/backtest.py` inside the core-layer
   purity gate, and delete `_permno_breakdown`'s degenerate `symbol` field from both call sites
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
