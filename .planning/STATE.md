@@ -2,13 +2,13 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.11"
-current_phase_name: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal
+current_phase_name: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 status: executing
 stopped_at: Phase 03.9 complete, ready to plan Phase 3
-last_updated: "2026-09-21T02:33:21.860Z"
+last_updated: "2026-09-21T02:37:08.190Z"
 last_activity: 2026-09-20
-last_activity_desc: Phase 03.10 execution started
-state_head: 80e36c6e458936a224ca9314f0c04357b2bacf7d
+last_activity_desc: Phase 03.11 execution started
+state_head: ba4f5b3660b1bf044d1ae952468db0c13bad9c3f
 progress:
   total_phases: 18
   completed_phases: 1
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-15)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.10 — CRSP Stock v2 Daily Data via WRDS (INSERTED)
+**Current focus:** Phase 03.11 — CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 
 ## Current Position
 
-Phase: 03.11 (CRSP PERMNO symbol axis migration and Tiingo-era dead code removal) — READY TO EXECUTE
-Plan: 1 of 17
-Status: Ready to execute
-Last activity: 2026-09-20 — Phase 03.10 execution started
+Phase: 03.11 (CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)) — EXECUTING
+Plan: 1 of 11
+Status: Executing Phase 03.11
+Last activity: 2026-09-20 — Phase 03.11 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
