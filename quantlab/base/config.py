@@ -109,8 +109,20 @@ class CrspDatasetConfig(DatasetConfig):
     reference_dir: str
 
     #: Restrict the conversion to these PERMNOs (digit strings). `None` means
-    #: every PERMNO present in the raw tier. This is the RAW-side filter; the
-    #: inherited `symbols` is the TICKER-side one, applied after symbology.
+    #: every PERMNO present in the raw tier. It is the RAW-side filter, and
+    #: since 03.11-08 it is the ONLY roster field this vendor accepts.
+    #:
+    #: **The inherited `symbols` is REFUSED here** (RULING 3). It is the
+    #: base class's TICKER-side roster, and this panel's `symbol` axis is the
+    #: int64 PERMNO (D-01), so it names an axis that does not exist on CRSP.
+    #: `CrspStockDataset`'s config setter raises a `ValueError` naming this
+    #: field as the replacement, at ASSIGNMENT -- the failure it replaces was a
+    #: mid-run `KeyError` from a `.sel` of strings against an integer index,
+    #: which blamed the data for a field the caller chose. The base field
+    #: itself is untouched: a dozen non-CRSP readers depend on it, and PERMNO
+    #: is a CRSP-only identifier that Binance, Alpaca and WRDS TAQ will never
+    #: have. A period-correct TICKER for a PERMNO is read from the ticker
+    #: sidecar; it is not selected on.
     #:
     #: **`None` is the ONLY spelling of "every PERMNO"; an EMPTY TUPLE is
     #: REFUSED** at config assignment (WR-01). `()` could mean "no security" or
@@ -130,12 +142,6 @@ class CrspDatasetConfig(DatasetConfig):
     #: `{zarr}.crsp_filter_report.json`, never applied silently.
     permnos: tuple[str, ...] | None = None
 
-    #: `{PERMNO: symbol}`, applied BEFORE every symbology rule. The live case
-    #: is QQQ (PERMNO 86755), whose ticker really was `QQQQ` from 2004-12-01
-    #: to 2011-03-22 -- a rename an index panel does not want to see, because
-    #: the instrument never changed.
-    symbol_overrides: dict[str, str] | None = None
-
     #: WHICH SECURITIES the panel holds (D-06, D-17). Either the name of a
     #: preset in `quantlab/dataset/crsp.py:SECURITY_FILTER_PRESETS`
     #: (`"equity_common"`, `"shrcd_10_11"`, `"none"`) or an explicit
@@ -153,41 +159,36 @@ class CrspDatasetConfig(DatasetConfig):
     #: a re-download.
     security_filter: str | dict = "equity_common"
 
-    #: Break the adjusted series where a ticker column changes COMPANY (D-18).
-    #: When True (the default) the incoming PERMNO's first row in a symbol
-    #: column gets NaN `adjOpen/adjHigh/adjLow/adjClose/adjVolume`, so no
-    #: return and no rolling window spans two securities. Raw prices and
-    #: `permno` are untouched, and the seam is reported either way.
-    nan_adj_at_permno_seam: bool = True
-
-    #: **THE INDEX THIS CONVERSION IS SCOPED TO**, one of
-    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. It has two
-    #: uses, and the second is the larger one:
+    #: **THE INDEX WHOSE MEMBERSHIP IS AN EXPLICIT ROSTER FOR THIS
+    #: CONVERSION**, one of
+    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. `None`
+    #: means no index roster: the panel is then whatever `permnos` and
+    #: `security_filter` admit.
     #:
-    #: 1. It breaks a same-day ticker collision (D-04). `None` means that
-    #:    tie-break is unavailable, and a collision no other rule resolves
-    #:    REFUSES the conversion rather than merging two securities into one
-    #:    column.
-    #: 2. It is an EXPLICIT ROSTER that overrides `security_filter` (GAP-C, the
-    #:    operator's decision of 2026-09-20). The index provider already decided
-    #:    membership, so a member is never dropped by the type filter during its
-    #:    membership spell -- per DATE, from the same `permno_intervals` frame
-    #:    the tie-break reads. Outside its spells a PERMNO is an unspecified
-    #:    population again and the filter applies normally. The override is
-    #:    recorded under `roster_overrides` in
-    #:    `{zarr}.crsp_filter_report.json`, never applied silently.
+    #: It does ONE thing (GAP-C, the operator's decision of 2026-09-20, P8
+    #: 「优先保证成分股不缺」): it OVERRIDES `security_filter`. The index
+    #: provider already decided membership, so a member is never dropped by the
+    #: type filter during its membership spell -- per DATE, from the
+    #: `permno_intervals` frame of that index. Outside its spells a PERMNO is an
+    #: unspecified population again and the filter applies normally; scoping the
+    #: exemption to the spell is what keeps a roster from becoming a blanket
+    #: widening. The override is recorded under `roster_overrides` in
+    #: `{zarr}.crsp_filter_report.json` -- **never applied silently**, because a
+    #: row that survives a filter it does not satisfy has to be explicable
+    #: afterwards.
     #:
-    #: **The NAME is narrower than the responsibility, and was not changed.**
-    #: Every store this phase has already written carries a serialized
-    #: `config.json` that `quantlab/utils/module.py:load_backtester_from_config`
-    #: and the dataset rebuild path read back BY KEY, so a rename breaks the
-    #: round trip for data that exists on disk today. A SECOND field naming the
-    #: same universe would be worse: two fields carrying one fact can disagree,
-    #: and nothing at runtime would notice. A rename becomes forced the first
-    #: time a conversion legitimately needs a roster universe DIFFERENT from its
-    #: collision tie-break universe; at that point the field splits and both
-    #: names become accurate.
-    collision_universe: str | None = None
+    #: **The field was RENAMED in 03.11-08** (D-17), from a name taken from a
+    #: SECOND use it no longer has: it used to also break a same-day ticker
+    #: collision, by asking which of two PERMNOs sharing one `(date, symbol)`
+    #: cell was the index member. On a PERMNO axis (D-01) two securities never
+    #: share a cell, so that question is unaskable and 03.11-07 deleted the
+    #: machinery that asked it. What is left is the roster, so the name says
+    #: roster and matches the `roster_overrides` report key it feeds. The rename
+    #: breaks the round trip of any `config.json` already on disk -- an accepted
+    #: consequence under D-04 (no migration, no compatibility shim; the stores
+    #: are rebuilt). `example/wrds_crsp.md` carries the before/after for anyone
+    #: holding an old config.
+    roster_universe: str | None = None
 
     @classmethod
     def qqq_benchmark(
@@ -215,11 +216,16 @@ class CrspDatasetConfig(DatasetConfig):
         - `permnos=(QQQ_PERMNO,)` -- the ETF alone;
         - `security_filter="none"` -- QQQ is `FUND`/`ETF`, which the equity
           panel's default filter drops by design (D-06/D-17), so a benchmark
-          store built with that filter would come out EMPTY;
-        - `symbol_overrides={QQQ_PERMNO: "QQQ"}` -- CRSP's period-correct
-          ticker really was `QQQQ` from 2004-12-01 to 2011-03-22, so without
-          the override one instrument's history would arrive as two columns
-          with a hole in each.
+          store built with that filter would come out EMPTY.
+
+        A THIRD setting stood beside them until 03.11-08: a per-PERMNO ticker
+        pin, set here because CRSP's period-correct ticker for 86755 really was
+        `QQQQ` from 2004-12-01 to 2011-03-22, and on a ticker axis that split
+        one instrument's history into two columns with a hole in each. On a
+        PERMNO axis (D-01) the column IS 86755 for the whole history, so there
+        is nothing left for a pin to prevent and the field was deleted rather
+        than kept inert. The `QQQQ` era is not lost -- it survives as a ticker
+        sidecar interval, which is where a period-correct ticker belongs.
 
         **This store is DATA ONLY in phase 03.10** (D-16). Nothing here, and
         nothing in the CRSP dataset or acquisition modules, touches
@@ -240,7 +246,6 @@ class CrspDatasetConfig(DatasetConfig):
             end_date=end_date,
             permnos=(QQQ_PERMNO,),
             security_filter="none",
-            symbol_overrides={QQQ_PERMNO: "QQQ"},
         )
 
 

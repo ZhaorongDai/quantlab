@@ -159,10 +159,11 @@ CRSP_EXTRA_VARIABLES: tuple[str, ...] = (
 #: what makes a per-date verdict possible at all.
 #:
 #: The list is CLOSED on purpose (T-03.10-28). `ticker`, `permno` or a price
-#: column would also filter, but a ticker-picked panel that looks like a
+#: column would also filter, but a roster-picked panel that looks like a
 #: type-filtered one is exactly the silent substitution the report cannot
-#: catch -- the roster filter is `config.permnos`, the ticker filter is
-#: `config.symbols`, and this is the TYPE filter.
+#: catch -- the ROSTER filter is `config.permnos`, and this is the TYPE
+#: filter. There is no third: the base-class ticker-side roster is refused on
+#: this vendor (03.11-08), because the panel's axis is the PERMNO (D-01).
 #:
 #: The last four (`primaryexch`, `conditionaltype`, `tradingstatusflg`,
 #: `exchangetier`) are filterable but appear in NO preset: they change over a
@@ -297,8 +298,8 @@ def resolve_security_filter(
                 f"is not filterable. The filterable columns are "
                 f"{list(FILTERABLE_COLUMNS)} -- all per-day TYPE columns, so "
                 f"the verdict can be a per-date one. To restrict the ROSTER "
-                f"use config.permnos; to restrict the TICKERS use "
-                f"config.symbols."
+                f"use config.permnos -- the PERMNO is this panel's identity "
+                f"(D-01), and there is no ticker-side roster on this vendor."
             )
         if isinstance(allowed, (str, bytes)) or not isinstance(
             allowed, (list, tuple, set, frozenset)
@@ -333,6 +334,29 @@ class CrspStockDataset(StockDataset):
 
     #: The config class `quantlab/utils/module.py` rebuilds this dataset with.
     config_cls = CrspDatasetConfig
+
+    #: RULING 3, the FACTOR-side half of the refusal this class installs on
+    #: its own config setter. `BaseFactorConfig.symbols` is a DIFFERENT field
+    #: from `BaseDatasetConfig.symbols` -- same name, different dataclass, and
+    #: it filters at a different stage: `Factor._auto_filter` hands it to
+    #: `XrBackend.filter_by_symbol`, one bare `.sel`. Against this panel's
+    #: int64 PERMNO axis (D-01) that raises a mid-run `KeyError` reading like
+    #: missing data, when the fact is that the caller named the wrong field.
+    #:
+    #: DECLARED here and READ by `quantlab/base/factor.py`, so the factor base
+    #: never learns this class's name and the layering stays one-directional.
+    #: The sentence is this vendor's, because the reason is this vendor's.
+    REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {
+        "symbols": (
+            "This panel's symbol axis is the int64 PERMNO (D-01), while that "
+            "field is the base-class TICKER-side roster. Restrict the "
+            "CONVERSION with config.permnos on the dataset instead -- it is "
+            "the raw-side PERMNO roster, and it doubles as the explicit "
+            "roster that overrides config.security_filter. A period-correct "
+            "ticker for a PERMNO is READ from the ticker sidecar; it is not "
+            "something this panel selects on."
+        )
+    }
 
     #: The twelve variables a Tiingo daily panel carries, in `TiingoColumns.EOD`
     #: order. Derived from that constant rather than restated, so the drop-in
@@ -374,15 +398,46 @@ class CrspStockDataset(StockDataset):
                 f"{self.class_name}: vendor must be 'wrds' (CRSP is reached "
                 f"through the WRDS account); got {config.vendor!r}."
             )
+        # RULING 3. `symbols` is refused on this vendor -- at ASSIGNMENT, and
+        # by pointing at the field that does work.
+        #
+        # This panel's `symbol` axis is the int64 PERMNO (D-01); `symbols` is
+        # the BASE-class ticker-side roster, and CRSP has no ticker axis left
+        # for it to select. The field is not deleted and not renamed: a dozen
+        # non-CRSP readers depend on it and PERMNO is a CRSP-only identifier --
+        # Alpaca and WRDS TAQ key on a ticker and will never have one. So the
+        # discipline is installed HERE, on the vendor that cannot honour the
+        # field, and nowhere near the base class.
+        #
+        # Why assignment and not first use: `symbols=('AAPL',)` used to survive
+        # construction and the pull, and then either filter the derivation to
+        # zero rows or raise a `KeyError` from a `.sel` against an integer
+        # index. The KeyError says "not in the index" and points at the data;
+        # the fact is that the caller named the wrong FIELD. Non-None is the
+        # condition, not truthiness -- `()` is refused too, because the field
+        # is wrong on this vendor whatever it holds.
+        if config.symbols is not None:
+            rejected = config.symbols
+            raise ValueError(
+                f"{self.class_name}: config.symbols is not selectable on a "
+                f"CRSP panel; got {rejected!r}. This panel's symbol axis is "
+                f"the int64 PERMNO (D-01), while that field is the base-class "
+                f"TICKER-side roster -- two names for one axis, which disagree "
+                f"the moment a ticker is reused or renamed. Use config.permnos "
+                f"instead: it is the raw-side PERMNO roster, and it doubles as "
+                f"the explicit roster that overrides config.security_filter. A "
+                f"period-correct ticker for a PERMNO is READ from the ticker "
+                f"sidecar; it is not something this panel selects on."
+            )
         if config.permnos is not None:
             permnos = tuple(str(permno) for permno in config.permnos)
             bad = [permno for permno in permnos if not permno.isdigit()]
             if bad:
                 raise ValueError(
                     f"{self.class_name}: config.permnos must hold PERMNO digit "
-                    f"strings; {bad} are not. The TICKER filter is "
-                    f"config.symbols -- permnos selects the raw tier, before "
-                    f"symbology has run."
+                    f"strings; {bad} are not. permnos selects the RAW tier, "
+                    f"which keys on the PERMNO -- there is no ticker-side "
+                    f"roster on this vendor to put a ticker in instead."
                 )
             # WR-01. An empty tuple carried TWO possible meanings and no way to
             # tell them apart, so it is refused by NAME rather than given one of
@@ -417,13 +472,13 @@ class CrspStockDataset(StockDataset):
         )
         if isinstance(config.security_filter, dict):
             config.security_filter = dict(self._security_filter)
-        if config.collision_universe is not None:
+        if config.roster_universe is not None:
             from quantlab.dataset.crsp_membership import CrspMembership
 
-            if config.collision_universe not in CrspMembership.INDEXES:
+            if config.roster_universe not in CrspMembership.INDEXES:
                 raise ValueError(
-                    f"{self.class_name}: collision_universe "
-                    f"{config.collision_universe!r} is not a CRSP universe; "
+                    f"{self.class_name}: roster_universe "
+                    f"{config.roster_universe!r} is not a CRSP universe; "
                     f"this vendor serves {CrspMembership.INDEXES}."
                 )
 
@@ -433,7 +488,7 @@ class CrspStockDataset(StockDataset):
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
-        # The membership spells of `collision_universe`, memoised for the
+        # The membership spells of `roster_universe`, memoised for the
         # roster exemption in `_apply_security_filter` -- its one reader. Reset
         # here for the same reason the derivation is: a re-dated or re-rostered
         # config must not reuse the previous universe's spells.
@@ -669,7 +724,7 @@ class CrspStockDataset(StockDataset):
     # -- the security filter (D-06, D-17) -----------------------------------
 
     def _member_intervals(self) -> pl.DataFrame | None:
-        """`permno_intervals(collision_universe)`, read ONCE per instance.
+        """`permno_intervals(roster_universe)`, read ONCE per instance.
 
         `None` when no universe is configured, which is also "there is no
         membership fact to consult" for this frame's reader.
@@ -687,7 +742,7 @@ class CrspStockDataset(StockDataset):
 
         Invalidated in the `config` setter beside `_derivation_cache`.
         """
-        if self.config.collision_universe is None:
+        if self.config.roster_universe is None:
             return None
         cached = getattr(self, "_member_intervals_cache", None)
         if cached is None:
@@ -695,7 +750,7 @@ class CrspStockDataset(StockDataset):
 
             cached = CrspMembership(
                 CrspReference(self.config.reference_dir)
-            ).permno_intervals(self.config.collision_universe)
+            ).permno_intervals(self.config.roster_universe)
             self._member_intervals_cache = cached
         return cached
 
@@ -717,7 +772,7 @@ class CrspStockDataset(StockDataset):
                 f"config.permnos: {len(self.config.permnos)} PERMNO(s) named "
                 f"explicitly, exempt on every date"
             )
-        if self.config.collision_universe is not None:
+        if self.config.roster_universe is not None:
             intervals = self._member_intervals()
             spells = 0 if intervals is None else intervals.height
             members = (
@@ -726,7 +781,7 @@ class CrspStockDataset(StockDataset):
                 else intervals.get_column("permno").n_unique()
             )
             sources.append(
-                f"config.collision_universe={self.config.collision_universe!r}: "
+                f"config.roster_universe={self.config.roster_universe!r}: "
                 f"{members} member PERMNO(s) over {spells} membership spell(s), "
                 f"exempt on the dates inside a spell"
             )
@@ -744,7 +799,7 @@ class CrspStockDataset(StockDataset):
 
         - `config.permnos` -- the user NAMED these securities, so every date of
           each is exempt. A `--permnos` run is a roster, not a screen.
-        - `config.collision_universe` -- the index provider already decided
+        - `config.roster_universe` -- the index provider already decided
           membership, so a member is exempt on the dates INSIDE its membership
           spell and on no others. Scoping the exemption to the spell is what
           keeps it from becoming a blanket widening: a PERMNO's pre-membership
@@ -1395,8 +1450,8 @@ class CrspStockDataset(StockDataset):
         Overridden rather than inherited because `StockDataset`'s version
         reads the raw `symbol` column as text, and this panel's axis is the
         int64 PERMNO (D-01) -- the same labels, cast, and read off the
-        DERIVATION rather than off raw so the `config.symbols` restriction and
-        the security filter have already been applied.
+        DERIVATION rather than off raw so the `config.permnos` roster and the
+        security filter have already been applied.
 
         One of THREE places the pinned symbol axis is decided -- the others
         being `StockDataset._raw_axes_in_range` and
@@ -1415,23 +1470,24 @@ class CrspStockDataset(StockDataset):
 
         record = self._adjustment_record()
         derivation = self._derivation()
-        # ONE frame decides BOTH axes (WR-07). The `config.symbols` restriction
-        # is applied to the derivation FIRST, and the symbol axis and the
-        # timestamp axis are then read off that same filtered frame. Do not
-        # separate them again: `_raw_data_to_xr_window` applies the restriction
-        # too, so a timestamp axis taken from the unrestricted frame made
+        # ONE frame decides BOTH axes (WR-07). The roster restriction is
+        # `config.permnos` and it is applied INSIDE `_derivation()`, so both
+        # axes below are read off one already-restricted frame. Do not filter
+        # here again and do not take either axis from a wider frame: a
+        # timestamp axis taken from the unrestricted frame made
         # `from_raw_data_chunked` plan windows over every day ANY security
-        # traded. A window the requested symbol has no rows in densifies to a
+        # traded. A window the requested security has no rows in densifies to a
         # zero-length `timestamp` dimension and appends nothing, while
         # `_reconcile_new_listings` was handed `len(timestamps)` from the wider
         # frame -- so a later `widen` rewrite pins the on-disk chunk grid against
         # an extent the store will never reach, and the chunk ledger persists a
-        # completed window over days that symbol never traded.
-        if self.config.symbols:
-            wanted = {int(symbol) for symbol in self.config.symbols}
-            derivation = derivation.filter(
-                pl.col("symbol").is_in(sorted(wanted))
-            )
+        # completed window over days that security never traded.
+        #
+        # A SECOND restriction, on the base-class ticker-side roster, used to
+        # stand here. That field is refused on this vendor since 03.11-08 (see
+        # the config setter), so there is now one roster field and one place it
+        # is applied.
+        #
         # The ONE place the CRSP panel's symbol axis is decided -- its dtype
         # (int64 PERMNO, D-01) and its ORDER (numeric, D-19) both. `sorted()`
         # on the string spelling put 5-digit PERMNOs before 4-digit ones
@@ -1518,15 +1574,15 @@ class CrspStockDataset(StockDataset):
         # (D-01), and `is_in` on a list of strings matches NOTHING against an
         # integer column -- it would filter every window down to zero rows
         # without raising.
+        # The ARGUMENT is the only restriction applied here. It used to have an
+        # `elif` arm on the base-class ticker-side roster; that field is
+        # refused on this vendor since 03.11-08, and `config.permnos` -- the
+        # roster that replaced it -- is already applied inside `_derivation()`,
+        # which this window slices. Re-applying it here would be a second
+        # filter over an already-restricted frame.
         if symbols is not None:
             window = window.filter(
                 pl.col("symbol").is_in([int(symbol) for symbol in symbols])
-            )
-        elif self.config.symbols:
-            window = window.filter(
-                pl.col("symbol").is_in(
-                    [int(symbol) for symbol in self.config.symbols]
-                )
             )
         self._assert_unique_panel_keys(window)
 

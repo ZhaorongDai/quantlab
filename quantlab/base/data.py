@@ -86,6 +86,28 @@ class BaseDataset(ABC):
 
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
+    #: `{field name: why it is refused}` -- the fields of a FACTOR's config
+    #: that a factor built over THIS dataset must not set. Empty for every
+    #: vendor that has no such field; a subclass overrides it to declare one.
+    #:
+    #: **A DECLARATION, read by `quantlab/base/factor.py`.** The refusal it
+    #: causes is raised in the factor's config setter, but the reason belongs
+    #: to the vendor, so the vendor writes it and the base only reads. That
+    #: direction is the point: `base/factor.py` must not learn the name of a
+    #: concrete `Dataset` subclass, because this repository's layering runs
+    #: `base -> dataset/factor/label -> model -> backtest` and an `isinstance`
+    #: check against a vendor class in the factor base would run the other way.
+    #:
+    #: The live case is `CrspStockDataset` (03.11-08) and `symbols`: a factor
+    #: over a CRSP panel hands `BaseFactorConfig.symbols` to
+    #: `XrBackend.filter_by_symbol`, whose bare `.sel` would meet an int64
+    #: PERMNO axis (D-01) and raise a mid-run `KeyError` blaming the data.
+    #:
+    #: The value is the SENTENCE appended to the refusal, so it must say why
+    #: AND what to use instead. A reason that only says "not supported" leaves
+    #: the caller exactly as stuck as the `KeyError` did.
+    REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {}
+
     #: How `update()` asks `from_raw_data_chunked()` to resolve the strategy
     #: from raw-layer EVIDENCE instead of being told one.
     #:

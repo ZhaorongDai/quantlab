@@ -918,7 +918,7 @@ def test_two_active_securities_under_one_ticker_convert_without_a_universe(
 def test_a_configured_universe_no_longer_decides_who_owns_a_ticker(
     mock_crsp_session, tmp_path
 ):
-    """`collision_universe` does not silence the non-member any more.
+    """`roster_universe` does not silence the non-member any more.
 
     It used to be the tie-break: the member kept the column and the outsider
     was DROPPED from the panel. That is a real loss of data driven by a naming
@@ -936,7 +936,7 @@ def test_a_configured_universe_no_longer_decides_who_owns_a_ticker(
         end="2011-01-31",
         extra_secinfo=_tie_secinfo(),
         dsp500_rows=_tie_dsp500_rows(),
-        collision_universe="crsp_sp500",
+        roster_universe="crsp_sp500",
     )
     panel = _panel(dataset_config)
 
@@ -1019,18 +1019,19 @@ def _qqq_raw(tmp_path):
 def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     mock_crsp_session, tmp_path
 ):
-    """D-15: QQQ gets its OWN store, filter off, ticker pinned.
+    """D-15: QQQ gets its OWN store, filter off, ONE column across the years.
 
-    `qqq_benchmark` states all three facts at once -- `permnos=('86755',)`,
-    `security_filter='none'` and `symbol_overrides={'86755': 'QQQ'}` -- so a
-    caller cannot accidentally build it with the equity panel's filter, which
-    drops `FUND`/`ETF`.
+    `qqq_benchmark` states both surviving facts at once -- `permnos=('86755',)`
+    and `security_filter='none'` -- so a caller cannot accidentally build it
+    with the equity panel's filter, which drops `FUND`/`ETF`.
 
-    The `symbol_overrides` half is now INERT as far as the axis goes: CRSP's
-    period-correct `QQQQ` ticker could split the series into two columns only
-    while the axis WAS the ticker, and PERMNO 86755 is one column across all
-    of it with or without the override. The field is removed in plan 08; the
-    factory still writes it today, which is what this asserts.
+    It used to state a THIRD: a per-PERMNO ticker pin over CRSP's
+    period-correct `QQQQ` era (2004-12-01..2011-03-22). That era could split
+    one instrument into two columns only while the axis WAS the ticker; on the
+    PERMNO axis (D-01) 86755 is one column across all of it, so 03.11-08
+    deleted the field rather than keep it inert. This test now asserts the
+    OUTCOME the pin used to buy -- one symbol across the QQQQ years -- which is
+    the assertion that survives the field, and the reason the deletion is safe.
 
     The numbers are the drop-in promise applied to an ETF: the anchor row's
     adjusted close IS its raw close, and 1999's volume scales by the
@@ -1051,7 +1052,6 @@ def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     assert QQQ_PERMNO == QQQ_PERMNO_TEXT
     assert benchmark.permnos == (QQQ_PERMNO,)
     assert benchmark.security_filter == "none"
-    assert benchmark.symbol_overrides == {QQQ_PERMNO: "QQQ"}
 
     _convert(benchmark)
     panel = _panel(benchmark)
@@ -1165,13 +1165,11 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
             start_date="2010-01-01",
             end_date="2020-12-31",
             permnos=("10107", "14593"),
-            symbol_overrides={"86755": "QQQ"},
             security_filter={
                 "securitytype": ["EQTY"],
                 "securitysubtype": ["COM"],
             },
-            nan_adj_at_permno_seam=False,
-            collision_universe="crsp_sp500",
+            roster_universe="crsp_sp500",
         )
     )
     saved = dataset.get_config()
@@ -1184,8 +1182,7 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
     assert rebuilt.get_config() == saved
     assert rebuilt.config.permnos == ("10107", "14593")
     assert rebuilt.config.security_filter["securitytype"] == ("EQTY",)
-    assert rebuilt.config.nan_adj_at_permno_seam is False
-    assert rebuilt.config.collision_universe == "crsp_sp500"
+    assert rebuilt.config.roster_universe == "crsp_sp500"
 
 
 # ---------------------------------------------------------------------------
@@ -1384,7 +1381,7 @@ def test_a_member_is_not_dropped_by_the_filter_during_its_spell(
         _roster_store(
             tmp_path,
             store="member_default.zarr",
-            collision_universe="crsp_sp500",
+            roster_universe="crsp_sp500",
         )
     )
     unfiltered = _panel(
@@ -1410,7 +1407,7 @@ def test_an_explicitly_named_permno_is_not_dropped_by_the_filter(
     """GAP-C: a `--permnos` run named the securities, so none of them is
     screened out -- on any of its dates, membership spell or not.
 
-    `config.permnos` is unconditional where `collision_universe` is per-date:
+    `config.permnos` is unconditional where `roster_universe` is per-date:
     the user named the security, not a window of it.
     """
     panel = _panel(
@@ -1435,7 +1432,7 @@ def test_without_a_roster_the_filter_still_truncates_the_rejected_era(
     """The MIRROR IMAGE of the two tests above, over the SAME fixture.
 
     Together the three prove the exemption is SCOPED rather than a blanket
-    widening: with neither `permnos` nor `collision_universe` set there is no
+    widening: with neither `permnos` nor `roster_universe` set there is no
     explicit roster, the population is unspecified, and excluding a partnership
     era is exactly what the filter is for (D-06, D-17). This test goes red if
     the exemption ever widens to the unspecified population -- the failure mode
@@ -1462,7 +1459,7 @@ def test_the_filter_report_names_the_roster_rescue(mock_crsp_session, tmp_path):
     `dropped_permnos` -- it was not dropped.
     """
     dataset_config = _roster_store(
-        tmp_path, store="report.zarr", collision_universe="crsp_sp500"
+        tmp_path, store="report.zarr", roster_universe="crsp_sp500"
     )
 
     report = _filter_report(dataset_config)
@@ -1516,7 +1513,7 @@ def test_every_member_survives_every_preset_on_its_member_dates(
         tmp_path,
         store=f"invariant_{preset}.zarr",
         security_filter=preset,
-        collision_universe="crsp_sp500",
+        roster_universe="crsp_sp500",
     )
     panel = _panel(dataset_config)
     intervals = CrspMembership(
@@ -1613,7 +1610,15 @@ def _axis_secinfo():
 def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
     mock_crsp_session, tmp_path
 ):
-    """WR-07: `config.symbols` must restrict the TIMESTAMP axis too.
+    """WR-07: a roster restriction must restrict the TIMESTAMP axis too.
+
+    **The restriction is spelled `config.permnos` since 03.11-08.** It was
+    `config.symbols` when this test was written; that field is now refused on
+    this vendor (RULING 3, the tests at the foot of this module), and `permnos`
+    is the roster field that survives. The DEFECT CLASS is unchanged and is
+    what this test is for -- a frame filtered for the symbol axis while the
+    timestamp axis is read off the unfiltered one -- so the test moves to the
+    surviving field rather than being deleted with the old one.
 
     `_raw_axes_in_range` filtered the symbol axis and took the timestamp axis
     from the UNFILTERED derivation, so a symbol-restricted conversion planned its
@@ -1658,7 +1663,7 @@ def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
             start="2010-01-01",
             end="2012-12-31",
             store="axis_probe.zarr",
-            symbols=(AXIS_KEPT_PERMNO,),
+            permnos=(AXIS_KEPT_PERMNO,),
         )
     )
     pinned_symbols, pinned_timestamps = probe._raw_axes_in_range()
@@ -1674,7 +1679,7 @@ def test_a_symbol_restricted_conversion_pins_only_that_symbols_days(
         start="2010-01-01",
         end="2012-12-31",
         store="axis.zarr",
-        symbols=(AXIS_KEPT_PERMNO,),
+        permnos=(AXIS_KEPT_PERMNO,),
     )
     _convert(dataset_config)
 
@@ -1834,3 +1839,278 @@ def test_a_none_permnos_roster_converts_the_whole_raw_tier(
     assert sorted(_symbols(panel)) == sorted(
         [int(AXIS_KEPT_PERMNO), int(AXIS_OTHER_PERMNO)]
     ), _symbols(panel)
+
+
+# ---------------------------------------------------------------------------
+# RULING 3: `config.symbols` is REFUSED on a CRSP panel
+# ---------------------------------------------------------------------------
+#
+# `symbols` is a BASE-class field (`BaseDatasetConfig.symbols`) with a dozen
+# non-CRSP readers -- Alpaca and WRDS TAQ key on a ticker and have no PERMNO at
+# all -- so it is neither deleted nor renamed. What changes is what it means on
+# THIS vendor: the CRSP panel's symbol axis is the int64 PERMNO (D-01), so a
+# ticker roster handed to `symbols` describes an axis that does not exist.
+#
+# The refusal happens at CONFIG ASSIGNMENT and names `permnos`, because the
+# failure it replaces was a mid-run one: `symbols=('AAPL',)` used to survive
+# construction, survive the pull, and then either filter the derivation down to
+# zero rows or raise a `KeyError` from a `.sel` against an integer index --
+# pointing at "not in the index" when the real fact is that the caller named the
+# wrong field.
+
+
+def test_a_ticker_roster_in_config_symbols_is_refused_at_assignment(tmp_path):
+    """`symbols=('AAPL',)` raises at assignment and points at `permnos`."""
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    with pytest.raises(ValueError) as excinfo:
+        CrspStockDataset(_bare_config(tmp_path, symbols=("AAPL",)))
+
+    message = str(excinfo.value)
+    assert "config.symbols" in message, message
+    # The whole point of refusing at assignment is to hand back the field the
+    # caller should have used. A refusal that only says "not supported" leaves
+    # them exactly as stuck as the KeyError did.
+    assert "permnos" in message, message
+    # And the value, so someone who mistyped one entry of a long roster can see
+    # which one they wrote.
+    assert "AAPL" in message, message
+
+
+def test_config_symbols_none_is_the_only_accepted_spelling(tmp_path):
+    """The default is untouched: `None` constructs exactly as before."""
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    dataset = CrspStockDataset(_bare_config(tmp_path))
+    assert dataset.config.symbols is None
+
+    explicit = CrspStockDataset(_bare_config(tmp_path, symbols=None))
+    assert explicit.config.symbols is None
+
+
+def test_an_empty_config_symbols_tuple_is_refused_too(tmp_path):
+    """`()` is refused as well -- NON-None is the condition, not truthiness.
+
+    Deliberately NOT the `permnos` treatment. `permnos` refuses `()` because
+    its two readings ("no security" / "every security") were indistinguishable
+    and one of them silently widened the panel (WR-01); there the emptiness is
+    the defect. Here the FIELD is wrong on this vendor whatever it holds, so
+    the gate is `is not None` and an empty tuple is refused for the same reason
+    a full one is.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    with pytest.raises(ValueError) as excinfo:
+        CrspStockDataset(_bare_config(tmp_path, symbols=()))
+
+    assert "permnos" in str(excinfo.value), str(excinfo.value)
+
+
+def test_a_non_crsp_dataset_still_accepts_config_symbols(tmp_path):
+    """CONTROL ARM: the base field is unchanged for every other vendor.
+
+    PERMNO is a CRSP-only identifier. Binance and Alpaca will never have one,
+    so a refusal installed on `BaseDatasetConfig` -- or a rename of the field,
+    or of the `symbol` DIMENSION -- would break a dozen readers to tidy up one
+    vendor. This test is what makes that regression loud.
+    """
+    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.stock import StockDataset
+
+    dataset = StockDataset(
+        DatasetConfig(
+            zarr_file_path=str(tmp_path / "stock.zarr"),
+            raw_data_dir_path=str(tmp_path / "raw"),
+            catalog_path=str(tmp_path / "catalog"),
+            market="us_equity",
+            frequency="1d",
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+            symbols=("AAPL", "MSFT"),
+        )
+    )
+    assert dataset.config.symbols == ("AAPL", "MSFT")
+
+
+def test_crsp_has_no_reader_of_config_symbols():
+    """Nothing in `crsp.py` READS `config.symbols` any more.
+
+    The refusal is only half the change. Two readers filtered on the field --
+    the pinned-axis restriction and the window restriction -- and leaving
+    either one in place would mean the field still had a live meaning on this
+    vendor that the setter claims it does not. Asserted over the SOURCE rather
+    than by behaviour because "no reader" is a statement about the file, and a
+    behavioural test could only ever sample the paths it happens to walk.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "quantlab"
+        / "dataset"
+        / "crsp.py"
+    )
+    readers = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if re.search(r"self\.config\.symbols", line)
+    ]
+    assert readers == [], readers
+
+
+# ---------------------------------------------------------------------------
+# RULING 3, the second installation point: the FACTOR layer's own `symbols`
+# ---------------------------------------------------------------------------
+#
+# `BaseFactorConfig.symbols` is a DIFFERENT FIELD from `BaseDatasetConfig.
+# symbols` -- same name, different dataclass, and it filters at a different
+# stage of the pipeline. `Factor._auto_filter` hands it to
+# `XrBackend.filter_by_symbol`, a one-line bare `.sel`. A factor over a CRSP
+# panel with `symbols=('AAPL',)` therefore `.sel`s strings against an int64
+# index and dies MID-RUN with a `KeyError` that reads like missing data.
+#
+# So the refusal is installed twice, once per field, and the two messages are
+# the same shape on purpose: two installation points of one discipline, not
+# two ad-hoc patches.
+
+
+def _crsp_dataset_for_factor(tmp_path):
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    return CrspStockDataset(_bare_config(tmp_path))
+
+
+def _tiingo_dataset_for_factor(tmp_path):
+    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.stock import StockDataset
+
+    return StockDataset(
+        DatasetConfig(
+            zarr_file_path=str(tmp_path / "stock.zarr"),
+            raw_data_dir_path=str(tmp_path / "raw"),
+            catalog_path=str(tmp_path / "catalog"),
+            market="us_equity",
+            frequency="1d",
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+        )
+    )
+
+
+def _momentum_over(dataset, **overrides):
+    """A `Momentum` factor over `dataset`, with the factor names PINNED.
+
+    Pinning short-circuits the probe read that name derivation would otherwise
+    do, so these tests exercise the config setter and nothing else -- which is
+    the whole claim: the refusal fires at ASSIGNMENT, before any store is
+    opened, so it cannot be mistaken for a missing-data error.
+    """
+    from quantlab.base.config import PolarsFactorConfig
+    from quantlab.factor.momentum import Momentum
+
+    return Momentum(
+        PolarsFactorConfig(
+            window=5,
+            dataset=dataset,
+            factor_names=("pinned",),
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+            **overrides,
+        )
+    )
+
+
+def test_a_crsp_backed_factor_refuses_a_ticker_roster_at_assignment(tmp_path):
+    """A factor over a CRSP dataset refuses `config.symbols`, naming `permnos`."""
+    with pytest.raises(ValueError) as excinfo:
+        _momentum_over(_crsp_dataset_for_factor(tmp_path), symbols=("AAPL",))
+
+    message = str(excinfo.value)
+    assert "config.symbols" in message, message
+    assert "permnos" in message, message
+    assert "AAPL" in message, message
+
+
+def test_a_crsp_backed_factor_with_no_roster_is_unchanged(tmp_path):
+    """`symbols=None` -- the default -- constructs exactly as before."""
+    factor = _momentum_over(_crsp_dataset_for_factor(tmp_path))
+    assert factor.config.symbols is None
+
+
+def test_a_non_crsp_backed_factor_still_accepts_a_ticker_roster(tmp_path):
+    """CONTROL ARM: a Tiingo-backed factor's `symbols` is untouched.
+
+    The refusal is declared by the DATASET and read by the factor base, so a
+    vendor that never declared it is unaffected. Without this arm the guard
+    could be widened to every factor and nothing would notice.
+    """
+    factor = _momentum_over(
+        _tiingo_dataset_for_factor(tmp_path), symbols=("AAPL", "MSFT")
+    )
+    assert factor.config.symbols == ("AAPL", "MSFT")
+
+
+def test_the_factor_refusal_fires_before_auto_filter_is_reachable(tmp_path):
+    """The refusal happens at assignment, so the bare `.sel` is never reached.
+
+    `_auto_filter` is what would hand the ticker roster to
+    `XrBackend.filter_by_symbol`. This asserts the failure arrives while the
+    CONFIG is being set -- before construction finishes, so before any method
+    on the factor can be called, `_auto_filter` included.
+    """
+    import quantlab.base.factor as factor_module
+
+    calls: list = []
+    original = factor_module.Factor._auto_filter
+
+    def _spy(self):
+        calls.append(self)
+        return original(self)
+
+    factor_module.Factor._auto_filter = _spy
+    try:
+        with pytest.raises(ValueError):
+            _momentum_over(
+                _crsp_dataset_for_factor(tmp_path), symbols=("AAPL",)
+            )
+    finally:
+        factor_module.Factor._auto_filter = original
+
+    assert calls == [], calls
+
+
+def test_the_factor_base_does_not_import_the_crsp_module():
+    """`base/factor.py` must not gain a `quantlab.dataset.crsp` import.
+
+    CLAUDE.md records this repo's layering as one-directional,
+    `base -> dataset/factor/label -> model -> backtest`. The refusal is
+    DECLARED by the dataset and READ by the base, so the base never learns a
+    concrete vendor's name.
+
+    The assertion is scoped to the `.crsp` SUBMODULE, not to
+    `quantlab.dataset` as a whole: `base/factor.py` has imported
+    `quantlab.dataset.backend.XrBackend` since long before this phase. That
+    is a known, pre-existing approximation of the layering, and the rule this
+    test enforces is the narrower one -- do not DEEPEN it from a storage
+    backend to a specific vendor Dataset subclass.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "quantlab"
+        / "base"
+        / "factor.py"
+    )
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if re.match(r"\s*(from|import)\s+quantlab\.dataset\.crsp\b", line)
+    ]
+    assert offenders == [], offenders

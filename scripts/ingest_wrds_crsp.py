@@ -498,7 +498,7 @@ if __name__ == "__main__":
                     end_date=window["end_date"],
                     permnos=equity_permnos,
                     security_filter=args.security_filter,
-                    collision_universe=args.universe,
+                    roster_universe=args.universe,
                 )
                 # `ds_config` directly: the former `replace(ds_config,
                 # symbols=None)` was a no-op, since `symbols` is already None on

@@ -6,7 +6,18 @@ Phase 03.11 moved the CRSP price panel's symbol axis onto the int64 PERMNO
 `(date, symbol)` collision tie-break, the share-class respelling pass, the
 delisting SYMBOL carry, the PERMNO seam with its NaN, and the symbology report
 that recorded all four. Plan 03.11-03 disconnected them; plan 03.11-07 deleted
-them. This file is what keeps them deleted.
+them, and plan 03.11-08 deleted the two config fields that were their last
+surface (a per-PERMNO ticker pin and the seam-NaN switch). This file is what
+keeps all of it deleted.
+
+**It was TWO lists between 03.11-07 and 03.11-08, and is one again.** The
+second held the names 08 was responsible for, in a STRICT expected-failure
+group: red on purpose while the fields still existed, and an unexpected PASS
+-- which strict mode reports as a failure -- the moment they were removed. The
+point was to give the deletion checklist exactly ONE home, so plan 08 could
+not finish without coming here, and so nobody had to re-derive the list from a
+SUMMARY that had scrolled out of context. It worked; the group is gone and the
+names sit on the single list below.
 
 **The hit test counts comments, and that is deliberate, not an oversight.**
 A conventional residue gate strips comments and looks only at live code. This
@@ -27,9 +38,9 @@ deliberately out of scope: a plan document has to be able to write
 to be able to say a mechanism was removed in 03.11. Naming the dead is how you
 explain a deletion; the rule is only that the SHIPPING PACKAGE may not.
 
-**Membership rule for the lists below.** A name goes on a list only if it was
+**Membership rule for the list below.** A name goes on it only if it was
 unique to the deleted machinery. `_as_date` was deleted from
-`crsp_symbology.py` in this plan and is deliberately NOT listed: three other
+`crsp_symbology.py` in 03.11-07 and is deliberately NOT listed: three other
 modules define their own private helper of that name, so listing it would make
 the gate cry wolf, and a gate that cries wolf is one people learn to skip.
 """
@@ -38,8 +49,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-
-import pytest
 
 #: The shipping package. The sibling of `tests/`, resolved from this file so
 #: the gate works from any working directory.
@@ -61,20 +70,20 @@ DELETED_IN_03_11_07: tuple[str, ...] = (
     # crsp_symbology.py -- the daily labeller and its per-PERMNO report shape
     "label_rows",
     "_per_permno",
-)
-
-#: Config fields that 03.11-08 deletes. NOT zero yet -- `symbol_overrides` and
-#: `nan_adj_at_permno_seam` are still declared on `CrspDatasetConfig`, and this
-#: phase's D-04 says no compatibility shim is written, so they go in one piece
-#: when plan 08 gets to them.
-#:
-#: They are listed HERE, in the gate, rather than being written down again in
-#: plan 08, so that the deletion checklist has ONE home. The test below is
-#: `xfail(strict=True)`: it is red today in the expected direction, and the
-#: moment plan 08 removes the fields it turns into an UNEXPECTED PASS, which
-#: strict xfail reports as a failure. That is the point -- plan 08 cannot
-#: finish without coming here to promote these two names onto the list above.
-DELETED_IN_03_11_08: tuple[str, ...] = (
+    # config fields deleted in 03.11-08, PROMOTED here out of the handover
+    # group 03.11-07 parked them in. They were the ticker axis's last two
+    # config fields: a per-PERMNO ticker PIN (the QQQ/QQQQ era) and the
+    # NaN-at-a-PERMNO-seam switch. On the int64 PERMNO axis (D-01) neither
+    # situation is expressible -- one instrument is one column for its whole
+    # history, and no column ever changes company -- so 03.11-08 deleted them
+    # outright under D-04, with no migration and no compatibility shim.
+    #
+    # The handover worked as designed. 03.11-07 parked the names in a STRICT
+    # expected-failure group, so deleting the fields without coming here would
+    # have turned that group into an unexpected PASS, which strict mode
+    # reports as a failure. The list never had to be re-derived from a SUMMARY
+    # that had scrolled out of context, and the group is gone now that the
+    # names live on the list above.
     "symbol_overrides",
     "nan_adj_at_permno_seam",
 )
@@ -133,26 +142,3 @@ def test_the_deleted_identity_machinery_leaves_no_residue_in_quantlab():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "03.11-08 deletes these two config fields; until it does they are "
-        "still declared on CrspDatasetConfig. When this starts passing, move "
-        "the names into DELETED_IN_03_11_07 and delete this test -- strict "
-        "xfail turns the unexpected pass into a failure so that promotion "
-        "cannot be forgotten."
-    ),
-)
-def test_the_config_fields_plan_08_deletes_leave_no_residue_in_quantlab():
-    """The same scan, over the names 03.11-08 is responsible for.
-
-    Red today, by design. It exists so the deletion checklist lives in ONE
-    place: plan 08 promotes these names above instead of re-deriving the list
-    from a SUMMARY that has long since scrolled out of anyone's context.
-    """
-    residue = _hits(DELETED_IN_03_11_08)
-
-    assert residue == [], (
-        f"{len(residue)} reference(s) to the config fields 03.11-08 deletes:\n"
-        + "\n".join(residue)
-    )

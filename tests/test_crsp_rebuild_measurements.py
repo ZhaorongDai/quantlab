@@ -169,7 +169,7 @@ def _config(root: Path) -> CrspDatasetConfig:
         end_date=END_DATE,
         permnos=permnos,
         security_filter="equity_common",
-        collision_universe="crsp_sp500",
+        roster_universe="crsp_sp500",
     )
 
 
