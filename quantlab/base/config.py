@@ -109,8 +109,20 @@ class CrspDatasetConfig(DatasetConfig):
     reference_dir: str
 
     #: Restrict the conversion to these PERMNOs (digit strings). `None` means
-    #: every PERMNO present in the raw tier. This is the RAW-side filter; the
-    #: inherited `symbols` is the TICKER-side one, applied after symbology.
+    #: every PERMNO present in the raw tier. It is the RAW-side filter, and
+    #: since 03.11-08 it is the ONLY roster field this vendor accepts.
+    #:
+    #: **The inherited `symbols` is REFUSED here** (RULING 3). It is the
+    #: base class's TICKER-side roster, and this panel's `symbol` axis is the
+    #: int64 PERMNO (D-01), so it names an axis that does not exist on CRSP.
+    #: `CrspStockDataset`'s config setter raises a `ValueError` naming this
+    #: field as the replacement, at ASSIGNMENT -- the failure it replaces was a
+    #: mid-run `KeyError` from a `.sel` of strings against an integer index,
+    #: which blamed the data for a field the caller chose. The base field
+    #: itself is untouched: a dozen non-CRSP readers depend on it, and PERMNO
+    #: is a CRSP-only identifier that Binance, Alpaca and WRDS TAQ will never
+    #: have. A period-correct TICKER for a PERMNO is read from the ticker
+    #: sidecar; it is not selected on.
     #:
     #: **`None` is the ONLY spelling of "every PERMNO"; an EMPTY TUPLE is
     #: REFUSED** at config assignment (WR-01). `()` could mean "no security" or
