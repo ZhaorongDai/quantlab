@@ -249,13 +249,33 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 13/13 plans executed, plus 2 gap-closure plans from `03.11-UAT.md`:
+**Plans:** 13/13 plans executed, plus 2 gap-closure plans from `03.11-UAT.md` and 5 more from
+`03.11-VERIFICATION.md` (2026-09-21 re-verification, 88/91) + `03.11-REVIEW.md` (WR-01..WR-04,
+IN-01..IN-04):
 
 - [x] 03.11-12-PLAN.md — G-03.11-3: make `CrspTickerLookup.label()`'s "never raises" contract true for
   structurally CORRUPT sidecars, and pin the `predict_panel` happy path that a malformed audit file
   could crash
 - [x] 03.11-13-PLAN.md — G-03.11-1 + G-03.11-2: bring `quantlab/base/backtest.py` inside the core-layer
   purity gate, and delete `_permno_breakdown`'s degenerate `symbol` field from both call sites
+- [ ] 03.11-14-PLAN.md — **G-03.11-4 (BLOCKER, wave 0)**: purge the poisoned-but-fresh-looking bytecode
+  cache, re-record an admissible regression baseline, and lock the "equal-length edit + restored mtime
+  ⇒ the `.pyc` never invalidates" lesson as an executable test
+- [ ] 03.11-15-PLAN.md — G-03.11-3 (WR-01 + WR-02) + IN-01: contain `RecursionError` in the `payload`
+  property, narrow the guard tuple to a module-level `_UNUSABLE` per the operator ruling, regress that
+  a bug inside the module propagates, and fix the call-site count in all five places it was copied to
+- [ ] 03.11-16-PLAN.md — IN-02 + IN-03 + IN-04: bring the third `_permno_breakdown` assertion up to its
+  two siblings' strength, point the module docstring at a function that exists, and state how narrow
+  the core-layer purity gate actually is
+- [ ] 03.11-17-PLAN.md — G-03.11-6 (WR-03 + WR-04): a once-per-instance degradation warning so a broken
+  sidecar stops being byte-identical to a store that never had one, and a shared `_object_payload()`
+  so `product_end` stops bypassing the one place the payload's shape is checked
+- [ ] 03.11-18-PLAN.md — G-03.11-5: regenerate the on-disk `.crsp_filter_report.json` from current HEAD
+  (operator ruling), and make the record's key set a standing assertion in the real-data rebuild gate
+
+**Still outstanding after this round (deliberately out of scope):** `03.11-UAT.md` test 4
+(`_compare_fingerprints` warning-storm backstop, `blocked_by: other` — needs a human running a real
+load-mode backtest) and the three `deferred-items.md` entries D-03.11-12-A/B/C.
 
 **Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
 They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
