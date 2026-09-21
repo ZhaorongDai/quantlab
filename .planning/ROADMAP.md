@@ -136,6 +136,102 @@ Plans:
 - [ ] 03-06-PLAN.md — Close CR-01: resolve Polars factor names on the `read()` path so `factor_data_strategy="read"` is backend-independent (D-03), plus the two-backend read-strategy lock
 - [ ] 03-07-PLAN.md — Close CR-02: US-equity `amount` becomes typical-price dollar volume (GAP-D-01) so `vwap` is no longer identically `close`, plus the VWAP non-degeneracy lock
 
+### Phase 03.11: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
+
+**Goal:** The CRSP price panel's `symbol` dimension becomes the **int64 PERMNO** instead of the
+ticker valid at each date, and every adaptation that existed only to make a reused/renamed ticker
+serviceable as the panel's identity axis is DELETED rather than kept behind a compatibility branch.
+A reused ticker can no longer concatenate two companies into one column, so the collision-resolution,
+class-suffix, delisting-symbol-carry, PERMNO-seam and `symbol_overrides` machinery all stop being
+needed at once. `ticker` leaves the panel entirely and lives in a sidecar for as-of display lookup.
+
+**Requirements**: DATA-03 (advanced) — the same `us_equity`/`1d` vendor seam, now with an identity
+axis that cannot silently fabricate a return at a ticker seam. No requirement is COMPLETED here.
+
+**Depends on:** Phase 03.10 (the CRSP vendor seam, its symbology, and the gap set that fixed the
+adjustment anchor). 03.10's own `03.10-UAT.md` may still be open; that does not block this phase.
+
+**Reverses a locked decision of Phase 03.10.** 03.10's user decisions state: "the panel `symbol`
+dimension stays the **ticker** valid at each date … **PERMNO is kept as a data variable**". This
+phase deliberately reverses that, on evidence measured after 03.10 shipped: 8,719 of 36,990 tickers
+(23.6%) have been used by 2+ PERMNOs, and in a 2000-2024 window 3,095 of 3,205 reused tickers
+(96.6%) are pure sequential succession that `resolve_collisions` cannot see at all — it detects only
+same-day contention via `group_by(["timestamp","symbol"])`. The recorded reversal is itself a
+deliverable of this phase.
+
+**Required reading before planning** (measured, line-precise, do not re-derive):
+- `.planning/research/permno-symbol-axis-migration.md`
+- `.planning/research/tiingo-era-cleaning-audit.md`
+
+**User decisions already made (2026-09-20, do NOT re-ask in discuss-phase):**
+
+- **Axis dtype: int64**, not a digit-string. PERMNO is an integer; int64 removes the ordering trap
+  permanently (the repo's `sorted()` calls are correct today only because historical PERMNOs happen
+  to be 5 digits, which nothing validates — only `isdigit()` is checked).
+- **CRSP only this round.** No `(ticker, date) → PERMNO` mapping layer for Tiingo/Alpaca/Binance;
+  they keep their ticker axes. Binance can never have a PERMNO.
+- **`ticker` does not enter the panel.** A 2-D string variable trips three existing guards
+  (`widen_symbol_axis` / `widen_data_vars` reject non-float variables on the symbol dim; string
+  coord `object` vs `StringDType()` round-trip) and `crsp.py` casts every data variable to Float64;
+  a 1-D `ticker(symbol)` coord could only hold "the last ticker" and would lose FB→META. Use a
+  sidecar as-of lookup, matching the existing `.crsp_*_report.json` pattern.
+- **No backward compatibility.** The project is pre-production: delete config fields outright, do
+  not write a config migration, and rebuild on-disk stores. Historical backtest runs becoming
+  unreplayable is accepted.
+- **`universe_filter.py`: delete condition (a) only.** Its 9 non-common-ticker regexes are 100% a
+  Tiingo-era artifact and CRSP's `security_filter` (`equity_common`) replaces them *more* strongly
+  (CRSP's type vocabulary contains no warrant/right/preferred/test encodings at all, and it also
+  excludes ADRs, ETFs, CEFs and unknown-type rows per-date with an audit report). **Keep (b)
+  `min_price` and (c) `min_dollar_volume`** — those are liquidity filters and CRSP has no
+  equivalent. Deleting (a) also lets the "symbol axis is independent of the date window" argument
+  become trivially true, removing one `DLModel._align_prediction_symbols` risk.
+- **`cleaning.py` stays, in full.** It is not a Tiingo patch: `flag_anomalies` is the only thing that
+  surfaced the CR-01/CR-02 defect (699 `anomaly_flag` hits on the shipped sp500 store, 686 of them
+  the zeroed `adjClose`), and `anomaly_flag` is the repo's only boolean data variable, wired into
+  five backend widening guards and five test files.
+- **03.10's WR-05 is settled here**, by deletion rather than by first adding a counter to code this
+  phase removes.
+
+**Suggested wave split** (ordered, one verifiable deliverable each — refine in plan-phase):
+
+- **W0 (prerequisite): rebuild the CRSP stores.** The shipped sidecars are dated 13:46 while the
+  CR-01/CR-02 fix landed at 16:03, so every on-disk store is a pre-fix artifact and every "how clean
+  is CRSP" number must be re-measured. This also discharges 03.10's recorded rebuild debt.
+- **W1 tracer:** `quantlab/dataset/crsp.py:494-495` (the two lines that drop the PERMNO axis and
+  install the ticker) make PERMNO the axis end to end. In the SAME wave, make the implicit admission
+  filter explicit: dropping unlabelled rows currently hides 1,012 PERMNOs that never had a ticker
+  (2.5%), which would otherwise appear in the panel for the first time — replace it with a stated
+  condition on `securitytype`/`sharetype`, folded into the existing `security_filter`, not a new
+  mechanism. Also settle empirically whether vectorbt tolerates an integer column index.
+- **W2 fix the int64 hard-break points.** `XrBackend.widen_symbol_axis`
+  (`backend.py:451` → `795`/`869`) would **silently empty an entire store** — a real bug, not a
+  compatibility concern. Plus `DLModel._align_prediction_symbols` (`model.py:1220`) KeyError, the
+  densify/reindex chains, the polars `is_in` sites, and a third int64 arm for
+  `tests/conftest.py`'s symbol-coord encoding model.
+- **W3 constituent/masking axis alignment:** `_build_intervals` switches from `symbol_intervals()` to
+  the already-existing `permno_intervals()`.
+- **W4 delete the dead code:** ~88% of `crsp_symbology.py`, `crsp.py:660-746` (`_resolve_identity`
+  and the seam), `symbol_overrides`, `nan_adj_at_permno_seam`, all six symbology-report fields,
+  rename `collision_universe` (its collision duty dies; its roster duty does not), and converge
+  `config.symbols` with `config.permnos`.
+- **W5** `universe_filter` condition (a), plus ticker sidecar restoration for the six human-visible
+  sites (`report.html` needs none — it prints no symbol at all).
+- **W6 close out:** test rebuild (~832 hardcoded tickers across 39 files; `test_crsp_symbology.py`
+  goes away almost entirely), sync `example/wrds_crsp.md`, and record the 03.10 decision reversal.
+
+**Six traps — code that looks like adaptation but is not** (line numbers in the research docs):
+two distinct "delisting carry" mechanisms, only one deletable (`crsp.py:960-976` is D-10
+anti-survivorship-bias and MUST stay); `collision_universe` has two duties; deleting `unlabelled`
+widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_keys` is a cheap
+downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
+`wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.11 to break down)
+
 ### Phase 03.10: CRSP Stock v2 Daily Data via WRDS (INSERTED)
 
 **Goal:** CRSP US Stock Database, Version 2 (CIZ format, WRDS annual-update product,

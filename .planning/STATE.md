@@ -5,15 +5,15 @@ current_phase: "03.10"
 current_phase_name: CRSP Stock v2 Daily Data via WRDS (INSERTED)
 status: executing
 stopped_at: Phase 03.9 complete, ready to plan Phase 3
-last_updated: "2026-09-20T19:33:02.392Z"
+last_updated: "2026-09-21T00:09:55.771Z"
 last_activity: 2026-09-20
 last_activity_desc: Phase 03.10 execution started
-state_head: 9c52dae15a6f409cb7f314b8686c496e53743603
+state_head: 295ca512eaefa311143fa996852336b982ccda1b
 progress:
-  total_phases: 17
-  completed_phases: 2
+  total_phases: 18
+  completed_phases: 1
   total_plans: 105
-  completed_plans: 98
+  completed_plans: 104
 milestone_name: milestone
 ---
 
@@ -360,6 +360,7 @@ Recent decisions affecting current work:
 - Phase 03.8 inserted after Phase 3: Backtest report: in/out-of-sample delta column, monthly-return heatmap, and positions-only trade metrics (URGENT)
 - Phase 03.9 inserted after Phase 3: WRDS TAQ consolidated quotes to NBBO zarr panel
 - Phase 03.10 inserted after Phase 3: CRSP Stock v2 daily data via WRDS (drop-in us_equity/1d vendor, ticker symbol + PERMNO variable)
+- Phase 03.11 inserted after Phase 3: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (URGENT)
 
 ## Deferred Items
 
