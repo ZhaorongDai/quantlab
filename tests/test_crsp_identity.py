@@ -1096,9 +1096,22 @@ def test_the_equity_store_over_the_same_raw_tier_drops_qqq(
 
     report = _filter_report(equity)
     assert QQQ_PERMNO_TEXT in report["dropped_permnos"], report["dropped_permnos"]
-    assert "symbol" not in report["dropped_permnos"][QQQ_PERMNO_TEXT], report[
-        "dropped_permnos"
-    ]
+
+    dropped = report["dropped_permnos"][QQQ_PERMNO_TEXT]
+    # The third reading of the one record shape the other two sites already
+    # pin (G-03.11-2 deleted the `symbol` field for all of them). The key-set
+    # line is not decoration: the absence check below, on its own, is
+    # satisfied by `{}`, by renamed fields, by any object with a
+    # `__contains__` -- so a `_permno_breakdown` regressed to emitting an
+    # empty record would leave this site green while its two siblings
+    # (`:587-588`, `:1478-1479`) turned red.
+    assert "symbol" not in dropped, dropped
+    assert set(dropped) == {"types", "rows", "first", "last"}, dropped
+    assert dropped["types"] == ["NS/FUND/ETF/ACOR/Y"], dropped
+    assert dropped["rows"] == len(QQQ_DAYS), dropped
+    assert dropped["first"] == QQQ_DAYS[0], dropped
+    assert dropped["last"] == QQQ_DAYS[-1], dropped
+
     assert report["dropped_by_type"]["NS/FUND/ETF/ACOR/Y"] == len(QQQ_DAYS)
 
 
