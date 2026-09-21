@@ -237,11 +237,61 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 0 plans
+**Plans:** 11 plans
+
+**Three operator rulings made during plan-phase (2026-09-20) amend the suggested W0..W6 split above.**
+They are recorded as D-14 / D-15 / D-16 in `03.11-01-PLAN.md`'s decision ledger, together with six
+planner decisions (D-17..D-22) that close CONTEXT.md's `## Still open` list:
+- **D-14 (amends D-10):** never-ticker PERMNOs are **ADMITTED**; only a count report field is added.
+  No type predicate is possible (1,003/1,012 are `EQTY/COM/NS`), and `securityactiveflg` is absent
+  from the daily raw tier. No date gate either.
+- **D-15:** W0 rebuilds **2024 only** — the slice RESEARCH §R1 measured pre-fix vs post-fix, so those
+  numbers stay directly comparable.
+- **D-16:** `config.symbols` option A, with the correction that the refusal installs at **TWO** config
+  setters (`CrspStockDataset` and the CRSP-backed `BaseFactorConfig.symbols`). The `symbol` DIMENSION
+  is not renamed and `XrBackend.filter_by_symbol` is not touched.
+
+Research also removed W1's vectorbt probe (§R3 already ran it — plan a regression test, not an
+investigation), raised the int64 break points from five to **seven**, and made the
+`widen_symbol_axis` fix land in **wave 1, before the axis switch** — between the two, any
+`widen_and_append` irreversibly empties the store.
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 03.11 to break down)
+**Wave 1**
+
+- [ ] 03.11-01-PLAN.md — W0 前置：`BaseStoreRebuilder` ABC + `CrspStoreRebuilder`（两层、config 驱动、不走工厂）、备份→清场→离线 convert→七项测量，在主仓库 data/ 上锁定 post-fix 四个数（D-15）
+- [ ] 03.11-02-PLAN.md — `widen_symbol_axis` 的 int64 静默清空修复（先红后绿）+ `quantlab/utils/symbol_axis.py` 的数值序与 dtype 归一化契约 + conftest 的第三个编码 arm
+
+**Wave 2** *(blocked on 01, 02)*
+
+- [ ] 03.11-03-PLAN.md — **TRACER**：`crsp.py:492-495` 两行换成 PERMNO 轴，端到端打穿到 int64 zarr；`admitted_without_ticker` 报告字段（D-14）；两家公司两列 / 退市行仍在 / vectorbt int 列索引三条行为断言
+
+**Wave 3** *(blocked on 03)*
+
+- [ ] 03.11-04-PLAN.md — checkpoint 符号契约三端同步 + `_stored_symbol_axis` 不再强转（本次新发现的破坏点）+ 三个钉轴点统一数值序
+- [ ] 03.11-05-PLAN.md — `_build_intervals` 换 `permno_intervals()`、`base/constituent._densify` 三处强转、`UniverseMask` 三处强转；验收写 dtype+序
+- [ ] 03.11-06-PLAN.md — `universe_filter.py` 只删条件 (a)（十一个位置），(b)(c) 与图改写机制保留；`_mask_panel` 永不删列的红利断言（D-22）
+
+**Wave 4** *(blocked on 03, 04, 05, 06)*
+
+- [ ] 03.11-07-PLAN.md — 死代码删除：`crsp_symbology.py` 收缩成区间提供者（D-18）、`crsp.py` 身份解析清空、三处 docstring 重写、仓库级零残留 grep gate（计入注释）
+
+**Wave 5** *(blocked on 07)*
+
+- [ ] 03.11-08-PLAN.md — 删 `symbol_overrides` / `nan_adj_at_permno_seam`、`collision_universe` → `roster_universe`（D-17）、两个 config setter 各装一条 `symbols` 拒绝（D-16）
+
+**Wave 6** *(blocked on 08)*
+
+- [ ] 03.11-09-PLAN.md — ticker sidecar：`.crsp_tickers.json` 区间表写侧 + `CrspTickerLookup` 读侧 + 六个人可见点还原（report.html 已核验无需改动）
+
+**Wave 7** *(blocked on 09)*
+
+- [ ] 03.11-10-PLAN.md — 最终重建成 PERMNO 轴 store（符号学 sidecar 消失 / ticker sidecar 出现）+ `example/wrds_crsp.md` 16 处同步
+
+**Wave 8** *(blocked on 10)*
+
+- [ ] 03.11-11-PLAN.md — 03.10 决策反转记录三处（不改历史文本）+ REQUIREMENTS 只追加 + 全套回归门 + D-21/D-20 两个 operator 决策点
 
 ### Phase 03.10: CRSP Stock v2 Daily Data via WRDS (INSERTED)
 
