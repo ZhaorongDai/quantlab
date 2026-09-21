@@ -229,13 +229,20 @@ t+1 的**原始**（未 ffill）成交价是 NaN。开头价格为 NaN、此前�
 不是某次回测的结果）：
 
 ```python
-{'symbol': 'CCC', 'signal_timestamp': '2024-02-01T00:00:00', 'fill_timestamp': '2024-02-02T00:00:00', 'price': 41.2}
+{'symbol': 'CCC', 'axis_symbol': 'CCC', 'signal_timestamp': '2024-02-01T00:00:00', 'fill_timestamp': '2024-02-02T00:00:00', 'price': 41.2}
 ```
 
-- `symbol`：标的名；
+- `symbol`：**人读的名字**——如果价格库旁边有 ticker 旁车（CRSP 面板的
+  `{zarr}.crsp_tickers.json`），这里是**成交日那天**的 ticker；没有旁车就原样回落成轴标签；
+- `axis_symbol`：**面板轴上的标签本身**，用来回查面板；
 - `signal_timestamp`：发出平仓信号的调仓 bar t；
 - `fill_timestamp`：成交 bar t+1；
 - `price`：t+1 上 ffill 后的成交价，即该标的最后一个有限的复权开盘价。
+
+两个字段都留是有理由的：只留名字，一条按名字回查面板的语句会在改名那天查空；
+只留数字，没人读得懂这条记录说的是哪只票。上面这条手写记录来自一个**没有**旁车的库，
+所以两者相等；CRSP 面板上它们会分别是 `META` 和 `13407`。
+`as-of` 取的是**成交日**——这条记录该署那天的名字。
 
 注意从价格变 NaN 到下一个调仓 bar 之间，这个仓位按最后价格冻结着估值；`rebalance_periods` 越大，这段越长。
 
@@ -442,7 +449,7 @@ lot 级胜率 57.27%，持仓级分别是 50.74%（2025 单年）与 50.81%（20
 | `config.json` | `get_config()`：`CrossSectionBacktestConfig` 的标量字段，加上逐个嵌套的 `price_dataset`、`model`（含因子、标签、`checkpoint` 引用）、`benchmark_dataset` 配置；另有顶层 `data_fingerprint` |
 | `weights.zarr` | 目标权重，`weight` 变量，非调仓行的 NaN 原样保留 |
 | `equity.zarr` | `value`（组合净值）与 `returns`，维度 `timestamp` |
-| `liquidations.json` | 强制平仓记录的 list |
+| `liquidations.json` | 强制平仓记录的 list（每条五个键，含并列的 `symbol` / `axis_symbol`，见上文） |
 | `metrics.json` | `whole`、`in_sample`、`out_of_sample`、`training_window`、`in_sample_range`、`out_of_sample_ranges`、`notes` |
 | `report.html` | 一个自包含的交互报告（D-23）。页首用文字写清日期与设置：回测窗口的首尾 bar 标签与 bar 数、bar 间隔、训练窗口、样本内区间、样本外各段、最深回撤那一段（`Deepest drawdown (valley to recovery)`：最低点与修复这两个 bar 的标签、长度、深度、有没有修复），以及 `model_mode` / `rebalance_periods` / `top_n` / `direction` / `init_cash` / `fees`；这些日期与同目录 `metrics.json` 的字符串**逐字节相同**（页面直接取已经算好的 bar 标签，不重新格式化时间戳）。接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表。再往下是共用时间轴的三栏图：净值（最深回撤的一对三角——**向上三角**标它的**最低点**、**向下三角**标它**修复**的那个 bar）、回撤（`value / 历史最高 - 1`）、按自然月复利的月度收益柱；净值栏带 log / 线性切换按钮，默认线性。`in_sample_range` 仍然涂灰，底部仍然印 `notes`。没有基准曲线（D-08）。plotly.js 从 CDN 加载，所以每份报告只有几 KB，但离线打不开图 |
 | `fingerprint.json` | 本次读到的数据的指纹（D-27） |

@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 24
+open_count: 22
 waived_count: 0
-fixed_count: 3
-total_count: 27
-last_updated: 2026-09-21T07:19:42.728Z
+fixed_count: 6
+total_count: 28
+last_updated: 2026-09-21T07:53:54.380Z
 ---
 
 # Broken Windows Ledger
@@ -39,9 +39,10 @@ last_updated: 2026-09-21T07:19:42.728Z
 | 22 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | 4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08. | open |  | 2026-09-21T04:00:30.770Z |  |
 | 23 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited. | open |  | 2026-09-21T04:37:01.261Z |  |
 | 24 | 03.11 | deviation | tests/test_no_identity_residue.py |  | strict-xfail group DELETED_IN_03_11_08 (symbol_overrides / nan_adj_at_permno_seam) is red by design until plan 03.11-08 deletes those config fields and promotes the names into DELETED_IN_03_11_07 | open |  | 2026-09-21T05:57:52.914Z |  |
-| 25 | 03.11 | deviation | example/wrds_crsp.md | 364 | 03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited. | open |  | 2026-09-21T07:19:31.356Z |  |
-| 26 | 03.11 | deviation | example/backtest.md | 227 | 03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass. | open |  | 2026-09-21T07:19:36.837Z |  |
-| 27 | 03.11 | deviation | example/constituent.md | 468 | 03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass. | open |  | 2026-09-21T07:19:42.728Z |  |
+| 25 | 03.11 | deviation | example/wrds_crsp.md | 364 | 03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited. | fixed |  | 2026-09-21T07:19:31.356Z | 2026-09-21T07:53:48.709Z |
+| 26 | 03.11 | deviation | example/backtest.md | 227 | 03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass. | fixed |  | 2026-09-21T07:19:36.837Z | 2026-09-21T07:53:54.261Z |
+| 27 | 03.11 | deviation | example/constituent.md | 468 | 03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass. | fixed |  | 2026-09-21T07:19:42.728Z | 2026-09-21T07:53:54.380Z |
+| 28 | 03.11 | deviation | data/data/us_equity/1d/wrds_crsp_custom_1d.zarr |  | The custom CRSP store is still a ticker-axis panel written 2026-09-20 by pre-migration code, and its stale .crsp_symbology_report.json sidecar survives beside it. Plan 03.11-10's D-15 scope was sp500/2024 only, and rebuilding custom needs a window/roster this phase never specified. data/ is gitignored, so this blocks nothing in git -- but any read of that store returns a panel the current tree cannot reproduce. | open |  | 2026-09-21T07:53:10.814Z |  |
 
 ````json
 [
@@ -340,10 +341,10 @@ last_updated: 2026-09-21T07:19:42.728Z
     "file": "example/wrds_crsp.md",
     "line": 364,
     "description": "03.11-09 added the .crsp_tickers.json sidecar; this doc's two sidecar enumerations (the prose at :364 and the ASCII tree at :456-457) list only the adjustment/filter/symbology trio. Out of 03.11-09's files_modified and inside the doc set plan 03.11-10 already owns, so handed over rather than edited.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T07:19:31.356Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T07:53:48.709Z"
   },
   {
     "id": 26,
@@ -352,10 +353,10 @@ last_updated: 2026-09-21T07:19:42.728Z
     "file": "example/backtest.md",
     "line": 227,
     "description": "03.11-09 added an axis_symbol field to every forced-liquidation record and made symbol the period-correct ticker; example/backtest.md:227 and :445 still describe the pre-09 record. Handed to plan 03.11-10's doc pass.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T07:19:36.837Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T07:53:54.261Z"
   },
   {
     "id": 27,
@@ -364,9 +365,21 @@ last_updated: 2026-09-21T07:19:42.728Z
     "file": "example/constituent.md",
     "line": 468,
     "description": "03.11-09 added missing_labels to UniverseMask.report(); the transcribed REPL output at example/constituent.md:468 shows the three-key dict and is now short one key. Handed to plan 03.11-10's doc pass.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T07:19:42.728Z",
+    "resolved_at": "2026-09-21T07:53:54.380Z"
+  },
+  {
+    "id": 28,
+    "kind": "deviation",
+    "phase": "03.11",
+    "file": "data/data/us_equity/1d/wrds_crsp_custom_1d.zarr",
+    "line": null,
+    "description": "The custom CRSP store is still a ticker-axis panel written 2026-09-20 by pre-migration code, and its stale .crsp_symbology_report.json sidecar survives beside it. Plan 03.11-10's D-15 scope was sp500/2024 only, and rebuilding custom needs a window/roster this phase never specified. data/ is gitignored, so this blocks nothing in git -- but any read of that store returns a panel the current tree cannot reproduce.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-21T07:53:10.814Z",
     "resolved_at": null
   }
 ]
