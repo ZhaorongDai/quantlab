@@ -136,6 +136,17 @@ Plans:
 - [ ] 03-06-PLAN.md — Close CR-01: resolve Polars factor names on the `read()` path so `factor_data_strategy="read"` is backend-independent (D-03), plus the two-backend read-strategy lock
 - [ ] 03-07-PLAN.md — Close CR-02: US-equity `amount` becomes typical-price dollar volume (GAP-D-01) so `vwap` is no longer identically `close`, plus the VWAP non-degeneracy lock
 
+### Phase 03.12: CRSP 复权锚点下沉到读侧：store 只存原始价与 dlyret，adjClose 成为派生物，锚点为读时参数（默认 last，下游逐位不变），删除整套窗口锚点机械 (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 03.12 to break down)
+
 ### Phase 03.11: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 
 **Goal:** The CRSP price panel's `symbol` dimension becomes the **int64 PERMNO** instead of the

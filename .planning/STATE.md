@@ -5,15 +5,15 @@ current_phase: "03.11"
 current_phase_name: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 status: executing
 stopped_at: Phase 03.9 complete, ready to plan Phase 3
-last_updated: "2026-09-21T02:37:08.190Z"
+last_updated: "2026-09-21T14:32:40.865Z"
 last_activity: 2026-09-20
 last_activity_desc: Phase 03.11 execution started
-state_head: ba4f5b3660b1bf044d1ae952468db0c13bad9c3f
+state_head: ad4a0c18708d1f8db85302a52d63c6dbe4269cc5
 progress:
-  total_phases: 18
+  total_phases: 19
   completed_phases: 1
   total_plans: 116
-  completed_plans: 104
+  completed_plans: 115
 milestone_name: milestone
 ---
 
@@ -362,6 +362,7 @@ Recent decisions affecting current work:
 - Phase 03.9 inserted after Phase 3: WRDS TAQ consolidated quotes to NBBO zarr panel
 - Phase 03.10 inserted after Phase 3: CRSP Stock v2 daily data via WRDS (drop-in us_equity/1d vendor, ticker symbol + PERMNO variable)
 - Phase 03.11 inserted after Phase 3: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (URGENT)
+- Phase 03.12 inserted after Phase 3: CRSP 复权锚点下沉到读侧（C+ii），默认锚 last 保持下游零回归 (URGENT)
 
 ## Deferred Items
 
@@ -373,6 +374,8 @@ Items acknowledged and carried forward from previous milestone close:
 | v2 | DATA-V2-01 (full tick-data production ingestion) | Deferred to v2 | Initial requirements definition |
 | v2 | DATA-V2-02 (full minute-frequency historical backfill) | Deferred to v2 | Initial requirements definition |
 | Phase 7 | `test.py`, `test_nt.ipynb`, `read_mock_data_sink.py` broader cleanup/relocation (CLEAN-02 test-code candidates) | Deferred to Phase 7 (QUAL-02) | Phase 1 planning revision, 2026-09-04 |
+| Backlog | Alpha101Stock 截面水平敏感性：81 个 alpha 约 55 个含裸价格水平/美元差分项，`factor/alpha101.py:95-100` 不包归一化，下游 `_preprocess` 全是 NaN 清洗无缩放；`CrossSectionalZScore`（`my_ops/preprocess.py:39`）已实现但生产侧零调用点。加不加、加在哪层是设计选择非 bug（见 03.12-CONTEXT D-08） | Open, unowned | 2026-09-21, 03.12 discussion |
+| Backlog | Alpaca 复权空缺：`acquisition/alpaca.py:618` 的 `adjustment` 默认 `"raw"`，只拉未复权一份，无法反解复权因子（需 raw+all 两遍或单独取公司行为表）。既有状态，按「每个 vendor 自己解决」不属 03.12（见 03.12-CONTEXT D-09） | Open, unowned | 2026-09-21, 03.12 discussion |
 
 ## Session Continuity
 
