@@ -1,29 +1,40 @@
-"""The two CRSP-vendor universes as SYMBOL-level membership panels (D-04, D-05, D-14).
+"""The two CRSP-vendor universes as membership panels (D-01, D-05, D-14).
 
-`tests/test_crsp_membership.py` owns the PERMNO-level half: which securities
-were in an index, on which dates, from the reference tier alone. This module
-owns the step that makes those intervals usable beside a price panel --
-answering the same question in the price panel's OWN tickers -- and the two
+`tests/test_crsp_membership.py` owns the interval half: which securities were
+in an index, on which dates, from the reference tier alone. This module owns
+the step that makes those intervals usable beside a price panel, and the two
 ordinary `IndexConstituentDataset` subclasses built on top of it.
 
 **Why the agreement test is the load-bearing one.** A universe mask is applied
-to a price panel by SYMBOL. If the mask says `FB` on a day the price panel
-calls that column `META`, the mask selects nothing and the run reports an
-empty universe rather than an error. The only structural defence is that both
-sides derive their symbols from ONE rule, `CrspSymbology.symbol_intervals()`,
-and `test_membership_symbols_agree_with_the_crsp_price_panel` is what proves
-they still do -- end to end, through a real pull and a real conversion, not by
-inspecting the call graph.
+to a price panel by SYMBOL, and since 03.11-03 a CRSP panel's `symbol` IS the
+int64 PERMNO. If the two sides spelled identity differently -- one in tickers,
+one in PERMNOs -- the mask would select nothing and the run would report an
+empty universe rather than an error. The structural defence is no longer a
+shared ticker RULE but a shared IDENTIFIER: the panel casts the raw PERMNO
+column and the universe reads PERMNO spells straight out of
+`dsp500list_v2`/`ccmxpf_lnkhist`, so there is no derivation left to disagree
+about. `test_membership_symbols_agree_with_the_crsp_price_panel` proves it end
+to end, through a real pull and a real conversion, not by inspecting the call
+graph.
 
 **Provenance rule, continued from plan 02.** Every row below is either
 VERBATIM from a named live-check key (through `tests/crsp_fixtures.py`) or
 carries a `# SYNTHETIC` comment on the spot.
 
+**Membership assertions are deliberately dtype-AGNOSTIC; the axis has its own
+two tests.** `test_the_constituent_panel_symbol_coord_is_int64` and
+`test_the_constituent_panel_symbol_coord_is_numerically_ordered` are the only
+place the dtype and the order are claimed, and they are two separate
+assertions on purpose (03.11 Pitfall 2): "the mask can be computed" is ALSO
+true when both sides quietly fall back to a lexicographic string axis, so it
+is not evidence of anything. Everywhere else `_label()` resolves a PERMNO to
+whatever the axis happens to spell it as, which keeps the membership claims
+about MEMBERSHIP.
+
 **Every quantlab import lives inside a test or inside a helper.** That is not
-style: this module is written before `CrspMembership.symbol_intervals` and the
-two constituent classes exist, and a module-scope import would turn the RED run
-into a COLLECTION error -- zero tests discovered, which proves nothing about
-the behaviour (TDD gate #3770).
+style: this module is written before the two constituent classes exist, and a
+module-scope import would turn the RED run into a COLLECTION error -- zero
+tests discovered, which proves nothing about the behaviour (TDD gate #3770).
 """
 
 from __future__ import annotations
@@ -171,124 +182,148 @@ def _ndx_reference(tmp_path, spells=None, links=None, secinfo=None):
     )
 
 
-def _membership(reference_dir):
-    from quantlab.dataset.crsp_membership import CrspMembership
-    from quantlab.dataset.crsp_reference import CrspReference
+def _rows(frame) -> list[tuple[object, str, str]]:
+    """An interval frame as `(symbol, start ISO, end ISO)` tuples.
 
-    return CrspMembership(CrspReference(reference_dir))
-
-
-def _rows(frame) -> list[tuple[str, str, str]]:
-    """A symbol-interval frame as `(symbol, start ISO, end ISO)` tuples."""
+    The symbol is returned AS STORED -- no `str()`. Stringifying here would
+    make this helper agree with a regressed int64 axis and a regressed string
+    axis alike, which is the "looks right" failure (Pitfall 2) the whole plan
+    is written against.
+    """
     return [
-        (str(record["symbol"]), str(record["start_date"]), str(record["end_date"]))
+        (record["symbol"], str(record["start_date"]), str(record["end_date"]))
         for record in frame.to_dicts()
     ]
 
 
+def _intervals(cls, tmp_path, reference_dir, name, **overrides):
+    """The interval table a constituent class hands `_densify`.
+
+    Exercised through the class rather than through `CrspMembership` directly,
+    because `_build_intervals()` is the seam this phase moved: it is what
+    decides whether the universe is keyed by ticker or by PERMNO, and a test
+    calling the membership layer straight would not notice the seam changing
+    under it.
+    """
+    return cls(_panel_config(tmp_path, reference_dir, name, **overrides))._build_intervals()
+
+
 # ---------------------------------------------------------------------------
-# D-04 / D-05 -- membership expressed in the price panel's own tickers
+# D-01 / D-05 -- membership expressed in the price panel's own PERMNOs
 # ---------------------------------------------------------------------------
 
 
-def test_symbol_intervals_rename_13407_is_fb_then_meta(tmp_path):
-    """The FB -> META rename splits ONE PERMNO membership into TWO symbol rows.
+def test_the_fb_meta_rename_is_one_permno_interval_not_two(tmp_path):
+    """The rename that used to SPLIT a membership no longer touches it.
 
     PERMNO 13407 never changed; its ticker did, on 2022-06-09 (verbatim `C5`).
-    A membership panel keyed on the OLD ticker would hold nothing after that
-    date while the price panel happily carried a `META` column -- the silent
-    empty-mask failure this whole plan exists to prevent.
+    On the old ticker axis that produced two interval rows (`FB` then `META`)
+    and a column handover in the panel, and every consumer had to get the
+    seam day exactly right. On the PERMNO axis the rename is not an event the
+    universe can see at all: one security, one interval, no boundary to be
+    off by one about.
 
-    The boundary is asserted on BOTH sides of the seam, because an off-by-one
-    here is exactly what a closed-interval convention gets wrong.
+    The interval column is still named `symbol` -- the DIMENSION name does not
+    change (RULING 3), only what it spells.
     """
-    membership = _membership(
-        _sp500_reference(
-            tmp_path, spells=[_sp500_spell("13407", "2013-12-23", _PRODUCT_END)]
-        )
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(
+        tmp_path, spells=[_sp500_spell("13407", "2013-12-23", _PRODUCT_END)]
     )
 
-    intervals = membership.symbol_intervals(membership.SP500)
-
-    assert _rows(intervals) == [
-        ("FB", "2013-12-23", "2022-06-08"),
-        ("META", "2022-06-09", "2025-12-31"),
-    ]
-
-
-def test_symbol_intervals_share_class_83443_keeps_the_brk_b_suffix(tmp_path):
-    """Berkshire's B line is `BRK.B` in the panel, so it is `BRK.B` in the mask.
-
-    PERMNO 83443's live `stksecurityinfohist` rows (verbatim `C5`) spell
-    `BRK` + `BRKB` + class `B`, which D-04 rule 4 renders `BRK.B`. A mask
-    naming the bare `BRK` would select the A line -- a DIFFERENT security -- or
-    nothing at all.
-    """
-    membership = _membership(
-        _sp500_reference(
-            tmp_path, spells=[_sp500_spell("83443", "2010-02-16", _PRODUCT_END)]
-        )
+    intervals = _intervals(
+        CrspSP500ConstituentDataset, tmp_path, reference_dir, "crsp_sp500"
     )
 
-    intervals = membership.symbol_intervals(membership.SP500)
+    assert intervals.columns == ["symbol", "start_date", "end_date"]
+    assert _rows(intervals) == [(13407, "2013-12-23", "2025-12-31")]
 
-    assert _rows(intervals) == [("BRK.B", "2010-02-16", "2025-12-31")]
+
+def test_the_share_class_line_is_its_own_permno_with_no_suffix_to_render(tmp_path):
+    """Berkshire's B line is 83443, and 83443 needs no rendering rule.
+
+    The old axis had to spell this security `BRK.B` -- `BRK` + `BRKB` + class
+    `B` through D-04 rule 4 -- and a mask naming the bare `BRK` would have
+    selected the A line, a DIFFERENT security. A PERMNO has no class suffix to
+    get wrong: the share class IS the identifier.
+    """
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(
+        tmp_path, spells=[_sp500_spell("83443", "2010-02-16", _PRODUCT_END)]
+    )
+
+    intervals = _intervals(
+        CrspSP500ConstituentDataset, tmp_path, reference_dir, "crsp_sp500"
+    )
+
+    assert _rows(intervals) == [(83443, "2010-02-16", "2025-12-31")]
 
 
-def test_symbol_intervals_googl_and_goog_survive_the_permno_handover(tmp_path):
-    """A ticker held by two PERMNOs in turn is ONE continuous membership.
+def test_the_goog_handover_is_two_securities_and_is_no_longer_merged(tmp_path):
+    """The ticker handover that MERGED two securities now cannot.
 
     Alphabet's Nasdaq-100 spells (verbatim `L8_2`) link to 90319 (iid 01) and
     14542 (iid 03) (verbatim `L7_4`). 90319 carried `GOOG` until 2014-04-02 and
-    `GOOGL` after; 14542 took `GOOG` over on 2014-04-03. On the SYMBOL axis
-    those two PERMNO halves touch, so `GOOG` is a single uninterrupted
-    membership -- the PERMNO switch is a seam the PRICE panel marks (D-18), not
-    a hole in the universe.
+    `GOOGL` after; 14542 took `GOOG` over on 2014-04-03. On the ticker axis
+    those two halves TOUCHED and merged, so the universe read one continuous
+    `GOOG` membership spanning two different companies' share classes -- the
+    recycled-ticker failure 03.11-03 removed from the price panel. Here it is
+    removed from the universe: two PERMNOs, two intervals, each starting where
+    that security's own membership did.
     """
-    membership = _membership(_ndx_reference(tmp_path))
+    from quantlab.dataset.constituent import CompustatNasdaq100ConstituentDataset
 
-    intervals = membership.symbol_intervals(membership.NASDAQ100)
+    reference_dir = _ndx_reference(tmp_path)
+
+    intervals = _intervals(
+        CompustatNasdaq100ConstituentDataset,
+        tmp_path,
+        reference_dir,
+        "comp_nasdaq100",
+    )
 
     assert _rows(intervals) == [
-        ("GOOG", "2005-12-21", "2025-12-31"),
-        ("GOOGL", "2014-04-03", "2025-12-31"),
+        (14542, "2014-04-03", "2025-12-31"),
+        (90319, "2005-12-21", "2025-12-31"),
     ]
 
 
-def test_symbol_intervals_unlabelled_membership_is_dropped_and_reported(tmp_path):
-    """Membership days with no symbol are dropped LOUDLY, never silently.
+def test_a_membership_range_with_no_ticker_is_kept_rather_than_dropped(tmp_path):
+    """Membership days no ticker covers are now ordinary membership days.
 
-    PERMNO 13407's symbol history starts 2012-05-18; a membership spell opened
-    in 2000 therefore has twelve years no ticker covers. Those days cannot go
-    into a symbol-keyed panel at all -- there is no column for them -- but
-    dropping them without a trace would read downstream as "not a member",
-    which is a different and unfalsifiable claim.
+    PERMNO 13407's symbol history starts 2012-05-18, so a spell opened in 2000
+    has twelve years no ticker covers. The ticker axis could not represent
+    them -- there was no column for them -- so they were dropped and reported
+    in `report["unlabelled_members"]`, and the universe was genuinely twelve
+    years smaller than the index was. A PERMNO needs no ticker to exist, so
+    the whole range survives and there is no exclusion left to report.
+
+    This is the universe-side twin of 03.11-03's `admitted_without_ticker`
+    (D-14 / RULING 1): the admission rule got WIDER, and the widening is
+    asserted rather than assumed.
     """
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(
+        tmp_path, spells=[_sp500_spell("13407", "2000-01-03", _PRODUCT_END)]
+    )
+
     messages: list[str] = []
     sink_id = logger.add(messages.append, level="WARNING", format="{message}")
     try:
-        membership = _membership(
-            _sp500_reference(
-                tmp_path,
-                spells=[_sp500_spell("13407", "2000-01-03", _PRODUCT_END)],
-            )
+        intervals = _intervals(
+            CrspSP500ConstituentDataset, tmp_path, reference_dir, "crsp_sp500"
         )
-        intervals = membership.symbol_intervals(membership.SP500)
     finally:
         logger.remove(sink_id)
 
-    # The labelled part survives untouched; only the uncovered head is gone.
-    assert _rows(intervals) == [
-        ("FB", "2012-05-18", "2022-06-08"),
-        ("META", "2022-06-09", "2025-12-31"),
-    ]
-    assert membership.report["unlabelled_members"] == [
-        {"permno": 13407, "start": "2000-01-03", "end": "2012-05-17"}
-    ]
-    assert any("unlabelled" in message for message in messages), messages
+    assert _rows(intervals) == [(13407, "2000-01-03", "2025-12-31")]
+    assert not any("unlabelled" in message for message in messages), messages
 
 
-def test_symbol_intervals_every_end_is_explicit_and_within_the_product_end(tmp_path):
+def test_every_end_is_explicit_and_within_the_product_end(tmp_path):
     """No null end, no end past the CRSP product end, in EITHER universe.
 
     `IndexConstituentDataset._densify` extends an interval with a null
@@ -297,21 +332,110 @@ def test_symbol_intervals_every_end_is_explicit_and_within_the_product_end(tmp_p
     resulting mask would be True over a region where no price exists at all
     (T-03.10-30).
     """
+    from quantlab.dataset.constituent import (
+        CompustatNasdaq100ConstituentDataset,
+        CrspSP500ConstituentDataset,
+    )
+
     product_end = date.fromisoformat(_PRODUCT_END)
 
-    sp500 = _membership(_sp500_reference(tmp_path / "sp500"))
-    ndx = _membership(_ndx_reference(tmp_path / "ndx"))
-
-    for membership, index in ((sp500, sp500.SP500), (ndx, ndx.NASDAQ100)):
-        intervals = membership.symbol_intervals(index)
+    cases = (
+        (
+            CrspSP500ConstituentDataset,
+            _sp500_reference(tmp_path / "sp500"),
+            "crsp_sp500",
+        ),
+        (
+            CompustatNasdaq100ConstituentDataset,
+            _ndx_reference(tmp_path / "ndx"),
+            "comp_nasdaq100",
+        ),
+    )
+    for cls, reference_dir, name in cases:
+        intervals = _intervals(cls, tmp_path, reference_dir, name)
         assert intervals.height > 0
         ends = intervals["end_date"].to_list()
-        assert all(end is not None for end in ends), (index, ends)
-        assert max(ends) <= product_end, (index, max(ends))
+        assert all(end is not None for end in ends), (name, ends)
+        assert max(ends) <= product_end, (name, max(ends))
         starts = intervals["start_date"].to_list()
         assert all(
             start <= end for start, end in zip(starts, ends)
-        ), (index, list(zip(starts, ends)))
+        ), (name, list(zip(starts, ends)))
+
+
+# ---------------------------------------------------------------------------
+# 03.11 Pitfall 2 -- the axis DTYPE and the axis ORDER, claimed separately
+# ---------------------------------------------------------------------------
+#
+# These two are deliberately NOT one test, and neither of them is "the mask can
+# be computed". A mask computes perfectly well when both sides have quietly
+# fallen back to a lexicographic STRING axis -- that is the "looks right"
+# failure (T-03.11-15), and it is reachable by removing `_build_intervals`'s
+# cast alone, or by leaving any one of `_densify`'s three `str()` calls in
+# place. Only dtype and order together rule it out, and splitting them says
+# which half regressed when one of them goes red.
+
+
+def _crsp_sp500_panel(tmp_path, spells, **overrides):
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+
+    reference_dir = _sp500_reference(tmp_path, spells=spells)
+    config = _panel_config(
+        tmp_path, reference_dir, "crsp_sp500_axis", **overrides
+    )
+    return CrspSP500ConstituentDataset(config).from_raw_data().get_xarray_dataset()
+
+
+def test_the_constituent_panel_symbol_coord_is_int64(tmp_path):
+    """Half one of Pitfall 2: the axis carries INTEGERS, not digit strings.
+
+    A digit-string axis selects nothing against the int64 price panel
+    03.11-03 produced, and `UniverseMask` would report the ENTIRE universe as
+    missing rather than raise (T-03.11-16).
+
+    Asserted by dtype KIND rather than by an exact dtype literal, following
+    `tests/conftest.py:stored_symbol_encoding`'s own never-by-a-width-literal
+    rule: int32 would be an integer axis too, and pinning `int64` would make
+    this test about a width nobody chose.
+    """
+    panel = _crsp_sp500_panel(
+        tmp_path,
+        [
+            _sp500_spell("13407", "2013-12-23", _PRODUCT_END),  # SYNTHETIC
+            _sp500_spell("83443", "2010-02-16", _PRODUCT_END),  # SYNTHETIC
+        ],
+        start_date="2022-06-01",
+        end_date="2022-06-30",
+    )
+
+    assert panel["symbol"].dtype.kind == "i", panel["symbol"].dtype
+
+
+def test_the_constituent_panel_symbol_coord_is_numerically_ordered(tmp_path):
+    """Half two of Pitfall 2: the ORDER is numeric, and it actually diverges.
+
+    Historical PERMNOs happen to be five digits (~10000-93436), so numeric and
+    lexicographic order COINCIDE on today's universe -- a regression to
+    `sorted(str(...))` would be invisible. PERMNO 7000 is a real four-digit
+    security (`tests/crsp_fixtures.py:SECINFO_ROWS`), and it is here for
+    exactly that reason: with it on the axis the two orders fork, so the second
+    assertion below proves this test could fail.
+    """
+    panel = _crsp_sp500_panel(
+        tmp_path,
+        [
+            _sp500_spell("13407", "2013-12-23", _PRODUCT_END),  # SYNTHETIC
+            _sp500_spell("7000", "2013-12-23", _PRODUCT_END),  # SYNTHETIC
+            _sp500_spell("83443", "2010-02-16", _PRODUCT_END),  # SYNTHETIC
+        ],
+        start_date="2022-06-01",
+        end_date="2022-06-30",
+    )
+
+    labels = panel["symbol"].values.tolist()
+
+    assert labels == [7000, 13407, 83443]
+    assert labels != sorted(labels, key=str)
 
 
 # ---------------------------------------------------------------------------
@@ -327,13 +451,19 @@ _BRK_DAYS = ("2020-01-02", "2020-01-03")
 def test_membership_symbols_agree_with_the_crsp_price_panel(
     mock_crsp_session, tmp_path
 ):
-    """The whole point, end to end: one reference tier, one symbology rule.
+    """The whole point, end to end: one reference tier, one identifier.
 
     A real pull into the raw tier, a real conversion into a Zarr panel, and the
     membership intervals resolved from the SAME reference directory. The two
-    sides are compared as sets of `(date, symbol)` pairs per PERMNO, so a rename
-    handled on one side only, a class suffix on one side only, or a symbol the
-    mask names that the panel never produced all fail here.
+    sides are compared as sets of `(date, symbol)` pairs per PERMNO, so a
+    security the universe names that the panel never produced -- or the
+    reverse -- fails here.
+
+    The fixture still renames 13407 mid-window (`FB` -> `META` on 2022-06-09)
+    and still carries a share-class line (83443). Neither is visible to this
+    assertion any more, and that is the RESULT being asserted: once both sides
+    key on the PERMNO, a rename is not an event either side has to handle in
+    step with the other.
 
     Restricting the comparison to the days each PERMNO actually has a price row
     is the honest predicate: the membership intervals are CALENDAR-day ranges
@@ -347,6 +477,7 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.constituent import CrspSP500ConstituentDataset
     from tests.crsp_fixtures import (
         FakeCrspSession,
         dsf_row,
@@ -398,26 +529,27 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
     )
     panel = xr.open_zarr(dataset_config.zarr_file_path)
 
-    membership = _membership(reference_dir)
-    intervals = membership.symbol_intervals(membership.SP500)
+    intervals = _intervals(
+        CrspSP500ConstituentDataset,
+        tmp_path,
+        reference_dir,
+        "crsp_sp500_agreement",
+    )
 
-    panel_symbols = {str(value) for value in panel["symbol"].values}
-    # Neither side may name a symbol the other does not have. This is the
-    # assertion a rename handled on one side only fails first.
-    assert {symbol for symbol, _, _ in _rows(intervals)} == panel_symbols
+    panel_symbols = {int(value) for value in panel["symbol"].values}
+    # Neither side may name a security the other does not have.
+    assert {int(symbol) for symbol, _, _ in _rows(intervals)} == panel_symbols
 
     days = [str(value)[:10] for value in panel["timestamp"].values]
-    permnos = panel["permno"].values
     closes = panel["close"].values
-    symbols = [str(value) for value in panel["symbol"].values]
+    symbols = [int(value) for value in panel["symbol"].values]
 
     for permno, expected_days in ((13407, _FB_DAYS), (83443, _BRK_DAYS)):
         priced = {
             (day, symbol)
             for row, day in enumerate(days)
             for column, symbol in enumerate(symbols)
-            if not np.isnan(closes[row][column])
-            and int(permnos[row][column]) == permno
+            if not np.isnan(closes[row][column]) and symbol == permno
         }
         assert {day for day, _ in priced} == set(expected_days), (permno, priced)
 
@@ -426,7 +558,7 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
             (day, symbol)
             for day in expected_days
             for symbol, start, end in _rows(intervals)
-            if symbol in owned and start <= day <= end
+            if int(symbol) in owned and start <= day <= end
         }
         assert priced == member, (permno, priced ^ member)
 
@@ -448,18 +580,38 @@ def _panel_config(tmp_path, reference_dir, name, **overrides):
     return ConstituentDatasetConfig(**params)  # type: ignore[arg-type]
 
 
-def _is_member(panel, symbol: str, day: str) -> bool:
-    return bool(panel["is_member"].sel(timestamp=day, symbol=symbol).values)
+def _label(panel, permno: int):
+    """The axis label `panel` spells `permno` with, whatever its dtype.
+
+    Deliberately NOT `permno` itself. The dtype and the order of the symbol
+    axis are claimed by their own two tests; every membership assertion here
+    is about WHO was a member, and routing it through the axis's own labels
+    keeps the two claims from propping each other up (Pitfall 2).
+    """
+    for value in panel["symbol"].values.tolist():
+        if int(value) == permno:
+            return value
+    raise AssertionError(
+        f"PERMNO {permno} is absent from the panel's symbol axis "
+        f"{panel['symbol'].values.tolist()!r}"
+    )
 
 
-def test_crsp_sp500_panel_marks_the_fb_meta_rename_on_the_right_days(tmp_path):
-    """The rename is a COLUMN HANDOVER in the panel, on the exact day.
+def _is_member(panel, permno: int, day: str) -> bool:
+    return bool(
+        panel["is_member"].sel(timestamp=day, symbol=_label(panel, permno)).values
+    )
 
-    `FB` is a member through 2022-06-08 and `META` from 2022-06-09 -- the same
-    security throughout, in the two tickers the price panel uses on either
-    side of the seam. Both days are asserted on both columns, because a mask
-    that switched a day early or a day late would silently hold the wrong
-    column for one rebalance.
+
+def test_crsp_sp500_panel_holds_the_renamed_security_across_the_seam(tmp_path):
+    """The rename is NO LONGER a column handover -- it is nothing at all.
+
+    On the ticker axis, PERMNO 13407 was `FB` through 2022-06-08 and `META`
+    from 2022-06-09: two columns, a handover day, and a mask that switched a
+    day early or late silently held the wrong column for one rebalance. On the
+    PERMNO axis it is ONE column that is a member on both days. Both days are
+    still asserted, because "one column" is only meaningful if the membership
+    is continuous across the date the old axis broke at.
     """
     from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 
@@ -474,15 +626,13 @@ def test_crsp_sp500_panel_marks_the_fb_meta_rename_on_the_right_days(tmp_path):
 
     panel = CrspSP500ConstituentDataset(config).from_raw_data().get_xarray_dataset()
 
-    assert set(panel["symbol"].values.tolist()) == {"FB", "META", "BRK.B"}
-    assert _is_member(panel, "FB", "2022-06-08") is True
-    assert _is_member(panel, "FB", "2022-06-09") is False
-    assert _is_member(panel, "META", "2022-06-08") is False
-    assert _is_member(panel, "META", "2022-06-09") is True
+    assert {int(value) for value in panel["symbol"].values.tolist()} == {13407, 83443}
+    assert _is_member(panel, 13407, "2022-06-08") is True
+    assert _is_member(panel, 13407, "2022-06-09") is True
     # The share-class line is a member across the whole window, untouched by
     # the rename happening beside it.
-    assert _is_member(panel, "BRK.B", "2022-06-08") is True
-    assert _is_member(panel, "BRK.B", "2022-06-09") is True
+    assert _is_member(panel, 83443, "2022-06-08") is True
+    assert _is_member(panel, 83443, "2022-06-09") is True
 
 
 def test_crsp_sp500_panel_edges_are_the_coverage_clamp_and_the_product_end(tmp_path):
@@ -520,7 +670,7 @@ def test_crsp_sp500_panel_edges_are_the_coverage_clamp_and_the_product_end(tmp_p
     assert pd.Timestamp(panel["timestamp"].values[-1]) == pd.Timestamp("2025-12-31")
 
 
-def test_compustat_nasdaq100_clamps_to_1995_and_holds_goog_and_googl(tmp_path):
+def test_compustat_nasdaq100_clamps_to_1995_and_holds_both_alphabet_permnos(tmp_path):
     """The Nasdaq-100 universe starts 1995-01-01, twelve years before Wikipedia's.
 
     `CompustatNasdaq100ConstituentDataset`'s left edge is a CENSOR, not a
@@ -553,12 +703,14 @@ def test_compustat_nasdaq100_clamps_to_1995_and_holds_goog_and_googl(tmp_path):
         _NDX_COVERAGE_START
     )
     assert pd.Timestamp(panel["timestamp"].values[-1]) == pd.Timestamp("2025-12-31")
-    assert set(panel["symbol"].values.tolist()) == {"GOOG", "GOOGL"}
-    assert _is_member(panel, "GOOG", "2015-01-02") is True
-    assert _is_member(panel, "GOOGL", "2015-01-02") is True
-    # GOOGL did not exist as a ticker before the 2014-04-03 split.
-    assert _is_member(panel, "GOOGL", "2014-04-02") is False
-    assert _is_member(panel, "GOOG", "2014-04-02") is True
+    assert {int(value) for value in panel["symbol"].values.tolist()} == {14542, 90319}
+    assert _is_member(panel, 90319, "2015-01-02") is True
+    assert _is_member(panel, 14542, "2015-01-02") is True
+    # 14542 (the class C issue) joined the index on 2014-04-03; the day before,
+    # only 90319 was a member. On the ticker axis this read as "GOOGL did not
+    # exist yet", which conflated a NAME appearing with a SECURITY joining.
+    assert _is_member(panel, 14542, "2014-04-02") is False
+    assert _is_member(panel, 90319, "2014-04-02") is True
 
 
 def test_an_unlinked_nasdaq100_spell_stops_the_panel_unless_allow_unlinked(tmp_path):
@@ -598,7 +750,7 @@ def test_an_unlinked_nasdaq100_spell_stops_the_panel_unless_allow_unlinked(tmp_p
         .get_xarray_dataset()
     )
 
-    assert set(panel["symbol"].values.tolist()) == {"GOOG", "GOOGL"}
+    assert {int(value) for value in panel["symbol"].values.tolist()} == {14542, 90319}
 
 
 def test_both_crsp_universes_round_trip_through_their_saved_config(tmp_path):

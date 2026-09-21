@@ -251,3 +251,156 @@ def test_a_disjoint_timestamp_axis_is_refused_rather_than_returning_empty() -> N
 
     with pytest.raises(ValueError, match="overlap"):
         UniverseMask(_market(), membership).apply()
+
+
+# ---------------------------------------------------------------------------
+# 03.11-05 -- the same claims on an int64 PERMNO axis
+# ---------------------------------------------------------------------------
+#
+# Since 03.11-03 a CRSP price panel's `symbol` is the int64 PERMNO, and since
+# 03.11-05 so is a CRSP membership panel's. `UniverseMask` used to `str()`
+# both sides in three separate places, which broke in two different ways at
+# once: `apply()` raised `KeyError` selecting digit strings out of an integer
+# index, and `missing_members` differenced a set of STRINGS against a set of
+# INTS, so every in-window member read as missing -- the whole universe
+# reported as a survivorship-bias hole (T-03.11-16). The three had to move
+# together; repairing `symbols` alone would have left the second failure
+# intact and SILENT.
+
+#: 14593 is priced but is not an index member -- out of universe, not a gap.
+#: 7000 and 10107 are the pair on which numeric and lexicographic order fork.
+_PERMNO_MARKET = [7000, 10107, 14593]
+#: 93436 is an in-window member the market panel does not carry (the gap);
+#: 88801 sits on the axis for survivorship-bias reasons and is never True.
+_PERMNO_MEMBERS = [7000, 10107, 93436, 88801]
+
+
+def _permno_membership() -> xr.Dataset:
+    values = np.zeros((len(_CALENDAR_DAYS), len(_PERMNO_MEMBERS)), dtype=bool)
+    index = {permno: i for i, permno in enumerate(_PERMNO_MEMBERS)}
+    values[:, index[7000]] = True
+    values[:, index[10107]] = True
+    window = (_CALENDAR_DAYS >= pd.Timestamp("2024-01-02")) & (
+        _CALENDAR_DAYS <= pd.Timestamp("2024-01-03")
+    )
+    values[window, index[93436]] = True
+    return xr.Dataset(
+        {"is_member": (["timestamp", "symbol"], values)},
+        coords={
+            "timestamp": _CALENDAR_DAYS,
+            "symbol": np.asarray(_PERMNO_MEMBERS, dtype="int64"),
+        },
+    )
+
+
+def _permno_market() -> xr.Dataset:
+    close = np.arange(
+        len(_MARKET_DAYS) * len(_PERMNO_MARKET), dtype=float
+    ).reshape(len(_MARKET_DAYS), len(_PERMNO_MARKET)) + 100.0
+    return xr.Dataset(
+        {"close": (["timestamp", "symbol"], close)},
+        coords={
+            "timestamp": _MARKET_DAYS,
+            "symbol": np.asarray(_PERMNO_MARKET, dtype="int64"),
+        },
+    )
+
+
+def test_missing_members_is_not_the_whole_universe() -> None:
+    """The failure T-03.11-16 names, asserted by its SHAPE rather than by a
+    KeyError.
+
+    With `str()` on one side of the set difference and integers on the other,
+    `missing_members` is the ENTIRE in-window membership -- every name a
+    survivorship-bias hole, a report that is loud, complete and completely
+    wrong. Exactly ONE member here is genuinely absent from the market panel,
+    and the third assertion spells out what the regression produced, so a
+    reader can see how this test fails.
+    """
+    mask = UniverseMask(_permno_market(), _permno_membership())
+
+    assert mask.missing_members == [93436]
+    assert mask.in_window_members == [7000, 10107, 93436]
+    assert mask.missing_members != mask.in_window_members
+
+
+def test_the_intersected_symbol_axis_is_int64_and_numerically_ordered() -> None:
+    """`symbols` takes the shape of its neighbour `timestamps`.
+
+    Both are now plain index intersections that convert nothing. The order is
+    numeric, and 7000 vs 10107 is where numeric and lexicographic fork -- on
+    five-digit PERMNOs alone a regression to `sorted(str(...))` is invisible.
+    """
+    mask = UniverseMask(_permno_market(), _permno_membership())
+
+    assert mask.symbols == [7000, 10107]
+    assert mask.symbols != sorted(mask.symbols, key=str)
+    assert all(isinstance(symbol, int) for symbol in mask.symbols), mask.symbols
+
+
+def test_apply_masks_an_int64_panel_without_a_keyerror() -> None:
+    """`.sel(symbol=[...])` against an integer index, end to end.
+
+    The pre-03.11-05 `symbols` handed `['7000', '10107']` to `.sel`, which
+    raised `KeyError: "not all values found in index 'symbol'"` (measured
+    2026-09-20). The surviving cells are asserted too, so a version that
+    "worked" by quietly returning an all-NaN panel would not pass.
+    """
+    result = UniverseMask(_permno_market(), _permno_membership()).apply()
+
+    assert result["symbol"].values.tolist() == [7000, 10107]
+    assert result["symbol"].dtype.kind == "i", result["symbol"].dtype
+    assert not np.isnan(result["close"].sel(symbol=7000).values).any()
+
+
+def test_the_complete_missing_list_survives_the_int64_axis() -> None:
+    """`report()`'s never-truncated, never-sampled promise is not weakened.
+
+    PERMNOs read worse than tickers, and truncating the list is the obvious
+    way to make the log tidier. It is also the one thing that docstring
+    forbids: a truncated list looks like a complete answer. Restoring readable
+    labels is a later plan's job, not a reason to shorten this one.
+    """
+    permnos = list(range(80000, 80020))
+    values = np.ones((len(_CALENDAR_DAYS), len(permnos)), dtype=bool)
+    membership = xr.Dataset(
+        {"is_member": (["timestamp", "symbol"], values)},
+        coords={
+            "timestamp": _CALENDAR_DAYS,
+            "symbol": np.asarray(permnos, dtype="int64"),
+        },
+    )
+    market = xr.Dataset(
+        {"close": (["timestamp", "symbol"], np.ones((len(_MARKET_DAYS), 1)))},
+        coords={
+            "timestamp": _MARKET_DAYS,
+            "symbol": np.asarray([80000], dtype="int64"),
+        },
+    )
+
+    messages, sink_id = _captured()
+    try:
+        report = UniverseMask(market, membership).report()
+    finally:
+        logger.remove(sink_id)
+
+    assert report["missing_count"] == 19
+    assert report["missing_symbols"] == permnos[1:]
+    joined = "\n".join(messages)
+    for permno in permnos[1:]:
+        assert str(permno) in joined
+    assert "..." not in joined
+
+
+def test_a_permno_panel_against_a_ticker_universe_is_still_refused() -> None:
+    """A GENUINE axis mismatch must keep raising, not quietly align.
+
+    This is a pre-existing good behaviour, and removing the `str()` calls is
+    exactly the change that could have weakened it: a caller who "fixed" the
+    mismatch by coercing one side onto the other's dtype would mask the right
+    panel against the wrong universe, silently. The two panels genuinely
+    disagree about what a security IS, and an empty overlap is never a useful
+    answer -- it flows into a backtest as "no positions".
+    """
+    with pytest.raises(ValueError, match="overlap"):
+        UniverseMask(_permno_market(), _membership()).apply()

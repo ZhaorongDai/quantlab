@@ -2,9 +2,9 @@
 schema_version: 1
 open_count: 20
 waived_count: 0
-fixed_count: 2
-total_count: 22
-last_updated: 2026-09-21T04:00:30.770Z
+fixed_count: 3
+total_count: 23
+last_updated: 2026-09-21T04:37:01.261Z
 ---
 
 # Broken Windows Ledger
@@ -35,8 +35,9 @@ last_updated: 2026-09-21T04:00:30.770Z
 | 18 | 03.6 | deviation | quantlab/base/chunking.py |  | Class docstring first line corrected (Rule 1) beyond the plan's two named constructs | open |  | 2026-09-12T20:56:42.552Z |  |
 | 19 | 03.6 | deviation | quantlab/base/data.py |  | Plan 03.6-09 Rule 3: the pre-try rebuild_rolled_back seed was annotated (bool) so the plan's AST gate, which forbids any ast.Constant-valued assignment, could pass; semantics unchanged | open |  | 2026-09-13T21:34:19.364Z |  |
 | 20 | 03.9 | stub | quantlab/dataset/nbbo_resample.py | 272 | n_ambiguous_ties emitted as 0.0 until plan 03.9-05 adds tie collapse and the ambiguity count (D-19) | fixed |  | 2026-09-19T18:49:10.437Z | 2026-09-19T19:14:23.404Z |
-| 21 | 03.11 | deviation | tests/test_crsp_constituent.py |  | test_membership_symbols_agree_with_the_crsp_price_panel red between 03.11-03 and 03.11-05: price panel is on the int64 PERMNO axis, the membership panel is still ticker-keyed. Owned by plan 03.11-05. | open |  | 2026-09-21T04:00:24.635Z |  |
+| 21 | 03.11 | deviation | tests/test_crsp_constituent.py |  | test_membership_symbols_agree_with_the_crsp_price_panel red between 03.11-03 and 03.11-05: price panel is on the int64 PERMNO axis, the membership panel is still ticker-keyed. Owned by plan 03.11-05. | fixed |  | 2026-09-21T04:00:24.635Z | 2026-09-21T04:36:55.739Z |
 | 22 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | 4 tests red between 03.11-03 and 03.11-08: they assert ticker axis labels (AAPL / QQQ) that the int64 PERMNO axis no longer carries. Owned by plan 03.11-08. | open |  | 2026-09-21T04:00:30.770Z |  |
+| 23 | 03.11 | deviation | tests/test_ingest_wrds_crsp.py |  | test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited. | open |  | 2026-09-21T04:37:01.261Z |  |
 
 ````json
 [
@@ -287,10 +288,10 @@ last_updated: 2026-09-21T04:00:30.770Z
     "file": "tests/test_crsp_constituent.py",
     "line": null,
     "description": "test_membership_symbols_agree_with_the_crsp_price_panel red between 03.11-03 and 03.11-05: price panel is on the int64 PERMNO axis, the membership panel is still ticker-keyed. Owned by plan 03.11-05.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-21T04:00:24.635Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-21T04:36:55.739Z"
   },
   {
     "id": 22,
@@ -302,6 +303,18 @@ last_updated: 2026-09-21T04:00:30.770Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-21T04:00:30.770Z",
+    "resolved_at": null
+  },
+  {
+    "id": 23,
+    "kind": "deviation",
+    "phase": "03.11",
+    "file": "tests/test_ingest_wrds_crsp.py",
+    "line": null,
+    "description": "test_the_universe_conversion_also_writes_the_membership_panel red from 03.11-05: it asserts the ticker label AAPL on the membership panel's symbol axis, which is now the int64 PERMNO 14593. Same file, same cause and same owner as ledger entry 22 -- plan 03.11-08. Out of 03.11-05's files_modified, so handed over rather than edited.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-21T04:37:01.261Z",
     "resolved_at": null
   }
 ]

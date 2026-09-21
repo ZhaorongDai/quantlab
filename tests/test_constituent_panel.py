@@ -461,6 +461,67 @@ def test_null_start_date_is_rejected_rather_than_silently_densified(tmp_path):
         dataset.from_raw_data()
 
 
+def test_the_symbol_axis_takes_its_dtype_and_order_from_the_intervals(tmp_path):
+    """The CONTROL ARM of 03.11-05: a ticker-keyed index is unchanged.
+
+    `_densify` stopped calling `str()` on the values that reach `column_of`
+    and `coords` so a PERMNO-keyed universe can land on an int64 axis. The
+    same path still serves every Wikipedia-sourced index, whose labels are
+    tickers, and for those nothing may move: the axis stays textual and stays
+    in the lexicographic order `sorted()` used to give it.
+
+    Asserted by dtype KIND, not by an exact dtype: `O`, `U` and `T` are all
+    ways numpy/pandas spell "text" depending on how the coordinate was built,
+    and pinning one of them would make this test about the construction route
+    rather than about the contract.
+    """
+    panel = _panel(
+        _PanelFixture(
+            _make_config(tmp_path, start_date="2000-01-01", end_date="2000-01-31")
+        )
+    )
+
+    labels = panel["symbol"].values.tolist()
+
+    assert panel["symbol"].dtype.kind in "OUST", panel["symbol"].dtype
+    assert all(isinstance(label, str) for label in labels), labels
+    assert labels == sorted(labels)
+
+
+def test_a_null_start_date_names_the_offending_symbol_in_the_message(tmp_path):
+    """The one `str()` in `_densify` that must SURVIVE the axis change.
+
+    `undated` renders its symbols for an ERROR MESSAGE, not for the axis, and
+    a message is text whatever the axis is. Removing this `str()` along with
+    the other three would make the refusal read `{np.int64(7000)}` on an
+    integer-keyed universe -- or raise while formatting -- at the exact moment
+    the operator most needs to know WHICH row has no date.
+    """
+
+    class _IntKeyedNullStart(_PanelFixture):
+        def _build_intervals(self) -> pl.DataFrame:
+            return pl.DataFrame(
+                [
+                    (10107, "2000-01-03", None),
+                    (7000, None, "2010-06-15"),
+                ],
+                schema={
+                    "symbol": pl.Int64,
+                    "start_date": pl.String,
+                    "end_date": pl.String,
+                },
+                orient="row",
+            )
+
+    with pytest.raises(ValueError) as refusal:
+        _IntKeyedNullStart(_make_config(tmp_path)).from_raw_data()
+
+    message = str(refusal.value)
+    assert "null start_date" in message
+    assert "'7000'" in message, message
+    assert "10107" not in message, message
+
+
 def test_membership_panel_cleaning_replaces_market_data_cleaning():
     """`clean_market_data()` is not merely unnecessary here, it is unusable:
     `validate_schema()` hard-raises on the five missing OHLCV columns, and

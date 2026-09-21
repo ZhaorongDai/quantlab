@@ -579,3 +579,80 @@ def test_nasdaq100_roster_in_range_resolves_the_alphabet_permnos(tmp_path):
     assert membership.permnos_in_range(
         membership.NASDAQ100, "2010-01-01", "2010-12-31"
     ) == ["90319"]
+
+
+# ---------------------------------------------------------------------------
+# 03.11-05 -- the ticker branch is GONE, the PERMNO branch is intact
+# ---------------------------------------------------------------------------
+
+
+def test_the_ticker_branch_no_longer_exists_on_this_class():
+    """`symbol_intervals` / `_symbol_frame` are DELETED, not deprecated.
+
+    The whole point of the PERMNO migration is that the membership layer has
+    exactly ONE identity to answer in. Leaving the ticker branch beside the
+    PERMNO one would keep a second, silently-wrong way to build a universe:
+    a ticker-keyed mask applied to a PERMNO-keyed price panel intersects to
+    nothing, and an empty universe reads downstream as "no positions" rather
+    than as the misconfiguration it is.
+
+    `CrspSymbology` was imported for that branch alone, so the import going
+    with it is the assertion that no second use crept in (S5: deleting code
+    means deleting what points at it).
+    """
+    from quantlab.dataset import crsp_membership
+    from quantlab.dataset.crsp_membership import CrspMembership
+
+    assert not hasattr(CrspMembership, "symbol_intervals")
+    assert not hasattr(CrspMembership, "_symbol_frame")
+    assert not hasattr(crsp_membership, "CrspSymbology")
+    # The key type narrows with the branch: on the PERMNO axis there is only
+    # one kind of key, so `int | str` would advertise a choice that is gone.
+    assert crsp_membership._Key is int
+
+
+def test_the_permno_branch_and_its_numeric_order_contract_survive_intact():
+    """Everything the deletion must NOT take with it.
+
+    `permnos_in_range`'s docstring is the DEPENDENCY of this whole migration
+    -- it is where "the order is part of the contract, and it is NUMERIC" was
+    first argued, and `quantlab/utils/symbol_axis.py` still cites it as the
+    provenance of `sort_symbol_axis`. Deleting the sibling method is not a
+    licence to touch it.
+    """
+    from quantlab.dataset.crsp_membership import CrspMembership
+
+    for name in (
+        "permno_intervals",
+        "permnos_in_range",
+        "_sp500_pieces",
+        "_nasdaq100_pieces",
+        "_ccm_links_by_key",
+        "_frame",
+    ):
+        assert hasattr(CrspMembership, name), name
+
+    assert "NUMERIC" in CrspMembership.permnos_in_range.__doc__
+
+
+def test_permno_intervals_are_ordered_numerically_not_lexicographically(tmp_path):
+    """A four-digit PERMNO is where numeric and text order fork.
+
+    Historical PERMNOs happen to be five digits (~10000-93436), so the two
+    orders COINCIDE on today's universe and a lexicographic regression would
+    be invisible -- until one four-digit PERMNO appears, and then `7000`
+    sorts after `14593`. PERMNO 7000 is a real never-ticker security
+    (`tests/crsp_fixtures.py:SECINFO_ROWS`), which is exactly why it is the
+    fixture that makes this assertion load-bearing.
+    """
+    rows = [
+        _sp500("14593", "1990-01-02", "2025-12-31"),  # SYNTHETIC
+        _sp500("7000", "1990-01-02", "2025-12-31"),  # SYNTHETIC
+        _sp500("93436", "1990-01-02", "2025-12-31"),  # SYNTHETIC
+    ]
+    membership = _sp500_tier(tmp_path, rows)
+
+    permnos = membership.permno_intervals(membership.SP500)["permno"].to_list()
+
+    assert permnos == [7000, 14593, 93436]
+    assert permnos != sorted(permnos, key=str)

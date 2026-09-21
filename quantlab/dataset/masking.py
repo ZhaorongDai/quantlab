@@ -20,6 +20,8 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
+from quantlab.utils.symbol_axis import sort_symbol_axis
+
 if TYPE_CHECKING:  # import-cycle-free type hints only
     from quantlab.base.constituent import IndexConstituentDataset
     from quantlab.base.data import MarketDataset
@@ -98,14 +100,34 @@ class UniverseMask:
         return market.intersection(membership).sort_values()
 
     @property
-    def symbols(self) -> list[str]:
-        """The intersected symbol axis, sorted."""
-        market = {str(symbol) for symbol in self.market["symbol"].values}
-        membership = {str(symbol) for symbol in self.membership["symbol"].values}
-        return sorted(market & membership)
+    def symbols(self) -> list:
+        """The intersected symbol axis, sorted.
+
+        Deliberately the same SHAPE as `timestamps` above: a plain index
+        intersection that converts nothing. It used to build two sets with
+        `str()` applied to every label instead, which on a CRSP pair -- both
+        panels keyed by int64 PERMNO since 03.11-03/05 -- produced digit
+        strings that
+        `apply()`'s `.sel` could not find in an integer index
+        (`KeyError: "not all values found in index 'symbol'"`, measured
+        2026-09-20).
+
+        The return type is intentionally unparameterised: the element type is
+        whatever the two axes agree on -- `int` for a CRSP universe, `str` for
+        a Wikipedia one -- and `list[str]` was a claim about only one of them.
+
+        Order comes from `sort_symbol_axis`, the single implementation of the
+        numeric-order contract. `Index.sort_values()` would already be numeric
+        on an int64 axis, but routing both axis kinds through one source is
+        what keeps a string axis's existing lexicographic order stated in the
+        same place rather than implied by a different call.
+        """
+        market = pd.Index(self.market["symbol"].values)
+        membership = pd.Index(self.membership["symbol"].values)
+        return sort_symbol_axis(market.intersection(membership).tolist())
 
     @property
-    def in_window_members(self) -> list[str]:
+    def in_window_members(self) -> list:
         """Every symbol True in `is_member` at one or more timestamps INSIDE
         the overlapping window.
 
@@ -114,31 +136,53 @@ class UniverseMask:
         all-False columns for symbols whose entire membership falls outside
         the window (that is its survivorship-bias guarantee), and those are
         not coverage gaps.
+
+        Labels come back in the membership axis's own dtype -- see `symbols`
+        for why that matters and `missing_members` for why the two properties
+        had to stop converting at the SAME time.
         """
         overlap = self.timestamps
         if len(overlap) == 0:
             return []
         member = self.membership["is_member"].sel(timestamp=overlap)
         ever = member.any(dim="timestamp")
-        return sorted(
-            str(symbol)
-            for symbol, flag in zip(ever["symbol"].values, ever.values)
+        return sort_symbol_axis(
+            symbol
+            for symbol, flag in zip(ever["symbol"].values.tolist(), ever.values)
             if bool(flag)
         )
 
     @property
-    def missing_members(self) -> list[str]:
-        """In-window members the market panel does not carry at all."""
-        market = {str(symbol) for symbol in self.market["symbol"].values}
-        return sorted(set(self.in_window_members) - market)
+    def missing_members(self) -> list:
+        """In-window members the market panel does not carry at all.
+
+        **This is a set difference, so both sides must be spelled the same
+        way.** When this property stringified the market axis while
+        `in_window_members` returned integers -- or the reverse -- the
+        difference was the WHOLE in-window membership: every index member
+        reported as a survivorship-bias hole, by count and by name, in a
+        report that is loud, complete and entirely wrong (T-03.11-16). The
+        three conversions in this class therefore moved together in 03.11-05;
+        repairing `symbols` alone would have turned a `KeyError` into that
+        silent, plausible-looking answer.
+        """
+        market = set(self.market["symbol"].values.tolist())
+        return sort_symbol_axis(set(self.in_window_members) - market)
 
     def report(self) -> dict:
         """Return AND log the coverage report (D-06).
 
         A `logger.warning` carrying the count and the COMPLETE sorted list
-        when non-empty; a `logger.info` when empty. The list is never
-        truncated and never sampled -- a truncated list is worse than none,
-        because it looks like a complete answer.
+        when non-empty; a `logger.info` when empty.
+        The list is never truncated and never sampled -- a truncated list is
+        worse than none, because it looks like a complete answer.
+
+        That promise survived the PERMNO migration unchanged (03.11-05), and
+        the temptation it had to survive was real: a list of bare integers
+        reads worse than a list of tickers, and shortening it is the obvious
+        way to make the log tidy again. Readability is restored by mapping
+        PERMNOs back to period-correct tickers for DISPLAY, not by printing
+        fewer of them.
         """
         members = self.in_window_members
         missing = self.missing_members

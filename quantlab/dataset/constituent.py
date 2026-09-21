@@ -9,10 +9,10 @@ adding an index a `dataset/` change only (DATA-06).
 pair replays a public change log; the CRSP-vendor pair reads the CRSP/
 Compustat reference tier. They are separate classes with separate stores
 rather than a source switch on one class, because their coverage starts and
-their SYMBOL AXES differ: the CRSP pair spells tickers with
-`CrspSymbology`, the same rule `CrspStockDataset` labels its price rows
-with, so a CRSP mask lines up with a CRSP panel across renames and share
-classes -- and a Wikipedia mask does not.
+their SYMBOL AXES differ: the CRSP pair's `symbol` is the int64 PERMNO, the
+same identifier `CrspStockDataset` keys its price columns by since 03.11-03,
+so a CRSP mask lines up with a CRSP panel with no derivation in between --
+and a Wikipedia mask, whose axis is tickers, does not.
 
 **`cache_dir` means "the local directory this universe is answered from",
 and that is two different directories.** For the Wikipedia pair it is where
@@ -40,6 +40,20 @@ from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
 from quantlab.dataset.crsp_membership import CrspMembership
 from quantlab.dataset.crsp_reference import CrspReference
+
+
+def _rename_permno_to_symbol(permno_intervals: pl.DataFrame) -> pl.DataFrame:
+    """A PERMNO-interval frame under `_densify`'s own column names.
+
+    `IndexConstituentDataset._densify` reads `(symbol, start_date, end_date)`,
+    and the DIMENSION is still called `symbol` on both panels (RULING 3) --
+    only what it spells changed. So this is a RENAME and nothing else: no cast,
+    no re-derivation, no second identity rule to keep in step with the price
+    panel's. `CrspMembership.permno_intervals` already types the column
+    `pl.Int64`, which is the dtype the CRSP price panel's axis carries since
+    03.11-03.
+    """
+    return permno_intervals.rename({"permno": "symbol"})
 
 
 class SP500ConstituentDataset(IndexConstituentDataset):
@@ -127,13 +141,14 @@ class CrspSP500ConstituentDataset(IndexConstituentDataset):
     earlier than `SP500ConstituentDataset`'s Wikipedia change log, which is
     the whole reason both exist.
 
-    **Its tickers are the CRSP PRICE PANEL'S tickers**, because both sides
-    derive them from one `CrspSymbology` rule (see
-    `CrspMembership.symbol_intervals`). A mask built here and applied to a
-    `CrspStockDataset` panel therefore lines up symbol for symbol across
-    renames (FB -> META) and share classes (BRK.B). It is NOT interchangeable
-    with the Wikipedia panel's symbol axis, which is why this is a separate
-    class and a separate store rather than a source switch on that one.
+    **Its symbols ARE the CRSP PRICE PANEL'S symbols**, because both sides are
+    the int64 PERMNO itself rather than something derived from it. A mask built
+    here and applied to a `CrspStockDataset` panel therefore lines up column
+    for column, and a rename (FB -> META) or a share class (BRK.B) is not an
+    event either side has to handle in step with the other -- there is no
+    ticker rule left to disagree about. It is NOT interchangeable with the
+    Wikipedia panel's symbol axis, which is why this is a separate class and a
+    separate store rather than a source switch on that one.
 
     **The right edge is the CRSP annual product end, never today.** Every
     interval `CrspMembership` produces carries an explicit end bounded by
@@ -153,13 +168,13 @@ class CrspSP500ConstituentDataset(IndexConstituentDataset):
         return CrspMembership.PIT_COVERAGE_START[self.INDEX]
 
     def _build_intervals(self) -> pl.DataFrame:
-        return CrspMembership(
-            CrspReference(self.config.cache_dir)
-        ).symbol_intervals(
-            self.INDEX,
-            allow_unlinked=bool(
-                (self.config.kwargs or {}).get("allow_unlinked", False)
-            ),
+        return _rename_permno_to_symbol(
+            CrspMembership(CrspReference(self.config.cache_dir)).permno_intervals(
+                self.INDEX,
+                allow_unlinked=bool(
+                    (self.config.kwargs or {}).get("allow_unlinked", False)
+                ),
+            )
         )
 
 
@@ -200,11 +215,11 @@ class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
         return CrspMembership.PIT_COVERAGE_START[self.INDEX]
 
     def _build_intervals(self) -> pl.DataFrame:
-        return CrspMembership(
-            CrspReference(self.config.cache_dir)
-        ).symbol_intervals(
-            self.INDEX,
-            allow_unlinked=bool(
-                (self.config.kwargs or {}).get("allow_unlinked", False)
-            ),
+        return _rename_permno_to_symbol(
+            CrspMembership(CrspReference(self.config.cache_dir)).permno_intervals(
+                self.INDEX,
+                allow_unlinked=bool(
+                    (self.config.kwargs or {}).get("allow_unlinked", False)
+                ),
+            )
         )
