@@ -20,6 +20,7 @@ from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.data import BaseDataset
 from quantlab.dataset.cleaning import clean_membership_panel
 from quantlab.enums.constant import Date
+from quantlab.utils.symbol_axis import sort_symbol_axis
 
 
 class IndexConstituentDataset(BaseDataset):
@@ -133,13 +134,22 @@ class IndexConstituentDataset(BaseDataset):
         See the class docstring for the two axis conventions. The resolution
         rules, in order:
 
-        - **Symbol axis**: `sorted(set(...))` over the ALL-TIME union, computed
-          before any date filtering. A symbol whose entire membership predates
-          the panel window still gets a (fully False) column. That is the
-          survivorship-bias guarantee, and it is also what makes
-          `XrBackend.filter_by_symbol`'s `.sel(symbol=[...])` safe: a requested
-          symbol that was never a member raises `KeyError` loudly instead of
-          silently vanishing.
+        - **Symbol axis**: `sort_symbol_axis(set(...))` over the ALL-TIME
+          union, computed before any date filtering. A symbol whose entire
+          membership predates the panel window still gets a (fully False)
+          column. That is the survivorship-bias guarantee, and it is also what
+          makes `XrBackend.filter_by_symbol`'s `.sel(symbol=[...])` safe: a
+          requested symbol that was never a member raises `KeyError` loudly
+          instead of silently vanishing.
+
+          **The labels keep the interval table's own dtype.** This method used
+          to `str()` them, so a PERMNO-keyed universe came back as digit
+          strings in lexicographic order and selected NOTHING against the
+          int64 price panel (03.11-05). It does not convert them now: a
+          ticker-keyed index still gets a textual axis in lexicographic order,
+          a PERMNO-keyed one gets an int64 axis in numeric order, and the
+          order contract itself lives once in
+          `quantlab/utils/symbol_axis.py:sort_symbol_axis`.
         - **Left edge**: `max(config.start_date, _pit_coverage_start())`. The
           config setter has already clamped it; the `max` here keeps the panel
           correct even if a caller mutates the config afterwards.
@@ -183,6 +193,13 @@ class IndexConstituentDataset(BaseDataset):
         # produces a silently all-False mask row. `start_date` can legitimately
         # be null today: it comes from `effective_date`, which is null if a
         # change-log row lacks a date.
+        # The `str()` here is deliberate and is NOT one of the three the
+        # PERMNO migration removed (03.11-05). It renders an ERROR MESSAGE
+        # PAYLOAD, and a message is text whatever the axis is: on an
+        # integer-keyed universe, dropping it would print `{np.int64(7000)}`
+        # at the exact moment the operator most needs to read which row has no
+        # date. The three that DID go are the ones whose values reach
+        # `column_of` and `coords` below, i.e. the ones that decide the axis.
         undated = sorted(
             {str(row["symbol"]) for row in rows if row["start_date"] is None}
         )
@@ -195,7 +212,14 @@ class IndexConstituentDataset(BaseDataset):
                 f"indistinguishable from 'never a member'."
             )
 
-        symbols = sorted({str(row["symbol"]) for row in rows})
+        # The labels enter the axis AS THE INTERVAL TABLE SPELLS THEM. A
+        # ticker-keyed index (Wikipedia) still yields a textual axis in
+        # lexicographic order; a PERMNO-keyed one (CRSP) yields an int64 axis
+        # in NUMERIC order, which is what lines it up with the price panel
+        # 03.11-03 produced. `sort_symbol_axis` is the single implementation of
+        # that order contract -- a bare `sorted()` here would put `"14593"`
+        # before `"7000"`, and today's five-digit PERMNOs make that invisible.
+        symbols = sort_symbol_axis({row["symbol"] for row in rows})
         column_of = {symbol: i for i, symbol in enumerate(symbols)}
 
         left = pd.Timestamp(
@@ -263,11 +287,11 @@ class IndexConstituentDataset(BaseDataset):
             # `UniverseCatalog.get_symbols_as_of`: the removal's effective
             # date IS a membership day.
             mask = (timestamps >= start) & (timestamps <= end)
-            values[mask, column_of[str(row["symbol"])]] = True
+            values[mask, column_of[row["symbol"]]] = True
 
         return xr.Dataset(
             {"is_member": (["timestamp", "symbol"], values)},
-            coords={"timestamp": timestamps, "symbol": symbols},
+            coords={"timestamp": timestamps, "symbol": np.asarray(symbols)},
         )
 
     @abstractmethod
