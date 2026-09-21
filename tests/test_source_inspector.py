@@ -1205,6 +1205,12 @@ def test_browse_zarr_names_the_store_on_an_unknown_symbol(
     assert config.zarr_file_path in message
     assert "NOSUCH" in message
     assert "2 symbol(s)" in message
+    # CONTROL ARM for 03.11-09: this store's axis really is tickers, so the
+    # PERMNO note must NOT appear. The note is keyed on the axis DTYPE, not on
+    # a vendor, and firing it here would point an operator at a sidecar that
+    # has nothing to do with their store.
+    assert "PERMNO" not in message
+    assert "crsp_tickers.json" not in message
     # The original KeyError is preserved in the chain rather than swallowed.
     assert isinstance(excinfo.value.__cause__, KeyError)
 
@@ -1215,6 +1221,59 @@ def test_browse_zarr_names_the_store_on_an_unknown_symbol(
     assert known.sizes["timestamp"] == 5
     # Nothing was NaN-filled anywhere.
     assert not bool(known["close"].isnull().any())
+
+
+def test_browse_zarr_says_an_integer_axis_is_permnos_and_where_the_names_are(
+    no_credentials, tmp_path
+) -> None:
+    """03.11-09: the REFUSAL is unchanged; the explanation is not.
+
+    On a CRSP store the symbol axis is the int64 PERMNO (D-01), so a ticker
+    can never match it -- whether or not the store holds that security. The old
+    message ("the store does not carry AAPL") was true and pointed the operator
+    at the wrong conclusion: convert more data, when what they needed was the
+    PERMNO. Saying which KIND of label the axis holds, and where the tickers
+    went, is the difference between a dead end and a next step.
+
+    The behaviour it explains is deliberately NOT relaxed: an unknown symbol
+    still raises rather than being reindexed to a NaN column.
+    """
+    import numpy as np
+    import pandas as pd
+    import pytest
+    import xarray as xr
+
+    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.base.config import DatasetConfig
+
+    store = tmp_path / "crsp" / "crsp.zarr"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    xr.Dataset(
+        {"close": (["timestamp", "symbol"], np.ones((5, 2)))},
+        coords={
+            "timestamp": pd.date_range("2024-01-01", periods=5, freq="D"),
+            "symbol": np.asarray([13407, 14593], dtype="int64"),
+        },
+    ).to_zarr(store, mode="w")
+
+    config = DatasetConfig(
+        raw_data_dir_path=str(tmp_path / "crsp" / "raw"),
+        zarr_file_path=str(store),
+        catalog_path=str(tmp_path / "crsp" / "catalog"),
+        market="us_equity",
+        frequency="1d",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        SourceInspector().browse_zarr(
+            config, ["META"], "2024-01-01", "2024-01-05"
+        )
+
+    message = str(excinfo.value)
+    assert "PERMNO" in message
+    assert "crsp_tickers.json" in message
+    assert "CrspTickerLookup" in message
+    assert isinstance(excinfo.value.__cause__, KeyError)
 
 
 def test_two_browses_on_one_inspector_do_not_narrow_each_other(

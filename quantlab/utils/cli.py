@@ -130,7 +130,14 @@ def add_universe_args(
         type=str,
         required=False,
         default=None,
-        help="Comma-separated symbols (e.g. AAPL,MSFT). Mutually exclusive with --universe.",
+        help=(
+            "Comma-separated TICKERS (e.g. AAPL,MSFT). Mutually exclusive "
+            "with --universe. This is the ticker-side entry point: a CRSP "
+            "panel's symbol axis is the int64 PERMNO (D-01), so a CRSP "
+            "conversion takes --permnos instead, and the ticker a PERMNO wore "
+            "on a given day is read from the '.crsp_tickers.json' sidecar "
+            "beside the store."
+        ),
     )
     parser.add_argument(
         "--universe",

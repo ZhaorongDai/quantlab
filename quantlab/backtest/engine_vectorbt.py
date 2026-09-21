@@ -46,7 +46,12 @@ class VectorBtBacktester(BaseBacktester):
     ffill）成交价是 NaN。开头价格为 NaN、此前从未持有的标的（晚上市）不算退市，
     上市后正常成交。每次强制平仓在 `SimulationResult.liquidations` 里记一条 dict：
 
-    - `symbol`：标的名（str）；
+    - `symbol`：标的名，**人读**的那个拼写（str）。价格库旁边有
+      `.crsp_tickers.json` 时，是该标的在**成交那一天**的 ticker（13407 在
+      2022-06-08 是 FB、次日是 META）；没有那份 sidecar 的库（Tiingo / Alpaca，
+      或 03.11-09 之前转换的 CRSP 库）上，就是面板轴自己的拼写，一个字不变；
+    - `axis_symbol`：面板 symbol 轴上的标签本身（str），机器身份。两个都记，
+      因为署名与索引是两个问题：按名字回查面板会在改名那天查空；
     - `signal_timestamp`：发出平仓信号的调仓 bar（pd.Timestamp）；
     - `fill_timestamp`：成交 bar，即 t+1（pd.Timestamp）；
     - `price`：t+1 上 ffill 后的成交价，也就是该标的最后一个有限成交价（float）。
@@ -285,10 +290,23 @@ class VectorBtBacktester(BaseBacktester):
         for t in np.flatnonzero(np.isfinite(weight_values).all(axis=1)):
             if t + 1 >= n_bars:
                 continue
-            delisted = (np.abs(held[t]) > tolerance) & np.isnan(raw_fill[t + 1])
-            for j in np.flatnonzero(delisted):
+            delisted = np.flatnonzero(
+                (np.abs(held[t]) > tolerance) & np.isnan(raw_fill[t + 1])
+            )
+            if delisted.size == 0:
+                continue
+            # 强平记录是**人读**的产物（日志 + liquidations.json），而 PERMNO 轴
+            # 上的 `str(symbols[j])` 是一串裸数字。按**成交那一天**查名字：退市
+            # 当天的拼写才是这条记录该署的名，用今天的名字去署十年前的记录正是
+            # 区间表存在的理由。一次查一整批，不是一行查一次。
+            fill_day = pd.Timestamp(timestamps[t + 1]).date()
+            named = self.ticker_lookup.label(
+                [symbols[j] for j in delisted], fill_day
+            )
+            for j, name in zip(delisted, named):
                 record = {
-                    "symbol": str(symbols[j]),
+                    "symbol": name,
+                    "axis_symbol": str(symbols[j]),
                     "signal_timestamp": pd.Timestamp(timestamps[t]),
                     "fill_timestamp": pd.Timestamp(timestamps[t + 1]),
                     "price": float(filled_fill[t + 1, j]),

@@ -333,6 +333,91 @@ def _delisting_case():
     return ts, symbols, fill, valuation, _weights(rows, ts, symbols)
 
 
+def _permno_delisting_case():
+    """`_delisting_case`, keyed on int64 PERMNOs instead of letters.
+
+    13407 is Meta -- the PERMNO whose ticker CHANGED (FB until 2022-06-08,
+    META after), which is why the sidecar is an interval table. 99999 is not in
+    the sidecar at all.
+    """
+    ts, _, fill, valuation, _ = _delisting_case()
+    symbols = [13407, 99999]
+    rows = np.full((len(ts), 2), NAN)
+    rows[0] = [1.0, 0.0]
+    rows[4] = [0.0, 1.0]
+    rows[8] = [0.0, 0.0]
+    return ts, symbols, fill, valuation, _weights(rows, ts, symbols)
+
+
+def _write_ticker_sidecar(dataset_config) -> "Path":
+    """A `.crsp_tickers.json` beside the fixture price store.
+
+    Written by hand rather than by a conversion: this file is about what the
+    ENGINE does with the sidecar, and `tests/test_crsp_ticker_sidecar.py`
+    already owns the question of whether a conversion writes it correctly.
+    """
+    import json
+    from pathlib import Path
+
+    from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
+
+    path = Path(str(dataset_config.zarr_file_path) + TICKER_SIDECAR_SUFFIX)
+    path.write_text(
+        json.dumps(
+            {
+                "generated_from": "stksecurityinfohist",
+                "vintage_product_end": "2025-12-31",
+                "intervals": {
+                    "13407": [
+                        {"ticker": "FB", "start": "2012-05-18",
+                         "end": "2022-06-08"},
+                        {"ticker": "META", "start": "2022-06-09",
+                         "end": "2025-12-31"},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_ticker_sidecar_names_the_liquidated_permno(tmp_path):
+    """03.11-09 / D-03: the log line and the record say META, not 13407.
+
+    The bars are in 2024, so the as-of answer is META; the SAME PERMNO on a
+    2015 bar would read FB, which is the entire reason the sidecar stores
+    intervals rather than one name per security.
+    """
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    _write_ticker_sidecar(backtester.config.price_dataset.config)
+    ts, symbols, fill, valuation, weights = _permno_delisting_case()
+
+    simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
+
+    assert simulation.liquidations, "the delisted holding must be recorded"
+    record = simulation.liquidations[0]
+    assert record["symbol"] == "META"
+    assert record["axis_symbol"] == "13407"
+
+
+def test_a_missing_ticker_sidecar_leaves_the_liquidation_record_working(tmp_path):
+    """T-03.11-30: the audit file is an ANNOTATION, not a dependency.
+
+    Same panel, no sidecar on disk. The record falls back to the PERMNO's own
+    digits -- which is exactly what it printed before 03.11-09 -- rather than
+    raising in the middle of a simulation.
+    """
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    ts, symbols, fill, valuation, weights = _permno_delisting_case()
+
+    simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
+
+    record = simulation.liquidations[0]
+    assert record["symbol"] == "13407"
+    assert record["axis_symbol"] == "13407"
+
+
 def test_held_symbol_that_delists_is_liquidated_at_its_last_price_and_recorded(tmp_path):
     """D-07: one record for A, filled on bar 5 at A's last finite fill price."""
     backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
@@ -343,7 +428,13 @@ def test_held_symbol_that_delists_is_liquidated_at_its_last_price_and_recorded(t
 
     assert simulation.liquidations == [
         {
+            # CONTROL ARM for 03.11-09: this price store has no
+            # `.crsp_tickers.json` beside it, so the human-readable `symbol`
+            # is the axis's own label, byte-identical to what this test
+            # asserted before the sidecar existed. Only a store that HAS the
+            # sidecar gets a period-correct ticker here.
             "symbol": "A",
+            "axis_symbol": "A",
             "signal_timestamp": ts[4],
             "fill_timestamp": ts[5],
             "price": last_price,
@@ -351,6 +442,7 @@ def test_held_symbol_that_delists_is_liquidated_at_its_last_price_and_recorded(t
     ]
     record = simulation.liquidations[0]
     assert type(record["symbol"]) is str
+    assert type(record["axis_symbol"]) is str
     assert isinstance(record["signal_timestamp"], pd.Timestamp)
     assert isinstance(record["fill_timestamp"], pd.Timestamp)
     assert type(record["price"]) is float
@@ -486,9 +578,19 @@ def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
     liquidations = result.simulation.liquidations
     assert liquidations, "the delisted holding must be recorded"
     for record in liquidations:
-        assert set(record) == {"symbol", "signal_timestamp", "fill_timestamp", "price"}
+        assert set(record) == {
+            "symbol",
+            "axis_symbol",
+            "signal_timestamp",
+            "fill_timestamp",
+            "price",
+        }
     first = liquidations[0]
+    # No ticker sidecar beside this store, so the two agree (03.11-09 control
+    # arm). The record keeps both because on a CRSP store they differ, and
+    # reindexing a panel by the NAME would miss on a rename day.
     assert first["symbol"] == picked
+    assert first["axis_symbol"] == picked
     assert first["signal_timestamp"] == bars[RUN_WINDOW_START + 5]
     assert first["fill_timestamp"] == bars[RUN_WINDOW_START + 6]
     last_open = probe[MARKET.fill_price_column].sel(symbol=picked).values[delist_bar - 1]

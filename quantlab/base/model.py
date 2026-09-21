@@ -72,6 +72,14 @@ class BaseModel(ABC):
         # 特征计算前核对一次变量，`load()` 再核对一次，同一条 warning 只输出一次。
         # 比较与报错从不跳过；每条 warning 都写明路径，换一个 checkpoint 仍会 warning。
         self._emitted_load_warnings: set[str] = set()
+        # 把标的标签拼成人可读文本的可调用，签名 `(symbols, day) -> list[str]`，
+        # 只用于**消息**，从不参与选择或对齐。`None` 时回落成标的自己的拼写。
+        #
+        # 为什么是一个注入进来的可调用而不是模型自己去查：模型层只认识因子库，
+        # 不认识价格库，而名字表是价格库的 sidecar；而且模型层不该知道任何厂商
+        # （`tests/test_extensibility_contract.py` 的核心层纯净性）。回测器在调
+        # `predict_panel` 之前把它装上（`base/backtest.py:_align_and_predict`）。
+        self.symbol_labeller = None
 
         self.data_backend = XrBackend()
         # self._pre_feature: Optional[xr.Dataset] = None
@@ -1255,28 +1263,53 @@ class DLModel(BaseModel):
         self._assert_symbol_types_match(trained, present, feats)
         present_set = set(present)
         missing = [symbol for symbol in trained if symbol not in present_set]
+        as_of = self._panel_as_of(feats)
         if missing:
+            shown = self._spell(missing[:20], as_of)
             raise ValueError(
                 f"{self.class_name}.predict_panel: the feature panel lacks "
                 f"{len(missing)} of the {len(trained)} symbols this model was "
-                f"trained on: {missing[:20]}{' ...' if len(missing) > 20 else ''}. "
+                f"trained on: {shown}{' ...' if len(missing) > 20 else ''}. "
                 f"A DL head encodes symbol position, so it cannot predict "
                 f"without them (WR-02)"
             )
         trained_set = set(trained)
-        # `missing` / `extra` 在 PERMNO 轴上会打出裸数字而不是 ticker。本任务
-        # 刻意不动：人类可读的 ticker 还原是 03.11-09 的 sidecar 的事，在这里
-        # 各自查一次符号学就是把那份逻辑复制到第七个地方。
         extra = sort_symbol_axis(
             symbol for symbol in present_set if symbol not in trained_set
         )
         if extra:
+            shown = self._spell(extra[:20], as_of)
             logger.warning(
                 f"{self.class_name}.predict_panel: dropping {len(extra)} symbol(s) "
                 f"the model was not trained on, which get no prediction: "
-                f"{extra[:20]}{' ...' if len(extra) > 20 else ''} (WR-02)"
+                f"{shown}{' ...' if len(extra) > 20 else ''} (WR-02)"
             )
         return feats.sel(symbol=sort_symbol_axis(trained))
+
+    @staticmethod
+    def _panel_as_of(feats: xr.Dataset):
+        """面板最后一个 bar 的日期，名字的 as-of 基准。
+
+        标的名是**有时效的**——13407 在 2022-06-08 叫 FB、次日叫 META——所以「用
+        哪一天去查」必须说清楚。取窗口末尾：这两条消息讲的是**这次预测**要用的
+        面板，而不是历史上某一天，所以最新的那个拼写就是读者手里正在看的那个。
+        面板没有时间轴时返回 `None`，查表随即整体回落。
+        """
+        stamps = feats["timestamp"].values if "timestamp" in feats.coords else []
+        if len(stamps) == 0:
+            return None
+        return pd.Timestamp(stamps[-1]).date()
+
+    def _spell(self, symbols: list, as_of) -> list[str]:
+        """标的标签拼成人可读文本，**只用于消息**。
+
+        没装 `symbol_labeller`（单独训练、非 CRSP 面板、没有 sidecar 的库）时
+        返回标签自己的拼写，也就是这两条消息在 03.11-09 之前一直打的东西。
+        查表**从不**抛错：一条日志不该因为审计文件缺失而变成一次崩溃。
+        """
+        if self.symbol_labeller is None or as_of is None:
+            return [str(symbol) for symbol in symbols]
+        return self.symbol_labeller(symbols, as_of)
 
     @staticmethod
     def _symbol_type_name(symbol) -> str:

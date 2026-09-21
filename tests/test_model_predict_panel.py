@@ -607,6 +607,89 @@ def test_ticker_trained_symbols_still_align_unchanged(tmp_path, warning_messages
     ), warning_messages
 
 
+def _ticker_lookup(tmp_path, *, write: bool):
+    """A `CrspTickerLookup` over a hand-written sidecar, or over a missing one.
+
+    Hand-written rather than produced by a conversion: this file is about what
+    the MODEL does with a labeller, and `tests/test_crsp_ticker_sidecar.py`
+    already owns whether a conversion writes the file correctly.
+    """
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    path = tmp_path / "prices.zarr.crsp_tickers.json"
+    if write:
+        path.write_text(
+            json.dumps(
+                {
+                    "generated_from": "stksecurityinfohist",
+                    "vintage_product_end": "2025-12-31",
+                    "intervals": {
+                        "99999": [
+                            {"ticker": "GHOST", "start": "1990-01-01",
+                             "end": "2025-12-31"}
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    return CrspTickerLookup(path)
+
+
+def test_a_symbol_labeller_spells_the_dropped_permnos(tmp_path, warning_messages):
+    """03.11-09: the WR-02 warning says GHOST, not 99999.
+
+    The model layer knows no vendor and no store path -- the backtester hands
+    it a `(symbols, day) -> list[str]` callable and nothing else
+    (`base/backtest.py:_align_and_predict`). The labeller touches the MESSAGE
+    only: the panel is still selected by the int64 identity, which is why the
+    returned axis below is unchanged.
+    """
+    trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+    fresh.symbol_labeller = _ticker_lookup(tmp_path, write=True).label
+    base = _features(trained)
+    wider = xr.concat(
+        [base, base.isel(symbol=[0]).assign_coords(symbol=[99999])],
+        dim="symbol",
+    ).isel(symbol=slice(None, None, -1))
+
+    pred = fresh.predict_panel(wider)
+
+    assert pred.symbol.values.tolist() == SORTED_PERMNOS
+    assert any(
+        "GHOST" in m and "WR-02" in m for m in warning_messages
+    ), warning_messages
+
+
+def test_a_missing_ticker_sidecar_leaves_the_warning_working(
+    tmp_path, warning_messages
+):
+    """T-03.11-30: a labeller pointed at a file that does not exist must not
+    turn a warning into a crash.
+
+    Same run, sidecar absent. The warning falls back to the digits, which is
+    exactly what it printed before 03.11-09.
+    """
+    trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+    fresh.symbol_labeller = _ticker_lookup(tmp_path, write=False).label
+    base = _features(trained)
+    wider = xr.concat(
+        [base, base.isel(symbol=[0]).assign_coords(symbol=[99999])],
+        dim="symbol",
+    ).isel(symbol=slice(None, None, -1))
+
+    pred = fresh.predict_panel(wider)
+
+    assert pred.symbol.values.tolist() == SORTED_PERMNOS
+    assert any(
+        "99999" in m and "WR-02" in m for m in warning_messages
+    ), warning_messages
+
+
 def test_int64_checkpoint_records_json_integers(tmp_path):
     """`trained_on.symbols` is a JSON INTEGER array on an int64 panel.
 

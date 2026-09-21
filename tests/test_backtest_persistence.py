@@ -271,8 +271,20 @@ def test_every_json_artifact_is_strict_json(overlap_run):
     assert result.simulation.liquidations, "the fixture run must liquidate"
     assert len(liquidations) == len(result.simulation.liquidations)
     first = liquidations[0]
-    assert set(first) == {"symbol", "signal_timestamp", "fill_timestamp", "price"}
+    # 03.11-09: the record carries BOTH halves of a security's name -- the
+    # human `symbol` (the period-correct ticker when a `.crsp_tickers.json`
+    # sits beside the price store) and `axis_symbol`, the panel label itself.
+    # This fixture store has NO sidecar, which is the control arm: the two are
+    # equal and the file reads exactly as it did before the sidecar existed.
+    assert set(first) == {
+        "symbol",
+        "axis_symbol",
+        "signal_timestamp",
+        "fill_timestamp",
+        "price",
+    }
     assert first["symbol"] == result.simulation.liquidations[0]["symbol"]
+    assert first["axis_symbol"] == first["symbol"]
     assert pd.Timestamp(first["fill_timestamp"]) == pd.Timestamp(
         result.simulation.liquidations[0]["fill_timestamp"]
     )
@@ -1059,7 +1071,13 @@ def test_the_liquidating_run_drops_the_chart_markers_and_keeps_the_json(overlap_
     persisted = _strict_json(result.run_dir / "liquidations.json")
     assert len(persisted) == len(result.simulation.liquidations)
     for stored, live in zip(persisted, result.simulation.liquidations):
-        assert set(stored) == {"symbol", "signal_timestamp", "fill_timestamp", "price"}
+        assert set(stored) == {
+            "symbol",
+            "axis_symbol",
+            "signal_timestamp",
+            "fill_timestamp",
+            "price",
+        }
         assert stored["symbol"] == live["symbol"]
         for field in ("fill_timestamp", "signal_timestamp"):
             assert pd.Timestamp(stored[field]) == pd.Timestamp(live[field]), field
