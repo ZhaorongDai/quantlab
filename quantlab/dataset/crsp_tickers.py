@@ -49,8 +49,13 @@ nothing else reads it.
   digits, which is exactly what those messages printed before this sidecar
   existed.
 
-A LEAF module: stdlib only, no project-internal imports at module scope, so any
-layer may import it. The one name it needs from `crsp.py` -- the suffix -- is
+A LEAF module: the standard library plus `loguru` at module scope, and no
+project-internal imports at all, so any layer may import it. It is the second
+half of that sentence that is load-bearing -- what would make this module
+un-importable from some layer is a quantlab dependency of its own, not a
+third-party one, and `loguru` is already imported by all three of its
+consumers (`dataset/masking.py`, `backtest/engine_vectorbt.py`,
+`base/model.py`). The one name it needs from `crsp.py` -- the suffix -- is
 imported inside `beside_store`, because appending a string must not drag the
 whole converter (polars, xarray, the reference tier) into a display path.
 
@@ -69,6 +74,8 @@ import json
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
+
+from loguru import logger
 
 __all__ = ["CrspTickerLookup"]
 
@@ -110,6 +117,16 @@ class CrspTickerLookup:
     def __init__(self, sidecar_path: str | Path) -> None:
         self.sidecar_path = Path(sidecar_path)
         self._payload: dict | None = None
+        #: Has this instance already said its sidecar is unusable? Purely a
+        #: log-throttle (see `_degrade`), never read by any query.
+        #:
+        #: INSTANCE-level and not module-level on purpose. The unit that gets
+        #: one warning is one FILE: a forced-liquidation batch builds a lookup
+        #: and renders hundreds of records through it, so per-call would spam,
+        #: while a module-level flag would let the first broken store silence
+        #: the report for every other store in the same process -- and a run
+        #: that backtests two panels would be told about one of them.
+        self._degraded = False
 
     def __repr__(self) -> str:
         return f"CrspTickerLookup({str(self.sidecar_path)!r})"
@@ -203,6 +220,50 @@ class CrspTickerLookup:
             f"store together with its '.crsp_*.json' sidecars and re-convert "
             f"to get a well-formed one."
         )
+
+    def _degrade(self, exc: BaseException) -> None:
+        """Note an unusable sidecar ONCE, then let the caller fall back.
+
+        `label()` never raises, and that is the contract three bare call sites
+        rest on -- but "never raises" was implemented as "never says anything",
+        and those are different promises. The digits this module falls back to
+        are ALSO the normal, documented, supported output of a store that has
+        no sidecar at all (a Tiingo or Alpaca panel, or a CRSP store built
+        before 03.11-09, see `label`'s docstring below). The two states are
+        byte-identical on a console, so the one that needs a rebuild was
+        invisible: nothing in a log, a `liquidations.json` or a
+        `UniverseMask.report()` distinguished "this audit file is broken" from
+        "this vendor never had one" (T-03.11-57). This line is that
+        distinction, and it is why the ABSENT branch warns too rather than
+        only the corrupt one.
+
+        The posture is the repo's own: `quantlab/base/config.py:142` and `:176`
+        both annotate the filter report with "never applied silently", and a
+        degradation of an AUDIT artefact is the case where silence costs most.
+
+        ONCE PER INSTANCE, via the `_degraded` flag. The worst caller hands a
+        whole forced-liquidation batch to a single `label()` call
+        mid-simulation, and a payload whose damage only shows up inside the
+        per-PERMNO `as_of` would arrive here once per record -- 500 identical
+        lines that bury the signal they exist to raise (T-03.11-61).
+
+        Returns `None` and raises nothing: this is a log-throttle, not a state
+        machine. The `_degraded` flag is written here and in `__init__`, read
+        only here, and never participates in any query's answer -- so the
+        read-write race under a threading backend can at worst cost a few
+        duplicate lines and can never cost a label, a cached payload or a
+        return value.
+        """
+        if not self._degraded:
+            self._degraded = True
+            logger.warning(
+                f"{type(self).__name__}: the ticker sidecar "
+                f"{str(self.sidecar_path)!r} is unusable, falling back to "
+                f"PERMNO digits for this store ({type(exc).__name__}: {exc}). "
+                f"The digits are also what a store with no sidecar prints, so "
+                f"this line is the only thing that tells the two apart. Said "
+                f"once per lookup, not once per name."
+            )
 
     def _intervals(self) -> dict:
         """The `{PERMNO: [span, ...]}` table, or a refusal naming what is off.
@@ -313,6 +374,14 @@ class CrspTickerLookup:
         03.11-09) reads exactly as it did. `as_of` keeps the strict behaviour
         for callers who want the refusal.
 
+        Never raises, and no longer SILENT either. Every fall-back that came
+        off the disk -- the absent file included -- passes through `_degrade`,
+        which says so ONCE per instance and never again. Without that line the
+        two readings of the same digits, "this sidecar is broken" and "this
+        vendor never had one", are indistinguishable, and only one of them is
+        something to act on. The narrow `int(value)` guard below is NOT one of
+        those fall-backs and deliberately stays quiet.
+
         The guard is in TWO places because damage arrives by two routes:
         `{"intervals": [1, 2, 3]}` breaks while the table is being read, while
         `{"intervals": {"13407": [{"ticker": "FB"}]}}` reads a perfectly good
@@ -333,7 +402,8 @@ class CrspTickerLookup:
         """
         try:
             intervals = self._intervals()
-        except _UNUSABLE:
+        except _UNUSABLE as exc:
+            self._degrade(exc)
             intervals = {}
 
         labels: list[str] = []
@@ -353,10 +423,19 @@ class CrspTickerLookup:
                 # the sidecar, so it is a separate concern from `_UNUSABLE` and
                 # is not a third copy of it: `int("QQQ")` raising `ValueError`
                 # says nothing about whether the file on disk is readable.
+                #
+                # Which is also why there is NO `_degrade` call here, and why
+                # this is not a third site somebody forgot to update: nothing
+                # degraded. A string symbol axis reaching a shared display path
+                # is supported and healthy, and warning on it would fire on
+                # every Tiingo panel that renders a symbol list -- teaching
+                # operators to ignore the one warning that means "rebuild this
+                # store".
                 labels.append(spelled)
                 continue
             try:
                 labels.append(self.as_of(permno, day) or spelled)
-            except _UNUSABLE:
+            except _UNUSABLE as exc:
+                self._degrade(exc)
                 labels.append(spelled)
         return labels
