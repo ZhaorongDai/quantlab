@@ -18,19 +18,32 @@ nothing else reads it.
 
 - `as_of(permno, day)` is the strict, single-value question. All THREE ways the
   sidecar can fail RAISE, and each refusal is shaped -- it names the class, the
-  path and the rebuild that fixes it: the file is MISSING, its bytes are not
-  JSON, or it parses and is STRUCTURALLY WRONG (the top level is not an object,
+  path and the rebuild that fixes it: the file is MISSING, its bytes DO NOT
+  PARSE (they are not decodable as UTF-8, they are not JSON at all, or they are
+  nested deeper than the parser's own stack -- see the `payload` property, where
+  that last one is why `RecursionError` is caught alongside `OSError` and
+  `ValueError`), or it parses and is STRUCTURALLY WRONG (the top level is not an object,
   `intervals` is not an object, a span is not an object or lacks
   `start`/`end`/`ticker`). The caller asked which name a specific security wore
   on a specific day, and "I could not read the file" is not an answer that may
   be silently rounded to `None` -- rounding it down would make "this sidecar is
   unreadable" and "that PERMNO had no name that day" the same answer.
 - `label(permnos, day)` is the DISPLAY entry point, and it never raises -- for
-  all three of those failures alike. The six human-visible points that call it
-  -- the forced-liquidation log and `liquidations.json`, the model's
-  missing/extra symbol lists, `UniverseMask.report()`'s missing-member list,
-  `browse_zarr`'s refusal and the `--symbols` CLI help -- are all trying to make
-  an EXISTING message readable. Breaking a backtest because an audit sidecar is
+  all three of those failures alike. There are exactly three call sites, and
+  every one of them is BARE -- inside no `try`, on the strength of this
+  paragraph: `quantlab/dataset/masking.py:262`,
+  `quantlab/backtest/engine_vectorbt.py:303` (mid-simulation, the most
+  expensive place a refusal could land) and `quantlab/base/model.py:1315`,
+  reached twice through `_spell` in `predict_panel`'s `missing` and `extra`
+  branches. Between them they render six human-visible messages -- the
+  forced-liquidation log and `liquidations.json`, the model's missing and extra
+  symbol lists, and `UniverseMask.report()`'s missing-member list -- all of
+  them trying to make an EXISTING message readable. (Two further messages,
+  `browse_zarr`'s refusal in `quantlab/acquisition/inspector.py` and the
+  `--symbols` CLI help, only NAME this class in prose: they neither construct a
+  lookup nor call it, and must not be counted as call sites, because the design
+  argument below -- the guard lives in the lookup rather than at each caller --
+  is built on that count.) Breaking a backtest because an audit sidecar is
   absent or half-written would make the readability layer more fragile than the
   thing it annotates (T-03.11-30), so an unusable sidecar degrades to the
   digits, which is exactly what those messages printed before this sidecar
@@ -59,6 +72,30 @@ from pathlib import Path
 
 __all__ = ["CrspTickerLookup"]
 
+#: What an UNUSABLE sidecar raises, and the one spelling of it. Both entry
+#: points now funnel every structural defect through `_malformed`
+#: (`ValueError`) or the `payload` property (`FileNotFoundError` for an absent
+#: file, `ValueError` for bytes that never parse), so these two are exhaustive
+#: for damage that came off the disk.
+#:
+#: `KeyError` / `AttributeError` / `TypeError` were in this tuple until
+#: 03.11-15 and are deliberately OUT of it: once 03.11-12's structural guards
+#: landed they could no longer arise from a damaged sidecar at all, leaving a
+#: bug in THIS module as their only remaining source -- so the tuple was
+#: swallowing precisely the class of failure `label()`'s own rationale says it
+#: was spelled out to surface. A typo in `as_of` used to make a display path
+#: print digits that look exactly like a legitimate no-name answer, over a
+#: perfectly good sidecar, without failing a single happy-path test
+#: (G-03.11-3 / WR-02). Deleted code that used to be caught here must reach the
+#: caller instead; `tests/test_crsp_ticker_sidecar.py`'s two subclass-injection
+#: regressions are the lock.
+#:
+#: A module constant rather than a literal inside each `except`, because "what
+#: counts as unusable" is ONE fact and the two `except` sites below are its two
+#: reference points -- a future third display entry point must not get to
+#: invent a third answer. Prefixed and out of `__all__`: internal vocabulary.
+_UNUSABLE = (FileNotFoundError, ValueError)
+
 
 class CrspTickerLookup:
     """As-of PERMNO -> ticker over one `{zarr}.crsp_tickers.json`.
@@ -83,7 +120,10 @@ class CrspTickerLookup:
 
         The ONE place the suffix is appended on the read side, so the display
         points do not each spell `".crsp_tickers.json"` for themselves -- a
-        literal repeated at four call sites is a rename waiting to go half-done.
+        literal repeated at the two production construction sites
+        (`quantlab/dataset/masking.py:115`, `quantlab/base/backtest.py:198`) is
+        a rename waiting to go half-done, and a third one is a `beside_store`
+        call away.
 
         The import is function-local on purpose: `crsp.py` owns the constant
         and pulls in polars, the reference tier and the whole converter with
@@ -104,6 +144,18 @@ class CrspTickerLookup:
         missing manifest: which class is complaining, which path it looked at,
         and what to do -- because this file is written BY a conversion and
         cannot be created by hand, the remedy is a rebuild, not an edit.
+
+        A failure of the READ or the PARSE becomes the second shaped refusal,
+        and "the parse failed" includes the case where the parser itself runs
+        out of stack: deeply nested JSON raises `RecursionError`, which is a
+        `RuntimeError` subclass and therefore caught by neither `OSError` nor
+        `ValueError`. It used to escape from here past every structural guard
+        downstream and out of BOTH entry points -- unshaped out of `as_of` and,
+        worse, out of `label`, which the display sites call bare (G-03.11-3 /
+        WR-01). Re-raising it here is what makes this the single place where an
+        unreadable sidecar turns into a refusal a reader can act on. Building
+        the message after a `RecursionError` is safe: CPython restores stack
+        headroom once the exception unwinds.
         """
         if self._payload is None:
             if not self.sidecar_path.exists():
@@ -119,7 +171,7 @@ class CrspTickerLookup:
                 self._payload = json.loads(
                     self.sidecar_path.read_text(encoding="utf-8")
                 )
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, RecursionError) as exc:
                 raise ValueError(
                     f"{type(self).__name__}: the ticker sidecar "
                     f"{str(self.sidecar_path)!r} could not be read "
@@ -242,16 +294,20 @@ class CrspTickerLookup:
     def label(self, permnos: Sequence, day: date) -> list[str]:
         """`permnos` spelled for a human, one string per input, in order.
 
-        The single entry point the six display points use, and the reason it is
+        The single entry point the three call sites use, and the reason it is
         BATCH: every one of them is rendering a LIST (a missing-member report,
         a dropped-symbol warning, a run of liquidation records on one date), so
-        a per-item call would re-enter the payload once per name.
+        a per-item call would re-enter the payload once per name. Between them
+        those three render the six human-visible messages the module docstring
+        enumerates -- the count of MESSAGES and the count of CALLERS are
+        different numbers and this module needs both.
 
         **Never raises.** An unknown PERMNO falls back to its own digits, and
         so does every PERMNO when the sidecar is missing or CORRUPT -- where
-        corrupt means both halves of it: bytes that are not JSON at all, and
-        bytes that parse fine but are not shaped like a sidecar (`intervals`
-        holding a list, a span with no `start`). The digits are precisely the
+        corrupt means both halves of it: bytes that never reach a shape at all
+        (undecodable, not JSON, or nested past the parser's stack), and bytes
+        that parse fine but are not shaped like a sidecar (`intervals` holding
+        a list, a span with no `start`). The digits are precisely the
         output these messages produced before the sidecar existed, so a panel
         with no sidecar (a Tiingo or Alpaca store, or a CRSP store built before
         03.11-09) reads exactly as it did. `as_of` keeps the strict behaviour
@@ -264,14 +320,20 @@ class CrspTickerLookup:
         on the first alone leaves the second crashing -- and the worst caller,
         `base/model.py`'s WR-02 warning, is a BARE call on a happy path.
 
-        `except Exception` is deliberately NOT used: the tuple is spelled out
-        so a genuine programming bug in this module still reaches the caller
-        instead of being swallowed by a display path.
+        Both sites catch `_UNUSABLE` -- exactly the two exception types the
+        guards above can produce -- and nothing wider. `except Exception` is
+        deliberately NOT used, and neither are the three backstop types this
+        tuple used to carry: after 03.11-12 preflighted every structural index,
+        a `KeyError` / `AttributeError` / `TypeError` in here can only be a
+        programming bug in THIS module, and a display path that ate one would
+        answer a caller with digits indistinguishable from a legitimate
+        "no name on that day" (G-03.11-3 / WR-02). Such a bug now reaches the
+        caller; the two subclass-injection regressions in
+        `tests/test_crsp_ticker_sidecar.py` are what hold that open.
         """
-        unusable = (FileNotFoundError, ValueError, KeyError, AttributeError, TypeError)
         try:
             intervals = self._intervals()
-        except unusable:
+        except _UNUSABLE:
             intervals = {}
 
         labels: list[str] = []
@@ -286,10 +348,15 @@ class CrspTickerLookup:
                 # A non-integer label is not a PERMNO -- a string symbol axis
                 # from another vendor reaching a shared display path. It is
                 # already readable; pass it through untouched.
+                #
+                # This narrow tuple is about the CALLER's argument, not about
+                # the sidecar, so it is a separate concern from `_UNUSABLE` and
+                # is not a third copy of it: `int("QQQ")` raising `ValueError`
+                # says nothing about whether the file on disk is readable.
                 labels.append(spelled)
                 continue
             try:
                 labels.append(self.as_of(permno, day) or spelled)
-            except unusable:
+            except _UNUSABLE:
                 labels.append(spelled)
         return labels

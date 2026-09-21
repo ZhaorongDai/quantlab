@@ -722,8 +722,13 @@ def test_a_corrupt_ticker_sidecar_leaves_the_warning_working(
 
     This test does NOT touch `quantlab/base/model.py`, and that is the point.
     The contract belongs to the lookup, where it is written down; wrapping each
-    of the six display points in its own `try` would be the same guard copied
-    six times, with six chances to forget the seventh.
+    of the three call sites in its own `try` would be the same guard copied
+    three times, with three chances to forget the fourth. (Three CALL SITES --
+    `dataset/masking.py:262`, `backtest/engine_vectorbt.py:303` and
+    `base/model.py`'s `_spell`, reached from both the `missing` and the `extra`
+    branch -- rendering six human-visible MESSAGES between them. The two
+    numbers are not interchangeable and the design argument rests on the
+    smaller one.)
     """
     trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
     fresh = _permno_head(tmp_path)

@@ -379,8 +379,16 @@ def test_the_sidecar_is_read_once_per_instance(converted, monkeypatch):
 
 
 def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
-    """The display contract (T-03.11-30): six human-visible points call
-    `label()`, and NONE of them may break because an audit file is missing.
+    """The display contract (T-03.11-30): three call sites reach `label()`, and
+    NONE of them may break because an audit file is missing.
+
+    The three are `quantlab/dataset/masking.py:262`,
+    `quantlab/backtest/engine_vectorbt.py:303` and `quantlab/base/model.py`'s
+    `_spell` (entered from both the `missing` and the `extra` branch of
+    `predict_panel`); between them they render six human-visible messages. The
+    two counts are different numbers, and it is the CALL SITE count the design
+    rests on -- `browse_zarr`'s refusal and the `--symbols` CLI help name this
+    class in prose without ever calling it.
 
     `as_of` still raises -- it is the strict, single-value question. `label` is
     the display entry point and answers with the digits.
@@ -485,6 +493,146 @@ def test_a_payload_with_no_intervals_key_keeps_its_current_behaviour(tmp_path):
     assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
 
 
+#: Sidecars that never get as far as a shape at all -- the OTHER half of
+#: "corrupt", and a DIFFERENT path from `MALFORMED_SIDECARS` above.
+#:
+#: The dividing line between the two lists is one question: **did `json.loads`
+#: return?** If it returned and handed back something that is not shaped like a
+#: sidecar, the damage is structural and is caught downstream by `_intervals()`
+#: or by the per-PERMNO `as_of` -- that is `MALFORMED_SIDECARS`. If it never
+#: returned, the failure happened in the `payload` property, strictly upstream
+#: of every structural guard, and none of those guards is even reached. Keeping
+#: the two lists apart is what keeps `MALFORMED_SIDECARS`' path table honest;
+#: merging them would make that table describe rows it does not cover.
+#:
+#: Bytes, not `str`, because one of the three is not decodable text.
+#:
+#: | payload | what `payload` sees |
+#: |---|---|
+#: | 20,000 nested `[` | `RecursionError` out of `json.loads` (G-03.11-3 / WR-01) |
+#: | an isolated UTF-8 continuation byte | `UnicodeDecodeError` out of `read_text` (a `ValueError`) |
+#: | zero bytes | `JSONDecodeError` out of `json.loads` (a `ValueError`) |
+#:
+#: The zero-byte row is deliberately NOT the same case as `{}` in
+#: `test_a_payload_with_no_intervals_key_keeps_its_current_behaviour` above:
+#: `{}` is a sidecar that parsed and knows no names, an empty FILE is a sidecar
+#: that could not be read at all, and the two entry points answer them
+#: differently on the `as_of` side. Both spellings of "empty" are pinned so the
+#: difference stays visible.
+UNPARSEABLE_SIDECARS = [
+    pytest.param(b"[" * 20000 + b"]" * 20000, id="nested-past-the-parser"),
+    pytest.param(b"\x80\x81\x82", id="not-valid-utf-8"),
+    pytest.param(b"", id="zero-bytes"),
+]
+
+
+def _written_bytes(tmp_path, payload: bytes):
+    """A lookup over a sidecar whose exact BYTES the test chose, and its path.
+
+    The `bytes` twin of `_written`: `write_text` cannot express a file that is
+    not decodable as UTF-8, and that is one of the three cases here.
+    """
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    path = tmp_path / "crsp.zarr.crsp_tickers.json"
+    path.write_bytes(payload)
+    return CrspTickerLookup(path), path
+
+
+@pytest.mark.parametrize("payload", UNPARSEABLE_SIDECARS)
+def test_label_falls_back_when_the_sidecar_never_parses(tmp_path, payload):
+    """The display contract holds for the parse stage too, not just for shapes.
+
+    `RecursionError` is the one that was escaping (G-03.11-3 / WR-01): it is a
+    `RuntimeError` subclass, so neither the `payload` property's original
+    `(OSError, ValueError)` nor `label()`'s tuple caught it, and it walked out
+    of all three bare call sites -- `dataset/masking.py:262`,
+    `backtest/engine_vectorbt.py:303` mid-simulation, and `base/model.py:1315`
+    via `_spell` on the happy path.
+    """
+    lookup, _ = _written_bytes(tmp_path, payload)
+
+    assert lookup.label([13407], date(2020, 1, 1)) == ["13407"]
+
+
+@pytest.mark.parametrize("payload", UNPARSEABLE_SIDECARS)
+def test_as_of_refuses_an_unparseable_sidecar_with_a_shaped_error(
+    tmp_path, payload
+):
+    """Strict stays strict, and the refusal is SHAPED -- the module docstring's
+    "each refusal names the class, the path and the rebuild" has to hold for
+    the parse stage as well, or it is simply false.
+
+    A bare `RecursionError: maximum recursion depth exceeded while decoding a
+    JSON array` names neither the file nor the way out; the same three
+    assertions the structural refusal already carries are what make it an
+    answer a reader can act on.
+    """
+    lookup, path = _written_bytes(tmp_path, payload)
+
+    with pytest.raises(ValueError) as excinfo:
+        lookup.as_of(13407, date(2020, 1, 1))
+
+    message = str(excinfo.value)
+    assert "CrspTickerLookup:" in message
+    assert str(path) in message
+    assert ".crsp_*.json" in message
+
+
+def test_a_bug_inside_as_of_reaches_the_caller_instead_of_becoming_digits(
+    converted,
+):
+    """G-03.11-3 / WR-02: the guard must not swallow THIS module's own bugs.
+
+    `label()`'s docstring has always said `except Exception` is deliberately
+    avoided "so a genuine programming bug in this module still reaches the
+    caller". Once 03.11-12's structural guards landed, `KeyError` /
+    `AttributeError` / `TypeError` could no longer come from data damage at all
+    -- every structural defect funnels through `_malformed` (a `ValueError`) or
+    the `payload` property (`FileNotFoundError` / `ValueError`) -- so the only
+    thing those three could still catch was the bug the rationale says they
+    exist to surface.
+
+    Injected into a SUBCLASS rather than the module, and over a VALID sidecar
+    on purpose: a damaged sidecar would leave "did the guard swallow it, or was
+    the data simply unreadable?" undecidable, which is exactly the ambiguity
+    that let this survive. Here the sidecar is known good, so a digit in the
+    output can only mean the guard ate a bug.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    class TypoInAsOf(CrspTickerLookup):
+        def as_of(self, permno, day):
+            raise KeyError("tikcer")  # a one-character typo in a span index
+
+    lookup = TypoInAsOf(CrspStockDataset(converted).ticker_sidecar_path())
+
+    with pytest.raises(KeyError):
+        lookup.label([13407], date(2022, 6, 9))
+
+
+def test_a_bug_inside_intervals_reaches_the_caller_too(converted):
+    """The other half of the same path.
+
+    Damage arrives by two routes and so does a bug: `label()` has TWO `except`
+    sites, one around the intervals read and one around the per-PERMNO `as_of`.
+    Narrowing one and not the other would leave a typo in `_intervals`
+    (`self.paylaod` -> `AttributeError`) still degrading silently to digits.
+    """
+    from quantlab.dataset.crsp import CrspStockDataset
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    class TypoInIntervals(CrspTickerLookup):
+        def _intervals(self):
+            raise AttributeError("paylaod")  # a typo in an attribute name
+
+    lookup = TypoInIntervals(CrspStockDataset(converted).ticker_sidecar_path())
+
+    with pytest.raises(AttributeError):
+        lookup.label([13407], date(2022, 6, 9))
+
+
 def test_product_end_is_parsed_from_the_recorded_vintage(converted):
     """A derived value behind a `@property`, like `CrspReference.product_end`."""
     lookup = _lookup(converted)
@@ -493,8 +641,10 @@ def test_product_end_is_parsed_from_the_recorded_vintage(converted):
 
 
 def test_beside_store_builds_the_lookup_from_a_store_path(converted):
-    """The one place the suffix is appended for a reader, so the three display
-    points do not each spell `".crsp_tickers.json"` for themselves."""
+    """The one place the suffix is appended for a reader, so the two production
+    construction sites (`quantlab/dataset/masking.py:115`,
+    `quantlab/base/backtest.py:198`) do not each spell `".crsp_tickers.json"`
+    for themselves."""
     from quantlab.dataset.crsp_tickers import CrspTickerLookup
 
     lookup = CrspTickerLookup.beside_store(converted.zarr_file_path)
