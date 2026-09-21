@@ -40,6 +40,22 @@ import sys
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+# Stale-bytecode trap (phase 03.11, gap G-03.11-4). Prose only, deliberately:
+# there is no cheap false-positive-free runtime detection for this, and a
+# half-working guard would only manufacture new bad signal.
+#
+# Symptom: a run disagrees with the source you are reading, while `git status`
+# is clean and a content grep finds nothing. Root cause: CPython judges a
+# cached `.pyc` stale by the source's mtime (whole seconds) and size ALONE, so
+# an equal-length edit that also preserves mtime leaves the old bytecode live.
+# Measured here: tests/test_crsp_ticker_sidecar.py gave 5 failed / 21 passed
+# on a clean tree; the same source under a clean cache gave 98 passed.
+#
+# So: inject through a subclass or `monkeypatch.setattr` and never edit the
+# file; or if it must be edited, `touch` it after restoring, or delete the
+# caches (`find . -path ./.venv -prune -o -name __pycache__ -type d -print0 |
+# xargs -0 rm -rf`). Size alone never proves a revert.
+# All three are proved in tests/test_stale_bytecode_lesson.py.
 import base64
 import importlib.util
 import io
