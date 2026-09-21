@@ -63,6 +63,16 @@ FACTORS = ["f_a", "f_b"]
 #: would put `ret_30` first and swap the two outputs.
 LABELS = ["ret_60", "ret_30"]
 
+#: The int64 PERMNO arm (03.11-04). `7000` is FOUR digits on purpose: numeric
+#: and lexicographic order coincide on the whole five-digit historical PERMNO
+#: universe and fork only here (`"10107" < "7000"`), so a panel without a
+#: four-digit member cannot tell a numeric sort from a lexicographic one.
+#: Deliberately given unsorted, so the sort is doing work.
+PERMNOS = [10107, 7000, 14593]
+#: What `sort_symbol_axis` must produce -- NOT `sorted(map(str, PERMNOS))`,
+#: which is `['10107', '14593', '7000']`.
+SORTED_PERMNOS = [7000, 10107, 14593]
+
 
 @pytest.fixture(autouse=True)
 def _offline_wandb(monkeypatch):
@@ -71,20 +81,29 @@ def _offline_wandb(monkeypatch):
 
 
 class FakePanel:
-    """A stand-in for a factor/label object: only what `collect()` calls."""
+    """A stand-in for a factor/label object: only what `collect()` calls.
 
-    def __init__(self, names, seed=0):
+    `symbols` is a parameter rather than the module constant so the PERMNO
+    arm (03.11-04) can build an int64 symbol axis through exactly the same
+    path the ticker arm uses. Everything else about the panel is identical,
+    which is what makes the two arms comparable.
+    """
+
+    def __init__(self, names, seed=0, symbols=SYMBOLS):
         rng = np.random.default_rng(seed)
         self.names = list(names)
+        self.symbols = list(symbols)
         self._ds = xr.Dataset(
             {
                 name: (
                     ("timestamp", "symbol"),
-                    rng.standard_normal((N_TIMES, N_SYMBOLS)).astype("float32"),
+                    rng.standard_normal(
+                        (N_TIMES, len(self.symbols))
+                    ).astype("float32"),
                 )
                 for name in self.names
             },
-            coords={"timestamp": TIMES, "symbol": SYMBOLS},
+            coords={"timestamp": TIMES, "symbol": self.symbols},
         )
         self.config = SimpleNamespace(start_date=None, end_date=None)
 
@@ -174,10 +193,10 @@ class TupleHeadWithoutAdapter(LinearDLHead):
         return _TupleLinear(num_features, num_labels)
 
 
-def _config_kwargs(tmp_path, *, labels=LABELS, seed=1):
+def _config_kwargs(tmp_path, *, labels=LABELS, seed=1, symbols=SYMBOLS):
     return dict(
-        factors=[FakePanel(FACTORS, seed=seed)],
-        labels=[FakePanel(labels, seed=seed + 1)],
+        factors=[FakePanel(FACTORS, seed=seed, symbols=symbols)],
+        labels=[FakePanel(labels, seed=seed + 1, symbols=symbols)],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -381,9 +400,9 @@ def warning_messages():
     logger.remove(handler_id)
 
 
-def _dl_train_kwargs(tmp_path) -> dict:
+def _dl_train_kwargs(tmp_path, *, symbols=SYMBOLS) -> dict:
     return dict(
-        **_config_kwargs(tmp_path),
+        **_config_kwargs(tmp_path, symbols=symbols),
         train_start=START,
         train_end=TRAIN_END,
         test_start=TEST_START,
@@ -394,8 +413,10 @@ def _dl_train_kwargs(tmp_path) -> dict:
     )
 
 
-def _trained_dl_checkpoint(tmp_path) -> tuple[LinearDLHead, Path]:
-    trained = LinearDLHead(DLConfig(**_dl_train_kwargs(tmp_path)))
+def _trained_dl_checkpoint(tmp_path, *, symbols=SYMBOLS) -> tuple[LinearDLHead, Path]:
+    trained = LinearDLHead(
+        DLConfig(**_dl_train_kwargs(tmp_path, symbols=symbols))
+    )
     trained.collect()
     trained.train()
     checkpoints = sorted((tmp_path / "ckpt").rglob("*.pth"))
@@ -462,6 +483,176 @@ def test_dl_predict_panel_refuses_a_panel_missing_a_training_symbol(tmp_path, re
 
     with pytest.raises(ValueError, match="S2"):
         fresh.predict_panel(features)
+
+
+# --------------------------------------------------------------------------
+# 03.11-04: the checkpoint symbol contract on an int64 PERMNO axis
+#
+# The `trained_on.symbols` record has THREE ends -- the write in
+# `_save_model`, the read in `_read_trained_symbols`, and the alignment in
+# `DLModel._align_prediction_symbols` -- and every one of them used to run the
+# labels through an unconditional `str()`. On a ticker axis that is the
+# identity, so the three ends agreed by accident. On an int64 PERMNO axis they
+# produce the failure 03.11-RESEARCH B measured: the membership check at the
+# top of `_align_prediction_symbols` PASSES (both sides are stringified), and
+# the very last line raises `KeyError: "not all values found in index
+# 'symbol'"` -- an error about a missing INDEX ENTRY for what is really a
+# dtype mismatch, which sends the operator looking for a symbol that is right
+# there in the panel.
+#
+# The ticker arm below is a CONTROL: it is the same assertion on the same code
+# path with string labels, and it is what proves the Tiingo/Alpaca path was
+# not disturbed by the fix (D-02).
+# --------------------------------------------------------------------------
+
+
+def _permno_head(tmp_path) -> LinearDLHead:
+    return LinearDLHead(
+        DLConfig(**_dl_train_kwargs(tmp_path, symbols=PERMNOS))
+    )
+
+
+def test_int64_trained_symbols_align(tmp_path, warning_messages):
+    """An int64 panel + an int64-recorded checkpoint align without raising.
+
+    The mirror image of
+    `test_dl_checkpoint_records_its_symbols_and_predict_panel_aligns_onto_them`
+    with PERMNOs instead of tickers: a fourth symbol the model never saw is
+    dropped with a warning, the rest come back in the training layout, and the
+    prediction equals the one from the panel that never carried the extra.
+
+    RED before the three-end fix: `.sel(symbol=sorted(trained))` is handed
+    `['10107', '14593', '7000']` against an int64 coordinate and raises
+    `KeyError: "not all values found in index 'symbol'"` -- AFTER the
+    membership check above it reported everything present.
+    """
+    trained, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+    base = _features(trained)
+    wider = xr.concat(
+        [base, base.isel(symbol=[0]).assign_coords(symbol=[99999])],
+        dim="symbol",
+    ).isel(symbol=slice(None, None, -1))
+
+    pred = fresh.predict_panel(wider)
+
+    assert pred.symbol.values.tolist() == SORTED_PERMNOS
+    assert pred.symbol.dtype.kind == "i"
+    xr.testing.assert_allclose(pred, fresh.predict_panel(base))
+    assert any(
+        "99999" in m and "WR-02" in m for m in warning_messages
+    ), warning_messages
+
+
+def test_string_trained_symbols_on_int_panel_names_the_dtype(tmp_path):
+    """A str-recorded checkpoint against an int64 panel is REFUSED by name.
+
+    This is the 03.11-RESEARCH B shape, reproduced by hand-editing the record
+    the way a pre-migration checkpoint carries it. What must come back is a
+    `ValueError` that says the two sides disagree on TYPE and names both --
+    not the `KeyError` about a missing index entry, which describes a
+    different defect than the one present. `pytest.raises(ValueError)` is
+    itself half the assertion: a `KeyError` does not satisfy it.
+    """
+    _, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    sidecar = checkpoint.parent / "config.json"
+    saved = json.loads(sidecar.read_text())
+    saved["trained_on"]["symbols"] = [str(permno) for permno in SORTED_PERMNOS]
+    sidecar.write_text(json.dumps(saved, indent=4))
+
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+
+    with pytest.raises(ValueError) as excinfo:
+        fresh.predict_panel(_features(fresh))
+
+    message = str(excinfo.value)
+    assert "refusing to align" in message, message
+    # Both sides named: the checkpoint's element type and the panel's dtype.
+    assert "str" in message, message
+    assert "int64" in message, message
+    # And a way out, so the operator is not left holding a diagnosis only.
+    assert "retrain" in message or "rewrite" in message, message
+
+
+def test_ticker_trained_symbols_still_align_unchanged(tmp_path, warning_messages):
+    """CONTROL ARM (D-02): the string axis behaves exactly as it did.
+
+    Same code path, same assertions as `test_int64_trained_symbols_align`,
+    with tickers. If the three-end fix reached the Tiingo/Alpaca path at all,
+    this is where it shows: the record is still JSON strings, the alignment
+    still returns the lexicographic ticker layout, and the extra symbol is
+    still dropped with a warning.
+    """
+    trained, checkpoint = _trained_dl_checkpoint(tmp_path)
+    recorded = json.loads((checkpoint.parent / "config.json").read_text())
+    assert recorded["trained_on"]["symbols"] == SYMBOLS
+    assert all(type(s) is str for s in recorded["trained_on"]["symbols"])
+
+    fresh = LinearDLHead(DLConfig(**_dl_train_kwargs(tmp_path)))
+    fresh.load(checkpoint)
+    assert fresh._trained_symbols == SYMBOLS
+    base = _features(trained)
+    wider = xr.concat(
+        [base, base.isel(symbol=[0]).assign_coords(symbol=["S9"])], dim="symbol"
+    ).isel(symbol=slice(None, None, -1))
+
+    pred = fresh.predict_panel(wider)
+
+    assert pred.symbol.values.tolist() == SYMBOLS
+    xr.testing.assert_allclose(pred, fresh.predict_panel(base))
+    assert any(
+        "S9" in m and "WR-02" in m for m in warning_messages
+    ), warning_messages
+
+
+def test_int64_checkpoint_records_json_integers(tmp_path):
+    """`trained_on.symbols` is a JSON INTEGER array on an int64 panel.
+
+    The write end. A quoted `"7000"` in the sidecar is not a cosmetic
+    difference: it is what the read end hands to `.sel()`, and it is the
+    reason the old alignment raised. Asserted on the JSON TEXT as well as on
+    the parsed value, because `json.loads` would happily give `['7000']` back
+    and the parsed-value assertion alone cannot see the quotes.
+    """
+    _, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    raw = (checkpoint.parent / "config.json").read_text()
+    recorded = json.loads(raw)["trained_on"]["symbols"]
+
+    assert recorded == SORTED_PERMNOS
+    assert all(type(value) is int for value in recorded)
+    assert '"7000"' not in raw, raw
+
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+    assert fresh._trained_symbols == SORTED_PERMNOS
+    assert all(type(value) is int for value in fresh._trained_symbols)
+
+
+def test_four_digit_permno_aligns_in_numeric_order(tmp_path):
+    """The aligned axis is `[7000, 10107, ...]`, not `['10107', ..., '7000']`.
+
+    `_align_prediction_symbols`'s last line is the third bare `sorted()` the
+    03.11-02 numeric-order contract had to absorb. A five-digit-only universe
+    cannot tell the two orders apart, so the divergence is asserted to be LIVE
+    in this fixture rather than assumed -- if `PERMNOS` ever loses its
+    four-digit member this test says so instead of silently passing.
+    """
+    _, checkpoint = _trained_dl_checkpoint(tmp_path, symbols=PERMNOS)
+    fresh = _permno_head(tmp_path)
+    fresh.load(checkpoint)
+
+    aligned = fresh._align_prediction_symbols(
+        _features(fresh)[FACTORS].sortby(["timestamp", "symbol"])
+    )
+
+    assert aligned.symbol.values.tolist() == SORTED_PERMNOS
+    lexicographic = sorted(PERMNOS, key=str)
+    assert lexicographic != SORTED_PERMNOS, (
+        "the fixture lost its four-digit PERMNO, so this test can no longer "
+        "distinguish numeric order from lexicographic order"
+    )
 
 
 # --------------------------------------------------------------------------
