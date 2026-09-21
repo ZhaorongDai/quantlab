@@ -469,6 +469,27 @@ PARTLY_BROKEN_SIDECAR = (
 #: A guard on the first step alone leaves the third one crashing, which is what
 #: `label()`'s single `try` around the intervals read used to do. Do not delete
 #: either half of the guard thinking the other one already covers it.
+#:
+#: THREE ENTRY POINTS, the same three inputs, three deliberately different
+#: postures. This second table is the one to read before "unifying" anything:
+#:
+#: | payload | `label` | `as_of` | `product_end` |
+#: |---|---|---|---|
+#: | `{"intervals": [1, 2, 3]}` | digits, plus ONE warning | shaped refusal (`intervals` is not an object) | `None` |
+#: | `[]` | digits, plus ONE warning | shaped refusal (top level is not an object) | shaped refusal (the SAME check, via `_object_payload()`) |
+#: | `{"intervals": {"13407": [{"ticker": "FB"}]}}` | digits, plus ONE warning | shaped refusal (the span lacks `start`) | `None` |
+#:
+#: The `None`s are not gaps. `product_end` shares the TOP-LEVEL check and
+#: nothing below it: a sidecar whose interval table is wrong can still say
+#: truthfully which CRSP vintage it was read against, so refusing there would
+#: be `product_end` inventing a second shape check of its own -- the thing
+#: G-03.11-6 / WR-04 was about. What it must never do again is answer with a
+#: BARE exception, and `[]` is the row that used to.
+#:
+#: The warning column is the other half of G-03.11-6: `label` degrading is not
+#: silent any more, and says so exactly once per lookup instance -- the digits
+#: alone are also what a store with NO sidecar prints, and a console that
+#: cannot tell the two apart never gets the broken one rebuilt.
 MALFORMED_SIDECARS = [
     pytest.param('{"intervals": [1, 2, 3]}', id="intervals-is-a-list"),
     pytest.param(
@@ -785,6 +806,58 @@ def test_a_partly_broken_sidecar_degrades_per_permno_and_keeps_order(
         "FB",
     ]
     assert len(warning_messages) == 1, warning_messages
+
+
+def test_the_degraded_flag_is_a_log_throttle_and_not_a_state_machine():
+    """A SOURCE assertion, because the property is about reach, not behaviour.
+
+    `_degraded` exists only to keep `_degrade` from repeating itself. It is
+    written in `__init__` and in `_degrade`, read in `_degrade`, and nowhere
+    else -- in particular it never reaches a query, so no answer this class
+    gives depends on whether a warning has already been printed.
+
+    That is what makes the flag safe without a lock. `label()` is reached from
+    `joblib`'s threading backend by way of the model and backtest layers, and
+    the read-modify-write here is not atomic: two threads can both see `False`
+    and both warn. The cost of that race is a duplicate log line. If the flag
+    ever became an input to a RETURN value, the same race would start deciding
+    whether a PERMNO gets its ticker, and this test is what stands between the
+    two situations.
+
+    No behavioural test can catch that drift -- a flag quietly consulted in
+    `as_of` would keep every existing assertion green -- so the lock has to
+    read the source.
+    """
+    import ast
+    from pathlib import Path
+
+    import quantlab.dataset.crsp_tickers as module
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    touched: dict[str, int] = {}
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        hits = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Attribute) and node.attr == "_degraded"
+        ]
+        if hits:
+            touched[function.name] = len(hits)
+
+    assert touched == {"__init__": 1, "_degrade": 2}, touched
+
+    degrade = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_degrade"
+    )
+    assert not [
+        node
+        for node in ast.walk(degrade)
+        if isinstance(node, ast.Return) and node.value is not None
+    ]
 
 
 def test_product_end_is_parsed_from_the_recorded_vintage(converted):

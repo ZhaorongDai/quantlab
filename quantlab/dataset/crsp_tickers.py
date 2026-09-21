@@ -14,7 +14,12 @@ not wear. The names therefore live in a SIDECAR, as INTERVALS, and this module
 is the as-of query over them. `quantlab/dataset/crsp.py` writes the file;
 nothing else reads it.
 
-**Two entry points, deliberately different about failure.**
+**Three entry points, deliberately different about failure.** `as_of` and
+`product_end` are strict, `label` is not, and the split is not about how
+important the caller is -- it is about whether the caller has a good answer of
+its own. A caller asking one precise question has none, and must be told. A
+caller rendering a line of text has one it was already printing before this
+sidecar existed.
 
 - `as_of(permno, day)` is the strict, single-value question. All THREE ways the
   sidecar can fail RAISE, and each refusal is shaped -- it names the class, the
@@ -28,6 +33,13 @@ nothing else reads it.
   on a specific day, and "I could not read the file" is not an answer that may
   be silently rounded to `None` -- rounding it down would make "this sidecar is
   unreadable" and "that PERMNO had no name that day" the same answer.
+- `product_end` is strict for the same reason and by the same route: it reads
+  the payload through `_object_payload()`, so a sidecar whose top level is not
+  a JSON object is refused with the identical shaped message rather than with a
+  bare `AttributeError` (G-03.11-6 / WR-04). It is NOT strict about `intervals`
+  -- a sidecar with a broken interval table can still say honestly which CRSP
+  vintage it was read against -- and a sidecar that simply records no vintage
+  answers `None`, which is a value, not a refusal.
 - `label(permnos, day)` is the DISPLAY entry point, and it never raises -- for
   all three of those failures alike. There are exactly three call sites, and
   every one of them is BARE -- inside no `try`, on the strength of this
@@ -47,7 +59,10 @@ nothing else reads it.
   absent or half-written would make the readability layer more fragile than the
   thing it annotates (T-03.11-30), so an unusable sidecar degrades to the
   digits, which is exactly what those messages printed before this sidecar
-  existed.
+  existed. Never raising is not the same as never SPEAKING: each degradation
+  emits one WARNING per lookup instance (`_degrade`), because those same digits
+  are also the healthy output of a store that has no sidecar at all, and a
+  console that cannot tell the two apart never gets the broken one rebuilt.
 
 A LEAF module: the standard library plus `loguru` at module scope, and no
 project-internal imports at all, so any layer may import it. It is the second
