@@ -1959,3 +1959,158 @@ def test_crsp_has_no_reader_of_config_symbols():
         if re.search(r"self\.config\.symbols", line)
     ]
     assert readers == [], readers
+
+
+# ---------------------------------------------------------------------------
+# RULING 3, the second installation point: the FACTOR layer's own `symbols`
+# ---------------------------------------------------------------------------
+#
+# `BaseFactorConfig.symbols` is a DIFFERENT FIELD from `BaseDatasetConfig.
+# symbols` -- same name, different dataclass, and it filters at a different
+# stage of the pipeline. `Factor._auto_filter` hands it to
+# `XrBackend.filter_by_symbol`, a one-line bare `.sel`. A factor over a CRSP
+# panel with `symbols=('AAPL',)` therefore `.sel`s strings against an int64
+# index and dies MID-RUN with a `KeyError` that reads like missing data.
+#
+# So the refusal is installed twice, once per field, and the two messages are
+# the same shape on purpose: two installation points of one discipline, not
+# two ad-hoc patches.
+
+
+def _crsp_dataset_for_factor(tmp_path):
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    return CrspStockDataset(_bare_config(tmp_path))
+
+
+def _tiingo_dataset_for_factor(tmp_path):
+    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.stock import StockDataset
+
+    return StockDataset(
+        DatasetConfig(
+            zarr_file_path=str(tmp_path / "stock.zarr"),
+            raw_data_dir_path=str(tmp_path / "raw"),
+            catalog_path=str(tmp_path / "catalog"),
+            market="us_equity",
+            frequency="1d",
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+        )
+    )
+
+
+def _momentum_over(dataset, **overrides):
+    """A `Momentum` factor over `dataset`, with the factor names PINNED.
+
+    Pinning short-circuits the probe read that name derivation would otherwise
+    do, so these tests exercise the config setter and nothing else -- which is
+    the whole claim: the refusal fires at ASSIGNMENT, before any store is
+    opened, so it cannot be mistaken for a missing-data error.
+    """
+    from quantlab.base.config import PolarsFactorConfig
+    from quantlab.factor.momentum import Momentum
+
+    return Momentum(
+        PolarsFactorConfig(
+            window=5,
+            dataset=dataset,
+            factor_names=("pinned",),
+            start_date="2020-01-01",
+            end_date="2020-12-31",
+            **overrides,
+        )
+    )
+
+
+def test_a_crsp_backed_factor_refuses_a_ticker_roster_at_assignment(tmp_path):
+    """A factor over a CRSP dataset refuses `config.symbols`, naming `permnos`."""
+    with pytest.raises(ValueError) as excinfo:
+        _momentum_over(_crsp_dataset_for_factor(tmp_path), symbols=("AAPL",))
+
+    message = str(excinfo.value)
+    assert "config.symbols" in message, message
+    assert "permnos" in message, message
+    assert "AAPL" in message, message
+
+
+def test_a_crsp_backed_factor_with_no_roster_is_unchanged(tmp_path):
+    """`symbols=None` -- the default -- constructs exactly as before."""
+    factor = _momentum_over(_crsp_dataset_for_factor(tmp_path))
+    assert factor.config.symbols is None
+
+
+def test_a_non_crsp_backed_factor_still_accepts_a_ticker_roster(tmp_path):
+    """CONTROL ARM: a Tiingo-backed factor's `symbols` is untouched.
+
+    The refusal is declared by the DATASET and read by the factor base, so a
+    vendor that never declared it is unaffected. Without this arm the guard
+    could be widened to every factor and nothing would notice.
+    """
+    factor = _momentum_over(
+        _tiingo_dataset_for_factor(tmp_path), symbols=("AAPL", "MSFT")
+    )
+    assert factor.config.symbols == ("AAPL", "MSFT")
+
+
+def test_the_factor_refusal_fires_before_auto_filter_is_reachable(tmp_path):
+    """The refusal happens at assignment, so the bare `.sel` is never reached.
+
+    `_auto_filter` is what would hand the ticker roster to
+    `XrBackend.filter_by_symbol`. This asserts the failure arrives while the
+    CONFIG is being set -- before construction finishes, so before any method
+    on the factor can be called, `_auto_filter` included.
+    """
+    import quantlab.base.factor as factor_module
+
+    calls: list = []
+    original = factor_module.Factor._auto_filter
+
+    def _spy(self):
+        calls.append(self)
+        return original(self)
+
+    factor_module.Factor._auto_filter = _spy
+    try:
+        with pytest.raises(ValueError):
+            _momentum_over(
+                _crsp_dataset_for_factor(tmp_path), symbols=("AAPL",)
+            )
+    finally:
+        factor_module.Factor._auto_filter = original
+
+    assert calls == [], calls
+
+
+def test_the_factor_base_does_not_import_the_crsp_module():
+    """`base/factor.py` must not gain a `quantlab.dataset.crsp` import.
+
+    CLAUDE.md records this repo's layering as one-directional,
+    `base -> dataset/factor/label -> model -> backtest`. The refusal is
+    DECLARED by the dataset and READ by the base, so the base never learns a
+    concrete vendor's name.
+
+    The assertion is scoped to the `.crsp` SUBMODULE, not to
+    `quantlab.dataset` as a whole: `base/factor.py` has imported
+    `quantlab.dataset.backend.XrBackend` since long before this phase. That
+    is a known, pre-existing approximation of the layering, and the rule this
+    test enforces is the narrower one -- do not DEEPEN it from a storage
+    backend to a specific vendor Dataset subclass.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "quantlab"
+        / "base"
+        / "factor.py"
+    )
+    offenders = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if re.match(r"\s*(from|import)\s+quantlab\.dataset\.crsp\b", line)
+    ]
+    assert offenders == [], offenders
