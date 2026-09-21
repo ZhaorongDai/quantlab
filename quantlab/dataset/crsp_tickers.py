@@ -62,6 +62,30 @@ from pathlib import Path
 
 __all__ = ["CrspTickerLookup"]
 
+#: What an UNUSABLE sidecar raises, and the one spelling of it. Both entry
+#: points now funnel every structural defect through `_malformed`
+#: (`ValueError`) or the `payload` property (`FileNotFoundError` for an absent
+#: file, `ValueError` for bytes that never parse), so these two are exhaustive
+#: for damage that came off the disk.
+#:
+#: `KeyError` / `AttributeError` / `TypeError` were in this tuple until
+#: 03.11-15 and are deliberately OUT of it: once 03.11-12's structural guards
+#: landed they could no longer arise from a damaged sidecar at all, leaving a
+#: bug in THIS module as their only remaining source -- so the tuple was
+#: swallowing precisely the class of failure `label()`'s own rationale says it
+#: was spelled out to surface. A typo in `as_of` used to make a display path
+#: print digits that look exactly like a legitimate no-name answer, over a
+#: perfectly good sidecar, without failing a single happy-path test
+#: (G-03.11-3 / WR-02). Deleted code that used to be caught here must reach the
+#: caller instead; `tests/test_crsp_ticker_sidecar.py`'s two subclass-injection
+#: regressions are the lock.
+#:
+#: A module constant rather than a literal inside each `except`, because "what
+#: counts as unusable" is ONE fact and the two `except` sites below are its two
+#: reference points -- a future third display entry point must not get to
+#: invent a third answer. Prefixed and out of `__all__`: internal vocabulary.
+_UNUSABLE = (FileNotFoundError, ValueError)
+
 
 class CrspTickerLookup:
     """As-of PERMNO -> ticker over one `{zarr}.crsp_tickers.json`.
@@ -280,14 +304,20 @@ class CrspTickerLookup:
         on the first alone leaves the second crashing -- and the worst caller,
         `base/model.py`'s WR-02 warning, is a BARE call on a happy path.
 
-        `except Exception` is deliberately NOT used: the tuple is spelled out
-        so a genuine programming bug in this module still reaches the caller
-        instead of being swallowed by a display path.
+        Both sites catch `_UNUSABLE` -- exactly the two exception types the
+        guards above can produce -- and nothing wider. `except Exception` is
+        deliberately NOT used, and neither are the three backstop types this
+        tuple used to carry: after 03.11-12 preflighted every structural index,
+        a `KeyError` / `AttributeError` / `TypeError` in here can only be a
+        programming bug in THIS module, and a display path that ate one would
+        answer a caller with digits indistinguishable from a legitimate
+        "no name on that day" (G-03.11-3 / WR-02). Such a bug now reaches the
+        caller; the two subclass-injection regressions in
+        `tests/test_crsp_ticker_sidecar.py` are what hold that open.
         """
-        unusable = (FileNotFoundError, ValueError, KeyError, AttributeError, TypeError)
         try:
             intervals = self._intervals()
-        except unusable:
+        except _UNUSABLE:
             intervals = {}
 
         labels: list[str] = []
@@ -302,10 +332,15 @@ class CrspTickerLookup:
                 # A non-integer label is not a PERMNO -- a string symbol axis
                 # from another vendor reaching a shared display path. It is
                 # already readable; pass it through untouched.
+                #
+                # This narrow tuple is about the CALLER's argument, not about
+                # the sidecar, so it is a separate concern from `_UNUSABLE` and
+                # is not a third copy of it: `int("QQQ")` raising `ValueError`
+                # says nothing about whether the file on disk is readable.
                 labels.append(spelled)
                 continue
             try:
                 labels.append(self.as_of(permno, day) or spelled)
-            except unusable:
+            except _UNUSABLE:
                 labels.append(spelled)
         return labels
