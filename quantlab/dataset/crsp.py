@@ -1232,7 +1232,7 @@ class CrspStockDataset(StockDataset):
         renderings of it could drift apart while both looked right.
 
         **There is no `symbol` field, deliberately** (G-03.11-2). The record
-        used to carry `pl.col("symbol").last()`, but after the PERMNO-axis
+        used to carry a last-symbol aggregation, but after the PERMNO-axis
         migration (D-01) the derivation's `symbol` column IS the PERMNO, so
         that field repeated the JSON key byte for byte:
         `{"75154": {"symbol": "75154", ...}}`. The operator ruled in
