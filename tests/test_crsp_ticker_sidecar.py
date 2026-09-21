@@ -15,7 +15,10 @@ PERMNO and is deliberately NOT the shape copied here.
 `tests/test_crsp_dataset.py`: these tests are written before the names they
 assert on exist, and a module-scope import would turn the RED run into a
 collection error -- zero tests discovered, which proves nothing (TDD gate
-#3770).
+#3770). The rule is about QUANTLAB names: `loguru` is third-party, already
+installed, and cannot be the name a RED run is waiting for, so the
+`warning_messages` fixture imports it at module scope like every other test
+file that captures a warning.
 
 **Provenance.** The FB -> META rows are VERBATIM `03.10-LIVE-CHECK.json` key
 `C5_ticker_hist_crsp_a_stock.stksecurityinfohist`, reached through
@@ -29,6 +32,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from loguru import logger
 
 from tests.test_crsp_dataset import (
     SYNTHETIC_PERMNO,
@@ -409,6 +413,46 @@ def test_label_falls_back_without_raising_when_the_sidecar_is_corrupt(tmp_path):
     assert CrspTickerLookup(corrupt).label([13407], date(2022, 6, 9)) == ["13407"]
 
 
+@pytest.fixture
+def warning_messages():
+    """Every loguru WARNING emitted during the test, as plain message text.
+
+    VERBATIM from `tests/test_model_predict_panel.py` -- this repo has one way
+    of capturing a `loguru` warning in a test, and a second spelling of it
+    would be a fixture to keep in sync for no benefit.
+    """
+    messages: list[str] = []
+    handler_id = logger.add(
+        lambda message: messages.append(message.record["message"]), level="WARNING"
+    )
+    yield messages
+    logger.remove(handler_id)
+
+
+#: A sidecar that is entirely well-formed -- the control for the tests that
+#: assert NOTHING was warned. Hand-written rather than taken from `converted`
+#: because those tests are about the absence of a log line, and a full CRSP
+#: conversion would be a minute of fixture work to prove it.
+VALID_SIDECAR = (
+    '{"generated_from": "stksecurityinfohist", '
+    '"vintage_product_end": "2025-12-31", '
+    '"intervals": {"13407": [{"ticker": "FB", "start": "2012-05-18", '
+    '"end": "2022-06-08"}]}}'
+)
+
+#: One PERMNO's spans are fine and the other's is missing `start`.
+#:
+#: The point is that damage is not all-or-nothing: `intervals` reads cleanly,
+#: 13407 answers, and only 14593 falls into the per-PERMNO `except`. A guard
+#: that degraded the whole CALL on the first bad span would turn one unreadable
+#: security into a line of digits for every security beside it.
+PARTLY_BROKEN_SIDECAR = (
+    '{"intervals": {'
+    '"13407": [{"ticker": "FB", "start": "2012-05-18", "end": "2022-06-08"}], '
+    '"14593": [{"ticker": "AAPL", "end": "2025-12-31"}]}}'
+)
+
+
 #: Sidecars that PARSE as JSON and are still unusable -- the half of "corrupt"
 #: the contract claimed to cover and did not (G-03.11-3). All three were
 #: reproduced by hand against the shipped 03.11-09 code.
@@ -445,7 +489,7 @@ def _written(tmp_path, text):
 
 @pytest.mark.parametrize("text", MALFORMED_SIDECARS)
 def test_label_falls_back_when_the_sidecar_parses_but_is_shaped_wrong(
-    tmp_path, text
+    tmp_path, text, warning_messages
 ):
     """The display contract says "missing OR CORRUPT", and corrupt includes
     "parsed fine, shaped wrong" -- not just "not JSON".
@@ -454,10 +498,17 @@ def test_label_falls_back_when_the_sidecar_parses_but_is_shaped_wrong(
     where a panel carrying untrained symbols is merely dropped with a warning
     and the prediction completes. A malformed audit sidecar used to turn that
     successful `predict_panel` into a crash.
+
+    The fall-back is never raised AND never silent (G-03.11-6 / WR-03): the
+    digits alone are also the supported output of a store with no sidecar at
+    all, so one WARNING naming the class and the original exception is what
+    tells the two apart on a console.
     """
     lookup, _ = _written(tmp_path, text)
 
     assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
+    assert len(warning_messages) == 1, warning_messages
+    assert "CrspTickerLookup" in warning_messages[0]
 
 
 @pytest.mark.parametrize("text", MALFORMED_SIDECARS)
@@ -631,6 +682,100 @@ def test_a_bug_inside_intervals_reaches_the_caller_too(converted):
 
     with pytest.raises(AttributeError):
         lookup.label([13407], date(2022, 6, 9))
+
+
+# ---------------------------------------------------------------------------
+# G-03.11-6 / WR-03 -- the degradation is visible, and says its piece ONCE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", MALFORMED_SIDECARS)
+def test_a_degraded_lookup_warns_at_most_once_per_instance(
+    tmp_path, text, warning_messages
+):
+    """T-03.11-61: one note per INSTANCE, not one per record.
+
+    The most expensive caller renders a RUN of records on a single date --
+    `backtest/engine_vectorbt.py:303` hands a whole forced-liquidation batch to
+    one `label()` call mid-simulation -- and the instance outlives the call.
+    A warning per record would bury the signal it exists to raise, which is
+    operationally the same as having no warning at all.
+
+    Both damage routes are exercised by the parametrisation, and they reach
+    `_degrade` from different places: the two payloads that break while
+    `intervals` is read enter it ONCE per call from the outer `except`, while
+    the one that breaks inside the per-PERMNO `as_of` would enter it 500 times
+    in the second call alone without the instance flag.
+    """
+    lookup, _ = _written(tmp_path, text)
+
+    assert lookup.label([13407], date(2022, 6, 9)) == ["13407"]
+    assert lookup.label([13407] * 500, date(2022, 6, 9)) == ["13407"] * 500
+    assert lookup.label([13407, 14593], date(2022, 6, 9)) == ["13407", "14593"]
+
+    assert len(warning_messages) == 1, warning_messages
+
+
+def test_an_absent_sidecar_warns_as_well_as_falling_back(
+    tmp_path, warning_messages
+):
+    """T-03.11-57: the OTHER half of telling the two states apart.
+
+    `label()` answering with digits is the normal, documented, supported output
+    for a store that simply has no sidecar -- a Tiingo or Alpaca panel, or a
+    CRSP store built before 03.11-09. If only the CORRUPT branch warned, an
+    operator reading digits would still have to guess which of the two they
+    were looking at. The absent branch warns too, so the question a console can
+    answer is "is this store missing a sidecar?" rather than "is this store
+    missing a sidecar, or is the one it has unreadable?".
+    """
+    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+
+    lookup = CrspTickerLookup(tmp_path / "absent.crsp_tickers.json")
+
+    assert lookup.label([13407, 99999], date(2022, 6, 9)) == ["13407", "99999"]
+    assert len(warning_messages) == 1, warning_messages
+    assert "CrspTickerLookup" in warning_messages[0]
+
+
+def test_a_non_integer_label_passes_through_without_a_warning(
+    tmp_path, warning_messages
+):
+    """The narrow `int(value)` guard is NOT a degradation and must stay quiet.
+
+    It catches the CALLER's argument, not the file: a string symbol axis from
+    another vendor reaching a shared display path is a supported, healthy case,
+    and the sidecar underneath is perfectly readable. Warning here would fire
+    once per lookup instance on every Tiingo panel that renders a symbol list,
+    and a warning that fires on healthy input is a warning operators learn to
+    ignore -- taking the corrupt-sidecar signal down with it.
+    """
+    lookup, _ = _written(tmp_path, VALID_SIDECAR)
+
+    assert lookup.label(["QQQ", "SPY"], date(2015, 1, 1)) == ["QQQ", "SPY"]
+    assert warning_messages == []
+
+
+def test_a_partly_broken_sidecar_degrades_per_permno_and_keeps_order(
+    tmp_path, warning_messages
+):
+    """Damage to ONE security costs that security its name and nothing else.
+
+    `label` is positional -- one string per input, in order -- and the
+    per-PERMNO `except` keeps that true through a partial failure: 13407 is
+    still spelled FB in both of the positions it occupies, 14593 falls back to
+    its digits in the one it occupies, and the list is the same length as the
+    input. The single warning is what says the file, not the roster, is the
+    problem.
+    """
+    lookup, _ = _written(tmp_path, PARTLY_BROKEN_SIDECAR)
+
+    assert lookup.label([13407, 14593, 13407], date(2015, 1, 1)) == [
+        "FB",
+        "14593",
+        "FB",
+    ]
+    assert len(warning_messages) == 1, warning_messages
 
 
 def test_product_end_is_parsed_from_the_recorded_vintage(converted):
