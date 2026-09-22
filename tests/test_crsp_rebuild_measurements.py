@@ -15,6 +15,14 @@ four cleanliness assertions are stated as INVARIANTS (`adjClose <= 0 == 0`,
 which is why they survive the axis change unmodified; `symbol_count` is the one
 number that may legitimately move, and it is reported rather than pinned.
 
+As of 03.11-18 it also reads the SHIPPED `.crsp_filter_report.json` and pins
+the key set of each `_permno_breakdown` record (G-03.11-5: the code had dropped
+the redundant `symbol` field while the on-disk report still carried it, so a
+fresh mtime was not evidence of fresh content). And one test here touches no
+real data at all: `_fresh_backup_dir` is locked by a `tmp_path` case, because
+"an existing backup generation is never overwritten" is what keeps this
+destructive gate safe to re-run and must not rest on a single live observation.
+
 **It is deliberately EXCLUDED from the full regression command**, and excluded
 by NOT BEING COLLECTED rather than by being skipped. Two independent reasons,
 either of which alone would be sufficient:
@@ -129,6 +137,44 @@ DEAD_SYMBOLOGY_SIDECAR = ".crsp_symbology_report.json"
 #: The interval table that replaced it: PERMNO -> period-correct ticker.
 TICKER_SIDECAR = ".crsp_tickers.json"
 
+#: The D-17 audit artefact: which rows the security filter dropped, and which
+#: an explicit roster rescued. Read here rather than merely mtime-checked,
+#: because a fresh file can still carry a stale SHAPE.
+FILTER_REPORT_SIDECAR = ".crsp_filter_report.json"
+
+#: The exact key set of ONE `_permno_breakdown` record
+#: (`quantlab/dataset/crsp.py:1263-1271`).
+#:
+#: **There is no `symbol` field.** On a PERMNO axis the derivation's `symbol`
+#: column IS the PERMNO, so that field repeated its own JSON key byte for byte
+#: -- `{"75154": {"symbol": "75154", ...}}` -- and the operator ruled in
+#: `03.11-UAT.md` test 2 to DELETE it rather than restore a ticker. The key
+#: answers "who", `types` answers "why", and that is the whole of the audit
+#: question this report exists to answer.
+#:
+#: `tests/test_crsp_identity.py:587-588` and `:1108-1109` pin the same key set
+#: on SYNTHETIC stores. This file is the only place that asks the SHIPPED
+#: report the same question -- which is exactly the half G-03.11-5 found
+#: unclosed: the code had been fixed while the on-disk artefact still carried
+#: the deleted field, so the thing being measured and the code were no longer
+#: the same thing.
+BREAKDOWN_RECORD_KEYS = frozenset({"types", "rows", "first", "last"})
+
+#: The one PERMNO an explicit roster rescued on the sp500/2024 window, with
+#: the three values its record carries. Pinned by VALUE, not just by shape:
+#: deleting a field must not have moved the endpoints, and `first`/`last`
+#: bracketing the whole window at 252 rows is what says this security traded
+#: every session rather than being a partial-year fragment.
+ROSTER_RESCUED_PERMNO = "75154"
+ROSTER_RESCUED_ROWS = 252
+ROSTER_RESCUED_FIRST = "2024-01-02"
+ROSTER_RESCUED_LAST = "2024-12-31"
+
+#: The base name of the backup generation THIS rebuild writes, under `data/`.
+#: One base name per plan that rebuilds; see `_fresh_backup_dir` for why a
+#: name is never reused.
+BACKUP_GENERATION_BASE = "_backup_pre_03.11_18"
+
 
 def _data_root() -> Path:
     """The main repository root, from `QUANTLAB_DATA_ROOT`.
@@ -190,6 +236,47 @@ def _input_paths(root: Path) -> tuple[Path, Path]:
     return vendor_parent / "wrds", vendor_parent / "_reference"
 
 
+def _fresh_backup_dir(root: Path) -> Path:
+    """The first backup generation directory under `root/data` that is FREE.
+
+    **Backup generations only ever accumulate; none is ever overwritten.**
+    `BaseStoreRebuilder.backup` copies with `shutil.copytree(...,
+    dirs_exist_ok=True)`, so handing `rebuild()` a directory that already holds
+    a generation replaces that generation IN PLACE. Every generation records a
+    panel the current tree can no longer produce -- that is the entire reason
+    a rebuild backs anything up -- so an overwrite destroys the only surviving
+    copy of whatever was there.
+
+    **Why this is a function and not a discipline.** Writing a new literal per
+    plan is safe exactly once. The overwrite that actually happens is not a
+    mistyped directory name, it is THE SAME GATE RUN TWICE: run one stores the
+    old generation under the new name, run two copies the freshly rebuilt store
+    over it, and the older panel is gone while both directories still look
+    plausible. 03.11-18 alone runs this gate twice (once for evidence, once to
+    verify its own change), and any interrupted run resumes into the same
+    shape.
+
+    **Why it steps aside instead of refusing.** A `pytest.fail` on collision
+    would also be decided before the copy, but it would make the gate
+    single-use: every later run is red, and the cheapest way out is `rm -rf`
+    on the occupied directory -- performing by hand the very overwrite this
+    protects against. Stepping to `..._rerun2`, `..._rerun3`, ... keeps re-runs
+    working while leaving every earlier generation untouched, which removes the
+    temptation rather than relying on nobody taking it. The cost is one extra
+    ~10 MB directory per re-run.
+
+    The caller asserts `not result.exists()` before passing it on. That
+    assertion is the invariant; the stepping here is only how it is met.
+    """
+    parent = root / "data"
+    candidate = parent / BACKUP_GENERATION_BASE
+    attempt = 1
+    while candidate.exists():
+        attempt += 1
+        candidate = parent / f"{BACKUP_GENERATION_BASE}_rerun{attempt}"
+    return candidate
+
+
 def _config(root: Path) -> CrspDatasetConfig:
     """The sp500/2024 config, constructed DIRECTLY.
 
@@ -232,22 +319,88 @@ def rebuilt():
     `started_at` companion is captured BEFORE the rebuild so the sidecar
     freshness assertion has a lower bound it can trust.
 
-    **The backup directory is per-rebuild, and that matters.** `backup()` copies
-    with `dirs_exist_ok=True`, so pointing two different rebuilds at one
-    directory overwrites the older copy in place. `data/_backup_pre_03.11` holds
-    the PRE-PHASE (pre-fix) store -- the only surviving record of what the 699 /
-    686 / 2202 numbers were measured on, and unreproducible because the code
-    that wrote it is deleted. This rebuild therefore writes its own
-    `data/_backup_pre_03.11_10`, preserving both generations.
+    **Backup generations ONLY ACCUMULATE. This is a standing rule, not a
+    one-off.** `backup()` copies with `dirs_exist_ok=True`, so pointing two
+    rebuilds at one directory overwrites the older copy in place -- and every
+    generation is the only surviving record of a panel the current tree can no
+    longer produce. So each rebuild takes a name of its own and every existing
+    generation is READ-ONLY:
+
+    - `data/_backup_pre_03.11` -- the PRE-PHASE (pre-fix) store, what the 699 /
+      686 / 2202 numbers were measured on.
+    - `data/_backup_pre_03.11_10` -- 03.11-10's generation: the PERMNO-axis
+      panel whose `.crsp_filter_report.json` still carried the redundant
+      `symbol` field (G-03.11-5).
+    - `data/_backup_pre_03.11_18[_rerunN]` -- this one.
+
+    The name is CHOSEN, and asserted free, BEFORE `rebuild()` is called. That
+    ordering is the whole protection: `backup()` has already copied by the time
+    any mtime comparison or `backup_path:` line can be read, so a check placed
+    after the call can only report the loss. See `_fresh_backup_dir`.
     """
     root = _data_root()
+    backup_dir = _fresh_backup_dir(root)
+
+    # THE INVARIANT, and it must hold here -- before `rebuild()`, hence before
+    # `shutil.copytree(..., dirs_exist_ok=True)`. Afterwards the copy has
+    # happened and this could only announce it.
+    assert not backup_dir.exists(), (
+        f"{backup_dir} already holds a backup generation. `backup()` copies "
+        f"with dirs_exist_ok=True, so rebuilding into it would overwrite that "
+        f"generation in place -- and a generation cannot be regenerated, since "
+        f"the code that wrote its panel is precisely what changed. "
+        f"_fresh_backup_dir is supposed to have stepped past every occupied "
+        f"name; reaching this line means it did not. Pick another name. Do NOT "
+        f"delete this directory to make room."
+    )
+    # Printed so the SUMMARY can transcribe it, and so a name that is not the
+    # base name is visible as what it means: this gate has been run before.
+    print(f"backup generation: {backup_dir}")
+
     started_at = time.time()
     config = _config(root)
     rebuilder = CrspStoreRebuilder(config, data_root=root)
-    measurement = rebuilder.rebuild(
-        backup_dir=root / "data" / "_backup_pre_03.11_10"
-    )
+    measurement = rebuilder.rebuild(backup_dir=backup_dir)
     return measurement, started_at, config
+
+
+def test_a_fresh_backup_generation_never_lands_on_an_existing_one(tmp_path):
+    """`_fresh_backup_dir` steps past every occupied name, repeatedly.
+
+    **The one test in this file that touches no real data and runs no
+    rebuild.** That is deliberate: "an existing backup generation is never
+    chosen" is the property that keeps the destructive gate re-runnable, and a
+    property proved only by watching one live run is proved once and then
+    trusted forever. Here it is re-proved on every collection, in
+    milliseconds, under `tmp_path`.
+
+    It needs no `QUANTLAB_DATA_ROOT`: `_data_root()` is called only from the
+    `rebuilt` fixture, and pytest fixtures are lazy, so selecting this test
+    alone never brings the rebuild up. Run it on its own with::
+
+        uv run pytest -q tests/test_crsp_rebuild_measurements.py \\
+          -k fresh_backup -p no:cacheprovider
+    """
+    occupied = tmp_path / "data" / BACKUP_GENERATION_BASE
+    occupied.mkdir(parents=True)
+
+    first = _fresh_backup_dir(tmp_path)
+    assert first != occupied, (
+        f"_fresh_backup_dir returned {first}, which already exists. "
+        f"rebuild() would copy into it with dirs_exist_ok=True and overwrite "
+        f"the generation stored there."
+    )
+    assert not first.exists(), f"{first} is not free"
+
+    # And again, so the step is a loop rather than a single hard-coded
+    # fallback: two re-runs must not collide with each other either.
+    first.mkdir(parents=True)
+    second = _fresh_backup_dir(tmp_path)
+    assert second not in (occupied, first), (
+        f"_fresh_backup_dir returned {second} a second time; it must step "
+        f"past EVERY occupied generation, not just the base name."
+    )
+    assert not second.exists(), f"{second} is not free"
 
 
 def test_sp500_2024_rebuild_matches_post_fix_measurements(rebuilt):
@@ -409,3 +562,54 @@ def test_rebuild_refreshed_every_sidecar(rebuilt):
             f"{sidecar} has mtime {sidecar.stat().st_mtime} which predates "
             f"this rebuild ({started_at}) -- it describes the PREVIOUS panel."
         )
+
+
+def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
+    """The shipped audit report's record shape, read off disk (G-03.11-5).
+
+    `test_rebuild_refreshed_every_sidecar` proves this file is NEW. That is a
+    different question from whether its CONTENT matches the code: a rebuild run
+    from a tree that still emitted the redundant field would produce a report
+    with a perfectly fresh mtime and the deleted field inside it. G-03.11-5 was
+    exactly that gap in reverse -- the code had dropped the field while the
+    shipped report, untouched since before the fix, still carried it, so the
+    artefact being audited and the code that writes it were no longer the same
+    thing.
+
+    The record count is asserted FIRST and on purpose. A bare `for record in
+    ...: assert set(record) == ...` is satisfied by an empty mapping, so a
+    `_permno_breakdown` that regressed to emitting nothing would leave this
+    test green -- the same empty-loop failure mode `test_crsp_identity.py`
+    calls out at `:1103-1107`.
+    """
+    measurement, _started_at, _config_used = rebuilt
+
+    report_path = Path(str(measurement.store_path) + FILTER_REPORT_SIDECAR)
+    report = json.loads(report_path.read_text())
+    overrides = report["roster_overrides"]["permnos"]
+
+    print(f"roster_overrides.permnos: {len(overrides)} record(s)")
+    assert len(overrides) >= 1, (
+        f"roster_overrides.permnos is empty, so the key-set check below would "
+        f"pass without examining anything. On the sp500/2024 window an "
+        f"explicit roster rescues PERMNO {ROSTER_RESCUED_PERMNO}; nothing to "
+        f"rescue means the roster wiring changed. Report: {report_path}"
+    )
+    for permno, record in overrides.items():
+        assert set(record) == BREAKDOWN_RECORD_KEYS, (
+            f"PERMNO {permno}'s record carries {sorted(record)}, not "
+            f"{sorted(BREAKDOWN_RECORD_KEYS)}. A `symbol` key here repeats "
+            f"the JSON key byte for byte and was deleted (G-03.11-2); its "
+            f"presence means this report predates that deletion. Full "
+            f"roster_overrides.permnos: {overrides}"
+        )
+
+    rescued = overrides[ROSTER_RESCUED_PERMNO]
+    assert rescued["rows"] == ROSTER_RESCUED_ROWS, rescued
+    assert rescued["first"] == ROSTER_RESCUED_FIRST, rescued
+    assert rescued["last"] == ROSTER_RESCUED_LAST, rescued
+    assert rescued["types"], (
+        f"PERMNO {ROSTER_RESCUED_PERMNO}'s `types` is empty. With `symbol` "
+        f"gone, `types` is the only field that answers WHY this row needed "
+        f"rescuing; an empty list makes the record unreadable. {rescued}"
+    )
