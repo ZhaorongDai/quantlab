@@ -174,6 +174,7 @@ class CrspSP500ConstituentDataset(IndexConstituentDataset):
                 allow_unlinked=bool(
                     (self.config.kwargs or {}).get("allow_unlinked", False)
                 ),
+                window=(self.config.start_date, self.config.end_date),
             )
         )
 
@@ -202,7 +203,10 @@ class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
     `kwargs={"allow_unlinked": True}` to proceed with the linked days and read
     the rest from the membership `report["unlinked"]` -- the opt-out lives in
     the config, so a run that tolerated the gap says so in its own
-    `config.json`.
+    `config.json`. The refusal is scoped to this panel's OWN configured
+    window: a link gap falling entirely outside it cannot cost this panel a
+    member, so it is recorded in the membership `report["unlinked"]` rather
+    than refusing.
     """
 
     #: The `CrspMembership` universe this class binds to.
@@ -221,5 +225,11 @@ class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
                 allow_unlinked=bool(
                     (self.config.kwargs or {}).get("allow_unlinked", False)
                 ),
+                # Safe to scope here because this panel's own edges are
+                # `max(config.start_date, coverage_start)`..`min(config.end_date,
+                # horizon)` (`quantlab/base/constituent.py`), a SUBSET of the
+                # window passed: an uncovered span outside it cannot touch a
+                # single cell this panel produces.
+                window=(self.config.start_date, self.config.end_date),
             )
         )

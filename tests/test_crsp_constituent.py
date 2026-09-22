@@ -753,6 +753,65 @@ def test_an_unlinked_nasdaq100_spell_stops_the_panel_unless_allow_unlinked(tmp_p
     assert {int(value) for value in panel["symbol"].values.tolist()} == {14542, 90319}
 
 
+def test_an_unlinked_spell_before_the_panel_window_no_longer_stops_the_panel(
+    tmp_path,
+):
+    """A 1999-2007 link gap does not stop a 2015+ Nasdaq-100 panel.
+
+    The assertion is on `_build_intervals()` rather than `from_raw_data()`
+    because the seam under test IS the refusal; the densification either side
+    of it has its own tests, and routing this claim through a whole panel
+    build would make it depend on them.
+
+    The returned frame still carries 81020 although the window is entirely
+    clear of its membership: a window scopes the refusal, it does not filter
+    intervals. `_densify` clips to `min(config.end_date, horizon)` afterwards,
+    which is where 81020 legitimately leaves a 2015 panel.
+    """
+    from quantlab.dataset.constituent import CompustatNasdaq100ConstituentDataset
+
+    spells = [
+        # SYNTHETIC: gvkey 100020 mirrors live gvkey 012884 -- a Nasdaq-100
+        # spell that outlives its last CCM link by five calendar days, every
+        # one of them in 2007.
+        _ndx_spell("100020", "01", "1999-01-13", "2007-02-05"),
+        # SYNTHETIC: a fully linked modern member, open-ended.
+        _ndx_spell("100021", "01", "2015-01-02", None),
+    ]
+    links = [
+        # SYNTHETIC: stops 2007-01-31, leaving 2007-02-01..2007-02-05 unlinked.
+        _link("100020", "01", "81020.0", "1999-01-01", "2007-01-31"),
+        # SYNTHETIC: open link covering the whole of 100021's membership.
+        _link("100021", "01", "81021.0", "2010-01-01", None),
+    ]
+    reference_dir = _ndx_reference(tmp_path, spells=spells, links=links)
+
+    intervals = CompustatNasdaq100ConstituentDataset(
+        _panel_config(
+            tmp_path,
+            reference_dir,
+            "ndx_window",
+            start_date="2015-01-01",
+            end_date="2025-12-31",
+        )
+    )._build_intervals()
+    assert {int(value) for value in intervals["symbol"].to_list()} == {81020, 81021}
+
+    # The same tier with a window that DOES cover the gap still refuses: the
+    # survivorship-bias guard is unchanged wherever it is real.
+    with pytest.raises(ValueError) as refusal:
+        CompustatNasdaq100ConstituentDataset(
+            _panel_config(
+                tmp_path,
+                reference_dir,
+                "ndx_window_covering_the_gap",
+                start_date="2007-01-01",
+                end_date="2007-12-31",
+            )
+        )._build_intervals()
+    assert "100020" in str(refusal.value)
+
+
 def test_both_crsp_universes_round_trip_through_their_saved_config(tmp_path):
     """D-26: each class rebuilds itself from the JSON its own config serialises.
 

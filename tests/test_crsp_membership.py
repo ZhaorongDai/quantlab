@@ -116,6 +116,40 @@ def _ndx_tier(tmp_path, spells, links, product_end=_PRODUCT_END):
     )
 
 
+def _gap_tier(tmp_path, product_end=_PRODUCT_END):
+    """A tier whose ONLY unlinked span is in 2007, beside a modern member.
+
+    This is the shape the operator met on live WRDS data. Live gvkey 012884's
+    Nasdaq-100 spell runs 1999-01-13..2007-02-05 while the CCM links for it
+    stop at 2007-01-31, leaving five uncovered calendar days -- one more than
+    `LINK_GAP_TOLERANCE_DAYS`, so they are genuinely unlinked rather than a
+    tolerated seam between two links. Every one of those days is before 2015,
+    so a 2015+ window cannot lose a member to them; a 2007 window can, and
+    still must.
+
+    The second member is fully linked and open-ended, so a window that clears
+    the gap still has somebody to come back with -- which is what separates
+    "the window did not need the gapped member" from "the fix returned
+    nothing".
+    """
+    spells = [
+        # SYNTHETIC: gvkey 100020 mirrors live gvkey 012884 -- a membership
+        # spell that outlives its last CCM link by five calendar days.
+        _spell("100020", "01", "1999-01-13", "2007-02-05"),
+        # SYNTHETIC: a fully linked modern member, open and therefore clipped
+        # to the product end.
+        _spell("100021", "01", "2015-01-02", None),
+    ]
+    links = [
+        # SYNTHETIC: stops 2007-01-31, leaving 2007-02-01..2007-02-05 with no
+        # PERMNO at all.
+        _link("100020", "01", "81020.0", "1999-01-01", "2007-01-31"),
+        # SYNTHETIC: open link, covering the whole of 100021's membership.
+        _link("100021", "01", "81021.0", "2010-01-01", None),
+    ]
+    return _ndx_tier(tmp_path, spells, links, product_end=product_end)
+
+
 # ---------------------------------------------------------------------------
 # D-05 -- CRSP's own S&P 500 membership
 # ---------------------------------------------------------------------------
@@ -579,6 +613,271 @@ def test_nasdaq100_roster_in_range_resolves_the_alphabet_permnos(tmp_path):
     assert membership.permnos_in_range(
         membership.NASDAQ100, "2010-01-01", "2010-12-31"
     ) == ["90319"]
+
+
+# ---------------------------------------------------------------------------
+# 260922-mb1 -- the refusal is scoped to the requested window
+#
+# An uncovered span refuses only when it OVERLAPS the requested window. A span
+# the window never touches cannot cost that window a member, so refusing on it
+# is an alarm that fires on every single pull -- and an alarm that always fires
+# trains the operator to pass the escape hatch reflexively, which is how
+# `--allow-unlinked-ndx` stops being read on the run where it really does drop
+# members. With no window every span still blocks, which is what keeps every
+# existing caller's floor exactly where it was.
+# ---------------------------------------------------------------------------
+
+
+def test_an_uncovered_gap_inside_the_window_still_refuses(tmp_path):
+    """The survivorship-bias guard where it is REAL, and it must not weaken.
+
+    A 2007 window genuinely loses a member if 2007-02-01..2007-02-05 are
+    dropped: 100020 was in the index on those days and has no PERMNO for them.
+    Scoping the refusal to the window is only defensible because this case
+    keeps refusing.
+    """
+    membership = _gap_tier(tmp_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        membership.permnos_in_range(
+            membership.NASDAQ100, "2007-01-01", "2007-12-31"
+        )
+
+    message = str(excinfo.value)
+    assert "100020" in message
+    assert "2007-02-01" in message
+    assert "allow_unlinked" in message
+
+
+def test_an_uncovered_gap_outside_the_window_no_longer_refuses(tmp_path):
+    """A 2015+ pull over a 2007-only gap returns its roster instead of raising.
+
+    The second assertion is the one that separates "the window does not need
+    that member" from "the fix silently lost it": 81020 is absent from the
+    2015 roster BECAUSE its membership ended in 2007, which the allow_unlinked
+    listing shows directly.
+    """
+    membership = _gap_tier(tmp_path)
+
+    assert membership.permnos_in_range(
+        membership.NASDAQ100, "2015-01-01", "2025-12-31"
+    ) == ["81021"]
+
+    tolerated = _gap_tier(tmp_path)
+    intervals = tolerated.permno_intervals(
+        tolerated.NASDAQ100, allow_unlinked=True
+    )
+    assert {
+        (row["permno"], row["end_date"])
+        for row in intervals.to_dicts()
+        if row["permno"] == 81020
+    } == {(81020, date(2007, 1, 31))}
+
+
+def test_a_gap_that_touches_the_window_edge_refuses_and_one_day_clear_does_not(
+    tmp_path,
+):
+    """The overlap predicate is inclusive on BOTH edges.
+
+    The gap is 2007-02-01..2007-02-05. A window that merely touches it can
+    still contain a membership day with no PERMNO, so the refusal fires; one
+    clear day either side and it cannot.
+    """
+    # The gap starts before the window and ends inside it.
+    membership = _gap_tier(tmp_path)
+    with pytest.raises(ValueError):
+        membership.permnos_in_range(
+            membership.NASDAQ100, "2007-02-03", "2007-12-31"
+        )
+
+    # The window END equals the gap START -- the `gap_start <= window_end` edge.
+    membership = _gap_tier(tmp_path)
+    with pytest.raises(ValueError):
+        membership.permnos_in_range(
+            membership.NASDAQ100, "2006-01-01", "2007-02-01"
+        )
+
+    # The window START equals the gap END -- the `gap_end >= window_start` edge.
+    membership = _gap_tier(tmp_path)
+    with pytest.raises(ValueError):
+        membership.permnos_in_range(
+            membership.NASDAQ100, "2007-02-05", "2030-01-01"
+        )
+
+    # One day clear of the gap: nothing to lose, so nothing to refuse.
+    membership = _gap_tier(tmp_path)
+    assert membership.permnos_in_range(
+        membership.NASDAQ100, "2007-02-06", "2007-12-31"
+    ) == []
+
+
+def test_permno_intervals_without_a_window_still_refuses_on_any_gap(tmp_path):
+    """The compatibility hinge: every existing caller omits `window`.
+
+    This is the test that says the widening did not move anyone's floor. An
+    explicit `window=None` is asserted beside the omitted one because `None`
+    is the value the parameter defaults to, and a fix that special-cased only
+    the omitted spelling would leave a second, silently different path.
+    """
+    membership = _gap_tier(tmp_path)
+    with pytest.raises(ValueError) as omitted:
+        membership.permno_intervals(membership.NASDAQ100)
+    assert "100020" in str(omitted.value)
+
+    membership = _gap_tier(tmp_path)
+    with pytest.raises(ValueError) as explicit:
+        membership.permno_intervals(membership.NASDAQ100, window=None)
+    assert "100020" in str(explicit.value)
+
+
+def test_a_window_scopes_the_refusal_and_never_filters_the_intervals(tmp_path):
+    """A window is not a filter; it only decides which gaps refuse.
+
+    81020's whole membership is outside the window passed here and the frame
+    still carries it. Filtering happens afterwards in `permnos_in_range`,
+    which has its own test -- doing it twice, in two places, is how the two
+    answers start to disagree.
+    """
+    membership = _gap_tier(tmp_path)
+
+    intervals = membership.permno_intervals(
+        membership.NASDAQ100, window=("2015-01-01", "2025-12-31")
+    )
+
+    assert set(intervals["permno"].to_list()) == {81020, 81021}
+    assert [
+        row for row in intervals.to_dicts() if row["permno"] == 81020
+    ] == [
+        {
+            "permno": 81020,
+            "start_date": date(1999, 1, 13),
+            "end_date": date(2007, 1, 31),
+        }
+    ]
+
+
+def test_the_report_lists_every_unlinked_spell_and_names_only_the_blocking_ones(
+    tmp_path,
+):
+    """Out of the refusal, never out of the record.
+
+    `report['unlinked']` stays complete in all three arms; the new
+    `report['unlinked_blocking']` is the subset that would refuse. The exact
+    dicts are asserted, not their lengths, because the entry shape IS what an
+    operator reads after a tolerated run.
+    """
+    entry = {
+        "gvkey": "100020",
+        "iid": "01",
+        "from": "1999-01-13",
+        "thru": "2007-02-05",
+        "uncovered": [["2007-02-01", "2007-02-05"]],
+    }
+
+    # Arm A: a window clear of the gap. No raise, nothing blocking, still
+    # recorded.
+    membership = _gap_tier(tmp_path)
+    membership.permno_intervals(
+        membership.NASDAQ100, window=("2015-01-01", "2025-12-31")
+    )
+    assert membership.report["unlinked"] == [entry]
+    assert membership.report["unlinked_blocking"] == []
+
+    # Arm B: no window at all -- every span blocks, and the opt-in tolerated it.
+    membership = _gap_tier(tmp_path)
+    membership.permno_intervals(membership.NASDAQ100, allow_unlinked=True)
+    assert membership.report["unlinked"] == [entry]
+    assert membership.report["unlinked_blocking"] == [entry]
+
+    # Arm C: a window that DOES cover the gap, tolerated by the opt-in.
+    membership = _gap_tier(tmp_path)
+    intervals = membership.permno_intervals(
+        membership.NASDAQ100,
+        allow_unlinked=True,
+        window=("2007-01-01", "2007-12-31"),
+    )
+    assert membership.report["unlinked"] == [entry]
+    assert membership.report["unlinked_blocking"] == [entry]
+    assert [
+        row for row in intervals.to_dicts() if row["permno"] == 81020
+    ] == [
+        {
+            "permno": 81020,
+            "start_date": date(1999, 1, 13),
+            "end_date": date(2007, 1, 31),
+        }
+    ]
+
+
+def test_an_inverted_window_is_refused_rather_than_silently_blocking_nothing(
+    tmp_path,
+):
+    """An inverted window overlaps nothing, so it would suppress EVERY refusal.
+
+    Left unchecked it returns a roster indistinguishable from a complete one,
+    which is the worst failure available here. The message must be about the
+    window, not about a link table -- naming a CRSP/Compustat link would send
+    the reader to the vendor data for a typo in their own arguments.
+    """
+    membership = _gap_tier(tmp_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        membership.permno_intervals(
+            membership.NASDAQ100, window=("2020-01-01", "2019-01-01")
+        )
+
+    message = str(excinfo.value)
+    assert "2020-01-01" in message
+    assert "2019-01-01" in message
+    # Not a bare "link" search: the message legitimately says "unlinked
+    # refusal", naming the thing an inverted window would suppress. What it
+    # must not do is point at the VENDOR link table, which would send the
+    # reader to CRSP for a typo in their own arguments.
+    assert "CRSP/Compustat" not in message
+
+
+def test_the_conversion_window_reaches_the_refusal_through_member_intervals(
+    tmp_path,
+):
+    """The security filter's roster exemption is the THIRD refusal site.
+
+    `CrspStockDataset._member_intervals` (`quantlab/dataset/crsp/__init__.py`)
+    backs the roster exemption in `_apply_security_filter`, so it is reached on
+    every `--universe` conversion -- and it passes no `allow_unlinked` at all.
+    Before the window reached it, a 1999 link gap refused a whole 2015+
+    conversion with no escape hatch available on the command line, which is
+    exactly where the operator's reported run died.
+
+    The frame still carries 81020 for the 2015 window because a window scopes
+    the refusal and never filters intervals.
+    """
+    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    reference_dir = str(_gap_tier(tmp_path).reference.reference_dir)
+
+    def _dataset(start_date, end_date):
+        # Construction performs no IO (the pattern is
+        # `tests/test_crsp_identity.py`'s round-trip config); only
+        # `_member_intervals()` reads the tier.
+        return CrspStockDataset(
+            CrspDatasetConfig(
+                zarr_file_path=str(tmp_path / "crsp.zarr"),
+                raw_data_dir_path=str(tmp_path / "raw"),
+                catalog_path=str(tmp_path / "catalog"),
+                reference_dir=reference_dir,
+                start_date=start_date,
+                end_date=end_date,
+                roster_universe="comp_nasdaq100",
+            )
+        )
+
+    intervals = _dataset("2015-01-01", "2025-12-31")._member_intervals()
+    assert set(intervals["permno"].to_list()) == {81020, 81021}
+
+    with pytest.raises(ValueError) as refusal:
+        _dataset("2007-01-01", "2007-12-31")._member_intervals()
+    assert "100020" in str(refusal.value)
 
 
 # ---------------------------------------------------------------------------
