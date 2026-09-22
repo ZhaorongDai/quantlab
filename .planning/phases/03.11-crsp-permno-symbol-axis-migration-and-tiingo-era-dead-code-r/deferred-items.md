@@ -114,3 +114,47 @@ the obvious candidate) and re-measures factor throughput, since lowering it
 changes performance characteristics the phase never benchmarked.
 
 **Note:** this is NOT the cause of D-03.11-12-B — see that entry.
+
+---
+
+## D-03.11-18-A — the regression gate collects one more test in the main
+checkout than in any worktree, because it parametrizes over the repo root
+
+**Found during:** Plan 03.11-18, Task 3 (regression gate)
+**Status:** open — a measurement artefact, not a defect in any test
+
+`tests/test_entry_point_contracts.py:44` builds its parametrization at module
+scope:
+
+```python
+ENTRY_POINTS = sorted(REPO_ROOT.glob("*.py"))
+```
+
+That glob reads the **working tree**, not git. The main checkout currently
+carries an untracked root-level scratch file, `jerry_query_data.py`
+(`git ls-files --error-unmatch jerry_query_data.py` → "did not match any
+file(s) known to git"), which no worktree ever contains — a worktree is a
+checkout of the commit, and untracked files do not travel with it. So
+`test_every_main_guarded_entry_point_imports` collects one extra (passing)
+case in the main tree:
+
+| Where the gate ran | collected | failed | passed | skipped |
+|---|---|---|---|---|
+| main checkout | 1757 | 55 | 1701 | 1 |
+| any worktree | 1756 | 55 | 1700 | 1 |
+
+**Why this is worth a ledger entry.** The same unexplained ±1 was reported as
+an open question by **03.11-09** and again by **03.11-10** (its Issues §2:
+"全仓 passed 比 orchestrator 给的基线少 1 个（1667 vs 1668）… 同一处未归因的
+±1"), and it cost 03.11-18 a round of forensics to rule out a regression. It
+is now attributed. Anyone comparing an orchestrator-measured baseline (main
+tree) against an executor-measured number (worktree) should expect exactly
+this offset, and neither number is wrong.
+
+**Not fixed here.** Two candidate fixes exist and both are scope of their own:
+restrict the glob to git-tracked files (`git ls-files '*.py'`), which changes
+what the contract test *claims to cover* — it currently asserts that **every**
+root-level script is import-safe, including a scratch file someone dropped in
+— or leave the glob and accept the offset as documented. Which of those is
+right is a question about the contract, not about this phase, and
+`tests/test_entry_point_contracts.py` is outside 03.11-18's `files_modified`.
