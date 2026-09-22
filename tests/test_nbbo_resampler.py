@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 
 from quantlab.base.config import NbboDatasetConfig
-from quantlab.dataset.nbbo_resample import NbboFilterPolicy, NbboResampler
+from quantlab.dataset.nbbo.resample import NbboFilterPolicy, NbboResampler
 
 DAY = "2024-01-24"
 _EST_OFFSET_HOURS = 5

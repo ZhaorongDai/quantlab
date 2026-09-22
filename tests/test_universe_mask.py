@@ -416,7 +416,7 @@ def test_a_ticker_sidecar_spells_the_missing_permnos_without_shortening_them(
     """
     import json
 
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     sidecar = tmp_path / "crsp.zarr.crsp_tickers.json"
     sidecar.write_text(
@@ -476,7 +476,7 @@ def test_a_missing_ticker_sidecar_leaves_the_report_working(tmp_path) -> None:
     is what every non-CRSP store produces. `report()` answers with the digits
     instead of raising.
     """
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     permnos = [80000, 80001]
     membership = xr.Dataset(

@@ -18,7 +18,7 @@ CONTEXT D-19):
   bid/ask midpoint, so the sign carries no information. A delisting return is
   its own daily row (`dlydelflg='Y'`), which is why the raw tier keeps every
   row exactly as CRSP serves it and all derivation happens in
-  `quantlab/dataset/crsp.py`.
+  `quantlab/dataset/crsp/__init__.py`.
 - **Symbology (D-04).** `dsf_v2` has no `shareclass` and no `tradingsymbol`, so
   it cannot spell `BRK.B`. The raw tier is therefore keyed by PERMNO -- the
   stable security id -- and the ticker is derived at CONVERSION time. A rename
@@ -316,7 +316,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
 
     The raw tier lands under `.../wrds_crsp/wrds/month=YYYY-MM/` with one row
     per `(permno, dlycaldt)`, EXACTLY as CRSP serves it: no derived price, no
-    adjusted series, no filter. Everything derived is `dataset/crsp.py`'s job,
+    adjusted series, no filter. Everything derived is `dataset/crsp/__init__.py`'s job,
     because the adjustment anchor is a property of the whole window and not of
     a page (RESEARCH Pattern 4).
 

@@ -1796,7 +1796,7 @@ def test_a_delisted_permno_keeps_its_last_row(mock_crsp_session, tmp_path):
     """The delisting row survives the security filter, and MUST keep doing so.
 
     **This is a prohibition guard, not a feature test.** The filter's verdict
-    inheritance (`quantlab/dataset/crsp.py`, `_apply_security_filter`) and
+    inheritance (`quantlab/dataset/crsp/__init__.py`, `_apply_security_filter`) and
     `CrspSymbology`'s ticker carry are described side by side in one docstring
     paragraph. The symbology half is deleted in plan 07; the filter half must
     NOT be, and the two are one edit apart.

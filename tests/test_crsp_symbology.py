@@ -26,8 +26,8 @@ from datetime import date
 
 import polars as pl
 
-from quantlab.dataset.crsp_reference import REFERENCE_TABLES_BY_NAME
-from quantlab.dataset.crsp_symbology import CrspSymbology
+from quantlab.dataset.crsp.reference import REFERENCE_TABLES_BY_NAME
+from quantlab.dataset.crsp.symbology import CrspSymbology
 from tests.crsp_fixtures import SECINFO_ROWS
 
 _SECINFO_SPEC = REFERENCE_TABLES_BY_NAME["stksecurityinfohist"]

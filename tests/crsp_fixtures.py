@@ -883,14 +883,14 @@ class FakeCrspSession(FakeWrdsSession):
         the pinned live column list -- `DSF_V2_SERVER_COLUMNS` for the daily
         table, and each `ReferenceTableSpec`'s own columns for the reference
         tables. The spec import is INSIDE the body so this module stays
-        importable before `quantlab/dataset/crsp_reference.py` exists.
+        importable before `quantlab/dataset/crsp/reference.py` exists.
         """
         key = f"{schema}.{table}"
         if key in cls.server_columns:
             return tuple(cls.server_columns[key])
         if key == "crsp_a_stock.dsf_v2":
             return DSF_V2_SERVER_COLUMNS
-        from quantlab.dataset.crsp_reference import REFERENCE_TABLES
+        from quantlab.dataset.crsp.reference import REFERENCE_TABLES
 
         for spec in REFERENCE_TABLES:
             if (spec.schema, spec.table) == (schema, table):
@@ -987,7 +987,7 @@ def write_reference_tables(
     live rows; a table with no rows is written EMPTY rather than skipped, so a
     reader meets the schema rather than a `FileNotFoundError`.
     """
-    from quantlab.dataset.crsp_reference import MANIFEST_NAME, REFERENCE_TABLES
+    from quantlab.dataset.crsp.reference import MANIFEST_NAME, REFERENCE_TABLES
     from quantlab.utils.atomic import write_json_atomically
 
     rows_by_table = (

@@ -4,11 +4,11 @@
 > `CrspVolumeProbe`、`CrspProductEndError`、`CrspVintageError`），参考表采集
 > `quantlab/acquisition/wrds/crsp_reference.py:CrspReferenceTables`，
 > 数据源描述符 `quantlab/acquisition/wrds/__init__.py`，体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
-> 参考表读取 `quantlab/dataset/crsp_reference.py`，
-> PERMNO → ticker 区间表 `quantlab/dataset/crsp_symbology.py:CrspSymbology`
+> 参考表读取 `quantlab/dataset/crsp/reference.py`，
+> PERMNO → ticker 区间表 `quantlab/dataset/crsp/symbology.py:CrspSymbology`
 > （**它现在只喂 ticker 旁车，不再决定面板的列叫什么**）与旁车读侧
-> `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`，
-> 面板 `quantlab/dataset/crsp.py:CrspStockDataset`，成分 `quantlab/dataset/crsp_membership.py:CrspMembership`
+> `quantlab/dataset/crsp/tickers.py:CrspTickerLookup`，
+> 面板 `quantlab/dataset/crsp/__init__.py:CrspStockDataset`，成分 `quantlab/dataset/crsp/membership.py:CrspMembership`
 > 与 `quantlab/dataset/constituent.py`（`CrspSP500ConstituentDataset`、`CompustatNasdaq100ConstituentDataset`），
 > 命令行入口 `scripts/ingest_wrds_crsp.py`。
 > 相关文档：采集引擎通用契约见 [acquisition.md](acquisition.md)，数据源登记表见 [registry.md](registry.md)，
@@ -65,7 +65,7 @@ CIZ 的做法是：退市收益**本身就是一条日行**（雷曼 PERMNO 8059
 面板对 `DA` 行的处理，逐条：
 
 - 原始 `close` 在这条行上是 **NaN**，不是一笔 $0.00 的成交。`abs(0.0)` 仍然是 `0.0`，
-  所以哨兵值必须在 `abs()` **之前**就被排除掉（`quantlab/dataset/crsp.py` 的
+  所以哨兵值必须在 `abs()` **之前**就被排除掉（`quantlab/dataset/crsp/__init__.py` 的
   `_NO_PRICE_FLAGS`）；否则面板会一边写着 `ret = -0.56%`，一边写着一笔 -100% 的成交。
 - 这条行**永远不可能成为复权锚点**。原来的判据是「最后一个非空收盘」，而 `0.0` 不是空值，
   于是 `dlyprcflg='DA'` 的哨兵行成了锚点，`adjClose = 0.0 × G_t / G_anchor`
@@ -95,7 +95,7 @@ CIZ 的做法是：退市收益**本身就是一条日行**（雷曼 PERMNO 8059
   它唯一剩下的作用是让旁车能给一只死掉的证券的最后一天写上名字。）
 - **还活着的那一半：类型列也是空的。** 退市行的 `sharetype` / `securitytype` /
   `securitysubtype` 同样为 NULL，于是证券过滤会判它「类型未知 → 丢」。
-  所以 `quantlab/dataset/crsp.py` 里有一条**判决继承**规则：`dlydelflg='Y'` 的行
+  所以 `quantlab/dataset/crsp/__init__.py` 里有一条**判决继承**规则：`dlydelflg='Y'` 的行
   继承前一天的过滤判决。这一条**必须留着**，它就是这一节的反幸存者偏差论证本身。
   两条规则在代码里曾经挨着写，这正是第二条容易被连坐删掉的原因。
 
@@ -242,7 +242,7 @@ WRDS 提供了一张预连接的宽视图 `wrds_dsfv2_query`（98 列，带分�
 
 区间而不是「每个 PERMNO 的最后一个 ticker」，是因为后者会把 13407 的 2012 年也答成 META——
 那正是 D-03 否决掉 1-D `ticker(symbol)` coord 的那个缺陷。旁车**只写这个面板自己的 PERMNO**
-（参考表里有 40,518 个），读侧是 `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`：
+（参考表里有 40,518 个），读侧是 `quantlab/dataset/crsp/tickers.py:CrspTickerLookup`：
 `as_of(permno, day)` 是严格的单值提问（缺文件会抛），`label(permnos, day)` 是展示层的批量入口
 （**永不抛**，旁车缺失或损坏——含解析不了与解析得了但形状不对——都原样回落成数字）。
 「解析不了」是三种：字节不是合法 **UTF-8**、字节不是 JSON、以及**嵌套**深到解析器自己爆栈
@@ -770,7 +770,7 @@ live 跑出来的关键数字（全部与离线契约一致）：
   `close_trade` 也是；`close`（= `abs(dlyprc)`）还在。用到最高最低价的因子在那段历史上会大面积 NaN。
 - **窗口一旦定下就别原地改。** 延长 `--end-date` 重跑会在写入之前被拒绝，
   报错点名两个锚点、旁车文件路径和原因。出路是删掉 store **连同它全部的旁车**重建——
-  `quantlab/dataset/crsp_rebuild.py:CrspStoreRebuilder` 就是这件事的执行者，
+  `quantlab/dataset/crsp/rebuild.py:CrspStoreRebuilder` 就是这件事的执行者，
   它的清场清单是唯一一份权威列表（只删 `.zarr` 目录会留下描述**上一个**面板的审计文件）。
 - **换 CRSP 年度版本 = 换原始目录。** 版本戳不匹配同样在 COPY 之前拒绝，
   两条出路（换 `subdir` / 删原始根及其 `_watermarks`、`_vintage` 兄弟）都写在报错里。
@@ -858,7 +858,7 @@ live 跑出来的关键数字（全部与离线契约一致）：
 
 **已交付的行为（用户 2026-09-20 明确拍板：「优先保证成分股不缺」）。** 原则是
 *证券过滤筛的是一个没有明说边界的总体，它不能推翻一份显式名册*，
-代码里由 `quantlab/dataset/crsp.py:CrspStockDataset._roster_exemption` 实现：
+代码里由 `quantlab/dataset/crsp/__init__.py:CrspStockDataset._roster_exemption` 实现：
 
 - `--universe` 跑：成分由指数提供方定了 → 一个成分在它的成分区间内**永远不会**被过滤掉，
   逐日判定，读的是 `CrspMembership.permno_intervals` ——

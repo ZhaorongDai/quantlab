@@ -207,7 +207,7 @@ t 之后的任何一根 bar 都不会改变 t 时刻的掩码——这条由 `te
 
 ### (ii) 职责的承接者：CRSP 的 `security_filter`
 
-CRSP 的 `security_filter` 预设 `equity_common`（`quantlab/dataset/crsp.py`）不是等价替换，是**更强**的替换：
+CRSP 的 `security_filter` 预设 `equity_common`（`quantlab/dataset/crsp/__init__.py`）不是等价替换，是**更强**的替换：
 
 - **CRSP 的类型词表里根本不存在** warrant / right / preferred / test-code 的编码，所以九条正则里有 7 类在 CRSP 面板上**不可能存在**；
 - 唯一真实对应的是 "unit"，在 CRSP 里是 `sharetype=UG`，**已被 `equity_common` 排除**；

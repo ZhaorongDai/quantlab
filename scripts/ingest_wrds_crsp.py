@@ -109,8 +109,8 @@ from quantlab.dataset.constituent import (
     CrspSP500ConstituentDataset,
 )
 from quantlab.dataset.crsp import SECURITY_FILTER_PRESETS, CrspStockDataset
-from quantlab.dataset.crsp_membership import CrspMembership
-from quantlab.dataset.crsp_reference import CrspReference
+from quantlab.dataset.crsp.membership import CrspMembership
+from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.cli import (
     add_chunk_args,
     add_data_dir_arg,

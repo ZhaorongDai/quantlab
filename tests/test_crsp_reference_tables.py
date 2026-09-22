@@ -1,6 +1,6 @@
 """The CRSP reference PULL: six whole tables into `_reference/` (phase 03.10).
 
-`quantlab/dataset/crsp_reference.py` declares WHICH tables the phase reads and
+`quantlab/dataset/crsp/reference.py` declares WHICH tables the phase reads and
 READS them back; this suite is about the other half --
 `quantlab/acquisition/wrds/crsp_reference.py:CrspReferenceTables`, which PUTS
 them on disk. What is asserted here, and why each assertion exists:
@@ -223,7 +223,7 @@ def test_pulled_tables_carry_the_spec_dtypes_and_every_fixture_row(session, dirs
     """
     import polars as pl
 
-    from quantlab.dataset.crsp_reference import CrspReference
+    from quantlab.dataset.crsp.reference import CrspReference
 
     reference_dir, _ = dirs
     _tables(session, reference_dir).pull(product_end=PRODUCT_END)
@@ -253,7 +253,7 @@ def test_delisting_and_distribution_events_round_trip_unchanged(session, dirs):
     """
     import polars as pl
 
-    from quantlab.dataset.crsp_reference import CrspReference
+    from quantlab.dataset.crsp.reference import CrspReference
 
     reference_dir, _ = dirs
     _tables(session, reference_dir).pull(product_end=PRODUCT_END)
@@ -446,7 +446,7 @@ def test_nasdaq100_pull_writes_the_idxcst_and_ccm_tables(session, dirs):
     """
     import polars as pl
 
-    from quantlab.dataset.crsp_reference import CrspReference
+    from quantlab.dataset.crsp.reference import CrspReference
 
     reference_dir, raw_root = dirs
     manifest = _tables(session, reference_dir).pull(

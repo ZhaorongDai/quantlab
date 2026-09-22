@@ -3,7 +3,7 @@
 `NbboPanelDataset` reads the raw tier `WrdsTaqNbboAcquisition` writes
 (`.../wrds/data_type=nbbo/date=/symbol=/`) and materialises a dense
 `[timestamp, symbol]` panel of right-closed NBBO bars through
-`dataset/nbbo_resample.py:NbboResampler`. The bar size is
+`dataset/nbbo/resample.py:NbboResampler`. The bar size is
 `NbboDatasetConfig.bar_interval`; the raw tier's `frequency` stays `"tick"`.
 
 Session edges come from `dataset/session_calendar.py:XnysSessionCalendar`
@@ -36,7 +36,7 @@ import xarray as xr
 from quantlab.base.config import DatasetConfig, NbboDatasetConfig
 from quantlab.base.data import BaseDataset
 from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
-from quantlab.dataset.nbbo_resample import (
+from quantlab.dataset.nbbo.resample import (
     FILTER_STATS_COUNTS,
     NbboFilterPolicy,
     NbboResampler,

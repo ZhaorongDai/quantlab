@@ -73,9 +73,9 @@ import pytest
 import zarr
 
 from quantlab.base.config import CrspDatasetConfig
-from quantlab.dataset.crsp_membership import CrspMembership
-from quantlab.dataset.crsp_reference import CrspReference
-from quantlab.dataset.crsp_rebuild import CrspStoreRebuilder
+from quantlab.dataset.crsp.membership import CrspMembership
+from quantlab.dataset.crsp.reference import CrspReference
+from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
 
 #: The window this gate rebuilds (03.11 D-15 / operator RULING 2). ONLY 2024,
 #: not the raw tier's full 2019-2025 span: `03.11-RESEARCH.md` section R1 took
@@ -143,7 +143,7 @@ TICKER_SIDECAR = ".crsp_tickers.json"
 FILTER_REPORT_SIDECAR = ".crsp_filter_report.json"
 
 #: The exact key set of ONE `_permno_breakdown` record
-#: (`quantlab/dataset/crsp.py:1263-1271`).
+#: (`quantlab/dataset/crsp/__init__.py:1263-1271`).
 #:
 #: **There is no `symbol` field.** On a PERMNO axis the derivation's `symbol`
 #: column IS the PERMNO, so that field repeated its own JSON key byte for byte
@@ -281,7 +281,7 @@ def _assert_breakdown_shape(breakdown: dict, *, label: str, source: Path) -> Non
     """Every record in one `_permno_breakdown` mapping has EXACTLY four keys.
 
     One predicate for both branches of the filter report, because
-    `quantlab/dataset/crsp.py` renders both from the single
+    `quantlab/dataset/crsp/__init__.py` renders both from the single
     `_permno_breakdown` (`:1099` for the rescued rows, `:1116` for the dropped
     ones). Two copies of this check could drift apart while each looked right
     on its own -- the same reason the production side has one renderer.

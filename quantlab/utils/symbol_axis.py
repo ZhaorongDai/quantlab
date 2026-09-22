@@ -10,7 +10,7 @@ existed neither had a home:
 
 Both were re-expressed at every call site instead -- eight-plus bare
 `sorted()` calls (`quantlab/dataset/stock.py:506-511`,
-`quantlab/dataset/crsp.py:1372-1375`, `quantlab/base/constituent.py:198`,
+`quantlab/dataset/crsp/__init__.py:1372-1375`, `quantlab/base/constituent.py:198`,
 `quantlab/dataset/masking.py:105`, `quantlab/base/model.py:310` and `:1220`,
 `quantlab/utils/fingerprint.py:58`, `quantlab/dataset/chunking.py:210`) and an
 unconditional `[str(symbol) for symbol in symbols]` at
@@ -67,7 +67,7 @@ def sort_symbol_axis(values: Iterable) -> list:
     first one wrote.
 
     That paragraph is not new wording: it MOVED here verbatim from
-    ``quantlab/dataset/crsp_membership.py:permnos_in_range``, which was the
+    ``quantlab/dataset/crsp/membership.py:permnos_in_range``, which was the
     only place in the repository that stated it. Moving rather than copying is
     the point of this module -- a second copy is a second thing to drift.
 

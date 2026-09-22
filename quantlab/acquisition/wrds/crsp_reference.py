@@ -1,6 +1,6 @@
 """The CRSP reference PULL: six whole tables into `_reference/` (phase 03.10).
 
-`quantlab/dataset/crsp_reference.py` DECLARES the six tables -- their schemas,
+`quantlab/dataset/crsp/reference.py` DECLARES the six tables -- their schemas,
 their server column order, their types -- and reads them back without a
 credential. This module is the other half: it puts them on disk.
 
@@ -53,7 +53,7 @@ from loguru import logger
 from psycopg2 import sql
 
 from quantlab.acquisition.wrds.crsp import CrspQueries
-from quantlab.dataset.crsp_reference import (
+from quantlab.dataset.crsp.reference import (
     MANIFEST_NAME,
     REFERENCE_TABLES_BY_NAME,
     ReferenceTableSpec,

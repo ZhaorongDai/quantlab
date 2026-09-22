@@ -1524,8 +1524,8 @@ def test_every_member_survives_every_preset_on_its_member_dates(
     """
     import numpy as np
 
-    from quantlab.dataset.crsp_membership import CrspMembership
-    from quantlab.dataset.crsp_reference import CrspReference
+    from quantlab.dataset.crsp.membership import CrspMembership
+    from quantlab.dataset.crsp.reference import CrspReference
 
     dataset_config = _roster_store(
         tmp_path,
@@ -1967,7 +1967,8 @@ def test_crsp_has_no_reader_of_config_symbols():
         Path(__file__).resolve().parent.parent
         / "quantlab"
         / "dataset"
-        / "crsp.py"
+        / "crsp"
+        / "__init__.py"
     )
     readers = [
         f"{number}: {line.strip()}"

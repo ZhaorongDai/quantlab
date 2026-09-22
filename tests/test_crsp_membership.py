@@ -16,7 +16,7 @@ provenance rule.
 
 **Every quantlab import lives inside a test (or inside `_membership`).** That
 is not style: this module is written before
-`quantlab/dataset/crsp_membership.py` exists, and a module-scope import would
+`quantlab/dataset/crsp/membership.py` exists, and a module-scope import would
 turn the RED run into a COLLECTION error -- zero tests discovered, which
 proves nothing about the behaviour (TDD gate #3770).
 """
@@ -89,8 +89,8 @@ def _link(gvkey, liid, permno, start, end, linktype="LC") -> dict[str, str | Non
 
 def _membership(tmp_path, rows_by_table, product_end=_PRODUCT_END):
     """A `CrspMembership` over a freshly written, offline reference tier."""
-    from quantlab.dataset.crsp_membership import CrspMembership
-    from quantlab.dataset.crsp_reference import CrspReference
+    from quantlab.dataset.crsp.membership import CrspMembership
+    from quantlab.dataset.crsp.reference import CrspReference
     from tests.crsp_fixtures import write_reference_tables
 
     directory = write_reference_tables(
@@ -600,15 +600,18 @@ def test_the_ticker_branch_no_longer_exists_on_this_class():
     with it is the assertion that no second use crept in (S5: deleting code
     means deleting what points at it).
     """
-    from quantlab.dataset import crsp_membership
-    from quantlab.dataset.crsp_membership import CrspMembership
+    # Aliased: `membership` is the name every other test in this file gives a
+    # `CrspMembership` INSTANCE, and an unaliased `import membership` here
+    # would read as one.
+    from quantlab.dataset.crsp import membership as membership_module
+    from quantlab.dataset.crsp.membership import CrspMembership
 
     assert not hasattr(CrspMembership, "symbol_intervals")
     assert not hasattr(CrspMembership, "_symbol_frame")
-    assert not hasattr(crsp_membership, "CrspSymbology")
+    assert not hasattr(membership_module, "CrspSymbology")
     # The key type narrows with the branch: on the PERMNO axis there is only
     # one kind of key, so `int | str` would advertise a choice that is gone.
-    assert crsp_membership._Key is int
+    assert membership_module._Key is int
 
 
 def test_the_permno_branch_and_its_numeric_order_contract_survive_intact():
@@ -620,7 +623,7 @@ def test_the_permno_branch_and_its_numeric_order_contract_survive_intact():
     provenance of `sort_symbol_axis`. Deleting the sibling method is not a
     licence to touch it.
     """
-    from quantlab.dataset.crsp_membership import CrspMembership
+    from quantlab.dataset.crsp.membership import CrspMembership
 
     for name in (
         "permno_intervals",

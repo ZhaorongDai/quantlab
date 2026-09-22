@@ -17,7 +17,7 @@ Live-verified facts this module is built on (`03.9-LIVE-CHECK-{1,2}.json`):
   within its (day, symbol-batch) query is recorded as `wrds_row_ord` BEFORE any
   other frame operation. Raw is one row per record, the full day, unfiltered
   (D-02/D-05); sorting, de-duplication and resampling happen only in
-  `dataset/nbbo_resample.py`.
+  `dataset/nbbo/resample.py`.
 - **Connection (D-20).** Not through the `wrds` package (its `Connection`
   prompts interactively and its `raw_sql` breaks under pandas 3) -- this
   module does not import it at all. `psycopg2` connects to the pinned WRDS

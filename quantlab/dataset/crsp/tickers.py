@@ -11,7 +11,7 @@ string variable is refused by the backend's symbol-dim dtype guards, and a 1-D
 `ticker(symbol)` coord holds one name per PERMNO -- so PERMNO 13407 would be
 "META" for its whole history and FB's decade would be filed under a name it did
 not wear. The names therefore live in a SIDECAR, as INTERVALS, and this module
-is the as-of query over them. `quantlab/dataset/crsp.py` writes the file;
+is the as-of query over them. `quantlab/dataset/crsp/__init__.py` writes the file;
 nothing else reads it.
 
 **Three entry points, deliberately different about failure.** `as_of` and
@@ -74,7 +74,7 @@ consumers (`dataset/masking.py`, `backtest/engine_vectorbt.py`,
 imported inside `beside_store`, because appending a string must not drag the
 whole converter (polars, xarray, the reference tier) into a display path.
 
-Shaped after `crsp_reference.py:CrspReference.manifest` in four respects, and
+Shaped after `crsp/reference.py:CrspReference.manifest` in four respects, and
 the resemblance is on purpose -- this repo has one way of reading a JSON
 sidecar and it is worth only having one: a `None` sentinel rather than a
 `hasattr` dance, a `FileNotFoundError` that names the class, the path and the
@@ -157,10 +157,16 @@ class CrspTickerLookup:
         a rename waiting to go half-done, and a third one is a `beside_store`
         call away.
 
-        The import is function-local on purpose: `crsp.py` owns the constant
-        and pulls in polars, the reference tier and the whole converter with
-        it, none of which a log line needs. This module stays a stdlib-only
-        leaf for every caller that already has a sidecar path.
+        The import is function-local on purpose, and the reasoning survives
+        this module becoming `crsp/tickers.py` intact: `crsp/__init__.py` owns
+        the constant and pulls in polars, the reference tier and the whole
+        converter with it, none of which a log line needs. This module stays a
+        stdlib-only leaf for every caller that already has a sidecar path.
+
+        It now imports its OWN PARENT package, which is safe for exactly the
+        reason it is function-local: by call time the parent is fully loaded.
+        A module-level `from quantlab.dataset.crsp import ...` here would run
+        during the parent's own initialisation and see a half-built module.
         """
         from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 
