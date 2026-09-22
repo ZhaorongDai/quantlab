@@ -538,7 +538,7 @@ class SourceInspector:
             # sidecar beside it maps the ticker to.
             axis_note = ""
             if axis_dtype is not None and axis_dtype.kind in "iu":
-                # Local: `crsp.py` owns the constant and drags the whole
+                # Local: `crsp/__init__.py` owns the constant and drags the whole
                 # converter in with it, and this inspector must stay importable
                 # for a vendor that has no CRSP tier at all.
                 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX

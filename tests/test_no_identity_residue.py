@@ -23,7 +23,7 @@ names sit on the single list below.
 A conventional residue gate strips comments and looks only at live code. This
 one does not, for a reason specific to this repository: `quantlab/dataset/`
 carries an unusually high docstring density and those docstrings cross-refer
-constantly -- one docstring in `crsp.py` described the delisting TYPE-column
+constantly -- one docstring in `crsp/__init__.py` described the delisting TYPE-column
 verdict inheritance and the delisting TICKER carry side by side, in adjacent
 sentences, and that adjacency is exactly how someone deletes the wrong half.
 A comment pointing at a mechanism that no longer exists sends the next reader
@@ -56,7 +56,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "quantlab"
 
 #: Deleted in 03.11-07. Must be zero NOW.
 DELETED_IN_03_11_07: tuple[str, ...] = (
-    # crsp.py -- the identity-resolution entry point and its sidecar
+    # crsp/__init__.py -- the identity-resolution entry point and its sidecar
     "_resolve_identity",
     "symbology_report_path",
     "SYMBOLOGY_REPORT_SUFFIX",

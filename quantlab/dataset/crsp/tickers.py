@@ -70,7 +70,7 @@ half of that sentence that is load-bearing -- what would make this module
 un-importable from some layer is a quantlab dependency of its own, not a
 third-party one, and `loguru` is already imported by all three of its
 consumers (`dataset/masking.py`, `backtest/engine_vectorbt.py`,
-`base/model.py`). The one name it needs from `crsp.py` -- the suffix -- is
+`base/model.py`). The one name it needs from `crsp/__init__.py` -- the suffix -- is
 imported inside `beside_store`, because appending a string must not drag the
 whole converter (polars, xarray, the reference tier) into a display path.
 

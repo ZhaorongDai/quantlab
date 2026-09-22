@@ -1951,7 +1951,7 @@ def test_a_non_crsp_dataset_still_accepts_config_symbols(tmp_path):
 
 
 def test_crsp_has_no_reader_of_config_symbols():
-    """Nothing in `crsp.py` READS `config.symbols` any more.
+    """Nothing in `crsp/__init__.py` READS `config.symbols` any more.
 
     The refusal is only half the change. Two readers filtered on the field --
     the pinned-axis restriction and the window restriction -- and leaving

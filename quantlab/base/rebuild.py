@@ -205,7 +205,7 @@ class BaseStoreRebuilder(ABC):
 
         **Deleting the sidecars is not tidiness -- it is correctness.**
         `dataset/crsp/__init__.py:_write_identity_reports` opens with a store-exists
-        guard (crsp.py:1414): if the store is already on disk, the audit
+        guard (crsp/__init__.py:1414): if the store is already on disk, the audit
         sidecars are left untouched. That guard is right for an APPEND, whose
         reports would otherwise be replaced by numbers for a panel that was
         refused and never written. But it means a rebuild that removed only
