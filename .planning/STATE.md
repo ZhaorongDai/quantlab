@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.0
-current_phase: "03.11"
-current_phase_name: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
-status: executing
-stopped_at: Completed 03.11-14-PLAN.md
-last_updated: "2026-09-21T22:49:54.625Z"
+current_phase: 3
+current_phase_name: Factor Computation (KunQuant + Polars)
+status: planning
+stopped_at: Phase 03.11 complete, ready to plan Phase 3
+last_updated: "2026-09-22T03:09:42.847Z"
 last_activity: 2026-09-21
-last_activity_desc: Phase 03.11 execution started
-state_head: f3284bc39e82e328ef84b89b519e6a1929d4c4e9
+last_activity_desc: Phase 03.11 complete, transitioned to Phase 3
+state_head: 12a85d838694f53ef7d742070c5353a48bf53821
 progress:
   total_phases: 19
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 123
-  completed_plans: 118
+  completed_plans: 122
 milestone_name: milestone
 ---
 
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-09-15)
 
 ## Current Position
 
-Phase: 03.11 (CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)) — EXECUTING
-Plan: 2 of 18
-Status: Ready to execute
-Last activity: 2026-09-21 — Phase 03.11 execution started
+Phase: 3 — Factor Computation (KunQuant + Polars)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-21 — Phase 03.11 complete, transitioned to Phase 3
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 
@@ -41,7 +41,7 @@ Progress: [██████████] 99% (75/76 plans)
 
 **Velocity:**
 
-- Total plans completed: 42
+- Total plans completed: 60
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -54,6 +54,7 @@ Progress: [██████████] 99% (75/76 plans)
 | 03.7 | 18 | - | - |
 | 03.8 | 4 | - | - |
 | 03.9 | 8 | - | - |
+| 03.11 | 18 | - | - |
 
 **Recent Trend:**
 
@@ -384,7 +385,7 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-09-21T22:49:30.315Z
-Stopped at: Completed 03.11-14-PLAN.md
+Stopped at: Phase 03.11 complete, ready to plan Phase 3
 rebuild the Zarr stores). NOTE: quick task 260906-26o Task 3 is still an OPEN blocking human
 checkpoint (stamp legacy Tiingo watermarks) -- untouched by this task.
 Resume file: None

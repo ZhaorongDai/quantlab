@@ -249,7 +249,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 18/18 plans executed, plus 2 gap-closure plans from `03.11-UAT.md` and 5 more from
+**Plans:** 18/18 plans complete
 `03.11-VERIFICATION.md` (2026-09-21 re-verification, 88/91) + `03.11-REVIEW.md` (WR-01..WR-04,
 IN-01..IN-04):
 
