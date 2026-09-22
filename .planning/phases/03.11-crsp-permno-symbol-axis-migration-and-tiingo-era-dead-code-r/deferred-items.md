@@ -93,6 +93,54 @@ file is an untested cross-sectional z-score op.
 
 ---
 
+### CORRECTION (2026-09-22, quick task 260922-edi post-merge gate)
+
+**The "Located at" line above is too narrow. This is not one fixture's bug.**
+
+Measured today: a full-suite run that ALREADY carried
+`--ignore=tests/test_cross_sectional_zscore.py` hung for **69 minutes**, and
+`sample(1)` on it showed the SAME stack —
+
+```
+kun::MultiThreadExecutor::~MultiThreadExecutor()  (in libKunRuntime.dylib)
+  -> _pthread_join            [blocked forever]
+```
+
+so the excluded file cannot be the cause. Progress stopped at **45%**, which
+maps to collected test ~788 of 1752 — the `tests/test_factor_kunquant.py`
+region (`--collect-only` on the same command, checked afterwards).
+
+**What this changes.** The race is in KunQuant's executor teardown, reachable
+from ANY caller, not from one module-scoped fixture. `test_cross_sectional_zscore.py`
+is where it was FIRST seen, not where it lives. Ignoring that one file does not
+make a suite run safe.
+
+**A lead worth following, stated as a lead and not as a finding.** Unlike
+`test_cross_sectional_zscore.py`, which builds its own executor with an explicit
+`kr.createMultiThreadExecutor(4)`, `test_factor_kunquant.py` reaches KunQuant
+through `quantlab/base/factor.py:291` and `:337`, both of which call
+`kr.createMultiThreadExecutor(self.config.njobs)` — and `njobs` defaults to
+**128** (D-03.11-12-C, below). So the two known deadlock sites differ by a
+factor of 32 in thread count.
+
+That does NOT overturn the "Not a thread-count problem" paragraph above, which
+remains true as written: the race reproduces at 4. What it adds is that the
+128-thread path also deadlocks, so D-03.11-12-C is no longer obviously
+independent of this entry — line 116's "this is NOT the cause of D-03.11-12-B"
+was established against the 4-thread site only.
+
+**Not proven, and deliberately not claimed:** which executor instance actually
+deadlocked. The stack names the destructor, not its owner. Confirming it needs a
+run under `faulthandler` or a root-enabled `py-spy dump`, neither of which was
+available in that session.
+
+**Unrelated to the refactor that found it.** Of quick task 260922-edi's 26
+changed files, the only one under `quantlab/factor/` is `universe_filter.py`,
+whose entire diff is one docstring path string with no executable change. The
+re-run of the identical command completed in 263s.
+
+---
+
 ## D-03.11-12-C — `FactorConfig.njobs` defaults to 128
 
 **Found during:** Phase 03.11 wave-1 post-merge gate
