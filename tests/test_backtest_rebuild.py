@@ -43,6 +43,7 @@ from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, MLConfig
 from quantlab.utils.jsonable import to_jsonable
 from tests.backtest_fixtures import (
+    SYMBOLS,
     make_model,
     make_stock_dataset,
     train_checkpoint,
@@ -70,6 +71,14 @@ CV_LAST_TEST_BAR = 77
 
 #: `BaseBacktester._compare_fingerprints` starts every warning with this.
 FINGERPRINT_WARNING = "data fingerprint mismatch"
+
+#: The distinctive substring of `quantlab.base.backtest.FINGERPRINT_PARTIAL_NOTE`,
+#: the tail `_compare_fingerprints(partial=True)` appends instead of "continuing".
+#: Spelled out here rather than imported on purpose: an ImportError at module
+#: level would break collection of this whole file, and these locks must be able
+#: to go red on code that does not define the constant yet. Any future rewording
+#: of that note must keep this substring.
+PARTIAL_WARNING = "comparison is PARTIAL"
 
 
 @pytest.fixture(autouse=True)
@@ -164,6 +173,48 @@ def _assert_same_run_artifacts(first_dir: Path, second_dir: Path) -> None:
 
 def _fingerprint_warnings(messages: list[str]) -> list[str]:
     return [m for m in messages if FINGERPRINT_WARNING in m]
+
+
+def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
+    """The run_cv setup: a CV-sized store, a `train_cv` project, and a backtester over it.
+
+    Writes `CV_N_BARS` bars, trains one `train_cv` project (asserting it wrote
+    exactly one `cv_folds.json`), and returns a backtester pointed at that
+    project over the `CV_FIRST_TEST_BAR..CV_LAST_TEST_BAR` window. Shared by the
+    rebuild lock and the failure-path lock so neither duplicates the setup.
+    """
+    dataset_config = write_price_store(tmp_path / "store", n_bars=CV_N_BARS)
+    model_dates = dict(
+        start_date=_day(CV_BARS[0]),
+        end_date=_day(CV_BARS[CV_N_BARS - 1]),
+        train_start=_day(CV_BARS[0]),
+        train_end=_day(CV_BARS[CV_TRAIN_PERIODS - 1]),
+        test_start=_day(CV_BARS[CV_TRAIN_PERIODS]),
+        test_end=_day(CV_BARS[CV_N_BARS - 1]),
+    )
+    trainer = make_model(tmp_path / "train", dataset_config, **model_dates)
+    trainer.collect()
+    trainer.train_cv(train_periods=CV_TRAIN_PERIODS, gap_periods=0)
+    manifests = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
+    assert len(manifests) == 1, manifests
+
+    return USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(dataset_config),
+            model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
+            model_mode="load",
+            cv_project_dir=str(manifests[0].parent),
+            start_date=_day(CV_BARS[CV_FIRST_TEST_BAR]),
+            end_date=_day(CV_BARS[CV_LAST_TEST_BAR]),
+            output_dir=str(tmp_path / "runs"),
+            rebalance_periods=REBALANCE_PERIODS,
+            direction="long_only",
+            top_n=TOP_N,
+            fees=0.0,
+            slippage=0.0,
+            init_cash=INIT_CASH,
+        )
+    )
 
 
 # --------------------------------------------------------------------------
@@ -464,38 +515,7 @@ def test_train_mode_run_records_its_checkpoint_and_replays_it_in_load_mode(tmp_p
 
 
 def test_run_cv_rebuild_reproduces_the_stitched_curve(tmp_path, warning_messages):
-    dataset_config = write_price_store(tmp_path / "store", n_bars=CV_N_BARS)
-    model_dates = dict(
-        start_date=_day(CV_BARS[0]),
-        end_date=_day(CV_BARS[CV_N_BARS - 1]),
-        train_start=_day(CV_BARS[0]),
-        train_end=_day(CV_BARS[CV_TRAIN_PERIODS - 1]),
-        test_start=_day(CV_BARS[CV_TRAIN_PERIODS]),
-        test_end=_day(CV_BARS[CV_N_BARS - 1]),
-    )
-    trainer = make_model(tmp_path / "train", dataset_config, **model_dates)
-    trainer.collect()
-    trainer.train_cv(train_periods=CV_TRAIN_PERIODS, gap_periods=0)
-    manifests = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
-    assert len(manifests) == 1, manifests
-
-    original = USEquityCrossectionSelectStockVectorBt(
-        CrossSectionBacktestConfig(
-            price_dataset=make_stock_dataset(dataset_config),
-            model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
-            model_mode="load",
-            cv_project_dir=str(manifests[0].parent),
-            start_date=_day(CV_BARS[CV_FIRST_TEST_BAR]),
-            end_date=_day(CV_BARS[CV_LAST_TEST_BAR]),
-            output_dir=str(tmp_path / "runs"),
-            rebalance_periods=REBALANCE_PERIODS,
-            direction="long_only",
-            top_n=TOP_N,
-            fees=0.0,
-            slippage=0.0,
-            init_cash=INIT_CASH,
-        )
-    )
+    original = _cv_original(tmp_path)
     first = original.run_cv()
 
     rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
@@ -533,3 +553,144 @@ def test_changed_store_rebuild_warns_and_completes(tmp_path, warning_messages):
     assert second.run_dir.is_dir()
     mismatches = _fingerprint_warnings(warning_messages)
     assert any("'price_dataset'" in m for m in mismatches), warning_messages
+
+
+# --------------------------------------------------------------------------
+# Task 3: a failed run still reports the changed data (D-03.11-UAT-A)
+# --------------------------------------------------------------------------
+
+
+def _boom(*_args, **_kwargs):
+    """Stands in for any real post-fingerprint failure inside the backtest window.
+
+    For example a ticker-era checkpoint predicted against a PERMNO panel, or
+    "the feature panel lacks N of the symbols this model was trained on".
+    """
+    raise ValueError("predict_panel: representative downstream failure")
+
+
+def test_a_raise_inside_the_window_still_reports_the_changed_data(
+    tmp_path, warning_messages, monkeypatch
+):
+    """A run that dies inside `_backtest_window` still says the data changed (D-03.11-UAT-A).
+
+    Control arm: without any raise, the two fingerprint mismatches are reported
+    exactly as they are today — same count, same trailing text, no partial
+    marker. That arm proves the mismatch is detectable at all and that the happy
+    path gained no extra or reworded warning.
+
+    Probe arm: `predict_panel` raises after `_redate_factors` has already
+    recorded the factor fingerprint and before the price fingerprint exists. The
+    factor mismatch must be reported, marked partial, and the original
+    `ValueError` must be what propagates.
+    """
+    dataset_config, checkpoint = _trained(tmp_path)
+    first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+    saved = _read_run_config(first.run_dir)
+
+    # A real data change at the same path `_trained` wrote: one symbol
+    # disappears, so the factor and the price fingerprint both differ
+    # (digest + n_symbols).
+    write_price_store(tmp_path / "store", symbols=SYMBOLS[:-1], n_bars=N_BARS)
+
+    # --- control: no raise, the mismatch is reported exactly as today --------
+    warning_messages.clear()
+    module_utils.load_backtester_from_config(saved).run()
+
+    control = _fingerprint_warnings(warning_messages)
+    assert len(control) == 2, control
+    assert any("'factor[0]:PastReturnFactor'" in m for m in control), control
+    assert any("'price_dataset'" in m for m in control), control
+    assert all(m.endswith("(D-27); continuing") for m in control), control
+    assert all(PARTIAL_WARNING not in m for m in control), control
+
+    # --- probe: a raise inside the window, after a fingerprint exists --------
+    warning_messages.clear()
+    rebuilt = module_utils.load_backtester_from_config(saved)
+    monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
+
+    with pytest.raises(ValueError, match="representative downstream failure"):
+        rebuilt.run()
+
+    # The price fingerprint does not exist yet at raise time.
+    assert sorted(rebuilt._fingerprints) == ["factor[0]:PastReturnFactor"]
+    probe = _fingerprint_warnings(warning_messages)
+    assert len(probe) == 1, probe
+    assert "'factor[0]:PastReturnFactor'" in probe[0], probe
+    assert "n_symbols: expected 6, got 5" in probe[0], probe
+    assert PARTIAL_WARNING in probe[0], probe
+    # `price_dataset` was not read YET, not "not read": warning about it would
+    # be a false alarm invented by the fix.
+    assert all("not read by this run" not in m for m in warning_messages), (
+        warning_messages
+    )
+
+
+def test_a_failing_partial_diagnostic_never_replaces_the_real_exception(
+    tmp_path, warning_messages, monkeypatch
+):
+    """A broken diagnostic cannot become the exception the caller sees (D-03.11-UAT-A).
+
+    The failure-path guard swallows whatever the diagnostic raises, but it does
+    not hide it: the broken diagnostic is reported as its own warning, and the
+    original `ValueError` propagates unchanged.
+    """
+    dataset_config, checkpoint = _trained(tmp_path)
+    first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+    saved = _read_run_config(first.run_dir)
+    write_price_store(tmp_path / "store", symbols=SYMBOLS[:-1], n_bars=N_BARS)
+
+    warning_messages.clear()
+    rebuilt = module_utils.load_backtester_from_config(saved)
+    monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
+
+    def broken_diagnostic(*_args, **_kwargs):
+        raise RuntimeError("the diagnostic itself is broken")
+
+    monkeypatch.setattr(rebuilt, "_compare_fingerprints", broken_diagnostic)
+
+    with pytest.raises(ValueError, match="representative downstream failure") as excinfo:
+        rebuilt.run()
+
+    assert "the diagnostic itself is broken" not in repr(excinfo.value)
+    reported = [
+        m
+        for m in warning_messages
+        if "diagnostic" in m and m not in _fingerprint_warnings(warning_messages)
+    ]
+    assert reported, warning_messages
+    assert any("the diagnostic itself is broken" in m for m in reported), reported
+
+
+def test_run_cv_reports_a_partial_comparison_when_a_fold_raises(
+    tmp_path, warning_messages, monkeypatch
+):
+    """`run_cv` carries the same failure-path diagnostic (D-03.11-UAT-A).
+
+    What this test does NOT claim: that the store changed. It did not. The
+    fold-0 window is narrower than the stitched window the expected fingerprint
+    describes, so the differing fields are `end` / `n_timestamps` / `digest` by
+    construction, not because any data moved. What is locked is that the
+    diagnostic RUNS on the failure path, that every warning it emits is marked
+    partial, and that the original exception propagates. That range caveat is
+    exactly why the partial marker exists.
+    """
+    original = _cv_original(tmp_path)
+    first = original.run_cv()
+    # The probe depends on the fold window being narrower than the stitched one.
+    assert len(first.folds) > 1
+
+    rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
+    monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
+    warning_messages.clear()
+
+    with pytest.raises(ValueError, match="representative downstream failure"):
+        rebuilt.run_cv()
+
+    partial = _fingerprint_warnings(warning_messages)
+    assert partial, warning_messages
+    assert all(PARTIAL_WARNING in m for m in partial), partial
+    assert any("'factor[0]:PastReturnFactor'" in m for m in partial), partial
+    assert all("not read by this run" not in m for m in warning_messages), (
+        warning_messages
+    )
