@@ -44,7 +44,7 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
     import quantlab.config as config
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
     from quantlab.base.config import NbboDatasetConfig
     from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.nbbo import NbboPanelDataset
@@ -174,7 +174,7 @@ def _acquire(tmp_path, rows: dict, *, symbols=("AAPL",)):
     import quantlab.config as config
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
     from tests.wrds_fixtures import FakeWrdsSession
 
     days = sorted({day for day, _ in rows})

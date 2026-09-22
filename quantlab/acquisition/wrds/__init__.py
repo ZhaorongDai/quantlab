@@ -7,29 +7,50 @@ different tables, different entitlements and different acquisition classes. The
 registry's D-01 rule is ONE descriptor per VENDOR, so all of that is one
 descriptor here, with the differences expressed as `Capability` rows.
 
-**Why the descriptor lives in this neutral module rather than beside a provider
-class, which is where every other vendor's descriptor sits (03.4 D-05).**
-Tiingo and Alpaca each have exactly one acquisition class, so "beside the class"
-and "beside the vendor" are the same place. WRDS has several. A registration
-written inside `wrds_taq.py` would have to name `wrds_crsp`'s classes to
-declare the CRSP capability, so `wrds_taq` would import `wrds_crsp` (or the
-reverse) purely in order to be registered -- and since the registering module
-also imports the registry, which imports the vendor modules, importing either
-provider first would close the loop.
+**Why the descriptor lives in the package entry point rather than beside a
+provider class, which is where every other vendor's descriptor sits (03.4
+D-05).** Tiingo and Alpaca each have exactly one acquisition class, so "beside
+the class" and "beside the vendor" are the same place. WRDS has several. A
+registration written inside one provider submodule would still have to name a
+sibling submodule's classes to declare the other capability -- being siblings
+in one package changes nothing about that. So the descriptor sits one level up,
+in this `__init__`, which imports the provider submodules; they import neither
+the registry nor this descriptor.
 
-Putting the descriptor one level up breaks it by construction: the providers
-import each other not at all, this module imports both, and
-`quantlab/acquisition/registry.py`'s bottom vendor import names THIS module. No
-import order can cycle, which `tests/test_wrds_vendor_seam.py` asserts in a
-fresh interpreter for both orders.
+**No import order cycles, and here is why.** `quantlab/acquisition/registry.py`
+binds this package as a MODULE OBJECT at its bottom
+(`from quantlab.acquisition import wrds as _wrds`), never an attribute off it,
+and `from package import submodule` is safe while the package is only partially
+initialised. Measured in three fresh interpreters with the editable-install
+finder removed -- `quantlab.acquisition.wrds.taq` first,
+`quantlab.acquisition.wrds` first, `quantlab.acquisition.registry` first -- all
+three print `['alpaca', 'tiingo', 'wrds']` with no traceback.
+`tests/test_wrds_vendor_seam.py` now pins all three orders permanently.
 
-The providers therefore stay free of the registry, and the shared
-`WrdsSession` offers provider-neutral `schema_usable` / `fetch_rows` /
-`copy_csv` so a second product needs no new plumbing -- only a `Capability`
+**What packaging these modules traded away, plainly.** Importing ANY WRDS
+provider now runs this `__init__`, so it loads the registry,
+`quantlab.dataset.crsp` and `quantlab.dataset.nbbo`. Before the providers were
+packaged it did not: importing a provider pulled in 1457 modules and left both
+`quantlab.acquisition.registry` and `quantlab.dataset.crsp` absent from
+`sys.modules`; it now pulls in 1600 (0.87s -> 0.85s, so the module count moved
+and the wall time did not). "The providers stay free of the registry" is
+therefore a SOURCE-TEXT rule from here on, enforced by the `ast` scan in
+`tests/test_wrds_vendor_seam.py`, not a runtime fact you can observe in
+`sys.modules`. It is still worth enforcing: it is what keeps a registration
+from drifting back into a provider.
+
+And the older claim that the providers "import each other not at all" was
+already false before the packaging: the CRSP provider reaches the shared
+session through the TAQ module's attribute (`_wrds.WrdsSession`, read at call
+time). The real rule, and the narrow one the tests enforce, is that no provider
+imports the registry or this descriptor.
+
+The shared `WrdsSession` offers provider-neutral `schema_usable` / `fetch_rows`
+/ `copy_csv` so a second product needs no new plumbing -- only a `Capability`
 row naming its own `acquisition_cls` and `config_factory`.
 """
 
-from quantlab.acquisition import wrds_crsp, wrds_taq
+from quantlab.acquisition.wrds import crsp, taq
 from quantlab.acquisition.registry import (
     Capability,
     SourceDescriptor,
@@ -57,8 +78,8 @@ WRDS_SOURCE = register_source(
     SourceDescriptor(
         vendor="wrds",
         display_name="WRDS (NYSE TAQ millisecond NBBO; CRSP Stock v2 daily)",
-        acquisition_cls=wrds_taq.WrdsTaqNbboAcquisition,
-        config_factory=wrds_taq.WrdsTaqNbboAcquisition.build_config,
+        acquisition_cls=taq.WrdsTaqNbboAcquisition,
+        config_factory=taq.WrdsTaqNbboAcquisition.build_config,
         capabilities=(
             Capability(
                 market="us_equity",
@@ -67,8 +88,8 @@ WRDS_SOURCE = register_source(
                 dataset_cls=NbboPanelDataset,
                 earliest_available="2003-09-10",
                 entitlement="WRDS NYSE TAQ millisecond subscription",
-                acquisition_cls=wrds_taq.WrdsTaqNbboAcquisition,
-                config_factory=wrds_taq.WrdsTaqNbboAcquisition.build_config,
+                acquisition_cls=taq.WrdsTaqNbboAcquisition,
+                config_factory=taq.WrdsTaqNbboAcquisition.build_config,
             ),
             #: CRSP Stock v2 daily (03.10). A SECOND acquisition class and a
             #: SECOND config factory under the SAME vendor -- which is the
@@ -89,8 +110,8 @@ WRDS_SOURCE = register_source(
                 entitlement=(
                     "WRDS CRSP annual-update Stock v2 (crsp_a_stock)"
                 ),
-                acquisition_cls=wrds_crsp.WrdsCrspDailyAcquisition,
-                config_factory=wrds_crsp.WrdsCrspDailyAcquisition.build_config,
+                acquisition_cls=crsp.WrdsCrspDailyAcquisition,
+                config_factory=crsp.WrdsCrspDailyAcquisition.build_config,
             ),
         ),
         #: A LITERAL, restated rather than derived from `CREDENTIAL_ENV_VARS`

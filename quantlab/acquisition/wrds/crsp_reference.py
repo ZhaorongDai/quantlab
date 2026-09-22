@@ -52,7 +52,7 @@ import polars as pl
 from loguru import logger
 from psycopg2 import sql
 
-from quantlab.acquisition.wrds_crsp import CrspQueries
+from quantlab.acquisition.wrds.crsp import CrspQueries
 from quantlab.dataset.crsp_reference import (
     MANIFEST_NAME,
     REFERENCE_TABLES_BY_NAME,

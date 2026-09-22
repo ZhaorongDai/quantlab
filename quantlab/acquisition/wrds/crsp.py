@@ -28,17 +28,23 @@ CONTEXT D-19):
   unless `kwargs["clip_to_product_end"]` is set.
 
 **The session is reached through the MODULE ATTRIBUTE** (RESEARCH Pattern 1).
-This module does `from quantlab.acquisition import wrds_taq as _wrds` and calls
-`_wrds.WrdsSession.shared()` at call time; it imports NO name from `wrds_taq`.
-`tests/conftest.py` patches `"quantlab.acquisition.wrds_taq.WrdsSession"`, and
+This module does `from quantlab.acquisition.wrds import taq as _wrds` and calls
+`_wrds.WrdsSession.shared()` at call time; it imports NO name from the `taq`
+sibling.
+`tests/conftest.py` patches `"quantlab.acquisition.wrds.taq.WrdsSession"`, and
 a by-name binding would capture the real class at import time and escape the
 patch -- in the dangerous direction, because a real run would still work while
 only the test suite failed. `tests/test_crsp_tracer.py` asserts the rule with
 an `ast` scan of this file.
 
-**This module REGISTERS NOTHING**, for the same reason `wrds_taq.py` does not:
-the one `wrds` descriptor lives in the neutral `quantlab/acquisition/wrds.py`,
-which imports both providers (03.10 D-12, plan 01).
+**This module REGISTERS NOTHING**, for the same reason `wrds/taq.py` does not:
+the one `wrds` descriptor lives in the package entry point,
+`quantlab/acquisition/wrds/__init__.py`, which imports both provider submodules
+(03.10 D-12, plan 01). The rule is source-text, not runtime: since the
+providers became submodules of that package, importing either one runs the
+entry point and so loads the registry -- what stays true, and what
+`tests/test_wrds_vendor_seam.py` enforces, is that no provider's SOURCE names
+the registry or the descriptor.
 """
 
 from __future__ import annotations
@@ -54,7 +60,7 @@ import psycopg2
 from loguru import logger
 from psycopg2 import sql
 
-from quantlab.acquisition import wrds_taq as _wrds
+from quantlab.acquisition.wrds import taq as _wrds
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
@@ -454,7 +460,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
                 f"to your phone and the WRDS role allows only 7."
             )
         # Through the MODULE ATTRIBUTE at call time, so the test fixture's
-        # patch of `wrds_taq.WrdsSession` takes effect (RESEARCH Pattern 1).
+        # patch of `wrds.taq.WrdsSession` takes effect (RESEARCH Pattern 1).
         self._session = _wrds.WrdsSession.shared()
         self._server_columns_cache: dict[tuple[str, str], tuple[str, ...]] = {}
 

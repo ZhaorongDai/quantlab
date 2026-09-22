@@ -120,7 +120,7 @@ def _pull(
     Production's own path: `run_crsp_pull` goes through the registry, and
     `write_reference_tables` writes the shape plan 04's real writer produces.
     """
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from tests.crsp_fixtures import (
         FakeCrspSession,
         run_crsp_pull,

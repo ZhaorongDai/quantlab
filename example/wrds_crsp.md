@@ -1,9 +1,9 @@
 # WRDS CRSP Stock v2 日频：从 PERMNO 原始行到可直接替换 Tiingo 的面板
 
-> 代码位置：采集 `quantlab/acquisition/wrds_crsp.py`（`CrspQueries`、`WrdsCrspDailyAcquisition`、
+> 代码位置：采集 `quantlab/acquisition/wrds/crsp.py`（`CrspQueries`、`WrdsCrspDailyAcquisition`、
 > `CrspVolumeProbe`、`CrspProductEndError`、`CrspVintageError`），参考表采集
-> `quantlab/acquisition/wrds_crsp_reference.py:CrspReferenceTables`，
-> 数据源描述符 `quantlab/acquisition/wrds.py`，体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
+> `quantlab/acquisition/wrds/crsp_reference.py:CrspReferenceTables`，
+> 数据源描述符 `quantlab/acquisition/wrds/__init__.py`，体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
 > 参考表读取 `quantlab/dataset/crsp_reference.py`，
 > PERMNO → ticker 区间表 `quantlab/dataset/crsp_symbology.py:CrspSymbology`
 > （**它现在只喂 ticker 旁车，不再决定面板的列叫什么**）与旁车读侧
@@ -110,7 +110,7 @@ ticker 是会被回收的。如果面板的 `symbol` 轴上「ABC」这一列前
 **这两种故障在 PERMNO 轴上都不是「被防住了」，而是不可拼写。** 一列换东家需要
 `symbol` 列能改指一家公司，而 PERMNO 列永远不会；同日撞车需要两个 PERMNO 落进同一个
 `(date, symbol)` 格子，而原始层本身就断言 `(permno, dlycaldt)` 唯一
-（`quantlab/acquisition/wrds_crsp.py`）。所以 phase 03.11-07 把为这两件事而生的机制
+（`quantlab/acquisition/wrds/crsp.py`）。所以 phase 03.11-07 把为这两件事而生的机制
 **整套删掉**，而不是留成永远只会说「没发生」的守卫：
 
 | 曾经的机制 | 它防的是什么 | 现状 |

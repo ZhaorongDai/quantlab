@@ -555,7 +555,7 @@ class CrspStockDataset(StockDataset):
             reference.table("stksecurityinfohist")
         )
         # The panel's `symbol` IS the PERMNO (D-01), and the raw frame's
-        # `symbol` column ALREADY holds it -- `wrds_crsp.py:317-319` verbatim:
+        # `symbol` column ALREADY holds it -- `wrds/crsp.py:317-319` verbatim:
         # "Raw `symbol` is the PERMNO as a string, and a typed `permno` Int64
         # column rides along." So the panel's identity axis is reached by a
         # CAST of the column the raw tier already wrote, not by dropping it and
@@ -658,7 +658,7 @@ class CrspStockDataset(StockDataset):
         # (D-01). Both things the deleted one existed for are unspellable on a
         # PERMNO axis: a same-day collision needs two PERMNOs in one
         # `(date, symbol)` cell, and the raw tier already asserts
-        # `(permno, dlycaldt)` uniqueness (`wrds_crsp.py:818-840`); a seam needs
+        # `(permno, dlycaldt)` uniqueness (`wrds/crsp.py:818-840`); a seam needs
         # a symbol column to change company, and a PERMNO column never does.
         return self._finalise(derived)
 
@@ -1755,7 +1755,7 @@ class CrspStockDataset(StockDataset):
 
         **A BACKSTOP, not the mechanism.** `symbol` IS the PERMNO here (D-01),
         so this pair is `(dlycaldt, permno)` under two other names, and
-        `WrdsCrspAcquisition._assert_unique_keys` (`wrds_crsp.py:818-840`)
+        `WrdsCrspAcquisition._assert_unique_keys` (`wrds/crsp.py:818-840`)
         already refuses any raw page that duplicates it. A duplicate reaching
         this point therefore means something between the raw tier and here
         MULTIPLIED rows -- a join that fanned out, a window read twice -- not
@@ -1786,7 +1786,7 @@ class CrspStockDataset(StockDataset):
                 f"(permno, dlycaldt) key -- the raw tier asserts that pair is "
                 f"unique on every page it fetches "
                 f"(WrdsCrspAcquisition._assert_unique_keys, "
-                f"wrds_crsp.py:818-840), so these rows were multiplied AFTER "
+                f"wrds/crsp.py:818-840), so these rows were multiplied AFTER "
                 f"acquisition, not confused between two securities. Refusing "
                 f"rather than collapsing them into one series. Inspect the raw "
                 f"parquet for these (permno, date) pairs; if the raw tier is "

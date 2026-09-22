@@ -2,7 +2,7 @@
 
 `quantlab/dataset/crsp_reference.py` declares WHICH tables the phase reads and
 READS them back; this suite is about the other half --
-`quantlab/acquisition/wrds_crsp_reference.py:CrspReferenceTables`, which PUTS
+`quantlab/acquisition/wrds/crsp_reference.py:CrspReferenceTables`, which PUTS
 them on disk. What is asserted here, and why each assertion exists:
 
 1. **The four stock/S&P tables land complete and typed**, in `_reference/`, a
@@ -25,7 +25,7 @@ them on disk. What is asserted here, and why each assertion exists:
    S&P-only pull never probes `comp` or `crsp_a_ccm` at all.
 
 Every `quantlab` import is INSIDE a test body or a fixture body. That is not
-style: this suite is written before `wrds_crsp_reference.py` exists, and a
+style: this suite is written before `wrds/crsp_reference.py` exists, and a
 module-scope import would turn the RED run into a collection error -- zero
 tests discovered, which proves nothing about the behaviour (TDD gate #3770).
 
@@ -136,7 +136,7 @@ def dirs(tmp_path) -> tuple[Path, Path]:
     the "nothing under the raw root" assertions are about the real layout.
     """
     import quantlab.config as config
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
 
     config.set_data_root(tmp_path)
     cfg = WrdsCrspDailyAcquisition.build_config(
@@ -150,7 +150,7 @@ def dirs(tmp_path) -> tuple[Path, Path]:
 
 def _tables(session, reference_dir):
     """The subject under test, imported INSIDE the body (see module docstring)."""
-    from quantlab.acquisition.wrds_crsp_reference import CrspReferenceTables
+    from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
 
     return CrspReferenceTables(session, reference_dir)
 
@@ -378,7 +378,7 @@ def test_a_table_over_the_ceiling_is_refused_before_its_copy(
     mis-typed table name and an unbounded download is this ceiling; it has to
     act on the count, not on the bytes already streaming (T-03.10-14).
     """
-    from quantlab.acquisition.wrds_crsp_reference import CrspReferenceTables
+    from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
 
     reference_dir, _ = dirs
     monkeypatch.setattr(CrspReferenceTables, "MAX_REFERENCE_ROWS", 2)
@@ -548,7 +548,7 @@ def test_a_nasdaq100_pull_without_entitlement_names_comp_and_ccm_before_any_copy
     needs to know what to ask WRDS for, and finding out one subscription at a
     time costs a round trip and a Duo prompt each.
     """
-    from quantlab.acquisition.wrds_taq import WrdsEntitlementError
+    from quantlab.acquisition.wrds.taq import WrdsEntitlementError
 
     reference_dir, _ = dirs
     FakeCrspSession.usable_schemas = {"crsp_a_stock", "crsp_a_indexes"}

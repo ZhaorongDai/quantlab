@@ -50,7 +50,7 @@ import pytest
 
 import quantlab.acquisition.alpaca as alpaca
 import quantlab.acquisition.tiingo as tiingo
-import quantlab.acquisition.wrds_taq as wrds_taq
+import quantlab.acquisition.wrds.taq as wrds_taq
 
 
 def test_the_acquisition_config_fixture_serves_both_vendors_with_a_terminated_raw_root(
@@ -427,7 +427,7 @@ def test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities() -> None:
     share `(us_equity, tick)` with the NBBO one: a registry that matched on
     the pair alone would hand an Alpaca quotes request a WRDS NBBO class.
     """
-    from quantlab.acquisition import wrds_crsp
+    from quantlab.acquisition.wrds import crsp
     from quantlab.acquisition.registry import DataSourceRegistry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.dataset.crsp import CrspStockDataset
@@ -444,15 +444,15 @@ def test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities() -> None:
         (c.market, c.frequency, c.data_type): c for c in source.capabilities
     }
     nbbo = by_key[("us_equity", "tick", "nbbo")]
-    crsp = by_key[("us_equity", "1d", "crsp_daily")]
+    crsp_cap = by_key[("us_equity", "1d", "crsp_daily")]
 
     assert nbbo.dataset_cls is NbboPanelDataset
-    assert crsp.dataset_cls is CrspStockDataset
+    assert crsp_cap.dataset_cls is CrspStockDataset
 
     assert nbbo.acquisition_cls is wrds_taq.WrdsTaqNbboAcquisition
     assert nbbo.config_factory == wrds_taq.WrdsTaqNbboAcquisition.build_config
-    assert crsp.acquisition_cls is wrds_crsp.WrdsCrspDailyAcquisition
-    assert crsp.config_factory == wrds_crsp.WrdsCrspDailyAcquisition.build_config
+    assert crsp_cap.acquisition_cls is crsp.WrdsCrspDailyAcquisition
+    assert crsp_cap.config_factory == crsp.WrdsCrspDailyAcquisition.build_config
 
     # Resolved through the PUBLIC resolvers, per triple, not read off the row:
     # that is the path `registry.run()` takes.
@@ -466,11 +466,11 @@ def test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities() -> None:
     )
     assert (
         source.acquisition_cls_for("us_equity", "1d", "crsp_daily")
-        is wrds_crsp.WrdsCrspDailyAcquisition
+        is crsp.WrdsCrspDailyAcquisition
     )
     assert (
         source.config_factory_for("us_equity", "1d", "crsp_daily")
-        == wrds_crsp.WrdsCrspDailyAcquisition.build_config
+        == crsp.WrdsCrspDailyAcquisition.build_config
     )
 
     # The DESCRIPTOR default is unchanged (the `add-alongside` decision).

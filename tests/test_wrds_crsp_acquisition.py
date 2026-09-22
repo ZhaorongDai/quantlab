@@ -47,7 +47,7 @@ import psycopg2
 import pytest
 from loguru import logger
 
-from quantlab.acquisition import wrds_crsp, wrds_taq
+from quantlab.acquisition.wrds import crsp, taq
 from tests.crsp_fixtures import (
     DSF_V2_SERVER_COLUMNS,
     FakeCrspSession,
@@ -83,7 +83,7 @@ def _config(tmp_path, permnos, start_date, end_date, kwargs=None):
     import quantlab.config as config
 
     config.set_data_root(Path(tmp_path))
-    return wrds_crsp.WrdsCrspDailyAcquisition.build_config(
+    return crsp.WrdsCrspDailyAcquisition.build_config(
         symbols=tuple(str(permno) for permno in permnos),
         start_date=start_date,
         end_date=end_date,
@@ -92,7 +92,7 @@ def _config(tmp_path, permnos, start_date, end_date, kwargs=None):
 
 
 def _acquisition(tmp_path, permnos, start_date, end_date, kwargs=None):
-    return wrds_crsp.WrdsCrspDailyAcquisition(
+    return crsp.WrdsCrspDailyAcquisition(
         _config(tmp_path, permnos, start_date, end_date, kwargs)
     )
 
@@ -146,7 +146,7 @@ def test_resolve_window_inside_the_product_end_is_returned_unchanged(
 ):
     session = FakeCrspSession.shared()
 
-    assert wrds_crsp.WrdsCrspDailyAcquisition.resolve_window(
+    assert crsp.WrdsCrspDailyAcquisition.resolve_window(
         session, "2024-01-01", "2025-06-30", clip=False
     ) == (date(2024, 1, 1), date(2025, 6, 30), None)
 
@@ -156,8 +156,8 @@ def test_resolve_window_past_the_product_end_refuses_without_the_clip_knob(
 ):
     session = FakeCrspSession.shared()
 
-    with pytest.raises(wrds_crsp.CrspProductEndError) as excinfo:
-        wrds_crsp.WrdsCrspDailyAcquisition.resolve_window(
+    with pytest.raises(crsp.CrspProductEndError) as excinfo:
+        crsp.WrdsCrspDailyAcquisition.resolve_window(
             session, "2024-01-01", "2026-06-30", clip=False
         )
 
@@ -171,7 +171,7 @@ def test_resolve_window_with_clip_lowers_the_end_to_the_product_end(
 ):
     session = FakeCrspSession.shared()
 
-    assert wrds_crsp.WrdsCrspDailyAcquisition.resolve_window(
+    assert crsp.WrdsCrspDailyAcquisition.resolve_window(
         session, "2024-01-01", "2026-06-30", clip=True
     ) == (date(2024, 1, 1), date(2025, 12, 31), date(2025, 12, 31))
 
@@ -183,8 +183,8 @@ def test_resolve_window_start_past_the_product_end_refuses_even_with_clip(
     range, which reads exactly like a roster with no members."""
     session = FakeCrspSession.shared()
 
-    with pytest.raises(wrds_crsp.CrspProductEndError) as excinfo:
-        wrds_crsp.WrdsCrspDailyAcquisition.resolve_window(
+    with pytest.raises(crsp.CrspProductEndError) as excinfo:
+        crsp.WrdsCrspDailyAcquisition.resolve_window(
             session, "2026-01-05", "2026-06-30", clip=True
         )
 
@@ -199,7 +199,7 @@ def test_a_download_past_the_product_end_issues_no_query_at_all(
 ):
     acq = _acquisition(tmp_path, [AAPL], "2025-06-01", "2026-06-30")
 
-    with pytest.raises(wrds_crsp.CrspProductEndError):
+    with pytest.raises(crsp.CrspProductEndError):
         acq.download()
 
     assert FakeCrspSession.crsp_copy_calls == [], FakeCrspSession.crsp_copy_calls
@@ -238,7 +238,7 @@ def test_entitlement_is_checked_before_the_product_end_probe(
     FakeCrspSession.usable_schemas = set()
     acq = _acquisition(tmp_path, [AAPL], "2020-08-01", "2020-08-31")
 
-    with pytest.raises(wrds_taq.WrdsEntitlementError) as excinfo:
+    with pytest.raises(taq.WrdsEntitlementError) as excinfo:
         acq.download()
 
     assert "crsp_a_stock" in str(excinfo.value)
@@ -264,7 +264,7 @@ def test_the_first_run_stamps_the_vintage_beside_the_raw_and_watermark_roots(
     cfg, result = run_crsp_pull(tmp_path, [AAPL], "2020-08-01", "2020-08-31")
     assert result.failures == {}, result.failures
 
-    stamp = wrds_crsp.WrdsCrspDailyAcquisition.vintage_path_for(cfg)
+    stamp = crsp.WrdsCrspDailyAcquisition.vintage_path_for(cfg)
     assert stamp == Path(cfg.raw_data_dir_path).parent / "_vintage" / "wrds.json"
     assert json.loads(stamp.read_text()) == {"product_end": "2025-12-31"}
 
@@ -280,7 +280,7 @@ def test_a_second_vintage_over_one_raw_tier_is_refused_before_any_copy(
     FakeCrspSession.crsp_copy_calls = []
     FakeCrspSession.product_end = date(2026, 12, 31)
 
-    with pytest.raises(wrds_crsp.CrspVintageError) as excinfo:
+    with pytest.raises(crsp.CrspVintageError) as excinfo:
         run_crsp_pull(tmp_path, [AAPL], "2020-08-01", "2020-08-31")
 
     message = str(excinfo.value)
@@ -310,7 +310,7 @@ def test_a_session_error_aborts_the_run_and_the_next_run_repeats_that_page(
     failure manifest stays empty and the next run re-issues the same page."""
     FakeCrspSession.daily_rows = scenario_rows()
     FakeCrspSession.raise_on_copy = {
-        0: wrds_taq.WrdsSessionError("the WRDS session failed")
+        0: taq.WrdsSessionError("the WRDS session failed")
     }
 
     _, result = run_crsp_pull(tmp_path, [AAPL], "2019-01-01", "2020-12-31")
@@ -338,7 +338,7 @@ def test_a_real_session_driver_error_is_scrubbed_of_the_username(
     test is the evidence that `CrspQueries.product_end` goes through the
     scrubbing path.
     """
-    from quantlab.acquisition.wrds_taq import WrdsSession, WrdsSessionError
+    from quantlab.acquisition.wrds.taq import WrdsSession, WrdsSessionError
 
     monkeypatch.setenv("WRDS_USERNAME", USER)
     for name in ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"):
@@ -361,7 +361,7 @@ def test_a_real_session_driver_error_is_scrubbed_of_the_username(
             f"FATAL: role {USER} is not permitted to log in"
         )
         with pytest.raises(WrdsSessionError) as excinfo:
-            wrds_crsp.CrspQueries.product_end(session)
+            crsp.CrspQueries.product_end(session)
     finally:
         WrdsSession.close_shared()
 
@@ -377,15 +377,15 @@ def test_year_pages_clips_each_calendar_year_to_the_window():
     """The ONE definition of a page's bounds, shared by the acquisition and
     the volume probe -- so the rows the operator is quoted are the rows the
     pull will move."""
-    assert wrds_crsp.year_pages(date(2018, 6, 1), date(2020, 3, 31)) == [
+    assert crsp.year_pages(date(2018, 6, 1), date(2020, 3, 31)) == [
         (date(2018, 6, 1), date(2018, 12, 31)),
         (date(2019, 1, 1), date(2019, 12, 31)),
         (date(2020, 1, 1), date(2020, 3, 31)),
     ]
-    assert wrds_crsp.year_pages(date(2020, 3, 1), date(2020, 3, 31)) == [
+    assert crsp.year_pages(date(2020, 3, 1), date(2020, 3, 31)) == [
         (date(2020, 3, 1), date(2020, 3, 31))
     ]
-    assert wrds_crsp.year_pages(date(2020, 3, 31), date(2020, 3, 1)) == []
+    assert crsp.year_pages(date(2020, 3, 31), date(2020, 3, 1)) == []
 
 
 def test_the_window_is_paged_one_calendar_year_at_a_time_in_order(
@@ -410,7 +410,7 @@ def test_every_page_lands_the_pinned_schema_and_leaves_a_null_return_null(
     """The SELECT is pinned, so every shard of every era carries the same 50
     columns with the same dtypes -- and an absent `dlyret` stays NULL rather
     than becoming a 0% return, which would be a silently wrong number."""
-    acq_cls = wrds_crsp.WrdsCrspDailyAcquisition
+    acq_cls = crsp.WrdsCrspDailyAcquisition
     rows = scenario_rows(permnos=(AAPL,), years=(2019, 2020))
     # `dsf_row` leaves `dlyret` NULL unless asked; this row is the one the
     # assertion below reads.
@@ -584,7 +584,7 @@ def test_daily_where_refuses_an_empty_permno_list():
     """The one statement this class must never be able to build: a query over
     a 110-million-row table with no PERMNO predicate."""
     with pytest.raises(ValueError, match="PERMNO"):
-        wrds_crsp.CrspQueries.daily_where([], date(2020, 1, 1), date(2020, 12, 31))
+        crsp.CrspQueries.daily_where([], date(2020, 1, 1), date(2020, 12, 31))
 
 
 def test_the_daily_table_constant_is_the_one_line_d19_fallback_switch(
@@ -594,7 +594,7 @@ def test_the_daily_table_constant_is_the_one_line_d19_fallback_switch(
     single constant edit -- so both the builders AND `_fetch_page` have to
     read `CrspQueries.DAILY_TABLE` at call time."""
     fallback = "stkdlysecuritydata"
-    monkeypatch.setattr(wrds_crsp.CrspQueries, "DAILY_TABLE", fallback)
+    monkeypatch.setattr(crsp.CrspQueries, "DAILY_TABLE", fallback)
     FakeCrspSession.server_columns = {
         f"crsp_a_stock.{fallback}": DSF_V2_SERVER_COLUMNS
     }
@@ -610,11 +610,11 @@ def test_the_daily_table_constant_is_the_one_line_d19_fallback_switch(
     ), FakeCrspSession.fetch_calls
 
     rendered = render_composed(
-        wrds_crsp.CrspQueries.copy_query(
-            wrds_crsp.CrspQueries.STOCK_SCHEMA,
-            wrds_crsp.CrspQueries.DAILY_TABLE,
-            wrds_crsp.WrdsCrspDailyAcquisition.CRSP_COLUMNS,
-            wrds_crsp.CrspQueries.daily_where(
+        crsp.CrspQueries.copy_query(
+            crsp.CrspQueries.STOCK_SCHEMA,
+            crsp.CrspQueries.DAILY_TABLE,
+            crsp.WrdsCrspDailyAcquisition.CRSP_COLUMNS,
+            crsp.CrspQueries.daily_where(
                 [AAPL], date(2020, 1, 1), date(2020, 12, 31)
             ),
         )
@@ -652,7 +652,7 @@ def test_the_volume_probe_counts_per_year_with_the_pulls_own_batching(
     """The probe's numbers are only worth quoting if they are the pull's own
     numbers: the SAME `year_pages`, the SAME batching, the SAME WHERE."""
     FakeCrspSession.daily_rows = probe_rows()
-    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)
+    probe = crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)
 
     counts = probe.count_rows_by_year(
         [AAPL, MSFT, LEHMAN], "2019-03-01", "2021-06-30"
@@ -668,9 +668,9 @@ def test_the_volume_probe_counts_per_year_with_the_pulls_own_batching(
     batches = [[AAPL, MSFT], [LEHMAN]]
     expected = [
         render_composed(
-            wrds_crsp.CrspQueries.daily_where(batch, page_start, page_end)
+            crsp.CrspQueries.daily_where(batch, page_start, page_end)
         )
-        for page_start, page_end in wrds_crsp.year_pages(
+        for page_start, page_end in crsp.year_pages(
             date(2019, 3, 1), date(2021, 6, 30)
         )
         for batch in batches
@@ -682,9 +682,9 @@ def test_the_volume_probe_counts_per_year_with_the_pulls_own_batching(
 
 def test_the_volume_probe_checks_entitlement_before_any_count(mock_crsp_session):
     FakeCrspSession.usable_schemas = set()
-    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared())
+    probe = crsp.CrspVolumeProbe(FakeCrspSession.shared())
 
-    with pytest.raises(wrds_taq.WrdsEntitlementError, match="crsp_a_stock"):
+    with pytest.raises(taq.WrdsEntitlementError, match="crsp_a_stock"):
         probe.count_rows_by_year([AAPL], "2019-01-01", "2019-12-31")
 
     assert FakeCrspSession.crsp_count_calls == [], (
@@ -693,7 +693,7 @@ def test_the_volume_probe_checks_entitlement_before_any_count(mock_crsp_session)
 
 
 def test_the_volume_probe_refuses_an_empty_roster_and_a_ticker(mock_crsp_session):
-    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared())
+    probe = crsp.CrspVolumeProbe(FakeCrspSession.shared())
 
     with pytest.raises(ValueError, match="PERMNO"):
         probe.count_rows_by_year([], "2019-01-01", "2019-12-31")
@@ -716,7 +716,7 @@ def test_the_volume_probes_counts_feed_the_sql_volume_guard_unchanged(
     from quantlab.acquisition.sql_volume import SqlVolumeGuard
 
     FakeCrspSession.daily_rows = probe_rows()
-    probe = wrds_crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)
+    probe = crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)
     counts = probe.count_rows_by_year(
         [AAPL, MSFT, LEHMAN], "2019-03-01", "2021-06-30"
     )

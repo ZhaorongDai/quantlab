@@ -475,7 +475,7 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
 
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig
     from quantlab.dataset.constituent import CrspSP500ConstituentDataset
     from tests.crsp_fixtures import (

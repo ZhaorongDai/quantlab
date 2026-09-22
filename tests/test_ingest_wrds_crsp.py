@@ -4,7 +4,7 @@ Two groups, the shape `tests/test_ingest_wrds_taq.py` established in 03.9-07:
 
 - end-to-end runs of the REAL script through `runpy.run_path` against
   `FakeCrspSession` (the `mock_crsp_session` fixture patches
-  `quantlab.acquisition.wrds_taq.WrdsSession`, which every WRDS provider and
+  `quantlab.acquisition.wrds.taq.WrdsSession`, which every WRDS provider and
   this script reach at run time), so no test can open a WRDS connection;
 - structural (AST/source) locks on the script: the guard's placement relative
   to the probe and the pull, the reference-pull ordering, the force flag, no

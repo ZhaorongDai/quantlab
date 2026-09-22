@@ -264,7 +264,7 @@ if __name__ == "__main__":
     # Imported here so the module attribute is read at run time (the test
     # suite patches it with an offline double).
     from quantlab.acquisition.sql_volume import SqlVolumeGuard
-    from quantlab.acquisition.wrds_taq import WrdsNbboVolumeProbe, WrdsSession
+    from quantlab.acquisition.wrds.taq import WrdsNbboVolumeProbe, WrdsSession
 
     try:
         session = WrdsSession.shared()

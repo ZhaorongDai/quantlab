@@ -153,7 +153,7 @@ def _close_shared_wrds_sessions():
     `quantlab.acquisition.*` import to every test in the suite.
     """
     yield
-    module = sys.modules.get("quantlab.acquisition.wrds_taq")
+    module = sys.modules.get("quantlab.acquisition.wrds.taq")
     if module is not None:
         module.WrdsSession.close_shared()
 
@@ -1211,7 +1211,7 @@ def mock_alpaca_client(monkeypatch, alpaca_bars_page) -> type:
 @pytest.fixture
 def mock_wrds_session(monkeypatch) -> type:
     """Return `tests.wrds_fixtures.FakeWrdsSession`, reset, and patch it over
-    `quantlab.acquisition.wrds_taq.WrdsSession` so `WrdsTaqNbboAcquisition`
+    `quantlab.acquisition.wrds.taq.WrdsSession` so `WrdsTaqNbboAcquisition`
     never builds a real session.
 
     The mirror of `mock_alpaca_client`: the target is patched by dotted string
@@ -1221,13 +1221,20 @@ def mock_wrds_session(monkeypatch) -> type:
     this fixture -- if the patch ever stopped taking effect, the real session
     would reach `psycopg2.connect` and the test would fail loudly instead of
     pushing Duo.
+
+    SIDE EFFECT, recorded rather than worked around: `taq` is a SUBMODULE of
+    the `quantlab.acquisition.wrds` package, and `find_spec` on a submodule
+    imports its parent to locate it -- so this fixture now pulls in the
+    descriptor, the registry, `quantlab.dataset.crsp` and
+    `quantlab.dataset.nbbo` at fixture-setup time. Before those modules were
+    packaged, the same guard only imported the 0-byte `quantlab.acquisition`.
     """
     from tests.wrds_fixtures import FakeWrdsSession
 
     FakeWrdsSession.reset()
-    if importlib.util.find_spec("quantlab.acquisition.wrds_taq") is not None:
+    if importlib.util.find_spec("quantlab.acquisition.wrds.taq") is not None:
         monkeypatch.setattr(
-            "quantlab.acquisition.wrds_taq.WrdsSession",
+            "quantlab.acquisition.wrds.taq.WrdsSession",
             FakeWrdsSession,
             raising=False,
         )
@@ -1238,12 +1245,12 @@ def mock_wrds_session(monkeypatch) -> type:
 @pytest.fixture
 def mock_crsp_session(monkeypatch) -> type:
     """Return `tests.crsp_fixtures.FakeCrspSession`, reset, and patch it over
-    `quantlab.acquisition.wrds_taq.WrdsSession` (phase 03.10).
+    `quantlab.acquisition.wrds.taq.WrdsSession` (phase 03.10).
 
     The exact mirror of `mock_wrds_session` above, and deliberately the SAME
     patch target: one WRDS account serves several products through ONE shared
-    session (D-20), so `quantlab/acquisition/wrds_crsp.py` reaches it as
-    `wrds_taq.WrdsSession.shared()` through the module attribute -- never by
+    session (D-20), so `quantlab/acquisition/wrds/crsp.py` reaches it as
+    `wrds.taq.WrdsSession.shared()` through the module attribute -- never by
     a `from ... import WrdsSession` binding, which would escape this patch and
     hide the bug behind a tripwire failure (RESEARCH Pattern 1).
 
@@ -1256,13 +1263,18 @@ def mock_crsp_session(monkeypatch) -> type:
     rule at the top of this file): the fixture module is imported inside the
     body, and the target is patched by dotted string behind the same
     `find_spec` guard.
+
+    Same SIDE EFFECT as `mock_wrds_session`: `find_spec` on the `taq` SUBMODULE
+    imports its parent package, so the descriptor, the registry,
+    `quantlab.dataset.crsp` and `quantlab.dataset.nbbo` all load at
+    fixture-setup time. Recorded, not worked around.
     """
     from tests.crsp_fixtures import FakeCrspSession
 
     FakeCrspSession.reset()
-    if importlib.util.find_spec("quantlab.acquisition.wrds_taq") is not None:
+    if importlib.util.find_spec("quantlab.acquisition.wrds.taq") is not None:
         monkeypatch.setattr(
-            "quantlab.acquisition.wrds_taq.WrdsSession",
+            "quantlab.acquisition.wrds.taq.WrdsSession",
             FakeCrspSession,
             raising=False,
         )

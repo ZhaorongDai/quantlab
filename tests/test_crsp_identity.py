@@ -197,7 +197,7 @@ def _pull(
     dsp500_rows=None,
 ):
     """Serve `rows` through the fake session, land the raw + reference tiers."""
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from tests.crsp_fixtures import (
         FakeCrspSession,
         run_crsp_pull,

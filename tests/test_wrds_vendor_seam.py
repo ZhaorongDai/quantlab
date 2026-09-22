@@ -1,23 +1,34 @@
 """The WRDS vendor SEAM: one account, several products (phase 03.10, plan 01).
 
-Phase 03.9 registered the `wrds` descriptor inside `wrds_taq.py`, beside the
+Phase 03.9 registered the `wrds` descriptor inside the TAQ provider, beside the
 one provider that existed. Plan 02 adds a SECOND provider (CRSP daily) to the
 same vendor, and a registration that lives inside a provider module would then
-have to name the other provider's classes -- so `wrds_taq` would import
-`wrds_crsp` (or the reverse) purely to be registered, and importing either one
-first would cycle through the registry.
+have to name the other provider's classes -- so one provider would import the
+other purely to be registered, and importing either one first would cycle
+through the registry.
 
 This file pins the shape that makes the second provider a one-row change:
 
-- the descriptor MOVED to the neutral `quantlab/acquisition/wrds.py`, which
-  imports the provider modules; `wrds_taq.py` imports nothing from the registry;
-- the registry's bottom vendor import names `wrds`, so a cold
-  `import quantlab.acquisition.registry` still enumerates every source, and so
-  does an import that touches a provider module FIRST;
+- the descriptor lives in the PACKAGE ENTRY POINT,
+  `quantlab/acquisition/wrds/__init__.py`, which imports the provider
+  submodules; `wrds/taq.py`'s SOURCE names neither the registry nor the
+  descriptor;
+- the registry's bottom vendor import names the PACKAGE `wrds` and no submodule
+  of it, so a cold `import quantlab.acquisition.registry` still enumerates
+  every source, and so does an import that touches a provider submodule FIRST;
 - the one `WrdsSession` offers GENERIC `schema_usable` / `fetch_rows` /
   `copy_csv`, so the CRSP provider reaches the shared connection without adding
   CRSP-shaped methods to a TAQ module -- and TAQ's own methods delegate to them
   without changing a byte of their SQL.
+
+WHICH KIND OF CLAIM: since the providers became SUBMODULES of the `wrds`
+package, importing one of them DOES load the entry point and therefore the
+registry. `test_wrds_taq_registers_nothing_and_imports_no_registry` is
+accordingly a claim about the SOURCE TEXT of `wrds/taq.py`, read with `ast`,
+and NOT a claim about `sys.modules`. The runtime property did not survive the
+packaging; the text rule did, and it is the rule that keeps a registration from
+drifting back into a provider. The import-order tests below are the ones that
+make a genuine runtime claim.
 
 EVERY test here is OFFLINE (D-13). The autouse `_forbid_wrds_network` tripwire
 in `tests/conftest.py` makes `psycopg2.connect` raise in every test; the
@@ -43,7 +54,7 @@ from psycopg2 import sql
 from tests.wrds_fixtures import fake_connect, render_composed
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WRDS_TAQ_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "wrds_taq.py"
+WRDS_TAQ_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "wrds" / "taq.py"
 REGISTRY_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "registry.py"
 
 USER = "test-wrds-user-not-real"
@@ -115,7 +126,7 @@ def live_session(monkeypatch, pgpass):
     while the real one leaked. Copied from
     `tests/test_wrds_taq_acquisition.py:live_session`.
     """
-    from quantlab.acquisition.wrds_taq import WrdsSession
+    from quantlab.acquisition.wrds.taq import WrdsSession
 
     pgpass()
     monkeypatch.setenv("WRDS_USERNAME", USER)
@@ -178,7 +189,7 @@ def test_wrds_descriptor_lives_in_the_neutral_module() -> None:
     """
     from quantlab.acquisition.registry import DataSourceRegistry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
     from quantlab.dataset.nbbo import NbboPanelDataset
 
     assert WRDS_SOURCE is DataSourceRegistry.get("wrds")
@@ -197,16 +208,27 @@ def test_wrds_descriptor_lives_in_the_neutral_module() -> None:
 
 
 def test_wrds_taq_registers_nothing_and_imports_no_registry() -> None:
-    """The provider module is REGISTRATION-FREE: no `register_source` call, and
-    no import from `quantlab.acquisition.registry` or `.wrds`.
+    """A SOURCE-TEXT claim about `wrds/taq.py`, NOT a runtime claim about
+    `sys.modules`: the provider submodule is REGISTRATION-FREE -- no
+    `register_source` call, and no import naming `quantlab.acquisition.registry`
+    or `quantlab.acquisition.wrds` (which, now that the providers are siblings
+    inside that package, also covers `...wrds.crsp` and `...wrds.taq`).
 
-    That is the whole anti-cycle property. When plan 02 adds `wrds_crsp.py`,
-    only `wrds.py` imports both providers; a provider importing the registry
-    (for the decorator) or the neutral module (for the descriptor) is exactly
-    the edge that would close the loop.
+    Say plainly what this no longer asserts. Once the providers became
+    submodules of the `wrds` package, importing `quantlab.acquisition.wrds.taq`
+    runs the package `__init__` and therefore DOES load the registry. So there
+    is no `sys.modules` assertion to make here any more; what survives is the
+    text rule, and it is worth keeping because it is what stops a registration
+    from drifting back into a provider and re-creating the import edge the
+    package entry point exists to avoid. The genuine runtime claim lives in
+    `test_enumeration_survives_any_wrds_import_order`.
 
     An `ast` walk rather than a substring scan: this module's docstrings name
     the registry in prose, and a grep would fail on the explanation of the rule.
+    Every `ImportFrom` is additionally required to be ABSOLUTE (`level == 0`).
+    Inside a package a relative `from . import crsp` would leave `node.module`
+    as `None` and slip straight past the name scan -- a way out that simply did
+    not exist while these modules were flat siblings in `acquisition/`.
     """
     tree = _taq_tree()
 
@@ -217,6 +239,17 @@ def test_wrds_taq_registers_nothing_and_imports_no_registry() -> None:
         and "register_source" in ast.unparse(node.func)
     ]
     assert calls == [], calls
+
+    relative = [
+        f"level={node.level} module={node.module!r}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level != 0
+    ]
+    assert relative == [], (
+        f"quantlab/acquisition/wrds/taq.py uses RELATIVE imports ({relative}). "
+        f"`node.module` is None for those, so the forbidden-prefix scan below "
+        f"cannot see what they name. Spell every import in full dotted form."
+    )
 
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -238,8 +271,9 @@ def test_wrds_taq_registers_nothing_and_imports_no_registry() -> None:
     assert offending == [], offending
 
 
-def test_registry_bottom_import_names_the_neutral_module() -> None:
-    """`registry.py` imports `wrds`, in the MODULE-OBJECT form.
+def test_registry_bottom_import_names_the_package_entry_point() -> None:
+    """`registry.py` imports the `wrds` PACKAGE, in the MODULE-OBJECT form, and
+    names no submodule of it.
 
     The form is load-bearing, and the file's own comment says why: when a
     caller imports a vendor module first, the registry runs while that module
@@ -258,23 +292,45 @@ def test_registry_bottom_import_names_the_neutral_module() -> None:
         for alias in node.names
     }
     assert "quantlab.acquisition.wrds" in from_registry
-    assert "quantlab.acquisition.wrds_taq" not in from_registry
+
+    submodules = sorted(
+        name
+        for name in from_registry
+        if name.startswith("quantlab.acquisition.wrds.")
+    )
+    assert submodules == [], (
+        f"registry.py names WRDS SUBMODULES ({submodules}). It must bind the "
+        f"package entry point and nothing under it: the entry point is what "
+        f"holds the descriptor, and naming a submodule would reintroduce the "
+        f"registry -> provider edge."
+    )
 
 
 @pytest.mark.parametrize(
     "first_module",
-    ["quantlab.acquisition.wrds_taq", "quantlab.acquisition.wrds"],
+    [
+        "quantlab.acquisition.wrds.taq",
+        "quantlab.acquisition.wrds",
+        "quantlab.acquisition.registry",
+    ],
 )
-def test_enumeration_survives_either_wrds_import_order(first_module) -> None:
-    """Importing EITHER WRDS module first still enumerates every source.
+def test_enumeration_survives_any_wrds_import_order(first_module) -> None:
+    """Importing ANY of the three WRDS-relevant modules first still enumerates
+    every source. This is the RUNTIME claim of this file.
 
     The failure this guards against is silent in one direction only: with the
     descriptor inside a provider module, importing that provider first and the
     registry second can leave a half-initialised module in `sys.modules`, and
     the vendor list an operator sees then depends on which module the caller
-    happened to touch. Both orders are asserted, in fresh interpreters, with
-    `WRDS_USERNAME` stripped -- so this doubles as a proof that enumeration
-    needs no credential.
+    happened to touch. Packaging the providers under `quantlab.acquisition.wrds`
+    made this sharper, not softer: the entry point imports its own submodules
+    and a submodule reaches its sibling, so all three orders now run the same
+    partially-initialised package. They hold because `registry.py` binds the
+    MODULE OBJECT rather than an attribute, and because
+    `from package import submodule` is defined to work during partial init.
+
+    All THREE orders are asserted, in fresh interpreters, with `WRDS_USERNAME`
+    stripped -- so this doubles as a proof that enumeration needs no credential.
     """
     child = _run_child(
         f"import {first_module}\n"
@@ -292,7 +348,7 @@ def test_the_moved_descriptor_is_registered_exactly_once() -> None:
     leave a second registration behind.
 
     `register_source` raises on a duplicate vendor, so a leftover registration
-    in `wrds_taq.py` would make a cold import of the registry FAIL rather than
+    in `wrds/taq.py` would make a cold import of the registry FAIL rather than
     double the row -- which is why the assertion is on the child's exit code as
     much as on the count.
     """
@@ -365,7 +421,7 @@ def test_session_helpers_scrub_the_username_and_never_reconnect(
     The planted username is the one in the driver's error text, so "scrubbed"
     is a real substitution here and not a vacuous absence.
     """
-    from quantlab.acquisition.wrds_taq import WrdsSession, WrdsSessionError
+    from quantlab.acquisition.wrds.taq import WrdsSession, WrdsSessionError
 
     pgpass()
     monkeypatch.setenv("WRDS_USERNAME", USER)

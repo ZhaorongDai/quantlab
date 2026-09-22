@@ -311,7 +311,7 @@ def _schemas_for(universe: str | None) -> tuple[str, ...]:
     """Exactly the schemas this run reads, so an S&P-only pull never asks
     whether this account can read Compustat -- a question whose answer is "no"
     for most CRSP subscriptions and which nothing in that pull needs."""
-    from quantlab.acquisition.wrds_crsp import CrspQueries
+    from quantlab.acquisition.wrds.crsp import CrspQueries
 
     schemas = [CrspQueries.STOCK_SCHEMA]
     if universe == CrspMembership.SP500:
@@ -334,13 +334,13 @@ if __name__ == "__main__":
     kwargs = {"batch_size": batch_size, "clip_to_product_end": True}
 
     # Imported here so the module attributes are read at RUN time: the test
-    # suite patches `wrds_taq.WrdsSession` with an offline double, and a
+    # suite patches `wrds.taq.WrdsSession` with an offline double, and a
     # module-scope binding would capture the real class at import time
     # (RESEARCH Pattern 1).
     from quantlab.acquisition.sql_volume import SqlVolumeGuard
-    from quantlab.acquisition.wrds_crsp import CrspQueries, CrspVolumeProbe
-    from quantlab.acquisition.wrds_crsp_reference import CrspReferenceTables
-    from quantlab.acquisition.wrds_taq import WrdsSession
+    from quantlab.acquisition.wrds.crsp import CrspQueries, CrspVolumeProbe
+    from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
+    from quantlab.acquisition.wrds.taq import WrdsSession
 
     try:
         session = WrdsSession.shared()
