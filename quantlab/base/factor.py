@@ -17,7 +17,7 @@ from quantlab.base.config import (
     FactorConfig,
     PolarsFactorConfig,
 )
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.timer import Timer
 
@@ -82,7 +82,7 @@ class Factor(ABC):
         a concrete vendor class here would add a `base -> dataset` dependency
         on a specific subclass, against this repository's one-directional
         layering. (`base/factor.py` already imports `XrBackend` from
-        `quantlab.dataset.backend`, a known approximation of that rule --
+        `quantlab.backend`, a known approximation of that rule --
         depending on a storage backend and depending on a vendor `Dataset`
         subclass are not the same order of coupling, and this method is
         written so the second never happens.)

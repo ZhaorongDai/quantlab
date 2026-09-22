@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     DataSourceRegistry,
     SourceDescriptor,
     convert,

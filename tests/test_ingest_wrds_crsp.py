@@ -717,7 +717,7 @@ def test_the_crsp_cli_names_no_acquisition_class_and_calls_one_factory():
     the class cannot quietly turn this lock into a check for a string nothing
     uses any more.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     acquisition_name = DataSourceRegistry.get("wrds").acquisition_cls_for(
         "us_equity", "1d", "crsp_daily"

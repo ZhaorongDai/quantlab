@@ -871,7 +871,7 @@ def print_sql_volume_estimate(
 
 
 def print_conversion_result(result, *, print_fn=print):
-    """Render the `ConversionResult` `quantlab.acquisition.registry.convert()`
+    """Render the `ConversionResult` `quantlab.registry.convert()`
     returns.
 
     Beside `print_volume_estimate` and shaped the same way -- `print_fn`

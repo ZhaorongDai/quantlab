@@ -334,7 +334,7 @@ uv run python scripts/ingest_wrds_taq.py --universe sp500 \
 
 命令行每次都会先探测、再拉取。原始数据已经在盘上、只想换 bar 大小或会话窗口重新转换时，
 不需要连 WRDS：在 Python 里直接构造 `NbboDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录）
-并调用 `quantlab.acquisition.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
+并调用 `quantlab.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
 
 ---
 

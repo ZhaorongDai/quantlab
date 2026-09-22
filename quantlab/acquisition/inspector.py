@@ -37,7 +37,7 @@ inspector what is on disk for one of them.
 **Import cost, stated rather than discovered.** This module reaches the raw
 tier through `quantlab/dataset/stock.py`, which transitively imports
 `nautilus_trader` (~1.7 s cold). That is an import cost, not a fragility, and it
-is a strictly LIGHTER path than `quantlab/acquisition/registry.py`, which pays
+is a strictly LIGHTER path than `quantlab/registry.py`, which pays
 the same cost through its config factories AND both vendor SDKs on top.
 Reimplementing the raw scan here to avoid it would trade a measured second for
 the four separately-measured bugs `_scan_raw` already fixes -- see `browse_raw`.

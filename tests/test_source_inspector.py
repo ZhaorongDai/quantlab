@@ -354,7 +354,7 @@ _INSPECTOR_RESOLVER_TOKEN = "INSPECTOR-FORBIDDEN-IMPORT-RESOLVED"
 
 #: Every module whose presence in the inspector's import graph would mean an
 #: `Acquisition` subclass -- and therefore a credential demand and a socket --
-#: is reachable from the read surface. `quantlab.acquisition.registry` is in the
+#: is reachable from the read surface. `quantlab.registry` is in the
 #: set for a second reason: its own bottom imports pull BOTH vendor modules, so
 #: reaching it reaches them transitively.
 _FORBIDDEN_INSPECTOR_MODULES = frozenset(
@@ -362,7 +362,7 @@ _FORBIDDEN_INSPECTOR_MODULES = frozenset(
         "quantlab.base.acquisition",
         "quantlab.acquisition.tiingo",
         "quantlab.acquisition.alpaca",
-        "quantlab.acquisition.registry",
+        "quantlab.registry",
     }
 )
 
@@ -562,11 +562,11 @@ def test_inspector_binds_no_client() -> None:
     of BOTH new modules with `ast` -- relative spellings included, which no
     substring scan can see -- and asserts the forbidden set is untouched.
 
-    `quantlab.acquisition.registry` is in the forbidden set for a second
+    `quantlab.registry` is in the forbidden set for a second
     reason: its own bottom imports pull both vendor modules, so reaching the
     registry reaches every client transitively.
 
-    Reddened by: adding `from quantlab.acquisition.registry import ...` (or any
+    Reddened by: adding `from quantlab.registry import ...` (or any
     relative spelling of it) to either module, or binding an `Acquisition`
     subclass into the inspector's namespace.
     """

@@ -4,7 +4,7 @@ import os
 import polars as pl
 import requests
 
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     Capability,
     SourceDescriptor,
     register_source,

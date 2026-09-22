@@ -42,7 +42,7 @@ current chunked ingest writes is `object`-encoded and decodes to
     StringDType()
 
 is unreachable in the fixed-width arm and fatal in the other. Measured
-2026-09-08 with `quantlab/dataset/backend.py` reverted to `dea1e85`: this suite
+2026-09-08 with `quantlab/backend.py` reverted to `dea1e85`: this suite
 reported `16 passed` on the list-literal coordinate and reddens on the object
 one. So the symbol coordinate now comes from `conftest.symbol_coord` and every
 test takes the `symbol_encoding` fixture, giving each one a `[fixed_width]` and
@@ -61,7 +61,7 @@ import xarray as xr
 import zarr
 
 from conftest import symbol_coord
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

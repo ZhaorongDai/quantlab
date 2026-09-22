@@ -14,7 +14,7 @@ Both were re-expressed at every call site instead -- eight-plus bare
 `quantlab/dataset/masking.py:105`, `quantlab/base/model.py:310` and `:1220`,
 `quantlab/utils/fingerprint.py:58`, `quantlab/dataset/chunking.py:210`) and an
 unconditional `[str(symbol) for symbol in symbols]` at
-`quantlab/dataset/backend.py:451`. N independent spellings of one contract are
+`quantlab/backend.py:451`. N independent spellings of one contract are
 N things that can drift, and the drift is invisible: on today's universe every
 one of them agrees with every other.
 
@@ -122,7 +122,7 @@ def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
     and nowhere else.
 
     On a string axis this is byte-for-byte what
-    `quantlab/dataset/backend.py:451` did before -- `str(symbol)` per label.
+    `quantlab/backend.py:451` did before -- `str(symbol)` per label.
     The behaviour change is confined to the axes where the old spelling was
     wrong.
 

@@ -177,7 +177,7 @@ def isolated_registry(monkeypatch):
     if it is ever deleted or weakened, this fixture's guarantee goes with it.
 
     The import is deliberately left to raise `ImportError` until
-    `quantlab/acquisition/registry.py` lands. It must NOT be softened with a
+    `quantlab/registry.py` lands. It must NOT be softened with a
     `try/except` or a `pytest.importorskip`: a silently-skipped isolation
     fixture is how a fake source leaks into every later test, and a test that
     quietly did not isolate is indistinguishable from one that did.
@@ -186,7 +186,7 @@ def isolated_registry(monkeypatch):
     convention `_reset_data_root_override` above already follows, so this file
     keeps its zero-import-time dependency promise.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     monkeypatch.setattr(
         DataSourceRegistry,

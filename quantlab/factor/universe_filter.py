@@ -84,7 +84,7 @@ from KunQuant.ops import Div
 from KunQuant.Stage import Function
 
 from quantlab.base.factor import FactorKunQuant
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 from quantlab.utils.module import load_factor_from_config
 from quantlab.utils.timer import Timer
 

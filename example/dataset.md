@@ -52,7 +52,7 @@
 
 **3. 多个变量共享同一套坐标。** 一个美股面板有 13 个数据变量（`open/high/low/close/volume/adj*/divCash/splitFactor/anomaly_flag`），它们共用一组 `timestamp` 和一组 `symbol`。xarray 存一份坐标，long DataFrame 把坐标重复 13 遍。
 
-**4. Zarr 的分块与追加是 xarray 的原生能力。** 沿 `timestamp` 增量 append、按 `symbol` 轴加宽、按块读取——这些是 `quantlab/dataset/backend.py:XrBackend` 直接用 `to_zarr(append_dim=...)` 做的，换成 parquet 要自己造一套。
+**4. Zarr 的分块与追加是 xarray 的原生能力。** 沿 `timestamp` 增量 append、按 `symbol` 轴加宽、按块读取——这些是 `quantlab/backend.py:XrBackend` 直接用 `to_zarr(append_dim=...)` 做的，换成 parquet 要自己造一套。
 
 **但 polars 并没有被赶走，它只是不做层间格式。** 它出现在两个地方：一是子类内部解析原始文件（`pl.scan_csv` / `pl.scan_parquet`，在成为面板*之前*），二是 Polars 因子后端通过 `get_lazyframe()` / `head()` 取数（在面板*之后*）。层内用什么都行，**层与层之间只认 xarray**。
 
@@ -479,7 +479,7 @@ StockDataset(cfg)   # 就这一行
   File "base/data.py", line 262, in _reset_symbols
   File "base/data.py", line 278, in read
   File "base/data.py", line 132, in _filter
-  File "dataset/backend.py", line 389, in filter_by_symbol
+  File "quantlab/backend.py", line 389, in filter_by_symbol
   ... 之后进入 xarray 的 .sel ...
 KeyError: "not all values found in index 'symbol'"
 ```

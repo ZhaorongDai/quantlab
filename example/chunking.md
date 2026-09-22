@@ -1,7 +1,7 @@
 # 时间分块与分块台账（chunking）
 
 > 涉及代码：`quantlab/base/chunking.py`、`quantlab/base/data.py:BaseDataset.from_raw_data_chunked()`、
-> `quantlab/dataset/backend.py:XrBackend.append/widen_symbol_axis/widen_and_append`、
+> `quantlab/backend.py:XrBackend.append/widen_symbol_axis/widen_and_append`、
 > `quantlab/dataset/stock.py` 的两个 seam、`quantlab/universe.py:_roster_window_profile()`、
 > `ingest_us_equity.py`。测试在 `tests/test_chunked_ingest.py`。
 >

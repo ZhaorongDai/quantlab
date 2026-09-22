@@ -18,7 +18,7 @@ from loguru import logger
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.ml_model.backend import MlBackend
 from quantlab.utils.atomic import write_json_atomically

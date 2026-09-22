@@ -97,7 +97,7 @@ import argparse
 
 from dataclasses import replace
 
-from quantlab.acquisition.registry import DataSourceRegistry, convert, run
+from quantlab.registry import DataSourceRegistry, convert, run
 from quantlab.base.config import (
     QQQ_PERMNO,
     ConstituentDatasetConfig,

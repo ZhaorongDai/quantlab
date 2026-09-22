@@ -5,7 +5,7 @@ owns, which converter writes it, and what to count once it is written. The
 generic four-step order and every refusal live in the ABC; nothing here
 re-states them.
 
-**This path is OFFLINE.** `quantlab/acquisition/registry.py:convert()` says so
+**This path is OFFLINE.** `quantlab/registry.py:convert()` says so
 word for word (registry.py:565-571): "`run()` downloads to the raw parquet tier
 and stops; this reads that tier and writes the Zarr store... nothing here
 touches a vendor client, an endpoint, or a credential." So a rebuild needs no
@@ -106,7 +106,7 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
         Nothing in this call reaches the network. See the module docstring and
         `registry.py:565-571` for the verbatim guarantee.
         """
-        from quantlab.acquisition.registry import convert
+        from quantlab.registry import convert
         from quantlab.acquisition.wrds import WRDS_SOURCE
 
         return convert(

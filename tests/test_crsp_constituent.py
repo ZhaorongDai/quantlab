@@ -473,7 +473,7 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
     import numpy as np
     import xarray as xr
 
-    from quantlab.acquisition import registry
+    from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig

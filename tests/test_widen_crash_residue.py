@@ -48,7 +48,7 @@ import xarray as xr
 
 import quantlab.base.data as base_data_module
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 
 
 def _small_panel(dates: list[str], symbols: list[str], offset: float = 0.0):

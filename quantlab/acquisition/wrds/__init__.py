@@ -17,13 +17,13 @@ in one package changes nothing about that. So the descriptor sits one level up,
 in this `__init__`, which imports the provider submodules; they import neither
 the registry nor this descriptor.
 
-**No import order cycles, and here is why.** `quantlab/acquisition/registry.py`
+**No import order cycles, and here is why.** `quantlab/registry.py`
 binds this package as a MODULE OBJECT at its bottom
 (`from quantlab.acquisition import wrds as _wrds`), never an attribute off it,
 and `from package import submodule` is safe while the package is only partially
 initialised. Measured in three fresh interpreters with the editable-install
 finder removed -- `quantlab.acquisition.wrds.taq` first,
-`quantlab.acquisition.wrds` first, `quantlab.acquisition.registry` first -- all
+`quantlab.acquisition.wrds` first, `quantlab.registry` first -- all
 three print `['alpaca', 'tiingo', 'wrds']` with no traceback.
 `tests/test_wrds_vendor_seam.py` now pins all three orders permanently.
 
@@ -31,7 +31,7 @@ three print `['alpaca', 'tiingo', 'wrds']` with no traceback.
 provider now runs this `__init__`, so it loads the registry,
 `quantlab.dataset.crsp` and `quantlab.dataset.nbbo`. Before the providers were
 packaged it did not: importing a provider pulled in 1457 modules and left both
-`quantlab.acquisition.registry` and `quantlab.dataset.crsp` absent from
+`quantlab.registry` and `quantlab.dataset.crsp` absent from
 `sys.modules`; it now pulls in 1600 (0.87s -> 0.85s, so the module count moved
 and the wall time did not). "The providers stay free of the registry" is
 therefore a SOURCE-TEXT rule from here on, enforced by the `ast` scan in
@@ -51,7 +51,7 @@ row naming its own `acquisition_cls` and `config_factory`.
 """
 
 from quantlab.acquisition.wrds import crsp, taq
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     Capability,
     SourceDescriptor,
     register_source,

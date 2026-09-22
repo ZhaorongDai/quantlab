@@ -39,7 +39,7 @@ import xarray as xr
 
 from quantlab.base.config import BaseDatasetConfig
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.backend import PlBackend, XrBackend
+from quantlab.backend import PlBackend, XrBackend
 
 TIMES = pd.date_range("2024-01-01", periods=4, freq="D")
 SYMBOLS = ["AAA", "BBB"]

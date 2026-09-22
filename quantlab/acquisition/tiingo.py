@@ -4,7 +4,7 @@ import os
 import polars as pl
 from tiingo import TiingoClient
 
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     Capability,
     SourceDescriptor,
     register_source,
@@ -327,12 +327,12 @@ class TiingoAcquisition(Acquisition):
 #: The registry descriptor for this vendor -- "who I am", beside the class that
 #: is "how I download" (03.4 D-05).
 #:
-#: Defined HERE rather than in `quantlab/acquisition/registry.py` so that
+#: Defined HERE rather than in `quantlab/registry.py` so that
 #: adding a vendor is one file: the class, its capabilities and its credential
 #: names sit together, and nothing has to be remembered in a second place. The
 #: dependency runs vendor-module -> registry, never the reverse at module top;
 #: `registry.py` imports this module at its BOTTOM, after every definition, so
-#: a cold `import quantlab.acquisition.registry` still enumerates this source.
+#: a cold `import quantlab.registry` still enumerates this source.
 #:
 #: `required_env` is restated as a LITERAL rather than sourced from
 #: `TiingoAcquisition.CREDENTIAL_ENV_VARS`. Deriving it would make D-04's

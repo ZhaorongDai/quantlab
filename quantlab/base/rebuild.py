@@ -153,7 +153,7 @@ class BaseStoreRebuilder(ABC):
         raw tier costs an error message rather than a deleted store.
 
         The message follows the house style for a refusal
-        (`dataset/backend.py:XrBackend.widen_symbol_axis`): collect the
+        (`quantlab/backend.py:XrBackend.widen_symbol_axis`): collect the
         offenders, describe them individually, say what cannot be done without
         them, and end with the remedy. A rebuild that quietly converted an
         absent raw tier would write an EMPTY panel over a real one, and an

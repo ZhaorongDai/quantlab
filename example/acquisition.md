@@ -751,7 +751,7 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
    )
    ```
 
-   然后在 `quantlab/acquisition/registry.py` 的**文件底部**加一行
+   然后在 `quantlab/registry.py` 的**文件底部**加一行
    `from quantlab.acquisition import myvendor as _myvendor`。
 
    **不要加到 `quantlab/acquisition/__init__.py` 里**，那个文件必须保持 0 字节：

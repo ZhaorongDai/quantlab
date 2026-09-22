@@ -111,11 +111,17 @@ class AcquisitionResult:
     report a full-market backfill's 404s as its own.
 
     **Defined HERE, in `base/`, rather than in
-    `quantlab/acquisition/registry.py`**, and the direction is what matters:
-    the base layer must not import the acquisition package, so a result type
-    living beside the registry would have to be imported backwards (or
-    duplicated). `registry.py` imports it from here instead -- one definition,
-    no cycle.
+    `quantlab/registry.py`**, and the direction is what matters:
+    the base layer must not import the registry, whose bottom imports pull
+    every vendor module, so a result type living beside the registry would
+    have to be imported backwards (or duplicated). `registry.py` imports it
+    from here instead -- one definition, no cycle.
+
+    260922-lu2 moved the registry up out of `quantlab/acquisition/` to
+    `quantlab/registry.py`. That does not soften the rule: the forbidden
+    edge was never "base imports the acquisition PACKAGE", it was "base
+    reaches a module that constructs vendor clients". The registry still is
+    one, one directory higher.
 
     **`failures` values are ALREADY SCRUBBED.** They are the same strings
     `_attempt_batch` produced through `_scrub`, never raw vendor exception
@@ -1534,7 +1540,7 @@ class Acquisition(ABC):
         # `Self`, not the result. `download()`/`refresh()` keep their chaining
         # contract, which the rest of this repo's idiom
         # (`Dataset.from_raw_data().save()`) depends on; the result is read off
-        # `last_result` by `quantlab/acquisition/registry.py:run`.
+        # `last_result` by `quantlab/registry.py:run`.
         return self
 
     def _run_once(

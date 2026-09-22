@@ -1,6 +1,6 @@
 # 数据源登记表（DataSourceRegistry）
 
-> 代码位置：`quantlab/acquisition/registry.py`（登记表、描述符、`run()`）、
+> 代码位置：`quantlab/registry.py`（登记表、描述符、`run()`）、
 > `quantlab/acquisition/inspector.py`（只读检视器）、`quantlab/base/progress.py`（进度事件与取消令牌）。
 > 描述符本身定义在各厂商模块里：`quantlab/acquisition/tiingo.py`、`quantlab/acquisition/alpaca.py`。
 > 采集引擎本身见 [acquisition.md](acquisition.md)；分页断点见 [pageledger.md](pageledger.md)。
@@ -121,7 +121,7 @@ Tiingo 只有 `us_equity` 的 `1d`。用两个扁平元组做叉乘，就会告�
 ### 描述符定义在哪、厂商模块什么时候被 import
 
 ```
-quantlab/acquisition/registry.py
+quantlab/registry.py
   ├─ 顶部：Capability / SourceDescriptor / DataSourceRegistry /
   │        register_source / is_configured / credential_status / run
   │        —— 这一段必须保持「不认识任何厂商」
@@ -152,7 +152,7 @@ quantlab/acquisition/registry.py
 ### 为什么 `all()` 排序而不是按 import 顺序
 
 枚举顺序会变成运维界面的**显示顺序**，而 import 顺序取决于调用方碰巧先 import 了哪个模块：
-`import quantlab.acquisition.tiingo` 和 `import quantlab.acquisition.registry`
+`import quantlab.acquisition.tiingo` 和 `import quantlab.registry`
 会把同一套安装渲染成两种顺序。排序还顺带让针对这个方法的断言变成一次字面元组比较。
 
 ### 三个 ingest 脚本怎么消费它
@@ -287,7 +287,7 @@ run(descriptor, config, *, refresh=False, reporter=None, cancel=None) -> Acquisi
 ```bash
 cd /Users/daizhaorong/projects/quantlab
 env -u TIINGO_API_KEY -u APCA_API_KEY_ID -u APCA_API_SECRET_KEY uv run python - <<'PY'
-from quantlab.acquisition.registry import DataSourceRegistry, is_configured, credential_status
+from quantlab.registry import DataSourceRegistry, is_configured, credential_status
 
 for d in DataSourceRegistry.all():
     print(f"{d.vendor:8} {d.display_name:22} configured={is_configured(d)}")
@@ -320,7 +320,7 @@ tiingo   Tiingo EOD             configured=False
 ### 例 2：能力查询与错误信息（真跑过）
 
 ```python
-from quantlab.acquisition.registry import DataSourceRegistry
+from quantlab.registry import DataSourceRegistry
 
 t = DataSourceRegistry.get("tiingo")
 a = DataSourceRegistry.get("alpaca")
@@ -342,7 +342,7 @@ alpaca supports us_equity/tick    : True
 alpaca supports tick/quotes       : True
 alpaca supports tick/bars         : False
 alpaca universe_categories        : ('nasdaq_all', 'us_all', 'sp500_constituent', 'nasdaq100_constituent')
-ValueError: No data source is registered for vendor 'polygon'. Registered vendors: ['alpaca', 'tiingo']. A source registers itself when its module is imported; if this vendor's module was never imported, the registry cannot know about it (see the vendor imports at the bottom of quantlab/acquisition/registry.py).
+ValueError: No data source is registered for vendor 'polygon'. Registered vendors: ['alpaca', 'tiingo']. A source registers itself when its module is imported; if this vendor's module was never imported, the registry cannot know about it (see the vendor imports at the bottom of quantlab/registry.py).
 ```
 
 （最后一行的 traceback 正文省略了，只留 `ValueError` 那行；消息文本原样。）
@@ -358,7 +358,7 @@ ValueError: No data source is registered for vendor 'polygon'. Registered vendor
 
 ```python
 import subprocess, sys
-code = "from quantlab.acquisition.registry import DataSourceRegistry;" \
+code = "from quantlab.registry import DataSourceRegistry;" \
        "print(tuple(d.vendor for d in DataSourceRegistry.all()))"
 print(subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout.strip())
 ```
@@ -372,7 +372,7 @@ print(subprocess.run([sys.executable, "-c", code], capture_output=True, text=Tru
 ### 例 4：用描述符构造 config（真跑过）
 
 ```python
-from quantlab.acquisition.registry import DataSourceRegistry
+from quantlab.registry import DataSourceRegistry
 
 S = DataSourceRegistry.get("tiingo")
 cfg = S.config_factory(market="us_equity", frequency="1d",
@@ -400,7 +400,7 @@ raw 根以 `/tiingo` **结尾**，水位目录是它的**兄弟**——这条约
 
 ```python
 from quantlab.acquisition.inspector import SourceInspector
-from quantlab.acquisition.registry import DataSourceRegistry
+from quantlab.registry import DataSourceRegistry
 
 S = DataSourceRegistry.get("alpaca")
 cfg = S.config_factory(market="us_equity", frequency="1m", subdir="nasdaq_data",
@@ -527,7 +527,7 @@ after reset()   : False
 ```python
 import threading
 
-from quantlab.acquisition.registry import DataSourceRegistry, is_configured, run
+from quantlab.registry import DataSourceRegistry, is_configured, run
 from quantlab.base.progress import CallbackProgressReporter, CancelToken
 
 SOURCE = DataSourceRegistry.get("tiingo")
@@ -575,7 +575,7 @@ import functools
 import polars as pl
 
 from quantlab.base.acquisition import Acquisition
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     Capability, SourceDescriptor, register_source,
 )
 from quantlab.config import stock_acquisition_config
@@ -620,7 +620,7 @@ empty capabilities -> Refusing to register vendor 'empty' with an empty `capabil
 还要做的三件配套事：
 
 1. 在 `quantlab/enums/data.py` 的 `Vendor` Literal 里加上 `"demo"`。
-2. 在 `quantlab/acquisition/registry.py` **底部**加一行
+2. 在 `quantlab/registry.py` **底部**加一行
    `from quantlab.acquisition import demo as _demo`——不是加到
    `quantlab/acquisition/__init__.py` 里，理由见上面「它是怎么工作的」。
 3. 如果这个厂商需要一个自己的 ingest 薄壳，照 `ingest_tiingo.py` 的形状写：

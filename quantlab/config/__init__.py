@@ -10,7 +10,7 @@ from quantlab.base.config import (
     PolarsFactorConfig,
     UniverseConfig,
 )
-from quantlab.dataset.backend import PlBackend, XrBackend
+from quantlab.backend import PlBackend, XrBackend
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import Frequency, Market, Vendor

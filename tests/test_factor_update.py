@@ -29,7 +29,7 @@ The coordinate now comes from `conftest.symbol_coord` and the encoding is
 carried on the factor instance by `_factor(..., encoding=...)`, so seven of
 the eight tests get a `[fixed_width]` and a `[variable_length]` id (the eighth
 arrived with 260908-g30). Measured
-2026-09-08 with `quantlab/dataset/backend.py` reverted to `dea1e85`, two of
+2026-09-08 with `quantlab/backend.py` reverted to `dea1e85`, two of
 those `[variable_length]` ids go red while every `[fixed_width]` twin stays
 green.
 """
@@ -49,7 +49,7 @@ from loguru import logger
 from conftest import assert_stored_symbol_encoding, symbol_coord
 from quantlab.base.config import BaseFactorConfig
 from quantlab.base.factor import Factor
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

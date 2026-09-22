@@ -46,7 +46,7 @@ from pathlib import Path
 
 import pytest
 
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     Capability,
     DataSourceRegistry,
     SourceDescriptor,

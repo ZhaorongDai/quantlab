@@ -10,8 +10,8 @@
 
 | 实现 | 介质 | `self.data` 是什么 | 惰性吗 |
 |---|---|---|---|
-| `XrBackend`（`quantlab/dataset/backend.py`） | Zarr 目录 | `xr.Dataset` | 否，`xr.open_dataset` 之后基本就在内存里 |
-| `PlBackend`（`quantlab/dataset/backend.py`） | 单个 Parquet 文件 | `pl.LazyFrame` | 是，`scan_parquet` 全程惰性 |
+| `XrBackend`（`quantlab/backend.py`） | Zarr 目录 | `xr.Dataset` | 否，`xr.open_dataset` 之后基本就在内存里 |
+| `PlBackend`（`quantlab/backend.py`） | 单个 Parquet 文件 | `pl.LazyFrame` | 是，`scan_parquet` 全程惰性 |
 | `MlBackend`（`quantlab/ml_model/backend.py`） | joblib 序列化文件 | 一个 Python 对象（模型） | 无所谓 |
 
 `MlBackend` 实现的是另一个 ABC——`quantlab/base/backend.py:ModelBackend`，它跟 `DataBackend` 是对称的两半：一个管数据落在哪，一个管模型落在哪。它整个类只有十几行，没有任何维度、坐标、时间轴的概念，`read` 就是 `joblib.load`。它能和 `XrBackend` 长在同一套设计里，恰恰是因为契约里没有一句话假设"数据是个带 timestamp/symbol 的面板"。
@@ -91,7 +91,7 @@ kwargs.pop("encoding", None)   # append 上给 encoding，xarray 直接拒绝
 self.data.to_zarr(path, mode="a", append_dim=append_dim, **kwargs)
 ```
 
-**chunk 网格是在第一次写的时候被钉死的。** `_append_encoding` 给每个带 `append_dim` 的变量算出 chunk 形状：append 维上是 `min(XrBackend.APPEND_DIM_CHUNK, size)`（`APPEND_DIM_CHUNK = 512`，`quantlab/dataset/backend.py:34`），其余每一维取该维的完整长度。
+**chunk 网格是在第一次写的时候被钉死的。** `_append_encoding` 给每个带 `append_dim` 的变量算出 chunk 形状：append 维上是 `min(XrBackend.APPEND_DIM_CHUNK, size)`（`APPEND_DIM_CHUNK = 512`，`quantlab/backend.py:34`），其余每一维取该维的完整长度。
 
 为什么要显式钉？因为不给 `encoding` 的话，zarr 会**拿第一个窗口自己的长度当 chunk 大小**。于是 store 的物理布局取决于"谁碰巧第一个被写进去"——第一批是 700 天就 700，是 90 天就 90——之后每一次长度不同的追加（一个短交易年、一个不完整的末月）都跟磁盘上的网格错开。钉一个固定值，布局才是 **store 的属性**而不是**第一个窗口的属性**。
 
@@ -114,7 +114,7 @@ APPEND_DIM_CHUNK = 512
 
 理由是：`to_zarr(mode="a", append_dim=...)` 这两条**一条都不查**，而它出错的方式是静默的。
 
-**第一种静默腐蚀：坐标标签被覆写。** store 里存着 `{A, XYZ}`，进来的窗口是 `{A, ARM}`（一个退市 + 一个新上市，**数量都没变**）。裸 `to_zarr` 会成功，然后把 symbol 坐标改写成 `['A', 'ARM']`，XYZ 已经写进去的历史就挂到了 ARM 名下。代码注释里记了这次实测（`quantlab/dataset/backend.py:113-114`，measured 2026-09-06：`rows [1.0, 3.0] were written for XYZ but are now labelled: ARM`）。原样复现：
+**第一种静默腐蚀：坐标标签被覆写。** store 里存着 `{A, XYZ}`，进来的窗口是 `{A, ARM}`（一个退市 + 一个新上市，**数量都没变**）。裸 `to_zarr` 会成功，然后把 symbol 坐标改写成 `['A', 'ARM']`，XYZ 已经写进去的历史就挂到了 ARM 名下。代码注释里记了这次实测（`quantlab/backend.py:113-114`，measured 2026-09-06：`rows [1.0, 3.0] were written for XYZ but are now labelled: ARM`）。原样复现：
 
 ```
 裸 append 之后的 symbol 轴: ['A', 'ARM']
@@ -187,7 +187,7 @@ XYZ 的历史还在 XYZ 名下（退市之后新行是 NaN），ARM 的历史段
 
 ```python
 import numpy as np, pandas as pd, xarray as xr
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 
 panel = xr.Dataset(
     {"close": (["timestamp", "symbol"], np.arange(6, dtype=float).reshape(3, 2))},

@@ -67,7 +67,7 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     import xarray as xr
     import zarr
 
-    from quantlab.acquisition import registry
+    from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig
@@ -309,7 +309,7 @@ def test_importing_wrds_crsp_first_registers_both_capabilities():
             "-c",
             "import json\n"
             "import quantlab.acquisition.wrds.crsp\n"
-            "from quantlab.acquisition.registry import DataSourceRegistry\n"
+            "from quantlab.registry import DataSourceRegistry\n"
             "d = DataSourceRegistry.get('wrds')\n"
             "print(json.dumps(sorted(\n"
             "    [c.market, c.frequency, c.data_type] for c in d.capabilities\n"
@@ -372,7 +372,7 @@ def _convert_to_panel(
     """
     import xarray as xr
 
-    from quantlab.acquisition import registry
+    from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig
