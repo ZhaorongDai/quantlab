@@ -131,8 +131,8 @@ class CrspMembership:
 
     Holds no connection: `reference` is a `CrspReference`, i.e. parquet on
     disk. Every public method reports what it excluded through `self.report`,
-    which describes the MOST RECENT `permno_intervals()` call -- the six keys
-    below are reset on entry.
+    which describes the MOST RECENT `permno_intervals()` call -- the seven
+    keys below are reset on entry.
     """
 
     #: CRSP's own S&P 500 membership (D-05).
@@ -182,13 +182,18 @@ class CrspMembership:
                 "left_censored_spells": 0,
                 "tolerated_gaps": [],
                 "unlinked": [],
+                "unlinked_blocking": [],
             }
         )
 
     # -- public -------------------------------------------------------------
 
     def permno_intervals(
-        self, index: str, *, allow_unlinked: bool = False
+        self,
+        index: str,
+        *,
+        allow_unlinked: bool = False,
+        window: tuple[date, date] | tuple[str, str] | None = None,
     ) -> pl.DataFrame:
         """`(permno Int64, start_date Date, end_date Date)`, sorted.
 
@@ -196,6 +201,14 @@ class CrspMembership:
         `end_date` never null and never later than
         `CrspReference.product_end`. `allow_unlinked` only affects the
         Nasdaq-100 branch (see `_nasdaq100_pieces`).
+
+        `window` scopes the UNLINKED REFUSAL and NOTHING ELSE. It never
+        filters the rows returned -- an interval entirely outside it still
+        comes back, because filtering is `permnos_in_range`'s job and doing it
+        in two places is how the two answers start to disagree. Like
+        `allow_unlinked` it only affects the Nasdaq-100 branch. Omitted (the
+        default), every uncovered span blocks, which is exactly today's
+        behaviour for every caller that does not pass it.
         """
         if index not in self.INDEXES:
             raise ValueError(
@@ -205,11 +218,23 @@ class CrspMembership:
                 f"legitimate answer for a REAL index, so a typo would be "
                 f"indistinguishable from 'nobody was a member'."
             )
+        if window is not None:
+            window = (_as_date(window[0]), _as_date(window[1]))
+            if window[0] > window[1]:
+                raise ValueError(
+                    f"{type(self).__name__}: the requested window is inverted "
+                    f"-- {window[0]} is after {window[1]}. An inverted window "
+                    f"overlaps nothing, so it would suppress EVERY unlinked "
+                    f"refusal and hand back a roster indistinguishable from a "
+                    f"complete one."
+                )
         self._reset_report()
         if index == self.SP500:
             pieces = self._sp500_pieces()
         else:
-            pieces = self._nasdaq100_pieces(allow_unlinked=allow_unlinked)
+            pieces = self._nasdaq100_pieces(
+                allow_unlinked=allow_unlinked, window=window
+            )
         return self._frame(_merge_intervals(pieces))
 
     def permnos_in_range(
@@ -235,6 +260,12 @@ class CrspMembership:
         It used to be stated here, and only here, while eight other call sites
         each spelled their own bare `sorted()`; a contract stated in one place
         and re-derived in eight is eight things that can drift apart.
+
+        **The window reaches the refusal.** `[start_date, end_date]` is passed
+        down to `permno_intervals`, so a Nasdaq-100 roster is refused only for
+        uncovered membership days this window could actually lose a member to.
+        A link gap the window never touches is recorded in
+        `report['unlinked']` and logged, not raised.
         """
         start = _as_date(start_date)
         end = _as_date(end_date)
@@ -244,7 +275,9 @@ class CrspMembership:
                 f"{end}; an inverted window overlaps nothing and would return "
                 f"an empty roster indistinguishable from a real one."
             )
-        intervals = self.permno_intervals(index, allow_unlinked=allow_unlinked)
+        intervals = self.permno_intervals(
+            index, allow_unlinked=allow_unlinked, window=(start, end)
+        )
         overlapping = intervals.filter(
             (pl.col("start_date") <= end) & (pl.col("end_date") >= start)
         )
@@ -307,7 +340,10 @@ class CrspMembership:
     # -- Nasdaq-100 (D-14) ---------------------------------------------------
 
     def _nasdaq100_pieces(
-        self, *, allow_unlinked: bool
+        self,
+        *,
+        allow_unlinked: bool,
+        window: tuple[date, date] | None = None,
     ) -> list[tuple[int, date, date]]:
         """Compustat spells x CCM links -> `(permno, start, end)` pieces.
 
@@ -332,6 +368,17 @@ class CrspMembership:
         A spell with NO matching link at all is always unlinked, however short
         it is: the tolerance bridges a seam BETWEEN two links, and with no
         link there is nothing to bridge.
+
+        **The refusal is scoped to `window`, when one is given.** A span of
+        uncovered days that the requested window never touches cannot cost
+        that window a member, so refusing on it is an alarm that fires on
+        every single pull -- and an alarm that always fires trains the
+        operator to pass the escape hatch reflexively, which is precisely how
+        `allow_unlinked` stops being read on the run where it really does drop
+        members. A gate that always fires is not a gate. Scoped out of the
+        REFUSAL only: every unlinked spell still lands in `report['unlinked']`
+        and still emits a warning naming the window, and the subset that would
+        have refused is `report['unlinked_blocking']`.
         """
         product_end = self.reference.product_end
         spells = (
@@ -354,6 +401,7 @@ class CrspMembership:
 
         pieces: list[tuple[int, date, date]] = []
         unlinked: list[dict] = []
+        blocking: list[dict] = []
         for spell in spells.to_dicts():
             gvkey, iid, start = spell["gvkey"], spell["iid"], spell["start"]
             if gvkey is None or iid is None or start is None:
@@ -408,29 +456,63 @@ class CrspMembership:
                 else:
                     uncovered.append((gap_start, gap_end))
             if uncovered:
-                unlinked.append(
-                    {
-                        "gvkey": gvkey,
-                        "iid": iid,
-                        "from": str(start),
-                        "thru": str(end),
-                        "uncovered": [
-                            [str(gap_start), str(gap_end)]
-                            for gap_start, gap_end in uncovered
-                        ],
-                    }
+                # The overlap test runs on the `date` tuples, HERE, while they
+                # still exist: the entry built below stringifies them, and a
+                # string compared against a date is either a TypeError or --
+                # worse -- a lexicographic answer that happens to look right.
+                blocks = window is None or any(
+                    gap_start <= window[1] and gap_end >= window[0]
+                    for gap_start, gap_end in uncovered
                 )
+                entry = {
+                    "gvkey": gvkey,
+                    "iid": iid,
+                    "from": str(start),
+                    "thru": str(end),
+                    "uncovered": [
+                        [str(gap_start), str(gap_end)]
+                        for gap_start, gap_end in uncovered
+                    ],
+                }
+                unlinked.append(entry)
+                # The SAME dict object in both lists, deliberately: the two
+                # report keys then cannot drift apart, and the whole cost is a
+                # second pointer.
+                if blocks:
+                    blocking.append(entry)
 
-        if unlinked and not allow_unlinked:
-            raise ValueError(self._unlinked_message(unlinked))
+        if blocking and not allow_unlinked:
+            raise ValueError(self._unlinked_message(blocking, window=window))
         if unlinked:
             self.report["unlinked"] = unlinked
-            logger.warning(
-                f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 membership "
-                f"spell(s) have days no CRSP/Compustat link covers; those days "
-                f"are absent from the universe. allow_unlinked=True was passed, "
-                f"so they are listed in report['unlinked'] instead of raising."
-            )
+            self.report["unlinked_blocking"] = blocking
+            if blocking:
+                in_window = (
+                    f" {len(blocking)} of them have uncovered days INSIDE the "
+                    f"requested window {window[0]}..{window[1]}."
+                    if window is not None
+                    else ""
+                )
+                logger.warning(
+                    f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 "
+                    f"membership spell(s) have days no CRSP/Compustat link "
+                    f"covers; those days are absent from the universe. "
+                    f"allow_unlinked=True was passed, so they are listed in "
+                    f"report['unlinked'] instead of raising." + in_window
+                )
+            else:
+                # `blocking` can only be empty with a window: without one every
+                # span blocks. This branch therefore fires on runs that did NOT
+                # pass allow_unlinked -- which is the point. The out-of-window
+                # fact is scoped out of the REFUSAL, never out of the log.
+                logger.warning(
+                    f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 "
+                    f"membership spell(s) have days no CRSP/Compustat link "
+                    f"covers, but NONE of those days fall inside the requested "
+                    f"window {window[0]}..{window[1]}, so the universe over "
+                    f"that window is complete. They are recorded in "
+                    f"report['unlinked'] for inspection."
+                )
         return pieces
 
     def _ccm_links_by_key(self) -> dict[tuple[str, str], list[dict]]:
@@ -502,8 +584,18 @@ class CrspMembership:
                         f"module may make on your behalf."
                     )
 
-    def _unlinked_message(self, unlinked: list[dict]) -> str:
-        """The refusal: what is unlinked, how much of it, and the remedy."""
+    def _unlinked_message(
+        self,
+        unlinked: list[dict],
+        *,
+        window: tuple[date, date] | None = None,
+    ) -> str:
+        """The refusal: what BLOCKS, how much of it, and the remedy.
+
+        `unlinked` is the BLOCKING subset, not every unlinked spell: with a
+        `window` the two differ, and listing spells that did not refuse would
+        make the message argue for a refusal it is not making.
+        """
         listed = []
         for record in unlinked[:_MAX_LISTED]:
             ranges = ", ".join(
@@ -518,12 +610,22 @@ class CrspMembership:
             if len(unlinked) > _MAX_LISTED
             else ""
         )
+        scope = (
+            f"\nThe refusal is scoped to the requested window "
+            f"{window[0]}..{window[1]}: only spells with uncovered days inside "
+            f"it are listed above, and only they refuse. Spells whose gaps "
+            f"fall entirely outside it are recorded in report['unlinked'] "
+            f"instead."
+            if window is not None
+            else ""
+        )
         return (
             f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 membership "
             f"spell(s) have days that no CRSP/Compustat link covers, so those "
             f"membership days have no PERMNO:\n"
             + "\n".join(listed)
             + more
+            + scope
             + f"\nDropping them would remove real index members from the "
             f"universe -- survivorship bias that reads downstream as a data "
             f"gap rather than an error. Pass allow_unlinked=True (the CLI's "

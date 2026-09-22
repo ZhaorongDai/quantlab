@@ -829,7 +829,11 @@ def test_an_inverted_window_is_refused_rather_than_silently_blocking_nothing(
     message = str(excinfo.value)
     assert "2020-01-01" in message
     assert "2019-01-01" in message
-    assert "link" not in message.lower()
+    # Not a bare "link" search: the message legitimately says "unlinked
+    # refusal", naming the thing an inverted window would suppress. What it
+    # must not do is point at the VENDOR link table, which would send the
+    # reader to CRSP for a typo in their own arguments.
+    assert "CRSP/Compustat" not in message
 
 
 # ---------------------------------------------------------------------------
