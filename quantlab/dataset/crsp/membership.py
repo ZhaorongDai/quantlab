@@ -487,9 +487,13 @@ class CrspMembership:
             self.report["unlinked"] = unlinked
             self.report["unlinked_blocking"] = blocking
             if blocking:
+                # Phrased without a verb agreeing with `len(blocking)`: "1 of
+                # them have" is the kind of wrong that makes an operator
+                # wonder whether the count itself is wrong.
                 in_window = (
-                    f" {len(blocking)} of them have uncovered days INSIDE the "
-                    f"requested window {window[0]}..{window[1]}."
+                    f" Uncovered days INSIDE the requested window "
+                    f"{window[0]}..{window[1]}: {len(blocking)} of the "
+                    f"{len(unlinked)}."
                     if window is not None
                     else ""
                 )
