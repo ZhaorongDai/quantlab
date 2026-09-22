@@ -25,6 +25,16 @@ from .config import BacktestConfig, FactorConfig
 #: 数据指纹比较的字段（D-27）：任一不同就 warning。
 FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
 
+#: 失败路径上做的那次指纹比较的结尾（D-03.11-UAT-A），代替正常的 "continuing"。
+#: `tests/test_backtest_rebuild.py` 用其中的子串 `"comparison is PARTIAL"`
+#: （那边叫 `PARTIAL_WARNING`）识别部分比较，所以以后改写措辞也必须保留这个子串。
+FINGERPRINT_PARTIAL_NOTE = (
+    "this comparison is PARTIAL: the run failed before it finished reading, so "
+    "a differing digest/start/end/n_timestamps may reflect the interrupted read "
+    "(under run_cv, a single fold's window) rather than a data change; the "
+    "original error follows"
+)
+
 #: 一个日历年的平均天数。长于一天的 bar 是日历跨度（周线、月线），按它年化
 #: （`MarketSpec.year_freq`，代码审查 CR-02）。
 CALENDAR_DAYS_PER_YEAR = 365.25
@@ -382,13 +392,24 @@ class BaseBacktester(ABC):
         # 训练出的 checkpoint 同理（代码审查 WR-04）：只有本次 train 模式才有。
         self._trained_checkpoint = None
 
-        # load 模式下训练日期取自 checkpoint 自己的 config.json（代码审查 WR-01）。
-        train_bounds = self._prepare_model()
-        calendar = self._price_calendar(end_date)
-        # 与 config.model 的日期比较按日历上选中的 bar 做（G-03.7-7），所以在日历之后。
-        if self.config.model_mode == "load":
-            self._warn_if_config_model_dates_differ(calendar, train_bounds)
-        window = self._backtest_window(start_date, end_date, calendar, *train_bounds)
+        # 这一段里任何一处抛异常，下面那次指纹比对就跑不到了，可它的输入已经存在
+        # 而且可能已经不一样（D-03.11-UAT-A）。`_prepare_model` 特意包在里面：
+        # train 模式下它在 `model.train()` 之前记训练段指纹（WR-05），而 train()
+        # 完全可能因为同样的数据原因抛异常。
+        try:
+            # load 模式下训练日期取自 checkpoint 自己的 config.json（代码审查 WR-01）。
+            train_bounds = self._prepare_model()
+            calendar = self._price_calendar(end_date)
+            # 与 config.model 的日期比较按日历上选中的 bar 做（G-03.7-7），所以在日历之后。
+            if self.config.model_mode == "load":
+                self._warn_if_config_model_dates_differ(calendar, train_bounds)
+            window = self._backtest_window(
+                start_date, end_date, calendar, *train_bounds
+            )
+        except Exception:
+            self._compare_fingerprints_on_failure()
+            raise
+        # 正常路径的这次比较不在 try 里，也不走 finally：否则顺利跑完会比两次。
         self._compare_fingerprints()
 
         metrics = window.metrics
@@ -431,7 +452,10 @@ class BaseBacktester(ABC):
            外的，只有每折开头的标签期限个 bar 是样本内，`in_sample_ranges`
            逐段记下它们（`_stitched_split`）；
         5. 指纹覆盖整个拼接窗口（D-27）：因子重新定到「首折预热起点 .. 末折
-           test_end」并重读后记录，价格指纹取自拼接价格，然后比对；
+           test_end」并重读后记录，价格指纹取自拼接价格，然后比对。某折的窗口
+           或这次拼接重读中途抛异常时，先做一次**部分**指纹比较
+           （`_compare_fingerprints_on_failure`，D-03.11-UAT-A），再把原始异常
+           原样抛出；
         6. 落盘（`_persist_cv`），可选 wandb，返回 `CVBacktestResult`。
 
         折日期经 `_iso_date` 规范成 ISO 日期（真实数据上是纳秒字符串），所以
@@ -485,12 +509,19 @@ class BaseBacktester(ABC):
                     f"{manifest_bounds[0]}..{manifest_bounds[1]}; using the "
                     f"manifest's dates (D-16, WR-01)"
                 )
-            window = self._backtest_window(
-                fold["test_start"],
-                fold["test_end"],
-                calendar,
-                *fold["_train_bounds"],
-            )
+            # 折窗口抛异常时补一次部分指纹比较（D-03.11-UAT-A）。循环体更前面
+            # （解析 / 加载 checkpoint）失败时手上要么没有指纹、要么还是上一折
+            # 的，所以特意不包进来。
+            try:
+                window = self._backtest_window(
+                    fold["test_start"],
+                    fold["test_end"],
+                    calendar,
+                    *fold["_train_bounds"],
+                )
+            except Exception:
+                self._compare_fingerprints_on_failure()
+                raise
             records.append(
                 {
                     **{key: fold[key] for key in self._CV_RECORD_KEYS},
@@ -511,8 +542,12 @@ class BaseBacktester(ABC):
         # D-27：逐折记录的只是最后一折的窗口。重置后把因子定到整个拼接窗口
         # （含首折预热）重读并记录，价格指纹取自拼接价格，然后比对。
         self._fingerprints = {}
-        self._redate_factors(first_start, last_end, calendar)
-        stitched_prices = self._load_prices(first_start, last_end)
+        try:
+            self._redate_factors(first_start, last_end, calendar)
+            stitched_prices = self._load_prices(first_start, last_end)
+        except Exception:
+            self._compare_fingerprints_on_failure()
+            raise
         self._compare_fingerprints()
 
         if not np.array_equal(
@@ -1172,7 +1207,7 @@ class BaseBacktester(ABC):
                         self._dataset_variables_fingerprint(item)
                     )
 
-    def _compare_fingerprints(self) -> None:
+    def _compare_fingerprints(self, *, partial: bool = False) -> None:
         """与 `expected_fingerprint` 比对本次记录的指纹（D-27）；只 warning，不中断。
 
         只在 `expected_fingerprint` 不为 None 时比对。某个键只出现在一侧，或
@@ -1180,24 +1215,42 @@ class BaseBacktester(ABC):
         该键发一条 warning，写明键名和不同的字段。数据集会被追加，Tiingo 也会在
         新分红后回溯重算复权价，所以重建出来的回测必须能察觉数据变了，而不是
         悄悄得出不同的结果；但变了的数据仍然可以回测，所以继续运行。
+
+        `partial=True` 是失败路径上的那次比较（D-03.11-UAT-A，只由
+        `_compare_fingerprints_on_failure` 传）：本次运行在读完之前就抛了异常，
+        手上只有抛出那一刻已经记下的指纹。两点不同：
+
+        - 每条 warning 的结尾换成 `FINGERPRINT_PARTIAL_NOTE` 而不是
+          "continuing"——这次比较之后跟着的是原始异常，不是继续运行，而且范围
+          可能是被打断的读（`run_cv` 下还可能只是某一折的窗口），所以
+          `digest` / `start` / `end` / `n_timestamps` 的不同不一定意味着数据变了；
+        - 「只在 expected_fingerprint 里、本次没读」这一支整个跳过：部分比较下
+          这个条件的含义是「**还没**读到」，不是「没有读」，报出来是假警报。
+
+        其余分支（两边都有但字段不同、本次读了而 expected 里没有）行为不变，
+        `partial=False` 时的每条消息文本与以前逐字节相同。
         """
         expected = self.expected_fingerprint
         if expected is None:
             return
+        tail = FINGERPRINT_PARTIAL_NOTE if partial else "continuing"
         actual = to_jsonable(self._fingerprints)
         for key in sorted(set(expected) | set(actual)):  # type: ignore[arg-type]
             if key not in actual:
+                # 部分比较下这只说明还没读到它，报出来是假警报。
+                if partial:
+                    continue
                 logger.warning(
                     f"{self.class_name}: data fingerprint mismatch for {key!r}: "
                     f"present in expected_fingerprint but not read by this run "
-                    f"(D-27); continuing"
+                    f"(D-27); {tail}"
                 )
                 continue
             if key not in expected:
                 logger.warning(
                     f"{self.class_name}: data fingerprint mismatch for {key!r}: "
                     f"read by this run but absent from expected_fingerprint "
-                    f"(D-27); continuing"
+                    f"(D-27); {tail}"
                 )
                 continue
             wanted, got = expected[key], actual[key]
@@ -1214,8 +1267,37 @@ class BaseBacktester(ABC):
                 logger.warning(
                     f"{self.class_name}: data fingerprint mismatch for {key!r} "
                     f"(differing fields: {', '.join(differing)}): {details}. The "
-                    f"data changed since the expected run (D-27); continuing"
+                    f"data changed since the expected run (D-27); {tail}"
                 )
+
+    def _compare_fingerprints_on_failure(self) -> None:
+        """失败路径上做一次部分指纹比较（D-03.11-UAT-A）；自己坏掉也绝不改变抛出的异常。
+
+        `run()` / `run_cv()` 在窗口算完之后才比对指纹，可是因子指纹在
+        `_redate_factors` 里、`predict_panel` 之前就记好了。窗口中途抛异常时，
+        指纹已经存在、而且可能已经不一样，比对却根本没跑：操作者只看到下游那个
+        错误，完全不知道数据变了——而这正是 D-27 存在的意义。所以异常路径上补这
+        一次比较，标成部分比较（`partial=True`）。
+
+        **这里吞掉异常是对的，别改回去。** 03.11 的 WR-02 定下的是相反的默认：
+        把模块自身的 bug 藏起来的 guard 是缺陷。这里是唯一的例外，因为它保护的
+        恰恰是「操作者仍然看得到**真正的**异常」：诊断只是额外信息，永远不能顶替
+        原始错误。它也没有藏住任何东西——诊断自己失败会另发一条 warning，随后原始
+        异常原样继续向上抛。那条 warning 里不含 "data fingerprint mismatch"，
+        所以不会被误读成一次 D-27 不匹配；连写日志本身也再包一层，免得日志 sink
+        坏掉又把问题请回来。
+        """
+        try:
+            self._compare_fingerprints(partial=True)
+        except BaseException as error:  # noqa: BLE001 - 见上：诊断不能顶替原始异常
+            try:
+                logger.warning(
+                    f"{self.class_name}: the failure-path data diagnostic itself "
+                    f"raised {type(error).__name__}: {error!r}; it is skipped and "
+                    f"the original error follows (D-03.11-UAT-A)"
+                )
+            except BaseException:  # noqa: BLE001 - 日志 sink 坏掉不能变成抛出的异常
+                pass
 
     def _assert_weights_contract(
         self, weights: xr.Dataset, prices: xr.Dataset
