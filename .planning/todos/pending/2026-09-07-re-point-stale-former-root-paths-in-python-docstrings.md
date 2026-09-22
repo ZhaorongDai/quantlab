@@ -33,7 +33,7 @@ Three distinct shapes, counted live rather than taken from the verification repo
 slightly different pattern):
 
 ```bash
-# 1. Slash form -- `base/data.py`, `dataset/cleaning.py:clean_membership_panel()`
+# 1. Slash form -- `base/data.py`, `quantlab/dataset/_support/cleaning.py:clean_membership_panel()`
 grep -rInoE '`(acquisition|base|config|dataset|dl_model|enums|factor|label|ml_model|my_ops|utils|vecbt)/[^`]*`' \
   --include="*.py" quantlab/ tests/ ./*.py | wc -l          # -> 161
 

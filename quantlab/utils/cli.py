@@ -20,8 +20,8 @@ Dataset layer stays unreachable from the command line:
 `base.data.BaseDataset.NEW_LISTING_STRATEGIES` for `--on-new-listing`.
 `apply_data_dir` additionally reaches the `config` layer, but imports it at
 CALL time for the same reason `_explicit_symbol_catalog` defers
-`acquisition.universe`: a module-scope `from config import set_data_root`
-would drag `dataset.backend`, `dataset.spot`, `dataset.stock` and
+`quantlab.universe`: a module-scope `from config import set_data_root`
+would drag `quantlab.backend`, `dataset.spot`, `dataset.stock` and
 `base.config` into every import of this module.
 
 **The one thing this module must not unify.** `ingest_tiingo.py` resolves
@@ -475,7 +475,7 @@ def apply_data_dir(args: argparse.Namespace) -> "object | None":
 
     The `config` import is deferred to call time so this module keeps the
     module-scope dependency surface its docstring promises -- the same reason
-    `_explicit_symbol_catalog` defers `acquisition.universe`.
+    `_explicit_symbol_catalog` defers `quantlab.universe`.
     """
     value = getattr(args, "data_dir", None)
     if value is None:

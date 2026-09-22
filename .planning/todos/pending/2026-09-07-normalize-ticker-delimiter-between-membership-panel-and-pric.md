@@ -4,8 +4,8 @@ title: Normalize ticker delimiter between membership panel and price roster
 area: data / acquisition
 severity: minor
 files:
-  - acquisition/universe.py (IndexMembershipFetcher — Wikipedia-sourced symbols)
-  - acquisition/universe.py (TiingoRosterFetcher — vendor-sourced symbols)
+  - quantlab/universe.py (IndexMembershipFetcher — Wikipedia-sourced symbols)
+  - quantlab/universe.py (TiingoRosterFetcher — vendor-sourced symbols)
   - data/data/reference/universe.parquet (both categories land in one table)
 ---
 
@@ -22,7 +22,7 @@ sp500_constituent symbols absent from the us_all price roster, dot-spelled: ['BF
 both are present in us_all after s.replace('.', '-'):                        ['BF-B', 'BRK-B']
 ```
 
-`BRK-B` and `BF-B` are not obscure — `acquisition/universe.py`'s own 260906-eme docstring
+`BRK-B` and `BF-B` are not obscure — `quantlab/universe.py`'s own 260906-eme docstring
 lists them among the class shares it verified as surviving the preferred-share filter.
 So the securities are present on both sides; only the notation differs.
 

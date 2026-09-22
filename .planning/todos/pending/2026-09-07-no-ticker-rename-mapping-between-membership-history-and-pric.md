@@ -7,8 +7,8 @@ triggers: a backtest (or any panel join) that resolves point-in-time index membe
   then looks those symbols up in the price panel. Harmless while only recent --as-of-date
   values are used; fires as soon as historical membership meets historical prices.
 files:
-  - acquisition/universe.py (IndexMembershipFetcher — Wikipedia change logs, period-correct tickers)
-  - acquisition/universe.py (TiingoRosterFetcher — Tiingo directory, history rewritten onto the CURRENT ticker)
+  - quantlab/universe.py (IndexMembershipFetcher — Wikipedia change logs, period-correct tickers)
+  - quantlab/universe.py (TiingoRosterFetcher — Tiingo directory, history rewritten onto the CURRENT ticker)
   - base/constituent.py (UniverseCatalog — where the two vocabularies are joined)
 ---
 

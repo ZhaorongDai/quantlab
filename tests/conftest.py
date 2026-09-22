@@ -598,7 +598,7 @@ def mock_universe_fetchers(
     ndx_anchor_html_fixture: str,
     ndx_changes_html_fixture: str,
 ) -> Callable[..., object]:
-    """Patch `acquisition.universe.requests.get` to return a `FakeResponse`
+    """Patch `quantlab.universe.requests.get` to return a `FakeResponse`
     (with `.status_code`, `.text`, `.content`, `.raise_for_status()`) keyed
     by requested URL, matching each fetcher's real class-constant URL:
 

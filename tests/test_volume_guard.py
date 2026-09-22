@@ -62,7 +62,7 @@ def test_the_grounded_constants_the_new_volume_guard_is_built_beside():
     number it was never about.
 
     `UniverseCatalog` is imported INSIDE the test body on purpose. A module-scope
-    import of `acquisition.universe` here would make this file a new
+    import of `quantlab.universe` here would make this file a new
     collection-time liability of the same kind `tests/conftest.py`'s docstring
     forbids.
     """

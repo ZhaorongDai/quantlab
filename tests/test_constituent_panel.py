@@ -1,7 +1,7 @@
 """Tests for the interval-to-daily-panel densification (DATA-05, D-04).
 
 Every test in this file runs OFFLINE. The only route to the network in this
-code path is `acquisition.universe.requests.get`, which the shared
+code path is `quantlab.universe.requests.get`, which the shared
 `mock_universe_fetchers` fixture in `tests/conftest.py` replaces with a
 URL-keyed fake that raises `AssertionError` on any unexpected URL. The
 densification tests do not even need that: they drive module-local
