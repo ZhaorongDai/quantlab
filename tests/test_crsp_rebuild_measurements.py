@@ -277,6 +277,29 @@ def _fresh_backup_dir(root: Path) -> Path:
     return candidate
 
 
+def _assert_breakdown_shape(breakdown: dict, *, label: str, source: Path) -> None:
+    """Every record in one `_permno_breakdown` mapping has EXACTLY four keys.
+
+    One predicate for both branches of the filter report, because
+    `quantlab/dataset/crsp.py` renders both from the single
+    `_permno_breakdown` (`:1099` for the rescued rows, `:1116` for the dropped
+    ones). Two copies of this check could drift apart while each looked right
+    on its own -- the same reason the production side has one renderer.
+
+    **Non-emptiness is deliberately NOT checked here.** The two branches have
+    different and incompatible expectations about it, and folding that into
+    this helper would force one of them to lie. The caller states its own.
+    """
+    for permno, record in breakdown.items():
+        assert set(record) == BREAKDOWN_RECORD_KEYS, (
+            f"{label}: PERMNO {permno}'s record carries {sorted(record)}, not "
+            f"{sorted(BREAKDOWN_RECORD_KEYS)}. A `symbol` key here repeats the "
+            f"JSON key byte for byte and was deleted (G-03.11-2); its presence "
+            f"means this report predates that deletion. Source: {source}. "
+            f"Full {label}: {breakdown}"
+        )
+
+
 def _config(root: Path) -> CrspDatasetConfig:
     """The sp500/2024 config, constructed DIRECTLY.
 
@@ -576,11 +599,16 @@ def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
     artefact being audited and the code that writes it were no longer the same
     thing.
 
-    The record count is asserted FIRST and on purpose. A bare `for record in
+    The record count is checked FIRST and on purpose. A bare `for record in
     ...: assert set(record) == ...` is satisfied by an empty mapping, so a
     `_permno_breakdown` that regressed to emitting nothing would leave this
     test green -- the same empty-loop failure mode `test_crsp_identity.py`
     calls out at `:1103-1107`.
+
+    **The two branches are NOT symmetric, and the asymmetry is in the code
+    rather than left to the reader.** See the `dropped_permnos` half below: on
+    this roster and window nothing is dropped, so the shape check there runs
+    over zero records. That is a MEASUREMENT, printed as such, not a pass.
     """
     measurement, _started_at, _config_used = rebuilt
 
@@ -588,6 +616,9 @@ def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
     report = json.loads(report_path.read_text())
     overrides = report["roster_overrides"]["permnos"]
 
+    # Branch 1: MUST be non-empty on this store. An explicit roster rescues
+    # PERMNO 75154 from the security filter, which is what makes this the
+    # branch that can actually exercise the key set on shipped data.
     print(f"roster_overrides.permnos: {len(overrides)} record(s)")
     assert len(overrides) >= 1, (
         f"roster_overrides.permnos is empty, so the key-set check below would "
@@ -595,14 +626,9 @@ def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
         f"explicit roster rescues PERMNO {ROSTER_RESCUED_PERMNO}; nothing to "
         f"rescue means the roster wiring changed. Report: {report_path}"
     )
-    for permno, record in overrides.items():
-        assert set(record) == BREAKDOWN_RECORD_KEYS, (
-            f"PERMNO {permno}'s record carries {sorted(record)}, not "
-            f"{sorted(BREAKDOWN_RECORD_KEYS)}. A `symbol` key here repeats "
-            f"the JSON key byte for byte and was deleted (G-03.11-2); its "
-            f"presence means this report predates that deletion. Full "
-            f"roster_overrides.permnos: {overrides}"
-        )
+    _assert_breakdown_shape(
+        overrides, label="roster_overrides.permnos", source=report_path
+    )
 
     rescued = overrides[ROSTER_RESCUED_PERMNO]
     assert rescued["rows"] == ROSTER_RESCUED_ROWS, rescued
@@ -612,4 +638,28 @@ def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
         f"PERMNO {ROSTER_RESCUED_PERMNO}'s `types` is empty. With `symbol` "
         f"gone, `types` is the only field that answers WHY this row needed "
         f"rescuing; an empty list makes the record unreadable. {rescued}"
+    )
+
+    # Branch 2: `dropped_permnos`, and it is EMPTY on this store -- measured
+    # as {} on 2026-09-21. It is deliberately not required to be non-empty:
+    # this roster/window simply drops nobody, and demanding a record would
+    # fail a correct rebuild.
+    #
+    # So the shape check below runs over ZERO records, and is reported as the
+    # empty measurement it is rather than allowed to look like a verification.
+    # The count is printed for exactly that reason: a reader seeing "0" should
+    # read "nothing was examined here", not "this branch checked out".
+    #
+    # Where the branch IS genuinely covered:
+    # `tests/test_crsp_identity.py:1085-1103` builds a synthetic store whose
+    # QQQ row the filter really does drop, and pins the same key set on it.
+    # The structural reason the two agree is that `crsp.py:1099` and `:1116`
+    # render both branches through the ONE `_permno_breakdown` -- which is
+    # also precisely why an empty run here cannot be treated as evidence for
+    # the other branch. Same renderer, same shape, by construction and not by
+    # measurement.
+    dropped = report["dropped_permnos"]
+    print(f"dropped_permnos: {len(dropped)} record(s)")
+    _assert_breakdown_shape(
+        dropped, label="dropped_permnos", source=report_path
     )
