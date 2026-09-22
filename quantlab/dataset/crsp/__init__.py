@@ -760,6 +760,18 @@ class CrspStockDataset(StockDataset):
         could be handed two different answers if it were rewritten underneath a
         long run. One read, one opinion about who was a member.
 
+        **The window passed is the conversion's own.** This derivation is
+        computed over exactly `[config.start_date, config.end_date]` (the
+        module docstring above), so a CRSP/Compustat link gap outside that
+        range cannot affect a single exempted row, and refusing on it would
+        stop a conversion over days it never produces.
+
+        **This call still passes no `allow_unlinked`.** An IN-window gap
+        therefore refuses the whole conversion with no CLI escape hatch --
+        `CrspDatasetConfig` has no field to carry the flag. That is a known,
+        deliberate gap, recorded here rather than closed: the conservative
+        direction is to refuse a universe that really would be incomplete.
+
         Invalidated in the `config` setter beside `_derivation_cache`.
         """
         if self.config.roster_universe is None:
@@ -770,7 +782,10 @@ class CrspStockDataset(StockDataset):
 
             cached = CrspMembership(
                 CrspReference(self.config.reference_dir)
-            ).permno_intervals(self.config.roster_universe)
+            ).permno_intervals(
+                self.config.roster_universe,
+                window=(self.config.start_date, self.config.end_date),
+            )
             self._member_intervals_cache = cached
         return cached
 

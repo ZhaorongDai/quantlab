@@ -836,6 +836,50 @@ def test_an_inverted_window_is_refused_rather_than_silently_blocking_nothing(
     assert "CRSP/Compustat" not in message
 
 
+def test_the_conversion_window_reaches_the_refusal_through_member_intervals(
+    tmp_path,
+):
+    """The security filter's roster exemption is the THIRD refusal site.
+
+    `CrspStockDataset._member_intervals` (`quantlab/dataset/crsp/__init__.py`)
+    backs the roster exemption in `_apply_security_filter`, so it is reached on
+    every `--universe` conversion -- and it passes no `allow_unlinked` at all.
+    Before the window reached it, a 1999 link gap refused a whole 2015+
+    conversion with no escape hatch available on the command line, which is
+    exactly where the operator's reported run died.
+
+    The frame still carries 81020 for the 2015 window because a window scopes
+    the refusal and never filters intervals.
+    """
+    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    reference_dir = str(_gap_tier(tmp_path).reference.reference_dir)
+
+    def _dataset(start_date, end_date):
+        # Construction performs no IO (the pattern is
+        # `tests/test_crsp_identity.py`'s round-trip config); only
+        # `_member_intervals()` reads the tier.
+        return CrspStockDataset(
+            CrspDatasetConfig(
+                zarr_file_path=str(tmp_path / "crsp.zarr"),
+                raw_data_dir_path=str(tmp_path / "raw"),
+                catalog_path=str(tmp_path / "catalog"),
+                reference_dir=reference_dir,
+                start_date=start_date,
+                end_date=end_date,
+                roster_universe="comp_nasdaq100",
+            )
+        )
+
+    intervals = _dataset("2015-01-01", "2025-12-31")._member_intervals()
+    assert set(intervals["permno"].to_list()) == {81020, 81021}
+
+    with pytest.raises(ValueError) as refusal:
+        _dataset("2007-01-01", "2007-12-31")._member_intervals()
+    assert "100020" in str(refusal.value)
+
+
 # ---------------------------------------------------------------------------
 # 03.11-05 -- the ticker branch is GONE, the PERMNO branch is intact
 # ---------------------------------------------------------------------------
