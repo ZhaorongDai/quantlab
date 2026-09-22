@@ -136,7 +136,7 @@ Plans:
 - [ ] 03-06-PLAN.md — Close CR-01: resolve Polars factor names on the `read()` path so `factor_data_strategy="read"` is backend-independent (D-03), plus the two-backend read-strategy lock
 - [ ] 03-07-PLAN.md — Close CR-02: US-equity `amount` becomes typical-price dollar volume (GAP-D-01) so `vwap` is no longer identically `close`, plus the VWAP non-degeneracy lock
 
-### Phase 03.12: CRSP 复权锚点下沉到读侧：store 只存原始价与 dlyret，adjClose 成为派生物，锚点为读时参数（默认 last，下游逐位不变），删除整套窗口锚点机械 (INSERTED)
+### Phase 03.12: CRSP 复权锚点改为 store 首个可用行（后复权），建库时算，store 变不可变，删除整套窗口锚点机械 (INSERTED)
 
 **Goal:** [Urgent work - to be planned]
 **Requirements**: TBD
