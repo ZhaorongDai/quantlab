@@ -158,3 +158,44 @@ root-level script is import-safe, including a scratch file someone dropped in
 — or leave the glob and accept the offset as documented. Which of those is
 right is a question about the contract, not about this phase, and
 `tests/test_entry_point_contracts.py` is outside 03.11-18's `files_modified`.
+
+---
+
+## D-03.11-UAT-A — a raise inside `_backtest_window` swallows the D-27
+"data changed" diagnostic
+
+**Found during:** UAT round 3 (verify-work), while disposing of test 4
+**Status:** open — pre-existing since phase **03.7**, untouched by 03.11
+**Operator decision (2026-09-21):** fix separately AFTER 03.11 closes, not inside it
+
+**The gap.** `run()` calls `self._backtest_window(...)` (`backtest.py:391`) and only
+then `self._compare_fingerprints()` (`:392`). But the factor fingerprints are already
+recorded *inside* that call — `_align_and_predict` (`:1065`) runs `_redate_factors` →
+`_record_factor_fingerprints` (`:1053`) **before** `model.predict_panel` (`:1068`), and
+`_load_prices` (`:774`) records the price fingerprint after it. So anything that raises
+between those points leaves the comparison unexecuted although its inputs exist and
+already differ. `run_cv()` has the same shape (`:488`, `:514-516`).
+
+**Consequence.** When a data change is large enough to break the run, the operator gets
+the downstream error and **no** indication that the data changed — which is precisely
+what D-27 exists to tell them. Realistic triggers: `DLModel._assert_symbol_types_match`
+(a ticker-era checkpoint against a PERMNO panel), `"the feature panel lacks N of the
+symbols this model was trained on"`, or `"no price bars between ..."`.
+
+**Reproduction (measured, not reasoned).** Synthetic store, one symbol dropped at the
+same path so both fingerprints really differ:
+
+| | fingerprints recorded at raise time | warnings emitted |
+|---|---|---|
+| control — no raise | — | **2** (`factor[0]:PastReturnFactor`, `price_dataset`; digest + n_symbols) |
+| probe — raise inside `_backtest_window` | `['factor[0]:PastReturnFactor']`, differing | **0** |
+
+**Why it is NOT a 03.11 defect.** `git log -L 391,392:quantlab/base/backtest.py` attributes
+both lines to `8465f1a` / `79e342d` (2026-09-15, phase 03.7). 03.11 never touched the
+ordering. It surfaced here only because test 4 asked what the fingerprint warnings do.
+
+**Sketch of the fix (not applied).** Give `_compare_fingerprints` a `partial` mode that
+skips the "present in expected but not read by this run" branch — under a partial
+comparison that means "not read *yet*", not "not read" — and call it from an exception
+path around the window computation, then re-raise. The diagnostic itself must be guarded
+so it can never replace the real exception.
