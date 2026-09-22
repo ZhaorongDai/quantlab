@@ -246,7 +246,7 @@ def test_resolve_symbols_in_range_propagates_the_coverage_guard(
     nothing at all about the guard.
     """
     import quantlab.utils.cli as cli
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
     from quantlab.base.config import UniverseConfig
 
     catalog = UniverseCatalog(

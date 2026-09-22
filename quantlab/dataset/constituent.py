@@ -24,7 +24,7 @@ classes.
 **The CRSP pair reaches no acquisition module.** `CrspMembership` and
 `CrspReference` are dataset-layer leaves over parquet, so a CRSP universe
 resolves with no WRDS credential and no database driver. That is also why
-`quantlab/acquisition/universe.py` gained no category: its vocabulary is
+`quantlab/universe.py` gained no category: its vocabulary is
 Tiingo/Wikipedia-shaped (tickers, exchange filters) and its "imports no
 acquisition module" rule is AST-enforced, so a CRSP category would have
 coupled two vocabularies for no gain.
@@ -32,7 +32,7 @@ coupled two vocabularies for no gain.
 
 import polars as pl
 
-from quantlab.acquisition.universe import (
+from quantlab.universe import (
     Nasdaq100MembershipFetcher,
     SP500MembershipFetcher,
 )

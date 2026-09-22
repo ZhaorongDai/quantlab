@@ -2,7 +2,7 @@
 
 Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
-`quantlab.acquisition.universe.UniverseCatalog` resolves the roster,
+`quantlab.universe.UniverseCatalog` resolves the roster,
 `quantlab.acquisition.registry.run()` fetches it through the registered source
 descriptor, `quantlab.acquisition.inspector.SourceInspector` answers the
 credential-free coverage question, and `quantlab.dataset.stock.StockDataset`
@@ -113,7 +113,7 @@ from dataclasses import replace
 
 from quantlab.acquisition.inspector import SourceInspector
 from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.cli import (

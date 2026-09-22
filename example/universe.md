@@ -203,7 +203,7 @@ t 之后的任何一根 bar 都不会改变 t 时刻的掩码——这条由 `te
 
 这条机制证据的分量和当初那次 14,481 个代码的测量**等量齐观**：那次测量证明了规则在 Tiingo ticker 轴上有效，这条机制证明了它在 PERMNO 轴上**不可能**有效。轴换了，规则的前提就没了。
 
-（代码里这九条正则是**唯一**的删除对象。`quantlab/acquisition/universe.py` 的 `_PREFERRED_SHARE_PATTERN` / `_BABY_BOND_PATTERN` **本体一个字未改**——它们是 Tiingo 采集基础设施；`quantlab/enums/data.py` 的 `TRADEABLE_TICKER_PATTERN` 也一个字未改——它是路径段安全检查，不是证券类型过滤。`universe_filter.py` 删掉的只是那两行 `import`。）
+（代码里这九条正则是**唯一**的删除对象。`quantlab/universe.py` 的 `_PREFERRED_SHARE_PATTERN` / `_BABY_BOND_PATTERN` **本体一个字未改**——它们是 Tiingo 采集基础设施；`quantlab/enums/data.py` 的 `TRADEABLE_TICKER_PATTERN` 也一个字未改——它是路径段安全检查，不是证券类型过滤。`universe_filter.py` 删掉的只是那两行 `import`。）
 
 ### (ii) 职责的承接者：CRSP 的 `security_filter`
 

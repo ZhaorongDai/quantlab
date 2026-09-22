@@ -1,4 +1,4 @@
-"""Tests for acquisition/universe.py -- point-in-time correctness,
+"""Tests for quantlab/universe.py -- point-in-time correctness,
 left-censoring, re-entry, and graceful degradation.
 
 No test in this module makes a real network call: all `requests.get` calls
@@ -16,7 +16,7 @@ import polars as pl
 import pytest
 from loguru import logger
 
-from quantlab.acquisition.universe import (
+from quantlab.universe import (
     IndexMembershipFetcher,
     Nasdaq100MembershipFetcher,
     NasdaqUniverseFetcher,
@@ -75,7 +75,7 @@ def test_nasdaq_roster_guard_rejects_a_drifted_filter(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(
-        "quantlab.acquisition.universe.requests.get", lambda url, *a, **k: _ZipResponse()
+        "quantlab.universe.requests.get", lambda url, *a, **k: _ZipResponse()
     )
 
     with pytest.raises(ValueError, match="token vocabulary has drifted"):
@@ -326,7 +326,7 @@ def test_wikipedia_parse_failure_falls_back_to_cache(
             return BrokenResponse()
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", broken_get)
+    monkeypatch.setattr("quantlab.universe.requests.get", broken_get)
 
     result = fetcher.fetch_changes()
 
@@ -496,7 +496,7 @@ def test_nasdaq100_anchor_rejects_a_structurally_drifted_page(monkeypatch, tmp_p
             return _FakeResponse(drifted)
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", fake_get)
+    monkeypatch.setattr("quantlab.universe.requests.get", fake_get)
 
     with pytest.raises(ValueError):
         fetcher.fetch_anchor()
@@ -524,7 +524,7 @@ def test_nasdaq100_changes_parse_failure_falls_back_to_cache_without_overwriting
             return _FakeResponse("<html><body><p>no table here</p></body></html>")
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", broken_get)
+    monkeypatch.setattr("quantlab.universe.requests.get", broken_get)
 
     result = fetcher.fetch_changes()
 
@@ -562,7 +562,7 @@ def test_nasdaq100_row_count_monotonicity_guard_rejects_a_shrunken_table(
             return _FakeResponse(shrunken)
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", shrunken_get)
+    monkeypatch.setattr("quantlab.universe.requests.get", shrunken_get)
 
     result = fetcher.fetch_changes()
 
@@ -607,7 +607,7 @@ def test_na_tickered_anchor_row_is_not_turned_into_a_nan_symbol(monkeypatch, tmp
     page = _ndx_anchor_html(["NA"] + [f"NDX{i:03d}" for i in range(1, 60)])
 
     monkeypatch.setattr(
-        "quantlab.acquisition.universe.requests.get",
+        "quantlab.universe.requests.get",
         lambda url, *a, **k: _FakeResponse(page),
     )
 
@@ -676,7 +676,7 @@ def test_changes_parse_rejects_a_reordered_source_header(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(
-        "quantlab.acquisition.universe.requests.get",
+        "quantlab.universe.requests.get",
         lambda url, *a, **k: _FakeResponse(swapped),
     )
 
@@ -821,7 +821,7 @@ def test_build_refuses_stale_snapshots_unless_explicitly_allowed(
             return _FakeResponse("<html><body><p>no table here</p></body></html>")
         return real_get(url, *args, **kwargs)
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", broken_changes)
+    monkeypatch.setattr("quantlab.universe.requests.get", broken_changes)
 
     with pytest.raises(ValueError, match="stale cached snapshots"):
         UniverseCatalog(config).build()
@@ -962,7 +962,7 @@ def test_us_equity_roster_guard_rejects_a_drifted_filter(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(
-        "quantlab.acquisition.universe.requests.get", lambda url, *a, **k: _ZipResponse()
+        "quantlab.universe.requests.get", lambda url, *a, **k: _ZipResponse()
     )
 
     assert USEquityUniverseFetcher.MIN_ROSTER_ROWS == 8000
@@ -1697,7 +1697,7 @@ def _patch_roster_download(monkeypatch, payload: bytes) -> None:
             pass
 
     monkeypatch.setattr(
-        "quantlab.acquisition.universe.requests.get", lambda url, *a, **k: _ZipResponse()
+        "quantlab.universe.requests.get", lambda url, *a, **k: _ZipResponse()
     )
 
 
@@ -1706,7 +1706,7 @@ def test_the_exclusion_criterion_matches_the_measured_directory():
     measured on, so a future edit to either regex has to confront all 36
     cases rather than only whatever the fixture happens to carry.
     """
-    from quantlab.acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
+    from quantlab.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
 
     def excluded(ticker: str) -> bool:
         return bool(
@@ -1858,7 +1858,7 @@ def test_the_roster_builder_drops_malformed_symbols_from_both_categories(
     # ... and the six that `_PREFERRED_SHARE_PATTERN` / `_BABY_BOND_PATTERN`
     # do NOT match, stated separately so the `us_all` half cannot pass merely
     # by restating 260906-eme's exclusion.
-    from quantlab.acquisition.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
+    from quantlab.universe import _BABY_BOND_PATTERN, _PREFERRED_SHARE_PATTERN
 
     only_the_new_filter_can_drop = [
         ticker
@@ -1963,7 +1963,7 @@ def _roster_return_expression(method_name: str):
     """
     import ast
 
-    from quantlab.acquisition import universe as universe_module
+    from quantlab import universe as universe_module
 
     tree = ast.parse(
         Path(universe_module.__file__).read_text(encoding="utf-8")

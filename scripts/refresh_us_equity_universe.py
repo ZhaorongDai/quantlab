@@ -1,6 +1,6 @@
 """Build/refresh the survivorship-bias-free, point-in-time US-equity universe.
 
-Thin CLI entry point -- all logic lives in `quantlab.acquisition.universe.
+Thin CLI entry point -- all logic lives in `quantlab.universe.
 UniverseCatalog` (02-08-PLAN.md); this script is glue only. Requires no
 Tiingo API key: the NASDAQ roster and S&P 500 membership sources are both
 public/unauthenticated.
@@ -19,7 +19,7 @@ Usage:
 
 import argparse
 
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 from quantlab.config import universe_config
 from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 

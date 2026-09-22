@@ -791,7 +791,7 @@ def test_the_acquisition_package_init_is_still_empty() -> None:
 
     A non-empty package `__init__` runs on EVERY
     `import quantlab.acquisition.<anything>`, including
-    `quantlab.acquisition.universe` -- the one module whose entire structural
+    `quantlab.universe` -- the one module whose entire structural
     guarantee is that no acquisition client can be constructed there, whatever
     the call order. That is what makes the volume guard refuse BEFORE any
     client exists rather than refuse if called in the right order.
@@ -821,7 +821,7 @@ def test_importing_universe_binds_no_acquisition_client() -> None:
     """
     child = _run_child(
         "import json, sys\n"
-        "import quantlab.acquisition.universe as u\n"
+        "import quantlab.universe as u\n"
         "print(json.dumps({\n"
         "    'bound': [n for n in vars(u) if n.endswith('Acquisition')],\n"
         "    'tiingo_imported': 'quantlab.acquisition.tiingo' in sys.modules,\n"

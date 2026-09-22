@@ -7,7 +7,7 @@ is registering a descriptor beside its acquisition class, not editing five call
 sites.
 
 **ONE class-level registration tuple**, in the spirit of
-`quantlab/acquisition/universe.py:1249` (`UniverseCatalog.MEMBERSHIP_FETCHERS`)
+`quantlab/universe.py:1249` (`UniverseCatalog.MEMBERSHIP_FETCHERS`)
 and consumed the same way: a plain loop over the tuple with the discriminator
 read off each element (`descriptor.vendor`), never an `if` branch on a vendor
 literal.
@@ -727,14 +727,22 @@ def convert(
 #
 # They do NOT go in `quantlab/acquisition/__init__.py`, which stays 0 bytes.
 # A non-empty package `__init__` runs on EVERY `import
-# quantlab.acquisition.<anything>` -- including `quantlab.acquisition.universe`,
-# the one module whose entire structural guarantee is that no acquisition
-# client can be constructed there, whatever the call order. That property is
-# what makes the volume guard refuse-before-any-client-exists rather than
+# quantlab.acquisition.<anything>` -- including `quantlab.acquisition.inspector`,
+# the read surface whose entire structural guarantee is that no acquisition
+# client is reachable from it, whatever the call order. That property is what
+# makes a read refuse-before-any-client-exists rather than
 # refuse-if-called-in-the-right-order. Worse, it would erode SILENTLY:
-# `tests/test_volume_guard.py`'s structural arm is an `ast` scan of
-# `universe.py`'s OWN source plus a `vars(universe_module)` sweep, and neither
-# can see a transitive import dragged in by a package `__init__`.
+# `tests/test_source_inspector.py`'s structural arm is an `ast` scan of
+# `inspector.py`'s OWN source plus a `vars(inspector_module)` sweep, and
+# neither can see a transitive import dragged in by a package `__init__`.
+#
+# The same argument used to cover `quantlab.acquisition.universe` and the
+# volume guard. That half has TRANSFERRED UP: the universe module is now
+# `quantlab/universe.py`, a top-level sibling, so `import quantlab.universe`
+# runs ONE package `__init__` (`quantlab/`, also 0 bytes) where it used to run
+# two -- the guarantee got strictly easier to hold, and its prose now lives on
+# the module that HAS it. `tests/test_volume_guard.py` asserts the emptiness
+# rather than trusting a comment.
 #
 # Bottom placement is also what lets each descriptor be defined beside the
 # class it describes: `tiingo.py`/`alpaca.py` import THIS module for the

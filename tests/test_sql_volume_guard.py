@@ -139,7 +139,7 @@ def test_unsorted_day_keys_are_ordered_before_the_prefix_search():
 
 
 def test_the_sql_guard_ceiling_is_pinned_to_the_universe_guard():
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     assert SqlVolumeGuard.MAX_RAW_BYTES == UniverseCatalog.MAX_RAW_BYTES
     assert SqlVolumeGuard.MAX_RAW_BYTES == 20 * 1024**3

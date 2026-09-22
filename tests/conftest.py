@@ -615,7 +615,7 @@ def mock_universe_fetchers(
 
     No test in this suite makes a real network call.
     """
-    from quantlab.acquisition.universe import (
+    from quantlab.universe import (
         Nasdaq100MembershipFetcher,
         NasdaqUniverseFetcher,
         SP500MembershipFetcher,
@@ -727,7 +727,7 @@ def mock_universe_fetchers(
             return FakeResponse(text=ndx_changes_html_fixture)
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", fake_get)
+    monkeypatch.setattr("quantlab.universe.requests.get", fake_get)
 
     # `NasdaqUniverseFetcher.MIN_ROSTER_ROWS` (1000) guards the REAL ~10k-row
     # Tiingo roster against a silent filter drift that would overwrite

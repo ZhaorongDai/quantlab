@@ -38,7 +38,7 @@ from quantlab.utils.atomic import write_json_atomically
 #: filesystem path segment or a query-string value.
 #:
 #: BOUND, not re-declared. This name is the SAME compiled object that the
-#: roster builder (`acquisition/universe.py:TiingoRosterFetcher.fetch`) filters
+#: roster builder (`quantlab/universe.py:TiingoRosterFetcher.fetch`) filters
 #: on, which is what makes "everything the builder persists is fetchable" true
 #: by construction rather than by coincidence. Identity is asserted directly in
 #: `tests/test_ticker_pattern_reconciliation.py`.
@@ -52,7 +52,7 @@ from quantlab.utils.atomic import write_json_atomically
 #:
 #: Until quick task 260907-10t this was a standalone `re.compile` of the same
 #: literal, with a comment claiming it was imported from
-#: `quantlab/acquisition/universe.py` and a deferred local import that did not
+#: `quantlab/universe.py` and a deferred local import that did not
 #: exist.
 #: Two free-to-diverge copies -- and they HAD diverged, which is the whole bug
 #: 260907-10t fixed.
@@ -67,7 +67,7 @@ from quantlab.utils.atomic import write_json_atomically
 #: object, so there is still exactly one compiled pattern in the process.
 #:
 #: DELIBERATELY WIDER than
-#: `quantlab/acquisition/universe.py:_WELL_FORMED_TICKER`, which
+#: `quantlab/universe.py:_WELL_FORMED_TICKER`, which
 #: is a different guard on a different input: that one validates
 #: Wikipedia-scraped change-log CELLS, where an interior delimiter means two
 #: cells were merged by a parser regression. A three-segment value is that

@@ -75,7 +75,7 @@ import typing
 from dataclasses import replace
 
 from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 from quantlab.base.config import NbboDatasetConfig, UniverseConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.nbbo import NbboPanelDataset

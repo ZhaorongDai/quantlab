@@ -37,7 +37,7 @@ guard was BYPASSED": a bypassed guard still answers `hasattr`.
 import ast
 from pathlib import Path
 
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 
 #: The five members phase 03.6 SC-3 deletes from `UniverseCatalog`.
 _DELETED_DENSE_PANEL_MEMBERS = (

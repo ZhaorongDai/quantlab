@@ -137,7 +137,7 @@ quantlab/acquisition/registry.py
    所以 import 这个模块必须把所有厂商模块带进来。
 2. **`quantlab/acquisition/__init__.py` 保持 0 字节。** 非空的包 `__init__` 会在
    **每一次** `import quantlab.acquisition.<任何东西>` 时执行——包括
-   `quantlab.acquisition.universe`，而那个模块的全部结构性保证就是
+   `quantlab.universe`，而那个模块的全部结构性保证就是
    「这里不可能构造出任何 acquisition client」。更糟的是它会**静默**地被侵蚀：
    `tests/test_volume_guard.py` 的结构臂是对 `universe.py` **自己源码**的 AST 扫描，
    看不见被包 `__init__` 拖进来的传递 import。（D-07 的 AMENDED 块记录了这次机制变更。）

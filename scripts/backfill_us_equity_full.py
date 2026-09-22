@@ -25,7 +25,7 @@ from quantlab.acquisition.registry import (
     is_configured,
     run,
 )
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 from quantlab.base.acquisition import AcquisitionResult
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.base.data import ConversionResult

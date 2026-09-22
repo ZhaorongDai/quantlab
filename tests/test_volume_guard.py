@@ -8,7 +8,7 @@ any request is issued, to name a concrete narrowing (fewer symbols, a shorter
 window, a coarser frequency) rather than just saying no, and to be overridable
 with an explicit `--force-volume`.
 
-Two grounded constants already live on `acquisition/universe.py:UniverseCatalog`
+Two grounded constants already live on `quantlab/universe.py:UniverseCatalog`
 and the new acquisition-volume estimator is built beside them, sharing their
 arithmetic. This module pins both, so an edit to either surfaces HERE -- next to
 the guard whose thresholds it silently shifts -- rather than only in the roster
@@ -66,7 +66,7 @@ def test_the_grounded_constants_the_new_volume_guard_is_built_beside():
     collection-time liability of the same kind `tests/conftest.py`'s docstring
     forbids.
     """
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     assert UniverseCatalog.TRADING_DAYS_PER_YEAR == 252, (
         "TRADING_DAYS_PER_YEAR changed; every window-length estimate in the "
@@ -150,7 +150,7 @@ def _catalog(tmp_path):
     """
     import polars as pl
 
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
     from quantlab.base.config import UniverseConfig
 
     rows = (
@@ -273,7 +273,7 @@ def test_minute_rows_are_daily_rows_times_the_documented_session_bar_count(tmp_p
     import inspect
     import re
 
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 
@@ -341,7 +341,7 @@ def test_wall_clock_is_requests_over_the_rate_limit_and_the_paid_tier_is_50x(tmp
     """
     import pytest
 
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 
@@ -527,7 +527,7 @@ def test_full_market_minute_backfill_is_refused_by_the_default_ceilings(
 
     import pytest
 
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
     _no_network(monkeypatch)
@@ -643,7 +643,7 @@ def test_each_of_the_three_ceilings_raises_independently(tmp_path):
     """
     import pytest
 
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
     ceilings = {
@@ -789,16 +789,18 @@ def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
     1. any socket allocation raises;
     2. every vendor credential is REMOVED from the environment, so a client
        constructed here would raise on its own missing-credential guard;
-    3. structurally, `quantlab/acquisition/universe.py` imports no acquisition
+    3. structurally, `quantlab/universe.py` imports no acquisition
        module and binds no `Acquisition` subclass -- so there is nothing here
-       that COULD be constructed, whatever the call order.
+       that COULD be constructed, whatever the call order;
+    4. the package `__init__.py` on this module's import path is 0 bytes, so
+       arm 3's `ast` scan cannot be evaded by hiding the import one level up.
     """
     import inspect
     from pathlib import Path
 
     import pytest
 
-    import quantlab.acquisition.universe as universe_module
+    import quantlab.universe as universe_module
     from quantlab.base.acquisition import Acquisition
 
     catalog = _catalog(tmp_path)
@@ -831,9 +833,31 @@ def test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials(
                                  universe_module.__name__)
     forbidden_hits = sorted(resolved & _FORBIDDEN_ACQUISITION_MODULES)
     assert not forbidden_hits, (
-        f"{_RESOLVER_TOKEN}: quantlab/acquisition/universe.py imports "
+        f"{_RESOLVER_TOKEN}: quantlab/universe.py imports "
         f"{forbidden_hits}; the volume guard must live where no acquisition "
         f"client can be constructed, whatever the call order"
+    )
+
+    # Emptiness arm, AHEAD of the bound-clients scan for the same reason the
+    # resolver arm is: an `__init__` that imported a client would ALSO bind one
+    # into this module's namespace transitively, and whichever assertion runs
+    # first is the one an operator reads.
+    #
+    # The arm above scans this module's OWN source. A non-empty package
+    # `__init__.py` runs on every `import quantlab.universe` and could pull a
+    # client in where that scan is structurally blind -- so the scan is only as
+    # strong as the emptiness of the packages above it. Until 260922-lu2 that
+    # was held by prose in a comment; this is the assertion. The path is
+    # resolved from the MODULE OBJECT rather than written as a literal, so it
+    # follows a future move the way the resolver arm does.
+    package_init = Path(inspect.getfile(universe_module)).parent / "__init__.py"
+    assert package_init.stat().st_size == 0, (
+        f"{_RESOLVER_TOKEN}: {package_init} is "
+        f"{package_init.stat().st_size} bytes, not 0. The volume guard's "
+        f"no-client-is-constructible property is proved by an `ast` scan of "
+        f"quantlab/universe.py's own source, which cannot see an import made "
+        f"by the package `__init__` that runs ahead of it. Move whatever that "
+        f"`__init__` does into an explicitly imported module."
     )
     bound_clients = [
         name
@@ -863,7 +887,7 @@ def test_the_surviving_guards_ceilings_are_pinned_together(tmp_path):
     What remains here is the surviving pair and the three ceilings it reads,
     which bound money and wall clock rather than memory.
     """
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     catalog = _catalog(tmp_path)
 

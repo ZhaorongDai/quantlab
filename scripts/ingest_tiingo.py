@@ -66,7 +66,7 @@ import argparse
 from dataclasses import replace
 
 from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset

@@ -19,7 +19,7 @@
 这层分离在项目里是真的被用起来的，不是纸面上的：
 
 - `quantlab/base/data.py:BaseDataset` 和 `quantlab/base/factor.py` 在 `__init__` 里各自 `self.data_backend = XrBackend()`，之后所有读写都走 `self.data_backend.xxx`，没有一处直接 `to_zarr`。
-- `quantlab/acquisition/universe.py:UniverseCatalog` 用的是 `PlBackend()`——因为美股 universe 参考表是"元数据"不是"流水线面板"（`quantlab/config/__init__.py:universe_config` 的注释写明了这个决定），它需要的是 parquet 长表而不是 Zarr 面板。同一套 `read/write/filter_by_*` 调用，换了个介质就成立。
+- `quantlab/universe.py:UniverseCatalog` 用的是 `PlBackend()`——因为美股 universe 参考表是"元数据"不是"流水线面板"（`quantlab/config/__init__.py:universe_config` 的注释写明了这个决定），它需要的是 parquet 长表而不是 Zarr 面板。同一套 `read/write/filter_by_*` 调用，换了个介质就成立。
 - `quantlab/base/model.py:BaseModel` 也有 `self.data_backend = XrBackend()`，用它来装训练集合并后的面板（`collect()` → `to_internal`）。注意训练用的这份数据从来没落过盘，是 `to_internal` 直接从内存接管的——这条"不经磁盘也能进流水线"的路径就是 `to_internal` 存在的理由。
 
 反过来说，如果没有这层：`BaseDataset` 里会散落 `xr.open_dataset` / `to_zarr` / `sel`，`UniverseCatalog` 里会散落 `scan_parquet`，而 `head()` 那个探查语义（下面细说）会在每个调用点各写一遍、各写错一遍。

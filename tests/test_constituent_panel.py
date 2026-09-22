@@ -160,7 +160,7 @@ def test_removal_effective_date_is_still_a_membership_day(tmp_path):
     """RESEARCH Finding 6 bullet 1 -- interval half-openness.
 
     A removal's `effective_date` IS a membership day. This matches
-    `acquisition/universe.py:UniverseCatalog.get_symbols_as_of`'s
+    `quantlab/universe.py:UniverseCatalog.get_symbols_as_of`'s
     `end_date >= as_of_date` comparison exactly. An off-by-one here is
     invisible unless a fixture pins a known removal date and asserts the
     boolean on exactly that day.
@@ -390,7 +390,7 @@ def test_construction_performs_no_network_call_and_no_store_read(
     def _explode(*args, **kwargs):
         raise AssertionError("network reached during construction")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", _explode)
+    monkeypatch.setattr("quantlab.universe.requests.get", _explode)
 
     cfg = _make_config(
         tmp_path / "does-not-exist", symbols=("AAPL", "MSFT")

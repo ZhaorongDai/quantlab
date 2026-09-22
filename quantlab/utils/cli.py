@@ -595,7 +595,7 @@ def _explicit_symbol_catalog(symbol_count: int):
     if _EXPLICIT_CATALOG_CLASS is None:
         import datetime
 
-        from quantlab.acquisition.universe import UniverseCatalog
+        from quantlab.universe import UniverseCatalog
 
         class _ExplicitSymbolCatalog(UniverseCatalog):
             def __init__(self, symbols: int):  # noqa: D107 - see factory
