@@ -508,7 +508,7 @@ class SourceInspector:
         correctly refused, and pointing at the wrong conclusion. The message
         therefore names the axis's dtype, and where the tickers went:
         `{zarr}.crsp_tickers.json`, queried as-of through
-        `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`.
+        `quantlab/dataset/crsp/tickers.py:CrspTickerLookup`.
         """
         listed = self._require_symbols(symbols, "browse_zarr")
         # NOT validated against TRADEABLE_TICKER_PATTERN, unlike `browse_raw`.
@@ -538,7 +538,7 @@ class SourceInspector:
             # sidecar beside it maps the ticker to.
             axis_note = ""
             if axis_dtype is not None and axis_dtype.kind in "iu":
-                # Local: `crsp.py` owns the constant and drags the whole
+                # Local: `crsp/__init__.py` owns the constant and drags the whole
                 # converter in with it, and this inspector must stay importable
                 # for a vendor that has no CRSP tier at all.
                 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
@@ -550,7 +550,7 @@ class SourceInspector:
                     f"the security is present. The tickers live in "
                     f"'{path.name}{TICKER_SIDECAR_SUFFIX}' beside the store "
                     f"and are queried as-of through "
-                    f"quantlab/dataset/crsp_tickers.py:CrspTickerLookup; ask "
+                    f"quantlab/dataset/crsp/tickers.py:CrspTickerLookup; ask "
                     f"for the PERMNO it gives you."
                 )
             raise ValueError(

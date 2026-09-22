@@ -891,7 +891,7 @@ class BaseDataset(ABC):
         is not: that one compared against the PINNED axis (int64 on a PERMNO
         panel), this one compares against the RAW tier's `symbol` column, and
         CRSP's raw `symbol` is the PERMNO in its STRING form -- see
-        `quantlab/acquisition/wrds_crsp.py:317-319`, which writes it that way
+        `quantlab/acquisition/wrds/crsp.py:317-319`, which writes it that way
         and which D-11 forbids this phase from touching. `str(10107)` is
         exactly `"10107"`, so the cast is what makes the two sides meet.
         Removing it would make the probe find zero raw rows for every added

@@ -20,7 +20,7 @@ stable across the event.
 
 This module used to carry a second, ticker-keyed answer -- `symbol_intervals()`
 -- which mapped these PERMNO intervals onto the ticker intervals
-`quantlab/dataset/crsp_symbology.py` derives, because the price panel's columns
+`quantlab/dataset/crsp/symbology.py` derives, because the price panel's columns
 were tickers at the time. Since
 03.11-03 the price panel's `symbol` IS the int64 PERMNO, so that branch became
 a way to build a universe that intersects a price panel to NOTHING, and an
@@ -59,7 +59,7 @@ from datetime import date, timedelta
 import polars as pl
 from loguru import logger
 
-from quantlab.dataset.crsp_reference import CrspReference
+from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 _ONE_DAY = timedelta(days=1)

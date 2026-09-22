@@ -73,9 +73,9 @@ import pytest
 import zarr
 
 from quantlab.base.config import CrspDatasetConfig
-from quantlab.dataset.crsp_membership import CrspMembership
-from quantlab.dataset.crsp_reference import CrspReference
-from quantlab.dataset.crsp_rebuild import CrspStoreRebuilder
+from quantlab.dataset.crsp.membership import CrspMembership
+from quantlab.dataset.crsp.reference import CrspReference
+from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
 
 #: The window this gate rebuilds (03.11 D-15 / operator RULING 2). ONLY 2024,
 #: not the raw tier's full 2019-2025 span: `03.11-RESEARCH.md` section R1 took
@@ -143,7 +143,7 @@ TICKER_SIDECAR = ".crsp_tickers.json"
 FILTER_REPORT_SIDECAR = ".crsp_filter_report.json"
 
 #: The exact key set of ONE `_permno_breakdown` record
-#: (`quantlab/dataset/crsp.py:1263-1271`).
+#: (`quantlab/dataset/crsp/__init__.py:1263-1271`).
 #:
 #: **There is no `symbol` field.** On a PERMNO axis the derivation's `symbol`
 #: column IS the PERMNO, so that field repeated its own JSON key byte for byte
@@ -281,7 +281,7 @@ def _assert_breakdown_shape(breakdown: dict, *, label: str, source: Path) -> Non
     """Every record in one `_permno_breakdown` mapping has EXACTLY four keys.
 
     One predicate for both branches of the filter report, because
-    `quantlab/dataset/crsp.py` renders both from the single
+    `quantlab/dataset/crsp/__init__.py` renders both from the single
     `_permno_breakdown` (`:1099` for the rescued rows, `:1116` for the dropped
     ones). Two copies of this check could drift apart while each looked right
     on its own -- the same reason the production side has one renderer.
@@ -567,7 +567,7 @@ def test_the_symbology_report_is_gone_and_the_ticker_table_arrived(rebuilt):
 def test_rebuild_refreshed_every_sidecar(rebuilt):
     """The reverse of Pitfall 8: every audit file describes THIS panel.
 
-    `crsp.py:1414`'s store-exists guard means an append leaves the sidecars
+    `crsp/__init__.py:1414`'s store-exists guard means an append leaves the sidecars
     alone, so a rebuild that cleared only the store would finish with audit
     files describing the previous panel. Asserting each one's mtime is later
     than the moment the rebuild started is what makes that failure visible.
@@ -653,7 +653,7 @@ def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
     # Where the branch IS genuinely covered:
     # `tests/test_crsp_identity.py:1085-1103` builds a synthetic store whose
     # QQQ row the filter really does drop, and pins the same key set on it.
-    # The structural reason the two agree is that `crsp.py:1099` and `:1116`
+    # The structural reason the two agree is that `crsp/__init__.py:1099` and `:1116`
     # render both branches through the ONE `_permno_breakdown` -- which is
     # also precisely why an empty run here cannot be treated as evidence for
     # the other branch. Same renderer, same shape, by construction and not by

@@ -38,8 +38,8 @@ from quantlab.acquisition.universe import (
 )
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
-from quantlab.dataset.crsp_membership import CrspMembership
-from quantlab.dataset.crsp_reference import CrspReference
+from quantlab.dataset.crsp.membership import CrspMembership
+from quantlab.dataset.crsp.reference import CrspReference
 
 
 def _rename_permno_to_symbol(permno_intervals: pl.DataFrame) -> pl.DataFrame:

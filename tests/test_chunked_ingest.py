@@ -2712,7 +2712,7 @@ def test_stock_raw_axes_pins_in_numeric_order_without_recasting(
     what changes is that the ORDER now comes from `sort_symbol_axis` rather
     than a bare `sorted()`. Digit-string labels are the shape that tells the
     two apart, and they are not hypothetical: CRSP's raw tier spells its
-    PERMNOs exactly this way (`wrds_crsp.py:317-319`).
+    PERMNOs exactly this way (`wrds/crsp.py:317-319`).
 
     RED: the old spelling returned `['10107', '7000']`.
     """

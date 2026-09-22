@@ -48,7 +48,7 @@ class DatasetConfig(BaseDatasetConfig):
 
 @dataclass(kw_only=True)
 class NbboDatasetConfig(DatasetConfig):
-    """Config of the WRDS TAQ NBBO bar panel (`dataset/nbbo.py`, phase 03.9).
+    """Config of the WRDS TAQ NBBO bar panel (`dataset/nbbo/__init__.py`, phase 03.9).
 
     `frequency` stays the ACQUISITION frequency (`"tick"`: the raw tier holds
     one row per NBBO record). The PANEL's bar size is the separate
@@ -59,7 +59,7 @@ class NbboDatasetConfig(DatasetConfig):
     the panel's session window (D-09); the default is regular trading hours.
 
     The four filter fields are the resampler's record filter (D-10), read by
-    `dataset/nbbo_resample.py:NbboFilterPolicy.from_config`. They are config
+    `dataset/nbbo/resample.py:NbboFilterPolicy.from_config`. They are config
     fields, not `kwargs`, so a rebuild from `config.json` reproduces the panel:
     `drop_crossed` (bid > ask, both sides present), `drop_locked` (bid == ask),
     `drop_nonpositive_price` (a present price <= 0) and `keep_qu_cond` (an
@@ -87,7 +87,7 @@ QQQ_PERMNO: str = "86755"
 
 @dataclass(kw_only=True)
 class CrspDatasetConfig(DatasetConfig):
-    """Config of the CRSP Stock v2 daily panel (`dataset/crsp.py`, phase 03.10).
+    """Config of the CRSP Stock v2 daily panel (`dataset/crsp/__init__.py`, phase 03.10).
 
     The three market fields default rather than being asked for: CRSP Stock v2
     is US equity, daily, and reached through the `wrds` account. They stay
@@ -143,10 +143,10 @@ class CrspDatasetConfig(DatasetConfig):
     permnos: tuple[str, ...] | None = None
 
     #: WHICH SECURITIES the panel holds (D-06, D-17). Either the name of a
-    #: preset in `quantlab/dataset/crsp.py:SECURITY_FILTER_PRESETS`
+    #: preset in `quantlab/dataset/crsp/__init__.py:SECURITY_FILTER_PRESETS`
     #: (`"equity_common"`, `"shrcd_10_11"`, `"none"`) or an explicit
     #: `{column: allowed values}` mapping over
-    #: `quantlab/dataset/crsp.py:FILTERABLE_COLUMNS`.
+    #: `quantlab/dataset/crsp/__init__.py:FILTERABLE_COLUMNS`.
     #:
     #: The default is `"equity_common"`, D-17's common-stock panel: REITs
     #: (share type `SB` included) and non-US-incorporated issuers stay; ADRs,
@@ -161,7 +161,7 @@ class CrspDatasetConfig(DatasetConfig):
 
     #: **THE INDEX WHOSE MEMBERSHIP IS AN EXPLICIT ROSTER FOR THIS
     #: CONVERSION**, one of
-    #: `quantlab/dataset/crsp_membership.py:CrspMembership.INDEXES`. `None`
+    #: `quantlab/dataset/crsp/membership.py:CrspMembership.INDEXES`. `None`
     #: means no index roster: the panel is then whatever `permnos` and
     #: `security_filter` admit.
     #:

@@ -17,7 +17,7 @@ Live-verified facts this module is built on (`03.9-LIVE-CHECK-{1,2}.json`):
   within its (day, symbol-batch) query is recorded as `wrds_row_ord` BEFORE any
   other frame operation. Raw is one row per record, the full day, unfiltered
   (D-02/D-05); sorting, de-duplication and resampling happen only in
-  `dataset/nbbo_resample.py`.
+  `dataset/nbbo/resample.py`.
 - **Connection (D-20).** Not through the `wrds` package (its `Connection`
   prompts interactively and its `raw_sql` breaks under pandas 3) -- this
   module does not import it at all. `psycopg2` connects to the pinned WRDS
@@ -27,11 +27,14 @@ Live-verified facts this module is built on (`03.9-LIVE-CHECK-{1,2}.json`):
   Duo prompt to the user's phone and the role's connection limit is 7.
 
 **This module REGISTERS NOTHING** (03.10 D-12). The `wrds` descriptor lives in
-`quantlab/acquisition/wrds.py`, a neutral module that imports the WRDS provider
-modules, and this one imports nothing from the registry. One WRDS account
-serves several products, so a registration placed inside a provider would have
-to name the OTHER provider's classes -- and then importing either provider
-first would cycle through the registry. `WrdsSession` accordingly offers
+the package entry point, `quantlab/acquisition/wrds/__init__.py`, which imports
+the WRDS provider submodules; this one imports nothing from the registry. One
+WRDS account serves several products, so a registration placed inside a
+provider would have to name a SIBLING submodule's classes. Since the providers
+became submodules of that package, importing either one DOES now run the entry
+point and load the registry -- so this is a rule about SOURCE TEXT, not about
+`sys.modules`, and `tests/test_wrds_vendor_seam.py` enforces it that way (see
+the package docstring for the measured cost). `WrdsSession` accordingly offers
 GENERIC `schema_usable` / `fetch_rows` / `copy_csv`, which the other providers
 build on; the TAQ-named methods here are thin statements of "which SQL",
 delegating "how to run it" to those three.

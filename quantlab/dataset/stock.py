@@ -536,7 +536,7 @@ class StockDataset(MarketDataset):
         in `BaseDataset._added_symbols_with_raw_history` (03.11-04): it
         compares against the RAW tier's `symbol` column, not against the
         pinned axis, and CRSP's raw `symbol` is the PERMNO in its STRING form
-        (`quantlab/acquisition/wrds_crsp.py:317-319`). `str(10107)` is exactly
+        (`quantlab/acquisition/wrds/crsp.py:317-319`). `str(10107)` is exactly
         `"10107"`, so the cast is what makes the `is_in` meet. Removing it
         would make the probe find zero raw rows for every added PERMNO and
         steer the widen-vs-rebuild resolver to `widen`, backfilling NaN over

@@ -9,7 +9,7 @@ triggers: >
   and every Alpha101/Alpha158 factor reading `Input("adjClose")`) on a CRSP panel containing a
   modern `DA`-shape delisting. Silent — the panel is well formed and nothing raises.
 files:
-  - quantlab/dataset/crsp.py (:550-557 — the recorded deliberate choice)
+  - quantlab/dataset/crsp/__init__.py (:550-557 — the recorded deliberate choice)
   - quantlab/label/fret.py (Return — reads Input("adjClose") and nothing else)
   - example/wrds_crsp.md (:78-81 — the survivorship-bias guarantee already narrowed to close/ret/is_delisting)
 ---

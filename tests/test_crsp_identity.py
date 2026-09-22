@@ -197,7 +197,7 @@ def _pull(
     dsp500_rows=None,
 ):
     """Serve `rows` through the fake session, land the raw + reference tiers."""
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from tests.crsp_fixtures import (
         FakeCrspSession,
         run_crsp_pull,
@@ -1524,8 +1524,8 @@ def test_every_member_survives_every_preset_on_its_member_dates(
     """
     import numpy as np
 
-    from quantlab.dataset.crsp_membership import CrspMembership
-    from quantlab.dataset.crsp_reference import CrspReference
+    from quantlab.dataset.crsp.membership import CrspMembership
+    from quantlab.dataset.crsp.reference import CrspReference
 
     dataset_config = _roster_store(
         tmp_path,
@@ -1951,7 +1951,7 @@ def test_a_non_crsp_dataset_still_accepts_config_symbols(tmp_path):
 
 
 def test_crsp_has_no_reader_of_config_symbols():
-    """Nothing in `crsp.py` READS `config.symbols` any more.
+    """Nothing in `crsp/__init__.py` READS `config.symbols` any more.
 
     The refusal is only half the change. Two readers filtered on the field --
     the pinned-axis restriction and the window restriction -- and leaving
@@ -1967,7 +1967,8 @@ def test_crsp_has_no_reader_of_config_symbols():
         Path(__file__).resolve().parent.parent
         / "quantlab"
         / "dataset"
-        / "crsp.py"
+        / "crsp"
+        / "__init__.py"
     )
     readers = [
         f"{number}: {line.strip()}"

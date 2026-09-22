@@ -30,7 +30,7 @@ from tests.wrds_fixtures import (
 )
 
 WRDS_TAQ_SOURCE = (
-    Path(__file__).resolve().parents[1] / "quantlab" / "acquisition" / "wrds_taq.py"
+    Path(__file__).resolve().parents[1] / "quantlab" / "acquisition" / "wrds" / "taq.py"
 )
 
 USER = "test-wrds-user-not-real"
@@ -71,7 +71,7 @@ def pgpass(monkeypatch, tmp_path):
 def live_session(monkeypatch, no_prompts):
     """A REAL `WrdsSession` for USER with `psycopg2.connect` replaced by a
     recording `FakeConnection` factory. Returns `(session, connections)`."""
-    from quantlab.acquisition.wrds_taq import WrdsSession
+    from quantlab.acquisition.wrds.taq import WrdsSession
 
     monkeypatch.setenv("WRDS_USERNAME", USER)
     for name in ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"):
@@ -96,7 +96,7 @@ def log_records():
 def test_credential_missing_username_fails_construction(
     monkeypatch, acquisition_config
 ):
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
 
     monkeypatch.delenv("WRDS_USERNAME", raising=False)
     with pytest.raises(RuntimeError, match="WRDS_USERNAME"):
@@ -106,7 +106,7 @@ def test_credential_missing_username_fails_construction(
 def test_credential_planted_username_is_absent_from_config_and_scrubbed(
     mock_wrds_session, monkeypatch, acquisition_config
 ):
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
 
     planted = "planted-wrds-user-7f3c"
     monkeypatch.setenv("WRDS_USERNAME", planted)
@@ -213,7 +213,7 @@ def test_connect_refuses_redirecting_env(live_session, pgpass, monkeypatch, name
 def test_session_broken_by_driver_error_never_reconnects(
     live_session, pgpass, monkeypatch
 ):
-    from quantlab.acquisition.wrds_taq import WrdsSessionError
+    from quantlab.acquisition.wrds.taq import WrdsSessionError
 
     session, connections = live_session
     pgpass()
@@ -233,7 +233,7 @@ def test_session_broken_by_driver_error_never_reconnects(
 
 
 def test_session_failed_connect_is_not_retried(live_session, pgpass, monkeypatch):
-    from quantlab.acquisition.wrds_taq import WrdsSessionError
+    from quantlab.acquisition.wrds.taq import WrdsSessionError
 
     session, _ = live_session
     pgpass()
@@ -253,7 +253,7 @@ def test_session_failed_connect_is_not_retried(live_session, pgpass, monkeypatch
 
 def test_session_constants_match_wrds_package_and_live_values():
     wrds_sql = pytest.importorskip("wrds.sql")
-    from quantlab.acquisition.wrds_taq import WrdsSession
+    from quantlab.acquisition.wrds.taq import WrdsSession
 
     assert WrdsSession.HOST == "wrds-pgdata.wharton.upenn.edu"
     assert WrdsSession.PORT == 9737
@@ -269,7 +269,7 @@ def test_session_constants_match_wrds_package_and_live_values():
 def test_classify_session_and_entitlement_failures_as_global_stop(
     mock_wrds_session, acquisition_config
 ):
-    from quantlab.acquisition.wrds_taq import (
+    from quantlab.acquisition.wrds.taq import (
         WrdsEntitlementError,
         WrdsSessionError,
         WrdsTaqNbboAcquisition,
@@ -335,7 +335,7 @@ def _acq(
     kwargs=None,
     symbols=("AAPL", "MSFT"),
 ):
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
 
     merged = {"data_type": "nbbo", **(kwargs or {})}
     cfg = acquisition_config(
@@ -382,7 +382,7 @@ def test_era_schema_2016_and_2024_pages_are_identical(
 def test_schema_select_follows_taq_columns_order_not_server_order(
     mock_wrds_session, acquisition_config, monkeypatch
 ):
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
 
     shuffled = tuple(reversed(TAQ_COLUMNS_2018_ON)) + ("extra_column",)
     monkeypatch.setattr(
@@ -511,7 +511,7 @@ def test_sql_every_composed_wrds_query_is_where_only(
 def test_sql_values_reach_the_query_only_as_literals():
     from psycopg2 import sql
 
-    from quantlab.acquisition.wrds_taq import WrdsSession
+    from quantlab.acquisition.wrds.taq import WrdsSession
 
     composed = WrdsSession.copy_query(
         D2016, [("BRK", "B"), ("AAPL", None)], ("date", "time_m")
@@ -534,7 +534,7 @@ def test_sql_values_reach_the_query_only_as_literals():
 
 
 def test_symbol_notation_round_trip_and_refusals():
-    from quantlab.acquisition.wrds_taq import WrdsTaqNbboAcquisition as W
+    from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition as W
 
     assert W.symbol_to_pair("BRK.B") == ("BRK", "B")
     assert W.symbol_to_pair("AAPL") == ("AAPL", None)
@@ -705,7 +705,7 @@ def test_resume_per_batch_failure_resumes_at_the_failed_day(
 def test_resume_session_error_is_a_global_stop_with_no_manifest_entry(
     mock_wrds_session, acquisition_config
 ):
-    from quantlab.acquisition.wrds_taq import WrdsSessionError
+    from quantlab.acquisition.wrds.taq import WrdsSessionError
 
     _three_day_window(mock_wrds_session)
     mock_wrds_session.raise_on = {1: WrdsSessionError("the WRDS session broke")}
@@ -730,7 +730,7 @@ def test_resume_more_than_one_worker_is_refused(mock_wrds_session, acquisition_c
 def test_entitlement_unentitled_year_fails_before_any_copy(
     mock_wrds_session, acquisition_config
 ):
-    from quantlab.acquisition.wrds_taq import WrdsEntitlementError
+    from quantlab.acquisition.wrds.taq import WrdsEntitlementError
 
     mock_wrds_session.entitled_years = {2016, 2024}
     mock_wrds_session.trading_days_by_year = {
@@ -759,7 +759,7 @@ def test_entitlement_window_spanning_a_year_boundary_checks_both_years(
 def test_entitlement_real_session_probes_has_schema_privilege(
     live_session, pgpass
 ):
-    from quantlab.acquisition.wrds_taq import WrdsEntitlementError
+    from quantlab.acquisition.wrds.taq import WrdsEntitlementError
 
     session, connections = live_session
     pgpass()
@@ -799,7 +799,7 @@ def test_page_counts_can_be_switched_off(mock_wrds_session, acquisition_config):
 
 
 def test_probe_counts_rows_per_day_summed_over_symbol_batches(mock_wrds_session):
-    from quantlab.acquisition.wrds_taq import WrdsNbboVolumeProbe
+    from quantlab.acquisition.wrds.taq import WrdsNbboVolumeProbe
     # The module attribute is the fake under `mock_wrds_session`.
     from tests.wrds_fixtures import RealWrdsSession as WrdsSession
 
@@ -832,7 +832,7 @@ def test_probe_counts_rows_per_day_summed_over_symbol_batches(mock_wrds_session)
 
 
 def test_probe_checks_entitlement_before_counting(mock_wrds_session):
-    from quantlab.acquisition.wrds_taq import (
+    from quantlab.acquisition.wrds.taq import (
         WrdsEntitlementError,
         WrdsNbboVolumeProbe,
     )
@@ -845,7 +845,7 @@ def test_probe_checks_entitlement_before_counting(mock_wrds_session):
 
 
 def test_probe_never_counts_a_table_without_a_symbol_predicate():
-    from quantlab.acquisition.wrds_taq import WrdsSession
+    from quantlab.acquisition.wrds.taq import WrdsSession
 
     with pytest.raises(ValueError):
         WrdsSession.count_query(D24, [])

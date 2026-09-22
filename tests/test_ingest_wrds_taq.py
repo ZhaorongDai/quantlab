@@ -4,7 +4,7 @@ Two groups:
 
 - end-to-end runs of the REAL script through `runpy.run_path` against
   `FakeWrdsSession` (the `mock_wrds_session` fixture patches
-  `quantlab.acquisition.wrds_taq.WrdsSession`, which the script imports by name
+  `quantlab.acquisition.wrds.taq.WrdsSession`, which the script imports by name
   at run time), so no test can reach WRDS;
 - structural (AST/source) locks on the script: the guard's placement, the
   force flag, no credential argument, no vendor class, no config factory, one

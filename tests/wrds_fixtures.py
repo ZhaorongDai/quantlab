@@ -1,7 +1,7 @@
 """Offline stand-ins for WRDS NYSE TAQ `complete_nbbo` data (phase 03.9).
 
 Nothing here touches the network. `FakeWrdsSession` mirrors the public surface
-of `quantlab.acquisition.wrds_taq.WrdsSession` and is patched over it by the
+of `quantlab.acquisition.wrds.taq.WrdsSession` and is patched over it by the
 `mock_wrds_session` fixture in `tests/conftest.py`; the autouse
 `_forbid_wrds_network` tripwire stays live underneath, so a fake that failed to
 install would fail the test instead of reaching WRDS (D-28).
@@ -20,10 +20,10 @@ from datetime import date
 import polars as pl
 
 # The REAL session class, captured at import time: `mock_wrds_session` patches
-# `quantlab.acquisition.wrds_taq.WrdsSession` with `FakeWrdsSession` AFTER this
+# `quantlab.acquisition.wrds.taq.WrdsSession` with `FakeWrdsSession` AFTER this
 # module is imported, and the fake builds its SQL through the real static
 # builders so the shape tests cover what the acquisition actually requests.
-from quantlab.acquisition.wrds_taq import WrdsSession as RealWrdsSession
+from quantlab.acquisition.wrds.taq import WrdsSession as RealWrdsSession
 
 #: `taqm_{YYYY}.complete_nbbo_{YYYYMMDD}` columns, in server order, for tables
 #: from 2018-01-02 on (LIVE-CHECK-1 L2).
@@ -143,7 +143,7 @@ def _default_rows() -> dict[tuple[date, str], list[dict[str, str | None]]]:
 
 
 class FakeWrdsSession:
-    """The offline double of `quantlab.acquisition.wrds_taq.WrdsSession`.
+    """The offline double of `quantlab.acquisition.wrds.taq.WrdsSession`.
 
     Class-level state, reset by `reset()` (the fixture calls it):
 

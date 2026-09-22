@@ -38,7 +38,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WRDS_CRSP_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "wrds_crsp.py"
+WRDS_CRSP_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "wrds" / "crsp.py"
 
 #: The PERMNO the whole tracer travels on: Apple Inc.
 AAPL_PERMNO = "14593"
@@ -69,7 +69,7 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
 
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig
     from tests.crsp_fixtures import (
         AAPL_AUG_2020_ROWS,
@@ -232,12 +232,12 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     with pytest.raises(KeyError):
         panel["close"].sel(symbol="AAPL")
 
-def test_wrds_crsp_reaches_the_session_only_through_the_wrds_taq_module():
-    """`wrds_crsp.py` must NOT bind `WrdsSession` by name (D-03).
+def test_wrds_crsp_reaches_the_session_only_through_the_taq_module():
+    """`wrds/crsp.py` must NOT bind `WrdsSession` by name (D-03).
 
     `tests/conftest.py:mock_crsp_session` patches the dotted target
-    `"quantlab.acquisition.wrds_taq.WrdsSession"`. A
-    `from quantlab.acquisition.wrds_taq import WrdsSession` in the provider
+    `"quantlab.acquisition.wrds.taq.WrdsSession"`. A
+    `from quantlab.acquisition.wrds.taq import WrdsSession` in the provider
     would capture the REAL class at import time, so the patch would not reach
     it -- and the failure mode is the dangerous direction: the autouse
     tripwire fires only in tests, while a production run works, so the bug
@@ -253,15 +253,15 @@ def test_wrds_crsp_reaches_the_session_only_through_the_wrds_taq_module():
         alias.name
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
-        and node.module == "quantlab.acquisition.wrds_taq"
+        and node.module == "quantlab.acquisition.wrds.taq"
         for alias in node.names
     ]
     assert "WrdsSession" not in by_name, (
-        f"quantlab/acquisition/wrds_crsp.py imports WrdsSession by NAME "
+        f"quantlab/acquisition/wrds/crsp.py imports WrdsSession by NAME "
         f"({by_name}). tests/conftest.py:mock_crsp_session patches "
-        f"'quantlab.acquisition.wrds_taq.WrdsSession', so a by-name binding "
+        f"'quantlab.acquisition.wrds.taq.WrdsSession', so a by-name binding "
         f"escapes the fake and the provider reaches the real session. Import "
-        f"the MODULE (`from quantlab.acquisition import wrds_taq as _wrds`) "
+        f"the MODULE (`from quantlab.acquisition.wrds import taq as _wrds`) "
         f"and read `_wrds.WrdsSession` at call time."
     )
 
@@ -269,14 +269,16 @@ def test_wrds_crsp_reaches_the_session_only_through_the_wrds_taq_module():
         alias.name
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
-        and node.module == "quantlab.acquisition"
+        and node.module == "quantlab.acquisition.wrds"
         for alias in node.names
     ]
-    assert "wrds_taq" in module_imports, (
-        f"quantlab/acquisition/wrds_crsp.py must reach the session through "
-        f"the wrds_taq MODULE object (`from quantlab.acquisition import "
-        f"wrds_taq as _wrds`); it imports {module_imports} from "
-        f"quantlab.acquisition instead."
+    assert "taq" in module_imports, (
+        f"quantlab/acquisition/wrds/crsp.py must reach the session through "
+        f"the sibling `taq` MODULE object (`from quantlab.acquisition.wrds "
+        f"import taq as _wrds`); it imports {module_imports} from "
+        f"quantlab.acquisition.wrds instead. Spell it ABSOLUTELY -- a relative "
+        f"`from . import taq` leaves node.module as None and this scan would "
+        f"not see it."
     )
 
 
@@ -284,10 +286,13 @@ def test_importing_wrds_crsp_first_registers_both_capabilities():
     """A cold interpreter that touches the CRSP provider FIRST still sees both
     WRDS capabilities.
 
-    The import graph plan 01 built is `registry -> wrds -> {wrds_taq,
-    wrds_crsp}`, and the providers import nothing from the registry. Importing
-    a provider first therefore must not leave a half-initialised module behind
-    -- which is the failure a descriptor living inside a provider would have.
+    The import graph plan 01 built is `registry -> wrds -> {wrds/taq,
+    wrds/crsp}`, and the providers' SOURCE names nothing from the registry.
+    Importing a provider first therefore must not leave a half-initialised
+    module behind -- which is the failure a descriptor living inside a provider
+    would have. Now that the providers are submodules, the CRSP import below
+    runs the `wrds` package `__init__` on its way in, so this order exercises
+    the partially-initialised package as well as the registry.
 
     A SUBPROCESS is required rather than fastidious: this pytest session has
     already imported the registry and every WRDS module for other reasons, so
@@ -303,7 +308,7 @@ def test_importing_wrds_crsp_first_registers_both_capabilities():
             sys.executable,
             "-c",
             "import json\n"
-            "import quantlab.acquisition.wrds_crsp\n"
+            "import quantlab.acquisition.wrds.crsp\n"
             "from quantlab.acquisition.registry import DataSourceRegistry\n"
             "d = DataSourceRegistry.get('wrds')\n"
             "print(json.dumps(sorted(\n"
@@ -369,7 +374,7 @@ def _convert_to_panel(
 
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.acquisition.wrds_crsp import WrdsCrspDailyAcquisition
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
     from quantlab.base.config import CrspDatasetConfig
     from tests.crsp_fixtures import (
         CCM_ROWS,

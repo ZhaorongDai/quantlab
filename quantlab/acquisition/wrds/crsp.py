@@ -18,7 +18,7 @@ CONTEXT D-19):
   bid/ask midpoint, so the sign carries no information. A delisting return is
   its own daily row (`dlydelflg='Y'`), which is why the raw tier keeps every
   row exactly as CRSP serves it and all derivation happens in
-  `quantlab/dataset/crsp.py`.
+  `quantlab/dataset/crsp/__init__.py`.
 - **Symbology (D-04).** `dsf_v2` has no `shareclass` and no `tradingsymbol`, so
   it cannot spell `BRK.B`. The raw tier is therefore keyed by PERMNO -- the
   stable security id -- and the ticker is derived at CONVERSION time. A rename
@@ -28,17 +28,23 @@ CONTEXT D-19):
   unless `kwargs["clip_to_product_end"]` is set.
 
 **The session is reached through the MODULE ATTRIBUTE** (RESEARCH Pattern 1).
-This module does `from quantlab.acquisition import wrds_taq as _wrds` and calls
-`_wrds.WrdsSession.shared()` at call time; it imports NO name from `wrds_taq`.
-`tests/conftest.py` patches `"quantlab.acquisition.wrds_taq.WrdsSession"`, and
+This module does `from quantlab.acquisition.wrds import taq as _wrds` and calls
+`_wrds.WrdsSession.shared()` at call time; it imports NO name from the `taq`
+sibling.
+`tests/conftest.py` patches `"quantlab.acquisition.wrds.taq.WrdsSession"`, and
 a by-name binding would capture the real class at import time and escape the
 patch -- in the dangerous direction, because a real run would still work while
 only the test suite failed. `tests/test_crsp_tracer.py` asserts the rule with
 an `ast` scan of this file.
 
-**This module REGISTERS NOTHING**, for the same reason `wrds_taq.py` does not:
-the one `wrds` descriptor lives in the neutral `quantlab/acquisition/wrds.py`,
-which imports both providers (03.10 D-12, plan 01).
+**This module REGISTERS NOTHING**, for the same reason `wrds/taq.py` does not:
+the one `wrds` descriptor lives in the package entry point,
+`quantlab/acquisition/wrds/__init__.py`, which imports both provider submodules
+(03.10 D-12, plan 01). The rule is source-text, not runtime: since the
+providers became submodules of that package, importing either one runs the
+entry point and so loads the registry -- what stays true, and what
+`tests/test_wrds_vendor_seam.py` enforces, is that no provider's SOURCE names
+the registry or the descriptor.
 """
 
 from __future__ import annotations
@@ -54,7 +60,7 @@ import psycopg2
 from loguru import logger
 from psycopg2 import sql
 
-from quantlab.acquisition import wrds_taq as _wrds
+from quantlab.acquisition.wrds import taq as _wrds
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.config import AcquisitionConfig
 from quantlab.config import get_data_root
@@ -310,7 +316,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
 
     The raw tier lands under `.../wrds_crsp/wrds/month=YYYY-MM/` with one row
     per `(permno, dlycaldt)`, EXACTLY as CRSP serves it: no derived price, no
-    adjusted series, no filter. Everything derived is `dataset/crsp.py`'s job,
+    adjusted series, no filter. Everything derived is `dataset/crsp/__init__.py`'s job,
     because the adjustment anchor is a property of the whole window and not of
     a page (RESEARCH Pattern 4).
 
@@ -454,7 +460,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
                 f"to your phone and the WRDS role allows only 7."
             )
         # Through the MODULE ATTRIBUTE at call time, so the test fixture's
-        # patch of `wrds_taq.WrdsSession` takes effect (RESEARCH Pattern 1).
+        # patch of `wrds.taq.WrdsSession` takes effect (RESEARCH Pattern 1).
         self._session = _wrds.WrdsSession.shared()
         self._server_columns_cache: dict[tuple[str, str], tuple[str, ...]] = {}
 

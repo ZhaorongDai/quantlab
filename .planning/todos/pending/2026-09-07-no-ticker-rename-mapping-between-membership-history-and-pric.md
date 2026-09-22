@@ -90,7 +90,7 @@ The CRSP/WRDS vendor (`example/wrds_crsp.md`) has **one PERMNO-keyed symbology s
 its prices and its universes**. PERMNO is CRSP's permanent security identifier; a rename
 (FB → META) does not change it. The raw tier is keyed by PERMNO and carries no ticker at
 all — the period-correct ticker is derived at CONVERSION time from
-`crsp_a_stock.stksecurityinfohist` by `quantlab/dataset/crsp_symbology.py:CrspSymbology`.
+`crsp_a_stock.stksecurityinfohist` by `quantlab/dataset/crsp/symbology.py:CrspSymbology`.
 
 Both halves that disagree for Tiingo/Wikipedia are then produced by the SAME object:
 

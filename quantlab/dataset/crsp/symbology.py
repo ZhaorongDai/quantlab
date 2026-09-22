@@ -46,7 +46,7 @@ import polars as pl
 
 #: The delimiter between a base ticker and its share class. The same `.` the
 #: constituent universes use and the same one
-#: `quantlab/acquisition/wrds_taq.py:WrdsTaqNbboAcquisition.SUFFIX_DELIMITER`
+#: `quantlab/acquisition/wrds/taq.py:WrdsTaqNbboAcquisition.SUFFIX_DELIMITER`
 #: declares -- restated rather than imported, because importing a TAQ constant
 #: into the CRSP dataset layer would make a tick-acquisition module a
 #: dependency of a daily-panel conversion.

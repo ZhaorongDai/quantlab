@@ -23,7 +23,7 @@ names sit on the single list below.
 A conventional residue gate strips comments and looks only at live code. This
 one does not, for a reason specific to this repository: `quantlab/dataset/`
 carries an unusually high docstring density and those docstrings cross-refer
-constantly -- one docstring in `crsp.py` described the delisting TYPE-column
+constantly -- one docstring in `crsp/__init__.py` described the delisting TYPE-column
 verdict inheritance and the delisting TICKER carry side by side, in adjacent
 sentences, and that adjacency is exactly how someone deletes the wrong half.
 A comment pointing at a mechanism that no longer exists sends the next reader
@@ -40,7 +40,7 @@ explain a deletion; the rule is only that the SHIPPING PACKAGE may not.
 
 **Membership rule for the list below.** A name goes on it only if it was
 unique to the deleted machinery. `_as_date` was deleted from
-`crsp_symbology.py` in 03.11-07 and is deliberately NOT listed: three other
+`crsp/symbology.py` in 03.11-07 and is deliberately NOT listed: three other
 modules define their own private helper of that name, so listing it would make
 the gate cry wolf, and a gate that cries wolf is one people learn to skip.
 """
@@ -56,18 +56,18 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "quantlab"
 
 #: Deleted in 03.11-07. Must be zero NOW.
 DELETED_IN_03_11_07: tuple[str, ...] = (
-    # crsp.py -- the identity-resolution entry point and its sidecar
+    # crsp/__init__.py -- the identity-resolution entry point and its sidecar
     "_resolve_identity",
     "symbology_report_path",
     "SYMBOLOGY_REPORT_SUFFIX",
     "_symbology_report",
-    # crsp_symbology.py -- collision resolution and the class-suffix pass
+    # crsp/symbology.py -- collision resolution and the class-suffix pass
     "resolve_collisions",
     "_class_collision_pass",
     "_collision_message",
     "_MAX_LISTED_COLLISIONS",
     "_member_spans",
-    # crsp_symbology.py -- the daily labeller and its per-PERMNO report shape
+    # crsp/symbology.py -- the daily labeller and its per-PERMNO report shape
     "label_rows",
     "_per_permno",
     # config fields deleted in 03.11-08, PROMOTED here out of the handover

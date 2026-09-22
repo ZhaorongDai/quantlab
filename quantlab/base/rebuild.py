@@ -14,7 +14,7 @@ convenience task; it is the precondition for every later acceptance criterion.
 order, the refusals, the measurement carrier. Everything vendor-specific --
 which sidecars exist, which converter to call, what to count -- is a subclass's
 job, mirroring the `base/data.py` -> `dataset/stock.py` split the rest of the
-project already uses. See `quantlab/dataset/crsp_rebuild.py` for the CRSP
+project already uses. See `quantlab/dataset/crsp/rebuild.py` for the CRSP
 implementation.
 
 **The order is the safety property**, not an implementation detail::
@@ -204,8 +204,8 @@ class BaseStoreRebuilder(ABC):
         """Delete the store directory AND every sidecar; return what went.
 
         **Deleting the sidecars is not tidiness -- it is correctness.**
-        `dataset/crsp.py:_write_identity_reports` opens with a store-exists
-        guard (crsp.py:1414): if the store is already on disk, the audit
+        `dataset/crsp/__init__.py:_write_identity_reports` opens with a store-exists
+        guard (crsp/__init__.py:1414): if the store is already on disk, the audit
         sidecars are left untouched. That guard is right for an APPEND, whose
         reports would otherwise be replaced by numbers for a panel that was
         refused and never written. But it means a rebuild that removed only

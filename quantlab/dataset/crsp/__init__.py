@@ -92,8 +92,8 @@ from loguru import logger
 
 from quantlab.base.config import CrspDatasetConfig, DatasetConfig
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.crsp_reference import CrspReference
-from quantlab.dataset.crsp_symbology import CrspSymbology
+from quantlab.dataset.crsp.reference import CrspReference
+from quantlab.dataset.crsp.symbology import CrspSymbology
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
 from quantlab.utils.atomic import write_json_atomically
@@ -231,7 +231,7 @@ FILTER_REPORT_SUFFIX: str = ".crsp_filter_report.json"
 #: PERMNO because FB and META are the same 13407, and a single name would file
 #: 2012 under the 2022 spelling -- the very defect that ruled out a 1-D
 #: `ticker(symbol)` coord. Read by
-#: `quantlab/dataset/crsp_tickers.py:CrspTickerLookup`.
+#: `quantlab/dataset/crsp/tickers.py:CrspTickerLookup`.
 TICKER_SIDECAR_SUFFIX: str = ".crsp_tickers.json"
 
 #: The `dsf_v2` flag marking the row that carries the delisting return.
@@ -482,7 +482,7 @@ class CrspStockDataset(StockDataset):
         if isinstance(config.security_filter, dict):
             config.security_filter = dict(self._security_filter)
         if config.roster_universe is not None:
-            from quantlab.dataset.crsp_membership import CrspMembership
+            from quantlab.dataset.crsp.membership import CrspMembership
 
             if config.roster_universe not in CrspMembership.INDEXES:
                 raise ValueError(
@@ -555,7 +555,7 @@ class CrspStockDataset(StockDataset):
             reference.table("stksecurityinfohist")
         )
         # The panel's `symbol` IS the PERMNO (D-01), and the raw frame's
-        # `symbol` column ALREADY holds it -- `wrds_crsp.py:317-319` verbatim:
+        # `symbol` column ALREADY holds it -- `wrds/crsp.py:317-319` verbatim:
         # "Raw `symbol` is the PERMNO as a string, and a typed `permno` Int64
         # column rides along." So the panel's identity axis is reached by a
         # CAST of the column the raw tier already wrote, not by dropping it and
@@ -658,7 +658,7 @@ class CrspStockDataset(StockDataset):
         # (D-01). Both things the deleted one existed for are unspellable on a
         # PERMNO axis: a same-day collision needs two PERMNOs in one
         # `(date, symbol)` cell, and the raw tier already asserts
-        # `(permno, dlycaldt)` uniqueness (`wrds_crsp.py:818-840`); a seam needs
+        # `(permno, dlycaldt)` uniqueness (`wrds/crsp.py:818-840`); a seam needs
         # a symbol column to change company, and a PERMNO column never does.
         return self._finalise(derived)
 
@@ -766,7 +766,7 @@ class CrspStockDataset(StockDataset):
             return None
         cached = getattr(self, "_member_intervals_cache", None)
         if cached is None:
-            from quantlab.dataset.crsp_membership import CrspMembership
+            from quantlab.dataset.crsp.membership import CrspMembership
 
             cached = CrspMembership(
                 CrspReference(self.config.reference_dir)
@@ -1654,7 +1654,7 @@ class CrspStockDataset(StockDataset):
         one, and the anchor sidecar has carried exactly this guard since it was
         introduced. It is also why a REBUILD must delete the sidecars before it
         starts rather than expect them to be overwritten:
-        `quantlab/dataset/crsp_rebuild.py:CrspStoreRebuilder` is the executor
+        `quantlab/dataset/crsp/rebuild.py:CrspStoreRebuilder` is the executor
         of that rule, and its `.crsp_*.json` cleanup list is what keeps a fresh
         store from inheriting the previous store's names. The STRONGER form,
         considered and not taken here because it needs a success signal this
@@ -1755,7 +1755,7 @@ class CrspStockDataset(StockDataset):
 
         **A BACKSTOP, not the mechanism.** `symbol` IS the PERMNO here (D-01),
         so this pair is `(dlycaldt, permno)` under two other names, and
-        `WrdsCrspAcquisition._assert_unique_keys` (`wrds_crsp.py:818-840`)
+        `WrdsCrspAcquisition._assert_unique_keys` (`wrds/crsp.py:818-840`)
         already refuses any raw page that duplicates it. A duplicate reaching
         this point therefore means something between the raw tier and here
         MULTIPLIED rows -- a join that fanned out, a window read twice -- not
@@ -1786,7 +1786,7 @@ class CrspStockDataset(StockDataset):
                 f"(permno, dlycaldt) key -- the raw tier asserts that pair is "
                 f"unique on every page it fetches "
                 f"(WrdsCrspAcquisition._assert_unique_keys, "
-                f"wrds_crsp.py:818-840), so these rows were multiplied AFTER "
+                f"wrds/crsp.py:818-840), so these rows were multiplied AFTER "
                 f"acquisition, not confused between two securities. Refusing "
                 f"rather than collapsing them into one series. Inspect the raw "
                 f"parquet for these (permno, date) pairs; if the raw tier is "

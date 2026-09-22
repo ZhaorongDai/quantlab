@@ -20,7 +20,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.dataset.crsp_tickers import CrspTickerLookup
+from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 if TYPE_CHECKING:  # import-cycle-free type hints only

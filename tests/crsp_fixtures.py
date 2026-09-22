@@ -3,7 +3,7 @@
 Nothing here touches the network. `FakeCrspSession` subclasses
 `tests.wrds_fixtures.FakeWrdsSession` and implements the PROVIDER-NEUTRAL
 session surface plan 03.10-01 added to the real
-`quantlab.acquisition.wrds_taq.WrdsSession` -- `schema_usable`, `fetch_rows`
+`quantlab.acquisition.wrds.taq.WrdsSession` -- `schema_usable`, `fetch_rows`
 and `copy_csv`. `tests/conftest.py:mock_crsp_session` patches it over the same
 dotted target `mock_wrds_session` uses, so the autouse `_forbid_wrds_network`
 tripwire stays live underneath: a fake that failed to install would fail the
@@ -845,7 +845,7 @@ class FakeCrspSession(FakeWrdsSession):
         The `instance` shadow is deleted for the same reason, one step
         further on. `FakeWrdsSession.shared()` assigns `cls.instance`, so
         calling it THROUGH this subclass (which every WRDS test now does --
-        the conftest patches this class over `wrds_taq.WrdsSession`) leaves a
+        the conftest patches this class over `wrds.taq.WrdsSession`) leaves a
         subclass-level `instance` that the base `reset()` cannot see. The next
         test would then be handed the PREVIOUS test's session object, no
         `__init__` would run, and `FakeWrdsSession.connections` would read 0
@@ -883,14 +883,14 @@ class FakeCrspSession(FakeWrdsSession):
         the pinned live column list -- `DSF_V2_SERVER_COLUMNS` for the daily
         table, and each `ReferenceTableSpec`'s own columns for the reference
         tables. The spec import is INSIDE the body so this module stays
-        importable before `quantlab/dataset/crsp_reference.py` exists.
+        importable before `quantlab/dataset/crsp/reference.py` exists.
         """
         key = f"{schema}.{table}"
         if key in cls.server_columns:
             return tuple(cls.server_columns[key])
         if key == "crsp_a_stock.dsf_v2":
             return DSF_V2_SERVER_COLUMNS
-        from quantlab.dataset.crsp_reference import REFERENCE_TABLES
+        from quantlab.dataset.crsp.reference import REFERENCE_TABLES
 
         for spec in REFERENCE_TABLES:
             if (spec.schema, spec.table) == (schema, table):
@@ -987,7 +987,7 @@ def write_reference_tables(
     live rows; a table with no rows is written EMPTY rather than skipped, so a
     reader meets the schema rather than a `FileNotFoundError`.
     """
-    from quantlab.dataset.crsp_reference import MANIFEST_NAME, REFERENCE_TABLES
+    from quantlab.dataset.crsp.reference import MANIFEST_NAME, REFERENCE_TABLES
     from quantlab.utils.atomic import write_json_atomically
 
     rows_by_table = (

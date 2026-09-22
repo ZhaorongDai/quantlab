@@ -33,7 +33,7 @@ LS-1 股票池掩码，点时点。标的在 t 时刻在池内，当且仅当：
   **全部要求字母**，而标的轴现在是 CRSP 的 int64 PERMNO，`"10107"` 这样的数字串
   一条都不匹配——那条静态判定恒返回 True，整条过滤**无声地变成 no-op**，
   却**看起来**在工作。它不是被取代，它是失效。职责由 CRSP 的 `security_filter`
-  （`equity_common`，`quantlab/dataset/crsp.py`）承接，而且更强：按**日期**判定、
+  （`equity_common`，`quantlab/dataset/crsp/__init__.py`）承接，而且更强：按**日期**判定、
   带审计报告，且 CRSP 的类型词表里根本不存在 warrant / right / preferred /
   test-code 的编码。详见 `example/universe.md`「为什么是删而不是关」。
 

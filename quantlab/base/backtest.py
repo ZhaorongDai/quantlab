@@ -12,7 +12,13 @@ from loguru import logger
 
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.backend import XrBackend
-from quantlab.dataset.crsp_tickers import CrspTickerLookup
+# `tickers` is a SUBMODULE of the `crsp` package now, so this line runs
+# `quantlab/dataset/crsp/__init__.py` -- the whole CRSP converter, polars and
+# the reference tier. Measured at +0.99s / +196 modules on top of this module's
+# 3.13s / 3118-module import, and accepted deliberately: the alternative was a
+# compatibility shim at the old flat path. If a slow backtest import ever sends
+# someone bisecting, this is the answer.
+from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import DASH, write_backtest_report

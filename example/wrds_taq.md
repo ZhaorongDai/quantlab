@@ -1,8 +1,8 @@
 # WRDS TAQ NBBO：从逐笔最优报价到 bar 面板
 
-> 代码位置：采集 `quantlab/acquisition/wrds_taq.py`（`WrdsSession`、`WrdsTaqNbboAcquisition`、
+> 代码位置：采集 `quantlab/acquisition/wrds/taq.py`（`WrdsSession`、`WrdsTaqNbboAcquisition`、
 > `WrdsNbboVolumeProbe`），体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
-> 面板 `quantlab/dataset/nbbo.py:NbboPanelDataset`，重采样 `quantlab/dataset/nbbo_resample.py`，
+> 面板 `quantlab/dataset/nbbo/__init__.py:NbboPanelDataset`，重采样 `quantlab/dataset/nbbo/resample.py`，
 > 交易日历 `quantlab/dataset/session_calendar.py:XnysSessionCalendar`，
 > 命令行入口 `scripts/ingest_wrds_taq.py`。
 > 相关文档：采集引擎通用契约见 [acquisition.md](acquisition.md)，数据源登记表见 [registry.md](registry.md)，

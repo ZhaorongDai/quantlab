@@ -208,7 +208,7 @@ _DSP500 = ReferenceTableSpec(
 #: `comp.idxcst_his` -- Compustat index membership, the Nasdaq-100 source
 #: (D-14). `from` and `thru` are RESERVED SQL words; every statement that
 #: names them must quote them, which is why the builders in
-#: `quantlab/acquisition/wrds_crsp.py` emit `sql.Identifier` and never text.
+#: `quantlab/acquisition/wrds/crsp.py` emit `sql.Identifier` and never text.
 _IDXCST = ReferenceTableSpec(
     name="idxcst_his",
     schema="comp",

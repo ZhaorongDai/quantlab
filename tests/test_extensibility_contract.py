@@ -37,7 +37,7 @@ CORE_LAYER_FILES = (
 
 # Why `CrspTickerLookup` is deliberately NOT in this tuple (G-03.11-1):
 # `quantlab/base/backtest.py:15` carries a named vendor import
-# (`from quantlab.dataset.crsp_tickers import CrspTickerLookup`) -- a concrete
+# (`from quantlab.dataset.crsp.tickers import CrspTickerLookup`) -- a concrete
 # dataset-layer class name living in `base/`. `base/factor.py` solved the same
 # problem the other way (the dataset declares a constant, `base/` only reads
 # it, zero vendor class names), so one phase ended up with two patterns. The

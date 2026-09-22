@@ -40,7 +40,7 @@ from quantlab.dataset.cleaning import REQUIRED_COLUMNS
 #:
 #: **All five must be DELETED before a rebuild, not just the store.**
 #: `dataset/crsp.py:_write_identity_reports` opens with a store-exists guard
-#: (crsp.py:1414): when the store is already on disk it returns without
+#: (crsp/__init__.py:1414): when the store is already on disk it returns without
 #: rewriting the reports. That guard is correct for an append -- it stops a
 #: REFUSED re-conversion from replacing a surviving store's audit trail with
 #: numbers for a panel that was never written -- but it means a rebuild that

@@ -6,7 +6,7 @@ Two layers are under test here, in the project's usual `base/` ABC +
 - `quantlab.base.rebuild.BaseStoreRebuilder` -- the framework-agnostic
   four-step skeleton (assert inputs -> backup -> clear -> convert -> measure)
   and its `RebuildMeasurement` carrier.
-- `quantlab.dataset.crsp_rebuild.CrspStoreRebuilder` -- the CRSP specifics:
+- `quantlab.dataset.crsp.rebuild.CrspStoreRebuilder` -- the CRSP specifics:
   four sidecars, the offline `registry.convert()` call, seven measurements.
 
 Everything in this file runs on SYNTHETIC fixtures under `tmp_path`, so it is
@@ -30,7 +30,7 @@ import xarray as xr
 from quantlab.base.config import CrspDatasetConfig
 from quantlab.base.rebuild import BaseStoreRebuilder, RebuildMeasurement
 from quantlab.dataset.cleaning import REQUIRED_COLUMNS
-from quantlab.dataset.crsp_rebuild import (
+from quantlab.dataset.crsp.rebuild import (
     CRSP_SIDECAR_SUFFIXES,
     CrspStoreRebuilder,
 )

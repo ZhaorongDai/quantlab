@@ -627,7 +627,7 @@ def _ticker_lookup(tmp_path, *, sidecar: str):
     `tests/test_crsp_ticker_sidecar.py`. It could never have reached the span
     indexing that G-03.11-3 is about.
     """
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     spans = {
         "valid": [{"ticker": "GHOST", "start": "1990-01-01", "end": "2025-12-31"}],

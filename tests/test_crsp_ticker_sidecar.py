@@ -239,7 +239,7 @@ def test_an_existing_store_blocks_the_write(tmp_path):
     lesser harm -- without the guard a REFUSED re-conversion would overwrite
     the surviving store's audit files with numbers for a panel that was never
     written. A rebuild deletes the store and its `.crsp_*.json` siblings first;
-    `quantlab/dataset/crsp_rebuild.py:CrspStoreRebuilder` is what does that.
+    `quantlab/dataset/crsp/rebuild.py:CrspStoreRebuilder` is what does that.
     """
     from quantlab.base.config import CrspDatasetConfig
     from quantlab.dataset.crsp import CrspStockDataset
@@ -274,7 +274,7 @@ def test_an_existing_store_blocks_the_write(tmp_path):
 
 def _lookup(converted):
     from quantlab.dataset.crsp import CrspStockDataset
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     return CrspTickerLookup(CrspStockDataset(converted).ticker_sidecar_path())
 
@@ -329,7 +329,7 @@ def test_a_missing_sidecar_is_raised_on_first_query_not_on_construction(
 ):
     """Lazy, like `CrspReference.manifest`: constructing the lookup touches no
     disk, and the refusal names the class, the path and what to do about it."""
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     missing = tmp_path / "crsp.zarr.crsp_tickers.json"
     lookup = CrspTickerLookup(missing)  # must not raise
@@ -346,7 +346,7 @@ def test_a_missing_sidecar_is_raised_on_first_query_not_on_construction(
 def test_a_corrupt_sidecar_names_the_exception_type_and_the_way_out(tmp_path):
     """The shape `_assert_anchor_unchanged` uses for the adjustment sidecar:
     `type(exc).__name__`, what the file records, and the rebuild route."""
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     corrupt = tmp_path / "crsp.zarr.crsp_tickers.json"
     corrupt.write_text("{not json", encoding="utf-8")
@@ -397,7 +397,7 @@ def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
     `as_of` still raises -- it is the strict, single-value question. `label` is
     the display entry point and answers with the digits.
     """
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     lookup = CrspTickerLookup(tmp_path / "absent.crsp_tickers.json")
 
@@ -405,7 +405,7 @@ def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
 
 
 def test_label_falls_back_without_raising_when_the_sidecar_is_corrupt(tmp_path):
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     corrupt = tmp_path / "crsp.zarr.crsp_tickers.json"
     corrupt.write_text("{not json", encoding="utf-8")
@@ -501,7 +501,7 @@ MALFORMED_SIDECARS = [
 
 def _written(tmp_path, text):
     """A lookup over a sidecar whose exact bytes the test chose, and its path."""
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     path = tmp_path / "crsp.zarr.crsp_tickers.json"
     path.write_text(text, encoding="utf-8")
@@ -613,7 +613,7 @@ def _written_bytes(tmp_path, payload: bytes):
     The `bytes` twin of `_written`: `write_text` cannot express a file that is
     not decodable as UTF-8, and that is one of the three cases here.
     """
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     path = tmp_path / "crsp.zarr.crsp_tickers.json"
     path.write_bytes(payload)
@@ -681,7 +681,7 @@ def test_a_bug_inside_as_of_reaches_the_caller_instead_of_becoming_digits(
     output can only mean the guard ate a bug.
     """
     from quantlab.dataset.crsp import CrspStockDataset
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     class TypoInAsOf(CrspTickerLookup):
         def as_of(self, permno, day):
@@ -702,7 +702,7 @@ def test_a_bug_inside_intervals_reaches_the_caller_too(converted):
     (`self.paylaod` -> `AttributeError`) still degrading silently to digits.
     """
     from quantlab.dataset.crsp import CrspStockDataset
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     class TypoInIntervals(CrspTickerLookup):
         def _intervals(self):
@@ -759,7 +759,7 @@ def test_an_absent_sidecar_warns_as_well_as_falling_back(
     answer is "is this store missing a sidecar?" rather than "is this store
     missing a sidecar, or is the one it has unreadable?".
     """
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     lookup = CrspTickerLookup(tmp_path / "absent.crsp_tickers.json")
 
@@ -831,7 +831,7 @@ def test_the_degraded_flag_is_a_log_throttle_and_not_a_state_machine():
     import ast
     from pathlib import Path
 
-    import quantlab.dataset.crsp_tickers as module
+    import quantlab.dataset.crsp.tickers as module
 
     tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
     touched: dict[str, int] = {}
@@ -953,7 +953,7 @@ def test_beside_store_builds_the_lookup_from_a_store_path(converted):
     construction sites (`quantlab/dataset/masking.py:115`,
     `quantlab/base/backtest.py:198`) do not each spell `".crsp_tickers.json"`
     for themselves."""
-    from quantlab.dataset.crsp_tickers import CrspTickerLookup
+    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     lookup = CrspTickerLookup.beside_store(converted.zarr_file_path)
 
