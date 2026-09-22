@@ -249,7 +249,7 @@ widens the panel (a behaviour change, not a deletion); `_assert_unique_panel_key
 downstream backstop worth keeping; `config.symbols`/`permnos` semantics converge and need a decision;
 `wrds_crsp.py:317-319` reads like ticker adaptation but is the reverse — leave it alone.
 
-**Plans:** 16/18 plans executed, plus 2 gap-closure plans from `03.11-UAT.md` and 5 more from
+**Plans:** 17/18 plans executed, plus 2 gap-closure plans from `03.11-UAT.md` and 5 more from
 `03.11-VERIFICATION.md` (2026-09-21 re-verification, 88/91) + `03.11-REVIEW.md` (WR-01..WR-04,
 IN-01..IN-04):
 
@@ -267,7 +267,7 @@ IN-01..IN-04):
 - [x] 03.11-16-PLAN.md — IN-02 + IN-03 + IN-04: bring the third `_permno_breakdown` assertion up to its
   two siblings' strength, point the module docstring at a function that exists, and state how narrow
   the core-layer purity gate actually is
-- [ ] 03.11-17-PLAN.md — G-03.11-6 (WR-03 + WR-04): a once-per-instance degradation warning so a broken
+- [x] 03.11-17-PLAN.md — G-03.11-6 (WR-03 + WR-04): a once-per-instance degradation warning so a broken
   sidecar stops being byte-identical to a store that never had one, and a shared `_object_payload()`
   so `product_end` stops bypassing the one place the payload's shape is checked
 - [ ] 03.11-18-PLAN.md — G-03.11-5: regenerate the on-disk `.crsp_filter_report.json` from current HEAD
