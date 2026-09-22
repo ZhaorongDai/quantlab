@@ -165,7 +165,7 @@ right is a question about the contract, not about this phase, and
 "data changed" diagnostic
 
 **Found during:** UAT round 3 (verify-work), while disposing of test 4
-**Status:** open — pre-existing since phase **03.7**, untouched by 03.11
+**Status:** resolved by quick task `260921-w6r` — `run()` and `run_cv()` now call `_compare_fingerprints_on_failure()` on the exception path (a `partial=True` comparison that never replaces the original exception); locked by `tests/test_backtest_rebuild.py::test_a_raise_inside_the_window_still_reports_the_changed_data`
 **Operator decision (2026-09-21):** fix separately AFTER 03.11 closes, not inside it
 
 **The gap.** `run()` calls `self._backtest_window(...)` (`backtest.py:391`) and only
