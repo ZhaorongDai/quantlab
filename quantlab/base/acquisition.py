@@ -477,7 +477,7 @@ class Acquisition(ABC):
     #:
     #: BOUND from `quantlab/base/coverage.py`, where it is DECLARED, so the
     #: writer here and the credential-free reader in
-    #: `quantlab/acquisition/inspector.py` name the same file by construction
+    #: `quantlab/acquisition/_support/inspector.py` name the same file by construction
     #: rather than by two literals that agree today. Every existing
     #: `self.FAILURE_MANIFEST_NAME` reference and every log message that
     #: interpolates it keeps working unchanged.

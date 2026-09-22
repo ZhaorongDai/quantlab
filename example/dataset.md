@@ -48,7 +48,7 @@
 
 **1. 面板天然是矩阵，因子和模型吃的就是矩阵。** KunQuant 的编译图要的是 `[time, symbol]` 的连续数组，从 xarray 一步 `data[col].to_numpy()` 就是（`quantlab/dataset/stock.py:_to_kunquant`）；`quantlab/base/model.py` 假设的张量形状是 `[num_times, num_symbols, num_features]`。如果层间传的是 long-format DataFrame，每一层都要自己 pivot 一次，而 pivot 的列顺序、缺失填充、排序规则会在每一层各写一遍，迟早各写各的。
 
-**2. "没有这一格" 和 "这一格是 NaN" 必须能区分。** long-format 里一个标的当天没交易就是"没有这一行"，跟"数据缺了"长得一模一样。稠密面板把它变成一个显式的 NaN 格子——`quantlab/dataset/cleaning.py:validate_schema` 正是靠这一点区分**结构性空缺**（必需列全为 null，说明这根 bar 根本不存在）和**异常空缺**（bar 在、某一列却是 null）。这个区分在 DataFrame 上表达不出来。（当必需列**全部**为空时这个区分本身失效，见「常见坑」#10。）
+**2. "没有这一格" 和 "这一格是 NaN" 必须能区分。** long-format 里一个标的当天没交易就是"没有这一行"，跟"数据缺了"长得一模一样。稠密面板把它变成一个显式的 NaN 格子——`quantlab/dataset/_support/cleaning.py:validate_schema` 正是靠这一点区分**结构性空缺**（必需列全为 null，说明这根 bar 根本不存在）和**异常空缺**（bar 在、某一列却是 null）。这个区分在 DataFrame 上表达不出来。（当必需列**全部**为空时这个区分本身失效，见「常见坑」#10。）
 
 **3. 多个变量共享同一套坐标。** 一个美股面板有 13 个数据变量（`open/high/low/close/volume/adj*/divCash/splitFactor/anomaly_flag`），它们共用一组 `timestamp` 和一组 `symbol`。xarray 存一份坐标，long DataFrame 把坐标重复 13 遍。
 
@@ -81,8 +81,8 @@
 **B. 原始文件 → 面板（`from_raw_data()`）**
 
 4. 一次性交接检查：如果第 3 步的兜底刚刚已经建好过面板、backend 还持着同一个对象、日期窗口也没变，就直接返回，跳过一次重复转换（实测一次 ingest 会转两遍原始树）。这个交接**只对一次调用有效**，进入方法就无条件清空。
-5. `_raw_data_to_xr()`——**子类唯一必须实现的方法**。它内部要做完三件事：定位/解析原始文件、**去重**、`to_xarray()`。去重走 `quantlab/dataset/cleaning.py:dedup_raw_frame(keep="last")`，必须在 `to_xarray()` 之前：非唯一的 `(timestamp, symbol)` MultiIndex 会让 `to_xarray()` 直接抛 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`。`keep="last"` 是因为 vendor 的月度重发里，后到的文件更可能是修正后的数据。
-6. **稠密化不需要写代码**。`pandas.DataFrame.set_index(["timestamp","symbol"]).to_xarray()` 本身就产出完整的笛卡尔积，缺的格子自动是 NaN。这就是为什么 `quantlab/dataset/cleaning.py` 里一行 fill/interpolate 都没有——模块开头写得很直白：加 forward-fill 等于**编造流水线从未观测到的数据**。
+5. `_raw_data_to_xr()`——**子类唯一必须实现的方法**。它内部要做完三件事：定位/解析原始文件、**去重**、`to_xarray()`。去重走 `quantlab/dataset/_support/cleaning.py:dedup_raw_frame(keep="last")`，必须在 `to_xarray()` 之前：非唯一的 `(timestamp, symbol)` MultiIndex 会让 `to_xarray()` 直接抛 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`。`keep="last"` 是因为 vendor 的月度重发里，后到的文件更可能是修正后的数据。
+6. **稠密化不需要写代码**。`pandas.DataFrame.set_index(["timestamp","symbol"]).to_xarray()` 本身就产出完整的笛卡尔积，缺的格子自动是 NaN。这就是为什么 `quantlab/dataset/_support/cleaning.py` 里一行 fill/interpolate 都没有——模块开头写得很直白：加 forward-fill 等于**编造流水线从未观测到的数据**。
 7. `_clean(data)`。默认实现是 `clean_market_data()` = `validate_schema()` + `flag_anomalies()`。前者对缺列**硬抛**，对 null 只 `logger.warning` 不抛（flag-don't-delete）——必需列全空这一种退化情形升到 `logger.error`，同样不抛（见「常见坑」#10）；后者加一个布尔变量 `anomaly_flag`，在任何 price-like 列 ≤ 0、或 `close` 单步涨跌幅超过 `_EXTREME_JUMP_THRESHOLD`（0.5）处置 True，**从不修改原值**。这是个可覆写的钩子，非 OHLCV 的数据集必须覆写它。
 8. `data_backend.to_internal(data)`——面板进内存，此时还没落盘。
 
@@ -301,7 +301,7 @@ import xarray as xr
 
 from quantlab.base.config import DatasetConfig
 from quantlab.base.data import MarketDataset
-from quantlab.dataset.cleaning import dedup_raw_frame
+from quantlab.dataset._support.cleaning import dedup_raw_frame
 
 TMP = Path("/tmp/quantlab_mini_demo")
 
@@ -507,7 +507,7 @@ clean_market_data(panel)
 ValueError: validate_schema: required column(s) missing from dataset: ['open', 'high', 'low', 'close', 'volume']
 ```
 
-即使绕过这一关，`flag_anomalies()` 还会给一个只有布尔变量的面板再挂一个全 False 的 `anomaly_flag`——**盘面尺寸翻倍，记录的信息为零**。用 `quantlab/dataset/cleaning.py:clean_membership_panel()`，或者写你自己的。
+即使绕过这一关，`flag_anomalies()` 还会给一个只有布尔变量的面板再挂一个全 False 的 `anomaly_flag`——**盘面尺寸翻倍，记录的信息为零**。用 `quantlab/dataset/_support/cleaning.py:clean_membership_panel()`，或者写你自己的。
 
 **6. `time_interval` 属性在 `XrBackend` 下曾经是坏的。**（**已于 2026-09-07 修复**）
 `BaseDataset.time_interval` 写的是 `get_xarray_dataset(["timestamp"]).diff(...).to_series().mode()`，但 `XrBackend.get_xarray_dataset()` **完全忽略 `indexes` 参数**，直接返回整个 `Dataset`。于是两个问题接连出现：
@@ -535,7 +535,7 @@ config setter 在边界上一次性拦掉了它，所以下游所有比较可以
 一个"每个标的每天都有 bar"的窗口，`volume` 会保留 pandas 的 `int64`；只要有一个缺口，为了放 NaN 就升成 `float64`。分块写入时这意味着 store 的 dtype 由**碰巧第一个被写进去的窗口**决定，而后来的 float64 NaN 写进 int64 变量会被静默 cast 成 0——在缺数据的地方伪造出一个观测值。`_pin_append_dtypes()` 通过把整型统一提升成 float64 让这个失败不可达（布尔的 `anomaly_flag` 例外，它是标志不是测量值）。
 
 **9. 清洗里永远不要加 fill / interpolate。**
-`quantlab/dataset/cleaning.py` 的模块文档写死了这一条：那等于编造流水线从未观测到的数据。异常只**打标**不修正（`anomaly_flag`），空缺只**报告**不填补。想改这个行为之前，先想清楚你是打算让一个 NaN 在三层之外变成一个看起来很正常的因子值。
+`quantlab/dataset/_support/cleaning.py` 的模块文档写死了这一条：那等于编造流水线从未观测到的数据。异常只**打标**不修正（`anomaly_flag`），空缺只**报告**不填补。想改这个行为之前，先想清楚你是打算让一个 NaN 在三层之外变成一个看起来很正常的因子值。
 
 **10. 结构性掩码曾经会把**所有**告警一起吞掉。**（**已于 2026-09-07 修复**）
 `validate_schema` 的结构性掩码是「每一个必需列都为 null」的逻辑与，每一列的告警条件是 `isnull() & ~mask`。当必需列**自己**全空时——空的 vendor 响应被写进了 store、CSV 解析错列、backfill 整段失败——掩码在每一格都是 True，`~mask` 在每一格都是 False，于是**每一列的告警都被吞掉，一条都不剩**：

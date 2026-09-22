@@ -19,7 +19,7 @@ from loguru import logger
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.cleaning import clean_membership_panel
+from quantlab.dataset._support.cleaning import clean_membership_panel
 from quantlab.dataset.constituent import SP500ConstituentDataset
 
 _COVERAGE_START = "1976-07-01"

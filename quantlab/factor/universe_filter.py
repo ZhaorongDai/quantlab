@@ -67,7 +67,7 @@ LS-5 已接受的代价：截面算子之上的时序算子（如 `correlation(r
   `quantlab/my_ops/preprocess.py:CrossSectionalZScore` 坑 1）。
 - **标的数必须与 SIMD 块宽对齐**（本机 aarch64 上 8 的倍数；实测 16 可以、13 不行）。
 
-与 `quantlab/dataset/masking.py:UniverseMask` 的区别：那个做的是**指数成分对齐**
+与 `quantlab/dataset/_support/masking.py:UniverseMask` 的区别：那个做的是**指数成分对齐**
 （某天谁是成分股），这里做的是**规则化的可交易性过滤**（够不够贵、够不够活、是不是
 普通股）。两者正交，可以叠加使用。
 """

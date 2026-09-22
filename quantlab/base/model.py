@@ -1309,7 +1309,7 @@ class DLModel(BaseModel):
         崩溃。这里是裸调用、且在快乐路径上——面板多出未训练标的本来只是丢弃加
         一条 warning、预测照常完成——所以守卫落在查表层（`CrspTickerLookup.label`），
         而不是给这三个调用点各包一个 try：全仓库只有三个调用点
-        （`dataset/masking.py:262`、`backtest/engine_vectorbt.py:303`、
+        （`quantlab/dataset/_support/masking.py:262`、`backtest/engine_vectorbt.py:303`、
         以及本方法这一处，经 `predict_panel` 的 missing / extra 两条分支各到达一次），
         它们合起来渲染六条人可见消息。守卫写在查表层是一份拼写，
         抄到调用点就是三份，且每多一个展示入口就多一次忘记的机会。

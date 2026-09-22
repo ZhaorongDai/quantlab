@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from quantlab.acquisition.sql_volume import SqlVolumeGuard
+from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
 ROWS_BY_DAY = {"2024-01-24": 1_243_426, "2024-01-25": 1_100_000}
 TOTAL_ROWS = 2_343_426
@@ -148,7 +148,7 @@ def test_the_sql_guard_ceiling_is_pinned_to_the_universe_guard():
 def test_sql_volume_module_imports_no_acquisition_class():
     import sys
 
-    import quantlab.acquisition.sql_volume as module
+    import quantlab.acquisition._support.sql_volume as module
 
     tree = ast.parse(Path(inspect.getfile(module)).read_text())
     top_levels = set()

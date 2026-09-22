@@ -838,7 +838,7 @@ def print_sql_volume_estimate(
     """
     # Imported at call time for the reason `apply_data_dir` defers `config`:
     # this module's module-scope project imports stay pinned at quantlab.base.*.
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
     bytes_per_row = estimate["bytes_per_row"]
     assumed = (

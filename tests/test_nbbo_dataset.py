@@ -46,7 +46,7 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
     from quantlab.base.config import NbboDatasetConfig
-    from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+    from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.nbbo import NbboPanelDataset
 
     mock_wrds_session.trading_days_by_year = {2024: [DAY]}
@@ -216,7 +216,7 @@ def _panel(dataset_config):
 
 
 def _bar(panel, label: str, symbol: str = "AAPL") -> dict[str, float]:
-    from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+    from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
 
     row = panel.sel(timestamp=pd.Timestamp(label), symbol=symbol)
     return {name: float(row[name].values) for name in NBBO_PANEL_VARIABLES}
@@ -476,7 +476,7 @@ def test_multi_day_chunked_conversion_is_granularity_independent_and_resumable(
     from conftest import stored_symbol_encoding
     from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
-    from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+    from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.nbbo import FILTER_STATS_SUFFIX
 
     acq = _acquire(tmp_path, _two_day_rows(), symbols=("AAPL", "BRK.B"))

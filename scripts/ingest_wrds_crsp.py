@@ -337,7 +337,7 @@ if __name__ == "__main__":
     # suite patches `wrds.taq.WrdsSession` with an offline double, and a
     # module-scope binding would capture the real class at import time
     # (RESEARCH Pattern 1).
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.crsp import CrspQueries, CrspVolumeProbe
     from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
     from quantlab.acquisition.wrds.taq import WrdsSession

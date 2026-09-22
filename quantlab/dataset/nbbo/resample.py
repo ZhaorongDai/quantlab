@@ -3,7 +3,7 @@
 `NbboResampler` turns a stream of individually-timestamped NBBO records into
 one row per `(symbol, bar label)`, per trading session. Pure polars; no I/O,
 no quantlab imports beyond the bar-interval table and the panel's variable
-tuple (`dataset/cleaning.py`, itself a leaf module).
+tuple (`quantlab/dataset/_support/cleaning.py`, itself a leaf module).
 
 Semantics (D-10/D-11/D-13/D-22/D-25):
 
@@ -28,7 +28,7 @@ Semantics (D-10/D-11/D-13/D-22/D-25):
 - **Carry-forward is state semantics, deliberately NOT a cleaning fill.** The
   NBBO stays in force until it is replaced, so an empty bar reports the
   prevailing state with `n_updates = 0` -- an observed state, not fabricated
-  data. This lives here and never in `dataset/cleaning.py`, whose no-fill rule
+  data. This lives here and never in `quantlab/dataset/_support/cleaning.py`, whose no-fill rule
   stands. State never crosses a session date (D-13).
 """
 
@@ -38,10 +38,10 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 
-#: The output variables, in order: the ONE definition in `dataset/cleaning.py`
+#: The output variables, in order: the ONE definition in `quantlab/dataset/_support/cleaning.py`
 #: that `clean_nbbo_panel` enforces, so the resampler cannot drift from it.
 PANEL_VARIABLES = NBBO_PANEL_VARIABLES
 

@@ -13,7 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from quantlab.dataset.session_calendar import XnysSessionCalendar
+from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -193,5 +193,5 @@ def test_dependencies_declared():
 
 
 def test_module_does_not_import_acquisition():
-    source = (REPO_ROOT / "quantlab/dataset/session_calendar.py").read_text()
+    source = (REPO_ROOT / "quantlab/dataset/_support/session_calendar.py").read_text()
     assert "quantlab.acquisition" not in source

@@ -4,7 +4,7 @@ Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
 `quantlab.universe.UniverseCatalog` resolves the roster,
 `quantlab.registry.run()` fetches it through the registered source
-descriptor, `quantlab.acquisition.inspector.SourceInspector` answers the
+descriptor, `quantlab.acquisition._support.inspector.SourceInspector` answers the
 credential-free coverage question, and `quantlab.dataset.stock.StockDataset`
 converts it. Nothing here should grow a behaviour that a component could own
 instead.
@@ -111,7 +111,7 @@ import datetime
 
 from dataclasses import replace
 
-from quantlab.acquisition.inspector import SourceInspector
+from quantlab.acquisition._support.inspector import SourceInspector
 from quantlab.registry import DataSourceRegistry, convert, run
 from quantlab.universe import UniverseCatalog
 from quantlab.config import stock_kline_config, universe_config

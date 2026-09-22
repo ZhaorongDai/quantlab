@@ -21,7 +21,7 @@ from pathlib import Path
 import xarray as xr
 
 from quantlab.base.rebuild import BaseStoreRebuilder
-from quantlab.dataset.cleaning import REQUIRED_COLUMNS
+from quantlab.dataset._support.cleaning import REQUIRED_COLUMNS
 
 #: Every sidecar that belongs to a CRSP store, as a suffix on the store path.
 #:
@@ -121,7 +121,7 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
         """The seven numbers phase 03.11 reasons about, from the written store.
 
         `structural_gaps` is computed the way
-        `dataset/cleaning.py:validate_schema` computes its own structural mask
+        `quantlab/dataset/_support/cleaning.py:validate_schema` computes its own structural mask
         -- a logical AND over `isnull()` of every column in `REQUIRED_COLUMNS`,
         imported from that module rather than re-listed here. A second copy of
         the rule would drift, and the whole force of the acceptance criterion

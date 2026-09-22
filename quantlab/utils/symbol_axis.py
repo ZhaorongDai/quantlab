@@ -11,7 +11,7 @@ existed neither had a home:
 Both were re-expressed at every call site instead -- eight-plus bare
 `sorted()` calls (`quantlab/dataset/stock.py:506-511`,
 `quantlab/dataset/crsp/__init__.py:1372-1375`, `quantlab/base/constituent.py:198`,
-`quantlab/dataset/masking.py:105`, `quantlab/base/model.py:310` and `:1220`,
+`quantlab/dataset/_support/masking.py:105`, `quantlab/base/model.py:310` and `:1220`,
 `quantlab/utils/fingerprint.py:58`, `quantlab/dataset/chunking.py:210`) and an
 unconditional `[str(symbol) for symbol in symbols]` at
 `quantlab/backend.py:451`. N independent spellings of one contract are

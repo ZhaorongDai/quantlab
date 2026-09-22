@@ -568,7 +568,7 @@ def test_carry_rows_exist_for_a_symbol_whose_every_record_was_dropped() -> None:
 
 
 def test_panel_variables_are_exactly_the_cleaning_contract_as_float64() -> None:
-    from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES
+    from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
 
     panel, _ = _run(
         [

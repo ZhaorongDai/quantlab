@@ -1,7 +1,7 @@
 # 数据源登记表（DataSourceRegistry）
 
 > 代码位置：`quantlab/registry.py`（登记表、描述符、`run()`）、
-> `quantlab/acquisition/inspector.py`（只读检视器）、`quantlab/base/progress.py`（进度事件与取消令牌）。
+> `quantlab/acquisition/_support/inspector.py`（只读检视器）、`quantlab/base/progress.py`（进度事件与取消令牌）。
 > 描述符本身定义在各厂商模块里：`quantlab/acquisition/tiingo.py`、`quantlab/acquisition/alpaca.py`。
 > 采集引擎本身见 [acquisition.md](acquisition.md)；分页断点见 [pageledger.md](pageledger.md)。
 
@@ -399,7 +399,7 @@ raw 根以 `/tiingo` **结尾**，水位目录是它的**兄弟**——这条约
 用的是仓库 `data/` 下真实存在的一次 Nasdaq-100 分钟线回填。
 
 ```python
-from quantlab.acquisition.inspector import SourceInspector
+from quantlab.acquisition._support.inspector import SourceInspector
 from quantlab.registry import DataSourceRegistry
 
 S = DataSourceRegistry.get("alpaca")
@@ -445,7 +445,7 @@ failures    : {}
 
 ```python
 import polars as pl
-from quantlab.acquisition.inspector import SourceInspector
+from quantlab.acquisition._support.inspector import SourceInspector
 from quantlab.config import stock_kline_config
 
 ds_cfg = stock_kline_config(

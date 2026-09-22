@@ -4,7 +4,7 @@ question "is this symbol already on disk for this window?" is answered.
 Extracted from `quantlab/base/acquisition.py` by 03.4-04 under D-09, which
 makes it BINDING that the read-only inspector does not re-implement coverage
 judgement. `Acquisition` composes a `CoverageLedger` and delegates every
-coverage member to it; `quantlab/acquisition/inspector.py` builds one directly
+coverage member to it; `quantlab/acquisition/_support/inspector.py` builds one directly
 through `CoverageLedger.for_config`. Both therefore reach the SAME
 `partition_by_coverage` function object, which is what makes "shared" provable
 by identity rather than by two results that happen to agree today.

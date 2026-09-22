@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from quantlab.base.config import DatasetConfig
 from quantlab.base.data import MarketDataset
-from quantlab.dataset.cleaning import dedup_raw_frame
+from quantlab.dataset._support.cleaning import dedup_raw_frame
 from quantlab.enums.data import RAW_HIVE_KEYS, BinanceCSVHeaders
 from quantlab.utils.file import file_date_filter
 from quantlab.utils.symbol_axis import sort_symbol_axis

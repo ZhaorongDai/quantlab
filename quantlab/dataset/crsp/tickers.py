@@ -43,7 +43,7 @@ sidecar existed.
 - `label(permnos, day)` is the DISPLAY entry point, and it never raises -- for
   all three of those failures alike. There are exactly three call sites, and
   every one of them is BARE -- inside no `try`, on the strength of this
-  paragraph: `quantlab/dataset/masking.py:262`,
+  paragraph: `quantlab/dataset/_support/masking.py:262`,
   `quantlab/backtest/engine_vectorbt.py:303` (mid-simulation, the most
   expensive place a refusal could land) and `quantlab/base/model.py:1315`,
   reached twice through `_spell` in `predict_panel`'s `missing` and `extra`
@@ -51,7 +51,7 @@ sidecar existed.
   forced-liquidation log and `liquidations.json`, the model's missing and extra
   symbol lists, and `UniverseMask.report()`'s missing-member list -- all of
   them trying to make an EXISTING message readable. (Two further messages,
-  `browse_zarr`'s refusal in `quantlab/acquisition/inspector.py` and the
+  `browse_zarr`'s refusal in `quantlab/acquisition/_support/inspector.py` and the
   `--symbols` CLI help, only NAME this class in prose: they neither construct a
   lookup nor call it, and must not be counted as call sites, because the design
   argument below -- the guard lives in the lookup rather than at each caller --
@@ -69,7 +69,7 @@ project-internal imports at all, so any layer may import it. It is the second
 half of that sentence that is load-bearing -- what would make this module
 un-importable from some layer is a quantlab dependency of its own, not a
 third-party one, and `loguru` is already imported by all three of its
-consumers (`dataset/masking.py`, `backtest/engine_vectorbt.py`,
+consumers (`quantlab/dataset/_support/masking.py`, `backtest/engine_vectorbt.py`,
 `base/model.py`). The one name it needs from `crsp/__init__.py` -- the suffix -- is
 imported inside `beside_store`, because appending a string must not drag the
 whole converter (polars, xarray, the reference tier) into a display path.
@@ -153,7 +153,7 @@ class CrspTickerLookup:
         The ONE place the suffix is appended on the read side, so the display
         points do not each spell `".crsp_tickers.json"` for themselves -- a
         literal repeated at the two production construction sites
-        (`quantlab/dataset/masking.py:115`, `quantlab/base/backtest.py:198`) is
+        (`quantlab/dataset/_support/masking.py:115`, `quantlab/base/backtest.py:198`) is
         a rename waiting to go half-done, and a third one is a `beside_store`
         call away.
 

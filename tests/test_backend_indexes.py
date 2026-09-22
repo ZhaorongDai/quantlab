@@ -94,7 +94,7 @@ class PanelDataset(BaseDataset):
 def _panel(transposed: bool = False) -> xr.Dataset:
     """A canonical two-variable panel, one float and one BOOL.
 
-    The bool `anomaly_flag` is not decoration: `dataset/cleaning.py` adds
+    The bool `anomaly_flag` is not decoration: `quantlab/dataset/_support/cleaning.py` adds
     exactly this variable to every cleaned market panel, and it is what made
     `.diff(dim="timestamp")` raise on the whole-dataset return.
     """

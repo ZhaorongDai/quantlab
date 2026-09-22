@@ -948,7 +948,7 @@ def test_the_manifest_survives_a_quota_abort_on_the_default_path(
     """
     import json
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     permanent = "AMZN"
     not_found = _rest_client_error(404, "Not found", "Not Found")

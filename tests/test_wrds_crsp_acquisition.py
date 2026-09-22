@@ -713,7 +713,7 @@ def test_the_volume_probes_counts_feed_the_sql_volume_guard_unchanged(
     """The guard is REUSED, not re-implemented (D-03). Its per-"day" wording
     means per-YEAR against these keys; plan 10 adds the unit label to the
     printed estimate."""
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
     FakeCrspSession.daily_rows = probe_rows()
     probe = crsp.CrspVolumeProbe(FakeCrspSession.shared(), batch_size=2)

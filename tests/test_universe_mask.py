@@ -1,4 +1,4 @@
-"""Tests for dataset/masking.py:UniverseMask (260906-13w Task 3, D-06/D-07).
+"""Tests for quantlab/dataset/_support/masking.py:UniverseMask (260906-13w Task 3, D-06/D-07).
 
 Aligning an index `is_member` panel against a market panel is an intersection
 in both directions, but the two directions are NOT symmetric and the asymmetry
@@ -26,7 +26,7 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.dataset.masking import UniverseMask
+from quantlab.dataset._support.masking import UniverseMask
 
 #: Five trading days (Mon..Fri) for the market panel.
 _MARKET_DAYS = pd.to_datetime(

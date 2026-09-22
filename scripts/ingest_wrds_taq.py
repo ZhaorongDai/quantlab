@@ -79,7 +79,7 @@ from quantlab.universe import UniverseCatalog
 from quantlab.base.config import NbboDatasetConfig, UniverseConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.nbbo import NbboPanelDataset
-from quantlab.dataset.session_calendar import XnysSessionCalendar
+from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.enums.data import BarInterval
 from quantlab.utils.cli import (
     add_chunk_args,
@@ -263,7 +263,7 @@ if __name__ == "__main__":
 
     # Imported here so the module attribute is read at run time (the test
     # suite patches it with an offline double).
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.taq import WrdsNbboVolumeProbe, WrdsSession
 
     try:

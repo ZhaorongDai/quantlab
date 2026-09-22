@@ -10,7 +10,7 @@ bind itself by implementing hooks. `UniverseMask` has no hooks and no
 per-index variation: it is a concrete, hook-free composition of two dataset
 kinds that already exist, and putting a hook-free concrete class in `base/`
 would dilute exactly the rule that makes that package legible.
-`dataset/cleaning.py` is the existing precedent for a concrete collaborator
+`quantlab/dataset/_support/cleaning.py` is the existing precedent for a concrete collaborator
 sitting beside the concrete datasets.
 """
 

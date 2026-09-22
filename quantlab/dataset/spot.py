@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from quantlab.base.config import DatasetConfig
 from quantlab.base.data import MarketDataset
-from quantlab.dataset.cleaning import dedup_raw_frame, flag_anomalies, validate_schema
+from quantlab.dataset._support.cleaning import dedup_raw_frame, flag_anomalies, validate_schema
 from quantlab.enums.data import BinanceCSVHeaders
 from quantlab.utils.file import file_date_filter, get_csv_files
 from quantlab.utils.nautilus import (
@@ -36,7 +36,7 @@ from quantlab.utils.timer import Timer
 
 class SpotKlineDataset(MarketDataset):
     # Binance raw columns are Title-Case (Open/High/Low/Close/Volume), unlike
-    # the shared dataset/cleaning.py module's lowercase convention (D-06..D-08
+    # the shared quantlab/dataset/_support/cleaning.py module's lowercase convention (D-06..D-08
     # default, tuned for StockDataset's already-lowercase Tiingo columns).
     # `_clean()` below overrides validate_schema()'s required-column names to
     # match, rather than renaming columns pipeline-wide (out of this plan's

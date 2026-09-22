@@ -236,7 +236,7 @@ CRSP 的 `security_filter` 预设 `equity_common`（`quantlab/dataset/crsp/__ini
 
 ---
 
-## 与 `quantlab/dataset/masking.py:UniverseMask` 的区别
+## 与 `quantlab/dataset/_support/masking.py:UniverseMask` 的区别
 
 两者名字像，做的事正交，可以叠加使用：
 

@@ -10,7 +10,7 @@
 |---|---|---|
 | 采集 + 参考表 | `quantlab/universe.py` | 抓数据、重建历史成分区间、落成一张 `universe.parquet` 参考表，并提供时点查询 |
 | 面板化 | `quantlab/base/constituent.py` + `quantlab/dataset/constituent.py` | 把"区间表"稠密化成 `(timestamp, symbol) -> is_member` 的布尔面板，存 Zarr |
-| 掩码 | `quantlab/dataset/masking.py` | 把布尔面板盖到价格面板上，非成分的格子置 NaN，并报告覆盖缺口 |
+| 掩码 | `quantlab/dataset/_support/masking.py` | 把布尔面板盖到价格面板上，非成分的格子置 NaN，并报告覆盖缺口 |
 
 ---
 
@@ -231,7 +231,7 @@ EK      sp500_constituent  1976-07-01   2010-12-17   false
 - **时间轴是日历日**（`pd.date_range(..., freq="D")`），不是交易日。周末和节假日的值是上一个交易日的成分关系顺延。所以和 OHLCV 面板 join 时**必须 reindex 或 `.sel()`**，不能假设两条轴对齐。`UniverseMask` 就是这么做的（时间戳做 inner join，且**故意不报告**被丢掉的行——那几千行是构造使然）。
 - **null `start_date` 直接抛 `ValueError`**，不容忍。`pd.Timestamp(None)` 是 `NaT`，而 `NaT` 的所有比较都是 `False`，`max()` 会静默返回它碰巧先拿到的那个值，把整个 horizon 算错；同一个 null 再走到填充循环里会产出一整列 `False`，和"从没当过成分"完全无法区分。
 
-### 掩码：`quantlab/dataset/masking.py:UniverseMask`
+### 掩码：`quantlab/dataset/_support/masking.py:UniverseMask`
 
 `apply()` 返回 `market.where(mask)`——非成分的格子变 NaN，**所有变量统一处理，布尔标志位也不例外**（`anomaly_flag` 会变成 float64 + NaN）。理由：在池子之外，一个 flag 是"未定义"，不是 `False`，保留 `False` 等于断言了这个掩码并不知道的事。
 
@@ -404,7 +404,7 @@ ValueError: as_of_date must be an ISO YYYY-MM-DD string, got '2020/01/02'. The t
 import numpy as np, pandas as pd, polars as pl, xarray as xr
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
-from quantlab.dataset.masking import UniverseMask
+from quantlab.dataset._support.masking import UniverseMask
 
 
 class DemoPanel(IndexConstituentDataset):
@@ -573,7 +573,7 @@ present in us_all after '.'->'-': ['BF-B', 'BRK-B']
 
 todo 里有一条设计约束值得单独记住：**无论选哪个方案，join 在遇到无法解析的成分代码时必须大声失败，而不是产出一个空列。这条性质比任何具体的映射机制都值钱。**
 
-顺带：`UniverseMask.report()` 就是**目前唯一能让这个坑现形的机制**（它会把每一个"是成分但价格面板没有"的代码完整列出来）。`quantlab/dataset/masking.py` 的 docstring 说得很直白——报告非空是一个**需要处理的发现**，不是一个可以在这里糊过去的洞。
+顺带：`UniverseMask.report()` 就是**目前唯一能让这个坑现形的机制**（它会把每一个"是成分但价格面板没有"的代码完整列出来）。`quantlab/dataset/_support/masking.py` 的 docstring 说得很直白——报告非空是一个**需要处理的发现**，不是一个可以在这里糊过去的洞。
 
 ### 坑 2：重建出来的历史成分数量不精确
 
