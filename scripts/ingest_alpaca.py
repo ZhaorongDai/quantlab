@@ -72,7 +72,7 @@ the volume guard can still be three orders of magnitude too large to densify
 allocates against. Choose `--chunk` accordingly.
 
 The conversion itself is CHUNKED and it is the REGISTRY'S (03.5
-D-06/D-07/SC-6): this script hands `quantlab.acquisition.registry.convert()` a
+D-06/D-07/SC-6): this script hands `quantlab.registry.convert()` a
 source descriptor and a dataset config and renders the `ConversionResult` it
 gets back, naming no Dataset subclass method. One window is densified and
 appended at a time onto a symbol axis pinned once over the whole range, so
@@ -139,8 +139,8 @@ import typing
 
 from dataclasses import replace
 
-from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset

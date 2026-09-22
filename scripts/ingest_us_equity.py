@@ -2,9 +2,9 @@
 
 Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
 logic lives in the layered components this script merely wires together:
-`quantlab.acquisition.universe.UniverseCatalog` resolves the roster,
-`quantlab.acquisition.registry.run()` fetches it through the registered source
-descriptor, `quantlab.acquisition.inspector.SourceInspector` answers the
+`quantlab.universe.UniverseCatalog` resolves the roster,
+`quantlab.registry.run()` fetches it through the registered source
+descriptor, `quantlab.acquisition._support.inspector.SourceInspector` answers the
 credential-free coverage question, and `quantlab.dataset.stock.StockDataset`
 converts it. Nothing here should grow a behaviour that a component could own
 instead.
@@ -37,7 +37,7 @@ grid, the ~29.6M-row pandas frame and conversion scratch at once, which OOMs a
 16 GiB machine.
 
 That is fixed. `--to-zarr` now goes through
-`quantlab.acquisition.registry.convert()`, which densifies and appends ONE
+`quantlab.registry.convert()`, which densifies and appends ONE
 time window at a time onto a symbol axis pinned once over the whole range, so
 peak RAM scales with the WINDOW rather than the range (D-01/D-02). `--chunk`
 selects the granularity (year by default) and a run interrupted at window 12
@@ -111,9 +111,9 @@ import datetime
 
 from dataclasses import replace
 
-from quantlab.acquisition.inspector import SourceInspector
-from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.acquisition._support.inspector import SourceInspector
+from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.universe import UniverseCatalog
 from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.cli import (

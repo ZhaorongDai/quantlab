@@ -29,7 +29,7 @@ import xarray as xr
 
 from quantlab.base.config import CrspDatasetConfig
 from quantlab.base.rebuild import BaseStoreRebuilder, RebuildMeasurement
-from quantlab.dataset.cleaning import REQUIRED_COLUMNS
+from quantlab.dataset._support.cleaning import REQUIRED_COLUMNS
 from quantlab.dataset.crsp.rebuild import (
     CRSP_SIDECAR_SUFFIXES,
     CrspStoreRebuilder,

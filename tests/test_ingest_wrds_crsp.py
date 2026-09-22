@@ -287,7 +287,7 @@ def test_a_start_past_the_product_end_refuses_with_no_daily_copy(
 def test_the_volume_guard_refuses_before_any_daily_copy(
     mock_crsp_session, tmp_path, monkeypatch, capsys
 ):
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
     monkeypatch.setattr(SqlVolumeGuard, "MAX_RAW_ROWS", 1)
     code = _run_script(monkeypatch, _permno_args(tmp_path))
@@ -300,7 +300,7 @@ def test_the_volume_guard_refuses_before_any_daily_copy(
 def test_force_volume_proceeds_and_says_so(
     mock_crsp_session, tmp_path, monkeypatch, capsys
 ):
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
     monkeypatch.setattr(SqlVolumeGuard, "MAX_RAW_ROWS", 1)
     code = _run_script(monkeypatch, _permno_args(tmp_path, "--force-volume"))
@@ -717,7 +717,7 @@ def test_the_crsp_cli_names_no_acquisition_class_and_calls_one_factory():
     the class cannot quietly turn this lock into a check for a string nothing
     uses any more.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     acquisition_name = DataSourceRegistry.get("wrds").acquisition_cls_for(
         "us_equity", "1d", "crsp_daily"

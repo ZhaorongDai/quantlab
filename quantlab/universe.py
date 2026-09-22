@@ -37,6 +37,26 @@ end_date, end_date_is_inferred)` reference table, persisted via the existing `Pl
 parquet -- per Locked Decision A1 (02-08-PLAN.md), this table is
 reference/metadata, not xarray/Zarr pipeline data, on the same footing as
 `config/instruments.yaml`.
+
+This module must reach NO acquisition client by any spelling -- not
+`quantlab.base.acquisition`, not `tiingo`, not `alpaca`, absolutely or
+relatively. `UniverseCatalog.assert_acquisition_volume_fits()` refuses an
+over-budget acquisition BEFORE any client exists, and that is a structural
+property of where the code lives, not of the order somebody calls it in. A
+guard that merely happens to run first today is one refactor away from running
+second.
+
+The enforcement is `tests/test_volume_guard.py`'s
+`test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials`: an
+`ast` scan of THIS FILE's own source (relative spellings resolved) plus a
+`vars()` sweep for bound `Acquisition` subclasses. Neither can see a transitive
+import dragged in by a package `__init__` -- so the guarantee also depends on
+every package `__init__.py` on the import path staying 0 bytes. That is why
+this is a flat `quantlab/universe.py` and not a `quantlab/universe/` package
+(D-1, 260922-lu2): a package of its own would put a second `__init__` back on
+the path, one directory lower, and re-create exactly the hazard. As it stands,
+`import quantlab.universe` runs exactly one package `__init__` -- `quantlab/` --
+and the same test asserts it is 0 bytes.
 """
 
 import datetime
@@ -55,7 +75,7 @@ import requests
 from loguru import logger
 
 from quantlab.base.config import UniverseConfig
-from quantlab.dataset.backend import PlBackend
+from quantlab.backend import PlBackend
 from quantlab.enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
 #: Contact string sent in the outbound `User-Agent` when scraping Wikipedia,

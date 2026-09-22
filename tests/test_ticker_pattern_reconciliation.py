@@ -166,13 +166,13 @@ def test_the_fetch_guard_binds_the_shared_pattern_object_not_a_copy():
     Before this task `base/acquisition.py` carried its own standalone
     `re.compile` of the same literal while its comment and its
     `_validate_symbols` docstring BOTH claimed the pattern was imported from
-    `acquisition/universe.py`. Two copies of one literal, already free to
+    `quantlab/universe.py`. Two copies of one literal, already free to
     diverge, with the provenance comment asserting otherwise -- which is
     exactly how the two ends drifted without anything noticing.
 
     The shared object lives in `enums/data.py` because neither module may
-    import the other: `base/acquisition.py` importing `acquisition.universe`
-    inverts the layering, and `acquisition/universe.py` importing
+    import the other: `base/acquisition.py` importing `quantlab.universe`
+    inverts the layering, and `quantlab/universe.py` importing
     `base.acquisition` breaks `tests/test_volume_guard.py`'s structural
     assertion that the volume guard lives where no acquisition client can be
     constructed.
@@ -211,7 +211,7 @@ def _built_rosters(monkeypatch, csv_text: Optional[str] = None) -> dict:
     `supported_tickers.csv` built from real measured literals, exactly as
     `tests/test_universe.py` already does.
     """
-    from quantlab.acquisition.universe import NasdaqUniverseFetcher, USEquityUniverseFetcher
+    from quantlab.universe import NasdaqUniverseFetcher, USEquityUniverseFetcher
     from test_universe import _patch_roster_download, _roster_zip
 
     if csv_text is not None:
@@ -243,7 +243,7 @@ def test_every_symbol_either_roster_builds_is_accepted_by_the_fetch_guard(
     mutations the plan named were run for real:
 
     - Removing the build-time filter from
-      `acquisition/universe.py:TiingoRosterFetcher.fetch()` REDDENS it
+      `quantlab/universe.py:TiingoRosterFetcher.fetch()` REDDENS it
       (observed: `refusing to fetch 'CAPTW(EXP20260807)'`). That is the
       roster-builder end, and it is the mutation that reproduces the original
       bug.
@@ -293,7 +293,7 @@ def test_every_symbol_either_roster_builds_is_accepted_by_the_fetch_guard(
 
 
 def test_the_changelog_guard_is_deliberately_narrower_than_the_fetch_guard():
-    """`acquisition/universe.py:_WELL_FORMED_TICKER` is NOT
+    """`quantlab/universe.py:_WELL_FORMED_TICKER` is NOT
     `enums.data.TRADEABLE_TICKER_PATTERN`, and must not be "aligned" with it.
 
     They answer different questions on different inputs. The change-log guard
@@ -311,7 +311,7 @@ def test_the_changelog_guard_is_deliberately_narrower_than_the_fetch_guard():
 
     Reddened by: pointing `_WELL_FORMED_TICKER` at `TRADEABLE_TICKER_PATTERN`.
     """
-    from quantlab.acquisition.universe import _WELL_FORMED_TICKER
+    from quantlab.universe import _WELL_FORMED_TICKER
 
     assert (
         _WELL_FORMED_TICKER.pattern != enums_data.TRADEABLE_TICKER_PATTERN.pattern

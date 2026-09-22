@@ -31,7 +31,7 @@ class DatasetConfig(BaseDatasetConfig):
     #: Placed beside `frequency` to mirror `AcquisitionConfig`, where the two
     #: are also adjacent and `market` comes first.
     #:
-    #: Its first reader is `quantlab/acquisition/registry.py:convert()`: the
+    #: Its first reader is `quantlab/registry.py:convert()`: the
     #: capability lookup key is `(market, frequency, data_type)`, which is
     #: exactly `Capability`'s own key. Without `market` here the key would be
     #: `(frequency, data_type)` and would resolve AMBIGUOUSLY the day one

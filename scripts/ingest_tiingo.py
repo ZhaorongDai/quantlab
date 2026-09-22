@@ -8,7 +8,7 @@ raw shards into a Zarr store (D-02 market/frequency convention, see
 quantlab/config/__init__.py:stock_kline_config()).
 
 The conversion is REACHED THROUGH THE REGISTRY and it is CHUNKED (03.5
-D-06/D-07/SC-6). This script hands `quantlab.acquisition.registry.convert()` a
+D-06/D-07/SC-6). This script hands `quantlab.registry.convert()` a
 source descriptor and a dataset config and renders the `ConversionResult` it
 gets back; it names no Dataset subclass method. There is exactly ONE
 conversion path in this repository and it densifies and appends one time
@@ -65,8 +65,8 @@ import argparse
 
 from dataclasses import replace
 
-from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.universe import UniverseCatalog
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.config import stock_kline_config, universe_config
 from quantlab.dataset.stock import StockDataset

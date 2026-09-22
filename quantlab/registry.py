@@ -7,7 +7,7 @@ is registering a descriptor beside its acquisition class, not editing five call
 sites.
 
 **ONE class-level registration tuple**, in the spirit of
-`quantlab/acquisition/universe.py:1249` (`UniverseCatalog.MEMBERSHIP_FETCHERS`)
+`quantlab/universe.py:1249` (`UniverseCatalog.MEMBERSHIP_FETCHERS`)
 and consumed the same way: a plain loop over the tuple with the discriminator
 read off each element (`descriptor.vendor`), never an `if` branch on a vendor
 literal.
@@ -216,7 +216,7 @@ class SourceDescriptor:
         """EVERY capability matching `(market, frequency[, data_type])`.
 
         The tuple-valued half of `supports()`, and the lookup
-        `quantlab/acquisition/registry.py:convert()` resolves a conversion
+        `quantlab/registry.py:convert()` resolves a conversion
         target through (03.5 D-03). Same match rule, same
         "`data_type=None` means do not care" semantics -- stated ONCE, here.
 
@@ -360,7 +360,7 @@ class DataSourceRegistry:
         #: becomes an operator surface's DISPLAY order, and import order is a
         #: function of which module the caller happened to touch first --
         #: `import quantlab.acquisition.tiingo` and
-        #: `import quantlab.acquisition.registry` would render the same
+        #: `import quantlab.registry` would render the same
         #: installation's sources in two different orders. Sorting also makes
         #: an assertion on this method a literal tuple comparison.
         return tuple(sorted(cls.SOURCES, key=lambda d: d.vendor))
@@ -383,7 +383,7 @@ class DataSourceRegistry:
             f"A source registers itself when its module is imported; if this "
             f"vendor's module was never imported, the registry cannot know "
             f"about it (see the vendor imports at the bottom of "
-            f"quantlab/acquisition/registry.py)."
+            f"quantlab/registry.py)."
         )
 
 
@@ -722,19 +722,28 @@ def convert(
 #
 # A decorator-populated registry is only as complete as the set of modules that
 # have been imported, so importing THIS module must import every vendor module
-# (D-07): a cold `import quantlab.acquisition.registry` in a fresh process must
+# (D-07): a cold `import quantlab.registry` in a fresh process must
 # enumerate every source.
 #
 # They do NOT go in `quantlab/acquisition/__init__.py`, which stays 0 bytes.
 # A non-empty package `__init__` runs on EVERY `import
-# quantlab.acquisition.<anything>` -- including `quantlab.acquisition.universe`,
-# the one module whose entire structural guarantee is that no acquisition
-# client can be constructed there, whatever the call order. That property is
-# what makes the volume guard refuse-before-any-client-exists rather than
+# quantlab.acquisition.<anything>` -- including `quantlab.acquisition._support.inspector`,
+# the read surface whose entire structural guarantee is that no acquisition
+# client is reachable from it, whatever the call order. That property is what
+# makes a read refuse-before-any-client-exists rather than
 # refuse-if-called-in-the-right-order. Worse, it would erode SILENTLY:
-# `tests/test_volume_guard.py`'s structural arm is an `ast` scan of
-# `universe.py`'s OWN source plus a `vars(universe_module)` sweep, and neither
-# can see a transitive import dragged in by a package `__init__`.
+# `tests/test_source_inspector.py`'s structural arm is an `ast` scan of
+# `inspector.py`'s OWN source plus a `vars(inspector_module)` sweep, and
+# neither can see a transitive import dragged in by a package `__init__`.
+#
+# The same argument used to cover the universe module and the volume
+# guard, back when it lived in this package. That half has TRANSFERRED
+# UP: the universe module is now
+# `quantlab/universe.py`, a top-level sibling, so `import quantlab.universe`
+# runs ONE package `__init__` (`quantlab/`, also 0 bytes) where it used to run
+# two -- the guarantee got strictly easier to hold, and its prose now lives on
+# the module that HAS it. `tests/test_volume_guard.py` asserts the emptiness
+# rather than trusting a comment.
 #
 # Bottom placement is also what lets each descriptor be defined beside the
 # class it describes: `tiingo.py`/`alpaca.py` import THIS module for the
@@ -746,6 +755,30 @@ def convert(
 # initialised, and binding the module object is safe where reading an attribute
 # off it would raise. Order between the three lines is irrelevant -- `all()`
 # sorts.
+#
+# That form is now carrying MORE weight than it used to. Since 260922-lu2 this
+# module is `quantlab/registry.py`, a top-level sibling, so the cycle it closes
+# CROSSES A PACKAGE BOUNDARY where it used to stay inside one:
+#
+#     quantlab.registry -> quantlab.acquisition.wrds -> quantlab.registry
+#
+# The mechanics are unchanged -- `from package import submodule` is defined to
+# work during partial initialisation, and the module object is safe to bind
+# where an attribute read would raise -- but the blast radius is wider, because
+# the partially-initialised module now lives outside the package whose
+# `__init__` the importer just ran. The five import orders that could expose it
+# are pinned by
+# `tests/test_wrds_vendor_seam.py::test_enumeration_survives_any_import_order`:
+# `quantlab.acquisition.wrds.taq`, `quantlab.acquisition.wrds`,
+# `quantlab.registry`, `quantlab.acquisition.alpaca`, `quantlab.universe` --
+# each in a fresh interpreter, each required to enumerate
+# `['alpaca', 'tiingo', 'wrds']`.
+#
+# The argument depends on TWO `__init__.py` files being 0 bytes: `quantlab/`
+# (which now runs on every `import quantlab.registry`) and
+# `quantlab/acquisition/` (which runs on every vendor import below). Both are
+# asserted by tests -- `tests/test_volume_guard.py` and
+# `tests/test_source_inspector.py` -- rather than by this comment.
 #
 # `wrds` is a NEUTRAL module rather than a provider (03.10 D-12): it holds the
 # one `wrds` descriptor and imports the WRDS PROVIDER modules itself, because

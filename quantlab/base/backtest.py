@@ -11,7 +11,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.model import BaseModel, DLModel
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 # `tickers` is a SUBMODULE of the `crsp` package now, so this line runs
 # `quantlab/dataset/crsp/__init__.py` -- the whole CRSP converter, polars and
 # the reference tier. Measured at +0.99s / +196 modules on top of this module's

@@ -122,7 +122,7 @@ def test_digit_strings_normalize_onto_an_int64_axis() -> None:
     store's labels, not miss every one of them.
 
     RED under: `[str(symbol) for symbol in symbols]`, i.e.
-    `quantlab/dataset/backend.py:451` as it stood before this plan.
+    `quantlab/backend.py:451` as it stood before this plan.
     """
     stored = pd.Index([10107], dtype="int64")
     result = normalize_to_axis_dtype(["10107"], stored)

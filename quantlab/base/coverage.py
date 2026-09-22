@@ -4,7 +4,7 @@ question "is this symbol already on disk for this window?" is answered.
 Extracted from `quantlab/base/acquisition.py` by 03.4-04 under D-09, which
 makes it BINDING that the read-only inspector does not re-implement coverage
 judgement. `Acquisition` composes a `CoverageLedger` and delegates every
-coverage member to it; `quantlab/acquisition/inspector.py` builds one directly
+coverage member to it; `quantlab/acquisition/_support/inspector.py` builds one directly
 through `CoverageLedger.for_config`. Both therefore reach the SAME
 `partition_by_coverage` function object, which is what makes "shared" provable
 by identity rather than by two results that happen to agree today.
@@ -80,7 +80,7 @@ DEFAULT_LEGACY_WATERMARK_POLICY = "warn"
 #: filesystem path segment or a query-string value.
 #:
 #: BOUND, not re-declared -- the SAME compiled object the roster builder
-#: (`acquisition/universe.py:TiingoRosterFetcher.fetch`) filters on and the
+#: (`quantlab/universe.py:TiingoRosterFetcher.fetch`) filters on and the
 #: same one `base/acquisition.py` binds. See that module's comment on
 #: `_TICKER_PATTERN` for why identity rather than equality is the requirement:
 #: two copies of the literal HAD diverged once, and that is the bug quick task
@@ -596,7 +596,7 @@ def validate_symbols(
     It admits digits deliberately (260906-eme: digit-bearing tickers are
     real) and up to TWO suffix segments (260907-10t: 77 `us_all` and 4
     `nasdaq_all` symbols are three-segment `ROOT-X-Y`). It is NOT
-    `acquisition/universe.py`'s `_WELL_FORMED_TICKER`, which is
+    `quantlab/universe.py`'s `_WELL_FORMED_TICKER`, which is
     deliberately narrower because it guards Wikipedia change-log cells --
     see that constant's own comment before considering aligning them.
     """
@@ -615,7 +615,7 @@ def validate_symbols(
                 f"Fix the roster rather than relaxing this pattern -- a "
                 f"malformed symbol should have been dropped by the "
                 f"build-time well-formedness filter in "
-                f"acquisition/universe.py:TiingoRosterFetcher.fetch(), so "
+                f"quantlab/universe.py:TiingoRosterFetcher.fetch(), so "
                 f"reaching here means the reference table predates that "
                 f"filter and needs rebuilding."
             )

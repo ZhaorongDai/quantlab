@@ -86,7 +86,7 @@ an int64 axis can never be two slices of one universe. That is worth evaluating 
 
 ## Shape to follow when it is implemented
 
-`quantlab/dataset/backend.py:470-505` is the house guard idiom: a message that opens with what is
+`quantlab/backend.py:470-505` is the house guard idiom: a message that opens with what is
 being refused, carries the **measured** evidence (both dtypes, both axis lengths, the intersection
 size), and names the remedy. Estimated ~10-20 lines plus two tests.
 

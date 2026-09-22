@@ -666,7 +666,7 @@ dimension sizes: {'timestamp': 29} != {'timestamp': 31}. to_zarr() only supports
 changing dimension sizes when explicitly appending, but append_dim=None
 ```
 
-结论：**因子落盘基本都该用 `save(mode="w")`**。真的要增量追加，得走 `XrBackend.append()` / `widen_and_append()`（`quantlab/dataset/backend.py`），那边有坐标一致性和 dtype 的检查，而 `Factor.save()` 现在没接过去。
+结论：**因子落盘基本都该用 `save(mode="w")`**。真的要增量追加，得走 `XrBackend.append()` / `widen_and_append()`（`quantlab/backend.py`），那边有坐标一致性和 dtype 的检查，而 `Factor.save()` 现在没接过去。
 
 **2026-09-07 起这条报错自己会说该怎么办**（上面那段 zarr 原文现在只是 `__cause__`）：
 

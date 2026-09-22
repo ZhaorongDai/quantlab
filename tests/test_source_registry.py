@@ -8,7 +8,7 @@ SC-2 — enumeration and credential status never return a credential VALUE and
 never require one to be present.
 
 Scaffolded by plan 03.4-01 (Wave 0) and filled in by plan 03.4-02, which built
-`quantlab/acquisition/registry.py` and both vendor descriptors.
+`quantlab/registry.py` and both vendor descriptors.
 
 TWO RULES THIS FILE IS SUBJECT TO, both from incidents this repository has
 already had (recorded in `.planning/STATE.md`):
@@ -188,7 +188,7 @@ def test_tracer_end_to_end_registry_to_raw_shard(
     Issues zero real requests: `mock_tiingo_client` replaces the transport
     wholesale.
     """
-    from quantlab.acquisition.registry import (
+    from quantlab.registry import (
         DataSourceRegistry,
         is_configured,
         run,
@@ -255,7 +255,7 @@ def _fake_descriptor(vendor: str, **overrides):
     "two descriptors may name the same class" case needs exactly that, and
     nothing here constructs it.
     """
-    from quantlab.acquisition.registry import Capability, SourceDescriptor
+    from quantlab.registry import Capability, SourceDescriptor
 
     fields = {
         "vendor": vendor,
@@ -281,7 +281,7 @@ def test_one_descriptor_per_vendor_rejects_a_duplicate(isolated_registry) -> Non
     rather than borrowed from the shipped descriptors: the mechanism is proved
     by construction, not by re-asserting a fact that already holds.
     """
-    from quantlab.acquisition.registry import register_source
+    from quantlab.registry import register_source
 
     first = _fake_descriptor("fakevendor")
     register_source(first)
@@ -309,7 +309,7 @@ def test_capabilities_are_dataclass_instances_and_reject_the_cross_product() -> 
     directions for the same reason: the negative case is the one a product
     would get wrong.
     """
-    from quantlab.acquisition.registry import Capability, DataSourceRegistry
+    from quantlab.registry import Capability, DataSourceRegistry
 
     alpaca_source = DataSourceRegistry.get("alpaca")
     tiingo_source = DataSourceRegistry.get("tiingo")
@@ -350,7 +350,7 @@ def test_capabilities_preserve_declaration_order_across_repeated_reads() -> None
     run). Asserted as a SEQUENCE, so a change to a frozenset fails here rather
     than only on a machine whose hash seed happens to differ.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     for descriptor in DataSourceRegistry.all():
         first = list(descriptor.capabilities)
@@ -382,7 +382,7 @@ def test_capabilities_match_the_vendor_class_constants() -> None:
     assertion is that it has no endpoint map to disagree with and exactly one
     frequency, matching `_FREQUENCY_MAP`.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     alpaca_source = DataSourceRegistry.get("alpaca")
     alpaca_cls = alpaca.AlpacaAcquisition
@@ -428,7 +428,7 @@ def test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities() -> None:
     the pair alone would hand an Alpaca quotes request a WRDS NBBO class.
     """
     from quantlab.acquisition.wrds import crsp
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.dataset.crsp import CrspStockDataset
     from quantlab.dataset.nbbo import NbboPanelDataset
@@ -497,7 +497,7 @@ def test_direct_class_reference_is_the_class_object(isolated_registry) -> None:
     descriptors may name the SAME class under different vendors (alpaca paper
     vs live is the motivating case), so registering one must not raise.
     """
-    from quantlab.acquisition.registry import register_source
+    from quantlab.registry import register_source
 
     assert isolated_registry.get("tiingo").acquisition_cls is tiingo.TiingoAcquisition
     assert isolated_registry.get("alpaca").acquisition_cls is alpaca.AlpacaAcquisition
@@ -533,7 +533,7 @@ def test_registration_tuple_shape_is_instances_in_a_rebound_tuple() -> None:
     """
     import ast
 
-    from quantlab.acquisition.registry import DataSourceRegistry, SourceDescriptor
+    from quantlab.registry import DataSourceRegistry, SourceDescriptor
 
     assert isinstance(DataSourceRegistry.SOURCES, tuple)
     assert DataSourceRegistry.SOURCES
@@ -541,7 +541,7 @@ def test_registration_tuple_shape_is_instances_in_a_rebound_tuple() -> None:
         assert isinstance(element, SourceDescriptor)
         assert not isinstance(element, type)
 
-    source = Path("quantlab/acquisition/registry.py").read_text(encoding="utf-8")
+    source = Path("quantlab/registry.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     # No `.append` may reach SOURCES -- neither `SOURCES.append(...)` nor
@@ -594,7 +594,7 @@ def test_decorator_registers_and_returns_the_descriptor(isolated_registry) -> No
     module imported twice under two names is a real way that happens, and
     registering it twice would double the row in an operator's list.
     """
-    from quantlab.acquisition.registry import register_source
+    from quantlab.registry import register_source
 
     descriptor = _fake_descriptor("decoratedvendor")
     assert register_source(descriptor) is descriptor
@@ -610,7 +610,7 @@ def DataSourceRegistry_all():
     """The live registry's `all()`, named apart so the sorted-order test can
     assert on BOTH the shipped registry and a synthetic reversed one without
     the fixture-bound name shadowing the module-level one."""
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     return DataSourceRegistry.all()
 
@@ -695,7 +695,7 @@ def test_registry_reaches_no_zarr_writer() -> None:
     import ast
 
     tree = ast.parse(
-        Path("quantlab/acquisition/registry.py").read_text(encoding="utf-8")
+        Path("quantlab/registry.py").read_text(encoding="utf-8")
     )
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -776,7 +776,7 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     non-zero here.
     """
     child = _run_child(
-        "from quantlab.acquisition.registry import DataSourceRegistry\n"
+        "from quantlab.registry import DataSourceRegistry\n"
         "print(sorted(d.vendor for d in DataSourceRegistry.all()))\n"
     )
 
@@ -791,7 +791,7 @@ def test_the_acquisition_package_init_is_still_empty() -> None:
 
     A non-empty package `__init__` runs on EVERY
     `import quantlab.acquisition.<anything>`, including
-    `quantlab.acquisition.universe` -- the one module whose entire structural
+    `quantlab.universe` -- the one module whose entire structural
     guarantee is that no acquisition client can be constructed there, whatever
     the call order. That is what makes the volume guard refuse BEFORE any
     client exists rather than refuse if called in the right order.
@@ -821,12 +821,12 @@ def test_importing_universe_binds_no_acquisition_client() -> None:
     """
     child = _run_child(
         "import json, sys\n"
-        "import quantlab.acquisition.universe as u\n"
+        "import quantlab.universe as u\n"
         "print(json.dumps({\n"
         "    'bound': [n for n in vars(u) if n.endswith('Acquisition')],\n"
         "    'tiingo_imported': 'quantlab.acquisition.tiingo' in sys.modules,\n"
         "    'alpaca_imported': 'quantlab.acquisition.alpaca' in sys.modules,\n"
-        "    'registry_imported': 'quantlab.acquisition.registry' in sys.modules,\n"
+        "    'registry_imported': 'quantlab.registry' in sys.modules,\n"
         "}))\n"
     )
 
@@ -893,7 +893,7 @@ def test_env_names_are_exactly_what_gates_construction(
     Issues zero requests: a socket tripwire is installed instead of a transport
     mock (see `_no_network`), so both vendors' REAL guards run.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry, is_configured
+    from quantlab.registry import DataSourceRegistry, is_configured
 
     _no_network(monkeypatch)
     descriptor = DataSourceRegistry.get(vendor)
@@ -943,7 +943,7 @@ def test_is_configured_never_returns_a_credential_value(
     """
     from loguru import logger
 
-    from quantlab.acquisition.registry import (
+    from quantlab.registry import (
         DataSourceRegistry,
         credential_status,
         is_configured,
@@ -1010,7 +1010,7 @@ def test_is_configured_on_a_descriptor_with_no_required_env(
     """
     import types
 
-    import quantlab.acquisition.registry as registry
+    import quantlab.registry as registry
 
     descriptor = _fake_descriptor("nocredvendor", required_env=())
     registry.register_source(descriptor)
@@ -1059,7 +1059,7 @@ def _resolver_descriptor(**overrides):
 
     Not registered, so no `isolated_registry` is needed and nothing can leak.
     """
-    from quantlab.acquisition.registry import Capability, SourceDescriptor
+    from quantlab.registry import Capability, SourceDescriptor
 
     fields = {
         "vendor": "resolvervendor",
@@ -1172,7 +1172,7 @@ def test_ambiguous_capability_resolution_refuses_rather_than_picking_by_order() 
     legitimate `data_type=None` request fail for a vendor that happens to
     serve two shapes through one class.
     """
-    from quantlab.acquisition.registry import Capability
+    from quantlab.registry import Capability
 
     descriptor = _resolver_descriptor()
 
@@ -1215,7 +1215,7 @@ def test_run_constructs_the_capabilitys_acquisition_class(acquisition_config) ->
     a `run()` that resolved correctly and then constructed the default anyway
     still fails here.
     """
-    from quantlab.acquisition.registry import run
+    from quantlab.registry import run
 
     _A0.constructed.clear()
     _A1.constructed.clear()
@@ -1246,7 +1246,7 @@ def test_capability_defaults_leave_the_new_fields_none() -> None:
     """
     import dataclasses
 
-    from quantlab.acquisition.registry import Capability
+    from quantlab.registry import Capability
 
     capability = Capability(market="us_equity", frequency="1d")
 
@@ -1271,7 +1271,7 @@ def test_every_registered_capability_resolves_to_its_own_class_or_the_default() 
     ambiguity case for free -- two capabilities sharing a triple with different
     classes make their own lookup raise, and the raise is not caught here.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     for descriptor in DataSourceRegistry.all():
         for capability in descriptor.capabilities:
@@ -1303,7 +1303,7 @@ def test_the_isolated_registry_fixture_restored_every_fake_vendor() -> None:
     silently stops covering it, so the list is the maintenance obligation that
     comes with `_fake_descriptor`.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo", "wrds"]
 

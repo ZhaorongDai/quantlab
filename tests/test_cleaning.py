@@ -1,4 +1,4 @@
-"""Unit tests for dataset/cleaning.py — the shared raw-market-data cleaning
+"""Unit tests for quantlab/dataset/_support/cleaning.py — the shared raw-market-data cleaning
 module (Phase 2 Plan 03, CONTEXT.md D-05..D-08).
 
 Tests 1-3 cover dedup_raw_frame() (D-05, Task 1).
@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from quantlab.dataset.cleaning import (
+from quantlab.dataset._support.cleaning import (
     NBBO_PANEL_VARIABLES,
     REQUIRED_COLUMNS,
     clean_market_data,

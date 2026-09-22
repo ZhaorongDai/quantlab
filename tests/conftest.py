@@ -177,7 +177,7 @@ def isolated_registry(monkeypatch):
     if it is ever deleted or weakened, this fixture's guarantee goes with it.
 
     The import is deliberately left to raise `ImportError` until
-    `quantlab/acquisition/registry.py` lands. It must NOT be softened with a
+    `quantlab/registry.py` lands. It must NOT be softened with a
     `try/except` or a `pytest.importorskip`: a silently-skipped isolation
     fixture is how a fake source leaks into every later test, and a test that
     quietly did not isolate is indistinguishable from one that did.
@@ -186,7 +186,7 @@ def isolated_registry(monkeypatch):
     convention `_reset_data_root_override` above already follows, so this file
     keeps its zero-import-time dependency promise.
     """
-    from quantlab.acquisition.registry import DataSourceRegistry
+    from quantlab.registry import DataSourceRegistry
 
     monkeypatch.setattr(
         DataSourceRegistry,
@@ -598,7 +598,7 @@ def mock_universe_fetchers(
     ndx_anchor_html_fixture: str,
     ndx_changes_html_fixture: str,
 ) -> Callable[..., object]:
-    """Patch `acquisition.universe.requests.get` to return a `FakeResponse`
+    """Patch `quantlab.universe.requests.get` to return a `FakeResponse`
     (with `.status_code`, `.text`, `.content`, `.raise_for_status()`) keyed
     by requested URL, matching each fetcher's real class-constant URL:
 
@@ -615,7 +615,7 @@ def mock_universe_fetchers(
 
     No test in this suite makes a real network call.
     """
-    from quantlab.acquisition.universe import (
+    from quantlab.universe import (
         Nasdaq100MembershipFetcher,
         NasdaqUniverseFetcher,
         SP500MembershipFetcher,
@@ -727,7 +727,7 @@ def mock_universe_fetchers(
             return FakeResponse(text=ndx_changes_html_fixture)
         raise AssertionError(f"Unexpected URL requested in test: {url}")
 
-    monkeypatch.setattr("quantlab.acquisition.universe.requests.get", fake_get)
+    monkeypatch.setattr("quantlab.universe.requests.get", fake_get)
 
     # `NasdaqUniverseFetcher.MIN_ROSTER_ROWS` (1000) guards the REAL ~10k-row
     # Tiingo roster against a silent filter drift that would overwrite

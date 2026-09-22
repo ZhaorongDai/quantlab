@@ -751,12 +751,12 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
    )
    ```
 
-   然后在 `quantlab/acquisition/registry.py` 的**文件底部**加一行
+   然后在 `quantlab/registry.py` 的**文件底部**加一行
    `from quantlab.acquisition import myvendor as _myvendor`。
 
    **不要加到 `quantlab/acquisition/__init__.py` 里**，那个文件必须保持 0 字节：
    非空的包 `__init__` 会在每一次 `import quantlab.acquisition.<任何东西>` 时执行，
-   包括 `quantlab.acquisition.universe`——而那个模块的全部结构性保证就是
+   包括 `quantlab.universe`——而那个模块的全部结构性保证就是
    「这里不可能构造出任何 acquisition client」，并且这条保证会被**静默**侵蚀
    （体量护栏的结构臂是对 `universe.py` 自己源码的 AST 扫描，看不见传递 import）。
    底部这个位置同时也是描述符能写在厂商类旁边的原因：
@@ -812,7 +812,7 @@ watermark 读写与四态分类、`legacy` 策略、失败清单、`_scrub` 脱�
    如果你以后给 `1m` 加了 `symbol=` 分区键，这条逻辑会自动生效——请确认那是你想要的。
 
 9. **不要把 `enums.data.TRADEABLE_TICKER_PATTERN` 和
-   `quantlab/acquisition/universe.py:_WELL_FORMED_TICKER` 「对齐」。** 它们守的是不同的输入：
+   `quantlab/universe.py:_WELL_FORMED_TICKER` 「对齐」。** 它们守的是不同的输入：
    前者守「即将变成路径段和 query 参数的 symbol」，后者守「从 Wikipedia 抓来的变更日志单元格」，
    在后者那里出现三段式恰恰是解析出错的信号。曾经有过两份自由漂移的副本，
    结果 `NXG-R-W` 让一个多小时的全市场任务在发出第一个请求前就崩了

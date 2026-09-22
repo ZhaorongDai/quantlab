@@ -4,7 +4,7 @@ import os
 import polars as pl
 import requests
 
-from quantlab.acquisition.registry import (
+from quantlab.registry import (
     Capability,
     SourceDescriptor,
     register_source,
@@ -173,7 +173,7 @@ class AlpacaAcquisition(Acquisition):
 
     So the tier question is not "can I get the data" but "how much data am I
     asking for" -- which is exactly the question the pre-flight volume guard
-    (D-09, `acquisition/universe.py`) forces the user to answer before a run
+    (D-09, `quantlab/universe.py`) forces the user to answer before a run
     starts.
 
     Subscription tier -- the SIP question is UNRESOLVED

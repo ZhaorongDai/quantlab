@@ -130,7 +130,7 @@ class FakeDataset(MarketDataset):
         symbols = ["FAKE_A", "FAKE_B"]
         shape = (len(timestamps), len(symbols))
 
-        # dataset/cleaning.py:validate_schema() requires the full OHLCV
+        # quantlab/dataset/_support/cleaning.py:validate_schema() requires the full OHLCV
         # column set (D-08) -- distinct offsets per column so a round-trip
         # mismatch on any single variable would be caught by an equality
         # assertion.

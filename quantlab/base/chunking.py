@@ -12,7 +12,7 @@ Two pure collaborators for the chunked densify-and-append ingestion path:
 Neither depends on a Dataset, a backend or a config -- they are functions of a
 timestamp axis and a file path -- so this module is a LEAF: stdlib plus
 pandas/xarray plus the one stdlib-only leaf `quantlab.utils.atomic`, and no
-other project-internal import. That is the same rule `dataset/cleaning.py`
+other project-internal import. That is the same rule `quantlab/dataset/_support/cleaning.py`
 follows, and it is what keeps this module unit-testable without touching a
 Dataset and structurally incapable of introducing an import cycle --
 `utils.atomic` imports nothing from this project at all, so depending on it

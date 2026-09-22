@@ -8,7 +8,7 @@ index -- its own left edge, its own store, and the structural claim that
 adding it cost nothing above `dataset/`.
 
 Every test runs OFFLINE. The only route to the network in this code path is
-`acquisition.universe.requests.get`, which the shared `mock_universe_fetchers`
+`quantlab.universe.requests.get`, which the shared `mock_universe_fetchers`
 fixture in `tests/conftest.py` replaces with a URL-keyed fake that raises
 `AssertionError` on any unexpected URL.
 """

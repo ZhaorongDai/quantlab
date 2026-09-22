@@ -156,7 +156,7 @@ def _dataset_config(tmp_path, cfg, reference_dir, *, start, end, store="crsp.zar
 
 
 def _convert(dataset_config, granularity="year"):
-    from quantlab.acquisition import registry
+    from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
 
     return registry.convert(

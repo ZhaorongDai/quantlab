@@ -1035,7 +1035,7 @@ def run_crsp_pull(
     cannot accidentally exercise a class the registry would not resolve.
     """
     import quantlab.config as config
-    from quantlab.acquisition import registry
+    from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
 
     config.set_data_root(Path(tmp_path))

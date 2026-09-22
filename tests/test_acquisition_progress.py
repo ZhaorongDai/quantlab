@@ -614,7 +614,7 @@ def test_run_forwards_the_reporter_and_the_cancel_token(
     """
     import inspect
 
-    from quantlab.acquisition.registry import run
+    from quantlab.registry import run
     from quantlab.acquisition.tiingo import TIINGO_SOURCE
     from quantlab.base.progress import CallbackProgressReporter, CancelToken
 
@@ -948,7 +948,7 @@ def test_the_manifest_survives_a_quota_abort_on_the_default_path(
     """
     import json
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     permanent = "AMZN"
     not_found = _rest_client_error(404, "Not found", "Not Found")

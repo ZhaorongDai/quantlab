@@ -75,7 +75,7 @@ takes no position on either:
 - `data/data/us_equity/1d/stock_alpaca.zarr` — the store in question
 - `quantlab/base/data.py` — `from_raw_data_chunked` / `_raw_data_to_xr_window`,
   where an empty window would be produced
-- `quantlab/dataset/backend.py` — `XrBackend.append`, whose dtype check is
+- `quantlab/backend.py` — `XrBackend.append`, whose dtype check is
   where the consequence would appear
 
 ## Discovered

@@ -38,7 +38,7 @@ so a single null end would extend a CRSP universe months past the CRSP price
 coverage it is supposed to be bounded by. Every end here is therefore either
 the source's own end or `CrspReference.product_end`, never null.
 
-**`quantlab/acquisition/universe.py` is untouched, on purpose.** The CRSP
+**`quantlab/universe.py` is untouched, on purpose.** The CRSP
 universes live beside the existing ones rather than inside `UniverseCatalog`:
 that module's structural "imports no acquisition module" rule is enforced by
 an AST scan, its categories are Tiingo/Wikipedia-shaped (tickers, exchange

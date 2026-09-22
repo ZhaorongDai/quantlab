@@ -18,7 +18,7 @@ from loguru import logger
 
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.cleaning import clean_membership_panel
+from quantlab.dataset._support.cleaning import clean_membership_panel
 from quantlab.enums.constant import Date
 from quantlab.utils.symbol_axis import sort_symbol_axis
 

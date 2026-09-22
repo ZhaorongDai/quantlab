@@ -9,7 +9,7 @@ which misses single-venue NBBO states) with one PostgreSQL `COPY` per
 (trading day, symbol batch). The raw tier lands under
 `<data root>/downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/` as hive
 shards, every record kept in arrival order. With `--to-zarr` the raw tier is
-resampled by `quantlab.acquisition.registry.convert()` into a right-closed
+resampled by `quantlab.registry.convert()` into a right-closed
 bar panel (`--bar-interval`, default 1m) over the session window
 (`--session-start`/`--session-end`, default regular hours 09:30-16:00 ET),
 and a `<store>.nbbo_filter_stats.json` sidecar records what the default
@@ -74,12 +74,12 @@ import typing
 
 from dataclasses import replace
 
-from quantlab.acquisition.registry import DataSourceRegistry, convert, run
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.universe import UniverseCatalog
 from quantlab.base.config import NbboDatasetConfig, UniverseConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.nbbo import NbboPanelDataset
-from quantlab.dataset.session_calendar import XnysSessionCalendar
+from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.enums.data import BarInterval
 from quantlab.utils.cli import (
     add_chunk_args,
@@ -263,7 +263,7 @@ if __name__ == "__main__":
 
     # Imported here so the module attribute is read at run time (the test
     # suite patches it with an offline double).
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.taq import WrdsNbboVolumeProbe, WrdsSession
 
     try:

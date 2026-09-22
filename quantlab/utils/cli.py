@@ -20,8 +20,8 @@ Dataset layer stays unreachable from the command line:
 `base.data.BaseDataset.NEW_LISTING_STRATEGIES` for `--on-new-listing`.
 `apply_data_dir` additionally reaches the `config` layer, but imports it at
 CALL time for the same reason `_explicit_symbol_catalog` defers
-`acquisition.universe`: a module-scope `from config import set_data_root`
-would drag `dataset.backend`, `dataset.spot`, `dataset.stock` and
+`quantlab.universe`: a module-scope `from config import set_data_root`
+would drag `quantlab.backend`, `dataset.spot`, `dataset.stock` and
 `base.config` into every import of this module.
 
 **The one thing this module must not unify.** `ingest_tiingo.py` resolves
@@ -475,7 +475,7 @@ def apply_data_dir(args: argparse.Namespace) -> "object | None":
 
     The `config` import is deferred to call time so this module keeps the
     module-scope dependency surface its docstring promises -- the same reason
-    `_explicit_symbol_catalog` defers `acquisition.universe`.
+    `_explicit_symbol_catalog` defers `quantlab.universe`.
     """
     value = getattr(args, "data_dir", None)
     if value is None:
@@ -595,7 +595,7 @@ def _explicit_symbol_catalog(symbol_count: int):
     if _EXPLICIT_CATALOG_CLASS is None:
         import datetime
 
-        from quantlab.acquisition.universe import UniverseCatalog
+        from quantlab.universe import UniverseCatalog
 
         class _ExplicitSymbolCatalog(UniverseCatalog):
             def __init__(self, symbols: int):  # noqa: D107 - see factory
@@ -838,7 +838,7 @@ def print_sql_volume_estimate(
     """
     # Imported at call time for the reason `apply_data_dir` defers `config`:
     # this module's module-scope project imports stay pinned at quantlab.base.*.
-    from quantlab.acquisition.sql_volume import SqlVolumeGuard
+    from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
     bytes_per_row = estimate["bytes_per_row"]
     assumed = (
@@ -871,7 +871,7 @@ def print_sql_volume_estimate(
 
 
 def print_conversion_result(result, *, print_fn=print):
-    """Render the `ConversionResult` `quantlab.acquisition.registry.convert()`
+    """Render the `ConversionResult` `quantlab.registry.convert()`
     returns.
 
     Beside `print_volume_estimate` and shaped the same way -- `print_fn`

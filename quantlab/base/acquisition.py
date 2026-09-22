@@ -38,7 +38,7 @@ from quantlab.utils.atomic import write_json_atomically
 #: filesystem path segment or a query-string value.
 #:
 #: BOUND, not re-declared. This name is the SAME compiled object that the
-#: roster builder (`acquisition/universe.py:TiingoRosterFetcher.fetch`) filters
+#: roster builder (`quantlab/universe.py:TiingoRosterFetcher.fetch`) filters
 #: on, which is what makes "everything the builder persists is fetchable" true
 #: by construction rather than by coincidence. Identity is asserted directly in
 #: `tests/test_ticker_pattern_reconciliation.py`.
@@ -52,7 +52,7 @@ from quantlab.utils.atomic import write_json_atomically
 #:
 #: Until quick task 260907-10t this was a standalone `re.compile` of the same
 #: literal, with a comment claiming it was imported from
-#: `quantlab/acquisition/universe.py` and a deferred local import that did not
+#: `quantlab/universe.py` and a deferred local import that did not
 #: exist.
 #: Two free-to-diverge copies -- and they HAD diverged, which is the whole bug
 #: 260907-10t fixed.
@@ -67,7 +67,7 @@ from quantlab.utils.atomic import write_json_atomically
 #: object, so there is still exactly one compiled pattern in the process.
 #:
 #: DELIBERATELY WIDER than
-#: `quantlab/acquisition/universe.py:_WELL_FORMED_TICKER`, which
+#: `quantlab/universe.py:_WELL_FORMED_TICKER`, which
 #: is a different guard on a different input: that one validates
 #: Wikipedia-scraped change-log CELLS, where an interior delimiter means two
 #: cells were merged by a parser regression. A three-segment value is that
@@ -111,11 +111,17 @@ class AcquisitionResult:
     report a full-market backfill's 404s as its own.
 
     **Defined HERE, in `base/`, rather than in
-    `quantlab/acquisition/registry.py`**, and the direction is what matters:
-    the base layer must not import the acquisition package, so a result type
-    living beside the registry would have to be imported backwards (or
-    duplicated). `registry.py` imports it from here instead -- one definition,
-    no cycle.
+    `quantlab/registry.py`**, and the direction is what matters:
+    the base layer must not import the registry, whose bottom imports pull
+    every vendor module, so a result type living beside the registry would
+    have to be imported backwards (or duplicated). `registry.py` imports it
+    from here instead -- one definition, no cycle.
+
+    260922-lu2 moved the registry up out of `quantlab/acquisition/` to
+    `quantlab/registry.py`. That does not soften the rule: the forbidden
+    edge was never "base imports the acquisition PACKAGE", it was "base
+    reaches a module that constructs vendor clients". The registry still is
+    one, one directory higher.
 
     **`failures` values are ALREADY SCRUBBED.** They are the same strings
     `_attempt_batch` produced through `_scrub`, never raw vendor exception
@@ -471,7 +477,7 @@ class Acquisition(ABC):
     #:
     #: BOUND from `quantlab/base/coverage.py`, where it is DECLARED, so the
     #: writer here and the credential-free reader in
-    #: `quantlab/acquisition/inspector.py` name the same file by construction
+    #: `quantlab/acquisition/_support/inspector.py` name the same file by construction
     #: rather than by two literals that agree today. Every existing
     #: `self.FAILURE_MANIFEST_NAME` reference and every log message that
     #: interpolates it keeps working unchanged.
@@ -1534,7 +1540,7 @@ class Acquisition(ABC):
         # `Self`, not the result. `download()`/`refresh()` keep their chaining
         # contract, which the rest of this repo's idiom
         # (`Dataset.from_raw_data().save()`) depends on; the result is read off
-        # `last_result` by `quantlab/acquisition/registry.py:run`.
+        # `last_result` by `quantlab/registry.py:run`.
         return self
 
     def _run_once(

@@ -3,7 +3,7 @@
 > 代码位置：采集 `quantlab/acquisition/wrds/crsp.py`（`CrspQueries`、`WrdsCrspDailyAcquisition`、
 > `CrspVolumeProbe`、`CrspProductEndError`、`CrspVintageError`），参考表采集
 > `quantlab/acquisition/wrds/crsp_reference.py:CrspReferenceTables`，
-> 数据源描述符 `quantlab/acquisition/wrds/__init__.py`，体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
+> 数据源描述符 `quantlab/acquisition/wrds/__init__.py`，体量护栏 `quantlab/acquisition/_support/sql_volume.py:SqlVolumeGuard`，
 > 参考表读取 `quantlab/dataset/crsp/reference.py`，
 > PERMNO → ticker 区间表 `quantlab/dataset/crsp/symbology.py:CrspSymbology`
 > （**它现在只喂 ticker 旁车，不再决定面板的列叫什么**）与旁车读侧
@@ -762,7 +762,7 @@ live 跑出来的关键数字（全部与离线契约一致）：
 原始数据已经在盘上、只想换过滤预设或分块粒度重新转换时，**不需要连 WRDS**：
 在 Python 里直接构造 `CrspDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录，
 `reference_dir` 指向它的 `_reference/` 兄弟）并调用
-`quantlab.acquisition.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="crsp_daily")`。
+`quantlab.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="crsp_daily")`。
 注意复权锚点由 `start_date`/`end_date` 决定，改窗口会被旁车文件拒绝。
 
 ---

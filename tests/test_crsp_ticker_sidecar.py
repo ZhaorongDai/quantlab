@@ -386,7 +386,7 @@ def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
     """The display contract (T-03.11-30): three call sites reach `label()`, and
     NONE of them may break because an audit file is missing.
 
-    The three are `quantlab/dataset/masking.py:262`,
+    The three are `quantlab/dataset/_support/masking.py:262`,
     `quantlab/backtest/engine_vectorbt.py:303` and `quantlab/base/model.py`'s
     `_spell` (entered from both the `missing` and the `extra` branch of
     `predict_panel`); between them they render six human-visible messages. The
@@ -627,7 +627,7 @@ def test_label_falls_back_when_the_sidecar_never_parses(tmp_path, payload):
     `RecursionError` is the one that was escaping (G-03.11-3 / WR-01): it is a
     `RuntimeError` subclass, so neither the `payload` property's original
     `(OSError, ValueError)` nor `label()`'s tuple caught it, and it walked out
-    of all three bare call sites -- `dataset/masking.py:262`,
+    of all three bare call sites -- `quantlab/dataset/_support/masking.py:262`,
     `backtest/engine_vectorbt.py:303` mid-simulation, and `base/model.py:1315`
     via `_spell` on the happy path.
     """
@@ -950,7 +950,7 @@ def test_product_end_refuses_an_unparseable_sidecar_too(tmp_path, payload):
 
 def test_beside_store_builds_the_lookup_from_a_store_path(converted):
     """The one place the suffix is appended for a reader, so the two production
-    construction sites (`quantlab/dataset/masking.py:115`,
+    construction sites (`quantlab/dataset/_support/masking.py:115`,
     `quantlab/base/backtest.py:198`) do not each spell `".crsp_tickers.json"`
     for themselves."""
     from quantlab.dataset.crsp.tickers import CrspTickerLookup

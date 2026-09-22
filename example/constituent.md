@@ -8,9 +8,9 @@
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| 采集 + 参考表 | `quantlab/acquisition/universe.py` | 抓数据、重建历史成分区间、落成一张 `universe.parquet` 参考表，并提供时点查询 |
+| 采集 + 参考表 | `quantlab/universe.py` | 抓数据、重建历史成分区间、落成一张 `universe.parquet` 参考表，并提供时点查询 |
 | 面板化 | `quantlab/base/constituent.py` + `quantlab/dataset/constituent.py` | 把"区间表"稠密化成 `(timestamp, symbol) -> is_member` 的布尔面板，存 Zarr |
-| 掩码 | `quantlab/dataset/masking.py` | 把布尔面板盖到价格面板上，非成分的格子置 NaN，并报告覆盖缺口 |
+| 掩码 | `quantlab/dataset/_support/masking.py` | 把布尔面板盖到价格面板上，非成分的格子置 NaN，并报告覆盖缺口 |
 
 ---
 
@@ -34,7 +34,7 @@
 
 这些恰恰是**表现最差的一批公司**。只拿"今天的 503 个"回测过去十九年，等于事先知道了"哪些公司挺过了金融危机"，把雷曼、两房、柯达全部从样本里删掉了。回测出来的夏普比率会好看得不像话，实盘会立刻打回原形。
 
-同一个偏差还有一个更隐蔽的版本：即使你意识到要用退市股，如果价格数据源只提供"当前上市公司"的历史（比如 `nasdaqlisted.txt`），你根本拿不到已退市公司的价格。所以 `TiingoRosterFetcher.SOURCE_URL` 用的是 Tiingo 的 `supported_tickers.zip` 而**不是** `nasdaqlisted.txt`——后者按定义就无法表达退市历史（见 `quantlab/acquisition/universe.py` 模块 docstring）。实测 `us_all` 的 15,167 行里有 7,018 行的 `end_date` 早于 2026-01-01——那都是已退市的代码，它们还在表里。
+同一个偏差还有一个更隐蔽的版本：即使你意识到要用退市股，如果价格数据源只提供"当前上市公司"的历史（比如 `nasdaqlisted.txt`），你根本拿不到已退市公司的价格。所以 `TiingoRosterFetcher.SOURCE_URL` 用的是 Tiingo 的 `supported_tickers.zip` 而**不是** `nasdaqlisted.txt`——后者按定义就无法表达退市历史（见 `quantlab/universe.py` 模块 docstring）。实测 `us_all` 的 15,167 行里有 7,018 行的 `end_date` 早于 2026-01-01——那都是已退市的代码，它们还在表里。
 
 ---
 
@@ -81,7 +81,7 @@ symbol: String, category: String, start_date: String, end_date: String, end_date
 
 历史成分是从维基百科的**变更日志**重建的，而变更日志本身有个最早的一行。在那行之前，源数据**根本没有信息**。
 
-- `SP500MembershipFetcher.PIT_COVERAGE_START = "1976-07-01"` —— 是那张 `id="changes"` 表实测最早的一行；注意**不是**该页正文自称的 1963 年（`quantlab/acquisition/universe.py` docstring 明确写了这个坑）。
+- `SP500MembershipFetcher.PIT_COVERAGE_START = "1976-07-01"` —— 是那张 `id="changes"` 表实测最早的一行；注意**不是**该页正文自称的 1963 年（`quantlab/universe.py` docstring 明确写了这个坑）。
 - `Nasdaq100MembershipFetcher.PIT_COVERAGE_START = "2007-02-01"` —— 是纳指 100 变更表实测最早的一行（`LOGI` 纳入 / `CMVT` 剔除）。
 
 两个日期差了 31 年。docstring 里专门警告：**这两个类别不能被悄悄 union 到同一条时间轴上**，那会暗示一段谁都没有的覆盖范围。
@@ -157,7 +157,7 @@ UniverseCategory = Literal[
 
 ## 数据是怎么重建出来的
 
-核心算法在 `IndexMembershipFetcher.reconstruct_intervals(anchor, changes)`（`quantlab/acquisition/universe.py:899`）。输入两样东西：
+核心算法在 `IndexMembershipFetcher.reconstruct_intervals(anchor, changes)`（`quantlab/universe.py:899`）。输入两样东西：
 
 1. **anchor（当前成分快照）**：`fetch_anchor()`，标普 500 来自 GitHub 上的 `constituents.csv`，纳指 100 来自 stockanalysis.com 抓取。它是 **"今天谁是成员" 的权威**。
 2. **changes（带日期的变更日志）**：`fetch_changes()`，来自维基百科 "Historical components of ..." 页面的表格，每行是 `(生效日, 纳入代码, 剔除代码)`。它是 **"什么时候变的" 的权威**。
@@ -231,7 +231,7 @@ EK      sp500_constituent  1976-07-01   2010-12-17   false
 - **时间轴是日历日**（`pd.date_range(..., freq="D")`），不是交易日。周末和节假日的值是上一个交易日的成分关系顺延。所以和 OHLCV 面板 join 时**必须 reindex 或 `.sel()`**，不能假设两条轴对齐。`UniverseMask` 就是这么做的（时间戳做 inner join，且**故意不报告**被丢掉的行——那几千行是构造使然）。
 - **null `start_date` 直接抛 `ValueError`**，不容忍。`pd.Timestamp(None)` 是 `NaT`，而 `NaT` 的所有比较都是 `False`，`max()` 会静默返回它碰巧先拿到的那个值，把整个 horizon 算错；同一个 null 再走到填充循环里会产出一整列 `False`，和"从没当过成分"完全无法区分。
 
-### 掩码：`quantlab/dataset/masking.py:UniverseMask`
+### 掩码：`quantlab/dataset/_support/masking.py:UniverseMask`
 
 `apply()` 返回 `market.where(mask)`——非成分的格子变 NaN，**所有变量统一处理，布尔标志位也不例外**（`anomaly_flag` 会变成 float64 + NaN）。理由：在池子之外，一个 flag 是"未定义"，不是 `False`，保留 `False` 等于断言了这个掩码并不知道的事。
 
@@ -330,7 +330,7 @@ Netflix 2002-05-23 上市（roster 层，两个类别一致），2010-12-17 进�
 
 ```python
 from quantlab.base.config import UniverseConfig
-from quantlab.acquisition.universe import UniverseCatalog
+from quantlab.universe import UniverseCatalog
 
 cfg = UniverseConfig(
     output_path="data/data/reference/universe.parquet",
@@ -404,7 +404,7 @@ ValueError: as_of_date must be an ISO YYYY-MM-DD string, got '2020/01/02'. The t
 import numpy as np, pandas as pd, polars as pl, xarray as xr
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
-from quantlab.dataset.masking import UniverseMask
+from quantlab.dataset._support.masking import UniverseMask
 
 
 class DemoPanel(IndexConstituentDataset):
@@ -573,7 +573,7 @@ present in us_all after '.'->'-': ['BF-B', 'BRK-B']
 
 todo 里有一条设计约束值得单独记住：**无论选哪个方案，join 在遇到无法解析的成分代码时必须大声失败，而不是产出一个空列。这条性质比任何具体的映射机制都值钱。**
 
-顺带：`UniverseMask.report()` 就是**目前唯一能让这个坑现形的机制**（它会把每一个"是成分但价格面板没有"的代码完整列出来）。`quantlab/dataset/masking.py` 的 docstring 说得很直白——报告非空是一个**需要处理的发现**，不是一个可以在这里糊过去的洞。
+顺带：`UniverseMask.report()` 就是**目前唯一能让这个坑现形的机制**（它会把每一个"是成分但价格面板没有"的代码完整列出来）。`quantlab/dataset/_support/masking.py` 的 docstring 说得很直白——报告非空是一个**需要处理的发现**，不是一个可以在这里糊过去的洞。
 
 ### 坑 2：重建出来的历史成分数量不精确
 
@@ -611,7 +611,7 @@ todo 里有一条设计约束值得单独记住：**无论选哪个方案，join
 
 按设计，**指数是数据不是代码**：
 
-1. 在 `quantlab/acquisition/universe.py` 加一个 `IndexMembershipFetcher` 子类：九个类常量（`ANCHOR_URL`、`CHANGES_URL`、`PIT_COVERAGE_START`、`CACHE_FILENAME`、`INDEX_LABEL`、`CATEGORY`、`EXPECTED_SOURCE_HEADER`、`DATE_HEADER`、可选 `CHANGES_TABLE_ATTRS`）+ 一个 `fetch_anchor()`。重建算法、变更日志解析、整套抓取/缓存安全阀都从基类白拿。
+1. 在 `quantlab/universe.py` 加一个 `IndexMembershipFetcher` 子类：九个类常量（`ANCHOR_URL`、`CHANGES_URL`、`PIT_COVERAGE_START`、`CACHE_FILENAME`、`INDEX_LABEL`、`CATEGORY`、`EXPECTED_SOURCE_HEADER`、`DATE_HEADER`、可选 `CHANGES_TABLE_ATTRS`）+ 一个 `fetch_anchor()`。重建算法、变更日志解析、整套抓取/缓存安全阀都从基类白拿。
 2. 把它注册进 `UniverseCatalog.MEMBERSHIP_FETCHERS`——覆盖边界守卫和 `known_categories()` 会自动跟上，不需要有人记得加 `if` 分支。
 3. 在 `quantlab/enums/data.py` 的 `UniverseCategory` Literal 里加上新 token（`CATEGORY` 标注的是 Literal 而不是 `str`，所以漏了会是类型错误）。
 4. 在 `quantlab/dataset/constituent.py` 加一个 `IndexConstituentDataset` 子类：只实现 `_pit_coverage_start()` 和 `_build_intervals()` 两个钩子。URL 和覆盖常量**不要**在这里重复一遍——这个类只是"指数"和"面板机器"之间的绑定。

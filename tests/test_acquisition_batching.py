@@ -330,10 +330,22 @@ def test_the_abort_check_is_first_in_attempt_batch_abort_is_first():
 def _concrete_acquisition_subclasses():
     """Every concrete `Acquisition` subclass defined in the SHIPPED tree.
 
-    Imports every module under the `acquisition` package first, so the walk
-    does not depend on which vendor some earlier test happened to import --
-    and so a third vendor dropped into that package is picked up here with no
-    edit to this file.
+    Imports every top-level entry of the `acquisition` package first, so the
+    walk does not depend on which vendor some earlier test happened to import
+    -- and so a third vendor dropped into that package is picked up here with
+    no edit to this file.
+
+    That sentence used to read "every module under the `acquisition` package",
+    and 260922-lu2 made the narrower reading the true one -- and the BETTER
+    one. Before, `iter_modules` also dragged in `registry`, `inspector` and
+    `sql_volume` as a side effect of the walk: support code, imported for no
+    reason by a test about vendor batching. Those three have left the top level
+    (two up to `quantlab/`, one down into `_support/`), so the walk now yields
+    exactly `_support`, `alpaca`, `tiingo`, `wrds` -- the three acquisitions,
+    plus a private package it does NOT recurse into (`iter_modules`, not
+    `walk_packages`).
+    Discovery is unaffected: the vendors are still imported directly, and
+    `Acquisition.__subclasses__()` below is what actually finds the classes.
 
     Classes defined inside the test tree are excluded: a test double is not a
     vendor, and whether one exists at all depends on test ordering.

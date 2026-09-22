@@ -171,14 +171,14 @@ RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
 # becomes a filesystem path segment or a query-string value.
 #
 # Declared HERE, and bound by BOTH ends of the symbol lifecycle -- the roster
-# builder (`acquisition/universe.py:TiingoRosterFetcher.fetch`) and the fetch
+# builder (`quantlab/universe.py:TiingoRosterFetcher.fetch`) and the fetch
 # guard (`base/acquisition.py:Acquisition._validate_symbols`) -- for exactly
 # the reason `RAW_HIVE_KEYS` above lives here (D-19): one definition, imported
 # by the writer and the reader, so the two cannot drift.
 #
 # They HAD drifted. `base/acquisition.py` carried a standalone `re.compile` of
 # the same literal while its comment claimed the pattern was imported from
-# `acquisition/universe.py`, and the guard admitted only ONE suffix segment
+# `quantlab/universe.py`, and the guard admitted only ONE suffix segment
 # while `us_all` deliberately retained 1,124 warrant / unit / right /
 # when-issued lines (260906-eme). The result was that `download()`'s
 # whole-roster pre-flight raised on `NXG-R-W` and killed a multi-hour
@@ -186,7 +186,7 @@ RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
 #
 # WHY THIS MODULE. Neither of the two binders may import the other:
 # `quantlab/base/acquisition.py` importing the universe module inverts the
-# layering, and `quantlab/acquisition/universe.py` importing the acquisition
+# layering, and `quantlab/universe.py` importing the acquisition
 # base breaks `tests/test_volume_guard.py`, which resolves universe.py's
 # imports with `ast` and asserts none of them is an acquisition module -- the
 # volume guard's "refuse before any client exists" property is STRUCTURAL.
@@ -224,7 +224,7 @@ RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
 # a path separator, a parent reference, an embedded comma, a space and
 # lowercase unrepresentable rather than merely unmatched (T-10t-01).
 #
-# NOT THE SAME AS `acquisition/universe.py:_WELL_FORMED_TICKER`, which is
+# NOT THE SAME AS `quantlab/universe.py:_WELL_FORMED_TICKER`, which is
 # DELIBERATELY NARROWER and must not be "aligned" with this one. That one
 # validates Wikipedia-scraped change-log CELLS, where an interior delimiter
 # means two cells were merged by a parser regression; a three-segment value is

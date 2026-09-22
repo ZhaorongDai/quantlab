@@ -244,7 +244,7 @@ def test_parser_refusals(wrds, tmp_path, monkeypatch, capsys, args, needle):
 
 
 def test_universe_resolves_by_interval_overlap(wrds, tmp_path, monkeypatch, capsys):
-    from quantlab.acquisition.universe import UniverseCatalog
+    from quantlab.universe import UniverseCatalog
 
     calls = []
 

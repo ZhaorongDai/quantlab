@@ -181,7 +181,7 @@ def test_utils_cli_does_not_import_config_at_module_scope() -> None:
     """D-04: `quantlab/utils/cli.py`'s module docstring pins its module-scope
     project dependency surface at `quantlab.base.chunking` and
     `quantlab.base.data`. Importing `set_data_root` from the configuration
-    package at module scope would drag `quantlab.dataset.backend`,
+    package at module scope would drag `quantlab.backend`,
     `quantlab.dataset.spot`, `quantlab.dataset.stock` and `quantlab.base.config`
     into every import of the dependency-light CLI helper module.
     """

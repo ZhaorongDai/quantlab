@@ -6,7 +6,7 @@
 `dataset/nbbo/resample.py:NbboResampler`. The bar size is
 `NbboDatasetConfig.bar_interval`; the raw tier's `frequency` stays `"tick"`.
 
-Session edges come from `dataset/session_calendar.py:XnysSessionCalendar`
+Session edges come from `quantlab/dataset/_support/session_calendar.py:XnysSessionCalendar`
 (D-23): the one place a session's open/close is decided, half days, DST and
 non-sessions included. Nothing here localises a wall-clock time itself.
 
@@ -35,13 +35,13 @@ import xarray as xr
 
 from quantlab.base.config import DatasetConfig, NbboDatasetConfig
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
+from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
 from quantlab.dataset.nbbo.resample import (
     FILTER_STATS_COUNTS,
     NbboFilterPolicy,
     NbboResampler,
 )
-from quantlab.dataset.session_calendar import XnysSessionCalendar
+from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 from quantlab.utils.atomic import write_json_atomically

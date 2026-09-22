@@ -89,8 +89,8 @@ Conventions not yet established. Will populate as patterns emerge during develop
 | Component | Responsibility | File |
 |-----------|----------------|------|
 | `DataBackend` (abstract) | Defines read/write/filter contract for any storage medium | `base/backend.py` |
-| `XrBackend` | Zarr-backed storage for `xarray.Dataset` (canonical `[timestamp, symbol]` shape) | `dataset/backend.py` |
-| `PlBackend` | Parquet-backed storage via `polars.LazyFrame` | `dataset/backend.py` |
+| `XrBackend` | Zarr-backed storage for `xarray.Dataset` (canonical `[timestamp, symbol]` shape) | `quantlab/backend.py` |
+| `PlBackend` | Parquet-backed storage via `polars.LazyFrame` | `quantlab/backend.py` |
 | `Dataset` (abstract) | Loads raw market data into the internal xarray representation; converts to KunQuant/Nautilus formats | `base/data.py` |
 | `SpotKlineDataset` | Binance spot kline CSV ingestion, conversion to Nautilus `Bar` objects | `dataset/spot.py` |
 | `StockDataset` | NASDAQ/Tiingo parquet ingestion | `dataset/stock.py` |
@@ -119,7 +119,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - No dependency injection framework, no plugin registry beyond `utils/module.py:get_cls_from_path` (dynamic import-by-dotted-path used to reconstruct a `Dataset`/`Factor`/`Model` from a saved JSON config).
 ## Layers
 - Purpose: Abstracts "how data is persisted" from "what the data means."
-- Location: `dataset/backend.py` (concrete: `XrBackend`, `PlBackend`), `base/backend.py` (abstract `DataBackend`).
+- Location: `quantlab/backend.py` (concrete: `XrBackend`, `PlBackend`), `base/backend.py` (abstract `DataBackend`).
 - Contains: `read`/`write`/`to_internal`/`filter_by_date`/`filter_by_symbol`/`get_xarray_dataset`/`get_lazyframe`.
 - Depends on: `xarray`, `polars`, `pandas`.
 - Used by: `Dataset` and `FactorKunQuant`, each of which owns a `self.data_backend` instance.
@@ -145,7 +145,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - No shared application state / no server process. State lives in: on-disk zarr/parquet stores (dataset/factor/label caches), on-disk `.pth`/`.joblib` model checkpoints + `config.json`, and in-memory instance attributes (`self.data_backend.data`, `self.predictions_history` in the live strategy).
 ## Key Abstractions
 - Purpose: Represents "a place data is stored," independent of its schema.
-- Examples: `dataset/backend.py:XrBackend` (zarr/xarray), `dataset/backend.py:PlBackend` (parquet/polars).
+- Examples: `quantlab/backend.py:XrBackend` (zarr/xarray), `quantlab/backend.py:PlBackend` (parquet/polars).
 - Pattern: Abstract Base Class with `read`/`write`/`to_internal`/`filter_by_*`.
 - Purpose: The single in-memory representation flowing between Dataset → Factor/Label → Model layers. All `.sel()`, `.combine_by_coords()`, and tensor-conversion code assumes this exact 2-D coordinate shape.
 - Examples: `base/data.py`, `base/factor.py`, `base/model.py`.
@@ -173,7 +173,35 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - **Global state:** None at module level observed (no module-level singletons/mutable globals); state is instance-scoped on `Dataset`/`FactorKunQuant`/`BaseModel` objects.
 - **Hardcoded paths:** `config/__init__.py`'s factory functions (`spot_kline_config`, `alpha101_config`, `alpha158_config`, `spot_label_config`) hardcode absolute Linux paths (`/home/zhrdai/projects/crypto_quant/...`), while `train_model.py`/`test.py` hardcode different absolute macOS paths (`/Users/daizhaorong/projects/quantlab/...` and `/home/zhrdai/projects/crypto_quant/...` again for checkpoint loading). Any new environment (including this one) requires manually editing these paths before the pipeline will run.
 - **Circular imports:** None observed; the layering (`base` → `dataset`/`factor`/`label` → `dl_model`/`ml_model` → `backtest` (`quantlab/backtest/`)) is consistently one-directional based on import statements read.
-- **No `__init__.py` re-exports, and three `__init__.py` files that ARE the module:** The LAYER packages — `base/`, `factor/`, `label/`, `dl_model/`, `ml_model/`, `my_ops/`, `utils/`, `enums/`, and `acquisition/` and `dataset/` themselves — still have empty `__init__.py` files, and every import of them spells the full dotted path to the implementation module (e.g. `from factor.alpha101 import Alpha101SpotKline`, never `from factor import Alpha101SpotKline`). Three packages are different: `quantlab/acquisition/wrds/`, `quantlab/dataset/crsp/` and `quantlab/dataset/nbbo/`, where `__init__.py` IS the entry module — the file that was `wrds.py` / `crsp.py` / `nbbo.py`, moved by `git mv`, not a re-export shim written over it. What that buys: `from quantlab.dataset.crsp import CrspStockDataset` is ONE name for one subsystem (the spelling is byte-identical before and after the move), and the subsystem's parts group by directory (`crsp/membership.py`, `crsp/tickers.py`) instead of by a shared filename prefix, so a fourth CRSP module is a file rather than a naming convention. What it costs: importing any SUBMODULE runs the entry module first — measured at **+0.99s / +196 modules** on `quantlab/base/backtest.py`, which imports `quantlab.dataset.crsp.tickers`, and it is why importing a WRDS provider now loads the registry when it used to not. The distinction being adopted is "the `__init__` IS the module", never "the `__init__` re-exports other modules"; do not add a re-export list to any `__init__.py`. `quantlab/acquisition/__init__.py` is still 0 bytes, and `quantlab/acquisition/registry.py:728-737` explains in prose why it must stay that way (a non-empty package `__init__` would run on every `import quantlab.acquisition.universe` and silently erode the volume guard's structural arm).
+- **No `__init__.py` re-exports, and three `__init__.py` files that ARE the module:** The LAYER packages — `base/`, `factor/`, `label/`, `dl_model/`, `ml_model/`, `my_ops/`, `utils/`, `enums/`, and `acquisition/` and `dataset/` themselves — still have empty `__init__.py` files, and every import of them spells the full dotted path to the implementation module (e.g. `from factor.alpha101 import Alpha101SpotKline`, never `from factor import Alpha101SpotKline`). Three packages are different: `quantlab/acquisition/wrds/`, `quantlab/dataset/crsp/` and `quantlab/dataset/nbbo/`, where `__init__.py` IS the entry module — the file that was `wrds.py` / `crsp.py` / `nbbo.py`, moved by `git mv`, not a re-export shim written over it. What that buys: `from quantlab.dataset.crsp import CrspStockDataset` is ONE name for one subsystem (the spelling is byte-identical before and after the move), and the subsystem's parts group by directory (`crsp/membership.py`, `crsp/tickers.py`) instead of by a shared filename prefix, so a fourth CRSP module is a file rather than a naming convention. What it costs: importing any SUBMODULE runs the entry module first — measured at **+0.99s / +196 modules** on `quantlab/base/backtest.py`, which imports `quantlab.dataset.crsp.tickers`, and it is why importing a WRDS provider now loads the registry when it used to not. The distinction being adopted is "the `__init__` IS the module", never "the `__init__` re-exports other modules"; do not add a re-export list to any `__init__.py`.
+
+  Since 260922-lu2 there are **three** kinds of package here, not two. The third is `_support/` — `quantlab/dataset/_support/` and `quantlab/acquisition/_support/`. These are neither layer packages nor entry-module packages: they are PRIVATE, their `__init__.py` files are empty, and they exist so the layer directory above them reads as a menu (see the layout rule below). Import their contents by full dotted path like a layer package (`from quantlab.dataset._support.masking import UniverseMask`); the leading underscore is the whole signal that nothing outside that layer should be reaching in.
+
+- **Five `__init__.py` files are 0 bytes, and three of them are load-bearing:** the invariant is no longer held by prose. A non-empty package `__init__` runs on EVERY import beneath it, and the structural guards that keep acquisition clients out of the read surfaces are `ast` scans of each guarded module's OWN source plus a `vars()` sweep — neither of which can see a transitive import dragged in by an `__init__`. So:
+
+  | file | carries |
+  |---|---|
+  | `quantlab/__init__.py` | `quantlab.universe` (the volume guard: no acquisition client is constructible there, whatever the call order), and `quantlab.registry` / `quantlab.backend` |
+  | `quantlab/acquisition/__init__.py` | `alpaca` / `tiingo` / `wrds`, and everything under `_support/` |
+  | `quantlab/acquisition/_support/__init__.py` | the read surface — `inspector.py` now sits one package deeper, so THREE `__init__`s run ahead of it |
+  | `quantlab/dataset/__init__.py` | consistency only; no guarantee rides on it |
+  | `quantlab/dataset/_support/__init__.py` | consistency only; no guarantee rides on it |
+
+  Enforced by `tests/test_volume_guard.py` (`test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials`, a fourth arm resolving the path from the module object) and `tests/test_source_inspector.py` (`test_inspector_binds_no_client`, asserting all three acquisition-chain files). Each was proved to redden independently. The prose explaining WHY lives on the modules that HAVE the guarantee — `quantlab/universe.py`'s module docstring and `quantlab/registry.py`'s bottom comment — not here and not in a comment that can drift away from its subject. Moving `universe.py` up to `quantlab/` **strengthened** this: `import quantlab.universe` used to run two package `__init__`s (`quantlab/` and `quantlab/acquisition/`) and now runs one.
+
+- **Every top-level entry of `quantlab/dataset/` is a dataset; every top-level entry of `quantlab/acquisition/` is an acquisition** (260922-lu2). Browsing either directory is a menu of complete, usable things — `dataset/` shows `spot.py`, `stock.py`, `constituent.py`, `crsp/`, `nbbo/`; `acquisition/` shows `alpaca.py`, `tiingo.py`, `wrds/`. Support code goes in `_support/`, or — if it is really its own LAYER — becomes a `quantlab/` sibling. Three modules became siblings, each for a measured reason:
+
+  - `quantlab/backend.py` (`XrBackend`/`PlBackend`) — imported by seven modules across four layers (`config/__init__.py`, `universe.py`, `factor/universe_filter.py`, and `base/data.py`/`factor.py`/`model.py`/`backtest.py`). No single layer owns it.
+  - `quantlab/registry.py` — the vendor registry is the thing an operator surface asks "what can this project download"; it is not itself an acquisition, and it imports all three vendors at its bottom.
+  - `quantlab/universe.py` — the point-in-time symbol universe plus the volume guard. Deliberately a flat module rather than a `universe/` package (D-1): a package would put a second `__init__` back on its import path and re-create, one directory lower, the exact hazard the row above guards.
+
+- **The `base/X.py` ↔ `<layer>/X.py` pairing: the mirrored filename was never the rule** (260922-lu2 D-2). **The ABC lives in `quantlab/base/`. The concrete implementation lives with its CONSUMERS** — not in a directory that mirrors the ABC's filename. The mirror was a coincidence of the first two cases. All three cases today:
+
+  - `base/backend.py:ModelBackend` ↔ `ml_model/backend.py:MlBackend` — only the model layer consumes it, so it lives in the model layer. The filename still matches; that is incidental.
+  - `base/backend.py:DataBackend` ↔ `quantlab/backend.py` — seven importers across four layers (measured above), so it is a top-level sibling and the filename no longer mirrors a directory.
+  - `base/constituent.py` ↔ `dataset/constituent.py` — untouched, because a constituent dataset genuinely IS a dataset.
+
+  Considered and NOT done: by the same "every file is one complete thing" logic, `quantlab/ml_model/backend.py` is support rather than a model. 260922-lu2 was scoped to `dataset/` and `acquisition/`; expanding it would have been scope creep. Recorded so the next reader sees it was weighed, not missed.
 ## Anti-Patterns
 ### Duplicated helper logic between script and library code
 ### Broken/incomplete backtest helper committed as-is

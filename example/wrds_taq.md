@@ -1,9 +1,9 @@
 # WRDS TAQ NBBO：从逐笔最优报价到 bar 面板
 
 > 代码位置：采集 `quantlab/acquisition/wrds/taq.py`（`WrdsSession`、`WrdsTaqNbboAcquisition`、
-> `WrdsNbboVolumeProbe`），体量护栏 `quantlab/acquisition/sql_volume.py:SqlVolumeGuard`，
+> `WrdsNbboVolumeProbe`），体量护栏 `quantlab/acquisition/_support/sql_volume.py:SqlVolumeGuard`，
 > 面板 `quantlab/dataset/nbbo/__init__.py:NbboPanelDataset`，重采样 `quantlab/dataset/nbbo/resample.py`，
-> 交易日历 `quantlab/dataset/session_calendar.py:XnysSessionCalendar`，
+> 交易日历 `quantlab/dataset/_support/session_calendar.py:XnysSessionCalendar`，
 > 命令行入口 `scripts/ingest_wrds_taq.py`。
 > 相关文档：采集引擎通用契约见 [acquisition.md](acquisition.md)，数据源登记表见 [registry.md](registry.md)，
 > 分块转换见 [chunking.md](chunking.md)，时点成分见 [constituent.md](constituent.md)。
@@ -334,7 +334,7 @@ uv run python scripts/ingest_wrds_taq.py --universe sp500 \
 
 命令行每次都会先探测、再拉取。原始数据已经在盘上、只想换 bar 大小或会话窗口重新转换时，
 不需要连 WRDS：在 Python 里直接构造 `NbboDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录）
-并调用 `quantlab.acquisition.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
+并调用 `quantlab.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
 
 ---
 

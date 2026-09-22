@@ -30,7 +30,7 @@ fixture, giving each one a `[fixed_width]` and a `[variable_length]` id.
 But the defect that motivated all of this -- `widen_data_vars` rebuilding the
 store's coordinates from the opened dataset and writing them back -- does NOT
 reach `widen_symbol_axis`, which never builds the filler. Measured 2026-09-08
-against `quantlab/dataset/backend.py` at `dea1e85`, this suite scores ZERO red
+against `quantlab/backend.py` at `dea1e85`, this suite scores ZERO red
 in either arm. That is CORRECT, not a shortfall, and it is recorded here so
 nobody later "fixes" the zero by contriving a fixture to reach a defect that
 genuinely is not on this path.
@@ -60,7 +60,7 @@ from conftest import (
     stored_symbol_encoding,
     symbol_coord,
 )
-from quantlab.dataset.backend import XrBackend
+from quantlab.backend import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -454,7 +454,7 @@ def test_widening_an_int64_axis_preserves_every_stored_cell(
     migrated axis hands down.
 
     RED under: `requested = [str(symbol) for symbol in symbols]` -- i.e.
-    `quantlab/dataset/backend.py:451` as it stood before 03.11-02. Under that
+    `quantlab/backend.py:451` as it stood before 03.11-02. Under that
     mutation the non-NaN count goes to 0 while every other assertion about
     shape and dtype still passes.
     """
@@ -1084,7 +1084,7 @@ def test_widen_and_append_inherits_the_overlap_refusal_verbatim(
     makes this an enforcement of D-03 rather than a restatement of it.
 
     Also asserted: the ACCEPTED side effect, now recorded in
-    `quantlab/dataset/backend.py::XrBackend.widen_and_append`'s docstring. The
+    `quantlab/backend.py::XrBackend.widen_and_append`'s docstring. The
     widen COMMITS before the closing `append()` raises, so the store's symbol
     axis MAY have grown to A, B, C while its timestamp axis is still the
     original three labels -- unique, monotonic, and with A's and B's stored

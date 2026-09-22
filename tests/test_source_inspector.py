@@ -6,7 +6,7 @@ NO credentials present and zero vendor requests.
 SC-4 — the coverage judgement it reports is computed by the same code the real
 acquisition run uses, not a second implementation that can drift.
 
-Scaffolded by plan 03.4-01 (Wave 0). `quantlab/acquisition/inspector.py` does
+Scaffolded by plan 03.4-01 (Wave 0). `quantlab/acquisition/_support/inspector.py` does
 not exist yet; plan 03.4-04 builds it and fills this file in.
 
 TWO RULES THIS FILE IS SUBJECT TO, both from incidents recorded in
@@ -354,7 +354,7 @@ _INSPECTOR_RESOLVER_TOKEN = "INSPECTOR-FORBIDDEN-IMPORT-RESOLVED"
 
 #: Every module whose presence in the inspector's import graph would mean an
 #: `Acquisition` subclass -- and therefore a credential demand and a socket --
-#: is reachable from the read surface. `quantlab.acquisition.registry` is in the
+#: is reachable from the read surface. `quantlab.registry` is in the
 #: set for a second reason: its own bottom imports pull BOTH vendor modules, so
 #: reaching it reaches them transitively.
 _FORBIDDEN_INSPECTOR_MODULES = frozenset(
@@ -362,7 +362,7 @@ _FORBIDDEN_INSPECTOR_MODULES = frozenset(
         "quantlab.base.acquisition",
         "quantlab.acquisition.tiingo",
         "quantlab.acquisition.alpaca",
-        "quantlab.acquisition.registry",
+        "quantlab.registry",
     }
 )
 
@@ -488,7 +488,7 @@ def test_the_inspector_answers_without_credentials(
     """
     import os
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     for name in no_credentials:
         assert os.environ.get(name) is None, name
@@ -535,7 +535,7 @@ def test_the_inspector_issues_zero_vendor_requests(
     later. Combined with arm 3 below it is the difference between "did not
     happen to call out" and "could not have".
     """
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
     _sidecar_tree(config, covered=("AAPL",), legacy=("MSFT",))
@@ -562,18 +562,20 @@ def test_inspector_binds_no_client() -> None:
     of BOTH new modules with `ast` -- relative spellings included, which no
     substring scan can see -- and asserts the forbidden set is untouched.
 
-    `quantlab.acquisition.registry` is in the forbidden set for a second
+    `quantlab.registry` is in the forbidden set for a second
     reason: its own bottom imports pull both vendor modules, so reaching the
     registry reaches every client transitively.
 
-    Reddened by: adding `from quantlab.acquisition.registry import ...` (or any
+    Reddened by: adding `from quantlab.registry import ...` (or any
     relative spelling of it) to either module, or binding an `Acquisition`
-    subclass into the inspector's namespace.
+    subclass into the inspector's namespace, or putting a single byte into any
+    of the three package `__init__.py` files on the inspector's import path --
+    the last of which is what the emptiness arm below exists for.
     """
     import inspect
     from pathlib import Path
 
-    import quantlab.acquisition.inspector as inspector_module
+    import quantlab.acquisition._support.inspector as inspector_module
     import quantlab.base.coverage as coverage_module
     from quantlab.base.acquisition import Acquisition
 
@@ -589,6 +591,38 @@ def test_inspector_binds_no_client() -> None:
         )
         # Non-vacuity: the resolver saw a real import graph, not an empty one.
         assert resolved, f"{module.__name__} resolved to zero imports"
+
+    # Emptiness arm (260922-lu2). The scan above reads each module's OWN source.
+    # A package `__init__.py` runs BEFORE that module on every import and could
+    # pull a client in where the scan is structurally blind -- so the scan is
+    # only ever as strong as the emptiness of the packages above it. The
+    # inspector now sits one package deeper
+    # (`quantlab.acquisition._support.inspector`), so THREE `__init__.py` files
+    # run ahead of it where two did before, and the newest of them was created
+    # by that same move.
+    #
+    # This is a second, independently worded copy of the check
+    # `tests/test_volume_guard.py` makes over `quantlab/__init__.py`. That is
+    # this file's own documented convention -- see the `_INSPECTOR_RESOLVER_TOKEN`
+    # comment above, which prefers a copy to a cross-test import because
+    # `tests/` is not a package -- and not duplication to be factored out.
+    repo_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        "quantlab/__init__.py",
+        "quantlab/acquisition/__init__.py",
+        "quantlab/acquisition/_support/__init__.py",
+    ):
+        init = repo_root / relative
+        assert init.exists(), f"{_INSPECTOR_RESOLVER_TOKEN}: {relative} is missing"
+        assert init.stat().st_size == 0, (
+            f"{_INSPECTOR_RESOLVER_TOKEN}: {relative} is "
+            f"{init.stat().st_size} bytes, not 0. No acquisition client may be "
+            f"reachable from the read surface, whatever the call order -- but "
+            f"that is proved by an `ast` scan of the read surface's own source, "
+            f"which cannot see an import made by a package `__init__` that runs "
+            f"ahead of it. Move whatever that `__init__` does into a module the "
+            f"importer names explicitly."
+        )
 
     bound_clients = [
         name
@@ -630,7 +664,7 @@ def test_coverage_is_the_same_code_as_the_real_run(
 
     monkeypatch.setenv("TIINGO_API_KEY", "not-a-real-key")
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
     from quantlab.acquisition.tiingo import TiingoAcquisition
     from quantlab.base.coverage import CoverageLedger
 
@@ -718,7 +752,7 @@ def test_the_inspector_rejects_a_traversal_symbol(acquisition_config) -> None:
     """
     import pytest
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     config = acquisition_config(vendor="tiingo")
     inspector = SourceInspector()
@@ -802,7 +836,7 @@ def test_inventory_reports_the_two_tiers_separately(
     """
     import json
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
     from quantlab.base.coverage import (
         FAILURE_MANIFEST_NAME,
         PAGE_LEDGER_DIR_NAME,
@@ -892,7 +926,7 @@ def test_inventory_makes_one_traversal_and_one_sidecar_pass(
     """
     import os as os_module
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
     from quantlab.base.coverage import CoverageLedger
 
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
@@ -918,7 +952,7 @@ def test_inventory_makes_one_traversal_and_one_sidecar_pass(
         read_calls.append(symbol)
         return real_read_coverage(self, symbol)
 
-    import quantlab.acquisition.inspector as inspector_module
+    import quantlab.acquisition._support.inspector as inspector_module
 
     monkeypatch.setattr(inspector_module.os, "walk", _counting_walk)
     monkeypatch.setattr(CoverageLedger, "read_coverage", _counting_read_coverage)
@@ -997,7 +1031,7 @@ def test_browse_requires_symbols_and_window(
     """
     import pytest
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     raw_config = _browse_dataset_config(tmp_path)
@@ -1051,7 +1085,7 @@ def test_browse_prunes(
     """
     import polars as pl
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     root = _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     on_disk = len(list(root.rglob("*.pqt")))
@@ -1099,7 +1133,7 @@ def test_browse_raw_returns_an_uncollected_lazyframe(
     """
     import polars as pl
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     config = _browse_dataset_config(tmp_path)
@@ -1127,7 +1161,7 @@ def test_browse_raw_is_sorted_and_stable(
 
     Reddened by: dropping the trailing `.sort(["timestamp", "symbol"])`.
     """
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     config = _browse_dataset_config(tmp_path)
@@ -1156,7 +1190,7 @@ def test_browse_raw_single_day_window_returns_that_day(
     return an empty frame, and an empty frame reads as "no data for this day"
     rather than as an off-by-one.
     """
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     config = _browse_dataset_config(tmp_path)
@@ -1191,7 +1225,7 @@ def test_browse_zarr_names_the_store_on_an_unknown_symbol(
     """
     import pytest
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     config = stock_zarr(symbols=["AAPL", "MSFT"], periods=10)
     inspector = SourceInspector()
@@ -1243,7 +1277,7 @@ def test_browse_zarr_says_an_integer_axis_is_permnos_and_where_the_names_are(
     import pytest
     import xarray as xr
 
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
     from quantlab.base.config import DatasetConfig
 
     store = tmp_path / "crsp" / "crsp.zarr"
@@ -1290,7 +1324,7 @@ def test_two_browses_on_one_inspector_do_not_narrow_each_other(
     Reddened by: caching an `XrBackend`, a `_RawTierReader` or an open
     `xr.Dataset` on the inspector.
     """
-    from quantlab.acquisition.inspector import SourceInspector
+    from quantlab.acquisition._support.inspector import SourceInspector
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     raw_config = _browse_dataset_config(tmp_path)
@@ -1346,7 +1380,7 @@ def test_browse_raw_reads_no_store_at_construction(
 
     Reddened by: deleting `_RawTierReader._reset_symbols`.
     """
-    from quantlab.acquisition.inspector import SourceInspector, _RawTierReader
+    from quantlab.acquisition._support.inspector import SourceInspector, _RawTierReader
     from quantlab.base.config import DatasetConfig
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)

@@ -39,7 +39,7 @@ import xarray as xr
 
 from quantlab.base.config import BaseDatasetConfig
 from quantlab.base.data import BaseDataset
-from quantlab.dataset.backend import PlBackend, XrBackend
+from quantlab.backend import PlBackend, XrBackend
 
 TIMES = pd.date_range("2024-01-01", periods=4, freq="D")
 SYMBOLS = ["AAA", "BBB"]
@@ -94,7 +94,7 @@ class PanelDataset(BaseDataset):
 def _panel(transposed: bool = False) -> xr.Dataset:
     """A canonical two-variable panel, one float and one BOOL.
 
-    The bool `anomaly_flag` is not decoration: `dataset/cleaning.py` adds
+    The bool `anomaly_flag` is not decoration: `quantlab/dataset/_support/cleaning.py` adds
     exactly this variable to every cleaned market panel, and it is what made
     `.diff(dim="timestamp")` raise on the whole-dataset return.
     """

@@ -347,7 +347,7 @@ def test_every_entry_point_that_densifies_refuses_first():
             # A bare `convert(...)` counts, and that arm is why this test did
             # not quietly start covering nothing. Since 03.5 the shells reach
             # the densification through
-            # `quantlab.acquisition.registry.convert()` rather than by naming
+            # `quantlab.registry.convert()` rather than by naming
             # a Dataset method, so an attribute-only detector would find zero
             # densifying doors and every ordering assertion below would be
             # vacuous. The attribute arms stay: a shell that goes back to
