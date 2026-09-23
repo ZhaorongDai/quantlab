@@ -138,14 +138,35 @@ Plans:
 
 ### Phase 03.12: CRSP 复权锚点改为 store 首个可用行（后复权），建库时算，store 变不可变，删除整套窗口锚点机械 (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
-**Depends on:** Phase 3
-**Plans:** 0 plans
+**Goal:** CRSP 的复权锚点从「转换窗口内最后一个可用行」（前复权）改成「每个 PERMNO 在 store 内
+**第一个**可用行」（后复权），**仍在保存 zarr 时计算**（五个 `adj*` 仍是落盘列，store 保持 27 个
+`data_vars`），从而让锚在只向前 append 时永不移动 ⇒ store 真正不可变 ⇒ 整套为「锚点会移动」而存在的
+窗口机械（窗口四元组旁车、跨运行闸门、它的记录器与写入器）被**删除**而不是保留在开关后面。
+真实 CRSP store 按新锚重建一次，因子库与标签库一并重算。
+
+**2026-09-22 决策修订：** `03.12-CONTEXT.md` 的 D-01 / D-02 / D-03 / D-06 已作废
+（读侧派生、前缀标量表、默认锚 `"last"` 下游逐位不变、`_reference/adjustment_anchor.parquet`
+全部不做）；权威是该文件的 `## ⚠ 2026-09-22 决策修订` 一节与新增的 D-10 / D-11 / D-12。
+D-04 / D-05 / D-07 / D-08 / D-09 保持有效。`quantlab/base/config.py` 一个字节不改；
+不做锚点参数化、不做 `"listing"` 锚。
+
+**验收契约是五条实测过的不变量**（替代已作废的 D-03「逐位不变」）：
+I-1 锚行 `adjClose == close`（`rel=1e-12`，520/520）· I-2 全量建库与增量 append 得到
+`assert_identical` 相等的 store · I-3 换锚是每标的一个常数重标度（`rel=1e-9`）·
+I-4 收益序列不变（max rel 4.9e-16）· I-5 `_measure()` 四不变量原值不变（0/0/764/764）。
+
+**Requirements**: DATA-03（advanced）—— 同一个 `us_equity`/`1d` vendor 契约，这次是把一个
+**随窗口移动的派生锚**换成一个 store 内不动的锚。本 phase 不 COMPLETE 任何 requirement。
+ROADMAP 此前写的是 `TBD`，无显式 requirement ID；本 phase 的需求源是 `03.12-CONTEXT.md` 的决策。
+**Depends on:** Phase 3（03.10 / 03.11 已完成）
+**Plans:** 4 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 03.12 to break down)
+- [ ] 03.12-01-PLAN.md — 选锚三行改 `.first()`（后复权），新建 `tests/test_crsp_first_anchor.py` 覆盖 I-1 / I-3 / I-4，并重新固化 6 条硬编码期望值（wave 1）
+- [ ] 03.12-02-PLAN.md — 删除整套窗口锚点机械（6 个方法/常量 + 4 段 docstring + 2 对调用点），加 I-2 跨运行 append 用例与仓库级「锚点机械零残留」gate，D-10 的两条已知限制进 `_derivation()`（wave 2）
+- [ ] 03.12-03-PLAN.md — `example/wrds_crsp.md` 复权节整节重写 + 两条具名已知限制 + 重建 checklist（D-12 因子库/标签库一并重算、D-11 指纹只发 warning）（wave 2，与 02 并行）
+- [ ] 03.12-04-PLAN.md — 真实数据门 `test_the_real_store_reproduces_its_adjusted_columns`（I-1 + I-5），one-way 重建决策门与真实 store 重建，D-12 / D-11 的证据清点（wave 3，含 checkpoint）
 
 ### Phase 03.11: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 
