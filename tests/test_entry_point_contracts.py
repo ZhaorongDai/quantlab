@@ -41,7 +41,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: The scripts in scope: every `*.py` at the repository ROOT. Discovered rather
 #: than listed, because a list is exactly the thing that goes stale -- the next
 #: entry point someone adds is covered by existing here, not by remembering.
-ENTRY_POINTS = sorted(REPO_ROOT.glob("*.py"))
+ENTRY_POINTS = sorted(
+    [*REPO_ROOT.glob("*.py"), *(REPO_ROOT / "scripts").glob("*.py")]
+)
 
 
 def _config_dataclasses() -> dict:

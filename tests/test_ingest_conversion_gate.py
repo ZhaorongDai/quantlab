@@ -41,6 +41,11 @@ from quantlab.utils.cli import refuse_conversion_without_raw_data
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: Where the ingest shells live. They moved out of the repository ROOT after
+#: these gates were written, which left every `REPO_ROOT / shell` below
+#: pointing at a path that does not exist.
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+
 #: The three front doors. Kept as one list so a fourth shell joins every
 #: assertion below by being added HERE, rather than by somebody remembering to
 #: extend each test -- the reachability lesson this module's own
@@ -271,7 +276,7 @@ def test_alpaca_refuses_tick_with_to_zarr_at_exit_2():
     completed = subprocess.run(
         [
             sys.executable,
-            str(REPO_ROOT / "ingest_alpaca.py"),
+            str(SCRIPTS_DIR / "ingest_alpaca.py"),
             "--symbols",
             "AAPL",
             "--frequency",
@@ -340,7 +345,7 @@ def test_every_entry_point_that_densifies_refuses_first():
     """
     densifying = 0
     for shell in INGEST_SHELLS:
-        path = REPO_ROOT / shell
+        path = SCRIPTS_DIR / shell
         body = _main_body(path)
 
         def _is_densify(node) -> bool:
@@ -425,7 +430,7 @@ def test_refusal_precedes_every_symbol_bearing_dataset_construction():
     checkable where it is relied on, rather than one factory call away.
     """
     for shell in INGEST_SHELLS:
-        path = REPO_ROOT / shell
+        path = SCRIPTS_DIR / shell
         body = _main_body(path)
 
         def _is_bare_construction(node) -> bool:

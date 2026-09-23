@@ -52,4 +52,4 @@ namespaces = false
 "quantlab.config" = ["instruments.yaml"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "scripts"]

@@ -263,6 +263,14 @@ EXPECTED_DATA_DIR_SCRIPTS = {
     "ingest_tiingo.py",
     "ingest_us_equity.py",
     "refresh_us_equity_universe.py",
+    # The three WRDS shells. They were NOT in this census while the glob above
+    # looked only at the repository root and the shells had moved under
+    # `scripts/` -- so they offered `--data-dir` and the ordering guard below
+    # never ran on them. That is what a broken census costs: not a red test,
+    # a silently smaller guarantee.
+    "ingest_wrds_crsp.py",
+    "ingest_wrds_crsp_all.py",
+    "ingest_wrds_taq.py",
 }
 
 
@@ -276,7 +284,13 @@ def _scripts_offering_the_flag() -> set[str]:
     flag went dead on that script while the suite stayed green.
     """
     found: set[str] = set()
-    for path in sorted(REPO_ROOT.glob("*.py")):
+    # Both roots: the repository root still holds entry points (cal.py,
+    # train_model.py, ...) and the ingest shells moved under scripts/ later.
+    # Globbing only the root silently narrowed this gate to the scripts that
+    # did NOT move -- which is every script except the ones it exists for.
+    for path in sorted(
+        [*REPO_ROOT.glob("*.py"), *(REPO_ROOT / "scripts").glob("*.py")]
+    ):
         try:
             tree = ast.parse(path.read_text())
         except SyntaxError:  # pragma: no cover - not a script we guard
@@ -401,7 +415,14 @@ def test_apply_data_dir_precedes_every_factory_reaching_call(
         "apply_data_dir(args) below it will silently no-op."
     )
 
-    tree = ast.parse((REPO_ROOT / script_name).read_text())
+    # The scripts this gate names live under `scripts/`; a couple of legacy
+    # entry points still sit at the repository root, so resolve against both
+    # rather than assuming either.
+    script_path = REPO_ROOT / "scripts" / script_name
+    if not script_path.is_file():
+        script_path = REPO_ROOT / script_name
+    assert script_path.is_file(), f"{script_name} resolves to no file"
+    tree = ast.parse(script_path.read_text())
     denied = _path_consuming_names(tree)
     calls = _calls_in_source_order(_main_block(tree))
     names = [called for _, _, called in calls]

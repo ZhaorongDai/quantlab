@@ -942,11 +942,53 @@ INGEST_SCRIPTS = ("ingest_tiingo.py", "ingest_us_equity.py", "ingest_alpaca.py")
 _GUARD_NAMES = frozenset({"assert_acquisition_volume_fits"})
 
 
-def _main_body(path: str):
-    """The statements under `if __name__ == "__main__":`."""
-    import ast
+def _shell_source(path: str) -> str:
+    """One shell's source text, resolved against `scripts/`.
 
-    tree = ast.parse(open(path).read())
+    Same resolution `_main_body` uses and for the same reason: these gates
+    parse a shell's source, so a filename that does not resolve makes the gate
+    vacuous rather than failing loudly. Function-local imports for this
+    module's no-module-level-import rule.
+    """
+    from pathlib import Path
+
+    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+    resolved = scripts_dir / path
+    assert resolved.is_file(), (
+        f"{path} is not under {scripts_dir} -- this gate asserts placement by "
+        f"parsing the shell's source, so a path that does not resolve makes it "
+        f"vacuous rather than failing loudly."
+    )
+    return resolved.read_text(encoding="utf-8")
+
+
+def _main_body(path: str):
+    """The statements under `if __name__ == "__main__":`.
+
+    `path` is a bare shell FILENAME and is resolved against `scripts/`. The
+    shells were at the repository ROOT when these gates were written and moved
+    under `scripts/` later; the original `open(path)` resolved against the
+    process CWD, so every gate in this section had been raising
+    `FileNotFoundError` on a path nobody looked at. Resolving explicitly, and
+    asserting the file is there, is what keeps a future move loud instead of
+    vacuous.
+
+    The imports are function-local because this module deliberately has NO
+    module-level imports -- see the note on `UniverseCatalog` above; a
+    module-scope import here would make this file a new importer of the very
+    graph it polices.
+    """
+    import ast
+    from pathlib import Path
+
+    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+    resolved = scripts_dir / path
+    assert resolved.is_file(), (
+        f"{path} is not under {scripts_dir} -- this gate asserts placement by "
+        f"parsing the shell's source, so a path that does not resolve makes it "
+        f"vacuous rather than failing loudly."
+    )
+    tree = ast.parse(resolved.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
             return node.body
@@ -1120,7 +1162,7 @@ def test_force_volume_is_an_explicit_flag_on_every_entry_point():
     assert parser.parse_args(["--force-volume"]).force_volume is True
 
     for path in INGEST_SCRIPTS:
-        source = open(path).read()
+        source = _shell_source(path)
         assert "force=args.force_volume" in source, path
         assert "add_volume_guard_args" in source, path
         for escape in ("FORCE_VOLUME", "getenv", "environ.get(\"FORCE"):
@@ -1134,7 +1176,7 @@ def test_the_flag_and_its_help_text_are_defined_once():
     import ast
 
     for path in INGEST_SCRIPTS:
-        tree = ast.parse(open(path).read())
+        tree = ast.parse(_shell_source(path))
         registered = {
             node.args[0].value
             for node in ast.walk(tree)

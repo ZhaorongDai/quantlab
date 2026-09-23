@@ -54,6 +54,13 @@ from quantlab.registry import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+#: Where the ingest shells live. They were at the repository ROOT when these
+#: gates were written and moved under `scripts/` later, which left every
+#: `REPO_ROOT / shell` in this file pointing at a path that does not exist --
+#: so the gates below had been failing on a missing file rather than asserting
+#: anything about the shells. Named once here so a future move is one edit.
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+
 #: Opens this file's structural assertion messages and appears in exactly one
 #: file in the repository, so a failure here is attributable to THIS arm rather
 #: than to a neighbouring purity test that would have failed anyway. Mirrors
@@ -198,24 +205,26 @@ def test_every_shell_file_exists_and_is_git_tracked() -> None:
     repo_root = Path(__file__).resolve().parent.parent
 
     for name in SHELL_FILES:
-        path = repo_root / name
+        path = repo_root / "scripts" / name
         assert path.is_file(), f"{name} must exist -- D-15 keeps all three shells"
 
+        relative = f"scripts/{name}"
         tracked = subprocess.run(
-            ["git", "ls-files", "--", name],
+            ["git", "ls-files", "--", relative],
             cwd=repo_root,
             capture_output=True,
             text=True,
             check=True,
         ).stdout.split()
-        assert tracked == [name], (
-            f"{name} must be tracked by git; `git ls-files` returned {tracked!r}"
+        assert tracked == [relative], (
+            f"{relative} must be tracked by git; `git ls-files` returned "
+            f"{tracked!r}"
         )
 
     # The shells must remain parseable at all times -- a later plan thins them,
     # and a syntax error there would otherwise only surface at run time.
     for name in SHELL_FILES:
-        ast.parse((repo_root / name).read_text(encoding="utf-8"))
+        ast.parse((repo_root / "scripts" / name).read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +283,7 @@ def test_no_shell_names_a_vendor_class(shell: str) -> None:
     merged CLI D-15 forbids. That ruling is recorded at each shell's own
     `SOURCE` constant so the next reader does not "finish the job".
     """
-    path = REPO_ROOT / shell
+    path = SCRIPTS_DIR / shell
     tree = ast.parse(path.read_text(encoding="utf-8"))
 
     named = sorted(
@@ -403,7 +412,7 @@ def _load_shell_against_a_stub_registry(shell: str, monkeypatch):
     monkeypatch.setattr(DataSourceRegistry, "get", classmethod(_fake_get))
 
     spec = importlib.util.spec_from_file_location(
-        f"_stubbed_{shell.removesuffix('.py')}", REPO_ROOT / shell
+        f"_stubbed_{shell.removesuffix('.py')}", SCRIPTS_DIR / shell
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -456,7 +465,7 @@ def test_each_shell_resolves_its_source_through_the_registry(
         f"[{SHELL_VENDOR_TOKENS[shell]!r}] exactly once"
     )
 
-    path = REPO_ROOT / shell
+    path = SCRIPTS_DIR / shell
     tree = ast.parse(path.read_text(encoding="utf-8"))
     reached = _resolved_imports(path, shell.removesuffix(".py"))
     assert "quantlab.config.stock_acquisition_config" not in reached, (
@@ -669,7 +678,7 @@ def test_us_equity_keeps_every_capability_that_makes_it_distinct() -> None:
     )
 
     tree = ast.parse(
-        (REPO_ROOT / "ingest_us_equity.py").read_text(encoding="utf-8")
+        (SCRIPTS_DIR / "ingest_us_equity.py").read_text(encoding="utf-8")
     )
 
     roster_modes = [
@@ -857,7 +866,7 @@ def test_the_dry_run_needs_no_credential(
     assert "would fetch:       2/4" in printed, printed
 
     # Structural arm: no credential environment read is even expressible here.
-    path = REPO_ROOT / "ingest_us_equity.py"
+    path = SCRIPTS_DIR / "ingest_us_equity.py"
     reached = _resolved_imports(path, "ingest_us_equity")
     assert "os" not in reached, (
         "ingest_us_equity.py imports `os` again. The only reason it ever did "
@@ -969,7 +978,7 @@ def test_apply_data_dir_still_precedes_every_config_factory(shell: str) -> None:
     is asserted rather than tolerated, so this cannot go vacuous the way an
     ordering assertion over nothing would.
     """
-    tree = ast.parse((REPO_ROOT / shell).read_text(encoding="utf-8"))
+    tree = ast.parse((SCRIPTS_DIR / shell).read_text(encoding="utf-8"))
     denied = _factory_reaching_names(tree)
 
     calls = sorted(
