@@ -159,7 +159,7 @@ I-4 收益序列不变（max rel 4.9e-16）· I-5 `_measure()` 四不变量原�
 **随窗口移动的派生锚**换成一个 store 内不动的锚。本 phase 不 COMPLETE 任何 requirement。
 ROADMAP 此前写的是 `TBD`，无显式 requirement ID；本 phase 的需求源是 `03.12-CONTEXT.md` 的决策。
 **Depends on:** Phase 3（03.10 / 03.11 已完成）
-**Plans:** 1/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -168,8 +168,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03.12-02-PLAN.md — 删除整套窗口锚点机械（6 个方法/常量 + 4 段 docstring + 2 对调用点），加 I-2 跨运行 append 用例与仓库级「锚点机械零残留」gate，D-10 的两条已知限制进 `_derivation()`（wave 2）
-- [ ] 03.12-03-PLAN.md — `example/wrds_crsp.md` 复权节整节重写 + 两条具名已知限制 + 重建 checklist（D-12 因子库/标签库一并重算、D-11 指纹只发 warning）（wave 2，与 02 并行）
+- [x] 03.12-02-PLAN.md — 删除整套窗口锚点机械（6 个方法/常量 + 4 段 docstring + 2 对调用点），加 I-2 跨运行 append 用例与仓库级「锚点机械零残留」gate，D-10 的两条已知限制进 `_derivation()`（wave 2）
+- [x] 03.12-03-PLAN.md — `example/wrds_crsp.md` 复权节整节重写 + 两条具名已知限制 + 重建 checklist（D-12 因子库/标签库一并重算、D-11 指纹只发 warning）（wave 2，与 02 并行）
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
