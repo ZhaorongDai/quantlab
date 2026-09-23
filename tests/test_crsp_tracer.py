@@ -195,9 +195,12 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
             panel[variable].sel(timestamp=day, symbol=int(AAPL_PERMNO)).values
         )
 
-    # The split day is the anchor: its adjusted close IS its close.
+    # The split day is NOT the anchor any more: the anchor is this PERMNO's
+    # FIRST usable row in the window, so the adjusted close here is the raw
+    # close carried forward from that row by the return chain, not the raw
+    # close itself. Backward adjustment states late days in early dollars.
     assert at("close", "2020-08-31") == pytest.approx(129.04)
-    assert at("adjClose", "2020-08-31") == pytest.approx(129.04)
+    assert at("adjClose", "2020-08-31") == pytest.approx(459.6241256733458)
 
     # Total return, not price: the day before the split is one 3.3912% step
     # below it on the adjusted series, even though the raw prices differ 4x.
@@ -215,8 +218,11 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     assert factor_28 / factor_31 == pytest.approx(0.25, abs=1e-5)
 
     # Volume rides `dlycumfacshr`, which is 4 before the split and 1 after.
-    assert at("adjVolume", "2020-08-28") == pytest.approx(4 * 1_000_000)
-    assert at("adjVolume", "2020-08-31") == pytest.approx(1_000_000)
+    # The LEVELS are normalised by the anchor's own factor, and the anchor is
+    # now the first usable row -- pre-split -- so `cumfacshr_A` is 4.0 and the
+    # ratio `dlycumfacshr_t / 4.0` is 1 before the split and 1/4 after.
+    assert at("adjVolume", "2020-08-28") == pytest.approx(1_000_000)
+    assert at("adjVolume", "2020-08-31") == pytest.approx(250_000)
 
     assert at("divCash", "2020-08-07") == pytest.approx(0.82)
     assert at("divCash", "2020-08-06") == pytest.approx(0.0)
