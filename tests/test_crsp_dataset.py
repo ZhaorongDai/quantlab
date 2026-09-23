@@ -1051,17 +1051,6 @@ def _anchor_series_rows():
     return rows
 
 
-def _sidecar_path(dataset_config):
-    from pathlib import Path
-
-    from quantlab.dataset.crsp import CrspStockDataset
-
-    return Path(
-        str(dataset_config.zarr_file_path)
-        + CrspStockDataset.ADJUSTMENT_SIDECAR_SUFFIX
-    )
-
-
 def test_year_and_month_granularity_produce_identical_stores(
     mock_crsp_session, tmp_path
 ):
@@ -1379,40 +1368,19 @@ def test_a_total_loss_after_the_anchor_is_not_refused_and_zeroes_the_tail(
     )
 
 
-def test_the_sidecar_records_the_anchor_beside_the_store(mock_crsp_session, tmp_path):
-    """A store never exists without the record of WHICH anchor built it.
+def test_a_second_convert_over_the_same_window_resumes(mock_crsp_session, tmp_path):
+    """Re-running the SAME window is a no-op resume, not a refusal.
 
-    `{zarr}.crsp_adjustment.json` is a SIBLING of the store, like the chunk
-    ledger -- not a file inside it, which a `mode="w"` rewrite would drop and
-    a zarr reader would surface as a stray array.
-    """
-    import json
+    This used to be the honest-case companion of a cross-run gate that
+    compared the conversion window against a record beside the store. That
+    gate is gone (phase 03.12: the anchor is each PERMNO's first usable row,
+    so it does not move when the window grows), but the claim it guarded here
+    still has to hold on its own: a second conversion of an already-complete
+    store finds every window in the chunk ledger and writes nothing.
 
-    dataset_config = _build_store(
-        tmp_path,
-        _anchor_series_rows(),
-        [SYNTHETIC_PERMNO],
-        start=ANCHOR_START,
-        end=ANCHOR_END,
-        extra_secinfo=_synthetic_secinfo(),
-    )
-
-    sidecar = _sidecar_path(dataset_config)
-    assert sidecar.exists(), sorted(p.name for p in tmp_path.iterdir())
-    assert sidecar.parent == tmp_path, sidecar
-    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
-        "start_date": ANCHOR_START,
-        "end_date": ANCHOR_END,
-        "product_end": "2025-12-31",
-        "rule": "total_return_backward_from_last_close",
-    }
-
-
-def test_a_second_convert_with_the_same_anchor_resumes(mock_crsp_session, tmp_path):
-    """The refusal must not fire on the honest case: the SAME window again.
-
-    A resumed or re-run conversion reads the same anchor record it wrote, so
-    every window is already in the ledger and the run is a no-op.
+    The extension case -- same `start_date`, later `end_date` -- is no longer
+    a refusal at all; it is the supported append, pinned bit-for-bit by
+    `tests/test_crsp_first_anchor.py::test_a_full_and_incremental_build_agree_bit_for_bit`.
     """
     dataset_config = _build_store(
         tmp_path,
@@ -1430,82 +1398,8 @@ def test_a_second_convert_with_the_same_anchor_resumes(mock_crsp_session, tmp_pa
     assert again.resumed is True, again
 
 
-def test_extending_the_window_is_refused_naming_both_anchors(
-    mock_crsp_session, tmp_path
-):
-    """D-08 / T-03.10-19: extending `end_date` in place would SPLICE anchors.
-
-    Extending the window moves every still-listed PERMNO's anchor, which
-    rescales every earlier adjusted value by a per-PERMNO constant. The chunk
-    ledger appends windows and never rewrites finished ones, so the new
-    windows would land beside old ones computed against the OLD anchor -- one
-    column, two anchors, and a fabricated return at the join. Refusing BEFORE
-    any write is the only place that cannot be half-done.
-    """
-    cfg, reference_dir = _pull(
-        tmp_path,
-        _anchor_series_rows(),
-        [SYNTHETIC_PERMNO],
-        start=ANCHOR_START,
-        end=ANCHOR_END,
-        extra_secinfo=_synthetic_secinfo(),
-    )
-    dataset_config = _dataset_config(
-        tmp_path, cfg, reference_dir, start=ANCHOR_START, end=ANCHOR_END
-    )
-    _convert(dataset_config)
-
-    before = _panel(dataset_config)
-    ledger = tmp_path / "crsp.zarr.chunks.json"
-    ledger_before = ledger.read_text(encoding="utf-8")
-
-    extended = _dataset_config(
-        tmp_path, cfg, reference_dir, start=ANCHOR_START, end="2020-12-31"
-    )
-    with pytest.raises(ValueError) as raised:
-        _convert(extended)
-
-    message = str(raised.value)
-    assert ANCHOR_END in message, message
-    assert "2020-12-31" in message, message
-    assert "crsp_adjustment" in message, message
-    # The remedy, not only the diagnosis.
-    assert "zarr_file_path" in message, message
-
-    import xarray as xr
-
-    xr.testing.assert_identical(before, _panel(dataset_config))
-    assert ledger.read_text(encoding="utf-8") == ledger_before
-
-
-def test_a_store_without_the_sidecar_is_refused(mock_crsp_session, tmp_path):
-    """No sidecar, no proof of which anchor the store holds -- so no append.
-
-    A store written before this record existed, or one whose sidecar was
-    deleted, is indistinguishable from a store built against a different
-    anchor. Guessing "probably the same one" is exactly the assumption the
-    sidecar exists to stop being an assumption.
-    """
-    dataset_config = _build_store(
-        tmp_path,
-        _anchor_series_rows(),
-        [SYNTHETIC_PERMNO],
-        start=ANCHOR_START,
-        end=ANCHOR_END,
-        extra_secinfo=_synthetic_secinfo(),
-    )
-    sidecar = _sidecar_path(dataset_config)
-    sidecar.unlink()
-
-    with pytest.raises(ValueError) as raised:
-        _convert(dataset_config)
-
-    message = str(raised.value)
-    assert sidecar.name in message, message
-
-
 # ---------------------------------------------------------------------------
-# WR-02 / WR-03: both entry points gate and record, and a refused run keeps
+# WR-02 / WR-03: both entry points record, and a refused run keeps
 # the audit trail of the store that survived it
 # ---------------------------------------------------------------------------
 
@@ -1609,20 +1503,21 @@ def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path
 
     `from_raw_data().save()` is the idiom every other dataset in this repo
     supports, and `scripts/ingest_wrds_crsp.py` uses it four lines from the CRSP
-    call. Until this plan the anchor sidecar and both identity reports were
-    written only from `_raw_axes_in_range`, which ONLY the chunked path calls --
-    so that idiom produced a store with no provenance at all, and the failure
-    was LATCHED: `_assert_anchor_unchanged` refuses any store that exists
-    without an adjustment sidecar, so every later `registry.convert` on that
-    path raised about a sidecar the user had never heard of and could never
-    satisfy.
+    call. The identity reports were once written only from
+    `_raw_axes_in_range`, which ONLY the chunked path calls -- so that idiom
+    produced a store with no provenance at all, and which conversion entry
+    point had been used silently decided whether an audit trail existed.
 
-    What this pins is the latch being gone. A later chunked conversion may still
-    refuse -- a store written in one `mode="w"` shot has no CHUNK ledger, and
-    appending blind to a store whose written windows are unrecorded is refused
-    for every dataset in the repo, CRSP included. That refusal names the ledger
-    and states its remedy. What must never come back is the CRSP-specific
-    refusal about a missing `.crsp_adjustment.json`.
+    **This is the test for BOTH entry points leaving records.** The chunked one
+    is covered everywhere else in this module; what is pinned HERE is that
+    `from_raw_data` (through `_raw_data_to_xr`) leaves the same set as
+    `from_raw_data_chunked` (through `_raw_axes_in_range`), because the two
+    call different overrides and nothing else forces them to agree.
+
+    A later chunked conversion may still refuse -- a store written in one
+    `mode="w"` shot has no CHUNK ledger, and appending blind to a store whose
+    written windows are unrecorded is refused for every dataset in the repo,
+    CRSP included. That refusal names the ledger and states its remedy.
     """
     from quantlab.dataset.crsp import CrspStockDataset
 
@@ -1640,11 +1535,10 @@ def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path
 
     CrspStockDataset(dataset_config).from_raw_data().save()
 
-    sidecar = _sidecar_path(dataset_config)
     filter_report, symbology_report, ticker_sidecar = _report_paths(
         dataset_config
     )
-    for path in (sidecar, filter_report, ticker_sidecar):
+    for path in (filter_report, ticker_sidecar):
         assert path.exists(), sorted(item.name for item in tmp_path.iterdir())
 
     # The SYMBOLOGY report is not part of the set any more (D-01, phase
@@ -1663,43 +1557,6 @@ def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path
     except ValueError as exc:
         message = str(exc)
         assert "chunk ledger" in message, message
-        assert sidecar.name not in message, message
-
-
-def test_from_raw_data_runs_the_anchor_gate_too(mock_crsp_session, tmp_path):
-    """WR-02's other half: the GATE is no longer chunked-path-only.
-
-    The gate and the record are one mechanism -- a record nothing checks is
-    decoration, and a check nothing records can never fire. Moving the write
-    into the non-chunked path without the check would let
-    `from_raw_data().save()` extend a store IN PLACE onto a second anchor,
-    which is the exact splice `_assert_anchor_unchanged` exists to refuse.
-    """
-    from quantlab.dataset.crsp import CrspStockDataset
-
-    cfg, reference_dir = _pull(
-        tmp_path,
-        _anchor_series_rows(),
-        [SYNTHETIC_PERMNO],
-        start=ANCHOR_START,
-        end=ANCHOR_END,
-        extra_secinfo=_synthetic_secinfo(),
-    )
-    dataset_config = _dataset_config(
-        tmp_path, cfg, reference_dir, start=ANCHOR_START, end=ANCHOR_END
-    )
-    _convert(dataset_config)
-
-    extended = _dataset_config(
-        tmp_path, cfg, reference_dir, start=ANCHOR_START, end="2020-12-31"
-    )
-    with pytest.raises(ValueError) as raised:
-        CrspStockDataset(extended).from_raw_data()
-
-    message = str(raised.value)
-    assert ANCHOR_END in message, message
-    assert "2020-12-31" in message, message
-    assert "crsp_adjustment" in message, message
 
 
 def test_a_refused_reconversion_keeps_the_existing_identity_reports(

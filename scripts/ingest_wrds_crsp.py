@@ -521,10 +521,6 @@ if __name__ == "__main__":
                     )
                 )
                 print(
-                    f"Adjustment anchor sidecar: "
-                    f"{CrspStockDataset.adjustment_sidecar_path(ds_config)}"
-                )
-                print(
                     f"Security filter sidecar:   "
                     f"{probe_dataset.filter_report_path()}"
                 )

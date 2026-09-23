@@ -12,21 +12,12 @@ CRSP panel without knowing it is one (D-07).
 `from_raw_data_chunked` calls `_raw_axes_in_range()` once and then
 `_raw_data_to_xr_window()` per window; computing the anchor inside a window
 would give every chunk its OWN anchor and put a fabricated return at every
-chunk seam. The cached derivation is the reason `granularity="year"` and
-`granularity="month"` produce the same store.
-
-**The anchor MOVES when the window is extended, so a store records its own**
-(D-08, RESEARCH Pitfall 2). Pushing `end_date` forward gives every
-still-listed PERMNO a later last priced day, which multiplies all of its
-earlier `adj*` values by a constant -- ratios survive, levels do not. Tiingo
-restates adjusted history the same way. What differs here is the WRITER: the
-chunk ledger appends windows and never rewrites a finished one, so extending
-a store in place would leave its old windows on the old anchor and the new
-ones on the new anchor, with a fabricated return at the join that no reader
-could see. Every conversion therefore writes `{zarr}.crsp_adjustment.json`
-beside the store before the first append and compares it on every later run;
-a mismatch -- or a missing sidecar -- REFUSES before anything is written. The
-remedy is a rebuild, which is cheap: CRSP publishes once a year.
+chunk seam. What makes `granularity="year"` and `granularity="month"` produce
+the same store is the SCOPE of `_derivation()` -- it reads the whole
+configured window and picks the anchor before any date slicing happens, so a
+window densifier never gets to see an anchor of its own. The cache only saves
+the recomputation; see `_derivation()` for the argument and for the two
+movements that DO rewrite history (its KNOWN LIMITATIONS section).
 
 **The arithmetic**, per PERMNO, sorted by date (D-08):
 
@@ -377,18 +368,6 @@ class CrspStockDataset(StockDataset):
     #: narrow or extend the set without the module constant moving.
     EXTRA_VARIABLES: tuple[str, ...] = CRSP_EXTRA_VARIABLES
 
-    #: The sidecar recording WHICH anchor a store's `adj*` columns were built
-    #: against. A SIBLING of the store, exactly like `ChunkLedger`'s
-    #: `.chunks.json` -- not a file inside the zarr directory, which a
-    #: `mode="w"` rewrite would drop and a zarr reader would surface as a
-    #: stray array.
-    ADJUSTMENT_SIDECAR_SUFFIX: str = ".crsp_adjustment.json"
-
-    #: The rule the sidecar names. Written into the file rather than only
-    #: implied by it, so a future change of rule is visible to a reader of an
-    #: OLD store instead of only in this module's history.
-    ADJUSTMENT_RULE: str = "total_return_backward_from_last_close"
-
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
         BaseDataset.config.fset(self, config)
@@ -513,25 +492,61 @@ class CrspStockDataset(StockDataset):
     def _derivation(self) -> pl.DataFrame:
         """The labelled, adjusted frame for the WHOLE configured window.
 
-        Computed once per instance and cached. Every window densifier slices
-        this, so every chunk of one conversion shares one anchor per PERMNO.
+        **One store, one anchor per PERMNO -- and the reason is the SCOPE of
+        this method, not the cache.** `_scan_raw()` below is called with no
+        date argument, so it reads the raw tier across the entire
+        `[config.start_date, config.end_date]` (`dataset/stock.py:433/436` is
+        where those two ends enter), the anchor reduction runs ONCE over that
+        whole frame, and `_raw_data_to_xr_window` slices dates only AFTER the
+        derivation has happened. A window densifier therefore cannot see an
+        anchor of its own, whatever the granularity. The cache saves N
+        recomputations of one already-global answer; it is not what makes the
+        answer global, and a cache miss would change the runtime, not the
+        numbers.
 
-        **Also the ANCHOR GATE** (WR-02). It sits here, on the FIRST derivation
-        of an instance, because this is the one method BOTH conversion entry
-        points call: `from_raw_data_chunked` reaches it through
-        `_raw_axes_in_range`, and `from_raw_data` through `_raw_data_to_xr`.
-        While the gate lived in `_raw_axes_in_range` only the chunked path was
-        gated, so `from_raw_data().save()` could extend a store in place onto a
-        second anchor -- and, having written no sidecar, latched that store into
-        a permanent refusal for every later chunked run. The cache check above
-        keeps it once per instance: a re-dated config resets the cache in the
-        `config` setter, which is exactly when the anchor must be re-checked.
+        It is also the one method BOTH conversion entry points pass through --
+        `from_raw_data_chunked` reaches it through `_raw_axes_in_range`, and
+        `from_raw_data` through `_raw_data_to_xr` -- which is why anything that
+        must happen exactly once per conversion, whichever entry point was
+        used, belongs here.
+
+        **KNOWN LIMITATIONS (D-10).** The anchor is each PERMNO's FIRST usable
+        row in the window, so a store that only ever grows FORWARD (fixed
+        `start_date`, later `end_date`) keeps every historical value bit for
+        bit -- that is what `tests/test_crsp_first_anchor.py`'s
+        `test_a_full_and_incremental_build_agree_bit_for_bit` pins. Two other
+        movements DO silently rewrite history, both measured, and the code
+        checks for NEITHER:
+
+        - **Moving `start_date` later.** The anchor row moves forward with it,
+          so every `adj*` level of every still-listed PERMNO is rescaled.
+          Measured on the real store: 112,359 of 112,934 overlapping rows
+          changed, max relative change **0.75**.
+        - **Back-filling the raw tier.** `config.start_date` does not change by
+          one character, but rows EARLIER than the previous anchor appear
+          underneath it, so the anchor moves backward on the next run.
+          Measured: **756 / 756** rows silently rewritten, max relative change
+          **0.76**. This is the NEW risk direction the first-row anchor
+          introduces -- a last-row anchor feared a moving `end_date`, a
+          first-row anchor fears a moving `start_date`.
+
+        Nothing rejects either case. `ChunkLedger.assert_consistent`
+        (`quantlab/base/chunking.py:307-372`) checks the symbol-axis
+        fingerprint, the store/ledger both-empty-or-both-populated pairing, and
+        that the store's last append-dim value equals the last recorded
+        window's end -- **it does not look at `start_date` at all.**
+
+        This is D-10's explicit trade: bit-for-bit equality on append is a
+        MEASURED zero, not a structurally impossible non-zero, and it rests on
+        three facts outside this code -- the start does not move, the raw tier
+        does not grow backwards, and a new vintage does not restate the anchor
+        row. Break any one of them and the remedy is a rebuild (CRSP publishes
+        once a year, so it is cheap); adding a detector is a separate phase,
+        deliberately not done here.
         """
         cached = getattr(self, "_derivation_cache", None)
         if cached is not None:
             return cached
-
-        self._assert_anchor_unchanged(self._adjustment_record())
 
         frame = self._scan_raw()
         # `is not None`, NOT truthiness (WR-01). The config setter above already
@@ -1465,108 +1480,6 @@ class CrspStockDataset(StockDataset):
         self._derivation_cache = frame
         return frame
 
-    # -- the adjustment anchor, and its sidecar ------------------------------
-
-    @classmethod
-    def adjustment_sidecar_path(cls, config: CrspDatasetConfig) -> Path:
-        """`{zarr_file_path}.crsp_adjustment.json`, a SIBLING of the store."""
-        return Path(str(config.zarr_file_path) + cls.ADJUSTMENT_SIDECAR_SUFFIX)
-
-    def _adjustment_record(self) -> dict:
-        """What this conversion's `adj*` columns are anchored to.
-
-        The anchor is a PERMNO's last priced day inside
-        `[start_date, end_date]`, so the WINDOW identifies it. `product_end`
-        rides along because the same window read against a newer CRSP vintage
-        can have a later last row for a security that kept trading -- the
-        vintage is part of "which anchor", not decoration.
-        """
-        reference = CrspReference(self.config.reference_dir)
-        return {
-            "start_date": str(self.config.start_date),
-            "end_date": str(self.config.end_date),
-            "product_end": str(reference.product_end),
-            "rule": self.ADJUSTMENT_RULE,
-        }
-
-    def _assert_anchor_unchanged(self, record: dict) -> None:
-        """Refuse to write into a store built against a DIFFERENT anchor.
-
-        **Why a refusal rather than a rescale.** Extending `end_date` moves
-        every still-listed PERMNO's anchor, which multiplies every earlier
-        `adj*` value of that PERMNO by a constant (ratios within a series
-        survive; levels do not). That is the same thing Tiingo does when it
-        restates adjusted history. The difference is the WRITER: the chunk
-        ledger APPENDS windows and never rewrites a finished one, so an
-        in-place extension would leave the old windows on the old anchor and
-        the new ones on the new anchor -- one column, two anchors, and a
-        fabricated return at the join that no reader could see.
-
-        Rebuilding is the remedy because it is cheap: CRSP publishes once a
-        year, and a full daily S&P panel re-converts in minutes.
-
-        Runs BEFORE the derivation and before any append -- the one place a
-        refusal cannot be half-done.
-        """
-        import json
-
-        store = Path(str(self.config.zarr_file_path))
-        if not store.exists():
-            return
-
-        sidecar = self.adjustment_sidecar_path(self.config)
-        if not sidecar.exists():
-            raise ValueError(
-                f"{self.class_name}: the store at {str(store)!r} exists but "
-                f"its adjustment sidecar {sidecar.name!r} is missing, so "
-                f"which anchor its adjusted columns were computed against is "
-                f"unknown. A store written against a different anchor is "
-                f"indistinguishable from this one, and appending would splice "
-                f"two anchors into one column. Convert into a NEW "
-                f"zarr_file_path, or delete {str(store)!r} together with its "
-                f"'.crsp_*.json' sidecars and rebuild."
-            )
-
-        try:
-            recorded = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ValueError(
-                f"{self.class_name}: the adjustment sidecar {str(sidecar)!r} "
-                f"could not be read ({type(exc).__name__}: {exc}). It records "
-                f"which anchor {str(store)!r} was built against; without it "
-                f"an append could splice two anchors. Delete the store and "
-                f"its '.crsp_*.json' sidecars and rebuild, or convert into a "
-                f"new zarr_file_path."
-            ) from exc
-
-        if recorded != record:
-            raise ValueError(
-                f"{self.class_name}: {str(store)!r} was built against the "
-                f"adjustment anchor {recorded} (recorded in "
-                f"{str(sidecar)!r}) and this conversion would use "
-                f"{record}. The anchor is each PERMNO's last priced day in "
-                f"the configured window, so a different window (here "
-                f"end_date {recorded.get('end_date')!r} -> "
-                f"{record.get('end_date')!r}) rescales every earlier adjusted "
-                f"value. The chunk ledger appends and never rewrites, so the "
-                f"result would be ONE column holding TWO anchors, with a "
-                f"fabricated return at the seam. Choose a new "
-                f"zarr_file_path, or delete {str(store)!r} together with its "
-                f"'.crsp_*.json' sidecars and rebuild the whole window."
-            )
-
-    def _write_adjustment_record(self, record: dict) -> None:
-        """Record the anchor before the first append, so a store cannot exist
-        without it."""
-        if Path(str(self.config.zarr_file_path)).exists():
-            return
-        write_json_atomically(
-            self.adjustment_sidecar_path(self.config),
-            record,
-            indent=2,
-            sort_keys=True,
-        )
-
     # -- axes and windows ---------------------------------------------------
 
     def _raw_axes_in_range(self):
@@ -1584,16 +1497,15 @@ class CrspStockDataset(StockDataset):
         `quantlab/utils/symbol_axis.py:sort_symbol_axis`, which is where that
         contract is stated and argued; it is deliberately not restated here.
 
-        Also where the chunked path RECORDS its provenance -- the gate itself
-        now lives in `_derivation()`, which both entry points call (WR-02). This
-        method is still the right place for the two WRITES: `from_raw_data_chunked`
-        calls it ONCE, before `ChunkLedger.assert_consistent` and before any
-        append, so the records land before the first irreversible write and are
-        never written eleven times by an eleven-window run.
+        Also where the chunked path RECORDS its provenance. This method is the
+        right place for that ONE write (`_write_identity_reports`):
+        `from_raw_data_chunked` calls it ONCE, before
+        `ChunkLedger.assert_consistent` and before any append, so the records
+        land before the first irreversible write and are never written eleven
+        times by an eleven-window run.
         """
         import pandas as pd
 
-        record = self._adjustment_record()
         derivation = self._derivation()
         # ONE frame decides BOTH axes (WR-07). The roster restriction is
         # `config.permnos` and it is applied INSIDE `_derivation()`, so both
@@ -1625,12 +1537,11 @@ class CrspStockDataset(StockDataset):
         timestamps = derivation.get_column("timestamp").unique().to_list()
 
         # Written LAST, after the derivation has succeeded: a run that fails
-        # in the derivation (an unusable adjustment anchor, a changed anchor)
-        # must not leave an anchor record for a store that was never created.
-        # A store, on the other hand, can never exist without one -- the first
-        # append happens after this returns.
+        # in the derivation (an unusable adjustment anchor) must not leave
+        # identity reports for a store that was never created. A store, on the
+        # other hand, can never exist without them -- the first append happens
+        # after this returns.
         self._write_identity_reports()
-        self._write_adjustment_record(record)
         return symbols, pd.DatetimeIndex(sorted(timestamps))
 
     def _write_identity_reports(self) -> None:
@@ -1745,24 +1656,23 @@ class CrspStockDataset(StockDataset):
 
         `BaseDataset.from_raw_data()` calls this and nothing else, so it is the
         non-chunked path's only chance to leave the records `_raw_axes_in_range`
-        leaves on the chunked one. Overridden rather than left inherited because
-        the omission was LATCHED: `_assert_anchor_unchanged` refuses any store
-        that exists without an adjustment sidecar, so a store written by
-        `from_raw_data().save()` could never be appended to again, and the user
-        met a refusal naming a file they had never heard of.
+        leaves on the chunked one. Overridden rather than left inherited so that
+        BOTH conversion entry points leave the same audit trail: a store built
+        through `from_raw_data().save()` would otherwise sit beside no identity
+        sidecars at all, and the filter report and ticker table that a reader
+        goes looking for would exist only for stores that happened to be
+        converted in chunks.
 
-        The writes happen AFTER the derivation has succeeded -- a run that
+        The write happens AFTER the derivation has succeeded -- a run that
         fails in the derivation must leave no record of a store that was never
         created -- and before the densified window is returned, which is before
-        `save()` creates the store. Both writers skip a path that already
+        `save()` creates the store. The writer skips a path that already
         exists, so this is a first-write only.
         """
-        record = self._adjustment_record()
         window = self._raw_data_to_xr_window(
             self.config.start_date, self.config.end_date, symbols=None
         )
         self._write_identity_reports()
-        self._write_adjustment_record(record)
         return window
 
     def _assert_unique_panel_keys(self, window: pl.DataFrame) -> None:

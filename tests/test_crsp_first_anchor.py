@@ -574,3 +574,117 @@ def test_the_day_over_day_ratios_unchanged_by_the_anchor_switch(
         assert float(relative.max()) <= 1e-9, (symbol, float(relative.max()))
 
     assert compared > 200, compared
+
+
+# ---------------------------------------------------------------------------
+# I-2: a full build and an incremental build agree BIT FOR BIT
+# ---------------------------------------------------------------------------
+
+
+def test_a_full_and_incremental_build_agree_bit_for_bit(mock_crsp_session, tmp_path):
+    """I-2, the acceptance anchor D-10 names: appending forward restates nothing.
+
+    Two stores over the SAME raw tier and the SAME `start_date`. One is built
+    in a single conversion across `[ANCHOR_START, ANCHOR_END]`. The other is
+    built across `[ANCHOR_START, 2019-12-31]` first and then brought up to
+    `ANCHOR_END` by `BaseDataset.update()` -- a real second RUN, against a
+    store that already exists on disk, through the append path the chunk ledger
+    drives.
+
+    **How this differs from its sister test.**
+    `tests/test_crsp_dataset.py:test_year_and_month_granularity_produce_identical_stores`
+    compares two CHUNKINGS of ONE run, so it can only prove the anchor is not
+    recomputed per window inside a single conversion. It says nothing about a
+    second process, on a second day, appending to a finished store. I-2 pins
+    exactly that: the values written by run 1 are still the values on disk
+    after run 2 (no historical rewrite), and the join between the two runs
+    carries no fabricated return (no seam).
+
+    `xr.testing.assert_identical`, never a tolerance-based comparison: the
+    claim is bit-for-bit, and it covers variable NAMES and COORDINATES too. Any
+    tolerance here would let exactly the drift this test exists to catch pass.
+
+    Before 03.12 this scenario RAISED. The anchor was each PERMNO's last
+    priced day, so extending `end_date` moved it, and a cross-run gate compared
+    a recorded window quadruple and REFUSED the second run outright. Under the
+    first-usable-row anchor the anchor does not move when the window only grows
+    forward, so the refusal became wrong and the machinery that carried it is
+    gone; this test is what replaced it.
+
+    **What it does NOT cover.** Only the forward-growth shape is pinned here.
+    Moving `start_date` later, and back-filling the raw tier underneath a fixed
+    `start_date`, both DO rewrite history, are both measured, and are checked
+    by nothing -- see the KNOWN LIMITATIONS section of
+    `CrspStockDataset._derivation()`.
+    """
+    import json
+    from pathlib import Path
+
+    import xarray as xr
+
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    cfg, reference_dir = _pull(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    # Store A: the whole window in one conversion.
+    full_config = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        store="crsp_full.zarr",
+    )
+    _convert(full_config, granularity="year")
+    panel_full = _panel(full_config)
+
+    # Store B, run 1: stop at the year boundary, which is also a window
+    # boundary for `granularity="year"` -- so run 2 appends a whole window
+    # rather than reopening a half-written one.
+    partial_config = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start=ANCHOR_START,
+        end="2019-12-31",
+        store="crsp_incremental.zarr",
+    )
+    _convert(partial_config, granularity="year")
+
+    # Store B, run 2. A NEW config object, not a mutated one: the `config`
+    # setter is what clears `_derivation_cache`, so a field poked onto the old
+    # config after construction would re-use run 1's derivation and prove
+    # nothing about a second run.
+    extended_config = _dataset_config(
+        tmp_path,
+        cfg,
+        reference_dir,
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        store="crsp_incremental.zarr",
+    )
+    CrspStockDataset(extended_config).update(granularity="year")
+    panel_incremental = _panel(extended_config)
+
+    xr.testing.assert_identical(panel_full, panel_incremental)
+
+    # Non-emptiness. Two empty panels are `assert_identical` too, so the
+    # comparison above is only worth something once the panel is known to hold
+    # the eleven months of trading days the fixture builds.
+    assert panel_full.sizes["timestamp"] > 200, panel_full.sizes
+
+    # Incrementality. Store B must have been APPENDED to, not rewritten whole:
+    # its ledger records the window run 1 wrote AND the window run 2 added.
+    ledger = json.loads(
+        Path(str(extended_config.zarr_file_path) + ".chunks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(ledger["windows"]) >= 2, ledger
