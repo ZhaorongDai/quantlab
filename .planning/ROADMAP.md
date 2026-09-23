@@ -159,7 +159,7 @@ I-4 收益序列不变（max rel 4.9e-16）· I-5 `_measure()` 四不变量原�
 **随窗口移动的派生锚**换成一个 store 内不动的锚。本 phase 不 COMPLETE 任何 requirement。
 ROADMAP 此前写的是 `TBD`，无显式 requirement ID；本 phase 的需求源是 `03.12-CONTEXT.md` 的决策。
 **Depends on:** Phase 3（03.10 / 03.11 已完成）
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 
 Plans:
 **Wave 1**
@@ -173,7 +173,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03.12-04-PLAN.md — 真实数据门 `test_the_real_store_reproduces_its_adjusted_columns`（I-1 + I-5），one-way 重建决策门与真实 store 重建，D-12 / D-11 的证据清点（wave 3，含 checkpoint）
+- [x] 03.12-04-PLAN.md — 真实数据门 `test_the_real_store_reproduces_its_adjusted_columns`（I-1 + I-5），one-way 重建决策门与真实 store 重建，D-12 / D-11 的证据清点（wave 3，含 checkpoint）
 
 ### Phase 03.11: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
 
