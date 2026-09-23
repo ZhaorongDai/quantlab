@@ -409,3 +409,168 @@ def test_an_eleven_month_series_converts_without_an_unusable_anchor_refusal(
 
     assert panel.sizes["timestamp"] > 200, panel.sizes
     assert panel["symbol"].values.tolist() == [SYNTHETIC_AXIS]
+
+
+# ---------------------------------------------------------------------------
+# I-3 / I-4: the switch is a constant rescale, and the returns are untouched
+# ---------------------------------------------------------------------------
+
+
+def _adjclose_anchored_last(panel, symbol):
+    """Recompute `adjClose` under the OLD `.last()` anchor, from raw columns.
+
+    A numpy replica of `quantlab/dataset/crsp/__init__.py:571-640` with the
+    reduction pointed at the LAST qualifying row instead of the first. It is
+    the control series both I-3 and I-4 compare against, and it is built from
+    the panel's OWN `close` / `ret` / `cumfacshr` -- never from `adjClose`,
+    which is the quantity under test.
+
+    Two things it deliberately does NOT do:
+
+    - it does not re-derive the price by testing the RAW price column for
+      positivity. The panel's `close` has already been through the
+      no-price-sentinel guard, so reading it is safe; re-deriving from the
+      raw price column would route around that guard and put CR-01 back
+      (D-05 / R-02).
+    - it does not chunk the cumulative product. `np.cumprod` in one call
+      keeps the floating-point association order the polars `cum_prod`
+      used; a hand-rolled blocked reduction would change it and make the
+      `rel=1e-9` comparisons below meaningless.
+
+    The three anchor quantities come from ONE index, exactly as the single
+    `group_by().agg()` in production does -- selecting on `close` and then
+    reading `cumfacshr` off a different row is CR-02.
+    """
+    import numpy as np
+
+    series = panel.sortby("timestamp").sel(symbol=symbol)
+    close = np.asarray(series["close"].values, dtype=float)
+    ret = np.asarray(series["ret"].values, dtype=float)
+    cumfacshr = np.asarray(series["cumfacshr"].values, dtype=float)
+
+    growth = np.cumprod(1.0 + np.nan_to_num(ret, nan=0.0))
+
+    usable = ~np.isnan(close) & (close > 0.0) & ~np.isnan(cumfacshr)
+    indices = np.flatnonzero(usable)
+    assert indices.size > 0, "no usable anchor row in the control series"
+    index = int(indices[-1])
+
+    return np.where(
+        np.isnan(close),
+        np.nan,
+        close[index] * growth / growth[index],
+    )
+
+
+def _last_anchor_index(panel, symbol):
+    """The row `_adjclose_anchored_last` anchored on -- for its self-check."""
+    import numpy as np
+
+    series = panel.sortby("timestamp").sel(symbol=symbol)
+    close = np.asarray(series["close"].values, dtype=float)
+    cumfacshr = np.asarray(series["cumfacshr"].values, dtype=float)
+    usable = ~np.isnan(close) & (close > 0.0) & ~np.isnan(cumfacshr)
+    return int(np.flatnonzero(usable)[-1])
+
+
+def test_switching_the_anchor_is_a_constant_rescale_per_permno(
+    mock_crsp_session, tmp_path
+):
+    """I-3: `adjClose^first_t / adjClose^last_t` is CONSTANT in `t`.
+
+    That is the whole claim of the switch: moving the anchor multiplies a
+    PERMNO's entire adjusted history by one number and changes nothing else.
+    The ratio is what catches the failure that would matter -- a SEAM. If any
+    part of the column were written under one anchor and the rest under
+    another (a chunk boundary, an in-place append, a per-window anchor), the
+    ratio would take one value on one side of the seam and another value on
+    the other, and `max == min` would fail. A per-cell tolerance check would
+    not: each side is individually plausible.
+
+    `rel=1e-9` against a measured worst case of `4.900e-16` on the real store.
+    """
+    import numpy as np
+
+    panel = _build(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    for symbol in panel["symbol"].values.tolist():
+        control = _adjclose_anchored_last(panel, symbol)
+        current = np.asarray(
+            panel.sortby("timestamp")["adjClose"].sel(symbol=symbol).values,
+            dtype=float,
+        )
+
+        # The control series is genuinely anchored on the LAST usable row:
+        # there, and only there, it equals that row's own close. Without this
+        # self-check the test could pass while `_adjclose_anchored_last` had
+        # quietly copied the store's own numbers.
+        index = _last_anchor_index(panel, symbol)
+        close = np.asarray(
+            panel.sortby("timestamp")["close"].sel(symbol=symbol).values,
+            dtype=float,
+        )
+        assert control[index] == pytest.approx(close[index], rel=1e-12)
+
+        ratio = current / control
+        finite = np.isfinite(ratio)
+        assert finite.sum() > 200, finite.sum()
+        assert np.nanmax(ratio[finite]) == pytest.approx(
+            np.nanmin(ratio[finite]), rel=1e-9
+        )
+
+
+def test_the_day_over_day_ratios_unchanged_by_the_anchor_switch(
+    mock_crsp_session, tmp_path
+):
+    """I-4: the RETURN series is bit-for-bit the same series it always was.
+
+    I-3 says the switch is a rescale; I-4 says the rescale is the ONLY thing
+    it is. `adjClose_t / adjClose_{t-1}` is what every factor, label and
+    backtest actually consumes, and it must not move: the store changes its
+    units, not its economics. The real store measures `max rel 4.900e-16`
+    across 129,756 cells, so `rel=1e-9` is six orders of magnitude of slack
+    over the noise floor and still far tighter than any real drift.
+    """
+    import numpy as np
+
+    panel = _build(
+        tmp_path,
+        _anchor_series_rows(),
+        [SYNTHETIC_PERMNO],
+        start=ANCHOR_START,
+        end=ANCHOR_END,
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    compared = 0
+    for symbol in panel["symbol"].values.tolist():
+        control = _adjclose_anchored_last(panel, symbol)
+        current = np.asarray(
+            panel.sortby("timestamp")["adjClose"].sel(symbol=symbol).values,
+            dtype=float,
+        )
+
+        current_steps = current[1:] / current[:-1]
+        control_steps = control[1:] / control[:-1]
+
+        both = np.isfinite(current_steps) & np.isfinite(control_steps)
+        assert both.sum() > 200, both.sum()
+        compared += int(both.sum())
+
+        assert current_steps[both] == pytest.approx(
+            control_steps[both], rel=1e-9
+        )
+
+        relative = np.abs(
+            current_steps[both] - control_steps[both]
+        ) / np.abs(control_steps[both])
+        assert float(relative.max()) <= 1e-9, (symbol, float(relative.max()))
+
+    assert compared > 200, compared
