@@ -38,6 +38,7 @@ from quantlab.universe import (
 )
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
+from quantlab.dataset.crsp.market import CrspMarketRoster
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference
 
@@ -231,5 +232,68 @@ class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
                 # window passed: an uncovered span outside it cannot touch a
                 # single cell this panel produces.
                 window=(self.config.start_date, self.config.end_date),
+            )
+        )
+
+
+class CrspMarketConstituentDataset(IndexConstituentDataset):
+    """Daily point-in-time WHOLE-MARKET membership from CRSP.
+
+    Not an index. "Was this security listed and of the requested type on this
+    day", for every security CRSP carries -- `CrspMarketRoster` rather than
+    `CrspMembership`, and therefore `stksecurityinfohist` rather than an index
+    membership table.
+
+    **Why a whole-market panel needs this more than an index panel does.** An
+    S&P 500 price panel is ~500 wide and nearly dense; a whole-market one is
+    5,465 wide for 2024 alone and 16,814 wide over 1999-2025 (measured on this
+    project's own reference tier), and most of those columns are NaN on most
+    days because the security had not listed yet or had already delisted.
+    Without this mask a consumer cannot tell "not listed" from "listed, no
+    trade" -- and a cross-sectional rank over a column that does not exist yet
+    is not a rank over the market that existed.
+
+    **Its symbols ARE the CRSP price panel's symbols**, for the same reason
+    `CrspSP500ConstituentDataset`'s are: both sides are the int64 PERMNO
+    itself, so the mask lines up with the panel column for column with no
+    identity rule in between.
+
+    **Coverage start is the price data's, not an index's.** There is no
+    membership table with its own start here, so the clamp is CRSP's own daily
+    coverage. `PIT_COVERAGE_START` mirrors `CrspMembership`'s S&P entry
+    (1925-12-31), which is where the CRSP daily file begins; a whole-market
+    universe cannot be answered before the prices exist.
+
+    **The right edge is the CRSP annual product end, never today**, because
+    every interval `CrspMarketRoster` produces is already clipped to
+    `CrspReference.product_end`. `_densify`'s open-interval branch -- which
+    extends to wall-clock today -- is therefore never taken here, exactly as
+    on the two CRSP index panels.
+
+    **The security filter is part of the panel's identity.** A mask built
+    under `equity_common` and one built under `none` are different universes,
+    so the filter rides in `kwargs` and lands in the run's own `config.json`
+    rather than being a default someone has to remember. It defaults to
+    `equity_common`, matching `scripts/ingest_wrds_crsp.py`'s own default, so
+    the mask and the price panel agree unless a caller deliberately parts
+    them.
+    """
+
+    #: CRSP's daily file start -- the same date `CrspMembership` records for
+    #: the S&P 500, because both are bounded by when CRSP's prices begin.
+    PIT_COVERAGE_START = "1925-12-31"
+
+    def __init__(self, dataset_config: ConstituentDatasetConfig):
+        super().__init__(dataset_config)
+
+    def _pit_coverage_start(self) -> str:
+        return self.PIT_COVERAGE_START
+
+    def _build_intervals(self) -> pl.DataFrame:
+        return _rename_permno_to_symbol(
+            CrspMarketRoster(CrspReference(self.config.cache_dir)).permno_intervals(
+                security_filter=(self.config.kwargs or {}).get(
+                    "security_filter", "equity_common"
+                )
             )
         )
