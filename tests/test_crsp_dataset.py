@@ -457,8 +457,15 @@ def test_lehman_delisting_loss_is_counted_exactly_once(mock_crsp_session, tmp_pa
 
     assert _at(panel, "ret", "2008-09-18", LEHMAN_AXIS) == pytest.approx(-0.6)
     assert _at(panel, "close", "2008-09-18", LEHMAN_AXIS) == pytest.approx(0.052)
-    # The delisting row is the last row with a price, so it IS the anchor.
-    assert _at(panel, "adjClose", "2008-09-18", LEHMAN_AXIS) == pytest.approx(0.052)
+    # The delisting row is NO LONGER the anchor: the anchor is this PERMNO's
+    # FIRST usable row in the window, so this row's adjusted close is only
+    # APPROXIMATELY its own close -- the raw prices and the return chain agree
+    # to 5.355e-06 here, not exactly. That relative difference is just outside
+    # `pytest.approx`'s 1e-6 default, which is why the tolerance is spelled
+    # out: the gap is the evidence that this row stopped being the anchor.
+    assert _at(panel, "adjClose", "2008-09-18", LEHMAN_AXIS) == pytest.approx(
+        0.052, rel=1e-4
+    )
 
     assert _at(panel, "adjClose", "2008-09-18", LEHMAN_AXIS) / _at(
         panel, "adjClose", "2008-09-17", LEHMAN_AXIS
@@ -497,8 +504,8 @@ def test_a_modern_delisting_keeps_a_real_adjusted_level(
 
     Every number here is VERIFIED: 03.10-REVIEW.md CR-01 reproduced these raw
     rows read-only from the pulled tier, and the expected adjusted values follow
-    from them by hand -- 51.51 is the last real close, so it IS the anchor, and
-    2024-07-03 sits one 3.5377% day below it.
+    from them by hand -- 49.75 is the FIRST real close, so it IS the anchor
+    (phase 03.12), and 2024-07-05 sits one 3.5377% day above it.
     """
     import numpy as np
 
@@ -515,16 +522,25 @@ def test_a_modern_delisting_keeps_a_real_adjusted_level(
     assert panel["symbol"].values.tolist() == [WESTROCK_AXIS]
 
     # (a) the adjusted LEVEL is real, and is not the zeroed column.
-    anchor_day = _at(panel, "adjClose", "2024-07-05", WESTROCK_AXIS)
-    previous_day = _at(panel, "adjClose", "2024-07-03", WESTROCK_AXIS)
-    assert anchor_day == pytest.approx(51.51, rel=1e-9)
-    assert previous_day == pytest.approx(51.51 / 1.035377, rel=1e-9)
+    #     The anchor is the FIRST usable row, 2024-07-03, so THAT row's
+    #     adjusted close is its own raw close and the later day is carried up
+    #     from it by the return chain. 2024-07-05's raw close (51.51) and the
+    #     chained level (49.75 * 1.035377 = 51.51000575) differ by 1.1e-07 --
+    #     CRSP's own rounding between its price and its return, which only
+    #     becomes visible once that row stops being the anchor.
+    anchor_day = _at(panel, "adjClose", "2024-07-03", WESTROCK_AXIS)
+    later_day = _at(panel, "adjClose", "2024-07-05", WESTROCK_AXIS)
+    assert anchor_day == pytest.approx(49.75, rel=1e-12)
+    assert later_day == pytest.approx(49.75 * 1.035377, rel=1e-9)
+    assert later_day == pytest.approx(51.51, rel=1e-5)
     assert anchor_day != 0.0
-    assert previous_day != 0.0
-    assert anchor_day / previous_day == pytest.approx(1.035377, rel=1e-9)
+    assert later_day != 0.0
+    assert later_day / anchor_day == pytest.approx(1.035377, rel=1e-9)
 
     adj_open = _at(panel, "adjOpen", "2024-07-05", WESTROCK_AXIS)
-    assert adj_open == pytest.approx(50.78 * (51.51 / 51.51), rel=1e-9)
+    assert adj_open == pytest.approx(
+        50.78 * (49.75 * 1.035377 / 51.51), rel=1e-9
+    )
     assert adj_open != 0.0
 
     # (b) adjVolume is finite wherever raw volume is -- `dlycumfacshr` is 1.0 on
@@ -1087,29 +1103,42 @@ def test_year_and_month_granularity_produce_identical_stores(
     assert stores["year"].sizes["timestamp"] > 200, stores["year"].sizes
 
 
-def test_the_anchor_is_the_last_non_null_close(mock_crsp_session, tmp_path):
-    """The anchor is the last row WITH A PRICE, not simply the last row.
+def test_the_anchor_is_the_FIRST_usable_row(mock_crsp_session, tmp_path):
+    """The anchor is the FIRST row with a usable level, not simply the first.
 
-    A PERMNO whose final row in the window is a Missing-Price day would
-    otherwise anchor its entire series on a null and every adjusted value
-    would be NaN. The null row itself keeps a NaN `adjClose`: there is no
-    price that day, and publishing the anchor's level there would invent one.
+    A usable level is a strictly positive `close` AND a non-null
+    `dlycumfacshr`, on ONE row. A PERMNO whose opening row in the window is a
+    Missing-Price day must therefore push its anchor forward by a row;
+    anchoring on that null would make every adjusted value in its entire
+    history NaN. The null row itself still keeps a NaN `adjClose`: there was
+    no price that day, and publishing the anchor's level there would invent
+    one.
+
+    **Why this test was rewritten rather than left alone** (phase 03.12). Its
+    three assertions stayed green when the anchor moved from `.last()` to
+    `.first()` -- the fixture's prices and returns are consistent, so both
+    anchors produce the same numbers on it. But its NAME and its docstring
+    said "last", and a test that passes while claiming to test something it
+    no longer tests is worse than no test: it is a confident false statement
+    about how the system works. The fixture's priceless row therefore moved
+    from the END of the window to the START, which is where the anchor rule
+    now has to do its work.
     """
     import numpy as np
 
     from tests.crsp_fixtures import dsf_row
 
-    rows = [  # SYNTHETIC: the window's LAST row has no price.
-        dsf_row(SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="0.010000"),
-        dsf_row(SYNTHETIC_PERMNO, "2020-03-03", dlyprc="102.000000", dlyret="0.020000"),
+    rows = [  # SYNTHETIC: the window's FIRST row has no price.
         dsf_row(
             SYNTHETIC_PERMNO,
-            "2020-03-04",
+            "2020-03-01",
             dlyprc=None,
             dlyprcflg=None,
             dlyret=None,
             dlyretmissflg="MP",
         ),
+        dsf_row(SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="0.010000"),
+        dsf_row(SYNTHETIC_PERMNO, "2020-03-03", dlyprc="102.000000", dlyret="0.020000"),
     ]
     panel = _build(
         tmp_path,
@@ -1120,13 +1149,15 @@ def test_the_anchor_is_the_last_non_null_close(mock_crsp_session, tmp_path):
         extra_secinfo=_synthetic_secinfo(),
     )
 
+    # The anchor skipped the priceless opening row and landed here, so this
+    # row's adjusted close IS its own close.
+    assert _at(panel, "adjClose", "2020-03-02", SYNTHETIC_AXIS) == pytest.approx(
+        100.0
+    )
+    assert np.isnan(_at(panel, "adjClose", "2020-03-01", SYNTHETIC_AXIS))
+    # And the rest of the series is carried forward from that close, not NaN.
     assert _at(panel, "adjClose", "2020-03-03", SYNTHETIC_AXIS) == pytest.approx(
         102.0
-    )
-    assert np.isnan(_at(panel, "adjClose", "2020-03-04", SYNTHETIC_AXIS))
-    # And the rest of the series is still anchored on that close, not on NaN.
-    assert _at(panel, "adjClose", "2020-03-02", SYNTHETIC_AXIS) == pytest.approx(
-        102.0 / 1.02
     )
 
 
@@ -1240,10 +1271,18 @@ def test_a_total_loss_return_chain_is_refused_rather_than_made_infinite(
     """GAP-A's third mechanism: a zero DENOMINATOR, not a zero anchor price.
 
     `_G` is `cum_prod(1 + dlyret)`. A `dlyret` of exactly -1.0 -- a total loss,
-    which is a legal CRSP return -- makes `_G` exactly 0.0 from that row onward,
-    so `_G_anchor` is 0.0 too. `adjClose = _close_anchor * _G / 0.0` is then
-    `inf` on every row before the loss and `0/0 -> NaN` on every row after it,
-    under IEEE semantics and with no exception raised.
+    which is a legal CRSP return -- makes `_G` exactly 0.0 from that row onward.
+    When the ANCHOR row is one of those rows, `_G_anchor` is 0.0 too, and
+    `adjClose = _close_anchor * _G / 0.0` is `inf` before the loss and
+    `0/0 -> NaN` after it, under IEEE semantics and with no exception raised.
+
+    **The fixture moved in phase 03.12, and that is the point.** The anchor is
+    now a PERMNO's FIRST usable row, not its last, so the row that has to
+    carry the -1.0 to make `_G_anchor` zero is the FIRST one. Under the old
+    `.last()` anchor a mid-series loss put the zero in the denominator; under
+    `.first()` it does not -- see
+    `test_a_total_loss_after_the_anchor_is_not_refused_and_zeroes_the_tail`
+    below, which pins what happens instead.
 
     No such row exists in the raw tier this phase pulled, and nothing in
     `_derivation` prevents one: the guard is being demanded here precisely
@@ -1253,12 +1292,12 @@ def test_a_total_loss_return_chain_is_refused_rather_than_made_infinite(
     """
     from tests.crsp_fixtures import dsf_row
 
-    rows = [  # SYNTHETIC: the middle row is a total loss, priced.
+    rows = [  # SYNTHETIC: the ANCHOR row -- the first one -- is a total loss.
         dsf_row(
-            SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="0.010000"
+            SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="-1.000000"
         ),
         dsf_row(
-            SYNTHETIC_PERMNO, "2020-03-03", dlyprc="50.000000", dlyret="-1.000000"
+            SYNTHETIC_PERMNO, "2020-03-03", dlyprc="50.000000", dlyret="0.010000"
         ),
         dsf_row(
             SYNTHETIC_PERMNO, "2020-03-04", dlyprc="49.000000", dlyret="0.020000"
@@ -1276,6 +1315,68 @@ def test_a_total_loss_return_chain_is_refused_rather_than_made_infinite(
         )
 
     assert SYNTHETIC_PERMNO in str(excinfo.value)
+
+
+def test_a_total_loss_after_the_anchor_is_not_refused_and_zeroes_the_tail(
+    mock_crsp_session, tmp_path
+):
+    """A KNOWN, CURRENTLY UNGUARDED consequence of the backward anchor.
+
+    This is a CHARACTERIZATION test, not an endorsement. With the anchor at a
+    PERMNO's FIRST usable row (phase 03.12), a `dlyret` of exactly -1.0 on any
+    LATER row no longer lands in `_G_anchor`, so `_assert_anchor_usable` does
+    not fire. `_G` is still exactly 0.0 from the loss onward, so every
+    subsequent `adjClose` is exactly 0.0 -- a $0.00 adjusted price published
+    on days whose raw `close` is 50.0 and 49.0.
+
+    That is CR-01's harm (a zeroed adjusted column feeding `0/0 -> NaN`
+    returns and a cross-sectional rank pinned to the bottom) reached through a
+    door the `.last()` anchor happened to close and the `.first()` anchor does
+    not. It is latent: no such row exists in the raw tier this project pulled,
+    and the raw data would have to be self-contradictory to produce one (a
+    -100% return followed by further trading).
+
+    Phase 03.12 plan 01 is forbidden from touching `_assert_anchor_usable`
+    (D-05 preservation), so the gap is RECORDED rather than patched here --
+    see `.planning/WINDOWS.md`. **When the guard is extended to cover a
+    post-anchor zero, DELETE this test**; it exists only to make sure the
+    behaviour is discovered on purpose rather than in a factor library.
+    """
+    from tests.crsp_fixtures import dsf_row
+
+    rows = [  # SYNTHETIC: the MIDDLE row is a total loss, priced.
+        dsf_row(
+            SYNTHETIC_PERMNO, "2020-03-02", dlyprc="100.000000", dlyret="0.010000"
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO, "2020-03-03", dlyprc="50.000000", dlyret="-1.000000"
+        ),
+        dsf_row(
+            SYNTHETIC_PERMNO, "2020-03-04", dlyprc="49.000000", dlyret="0.020000"
+        ),
+    ]
+    panel = _build(
+        tmp_path,
+        rows,
+        [SYNTHETIC_PERMNO],
+        start="2020-03-01",
+        end="2020-03-31",
+        extra_secinfo=_synthetic_secinfo(),
+    )
+
+    # The anchor row itself is unharmed: it publishes its own close.
+    assert _at(panel, "adjClose", "2020-03-02", SYNTHETIC_AXIS) == pytest.approx(
+        100.0, rel=1e-12
+    )
+    # Everything from the loss onward is exactly 0.0 while the raw close is not.
+    assert _at(panel, "adjClose", "2020-03-03", SYNTHETIC_AXIS) == 0.0
+    assert _at(panel, "adjClose", "2020-03-04", SYNTHETIC_AXIS) == 0.0
+    assert _at(panel, "close", "2020-03-03", SYNTHETIC_AXIS) == pytest.approx(
+        50.0, rel=1e-12
+    )
+    assert _at(panel, "close", "2020-03-04", SYNTHETIC_AXIS) == pytest.approx(
+        49.0, rel=1e-12
+    )
 
 
 def test_the_sidecar_records_the_anchor_beside_the_store(mock_crsp_session, tmp_path):

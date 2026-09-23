@@ -1035,9 +1035,11 @@ def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     OUTCOME the pin used to buy -- one symbol across the QQQQ years -- which is
     the assertion that survives the field, and the reason the deletion is safe.
 
-    The numbers are the drop-in promise applied to an ETF: the anchor row's
-    adjusted close IS its raw close, and 1999's volume scales by the
-    `dlycumfacshr` ratio 2 -> 1.
+    The numbers are the drop-in promise applied to an ETF, now stated from a
+    BACKWARD anchor: the adjusted series is pinned to QQQ's FIRST usable row
+    in the window, so 2025's adjusted close is the raw close restated in 1999
+    dollars, and 1999's own volume -- the anchor's side of the `dlycumfacshr`
+    2 -> 1 step -- is its raw volume unchanged.
     """
     from quantlab.base.config import QQQ_PERMNO, CrspDatasetConfig
 
@@ -1063,9 +1065,11 @@ def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     assert _timestamps(panel) == list(QQQ_DAYS), _timestamps(panel)
 
     assert _at(panel, "close", "2025-12-31", qqq) == pytest.approx(614.31)
-    assert _at(panel, "adjClose", "2025-12-31", qqq) == pytest.approx(614.31)
+    assert _at(panel, "adjClose", "2025-12-31", qqq) == pytest.approx(
+        100.34793698111775
+    )
     assert _at(panel, "adjVolume", "1999-03-10", qqq) == pytest.approx(
-        2616100 * 2.0
+        2616100 * 1.0
     )
 
 
