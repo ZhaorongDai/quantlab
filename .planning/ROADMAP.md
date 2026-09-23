@@ -162,10 +162,17 @@ ROADMAP 此前写的是 `TBD`，无显式 requirement ID；本 phase 的需求�
 **Plans:** 4 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 03.12-01-PLAN.md — 选锚三行改 `.first()`（后复权），新建 `tests/test_crsp_first_anchor.py` 覆盖 I-1 / I-3 / I-4，并重新固化 6 条硬编码期望值（wave 1）
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 03.12-02-PLAN.md — 删除整套窗口锚点机械（6 个方法/常量 + 4 段 docstring + 2 对调用点），加 I-2 跨运行 append 用例与仓库级「锚点机械零残留」gate，D-10 的两条已知限制进 `_derivation()`（wave 2）
 - [ ] 03.12-03-PLAN.md — `example/wrds_crsp.md` 复权节整节重写 + 两条具名已知限制 + 重建 checklist（D-12 因子库/标签库一并重算、D-11 指纹只发 warning）（wave 2，与 02 并行）
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 03.12-04-PLAN.md — 真实数据门 `test_the_real_store_reproduces_its_adjusted_columns`（I-1 + I-5），one-way 重建决策门与真实 store 重建，D-12 / D-11 的证据清点（wave 3，含 checkpoint）
 
 ### Phase 03.11: CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
