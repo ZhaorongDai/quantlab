@@ -67,11 +67,14 @@ CIZ 的做法是：退市收益**本身就是一条日行**（雷曼 PERMNO 8059
 - 原始 `close` 在这条行上是 **NaN**，不是一笔 $0.00 的成交。`abs(0.0)` 仍然是 `0.0`，
   所以哨兵值必须在 `abs()` **之前**就被排除掉（`quantlab/dataset/crsp/__init__.py` 的
   `_NO_PRICE_FLAGS`）；否则面板会一边写着 `ret = -0.56%`，一边写着一笔 -100% 的成交。
-- 这条行**永远不可能成为复权锚点**。原来的判据是「最后一个非空收盘」，而 `0.0` 不是空值，
+- 这条行**永远不可能成为复权锚点**。原来的判据只是「一个非空收盘」（03.12 换向之后是
+  「**第一个非空收盘**」，漏洞的形状一模一样），而 `0.0` 不是空值，
   于是 `dlyprcflg='DA'` 的哨兵行成了锚点，`adjClose = 0.0 × G_t / G_anchor`
   在这只证券**整段历史**上恒为 0.0。
 - `ret` 照旧只带这笔退市收益**一次**，累计连乘 `G` 也照旧包含它。这次修复**没有动收益链**，
-  动的只是这条链被锚定在哪个**水平**上（WestRock：从 0.0 变回它最后一个真实收盘 51.51）。
+  动的只是这条链被锚定在哪个**水平**上（WestRock：从整段历史恒为 0.0，变回由它
+  **第一个**真实收盘定下的水平——在 `tests/test_crsp_dataset.py` 那个 2024-07 窗口里，
+  锚是 2024-07-03 的 49.75）。
 - 一个 PERMNO 在窗口内**没有任何一行**同时带着正的 `dlyprc` 和非空的 `dlycumfacshr` 时，
   转换会**点名拒绝**（`ValueError` 里带上 PERMNO、配置的起止日期和所需谓词），
   而不是发布一列全 0 的 `adjClose` 或一列全 NaN 的 `adjVolume`。
@@ -436,17 +439,25 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
   一列 NaN 长得像「没有数据」，实际含义却是「数据在那里，复权把它丢了」，
   任何流动性筛选都会安静地剔掉它。
 
-### 复权：锚点在窗口最后一个收盘，以及为什么拒绝原地扩展
+### 复权：锚点是 store 内第一个可用收盘（后复权），以及为什么延长窗口是安全的
 
-`adj*` 是**总收益复权**（拆股 + 分红），语义和 Tiingo 的 `adjClose` 一致：
-把 CRSP 的 `dlyret` 从**该 PERMNO 在配置窗口内最后一个可用收盘**往回连乘，
-所以最新那天的 `adjClose` 就等于它的原始 `close`。`adjOpen/High/Low` 按同一个日因子缩放，
-`adjVolume` 用 `dlycumfacshr` 派生的股数因子。
+`adj*` 是**总收益复权**（拆股 + 分红），和 Tiingo 的 `adjClose` 一样把两者都算进去，
+但**连乘方向是往后的**：把 CRSP 的 `dlyret` 从**该 PERMNO 在 store 内第一个可用收盘**
+往**后**连乘，所以**最早**那天的 `adjClose` 就等于它的原始 `close`，越晚的日子 `adjClose`
+相对名义价越**高**（长期赢家尤其明显——整条序列是用最早那天的美元重述的）。
+`adjOpen/High/Low` 仍按同一个日因子缩放，`adjVolume` 仍用 `dlycumfacshr` 派生的股数因子
+（**D-07**：总收益、仅拆股、成交量是**三个不同的**复权因子，不要互相代用）。
+
+换向买到的是一个**不可变的 store**：锚只是每个 PERMNO **首行**的函数。
+只向前 append（`start_date` 固定、`end_date` 延长）时首行不动 ⇒ 锚不动 ⇒
+已经写出去的每一个 `adj*` 值都不会被下一次追加改写。所以不再需要把转换窗口钉成旁车，
+也不再需要跨运行闸门——它们连同「锚点会随窗口移动」这件事一起，在 03.12 被删掉了。
+这个不可变性的边界写在本节末尾的「已知限制」里。
 
 四条实现上的讲究：
 
-- 锚点是该 PERMNO 在窗口内**最后一行同时满足「`dlyprc` 严格为正」和「`dlycumfacshr` 非空」**
-  的行，不是简单的最后一行，也不只是「最后一个非空收盘」。两个条件写在**同一个**谓词里，
+- 锚点是该 PERMNO 在窗口内**第一行同时满足「`dlyprc` 严格为正」和「`dlycumfacshr` 非空」**
+  的行，不是简单的第一行，也不只是「第一个非空收盘」。两个条件写在**同一个**谓词里，
   是为了让 `adjClose`、`adjOpen`、`adjHigh`、`adjLow`、`adjVolume` 五个量**全部**从
   **同一行**上读出来：只按收盘挑锚点、再去那行读一个 NULL 的 `dlycumfacshr`，
   就是 `adjVolume` 整段历史变 NaN 的那个机制（GAP-B）。
@@ -454,29 +465,54 @@ tmp + `os.replace` 落盘；**manifest 最后写**，所以被打断的一次拉
 - 一个 PERMNO 没有任何合格行，或者它的 `G_anchor` 是 `0.0` / 非有限值
   （`dlyret = -1.0`，一次合法的血本无归），转换都会**点名拒绝**。
   后者的理由和前者一样：`close_A × G_t / 0.0` 在 IEEE 语义下是 `inf`，一路传下去不报错。
+  方向性说明：`.first()` 之下第二条**更难触发**——`G_anchor` 是**首行**处的累积值，
+  要零化它，那个 `dlyret == -1.0` 必须发生在锚**之前**，而锚就是首个可用行。
+  代价写在明处：发生在锚**之后**的 -1.0 不再撞上这道拒绝，它之后那一段 `adjClose`
+  会被写成精确的 `0.0`（而原始 `close` 仍然为正）。这是一个**已登记的已知缺口**
+  （`.planning/WINDOWS.md`），由 `tests/test_crsp_dataset.py` 里的
+  `test_a_total_loss_after_the_anchor_is_not_refused_and_zeroes_the_tail` 钉住。
 - 空的 `dlyret` 在连乘里贡献因子 **1**，不是 0。CIZ 的收益会跨过空缺回溯到 `DlyPrevDt`
   （`DlyRetDurFlg` 的 `D3`/`D4`），下一个有效收益已经覆盖了缺失那天，填 0 等于重复计一次。
 - 没有价格的那天 `adjClose` 是 **NaN**。连乘在那天是有定义的，不加这个 mask 的话，
   锚点的水平会被当成那天的复权价发布出去——凭空造出一个价格，而收益序列随后会对着它做差。
 
-**锚点被记录，而且被保护。** 每个 store 旁边有一个 `{zarr}.crsp_adjustment.json`，
-记着 `start_date` / `end_date` / `product_end` / `rule`。**先比对、后写入**：
-比对发生在那次全窗口派生的开头，所以 `registry.convert`（分块）和
-`CrspStockDataset(cfg).from_raw_data().save()`（非分块）**两条入口都过这道闸**；
-写入在派生成功之后、第一次落盘之前，每次运行一次。
-锚点不一致或旁车文件缺失，在任何写入之前就拒绝，store 和分块台账保持字节不变。
-
 两个旁车文件（`crsp_filter_report.json` / `crsp_tickers.json`）
-在 store **已存在**时不再重写，和锚点旁车一样。后者不是审计报告而是一张
+在 store **已存在**时不再重写（`quantlab/dataset/crsp/__init__.py` 的
+`_write_identity_reports` 开头那道 store-exists 守卫）。后者不是审计报告而是一张
 PERMNO → ticker 的**区间表**（见上文「原始层按 PERMNO」）。
 代价是：一次追加不会刷新这两份文件，
 它们描述的是 store **最初**写成时的那个面板；换来的是一次**被拒绝**的转换
 （比如换了更宽的名册、撞上 `on_new_listing='refuse'`）不会把活着的那个 store 的
 D-17 审计记录、或者它那份名字表，换成一个从没被写出来过的面板的数字。
 
-所以**把 `--end-date` 往后延、在原有 store 上原地扩展是被拒绝的**。
-Tiingo 的做法是整体重新缩放，算术上没问题；这里不行，因为分块台账只追加、从不重写，
-旧窗口会留着旧锚点，一列里就有了两个锚点。**出路是重建**——CRSP 一年才发布一次，重建很便宜。
+所以**把 `--end-date` 往后延、在原有 store 上原地扩展现在是被支持的**：新追加的那一段用的是
+同一个锚（每个 PERMNO 的首行没有动），实测**逐位相等**（66,356 行，`max rel 0.000e+00`），
+由 `tests/test_crsp_first_anchor.py::test_a_full_and_incremental_build_agree_bit_for_bit` 钉住。
+反过来，**动 `start_date` 不是 append，是重建**——为什么，见下。
+
+#### 已知限制：历史值在什么情况下会被静默改写
+
+「已经写出去的值不会再变」只在**一种** append 形态下成立：`start_date` 固定、`end_date` 延长。
+另外两种形态**会改写**已经落盘的历史值，而且代码一条都不拦（**D-10**）：
+
+| 场景 | 实测后果 | 代码检查吗 |
+|---|---|---|
+| **`start_date` 往后移**（换一个更晚的起点重新转换同一个 store） | 重叠区 **112,359 / 112,934 行**改变，max rel **0.75** | ❌ |
+| **raw tier 向前回填**（`start_date` 一个字没改，但原始层里出现了比原锚更早的行） | **756 / 756 行**全部被改写，max rel **0.76** | ❌ |
+
+第二行是 `.first()` 锚引入的**新**风险方向：`.last()` 锚怕 `end_date` 变，`.first()` 锚怕
+`start_date` 变——以及它的等价物，原始层往**前**长。两条都是实测出来的数字，不是理论推演。
+
+**没有任何代码检查它们。** `ChunkLedger.assert_consistent`
+（`quantlab/base/chunking.py:307-372`）看的是符号轴指纹、store 与台账的空/非空是否一致、
+store 的末尾是否等于最后一个窗口的 `end`——**它不看 `start_date`**。所以这两种形态会安静地
+跑完，留下一个每个 `adj*` 都变过、而所有一致性检查都绿的 store。
+
+这是一次**明示的取舍**（D-10：纯重算，不加锚点旁车、不加反解比对）：逐位相等是「实测是 0」，
+不是「结构上不可能不是 0」。它依赖三个**外部**事实——`start_date` 不动、raw tier 不向前长、
+CRSP 年度 vintage 不改写锚行——而代码一件都不检查。操作者的动作因此是明确的：改了
+`start_date`、或者发现原始层往前长了，就按下文「重建 CRSP store」那一节**重建**，
+不要当成一次 append。
 
 ### 事件落在除息日
 
@@ -562,12 +598,12 @@ registry.run(SOURCE, ...)   每 (年, 批次) 一次 COPY；核对行数、     
 原始分片 downloads/us_equity/1d/wrds_crsp/wrds/month=YYYY-MM/               │
   ▼   （仅 --to-zarr）                                                     │
 registry.convert(...)  → CrspStockDataset                                 │
-  │   全局复权（每 PERMNO 一个锚点，缓存在实例上）                            │
+  │   全局复权（锚 = 每 PERMNO 在 store 内的首个可用行）                      │
   │   → PERMNO 轴（symbol = int64 permno）→ 证券过滤 → ticker 区间表          │
   ▼                                                                       │
 data/us_equity/1d/wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr               │
-  + .crsp_adjustment.json  +  .crsp_filter_report.json                     │
-  + .crsp_tickers.json     （+ .chunks.json，分块台账）                      │
+  + .crsp_filter_report.json  +  .crsp_tickers.json                        │
+  + .chunks.json（分块台账）                                                 │
   ├─ （--qqq）      wrds_crsp_qqq_1d.zarr                                   │
   └─ （--universe） wrds_crsp_{sp500|nasdaq100}_membership.zarr             │
                                                         finally: close_shared()
@@ -583,6 +619,10 @@ data/us_equity/1d/wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr               │
   **之前**就已经是 PERMNO——否则一个 ticker 名册会被记成「WRDS 拒绝了这些证券」的逐批失败。
 - **复权锚点在一次转换里只算一次**，按整个配置窗口算，然后切片给每个分块窗口用。
   按 `year` 和按 `month` 转出来的 store 是 `assert_identical` 相等的。
+  一个 store 一个锚的原因是**全窗口取数、派生之后再切片**——锚被缓存在实例上省的是
+  重算次数，不是正确性。跨**运行**的 append（`start_date` 固定、`end_date` 延长）同样
+  得到**逐位相同**的 store，由
+  `tests/test_crsp_first_anchor.py::test_a_full_and_incremental_build_agree_bit_for_bit` 钉住。
 - **旁车文件是审计线索**，不是日志。「S&P 面板少了那个 ADR 成分」现在是文件里的一行，
   而不是一列没人注意到它不见了。
 
@@ -759,11 +799,47 @@ live 跑出来的关键数字（全部与离线契约一致）：
 这几条由真实数据门 `tests/test_crsp_rebuild_measurements.py` 自动锁定；它**不挂在日常回归上**
 （挂上去就等于每跑一次测试重建一次真实面板），跑法写在那个文件的模块 docstring 里。
 
+> **2026-09-23 追记（phase 03.12）。** 上表「旁车文件个数」那行的两个 **4** 是
+> 2026-09-20 / 2026-09-21 两次的实测，**不改**。但 03.12 把那个记录复权锚点的旁车
+> 连同它的跨运行闸门一起删掉了，所以用**当前**代码重建出来的 store 旁边是 **3** 个旁车
+> 文件：`.crsp_filter_report.json` / `.crsp_tickers.json` / `.chunks.json`。
+
 原始数据已经在盘上、只想换过滤预设或分块粒度重新转换时，**不需要连 WRDS**：
 在 Python 里直接构造 `CrspDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录，
 `reference_dir` 指向它的 `_reference/` 兄弟）并调用
 `quantlab.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="crsp_daily")`。
-注意复权锚点由 `start_date`/`end_date` 决定，改窗口会被旁车文件拒绝。
+注意复权锚点只由窗口的**起点**一侧决定——它是每个 PERMNO 在窗口内的**首个可用行**。
+所以**只延长 `end_date` 重新转换是安全的**，得到的 store 与一次性全量建出来的逐位相同；
+而**改动 `start_date` 等于重建**，不是 append：重叠区的历史值会被静默改写，
+代码不拦（见上文「已知限制：历史值在什么情况下会被静默改写」）。
+
+---
+
+## 重建 CRSP store 的完整步骤
+
+改了 `start_date`、原始层往前长了、或者换了 CRSP 年度版本——这三种都是**重建**。
+四步，第 3 步最容易漏，漏了会留下一个看起来没问题的旧因子库：
+
+1. **先清旁车，再清 store。** `CRSP_SIDECAR_SUFFIXES`
+   （`quantlab/dataset/crsp/rebuild.py`）里的五个后缀**全部**删掉，不是只删 `.zarr` 目录：
+   `_write_identity_reports` 开头那道 store-exists 守卫在 store 已存在时直接返回，
+   所以只删 store 会让新面板旁边留着描述**上一个**面板的审计文件。
+   这四步（校验输入 → 备份 → 清场 → 转换）`CrspStoreRebuilder` 已经编排好了，
+   **不要自己写 backup/clear/convert**。
+2. **备份代数只增不覆盖。** 每次重建取一个自己的名字，既有的每一代都当只读的看——
+   每一代都是当前代码**已经无法再产出**的那个面板的唯一记录。
+3. **必须一并重算因子库与标签库**（**D-12，不是可选项**）。理由：
+   `quantlab/base/backtest.py` 的 `factor_store[i]` / `train_factor_store[i]` /
+   `train_label_store[i]` 三个指纹键覆盖的是**因子库自己的变量**，不是它上游那个 dataset
+   的变量。所以只重建 dataset store 而不重算因子库，这三个 digest 会**保持不变、
+   而底层数据已经变了**——一个看起来没问题的旧因子库，偏偏被一个本来就是为抓这种情形
+   而设的键放过去了。（本项目不提供自动重算：这是操作者的一步。）
+4. **既有 backtest run 会失效，而且只会得到一条 warning**（**D-11**）。
+   `_compare_fingerprints`（`quantlab/base/backtest.py:1216`）**故意**只发 warning 不 raise：
+   数据集本来就会被追加、复权本来就会回溯重算，变了的数据仍然可以回测——那是一条长期
+   真理，不是为这次重建找的借口。所以重建之后重放一个既有 run **会跑完**，并打出指纹
+   warning。把 warning 的**条数与键名**抄下来，别把它当噪声划掉：那是「这个 run 的结论
+   建立在另一份数据上」的唯一证据。
 
 ---
 
@@ -777,8 +853,10 @@ live 跑出来的关键数字（全部与离线契约一致）：
   强平日志、模型的 missing/extra 清单、`UniverseMask.report()` 已经替你查过了。
 - **1992 年以前的 Nasdaq 行没有 OHLC。** `dlyopen/high/low` 在那之前普遍为空，
   `close_trade` 也是；`close`（= `abs(dlyprc)`）还在。用到最高最低价的因子在那段历史上会大面积 NaN。
-- **窗口一旦定下就别原地改。** 延长 `--end-date` 重跑会在写入之前被拒绝，
-  报错点名两个锚点、旁车文件路径和原因。出路是删掉 store **连同它全部的旁车**重建——
+- **延长 `--end-date` 可以原地重跑；改 `--start-date` 不行。** 前者用的是同一个锚
+  （每个 PERMNO 的首个可用行没动），结果与一次性全量建出来的逐位相同；后者会静默改写
+  重叠区的历史值，而且**没有任何检查会拦下来**（见上文「已知限制」）。改了起点、
+  原始层往前长了、或者换了年度版本，都走上文「重建 CRSP store」那一节——
   `quantlab/dataset/crsp/rebuild.py:CrspStoreRebuilder` 就是这件事的执行者，
   它的清场清单是唯一一份权威列表（只删 `.zarr` 目录会留下描述**上一个**面板的审计文件）。
 - **换 CRSP 年度版本 = 换原始目录。** 版本戳不匹配同样在 COPY 之前拒绝，
@@ -812,7 +890,8 @@ live 跑出来的关键数字（全部与离线契约一致）：
 > ——退市哨兵行成了复权锚点（GAP-A，`03.10-REVIEW.md` CR-01）、锚点行的 NULL
 > `dlycumfacshr` 让 `adjVolume` 整段变 NaN（GAP-B，CR-02）。**这两个现在都已修好**，
 > 见上文「缺了退市收益」和「复权」两节；另外两个转换旁车缺陷（WR-02：非分块入口不写旁车、
-> 不过锚点闸；WR-03：被拒绝的转换会覆盖活着的 store 的审计报告）也一并修好了。
+> 不过当时那道锚点闸；WR-03：被拒绝的转换会覆盖活着的 store 的审计报告）也一并修好了。
+> （那道锚点闸后来在 03.12 随锚点换向一起删除了，见上文「复权」；这里保留的是当时的记录。）
 > **下面的 GAP-1 和 GAP-2 仍然是开的**，各自由后续计划负责。
 > 用旧代码转出来的 store 需要重建：那四只 2024 年真实退出 S&P 500 的票
 > （CTLT / MRO / PXD / WRK）在旧 store 里的五列 `adj*` 是错的。
@@ -899,11 +978,14 @@ live 跑出来的关键数字（全部与离线契约一致）：
 只给 `--qqq`、不给 `--permnos` / `--universe` 时，权益名册是空的，
 但 `scripts/ingest_wrds_crsp.py` 仍然去调权益面板那次 `convert()`（会打印 `Converting 0 PERMNO(s)`）。
 空名册解析出来的 store 名是 `custom`，于是撞上之前用别的窗口建好的
-`wrds_crsp_custom_1d.zarr`（锚点 `end_date=2023-12-31`），`_assert_anchor_unchanged` 抛 `ValueError`，
-**整条命令 exit 1，QQQ 那个 store 根本没被写出来**——尽管 QQQ 的原始拉取是成功的、数据也是对的
-（502 行，2025-12-31 收盘 614.31，已核对）。
+`wrds_crsp_custom_1d.zarr`（那个 store 的锚点建在 `end_date=2023-12-31` 上）。
+在 03.12 **之前**，这种撞车会被一道跨运行的锚点闸门拒绝（`_assert_anchor_unchanged` 抛
+`ValueError`），于是**整条命令 exit 1，QQQ 那个 store 根本没被写出来**——尽管 QQQ 的原始
+拉取是成功的、数据也是对的（502 行，2025-12-31 收盘 614.31，已核对）。
 
-锚点守卫的行为是**正确**的；错的是 CLI：权益名册为空时就该跳过权益那次转换。
+当时那道锚点守卫的行为是**正确**的；错的是 CLI：权益名册为空时就该跳过权益那次转换。
+**那道闸门本身已经在 03.12 随锚点换向一起删掉了**（锚不再是窗口的函数，见上文「复权」），
+但**这个 GAP 的两条交付与它无关**，下面两条今天仍然有效。
 
 **已交付的行为（计划 03.10-15）。** 这个缺口是两层，分开修的：
 
@@ -929,8 +1011,8 @@ live 跑出来的关键数字（全部与离线契约一致）：
 写出 `wrds_crsp_qqq_1d.zarr`（symbol 轴只有一个 `QQQ`），不读也不写
 `wrds_crsp_custom_1d.zarr`——**即使**磁盘上已经有一个用别的窗口建好的同名 store 和它的旁车。
 这一条由 `tests/test_ingest_wrds_crsp.py::test_qqq_alone_writes_only_the_benchmark_store_over_a_stale_custom_store`
-钉住：它会先把那个旧 store 和一份窗口不一致的 `.crsp_adjustment.json` **种下去**，
-再断言旧旁车的字节没变——「没写权益 store」是用字节证明的，不是用「文件还在」证明的。
+钉住：它会先把那个用别的窗口建好的旧 store **种下去**，再断言它的字节没变——
+「没写权益 store」是用字节证明的，不是用「文件还在」证明的。
 
 **旧 store 不需要因为这个改动重建。** 这两处改的是「哪次转换会被发起」和
 「空名册是什么意思」，不是任何一列的数值；已经写出来的面板里的数字没有变。
