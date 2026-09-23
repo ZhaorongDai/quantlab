@@ -344,7 +344,7 @@ def test_a_missing_sidecar_is_raised_on_first_query_not_on_construction(
 
 
 def test_a_corrupt_sidecar_names_the_exception_type_and_the_way_out(tmp_path):
-    """The shape `_assert_anchor_unchanged` uses for the adjustment sidecar:
+    """This repo's shaped-error convention for an unreadable sidecar:
     `type(exc).__name__`, what the file records, and the rebuild route."""
     from quantlab.dataset.crsp.tickers import CrspTickerLookup
 

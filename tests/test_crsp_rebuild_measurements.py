@@ -119,9 +119,13 @@ SYMBOL_COUNT_BAND = (500, 540)
 #: generated and may be lying around from an older store. The two lists answer
 #: different questions, and conflating them would either stop clearing a stale
 #: file or demand a file the current tree has no code to write.
+#:
+#: `.crsp_adjustment.json` is the SECOND example of that split, added in
+#: 03.12-02: the window-anchor machinery that wrote it is gone, so it leaves
+#: this list, and it stays on the clearing list for exactly the reason the
+#: symbology report does.
 EXPECTED_WRITTEN_SIDECARS: tuple[str, ...] = (
     ".chunks.json",
-    ".crsp_adjustment.json",
     ".crsp_filter_report.json",
     ".crsp_tickers.json",
 )

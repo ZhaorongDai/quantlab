@@ -129,14 +129,12 @@ def test_end_to_end_permnos_pull_and_convert_uses_one_connection(
 
     store = _equity_store(tmp_path)
     assert str(store) in out.out
-    # Two sidecars, not three. The symbology report was the third until
-    # 03.11-07 deleted the machinery that produced it; the script stopped
-    # printing its path in the same commit, so listing it here would assert a
-    # line no code can emit.
-    for suffix in (
-        ".crsp_adjustment.json",
-        ".crsp_filter_report.json",
-    ):
+    # ONE sidecar path, not three. The symbology report was dropped when
+    # 03.11-07 deleted the machinery that produced it, and the adjustment
+    # anchor sidecar when 03.12-02 deleted the window-anchor machinery -- in
+    # both cases the script stopped printing the path in the same commit, so
+    # listing either here would assert a line no code can emit.
+    for suffix in (".crsp_filter_report.json",):
         assert f"{store}{suffix}" in out.out, suffix
 
     panel = xr.open_zarr(store).load()
@@ -383,51 +381,24 @@ SKIP_PREFIX = "Skipping the equity conversion:"
 def _plant_stale_equity_store(tmp_path, *, end_date="2020-12-31"):
     """The trap the live `--qqq --to-zarr` run fell into (GAP-2 / GAP-D).
 
-    A `wrds_crsp_custom_1d.zarr` left by an EARLIER run under a DIFFERENT window,
-    with its adjustment sidecar recording that window. `_assert_anchor_unchanged`
-    is right to refuse an append onto it -- the defect was that a QQQ-only run
-    reached that gate at all, because an empty equity roster fell back to the
-    `custom` store name and converted the whole raw tier into it.
+    A `wrds_crsp_custom_1d.zarr` left by an EARLIER run under a DIFFERENT
+    window. The defect was that a QQQ-only run touched that store at all,
+    because an empty equity roster fell back to the `custom` store name and
+    converted the whole raw tier into it.
 
-    Returns `(store_path, sidecar_path, sidecar_bytes, store_entries)` so the
-    caller can prove the planted files were left UNTOUCHED rather than merely
-    still present.
+    The assertion this helper serves is "the planted files were left UNTOUCHED"
+    -- not "something refused". It is deliberately independent of WHICH guard
+    would have fired: the anchor-window gate that used to refuse here was
+    deleted in 03.12-02, and this trap still has to hold, because the guard
+    under test is the empty-roster skip, not the conversion's own defences.
+
+    Returns `(store_path, store_entries)` so the caller can prove the planted
+    directory is byte-for-byte the one it planted rather than merely present.
     """
-    import json
-    from types import SimpleNamespace
-
-    from quantlab.dataset.crsp import CrspStockDataset
-
     store = _equity_store(tmp_path)
     store.mkdir(parents=True, exist_ok=True)
     (store / "zarr.json").write_text('{"planted": true}', encoding="utf-8")
-
-    # The sidecar NAME comes from the production classmethod, not from a literal
-    # repeated here: a rename of the suffix must move this trap with it, or the
-    # test would plant a file the anchor gate no longer looks for and pass for
-    # the wrong reason. The classmethod reads one attribute.
-    sidecar = CrspStockDataset.adjustment_sidecar_path(
-        SimpleNamespace(zarr_file_path=str(store))
-    )
-    sidecar.write_text(
-        json.dumps(
-            {
-                "start_date": "1999-01-01",
-                "end_date": end_date,
-                "product_end": end_date,
-                "rule": CrspStockDataset.ADJUSTMENT_RULE,
-            },
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return (
-        store,
-        sidecar,
-        sidecar.read_bytes(),
-        sorted(path.name for path in store.iterdir()),
-    )
+    return store, sorted(path.name for path in store.iterdir())
 
 
 def test_qqq_alone_writes_only_the_benchmark_store_over_a_stale_custom_store(
@@ -439,19 +410,18 @@ def test_qqq_alone_writes_only_the_benchmark_store_over_a_stale_custom_store(
     `--permnos`/`--universe` the roster is exactly the QQQ PERMNO, so
     `equity_permnos` is the EMPTY tuple -- and the equity conversion ran anyway,
     under the fallback store name `custom`, against a store an earlier run had
-    written under a different window. `_assert_anchor_unchanged` refused it
-    (correctly) and the run died BEFORE the QQQ block, which is why truths 08-T6
-    and 10-T6 both claim a store that is not on disk.
+    written under a different window. The conversion's own defences refused it
+    and the run died BEFORE the QQQ block, which is why truths 08-T6 and 10-T6
+    both claim a store that is not on disk.
 
     The stale store is PLANTED rather than assumed absent: "no equity store was
-    written" is proved by the planted sidecar's bytes being unchanged, so a
-    conversion that ran and happened to fail cannot pass this test either.
+    written" is proved by the planted bytes being unchanged, so a conversion
+    that ran and happened to fail cannot pass this test either.
     """
     import xarray as xr
 
-    store, sidecar, planted_bytes, planted_entries = _plant_stale_equity_store(
-        tmp_path
-    )
+    store, planted_entries = _plant_stale_equity_store(tmp_path)
+    planted_bytes = (store / "zarr.json").read_bytes()
 
     code = _run_script(
         monkeypatch,
@@ -476,9 +446,9 @@ def test_qqq_alone_writes_only_the_benchmark_store_over_a_stale_custom_store(
         str(value) for value in xr.open_zarr(benchmark).load()["symbol"].values
     ] == [QQQ_PERMNO]
 
-    # The planted equity store was not written into -- byte-unchanged sidecar
+    # The planted equity store was not written into -- byte-unchanged contents
     # and no new files in the directory.
-    assert sidecar.read_bytes() == planted_bytes
+    assert (store / "zarr.json").read_bytes() == planted_bytes
     assert sorted(path.name for path in store.iterdir()) == planted_entries
 
 

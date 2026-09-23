@@ -600,9 +600,9 @@ def test_a_full_and_incremental_build_agree_bit_for_bit(mock_crsp_session, tmp_p
     after run 2 (no historical rewrite), and the join between the two runs
     carries no fabricated return (no seam).
 
-    `xr.testing.assert_identical`, never `assert_allclose`: the claim is
-    bit-for-bit, and it covers variable NAMES and COORDINATES too. A tolerance
-    here would let exactly the drift this test exists to catch pass.
+    `xr.testing.assert_identical`, never a tolerance-based comparison: the
+    claim is bit-for-bit, and it covers variable NAMES and COORDINATES too. Any
+    tolerance here would let exactly the drift this test exists to catch pass.
 
     Before 03.12 this scenario RAISED. The anchor was each PERMNO's last
     priced day, so extending `end_date` moved it, and a cross-run gate compared
