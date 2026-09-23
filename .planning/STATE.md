@@ -2,16 +2,16 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 current_phase: "03.12"
-current_phase_name: crsp-store-dlyret-adjclose-last
+current_phase_name: CRSP 复权锚点改为 store 首个可用行（后复权）
 status: executing
 stopped_at: Phase 03.11 complete, ready to plan Phase 3
-last_updated: "2026-09-23T02:51:45.306Z"
-last_activity: 2026-09-21
-last_activity_desc: Phase 03.11 complete, transitioned to Phase 3
-state_head: f71428e09d0b92ab20e963608065be9f8287311b
+last_updated: "2026-09-23T03:23:12.625Z"
+last_activity: 2026-09-22
+last_activity_desc: Phase 03.12 execution started
+state_head: 9e9d2ab63fb961ce650b9a82d0fa084a3adb104f
 progress:
   total_phases: 19
-  completed_phases: 2
+  completed_phases: 1
   total_plans: 127
   completed_plans: 122
 milestone_name: milestone
@@ -24,14 +24,14 @@ milestone_name: milestone
 See: .planning/PROJECT.md (updated 2026-09-15)
 
 **Core value:** 一条打通的、config 驱动可复现的量化流水线（数据→因子→收益模型→组合优化→目标持仓→回测→结果），模块间用清晰的输入输出契约组合，任何一环都能独立替换/扩展而不需要推倒重来。
-**Current focus:** Phase 03.11 — CRSP PERMNO symbol axis migration and Tiingo-era dead code removal (INSERTED)
+**Current focus:** Phase 03.12 — CRSP 复权锚点改为 store 首个可用行（后复权）
 
 ## Current Position
 
-Phase: 03.12 (crsp-store-dlyret-adjclose-last) — READY TO EXECUTE
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-09-21 — Phase 03.11 complete, transitioned to Phase 3
+Phase: 03.12 (CRSP 复权锚点改为 store 首个可用行（后复权）) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 03.12
+Last activity: 2026-09-22 — Phase 03.12 execution started
 
 Phase 03.4 is executed with UAT 4/4 passed, but NOT sealed — see Blockers/Concerns.
 

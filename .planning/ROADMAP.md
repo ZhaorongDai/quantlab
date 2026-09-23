@@ -159,12 +159,12 @@ I-4 收益序列不变（max rel 4.9e-16）· I-5 `_measure()` 四不变量原�
 **随窗口移动的派生锚**换成一个 store 内不动的锚。本 phase 不 COMPLETE 任何 requirement。
 ROADMAP 此前写的是 `TBD`，无显式 requirement ID；本 phase 的需求源是 `03.12-CONTEXT.md` 的决策。
 **Depends on:** Phase 3（03.10 / 03.11 已完成）
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 03.12-01-PLAN.md — 选锚三行改 `.first()`（后复权），新建 `tests/test_crsp_first_anchor.py` 覆盖 I-1 / I-3 / I-4，并重新固化 6 条硬编码期望值（wave 1）
+- [x] 03.12-01-PLAN.md — 选锚三行改 `.first()`（后复权），新建 `tests/test_crsp_first_anchor.py` 覆盖 I-1 / I-3 / I-4，并重新固化 6 条硬编码期望值（wave 1）
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
