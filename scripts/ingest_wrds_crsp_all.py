@@ -174,11 +174,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "WHICH securities the market roster holds (default "
             "equity_common: common stock, REITs included, ADRs/units/funds/"
-            "ETFs dropped). Unlike the index shell this filter also decides "
-            "the ROSTER, not only the per-day verdict: with no index to bound "
-            "it, 'none' means all 40,518 PERMNOs CRSP carries. The per-day "
-            "verdict still runs at conversion time against dsf_v2's own type "
-            "columns and is still reported in .crsp_filter_report.json."
+            "ETFs dropped). Unlike the index shell this filter decides the "
+            "ROSTER: with no index to bound it, 'none' means all 40,518 "
+            "PERMNOs CRSP carries. The PER-DAY verdict is carried by the "
+            "in-listing mask this run writes beside the panel, NOT by removing "
+            "rows from the panel -- naming a roster in config.permnos exempts "
+            "those PERMNOs from the conversion-time type filter (GAP-C), so "
+            "the panel holds every row of every security in the roster and the "
+            "mask says which (day, symbol) cells the universe actually "
+            "contains."
         ),
     )
     parser.add_argument(
@@ -447,7 +451,14 @@ if __name__ == "__main__":
                 end_date=window["end_date"],
                 permnos=tuple(roster),
                 security_filter=args.security_filter,
-                roster_universe=MARKET,
+                # NOT `roster_universe=MARKET`. That field means "an index
+                # provider decided membership, so a member is exempt from the
+                # type filter inside its spell" (GAP-C), and it is resolved
+                # through `CrspMembership.permno_intervals`, which serves
+                # indexes only. Neither half fits a whole-market roster: this
+                # roster IS the type filter's own output, so exempting it from
+                # the type filter would be circular, and `crsp_all` is not an
+                # index `CrspMembership` can answer for.
             )
             probe_dataset = CrspStockDataset(ds_config)
             refuse_conversion_without_raw_data(probe_dataset, result)
