@@ -27,9 +27,13 @@ from quantlab.dataset._support.cleaning import REQUIRED_COLUMNS
 #:
 #: - `.chunks.json` -- `base/chunking.py:ChunkLedger`'s record of which windows
 #:   were written, which the next append reconciles against.
-#: - `.crsp_adjustment.json` -- the adjustment anchor the adjusted series was
-#:   built from. THE reason this phase rebuilds at all: the shipped stores were
-#:   written before the no-price-sentinel anchor fix.
+#: - `.crsp_adjustment.json` -- the window quadruple the adjusted series used
+#:   to be anchored against. NO LONGER GENERATED: 03.12 moved the anchor to
+#:   each PERMNO's first usable row, which does not move when the window is
+#:   extended forward, so the machinery that recorded and compared it is gone.
+#:   It stays on this list for the same reason `.crsp_symbology_report.json`
+#:   does -- a suffix dropped from here would leave a file describing a deleted
+#:   mechanism sitting beside a store it never described.
 #: - `.crsp_filter_report.json` -- what the security filter dropped and what an
 #:   explicit roster overrode (`roster_overrides`). The D-17 audit artefact.
 #: - `.crsp_symbology_report.json` -- every ticker identity decision.
