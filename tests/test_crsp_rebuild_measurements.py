@@ -69,7 +69,9 @@ import os
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
+import xarray as xr
 import zarr
 
 from quantlab.base.config import CrspDatasetConfig
@@ -666,4 +668,151 @@ def test_the_filter_report_carries_no_redundant_symbol_field(rebuilt):
     print(f"dropped_permnos: {len(dropped)} record(s)")
     _assert_breakdown_shape(
         dropped, label="dropped_permnos", source=report_path
+    )
+
+
+def test_the_real_store_reproduces_its_adjusted_columns(rebuilt):
+    """I-1 and I-5 on the SHIPPED 252x520 panel: the `.first()` anchor's two
+    self-consistency properties, measured where a synthetic fixture cannot
+    reach.
+
+    **I-1 -- the anchor row reproduces itself.** With the anchor at a PERMNO's
+    FIRST usable row (03.12-01), `adjClose_A = close_A * G_A / G_A` and
+    `adjVolume_A = volume_A * cumfacshr_A / cumfacshr_A`, so on that one row
+    the adjusted columns must come back as the raw ones. This is the whole
+    content of "backward adjustment": the series is pinned at its start, and
+    every later value is a ratio away from it.
+
+    **I-5 -- the CR-01 / CR-02 regression numbers did not move.** The four
+    invariants `_measure()` reports (`adj_close_le_zero == 0`,
+    `close_eq_zero == 0`, both adjusted NaN counts `== structural_gaps`) held
+    under the `.last()` anchor and must hold, at the SAME values, under
+    `.first()`. Their job is to prove the anchor switch did not loosen either
+    defence; they are read straight off `measurement.metrics` rather than
+    recomputed here, because `_measure()` is the authoritative definition and a
+    second copy of it would be free to drift away from the one the phase
+    reasons about.
+
+    **Why `rel=1e-12` and not `==`.** `close_A * G_A / G_A` is not required by
+    IEEE-754 to return `close_A` bit for bit; on the real store the exact
+    equality holds for 514 of 520 PERMNOs. Those six last-place differences are
+    not a defect, and reading them as one invites the obvious "fix" -- relaxing
+    to `pytest.approx`'s default `rel=1e-6`, which would simultaneously stop
+    seeing a genuine 5e-06 offset. So the tolerance is pinned at `1e-12`, and
+    the count of PERMNOs that DO satisfy the exact equality is printed beside
+    it as the standing evidence for that trade-off.
+
+    **Why the predicate has three conjuncts on ONE index.** `np.isfinite` on
+    `close` (the panel writes NULL as NaN, so `is_not_null()` has no meaning
+    here), `close > 0.0` (CRSP's no-price sentinel IS the number 0.0 -- CR-01),
+    and `np.isfinite(cumfacshr)` (reading the share factor off a DIFFERENT row
+    than the close is CR-02). The three come from a single row because that is
+    what `quantlab/dataset/crsp/__init__.py`'s one `group_by().agg()` does.
+
+    Hangs off the module-scoped `rebuilt` fixture like every other real-data
+    case here: the rebuild is destructive, and running it twice produces a
+    second backup generation and not one additional fact.
+    """
+    measurement, _started_at, _config_used = rebuilt
+
+    metrics = measurement.metrics
+    print(f"I-1/I-5 store_path: {measurement.store_path}")
+    print(f"I-1/I-5 dims:       {measurement.dims}")
+    print(f"I-1/I-5 metrics:    {metrics}")
+
+    # -- I-5: the four CR-01 / CR-02 invariants, at their original values ----
+    assert metrics["adj_close_le_zero"] == 0, (
+        f"adj_close_le_zero is {metrics['adj_close_le_zero']}, not 0. Under "
+        f"the `.first()` anchor a non-positive adjusted close means the anchor "
+        f"row itself carried the no-price sentinel (CR-01) -- the predicate "
+        f"that is supposed to exclude it did not."
+    )
+    assert metrics["close_eq_zero"] == 0, (
+        f"close_eq_zero is {metrics['close_eq_zero']}, not 0. CRSP's "
+        f"no-price sentinel is being published as a $0.00 trade."
+    )
+    assert metrics["adj_close_nan"] == metrics["structural_gaps"], (
+        f"adj_close_nan {metrics['adj_close_nan']} != structural_gaps "
+        f"{metrics['structural_gaps']}: there is a SURPLUS NaN in adjClose, "
+        f"i.e. a cell where a bar exists but the adjustment produced nothing."
+    )
+    assert metrics["adj_volume_nan"] == metrics["structural_gaps"], (
+        f"adj_volume_nan {metrics['adj_volume_nan']} != structural_gaps "
+        f"{metrics['structural_gaps']}: a NULL cumfacshr was read off a row "
+        f"the close did not come from (CR-02)."
+    )
+
+    # -- I-1: every PERMNO's anchor row reproduces its own raw columns -------
+    panel = xr.open_zarr(measurement.store_path)
+    try:
+        ordered = panel.sortby("timestamp").transpose("symbol", "timestamp")
+        permnos = [int(label) for label in ordered["symbol"].values]
+        close = np.asarray(ordered["close"].values, dtype=float)
+        volume = np.asarray(ordered["volume"].values, dtype=float)
+        cumfacshr = np.asarray(ordered["cumfacshr"].values, dtype=float)
+        adj_close = np.asarray(ordered["adjClose"].values, dtype=float)
+        adj_volume = np.asarray(ordered["adjVolume"].values, dtype=float)
+    finally:
+        panel.close()
+
+    checked = 0
+    exact = 0
+    anchorless: list[int] = []
+    for position, permno in enumerate(permnos):
+        usable = (
+            np.isfinite(close[position])
+            & (close[position] > 0.0)
+            & np.isfinite(cumfacshr[position])
+        )
+        indices = np.flatnonzero(usable)
+        if indices.size == 0:
+            # NAMED, never silently passed over: a PERMNO with no usable row
+            # is a column this gate did not examine, and an unexamined column
+            # subtracted from the coverage count below is what would let the
+            # gate shrink without anybody noticing.
+            anchorless.append(permno)
+            continue
+
+        index = int(indices[0])
+        assert adj_close[position][index] == pytest.approx(
+            close[position][index], rel=1e-12
+        ), (
+            f"PERMNO {permno}: adjClose {adj_close[position][index]!r} at its "
+            f"anchor row (index {index}) is not its own close "
+            f"{close[position][index]!r}. The anchor is the FIRST usable row, "
+            f"so `close_A * G_A / G_A` must return close_A to within 1e-12. Do "
+            f"NOT widen this tolerance -- see this test's docstring."
+        )
+        assert adj_volume[position][index] == pytest.approx(
+            volume[position][index], rel=1e-12
+        ), (
+            f"PERMNO {permno}: adjVolume {adj_volume[position][index]!r} at "
+            f"its anchor row (index {index}) is not its own volume "
+            f"{volume[position][index]!r}. `volume_A * cumfacshr_A / "
+            f"cumfacshr_A` must return volume_A; a mismatch means the share "
+            f"factor was read off a different row than the close (CR-02)."
+        )
+        checked += 1
+        if (
+            adj_close[position][index] == close[position][index]
+            and adj_volume[position][index] == volume[position][index]
+        ):
+            exact += 1
+
+    print(f"I-1 checked PERMNOs:     {checked}")
+    print(f"I-1 exact == PERMNOs:    {exact} (of {checked}; < {checked} is "
+          f"EXPECTED and is why the tolerance is rel=1e-12)")
+    print(f"I-1 anchorless PERMNOs:  {anchorless}")
+
+    assert not anchorless, (
+        f"{len(anchorless)} PERMNO(s) carry no row satisfying the anchor "
+        f"predicate at all: {anchorless}. `_assert_anchor_usable` is supposed "
+        f"to refuse such a security during conversion, so one reaching the "
+        f"written store means the refusal did not fire."
+    )
+    assert checked == metrics["symbol_count"], (
+        f"I-1 examined {checked} PERMNO(s) while the panel carries "
+        f"{metrics['symbol_count']}. Every column on the axis must be "
+        f"examined; a shortfall means this gate silently covers less than the "
+        f"store it claims to gate."
     )
