@@ -1,3 +1,13 @@
+"""US-equity bars from a vendor's hive-partitioned parquet tree.
+
+``StockDataset`` reads the raw tier written by the acquisition layer
+(``downloads/{market}/{frequency}/{subdir}/{vendor}/<key>=<value>/*.pqt``),
+pushes the date window down into the parquet scan so only the partitions it
+needs are opened, and produces the canonical ``(timestamp, symbol)`` panel.
+It is the US-equity counterpart of ``quantlab/dataset/spot.py`` and the
+memory-bounded reference implementation of the chunked conversion path.
+"""
+
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -20,77 +30,74 @@ from quantlab.utils.timer import Timer
 
 
 class StockDataset(MarketDataset):
-    """US-equity dataset over a vendor-namespaced, hive-partitioned raw tier.
+    """US-equity dataset over a single vendor's hive-partitioned raw tree.
 
-    `get_pqt_files` is no longer imported: `_scan_raw` hands the raw ROOT to
-    `pl.scan_parquet` rather than a file list, because the directory form is
-    what auto-enables hive partitioning and therefore what makes plan-time
-    directory pruning possible at all. (`utils/file.py:get_pqt_files` had no
-    other caller in the repo; the function is left in place, unused here.)
+    The raw root must end in the vendor's own directory and hold that vendor's
+    shards only; two vendors under one root would merge into a blended price
+    series with no error, so the root name, the ``vendor`` column and the
+    parquet schema are all checked before any row is used. Daily (``1d``)
+    data is partitioned by ``month``, intraday (``1m``) by session ``date``,
+    and ``tick`` by ``data_type``, ``date`` and ``symbol``; tick data has no
+    dense-panel form and is only reachable through ``_scan_raw``.
+
+    Example:
+        >>> config = DatasetConfig(
+        ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
+        ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
+        ...     catalog_path="data/us_equity/catalog",
+        ...     market="us_equity",
+        ...     frequency="1d",
+        ...     vendor="tiingo",
+        ...     start_date="2024-01-01",
+        ...     end_date="2024-12-31",
+        ... )
+        >>> StockDataset(config).from_raw_data_chunked(granularity="quarter")
+        >>> panel = StockDataset(config).read().get_xarray_dataset()
     """
 
-    #: Explicit hive dtypes per frequency, keyed to match
-    #: `enums.data.RAW_HIVE_KEYS` exactly.
-    #:
-    #: ALWAYS passed to `pl.scan_parquet`, never inferred. An unpinned
-    #: numeric-looking hive value is inferred as an integer -- `symbol=8686`
-    #: becomes `Int64` -- and a string comparison against it then silently
-    #: matches NOTHING (03.2-RESEARCH.md Pitfall 8). That is not hypothetical
-    #: here: quick task 260906-eme established that `_WELL_FORMED_TICKER`
-    #: admits digits precisely because digit-bearing tickers are legitimate.
+    #: Hive key dtypes per frequency, keyed to match ``RAW_HIVE_KEYS``.
+    #: Always passed to ``pl.scan_parquet`` explicitly: an inferred
+    #: numeric-looking value such as ``symbol=8686`` would become an integer
+    #: column and a string predicate against it would silently match nothing.
     HIVE_SCHEMA_BY_FREQUENCY = {
         "1d": {"month": pl.String},
         "1m": {"date": pl.Date},
         "tick": {"data_type": pl.String, "date": pl.Date, "symbol": pl.String},
     }
 
-    #: Hive keys that are PURELY derived partition metadata and carry no data
-    #: column of their own, so `_scan_raw` drops them before handing the frame
-    #: downstream. `symbol` is deliberately absent: the tick layout expresses
-    #: it as a path segment, and the writer therefore omits it from the file,
-    #: so the hive key is the ONLY carrier of it there.
+    #: Hive keys that are partition metadata only and are dropped after the
+    #: scan. ``symbol`` is deliberately absent: on the tick layout the path
+    #: segment is the only carrier of the symbol, so it must survive.
     DERIVED_HIVE_KEYS = ("month", "date", "data_type")
 
-    #: Filename suffix of one raw shard, named ONCE so the two places that ask
-    #: "which files are the raw tier?" cannot drift: `_scan_raw`'s recursive
-    #: glob and `has_raw_data`'s `rglob`. They were two independent `"*.pqt"`
-    #: literals, which is the same split-contract shape the `has_raw_data`
-    #: docstring already warns about one level up -- a scan that reads a wider
-    #: set than the presence check answers about is a scan that can fail on a
-    #: file the check never considered.
+    #: Filename suffix of one raw shard, shared by the scan glob and the
+    #: ``has_raw_data`` probe so both decide on the same set of files.
     RAW_SHARD_SUFFIX = ".pqt"
 
     def __init__(self, dataset_config: DatasetConfig):
+        """Create the dataset from a ``DatasetConfig``."""
         super().__init__(dataset_config)
 
     @property
     def _hive_keys(self) -> tuple[str, ...]:
-        """The hive partition key(s) for this config's frequency.
+        """Return the hive partition keys for this config's frequency.
 
-        Read from `enums.data.RAW_HIVE_KEYS`, the SAME mapping
-        `base/acquisition.py` reads when it WRITES the tree. One definition
-        means the writer and the reader cannot drift into a state where the
-        scan prunes on a key the writer never produced -- which would return
-        silently fewer rows than the tree holds, with nothing failing.
+        Read from ``RAW_HIVE_KEYS``, the same mapping the acquisition layer
+        writes the tree with, so reader and writer cannot disagree.
         """
         return RAW_HIVE_KEYS[self.config.frequency]
 
     def _assert_vendor_root(self) -> Path:
-        """Return the raw root, having proved it is a single vendor's root.
+        """Return the raw root after checking it is one vendor's directory.
 
-        Two checks, one line of reasoning each, and together they make the
-        cross-vendor silent merge unreachable BY ACCIDENT rather than merely
-        unlikely (SC-7 / D-11).
+        ``pl.scan_parquet`` silently unions every shard beneath its root, and
+        the later dedup would then collapse two vendors' rows into one
+        arbitrary blend, so the root must terminate at the configured
+        vendor's own directory.
 
-        Measured against polars 1.44.1: two vendors writing the SAME schema
-        under one scan root do not raise, do not warn, and do not record which
-        vendor each row came from -- `pl.scan_parquet` simply returns their
-        union, and `dedup_raw_frame(keep="last")` then collapses the duplicate
-        `(timestamp, symbol)` pairs to one ARBITRARILY. The result is an
-        untraceable blended price series that looks exactly like clean data.
-        A `.../{vendor}/...` path segment alone stops none of that: it carries
-        no `=`, so it is not a hive key, and a scan rooted one level up walks
-        straight into both.
+        Raises:
+            ValueError: If ``config.vendor`` is unset or the root's basename
+                differs from it.
         """
         if not self.config.vendor:
             raise ValueError(
@@ -118,28 +125,14 @@ class StockDataset(MarketDataset):
         return root
 
     def _scan_root(self) -> Path:
-        """The directory `pl.scan_parquet` is actually handed.
+        """Return the directory handed to ``pl.scan_parquet``.
 
-        For `1d`/`1m` that is the vendor root. For `tick` it is one level
-        deeper -- `{vendor_root}/data_type={quotes|trades}` -- and that is a
-        STRUCTURAL requirement, not a convenience.
-
-        Measured against polars 1.44.1: a scan rooted at a tick vendor root
-        holding both data types fixes its expected schema from the FIRST file
-        it discovers, and that schema is then enforced against every file it
-        opens -- including files a `data_type` PREDICATE has already pruned the
-        scan down to. `.explain()` shows the plan correctly listing only the
-        trades shard, and `.collect()` still raises
-        `SchemaError: extra column in file outside of expected schema: price`,
-        because the expected schema came from the alphabetically-first quotes
-        shard. Filtering therefore CANNOT isolate a data type here; only
-        scoping the root can.
-
-        This is the same lesson as D-11's vendor segment, one level deeper: a
-        distinction that only a predicate enforces is not isolation. The
-        difference is that the vendor case merges silently while this one
-        raises -- and it raises in the direction that depends on filename
-        ordering, so it would look intermittent.
+        For ``1d`` and ``1m`` this is the vendor root. For ``tick`` it is one
+        level deeper, ``{vendor_root}/data_type={quotes|trades}``: polars fixes
+        the scan's schema from the first file it finds and enforces it on
+        every file, including ones a predicate has pruned, so quotes and
+        trades (which have different columns) can only be separated by the
+        root, never by a filter.
         """
         root = Path(self.config.raw_data_dir_path)
         if "data_type" in self._hive_keys:
@@ -148,62 +141,39 @@ class StockDataset(MarketDataset):
 
     @property
     def _scanned_hive_keys(self) -> tuple[str, ...]:
-        """The hive keys the WINDOW PREDICATE may filter on.
+        """Return the hive keys the window predicate may filter on.
 
-        NOT TRUE ANY MORE: this used to be "the hive keys visible INSIDE the
-        scan", justified as "a key consumed by `_scan_root` is no longer below
-        the scan root, so polars never materialises it as a column and neither
-        the hive schema nor the predicate may mention it". The first half of
-        that stopped holding when `_scan_raw` moved from a bare directory to a
-        recursive glob: a glob has no directory to treat as the hive boundary,
-        so polars walks the path upward and materialises EVERY `key=value`
-        segment it finds -- `data_type=quotes` included, even though the scan
-        root already sits inside it. `_materialised_hive_keys` below is the
-        set the schema and the drop must now use.
-
-        What survives is the predicate half, and it survives for a better
-        reason than "the column is absent": a key consumed by `_scan_root` is
-        already scoped by the ROOT, so filtering on it would restate a
-        guarantee the path shape has already made structurally. Root scoping
-        remains the isolation -- measured after the glob change, a tick scan
-        rooted at `data_type=quotes` still sees exactly `['quotes']`.
+        ``data_type`` is excluded because ``_scan_root`` already scopes the
+        scan to one value of it; a predicate would only restate that.
         """
-        # `data_type` is the only key `_scan_root` consumes, and it consumes it
-        # whenever the frequency declares it -- so this is a straight removal
-        # rather than a condition on the resolved root.
         return tuple(key for key in self._hive_keys if key != "data_type")
 
     @property
     def _materialised_hive_keys(self) -> tuple[str, ...]:
-        """Every hive key the glob makes polars produce as a column.
+        """Return every hive key polars materialises as a column.
 
-        Distinct from `_scanned_hive_keys` above, which is the narrower
-        predicate set. Two consumers need THIS one and would be wrong with the
-        other: `hive_schema` must declare every key polars parses or the scan
-        raises `SchemaFieldNotFoundError`, and the drop must remove every key
-        it declared or a consumed key leaks into the downstream column set.
+        The recursive glob makes polars parse every ``key=value`` segment on
+        the path, including ``data_type`` above the scan root, so this is the
+        full key set: the hive schema must declare all of them and the
+        post-scan drop must remove all of the derived ones.
         """
         return self._hive_keys
 
     def _scanned_hive_schema(self) -> dict:
-        """`HIVE_SCHEMA_BY_FREQUENCY`, narrowed to the keys the glob produces.
-
-        Every key must be declared explicitly rather than inferred: an
-        inferred numeric-looking key changes dtype (Pitfall 8).
-        """
+        """Return ``HIVE_SCHEMA_BY_FREQUENCY`` narrowed to the materialised keys."""
         schema = self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency]
         keys = self._materialised_hive_keys
         return {name: dtype for name, dtype in schema.items() if name in keys}
 
     def _hive_window_predicate(self, start, end) -> pl.Expr:
-        """The predicate over the HIVE key(s), used for directory pruning.
+        """Return the predicate over the hive keys that prunes partitions.
 
-        For `1d` the key is `month`, a `YYYY-MM` String. ISO ordering makes a
-        plain string comparison correct at both edges, so no date parsing
-        happens here and no time zone can creep in. The predicate is
-        deliberately INCLUSIVE of the two edge partitions -- they are only
-        partially covered by the window, and the `timestamp` predicate applied
-        alongside this one trims them exactly.
+        For ``1d`` the key is ``month``, a ``YYYY-MM`` string compared
+        lexicographically. The predicate includes both edge partitions in
+        full; the ``timestamp`` predicate applied beside it trims them.
+
+        Raises:
+            NotImplementedError: For a frequency with no known window key.
         """
         keys = self._scanned_hive_keys
         if keys == ("month",):
@@ -211,10 +181,8 @@ class StockDataset(MarketDataset):
                 pl.col("month") <= pl.lit(end.strftime("%Y-%m"))
             )
         if keys in (("date",), ("date", "symbol")):
-            # `date` is the only prunable window key for both intraday tiers.
-            # `symbol` carries no predicate here: a scan is over the whole
-            # configured roster, and `data_type` has already been consumed by
-            # `_scan_root` (see there for why a predicate cannot do that job).
+            # `date` is the only prunable window key for both intraday tiers;
+            # a scan covers the whole roster, so `symbol` carries no predicate.
             return self._session_date_window_predicate(start, end)
         raise NotImplementedError(
             f"{self.__class__.__name__}: no hive window predicate for "
@@ -223,13 +191,13 @@ class StockDataset(MarketDataset):
 
     @property
     def _tick_data_type(self) -> str:
-        """Which tick data type this scan reads, from `config.kwargs`.
+        """Return which tick data type (``quotes`` or ``trades``) to read.
 
-        RAISES when unset rather than guessing. Quotes and trades share one
-        vendor root and have different column sets, so "read the tick data"
-        is an ambiguous question with two incompatible answers -- and picking
-        one silently would be a confident answer to a question the caller
-        never actually asked.
+        Taken from ``config.kwargs["data_type"]``. The two share one vendor
+        root and have different columns, so the choice is required.
+
+        Raises:
+            ValueError: If the config does not say which one to read.
         """
         data_type = (self.config.kwargs or {}).get("data_type")
         if not data_type:
@@ -246,31 +214,15 @@ class StockDataset(MarketDataset):
         return str(data_type)
 
     #: How far the intraday hive predicate widens the window at each edge.
-    #:
-    #: The hive `date=` key is a SESSION date (see
-    #: `base/acquisition.py:Acquisition._session_date` and
-    #: `acquisition/alpaca.py:AlpacaAcquisition.SESSION_TIME_ZONE`), while the
-    #: window edges arriving here are naive-UTC datetimes. Those two disagree by
-    #: up to a day in either direction, and the reader deliberately does NOT
-    #: know the writer's session time zone -- encoding it here would put the
-    #: same fact in two places and let them drift.
-    #:
-    #: One day of slack covers every session time zone within +/-24h of UTC. It
-    #: over-includes at most two partitions, and the `timestamp` predicate
-    #: applied alongside trims them exactly, so the cost is bounded and the
-    #: alternative is not. Comparing the session key directly against
-    #: `start.date()` drops the tail of the window's first session -- a row at
-    #: 2024-04-01T00:30Z is 2024-03-31 20:30 ET, lives under `date=2024-03-31`,
-    #: and is inside a window starting 2024-04-01T00:00. That loss is silent
-    #: and reads as sparse data.
+    #: The ``date=`` key is a session date in the writer's exchange time zone
+    #: while window edges arrive as naive UTC datetimes, and the two can
+    #: disagree by up to a day. One day of slack over-includes at most two
+    #: partitions, which the ``timestamp`` predicate trims exactly; without it
+    #: the tail of the window's first session would be silently lost.
     SESSION_DATE_SLACK = timedelta(days=1)
 
     def _session_date_window_predicate(self, start, end) -> pl.Expr:
-        """The `date=` predicate, widened by `SESSION_DATE_SLACK` at each edge.
-
-        `date` is typed `pl.Date` by `HIVE_SCHEMA_BY_FREQUENCY`, so both sides
-        of the comparison are dates and no time zone can creep in here either.
-        """
+        """Return the ``date`` predicate widened by ``SESSION_DATE_SLACK``."""
         return (
             pl.col("date") >= pl.lit((start - self.SESSION_DATE_SLACK).date())
         ) & (pl.col("date") <= pl.lit((end + self.SESSION_DATE_SLACK).date()))
@@ -278,23 +230,14 @@ class StockDataset(MarketDataset):
     def _assert_single_vendor_and_drop(
         self, data: pl.LazyFrame
     ) -> pl.LazyFrame:
-        """Assert the scanned frame holds exactly ONE vendor, then drop the
-        column.
+        """Check the scanned ``vendor`` column holds one value, then drop it.
 
-        The third of SC-7's three mutually reinforcing measures, and the only
-        one that works AFTER the fact: the basename check prevents a merge, and
-        the written `vendor` column makes one DETECTABLE if it ever happens
-        anyway -- a shard hand-copied into the wrong root, say, which no path
-        assertion can see.
+        This runs before ``dedup_raw_frame``, which would otherwise collapse
+        two vendors' overlapping rows and destroy the evidence of a merge.
 
-        This must run BEFORE `dedup_raw_frame`. Dedup on `(timestamp, symbol)`
-        would collapse two vendors' overlapping rows to one arbitrarily, at
-        which point the evidence that a merge occurred is gone.
-
-        The column is then dropped, along with the hive key(s), so the frame
-        handed to `_raw_data_to_xr_window` carries EXACTLY its pre-refactor
-        column set and every existing assertion in tests/test_stock_dataset.py
-        stands untouched.
+        Raises:
+            ValueError: If more than one vendor is present, or the one
+                present is not the configured vendor.
         """
         vendors = (
             data.select(pl.col("vendor").unique())
@@ -325,53 +268,36 @@ class StockDataset(MarketDataset):
         return data.drop("vendor")
 
     def has_raw_data(self) -> bool:
-        """Whether this config's raw tree holds at least one shard to convert.
+        """Return whether the raw tree holds at least one shard to convert.
 
-        THE raw-presence predicate, and deliberately the only one. `_scan_raw`
-        below reads it to tell "root absent" apart from "window pruned to
-        nothing"; `quantlab.utils.cli.refuse_conversion_without_raw_data`
-        reads the SAME method to refuse a conversion before it starts. Two
-        copies of `exists() / rglob("*.pqt")` -- one here and one in the CLI --
-        is the shape both of the 03.4 UAT gaps grew out of: a contract split
-        into two statements that can then disagree about the same fact.
-
-        Public because a shell calls it, and it is the shell's ONLY sanctioned
-        way to ask: reaching for `Path(config.raw_data_dir_path)` at a call
-        site would miss `_scan_root`'s tick descent into
-        `data_type={quotes|trades}`, and would answer about a directory the
-        scan never opens.
-
-        Read-only: it stats a directory and stops at the first match. It
-        writes nothing, deletes nothing, and opens no parquet file.
+        This is the single raw-presence check: ``_scan_raw`` uses it to tell
+        an absent root from a window that pruned to nothing, and the ingest
+        shells call it to refuse a conversion before it starts. It accounts
+        for the tick layout's ``data_type`` descent, which a bare check of
+        ``config.raw_data_dir_path`` would miss. It only stats the directory
+        and opens no parquet file.
         """
         root = self._scan_root()
         return root.exists() and any(root.rglob(f"*{self.RAW_SHARD_SUFFIX}"))
 
     def _scan_raw(self, start_date=None, end_date=None) -> pl.LazyFrame:
-        """The shared LazyFrame pipeline: hive-scan, prune, date-filter,
-        assert provenance, sort, dedup -- returned UNCOLLECTED.
+        """Return the lazy scan of the raw tree for a window, uncollected.
 
-        Parameterised by the window so polars can push both predicates DOWN
-        into the parquet scan. `None` means "the config's own edge", which is
-        what keeps `_raw_data_to_xr()` byte-identical to its pre-refactor self.
+        Scans the shards, prunes partitions with the hive predicate, trims
+        the exact edges with a ``timestamp`` predicate, asserts single-vendor
+        provenance, drops the derived hive keys, sorts, and (except for tick
+        data) deduplicates on ``(timestamp, symbol)``. ``None`` for either
+        edge means the config's own edge.
+
+        Raises:
+            ValueError: If the raw tree is absent or empty.
         """
         self._assert_vendor_root()
         root = self._scan_root()
 
-        # Distinguish "root absent" from "root present but the window pruned to
-        # nothing". Polars infers a scan's schema from the FIRST file it finds,
-        # so an absent or empty root raises `ComputeError: failed to retrieve
-        # first file schema ... expanded paths were empty` -- an error message
-        # that names none of the things a user needs in order to fix it
-        # (03.2-RESEARCH.md Pitfall 7). A pruned-to-nothing window is NOT an
-        # error and returns an empty frame below.
-        #
-        # The test is `has_raw_data()` rather than an inline
-        # `exists() / rglob()` so that the shell-level refusal
-        # (`quantlab.utils.cli.refuse_conversion_without_raw_data`) decides on
-        # the SAME fact this raise decides on. When they were two statements,
-        # a run that fetched nothing sailed past the shell and landed here as
-        # an uncaught traceback (G-03.4-1).
+        # An absent root would fail inside polars with an unhelpful schema
+        # error; a window that prunes to nothing is fine and yields an empty
+        # frame.
         if not self.has_raw_data():
             raise ValueError(
                 f"{self.__class__.__name__}: no raw data for vendor "
@@ -382,47 +308,13 @@ class StockDataset(MarketDataset):
                 f"merely prunes to zero rows returns an empty frame instead."
             )
 
-        # A RECURSIVE GLOB over the shard extension, not the bare directory.
-        #
-        # NOT TRUE ANY MORE: the previous comment here read "A DIRECTORY
-        # argument (not a file list) is what auto-enables hive partitioning".
-        # Auto-enabling is not what this call relies on -- `hive_partitioning`
-        # is passed EXPLICITLY on the line below, and measurement on the live
-        # tree confirms a glob keeps both halves: the `month` key is still
-        # materialised, and plan-time DIRECTORY PRUNING still happens (a
-        # three-partition tree filtered to one month lists exactly
-        # `month=.../part-0.pqt` in the scan node, 1 of 3). Handing a bare
-        # directory was therefore never load-bearing, and it carried a defect.
-        #
-        # The defect: polars walks EVERY file beneath a directory argument and
-        # refuses the scan outright when the extensions disagree --
-        # `InvalidOperationError: directory contained paths with different file
-        # extensions`. `config/__init__.py` already knows this failure mode; it
-        # is the documented reason (D-13) the watermark sidecars live in a
-        # SIBLING directory rather than inside the raw tree. That mitigation
-        # assumes nothing else ever writes into the tree, and on macOS that
-        # assumption does not hold: opening the folder in Finder is enough to
-        # leave a `.DS_Store` beside the partitions, after which every scan
-        # fails until someone deletes it. A full-market backfill hit exactly
-        # this after a two-hour download, on the FIRST collect of the
-        # conversion.
-        #
-        # `*.pqt` is the repo's own shard extension, and using it here means
-        # the scan and `has_raw_data()` (`root.rglob("*.pqt")`, below) decide
-        # on the SAME set of files rather than on two similar-looking ones.
-        # The glob narrows nothing real: a `.pqt` sitting directly in the scan
-        # root, with no `month=` segment, fails hive parsing identically under
-        # both spellings, so no supported layout loses a shard.
-        #
-        # `hive_schema` is passed explicitly because an inferred
-        # numeric-looking key changes dtype (Pitfall 8).
-        #
-        # `extra_columns` and `missing_columns` are LEFT AT THEIR RAISING
-        # DEFAULTS on purpose. The SchemaError a mixed-schema scan raises is
-        # the structural half of D-11 -- it is the thing that catches a shard
-        # written outside `RAW_COLUMNS`. Setting `extra_columns="ignore"` "to
-        # make the scan work" would reopen precisely the silent merge this
-        # method exists to prevent, while looking like a bug fix.
+        # A recursive glob over the shard suffix rather than the bare
+        # directory: polars refuses a directory holding mixed extensions, and
+        # a stray `.DS_Store` is enough to trigger that. Directory pruning
+        # still works with the glob. `hive_schema` is passed explicitly so a
+        # numeric-looking key is not inferred as an integer, and the
+        # `extra_columns`/`missing_columns` defaults are left raising: a
+        # mixed-schema scan is a shard written outside the expected columns.
         data = pl.scan_parquet(
             str(root / "**" / f"*{self.RAW_SHARD_SUFFIX}"),
             hive_partitioning=True,
@@ -436,37 +328,19 @@ class StockDataset(MarketDataset):
             self.config.end_date if end_date is None else end_date
         )
 
-        # BOTH predicates, and neither alone is correct.
-        #
-        # The HIVE predicate prunes DIRECTORIES at plan time -- measured on
-        # polars 1.44.1 as 2 of 5 files listed in the scan node, versus 5 of 5
-        # for a timestamp-only filter. A `timestamp` predicate prunes NOTHING,
-        # because the hive key and the timestamp data column are different
-        # columns and polars can only prune on the former.
+        # Both predicates are needed: the hive one prunes partitions at plan
+        # time (a `timestamp` predicate cannot), and the timestamp one trims
+        # the two partially covered edge partitions exactly.
         data = data.filter(self._hive_window_predicate(start, end))
-        # The TIMESTAMP predicate trims the window's exact edges. The hive
-        # predicate alone over-includes every row of the two partially-covered
-        # edge partitions.
         data = data.filter(
             pl.col("timestamp") >= pl.lit(start),
             pl.col("timestamp") <= pl.lit(end),
         )
 
-        # Provenance asserted BEFORE dedup could collapse the evidence, then
-        # dropped along with the hive key(s), so the downstream column set is
-        # exactly what it was before this rework.
         data = self._assert_single_vendor_and_drop(data)
-        # Drop only the PURELY DERIVED keys. `symbol` is also a real data
-        # column that the tick layout happens to express as a path segment --
-        # the writer drops it from the file because the segment carries it, so
-        # dropping it here too would delete it outright.
-        #
-        # Iterates `_materialised_hive_keys`, NOT `_scanned_hive_keys`: the two
-        # differ by exactly the key `_scan_root` consumed (`data_type`), and
-        # since the glob change polars materialises that one as a column too.
-        # Dropping the narrower set would leak `data_type` into the downstream
-        # column set on the tick path -- a column no caller of `_scan_raw` has
-        # ever seen, which is a schema change wearing a bug fix's clothes.
+        # Drop only the derived keys; `symbol` is a real data column that the
+        # tick layout expresses as a path segment. Iterates the materialised
+        # set so `data_type` is dropped too on the tick path.
         data = data.drop(
             [
                 key
@@ -477,44 +351,27 @@ class StockDataset(MarketDataset):
 
         data = data.sort(by=["timestamp", "symbol"])
         if self.config.frequency == "tick":
-            # NO DEDUP for tick (D-16). `dedup_raw_frame` exists so
-            # `.to_xarray()` receives a unique `[timestamp, symbol]` MultiIndex
-            # -- a dense-panel requirement. Tick has no xarray path this phase
-            # (D-18: an irregular event axis cannot be expressed as a dense
-            # panel), and many genuine quotes and trades legitimately share one
-            # (timestamp, symbol): deduping them would silently discard exactly
-            # the resolution this tier exists to capture.
+            # Tick data has no dense-panel form, and many genuine quotes or
+            # trades share one (timestamp, symbol), so it is not deduplicated.
             return data
         return dedup_raw_frame(data, keep="last")
 
     @staticmethod
     def _as_datetime(value) -> datetime:
-        """Normalise a window edge to a naive `datetime`.
+        """Normalise a window edge to a naive ``datetime``.
 
-        An ISO date string resolves to that date at MIDNIGHT, exactly what
-        the pre-refactor `pl.lit(...).str.to_datetime()` produced, so the
-        inclusive `<=` end-edge semantics are unchanged. A `pd.Timestamp`
-        coming from `TimeChunkPlanner.plan_from_timestamps()` is an OBSERVED
-        timestamp and passes through with its time-of-day intact.
+        An ISO date string resolves to midnight of that date, so an inclusive
+        ``<=`` end edge keeps that whole day's daily bar. A ``pd.Timestamp``
+        from the chunk planner passes through with its time of day intact.
         """
         return pd.Timestamp(value).to_pydatetime()
 
     def _raw_axes_in_range(self) -> tuple[list, pd.DatetimeIndex]:
-        """Both axes for the config's whole range, from one scan, WITHOUT
-        densifying anything (D-02).
+        """Return ``(pinned_symbols, observed_timestamps)`` from one lazy scan.
 
-        One of THREE places the pinned symbol axis is decided -- the others
-        being `BaseDataset._raw_axes_in_range` and
-        `CrspDataset._raw_axes_in_range`, which overrides this one. Its ORDER
-        comes from `quantlab/utils/symbol_axis.py:sort_symbol_axis`, the
-        single implementation of "numeric order" in this repo; the argument
-        for it lives there and is deliberately not restated here.
-
-        The element TYPE is the raw `symbol` column's own (03.11-04). Tiingo's
-        is text, so on that path nothing changes; the cast is gone so that a
-        future vendor whose raw tier keys on an integer cannot silently fall
-        back to lexicographic order on a stringified axis -- and so that this
-        site has the same shape as the other two.
+        Only the two axis columns are collected; nothing is densified. The
+        symbol order comes from ``sort_symbol_axis`` and the label type is the
+        raw ``symbol`` column's own.
         """
         scan = self._scan_raw()
         symbols = sort_symbol_axis(
@@ -528,19 +385,13 @@ class StockDataset(MarketDataset):
     def _added_symbols_with_raw_history(
         self, added: list, start, end
     ) -> dict[str, int]:
-        """
-        The hive-pruned answer to the evidence question -- how many raw rows
-        each of `added` carries in the CLOSED window `[start, end]`.
+        """Count raw rows each of ``added`` carries in the closed window.
 
-        The `str()` below is DELIBERATE and must stay, for the same reason as
-        in `BaseDataset._added_symbols_with_raw_history` (03.11-04): it
-        compares against the RAW tier's `symbol` column, not against the
-        pinned axis, and CRSP's raw `symbol` is the PERMNO in its STRING form
-        (`quantlab/acquisition/wrds/crsp.py:317-319`). `str(10107)` is exactly
-        `"10107"`, so the cast is what makes the `is_in` meet. Removing it
-        would make the probe find zero raw rows for every added PERMNO and
-        steer the widen-vs-rebuild resolver to `widen`, backfilling NaN over
-        history the vendor already has.
+        The hive-pruned version of the base class probe: the symbol predicate
+        is pushed into the scan and only a group-by is collected. Symbols are
+        compared as text because the raw ``symbol`` column is stored as
+        strings even when the pinned axis is integer-typed; without the cast
+        the probe would find no rows and steer ``update`` to ``widen``.
         """
         wanted = [str(symbol) for symbol in added]
         if not wanted:
@@ -561,7 +412,11 @@ class StockDataset(MarketDataset):
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: Optional[list[str]] = None
     ) -> xr.Dataset:
-        """Densify ONE window, reindexed onto the pinned symbol axis."""
+        """Return the dense panel for one window, reindexed onto ``symbols``.
+
+        Only the window's partitions are scanned, so memory is bounded by the
+        window rather than by the whole configured range.
+        """
         data = self._scan_raw(start_date, end_date)
         data = data.collect().to_pandas().set_index(["timestamp", "symbol"])
         data = data.to_xarray()
@@ -570,6 +425,7 @@ class StockDataset(MarketDataset):
         return data
 
     def _raw_data_to_xr(self) -> xr.Dataset:
+        """Return the dense panel for the config's whole date range."""
         with Timer(f" {self.__class__.__name__}: from pqt"):
             return self._raw_data_to_xr_window(
                 self.config.start_date, self.config.end_date, symbols=None
@@ -578,6 +434,7 @@ class StockDataset(MarketDataset):
     def _to_kunquant(
         self, data: xr.Dataset, data_columns: tuple
     ) -> tuple[dict, np.ndarray, np.ndarray]:
+        """Export the requested columns as contiguous ``[time, symbol]`` arrays."""
         with Timer(f"{self.__class__.__name__}: to kunquant"):
             data = data.sortby(["timestamp", "symbol"])
             timestamp = data["timestamp"].values
@@ -591,14 +448,17 @@ class StockDataset(MarketDataset):
 
     @staticmethod
     def _get_instrument(symbol: str, venue: str):
+        """Not implemented: this dataset has no Nautilus instrument model yet."""
         raise ValueError("Not finished")
 
     def _xr_to_bars(
         self, data: xr.Dataset, symbol: str, venue: str = "BINANCE"
     ):
+        """Not implemented: this dataset has no Nautilus bar conversion yet."""
         raise ValueError("Not finished")
 
     def _to_nautilus(
         self, data: xr.Dataset, venue: str = "BINANCE", n_jobs: int = 16
     ):
+        """Not implemented: the Nautilus exit is refused for US equities."""
         raise ValueError("Not finished")

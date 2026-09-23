@@ -1,3 +1,12 @@
+"""Fetch Binance spot instrument metadata from the public exchange-info endpoint.
+
+``get_instrument_info`` turns Binance's ``exchangeInfo`` response into the flat
+per-symbol dictionary stored under ``instruments`` in the packaged
+``instruments.yaml``, which the Nautilus helpers read when building a
+``CurrencyPair``. It is used both by the instrument refresh CLI and as a
+fallback when a symbol is missing from the packaged file.
+"""
+
 from typing import Any, Dict
 
 import requests
@@ -5,6 +14,23 @@ from loguru import logger
 
 
 def get_instrument_info(symbols: list[str]) -> dict:
+    """Return ``{"instruments": {symbol: info}}`` for the requested Binance symbols.
+
+    One request is made for the whole exchange and the requested symbols are
+    picked out of it. A symbol Binance does not list is logged as a warning and
+    omitted from the result rather than raising.
+
+    Args:
+        symbols: Binance spot symbols such as ``"BTCUSDT"``.
+
+    Returns:
+        A dict with a single ``"instruments"`` key mapping each found symbol to
+        the precision, increment, quantity, price and notional limits produced
+        by ``_parse_symbol_info``.
+
+    Raises:
+        requests.RequestException: If the exchange-info request fails.
+    """
     exchange_info = _get_binance_exchange_info()
     symbol_map = {s["symbol"]: s for s in exchange_info["symbols"]}
     config = {
@@ -21,7 +47,7 @@ def get_instrument_info(symbols: list[str]) -> dict:
 
 
 def _get_binance_exchange_info() -> Dict[str, Any]:
-    """获取币安交易所信息"""
+    """Download and return the full Binance spot ``exchangeInfo`` payload."""
     url = "https://api.binance.com/api/v3/exchangeInfo"
 
     try:
@@ -34,20 +60,22 @@ def _get_binance_exchange_info() -> Dict[str, Any]:
 
 
 def _parse_symbol_info(symbol_data: Dict[str, Any]) -> Dict[str, Any]:
-    """解析单个交易对信息"""
+    """Flatten one ``exchangeInfo`` symbol entry into the instrument config shape.
+
+    Precisions come from the symbol record; increments and quantity or price
+    bounds come from the ``PRICE_FILTER`` and ``LOT_SIZE`` filters; the minimum
+    notional is read from ``MIN_NOTIONAL`` when present and ``NOTIONAL``
+    otherwise. Missing filters fall back to conservative defaults.
+    """
     filters = {f["filterType"]: f for f in symbol_data["filters"]}
 
-    # 价格过滤器
     price_filter = filters.get("PRICE_FILTER", {})
 
-    # 数量过滤器
     lot_size = filters.get("LOT_SIZE", {})
 
-    # 最小名义价值过滤器
     min_notional = filters.get("MIN_NOTIONAL", {})
     notional_filter = filters.get("NOTIONAL", {})
 
-    # 获取最小名义价值
     min_notional_value = 0.0
     if min_notional:
         min_notional_value = float(min_notional.get("minNotional", 0))

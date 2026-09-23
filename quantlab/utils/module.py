@@ -1,9 +1,19 @@
-"""Reconstruct a dataset/factor/model/backtester object from its serialized config.
+"""Rebuild datasets, factors, models and backtesters from their serialised configs.
 
-A config records the class to rebuild as a dotted path in `config.name`, taken
-from the `import_path` property the base classes expose. Those paths are
-therefore part of the on-disk format, and the namespace migration changed all
-of them -- see `get_cls_from_path` for the decision and its evidence.
+Every configurable object records the class that built it as a dotted import
+path in ``config.name`` (the ``import_path`` property of the base classes),
+and that config is written as JSON next to model checkpoints and backtest
+runs. The loaders here read such a dict back, import the named class, rebuild
+any nested objects (a factor's dataset, a model's factors and labels, a
+backtester's price dataset and model) and construct the object with the config
+class the class itself declares through ``config_cls``.
+
+Example:
+    >>> import json
+    >>> from quantlab.utils.module import load_backtester_from_config
+    >>> config = json.load(open("runs/2024-06-01/config.json"))
+    >>> backtester = load_backtester_from_config(config)
+    >>> result = backtester.run()
 """
 
 import copy
@@ -11,33 +21,18 @@ import importlib
 
 
 def get_cls_from_path(path: str):
-    """Import `path` ("pkg.module.ClassName") and return the class.
+    """Import ``path`` (``"pkg.module.ClassName"``) and return the class.
 
-    DECISION (quick task 260907-sm2): the namespace migration is a HARD BREAK
-    for configs persisted before it, and no legacy alias table is provided.
+    Args:
+        path: A dotted path whose last segment is the attribute to fetch.
 
-    Every dotted path this resolves originates in the `import_path` property of
-    `BaseDataset`, `Factor`, `BaseModel` or `Acquisition`, which builds it from
-    the class's own module and qualified name. Each config setter assigns that
-    string to `config.name`, and it is serialized into the JSON written beside
-    a model checkpoint. Moving the twelve former top-level packages under one
-    umbrella package changed every one of those module names, so a config
-    written before the migration names a module that no longer exists and
-    raises `ModuleNotFoundError` here.
+    Returns:
+        The attribute named by the final segment, normally a class.
 
-    THE EVIDENCE for taking the break rather than mapping the old names. A
-    search of the whole repository, excluding version-control and virtualenv
-    directories, returns zero `.pth` files and zero `.joblib` files -- the two
-    formats a trained model is persisted in. The only `config.json` in the tree
-    belongs to the planning tooling and is not a model config. Neither
-    directory such artifacts would live in exists, both are excluded from
-    version control, and no file of either extension has ever been added in
-    this repository's history, so none is recoverable from an earlier commit.
-    The set of configs an alias table would rescue is empty, and the table
-    would be permanent maintenance owed to that empty set.
-
-    The mapping stays available: should a pre-migration artifact ever turn up,
-    rewriting its stale prefix here is a strictly additive change.
+    Raises:
+        ModuleNotFoundError: If the module part cannot be imported. Configs
+            written under a previous package layout are not remapped.
+        AttributeError: If the module has no such attribute.
     """
     module_path, class_name = path.rsplit(".", 1)
     module = importlib.import_module(module_path)
@@ -45,12 +40,16 @@ def get_cls_from_path(path: str):
 
 
 def _config_cls_of(cls) -> type:
-    """Return the config class `cls` declares, or refuse it by name.
+    """Return the config class ``cls`` declares in ``config_cls``.
 
-    A class without `config_cls` gives the loader no way to know which config
-    to build, and guessing one is exactly how a `PolarsFactorConfig` dict used
-    to become a `FactorConfig` (D-26). The refusal also keeps an arbitrary
-    importable callable from being instantiated with a config dict.
+    Guessing a config class is how a config dict of one factor backend used to
+    be rebuilt as another's, and it would also let any importable callable be
+    instantiated with a config dict, so a class without ``config_cls`` is
+    refused.
+
+    Raises:
+        TypeError: If ``cls`` has no ``config_cls`` attribute, or it is not a
+            type.
     """
     config_cls = getattr(cls, "config_cls", None)
     if not isinstance(config_cls, type):
@@ -62,12 +61,17 @@ def _config_cls_of(cls) -> type:
 
 
 def load_dataset_from_config(config: dict):
-    """Rebuild a dataset with the config class its class declares (D-26).
+    """Rebuild a dataset from its config dict.
 
-    `MarketDataset` declares `DatasetConfig` and `IndexConstituentDataset`
-    declares `ConstituentDatasetConfig`. The input is deep-copied first:
-    callers reuse the dict they saved, so it must come back untouched
-    (RESEARCH Pitfall 9).
+    The class named in ``config["name"]`` is imported and constructed with its
+    own declared config class. The input dict is deep-copied first and is
+    returned to the caller unchanged.
+
+    Args:
+        config: The dict a dataset's ``config.to_dict()`` produced.
+
+    Returns:
+        A dataset instance.
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
@@ -75,30 +79,22 @@ def load_dataset_from_config(config: dict):
 
 
 def load_factor_from_config(config: dict):
-    """Rebuild a factor, and its nested dataset, with their declared config classes (D-26).
+    """Rebuild a factor, and the dataset nested inside it, from a config dict.
 
-    `FactorKunQuant` declares `FactorConfig` and `FactorPolars` declares
-    `PolarsFactorConfig`. The nested `dataset` dict is replaced by a rebuilt
-    dataset object on a deep copy, never on the caller's dict (RESEARCH
-    Pitfall 9).
+    The class named in ``config["name"]`` is resolved first. If it declares a
+    callable ``from_config``, that classmethod receives the whole dict and owns
+    the rebuild; this is how a factor that wraps another factor (and therefore
+    has no dataset of its own) rebuilds its inner factor recursively through
+    this same function. Otherwise the nested ``dataset`` dict is replaced by a
+    rebuilt dataset and the factor is constructed with its declared config
+    class. The caller's dict is never modified.
 
-    **A factor that COMPOSES another factor rebuilds itself.** The class named
-    in `config["name"]` is resolved FIRST, and if it declares a callable
-    `from_config`, that classmethod is handed the whole config dict and owns
-    the rebuild; its nested factor goes back through this same function, so a
-    wrapper of a wrapper of a plain factor resolves recursively.
+    Args:
+        config: The dict a factor's ``config.to_dict()`` produced, including a
+            nested ``dataset`` dict unless the class provides ``from_config``.
 
-    Why the protocol is needed rather than the plain path below: that path
-    requires a top-level `dataset` key and ends in `cls(config_cls(**config))`.
-    A wrapper has no dataset of its own -- the dataset belongs to the factor it
-    wraps -- so satisfying the plain path would mean duplicating the nested
-    dataset dict at the top level, constructing a SECOND dataset object that
-    reads the same store, and letting the two copies drift.
-    `quantlab/factor/universe_filter.py:UniverseFilteredFactor` is the first
-    such factor.
-
-    A class that declares no `from_config` is unaffected and takes the original
-    path unchanged, `_config_cls_of`'s refusal included.
+    Returns:
+        A factor instance.
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
@@ -112,24 +108,27 @@ def load_factor_from_config(config: dict):
 
 
 def load_model_from_config(config: dict):
-    """Rebuild a model, using the config class the model class declares.
+    """Rebuild a model, with its factors and labels, from a config dict.
 
-    `cls.config_cls` is `DLConfig` for `DLModel` heads and `MLConfig` for
-    `MLModel` heads. Hardcoding `DLConfig` here used to turn an ML checkpoint's
-    config into a `DLConfig` silently; the `BaseModel` config setter now also
-    rejects a mismatched config type with `TypeError`.
+    ``cls.config_cls`` selects the right config class for the model variant
+    (``DLConfig`` for torch heads, ``MLConfig`` for tree heads). Two keys a
+    checkpoint's ``config.json`` carries as training records rather than
+    config fields, ``resolved_hyperparameters`` and ``trained_on``, are dropped
+    before construction; any other unknown key still fails loudly. The caller's
+    dict is never modified.
 
-    The input is deep-copied first so the caller's dict never receives the
-    rebuilt factor objects (RESEARCH Pitfall 9).
+    Args:
+        config: The dict written beside a checkpoint, with ``factors`` and
+            ``labels`` as lists of factor config dicts.
+
+    Returns:
+        A model instance (untrained; call ``load`` to restore a checkpoint).
     """
     config = copy.deepcopy(config)
-    # `resolved_hyperparameters` is a record written by `MLModel.get_config`
-    # (what the library actually trained with), not a config field: drop it,
-    # and only it, so any other unknown key still fails loudly below.
+    # `resolved_hyperparameters` (what the library actually trained with) and
+    # `trained_on` (factor/label names and training symbols) are records, not
+    # config fields. Drop only those so any other unknown key still fails.
     config.pop("resolved_hyperparameters", None)
-    # `trained_on` is the training record `BaseModel._save_model` writes into
-    # a checkpoint's config.json (factor/label names and the training symbols,
-    # code review WR-02). Also a record, not a config field.
     config.pop("trained_on", None)
     config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
     config["labels"] = [load_factor_from_config(l) for l in config["labels"]]
@@ -138,37 +137,43 @@ def load_model_from_config(config: dict):
 
 
 def load_backtester_from_config(config: dict):
-    """Rebuild a backtester from the `config.json` a backtest run wrote (D-25).
+    """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
     The price dataset, the model (with its factors, labels and checkpoint
     reference), an optional benchmark dataset and every scalar parameter are
-    rebuilt, and the backtester is constructed with the config class its class
-    declares (D-26). Calling `run()` or `run_cv()` on the result re-runs the
-    stored backtest.
+    rebuilt, and the backtester is constructed with its declared config class.
+    Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
+    backtest.
 
-    `data_fingerprint` is a record of what the original run read, not a config
-    field. It is removed from the config and assigned to the rebuilt
-    backtester's `expected_fingerprint`, so the re-run compares the data it
-    reads against the stored run and warns on a mismatch (D-27).
+    Two keys are records rather than config fields. ``data_fingerprint``
+    describes the data the original run read; it is removed and assigned to
+    the rebuilt backtester's ``expected_fingerprint`` so the re-run can warn
+    when its data differs. ``trained_checkpoint`` names the checkpoint a
+    train-mode run produced; rebuilding such a config retrains, so to replay
+    that exact model set ``model_mode="load"`` and ``checkpoint`` to the
+    recorded path.
 
-    The class named in `config["name"]` must be a `BaseBacktester` subclass.
-    That is checked before any nested config is built, so a tampered name
-    cannot get a dataset or model constructed on its behalf. A config JSON is
-    otherwise trusted local input, like a checkpoint: it names classes to import
-    and paths to read.
+    Every field of the config class must be present in the dict. Missing keys
+    are not filled from the current dataclass defaults, because a default that
+    changed since the run would silently produce a different backtest.
 
-    The input is deep-copied first and comes back untouched (RESEARCH
-    Pitfall 9). `BaseBacktester` is imported inside the function: this module
-    must not import the backtest layer at import time.
+    Args:
+        config: The dict read from a run directory's ``config.json``.
+
+    Returns:
+        A backtester instance ready to run.
+
+    Raises:
+        TypeError: If ``config["name"]`` is not a ``BaseBacktester`` subclass.
+            This is checked before any nested dataset or model is built.
+        ValueError: If any config field other than ``name`` is missing.
     """
+    # Imported here so this module does not import the backtest layer at
+    # import time.
     from quantlab.base.backtest import BaseBacktester
 
     config = copy.deepcopy(config)
     expected = config.pop("data_fingerprint", None)
-    # `trained_checkpoint` is a record a train-mode run writes: the checkpoint it
-    # trained (code review WR-04). It is not a config field. Rebuilding a
-    # train-mode config retrains; to replay that exact model, set
-    # model_mode="load" and checkpoint to the recorded path.
     config.pop("trained_checkpoint", None)
 
     cls = get_cls_from_path(config["name"])
@@ -178,12 +183,6 @@ def load_backtester_from_config(config: dict):
             f"rebuilt as a backtester"
         )
 
-    # Code review WR-06: every config field must be present. Building the config
-    # class with `**config` silently fills a missing key from the CURRENT
-    # dataclass defaults, so an older or hand-edited config.json would rebuild
-    # into a different backtest (say `fees` after its default changes) with no
-    # warning, breaking D-25's "all parameters identical". Refused before any
-    # nested dataset or model is built. `name` is exempt: it was just resolved.
     from dataclasses import fields
 
     missing = [

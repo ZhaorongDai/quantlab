@@ -1,3 +1,10 @@
+"""Small filesystem helpers for locating and date-filtering raw data files.
+
+The Binance spot kline dataset reads one CSV per symbol per month; these
+functions list such files under a directory and keep only those whose month
+falls inside a requested date range.
+"""
+
 from pathlib import Path
 from typing import Literal
 
@@ -12,6 +19,22 @@ def file_date_filter(
     end_date: str = Date.END_DATE,
     period: Literal["month"] = "month",
 ) -> list[Path]:
+    """Keep the files whose name-encoded month lies within ``[start_date, end_date]``.
+
+    The month is read from the file stem, which must end in ``-YYYY-MM`` (for
+    example ``BTCUSDT-1m-2024-01.csv``). Both bounds are inclusive and are
+    compared as timestamps against the first day of that month.
+
+    Args:
+        path: One path or a list of paths to filter.
+        start_date: Earliest date to keep, as a parseable date string.
+        end_date: Latest date to keep, as a parseable date string.
+        period: Granularity encoded in the file name; only ``"month"`` is
+            supported.
+
+    Returns:
+        The subset of ``path`` inside the range, in the original order.
+    """
     if not isinstance(path, list):
         path = [path]
     if period == "month":
@@ -27,11 +50,12 @@ def file_date_filter(
 
 
 def get_csv_files(dir_path: str) -> list[Path]:
+    """Return every ``*.csv`` under ``dir_path`` (recursively), sorted by path."""
     assert Path(dir_path).exists(), f"{dir_path} does not exist"
     return sorted(Path(dir_path).rglob("*.csv"))
 
 
 def get_pqt_files(dir_path: str) -> list[Path]:
+    """Return every ``*.pqt`` under ``dir_path`` (recursively), sorted by path."""
     assert Path(dir_path).exists(), f"{dir_path} does not exist"
     return sorted(Path(dir_path).rglob("*.pqt"))
-

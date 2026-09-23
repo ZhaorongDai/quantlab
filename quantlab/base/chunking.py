@@ -1,23 +1,13 @@
-"""Time-window chunk planning and the chunk resume ledger (260906-13w D-01/D-04).
+"""Time-window planning and the resume ledger for chunked ingestion.
 
-Two pure collaborators for the chunked densify-and-append ingestion path:
-
-- `TimeChunkPlanner` turns an OBSERVED timestamp axis into a list of time
-  windows, so every edge it returns is a timestamp that actually appears in
-  the data.
-- `ChunkLedger` is the JSON sidecar recording which windows a previous run
-  already appended, so an interrupted multi-hour conversion resumes at the
-  first unwritten window instead of at the top.
-
-Neither depends on a Dataset, a backend or a config -- they are functions of a
-timestamp axis and a file path -- so this module is a LEAF: stdlib plus
-pandas/xarray plus the one stdlib-only leaf `quantlab.utils.atomic`, and no
-other project-internal import. That is the same rule `quantlab/dataset/_support/cleaning.py`
-follows, and it is what keeps this module unit-testable without touching a
-Dataset and structurally incapable of introducing an import cycle --
-`utils.atomic` imports nothing from this project at all, so depending on it
-cannot close a cycle. (`base.data` imports this module, never the other way
-round.)
+Chunked ingestion densifies one time window at a time and appends each to
+the Zarr store, so peak memory scales with the window rather than the whole
+date range. ``TimeChunkPlanner`` turns an observed timestamp axis into such
+windows, and ``ChunkLedger`` is the JSON sidecar recording which windows a
+previous run already appended, so an interrupted conversion resumes at the
+first unwritten window. Neither depends on a dataset, a backend or a config;
+the module imports only pandas, xarray and the atomic JSON writer, so it
+never participates in an import cycle.
 """
 
 import hashlib
@@ -34,42 +24,33 @@ from quantlab.utils.atomic import write_json_atomically
 class TimeChunkPlanner:
     """Split an observed timestamp axis into windows at a period boundary.
 
-    The accepted granularity tokens are the members of `GRANULARITIES`, in
-    coarse-to-fine order. This docstring deliberately does not re-enumerate
-    them: the enumeration that used to stand here went stale the moment the
-    ladder grew, and a summary line that can go stale is a summary line that
-    will.
+    Every window edge returned by ``plan_from_timestamps()`` is a timestamp
+    that actually appears in the axis, never a calendar period end, so a
+    window handed to a densifier cannot name a day on which nothing traded.
 
-    There is ONE planner. `plan_from_timestamps()` runs during the WRITE,
-    when the real observed timestamp axis exists, and every window edge it
-    returns is an observed timestamp -- so a window handed to a densifier can
-    never name a day on which nothing traded. The class has no other mode.
+    The accepted granularity tokens are the members of ``GRANULARITIES``. A
+    new granularity needs both a new token there and a matching branch in
+    ``_period_key``; the latter raises if the two lists drift apart.
 
-    A second, SIZING-time planner stood beside it until phase 03.6. It ran
-    BEFORE the download, when no timestamp axis existed yet, so its edges came
-    from calendar arithmetic; its only production consumer was the
-    pre-download dense-panel RAM estimator that phase 03.6 deleted. Calendar
-    edges routinely name days on which nothing traded, which is why that
-    method had to open its own docstring with a warning never to hand its
-    windows to a densifier -- and that warning was the only thing enforcing
-    it. One entry point removes the warning by removing the hazard.
-
-    The drift this class does have to defend against is between
-    `GRANULARITIES` and `_period_key`. A new granularity is added in two
-    places, the tuple and a `_period_key` branch, and adding it to only the
-    first used to fall through to month-sized windows under another name --
-    a wrong window size is a wrong memory bound, and it failed open.
-    `_period_key` now ends in a `raise ValueError` naming BOTH lists. That
-    raise is unreachable while the two agree, because `__init__` already
-    refuses any token absent from `GRANULARITIES`; being unreachable is
-    exactly what makes it a drift detector rather than dead code.
+    Example:
+        >>> planner = TimeChunkPlanner("month")
+        >>> planner.plan_from_timestamps(
+        ...     pd.to_datetime(["2024-01-02", "2024-01-31", "2024-02-01"])
+        ... )
+        [(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-31 00:00:00')),
+         (Timestamp('2024-02-01 00:00:00'), Timestamp('2024-02-01 00:00:00'))]
     """
 
-    #: Accepted granularity tokens, in coarse-to-fine order. Also the values
-    #: `ingest_us_equity.py --chunk` offers.
+    #: Accepted granularity tokens, coarse to fine. Also the choices the
+    #: ingest CLI's ``--chunk`` option offers.
     GRANULARITIES: tuple[str, ...] = ("year", "quarter", "month", "day", "hour")
 
     def __init__(self, granularity: str = "year") -> None:
+        """Store the granularity after checking it is a known token.
+
+        Raises:
+            ValueError: If ``granularity`` is not in ``GRANULARITIES``.
+        """
         if granularity not in self.GRANULARITIES:
             raise ValueError(
                 f"TimeChunkPlanner: unknown granularity {granularity!r}; "
@@ -78,23 +59,22 @@ class TimeChunkPlanner:
         self.granularity = granularity
 
     def __repr__(self) -> str:
+        """Return the planner's granularity in constructor form."""
         return f"TimeChunkPlanner(granularity={self.granularity!r})"
 
     def _period_key(self, timestamp) -> tuple[int, int]:
-        """Map one timestamp to the label of the period that contains it.
+        """Map one timestamp to the label of the period containing it.
 
-        The single definition of "one window" in this module.
-        `_group_by_period()` groups by this and nothing else, so "what counts
-        as one window" is defined in exactly one place rather than restated
-        wherever a window is needed.
+        This is the single definition of "one window": ``_group_by_period()``
+        groups by this key and nothing else. The second component is only
+        ever compared for equality, never ordered, so it need not be a
+        natural calendar number (the ``year`` rung returns ``0``; the
+        ``hour`` rung combines day-of-year and hour).
 
-        The SECOND component is not a natural calendar number -- the `year`
-        rung already returns a literal `0`. It is a within-year monotonically
-        increasing discriminant that `_group_by_period()` only ever compares
-        for EQUALITY: it is never ordered and never has arithmetic done on it.
-        That is what lets the finest rung stay inside the declared
-        `tuple[int, int]`: `hour`'s widest value is `366 * 24 + 23 == 8807`,
-        on a leap year's last hour.
+        Raises:
+            ValueError: If the granularity is in ``GRANULARITIES`` but has no
+                branch here. Unreachable while the two agree, since
+                ``__init__`` refuses unknown tokens; it exists to catch drift.
         """
         ts = pd.Timestamp(timestamp)
         if self.granularity == "year":
@@ -107,16 +87,9 @@ class TimeChunkPlanner:
             return (ts.year, ts.dayofyear)
         if self.granularity == "hour":
             return (ts.year, ts.dayofyear * 24 + ts.hour)
-        # Unreachable while `GRANULARITIES` and the branches above agree, and
-        # that is the point: `__init__` already refuses a token absent from
-        # `GRANULARITIES`, so only DRIFT between the two lists reaches here.
-        # Before this raise existed the method ended in a bare `return
-        # (ts.year, ts.month)`, so a rung added to `GRANULARITIES` without a
-        # branch here silently produced MONTH-sized windows under another
-        # name -- a wrong window size is a wrong memory bound, and it failed
-        # open. The class docstring's claim that a new granularity is added in
-        # `GRANULARITIES` plus a branch here was enforced by nothing before
-        # this raise existed; it is now true by construction.
+        # Only reachable if ``GRANULARITIES`` gained a token without a branch
+        # above; a silent fallback here would produce windows of the wrong
+        # size, and therefore the wrong memory bound.
         raise ValueError(
             f"TimeChunkPlanner: granularity {self.granularity!r} is accepted by "
             f"GRANULARITIES but _period_key defines no period for it; accepted "
@@ -128,8 +101,9 @@ class TimeChunkPlanner:
     def _group_by_period(
         self, index: pd.DatetimeIndex
     ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-        """Collapse a sorted, de-duplicated index into (first, last) pairs,
-        one per contiguous run of equal period keys.
+        """Collapse a sorted, de-duplicated index into ``(first, last)`` pairs.
+
+        One pair is emitted per contiguous run of equal period keys.
         """
         windows: list[list[pd.Timestamp]] = []
         current_key: Optional[tuple[int, int]] = None
@@ -145,15 +119,20 @@ class TimeChunkPlanner:
     def plan_from_timestamps(
         self, timestamps: Iterable
     ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-        """Windows whose edges are OBSERVED timestamps. This is the planner.
+        """Return the windows covering ``timestamps``, with observed edges.
 
-        Trading days are not calendar days. A window running to a calendar
-        period end would name a date with no row behind it, and handing that
-        to a densifier fabricates a row for a day the market was shut. Every
-        edge returned here is a timestamp that actually appears in the axis.
+        Args:
+            timestamps: Any iterable convertible to a ``DatetimeIndex``;
+                duplicates are dropped and the axis is sorted first.
 
-        The returned windows are time-ordered, non-overlapping, and together
-        cover the whole de-duplicated axis exactly once.
+        Returns:
+            Time-ordered, non-overlapping ``(start, end)`` pairs that together
+            cover the de-duplicated axis exactly once. Both edges of each pair
+            are timestamps present in the input.
+
+        Raises:
+            ValueError: If the axis is empty; planning zero windows would
+                silently write an empty store.
         """
         index = pd.DatetimeIndex(pd.unique(pd.DatetimeIndex(timestamps))).sort_values()
         if len(index) == 0:
@@ -167,58 +146,66 @@ class TimeChunkPlanner:
 
 
 class ChunkLedger:
-    """A JSON sidecar recording which chunk windows have been appended.
+    """JSON sidecar recording which chunk windows have been appended.
 
-    Written BESIDE the Zarr store, never inside it: `XrBackend.write()`
-    rewrites a store with `mode="w"`, which replaces the store DIRECTORY, so a
-    ledger kept inside would be destroyed by exactly the operation that makes
-    a resume necessary.
+    The file lives beside the Zarr store, never inside it, because rewriting
+    the store replaces its whole directory. It records the pinned symbol axis
+    as a sha256 fingerprint rather than the list itself, since the only
+    question a resume asks is whether the roster is unchanged. A missing file
+    is an empty ledger, the normal state of a first run.
 
-    It stores a sha256 fingerprint of the pinned symbol list rather than the
-    list itself -- 15,000 tickers would dominate the sidecar, and the only
-    question a resume asks is "is this the same roster", which a fingerprint
-    answers exactly.
-
-    A missing file is an EMPTY ledger, not an error: that is the normal state
-    of a first run.
+    Example:
+        >>> ledger = ChunkLedger(ChunkLedger.default_path("panel.zarr"))
+        >>> ledger.assert_consistent(symbols, "panel.zarr")
+        >>> if not ledger.is_written(start, end):
+        ...     backend.append("panel.zarr")
+        ...     ledger.record(start, end, rows=n, symbols=symbols)
     """
 
     #: Appended to the store path to derive the default sidecar location.
     SUFFIX = ".chunks.json"
 
     def __init__(self, path: str, append_dim: str = "timestamp") -> None:
+        """Load the ledger at ``path``, or start an empty one if absent.
+
+        Args:
+            path: The sidecar file.
+            append_dim: The dimension the store is appended along.
+        """
         self.path = str(path)
         self.append_dim = append_dim
         self._payload = self._load()
 
     def __repr__(self) -> str:
+        """Return the ledger's path and its number of recorded windows."""
         return f"ChunkLedger(path={self.path!r}, windows={len(self.windows)})"
 
     @classmethod
     def default_path(cls, zarr_file_path: str) -> str:
-        """`<store>.chunks.json`, a SIBLING of the store directory."""
+        """Return ``<store>.chunks.json``, a sibling of the store directory."""
         return f"{zarr_file_path}{cls.SUFFIX}"
 
     @staticmethod
     def fingerprint(symbols: Sequence[str]) -> str:
-        """sha256 over the newline-joined symbol list, in the given order.
+        """Return the sha256 of the newline-joined symbols, in the given order.
 
-        Order-sensitive on purpose: the pinned axis is an ORDERED coordinate,
-        and two identical symbol sets in different orders would produce two
-        differently-aligned stores.
+        Order-sensitive on purpose: the pinned axis is an ordered coordinate,
+        and the same set in a different order would align columns differently.
         """
         joined = "\n".join(str(symbol) for symbol in symbols)
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _key(value) -> str:
-        """Canonical, JSON-safe window edge. Every comparison goes through
-        this, so a `pd.Timestamp`, a `numpy.datetime64` and an ISO string all
-        match the same recorded window.
+        """Return the canonical ISO-string form of a window edge.
+
+        Every comparison goes through this, so a ``pd.Timestamp``, a
+        ``numpy.datetime64`` and an ISO string match the same recorded window.
         """
         return pd.Timestamp(value).isoformat()
 
     def _empty(self) -> dict:
+        """Return the payload of a ledger with nothing recorded."""
         return {
             "append_dim": self.append_dim,
             "symbol_count": None,
@@ -227,6 +214,7 @@ class ChunkLedger:
         }
 
     def _load(self) -> dict:
+        """Read the sidecar if it exists, filling in any missing keys."""
         if not Path(self.path).exists():
             return self._empty()
         with open(self.path, "r", encoding="utf-8") as handle:
@@ -239,24 +227,28 @@ class ChunkLedger:
 
     @property
     def windows(self) -> list[dict]:
+        """A copy of the recorded windows, each ``{"start", "end", "rows"}``."""
         return list(self._payload["windows"])
 
     @property
     def symbol_count(self) -> Optional[int]:
+        """The symbol count the ledger was last written against, or None."""
         return self._payload["symbol_count"]
 
     @property
     def symbol_fingerprint(self) -> Optional[str]:
+        """The fingerprint of the axis the ledger was last written against."""
         return self._payload["symbol_fingerprint"]
 
     @property
     def last_end(self) -> Optional[str]:
-        """The `end` of the last recorded window, or None for an empty ledger."""
+        """The ``end`` of the last recorded window, or None for an empty ledger."""
         if not self._payload["windows"]:
             return None
         return self._payload["windows"][-1]["end"]
 
     def is_written(self, start, end) -> bool:
+        """Return whether the window ``(start, end)`` is already recorded."""
         key = (self._key(start), self._key(end))
         return any(
             (window["start"], window["end"]) == key
@@ -264,13 +256,17 @@ class ChunkLedger:
         )
 
     def record(self, start, end, rows: int, symbols: Sequence[str]) -> None:
-        """Append one window and rewrite the sidecar ATOMICALLY.
+        """Append one window and rewrite the sidecar atomically.
 
-        Written to a temp file in the same directory and then renamed over
-        the destination, so a crash mid-write leaves either the previous
-        valid ledger or the new one -- never a half-written file that cannot
-        be parsed, which would make the next run unable to resume at all.
-        See `quantlab.utils.atomic.write_json_atomically` for the mechanism.
+        The file is written to a temporary sibling and renamed over the
+        destination, so a crash mid-write leaves either the previous ledger
+        or the new one, never a half-written file the next run cannot parse.
+
+        Args:
+            start: First timestamp of the window.
+            end: Last timestamp of the window.
+            rows: Number of rows appended for it.
+            symbols: The pinned symbol axis the window was written on.
         """
         self._payload["append_dim"] = self.append_dim
         self._payload["symbol_count"] = len(symbols)
@@ -285,19 +281,16 @@ class ChunkLedger:
         self._flush()
 
     def rebase(self, symbols: Sequence[str]) -> None:
-        """Re-fingerprint the ledger against a NEW pinned symbol axis.
+        """Re-fingerprint the ledger against a new pinned symbol axis.
 
-        Valid ONLY immediately after a successful widen of the store onto that
-        same axis (`XrBackend.widen_symbol_axis`). Called without one it
-        re-fingerprints a store whose columns are still on the OLD axis, which
-        is precisely the misalignment `assert_consistent` exists to catch --
-        the check would then pass and the next append would silently write onto
-        a store whose columns mean something else.
+        Call this only immediately after the store itself has been widened
+        onto the same axis. Called without that widen, the fingerprint would
+        match while the store's columns are still on the old axis, which is
+        exactly the misalignment ``assert_consistent`` exists to catch.
 
-        `windows` is deliberately left untouched. The ledger records WHICH
-        WINDOWS have been written; a widen changes the AXIS, not the windows.
-        Clearing them would make an already-complete store re-densify from the
-        top and append every window a second time.
+        The recorded windows are left untouched: a widen changes the axis,
+        not which windows have been written, and clearing them would make a
+        complete store append every window a second time.
         """
         self._payload["append_dim"] = self.append_dim
         self._payload["symbol_count"] = len(symbols)
@@ -307,26 +300,23 @@ class ChunkLedger:
     def assert_consistent(self, symbols: Sequence[str], store_path: str) -> None:
         """Cross-check the ledger against the store before the first append.
 
-        The two are independent records of the same truth, written at
-        different instants, and an append is irreversible: it cannot be
-        validated after the fact from the store alone (T-13w-02). So a resume
-        trusts neither on its own and refuses on any disagreement rather than
-        appending a window that would misalign the whole store.
+        The two are independent records of the same history, and an append
+        cannot be undone, so a resume trusts neither alone. Only the append
+        dimension's coordinate is read from the store.
 
-        Four cases, in order:
+        Args:
+            symbols: The pinned symbol axis of the run about to start.
+            store_path: The Zarr store the ledger describes.
 
-        - store absent, ledger empty -> the normal first run;
-        - a recorded fingerprint that differs from the current pinned symbol
-          list -> the roster changed between runs, so every stored column is
-          on a different axis than the next window would be;
-        - a store with no ledger -> there is no record of WHICH windows are
-          already in it, so appending would blindly duplicate or skip;
-        - a store whose last append-dim value differs from the last recorded
-          window's end -> a crash landed between a successful `to_zarr` and
-          the ledger write, and re-running the window would duplicate it.
-
-        Only the append-dim COORDINATE is read from the store; the data
-        variables are never loaded.
+        Raises:
+            ValueError: If the recorded fingerprint differs from ``symbols``
+                (the roster changed between runs); if a store exists with an
+                empty ledger (no record of what it holds); if the ledger has
+                windows but no store exists; or if the store's last
+                coordinate value differs from the last recorded window's end
+                (a crash landed between the store write and the ledger
+                update). A missing store with an empty ledger is the normal
+                first run and passes.
         """
         store_exists = Path(store_path).exists()
         recorded = self._payload["windows"]
@@ -377,11 +367,9 @@ class ChunkLedger:
                 )
 
     def _store_tail(self, store_path: str):
-        """The store's last append-dim coordinate value, or None.
+        """Return the store's last append-dim coordinate value, or None.
 
-        Opened lazily and only the coordinate is touched -- reading the data
-        variables to answer a one-value question would defeat the whole point
-        of chunking.
+        Only the coordinate is read; the data variables are never loaded.
         """
         store = xr.open_zarr(store_path)
         try:
@@ -393,13 +381,8 @@ class ChunkLedger:
             store.close()
 
     def _flush(self) -> None:
-        """Rewrite the ledger ATOMICALLY through the shared writer.
+        """Rewrite the sidecar atomically through the shared JSON writer.
 
-        The temp-file/rename body this method used to carry inline -- and
-        that `base/pageledger.py:PageLedger._flush` copied verbatim -- now
-        lives once in
-        `quantlab.utils.atomic.write_json_atomically` (03.4-03). The `indent=2`
-        stays HERE rather than moving into the helper so this ledger's on-disk
-        bytes are unchanged by the extraction.
+        ``indent=2`` is passed here so the on-disk file stays readable.
         """
         write_json_atomically(self.path, self._payload, indent=2)

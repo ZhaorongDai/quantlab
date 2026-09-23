@@ -1,34 +1,18 @@
-"""Shared raw-market-data cleaning, reused by every Dataset subclass.
+"""Cleaning and validation rules shared by every dataset class.
 
-Four entry points. Two are called at two different pipeline stages of the
-raw-market-data path:
-- dedup_raw_frame(): tabular (polars), called by each subclass's
-  _raw_data_to_xr() BEFORE the final .to_xarray() conversion — required
-  because a non-unique (timestamp, symbol) index crashes to_xarray()
-  with `ValueError: cannot convert a DataFrame with a non-unique
-  MultiIndex into xarray` (see 02-RESEARCH.md Pitfall 2).
-- clean_market_data(): xr.Dataset, called once centrally in
-  base/data.py:Dataset.from_raw_data() AFTER conversion — anomaly-flagging
-  and schema validation only. Missing-timestamp NaN-gap behavior requires
-  no code here: pandas.DataFrame.set_index([...]).to_xarray() already
-  produces the full (timestamp, symbol) cartesian product with NaN for
-  absent combinations, given a unique index (verified empirically, see
-  02-RESEARCH.md Pattern 3).
+The raw-market-data path calls two of the functions here at two different
+stages. ``dedup_raw_frame`` runs on the tabular (polars) frame before it is
+converted to xarray, because a duplicated ``(timestamp, symbol)`` pair makes
+that conversion fail. ``clean_market_data`` runs once on the resulting
+``xarray.Dataset`` and only validates the schema and flags anomalies; the NaN
+gaps of a dense panel are produced by the conversion itself and pass through
+untouched. ``clean_membership_panel`` and ``clean_nbbo_panel`` are the
+equivalent validators for an index-membership panel and an NBBO quote panel,
+neither of which carries OHLCV columns.
 
-The third, clean_membership_panel(), is the non-OHLCV counterpart of
-clean_market_data(): it is the `_clean()` route for an index-membership
-boolean panel, which has none of the five required OHLCV columns and for
-which anomaly-flagging would be meaningless.
-
-The fourth, clean_nbbo_panel(), is the same kind of validator for the WRDS
-TAQ NBBO bar panel (phase 03.9, D-14).
-
-Do NOT add forward-fill/interpolate/fillna anywhere in this module — that
-would fabricate data the pipeline never actually observed (D-06).
-
-This module is a leaf: it has zero project-internal imports (only polars,
-xarray, numpy, loguru, stdlib `typing`), so it can never be the source of a
-future import cycle.
+Nothing in this module fills, interpolates or corrects a value: a gap or an
+outlier is reported, never repaired, so the pipeline never contains data that
+was not observed. The module imports only third-party libraries.
 """
 
 from typing import Literal
@@ -40,8 +24,8 @@ from loguru import logger
 
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
-# Price-like variables checked for zero/negative values and extreme jumps.
-# Includes Tiingo's adjusted-price variants when present.
+# Price-like variables checked for zero/negative values and extreme jumps,
+# including the adjusted-price variants some vendors supply.
 _PRICE_LIKE_COLUMNS = (
     "open",
     "high",
@@ -53,39 +37,46 @@ _PRICE_LIKE_COLUMNS = (
     "adjClose",
 )
 
-# A single-step percentage change on `close` beyond this threshold is
-# flagged as an extreme jump. Simple, documented, fixed rule — deeper
-# statistical/ML anomaly detection is explicitly out of scope for v1
-# (CONTEXT.md D-08 / Deferred Ideas).
+# A single-step percentage change in ``close`` beyond this fraction is
+# flagged as an extreme jump.
 _EXTREME_JUMP_THRESHOLD = 0.5
 
 
 def dedup_raw_frame(
     data: pl.LazyFrame, keep: Literal["first", "last"] = "last"
 ) -> pl.LazyFrame:
-    """Deterministic dedup on (timestamp, symbol) — D-05.
+    """Drop duplicate ``(timestamp, symbol)`` rows deterministically.
 
-    keep="last" is the default because later-arriving files in a vendor's
-    monthly-drop workflow more often represent corrected/reprocessed data
-    than earlier ones (per 02-RESEARCH.md's Code Examples section) — this
-    satisfies D-05's "deterministic and documented" requirement.
+    Must run before the frame is converted to xarray, which rejects a
+    non-unique index. ``keep="last"`` is the default because in a vendor's
+    periodic-drop workflow a later file more often carries corrected data
+    than an earlier one.
 
-    Must run before `.to_xarray()`; a non-unique (timestamp, symbol)
-    MultiIndex raises ValueError there (see module docstring / Pitfall 2).
+    Args:
+        data: A long-format frame with ``timestamp`` and ``symbol`` columns.
+        keep: Which duplicate to retain, ``"first"`` or ``"last"``.
+
+    Returns:
+        The frame with at most one row per ``(timestamp, symbol)`` pair.
     """
     return data.unique(subset=["timestamp", "symbol"], keep=keep)
 
 
 def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
-    """Flag (not delete/correct) zero/negative price or extreme jumps — D-07.
+    """Add a boolean ``anomaly_flag`` variable marking suspicious prices.
 
-    Adds a boolean data variable `anomaly_flag` (same [timestamp, symbol]
-    dims as the source data) that is True wherever any present price-like
-    variable is zero/negative, or `close` makes a single-step percentage
-    change beyond `_EXTREME_JUMP_THRESHOLD`. Never mutates, drops, or
-    corrects the underlying values — anomalies stay visible for later
-    investigation (auto-correction would hide the evidence a debugging
-    session needs).
+    A cell is flagged when any present price-like variable is zero or
+    negative, or when ``close`` moves by more than ``_EXTREME_JUMP_THRESHOLD``
+    from a strictly positive prior close. The underlying values are never
+    changed or dropped, so an anomaly stays visible for later investigation.
+    A warning with the flagged count is logged when the count is non-zero.
+
+    Args:
+        data: A panel on ``(timestamp, symbol)``.
+
+    Returns:
+        ``data`` with an additional ``anomaly_flag`` variable on the same
+        dimensions.
     """
     present_price_columns = [
         c for c in _PRICE_LIKE_COLUMNS if c in data.data_vars
@@ -110,15 +101,13 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
         close = data["close"]
         shifted = close.shift(timestamp=1)
         pct_change = close.diff(dim="timestamp") / shifted
-        # A shifted (prior) value that is itself zero/negative/NaN makes the
-        # percentage change undefined/meaningless — only compare against a
-        # strictly-positive prior price. Comparisons against NaN evaluate to
-        # False elementwise, so no separate NaN-handling is needed.
+        # A prior close that is zero, negative or NaN makes the percentage
+        # change meaningless, so only compare against a strictly positive
+        # prior. Comparisons against NaN are False elementwise.
         valid_prior = shifted > 0
         jump = (np.abs(pct_change) > _EXTREME_JUMP_THRESHOLD) & valid_prior
-        # jump is one element shorter along `timestamp` (diff drops the
-        # first row); reindex back onto the full grid, treating the first
-        # timestamp (no prior value to diff against) as not-a-jump.
+        # ``diff`` drops the first timestamp; reindex onto the full axis and
+        # treat that first row as not-a-jump.
         jump = jump.reindex(timestamp=data["timestamp"], fill_value=False)
         anomaly = anomaly | jump
 
@@ -139,66 +128,33 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
 def validate_schema(
     data: xr.Dataset, required_columns: tuple[str, ...] = REQUIRED_COLUMNS
 ) -> xr.Dataset:
-    """Basic schema/non-null validation — D-08.
+    """Check that required columns exist and report unexpected nulls.
 
-    Raises `ValueError` naming the missing column(s) if any
-    `required_columns` entry is absent from `data.data_vars`. That behaviour,
-    and the signature, are unchanged.
+    A dense panel is the cartesian product of its axes, so a symbol that did
+    not trade in a period is null in every variable at that cell. Those cells
+    are structural, not anomalous, and are excluded from the null counts: a
+    cell counts as "no bar" when every column in ``required_columns`` is null
+    there, and only nulls on cells where a bar does exist are warned about. A
+    column laid out on other dimensions than the required columns is counted
+    whole instead.
 
-    **The discrimination rule.** A dense `[timestamp, symbol]` panel is a
-    cartesian product (D-06), so a symbol that did not trade in a period is
-    NaN in EVERY variable at that cell. That is the panel's design, not an
-    anomaly, and counting those cells produced million-row false alarms on a
-    real minute panel — which is exactly what teaches an operator to ignore
-    the one warning that matters. The two sources of a null are separated by
-    a STRUCTURAL MASK:
+    If every required column is null on every cell, the panel is treated as
+    an empty ingest: that is reported at error level, the structural mask is
+    disabled and each column's raw null count is reported instead. No null
+    condition raises; only a missing column does, because a data-content
+    problem must not abort an ingest that is running unattended.
 
-    - `structural mask` = logical AND over `isnull()` of every column in the
-      `required_columns` ARGUMENT. True precisely where no bar exists at all.
-    - `unexpected nulls` for a column = `isnull() & ~structural_mask` — nulls
-      on cells where a bar DOES exist. Only these are warned about.
+    Args:
+        data: A panel on ``(timestamp, symbol)``.
+        required_columns: The variables that must be present. Callers whose
+            columns use another spelling pass their own tuple, and the
+            structural mask is built from that argument.
 
-    So `trade_count` null only where the bar is absent is silent, while a
-    `vwap` the vendor withheld entirely still warns — and the count it reports
-    is now the number of cells that actually have a bar behind them.
+    Returns:
+        ``data``, unchanged.
 
-    **The mask's degenerate case: an EMPTY INGEST.** If the required columns
-    are themselves null everywhere — an empty vendor response written to a
-    store, a mis-parsed CSV, a fully-failed backfill — the mask is True on
-    every cell, `~mask` is False on every cell, and the per-column loop
-    reports 0 for EVERY column. This function used to go completely silent on
-    exactly the panel it exists to catch (the `vwap` claim above was false in
-    that configuration), and the structural report was `logger.info`, so
-    nothing surfaced at warning level either. Now that case is detected
-    up front, reported at `logger.error` — deliberately LOUDER than the
-    per-column warnings it was swallowing, because it means the ingest
-    produced nothing usable at all — and the mask is disabled for that panel
-    so the per-column loop reports real whole-column counts. It still does
-    not raise: raising is reserved for a SCHEMA violation (a missing column);
-    an all-null panel is a data-CONTENT problem, and `clean_market_data()`
-    runs inside `from_raw_data()` on every ingest with nothing catching it,
-    so an abort here would kill a chunked backfill on the first window where
-    nothing traded.
-
-    **Two deliberate widenings, both closing blind spots.**
-
-    - REQUIRED columns are now null-checked too. `open` missing on a bar whose
-      `close` exists was previously silent, because the loop skipped every
-      required column; it now warns through the same mask.
-    - The mask is built from the `required_columns` ARGUMENT, never from the
-      module-level `REQUIRED_COLUMNS`, because
-      `dataset/spot.py:SpotKlineDataset._clean()` passes Title-Case
-      `("Open","High","Low","Close","Volume")`. A hardcoded mask would raise
-      `KeyError` on every Binance ingest.
-
-    A column whose dims differ from the mask's falls back to the plain
-    whole-column null count rather than broadcasting into a meaningless larger
-    array — no column silently loses its check to a broadcasting accident.
-
-    Still logs a `loguru.logger.warning` and returns `data` unchanged — does
-    NOT raise, consistent with D-07's flag-don't-delete philosophy. Deeper
-    statistical anomaly detection beyond flagging is explicitly out of scope
-    for v1 (CONTEXT.md D-08).
+    Raises:
+        ValueError: If any of ``required_columns`` is missing.
     """
     missing = [col for col in required_columns if col not in data.data_vars]
     if missing:
@@ -244,11 +200,8 @@ def validate_schema(
     for col in data.data_vars:
         column = data[col]
         if empty_ingest:
-            # The mask is True on every cell here, so `~mask` is False on
-            # every cell and the discriminating branch below would report 0
-            # for every column — the exact silence BL-01 describes. Fall back
-            # to raw counts: with no bar anywhere there is no bar-exists grid
-            # left to discriminate against.
+            # With the mask True everywhere, the discriminating branch below
+            # would report zero for every column; fall back to raw counts.
             null_count = int(column.isnull().sum().item())
             scope = (
                 "raw null value(s) — whole-column count, because the "
@@ -281,16 +234,18 @@ def validate_schema(
 
 
 def clean_market_data(data: xr.Dataset) -> xr.Dataset:
-    """Single entry point called from base/data.py:Dataset.from_raw_data().
+    """Validate the schema of a market panel and flag its anomalies.
 
-    NaN-gap behavior (D-06) requires no logic here — already guaranteed by
-    the dedup step (dedup_raw_frame(), run by each subclass's
-    _raw_data_to_xr() before this function ever sees the data) plus
-    pandas.DataFrame.set_index([...]).to_xarray()'s cartesian-product
-    behavior upstream. This function only layers schema validation (D-08)
-    and anomaly-flagging (D-07) on top. This module never forward-fills,
-    backward-fills, interpolates, or fills missing market-data values —
-    NaN gaps always pass through unchanged.
+    This is the single cleaning step applied to every market-data panel after
+    it has been converted to xarray. Deduplication has already happened on
+    the tabular frame, and the NaN gaps of the dense panel come from the
+    conversion itself, so nothing here fills or alters a value.
+
+    Args:
+        data: A panel on ``(timestamp, symbol)`` carrying the OHLCV columns.
+
+    Returns:
+        ``data`` with an ``anomaly_flag`` variable added.
     """
     data = validate_schema(data)
     data = flag_anomalies(data)
@@ -298,30 +253,27 @@ def clean_market_data(data: xr.Dataset) -> xr.Dataset:
 
 
 def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
-    """Membership-panel counterpart to `clean_market_data()`, called from
-    `base/constituent.py:IndexConstituentDataset._clean()`.
+    """Validate an index-membership panel and return it unchanged.
 
-    Validates the panel's shape and returns it unchanged. It never modifies,
-    fills or re-sorts anything -- a panel that violates the contract is a bug
-    in the densification, and silently repairing it here would hide that.
+    The OHLCV cleaning path cannot be reused here: ``validate_schema`` would
+    raise on the missing price columns, and ``flag_anomalies`` would add a
+    meaningless all-False flag beside the panel's only variable. Nothing is
+    modified, filled or re-sorted; a panel that breaks the contract is a bug
+    upstream, and repairing it here would hide that.
 
-    Raises `ValueError` naming the specific violation for each of:
+    Args:
+        data: A panel whose only variable is a boolean ``is_member`` on
+            ``(timestamp, symbol)``.
 
-    - `data_vars` is not exactly `{"is_member"}`;
-    - `is_member.dtype` is not `bool`;
-    - `is_member.dims` is not exactly `("timestamp", "symbol")`;
-    - the `timestamp` coordinate is not strictly increasing (which includes
-      duplicates) -- `XrBackend.filter_by_date` slices with
-      `.sel(timestamp=slice(...))`, which silently returns wrong results on an
-      unsorted index rather than raising.
+    Returns:
+        ``data``, unchanged.
 
-    **Why the inherited default is unusable here, not merely unnecessary.**
-    `clean_market_data()` calls `validate_schema()`, which hard-raises on the
-    five missing OHLCV columns (`open`/`high`/`low`/`close`/`volume`) that a
-    membership panel does not and cannot have. Even past that,
-    `flag_anomalies()` would append a second, meaningless all-False
-    `anomaly_flag` variable to a panel whose only variable is already a
-    boolean -- doubling its on-disk size to record nothing.
+    Raises:
+        ValueError: If the variables are not exactly ``{"is_member"}``, if
+            ``is_member`` is not boolean or not on ``("timestamp", "symbol")``,
+            or if the ``timestamp`` coordinate is not strictly increasing.
+            Label-based date slicing silently returns wrong results on an
+            unsorted index, which is why the last case is refused.
     """
     variables = set(data.data_vars)
     if variables != {"is_member"}:
@@ -343,8 +295,8 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
         )
 
     timestamps = data["timestamp"].values
-    # Compared elementwise rather than via `np.diff(...) > 0` so the check
-    # stays dtype-agnostic (a bare `0` against a timedelta64 is deprecated).
+    # Compared elementwise rather than via ``np.diff(...) > 0`` so the check
+    # stays dtype-agnostic (a bare ``0`` against a timedelta64 is deprecated).
     if timestamps.size > 1 and not np.all(timestamps[:-1] < timestamps[1:]):
         raise ValueError(
             "clean_membership_panel: the 'timestamp' coordinate must be "
@@ -356,11 +308,10 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
     return data
 
 
-#: The exact variable set of an NBBO bar panel (phase 03.9, D-11/D-12/D-19),
-#: every one float64. `n_updates` and `n_ambiguous_ties` are counts but are
-#: stored as float64 from the start: `BaseDataset._pin_append_dtypes` promotes
-#: integer variables on append anyway, and a count that is NaN for a symbol
-#: added later (widen) cannot be an integer.
+#: The exact variable set of an NBBO bar panel, every one float64. The two
+#: count variables, ``n_updates`` and ``n_ambiguous_ties``, are float64 as
+#: well: integer variables are promoted on append anyway, and a count that is
+#: NaN for a symbol added later cannot be an integer.
 NBBO_PANEL_VARIABLES = (
     "bid",
     "ask",
@@ -379,26 +330,24 @@ NBBO_PANEL_VARIABLES = (
 
 
 def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
-    """NBBO-panel counterpart to `clean_market_data()`, called from
-    `dataset/nbbo.py:NbboPanelDataset._clean()` (D-14).
+    """Validate an NBBO quote-bar panel and return it unchanged.
 
-    Validates the panel's shape and returns it unchanged. Like
-    `clean_membership_panel`, it never modifies, fills or re-sorts anything --
-    a panel that violates the contract is a bug in the resampler, and silently
-    repairing it here would hide that.
+    Like ``clean_membership_panel``, this never modifies, fills or re-sorts.
+    The OHLCV path does not apply because the panel has no price columns, and
+    no filling of any kind is done here: carrying the prevailing quote forward
+    over an empty bar is the resampler's responsibility, not a cleaning step.
 
-    Raises `ValueError` naming the specific violation for each of:
+    Args:
+        data: A panel whose variables are exactly ``NBBO_PANEL_VARIABLES``.
 
-    - `data_vars` is not exactly `NBBO_PANEL_VARIABLES`;
-    - a variable's dtype is not float64;
-    - a variable's dims are not exactly `("timestamp", "symbol")`;
-    - the `timestamp` coordinate is not strictly increasing.
+    Returns:
+        ``data``, unchanged.
 
-    **No `anomaly_flag`, no OHLCV check, and no filling of any kind.** The
-    inherited `clean_market_data()` hard-raises on the five OHLCV columns an
-    NBBO panel does not have. Carry-forward over empty bars is the RESAMPLER's
-    state semantics (the prevailing NBBO stays in force until replaced), never
-    a cleaning step -- this module's no-fill rule stands.
+    Raises:
+        ValueError: If the variable set differs from ``NBBO_PANEL_VARIABLES``,
+            if any variable is not float64 or not on ``("timestamp",
+            "symbol")``, or if the ``timestamp`` coordinate is not strictly
+            increasing.
     """
     variables = set(data.data_vars)
     expected = set(NBBO_PANEL_VARIABLES)
@@ -424,7 +373,7 @@ def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
             )
 
     timestamps = data["timestamp"].values
-    # Elementwise, as in `clean_membership_panel`, to stay dtype-agnostic.
+    # Elementwise, as in ``clean_membership_panel``, to stay dtype-agnostic.
     if timestamps.size > 1 and not np.all(timestamps[:-1] < timestamps[1:]):
         raise ValueError(
             "clean_nbbo_panel: the 'timestamp' coordinate must be strictly "

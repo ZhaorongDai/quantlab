@@ -1,3 +1,25 @@
+"""Config factories for the datasets, factors and labels the pipeline ships with.
+
+Each factory builds one config dataclass from ``quantlab.base.config`` with
+every storage path derived from a single data root. ``get_data_root`` resolves
+that root from, in order, the process-level override that ``--data-dir`` sets
+through ``set_data_root``, the ``QUANTLAB_DATA_DIR`` environment variable, and
+finally a ``data/`` directory beside the repository, so a fresh clone works
+with no configuration. Beneath the root, raw downloads live under
+``downloads/{market}/{frequency}/``, Zarr stores under
+``data/{market}/{frequency}/`` and reference tables under ``data/reference/``.
+
+The factories snapshot their paths as plain strings, so a root override must
+be applied before the first factory call.
+
+Example:
+    >>> from quantlab.config import set_data_root, stock_kline_config
+    >>> set_data_root("/mnt/quant")
+    >>> cfg = stock_kline_config(start_date="2020-01-01", symbols=("AAPL",))
+    >>> cfg.zarr_file_path
+    '/mnt/quant/data/us_equity/1d/stock.zarr'
+"""
+
 import os
 from pathlib import Path
 from typing import Literal
@@ -15,44 +37,31 @@ from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import Frequency, Market, Vendor
 
-#: Process-level storage-root override, set by `set_data_root()` and consulted
-#: first by `get_data_root()`. `None` means "not overridden"; see D-06.
+#: Process-level storage-root override, set by ``set_data_root`` and consulted
+#: first by ``get_data_root``. ``None`` means not overridden.
 _DATA_ROOT_OVERRIDE: Path | None = None
 
 
 def set_data_root(path: "str | os.PathLike | None") -> Path | None:
     """Set the process-level storage root, ahead of the environment variable.
 
-    Precedence, highest first (260907-rjq D-01):
+    The value is passed through ``expanduser`` but not ``resolve``: the
+    ``QUANTLAB_DATA_DIR`` value is used unresolved too, so the two behave the
+    same on a symlinked root, and a quoted ``--data-dir '~/x'`` reaches Python
+    with a literal tilde that would otherwise become a directory named ``~``.
+    The directory is neither created nor required to exist.
 
-    1. this override,
-    2. the `QUANTLAB_DATA_DIR` environment variable,
-    3. the repo-root-relative `data/` directory.
+    Args:
+        path: The new root. ``None`` clears the override so that
+            ``QUANTLAB_DATA_DIR`` or the repository default applies again.
 
-    There is still exactly ONE data root; it simply has one more way to be set,
-    and no volume is ever hardcoded.
+    Returns:
+        The stored ``Path``, or ``None`` when the override was cleared.
 
-    The value is `expanduser()`-ed but deliberately NOT `resolve()`-d. The
-    environment knob is `Path(env_value)` with no resolution, so resolving only
-    this one would make the two behave differently on a symlinked root -- on
-    macOS `/tmp` resolves to `/private/tmp` -- and would defeat a caller who
-    passed a symlink on purpose. Expansion IS applied because a quoted
-    `--data-dir '~/quantlab-data'` reaches Python with a literal tilde and
-    would otherwise create a directory named `~`.
-
-    The directory is neither created nor required to exist (D-08): the
-    acquisition layer creates its own directories under whatever root it is
-    given, and the environment knob validates nothing -- validating one and not
-    the other is how two knobs drift apart.
-
-    Passing `None` CLEARS the override and returns `None` (D-06); a
-    process-global knob without a reset would let the first caller that sets it
-    silently redirect everything afterwards. An empty or whitespace-only value
-    raises `ValueError`: an unset/empty env var falls through to the default,
-    but someone who typed an empty root meant something, and silently meaning
-    "repo default" is wrong.
-
-    Returns the stored `Path` so a caller can report where the run will write.
+    Raises:
+        ValueError: If ``path`` is an empty or whitespace-only string. An
+            empty environment variable falls through to the default, but a
+            root someone typed explicitly should not silently mean "default".
     """
     global _DATA_ROOT_OVERRIDE
     if path is None:
@@ -69,12 +78,11 @@ def set_data_root(path: "str | os.PathLike | None") -> Path | None:
 
 
 def get_data_root() -> Path:
-    """Root directory for downloads/data storage.
+    """Return the storage root every config factory derives its paths from.
 
-    Resolves the one storage root through three levels, highest first: the
-    process-level override set by `set_data_root()` (what `--data-dir` drives),
-    then the `QUANTLAB_DATA_DIR` environment variable, then a `data/` directory
-    beside the repository root so a fresh clone works with zero configuration.
+    Resolution order: the override set by ``set_data_root`` (what
+    ``--data-dir`` drives), then the ``QUANTLAB_DATA_DIR`` environment
+    variable, then the ``data/`` directory beside the repository root.
     """
     if _DATA_ROOT_OVERRIDE is not None:
         return _DATA_ROOT_OVERRIDE
@@ -86,14 +94,12 @@ def get_data_root() -> Path:
 
 
 def _market_data_root(market: str, frequency: str) -> Path:
-    """`data/{market}/{frequency}` root that every zarr-backed config factory
-    derives its `zarr_file_path` from (02-CONTEXT.md D-02)."""
+    """Return the ``data/{market}/{frequency}`` directory Zarr stores live in."""
     return get_data_root() / "data" / market / frequency
 
 
 def _market_downloads_root(market: str, frequency: str) -> Path:
-    """`downloads/{market}/{frequency}` root that every acquisition-facing
-    config factory derives its `raw_data_dir_path` from (02-CONTEXT.md D-02)."""
+    """Return the ``downloads/{market}/{frequency}`` directory for raw data."""
     return get_data_root() / "downloads" / market / frequency
 
 
@@ -105,6 +111,21 @@ def spot_kline_config(
     market: Market = "crypto_spot",
     frequency: Frequency = "1d",
 ):
+    """Build the ``DatasetConfig`` for Binance spot klines.
+
+    Raw CSVs are read from
+    ``downloads/{market}/{frequency}/spot/monthly/klines`` and the panel is
+    stored at ``data/{market}/{frequency}/klines.zarr``.
+
+    Args:
+        start_date: First date to load, ISO format; ``None`` means unbounded.
+        end_date: Last date to load, inclusive; ``None`` means unbounded.
+        symbols: Symbols to keep; ``None`` leaves the selection to the
+            dataset.
+        kwargs: Extra dataset options.
+        market: Market label used in the storage paths.
+        frequency: Bar frequency used in the storage paths.
+    """
     return DatasetConfig(
         raw_data_dir_path=str(
             _market_downloads_root(market, frequency)
@@ -136,30 +157,30 @@ def stock_kline_config(
     store_name: str = "stock.zarr",
     vendor: Vendor = "tiingo",
 ):
-    """US-equity daily Zarr config.
+    """Build the ``DatasetConfig`` for daily US-equity bars.
 
-    `subdir` selects the raw-data subdirectory and `store_name` the Zarr store
-    filename, both BENEATH the existing `data/{market}/{frequency}/`
-    convention (02-CONTEXT.md D-02). They exist so a second roster -- the
-    full-market `us_all` backfill -- can land beside the NASDAQ-only one
-    instead of overwriting it, WITHOUT introducing a second path root. There
-    is exactly one storage root, resolved by `get_data_root()` in the order
-    `--data-dir` override > `QUANTLAB_DATA_DIR` > repo-root `data/`
-    (260906-0iy D-04, 260907-rjq D-01); `subdir`/`store_name` select a
-    location beneath whichever of the three answered, and no volume is ever
-    hardcoded here.
+    Raw parquet is read from
+    ``downloads/{market}/{frequency}/{subdir}/{vendor}`` and the panel is
+    stored at ``data/{market}/{frequency}/{store_name}``. ``subdir`` and
+    ``store_name`` let a second roster (for example a full-market backfill)
+    live beside the NASDAQ-only one instead of overwriting it. The raw path
+    ends at the vendor segment on purpose: ``StockDataset`` checks that the
+    directory basename equals ``vendor`` before scanning, which rules out an
+    accidental scan one level up that would merge two vendors' shards.
 
-    `vendor` appends the D-11 vendor segment so `raw_data_dir_path`
-    TERMINATES at it -- `Path(raw_data_dir_path).name == vendor` is the
-    equality `StockDataset._scan_raw` asserts before scanning, which is what
-    makes a scan rooted one level up (and therefore a silent two-vendor merge)
-    unreachable by accident rather than merely unlikely. The vendor is also
-    threaded onto `DatasetConfig.vendor`, because a path the reader cannot
-    check against a recorded expectation checks nothing.
-
-    `"tiingo"` is the documented INCUMBENT, not a guess: every existing caller
-    of this factory reads raw data that `TiingoAcquisition` fetched, so the
-    default names what is already on disk.
+    Args:
+        start_date: First date to load, ISO format; ``None`` means unbounded.
+        end_date: Last date to load, inclusive; ``None`` means unbounded.
+        symbols: Symbols to keep; ``None`` leaves the selection to the
+            dataset.
+        kwargs: Extra dataset options.
+        market: Market label used in the storage paths.
+        frequency: Bar frequency used in the storage paths.
+        subdir: Raw-data subdirectory beneath the market/frequency root.
+        store_name: Zarr store filename.
+        vendor: Vendor whose shards the raw directory holds, also recorded on
+            the config. Defaults to ``"tiingo"``, which is what existing
+            callers have on disk.
     """
     return DatasetConfig(
         raw_data_dir_path=str(
@@ -187,34 +208,28 @@ def stock_acquisition_config(
     subdir: str = "nasdaq_data",
     vendor: Vendor = "tiingo",
 ):
-    """US-equity daily acquisition config.
+    """Build the ``AcquisitionConfig`` for a daily US-equity download.
 
-    `subdir` selects the raw-data subdirectory (and, beside it, the watermark
-    directory) so a second roster's raw parquet and watermarks stay separate
-    from the NASDAQ-only ones -- separate watermarks are what make the two
-    backfills independently resumable. It is a subdirectory BENEATH
-    `downloads/{market}/{frequency}/`, not a second root: there is exactly one
-    storage root, resolved by `get_data_root()` in the order `--data-dir`
-    override > `QUANTLAB_DATA_DIR` > repo-root `data/` (260906-0iy D-04,
-    260907-rjq D-01), and this factory hardcodes no volume.
+    Raw shards are written beneath ``{subdir}/{vendor}`` and watermarks
+    beneath ``{subdir}/_watermarks/{vendor}``, both under
+    ``downloads/{market}/{frequency}/``. The watermark directory is a sibling
+    of the raw root rather than inside it because a polars directory scan
+    reads every file beneath the root it is given, and a ``.json`` sidecar in
+    the raw tree would break ``scan_parquet``. A separate ``subdir`` per
+    roster keeps two backfills independently resumable.
 
-    `vendor` is DERIVED into both paths rather than accepted pre-built, so the
-    two placements below cannot drift apart at a call site (D-11, D-19):
-
-    - `raw_data_dir_path` TERMINATES at the vendor segment
-      (`.../{subdir}/{vendor}`). The basename IS the vendor, which is what
-      makes `StockDataset._scan_raw`'s basename assertion expressible at all.
-    - `watermark_path` is a SIBLING of that raw root
-      (`.../{subdir}/_watermarks/{vendor}`), deliberately NOT inside it. A
-      polars directory scan walks EVERY file beneath the root it is given, so
-      a `.json` sidecar living in the raw tree breaks `pl.scan_parquet`
-      outright. This is a change from the pre-03.2 `{subdir}/_watermarks/`
-      placement; D-13 already discards those legacy sidecars rather than
-      migrating them.
-
-    `"tiingo"` is the documented INCUMBENT, not a guess: every existing caller
-    of this factory fetched from Tiingo, so the default names the vendor whose
-    data the pre-03.2 paths actually hold.
+    Args:
+        symbols: Symbols to download.
+        start_date: First date to request; ``None`` leaves it to the vendor
+            client.
+        end_date: Last date to request; ``None`` leaves it to the vendor
+            client.
+        kwargs: Extra acquisition options (for example ``max_workers``).
+        market: Market label used in the storage paths.
+        frequency: Bar frequency used in the storage paths.
+        subdir: Raw-data subdirectory beneath the market/frequency root.
+        vendor: Vendor to fetch from. Defaults to ``"tiingo"``, which is what
+            existing callers have on disk.
     """
     downloads = _market_downloads_root(market, frequency) / subdir
     return AcquisitionConfig(
@@ -231,14 +246,12 @@ def stock_acquisition_config(
 
 
 def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
-    """Config for the US-equity universe reference table (02-CONTEXT.md D-12).
+    """Build the ``UniverseConfig`` for the US-equity universe reference table.
 
-    Deliberately lives under `data/reference/`, separate from the
-    `data/{market}/{frequency}/` convention used by spot_kline_config()/
-    stock_kline_config() -- this reflects Locked Decision A1 (02-08-PLAN.md):
-    the universe table is reference/metadata (same footing as
-    config/instruments.yaml), not xarray/Zarr pipeline data, hence
-    PlBackend/parquet, not XrBackend/Zarr.
+    The table is reference metadata rather than pipeline data, so it lives as
+    parquet under ``data/reference/`` instead of a
+    ``data/{market}/{frequency}/`` Zarr store, with a ``_cache`` directory
+    beside it for fetcher snapshots.
     """
     return UniverseConfig(
         output_path=str(
@@ -256,23 +269,20 @@ def sp500_constituent_config(
     as_of: str | None = None,
     kwargs: dict = None,  # type: ignore
 ) -> ConstituentDatasetConfig:
-    """Config for the daily point-in-time S&P 500 membership panel (DATA-05,
-    03.1-CONTEXT.md D-04).
+    """Build the ``ConstituentDatasetConfig`` for daily S&P 500 membership.
 
-    The two paths deliberately live in DIFFERENT roots, and the split is not
-    an oversight:
+    The boolean ``is_member`` panel is pipeline data consumed by the factor
+    and model layers as a per-day universe mask, so it is stored as Zarr at
+    ``data/us_equity/1d/sp500_constituent.zarr``. The fetcher's cached source
+    snapshot shares ``universe_config``'s ``data/reference/_cache`` directory
+    so there is only one copy of it.
 
-    - `zarr_file_path` takes the `data/{market}/{frequency}/` branch, same as
-      `stock_kline_config()`, because the daily `is_member` panel is PIPELINE
-      data -- it exists to be consumed by the factor and model layers as a
-      per-day universe mask, so CLAUDE.md's xarray/Zarr constraint governs it
-      (D-04). This is the deliberate, scoped divergence from Locked Decision
-      A1 of 02-08-PLAN.md.
-    - `cache_dir` shares `universe_config()`'s `data/reference/_cache`
-      directory because the fetcher's cached source snapshot is the very same
-      reference/metadata artefact that factory already owns; giving the panel
-      a second, private cache directory would mean two copies of one snapshot
-      drifting apart.
+    Args:
+        start_date: First date of the panel; ``None`` means unbounded.
+        end_date: Last date of the panel, inclusive; ``None`` means unbounded.
+        symbols: Symbols to keep, converted to a tuple; ``None`` keeps all.
+        as_of: Optional date to resolve membership as of.
+        kwargs: Extra dataset options.
     """
     return ConstituentDatasetConfig(
         zarr_file_path=str(
@@ -281,11 +291,7 @@ def sp500_constituent_config(
         cache_dir=str(get_data_root() / "data" / "reference" / "_cache"),
         start_date=start_date,
         end_date=end_date,
-        # Converted here rather than passed through: `BaseDatasetConfig`
-        # declares `tuple | None`, and `IndexConstituentDataset` overrides the
-        # `_reset_symbols()` seam that used to do the normalising. Making the
-        # conversion explicit at the boundary is what removes the
-        # `# type: ignore[arg-type]` that was papering over the mismatch.
+        # The config declares `tuple | None`; normalise at the boundary.
         symbols=tuple(symbols) if symbols is not None else None,
         as_of=as_of,
         kwargs=kwargs,
@@ -299,24 +305,22 @@ def nasdaq100_constituent_config(
     as_of: str | None = None,
     kwargs: dict = None,  # type: ignore
 ) -> ConstituentDatasetConfig:
-    """Config for the daily point-in-time Nasdaq-100 membership panel
-    (DATA-05, 03.1-CONTEXT.md D-02/D-04).
+    """Build the ``ConstituentDatasetConfig`` for daily Nasdaq-100 membership.
 
-    Identical in shape to `sp500_constituent_config()` apart from the store
-    filename, and the difference is deliberate: **the Nasdaq-100 panel gets
-    its OWN Zarr store rather than sharing the S&P 500 panel's.** The two
-    indices have different point-in-time coverage starts (1976-07-01 versus
-    2007-02-01), so unioning them onto one timestamp axis would imply 1976
-    Nasdaq-100 coverage that does not exist -- and in a boolean panel the
-    fabricated region is indistinguishable at read time from a genuine
-    "nobody was a member" answer. A consumer that wants both opens both and
-    joins on the intersection of their timestamp axes; that is a deliberate,
-    visible step rather than an implicit and wrong union.
+    Same shape as ``sp500_constituent_config`` but with its own Zarr store,
+    ``data/us_equity/1d/nasdaq100_constituent.zarr``. The two indices have
+    different coverage starts (1976 for the S&P 500, 2007 for the Nasdaq-100),
+    and sharing one timestamp axis would fabricate a region that a boolean
+    panel cannot distinguish from "nobody was a member". A consumer that wants
+    both opens both and joins on the intersection of their timestamp axes.
+    The cache directory is shared; each fetcher writes its own file inside it.
 
-    `cache_dir` is shared with `sp500_constituent_config()` and
-    `universe_config()` on purpose -- each fetcher writes its own
-    `CACHE_FILENAME` inside it, so one directory holds one snapshot per index
-    with no chance of two copies of one snapshot drifting apart.
+    Args:
+        start_date: First date of the panel; ``None`` means unbounded.
+        end_date: Last date of the panel, inclusive; ``None`` means unbounded.
+        symbols: Symbols to keep, converted to a tuple; ``None`` keeps all.
+        as_of: Optional date to resolve membership as of.
+        kwargs: Extra dataset options.
     """
     return ConstituentDatasetConfig(
         zarr_file_path=str(
@@ -325,11 +329,7 @@ def nasdaq100_constituent_config(
         cache_dir=str(get_data_root() / "data" / "reference" / "_cache"),
         start_date=start_date,
         end_date=end_date,
-        # Converted here rather than passed through: `BaseDatasetConfig`
-        # declares `tuple | None`, and `IndexConstituentDataset` overrides the
-        # `_reset_symbols()` seam that used to do the normalising. Making the
-        # conversion explicit at the boundary is what removes the
-        # `# type: ignore[arg-type]` that was papering over the mismatch.
+        # The config declares `tuple | None`; normalise at the boundary.
         symbols=tuple(symbols) if symbols is not None else None,
         as_of=as_of,
         kwargs=kwargs,
@@ -344,6 +344,20 @@ def alpha101_config(
     symbols: list | None = None,
     mode: Literal["batch", "stream"] = "batch",
 ):
+    """Build the ``FactorConfig`` for Alpha101 factors on Binance spot klines.
+
+    Factor values are stored at ``data/factor/alpha101.zarr``; the dataset is
+    a ``SpotKlineDataset`` built from ``spot_kline_config``.
+
+    Args:
+        start_date: First date of the factor window.
+        end_date: Last date of the factor window.
+        window: Lookback, in bars, that the dataset window is extended by.
+        factor_names: Factors to compute; ``None`` means all.
+        symbols: Symbols to compute; ``None`` means all.
+        mode: ``"batch"`` for a full historical run, ``"stream"`` for
+            incremental per-bar updates.
+    """
     return FactorConfig(
         file_path=str(get_data_root() / "data" / "factor" / "alpha101.zarr"),
         dataset=SpotKlineDataset(spot_kline_config(symbols=symbols)),
@@ -375,14 +389,25 @@ def stock_alpha101_config(
     market: Market = "us_equity",
     frequency: Frequency = "1d",
 ):
-    """US-equity sibling of `alpha101_config()` (D-01, FACTOR-01).
+    """Build the ``FactorConfig`` for Alpha101 factors on US-equity bars.
 
-    Identical in shape to the crypto-spot factory apart from the dataset it
-    wires (`StockDataset`) and the zarr output name. `"amount"` MUST stay in
-    `data_columns`: `Alpha101.AllData` derives `vwap` from it, and it is what
-    triggers the D-02 `volume * close` synthesis in
-    `StockDataset._to_kunquant()`. Drop it and the factor graph raises
-    `RuntimeError: Bad inputs, given <class 'NoneType'>` at construction time.
+    Same shape as ``alpha101_config`` but wired to a ``StockDataset`` and
+    stored at ``data/factor/alpha101_stock.zarr``. ``"amount"`` must stay in
+    ``data_columns``: the factor graph derives ``vwap`` from it, and its
+    presence is what makes ``StockDataset`` synthesise ``volume * close`` for
+    a vendor with no turnover column. Without it the graph fails at
+    construction with ``RuntimeError: Bad inputs``.
+
+    Args:
+        start_date: First date of the factor window.
+        end_date: Last date of the factor window.
+        window: Lookback, in bars, that the dataset window is extended by.
+        factor_names: Factors to compute; ``None`` means all.
+        symbols: Symbols to compute; ``None`` means all.
+        mode: ``"batch"`` for a full historical run, ``"stream"`` for
+            incremental per-bar updates.
+        market: Market label used in the storage paths.
+        frequency: Bar frequency used in the storage paths.
     """
     return FactorConfig(
         file_path=str(
@@ -417,6 +442,20 @@ def alpha158_config(
     symbols: list | None = None,
     mode: Literal["batch", "stream"] = "batch",
 ):
+    """Build the ``FactorConfig`` for Alpha158 factors on Binance spot klines.
+
+    Factor values are stored at ``data/factor/alpha158.zarr``; the dataset is
+    a ``SpotKlineDataset`` built from ``spot_kline_config``. The lookback
+    window is fixed at 128 bars.
+
+    Args:
+        start_date: First date of the factor window.
+        end_date: Last date of the factor window.
+        factor_names: Factors to compute; ``None`` means all.
+        symbols: Symbols to compute; ``None`` means all.
+        mode: ``"batch"`` for a full historical run, ``"stream"`` for
+            incremental per-bar updates.
+    """
     return FactorConfig(
         file_path=str(get_data_root() / "data" / "factor" / "alpha158.zarr"),
         dataset=SpotKlineDataset(spot_kline_config(symbols=symbols)),
@@ -447,17 +486,25 @@ def stock_alpha158_config(
     market: Market = "us_equity",
     frequency: Frequency = "1d",
 ):
-    """US-equity sibling of `alpha158_config()` (D-01, FACTOR-01).
+    """Build the ``FactorConfig`` for Alpha158 factors on US-equity bars.
 
-    Identical in shape to the crypto-spot factory apart from the dataset it
-    wires (`StockDataset`) and the zarr output name. `"amount"` MUST stay in
-    `data_columns`: `Alpha158.AllData` derives `vwap` from it, and it is what
-    triggers the D-02 `volume * close` synthesis in
-    `StockDataset._to_kunquant()`.
+    Same shape as ``alpha158_config`` but wired to a ``StockDataset`` and
+    stored at ``data/factor/alpha158_stock.zarr``. ``"amount"`` must stay in
+    ``data_columns``: the factor graph derives ``vwap`` from it, and its
+    presence is what makes ``StockDataset`` synthesise ``volume * close`` for
+    a vendor with no turnover column. The ``Alpha158Stock`` factor this
+    configures emits raw, un-normalised values; normalisation is the factor
+    class's concern, and this factory only chooses the dataset.
 
-    The `Alpha158Stock` class this configures emits raw, un-normalized factor
-    values (NORM-01 / D-09) -- the market split lives in the factor class, not
-    here; this factory only chooses the dataset.
+    Args:
+        start_date: First date of the factor window.
+        end_date: Last date of the factor window.
+        factor_names: Factors to compute; ``None`` means all.
+        symbols: Symbols to compute; ``None`` means all.
+        mode: ``"batch"`` for a full historical run, ``"stream"`` for
+            incremental per-bar updates.
+        market: Market label used in the storage paths.
+        frequency: Bar frequency used in the storage paths.
     """
     return FactorConfig(
         file_path=str(
@@ -494,18 +541,20 @@ def momentum_config(
     market: Market = "crypto_spot",
     frequency: Frequency = "1d",
 ):
-    """Config for the Polars-backend `Momentum` factor (FACTOR-03, D-08).
+    """Build the ``PolarsFactorConfig`` for the Polars ``Momentum`` factor.
 
-    Lives here purely for `config/__init__.py` file ownership: 03-03 owns this
-    file for the whole of wave 3, while the `Momentum` class itself is
-    delivered by the parallel plan 03-04. This factory therefore imports
-    NOTHING from `factor/momentum.py` -- it only builds and returns a
-    `PolarsFactorConfig`, so there is no runtime coupling between the two
-    wave-3 plans.
+    ``window`` is set to ``n`` so the dataset lookback is extended by exactly
+    the momentum horizon, and ``kwargs={"n": n}`` lets the factor read its
+    horizon from config rather than from a literal. This factory imports
+    nothing from the factor module; it only builds the config.
 
-    `window=n` so `Factor._reset_dataset_config()` extends the dataset lookback
-    by exactly the momentum horizon, and `kwargs={"n": n}` so the factor reads
-    its horizon from config rather than from a literal in its own source.
+    Args:
+        start_date: First date of the factor window.
+        end_date: Last date of the factor window.
+        symbols: Symbols to compute; ``None`` means all.
+        n: Momentum horizon, in bars.
+        market: Market label used in the storage paths.
+        frequency: Bar frequency used in the storage paths.
     """
     return PolarsFactorConfig(
         file_path=str(get_data_root() / "data" / "factor" / "momentum.zarr"),
@@ -530,6 +579,21 @@ def spot_label_config(
     mode: Literal["batch", "stream"] = "batch",
     n_forward_periods: int = 1,
 ):
+    """Build the ``FactorConfig`` for a forward-return label on spot klines.
+
+    Labels are stored at ``data/label/spot_label_{label_name}.zarr`` and are
+    computed from ``close`` only. ``symbols`` defaults to ``["_all_"]`` and
+    ``factor_names`` is always ``["_all_"]``.
+
+    Args:
+        label_name: Name of the label, used in the store filename.
+        start_date: First date of the label window.
+        end_date: Last date of the label window.
+        symbols: Symbols to compute; ``None`` means all.
+        mode: ``"batch"`` for a full historical run, ``"stream"`` for
+            incremental per-bar updates.
+        n_forward_periods: Horizon of the forward return, in bars.
+    """
     if symbols is None:
         symbols = ["_all_"]
     return FactorConfig(

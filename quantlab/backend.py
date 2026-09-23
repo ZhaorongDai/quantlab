@@ -1,3 +1,17 @@
+"""Concrete storage backends: Zarr-backed xarray panels and Parquet tables.
+
+``XrBackend`` is the backend every dataset, factor and model object in the
+pipeline owns by default. It keeps an ``xarray.Dataset`` in memory, persists
+it as a Zarr store, and carries the machinery chunked ingestion needs to grow
+a store safely over time: ``append`` extends the time axis with a set of
+corruption checks that raw ``to_zarr(mode="a")`` does not perform, and the
+``widen_*`` family reconciles a store whose symbol roster or variable set has
+grown between runs. ``PlBackend`` is the lazy Parquet counterpart used for
+long-format reference tables. Both implement ``DataBackend`` from
+``quantlab.base.backend``; see ``docs/backend.md`` and
+``docs/chunking.md``.
+"""
+
 import os
 import shutil
 from pathlib import Path
@@ -14,10 +28,47 @@ from quantlab.utils.symbol_axis import normalize_to_axis_dtype, sort_symbol_axis
 
 
 class XrBackend(DataBackend):
+    """Zarr-backed storage for an ``xarray.Dataset`` panel.
+
+    ``read`` and ``write`` move the whole panel between memory and a Zarr
+    directory. ``append`` extends an existing store along one dimension
+    (``timestamp`` by default) after checking that the incoming window cannot
+    silently corrupt it. ``widen_symbol_axis``, ``widen_data_vars`` and
+    ``widen_and_append`` handle the case where the panel written today has
+    more symbols or more variables than the store already holds.
+
+    Two class constants govern the on-disk layout: ``APPEND_DIM_CHUNK`` is
+    the chunk length pinned along the append dimension when a store is
+    created, and ``MAX_WIDEN_BYTES`` is the largest panel a widen will hold
+    in memory at once before switching to a block-by-block rewrite.
+
+    Example:
+        >>> backend = XrBackend().to_internal(panel)
+        >>> backend.write("prices.zarr")
+        >>> backend.to_internal(next_month).widen_and_append("prices.zarr")
+        >>> ds = XrBackend().read("prices.zarr").get_xarray_dataset(
+        ...     ["timestamp", "symbol"]
+        ... )
+    """
+
     def __init__(self) -> None:
+        """Create an empty backend; call ``read`` or ``to_internal`` to fill it."""
         super().__init__()
 
     def read(self, path: str, overwrite: bool = False, **kwargs) -> Self:
+        """Open the Zarr store at ``path`` into ``data``.
+
+        A backend that already holds data returns immediately unless
+        ``overwrite`` is true, so repeated reads do not reload the store.
+
+        Args:
+            path: Directory of the Zarr store.
+            overwrite: Reload even if ``data`` is already populated.
+            **kwargs: Passed through to ``xarray.open_dataset``.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
+        """
         if not overwrite and hasattr(self, "data"):
             return self
 
@@ -26,104 +77,38 @@ class XrBackend(DataBackend):
         self.data = xr.open_dataset(path, **kwargs)
         return self
 
-    #: Chunk length pinned along the append dimension by the FIRST write of
-    #: an appended store. Without an explicit `encoding`, Zarr adopts the
-    #: first window's own length as the chunk size, and every later append of
-    #: a different length (a short trading year, a partial final month) is
-    #: then misaligned with the on-disk chunk grid. A fixed value makes the
-    #: layout a property of the store rather than of whichever window
-    #: happened to be written first.
-    #:
-    #: **That last sentence was TRUE of a whole-range write and FALSE of a
-    #: chunked conversion until phase 03.6's gap-closure pass, and it is kept
-    #: above rather than rewritten so the correction is legible (D-18).** The
-    #: claim holds by construction only when the panel handed to the creating
-    #: write IS the store: `min(APPEND_DIM_CHUNK, panel_len)` equals
-    #: `min(APPEND_DIM_CHUNK, total_len)` exactly then.
-    #: `BaseDataset.from_raw_data_chunked` hands it a WINDOW, so the grid
-    #: became a property of the RUNG the caller picked. Measured 2026-09-12,
-    #: one raw input, 13 data variables: the whole-range write left `(9, 3)`,
-    #: `--chunk year` left `(3, 3)`, `--chunk day` left `(1, 3)`. Zarr fixes
-    #: the grid at creation and append cannot revise it, so a store written
-    #: that way could only be corrected by delete-and-rebuild. Phase 03.6's
-    #: finer rungs are what made it reachable: before them the finest rung was
-    #: `month`, whose first window normally cleared this floor on its own.
-    #:
-    #: **`append_dim_size` is the mechanism that now carries the claim on that
-    #: path.** A caller writing a store INCREMENTALLY states the store's total
-    #: append-dim extent on `append()`, and `_append_encoding` substitutes it
-    #: for the panel-in-hand length.
-    #:
-    #: **That paragraph used to close by counting TWO paths, and there are
-    #: THREE.** SUPERSEDED by phase 03.6's second gap-closure pass; the
-    #: original wording is quoted here rather than deleted so the correction
-    #: is legible (D-18). It read: "so both paths land on
-    #: `min(APPEND_DIM_CHUNK, total_len)` and the sentence above is true of
-    #: both. The sibling widen path reaches the same grid by a DIFFERENT
-    #: route, and deliberately: see `_widen_block_rows`." The two it counted
-    #: were the whole-range creating write and the incremental chunked append.
-    #: The third is `widen_symbol_axis`, which rewrites the store with
-    #: `mode="w"` and therefore does not preserve the grid -- it RE-PINS it.
-    #: The three paths, and how each lands on
-    #: `min(APPEND_DIM_CHUNK, stated total extent)`:
-    #:
-    #: 1. the whole-range creating write -- by construction, because the panel
-    #:    in hand IS the store, so panel length and total extent coincide;
-    #: 2. the incremental chunked append -- because the caller STATES the
-    #:    extent with `append_dim_size` (plan `03.6-05`);
-    #: 3. the `mode="w"` widen rewrite via `widen_symbol_axis`, and the
-    #:    variable widen beside it -- because the caller states the extent
-    #:    there too, with the same keyword (this pass).
-    #:
-    #: Measured 2026-09-13, `APPEND_DIM_CHUNK` at 4 over a 9-row range with a
-    #: store created stating an extent of 9 but holding only part of it: the
-    #: widen rewrite left `(3, 3)` at rung `year` and `(1, 3)` at rung `day`,
-    #: where the invariant claims `(4, 3)` for both -- and `(1, 3)` is the
-    #: SAME number the original gap report measured on the creating write,
-    #: which is what identified this as the one defect surviving on a third
-    #: path rather than a new one.
-    #:
-    #: The fairness point, because it explains why no existing test caught
-    #: this: widening an ALREADY-COMPLETE store re-pins to the same value and
-    #: degraded nothing even before the fix. The defect needed a store
-    #: INCOMPLETE relative to its stated extent -- a crash-resume, or a
-    #: rolled-back rebuild -- which is why every widen test stayed green.
-    #:
-    #: The chunked widen strategy now takes the keyword AND keeps its floor,
-    #: for two different jobs -- see `_widen_block_rows`.
+    #: Chunk length pinned along the append dimension when a store is created
+    #: by ``append``, ``widen_symbol_axis`` or ``widen_data_vars``. Without an
+    #: explicit encoding Zarr would adopt the first window's own length as the
+    #: chunk size, and later windows of a different length would be misaligned
+    #: with the on-disk grid. The grid a store ends up with is
+    #: ``min(APPEND_DIM_CHUNK, extent)``, where ``extent`` is the panel's
+    #: length along the append dimension or, when the caller states it with
+    #: ``append_dim_size``, the store's eventual total length. Zarr fixes the
+    #: grid at creation; an append cannot revise it, and a ``mode="w"`` rewrite
+    #: re-pins it.
     APPEND_DIM_CHUNK = 512
 
-    #: Ceiling on the bytes a symbol-axis widen may materialise AT ONCE,
-    #: enforced by `widen_symbol_axis`'s router rather than by a refusal.
-    #:
-    #: **Derived from the target machine's measured materialisation ceiling
-    #: (2026-09-06), and deliberately a constant of this module's own.** 4 GiB
-    #: sits below the ~7.2 GiB that OOMs a 16 GiB box and above every window
-    #: that comfortably fits. It is stated here rather than imported because
-    #: this module has no import path to the acquisition layer and must not
-    #: grow one: a storage backend that imports `UniverseCatalog` to read a
-    #: number has acquired a dependency on the whole acquisition stack for a
-    #: scalar. That is the sibling-constant precedent `MAX_RAW_BYTES` already
-    #: sets one file over, where the same measurement is cited for a DISK
-    #: ceiling rather than a RAM one.
-    #:
-    #: **This routes; it does not refuse.** The acquisition layer's RAM guard,
-    #: which failed a fetch that would not fit, was deleted by decision in
-    #: phase 03.6 (SC-3); this budget never refused in the first place --
-    #: crossing it selects a bounded block-by-block rewrite. Refusing is not
-    #: available here:
-    #: `Factor.update()` reaches `widen_symbol_axis` as its ONLY path -- there
-    #: is no raw tier for it to re-read, so `BaseDataset`'s
-    #: `on_new_listing="rebuild"` escape does not exist on the factor side.
-    #:
-    #: Routing of the brief's measured scenarios at this value (2026-09-08):
-    #: 0.2 / 34.6 / 137.3 MiB stores and a daily 7,700-symbol year of 20
-    #: variables (0.3 GiB) take the whole-store rewrite; daily full history
-    #: (6.0 GiB), 1-minute 500 symbols (7.3 GiB) and 1-minute 3,000 symbols
-    #: (43.9 GiB) take the chunked one.
+    #: Largest number of bytes a symbol-axis widen may materialise at once.
+    #: At or under this budget ``widen_symbol_axis`` reindexes the whole store
+    #: in memory and writes it once; above it, the store is rewritten block by
+    #: block along the append dimension. The value routes between the two
+    #: strategies and never refuses a widen. It is a constant of this module
+    #: rather than an import because the storage layer must not depend on the
+    #: acquisition layer for a scalar.
     MAX_WIDEN_BYTES = 4 * 1024**3
 
     def write(self, path: str, **kwargs) -> Self:
+        """Write ``data`` to ``path``, replacing any store already there.
+
+        The parent directory is created if needed and ``mode`` defaults to
+        ``"w"``. No chunk encoding is applied, so the store lands on Zarr's
+        default chunk grid.
+
+        Args:
+            path: Directory of the Zarr store.
+            **kwargs: Passed through to ``Dataset.to_zarr``.
+        """
         if not Path(path).exists():
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         kwargs.setdefault("mode", "w")
@@ -138,117 +123,41 @@ class XrBackend(DataBackend):
         append_dim_size: Optional[int] = None,
         **kwargs,
     ) -> Self:
-        """Create the store, or extend it along `append_dim`.
+        """Create the store at ``path``, or extend it along ``append_dim``.
 
-        The storage-medium half of the chunked ingestion path: "how the
-        in-memory object reaches this medium INCREMENTALLY" is the same
-        concern, at the same altitude, as `write()`'s "how it reaches this
-        medium". Nothing here reads a config -- the backend has no
-        `raw_data_dir_path`, no `start_date` and no knowledge of where its
-        data came from, and giving it any of those would break the
-        medium-agnostic contract that lets `PlBackend` exist.
+        When no store exists, ``data`` is written as the first window with
+        the chunk grid pinned by ``_append_encoding``. Otherwise the window
+        is appended after ``_assert_append_compatible`` has checked that it
+        cannot silently corrupt the store. Raw ``to_zarr(mode="a")`` performs
+        none of those checks: a changed coordinate overwrites the stored
+        labels, a float NaN written into an integer variable becomes ``0``,
+        an overlapping window leaves the axis non-monotonic, and a changed
+        variable set leaves the store unopenable. A gap between the stored
+        end and the incoming start is allowed; overlap is refused and has no
+        opt-out, because ``append`` extends a store and does not recompute
+        one. To replace a range the store already holds, rewrite the store
+        with ``write``.
 
-        **Contract, enforced rather than merely documented.** Every non-append
-        dimension and its coordinate values must match the store EXACTLY
-        across calls, every shared data variable must keep its dtype, the
-        incoming window must begin STRICTLY AFTER the stored end of
-        `append_dim`, and the incoming panel's SET of data variables must
-        match the store's exactly. Those four are CHECKED on every call; a
-        FIFTH thing is decided once and permanently by the creating write and
-        cannot be checked afterwards at all -- the on-disk chunk grid, which a
-        caller who knows the store's eventual extent states with
-        `append_dim_size` and a caller who does not gets from the panel in
-        hand (see the paragraph on it below). Raw
-        `to_zarr(mode="a", append_dim=...)` enforces none of
-        the four: a mismatched symbol coordinate is silently OVERWRITTEN with
-        the new window's labels, leaving previously-written rows attributed to
-        the wrong symbols; an appended float64 NaN written into an int64
-        variable is silently cast to 0 -- a fabricated observation where data
-        was missing; and an OVERLAPPING window is simply concatenated on,
-        leaving the append dimension no longer strictly increasing (measured
-        2026-09-07: a store on 2022-01-04..2022-01-06 taking a
-        2022-01-05..2022-01-07 window comes back holding
-        `[01-04, 01-05, 01-06, 01-05, 01-06, 01-07]`, and the failure surfaces
-        later and elsewhere as a `.sel()` KeyError on a non-monotonic index or
-        a `to_xarray` refusal on a non-unique one); and a panel whose SET of
-        data variables differs from the store's is written variable by
-        variable, leaving the store's variables at DIFFERENT lengths along
-        `append_dim`. The first three corruptions are invisible afterwards
-        from the store alone, which is why they are checked here, before the
-        irreversible append. The fourth is worse than invisible: the store
-        cannot be OPENED afterwards at all.
+        A panel that has grown a variable must go through
+        ``widen_data_vars`` or ``widen_and_append`` first; a panel missing a
+        stored variable is refused outright, since the only fill would be
+        NaN over the incoming dates of a variable that was complete.
 
-        **The data-variable set is an axis too**, and the one whose corruption
-        is total. Zarr extends exactly the variables it is handed, so any
-        mismatch in either direction leaves ragged lengths and `xr.open_zarr`
-        then refuses the whole store with `conflicting sizes for dimension
-        'timestamp'` -- measured 2026-09-07 in all three shapes: a variable
-        added, a variable dropped, and the two sets disjoint. The set must
-        therefore MATCH, and the two directions are not symmetric. A panel
-        that legitimately GREW a variable has an explicit opt-in:
-        `widen_data_vars()` materialises it over the store's existing extent
-        with NaN over history, which is the same superset-and-backfill rule
-        the symbol axis already follows, and `widen_and_append()` applies it
-        as part of reconciling every axis. A panel MISSING a stored variable
-        has no such route, because the only way to fill it would be NaN over
-        the INCOMING window -- punching holes into recent dates of a variable
-        that was complete, after which nothing distinguishes those holes from
-        data the vendor never had. That direction destroys history which was
-        valid before the call, so it is refused outright; recompute the window
-        over the store's full variable set, or replace the store.
+        Args:
+            path: Directory of the Zarr store.
+            append_dim: The dimension the store grows along.
+            append_dim_size: The store's eventual total length along
+                ``append_dim``, if the caller knows it. Only the creating
+                write reads it; it pins the chunk grid to the value a single
+                whole-range write would have chosen instead of the first
+                window's length. Ignored against an existing store, so an
+                incremental writer may pass it on every window.
+            **kwargs: Passed through to ``Dataset.to_zarr``. An ``encoding``
+                entry is dropped on the append path because xarray rejects
+                it there.
 
-        A GAP is NOT an error. A window starting strictly after the stored end
-        appends normally whatever the distance: a discontinuous axis is a
-        legitimate shape this layer takes no position on, and only OVERLAP is
-        refused. The refusal is unconditional and carries no opt-out -- to
-        recompute a range the store already holds, replace the store with
-        `save(mode="w")`; `append()` exists to extend it.
-
-        `from_raw_data_chunked()` satisfies the coordinate half by pinning the
-        symbol axis once over the whole range (D-02); this check is what turns
-        that guarantee into an assertion.
-
-        **The creating write decides a FIFTH thing, and it decides it
-        permanently: the on-disk chunk grid.** Zarr fixes it at store creation
-        and append cannot revise it, so a caller who already knows the store's
-        eventual extent along `append_dim` says so with `append_dim_size` and
-        gets `min(APPEND_DIM_CHUNK, that extent)` -- the grid a single
-        whole-range write would have left -- while a caller who does not know
-        it gets the panel-in-hand default. An incremental writer that stays
-        silent hands Zarr its FIRST WINDOW's length as the store's permanent
-        chunk, which is how `--chunk day` came to leave `(1, 3)` where the
-        unchunked path left `(9, 3)` (measured 2026-09-12, fixed in 03.6). The
-        parameter is keyword-ONLY and consumed explicitly rather than left
-        riding in `**kwargs`, because both branches forward `**kwargs`
-        verbatim to `to_zarr`, which would reject an unknown argument.
-
-        Against an EXISTING store the value is accepted and ignored, so a
-        caller may pass it unconditionally on every window -- which is exactly
-        what `from_raw_data_chunked` does, because store EXISTENCE is the real
-        condition and it is owned here. A loop-index guard at the call site
-        would be wrong on the two paths where the creating write is not
-        iteration zero: a resume skips already-recorded windows, and
-        `on_new_listing="rebuild"` moves the store aside so a later call
-        creates it.
-
-        **The REASON that paragraph used to give was false, and the falsity
-        was load-bearing rather than cosmetic.** SUPERSEDED by phase 03.6's
-        second gap-closure pass; the original wording is quoted here rather
-        than deleted so the correction is legible (D-18). It read: "the grid
-        was pinned irreversibly by the creating write and there is nothing
-        left to decide". A reader who trusted that would conclude the grid
-        needs no thought at any later point in a store's life, which is the
-        opposite of true. The accurate reason `append()` ignores the value
-        here is narrower: THIS METHOD cannot revise the grid, because xarray
-        rejects `encoding` on an append -- see the `kwargs.pop("encoding")`
-        below. The GRID is not beyond revision. `widen_symbol_axis`, in this
-        same class, rewrites the store with `mode="w"` and re-pins it, and
-        `widen_data_vars` pins its filler; both take the same
-        `append_dim_size` for exactly that reason, so the entry points cannot
-        disagree about what the store's grid should be. What IS irreversible
-        is any individual pinning: Zarr fixes a grid at write time and nothing
-        edits it in place, so a store left on the wrong one can only be
-        corrected by delete-and-rebuild.
+        Raises:
+            ValueError: If the window fails any compatibility check.
         """
         target = Path(path)
         if not target.exists():
@@ -263,17 +172,17 @@ class XrBackend(DataBackend):
             return self
 
         self._assert_append_compatible(path, append_dim)
-        # No `encoding` on an append -- xarray rejects it outright, and the
-        # chunk grid was already pinned by the creating write above.
+        # xarray rejects `encoding` on an append; the grid was pinned by the
+        # creating write above.
         kwargs.pop("encoding", None)
         self.data.to_zarr(path, mode="a", append_dim=append_dim, **kwargs)
         return self
 
-    #: Sidecar suffixes used by `widen_symbol_axis`'s atomic directory swap.
-    #: `.widening.tmp` holds the rewritten store BEFORE it is authoritative and
-    #: is never read by anything; `.superseded.tmp` briefly holds the ORIGINAL
-    #: store between the two renames and is the one artefact a crash can leave
-    #: behind that still contains real data.
+    #: Sidecar suffixes used by ``widen_symbol_axis``'s atomic directory
+    #: swap. ``.widening.tmp`` holds the rewritten store before it becomes
+    #: authoritative and is never read by anything. ``.superseded.tmp`` briefly
+    #: holds the original store between the two renames and is the one
+    #: artefact a crash can leave behind that still contains real data.
     WIDENING_SUFFIX = ".widening.tmp"
     SUPERSEDED_SUFFIX = ".superseded.tmp"
 
@@ -287,162 +196,62 @@ class XrBackend(DataBackend):
         *,
         append_dim_size: Optional[int] = None,
     ) -> Self:
-        """Rewrite the store at `path` onto a SUPERSET `dim` axis, crash-safely.
+        """Rewrite the store at ``path`` onto a superset ``dim`` axis.
 
-        The storage-medium answer to "the roster grew between two runs". Every
-        pre-existing label keeps its history bit-identical; a newly added label
-        gets the fill value across the whole historical block (NaN for a float
-        variable, whatever `fill_values` names otherwise). The append dimension
-        is not touched and neither is `self.data` -- this operates purely on the
-        store, so a caller can widen without holding a panel at all.
+        Every label already in the store keeps its history unchanged; each
+        new label is filled across the whole stored extent (NaN for a
+        floating-point variable, the value named in ``fill_values``
+        otherwise). ``data`` is not touched, so a caller can widen a store
+        without holding a panel. This is the explicit opt-in for a roster
+        that grew between runs; a plain ``append`` still refuses a changed
+        coordinate.
 
-        **Why this is a separate method rather than a flag on `append()`.**
-        `_assert_append_compatible` refuses a changed `dim` coordinate for a
-        reason that has not gone away: raw `to_zarr(mode="a", append_dim=...)`
-        silently OVERWRITES the stored labels, so a window on `{A, ARM}` written
-        into a store on `{A, XYZ}` leaves XYZ's rows attributed to ARM with
-        nothing raised (measured 2026-09-06: `rows [1.0, 3.0] were written for
-        XYZ but are now labelled: ARM`). Widening is an explicit, separately
-        named opt-in that makes the two axes AGREE; it does not loosen the
-        refusal a caller who did not opt in still gets.
+        The rewrite lands in a ``.widening.tmp`` sidecar and is then swapped
+        in with two same-parent renames (store to ``.superseded.tmp``,
+        sidecar to store) followed by removal of the superseded copy. A crash
+        between the renames leaves no store at ``path`` and a superseded
+        sidecar holding the only copy; the next call refuses and names the
+        manual move rather than guessing which directory is authoritative.
+        A non-empty superseded sidecar beside a live store is also refused,
+        because it may be a real store left by an interrupted rebuild. Empty
+        or never-authoritative residue is removed and the widen proceeds.
 
-        **Guards fire before any write**, in this order:
+        The strategy is chosen by size: at or under ``MAX_WIDEN_BYTES`` the
+        whole store is reindexed in memory and written once; above it the
+        store is rewritten block by block along ``append_dim`` and a warning
+        names the figures involved. Both leave an identical store.
 
-        1. A `.superseded.tmp` sidecar with NO store at `path` means a previous
-           run crashed between the two renames. Refuse and name the manual move
-           -- deciding which directory is authoritative is not this method's
-           call to make.
-        2. A `.superseded.tmp` sidecar WITH a store at `path` is the fourth
-           crash state, and it splits by whether the residue holds anything.
-           NON-EMPTY: refuse. The closing rename of the store onto the residue
-           raises `ENOTEMPTY` on POSIX against a non-empty directory, but only
-           AFTER the entire sidecar rewrite has been paid for and thrown away
-           -- measured `OSError: [Errno 66] Directory not empty`, with an
-           orphaned `.widening.tmp` holding a complete widened store left
-           behind. Two DIFFERENT producers write this suffix at this path: a
-           widen that crashed between its two renames, and a SIGKILLed
-           `on_new_listing="rebuild"`, whose `BaseDataset.SUPERSEDED_SUFFIX`
-           aside is this same string (`_restore_rebuild_asides` runs only on an
-           exception or a cancel, and SIGKILL reaches neither). Either may hold
-           the only complete copy of a store, so the residue is never deleted
-           and never renamed over -- the operator is named both producers and
-           told to decide by hand. EMPTY: self-heal with `rmtree`, exactly as
-           the orphaned `.widening.tmp` one line below. This deviates
-           deliberately from the review's suggested guard, which refuses the
-           both-exist state unconditionally: an empty directory holds nothing
-           and `os.replace` onto it SUCCEEDS today, so an unconditional refusal
-           would turn a working widen into an error in the name of fixing one.
-        3. `symbols` must be a SUPERSET of the stored labels. `reindex` drops
-           what it is not asked for, and a store missing a delisted symbol's
-           history is indistinguishable afterwards from one that never held it.
-        4. Every data variable carrying `dim` must be floating-point, or be
-           named in `fill_values`. Measured: an unfilled `reindex` upcasts a
-           bool `anomaly_flag` and an int64 `volume` to float64-with-NaN -- a
-           silent schema change to a LIVE store, the same family of invisible
-           corruption `_assert_append_compatible` refuses on the append path.
-           An explicit `fill_values` entry preserves the stored dtype exactly,
-           so no `.astype()` restoration is done or needed.
+        ``symbols`` is re-spelled in the stored axis's dtype before anything
+        is compared, so a ticker handed to an integer axis raises from
+        ``normalize_to_axis_dtype`` instead of matching nothing and writing
+        an all-NaN store.
 
-        **The swap** is rename-aside -> rename-in -> rmtree, mirroring
-        `ChunkLedger._flush`'s `os.replace` idiom one level up at directory
-        granularity. Both renames are same-parent and therefore atomic. The
-        rename-aside comes FIRST on purpose: a crash between the two leaves NO
-        store at `path`, so the next read fails loudly instead of treating a
-        half-widened store as authoritative.
+        Widening backfills NaN over a new label's history; it does not
+        recover data a vendor may have had. Rebuilding from raw data is the
+        route when that history matters.
 
-        **The strategy is chosen BY SIZE, and reported** (260908-g30). dask is
-        not installed here, so `xr.open_zarr` yields lazily-indexed arrays that
-        `.load()` materialises in full. `_estimate_widen_bytes` sizes the
-        WIDENED panel before anything is written, and the result routes:
+        Args:
+            path: Directory of the Zarr store.
+            symbols: The labels the rewritten ``dim`` axis must contain. Must
+                be a superset of the stored axis.
+            dim: The axis being widened.
+            append_dim: The store's append dimension, used to size blocks and
+                to pin the rewritten chunk grid.
+            fill_values: Per-variable fill for variables carrying ``dim``
+                that are not floating-point. Without an entry such a
+                variable is refused, because an unfilled reindex would
+                silently upcast it to float64.
+            append_dim_size: The store's eventual length along
+                ``append_dim``. This rewrite re-pins the chunk grid, so a
+                caller widening a store that has not yet reached its final
+                extent states the extent here; ``None`` sizes the grid from
+                the store as it is now.
 
-        - at or under `MAX_WIDEN_BYTES`, `_widen_whole_store` reindexes the
-          whole store and writes it once -- the shipped path, unchanged, and
-          logged at `info`;
-        - over it, `_widen_chunked` rewrites the store block by block along
-          `append_dim`, holding ONE block, and logs a `warning` naming every
-          figure it decided on.
-
-        Both leave the same store: values element for element, both
-        coordinates, the on-disk chunk grid and the `symbol` coordinate's
-        on-disk encoding, measured across both live production encodings and
-        locked by `tests/test_symbol_axis_widening.py`.
-
-        **`append_dim_size` decides the REWRITTEN store's chunk grid.** This
-        is a `mode="w"` write, so it does not merely preserve the grid the
-        creating write pinned -- it re-pins it, and Zarr cannot revise the
-        result afterwards. `None`, which is every call site that existed
-        before this parameter, means "size the rewritten grid from the extent
-        the store has RIGHT NOW"; that is this method's behaviour verbatim and
-        is the right answer for a caller widening a store that has already
-        reached its final extent, which is the overwhelmingly common case. A
-        caller that knows the store's EVENTUAL extent along `append_dim`
-        states it instead and gets `min(APPEND_DIM_CHUNK, that extent)` -- the
-        grid a whole-range write would have left.
-
-        The distinction only bites on an INCOMPLETE store, which is exactly
-        why it went unnoticed for a round: a crash-resumed conversion, or a
-        rolled-back rebuild, widens a store holding less than its stated
-        range. Measured 2026-09-13, `APPEND_DIM_CHUNK` at 4 over a 9-row
-        range with the store holding 3 of those rows: the rewrite came back on
-        `(3, 3)` where the creating write had correctly left `(4, 2)`, and at
-        the `day` rung on `(1, 3)` -- the same number the original gap report
-        measured on the creating write. `BaseDataset.from_raw_data_chunked`
-        therefore passes D-02's once-resolved `len(timestamps)` down through
-        `_reconcile_new_listings`, the same value its in-loop
-        `widen_and_append` already passes.
-
-        **Why a router rather than always chunking.** Measured 2026-09-08, the
-        chunked rewrite runs 1.2x / 4.0x / 3.6x the whole-store wall clock on
-        0.2 / 34.6 / 137.3 MiB stores. Where both fit, whole-store wins; above
-        the budget, whole-store does not run at all. Chunking unconditionally
-        would tax every routine widen ~4x to buy nothing.
-
-        **The request is normalised to the STORED axis's dtype, and that is
-        not a compatibility nicety -- it closes a SILENT DATA-DESTRUCTION
-        path.** Until 03.11-02 this method stringified the request
-        unconditionally (`[str(symbol) for symbol in symbols]`) before the
-        store was even open, so on an integer `symbol` axis -- the PERMNO axis
-        phase 03.11 migrates to -- `reindex` matched not one stored label and
-        produced an ALL-NaN panel. The two `os.replace` calls below then made
-        that panel authoritative and `shutil.rmtree`d the original. **No
-        exception was raised and not one line was logged.** Measured
-        2026-09-20 (xarray 2026.7.0 / zarr 3.3.0) on a 4x3 store::
-
-            superset guard 'dropped': [] -> guard passes: True
-            widened symbol coord: ['7000' '10107' '14593' '93436'] <U5
-            non-NaN cells after widen: 0 of 12
-
-        Read the first line together with the third. The superset guard
-        reported nothing dropped AT THE SAME MOMENT the rewrite emptied the
-        store, because it stringified both sides too: `str(10107) ==
-        "10107"`, so it compared a question the reindex was never asked.
-        Passing that guard guaranteed nothing, which is why it now compares
-        `stored[dim].to_index()` against the NORMALISED request.
-
-        How loud the failure is depends on whether the store carries pinned
-        `symbol` encoding metadata, which is the measurement above's one
-        subtlety: a store written by `append()` does carry it, and there the
-        widened `<U5` coordinate fails the closing write with
-        ``TypeError: ufunc 'rint' not supported for the input types`` --
-        noisy, and harmless, since the sidecar is discarded and `path` stays
-        authoritative. A store written by a plain `to_zarr` does NOT, and
-        there the emptied panel is written out and promoted in silence. The
-        same defect, two volumes; only one of them is survivable.
-
-        A label with no spelling in the stored dtype (a ticker handed to a
-        PERMNO axis) raises rather than being coerced or dropped: the error
-        from `quantlab/utils/symbol_axis.normalize_to_axis_dtype` is allowed
-        to BUBBLE rather than being re-wrapped here, because that function
-        already names the offending labels and the target dtype, and a wrapper
-        would only restate them one frame further from where they were
-        rejected.
-
-        **`on_new_listing="rebuild"` is still worth reaching for, for a
-        DIFFERENT reason than it used to be.** Not memory -- that argument is
-        gone, and it never applied to `Factor` anyway, which has no raw tier
-        and so no `rebuild` at all. The surviving reason is DATA: `rebuild`
-        re-reads raw and recovers a new listing's REAL history, where a widen
-        of either strategy backfills NaN over the whole historical block.
+        Raises:
+            FileNotFoundError: If no store exists at ``path``.
+            ValueError: If crash residue makes the store's identity
+                ambiguous, if ``symbols`` would drop a stored label, or if a
+                non-floating variable has no fill value.
         """
         target = Path(path)
         widening = Path(f"{path}{self.WIDENING_SUFFIX}")
@@ -477,14 +286,10 @@ class XrBackend(DataBackend):
                 f"residue may be the ONLY complete copy of the store."
             )
         if superseded.exists():
-            # Empty, so it holds nothing and `os.replace` onto it would
-            # succeed today anyway. Removing it changes no outcome and keeps
-            # the retry clean -- the same treatment the orphaned
-            # `.widening.tmp` gets one line below.
+            # Empty, so it holds nothing; removing it keeps the retry clean.
             shutil.rmtree(superseded, ignore_errors=True)
         if widening.exists():
-            # A never-authoritative orphan from a crashed rewrite. Nothing ever
-            # reads it, so removing it is safe and keeps the retry clean.
+            # A never-authoritative orphan from a crashed rewrite.
             shutil.rmtree(widening, ignore_errors=True)
         if not target.exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -493,18 +298,13 @@ class XrBackend(DataBackend):
 
         stored = xr.open_zarr(path)
         try:
-            # `requested` CANNOT be computed before this point: normalising it
-            # needs the stored axis's dtype, and that needs the store open.
-            # Until 03.11-02 it was built by a bare `str()` comprehension over
-            # `symbols`, placed ABOVE the open -- which is precisely why it
-            # could not consult the dtype, and so was blind to it.
+            # The request can only be normalised once the store is open,
+            # because the target dtype is the stored axis's own.
             stored_index = stored[dim].to_index()
             requested = normalize_to_axis_dtype(symbols, stored_index)
 
-            # Compared on the NORMALISED values. Both sides used to be
-            # `str()`ed here, which made the comparison self-consistent but
-            # unrelated to what `reindex` would actually match -- see this
-            # method's docstring.
+            # Compared on the normalised values, which is what `reindex`
+            # will actually match against.
             dropped = stored_index.difference(pd.Index(requested)).tolist()
             if dropped:
                 raise ValueError(
@@ -565,11 +365,10 @@ class XrBackend(DataBackend):
                 path, dim, append_dim, estimate, block_rows, chunked
             )
 
-            # Per D-3 the chosen strategy runs INSIDE `stored`'s lifetime: both
-            # strategies read `path` through that handle, the chunked one for
-            # the whole duration of its block loop. The cleanup spans the WHOLE
-            # strategy call rather than a single write, so a crash on block 7
-            # of 12 leaves no orphan sidecar and leaves `path` authoritative.
+            # The strategy reads `path` through `stored` for its whole
+            # duration, so it runs inside this handle's lifetime, and the
+            # cleanup covers the whole strategy call: a crash mid-way leaves
+            # no orphan sidecar and leaves `path` authoritative.
             strategy = self._widen_chunked if chunked else self._widen_whole_store
             try:
                 strategy(
@@ -600,26 +399,22 @@ class XrBackend(DataBackend):
         dim: str,
         append_dim: str,
     ) -> dict:
-        """Size the panel a widen of `stored` onto `requested` would produce.
+        """Estimate the size of the panel a widen onto ``requested`` produces.
 
-        Takes the ALREADY-OPEN dataset rather than a path on purpose: the
-        router holds one -- it opened the store to run the superset and dtype
-        guards -- and a path-taking sibling would be a SECOND live name for one
-        estimate with no caller of its own. Lift it to a path-taking form the
-        day something outside the router needs to size a widen without opening
-        the store first; until then, one name.
+        Only metadata is read, so the estimate is free relative to the
+        rewrite it decides.
 
-        `widened_bytes` sums, over every data variable, that variable's byte
-        count with the `dim` extent replaced by `len(requested)` -- i.e. the
-        allocation the whole-store rewrite makes. `row_bytes` is the same
-        quantity per ONE `append_dim` row, summed over only those variables
-        that carry `append_dim`, which is what turns a byte budget into a block
-        length in `_widen_block_rows`. Variables that do not carry `append_dim`
-        contribute to `widened_bytes` (they are materialised too) but not to
-        `row_bytes` (they do not scale with the block).
+        Args:
+            stored: The already-open store.
+            requested: The target ``dim`` axis.
+            dim: The axis being widened.
+            append_dim: The store's append dimension.
 
-        Metadata only: nothing here reads a chunk off disk, so the estimate is
-        free relative to the rewrite it decides.
+        Returns:
+            A dict with ``stored_symbols``, ``symbols``, ``timestamps``,
+            ``variables``, ``widened_bytes`` (the whole widened panel, every
+            variable) and ``row_bytes`` (the bytes of one ``append_dim`` row,
+            counting only variables that carry ``append_dim``).
         """
         widened_bytes = 0
         row_bytes = 0
@@ -646,95 +441,18 @@ class XrBackend(DataBackend):
 
     @staticmethod
     def _widen_block_rows(row_bytes: int) -> int:
-        """How many `append_dim` rows one chunked-rewrite block may hold.
+        """Return how many ``append_dim`` rows one chunked-rewrite block holds.
 
-        D-2's rule, verbatim::
+        The block is the largest multiple of ``APPEND_DIM_CHUNK`` that fits
+        under ``MAX_WIDEN_BYTES``, and never less than one
+        ``APPEND_DIM_CHUNK``. The floor bounds memory per block; a single
+        block that is still over budget is accepted rather than refused,
+        because a bounded loop is still better than the whole-store
+        allocation it replaces.
 
-            raw        = MAX_WIDEN_BYTES // row_bytes      (0 when row_bytes is 0)
-            block_rows = max(APPEND_DIM_CHUNK,
-                             (raw // APPEND_DIM_CHUNK) * APPEND_DIM_CHUNK)
-
-        **The paragraph below transcribes the first block's write as it stood
-        BEFORE plan 03.6-07 threaded the caller's stated extent into it.**
-        NOT TRUE ANY MORE AS OF 03.6-07 -- SUPERSEDED by phase 03.6's third
-        gap-closure pass (plan 03.6-08); the original wording is kept below
-        rather than deleted so the correction is legible (D-18). The excerpt
-        is kept ON PURPOSE rather than deleted as review finding WR-06
-        proposed, because D-18 forbids deleting falsified text and
-        preserve-and-mark is the discipline this whole phase enforces; the rot
-        WR-06 objected to is answered instead by writing the correction as
-        PROSE, so no new transcription enters this file. Only the sentence
-        naming the block's own length as the decider, and the conclusion it
-        supports, are stale -- the 2026-09-08 figures and the
-        `max(APPEND_DIM_CHUNK, ...)` floor argument standing in the same
-        paragraph are still live and still what they measured.
-
-        **The grid constraint is load-bearing, not stylistic.** The FIRST block
-        is written with `encoding=self._append_encoding(append_dim,
-        data=first_block)` -- routing through the single-sourced chunk rule
-        rather than restating it -- so the block's own length is what decides
-        the store's on-disk append-dim chunk. Measured 2026-09-08 against a
-        600-timestamp store: a 100-row block leaves `close` chunks `(100, 3)`
-        where the whole-store path leaves `(512, 3)`; a 512-row block
-        reproduces `(512, 3)` exactly. Requiring the block to be at least
-        `APPEND_DIM_CHUNK` AND a multiple of it makes
-        `min(APPEND_DIM_CHUNK, first_block_len)` equal
-        `min(APPEND_DIM_CHUNK, total_len)` identically, so the two strategies
-        agree on the grid without either restating the arithmetic.
-
-        **The correction, in prose.** The first block's write now ALSO passes
-        the caller's stated extent, through `_append_encoding`'s keyword-only
-        `append_dim_size`, so what decides the store's on-disk append-dim
-        chunk is `min(APPEND_DIM_CHUNK, max(block length, stated extent))`.
-        The block's own length is the answer only when the caller states
-        nothing, which is every call site that existed before phase 03.6.
-
-        **This path keeps its floor AND the chunked strategy now also takes
-        `append_dim_size`. The two do different jobs; neither replaces the
-        other.** The floor bounds BYTES under `MAX_WIDEN_BYTES`, which no
-        append-dimension length can express, so dropping it would leave the
-        grid correct and the memory ceiling unenforced. The keyword states the
-        store's EVENTUAL extent, so the first block does not re-pin the grid
-        downward while the store is still incomplete, which no byte budget can
-        express either. Both apply, on the same path, for different reasons.
-
-        **This paragraph used to conclude the opposite, and that conclusion is
-        why the widen family was judged already-covered for a whole round.**
-        SUPERSEDED by phase 03.6's second gap-closure pass; the original
-        argument is preserved here rather than deleted so the correction is
-        legible (D-18). It read: "This path keeps its floor rather than
-        adopting `append_dim_size` [...] the floor is doing TWO jobs (grid
-        agreement and byte bounding) where `append_dim_size` does only the
-        first [...] The two paths agreeing on the grid by different routes is
-        the intended shape, not a divergence to reconcile."
-
-        Two things were wrong with it. First, it was offered as an argument
-        about the widen FAMILY, and the sibling strategy `_widen_whole_store`
-        has no floor and no byte budget at all -- so the argument never
-        covered it. That matters because `_widen_whole_store` is the branch
-        the router actually selects for every store under `MAX_WIDEN_BYTES`,
-        which the logs confirm ("taking the whole-store rewrite"); the covered
-        branch was the rarely-taken one. Second, the floor is not sufficient
-        even HERE: the identity
-        `min(APPEND_DIM_CHUNK, first_block_len) == min(APPEND_DIM_CHUNK,
-        total_len)` holds only once the store has reached its FINAL extent.
-        On an incomplete store the whole store is one block, and at
-        `APPEND_DIM_CHUNK = 4` over 3 held rows the floor alone leaves
-        `min(4, 3) == 3` where the stated extent of 9 wants `min(4, 9) == 4`.
-
-        **The floor wins even when one aligned block exceeds the budget.** This
-        method ROUTES, it does not refuse: a store whose single `APPEND_DIM_CHUNK`
-        block is already over budget still gets the bounded loop, which is
-        strictly better than the whole-store allocation it replaces. Refusing
-        is not an option `Factor.update()` could act on -- it has no raw tier to
-        rebuild from.
-
-        `TimeChunkPlanner` is deliberately NOT used (D-2). Its granularities are
-        CALENDAR periods, and a period's row count is a function of frequency
-        and density -- a month of 1-minute bars is ~390x a month of daily bars
-        (`BARS_PER_DAY_BY_FREQUENCY`) -- so it cannot bound BYTES, which is the
-        entire constraint here. It stays the right tool for planning
-        CONVERSION windows, where the calendar is the unit of work.
+        Args:
+            row_bytes: Bytes of one ``append_dim`` row, from
+                ``_estimate_widen_bytes``.
         """
         chunk = XrBackend.APPEND_DIM_CHUNK
         raw = XrBackend.MAX_WIDEN_BYTES // row_bytes if row_bytes > 0 else 0
@@ -742,11 +460,10 @@ class XrBackend(DataBackend):
 
     @staticmethod
     def _widen_blocks(timestamps: int, block_rows: int) -> range:
-        """The block offsets the chunked rewrite walks.
+        """Return the block start offsets the chunked rewrite walks.
 
-        `max(timestamps, 1)` so a store with a zero-length `append_dim` still
-        writes exactly one (empty) block rather than no block at all, which
-        would leave no sidecar for the swap to rename in.
+        A store with a zero-length append dimension still yields exactly one
+        (empty) block, so the swap always has a sidecar to rename in.
         """
         return range(0, max(int(timestamps), 1), block_rows)
 
@@ -759,19 +476,12 @@ class XrBackend(DataBackend):
         block_rows: int,
         chunked: bool,
     ) -> None:
-        """Say which strategy ran, and how loudly (D-6).
+        """Log which widen strategy was chosen.
 
-        Asymmetric on purpose. A `warning` on every routine sub-budget widen is
-        noise, and noise is how an operator learns to stop reading warnings; the
-        requirement is that the SWITCH not be silent, not that every widen
-        announce itself. So the chunked branch is loud and names every figure a
-        reader needs -- including the measured wall-clock multiplier, so a slow
-        run reads as the strategy rather than as the machine -- and the
-        whole-store branch is one `info` line, enough that which path ran is
-        always answerable from the log.
-
-        Shaped after `BaseDataset._reconcile_new_listings`'s widen warning: name
-        the store, name both counts, name the consequence, name the opt-out.
+        The whole-store path logs one ``info`` line; the chunked path logs a
+        ``warning`` naming every figure it decided on, so a slow run reads as
+        the strategy rather than the machine. The asymmetry is deliberate: a
+        warning on every routine widen would train operators to ignore it.
         """
         gib = 1024**3
         mib = 1024**2
@@ -814,33 +524,18 @@ class XrBackend(DataBackend):
         block_rows: int,
         append_dim_size: Optional[int] = None,
     ) -> None:
-        """The shipped rewrite, unchanged: reindex the WHOLE store, write once.
+        """Reindex the whole store in memory and write it once to ``widening``.
 
-        Faster than `_widen_chunked` wherever it fits -- measured 2026-09-08,
-        chunked runs 1.2x / 4.0x / 3.6x this path's wall clock on 0.2 / 34.6 /
-        137.3 MiB stores -- which is exactly why `widen_symbol_axis` routes
-        rather than always chunking.
-
-        `block_rows` is accepted and ignored. The two strategies carry ONE
-        signature so the router selects between them by name and calls them
-        identically; a router that had to remember which arguments each
-        strategy wanted is a router with two call sites to drift apart.
-        `append_dim_size` is on both for the same reason, and unlike
-        `block_rows` this path genuinely uses it.
-
-        **This method has NO floor and NO byte budget.** Its sibling
-        `_widen_chunked` gets grid agreement partly for free from
-        `_widen_block_rows`'s `max(APPEND_DIM_CHUNK, ...)` floor; there is no
-        equivalent here, so the caller's STATED extent is the only thing
-        standing between this rewrite and a grid re-pinned from whatever the
-        store happens to hold right now. That absence is why this branch was
-        judged already-covered by the floor argument one method over and was
-        not: the floor never applied to it at all.
+        The faster strategy wherever the widened panel fits under
+        ``MAX_WIDEN_BYTES``. ``block_rows`` is accepted and ignored so that
+        both strategies share one signature. This path has no block floor,
+        so ``append_dim_size`` is the only thing that keeps the rewritten
+        chunk grid from being sized by whatever the store happens to hold
+        right now.
         """
-        # `.load()` is load-bearing, not defensive: without dask,
-        # `open_zarr` still hands back lazily-indexed arrays that read from
-        # the store directory on access, and the swap below renames that
-        # directory out from under them.
+        # `.load()` is required: without dask, `open_zarr` returns lazily
+        # indexed arrays that read from the store directory on access, and
+        # the swap renames that directory out from under them.
         widened = stored.reindex({dim: requested}, fill_value=fills).load()
         encoding = self._append_encoding(
             append_dim, data=widened, append_dim_size=append_dim_size
@@ -859,56 +554,16 @@ class XrBackend(DataBackend):
         block_rows: int,
         append_dim_size: Optional[int] = None,
     ) -> None:
-        """The bounded rewrite: one `append_dim` block in memory at a time.
+        """Rewrite the store to ``widening`` one ``append_dim`` block at a time.
 
-        Same output as `_widen_whole_store`, measured element for element
-        (values with `equal_nan=True`, both coordinates, the on-disk chunk grid
-        AND the `symbol` coordinate's on-disk encoding, across both live
-        production encodings) -- and a peak allocation of one block instead of
-        the whole store. `tests/test_symbol_axis_widening.py` is what keeps the
-        two paths agreeing; the equivalence is the deliverable, not a nicety.
-
-        **The transcribed sentence below describes the first block's write as
-        it stood BEFORE plan 03.6-07, and its conclusion about WHY the two
-        strategies agree is now the wrong reason.**
-        NOT TRUE ANY MORE AS OF 03.6-07 -- SUPERSEDED by phase 03.6's third
-        gap-closure pass (plan 03.6-08); the original wording is kept below
-        rather than deleted so the correction is legible (D-18). It read:
-
-        [BEGIN preserved original -- D-18]
-        The FIRST block creates the sidecar with `mode="w"` and
-        `encoding=self._append_encoding(append_dim, data=block)`, so the chunk
-        rule stays single-sourced and the block-size constraint in
-        `_widen_block_rows` is what makes the resulting grid match the
-        whole-store path's.
-        [END preserved original]
-
-        **The correction, in prose.** The two strategies now agree on the grid
-        because BOTH read the same `append_dim_size` keyword and hand it to
-        `_append_encoding`, not because `_widen_block_rows`'s block-size floor
-        makes them coincide. That floor is still live and still does its own
-        job -- bounding the BYTES one block may materialise under
-        `MAX_WIDEN_BYTES`, which no append-dimension length can express -- it
-        simply is no longer the thing that aligns the grids. The full
-        floor-versus-`append_dim_size` argument is written out once, in
-        `_widen_block_rows`'s own docstring, and is not restated here.
-
-        Every LATER block appends along `append_dim`, first dropping any data
-        variable that does not carry it: the first block already wrote those at
-        their full extent, and handing them to an appending write again would
-        rewrite them per block.
-
-        **Each block is `.load()`ed before its own write**, for the same reason
-        the whole-store path loads once: without dask, `open_zarr` hands back
-        lazily-indexed arrays that read from the store directory on access, and
-        the swap renames that directory out from under them. At block
-        granularity the requirement is sharper -- no lazily-indexed reference
-        may outlive its ITERATION either, because the next iteration's `isel`
-        must be free to read the same handle.
-
-        `stored` is read for the whole duration of the loop, which is why the
-        loop runs inside the router's `try:` whose `finally` closes it, and why
-        both `os.replace` calls stay outside that (D-3).
+        Produces the same store as ``_widen_whole_store`` (values, both
+        coordinates, chunk grid and coordinate encoding) with a peak
+        allocation of one block. The first block creates the sidecar with
+        the chunk grid pinned by ``_append_encoding``; every later block is
+        appended after dropping any variable that does not carry
+        ``append_dim``, since the first block already wrote those at full
+        extent. Each block is loaded before its own write so that no lazily
+        indexed reference outlives its iteration.
         """
         timestamps = int(stored.sizes.get(append_dim, 0))
         for index, low in enumerate(self._widen_blocks(timestamps, block_rows)):
@@ -945,71 +600,42 @@ class XrBackend(DataBackend):
         *,
         append_dim_size: Optional[int] = None,
     ) -> Self:
-        """Add data variable(s) to the store at `path`, backfilled over its
-        EXISTING extent.
+        """Add data variables to the store at ``path``, backfilled over its extent.
 
-        The storage-medium answer to "the stored panel grew a column between
-        two runs" -- the `data_vars` counterpart of `widen_symbol_axis`,
-        following the same rule. The incoming set must be a SUPERSET; a new
-        member is materialised across the whole historical block with the fill
-        value (NaN for a floating-point variable, whatever `fill_values` names
-        otherwise); every stored variable keeps its values bit-identical. A
-        name the store already holds is left entirely alone, and when none of
-        `variables` is new this returns without writing at all.
+        The variable-set counterpart of ``widen_symbol_axis``. Each name in
+        ``variables`` that the store does not yet hold is materialised across
+        the store's whole existing extent with the fill value (NaN for a
+        floating-point dtype, the ``fill_values`` entry otherwise). Names the
+        store already holds are left alone, and when nothing is new the
+        method returns without writing. This is the explicit opt-in for a
+        panel that grew a column; a plain ``append`` still refuses a changed
+        variable set because Zarr would otherwise write the new variable
+        over the incoming window only and leave the store unopenable.
 
-        `variables` maps each name to its DTYPE rather than to the incoming
-        array. The dtype is the narrower of the two and is everything the
-        filler needs, so this method never holds the caller's panel -- like
-        its sibling it operates purely on the store, and a caller can widen
-        without having a panel in hand.
+        The filler carries dimensions but no coordinates: the store already
+        holds them, and writing a decoded coordinate back can land on a
+        different dtype than the one Zarr recorded. No directory swap is
+        needed because a failed partial write raises and leaves the store
+        intact.
 
-        **Why this is a separate method rather than a flag on `append()`.**
-        `_assert_append_compatible` refuses an incoming variable set the store
-        does not match, for a reason that has not gone away: zarr extends
-        exactly the variables it is handed, so a new name written straight
-        through lands SHORTER along `append_dim` than everything already
-        stored, and `xr.open_zarr` afterwards refuses the ENTIRE store with
-        `conflicting sizes for dimension 'timestamp'` (measured 2026-09-07).
-        Widening is an explicit, separately named opt-in that makes the two
-        sets AGREE before the append; it does not loosen the refusal a caller
-        who did not opt in still gets.
+        Args:
+            path: Directory of the Zarr store.
+            variables: Maps each variable name to its dtype. The dtype is
+                all the filler needs, so the caller's panel is never held.
+            append_dim: The store's append dimension, used to pin the
+                filler's chunk grid to the store's.
+            fill_values: Per-variable fill for new variables that are not
+                floating-point. Without an entry such a variable is refused,
+                because ``np.full`` with NaN yields ``0`` for integers and
+                ``True`` for booleans, fabricating history.
+            append_dim_size: The store's eventual length along
+                ``append_dim``, so a filler added to a store that has not
+                reached its final extent joins on the same grid as the
+                variables already there.
 
-        **Guards fire before any write**, mirroring `widen_symbol_axis`:
-
-        1. No store at `path` -> `FileNotFoundError`, same as its sibling.
-        2. A new variable that is neither floating-point nor named in
-           `fill_values` is refused. Measured 2026-09-07:
-           `np.full(shape, np.nan, dtype='int64')` yields 0 and `dtype=bool`
-           yields True, so an unfilled backfill across the store's whole
-           history FABRICATES observations rather than marking them absent --
-           the same family of invisible corruption
-           `_assert_append_compatible` refuses on the append path. An explicit
-           `fill_values` entry preserves the stored dtype exactly.
-
-        The filler's `encoding` comes from `_append_encoding`, so the new
-        variable joins the store on the SAME chunk grid as every other one.
-        Measured 2026-09-07 with `APPEND_DIM_CHUNK` at 4 over a 10-long store:
-        an unencoded filler takes the store's whole extent as its chunk while
-        the stored variable holds 4. The next append still succeeds, which is
-        precisely why the grid is pinned here by construction rather than left
-        to surface later as a layout nobody chose.
-
-        **That reasoning covers a filler with NO encoding and misses the case
-        `append_dim_size` exists for: an INCOMPLETE store.** The filler spans
-        the store's extent AS IT IS NOW, so on a store that has not yet reached
-        its stated range the filler is encoded SMALLER than the variables
-        already there -- the opposite direction of the 2026-09-07 measurement,
-        and the same one-store-two-grids outcome. Measured 2026-09-13,
-        `APPEND_DIM_CHUNK` at 4, a store created with a stated extent of 9 but
-        holding 3 rows: `close` on `(4, 2)` and the new `newvar` on `(3, 2)`.
-        A caller that knows the store's eventual extent states it with
-        `append_dim_size` and the filler joins on the same grid as everything
-        else; `None` keeps the store's current extent, which is correct for a
-        caller widening a store that is already complete.
-
-        Unlike its sibling this needs NO directory swap. The measured
-        behaviour is that a partial-extent write raises and leaves the store
-        INTACT, so the operation is already safe to retry.
+        Raises:
+            FileNotFoundError: If no store exists at ``path``.
+            ValueError: If a new non-floating variable has no fill value.
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1054,9 +680,8 @@ class XrBackend(DataBackend):
                     f"measured to preserve the dtype exactly."
                 )
 
-            # The store's own layout, taken from a variable that already
-            # spans `append_dim`, so the filler reproduces the shape the store
-            # actually has rather than one assumed here.
+            # Take the layout from a variable that already spans `append_dim`
+            # so the filler reproduces the store's actual shape.
             layout = next(
                 (
                     variable.dims
@@ -1068,26 +693,12 @@ class XrBackend(DataBackend):
             dims = tuple(layout) if layout is not None else tuple(stored.sizes)
             shape = tuple(int(stored.sizes[name]) for name in dims)
 
-            # NO coords on the filler, deliberately. The store already holds
-            # every one of these dimensions' coordinates, and handing them
-            # back is not a no-op: `stored[name].values` is the DECODED array,
-            # and re-encoding it on the way in can land on a different dtype
-            # than the one zarr recorded. Measured 2026-09-08 against a store
-            # this project's own chunked ingest builds -- zarr holds `symbol`
-            # as `object`, `xr.open_zarr` decodes it to numpy's
-            # `StringDType()`, and writing that back raises
-            # `ValueError: Mismatched dtypes for variable symbol between Zarr
-            # store on disk and dataset to append`, from INSIDE this method,
-            # before the filler lands. That made the whole variable-widening
-            # path unreachable for any store with a string coordinate, which
-            # is every real store here.
-            #
-            # A filler carrying only its dims is positionally aligned by zarr
-            # against the arrays already on disk, so the coordinates stay
-            # exactly as written and every stored value stays bit-identical
-            # (measured: `keep` unchanged, `symbol`/`timestamp` untouched, the
-            # new variable all-fill across the store's whole extent, and the
-            # following `append()` succeeds).
+            # No coords on the filler. The store already holds them, and
+            # `stored[name].values` is the decoded array: re-encoding it on
+            # the way in can land on a different dtype than Zarr recorded
+            # (a string coordinate decodes to numpy's StringDType and is then
+            # rejected as a dtype mismatch). A filler carrying only its dims
+            # is aligned positionally against the arrays on disk.
             filler = xr.Dataset(
                 {
                     name: (
@@ -1114,137 +725,50 @@ class XrBackend(DataBackend):
         fill_values: Optional[Mapping[str, object]] = None,
         **kwargs,
     ) -> Self:
-        """`append()`'s explicit opt-in sibling for a panel that has grown.
+        """Reconcile every axis with the store at ``path``, then ``append``.
 
-        Reconciles all THREE axes and then calls the UNCHANGED `append()`. The
-        order is fixed: `dim` first (widen the store to
-        `sorted(stored | incoming)` and reindex `self.data` onto that same
-        axis), then the data-variable set (`widen_data_vars`), then the
-        append. Variables second is deliberate -- the filler is built over the
-        store's extent AFTER the `dim` widen, so it is materialised once at
-        the final width rather than written narrow and rewritten.
+        The opt-in sibling of ``append`` for a panel that has grown. In
+        order: the ``dim`` axis is widened to the sorted union of the stored
+        and incoming labels and ``data`` is reindexed onto that axis; then
+        any variable the store lacks is added with ``widen_data_vars``; then
+        the unchanged ``append`` runs. Variables are widened after the symbol
+        axis so the filler is built once at the final width. Calling this
+        unconditionally is cheap: when both axes already agree, or when no
+        store exists yet, it delegates straight to ``append``.
 
-        This stays the ONE reconcile-then-append path. A second composed entry
-        point for the third axis would give callers two ways to say the same
-        thing and two places for the guard ordering to drift apart.
+        The closing ``append`` is what keeps the compatibility checks in
+        force. Because the widens commit before it runs, a window it then
+        refuses (an overlapping ``append_dim`` range, say) can leave the
+        store with the grown symbol axis and variable set while its append
+        dimension and stored history are untouched. That is the accepted
+        cost of inheriting the refusal rather than duplicating it.
 
-        **The closing `append()` call is load-bearing, not incidental.** Both
-        sides now share one axis, so `_assert_append_compatible` still runs and
-        PASSES on its own terms -- the guard is satisfied by construction rather
-        than bypassed or relaxed. Any refactor that writes the window directly
-        with `to_zarr(mode="a")` from inside this method removes the guard from
-        the widened path entirely and reintroduces the measured
-        mis-attribution. Nothing here weakens the refusal a caller who did not
-        opt in still gets from plain `append()`.
+        ``append_dim_size`` may ride in ``kwargs``. It is read, not consumed,
+        so the same value reaches the symbol widen, the variable widen and
+        the closing ``append``; those three cannot disagree on the chunk
+        grid for what this call writes. Variables the store held from an
+        earlier write keep whatever grid they were created with.
 
-        The union is `sorted(...)`, matching `base/constituent.py:_densify`'s
-        all-time-union rule, because `ChunkLedger`'s fingerprint is
-        order-sensitive and the axis must be reproducible across runs.
-
-        Because the widens COMMIT before the closing `append()` runs, a window
-        the shared guard then refuses -- an overlapping `append_dim` range, say
-        -- can leave the store carrying the GROWN symbol axis AND the grown
-        variable set while its append dimension is untouched and its
-        pre-existing history intact; that is an accepted side effect of
-        inheriting the refusal rather than duplicating it, not a partial write
-        of the window. It now spans the variable axis as well as the symbol
-        one, and for the same reason.
-
-        Calling this unconditionally is cheap: axes that already agree skip
-        both rewrites entirely and delegate straight to `append()`. The fast
-        path requires BOTH the `dim` axis and the variable set to match --
-        checking only the former would send a variable-grown panel to a plain
-        `append()`, which refuses it. An absent store delegates too, so there
-        is ONE creation path rather than two.
-
-        **This method's grid paragraph used to close with an UNCONDITIONAL
-        claim about the whole store, and that half of it is false.**
-        NOT TRUE ANY MORE AS OF 03.6-07 -- SUPERSEDED by phase 03.6's third
-        gap-closure pass (plan 03.6-08); the original wording is kept below
-        rather than deleted so the correction is legible (D-18). It read,
-        verbatim and unedited, between the two fences:
-
-        [BEGIN preserved original -- D-18, no longer this method's claim]
-        **This method reconciles all three axes AND makes all three of them
-        agree on ONE chunk grid.** Both rewrites below re-pin the grid -- the
-        symbol widen with `mode="w"`, the variable widen by encoding its filler
-        -- and the closing `append()` pins it when the store does not yet
-        exist. All three read `append_dim_size` from the SAME `kwargs` entry,
-        so a store cannot come out of here carrying one grid per axis.
-        [END preserved original]
-
-        **The narrowed claim, which IS true, is about THIS CALL only.** The
-        three things this method itself writes -- `widen_symbol_axis`'s
-        `mode="w"` rewrite, `widen_data_vars`'s filler, and the closing
-        `append()` when it creates the store -- all read `append_dim_size`
-        from the SAME `kwargs` entry, so those three cannot disagree WITH EACH
-        OTHER. That says nothing whatever about variables the store already
-        held from an EARLIER write: this method never revises their grid, and
-        Zarr gives it no way to. A store can and does come out of here
-        carrying one grid for what was already on disk and another for what
-        this call added.
-
-        **The accepted cost, named here with its numbers so the next reader
-        does not re-derive them.** `XrBackend.write()` passes no `encoding` at
-        all, so a store created by `BaseDataset.save()` / `Factor.save()`
-        lands on Zarr's default grid -- the panel's own full shape for a
-        numpy-backed panel -- and has NEVER sat on
-        `min(APPEND_DIM_CHUNK, total)`. `Factor.update()` then holds no source
-        for the store's total extent and passes no `append_dim_size`, so
-        `widen_data_vars`'s filler takes `min(APPEND_DIM_CHUNK, filler_len)`.
-        Measured 2026-09-13 at the REAL default `APPEND_DIM_CHUNK = 512` with
-        NO monkeypatch, along the documented `Factor.save()` ->
-        `Factor.update()` workflow: a 1000-row store came back as
-        `{'close': (1000, 2)}` and the update added `'newvar': (512, 2)` --
-        two grids in one store.
-
-        **Disposition: ACCEPTED, not overlooked.** The root cause is WR-02 --
-        `write()` never pins `encoding` -- which predates phase 03.6 and is
-        INDEPENDENT of the `--chunk` rung, because the filler's grid is
-        decided by `APPEND_DIM_CHUNK` and the filler's own length alone. It
-        therefore leaves SC-1..SC-8 and the phase goal's
-        caller-owns-a-stated-cost half intact. It is recorded in
-        `.planning/phases/03.6-frequency-keyed-chunking-policy/deferred-items.md`
-        and pinned by
-        `tests/test_chunked_ingest.py::test_a_store_built_by_write_keeps_two_chunk_grids_accepted_cost`,
-        so it cannot be denied or silently "fixed" without a red test. The
-        route NOT taken: pinning `encoding` inside `write()` would change the
-        on-disk grid of every store this project writes, on a pre-03.6
-        bulk-write path `03.6-REVIEW-FIX.md` already declined as out of scope.
-
-        The signature deliberately does not grow the parameter: it rides in
-        `**kwargs` already, and `Factor.update()`'s only route through this
-        method is locked against the current parameter tuple by
-        `tests/test_factor_update.py`.
+        Args:
+            path: Directory of the Zarr store.
+            append_dim: The dimension the store grows along.
+            dim: The symbol axis to reconcile.
+            fill_values: Per-variable fill for non-floating variables, passed
+                to both widens and used to reindex ``data``.
+            **kwargs: Passed through to ``append``.
         """
-        # GET, never POP. All three `self.append(path, append_dim, **kwargs)`
-        # exits below forward `**kwargs` verbatim, so consuming this key would
-        # starve the closing append() and reintroduce the ORIGINAL first-window
-        # defect on every store-CREATING write -- strictly worse than the widen
-        # degradation this forwarding fixes. Locked by
-        # `test_the_chunk_grid_reaches_three_consumers_from_one_read`.
+        # Read with `get`, never `pop`: every `append(...)` exit below
+        # forwards `**kwargs` verbatim, and consuming the key here would
+        # starve the closing append on a store-creating write.
         append_dim_size = kwargs.get("append_dim_size")
 
         if not Path(path).exists():
             return self.append(path, append_dim, **kwargs)
 
-        # Both sides in their OWN spelling, and the union ordered by the one
-        # numeric-order implementation this repo has (03.11-04). These two
-        # comprehensions used to `str()` unconditionally, which on an int64
-        # PERMNO axis did TWO things, neither of them visible:
-        #
-        #   - `union` came out in LEXICOGRAPHIC order, so a store whose axis
-        #     was pinned numerically ('[7000, 10107]') was rewritten to
-        #     '[10107, 7000]' by the widen below -- the four-digit fork
-        #     `sort_symbol_axis` exists to close, reached through this door;
-        #   - `self.data.reindex({dim: union})` was handed digit strings
-        #     against an int64 coordinate, matched NOTHING, and returned a
-        #     full-shape, full-dtype, entirely-NaN window, which the closing
-        #     `append()` then wrote.
-        #
-        # On a ticker axis `.tolist()` already yields `str` and
-        # `sort_symbol_axis` falls back to `str` comparison, so this is
-        # byte-for-byte the old behaviour there.
+        # Both sides keep their own spelling and the union is ordered
+        # numerically where that is meaningful, so an integer axis is never
+        # rewritten in lexicographic order or reindexed against digit
+        # strings that match nothing.
         stored = xr.open_zarr(path)
         try:
             stored_labels = (
@@ -1261,9 +785,8 @@ class XrBackend(DataBackend):
             if dim in self.data.coords
             else []
         )
-        # Name -> dtype, which is all `widen_data_vars` needs and all it is
-        # given: the filler's dtype must be the INCOMING one or the closing
-        # `append()`'s shared-variable dtype guard refuses the window.
+        # Name to dtype is all `widen_data_vars` needs: the filler must take
+        # the incoming dtype or the closing `append` refuses the window.
         incoming_names = {
             str(name): variable.dtype
             for name, variable in self.data.data_vars.items()
@@ -1307,67 +830,29 @@ class XrBackend(DataBackend):
         *,
         append_dim_size: Optional[int] = None,
     ) -> dict:
-        """Pin each data variable's chunk shape: `APPEND_DIM_CHUNK` along the
-        append dimension, the full length across every other one.
+        """Build the Zarr ``encoding`` that pins each variable's chunk shape.
 
-        `data` defaults to `self.data`, which is what `append()` passes
-        implicitly. `widen_symbol_axis` passes the WIDENED panel instead, so
-        the rewritten store's non-append dims are pinned to their widened
-        length while `APPEND_DIM_CHUNK` still governs the append dimension.
-        Routing the widen through this method rather than restating the chunk
-        arithmetic is what keeps that rule single-sourced.
+        Along ``append_dim`` the chunk is ``min(APPEND_DIM_CHUNK, extent)``;
+        along every other dimension it is the panel's full length. Variables
+        that do not carry ``append_dim`` are left unencoded. Every creating
+        write in this class routes through here so the chunk rule has one
+        source.
 
-        **`append_dim_size` is a LOWER BOUND on the store's total extent
-        along `append_dim` -- never a replacement for what the panel in hand
-        already proves.** The append-dim chunk is a property of the store's
-        extent, and the effective extent this method uses is
-        `max(panel.sizes[append_dim], append_dim_size)`. `None` -- every call
-        site that existed before phase 03.6's gap-closure pass -- means "use
-        the panel's own append-dim length", which is this method's behaviour
-        verbatim and is the right answer for a caller holding the whole store.
-        A caller that writes the store INCREMENTALLY holds only a window, and
-        its window's length is an accident of the chunking rung rather than a
-        property of the store, so it states the extent instead:
-        `BaseDataset.from_raw_data_chunked` passes `len(timestamps)`, D-02's
-        once-resolved whole-range axis, through `append()`.
+        Args:
+            append_dim: The store's append dimension.
+            data: The panel whose shape to encode; defaults to ``data``.
+                The widen paths pass the widened panel so non-append
+                dimensions are pinned at their widened length.
+            append_dim_size: A lower bound on the store's total extent along
+                ``append_dim``. The effective extent is
+                ``max(panel length, append_dim_size)``, so a caller holding
+                only a window of a larger store can raise the grid to what a
+                whole-range write would have chosen, while a stated value
+                narrower than the panel cannot shrink it. ``None`` uses the
+                panel's own length.
 
-        **That paragraph used to define the keyword WITHOUT the lower-bound
-        qualification, and the missing qualification was a live defect rather
-        than a wording nicety.** SUPERSEDED by phase 03.6's code review
-        (CR-01); the original wording is quoted here rather than deleted so
-        the correction is legible (D-18). It read: "`append_dim_size` is the
-        store's TOTAL extent along `append_dim`, and it is what the append-dim
-        chunk is a property of." The only production call site does not, and
-        cannot, honour that claim. `from_raw_data_chunked` passes
-        `len(timestamps)` from `_raw_axes_in_range()`, which resolves the axis
-        inside the run's `config.start_date` / `config.end_date` -- so a run
-        whose config window is NARROWER than the history already on disk
-        states an extent BELOW the store's true extent. Fed straight into the
-        `min(APPEND_DIM_CHUNK, size)` below, that narrow value re-pinned the
-        grid downward on `widen_symbol_axis`'s `mode="w"` rewrite, measured at
-        `APPEND_DIM_CHUNK = 4` as a complete 12-row store going from `(4, 2)`
-        to `(2, 3)`. Zarr fixes a grid at write time and nothing edits it in
-        place, so that degradation was IRREVERSIBLE -- delete-and-rebuild was
-        the only recovery. Taking the `max()` makes a wrong narrow value inert
-        instead: at worst it fails to raise a grid that was already right.
-        `tests/test_chunked_ingest.py::test_a_narrow_stated_extent_cannot_shrink_an_existing_stores_grid`
-        holds the direction down.
-
-        The SIZE is substituted into the existing
-        `max(min(APPEND_DIM_CHUNK, size), 1)` rather than a second floor being
-        added beside it, deliberately. `APPEND_DIM_CHUNK` is a CEILING as well
-        as the grid unit, so the target is the grid a whole-range write through
-        this same method would have produced -- `min(APPEND_DIM_CHUNK, total)`
-        -- and a bolted-on `max(APPEND_DIM_CHUNK, ...)` floor would lose the
-        ceiling on any range longer than `APPEND_DIM_CHUNK`. That floor IS the
-        right shape one method over in `_widen_block_rows`, which is choosing a
-        block size under a byte budget rather than a chunk under none.
-
-        Only the APPEND dimension reads it. Every other dimension keeps reading
-        the panel in hand, because on the chunked path the panel's non-append
-        axes already equal the store's: D-02 resolves the symbol axis once over
-        the whole range before any window exists, and the ingestion loop
-        refuses a window that came back on a different one.
+        Returns:
+            A dict mapping variable names to ``{"chunks": (...)}`` entries.
         """
         panel = self.data if data is None else data
         encoding = {}
@@ -1377,13 +862,9 @@ class XrBackend(DataBackend):
             chunks = []
             for dim in variable.dims:
                 if dim == append_dim and append_dim_size is not None:
-                    # The stated extent is a LOWER bound, never a ceiling on
-                    # what the panel in hand already proves the store holds.
-                    # It exists to RAISE the grid when the caller holds only a
-                    # window of a larger store; a caller whose window is
-                    # narrower than the store must not be able to re-pin the
-                    # grid downward, because `mode="w"` makes that
-                    # irreversible.
+                    # A lower bound only: the stated extent may raise the
+                    # grid, never re-pin it downward, because a `mode="w"`
+                    # rewrite would make that shrink irreversible.
                     size = max(int(panel.sizes[dim]), int(append_dim_size))
                 else:
                     size = int(panel.sizes[dim])
@@ -1396,20 +877,29 @@ class XrBackend(DataBackend):
 
     @staticmethod
     def _format_append_label(value) -> str:
-        """Render one append-dimension label for a human reading a refusal.
+        """Render one append-dimension label for an error message.
 
-        `append_dim` is a PARAMETER, so this guard must not become
-        timestamp-only: a `datetime64` label reads as an ISO string
-        (`2022-01-07T00:00:00` rather than
-        `np.datetime64('2022-01-07T00:00:00.000000000')`), and anything else
-        falls back to `str()`.
+        A ``datetime64`` label reads as an ISO string; anything else falls
+        back to ``str``, since ``append_dim`` need not be a timestamp.
         """
         if np.issubdtype(np.asarray(value).dtype, np.datetime64):
             return pd.Timestamp(value).isoformat()
         return str(value)
 
     def _assert_append_compatible(self, path: str, append_dim: str) -> None:
-        """Raise before an append that would silently corrupt the store."""
+        """Raise before an append that would silently corrupt the store.
+
+        Four checks run against the store at ``path``, in this order: every
+        shared non-append coordinate must match exactly; the incoming window
+        must start strictly after the stored end of ``append_dim`` (a gap is
+        fine, overlap is not); every shared variable must keep its dtype;
+        and the data-variable sets must be equal, with the missing direction
+        reported before the added one because it has no remedy short of
+        recomputing.
+
+        Raises:
+            ValueError: On the first check that fails.
+        """
         existing = xr.open_zarr(path)
         try:
             for dim in self.data.dims:
@@ -1431,26 +921,20 @@ class XrBackend(DataBackend):
                         f"first window, the way "
                         f"BaseDataset.from_raw_data_chunked() does."
                     )
-            # The append dimension itself, skipped by the loop above. Nothing
-            # else compares an incoming window's labels against the stored
-            # ones, so an OVERLAPPING window appends silently and corrupts the
-            # axis. Skipped when either side carries no coordinate on this
-            # dimension -- a store with the dim but no coord appends fine
-            # today, and turning that working path into a crash is not the job
-            # here -- and skipped when either side is empty, since there is
-            # nothing to compare. A GAP is deliberately permitted (D-01).
+            # The append dimension itself. Skipped when either side has no
+            # coordinate on it (such a store appends fine today) or is empty.
             if (
                 append_dim in self.data.coords
                 and append_dim in existing.coords
                 and self.data[append_dim].size
                 and existing[append_dim].size
             ):
-                # `.min()` / `.max()` rather than positional indexing, so an
-                # unsorted axis on either side cannot fool the comparison.
+                # min/max rather than positional indexing, so an unsorted
+                # axis on either side cannot fool the comparison.
                 incoming_start = self.data[append_dim].values.min()
                 stored_end = existing[append_dim].values.max()
-                # `<=`, not `<`: a window starting exactly ON the stored end
-                # duplicates that one label.
+                # `<=`: a window starting exactly on the stored end would
+                # duplicate that label.
                 if incoming_start <= stored_end:
                     raise ValueError(
                         f"XrBackend.append: refusing to append to {path} -- "
@@ -1478,20 +962,12 @@ class XrBackend(DataBackend):
                         f"integer store becomes 0: a fabricated observation "
                         f"where the data was missing."
                     )
-            # The data-variable SET, which the loop above cannot reach: it
-            # skips any incoming name the store lacks, and never visits a
-            # stored name the incoming panel lacks at all. Placed AFTER that
-            # loop deliberately (D-03), so no pre-existing refusal's
-            # precedence moves -- a panel carrying BOTH a dtype mismatch on a
-            # shared variable AND a changed variable set still raises the
-            # dtype message it raised before this check existed.
+            # The variable set, checked after the dtype loop so a panel with
+            # both a dtype mismatch and a changed set still reports the
+            # dtype first. The missing direction goes first: it destroys
+            # data that was valid before the call and has no widen remedy.
             incoming_names = set(self.data.data_vars)
             stored_names = set(existing.data_vars)
-            # The MISSING direction is checked FIRST: it is the one that
-            # destroys data which was valid before the call, and it is the one
-            # with no remedy short of recomputing. A caller shown the widening
-            # message first would widen the new variable in, retry, and be
-            # refused all over again on the dropped one.
             absent = sorted(stored_names - incoming_names)
             if absent:
                 raise ValueError(
@@ -1533,52 +1009,40 @@ class XrBackend(DataBackend):
             existing.close()
 
     def to_internal(self, data: xr.Dataset) -> Self:
+        """Adopt an in-memory ``xarray.Dataset`` as ``data``."""
         self.data = data
         return self
 
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
+        """Narrow ``data`` in place to the label slice ``start_date..end_date``."""
         self.data = self.data.sel({col: slice(start_date, end_date)})
         return self
 
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
+        """Narrow ``data`` in place to the given labels on ``col``."""
         self.data = self.data.sel({col: list(symbols)})
         return self
 
     def get_xarray_dataset(
         self, indexes: Optional[list[str]] = None
     ) -> xr.Dataset:
-        """按 `indexes` 给定的维度返回面板；`indexes=None` 表示「原样返回」。
+        """Return ``data`` indexed by exactly the dimensions in ``indexes``.
 
-        `indexes` 的语义与 `PlBackend.get_xarray_dataset` 保持一致：**它就是结果
-        的索引维度**。那边是 `set_index(indexes)` 之后 `Dataset.from_dataframe`，
-        所以只有 `indexes` 里的名字会成为维度，其余列成为数据变量；这边输入本来
-        就是 `xr.Dataset`，等价动作是：
+        ``indexes`` names the result's dimensions, in order: data variables
+        laid out on any other dimension are dropped, dimensions no longer
+        used are dropped with their coordinates, and the survivors are
+        transposed onto the requested order. This is the same meaning
+        ``PlBackend.get_xarray_dataset`` gives the argument. ``None`` returns
+        ``data`` itself, not a copy, since callers rely on receiving the
+        object the backend holds. ``data`` is never modified here; the
+        ``filter_by_*`` methods are the in-place ones.
 
-        1. 校验每个名字都是当前面板的维度，不是就报错并把实际维度列出来；
-        2. 丢掉任何铺在 `indexes` 之外维度上的数据变量；
-        3. 丢掉不再被使用的维度（连同它的坐标）；
-        4. 把剩下的变量 `transpose` 成 `indexes` 给定的轴顺序。
+        Args:
+            indexes: The dimensions to index by, or ``None`` for no shape
+                request.
 
-        以前这个方法的函数体只有一行 `return self.data`——`indexes` 完全被忽略，
-        传什么都一样（2026-09-07 修复，`tests/test_backend_indexes.py` 锁）。
-
-        **对既有调用点全部是无操作**：全仓传的要么是 `["timestamp", "symbol"]`，
-        要么什么都不传。规范面板的每个数据变量都恰好铺在这两维上，所以第 2、3 步
-        什么都不丢，第 4 步只是把轴顺序钉死成 `(timestamp, symbol)`——这正是
-        CLAUDE.md 里那条硬约束，只不过以前靠 `from_raw_data()` 稠密化时的约定
-        维持，现在在边界上真的校验了。
-
-        真正因此改变行为的只有 `indexes=["timestamp"]`，也就是
-        `BaseDataset.time_interval` 那一条路：它以前拿回整个面板，`.diff()` 撞上
-        布尔的 `anomaly_flag` 直接 `TypeError`。现在拿回的是一个只剩时间轴的
-        `Dataset`（没有数据变量，但保留 `timestamp` 坐标），差分可以正常做。
-
-        `indexes=None` 保持返回 `self.data` 本身（不是副本），因为几十个调用点
-        依赖「拿到的就是后端持有的那个对象」这一点。
-
-        本方法**不改写** `self.data`。同接口上的 `filter_by_date` /
-        `filter_by_symbol` 是就地收窄的，照着它们的样子实现这一个会静默截断调用方
-        和别人共享的那份面板——那正是 RV-01 的故障模式。
+        Raises:
+            ValueError: If a requested name is not a dimension of ``data``.
         """
         if indexes is None:
             return self.data
@@ -1606,37 +1070,21 @@ class XrBackend(DataBackend):
         return result.transpose(*indexes, ...)
 
     def get_lazyframe(self) -> pl.LazyFrame:
+        """Return ``data`` as a long-format ``polars.LazyFrame``."""
         data = self.data.to_dataframe().reset_index()
         return pl.from_pandas(data).lazy()
 
     def head(self, path: str, n: int) -> pl.LazyFrame:
-        """At most `n` rows, bounding EVERY dimension before converting.
+        """Return at most ``n`` rows of the store at ``path`` as a lazy frame.
 
-        Opens the store at `path` with `xr.open_dataset` -- the SAME opener
-        `read()` above uses, deliberately not `xr.open_zarr`. Two different
-        openers for one store in one class is a divergence waiting to bite;
-        `_assert_append_compatible`'s `open_zarr` is a separate,
-        append-specific concern.
+        The store is opened by path with the same opener ``read`` uses, and
+        every dimension is sliced to ``n`` before conversion, so the whole
+        store is never materialised. ``data`` is neither read nor written:
+        a probe must not observe or inherit the in-place narrowing that
+        ``filter_by_date`` leaves behind.
 
-        Opening by path rather than reading `self.data` is the RV-01 fix, not
-        a stylistic choice. `self.data` can only be populated by a prior
-        `read()`, and `BaseDataset.read()` runs `_filter()`, which narrows the
-        shared dataset IN PLACE; `read()`'s cache early-return above then
-        makes that narrowing permanent. A `FactorPolars` name probe going
-        through that path silently dropped its factor's entire lookback
-        window. Nothing here touches `self.data`, so there is no narrowing
-        left to survive.
-
-        The selector is built from the opened dataset's `dims` rather than
-        naming `timestamp`: a storage-medium-agnostic backend has no business
-        knowing that this project's panels happen to be indexed by time and
-        symbol, and a dataset with a third axis would otherwise be converted
-        in full.
-
-        The `Path(path).exists()` guard mirrors `read()`'s, message included
-        (D-3 of the RV-01 fix plan): without it a missing zarr directory
-        surfaces as an obscure xarray engine-guess error instead of naming the
-        path that is not there.
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1651,21 +1099,42 @@ class XrBackend(DataBackend):
 
 
 class PlBackend(DataBackend):
+    """Parquet-backed storage for a long-format table held as a lazy frame.
+
+    ``data`` is a ``polars.LazyFrame`` produced by ``scan_parquet``, so reads
+    and filters stay lazy until ``write`` or ``get_xarray_dataset`` collects
+    them. Used for reference tables that are tabular rather than panel
+    shaped.
+
+    Example:
+        >>> table = PlBackend().read("universe.parquet")
+        >>> frame = table.filter_by_symbol("symbol", ("AAPL",)).get_lazyframe()
+        >>> frame.collect()
+    """
+
     def read(self, path: str, **kwargs) -> Self:
+        """Lazily scan the Parquet file at ``path`` into ``data``.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
+        """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
         self.data = pl.scan_parquet(path)
         return self
 
     def write(self, path: str, **kwargs) -> Self:
+        """Collect ``data`` and write it to ``path`` as Parquet."""
         self.data.collect().write_parquet(path, **kwargs)
         return self
 
     def to_internal(self, data: pl.LazyFrame) -> Self:
+        """Adopt an in-memory ``polars.LazyFrame`` as ``data``."""
         self.data = data
         return self
 
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
+        """Narrow ``data`` in place to rows whose ``col`` lies in the range."""
         self.data = self.data.filter(
             pl.col(col).is_between(
                 pl.lit(pd.to_datetime(start_date)),
@@ -1675,23 +1144,24 @@ class PlBackend(DataBackend):
         return self
 
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
+        """Narrow ``data`` in place to rows whose ``col`` is in ``symbols``."""
         self.data = self.data.filter(pl.col(col).is_in(symbols))
         return self
 
     def get_lazyframe(self) -> pl.LazyFrame:
+        """Return the held lazy frame."""
         return self.data
 
     def head(self, path: str, n: int) -> pl.LazyFrame:
-        """At most `n` rows, genuinely lazily, scanned straight from `path`.
+        """Return at most ``n`` rows scanned lazily from ``path``.
 
-        `scan_parquet` pushes the limit down into the reader, so this costs
-        essentially nothing here -- and it returns a fresh `pl.LazyFrame`
-        rather than touching `self.data`, so the non-mutation half of the
-        contract comes for free.
+        The limit is pushed down into the Parquet reader, and a fresh frame
+        is returned without touching ``data``. The existence check is done
+        here because ``scan_parquet`` on a missing file only fails at
+        collect time.
 
-        The `Path(path).exists()` guard mirrors `read()`'s, message included:
-        `scan_parquet` on an absent file fails only at `.collect()` time, far
-        from the call that was actually wrong.
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1700,13 +1170,17 @@ class PlBackend(DataBackend):
     def get_xarray_dataset(
         self, indexes: Optional[list[str]] = None
     ) -> xr.Dataset:
-        """`set_index(indexes)` 之后 `Dataset.from_dataframe`——`indexes` 里的
-        名字成为维度，其余列成为数据变量。这一直是 `indexes` 的语义来源，
-        `XrBackend` 那边在 2026-09-07 才对齐上来。
+        """Collect ``data`` and convert it to a dataset indexed by ``indexes``.
 
-        这里 `indexes` 不能省：一个 `pl.LazyFrame` 是纯粹的表，没有维度可言，
-        不指定索引就无从构造 `Dataset`。ABC 上的默认值 `None` 是给
-        `XrBackend`「原样返回」用的。
+        The named columns become the dataset's dimensions and every other
+        column becomes a data variable.
+
+        Args:
+            indexes: The columns to index by. Required: a lazy frame has no
+                dimensions to fall back on.
+
+        Raises:
+            ValueError: If ``indexes`` is ``None``.
         """
         if indexes is None:
             raise ValueError(

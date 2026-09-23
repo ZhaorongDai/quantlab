@@ -1,34 +1,27 @@
-"""Argument groups and roster resolution shared by the ingest entry points.
+"""Shared argparse helpers for the ingest entry points.
 
-D-14 keeps one top-level script per source -- `ingest_tiingo.py`,
-`ingest_us_equity.py`, `ingest_alpaca.py` -- and forbids a third copy of the
-`--symbols` / `--universe` / `--as-of-date` / `--start-date` / `--end-date` /
-`--chunk` parsing those scripts share. The definitions live HERE once; each
-script adds only the flags that are genuinely its own.
+The scripts under ``scripts/`` (``ingest_tiingo.py``, ``ingest_us_equity.py``,
+``ingest_alpaca.py`` and the WRDS shells) share most of their command line:
+``--symbols`` / ``--universe`` / ``--as-of-date``, the date window, ``--chunk``,
+``--to-zarr``, ``--data-dir`` and the pre-flight volume guard flags. This module
+defines each of those groups once, resolves the symbol roster the flags select,
+and renders the value objects (volume estimates, conversion results) the scripts
+print. Each script adds only the flags that are its own.
 
-This module is deliberately dependency-light in the `utils/` tradition
-(`utils/file.py`, `utils/timer.py`): it builds `argparse` groups and resolves a
-roster through a catalog handed to it. It constructs no acquisition client and
-issues no request, and it opens no file -- `refuse_conversion_without_raw_data`
-does reach the filesystem, but only by asking a Dataset handed to it whether
-its raw root holds a shard (a directory stat, read-only, no parquet opened).
-Every object it works on arrives as an argument. Its two module-scope project imports are
-both there for the same reason -- a `choices` list must be DERIVED from the
-literal that defines it rather than restated here, or a value added at the
-Dataset layer stays unreachable from the command line:
-`base.chunking.TimeChunkPlanner.GRANULARITIES` for `--chunk`, and
-`base.data.BaseDataset.NEW_LISTING_STRATEGIES` for `--on-new-listing`.
-`apply_data_dir` additionally reaches the `config` layer, but imports it at
-CALL time for the same reason `_explicit_symbol_catalog` defers
-`quantlab.universe`: a module-scope `from config import set_data_root`
-would drag `quantlab.backend`, `dataset.spot`, `dataset.stock` and
-`base.config` into every import of this module.
+The module is deliberately light at import time. Its only module-scope project
+imports are ``quantlab.base.chunking`` and ``quantlab.base.data``, and both are
+there so that a ``choices`` list is derived from the constant that defines it
+(``TimeChunkPlanner.GRANULARITIES`` for ``--chunk``,
+``BaseDataset.NEW_LISTING_STRATEGIES`` for ``--on-new-listing``). Everything
+heavier (``quantlab.config``, ``quantlab.universe``, the SQL volume guard) is
+imported inside the function that needs it, so importing this module does not
+pull in the dataset layer. Nothing here constructs an acquisition client or
+issues a request.
 
-**The one thing this module must not unify.** `ingest_tiingo.py` resolves
-point-in-time membership on a single day; `ingest_us_equity.py` resolves
-interval OVERLAP across a window. That is a deliberate semantic difference, not
-duplication -- see `resolve_symbols`, whose `mode` is keyword-only and has no
-default for exactly that reason.
+One thing is intentionally not unified: ``resolve_symbols`` takes a keyword-only
+``mode`` with no default, because point-in-time membership on one day
+(``"as_of"``) and interval overlap across a window (``"in_range"``) are
+different rosters, and a silent default would quietly pick one of them.
 """
 
 import argparse
@@ -37,16 +30,9 @@ from typing import Literal
 from quantlab.base.chunking import TimeChunkPlanner
 from quantlab.base.data import BaseDataset
 
-#: Maps the CLI-facing --universe choice to enums.data.UniverseCategory.
-#:
-#: The --universe `choices` are DERIVED from this map rather than repeated as a
-#: second hardcoded list: when they were two separate literals, adding the
-#: nasdaq100_constituent category produced it into universe.parquet while
-#: leaving it unselectable from the only CLI that consumes the table.
-#:
-#: It lives here rather than in any one script because it is now read by every
-#: script that offers `--universe`; a per-script copy would reintroduce the
-#: same drift one level up.
+#: Maps each ``--universe`` choice to a universe category name. The ``choices``
+#: of ``--universe`` are derived from this map, so a category added here is
+#: selectable from every script that offers the flag.
 UNIVERSE_CATEGORY_MAP = {
     "sp500": "sp500_constituent",
     "nasdaq100": "nasdaq100_constituent",
@@ -54,14 +40,10 @@ UNIVERSE_CATEGORY_MAP = {
     "us_all": "us_all",
 }
 
-#: The two window semantics the repo's ingest scripts actually have, and the
-#: help text each one carries. Kept as data rather than as a caller-supplied
-#: string so the distinction is stated once, where the flags are defined.
-#:
-#: - `"request-range"`: the window is a per-symbol REQUEST range handed to the
-#:   vendor (`ingest_tiingo.py`, `ingest_alpaca.py`).
-#: - `"interval-overlap"`: the window additionally FILTERS the roster, keeping
-#:   every symbol that traded at any point inside it (`ingest_us_equity.py`).
+#: The two meanings a ``--start-date`` / ``--end-date`` window can have, and
+#: the help text each one carries. ``"request-range"`` is a per-symbol request
+#: range handed to the vendor. ``"interval-overlap"`` additionally filters the
+#: roster to every symbol that traded at any point inside the window.
 WindowSemantics = Literal["request-range", "interval-overlap"]
 
 _WINDOW_HELP = {
@@ -72,16 +54,16 @@ _WINDOW_HELP = {
     "interval-overlap": {
         "start": (
             "Window start (inclusive), default {default}. Applied "
-            "as interval OVERLAP: every symbol that traded at ANY point in "
-            "the window is kept, INCLUDING those that delisted inside it. "
+            "as interval overlap: every symbol that traded at any point in "
+            "the window is kept, including those that delisted inside it. "
             "Only symbols whose listing ended before this date are dropped."
         ),
         "end": "Window end (inclusive), default today.",
     },
 }
 
-#: The two roster-resolution semantics `resolve_symbols` exposes. Neither is a
-#: default; see that function's docstring.
+#: The two roster-resolution modes ``resolve_symbols`` accepts. Neither is a
+#: default; see that function.
 RosterMode = Literal["as_of", "in_range"]
 ROSTER_MODES: tuple[str, ...] = ("as_of", "in_range")
 
@@ -92,12 +74,19 @@ def add_window_args(
     default_start_date: str | None = None,
     semantics: WindowSemantics = "request-range",
 ) -> argparse.ArgumentParser:
-    """Add `--start-date` / `--end-date`.
+    """Add ``--start-date`` and ``--end-date`` to ``parser``.
 
-    `semantics` selects which help text the two flags carry, and it is NOT
-    cosmetic: a request range and a roster-filtering interval overlap are
-    different promises to the user, and the longer text exists because the
-    second one is the non-obvious of the two.
+    Args:
+        parser: The parser to extend.
+        default_start_date: Default for ``--start-date``; ``None`` leaves it
+            unset.
+        semantics: Which help text the two flags carry. ``"request-range"``
+            describes a per-symbol request range; ``"interval-overlap"``
+            describes a window that also filters the roster, which is the
+            less obvious of the two and gets the longer text.
+
+    Returns:
+        ``parser``, for chaining.
     """
     help_text = _WINDOW_HELP[semantics]
     parser.add_argument(
@@ -118,12 +107,14 @@ def add_window_args(
 def add_universe_args(
     parser: argparse.ArgumentParser,
 ) -> argparse.ArgumentParser:
-    """Add `--symbols`, `--universe` and `--as-of-date`.
+    """Add ``--symbols``, ``--universe`` and ``--as-of-date`` to ``parser``.
 
-    The `--universe` help text carries real domain distinctions -- the
-    Nasdaq-100 index is not the NASDAQ roster, and a full-window backfill wants
-    a different script -- which is the reason this extraction is worth doing
-    rather than letting each script grow its own shorter, vaguer version.
+    The ``--universe`` choices are derived from ``UNIVERSE_CATEGORY_MAP``. The
+    help text spells out the domain distinctions users trip over, such as the
+    Nasdaq-100 index versus the full NASDAQ roster.
+
+    Returns:
+        ``parser``, for chaining.
     """
     parser.add_argument(
         "--symbols",
@@ -131,12 +122,12 @@ def add_universe_args(
         required=False,
         default=None,
         help=(
-            "Comma-separated TICKERS (e.g. AAPL,MSFT). Mutually exclusive "
+            "Comma-separated tickers (e.g. AAPL,MSFT). Mutually exclusive "
             "with --universe. This is the ticker-side entry point: a CRSP "
-            "panel's symbol axis is the int64 PERMNO (D-01), so a CRSP "
-            "conversion takes --permnos instead, and the ticker a PERMNO wore "
-            "on a given day is read from the '.crsp_tickers.json' sidecar "
-            "beside the store."
+            "panel's symbol axis is the int64 PERMNO, so a CRSP conversion "
+            "takes --permnos instead, and the ticker a PERMNO wore on a "
+            "given day is read from the '.crsp_tickers.json' sidecar beside "
+            "the store."
         ),
     )
     parser.add_argument(
@@ -146,62 +137,53 @@ def add_universe_args(
         default=None,
         help=(
             "Resolve a symbol list from the persisted universe table "
-            "(02-08-PLAN.md) instead of --symbols. 'sp500' resolves "
-            "point-in-time S&P 500 constituent membership; 'nasdaq100' "
-            "resolves point-in-time Nasdaq-100 (NDX) index membership; "
-            "'nasdaq_all' resolves the full NASDAQ-listed Common Stock roster "
-            "(current + delisted); 'us_all' resolves the full US listed-equity "
-            "roster -- NYSE + NASDAQ + AMEX common stock, delisted included "
-            "(~15.4k tickers). Note 'nasdaq100' and 'nasdaq_all' are "
-            "DIFFERENT universes that merely share the word Nasdaq -- the "
-            "former is the ~100-name index, the latter every symbol ever "
-            "listed on the exchange. 'us_all' is a strict superset of "
-            "'nasdaq_all'; both are kept deliberately. Requires --as-of-date. "
-            "For a full-window BACKFILL of every symbol that traded at any "
-            "point in a date range (rather than membership on one day), use "
-            "ingest_us_equity.py, which queries by interval overlap instead."
+            "instead of --symbols. 'sp500' resolves point-in-time S&P 500 "
+            "constituent membership; 'nasdaq100' resolves point-in-time "
+            "Nasdaq-100 (NDX) index membership; 'nasdaq_all' resolves the "
+            "full NASDAQ-listed Common Stock roster (current + delisted); "
+            "'us_all' resolves the full US listed-equity roster -- NYSE + "
+            "NASDAQ + AMEX common stock, delisted included (~15.4k tickers). "
+            "Note that 'nasdaq100' and 'nasdaq_all' are different universes "
+            "that merely share the word Nasdaq: the former is the ~100-name "
+            "index, the latter every symbol ever listed on the exchange. "
+            "'us_all' is a strict superset of 'nasdaq_all'; both are kept "
+            "deliberately. Requires --as-of-date. For a full-window backfill "
+            "of every symbol that traded at any point in a date range "
+            "(rather than membership on one day), use ingest_us_equity.py, "
+            "which queries by interval overlap instead."
         ),
     )
     parser.add_argument(
         "--as-of-date",
         type=str,
         default=None,
-        help="Required with --universe; point-in-time date (YYYY-MM-DD) to resolve membership as of.",
+        help=(
+            "Required with --universe; point-in-time date (YYYY-MM-DD) to "
+            "resolve membership as of."
+        ),
     )
     return parser
 
 
 def add_to_zarr_arg(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """Add `--to-zarr`, the opt-in that gates every raw-to-Zarr conversion.
+    """Add ``--to-zarr``, the opt-in flag that gates raw-to-Zarr conversion.
 
-    Defined HERE once, for the reason D-14 gives for `--symbols` and friends:
-    `ingest_us_equity.py` had the flag and the other two converted
-    unconditionally, so the three front doors disagreed about what a run
-    without arguments does. A user who learned one script's default learned
-    the wrong thing about the other two (G-03.4-1b).
+    The flag is off by default on every ingest script, and a run without it
+    stops at the raw shards and says so. The conversion it enables is the
+    chunked, resumable one that ``--chunk`` governs.
 
-    OFF by default in all three, and the default path SAYS so rather than
-    staying quiet: a conversion that silently did not happen is the same class
-    of silence this flag exists to end.
-
-    **One conversion path, therefore one help text (D-06).** This helper used
-    to take a `mode` selecting between a chunked clause and a whole-window
-    one, following `add_concurrency_args(default_max_workers=...)`. There is
-    no second mode to select any more -- the chunked, resumable conversion is
-    what every shell runs -- so the parameter and the two-armed help dict were
-    retired with the mode itself, and the surviving text is the chunked arm's
-    word for word. The roadmap's "three modes" was stale arithmetic.
+    Returns:
+        ``parser``, for chaining.
     """
     parser.add_argument(
         "--to-zarr",
         action="store_true",
         help=(
             "After acquisition, convert the raw parquet into the Zarr store. "
-            "The full window is no longer refused: the conversion densifies "
-            "and appends ONE --chunk window at a time, so peak RAM scales "
-            "with the window rather than the range, and an interrupted run "
-            "resumes at the first unwritten window."
-            " OFF by default because it is slow, not because it is "
+            "The conversion densifies and appends one --chunk window at a "
+            "time, so peak RAM scales with the window rather than the whole "
+            "range, and an interrupted run resumes at the first unwritten "
+            "window. Off by default because it is slow, not because it is "
             "impossible; without it the run stops at the raw shards and says "
             "so."
         ),
@@ -210,37 +192,29 @@ def add_to_zarr_arg(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def refuse_conversion_without_raw_data(dataset, result) -> None:
-    """Refuse a raw-to-Zarr conversion when this run fetched nothing AND the
-    raw tree is empty.
+    """Exit when this run fetched nothing and the raw tree holds nothing.
 
-    G-03.4-1a. A run whose every symbol failed (an expired key, an exhausted
-    quota, a roster of typos) used to walk straight into
-    `StockDataset.from_raw_data()` and end on `dataset/stock.py`'s uncaught
-    absent-root `ValueError` -- a traceback that reads like a bug in the
-    conversion layer when the actual event was "the vendor returned nothing".
-    That raise is the correct LOWER-level signal and is unchanged; this is the
-    upper-level caller that translates it into a clean, non-zero exit.
+    A run whose every symbol failed (an expired key, an exhausted quota, a
+    roster of typos) would otherwise walk into the conversion and fail deep
+    inside the dataset layer with an error that reads like a conversion bug.
+    Both halves of the condition matter: a run in which every symbol was
+    skipped because its watermark already covered the window also reports
+    zero successes, yet it has raw data on disk that must still be converted.
+    The disk probe is ``dataset.has_raw_data()``, the same predicate the
+    dataset's own raw scan uses, so the two cannot disagree.
 
-    **Both halves of the condition are load-bearing.** A run in which every
-    symbol was SKIPPED because its watermark already covers the window also
-    reports zero successes -- and it has raw data on disk that must still be
-    converted. Counting successes alone would refuse that legitimate run. What
-    separates the two cases is the disk probe, so the probe is the test and
-    the counts are only reported.
+    The message names paths and counts only; it never includes a credential
+    or a vendor response body.
 
-    The probe is `dataset.has_raw_data()` -- the SAME predicate `_scan_raw`
-    decides on -- rather than a second `exists() / rglob()` written here. Two
-    spellings of one fact is the ancestor shape of this gap.
+    Args:
+        dataset: A constructed dataset whose ``config.raw_data_dir_path`` is
+            the raw tree the conversion would read.
+        result: An acquisition result with ``succeeded`` and ``failures``
+            collections.
 
-    Takes CONSTRUCTED objects and imports nothing: this module is
-    dependency-light by contract (see the module docstring), and
-    `tests/test_data_dir_cli.py::
-    test_utils_cli_does_not_import_config_at_module_scope` holds it there.
-
-    The message names paths, counts and where to read the failure list. It
-    carries NO credential value and no vendor response body: this repo has
-    already leaked one real key, and a refusal path is exactly where a
-    "helpful" dump of the vendor's error gets added.
+    Raises:
+        SystemExit: With an explanatory message when there is nothing to
+            convert.
     """
     if result.succeeded or dataset.has_raw_data():
         return
@@ -264,16 +238,21 @@ def add_chunk_args(
     *,
     default: str = "year",
 ) -> argparse.ArgumentParser:
-    """Add `--chunk` and `--on-new-listing`, both with DERIVED `choices`.
+    """Add ``--chunk`` and ``--on-new-listing`` to ``parser``.
 
-    Derived, never restated: a granularity added to `GRANULARITIES` and its
-    `_period_key`, or a strategy added to
-    `BaseDataset.NEW_LISTING_STRATEGIES`, must not need a second edit here to
-    become selectable.
+    Both ``choices`` lists are derived from the constants that define them
+    (``TimeChunkPlanner.GRANULARITIES`` and
+    ``BaseDataset.NEW_LISTING_STRATEGIES``), so a value added at the dataset
+    layer is selectable here without a second edit. ``--on-new-listing`` sits
+    in this group because it is a knob on the same chunked ``--to-zarr``
+    conversion that ``--chunk`` governs.
 
-    `--on-new-listing` belongs in THIS group rather than a new one: it is a
-    knob on the same chunked `--to-zarr` conversion `--chunk` governs, and this
-    group is already registered in the shared-group wiring test's table.
+    Args:
+        parser: The parser to extend.
+        default: Default granularity for ``--chunk``.
+
+    Returns:
+        ``parser``, for chaining.
     """
     parser.add_argument(
         "--chunk",
@@ -282,9 +261,9 @@ def add_chunk_args(
         default=default,
         help=(
             "Time granularity of one --to-zarr conversion window (default "
-            "year). Finer windows use less peak RAM and give a finer resume "
-            "granularity, at the cost of more append round trips. The ladder "
-            "now reaches 'hour', so an intraday window has a rung of its own."
+            "year). Finer windows use less peak RAM and resume at a finer "
+            "granularity, at the cost of more append round trips. 'hour' is "
+            "available so an intraday window has a rung of its own."
         ),
     )
     parser.add_argument(
@@ -294,14 +273,14 @@ def add_chunk_args(
         default="refuse",
         help=(
             "What to do when the raw roster has grown since the Zarr store "
-            "was built -- the routine consequence of a new listing between two "
-            "refreshes (default refuse). 'refuse' halts with the roster error, "
-            "exactly as before this flag existed, leaving the store untouched. "
-            "'rebuild' re-densifies every --chunk window from raw onto the new "
-            "symbol union, recovering the new listing's REAL history at the "
-            "cost of a full re-densify. 'widen' keeps the store and widens its "
-            "symbol axis in place, which is fast but leaves the new listing's "
-            "entire historical block NaN because raw is not re-read."
+            "was built, the routine consequence of a new listing between two "
+            "refreshes (default refuse). 'refuse' halts with the roster error "
+            "and leaves the store untouched. 'rebuild' re-densifies every "
+            "--chunk window from raw onto the new symbol union, recovering "
+            "the new listing's real history at the cost of a full "
+            "re-densify. 'widen' keeps the store and widens its symbol axis "
+            "in place, which is fast but leaves the new listing's entire "
+            "historical block NaN because raw is not re-read."
         ),
     )
     return parser
@@ -312,24 +291,28 @@ def add_concurrency_args(
     *,
     default_max_workers: int,
 ) -> argparse.ArgumentParser:
-    """Add `--max-workers` and `--limit`.
+    """Add ``--limit`` and ``--max-workers`` to ``parser``.
 
-    `default_max_workers` is a PARAMETER rather than an import: this module
-    stays vendor-agnostic, so reaching into `TiingoAcquisition` for a default
-    would give the shared CLI module a dependency on one particular vendor's
-    acquisition class.
+    Args:
+        parser: The parser to extend.
+        default_max_workers: Default for ``--max-workers``. It is a parameter
+            rather than an import so this module does not depend on any one
+            vendor's acquisition class.
+
+    Returns:
+        ``parser``, for chaining.
     """
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
         help=(
-            "Process only the first N resolved symbols, where FIRST means "
-            "ASCENDING BY SYMBOL -- the roster queries return sorted lists on "
-            "purpose, so the same --universe/--limit pair truncates to the "
-            "SAME N symbols on every run and a second run meets the "
-            "watermarks the first one wrote. For smoke-testing the pipeline "
-            "end to end before committing to the full roster."
+            "Process only the first N resolved symbols, in ascending symbol "
+            "order. The roster queries return sorted lists on purpose, so the "
+            "same --universe/--limit pair truncates to the same N symbols on "
+            "every run and a second run meets the watermarks the first one "
+            "wrote. Useful for smoke-testing the pipeline end to end before "
+            "committing to the full roster."
         ),
     )
     parser.add_argument(
@@ -348,10 +331,11 @@ def add_concurrency_args(
 def validate_roster_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> None:
-    """The `--symbols` / `--universe` mutual exclusion, message text unchanged.
+    """Enforce that exactly one of ``--symbols`` and ``--universe`` is set.
 
-    Uses `parser.error(...)` rather than raising, so a misuse exits 2 with the
-    usage block the way every other argparse misuse in these scripts does.
+    ``--as-of-date`` is additionally required with ``--universe``. Misuse goes
+    through ``parser.error``, so it exits with status 2 and the usage block
+    like every other argparse error.
     """
     if bool(args.symbols) == bool(args.universe):
         parser.error("Exactly one of --symbols or --universe must be set.")
@@ -360,14 +344,13 @@ def validate_roster_args(
 
 
 def roster_category(args: argparse.Namespace) -> str | None:
-    """The universe category these arguments select, or `None` for an explicit
-    `--symbols` list.
+    """Return the universe category ``args`` selects, or ``None``.
 
-    Two spellings reach this: `--universe`, whose CLI-facing token is mapped
-    through `UNIVERSE_CATEGORY_MAP`, and `ingest_us_equity.py`'s `--category`,
-    which already names the category directly. Returning `None` rather than
-    raising is what lets a caller size an explicit symbol list differently
-    instead of pretending it came from a roster.
+    Two spellings reach here: ``--universe``, whose token is mapped through
+    ``UNIVERSE_CATEGORY_MAP``, and ``ingest_us_equity.py``'s ``--category``,
+    which names the category directly. ``None`` means an explicit
+    ``--symbols`` list, so a caller can size it differently instead of
+    treating it as a roster.
     """
     universe = getattr(args, "universe", None)
     if universe:
@@ -381,26 +364,32 @@ def resolve_symbols(
     *,
     mode: RosterMode,
 ) -> tuple[str, ...]:
-    """Resolve the symbol roster these arguments select.
+    """Resolve the symbol roster ``args`` selects.
 
-    `mode` is KEYWORD-ONLY and has NO DEFAULT, deliberately:
+    An explicit ``--symbols`` list is returned verbatim, and ``catalog`` may
+    be ``None`` on that path. Otherwise the category is resolved through
+    ``catalog`` in one of two modes, and ``--limit`` truncates the result.
 
-    - `"as_of"` calls `UniverseCatalog.get_symbols_as_of` -- point-in-time
-      membership on ONE day. Right for "fetch today's S&P 500".
-    - `"in_range"` calls `UniverseCatalog.get_symbols_in_range` -- interval
-      OVERLAP across the window. A backfill wants every symbol that traded at
-      ANY point in the window, including the ~6.9k that delisted inside it;
-      resolving membership on a single day there would reintroduce exactly the
-      survivorship bias this roster exists to remove.
+    Args:
+        args: Parsed arguments carrying ``symbols``, ``as_of_date``,
+            ``start_date``, ``end_date`` and optionally ``limit``,
+            ``universe`` or ``category``.
+        catalog: A ``UniverseCatalog`` (or compatible object) used to resolve
+            a category; ignored for an explicit list.
+        mode: ``"as_of"`` resolves point-in-time membership on
+            ``args.as_of_date``. ``"in_range"`` resolves interval overlap
+            across ``args.start_date .. args.end_date``, keeping every symbol
+            that traded at any point in the window, delisted names included.
+            Keyword-only with no default, because the two rosters differ and
+            a silent default would hide a survivorship bias that nothing
+            notices unless it looks for delisted tickers.
 
-    The two are a deliberate semantic difference, not duplication. A default
-    would make the wrong choice SILENT -- and wrong in the direction whose
-    symptom (a roster missing every delisted name) is invisible to every test
-    that does not specifically look for delisted tickers. So there is none, and
-    a caller that omits `mode` gets a `TypeError` instead of a quiet bias.
+    Returns:
+        The resolved symbols as a tuple, in the order the catalog returned
+        them.
 
-    An explicit `--symbols` list bypasses the catalog entirely and is returned
-    verbatim; `catalog` may be `None` on that path.
+    Raises:
+        ValueError: If ``mode`` is not one of ``ROSTER_MODES``.
     """
     if mode not in ROSTER_MODES:
         raise ValueError(
@@ -431,10 +420,13 @@ def resolve_symbols(
 def add_data_dir_arg(
     parser: argparse.ArgumentParser,
 ) -> argparse.ArgumentParser:
-    """Add `--data-dir`, the per-run storage root override.
+    """Add ``--data-dir``, the per-run storage root override, to ``parser``.
 
-    Defined here once (D-14) so the flag name, its help text and its
-    precedence story are identical on every entry point that offers it.
+    Defined once here so the flag name, help text and precedence story are
+    identical on every entry point that offers it. See ``apply_data_dir``.
+
+    Returns:
+        ``parser``, for chaining.
     """
     parser.add_argument(
         "--data-dir",
@@ -445,8 +437,8 @@ def add_data_dir_arg(
             "(raw downloads, watermarks, Zarr stores, the universe table) is "
             "derived from it. Precedence is --data-dir > QUANTLAB_DATA_DIR > "
             "the repo-root data/ directory. The directory does not need to "
-            "exist -- the run creates what it needs. It relocates the whole "
-            "ROOT; ingest_binance_spot.py's --raw-data-dir is a different "
+            "exist; the run creates what it needs. It relocates the whole "
+            "root; ingest_binance_spot.py's --raw-data-dir is a different "
             "knob that points at one pre-existing raw CSV directory, and the "
             "two compose."
         ),
@@ -455,27 +447,24 @@ def add_data_dir_arg(
 
 
 def apply_data_dir(args: argparse.Namespace) -> "object | None":
-    """Apply `--data-dir` to the process-level storage root, if it was given.
+    """Apply ``--data-dir`` to the process-level storage root, if given.
 
-    Returns the stored root `Path`, or `None` when the flag was absent (in
-    which case the root is left exactly as it was, so `QUANTLAB_DATA_DIR` or
-    the repo default still answers).
+    Each script calls this explicitly from its ``__main__``, directly after
+    ``parse_args()`` and before anything that builds a config: the config
+    factories snapshot their paths as strings at construction time, so an
+    override applied later silently does nothing. It is a plain call rather
+    than an argparse action so the root relocation is visible at the call
+    site. The ``quantlab.config`` import is deferred to call time to keep
+    this module light at import.
 
-    This is an EXPLICIT call each script makes from its own `__main__`, not an
-    argparse `action=` side effect. A custom Action firing inside
-    `parse_args()` would make the ordering structurally unbreakable, which is
-    tempting -- but it was rejected for the reason stated at the volume guard's
-    call-site helper below: each script names the thing it invokes at its own
-    call site, so a reader of the script, and a grep across the entry points,
-    sees the decision where it is made rather than one level of indirection
-    away. A root-relocating side effect hidden inside argument parsing is
-    exactly the kind of invisible action that comment exists to prevent. The
-    ordering is enforced instead by the AST guard in
-    `tests/test_data_dir_cli.py`.
+    Args:
+        args: Parsed arguments. An object without a ``data_dir`` attribute is
+            treated as if the flag were absent.
 
-    The `config` import is deferred to call time so this module keeps the
-    module-scope dependency surface its docstring promises -- the same reason
-    `_explicit_symbol_catalog` defers `quantlab.universe`.
+    Returns:
+        The stored root ``Path``, or ``None`` when the flag was absent, in
+        which case ``QUANTLAB_DATA_DIR`` or the repository default still
+        applies.
     """
     value = getattr(args, "data_dir", None)
     if value is None:
@@ -489,30 +478,25 @@ def apply_data_dir(args: argparse.Namespace) -> "object | None":
 def add_volume_guard_args(
     parser: argparse.ArgumentParser,
 ) -> argparse.ArgumentParser:
-    """Add the pre-flight volume guard's two flags: `--force-volume` and
-    `--rows-per-symbol-day`.
+    """Add ``--force-volume`` and ``--rows-per-symbol-day`` to ``parser``.
 
-    Defined HERE rather than in each script so the flag name and the help text
-    exist once (D-14). `--force-volume` is an EXPLICIT, visible opt-out: it is
-    a flag a user types, never an environment variable and never a config key
-    that could turn the guard off for a whole machine without anyone noticing.
-    It skips the RAISE and never the arithmetic, so a forced run still prints
-    the estimate, with a line saying a ceiling was crossed and overridden. A
-    REFUSED run prints no estimate -- its numbers travel in the exception
-    message instead (WR-07).
+    ``--force-volume`` is an explicit, per-run opt-out of the pre-flight
+    volume guard: it skips the refusal, never the arithmetic, so a forced run
+    still prints its estimate. There is deliberately no environment variable
+    or config key that disables the guard for a whole machine.
+    ``--rows-per-symbol-day`` has no default because tick volume cannot be
+    derived from a calendar; the guard refuses to size a tick fetch without a
+    measured figure rather than inventing one.
 
-    `--rows-per-symbol-day` has no default on purpose. Tick volume is not
-    derivable from a calendar the way a bar count is, so
-    `assert_acquisition_volume_fits` REFUSES a tick estimate without a measured
-    figure rather than inventing one -- an invented row count would make the
-    guard confidently wrong in exactly the regime it exists for.
+    Returns:
+        ``parser``, for chaining.
     """
     parser.add_argument(
         "--force-volume",
         action="store_true",
         help=(
             "Proceed even when the pre-flight volume estimate is over a "
-            "ceiling. The arithmetic still runs and is still printed -- only "
+            "ceiling. The arithmetic still runs and is still printed; only "
             "the refusal is skipped. Explicit and per-run on purpose: there is "
             "no environment variable and no config key that disables the guard "
             "wholesale."
@@ -523,7 +507,7 @@ def add_volume_guard_args(
         type=int,
         default=None,
         help=(
-            "Measured rows per symbol per session, REQUIRED to size a "
+            "Measured rows per symbol per session, required to size a "
             "--frequency tick fetch and ignored otherwise. No default: sample "
             "one symbol-day and count. A guessed figure produces a guessed "
             "budget, and the guard's whole value is that its number is "
@@ -534,62 +518,53 @@ def add_volume_guard_args(
 
 
 # ---------------------------------------------------------------------------
-# The pre-flight volume guard's call-site helper (D-09 / SC-6)
+# Call-site helpers for the pre-flight volume guard.
 #
-# `UniverseCatalog.assert_acquisition_volume_fits` is the guard. It lives in a
-# module that imports no acquisition module and binds no `Acquisition`
-# subclass, which is what makes "refuses before the client is constructed" a
-# STRUCTURAL property rather than a matter of call order. Nothing below may
-# undo that: this helper is imported BY the ingest scripts, never the reverse,
-# and it constructs no client either.
+# The guard itself is `UniverseCatalog.assert_acquisition_volume_fits`, which
+# lives in a module that binds no acquisition class. That is what makes
+# "refuses before the client is constructed" a structural property, and the
+# helpers below preserve it: they are imported by the ingest scripts, never
+# the reverse, and they construct no client.
 # ---------------------------------------------------------------------------
 
-#: The category name a refusal reports when the roster came from an explicit
-#: `--symbols` list rather than a universe category. It is not a real category
-#: and is never validated against one -- see `_ExplicitSymbolCatalog`.
+#: Category name a refusal reports when the roster came from an explicit
+#: ``--symbols`` list. It is not a real category and is never validated
+#: against one; see ``_explicit_symbol_catalog``.
 EXPLICIT_SYMBOLS_CATEGORY = "(explicit --symbols list)"
 
-#: Window start assumed for SIZING ONLY when a script is invoked with no
-#: `--start-date`. `ingest_tiingo.py` has no default window, and an unbounded
-#: Tiingo EOD request returns a symbol's whole history -- which cannot be
-#: priced without a start.
-#:
-#: This is a STATED assumption, not a hidden default: `run_volume_guard` prints
-#: the assumed window on the line above the estimate whenever it applies, and
-#: it is never written back onto `args` or into any config. The value is the
-#: project's own documented backfill floor (`ingest_us_equity.DEFAULT_START_DATE`,
-#: D-05), and assuming it errs toward a LONGER window than most such runs
-#: actually fetch, which is the safe direction for a guard.
+#: Window start assumed, for sizing only, when a script is run with no
+#: ``--start-date``. An unbounded Tiingo request returns a symbol's whole
+#: history, which cannot be priced without a start. The assumption is printed
+#: beside the estimate and is never written back onto ``args`` or a config.
+#: The value is the project's documented backfill floor, which errs toward a
+#: longer window than most runs fetch, the safe direction for a guard.
 UNBOUNDED_WINDOW_START = "2016-01-01"
 
+#: Bytes in one GiB.
 _GIB = 1024**3
 
-#: Built once, on first use, by `_explicit_symbol_catalog`.
+#: Cache for the class ``_explicit_symbol_catalog`` builds on first use.
 _EXPLICIT_CATALOG_CLASS = None
 
 
 def _explicit_symbol_catalog(symbol_count: int):
-    """A pricing view that sizes an explicitly named symbol list.
+    """Return a pricing view that sizes an explicitly named symbol list.
 
-    An explicit 15,000-symbol list is exactly as expensive as the same roster
-    resolved from a category, so the guard must price it rather than skip it.
-    But `_roster_window_profile` derives its symbol count and its listing spans
-    from the catalog's interval table, and an explicit list has neither.
+    An explicit 15,000-symbol list costs exactly what the same roster
+    resolved from a category costs, so the guard must price it rather than
+    skip it. The catalog derives symbol counts and listing spans from its
+    interval table, which an explicit list does not have, so this returns an
+    instance of a ``UniverseCatalog`` subclass that replaces the roster
+    profile step with one driven by ``symbol_count``. Every ceiling, report
+    and refusal message stays the catalog's own, so the explicit path cannot
+    drift from the category path.
 
-    So this SUBCLASSES `UniverseCatalog` and overrides `_roster_window_profile`
-    WHOLESALE -- the one step that is ABOUT the roster's provenance. It also
-    carries a `_validate_category` override (admitting this view's own sentinel,
-    delegating everything else), and that override is CURRENTLY UNREACHABLE
-    precisely because the `_roster_window_profile` override is wholesale: the
-    base's validator call lives inside base methods this view either replaces
-    or never enters. It is retained deliberately -- see the comment on the
-    method for why. Every ceiling, every crossed-ceiling report, the refusal
-    message and the re-estimated narrowing search stay the catalog's own, which
-    is the point: the explicit path cannot drift away from the category path,
-    because it is the same code.
+    The subclass is built on first use and cached, and ``quantlab.universe``
+    is imported here rather than at module scope to keep this module light
+    at import.
 
-    The import is deferred to call time so this module keeps its module-scope
-    dependency surface to `base.chunking`; the class is built once and cached.
+    Args:
+        symbol_count: Number of symbols in the explicit list.
     """
     global _EXPLICIT_CATALOG_CLASS
     if _EXPLICIT_CATALOG_CLASS is None:
@@ -598,48 +573,29 @@ def _explicit_symbol_catalog(symbol_count: int):
         from quantlab.universe import UniverseCatalog
 
         class _ExplicitSymbolCatalog(UniverseCatalog):
-            def __init__(self, symbols: int):  # noqa: D107 - see factory
-                # No `super().__init__`: this view never reads the reference
-                # table, so it needs no backend and no config, and requiring
-                # one would make `--symbols AAPL` fail on a machine that has
-                # never built universe.parquet.
+            """Catalog view whose roster is a bare symbol count."""
+
+            def __init__(self, symbols: int):  # noqa: D107
+                """Store the symbol count without touching the reference table.
+
+                ``super().__init__`` is skipped on purpose: this view never
+                reads ``universe.parquet``, so ``--symbols AAPL`` works on a
+                machine that has never built it.
+                """
                 self._explicit_symbols = symbols
 
             def _validate_category(self, category: str) -> None:
-                # This view resolves NO roster from the reference table, so
-                # `EXPLICIT_SYMBOLS_CATEGORY` is a token it can legitimately be
-                # asked about and there is nothing to validate it against.
-                #
-                # CURRENTLY UNREACHABLE, and deliberately kept. The validator
-                # call this override was written to intercept belongs to the
-                # BASE `_roster_window_profile`, which opens with
-                # `self._validate_category(category)` and would reject the
-                # sentinel with "Unknown universe category '(explicit
-                # --symbols list)'" before a single byte was fetched. But this
-                # class overrides `_roster_window_profile` WHOLESALE, and that
-                # override makes no validator call -- so on this view nothing
-                # reaches here. The base's other two call sites
-                # (`get_symbols_in_range`, `get_symbols_as_of`) read the
-                # reference table this view does not have and are never entered
-                # on the pricing path, whose only entry point is
-                # `assert_acquisition_volume_fits` ->
-                # `estimate_acquisition_volume` -> the override below.
-                #
-                # KEEP IT anyway. (i) It is the guard that makes the sentinel
-                # safe IF this view's `_roster_window_profile` is ever narrowed
-                # to delegate to `super()` -- which is exactly the drift this
-                # class exists to prevent, per the factory docstring's "the
-                # explicit path cannot drift away from the category path".
-                # (ii) Deleting it removes that protection in exchange for
-                # nothing measurable. What was wrong here was the REASON given,
-                # not the code.
-                #
-                # Every OTHER token still goes to the base check, so a
-                # `--limit`-truncated REAL category (which `volume_pricing`
-                # reports under its own name) keeps the typo protection.
-                # `known_categories()` reads the two class-level fetcher
-                # registries, never the backend this view does not have, so
-                # delegating is safe without a config.
+                """Accept ``EXPLICIT_SYMBOLS_CATEGORY``; delegate the rest.
+
+                This view resolves no roster from the reference table, so
+                the explicit sentinel has nothing to be validated against.
+                The base validator still applies to every other token, so a
+                ``--limit``-truncated real category keeps its typo check.
+                Nothing on the pricing path currently calls this override,
+                because ``_roster_window_profile`` below is replaced
+                wholesale; it is kept so the sentinel stays safe if that
+                override ever delegates to ``super()``.
+                """
                 if category != EXPLICIT_SYMBOLS_CATEGORY:
                     super()._validate_category(category)
 
@@ -650,17 +606,16 @@ def _explicit_symbol_catalog(symbol_count: int):
                 end_date: str,
                 bars_per_day: int = 1,
             ) -> dict:
-                # The signature MIRRORS the base's, `bars_per_day` included.
-                # This override is what the acquisition-volume guard reaches
-                # on the explicit path, and an override that dropped the
-                # keyword would raise TypeError on the one path that matters --
-                # an explicit `--symbols` list at `--frequency 1m`.
-                # Rebound, exactly as the base method does: the validator
-                # NORMALISES (`"20180101"` -> `"2018-01-01"`), and a caller
-                # that validates and then uses its own raw string is the CR-01
-                # bug. Nothing here compares dates lexicographically today,
-                # but this override exists precisely so the explicit path
-                # cannot drift from the category path.
+                """Profile the window for a fixed symbol count at density 1.0.
+
+                Mirrors the base signature, ``bars_per_day`` included, since
+                this is what the volume guard calls on the explicit path.
+                Dates are normalised exactly as the base method does before
+                any arithmetic. Density is 1.0 rather than the catalog's
+                survivorship-adjusted figure: a hand-named list carries no
+                delisting structure, and assuming it did would understate
+                the fetch by roughly 2.7x, the wrong direction for a guard.
+                """
                 start_date = self._normalize_iso_date(start_date, "start_date")
                 end_date = self._normalize_iso_date(end_date, "end_date")
                 if bars_per_day < 1:
@@ -682,12 +637,6 @@ def _explicit_symbol_catalog(symbol_count: int):
                 symbols = self._explicit_symbols
                 timestamps = trading_days * bars_per_day
                 dense_cells = symbols * timestamps
-                # `observed_cells == dense_cells`, density 1.0. The catalog's
-                # 0.368 density is a property of a survivorship-bias-free
-                # ROSTER over a decade -- most of it delisted for most of the
-                # window. A hand-named symbol list carries no such structure,
-                # and assuming it does would UNDERSTATE the fetch by ~2.7x,
-                # which is the wrong direction for a guard.
                 return {
                     "symbols": symbols,
                     "trading_days": trading_days,
@@ -703,9 +652,13 @@ def _explicit_symbol_catalog(symbol_count: int):
 
 
 def _sizing_window(args: argparse.Namespace) -> tuple[str, str, bool]:
-    """`(start, end, assumed)` for the estimate. Never written back onto
-    `args` -- an assumption made to size a fetch must not silently become the
-    window that fetch actually requests."""
+    """Return ``(start, end, assumed)`` for the volume estimate.
+
+    A missing ``--start-date`` falls back to ``UNBOUNDED_WINDOW_START`` and a
+    missing ``--end-date`` to today; ``assumed`` reports whether either
+    fallback applied. Nothing is written back onto ``args``: an assumption
+    made to size a fetch must not become the window the fetch requests.
+    """
     import datetime
 
     start = getattr(args, "start_date", None)
@@ -724,21 +677,27 @@ def volume_pricing(
     *,
     symbols,
 ) -> tuple[object, str, str, str, bool]:
-    """`(pricing, category, start_date, end_date, window_assumed)` for the
-    guard call the CALLER makes.
+    """Return what the caller needs to run the volume guard.
 
-    This helper deliberately does NOT call the guard. Each ingest script names
-    `assert_acquisition_volume_fits` at its own call site, so a reader of the
-    script -- and a grep across the entry points -- sees the guard where the
-    decision to fetch is made, rather than one level of indirection away. What
-    IS shared is the part that would otherwise be copied three times and drift:
-    which object prices the fetch, and over which window.
+    The guard itself, ``assert_acquisition_volume_fits``, is not called here:
+    each ingest script names it at its own call site so the decision to fetch
+    is visible where it is made. What is shared is which object prices the
+    fetch and over which window. An explicit ``--symbols`` list, or a
+    category truncated by ``--limit``, is priced from its real symbol count
+    through ``_explicit_symbol_catalog``; only a whole, untruncated category
+    is priced through the catalog's density-adjusted estimate.
 
-    Prices the ACTUAL roster. An explicit `--symbols` list, or a category
-    truncated by `--limit`, is sized from its real symbol count rather than
-    exempted -- an explicit 15,000-symbol list costs exactly what the same
-    roster resolved from a category costs. Only a whole, untruncated category
-    is priced through the catalog's own density-adjusted estimate.
+    Args:
+        args: Parsed arguments.
+        catalog: The ``UniverseCatalog`` that resolved ``symbols``; may be
+            ``None`` for an explicit list.
+        symbols: The resolved roster, as returned by ``resolve_symbols``.
+
+    Returns:
+        ``(pricing, category, start_date, end_date, window_assumed)``, where
+        ``pricing`` is the object to call the guard on, ``category`` is the
+        name to report, and ``window_assumed`` says whether the window came
+        from the fallbacks in ``_sizing_window``.
     """
     category = roster_category(args)
     truncated = getattr(args, "limit", None) is not None
@@ -763,26 +722,29 @@ def print_volume_estimate(
     forced: bool = False,
     print_fn=print,
 ) -> dict:
-    """Print what the user just committed to.
+    """Print an admitted volume estimate and return it.
 
-    **Reached only when the guard ADMITS the fetch.** Every call site is
-    structured as `print_volume_estimate(pricing.assert_acquisition_volume_fits(
-    ...), ...)`, so the guard is an ARGUMENT: when it raises, this function is
-    never invoked. That is deliberate and it is not a gap -- the refusal message
-    already carries the same arithmetic (symbols, trading days, rows, requests,
-    GiB, hours) plus every ceiling crossed and a concrete narrowing that would
-    fit, so a refused user sees MORE than this prints, not less.
+    Call sites pass the guard's return value straight in, as in
+    ``print_volume_estimate(pricing.assert_acquisition_volume_fits(...))``,
+    so this runs only when the guard admits the fetch. A refusal never gets
+    here; its exception message already carries the same arithmetic plus
+    every ceiling crossed and a narrowing that would fit. What this adds is
+    the admitted case: the numbers the user proceeded with, and a
+    ``--force-volume`` line that distinguishes "under every ceiling" from
+    "over one and overridden".
 
-    An earlier version of this docstring claimed the estimate was "printed
-    whether or not the guard refused". It was not, and could not be, in this
-    structure; the claim is corrected rather than the structure changed, and
-    `test_a_refusal_prints_no_estimate_and_carries_the_numbers_itself` pins
-    which of the two is actually true (WR-07).
+    Args:
+        estimate: The dict returned by ``assert_acquisition_volume_fits``.
+        category: Roster name to print.
+        start_date: Window start used for sizing.
+        end_date: Window end used for sizing.
+        window_assumed: Whether the window came from the sizing fallbacks;
+            if so, a line saying so is printed first.
+        forced: Whether ``--force-volume`` was set.
+        print_fn: Output function, injectable for tests.
 
-    What this adds over the refusal message is the ADMITTED case: a user who
-    proceeds sees the numbers they proceeded with, and the `--force-volume`
-    line distinguishes "under every ceiling" from "over one and overridden",
-    which the estimate alone cannot say.
+    Returns:
+        ``estimate``, unchanged, so a call site can compose.
     """
     if window_assumed:
         print_fn(
@@ -822,22 +784,25 @@ def print_volume_estimate(
 def print_sql_volume_estimate(
     estimate: dict, *, forced: bool = False, print_fn=print
 ) -> dict:
-    """Print an admitted `SqlVolumeGuard` estimate (D-16).
+    """Print an admitted ``SqlVolumeGuard`` estimate and return it.
 
-    The WRDS twin of `print_volume_estimate`, under the same rule: it is
-    reached only when the guard ADMITTED the pull -- a refusal carries its own
-    numbers (and a date segment that fits) in the exception message. It takes
-    the returned dict alone, so this module imports nothing new and needs no
-    connection; it prints counts, dates and ceilings, never a credential.
+    The WRDS counterpart of ``print_volume_estimate``, under the same rule: it
+    is reached only when the guard admitted the pull, since a refusal carries
+    its own numbers in its exception. The bucket line is labelled from
+    ``estimate["unit"]``: ``trading days:`` for a TAQ pull, whose pages are
+    days, and ``year buckets:`` for a CRSP pull, whose pages are calendar
+    years. An estimate without a ``unit`` key is treated as a TAQ estimate.
+    Only counts, dates and ceilings are printed, never a credential.
 
-    The bucket line is labelled from `estimate['unit']` -- `trading days:`
-    for a TAQ pull (whose pages ARE days), `year buckets:` for a CRSP one
-    (whose pages are calendar years). An estimate with no `unit` key comes
-    from a caller older than 03.10-10 and is a TAQ estimate by construction,
-    so it reads `trading days:` exactly as it always did.
+    Args:
+        estimate: The dict returned by the SQL volume guard.
+        forced: Whether ``--force-volume`` was set.
+        print_fn: Output function, injectable for tests.
+
+    Returns:
+        ``estimate``, unchanged.
     """
-    # Imported at call time for the reason `apply_data_dir` defers `config`:
-    # this module's module-scope project imports stay pinned at quantlab.base.*.
+    # Imported at call time so this module stays light at import.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 
     bytes_per_row = estimate["bytes_per_row"]
@@ -871,32 +836,21 @@ def print_sql_volume_estimate(
 
 
 def print_conversion_result(result, *, print_fn=print):
-    """Render the `ConversionResult` `quantlab.registry.convert()`
-    returns.
+    """Print the ``ConversionResult`` returned by ``quantlab.registry.convert``.
 
-    Beside `print_volume_estimate` and shaped the same way -- `print_fn`
-    injected LAST, the input returned so a call site can compose -- because
-    the same rule applies: `quantlab/acquisition/` and `quantlab/base/`
-    produce VALUE objects, and every print of one lives in this module. Three
-    shells render the same outcome, so a third copy of these lines in a third
-    shell is the duplication that hoisting into this module (D-13) was about.
+    Every line comes off the returned object, not the config and not a
+    read-back of the store, so the printed path is the one actually written
+    and ``windows_skipped`` / ``resumed`` describe this run rather than
+    whatever the ledger holds. Only paths, integer counts and booleans are
+    printed. The argument is left unannotated so this module does not import
+    the result class.
 
-    **Every line comes off the RETURNED object, none from the config and none
-    from a read-back of the store.** That is half of what `ConversionResult`
-    exists for (03.5 D-04): the written path is echoed rather than re-derived,
-    so a run that wrote somewhere other than where the caller expected says
-    so, and `windows_skipped`/`resumed` describe THIS run rather than what the
-    ledger happens to hold.
+    Args:
+        result: The conversion result to render.
+        print_fn: Output function, injectable for tests.
 
-    Takes the CONSTRUCTED object and imports nothing, exactly as
-    `refuse_conversion_without_raw_data` above does: this module's module-scope
-    project dependency surface is pinned at `quantlab.base.*` by its own
-    module docstring, and naming `ConversionResult` for an annotation would
-    widen it for no behaviour.
-
-    Prints paths, integer counts and booleans only (T-03.5-17). There is no
-    vendor response body and no credential in a `ConversionResult` to leak,
-    and this renderer adds no field of its own.
+    Returns:
+        ``result``, unchanged, so a call site can compose.
     """
     print_fn(f"Zarr store written at: {result.zarr_path}")
     print_fn(
@@ -907,17 +861,15 @@ def print_conversion_result(result, *, print_fn=print):
     print_fn(f"  symbols pinned:    {result.pinned_symbols}")
     print_fn(f"  rows appended:     {result.rows_written:,}")
     if result.resumed:
-        # Said out loud, because "0 windows written" and "this run had nothing
-        # left to do" read identically in a log otherwise -- and one of them
-        # is a bug report.
+        # Said explicitly: "0 windows written" and "nothing left to do" read
+        # identically in a log otherwise, and one of them is a bug report.
         print_fn(
             "  resumed:           yes -- windows the chunk ledger already "
             "recorded were skipped, not rewritten"
         )
     if result.peak_window_bytes is not None:
-        # Prediction beside outcome, and only when there IS an outcome: a
-        # fully-resumed run materialises no window, so it has no observed peak
-        # and printing `0.00 GiB` would claim a measurement nobody took.
+        # A fully resumed run materialises no window and has no observed peak;
+        # printing 0.00 GiB would claim a measurement nobody took.
         predicted = (
             ""
             if result.predicted_peak_bytes is None

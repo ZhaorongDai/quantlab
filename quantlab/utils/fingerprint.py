@@ -1,20 +1,15 @@
-"""Content fingerprint of the data a backtest run actually read (03.7 D-27).
+"""Content fingerprint of the data a backtest run read.
 
-A stored backtest is only reproducible if the data under it has not changed.
-Datasets get appended to, and Tiingo re-bases adjusted prices retroactively
-after new dividends, so a rebuild from a persisted config can silently compute
-over different numbers. `dataset_fingerprint` records, for one dataset, the
-time range, the axis sizes and a sha256 over the values of the variables the
-run consumed, so a rebuild can compare its own record against the stored one.
+A stored backtest is reproducible only if the data under it has not changed,
+and datasets do change: stores are appended to and adjusted prices are
+re-based retroactively. ``dataset_fingerprint`` records, for one dataset, the
+time range, the axis sizes and a sha256 digest over the values of the
+variables a run consumed. A rebuild from a persisted config computes the same
+record and compares it against the stored one.
 
-**NaN-canonical.** NaN has many bit patterns: two reads of one store, or two
-code paths producing "missing", can carry NaNs whose payload bits differ. Such
-arrays compare as the same missing values but differ byte for byte, so hashing
-raw bytes would report a changed digest on unchanged data. Every NaN is
-rewritten to one canonical NaN and every -0.0 to 0.0 before hashing.
-
-A LEAF module: hashlib, numpy, pandas and xarray only, zero project-internal
-imports.
+NaN has many bit patterns, so every NaN is rewritten to one canonical NaN and
+every ``-0.0`` to ``0.0`` before hashing; otherwise two reads of identical data
+could report different digests. This module has no project-internal imports.
 """
 
 import hashlib
@@ -27,21 +22,35 @@ __all__ = ["dataset_fingerprint"]
 
 
 def _iso(value) -> str:
+    """Return ``value`` as an ISO-8601 timestamp string."""
     return pd.Timestamp(value).isoformat()
 
 
 def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
-    """Fingerprint `variables` of a `(timestamp, symbol)` dataset.
+    """Fingerprint ``variables`` of a ``(timestamp, symbol)`` dataset.
 
     The dataset is sorted by timestamp and symbol first, so the digest does not
     depend on axis order. The hash covers, in order: the int64 nanosecond
     timestamps, the NUL-joined symbol names, then for each variable in sorted
-    order its name and its float64 values on `(timestamp, symbol)` after NaN
-    and signed-zero canonicalization.
+    order its name and its float64 values on ``(timestamp, symbol)`` after NaN
+    and signed-zero canonicalisation.
 
-    Returns `{"algorithm": "sha256", "digest", "variables" (sorted), "start",
-    "end" (ISO strings, None for an empty timestamp axis), "n_timestamps",
-    "n_symbols"}`. A variable missing from `ds` raises `ValueError` naming it.
+    Args:
+        ds: A panel indexed by ``timestamp`` and ``symbol``.
+        variables: Names of the data variables to include.
+
+    Returns:
+        A dict with keys ``algorithm`` (``"sha256"``), ``digest``, ``variables``
+        (sorted), ``start`` and ``end`` (ISO strings, ``None`` when the
+        timestamp axis is empty), ``n_timestamps`` and ``n_symbols``.
+
+    Raises:
+        ValueError: If any requested variable is not in ``ds``.
+
+    Example:
+        >>> record = dataset_fingerprint(prices, ["open", "close"])
+        >>> record["digest"] == stored_record["digest"]
+        True
     """
     names = sorted(variables)
     missing = [name for name in names if name not in ds.data_vars]
@@ -61,7 +70,7 @@ def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
             ds[name].transpose("timestamp", "symbol").values, dtype=np.float64
         )
         values = np.where(np.isnan(values), np.nan, values)  # one NaN bit pattern
-        values = values + 0.0  # -0.0 -> 0.0
+        values = values + 0.0  # -0.0 becomes 0.0
         digest.update(name.encode())
         digest.update(np.ascontiguousarray(values).tobytes())
 

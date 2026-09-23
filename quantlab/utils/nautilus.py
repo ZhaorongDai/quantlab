@@ -1,3 +1,11 @@
+"""Helpers for converting quantlab market data into Nautilus Trader objects.
+
+The spot kline dataset uses these to build ``Currency`` and ``CurrencyPair``
+instruments for its Nautilus data catalog and to name bar types. Instrument
+limits are read from the packaged ``instruments.yaml``; a symbol missing from
+that file is fetched live from the venue (currently only Binance).
+"""
+
 import os
 from decimal import Decimal
 
@@ -17,31 +25,16 @@ from quantlab.utils.paths import INSTRUMENTS_CONFIG_PATH
 
 
 def get_crypto_currency(symbol: str) -> Currency:
-    """按代码取一个 `Currency`（未注册的代码会被当作加密货币，精度默认 8）。
+    """Return the Nautilus ``Currency`` for ``symbol``.
 
-    改名说明：它以前叫 `get_crypot_currency`——"crypot" 是 "crypto" 的拼写错误
-    （2026-09-07 更正）。同一个文件里紧挨着的 `get_crypto_currency_pair` 拼写
-    是对的，两个名字并排放着只会让人以为是两类东西。
-
-    同时**去掉了那个 `name: Optional[str] = None` 参数**。它被声明、被接收，
-    然后函数体一个字都没用到；两个调用点（`dataset/spot.py` 的
-    `base_currency` / `quote_currency`）也都只传 `symbol=`。要真正兑现它，
-    得改用 `Currency(code, precision, iso4217, name, currency_type)` 构造器
-    ——`Currency.from_str(code, strict=False)` 根本不收 name——那需要替每个
-    币种定下 precision / currency_type，仓库里没有任何依据，而且会改变现有两个
-    调用点的行为。所以是删，不是补：一个被接收又被忽略的参数，跟这次一并修掉的
-    `_train_dl(backtest=...)` 是同一种谎。
+    Codes Nautilus does not know are registered on the fly as crypto
+    currencies with the default precision of 8.
     """
     return Currency.from_str(symbol)
 
 
 def _load_instrument_config(venue: str):
-    """Read venue metadata from the packaged instrument file.
-
-    The location comes from `quantlab.utils.paths`, which derives it from
-    the package rather than from the current working directory, and is the
-    same constant the Binance refresh CLI writes back through.
-    """
+    """Return the ``venue`` section of the packaged ``instruments.yaml``."""
     with open(INSTRUMENTS_CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)[venue]
 
@@ -52,6 +45,26 @@ def get_crypto_currency_pair(
     base: Currency,
     quote: Currency,
 ):
+    """Build a Nautilus ``CurrencyPair`` instrument for ``symbol`` on ``venue``.
+
+    Precision, increment, quantity, price and notional limits come from the
+    packaged instrument file; fees and margins come from the venue-level
+    ``fees`` and ``margin`` sections. A symbol absent from the file is fetched
+    from the exchange for this call only, without updating the file.
+
+    Args:
+        symbol: The venue's symbol, such as ``"BTCUSDT"``.
+        venue: The venue name as spelled in ``instruments.yaml``.
+        base: The base currency.
+        quote: The quote currency.
+
+    Returns:
+        A ``CurrencyPair`` with ``ts_event`` and ``ts_init`` set to 0.
+
+    Raises:
+        ValueError: If the symbol is missing and the venue has no live
+            fetcher.
+    """
     config_data = _load_instrument_config(venue)
 
     if symbol not in config_data["instruments"]:
@@ -118,12 +131,20 @@ def get_crypto_currency_pair(
 def generate_bar_type_str(
     time_interval: np.timedelta64, symbol: str, venue: str = "BINANCE"
 ) -> str:
-    """生成bar type字符串"""
+    """Return the Nautilus bar-type string for a bar of ``time_interval``.
+
+    The interval is expressed in the largest unit that divides it exactly:
+    whole days as ``DAY``, whole hours as ``HOUR``, anything else in minutes.
+    Bars are always ``LAST`` priced and ``EXTERNAL`` aggregated.
+
+    Example:
+        >>> generate_bar_type_str(np.timedelta64(4, "h"), "BTCUSDT")
+        'BTCUSDT.BINANCE-4-HOUR-LAST-EXTERNAL'
+    """
     time_interval_minutes = time_interval.astype("timedelta64[m]").astype(
         "int64"
     )
 
-    # 特殊情况：1天、1小时、1分钟
     if time_interval == np.timedelta64(1, "D"):
         return f"{symbol}.{venue}-1-DAY-LAST-EXTERNAL"
     elif time_interval == np.timedelta64(1, "h"):
@@ -131,7 +152,6 @@ def generate_bar_type_str(
     elif time_interval == np.timedelta64(1, "m"):
         return f"{symbol}.{venue}-1-MINUTE-LAST-EXTERNAL"
 
-    # 其他情况：根据分钟数计算
     if time_interval_minutes % (60 * 24) == 0:
         days = time_interval_minutes // (60 * 24)
         return f"{symbol}.{venue}-{days}-DAY-LAST-EXTERNAL"
@@ -143,9 +163,15 @@ def generate_bar_type_str(
 
 
 def parse_symbol_currencies(symbol: str) -> tuple[str, str]:
-    """解析symbol获取base和quote货币"""
+    """Split a ``...USDT`` spot symbol into its ``(base, quote)`` codes.
+
+    Only USDT-quoted symbols are recognised.
+
+    Raises:
+        ValueError: If ``symbol`` does not end in ``USDT``.
+    """
     if symbol.endswith("USDT"):
-        base_symbol = symbol[:-4]  # 移除USDT
+        base_symbol = symbol[:-4]
         quote_symbol = "USDT"
     else:
         raise ValueError(f"Unsupported symbol format: {symbol}")

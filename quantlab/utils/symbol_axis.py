@@ -1,29 +1,12 @@
-"""The symbol axis's two contracts, each stated ONCE (03.11-02).
+"""The two contracts of a panel's ``symbol`` axis: its order and its dtype.
 
-A panel's `symbol` axis carries TWO separate contracts, and before this module
-existed neither had a home:
-
-1. **ORDER.** The axis is sorted NUMERICALLY when its labels are integers.
-2. **DTYPE.** A caller's labels must be normalised to the dtype the STORED
-   axis carries before they are used to index it -- never the other way
-   round, and never by an unconditional `str()`.
-
-Both were re-expressed at every call site instead -- eight-plus bare
-`sorted()` calls (`quantlab/dataset/stock.py:506-511`,
-`quantlab/dataset/crsp/__init__.py:1372-1375`, `quantlab/base/constituent.py:198`,
-`quantlab/dataset/_support/masking.py:105`, `quantlab/base/model.py:310` and `:1220`,
-`quantlab/utils/fingerprint.py:58`, `quantlab/dataset/chunking.py:210`) and an
-unconditional `[str(symbol) for symbol in symbols]` at
-`quantlab/backend.py:451`. N independent spellings of one contract are
-N things that can drift, and the drift is invisible: on today's universe every
-one of them agrees with every other.
-
-The second contract is not a style point. Measured 2026-09-20 (xarray 2026.7.0
-/ zarr 3.3.0), `XrBackend.widen_symbol_axis` stringified its request against an
-int64 store, so the reindex matched nothing, the superset guard compared
-`str(...)` on BOTH sides and therefore saw nothing dropped, and the resulting
-ALL-NaN panel was renamed over the authoritative store, whose original was then
-`rmtree`d -- 0 of 12 cells survived, with no exception and no log line.
+A ``symbol`` axis is sorted numerically when every label is an integer (or a
+digit string) and lexicographically otherwise; ``sort_symbol_axis`` is the one
+place that rule is spelled out. Separately, labels a caller holds must be
+re-spelled in the dtype the stored axis carries before they are used to index
+it, which ``normalize_to_axis_dtype`` does. Indexing an int64 axis with digit
+strings does not raise: ``reindex`` matches nothing and silently returns an
+all-NaN panel of the right shape, which is the failure this module prevents.
 """
 
 from __future__ import annotations
@@ -33,20 +16,18 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-#: numpy/pandas dtype kinds that spell a TEXTUAL axis: `O` (python object and
-#: pandas 3's `str` dtype, measured `pd.Index(['A']).dtype.kind == 'O'`), `U`
-#: (numpy fixed-width unicode, what a list literal round-trips to in zarr),
-#: `S` (bytes) and `T` (`np.dtypes.StringDType()`, what `xr.open_zarr` decodes
-#: an object-encoded coordinate to).
+#: numpy/pandas dtype kinds that denote a textual axis: ``O`` (Python object
+#: and pandas' ``str`` dtype), ``U`` (fixed-width unicode, what a list literal
+#: round-trips to in zarr), ``S`` (bytes) and ``T`` (``np.dtypes.StringDType``,
+#: what ``xr.open_zarr`` decodes an object-encoded coordinate to).
 _TEXTUAL_KINDS = frozenset("OUST")
 
 
 def _is_integral(value: object) -> bool:
-    """Can `value` be read as an integer WITHOUT guessing?
+    """Return True if ``value`` is an integer or a string of digits.
 
-    `bool` is excluded deliberately: it is an `int` subclass, so a `[True,
-    False]` axis would otherwise sort "numerically" and read as a legitimate
-    integer universe.
+    ``bool`` is excluded deliberately: it is an ``int`` subclass, and an axis
+    of booleans must not be treated as an integer universe.
     """
     if isinstance(value, bool):
         return False
@@ -56,41 +37,28 @@ def _is_integral(value: object) -> bool:
 
 
 def sort_symbol_axis(values: Iterable) -> list:
-    """Sort a symbol axis, numerically where that is meaningful.
+    """Sort a symbol axis, numerically when every label is integral.
 
-    **The order is part of the contract, and it is NUMERIC.** PERMNOs are
-    integers -- rendered as strings on the 03.10-era axis -- so `sorted()` on
-    the text would put ``"14593"`` before ``"7000"``.
-    ``quantlab/utils/cli.py:resolve_symbols`` slices this list for
-    ``--limit``; an unstable or surprising order truncates to a different
-    batch on every run, and the second run never meets the watermarks the
-    first one wrote.
+    Security identifiers such as PERMNOs are integers that are sometimes
+    carried as digit strings; plain ``sorted()`` on the text would put
+    ``"14593"`` before ``"7000"``. When every label passes ``_is_integral`` the
+    sort key is ``int``; a mixed or non-integer axis falls back to ``str``
+    comparison rather than raising, because this function orders labels and
+    does not validate them.
 
-    That paragraph is not new wording: it MOVED here verbatim from
-    ``quantlab/dataset/crsp/membership.py:permnos_in_range``, which was the
-    only place in the repository that stated it. Moving rather than copying is
-    the point of this module -- a second copy is a second thing to drift.
+    Only the order changes. Elements keep their input type, so digit strings
+    come back as digit strings; converting them is ``normalize_to_axis_dtype``'s
+    job.
 
-    **Why the trap is invisible today.** Historical PERMNOs happen to be five
-    digits (~10000-93436), so numeric and lexicographic order COINCIDE on the
-    current universe -- measured 2026-09-20::
+    Args:
+        values: The labels to sort.
 
-        sorted(str) : ['10107', '14593', '7000', '93436']
-        sorted(int) : [7000, 10107, 14593, 93436]
+    Returns:
+        A new sorted list, empty for empty input.
 
-    The two forks the moment one four-digit PERMNO appears, and not before.
-    ``tests/test_symbol_axis_contract.py`` pins both halves.
-
-    This function decides ORDER ONLY. **The returned elements have the same
-    type as the input elements** -- digit strings come back as digit strings.
-    Converting them is `normalize_to_axis_dtype`'s contract, and doing both
-    here would collapse the two contracts back into one place, which is the
-    situation this module exists to end.
-
-    A mixed or non-integer axis falls back to `str` comparison rather than
-    raising: this function orders, it does not police. A mixed axis is a
-    defect upstream, and raising here would replace a diagnosable panel with
-    an exception that has no panel to look at.
+    Example:
+        >>> sort_symbol_axis(["10107", "14593", "7000"])
+        ['7000', '10107', '14593']
     """
     materialised = list(values)
     if not materialised:
@@ -100,37 +68,32 @@ def sort_symbol_axis(values: Iterable) -> list:
 
 
 def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
-    """Re-spell `labels` in the dtype `stored_index` actually carries.
+    """Re-spell ``labels`` in the dtype ``stored_index`` carries.
 
-    The stored axis decides. A caller holding digit strings must reach an
-    int64 store's labels, and a caller holding integers must reach a string
-    store's -- because the alternative is not an error, it is a SILENT MISS:
-    `reindex` drops every label it cannot match and writes NaN in its place.
+    The stored axis decides. A textual axis (see ``_TEXTUAL_KINDS``) receives
+    ``str(label)`` for each label; any other axis receives
+    ``pd.Index(labels).astype(dtype)``. The two directions are not symmetric:
+    ``astype(object)`` boxes an integer instead of rendering it, which is why
+    textual targets use ``str`` explicitly. Textual is decided by dtype kind,
+    never by width, because a fixed-width store's width depends on the labels
+    it happens to hold.
 
-    **The two directions are not symmetric, and `astype` alone does not do
-    it.** Measured 2026-09-20 (pandas 3.0.5 / numpy 2.5.3)::
+    Args:
+        labels: The labels a caller wants to select or reindex with.
+        stored_index: The axis of the store being indexed.
 
-        pd.Index(['10107']).astype('int64').tolist()  -> [10107]   int
-        pd.Index([10107]).astype(object).tolist()     -> [10107]   int  (!)
+    Returns:
+        A list of labels in the stored dtype, empty for empty input.
 
-    The second row is the trap: `astype(object)` boxes the INT, it does not
-    render it. So a textual target dtype normalises with `str` and a
-    non-textual one goes through `astype`. Textual is decided by dtype KIND
-    (`_TEXTUAL_KINDS`), never by a width or a dtype literal -- a fixed-width
-    store's width is a property of its LABELS (`<U1` for `A`, `<U9` for
-    `SATX-WS-A`), so anything pinned to one width reproduces at one label set
-    and nowhere else.
+    Raises:
+        ValueError: If any label has no spelling in the stored dtype. The
+            message names the offending labels. Labels are never coerced to a
+            guess or dropped, since either would hand ``reindex`` a request
+            that misses silently.
 
-    On a string axis this is byte-for-byte what
-    `quantlab/backend.py:451` did before -- `str(symbol)` per label.
-    The behaviour change is confined to the axes where the old spelling was
-    wrong.
-
-    A label with no spelling in the target dtype raises `ValueError` naming
-    the offenders and the dtype. It does NOT coerce to something, and it does
-    NOT drop the label: either would hand `reindex` a request that misses
-    silently, which is the entire failure this function was written to
-    remove.
+    Example:
+        >>> normalize_to_axis_dtype(["10107", "7000"], pd.Index([7000, 10107]))
+        [10107, 7000]
     """
     materialised = list(labels)
     if not materialised:
@@ -169,11 +132,10 @@ def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
 
 
 def _coercible(label: object, dtype) -> bool:
-    """Would `label` alone survive `astype(dtype)`?
+    """Return True if ``label`` alone survives ``astype(dtype)``.
 
-    Used only to NAME the offenders in the error above. Per-label so the
-    message points at the one bad ticker in a universe of 7,700 rather than at
-    the whole request.
+    Used only to name the offending labels in ``normalize_to_axis_dtype``'s
+    error message, so it points at the bad label rather than the whole request.
     """
     try:
         pd.Index([label]).astype(dtype)

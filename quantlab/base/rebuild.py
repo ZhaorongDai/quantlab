@@ -1,32 +1,21 @@
-"""Offline store REBUILD -- the framework-agnostic skeleton (phase 03.11 W0).
+"""Rebuilding an on-disk store from its raw tier.
 
-**Why this layer exists at all.** A Zarr store on disk is a *derived* artefact:
-it is whatever the conversion code produced on the day it ran. When that code
-is fixed, every store written before the fix keeps describing a panel the
-current tree can no longer produce -- and every number measured on it is a
-measurement of deleted code. Phase 03.11's W0 hit exactly that: the on-disk
-CRSP sidecars are timestamped 13:46/13:47 while the commit that fixed the
-no-price-sentinel adjustment anchor landed at 16:03, so the audit's headline
-counts were all pre-fix. Re-running the conversion is therefore not a
-convenience task; it is the precondition for every later acceptance criterion.
+A Zarr store is a derived artefact: it holds whatever the conversion code
+produced on the day it ran, and once that code changes the store describes a
+panel the current code can no longer produce. ``BaseStoreRebuilder`` is the
+vendor-agnostic skeleton for re-running a conversion safely. It fixes the
+order of operations, the refusals, and the ``RebuildMeasurement`` record a
+rebuild returns; which raw files must exist, which converter to call and what
+to count are a subclass's job (see ``quantlab/dataset/crsp/rebuild.py``).
 
-**The shape.** This module holds only what is true of ANY store: the four-step
-order, the refusals, the measurement carrier. Everything vendor-specific --
-which sidecars exist, which converter to call, what to count -- is a subclass's
-job, mirroring the `base/data.py` -> `dataset/stock.py` split the rest of the
-project already uses. See `quantlab/dataset/crsp/rebuild.py` for the CRSP
-implementation.
-
-**The order is the safety property**, not an implementation detail::
+The order is the safety property::
 
     assert_inputs_present() -> backup() -> clear() -> _convert() -> _measure()
 
-`clear()` deletes a real store. Putting `assert_inputs_present()` first means a
-missing raw tier costs nothing: the refusal happens while the old store is
-still on disk. Putting `backup()` before `clear()` means even a conversion that
-fails halfway leaves the operator with the previous panel. `_measure()` runs
-last and only on success, because measuring a store that `_convert()` never
-finished writing is how a half-written panel becomes a quoted number.
+Checking inputs first means a missing raw tier is refused while the old store
+is still on disk. Backing up before clearing means a conversion that fails
+halfway still leaves the previous panel available. Measuring last, and only
+on success, means a half-written store is never quoted as a number.
 """
 
 from __future__ import annotations
@@ -39,19 +28,14 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class RebuildMeasurement:
-    """Everything one rebuild produced, in the form a SUMMARY quotes verbatim.
+    """The record one rebuild produced, quoted verbatim by a summary.
 
-    Frozen because it is evidence. A caller that could mutate a field after the
-    fact turns "what the rebuild measured" into "what somebody last wrote
-    here", and the whole reason this object exists is that phase 03.11 could no
-    longer trust numbers whose provenance had gone quiet.
-
-    `data_root` is an ABSOLUTE path STRING rather than a `Path`, and it is
-    first on purpose. Executions run inside a git worktree while the data lives
-    in the main repository (`data/` is gitignored, so it is simply absent from
-    a worktree); the recorded accident is an executor reading the wrong tree
-    and reporting a false green. Printing this field is the only cheap way an
-    operator can see WHICH tree was read.
+    Frozen because it is evidence: a mutable field would turn "what the
+    rebuild measured" into "what somebody last wrote here". ``data_root`` is
+    an absolute path string and comes first so that a printed measurement
+    shows which tree was read; a rebuild run from a git worktree could
+    otherwise report success against a ``data/`` directory that is absent
+    there.
     """
 
     #: The absolute filesystem root the rebuild read and wrote under.
@@ -60,53 +44,67 @@ class RebuildMeasurement:
     #: The absolute path of the Zarr store that was rebuilt.
     store_path: str
 
-    #: `dict(ds.sizes)` of the rebuilt panel -- axis name to length.
+    #: ``dict(ds.sizes)`` of the rebuilt panel: axis name to length.
     dims: dict[str, int]
 
-    #: `len(ds.data_vars)` of the rebuilt panel.
+    #: ``len(ds.data_vars)`` of the rebuilt panel.
     data_var_count: int
 
     #: The subclass's own measurements, keyed by metric name.
     metrics: dict[str, int]
 
-    #: Every path `clear()` actually deleted, sorted.
+    #: Every path ``clear()`` actually deleted, sorted.
     removed: tuple[str, ...]
 
-    #: Where the pre-rebuild store was copied, or `None` when there was no
-    #: store to copy (or no `backup_dir` was asked for).
+    #: Where the pre-rebuild store was copied, or ``None`` when there was no
+    #: store to copy or no ``backup_dir`` was given.
     backup_path: str | None
 
 
 class BaseStoreRebuilder(ABC):
     """Rebuild one on-disk store from its raw tier, safely and measurably.
 
-    Subclasses declare `SIDECAR_SUFFIXES` and implement four hooks:
-    `_required_inputs`, `_convert`, `_measure` and `_measure_dims`.
+    Subclasses declare ``SIDECAR_SUFFIXES`` and implement the four hooks
+    ``_required_inputs``, ``_convert``, ``_measure`` and ``_measure_dims``.
+    ``rebuild()`` runs the whole sequence and returns a ``RebuildMeasurement``.
+
+    Example:
+        A subclass names its sidecars and fills in the hooks::
+
+            class MyRebuilder(BaseStoreRebuilder):
+                SIDECAR_SUFFIXES = (".chunks.json",)
+
+                def _required_inputs(self):
+                    return (self.data_root / "raw" / "prices.parquet",)
+
+                ...
+
+            measurement = MyRebuilder(config, data_root=repo_root).rebuild(
+                backup_dir=repo_root / "backup"
+            )
     """
 
-    #: The suffixes appended to `store_path` to name every sidecar file that
-    #: belongs to this store. Declared by the subclass; `()` means the store
-    #: has no sidecars. These are the files `clear()` deletes alongside the
-    #: store directory -- see `clear()` for why that is not optional.
+    #: The suffixes appended to ``store_path`` to name every sidecar file that
+    #: belongs to this store. ``()`` means the store has no sidecars. These
+    #: are deleted together with the store directory by ``clear()``.
     SIDECAR_SUFFIXES: tuple[str, ...] = ()
 
     def __init__(self, config, *, data_root: Path | str) -> None:
         """Bind a config and the filesystem root every path resolves under.
 
-        `data_root` is KEYWORD-ONLY, has NO DEFAULT and gets NO cwd fallback,
-        and all three are deliberate. The caller always knows which tree it
-        means; this class never does. A default would silently make "the
-        current directory" the answer, which inside a git worktree is the
-        worktree -- the exact tree that has no `data/` at all, and the exact
-        way a rebuild reports success against data it never touched.
+        ``data_root`` is keyword-only with no default and no fallback to the
+        current directory. Inside a git worktree the current directory has no
+        ``data/`` at all, and a default would let a rebuild report success
+        against a tree it never read. From a worktree the right value is the
+        parent of ``git rev-parse --path-format=absolute --git-common-dir``,
+        which is the main repository root.
 
-        In a worktree the right value is::
+        Args:
+            config: The dataset config naming ``zarr_file_path``.
+            data_root: An existing directory the raw tier and store sit under.
 
-            dirname( git rev-parse --path-format=absolute --git-common-dir )
-
-        which resolves to the MAIN repository root from inside a worktree and
-        to the repository root from the main tree, so one expression serves
-        both.
+        Raises:
+            ValueError: If ``data_root`` is not an existing directory.
         """
         self.config = config
         resolved = Path(data_root).resolve()
@@ -131,15 +129,15 @@ class BaseStoreRebuilder(ABC):
 
     @property
     def store_path(self) -> Path:
-        """The Zarr store this rebuilder replaces, from the config."""
+        """The Zarr store this rebuilder replaces, taken from the config."""
         return Path(str(self.config.zarr_file_path))
 
     def sidecar_paths(self) -> tuple[Path, ...]:
-        """`store_path` + each entry of `SIDECAR_SUFFIXES`, existing or not.
+        """Return ``store_path`` joined with each of ``SIDECAR_SUFFIXES``.
 
-        Sidecars are SIBLINGS of the store directory, never files inside it:
-        a path inside the `.zarr` directory would be read as an array by any
-        Zarr reader that walked it.
+        Paths are returned whether or not they exist. Sidecars are siblings of
+        the store directory, never files inside it, because a Zarr reader
+        walking the directory would try to read them as arrays.
         """
         return tuple(
             Path(str(self.store_path) + suffix)
@@ -147,18 +145,17 @@ class BaseStoreRebuilder(ABC):
         )
 
     def assert_inputs_present(self) -> None:
-        """Refuse, naming names, when any required input is missing.
+        """Refuse, naming every missing path, when a required input is absent.
 
-        Runs FIRST in `rebuild()`, before anything destructive, so a missing
-        raw tier costs an error message rather than a deleted store.
+        Runs first in ``rebuild()``, before anything destructive, so a missing
+        raw tier costs an error message rather than a deleted store. A rebuild
+        that converted an absent raw tier would write an empty panel over a
+        real one, and afterwards that is indistinguishable from a period in
+        which nothing traded.
 
-        The message follows the house style for a refusal
-        (`quantlab/backend.py:XrBackend.widen_symbol_axis`): collect the
-        offenders, describe them individually, say what cannot be done without
-        them, and end with the remedy. A rebuild that quietly converted an
-        absent raw tier would write an EMPTY panel over a real one, and an
-        empty panel is not distinguishable afterwards from a market in which
-        nothing traded.
+        Raises:
+            FileNotFoundError: If any path from ``_required_inputs()`` does
+                not exist.
         """
         missing = [
             path for path in self._required_inputs() if not Path(path).exists()
@@ -179,16 +176,18 @@ class BaseStoreRebuilder(ABC):
         )
 
     def backup(self, dest: Path) -> str | None:
-        """Copy the store and every existing sidecar into `dest`.
+        """Copy the store and every existing sidecar into ``dest``.
 
-        Returns `str(dest)`, or `None` when there is no store to copy -- a
-        first-ever conversion has nothing to preserve and must not be turned
-        into an error by the safety net that exists for the other case.
+        This is what makes ``clear()`` reversible: the store it deletes was
+        written by code that no longer exists, so the copy is the only record
+        of what earlier numbers were measured on.
 
-        This is what makes `clear()` a reversible decision. The pre-fix store
-        it deletes can no longer be REPRODUCED (the code path that wrote it is
-        gone, which is the whole reason for the rebuild), so the copy is the
-        only remaining record of what the old numbers were measured on.
+        Args:
+            dest: The directory to copy into; created if needed.
+
+        Returns:
+            ``str(dest)``, or ``None`` when there is no store to copy, since a
+            first-ever conversion has nothing to preserve.
         """
         store = self.store_path
         if not store.exists():
@@ -201,22 +200,16 @@ class BaseStoreRebuilder(ABC):
         return str(dest)
 
     def clear(self) -> tuple[str, ...]:
-        """Delete the store directory AND every sidecar; return what went.
+        """Delete the store directory and every sidecar; return what went.
 
-        **Deleting the sidecars is not tidiness -- it is correctness.**
-        `dataset/crsp/__init__.py:_write_identity_reports` opens with a store-exists
-        guard (crsp/__init__.py:1414): if the store is already on disk, the audit
-        sidecars are left untouched. That guard is right for an APPEND, whose
-        reports would otherwise be replaced by numbers for a panel that was
-        refused and never written. But it means a rebuild that removed only
-        the store directory would finish with sidecars describing the PREVIOUS
-        panel sitting beside the new one -- an audit trail that is confidently
-        wrong, which is worse than none. So the store and its sidecars are
-        cleared together, always.
+        The sidecars must go with the store. A converter that writes audit
+        sidecars may skip them when a store already exists, which is right
+        for an append but would leave a rebuild with sidecars describing the
+        previous panel beside the new one. Idempotent: ``rebuild()`` calls it
+        unconditionally, and a first conversion has nothing to remove.
 
-        Idempotent by design: `rebuild()` calls this unconditionally, and a
-        first-ever conversion has nothing to remove. Returns the paths that
-        actually existed, sorted, so the caller can record what it destroyed.
+        Returns:
+            The paths that existed and were deleted, sorted.
         """
         removed: list[str] = []
         store = self.store_path
@@ -230,16 +223,21 @@ class BaseStoreRebuilder(ABC):
         return tuple(sorted(removed))
 
     def rebuild(self, *, backup_dir: Path | None = None) -> RebuildMeasurement:
-        """Run the full four-step rebuild and return its measurement.
+        """Run the full sequence and return its measurement.
 
-        Order: `assert_inputs_present` -> `backup` -> `clear` -> `_convert` ->
-        `_measure`. See the module docstring for why each position is load
-        bearing. `_measure` is reached only when `_convert` returned, so an
-        exception mid-conversion propagates with no measurement attached
-        rather than producing numbers for a half-written store.
+        The order is ``assert_inputs_present``, ``backup``, ``clear``,
+        ``_convert``, ``_measure``; see the module docstring for why each
+        position matters. An exception inside ``_convert`` propagates with no
+        measurement attached rather than producing numbers for a half-written
+        store.
 
-        `backup_dir=None` skips the copy. Every caller that is about to
-        destroy a real panel should pass one.
+        Args:
+            backup_dir: Where to copy the existing store first. ``None`` skips
+                the copy; every caller about to destroy a real panel should
+                pass one.
+
+        Returns:
+            The ``RebuildMeasurement`` for the freshly written store.
         """
         self.assert_inputs_present()
         backup_path = self.backup(backup_dir) if backup_dir is not None else None
@@ -259,16 +257,16 @@ class BaseStoreRebuilder(ABC):
 
     @abstractmethod
     def _required_inputs(self) -> tuple[Path, ...]:
-        """Every path that must exist before the conversion may start."""
+        """Return every path that must exist before the conversion may start."""
 
     @abstractmethod
     def _convert(self) -> object:
-        """Run the conversion that writes the store. Return whatever it gives."""
+        """Run the conversion that writes the store and return its result."""
 
     @abstractmethod
     def _measure(self) -> dict[str, int]:
-        """Measure the freshly-written store. Keys are the subclass's contract."""
+        """Measure the freshly written store; the keys are the subclass's."""
 
     @abstractmethod
     def _measure_dims(self) -> tuple[dict[str, int], int]:
-        """`(dict(ds.sizes), len(ds.data_vars))` of the freshly-written store."""
+        """Return ``(dict(ds.sizes), len(ds.data_vars))`` of the new store."""

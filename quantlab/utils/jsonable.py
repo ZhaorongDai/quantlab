@@ -1,21 +1,15 @@
 """Convert arbitrary result payloads into strictly standard JSON values.
 
-vectorbt `stats()` output carries NaN, +/-inf, `pd.Timestamp`, `pd.Timedelta`
-(including `NaT`) and numpy scalars. Plain `json.dump` either emits the
-non-standard `NaN` / `Infinity` tokens (which strict parsers reject) or raises
-on the timestamp types, so every JSON artifact a backtest run persists goes
-through `to_jsonable` first (03.7-RESEARCH.md Pitfall 10).
+Backtest statistics carry NaN, infinities, ``pd.Timestamp``, ``pd.Timedelta``
+(including ``NaT``) and numpy scalars. Plain ``json.dump`` either emits the
+non-standard ``NaN`` and ``Infinity`` tokens, which strict parsers reject, or
+raises on the timestamp types. Every JSON artifact a backtest run persists is
+passed through ``to_jsonable`` first.
 
-**Lossless, or loud (code review WR-07).** This function used to fall back to
-`str(value)` for any type it did not know, and to coerce dict keys with `str()`
-without checking. A numpy array therefore persisted as numpy's abbreviated repr
-(`np.arange(2000.0)` -> `'[0.000e+00 1.000e+00 ... 1.999e+03]'`), a `pd.Series`
-or a set became unrecoverable text, and `{1: 'x', '1': 'y'}` silently lost
-`'x'`. The output was strict JSON only syntactically. Now arrays, Series,
-Indexes and sets become full lists, colliding keys raise `ValueError`, and an
-unsupported type raises `TypeError` instead of being stringified.
-
-A LEAF module: stdlib, numpy and pandas only, zero project-internal imports.
+The conversion is lossless or loud: arrays, Series, Indexes and sets become
+full lists, dict keys that collide after ``str()`` raise ``ValueError``, and an
+unsupported type raises ``TypeError`` instead of being stringified. This
+module has no project-internal imports.
 """
 
 import datetime
@@ -32,6 +26,7 @@ __all__ = ["to_jsonable"]
 
 
 def _is_nat(value: object) -> bool:
+    """Return True if ``value`` is pandas ``NaT`` or a numpy NaT datetime/timedelta."""
     if value is pd.NaT:
         return True
     if isinstance(value, (np.datetime64, np.timedelta64)):
@@ -40,28 +35,40 @@ def _is_nat(value: object) -> bool:
 
 
 def _canonical(item: object) -> str:
-    """A total, deterministic sort key for already-converted JSON values."""
+    """Return a total, deterministic sort key for an already-converted JSON value."""
     return json.dumps(item, sort_keys=True)
 
 
 def to_jsonable(value: object) -> object:
-    """Return `value` rebuilt from JSON-safe types only.
+    """Return ``value`` rebuilt from JSON-safe types only.
 
-    - dict -> dict with str keys and converted values; two keys that are equal
-      after `str()` coercion raise `ValueError` (one value would be lost);
-    - list/tuple -> list; `np.ndarray` (any rank), `pd.Series` and `pd.Index`
-      -> nested lists, every element converted by these same rules (a 0-d
-      array -> its scalar); set/frozenset -> list in a deterministic order;
-    - bool / numpy bool -> bool; numpy integer -> int;
-    - float / numpy floating -> float, with NaN, +inf and -inf -> None;
-    - Timestamp / datetime64 / datetime / date -> ISO-8601 string;
-    - Timedelta / timedelta64 / timedelta -> str;
-    - NaT (either kind) -> None;
-    - `pathlib.Path` -> str; `decimal.Decimal` -> str (exact digits);
-      `enum.Enum` -> its value, converted;
-    - str, int and None pass through;
-    - anything else raises `TypeError` naming the type. Persisting its
-      `str()` would hide data loss behind syntactically valid JSON.
+    Conversion rules:
+
+    - ``dict`` becomes a dict with ``str`` keys and converted values; two keys
+      that are equal after ``str()`` raise ``ValueError``.
+    - ``list``, ``tuple``, ``np.ndarray`` (any rank), ``pd.Series`` and
+      ``pd.Index`` become lists, element by element; a 0-d array becomes its
+      scalar; ``set`` and ``frozenset`` become lists in a deterministic order.
+    - Booleans and integers (Python or numpy) become ``bool`` and ``int``;
+      floats become ``float`` with NaN and infinities mapped to ``None``.
+    - Timestamps, ``datetime64``, ``datetime`` and ``date`` become ISO-8601
+      strings; timedeltas become ``str``; ``NaT`` of either kind becomes
+      ``None``; ``Path`` and ``Decimal`` become ``str``; an ``Enum`` is replaced
+      by its converted value; ``str``, ``int`` and ``None`` pass through.
+
+    Args:
+        value: The object to convert.
+
+    Returns:
+        A structure made only of dict, list, str, int, float, bool and None.
+
+    Raises:
+        ValueError: If two dict keys collide after ``str()`` coercion.
+        TypeError: If ``value`` (or any nested value) has an unsupported type.
+
+    Example:
+        >>> to_jsonable({"sharpe": np.float64("nan"), "start": pd.Timestamp("2024")})
+        {'sharpe': None, 'start': '2024-01-01T00:00:00'}
     """
     if value is None:
         return None

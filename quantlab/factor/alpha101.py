@@ -1,3 +1,11 @@
+"""Alpha101 factor sets computed with the KunQuant backend.
+
+The formulaic alphas of KunQuant's ``Alpha101`` library are exposed as two
+``FactorKunQuant`` subclasses that differ in which input columns they read
+and whether the outputs are normalized: ``Alpha101SpotKline`` for crypto spot
+klines and ``Alpha101Stock`` for adjusted US-equity bars.
+"""
+
 from typing import NoReturn
 
 import xarray as xr
@@ -11,29 +19,32 @@ from quantlab.my_ops.preprocess import WindowedZScore
 
 
 class Alpha101SpotKline(FactorKunQuant):
-    """Alpha101 factor set over crypto-spot kline (`SpotKlineDataset`) data.
+    """Alpha101 factors over crypto spot klines, z-scored along time.
 
-    **Normalization: `my_ops/preprocess.py:WindowedZScore` over
-    `self.config.window`, applied around every `Output(...)`.**
+    Reads the lowercase ``open``/``high``/``low``/``close``/``volume``/
+    ``amount`` columns the spot kline dataset exposes to KunQuant. Every
+    output is wrapped in ``WindowedZScore`` over ``config.window`` bars, a
+    time-series normalization that standardizes each symbol against its own
+    trailing window. That suits the time-series strategies spot data is
+    traded with; the US-equity sibling ``Alpha101Stock`` deliberately emits
+    raw values because it serves cross-sectional strategies. The two are not
+    meant to be aligned.
 
-    That op is a 时序 / time-series normalization: it standardizes each symbol
-    against that symbol's OWN rolling window. Crypto spot in this project is
-    traded with 时序 / time-series strategies, which is exactly the
-    normalization they want.
-
-    This is a strategy-type choice, not a market-dependent defect -- the
-    US-equity siblings (`Alpha101Stock`, `Alpha158Stock`) deliberately omit it
-    because they serve 截面 / cross-sectional strategies. See NORM-01 in
-    `03-03-PLAN.md` and the locked decision D-09 in
-    `.planning/phases/03-factor-computation-kunquant-polars/03-CONTEXT.md`;
-    `tests/test_factor_kunquant.py:test_normalization_matrix_matches_recorded_strategy_types`
-    is the automated lock on the four-class matrix.
+    Example:
+        >>> factor = Alpha101SpotKline(FactorConfig(
+        ...     window=20, dataset=dataset, mode="batch",
+        ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
+        ...     factor_names=["alpha001", "alpha002"], file_path="alpha101.zarr",
+        ... ))
+        >>> panel = factor.cal().get_features()
     """
 
     def __init__(self, factor_config: FactorConfig):
+        """Create the factor from a KunQuant factor config."""
         super().__init__(factor_config)
 
     def _get_factor_func(self) -> Function:
+        """Build the graph: one rolling z-scored ``Output`` per requested alpha."""
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
@@ -60,23 +71,45 @@ class Alpha101SpotKline(FactorKunQuant):
         return Function(builder.ops)
 
     def _get_factor_names(self) -> tuple[str, ...]:
+        """Return the names of every alpha in KunQuant's ``Alpha101`` library."""
         factors = [alpha.__name__ for alpha in Alpha101.all_alpha]
         return tuple(factors)
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
+        """Raise; this factor set produces features only."""
         raise RuntimeError(f"{__class__.__name__} does not support get_label()")
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
+        """Return the computed panel unchanged."""
         return data
 
 
 class Alpha101Stock(FactorKunQuant):
-    """Alpha101 factor set over US-equity (Tiingo/`StockDataset`) data."""
+    """Alpha101 factors over adjusted US-equity bars, emitted raw.
+
+    Reads ``adjOpen``/``adjHigh``/``adjLow``/``adjClose``/``adjVolume``; the
+    stock stores carry no dollar-volume column, so KunQuant derives
+    ``amount`` as ``close * volume``. Outputs are not normalized: US equities
+    are traded with cross-sectional strategies here, and a rolling
+    time-series z-score would change how symbols compare on the same day, so
+    normalization across symbols is left to the consumer.
+
+    Example:
+        >>> factor = Alpha101Stock(FactorConfig(
+        ...     window=20, dataset=dataset, mode="batch",
+        ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
+        ...                   "adjVolume"],
+        ...     file_path="alpha101_stock.zarr",
+        ... ))
+        >>> panel = factor.cal().get_features()
+    """
 
     def __init__(self, factor_config: FactorConfig):
+        """Create the factor from a KunQuant factor config."""
         super().__init__(factor_config)
 
     def _get_factor_func(self) -> Function:
+        """Build the graph: one raw ``Output`` per requested alpha."""
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
@@ -101,11 +134,14 @@ class Alpha101Stock(FactorKunQuant):
         return Function(builder.ops)
 
     def _get_factor_names(self) -> tuple[str, ...]:
+        """Return the names of every alpha in KunQuant's ``Alpha101`` library."""
         factors = [alpha.__name__ for alpha in Alpha101.all_alpha]
         return tuple(factors)
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
+        """Raise; this factor set produces features only."""
         raise RuntimeError(f"{__class__.__name__} does not support get_label()")
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
+        """Return the computed panel unchanged."""
         return data

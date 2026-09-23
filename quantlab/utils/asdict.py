@@ -1,17 +1,40 @@
+"""A recursive ``asdict`` that tolerates values ``copy.deepcopy`` cannot handle.
+
+``dataclasses.asdict`` raises as soon as a field holds something that cannot be
+deep-copied, such as an open file handle or a compiled model. ``asdict_customized``
+walks dataclasses, namedtuples, lists, tuples and dicts the same way the standard
+version does, but any leaf that fails to deep-copy becomes ``None`` instead of
+raising, so a config object can always be flattened for logging or JSON output.
+"""
+
 from dataclasses import fields
 import copy
 
 
-# customized asdict
 _FIELDS = "__dataclass_fields__"
 
 
 def _is_dataclass_instance(obj):
-    """Returns True if obj is an instance of a dataclass."""
+    """Return True if ``obj`` is an instance (not the class) of a dataclass."""
     return hasattr(type(obj), _FIELDS)
 
 
 def asdict_customized(obj, dict_factory=dict):
+    """Convert a dataclass instance to a dict, replacing uncopyable leaves with None.
+
+    Dataclass fields, namedtuples, lists, tuples and dicts (including
+    ``defaultdict``) are recursed into and rebuilt with the same container type.
+    Every other value is deep-copied; if the copy raises ``TypeError`` the value
+    is replaced by ``None`` rather than aborting the whole conversion.
+
+    Args:
+        obj: The dataclass instance, container or leaf value to convert.
+        dict_factory: Callable that builds the mapping for each dataclass
+            level, as in ``dataclasses.asdict``.
+
+    Returns:
+        A plain-data mirror of ``obj``.
+    """
     if _is_dataclass_instance(obj):
         # fast path for the common case
         if dict_factory is dict:
@@ -26,35 +49,18 @@ def asdict_customized(obj, dict_factory=dict):
                 result.append((f.name, value))
             return dict_factory(result)
     elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
-        # obj is a namedtuple.  Recurse into it, but the returned
-        # object is another namedtuple of the same type.  This is
-        # similar to how other list- or tuple-derived classes are
-        # treated (see below), but we just need to create them
-        # differently because a namedtuple's __init__ needs to be
-        # called differently (see bpo-34363).
-
-        # I'm not using namedtuple's _asdict()
-        # method, because:
-        # - it does not recurse in to the namedtuple fields and
-        #   convert them to dicts (using dict_factory).
-        # - I don't actually want to return a dict here.  The main
-        #   use case here is json.dumps, and it handles converting
-        #   namedtuples to lists.  Admittedly we're losing some
-        #   information here when we produce a json list instead of a
-        #   dict.  Note that if we returned dicts here instead of
-        #   namedtuples, we could no longer call asdict() on a data
-        #   structure where a namedtuple was used as a dict key.
-
+        # A namedtuple is rebuilt as the same namedtuple type (positional
+        # construction) rather than through its own `_asdict`, which neither
+        # recurses into nested fields nor returns the tuple type json expects.
         return type(obj)(*[asdict_customized(v, dict_factory) for v in obj])  # type: ignore
     elif isinstance(obj, (list, tuple)):
-        # Assume we can create an object of this type by passing in a
-        # generator (which is not true for namedtuples, handled
-        # above).
+        # Assume the container type accepts a generator (namedtuples, which do
+        # not, were handled above).
         return type(obj)(asdict_customized(v, dict_factory) for v in obj)
     elif isinstance(obj, dict):
         if hasattr(type(obj), "default_factory"):
-            # obj is a defaultdict, which has a different constructor from
-            # dict as it requires the default_factory as its first arg.
+            # A defaultdict takes its default_factory as the first constructor
+            # argument, so it cannot be rebuilt from pairs like a plain dict.
             result = type(obj)(getattr(obj, "default_factory"))
             for k, v in obj.items():
                 result[asdict_customized(k, dict_factory)] = asdict_customized(

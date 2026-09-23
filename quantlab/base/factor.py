@@ -1,6 +1,17 @@
+"""Abstract factor layer and its two computation backends.
+
+A factor turns the ``(timestamp, symbol)`` panel held by a dataset into a
+panel of engineered features (or, for label classes, prediction targets) of
+the same shape. ``Factor`` is the backend-agnostic contract the model layer
+programs against. ``FactorKunQuant`` compiles a declarative KunQuant op graph
+to native code and runs it in batch or streaming mode; ``FactorPolars`` is a
+batch-only backend whose factor logic is a Polars expression chain. Concrete
+factor sets live under ``quantlab/factor`` and labels under
+``quantlab/label``. See ``docs/factor.md``.
+"""
+
 from abc import ABC, abstractmethod
 
-# from prefect import task, flow
 from typing import Literal, Self
 
 import KunQuant.runner.KunRunner as kr
@@ -23,17 +34,42 @@ from quantlab.utils.timer import Timer
 
 
 class Factor(ABC):
+    """Backend-agnostic base class for factors and labels.
+
+    A ``Factor`` holds a config whose ``dataset`` attribute is the dataset it
+    reads from. It computes its output with ``cal()``, persists it with
+    ``save()`` or ``update()``, reads it back with ``read()``, and hands the
+    model layer an ``xarray.Dataset`` through ``get_features()`` or
+    ``get_labels()``. Subclasses implement ``cal`` and ``_get_factor_names``
+    and override ``_get_features`` and/or ``_get_labels`` for the half they
+    support.
+
+    Assigning ``config`` runs the property setter, which fills in default
+    dates, resolves ``factor_names`` when they are not pinned, and moves the
+    dataset's start date ``config.window`` days earlier so rolling windows are
+    warm on the first requested bar. Factor names are therefore known as soon
+    as the object is constructed, before anything is computed.
+
+    Example:
+        >>> factor = MyFactor(config)
+        >>> factor.get_factor_names()          # known before cal()
+        >>> panel = factor.cal().save(mode="w").get_features()
+    """
+
     def __init__(self, config: BaseFactorConfig):
-        # Ordering is load-bearing: assigning `self.config` fires the property
-        # setter below, which runs before `self.data_backend` exists. No
-        # setter-reachable method may read the storage backend.
+        """Store ``config`` and create the storage backend."""
+        # Ordering matters: assigning `self.config` runs the property setter
+        # before `self.data_backend` exists, so nothing the setter reaches may
+        # read the storage backend.
         self.config = config
         self.data_backend = XrBackend()
 
     def __repr__(self) -> str:
+        """Return the class name and its config."""
         return f"{self.__class__.__name__}(config={self.config})"
 
     def _auto_filter(self):
+        """Narrow the held panel to the configured dates and, if set, symbols."""
         self.data_backend.filter_by_date(
             col="timestamp",
             start_date=self.config.start_date,
@@ -44,69 +80,52 @@ class Factor(ABC):
 
     @property
     def config(self) -> BaseFactorConfig:
+        """The factor's config; assigning it normalizes the config in place."""
         return self._config
 
     @config.setter
     def config(self, config: BaseFactorConfig):
-        """设置因子配置文件 使用因子配置覆盖数据集配置
+        """Take ownership of ``config`` and normalize it in place.
+
+        In order: ``name`` is set to this class's import path, fields the
+        dataset declares unusable are refused, missing dates default to the
+        open-ended ``Date`` bounds, ``factor_names`` are resolved if unset,
+        and the dataset's date range is widened to cover the warm-up window.
+        Nothing here touches the storage backend, which does not exist yet
+        when ``__init__`` assigns the config.
 
         Args:
-            config (FactorConfig): 配置类
+            config: The factor config to install.
         """
         self._config = config
         self._config.name = self.import_path
 
-        # FIRST, before names are resolved (which probes the store) and before
-        # anything is filtered. See `_reject_declared_config_fields`.
+        # Refuse before names are resolved (which may probe the store) and
+        # before anything is filtered.
         self._reject_declared_config_fields()
 
-        # 初始化时间
         if self._config.start_date is None:
             self._config.start_date = Date.START_DATE
         if self._config.end_date is None:
             self._config.end_date = Date.END_DATE
 
-        # 初始化因子名
         self._maybe_resolve_factor_names()
 
-        # 重置数据集配置
-        # batch模式下, 数据集实例化时会初始化数据集文件(若不存在), 存在则会读取
         self._reset_dataset_config()
 
     def _reject_declared_config_fields(self) -> None:
-        """Refuse config fields the underlying dataset declares unusable.
+        """Refuse config fields the dataset declares unusable.
 
-        The declaration is `BaseDataset.REJECTED_FACTOR_CONFIG_FIELDS`, a
-        `{field: why}` mapping each vendor writes for itself. This method only
-        READS it. That direction is deliberate: an `isinstance` check against
-        a concrete vendor class here would add a `base -> dataset` dependency
-        on a specific subclass, against this repository's one-directional
-        layering. (`base/factor.py` already imports `XrBackend` from
-        `quantlab.backend`, a known approximation of that rule --
-        depending on a storage backend and depending on a vendor `Dataset`
-        subclass are not the same order of coupling, and this method is
-        written so the second never happens.)
+        A dataset may publish ``REJECTED_FACTOR_CONFIG_FIELDS``, a mapping
+        from a config field name to the reason it cannot select on that
+        dataset's panel (for example a ticker list against an integer
+        identifier axis). The check runs at assignment time, before any store
+        is probed, so the error names the offending field instead of
+        surfacing later as a ``KeyError`` deep inside a ``.sel`` call. Only
+        the mapping is read; this module names no dataset class.
 
-        **Why at ASSIGNMENT rather than at first use.** The live case is a
-        factor over a CRSP panel with `config.symbols` set: that value reaches
-        `XrBackend.filter_by_symbol`'s bare `.sel` and meets an int64 PERMNO
-        axis, so the run dies MID-FLIGHT with a `KeyError` that points at the
-        index and says nothing about the field being the wrong one. Refusing
-        at assignment turns a misleading runtime error into a clear one, and
-        it happens before `_maybe_resolve_factor_names` probes any store --
-        so no disk is touched on the way to being told what to fix.
-
-        The message SHAPE deliberately matches the refusal a declaring vendor
-        installs on its OWN config setter, so the two read as two installation
-        points of one discipline rather than two ad-hoc patches. For the live
-        declarer that discipline is: a ticker roster cannot select a PERMNO
-        axis, and `config.permnos` is the field that does.
-
-        No vendor class is NAMED anywhere in this file, including here --
-        `tests/test_extensibility_contract.py` scans these core modules for
-        concrete `Dataset` subclass names and counts a docstring line as a
-        live reference (only `#`-prefixed lines are exempt). That gate is the
-        machine-checked form of the rule this method is written around.
+        Raises:
+            ValueError: If any declared field is set on the config.
         """
         dataset = getattr(self._config, "dataset", None)
         rejected = getattr(dataset, "REJECTED_FACTOR_CONFIG_FIELDS", None) or {}
@@ -120,57 +139,83 @@ class Factor(ABC):
             )
 
     def _maybe_resolve_factor_names(self) -> None:
-        """
-        Resolve `config.factor_names` eagerly, at config-assignment time.
-        """
+        """Fill ``config.factor_names`` from ``_get_factor_names()`` when unset."""
         if self._config.factor_names is None:
             self._config.factor_names = self._get_factor_names()
 
     def _reset_dataset_config(self):
-        # 时间
+        """Point the dataset at the factor's window plus warm-up history.
+
+        The dataset's start date is moved ``config.window`` calendar days
+        before the factor's start date so rolling operators are warm on the
+        first requested bar; ``read()`` and ``save()`` narrow the result back
+        through ``_auto_filter``. The symbol axis is left alone: symbols with
+        no data show up as NaN columns rather than missing ones.
+        """
         start_date = pd.to_datetime(self._config.start_date)
         start_date = start_date - pd.DateOffset(days=self._config.window)
         self._config.dataset.config.start_date = start_date.strftime("%Y-%m-%d")
         self._config.dataset.config.end_date = self._config.end_date
 
-        # symbol
-        # 可以不reset, 因为xarray缺失的数据设为null 但是.symbol还是存在
-        # self._config.dataset._reset_symbols()
-
     @property
     def num_symbols(self) -> int:
+        """Number of symbols on the dataset's symbol axis."""
         return self.config.dataset.num_symbols
 
     @property
     def num_factors(self) -> int:
+        """Number of columns this factor produces."""
         return len(self.get_factor_names())
 
     @property
     def import_path(self) -> str:
+        """Dotted ``module.QualName`` path used to rebuild this class from a config."""
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     @property
     def symbols(self) -> list[str]:
+        """Symbols on the dataset's symbol axis."""
         return self.config.dataset.symbols
 
     @property
     def class_name(self) -> str:
+        """Bare class name, used in log and error messages."""
         return self.__class__.__name__
 
     def read(self, overwrite: bool = False) -> Self:
-        """Read the factor store and narrow it to the configured window.
+        """Open the factor store and narrow it to the configured window.
 
-        The default keeps the cached read: once the backend holds data it is
-        not re-opened, and `_auto_filter()` narrows that cached panel in place.
-        Pass `overwrite=True` to re-open the store. It is required after
-        mutating `config.start_date`/`end_date`, which is what the
-        backtester's D-14 re-dating does (RESEARCH Pitfall 1).
+        Args:
+            overwrite: Re-open the store even if the backend already holds
+                data. The default reuses the cached panel and only narrows
+                it; pass ``True`` after changing ``config.start_date`` or
+                ``config.end_date``, since the cached panel was cut to the
+                old dates.
+
+        Returns:
+            ``self``, for chaining.
         """
         self.data_backend.read(self.config.file_path, overwrite=overwrite)
         self._auto_filter()
         return self
 
     def save(self, mode: Literal["a", "w"] = "a", **kwargs) -> Self:
+        """Write the held panel to ``config.file_path`` as a Zarr store.
+
+        Args:
+            mode: ``"a"`` (the default) overwrites variables in an existing
+                store and fails if that store has a different time or symbol
+                axis; ``"w"`` replaces the store. To extend a store with a
+                later date range use ``update()`` instead.
+            **kwargs: Passed through to the backend's ``write``.
+
+        Returns:
+            ``self``, for chaining.
+
+        Raises:
+            ValueError: If ``mode="a"`` meets a store whose dimension sizes
+                differ from the panel being written.
+        """
         with Timer(f"{self.__class__.__name__}: save"):
             self._auto_filter()
             try:
@@ -201,6 +246,19 @@ class Factor(ABC):
             return self
 
     def update(self, **kwargs) -> Self:
+        """Append the held panel to the store at ``config.file_path``.
+
+        The store's timestamp, symbol and variable axes are widened to the
+        union of what it holds and what the panel carries, then the panel is
+        appended. Cells created by widening are filled from
+        ``_widen_fill_values()``.
+
+        Args:
+            **kwargs: Passed through to the backend's ``widen_and_append``.
+
+        Returns:
+            ``self``, for chaining.
+        """
         with Timer(f"{self.__class__.__name__}: update"):
             self._auto_filter()
             self.data_backend.widen_and_append(
@@ -211,62 +269,133 @@ class Factor(ABC):
             return self
 
     def _widen_fill_values(self) -> dict:
+        """Return per-variable fill values for cells that widening creates.
+
+        The default is empty, which leaves the choice to the backend.
+        """
         return {}
 
     def _get_lazyframe(self) -> pl.LazyFrame:
+        """Return the held panel as a ``LazyFrame`` with the index as columns."""
         df = self.data_backend.get_xarray_dataset().to_pandas()  # type: ignore
         df = pl.LazyFrame(df.reset_index())
         return df
 
     def _get_xarray_dataset(self) -> xr.Dataset:
+        """Return the held panel as an ``xarray.Dataset``."""
         return self.data_backend.get_xarray_dataset()  # type: ignore
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
+        """Turn the held panel into features; factor classes override this.
+
+        Raises:
+            NotImplementedError: Unless a subclass overrides it.
+        """
         raise NotImplementedError
 
     def get_features(self) -> xr.Dataset:
+        """Return the computed panel as model features."""
         return self._get_features(self._get_xarray_dataset())
 
     def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
+        """Turn the held panel into labels; label classes override this.
+
+        Raises:
+            NotImplementedError: Unless a subclass overrides it.
+        """
         raise NotImplementedError
 
     def get_labels(self) -> xr.Dataset:
+        """Return the computed panel as model labels."""
         return self._get_labels(self._get_xarray_dataset())
 
     def get_factor_names(self) -> tuple[str, ...]:
+        """Return the names of the columns this factor produces."""
         return self.config.factor_names
 
     def get_config(self) -> dict:
+        """Return a serializable dict describing this factor and its dataset.
+
+        The dataset's own config is nested under ``"dataset"``;
+        ``quantlab.utils.module.load_factor_from_config`` rebuilds the factor
+        from the result.
+        """
         ds_config = self.config.dataset.get_config()
         cfg = self.config.to_dict()
         cfg["dataset"] = ds_config  # type: ignore
         return cfg  # type: ignore
 
     @abstractmethod
-    def _get_factor_names(self) -> tuple[str, ...]: ...
+    def _get_factor_names(self) -> tuple[str, ...]:
+        """Return the names of every column this factor can produce."""
+        ...
 
     @abstractmethod
-    def cal(self) -> Self: ...
+    def cal(self) -> Self:
+        """Compute the factor panel and hold it in the storage backend.
+
+        Returns:
+            ``self``, for chaining.
+        """
+        ...
 
 
 class FactorKunQuant(Factor):
-    """The KunQuant factor backend."""
+    """Factor backend that compiles a KunQuant op graph to native code.
 
-    # D-26: the config class `quantlab/utils/module.py` rebuilds this factor with.
+    A subclass describes its factor as a KunQuant graph in
+    ``_get_factor_func``: ``Input`` nodes named after ``config.data_columns``,
+    operator nodes, and one ``Output`` per factor name. The same graph is
+    compiled on demand in two layouts, ``TS`` for ``cal()`` (the whole history
+    in one call) and ``STREAM`` for ``cal_stream()`` (one bar at a time), so a
+    factor validated in a backtest runs unchanged on live data.
+    ``config.mode`` says which of the two the object is used in.
+
+    Compilation needs a working C++ compiler and dominates run time on small
+    panels; pinning ``config.factor_names`` to the columns you need keeps the
+    compiled graph small. In batch mode the number of symbols must be a
+    multiple of the SIMD block width KunQuant uses on the host.
+
+    Example:
+        class MaDeviation(FactorKunQuant):
+            def _get_factor_names(self):
+                return ("ma_dev_5",)
+
+            def _get_factor_func(self):
+                builder = Builder()
+                with builder:
+                    close = Input("close")
+                    dev = op.Div(close, op.WindowedAvg(close, 5))
+                    Output(op.SubConst(dev, 1.0), "ma_dev_5")
+                return Function(builder.ops)
+    """
+
+    #: The config class ``load_factor_from_config`` rebuilds this factor with.
     config_cls = FactorConfig
 
     def __init__(self, config: FactorConfig):
+        """Create the factor with no compiled library or stream context yet."""
         super().__init__(config)
         self._stream_context: kr.StreamContext = None
         self._lib = None
         self._buffer_name_to_id = dict()
 
     def _auto_filter(self):
+        """Narrow the panel in batch mode; a stream holds one bar, so skip."""
         if self.config.mode == "batch":
             super()._auto_filter()
 
     @property
     def num_symbols(self) -> int:
+        """Number of symbols the graph runs over.
+
+        Batch mode asks the dataset; stream mode reads the symbol list pinned
+        on the dataset config, since no panel has been loaded.
+
+        Raises:
+            ValueError: If ``config.mode`` is neither ``"batch"`` nor
+                ``"stream"``.
+        """
         if self.config.mode == "batch":
             return super().num_symbols
         elif self.config.mode == "stream":
@@ -276,6 +405,15 @@ class FactorKunQuant(Factor):
 
     @property
     def symbols(self) -> list[str]:
+        """Symbols the graph runs over, in axis order.
+
+        Batch mode asks the dataset; stream mode reads the symbol list pinned
+        on the dataset config.
+
+        Raises:
+            ValueError: If ``config.mode`` is neither ``"batch"`` nor
+                ``"stream"``.
+        """
         if self.config.mode == "batch":
             return super().symbols
         elif self.config.mode == "stream":
@@ -284,6 +422,18 @@ class FactorKunQuant(Factor):
             raise ValueError(f"mode {self.config.mode} is not supported")
 
     def init_stream(self) -> Self:
+        """Compile the graph in the streaming layout and bind its buffers.
+
+        Creates a ``StreamContext`` sized to ``num_symbols`` and caches a
+        buffer handle for every input column and every factor name, so
+        ``cal_stream`` does not look handles up by name on the hot path.
+        Every name in ``config.data_columns`` must be consumed by a reachable
+        ``Output``: KunQuant prunes unused inputs and the handle lookup for a
+        pruned one fails.
+
+        Returns:
+            ``self``, for chaining.
+        """
         with Timer(f"{self.__class__.__name__}: init stream"):
             lib = self._make_stream()
             modu = lib.getModule(f"{self.__class__.__name__}_stream")  # type: ignore
@@ -307,6 +457,16 @@ class FactorKunQuant(Factor):
         timestamps: np.ndarray,
         symbols: np.ndarray,
     ):
+        """Wrap raw ``[time, symbol]`` arrays in an ``xarray.Dataset`` and hold it.
+
+        Args:
+            raw_factor: Factor name to a ``[num_times, num_symbols]`` array.
+            timestamps: Coordinate values for the time axis.
+            symbols: Coordinate values for the symbol axis.
+
+        Returns:
+            ``self``, for chaining.
+        """
         ds = xr.Dataset(
             {k: (["timestamp", "symbol"], v) for k, v in raw_factor.items()},
             coords={
@@ -319,14 +479,29 @@ class FactorKunQuant(Factor):
         return self
 
     @abstractmethod
-    def _get_factor_func(self) -> Function: ...
+    def _get_factor_func(self) -> Function:
+        """Build and return the KunQuant graph that computes this factor.
+
+        Input names must match ``config.data_columns``; output names are the
+        factor names.
+        """
+        ...
 
     def cal(self) -> Self:
+        """Run the compiled graph over the dataset's full history.
+
+        The dataset is converted with ``to_kunquant``, the graph is compiled
+        if no library is cached, run from bar 0 on an executor of
+        ``config.njobs`` threads, and the outputs are wrapped as a panel. The
+        compiled library is dropped afterwards, so each call compiles again.
+
+        Returns:
+            ``self``, for chaining.
+        """
         input_dict, symbols, timestamp = self.config.dataset.to_kunquant(
             data_columns=self.config.data_columns
         )
-        # 随便拿一个确定时间
-        # [time, stocks]
+        # Every input is laid out [time, symbol]; any one gives the time count.
         num_time = next(iter(input_dict.values())).shape[0]
 
         if self._lib is None:
@@ -347,6 +522,21 @@ class FactorKunQuant(Factor):
     def cal_stream(
         self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]
     ) -> Self:
+        """Advance the streaming graph by one bar and hold that bar's outputs.
+
+        The stream is initialized on first use.
+
+        Args:
+            data: Column name to a 1-D array of length ``num_symbols`` for
+                every name in ``config.data_columns``.
+            timestamp: The bar's timestamp, used as the single time
+                coordinate.
+            symbols: Symbol coordinate values, in the order the arrays are
+                laid out.
+
+        Returns:
+            ``self``, holding a ``(1, num_symbols)`` panel for this bar.
+        """
         if self._stream_context is None:
             self.init_stream()
 
@@ -371,6 +561,7 @@ class FactorKunQuant(Factor):
         return self
 
     def _make(self):
+        """Compile the graph for batch execution with the ``TS`` layout."""
         with Timer(f" {self.__class__.__name__}: make"):
             return cfake.compileit(
                 [
@@ -388,6 +579,7 @@ class FactorKunQuant(Factor):
             )
 
     def _make_stream(self):
+        """Compile the graph for streaming execution with the ``STREAM`` layout."""
         with Timer(f"{self.__class__.__name__}: make stream"):
             return cfake.compileit(
                 [
@@ -408,23 +600,51 @@ class FactorKunQuant(Factor):
 
 
 class FactorPolars(Factor):
-    """
-    Batch-only factor backend whose factor logic is written in Polars.
+    """Batch-only factor backend whose factor logic is a Polars expression chain.
+
+    A subclass overrides ``_get_factor_lazyframe``, which receives the dataset
+    as a ``LazyFrame`` and returns a lazy frame carrying only ``timestamp``,
+    ``symbol`` and the factor columns. Nothing is materialized until ``cal()``
+    collects it and converts the result to an ``xarray.Dataset``. Factor
+    names are not declared: they are read from the schema of the returned
+    frame, so they are known at construction time (which reads a few rows
+    from the store) and always match what the expression chain produces.
+
+    Column names are whatever the underlying store holds; unlike the KunQuant
+    path, no per-market renaming is applied.
+
+    Example:
+        class RelativeVolume(FactorPolars):
+            def _get_factor_lazyframe(self, lf):
+                volume = pl.col("Volume")
+                return (
+                    lf.sort(["symbol", "timestamp"])
+                    .with_columns(
+                        (volume / volume.rolling_mean(20).over("symbol") - 1.0)
+                        .alias("rel_volume_20")
+                    )
+                    .select(["timestamp", "symbol", "rel_volume_20"])
+                )
     """
 
-    # D-26: the config class `quantlab/utils/module.py` rebuilds this factor with.
+    #: The config class ``load_factor_from_config`` rebuilds this factor with.
     config_cls = PolarsFactorConfig
 
+    #: Index columns, never reported as factor names.
     _INDEX_COLUMNS = ("timestamp", "symbol")
 
+    #: Rows read from the store to derive the output schema at construction.
     _SCHEMA_PROBE_ROWS = 8
 
     def __init__(self, config: PolarsFactorConfig):
+        """Create the factor; factor names are derived from the store at once."""
         super().__init__(config)
 
     def _get_factor_names(self) -> tuple[str, ...]:
-        """
-        Derive the factor names by asking the graph what it produces.
+        """Derive the factor names from the schema the expression chain yields.
+
+        A few rows are read from the dataset store so the probe carries real
+        dtypes; the index columns are excluded from the result.
         """
         probe = self.config.dataset.head(self._SCHEMA_PROBE_ROWS)
         factor_lf = self._get_factor_lazyframe(probe)
@@ -436,12 +656,26 @@ class FactorPolars(Factor):
 
     @abstractmethod
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """
-        Write the factor here. This is the one method a subclass overrides.
+        """Return the factor as a lazy frame; the one method a subclass writes.
+
+        Args:
+            lf: The dataset as a ``LazyFrame`` with the store's own column
+                names.
+
+        Returns:
+            A lazy frame with exactly ``timestamp``, ``symbol`` and the factor
+            columns. Do not call ``collect`` here.
         """
         ...
 
     def cal(self) -> Self:
+        """Collect the expression chain over the full dataset and hold the panel.
+
+        ``config.factor_names`` is refreshed from the collected schema.
+
+        Returns:
+            ``self``, for chaining.
+        """
         lf = self.config.dataset.read().get_lazyframe()
         factor_lf = self._get_factor_lazyframe(lf)
 
