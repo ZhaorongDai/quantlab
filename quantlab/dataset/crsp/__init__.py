@@ -41,7 +41,7 @@ remedy is a rebuild, which is cheap: CRSP publishes once a year.
 - `G_t = prod_{s<=t}(1 + dlyret_s)`, a NULL return contributing 1. CIZ returns
   span gaps back to `DlyPrevDt` (`DlyRetDurFlg`), so the next valid return
   already covers the missing day; filling a null with 0 would double-count it.
-- the anchor `A` is the PERMNO's LAST row carrying a USABLE LEVEL: a strictly
+- the anchor `A` is the PERMNO's FIRST row carrying a USABLE LEVEL: a strictly
   positive `close` AND a non-null `dlycumfacshr`, so every quantity read off the
   anchor comes from ONE row that carries all of them. A non-null test alone was
   the loophole -- the sentinel above is the NUMBER 0.0, which is not null, so it
@@ -593,9 +593,9 @@ class CrspStockDataset(StockDataset):
             .over("permno")
             .alias("_G"),
         )
-        # The anchor is the PERMNO's last row carrying a USABLE LEVEL -- a
+        # The anchor is the PERMNO's first row carrying a USABLE LEVEL -- a
         # strictly positive close AND the share factor every adjusted volume is
-        # scaled by -- not simply its last row, and not merely its last
+        # scaled by -- not simply its first row, and not merely its first
         # non-null one. "Non-null" was the loophole: CRSP's no-price sentinel is
         # the number 0.0, which passes `is_not_null()` and then makes
         # `adjClose = 0.0 * _G / _G_anchor` exactly 0.0 on every day of that
@@ -612,9 +612,9 @@ class CrspStockDataset(StockDataset):
             )
             .group_by("permno")
             .agg(
-                pl.col("close").last().alias("_close_anchor"),
-                pl.col("_G").last().alias("_G_anchor"),
-                pl.col("dlycumfacshr").last().alias("_cumfacshr_anchor"),
+                pl.col("close").first().alias("_close_anchor"),
+                pl.col("_G").first().alias("_G_anchor"),
+                pl.col("dlycumfacshr").first().alias("_cumfacshr_anchor"),
             )
         )
         derived = derived.join(anchor, on="permno", how="left")
@@ -703,7 +703,7 @@ class CrspStockDataset(StockDataset):
                 f"{self.class_name}: {len(missing)} PERMNO(s) have NO usable "
                 f"adjustment anchor in [{self.config.start_date}, "
                 f"{self.config.end_date}]: {missing[:10]}. The anchor is a "
-                f"PERMNO's last row inside that window carrying BOTH a strictly "
+                f"PERMNO's first row inside that window carrying BOTH a strictly "
                 f"positive dlyprc AND a non-null dlycumfacshr. CRSP writes "
                 f"dlyprc = 0.000000 on a delisting-AMOUNT row "
                 f"(dlyprcflg in {list(_NO_PRICE_FLAGS)}) as a NO-PRICE "
