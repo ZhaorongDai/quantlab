@@ -1,61 +1,18 @@
-"""`SourceInspector` -- the credential-free, read-only view of what is already
-on disk.
+"""Credential-free, read-only inspection of what a data source has on disk.
 
-Built by 03.4-04 for SC-3 and SC-4, and consumed IN-PROCESS by the out-of-repo
-operator console (D-12).
+``SourceInspector`` answers questions about one source's raw parquet tier and
+Zarr store from local files alone: which requested symbols are already
+covered, which symbols failed in earlier runs, how many shards and watermark
+sidecars exist, and a narrow row-level view of either tier. It imports no
+vendor client and never constructs an ``Acquisition``, so it needs no API key
+and issues no network request whatever is called in whatever order. Listing
+the sources themselves is left to ``quantlab.registry``, whose import pulls in
+every vendor module.
 
-**The hard constraint, and the evidence for it (D-08).** This surface must run
-on a machine with NO credentials, because everything it answers is a local file
-read. Constructing an `Acquisition` is not an option:
-`TiingoAcquisition.__init__` raises `RuntimeError` the moment `TIINGO_API_KEY`
-is unset -- before it could possibly know that the caller only wanted to count
-sidecars. That is why `ingest_us_equity.py` USED TO print
-``coverage report: skipped (export TIINGO_API_KEY to see it)`` for a
-computation that is nothing but `open()` and `json.load()`. That branch is gone
-as of 03.4-06: `_print_coverage` is unconditional and routes through this class,
-and `tests/test_ingest_shells.py::test_the_dry_run_needs_no_credential` is what
-keeps the skip line history. Extending
-`Acquisition` and deferring its credential check was considered and rejected in
-CONTEXT: it would turn a fail-fast safety behaviour into a fail-late one.
-
-**It issues ZERO vendor requests BY CONSTRUCTION, not by call order.** This
-module imports no vendor client and binds no `Acquisition` subclass, so there
-is nothing here that COULD open a socket, whatever anyone calls in what order.
-Three independent arms prove it in `tests/test_source_inspector.py`, copying
-`tests/test_volume_guard.py`'s structure: every socket allocation raises, every
-credential is deleted from the environment, and an AST resolver asserts this
-file's (and `quantlab/base/coverage.py`'s) import set is disjoint from the
-acquisition modules.
-
-**What it deliberately does NOT do: enumerate sources.** That is
-`DataSourceRegistry.all()`'s job and it stays there. Importing the registry
-here would drag in both vendor modules -- the registry's own bottom imports --
-and turn a structural guarantee into a conventional one ("we happen not to call
-the client"). The console asks the registry what sources exist and asks the
-inspector what is on disk for one of them.
-
-**Import cost, stated rather than discovered.** This module reaches the raw
-tier through `quantlab/dataset/stock.py`, which transitively imports
-`nautilus_trader` (~1.7 s cold). That is an import cost, not a fragility, and it
-is a strictly LIGHTER path than `quantlab/registry.py`, which pays
-the same cost through its config factories AND both vendor SDKs on top.
-Reimplementing the raw scan here to avoid it would trade a measured second for
-the four separately-measured bugs `_scan_raw` already fixes -- see `browse_raw`.
-
-**No caching, deliberately.** Reading 7,756 watermark sidecars was measured at
-~1.65 s on this machine, while a full directory traversal of the 26,584-file
-raw root costs ~0.05 s warm -- so the sidecar pass is the expensive half, the
-opposite of what one would guess. quantlab caches none of it: refresh policy
-belongs to the console, which knows whether the operator just pressed a key or
-just finished a backfill. What this module DOES guarantee is that each figure
-is computed from one traversal and one sidecar pass, never one per field.
-
-**Statelessness is a contract, not an accident.** Every method builds its own
-reader and its own ledger. Nothing is held on the instance, so two queries
-issued back to back on one inspector cannot narrow each other --
-`XrBackend.filter_by_date` / `filter_by_symbol` assign back to `self.data`, and
-a shared backend would narrow permanently (the bug quick task 260906-w3t fixed
-for the Polars factor probe).
+Nothing is cached and nothing is held on the instance. Every method builds
+its own ledger or opens its own store and closes it before returning, so two
+queries on one inspector cannot narrow each other. Refresh policy belongs to
+the caller.
 """
 
 import json
@@ -73,73 +30,74 @@ from quantlab.enums.data import RAW_HIVE_KEYS
 
 
 class _RawTierReader(StockDataset):
-    """A `StockDataset` that performs NO store read at construction.
+    """A ``StockDataset`` that reads nothing when constructed.
 
-    `BaseDataset.__init__` assigns the config, and the config setter calls
-    `_reset_symbols()` whenever `symbols` is set -- which reaches the Zarr store
-    through `read()` and falls back to materialising the WHOLE panel via
-    `from_raw_data()` when the store is absent or empty. For a browse that only
-    wants a lazy handle over the raw tier, that is a full conversion performed
-    before the caller has asked for a single row: exactly the
-    narrow-in-place / fallback-on-construction hazard quick task 260906-w3t
-    fixed for the Polars factor probe.
-
-    `_reset_symbols` is documented on `BaseDataset` as an OVERRIDABLE SEAM for
-    precisely this case, and `IndexConstituentDataset` already overrides it to a
-    no-op for the same reason. Overriding it is therefore the established
-    in-repo way to build a dataset object that reads nothing on construction --
-    not a workaround.
-
-    Module-private, and constructed FRESH per query: it exists so `browse_raw`
-    can reuse `_scan_raw`'s vendor-root assertion, tick `_scan_root` descent,
-    pinned `hive_schema` and RAISING `extra_columns` / `missing_columns`
-    defaults. It is not a dataset anyone should persist through.
+    The base config setter calls ``_reset_symbols`` whenever ``symbols`` is
+    assigned, which opens the Zarr store and falls back to materialising the
+    whole panel from the raw tier when the store is absent. A browse only
+    wants a lazy handle over the raw tier, so that seam is overridden to a
+    no-op here. Module-private and built fresh per query, so ``browse_raw``
+    can reuse ``_scan_raw`` (vendor-root check, tick data-type descent, pinned
+    hive schema, strict column checks) without a second scan implementation.
     """
 
     def _reset_symbols(self) -> None:
-        """No-op: the inspector never writes and never needs a resolved symbol
-        axis at construction time. See the class docstring.
-        """
+        """Do nothing: the inspector never needs a resolved symbol axis."""
         return None
 
 
 class SourceInspector:
-    """Read-only questions about locally downloaded data, answered with no
-    credentials and zero vendor requests.
+    """Read-only questions about locally downloaded data.
 
-    Holds no state. Construct one and keep it, or construct one per call --
-    both are correct, and that is the point (see the module docstring's
-    statelessness contract).
+    Every method takes the config that locates the data and answers from the
+    file system. The inspector holds no state, so one instance can be kept
+    and reused or built per call.
+
+    Example:
+        ``acq_cfg`` is an ``AcquisitionConfig`` and ``ds_cfg`` a
+        ``DatasetConfig`` for the same source.
+
+        >>> from quantlab.acquisition._support.inspector import SourceInspector
+        >>> inspector = SourceInspector()
+        >>> inspector
+        SourceInspector()
+        >>> inspector.coverage(acq_cfg)["pending"]
+        1
+        >>> inspector.inventory(acq_cfg)["raw"]["shards"]
+        5
     """
 
     def __repr__(self) -> str:
+        """Return ``SourceInspector()``; the instance carries no state."""
         return f"{self.__class__.__name__}()"
 
-    # -- coverage (D-09: the same code the real run uses) -------------------
+    # -- coverage -----------------------------------------------------------
 
     def coverage(
         self,
         config: AcquisitionConfig,
         symbols: Sequence[str] | None = None,
     ) -> dict:
-        """Classify `symbols` (default: `config.symbols`) against
-        `[config.start_date, config.end_date]`, returning the same shape
-        `Acquisition.coverage_report()` returns.
+        """Classify symbols against the config's date window from sidecars.
 
-        **This is `coverage_report()`'s body reading from the same shared
-        object** -- `CoverageLedger.partition_by_coverage` -- rather than a
-        second implementation (D-09). The four-state rule plus the orthogonal
-        `no_data` count is subtle enough that a "simple" reimplementation gets
-        `legacy` wrong, and two answers that agree today are how an operator
-        ends up trusting the wrong one. A test asserts the sharing by IDENTITY
-        and by mutation, not by equality of results.
+        This is the same computation ``Acquisition.coverage_report()`` runs,
+        through the same ``CoverageLedger`` object, so the two never disagree.
+        Symbols are validated before any path is built, because a symbol
+        becomes a sidecar filename.
 
-        Symbols are validated FIRST, before any path is built, exactly as
-        `Acquisition._run` and `coverage_report` do. A symbol becomes a
-        watermark filename, so `"../../etc/hosts"` reaching `watermark_path`
-        would escape the sidecar root (T-03.4-04-01); the check is the shared
-        `TRADEABLE_TICKER_PATTERN`, not a local copy -- a local copy already
-        caused one production incident (260907-10t).
+        Args:
+            config: Locates the watermark sidecars and supplies the window.
+            symbols: The symbols to classify; ``config.symbols`` by default.
+
+        Returns:
+            A dict with ``requested``, ``pending`` (need a download),
+            ``skipped`` (already satisfied), and the per-state counts
+            ``covered``, ``widened``, ``legacy`` and ``no_data``.
+
+        Example:
+            >>> report = inspector.coverage(acq_cfg, ["AAPL", "MSFT"])
+            >>> report["requested"], report["pending"], report["covered"]
+            (2, 1, 1)
         """
         ledger = CoverageLedger.for_config(config)
         requested = ledger.validate_symbols(
@@ -158,46 +116,21 @@ class SourceInspector:
     # -- failures -----------------------------------------------------------
 
     def failures(self, config: AcquisitionConfig) -> dict[str, str]:
-        """Every symbol `_failures.json` records as failing, accumulated across runs.
+        """Return every symbol the failure manifest records, across runs.
 
-        Returned as `{symbol: reason}`, or `{}`. Because the manifest
-        accumulates across runs, the console can be shown a symbol the most
-        recent run never requested: `Acquisition._merge_unattempted_failures`
-        folds the on-disk entries a run had no news about forward before every
-        overwrite. Pinned from the console side by
-        `tests/test_acquisition_progress.py::test_the_manifest_survives_a_quota_abort_on_the_default_path`,
-        which reads a symbol back through this method after a run that never
-        asked the vendor for it. This summary line is kept verbatim in sync
-        with `CoverageLedger.read_failure_manifest`; the two return the same
-        value, and a drifting pair of summaries is where the next divergence
-        starts.
+        The manifest (``_failures.json`` beside the watermark sidecars) is the
+        crash-durable record of download failures. It accumulates across
+        runs, so it may name symbols the most recent run never requested.
+        The reasons are already scrubbed of credentials. A missing or
+        unreadable manifest returns ``{}``. Resume does not read the
+        manifest; it is driven by sidecar presence alone.
 
-        **This method is the manifest's FIRST in-repo reader.** What L-2
-        established (2026-09-08) is narrower than it was later summarised as:
-        the manifest is not RESUME input. Resume is driven entirely by
-        watermark-sidecar PRESENCE, so an earlier claim that the manifest feeds
-        resume was wrong about the code. The manifest is kept anyway, and
-        deliberately (D-18): it is the crash-durable operator record -- a
-        process that dies returns no `AcquisitionResult` -- and the console
-        needs the reasons, which is what this reads.
+        Returns:
+            ``{symbol: reason}``, or ``{}``.
 
-        Absent file means `{}`, not an error: a source that has never failed
-        and a source that has never run look the same from here, and both
-        answers are "nothing to report". A corrupt file is tolerated the same
-        way `CoverageLedger.read_sidecar` tolerates a corrupt sidecar, for the
-        same reason -- one failure policy for unreadable JSON, not two that can
-        drift.
-
-        The values are already scrubbed: they are the strings
-        `Acquisition._attempt_batch` produced through `_scrub`, which is what
-        makes the manifest safe to paste into an issue. This method adds no new
-        egress path for raw vendor exception text.
-
-        Delegates to `CoverageLedger.read_failure_manifest` (03.4-05): the
-        pre-write merge in `Acquisition._run` -- which since 03.4-08 runs on
-        every exit path of the resume loop, not only the cancel one -- also
-        reads the manifest, and two tolerant readers is two copies of the
-        failure policy, free to drift.
+        Example:
+            >>> inspector.failures(acq_cfg)
+            {'ZZZZ': 'HTTP 404'}
         """
         return CoverageLedger.for_config(config).read_failure_manifest()
 
@@ -208,24 +141,33 @@ class SourceInspector:
         config: AcquisitionConfig,
         dataset_config: DatasetConfig | None = None,
     ) -> dict:
-        """What exists on disk for this source, raw tier and Zarr tier
-        reported SEPARATELY.
+        """Report what exists on disk, raw tier and Zarr tier separately.
 
-        Two sub-results rather than one merged number because they are
-        different artefacts with different lifecycles: the raw tier is
-        vendor-shaped, append-only and written by acquisition; the Zarr store
-        is the canonical panel, rewritten by conversion, and may legitimately
-        not exist at all (`ingest_us_equity.py` converts only under
-        `--to-zarr`). `zarr` is `None` when no `dataset_config` is supplied --
-        "not asked" rather than "not there".
+        The two tiers are different artefacts: the raw tier is vendor-shaped
+        and append-only, the Zarr store is the converted panel and may not
+        exist yet. Reading the watermark sidecars is the expensive half (the
+        directory walk is cheap), so every figure comes from one walk and one
+        sidecar pass.
 
-        Cost, measured (RESEARCH Pitfall 5): the directory traversal is the
-        CHEAP half (~0.05 s warm over 26,584 files) and the sidecar pass is the
-        expensive one (~1.65 s over 7,756 sidecars). So the shard count and the
-        byte total come from ONE walk, and every sidecar figure comes from ONE
-        pass over `iter_watermark_symbols()`. Never one traversal per field,
-        and never `read_coverage` per symbol inside a loop a caller runs per
-        symbol. Nothing is cached here; refresh policy is the console's.
+        Args:
+            config: Locates the raw tier and its sidecars.
+            dataset_config: Locates the Zarr store. When omitted, ``"zarr"``
+                is ``None``, meaning "not asked" rather than "absent".
+
+        Returns:
+            ``{"raw": {...}, "zarr": {...} | None}``. The raw dict carries the
+            root, shard count, byte total, sidecar count, coverage span and
+            failure count; the zarr dict carries the path, byte total, dims,
+            variable names and timestamp span.
+
+        Example:
+            >>> report = inspector.inventory(acq_cfg, ds_cfg)
+            >>> report["raw"]["shards"], report["raw"]["symbols_with_watermark"]
+            (5, 2)
+            >>> report["zarr"]["exists"]
+            False
+            >>> inspector.inventory(acq_cfg)["zarr"] is None
+            True
         """
         ledger = CoverageLedger.for_config(config)
         return {
@@ -239,15 +181,11 @@ class SourceInspector:
 
     @staticmethod
     def _raw_root(config: AcquisitionConfig, ledger: CoverageLedger) -> Path:
-        """The raw directory this config's data actually lands under.
+        """Return the directory this config's raw shards actually land under.
 
-        Descends into `data_type={quotes|trades}` for a frequency that
-        partitions on it, mirroring `StockDataset._scan_root` and
-        `CoverageLedger.watermark_root`. Reporting the vendor root instead
-        would conflate quotes and trades into one figure -- the same
-        namespacing mistake that once let a completed quotes backfill tell a
-        trades run every symbol was covered, here in its harmless
-        disk-footprint costume.
+        Descends into ``data_type={quotes|trades}`` for a frequency whose hive
+        layout partitions on it, so quotes and trades are never counted as
+        one figure.
         """
         root = Path(config.raw_data_dir_path)
         if "data_type" in RAW_HIVE_KEYS[config.frequency]:
@@ -257,15 +195,14 @@ class SourceInspector:
     def _raw_inventory(
         self, config: AcquisitionConfig, ledger: CoverageLedger
     ) -> dict:
-        """The raw tier's figures: ONE directory walk, ONE sidecar pass."""
+        """Compute the raw tier's figures from one walk and one sidecar pass."""
         root = self._raw_root(config, ledger)
 
         shards = 0
         total_bytes = 0
         if root.exists():
-            # ONE walk. `os.walk` rather than repeated `rglob` calls, because
-            # each `rglob` is its own full traversal and the fields below would
-            # otherwise cost one traversal each.
+            # One walk with `os.walk`; repeated `rglob` calls would cost one
+            # full traversal per figure.
             for dirpath, _dirnames, filenames in os.walk(root):
                 for filename in filenames:
                     if not filename.endswith(".pqt"):
@@ -274,11 +211,11 @@ class SourceInspector:
                     try:
                         total_bytes += (Path(dirpath) / filename).stat().st_size
                     except OSError:
-                        # A shard removed between listing and stat is not an
-                        # error for a footprint report; it is just gone.
+                        # A shard removed between listing and stat is simply
+                        # gone, not an error for a footprint report.
                         continue
 
-        # ONE sidecar pass. Every figure below comes out of this single loop.
+        # One sidecar pass; every figure below comes out of this loop.
         symbols_with_watermark = 0
         no_data = 0
         earliest_start: str | None = None
@@ -312,9 +249,7 @@ class SourceInspector:
             "bytes": total_bytes,
             "watermark_root": str(ledger.watermark_root),
             "symbols_with_watermark": symbols_with_watermark,
-            # ISO strings compare lexicographically, which is why no date
-            # parsing happens here -- the same reason `classify_coverage`
-            # compares them as strings.
+            # ISO date strings compare lexicographically, so no parsing.
             "coverage_start": earliest_start,
             "coverage_last_date": latest_last_date,
             "no_data": no_data,
@@ -323,13 +258,11 @@ class SourceInspector:
 
     @staticmethod
     def _zarr_inventory(dataset_config: DatasetConfig) -> dict:
-        """The Zarr tier's figures, opened lazily and closed again.
+        """Compute the Zarr tier's figures from metadata, then close the store.
 
-        `xr.open_zarr` reads metadata only (~0.2 s on the measured store), so
-        `dims`, the variable names and the timestamp span cost no array reads.
-        The store is CLOSED before returning: this method hands back plain
-        Python values, never a live handle, so nothing the caller does later
-        can narrow a dataset a subsequent call would reuse.
+        ``xr.open_zarr`` reads metadata only, so dims, variable names and the
+        timestamp span cost no array reads. Only plain Python values are
+        returned, never a live handle.
         """
         path = Path(dataset_config.zarr_file_path)
         if not path.exists():
@@ -372,16 +305,13 @@ class SourceInspector:
         finally:
             dataset.close()
 
-    # -- row-level browsing (D-10 lazy, D-11 narrow by construction) --------
+    # -- row-level browsing -------------------------------------------------
 
-    #: What `browse_raw` / `browse_zarr` refuse an empty `symbols` with.
-    #:
-    #: D-11 makes `symbols` and the window REQUIRED rather than optional, which
-    #: closes the "ask for a whole tier" footgun from the argument side. An
-    #: EMPTY sequence reopens it from the value side: `is_in([])` and
-    #: `.sel(symbol=[])` are both perfectly valid and both mean "no rows", but a
-    #: caller who arrived there by passing an unfiltered roster that happened to
-    #: come back empty gets a silent nothing instead of a question.
+    #: Message ``browse_raw`` and ``browse_zarr`` refuse an empty ``symbols``
+    #: with. Both take the symbols and the date window as required arguments
+    #: so the handle they return is already narrow; an empty list would be the
+    #: same unbounded request from the value side, so it is refused rather
+    #: than answered with zero rows.
     EMPTY_SYMBOLS_MESSAGE = (
         "symbols must be a NON-EMPTY sequence. D-11 makes symbols and the date "
         "window required arguments precisely so the lazy handle is already "
@@ -391,7 +321,7 @@ class SourceInspector:
     )
 
     def _require_symbols(self, symbols: Sequence[str], caller: str) -> list[str]:
-        """Normalise `symbols` to a non-empty list, refusing an empty one."""
+        """Return ``symbols`` as a list, raising ``ValueError`` if empty."""
         listed = list(symbols)
         if not listed:
             raise ValueError(f"{caller}: {self.EMPTY_SYMBOLS_MESSAGE}")
@@ -404,48 +334,42 @@ class SourceInspector:
         start_date: str,
         end_date: str,
     ) -> pl.LazyFrame:
-        """A LAZY, already-narrow view of the raw parquet tier. The caller
-        collects (D-10).
+        """Return a lazy, already-narrow view of the raw parquet tier.
 
-        All four arguments are positional-REQUIRED with no defaults, so
-        omitting any one of them is a `TypeError` at the call site (D-11). That
-        is the other side of the developer's D-10 override: a lazy object
-        technically permits asking for a whole tier, and what closes that is the
-        arguments, not the return type. Asking for everything therefore requires
-        deliberately passing the full roster and the full window.
+        All four arguments are required so the handle is narrow when it is
+        handed out; asking for a whole tier means passing the full roster and
+        window deliberately. The frame is not collected here.
 
-        **It opens no parquet scan of its own, and that is load-bearing.** (Stated
-        without naming the polars call, because the acceptance check for this
-        rule is a literal scan of this file for that call's name -- the same
-        false positive 03.4-01 and 03.4-03 each had to undo in a docstring.)
-        `StockDataset._scan_raw` already carries four separately-measured
-        fixes -- the vendor-root basename assertion (two vendors under one root
-        merge with NO error and no provenance), the tick `_scan_root` descent
-        (a root holding both data types fixes its schema from the
-        alphabetically-first file and then raises on the other), the explicitly
-        pinned `hive_schema` (an inferred numeric-looking key changes dtype and
-        a string comparison then matches nothing), and `extra_columns` /
-        `missing_columns` left at their RAISING defaults. A second scan written
-        here is precisely where `extra_columns="ignore"` gets added "to make it
-        work", reopening the silent cross-vendor merge while looking like a bug
-        fix. So this method calls `_scan_raw` and appends to what it returns.
+        The scan itself is ``StockDataset._scan_raw``, which checks that the
+        root is a vendor directory, descends into the tick data-type
+        directory, pins the hive schema and raises on unexpected or missing
+        columns; this method only adds the symbol filter and a sort. Symbols
+        are validated against the shared ticker pattern first. At daily and
+        minute frequency ``symbol`` is a data column, so the symbol predicate
+        prunes row groups while the date window prunes directories; at tick
+        frequency ``symbol`` is a hive key and the same predicate prunes
+        directories.
 
-        Symbols are validated through the shared `validate_symbols` -- the same
-        compiled `TRADEABLE_TICKER_PATTERN` object bound at both ends of the
-        symbol lifecycle, never a local copy. A local copy is what caused
-        incident 260907-10t.
+        Args:
+            dataset_config: Locates the vendor's raw root.
+            symbols: Non-empty sequence of tickers to keep.
+            start_date: Inclusive ISO start of the window.
+            end_date: Inclusive ISO end of the window.
 
-        **The symbol predicate is asymmetric across frequencies, and nobody
-        should optimise that away.** At `1d` and `1m`, `symbol` is a data
-        column, so `is_in` prunes only ROW GROUPS via parquet statistics. At
-        `tick`, `symbol` IS a hive key, so the very same predicate prunes
-        DIRECTORIES. The window predicate is what prunes directories in the
-        first two cases, and `_scan_raw` applies it.
+        Returns:
+            A ``polars.LazyFrame`` sorted by ``(timestamp, symbol)``, so
+            repeated collection yields the same row order.
 
-        The result is sorted by `(timestamp, symbol)` so repeated collection of
-        one window yields an identical row order -- `_scan_raw` sorts too, but
-        the symbol filter is applied after it, and a filter is not obliged to
-        preserve order.
+        Raises:
+            ValueError: If ``symbols`` is empty or contains an invalid ticker.
+
+        Example:
+            >>> frame = inspector.browse_raw(
+            ...     ds_cfg, ["AAPL"], "2024-02-01", "2024-03-31"
+            ... )
+            >>> rows = frame.collect()
+            >>> rows.height, rows["symbol"].unique().to_list()
+            (2, ['AAPL'])
         """
         listed = self._require_symbols(symbols, "browse_raw")
         listed = validate_symbols(
@@ -453,8 +377,8 @@ class SourceInspector:
             owner_label=f"{self.__class__.__name__}.browse_raw",
             raw_root=dataset_config.raw_data_dir_path,
         )
-        # FRESH reader per query. Nothing is held on the inspector, so a narrow
-        # query cannot narrow what a later wide one sees.
+        # A fresh reader per query, so a narrow query cannot narrow what a
+        # later wide one sees.
         reader = _RawTierReader(dataset_config)
         return (
             reader._scan_raw(start_date, end_date)
@@ -469,54 +393,42 @@ class SourceInspector:
         start_date: str,
         end_date: str,
     ) -> xr.Dataset:
-        """A narrowed view of the Zarr tier, lazy and dask-free.
+        """Return a narrowed view of the Zarr store, lazy and dask-free.
 
-        Same required-argument rule as `browse_raw`, for the same D-11 reason.
+        The store is opened fresh on every call and ``.sel`` is applied to a
+        local, so nothing is narrowed permanently. A symbol the store does
+        not carry raises rather than being reindexed to a NaN column, because
+        a NaN column cannot be told apart from a genuinely empty history. On
+        a store whose ``symbol`` axis is integer-valued (a CRSP panel keyed
+        by PERMNO) the message also says so and points at the ticker sidecar
+        beside the store, since a ticker can never match that axis.
 
-        **A separate name rather than one shared browse method**, because the
-        two return different types (`pl.LazyFrame` vs `xr.Dataset`). One name
-        with two return types would be worse than two clearly-named methods:
-        the caller has to branch on the tier anyway, and a shared name hides
-        that it must.
+        Args:
+            dataset_config: Locates the Zarr store.
+            symbols: Non-empty sequence of symbol labels to select.
+            start_date: Inclusive ISO start of the window.
+            end_date: Inclusive ISO end of the window.
 
-        **The store is opened FRESH per call and never held.**
-        `XrBackend.filter_by_date` / `filter_by_symbol` assign back to
-        `self.data`, so an inspector that kept one backend would narrow
-        permanently and a wide query issued after a narrow one would silently
-        return the narrow result -- the bug quick task 260906-w3t fixed for the
-        Polars factor probe. `.sel(...)` is applied to a LOCAL and the result
-        is returned; nothing is written back anywhere.
+        Returns:
+            The selected ``xarray.Dataset``, with the store's lazy arrays.
 
-        **An unknown symbol RAISES, and is deliberately not reindexed.**
-        `.sel(symbol=[...])` raises `KeyError` when the store does not carry a
-        requested symbol. `reindex` would instead return a NaN-filled column,
-        and a NaN column is INDISTINGUISHABLE from a genuinely empty history --
-        an operator would read "this ticker has no data" when the truth is
-        "this store has never heard of this ticker". The refusal is re-raised
-        as a `ValueError` naming the store, the requested symbols and how many
-        symbols the store carries, because that is this repo's house style for
-        a legible refusal (`_scan_raw`, `_assert_vendor_root` and
-        `validate_symbols` all raise `ValueError`) and because `KeyError`'s
-        `str()` reprs its argument, mangling a multi-line operator message. The
-        original `KeyError` is kept in the exception chain.
+        Raises:
+            ValueError: If ``symbols`` is empty, or if the store does not
+                carry every requested symbol. The message names the store,
+                the missing symbols and how many symbols the store carries.
 
-        **The refusal says WHICH KIND of label the store's axis holds**
-        (03.11-09). The behaviour above is unchanged, but its message was not
-        enough on a CRSP store: that axis is the int64 PERMNO (D-01), so a
-        perfectly legitimate ticker arrives as a string the index cannot match
-        and the operator is told "the store does not carry AAPL" -- true,
-        correctly refused, and pointing at the wrong conclusion. The message
-        therefore names the axis's dtype, and where the tickers went:
-        `{zarr}.crsp_tickers.json`, queried as-of through
-        `quantlab/dataset/crsp/tickers.py:CrspTickerLookup`.
+        Example:
+            >>> view = inspector.browse_zarr(
+            ...     ds_cfg, ["AAPL"], "2024-01-10", "2024-01-12"
+            ... )
+            >>> dict(view.sizes)
+            {'timestamp': 3, 'symbol': 1}
         """
         listed = self._require_symbols(symbols, "browse_zarr")
-        # NOT validated against TRADEABLE_TICKER_PATTERN, unlike `browse_raw`.
-        # Here a symbol is a coordinate LABEL matched against an index, never a
-        # path segment and never a query-string value, so neither trust
-        # boundary `validate_symbols` guards is crossed -- and the index either
-        # carries the label or raises below, which is a stricter check than the
-        # pattern would be.
+        # Not validated against the ticker pattern, unlike `browse_raw`: here a
+        # symbol is a coordinate label matched against an index, never a path
+        # segment or a query-string value, and the index either carries the
+        # label or raises below.
         path = Path(dataset_config.zarr_file_path)
         dataset = xr.open_zarr(path)
         try:
@@ -532,15 +444,15 @@ class SourceInspector:
                 axis_dtype = dataset["symbol"].dtype
             missing = sorted(symbol for symbol in listed if symbol not in known)
             dataset.close()
-            # An INTEGER symbol axis is the CRSP panel's PERMNO axis (D-01).
-            # Saying only "does not carry AAPL" there is true and misleading:
-            # the store may well hold that security, under the number the
-            # sidecar beside it maps the ticker to.
+            # An integer symbol axis is a CRSP panel keyed by PERMNO. Saying
+            # only "does not carry AAPL" would be true but misleading: the
+            # store may hold that security under the number the ticker
+            # sidecar maps it to.
             axis_note = ""
             if axis_dtype is not None and axis_dtype.kind in "iu":
-                # Local: `crsp/__init__.py` owns the constant and drags the whole
-                # converter in with it, and this inspector must stay importable
-                # for a vendor that has no CRSP tier at all.
+                # Imported locally: the CRSP package owns the constant and
+                # drags the whole converter in with it, and this inspector
+                # must stay importable for a vendor with no CRSP tier.
                 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 
                 axis_note = (

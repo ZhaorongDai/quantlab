@@ -1,86 +1,34 @@
-"""Read side of `{zarr}.crsp_tickers.json`: a PERMNO spelled for a human (D-03).
+"""Read side of the ticker sidecar: spell a PERMNO as a ticker for a human.
 
-The CRSP price panel's `symbol` axis is the int64 PERMNO (D-01). That is the
-right identity for a machine -- it never collides, never needs a share-class
-suffix, and never changes when a company renames itself -- and the wrong one
-for a log line, a `liquidations.json` entry or a coverage report, none of which
-a person can read as digits.
+The CRSP price panel's ``symbol`` axis is the integer PERMNO. That is the
+right identity for a machine and the wrong one for a log line, a
+``liquidations.json`` entry or a coverage report. The names live in a JSON
+sidecar next to the store, ``{zarr}.crsp_tickers.json``, as intervals per
+PERMNO (FB and META are the same PERMNO 13407, so one name per PERMNO would
+be wrong for half its history). The conversion writes the sidecar;
+``CrspTickerLookup`` is the as-of query over it.
 
-**Why the names are not in the panel.** A 2-D `ticker(timestamp, symbol)`
-string variable is refused by the backend's symbol-dim dtype guards, and a 1-D
-`ticker(symbol)` coord holds one name per PERMNO -- so PERMNO 13407 would be
-"META" for its whole history and FB's decade would be filed under a name it did
-not wear. The names therefore live in a SIDECAR, as INTERVALS, and this module
-is the as-of query over them. `quantlab/dataset/crsp/__init__.py` writes the file;
-nothing else reads it.
+The lookup has three entry points with three deliberate postures towards a
+sidecar that is missing, unparseable or wrongly shaped:
 
-**Three entry points, deliberately different about failure.** `as_of` and
-`product_end` are strict, `label` is not, and the split is not about how
-important the caller is -- it is about whether the caller has a good answer of
-its own. A caller asking one precise question has none, and must be told. A
-caller rendering a line of text has one it was already printing before this
-sidecar existed.
+- ``as_of(permno, day)`` is strict. It raises a shaped error (naming the
+  class, the path and the rebuild that fixes it) for all three failures,
+  because "the file could not be read" must not be rounded down to "that
+  PERMNO had no name that day".
+- ``product_end`` is strict about the file and its top level, but not about
+  the interval table: a sidecar whose intervals are broken can still say
+  which CRSP vintage it was read against, and one that records no vintage
+  answers ``None``.
+- ``label(permnos, day)`` is the display entry point and never raises. An
+  unusable sidecar degrades to the PERMNO digits, which is exactly what the
+  messages printed before the sidecar existed, and the degradation is logged
+  once per lookup instance so a broken sidecar can be told apart from a
+  store that never had one.
 
-- `as_of(permno, day)` is the strict, single-value question. All THREE ways the
-  sidecar can fail RAISE, and each refusal is shaped -- it names the class, the
-  path and the rebuild that fixes it: the file is MISSING, its bytes DO NOT
-  PARSE (they are not decodable as UTF-8, they are not JSON at all, or they are
-  nested deeper than the parser's own stack -- see the `payload` property, where
-  that last one is why `RecursionError` is caught alongside `OSError` and
-  `ValueError`), or it parses and is STRUCTURALLY WRONG (the top level is not an object,
-  `intervals` is not an object, a span is not an object or lacks
-  `start`/`end`/`ticker`). The caller asked which name a specific security wore
-  on a specific day, and "I could not read the file" is not an answer that may
-  be silently rounded to `None` -- rounding it down would make "this sidecar is
-  unreadable" and "that PERMNO had no name that day" the same answer.
-- `product_end` is strict for the same reason and by the same route: it reads
-  the payload through `_object_payload()`, so a sidecar whose top level is not
-  a JSON object is refused with the identical shaped message rather than with a
-  bare `AttributeError` (G-03.11-6 / WR-04). It is NOT strict about `intervals`
-  -- a sidecar with a broken interval table can still say honestly which CRSP
-  vintage it was read against -- and a sidecar that simply records no vintage
-  answers `None`, which is a value, not a refusal.
-- `label(permnos, day)` is the DISPLAY entry point, and it never raises -- for
-  all three of those failures alike. There are exactly three call sites, and
-  every one of them is BARE -- inside no `try`, on the strength of this
-  paragraph: `quantlab/dataset/_support/masking.py:262`,
-  `quantlab/backtest/engine_vectorbt.py:303` (mid-simulation, the most
-  expensive place a refusal could land) and `quantlab/base/model.py:1315`,
-  reached twice through `_spell` in `predict_panel`'s `missing` and `extra`
-  branches. Between them they render six human-visible messages -- the
-  forced-liquidation log and `liquidations.json`, the model's missing and extra
-  symbol lists, and `UniverseMask.report()`'s missing-member list -- all of
-  them trying to make an EXISTING message readable. (Two further messages,
-  `browse_zarr`'s refusal in `quantlab/acquisition/_support/inspector.py` and the
-  `--symbols` CLI help, only NAME this class in prose: they neither construct a
-  lookup nor call it, and must not be counted as call sites, because the design
-  argument below -- the guard lives in the lookup rather than at each caller --
-  is built on that count.) Breaking a backtest because an audit sidecar is
-  absent or half-written would make the readability layer more fragile than the
-  thing it annotates (T-03.11-30), so an unusable sidecar degrades to the
-  digits, which is exactly what those messages printed before this sidecar
-  existed. Never raising is not the same as never SPEAKING: each degradation
-  emits one WARNING per lookup instance (`_degrade`), because those same digits
-  are also the healthy output of a store that has no sidecar at all, and a
-  console that cannot tell the two apart never gets the broken one rebuilt.
-
-A LEAF module: the standard library plus `loguru` at module scope, and no
-project-internal imports at all, so any layer may import it. It is the second
-half of that sentence that is load-bearing -- what would make this module
-un-importable from some layer is a quantlab dependency of its own, not a
-third-party one, and `loguru` is already imported by all three of its
-consumers (`quantlab/dataset/_support/masking.py`, `backtest/engine_vectorbt.py`,
-`base/model.py`). The one name it needs from `crsp/__init__.py` -- the suffix -- is
-imported inside `beside_store`, because appending a string must not drag the
-whole converter (polars, xarray, the reference tier) into a display path.
-
-Shaped after `crsp/reference.py:CrspReference.manifest` in four respects, and
-the resemblance is on purpose -- this repo has one way of reading a JSON
-sidecar and it is worth only having one: a `None` sentinel rather than a
-`hasattr` dance, a `FileNotFoundError` that names the class, the path and the
-remedy, `json.loads(path.read_text(encoding="utf-8"))` as the single read, and
-derived values (`product_end`) behind a `@property` rather than recomputed per
-call.
+The module imports only the standard library and ``loguru`` at module scope,
+so any layer may import it. The one project constant it needs, the sidecar
+suffix, is imported inside ``beside_store`` so that a log line never pulls
+the whole converter onto its import path.
 """
 
 from __future__ import annotations
@@ -94,79 +42,66 @@ from loguru import logger
 
 __all__ = ["CrspTickerLookup"]
 
-#: What an UNUSABLE sidecar raises, and the one spelling of it. Both entry
-#: points now funnel every structural defect through `_malformed`
-#: (`ValueError`) or the `payload` property (`FileNotFoundError` for an absent
-#: file, `ValueError` for bytes that never parse), so these two are exhaustive
-#: for damage that came off the disk.
-#:
-#: `KeyError` / `AttributeError` / `TypeError` were in this tuple until
-#: 03.11-15 and are deliberately OUT of it: once 03.11-12's structural guards
-#: landed they could no longer arise from a damaged sidecar at all, leaving a
-#: bug in THIS module as their only remaining source -- so the tuple was
-#: swallowing precisely the class of failure `label()`'s own rationale says it
-#: was spelled out to surface. A typo in `as_of` used to make a display path
-#: print digits that look exactly like a legitimate no-name answer, over a
-#: perfectly good sidecar, without failing a single happy-path test
-#: (G-03.11-3 / WR-02). Deleted code that used to be caught here must reach the
-#: caller instead; `tests/test_crsp_ticker_sidecar.py`'s two subclass-injection
-#: regressions are the lock.
-#:
-#: A module constant rather than a literal inside each `except`, because "what
-#: counts as unusable" is ONE fact and the two `except` sites below are its two
-#: reference points -- a future third display entry point must not get to
-#: invent a third answer. Prefixed and out of `__all__`: internal vocabulary.
+#: What an unusable sidecar raises. Every structural defect is funnelled
+#: through ``_malformed`` (``ValueError``) or the ``payload`` property
+#: (``FileNotFoundError`` for an absent file, ``ValueError`` for bytes that
+#: do not parse), so these two types are exhaustive for damage that came off
+#: the disk. ``KeyError``, ``AttributeError`` and ``TypeError`` are
+#: deliberately not included: after the structural guards they can only be a
+#: bug in this module, and ``label()`` must let such a bug reach the caller
+#: rather than print digits that look like a legitimate answer.
 _UNUSABLE = (FileNotFoundError, ValueError)
 
 
 class CrspTickerLookup:
-    """As-of PERMNO -> ticker over one `{zarr}.crsp_tickers.json`.
+    """As-of PERMNO-to-ticker lookup over one ``{zarr}.crsp_tickers.json``.
 
-    Constructed from a PATH and reads it lazily, like `CrspReference`, rather
-    than from an already-parsed payload like `CrspSymbology`. The consumers are
-    display sites deep inside a backtest or a log call: they have a store path
-    in hand and no way to obtain a parsed frame, and a constructor that hit the
-    disk would make "build a lookup just in case" cost an I/O per call site.
+    Constructed from a path and read lazily on first use. The callers are
+    display sites deep inside a backtest or a log call: they hold a store
+    path and nothing else, and a constructor that hit the disk would make
+    "build a lookup just in case" cost an I/O per call site.
+
+    Example:
+        >>> from datetime import date
+        >>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
+        >>> lookup = CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
+        >>> lookup.as_of(13407, date(2022, 6, 8)), lookup.as_of(13407, date(2022, 6, 9))
+        ('FB', 'META')
+        >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
+        ['FB', 'AAPL', '99999']
     """
 
     def __init__(self, sidecar_path: str | Path) -> None:
+        """Bind a sidecar path without reading it."""
         self.sidecar_path = Path(sidecar_path)
         self._payload: dict | None = None
-        #: Has this instance already said its sidecar is unusable? Purely a
-        #: log-throttle (see `_degrade`), never read by any query.
-        #:
-        #: INSTANCE-level and not module-level on purpose. The unit that gets
-        #: one warning is one FILE: a forced-liquidation batch builds a lookup
-        #: and renders hundreds of records through it, so per-call would spam,
-        #: while a module-level flag would let the first broken store silence
-        #: the report for every other store in the same process -- and a run
-        #: that backtests two panels would be told about one of them.
+        #: Whether this instance has already warned that its sidecar is
+        #: unusable. A log throttle only (see ``_degrade``), never read by a
+        #: query. Per instance rather than per module so that one broken
+        #: store does not silence the warning for every other store in the
+        #: same process.
         self._degraded = False
 
     def __repr__(self) -> str:
+        """Return ``CrspTickerLookup('<sidecar path>')``."""
         return f"CrspTickerLookup({str(self.sidecar_path)!r})"
 
     @classmethod
     def beside_store(cls, zarr_file_path: str | Path) -> "CrspTickerLookup":
-        """The lookup for the store at `zarr_file_path`.
+        """Return the lookup for the sidecar written beside ``zarr_file_path``.
 
-        The ONE place the suffix is appended on the read side, so the display
-        points do not each spell `".crsp_tickers.json"` for themselves -- a
-        literal repeated at the two production construction sites
-        (`quantlab/dataset/_support/masking.py:115`, `quantlab/base/backtest.py:198`) is
-        a rename waiting to go half-done, and a third one is a `beside_store`
-        call away.
+        This is the one place on the read side where the sidecar suffix is
+        appended, so display sites do not each spell ``".crsp_tickers.json"``.
 
-        The import is function-local on purpose, and the reasoning survives
-        this module becoming `crsp/tickers.py` intact: `crsp/__init__.py` owns
-        the constant and pulls in polars, the reference tier and the whole
-        converter with it, none of which a log line needs. This module stays a
-        stdlib-only leaf for every caller that already has a sidecar path.
+        The import is function-local on purpose: ``quantlab.dataset.crsp``
+        owns the constant and pulls in polars and the whole converter, none
+        of which a log line needs. It also imports this module's own parent
+        package, which is safe only because it runs at call time, when the
+        parent is fully initialised.
 
-        It now imports its OWN PARENT package, which is safe for exactly the
-        reason it is function-local: by call time the parent is fully loaded.
-        A module-level `from quantlab.dataset.crsp import ...` here would run
-        during the parent's own initialisation and see a half-built module.
+        Example:
+            >>> CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
+            CrspTickerLookup('data/data/us_equity/1d/crsp.zarr.crsp_tickers.json')
         """
         from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 
@@ -176,24 +111,20 @@ class CrspTickerLookup:
 
     @property
     def payload(self) -> dict:
-        """The sidecar as a dict, read at most once per instance.
+        """Return the sidecar as parsed JSON, read at most once per instance.
 
-        Raises the same shaped `FileNotFoundError` `CrspReference` raises for a
-        missing manifest: which class is complaining, which path it looked at,
-        and what to do -- because this file is written BY a conversion and
-        cannot be created by hand, the remedy is a rebuild, not an edit.
+        Raises:
+            FileNotFoundError: If the sidecar is absent. The message names
+                the class, the path and the remedy (a rebuild), because the
+                file is written by a conversion and cannot be created by hand.
+            ValueError: If the bytes cannot be read or parsed. This includes
+                ``RecursionError`` from JSON nested deeper than the parser's
+                stack, which is a ``RuntimeError`` and would otherwise escape
+                both entry points unshaped.
 
-        A failure of the READ or the PARSE becomes the second shaped refusal,
-        and "the parse failed" includes the case where the parser itself runs
-        out of stack: deeply nested JSON raises `RecursionError`, which is a
-        `RuntimeError` subclass and therefore caught by neither `OSError` nor
-        `ValueError`. It used to escape from here past every structural guard
-        downstream and out of BOTH entry points -- unshaped out of `as_of` and,
-        worse, out of `label`, which the display sites call bare (G-03.11-3 /
-        WR-01). Re-raising it here is what makes this the single place where an
-        unreadable sidecar turns into a refusal a reader can act on. Building
-        the message after a `RecursionError` is safe: CPython restores stack
-        headroom once the exception unwinds.
+        Example:
+            >>> sorted(lookup.payload)
+            ['generated_from', 'intervals', 'vintage_product_end']
         """
         if self._payload is None:
             if not self.sidecar_path.exists():
@@ -222,16 +153,11 @@ class CrspTickerLookup:
         return self._payload
 
     def _malformed(self, detail: str) -> ValueError:
-        """The refusal for a sidecar that PARSED but is shaped wrong.
+        """Build the error for a sidecar that parsed but is shaped wrong.
 
-        RETURNS the error rather than raising it, so every structural branch
-        below reads `raise self._malformed(...)` and the four-part message --
-        which class, which path, what is wrong, how to fix it -- is written
-        ONCE. Five hand-written copies of the same sentence drift, and they
-        drift invisibly: nobody diffs error strings.
-
-        Same shape as the `payload` property's two refusals on purpose; a
-        reader who has seen one has seen all of them.
+        Returned rather than raised, so every structural check reads
+        ``raise self._malformed(...)`` and the four-part message (which class,
+        which path, what is wrong, how to fix it) is written once.
         """
         return ValueError(
             f"{type(self).__name__}: the ticker sidecar "
@@ -243,37 +169,19 @@ class CrspTickerLookup:
         )
 
     def _degrade(self, exc: BaseException) -> None:
-        """Note an unusable sidecar ONCE, then let the caller fall back.
+        """Warn once per instance that the sidecar is unusable.
 
-        `label()` never raises, and that is the contract three bare call sites
-        rest on -- but "never raises" was implemented as "never says anything",
-        and those are different promises. The digits this module falls back to
-        are ALSO the normal, documented, supported output of a store that has
-        no sidecar at all (a Tiingo or Alpaca panel, or a CRSP store built
-        before 03.11-09, see `label`'s docstring below). The two states are
-        byte-identical on a console, so the one that needs a rebuild was
-        invisible: nothing in a log, a `liquidations.json` or a
-        `UniverseMask.report()` distinguished "this audit file is broken" from
-        "this vendor never had one" (T-03.11-57). This line is that
-        distinction, and it is why the ABSENT branch warns too rather than
-        only the corrupt one.
+        The digits ``label()`` falls back to are also the normal output of a
+        store that has no sidecar at all, so without this line a broken
+        sidecar would be invisible on a console. It warns on the absent case
+        too, for the same reason.
 
-        The posture is the repo's own: `quantlab/base/config.py:142` and `:176`
-        both annotate the filter report with "never applied silently", and a
-        degradation of an AUDIT artefact is the case where silence costs most.
-
-        ONCE PER INSTANCE, via the `_degraded` flag. The worst caller hands a
-        whole forced-liquidation batch to a single `label()` call
-        mid-simulation, and a payload whose damage only shows up inside the
-        per-PERMNO `as_of` would arrive here once per record -- 500 identical
-        lines that bury the signal they exist to raise (T-03.11-61).
-
-        Returns `None` and raises nothing: this is a log-throttle, not a state
-        machine. The `_degraded` flag is written here and in `__init__`, read
-        only here, and never participates in any query's answer -- so the
-        read-write race under a threading backend can at worst cost a few
-        duplicate lines and can never cost a label, a cached payload or a
-        return value.
+        Once per instance, because the worst caller hands a whole
+        forced-liquidation batch to a single ``label()`` call and would
+        otherwise log hundreds of identical lines. The ``_degraded`` flag is
+        written here and in ``__init__`` and read only here; it never
+        influences a return value, so a race between threads can at most
+        cost a duplicate log line.
         """
         if not self._degraded:
             self._degraded = True
@@ -287,25 +195,13 @@ class CrspTickerLookup:
             )
 
     def _object_payload(self) -> dict:
-        """The payload, once it is known to be a JSON OBJECT.
+        """Return the payload once it is known to be a JSON object.
 
-        THE ONE PLACE the payload's top-level shape is checked, so every reader
-        below can index it without a second thought.
-
-        This claim used to sit on `_intervals()` and be false: `product_end`
-        read `self.payload` directly, so a `[]` sidecar answered it with a bare
-        `AttributeError: 'list' object has no attribute 'get'` -- from an entry
-        point the module docstring had already promised a shaped refusal for,
-        on an input that was sitting in this module's own malformed-sidecar
-        fixtures the whole time (G-03.11-6 / WR-04). The fix is a shared helper
-        rather than a second `isinstance` inside `product_end`, because a
-        second copy would only move the false sentence somewhere else and would
-        leave the NEXT reader of the payload free to open the same hole again.
-        Any future third reader goes through here.
-
-        `FileNotFoundError` and `ValueError` out of `self.payload` (absent
-        file, unparseable bytes) travel through untouched: those two refusals
-        are the existing contract and this method has nothing to add to them.
+        The one place the top-level shape is checked; ``_intervals`` and
+        ``product_end`` both read through it, so a ``[]`` sidecar gets the
+        same shaped refusal from every entry point instead of a bare
+        ``AttributeError``. ``FileNotFoundError`` and ``ValueError`` from
+        ``payload`` pass through untouched.
         """
         payload = self.payload
         if not isinstance(payload, dict):
@@ -316,15 +212,11 @@ class CrspTickerLookup:
         return payload
 
     def _intervals(self) -> dict:
-        """The `{PERMNO: [span, ...]}` table, or a refusal naming what is off.
+        """Return the ``{PERMNO: [span, ...]}`` table, checking its shape.
 
-        The `intervals` LAYER's shape is checked here; the top level is
-        `_object_payload`'s job, and this method is one of its two readers.
-
-        A MISSING `intervals` key is not damage -- `.get("intervals", {})` has
-        always answered "this sidecar knows no names", and both entry points
-        already have a good answer for that. Only a key present with the wrong
-        TYPE is a refusal.
+        A missing ``intervals`` key is not damage: it means the sidecar knows
+        no names, and both entry points have a good answer for that. Only a
+        key present with the wrong type is refused.
         """
         intervals = self._object_payload().get("intervals", {})
         if not isinstance(intervals, dict):
@@ -336,22 +228,21 @@ class CrspTickerLookup:
 
     @property
     def product_end(self) -> date | None:
-        """The CRSP vintage the sidecar's intervals were read against.
+        """Return the CRSP vintage the sidecar was read against, or ``None``.
 
-        `None` when the sidecar does not record one. A derived value behind a
-        `@property`, matching `CrspReference.product_end` -- the parse belongs
-        beside the field it parses, not at each reader.
+        ``None`` means the sidecar records no vintage, which is a usable
+        state, not damage. Only a payload whose top level is not a JSON
+        object is refused, with the same shaped error ``as_of`` gives; a
+        broken interval table does not affect this property.
 
-        The THIRD public entry point, and the second reader of
-        `_object_payload`: a structurally broken sidecar is refused here with
-        the same shaped message `as_of` gives, rather than with whatever
-        `AttributeError` falls out of indexing a list.
+        Raises:
+            FileNotFoundError: If the sidecar is absent.
+            ValueError: If it cannot be parsed or its top level is not an
+                object.
 
-        "Records no vintage" and "is broken" stay different answers, and the
-        difference is worth keeping: a sidecar written before the vintage was
-        recorded, or for a roster that predates it, is perfectly usable and
-        gets `None`. Only a payload that is not a JSON object at all is
-        refused. Do not round the first case down to the second.
+        Example:
+            >>> lookup.product_end
+            datetime.date(2025, 12, 31)
         """
         recorded = self._object_payload().get("vintage_product_end")
         if not recorded:
@@ -361,22 +252,33 @@ class CrspTickerLookup:
     # -- queries ------------------------------------------------------------
 
     def as_of(self, permno: int, day: date) -> str | None:
-        """The ticker `permno` wore on `day`, or `None`.
+        """Return the ticker ``permno`` wore on ``day``, or ``None``.
 
-        Both ends of an interval are INCLUSIVE, the convention
-        `symbol_intervals()` and `_member_intervals` already use: 13407's FB
-        span ends 2022-06-08 and its META span starts 2022-06-09, so the
-        boundary day belongs to exactly one of them.
+        Both ends of an interval are inclusive: PERMNO 13407's FB span ends
+        2022-06-08 and its META span starts 2022-06-09, so each day belongs
+        to exactly one of them. ``None`` covers both "no interval covers this
+        day" and "this sidecar has never heard of this PERMNO"; no caller
+        acts differently on the two.
 
-        `None` means "no interval covers this day" and "this sidecar has never
-        heard of this PERMNO" alike. The two are not distinguished because no
-        caller acts differently on them: both mean there is no name to print,
-        and both arise from the same cause -- a store whose sidecar was written
-        for a different roster or a different window.
+        The spans are scanned linearly: a security's whole naming history is
+        a handful of intervals, and an index would cost more than it saves.
 
-        A linear scan of one PERMNO's spans, not a bisect: a security's whole
-        naming history is a handful of intervals (four for AAPL's 45 years),
-        and an index would cost more to build than every lookup it saves.
+        Args:
+            permno: The PERMNO, as an int or anything ``int()`` accepts.
+            day: The date to look up; anything whose ``str()`` starts with
+                an ISO date works.
+
+        Raises:
+            FileNotFoundError: If the sidecar is absent.
+            ValueError: If it cannot be parsed or is not shaped like a
+                sidecar (top level, ``intervals``, or a span lacking
+                ``start``, ``end`` or ``ticker``).
+
+        Example:
+            >>> lookup.as_of(13407, date(2022, 6, 8))
+            'FB'
+            >>> lookup.as_of(13407, date(2000, 1, 1)) is None
+            True
         """
         spans = self._intervals().get(str(int(permno)))
         if not spans:
@@ -404,52 +306,42 @@ class CrspTickerLookup:
         return None
 
     def label(self, permnos: Sequence, day: date) -> list[str]:
-        """`permnos` spelled for a human, one string per input, in order.
+        """Spell ``permnos`` for a human, one string per input, in order.
 
-        The single entry point the three call sites use, and the reason it is
-        BATCH: every one of them is rendering a LIST (a missing-member report,
-        a dropped-symbol warning, a run of liquidation records on one date), so
-        a per-item call would re-enter the payload once per name. Between them
-        those three render the six human-visible messages the module docstring
-        enumerates -- the count of MESSAGES and the count of CALLERS are
-        different numbers and this module needs both.
+        This is the display entry point, and it is a batch call because every
+        caller renders a list (a missing-member report, a dropped-symbol
+        warning, a run of liquidation records on one date).
 
-        **Never raises.** An unknown PERMNO falls back to its own digits, and
-        so does every PERMNO when the sidecar is missing or CORRUPT -- where
-        corrupt means both halves of it: bytes that never reach a shape at all
-        (undecodable, not JSON, or nested past the parser's stack), and bytes
-        that parse fine but are not shaped like a sidecar (`intervals` holding
-        a list, a span with no `start`). The digits are precisely the
-        output these messages produced before the sidecar existed, so a panel
-        with no sidecar (a Tiingo or Alpaca store, or a CRSP store built before
-        03.11-09) reads exactly as it did. `as_of` keeps the strict behaviour
-        for callers who want the refusal.
+        It never raises. An unknown PERMNO falls back to its own digits, and
+        so does every PERMNO when the sidecar is missing, unparseable or
+        wrongly shaped. The digits are exactly what these messages printed
+        before the sidecar existed, so a panel from a vendor with no sidecar
+        reads as it always did. Every fall-back caused by the file goes
+        through ``_degrade``, which warns once per instance. A value that is
+        not an integer at all (a string symbol axis from another vendor) is
+        passed through untouched and does not count as a degradation.
 
-        Never raises, and no longer SILENT either. Every fall-back that came
-        off the disk -- the absent file included -- passes through `_degrade`,
-        which says so ONCE per instance and never again. Without that line the
-        two readings of the same digits, "this sidecar is broken" and "this
-        vendor never had one", are indistinguishable, and only one of them is
-        something to act on. The narrow `int(value)` guard below is NOT one of
-        those fall-backs and deliberately stays quiet.
+        The guard sits in two places because damage arrives by two routes:
+        ``{"intervals": [1, 2, 3]}`` breaks while the table is being read,
+        while ``{"intervals": {"13407": [{"ticker": "FB"}]}}`` reads as a
+        good table and only breaks inside the per-PERMNO ``as_of``. Both
+        sites catch ``_UNUSABLE`` and nothing wider. ``except Exception`` is
+        deliberately not used, so that a genuine programming bug in this
+        module still reaches the caller instead of being printed as digits
+        that look like a legitimate "no name on that day" answer.
 
-        The guard is in TWO places because damage arrives by two routes:
-        `{"intervals": [1, 2, 3]}` breaks while the table is being read, while
-        `{"intervals": {"13407": [{"ticker": "FB"}]}}` reads a perfectly good
-        non-empty table and only breaks inside the per-PERMNO `as_of`. A guard
-        on the first alone leaves the second crashing -- and the worst caller,
-        `base/model.py`'s WR-02 warning, is a BARE call on a happy path.
+        Args:
+            permnos: PERMNOs as ints, digit strings, or plain symbols.
+            day: The date to spell them as of.
 
-        Both sites catch `_UNUSABLE` -- exactly the two exception types the
-        guards above can produce -- and nothing wider. `except Exception` is
-        deliberately NOT used, and neither are the three backstop types this
-        tuple used to carry: after 03.11-12 preflighted every structural index,
-        a `KeyError` / `AttributeError` / `TypeError` in here can only be a
-        programming bug in THIS module, and a display path that ate one would
-        answer a caller with digits indistinguishable from a legitimate
-        "no name on that day" (G-03.11-3 / WR-02). Such a bug now reaches the
-        caller; the two subclass-injection regressions in
-        `tests/test_crsp_ticker_sidecar.py` are what hold that open.
+        Returns:
+            One label per input, in the input's order.
+
+        Example:
+            >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
+            ['FB', 'AAPL', '99999']
+            >>> lookup.label(["AAPL", "MSFT"], date(2020, 1, 1))
+            ['AAPL', 'MSFT']
         """
         try:
             intervals = self._intervals()
@@ -466,22 +358,13 @@ class CrspTickerLookup:
             try:
                 permno = int(value)
             except (TypeError, ValueError):
-                # A non-integer label is not a PERMNO -- a string symbol axis
-                # from another vendor reaching a shared display path. It is
-                # already readable; pass it through untouched.
-                #
-                # This narrow tuple is about the CALLER's argument, not about
-                # the sidecar, so it is a separate concern from `_UNUSABLE` and
-                # is not a third copy of it: `int("QQQ")` raising `ValueError`
-                # says nothing about whether the file on disk is readable.
-                #
-                # Which is also why there is NO `_degrade` call here, and why
-                # this is not a third site somebody forgot to update: nothing
-                # degraded. A string symbol axis reaching a shared display path
-                # is supported and healthy, and warning on it would fire on
-                # every Tiingo panel that renders a symbol list -- teaching
-                # operators to ignore the one warning that means "rebuild this
-                # store".
+                # A non-integer label is not a PERMNO: it is a string symbol
+                # axis from another vendor reaching a shared display path,
+                # already readable, so it passes through untouched. This is
+                # about the caller's argument, not the sidecar, which is why
+                # there is no `_degrade` call here: nothing degraded, and
+                # warning would fire on every panel that renders a symbol
+                # list.
                 labels.append(spelled)
                 continue
             try:

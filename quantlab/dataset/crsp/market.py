@@ -1,38 +1,25 @@
-"""The WHOLE-MARKET CRSP roster: every security, not an index's members.
+"""The whole-market CRSP roster: every security, not an index's members.
 
-`CrspMembership` answers "who was in this index"; this module answers "what
-securities existed at all". The two are siblings, not a base and a subclass,
-because they are sourced from different tables and mean different things --
-folding a market roster into a class whose every docstring says "membership"
-would make `crsp_all` read as an index with 40,518 members.
+``CrspMembership`` answers "who was in this index"; ``CrspMarketRoster``
+answers "which securities existed at all". They are siblings with the same
+public shape (``permno_intervals()``, ``permnos_in_range()``, ``report``),
+sourced from different tables, so a caller can hold either behind the same
+two calls.
 
-**Where the roster comes from, and why it costs nothing extra.**
-`crsp_a_stock.stksecurityinfohist` is already pulled unconditionally by
-`CrspReferenceTables.STOCK_TABLES`, because symbology needs it (D-04). It
-carries one interval per security-info change with `permno`, the interval's
-`(secinfostartdt, secinfoenddt)` and every column
-`SECURITY_FILTER_PRESETS` names. So a whole-market roster is a read of a
-table this project already has on disk: no new query, no new schema
-entitlement, no extra round trip.
+The roster is read from ``crsp_a_stock.stksecurityinfohist``, which the
+reference tier already holds for ticker lookups. Each row of that table is
+one interval of a security's history carrying the type columns a security
+filter names, so a whole-market roster costs no extra query.
 
-**Spell-level verdict, not per-date.** The type predicate is evaluated on each
-`stksecurityinfohist` interval, and a PERMNO joins the roster when ANY of its
-intervals qualifies. The per-DAY verdict stays where it already lives --
-`CrspStockDataset._apply_security_filter`, reading `dsf_v2`'s own per-day type
-columns, which is what lets a security keep exactly the era in which it was
-common stock (D-17). This split is the existing division of labour, stated by
-`resolve_security_filter`'s own refusal text ("To restrict the ROSTER ..."):
-the roster decides who gets PULLED, the conversion decides which of their rows
-survive. Evaluating the day-level rule here as well would be a second place
-that can disagree with the first.
+The type filter is applied per interval, and a PERMNO joins the roster when
+any of its intervals qualifies. The per-day verdict (which of a security's
+daily rows survive) is made later by the dataset's own security filter
+against the daily table; the roster only decides who gets pulled.
 
-**Overlap, not containment.** `permnos_in_range` keeps every PERMNO whose
-interval OVERLAPS the window (`start_date <= end AND end_date >= start`) --
-the same predicate `CrspMembership.permnos_in_range` and
-`UniverseCatalog.get_symbols_in_range` use. A security that was delisted
-inside the window stays in the roster; dropping it is precisely the
-survivorship bias this layer exists to remove, and on a whole-market roster
-there are far more of them than in any index.
+Overlap, not containment: ``permnos_in_range`` keeps every PERMNO whose
+qualifying interval overlaps the window, so a security delisted inside the
+window stays in the roster. Dropping it would be survivorship bias, and on a
+whole-market roster there are far more such securities than in any index.
 """
 
 from __future__ import annotations
@@ -46,49 +33,53 @@ from quantlab.dataset.crsp import resolve_security_filter
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
-# Imported rather than re-written. `_merge_intervals` IS the merge contract
-# (closed intervals, touching means `next.start <= previous.end + 1 day`), and
-# `_as_date` IS the date-coercion contract; `CrspMembership.permnos_in_range`'s
-# own docstring records what happens when one contract is re-derived in several
-# places. A second copy here would be a second thing to keep in step. If a
-# third caller appears, these two belong in `quantlab/dataset/_support/`, and
-# that move is a rename rather than a rewrite.
+# Shared with `CrspMembership` rather than copied: `_merge_intervals` defines
+# what "touching" means for closed intervals, and `_as_date` the date
+# coercion. A second copy here would be a second thing to keep in step.
 from quantlab.dataset.crsp.membership import _as_date, _merge_intervals
 
-#: How many PERMNOs `stksecurityinfohist` carries in the vintage this project
-#: pulls -- the upper bound on any whole-market roster, BEFORE the type filter.
-#: Recorded so a roster that comes back the same order of magnitude as an index
-#: is visibly wrong. The number is the one already stated in
-#: `quantlab/dataset/crsp/__init__.py`'s ticker-sidecar docstring.
+#: How many PERMNOs ``stksecurityinfohist`` carries in the vintage this
+#: project pulls, before any type filter: the upper bound on a whole-market
+#: roster. A roster the size of an index is visibly wrong against it.
 SECINFO_PERMNO_COUNT_HINT: int = 40_518
 
-#: The name this roster answers to on a CLI, beside `CrspMembership.INDEXES`.
-#: Deliberately NOT added to `CrspMembership.INDEXES`: that tuple is what the
-#: index-membership CLI offers, and a whole-market roster has no membership
-#: panel behind it in the sense those two do.
+#: The name this roster answers to on a CLI, beside ``CrspMembership.INDEXES``.
+#: It is not added to that tuple, because a whole-market roster has no
+#: membership panel behind it in the sense the two indexes do.
 MARKET = "crsp_all"
 
 
 class CrspMarketRoster:
     """Every CRSP security, point-in-time, over one reference directory.
 
-    Holds no connection and needs no credential: `reference` is a
-    `CrspReference`, i.e. parquet on disk. Mirrors `CrspMembership`'s public
-    shape on purpose -- `permno_intervals()` / `permnos_in_range()` / `report`
-    -- so a caller can hold either behind the same two calls, and `report`
-    describes the MOST RECENT `permno_intervals()` call.
+    Holds no connection and needs no credential: ``reference`` is a
+    ``CrspReference`` over parquet on disk. ``report`` describes the most
+    recent ``permno_intervals()`` call.
+
+    Example:
+        >>> from quantlab.dataset.crsp.market import CrspMarketRoster
+        >>> from quantlab.dataset.crsp.reference import CrspReference
+        >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+        >>> roster = CrspMarketRoster(ref)
+        >>> roster.permnos_in_range("2010-01-01", "2010-12-31")
+        ['10001', '10002']
+        >>> roster.report["permnos_after_type_filter"]
+        2
     """
 
     #: The table this roster is read from. Always present in a reference tier.
     SOURCE_TABLE = "stksecurityinfohist"
 
     def __init__(self, reference: CrspReference) -> None:
+        """Bind a reference directory and start with an empty report."""
         self.reference = reference
-        #: What was excluded, clipped or filtered.
+        #: What the last ``permno_intervals()`` call excluded, clipped or
+        #: filtered.
         self.report: dict = {}
         self._reset_report()
 
     def _reset_report(self) -> None:
+        """Reset every report key to its empty value."""
         self.report.clear()
         self.report.update(
             {
@@ -107,21 +98,36 @@ class CrspMarketRoster:
     def permno_intervals(
         self, *, security_filter: str | dict = "equity_common"
     ) -> pl.DataFrame:
-        """`(permno Int64, start_date Date, end_date Date)`, sorted.
+        """Return qualifying spans as ``(permno, start_date, end_date)``.
 
-        One row per continuous QUALIFYING span of one PERMNO, both ends
-        inclusive, `end_date` never null and never later than
-        `CrspReference.product_end`.
+        One row per continuous qualifying span of one PERMNO, sorted, both
+        ends inclusive, ``end_date`` never null and never later than
+        ``CrspReference.product_end``. Adjacent qualifying intervals are
+        merged, so a common share that changed ticker four times is one span.
+        Non-qualifying intervals are dropped before the merge, so a security
+        that was an ADR and later ordinary common comes back as the ordinary
+        stretch alone.
 
-        Adjacent qualifying intervals are merged, so an ordinary common share
-        that changed ticker four times is ONE span, not four. Non-qualifying
-        intervals are dropped BEFORE the merge, which is what makes a security
-        that was an ADR and later ordinary common come back as the ordinary
-        stretch alone rather than one span covering both.
+        Args:
+            security_filter: A preset name (``"equity_common"``,
+                ``"shrcd_10_11"``, ``"none"``) or a ``{column: allowed
+                values}`` mapping, resolved by ``resolve_security_filter``.
 
-        Unlike `CrspMembership.permno_intervals` this takes no `window`: that
-        parameter exists there to scope the Nasdaq-100 unlinked-spell refusal,
-        and this roster has no link table and therefore no such refusal.
+        Raises:
+            ValueError: If ``security_filter`` is not a valid preset or
+                mapping, or if a source row has a null PERMNO or start.
+
+        Example:
+            >>> roster.permno_intervals()
+            shape: (2, 3)
+            ┌────────┬────────────┬────────────┐
+            │ permno ┆ start_date ┆ end_date   │
+            │ ---    ┆ ---        ┆ ---        │
+            │ i64    ┆ date       ┆ date       │
+            ╞════════╪════════════╪════════════╡
+            │ 10001  ┆ 2000-01-03 ┆ 2025-12-31 │
+            │ 10002  ┆ 2000-01-03 ┆ 2010-06-30 │
+            └────────┴────────────┴────────────┘
         """
         resolved = resolve_security_filter(
             security_filter, owner=type(self).__name__
@@ -148,17 +154,34 @@ class CrspMarketRoster:
         *,
         security_filter: str | dict = "equity_common",
     ) -> list[str]:
-        """Every PERMNO whose qualifying span OVERLAPS `[start_date, end_date]`.
+        """Return every PERMNO whose qualifying span overlaps the window.
 
-        The overlap predicate is `start_date <= end AND end_date >= start` --
-        the same one `CrspMembership.permnos_in_range` uses, and the reason a
-        security delisted inside the window stays in the roster.
+        The window is ``[start_date, end_date]``, both ends inclusive. The
+        test is overlap (``start_date <= end and end_date >= start``), the
+        same one ``CrspMembership.permnos_in_range`` uses, so a security
+        delisted inside the window is still listed.
 
-        The order is NUMERIC and is part of the contract; it comes from
-        `quantlab.utils.symbol_axis.sort_symbol_axis`, the single source of
-        that contract, rather than a bare `sorted()` over digit strings (which
-        would put "14593" before "7000" and move the acquisition batch
-        boundaries between two runs of the same command).
+        The order is numeric, as ``quantlab.utils.symbol_axis.sort_symbol_axis``
+        defines it, not lexicographic: ``"7000"`` sorts before ``"14593"``.
+
+        Args:
+            start_date: Window start, as a ``date`` or ISO string.
+            end_date: Window end, inclusive.
+            security_filter: As for ``permno_intervals``.
+
+        Returns:
+            PERMNOs as strings, in numeric order.
+
+        Raises:
+            ValueError: If ``start_date`` is after ``end_date``.
+
+        Example:
+            >>> roster.permnos_in_range("2011-01-01", "2011-12-31")
+            ['10001']
+            >>> roster.permnos_in_range(
+            ...     "2011-01-01", "2011-12-31", security_filter="none"
+            ... )
+            ['10001', '10004']
         """
         start = _as_date(start_date)
         end = _as_date(end_date)
@@ -182,29 +205,19 @@ class CrspMarketRoster:
     def _market_pieces(
         self, resolved: dict[str, tuple[str, ...]]
     ) -> list[tuple[int, date, date]]:
-        """`stksecurityinfohist` -> `(permno, start, end)` for qualifying spells.
+        """Read ``stksecurityinfohist`` into ``(permno, start, end)`` qualifying spells.
 
-        The type predicate is the same shape
-        `CrspStockDataset._apply_security_filter` builds: every listed column
-        must match and a NULL never matches, because "unknown type" is not
-        "the type you asked for". An empty filter (`security_filter="none"`)
-        keeps every spell, which is the whole 40,518-PERMNO table.
+        Every filtered column must match and a null never matches, because
+        "unknown type" is not "the type you asked for". An empty filter keeps
+        every spell. Spells are filtered before ``_merge_intervals`` sees
+        them: a security that was ordinary common, became an ADR, and became
+        ordinary again must come back as two spans with a real hole, and
+        merging first would bridge the ADR era.
 
-        The NULL rejection is stated twice -- `.fill_null(False)` below, and
-        the falsy `if not row["_keep"]` that reads it -- and a mutation run
-        showed either alone suffices. The expression keeps its `.fill_null`
-        so it means the right thing on its own, rather than being correct only
-        because of how the loop below happens to read it; the loop keeps its
-        falsy test because that is also what it does for a `_keep` that is
-        legitimately False. Neither is dead code, but no test can tell them
-        apart, and `tests/test_crsp_market_roster.py` says so rather than
-        claiming a coverage it does not have.
-
-        Spells are filtered BEFORE `_merge_intervals` sees them, never after.
-        A security that was ordinary common, became an ADR, and became
-        ordinary again must come back as two spans with a real hole; merging
-        first would bridge the ADR era and assert the security was ordinary
-        common throughout.
+        The null rejection appears twice, as ``.fill_null(False)`` in the
+        expression and as the falsy ``if not row["_keep"]`` that reads it.
+        Either alone suffices; both are kept so each reads correctly on its
+        own.
         """
         product_end = self.reference.product_end
         table = self.reference.table(self.SOURCE_TABLE)
@@ -261,7 +274,7 @@ class CrspMarketRoster:
 
     @staticmethod
     def _frame(intervals: list[tuple[int, date, date]]) -> pl.DataFrame:
-        """The public frame shape, typed even when there are no intervals."""
+        """Return the public frame shape, correctly typed even when empty."""
         return pl.DataFrame(
             {
                 "permno": [permno for permno, _, _ in intervals],

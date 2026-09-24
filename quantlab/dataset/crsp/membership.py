@@ -1,55 +1,26 @@
-"""The two CRSP-vendor point-in-time universes, keyed by PERMNO (D-05, D-14).
+"""Point-in-time index membership from the CRSP reference tier, keyed by PERMNO.
 
-This vendor offers exactly two index histories, and neither of them is a
-Wikipedia change log:
+``CrspMembership`` answers "which securities were in this index on these
+dates" from parquet on disk, with no WRDS connection. It serves the two
+index histories this vendor offers:
 
-- **`crsp_sp500`** -- CRSP's OWN S&P 500 membership, `crsp_a_indexes.dsp500list_v2`,
-  one spell per `(permno, mbrstartdt, mbrenddt)`. Coverage runs from
-  1925-12-31, the start of index family 1100500 (D-05).
-- **`comp_nasdaq100`** -- Compustat's Nasdaq-100 constituent history,
-  `comp.idxcst_his` at `gvkeyx = '000208'`, whose `gvkey`/`iid` pairs become
-  PERMNOs through the CRSP/Compustat Merged link table
-  `crsp_a_ccm.ccmxpf_lnkhist` (D-14).
+- ``crsp_sp500``: CRSP's own S&P 500 membership from
+  ``crsp_a_indexes.dsp500list_v2``, one spell per
+  ``(permno, mbrstartdt, mbrenddt)``, with coverage from 1925-12-31.
+- ``comp_nasdaq100``: Compustat's Nasdaq-100 constituent history from
+  ``comp.idxcst_his`` (``gvkeyx = '000208'``), whose ``gvkey``/``iid`` pairs
+  are mapped to PERMNOs through the CRSP/Compustat link table
+  ``crsp_a_ccm.ccmxpf_lnkhist``.
 
-**Keyed by PERMNO, and that is now the ONLY key.** A universe answered in
-tickers has to be re-answered every time a security is renamed, and the rename
-is exactly where a membership panel and a price panel stop agreeing. The
-PERMNO does not change on a rename, so the roster the CLI pulls and the
-intervals a constituent panel densifies are both in an identifier that is
-stable across the event.
+Memberships are returned as intervals keyed by PERMNO, because the PERMNO
+survives a ticker change and a ticker does not. Intervals are closed on both
+ends and every end is explicit: an open membership is clipped to
+``CrspReference.product_end`` rather than left null, so a constituent panel
+built from them cannot extend past the CRSP price coverage.
 
-This module used to carry a second, ticker-keyed answer -- `symbol_intervals()`
--- which mapped these PERMNO intervals onto the ticker intervals
-`quantlab/dataset/crsp/symbology.py` derives, because the price panel's columns
-were tickers at the time. Since
-03.11-03 the price panel's `symbol` IS the int64 PERMNO, so that branch became
-a way to build a universe that intersects a price panel to NOTHING, and an
-empty universe reads downstream as "no positions" rather than as an error. It
-was deleted in 03.11-05 rather than deprecated:
-`quantlab/dataset/constituent.py` renames the `permno` column to `symbol` and
-hands the frame to `_densify` unchanged.
-
-**Intervals are CLOSED on both ends, and the end is ALWAYS explicit.** Closed
-matches `IndexConstituentDataset`'s convention verbatim
-(`quantlab/base/constituent.py`: "Membership intervals are CLOSED on both
-ends"). Explicit is the load-bearing half: `_densify`'s open-interval branch
-sets the panel's right edge to `max(observed, today)` -- WALL-CLOCK today --
-so a single null end would extend a CRSP universe months past the CRSP price
-coverage it is supposed to be bounded by. Every end here is therefore either
-the source's own end or `CrspReference.product_end`, never null.
-
-**`quantlab/universe.py` is untouched, on purpose.** The CRSP
-universes live beside the existing ones rather than inside `UniverseCatalog`:
-that module's structural "imports no acquisition module" rule is enforced by
-an AST scan, its categories are Tiingo/Wikipedia-shaped (tickers, exchange
-filters), and this one is a dataset-layer reader over parquet. Adding a
-category would have coupled two vocabularies for no gain.
-
-**A LEAF module.** polars, loguru, stdlib and `crsp_reference` only -- no
-psycopg2, no acquisition import, and since 03.11-05 no `crsp_symbology` either
-(it was imported for the deleted ticker branch alone). That sibling is itself a
-leaf, so the universes still resolve on a machine with no WRDS credential and
-no database driver.
+This module imports polars, loguru, the standard library and
+``quantlab.dataset.crsp.reference`` only, so it works on a machine with no
+database driver.
 """
 
 from __future__ import annotations
@@ -64,21 +35,16 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 
 _ONE_DAY = timedelta(days=1)
 
-#: What an interval list is keyed by: a PERMNO, and nothing else. It was
-#: `int | str` while `symbol_intervals()` merged the SAME way by ticker, so the
-#: boundary arithmetic below could be written once for both; on the PERMNO axis
-#: there is only one kind of key, and a union type would advertise a choice
-#: that no longer exists.
+#: The key an interval list is grouped by: a PERMNO.
 _Key = int
 
-#: How many unlinked spells the refusal lists before summarising the rest.
-#: A full listing of a systematically broken link table would bury the remedy
-#: sentence that follows it.
+#: How many unlinked spells a refusal lists before summarising the rest, so
+#: the remedy sentence at the end is not buried.
 _MAX_LISTED = 20
 
 
 def _as_date(value) -> date:
-    """`"2020-01-02"` or a `date` -> `date`. Anything else raises."""
+    """Coerce an ISO date string or a ``date`` to a ``date``."""
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value)[:10])
@@ -87,13 +53,12 @@ def _as_date(value) -> date:
 def _merge_intervals(
     pieces: list[tuple[_Key, date, date]],
 ) -> list[tuple[_Key, date, date]]:
-    """Merge overlapping or TOUCHING intervals, per key (a PERMNO or a symbol).
+    """Merge overlapping or touching closed intervals, per key.
 
-    Touching means `next.start <= previous.end + 1 day`: the intervals are
-    closed, so 2005-12-31 and 2006-01-01 are one continuous membership with no
-    day between them. Anything wider stays two intervals -- a security that
-    left the index and rejoined was genuinely not a member in between, and
-    bridging the hole would fabricate membership.
+    Touching means ``next.start <= previous.end + 1 day``, so 2005-12-31 and
+    2006-01-01 form one continuous interval. Anything wider stays two
+    intervals: a security that left and rejoined was genuinely absent in
+    between, and bridging the hole would fabricate membership.
     """
     merged: list[tuple[_Key, date, date]] = []
     for key, start, end in sorted(pieces):
@@ -108,10 +73,10 @@ def _merge_intervals(
 def _uncovered(
     start: date, end: date, covered: list[tuple[date, date]]
 ) -> list[tuple[date, date]]:
-    """The calendar-day ranges of `[start, end]` that `covered` does not cover.
+    """Return the day ranges of ``[start, end]`` that ``covered`` leaves out.
 
-    Plain interval subtraction on closed ranges. `covered` may overlap itself
-    and need not be sorted.
+    Plain interval subtraction on closed ranges. ``covered`` may overlap
+    itself and need not be sorted.
     """
     gaps: list[tuple[date, date]] = []
     cursor = start
@@ -129,51 +94,63 @@ def _uncovered(
 class CrspMembership:
     """Point-in-time index membership over one CRSP reference directory.
 
-    Holds no connection: `reference` is a `CrspReference`, i.e. parquet on
-    disk. Every public method reports what it excluded through `self.report`,
-    which describes the MOST RECENT `permno_intervals()` call -- the seven
-    keys below are reset on entry.
+    Holds no connection: ``reference`` is a ``CrspReference`` over parquet on
+    disk. ``report`` describes what the most recent ``permno_intervals()``
+    call excluded, clipped, tolerated or left unlinked; its keys are reset on
+    every call.
+
+    Example:
+        >>> from quantlab.dataset.crsp.membership import CrspMembership
+        >>> from quantlab.dataset.crsp.reference import CrspReference
+        >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+        >>> membership = CrspMembership(ref)
+        >>> membership.permnos_in_range("comp_nasdaq100", "2010-01-01", "2020-12-31")
+        ['14542', '90319']
+        >>> membership.report["clipped_to_product_end"]
+        2
     """
 
-    #: CRSP's own S&P 500 membership (D-05).
+    #: CRSP's own S&P 500 membership.
     SP500 = "crsp_sp500"
-    #: Compustat's Nasdaq-100 membership, linked through CCM (D-14).
+    #: Compustat's Nasdaq-100 membership, linked to PERMNOs through CCM.
     NASDAQ100 = "comp_nasdaq100"
-    #: Every universe this vendor serves, in the order the CLI lists them.
+    #: Every universe this vendor serves, in the order a CLI lists them.
     INDEXES = (SP500, NASDAQ100)
 
-    #: The earliest date each universe can be answered for AT ALL. The S&P
-    #: start is index family 1100500's own start; the Nasdaq-100 one is a
-    #: CENSOR rather than a start -- 100 spells begin exactly 1995-01-01
-    #: (live check `L8_3`), which is where Compustat's history begins, not
-    #: where those memberships did. Even censored it is twelve years earlier
-    #: than the Wikipedia Nasdaq-100 panel's 2007-02-01.
+    #: The earliest date each universe can be answered for. The S&P start is
+    #: the index family's own start; the Nasdaq-100 date is a censor, not a
+    #: start: Compustat's history begins 1995-01-01, so spells that begin on
+    #: that day may have begun earlier in reality.
     PIT_COVERAGE_START = {SP500: "1925-12-31", NASDAQ100: "1995-01-01"}
 
-    #: The S&P 500's index number in `dsp500list_v2`; the table carries other
-    #: indexes and a row of any other `indno` is not this universe.
+    #: The S&P 500's index number in ``dsp500list_v2``; the table carries
+    #: other indexes, and a row with any other ``indno`` is not this universe.
     SP500_INDNO = 1000500
 
-    #: `comp.idx_index`'s gvkeyx for "Nasdaq 100".
+    #: ``comp.idx_index``'s gvkeyx for "Nasdaq 100".
     NDX_GVKEYX = "000208"
 
-    #: The CCM link types that assert a real gvkey <-> PERMNO identity. `NR`
-    #: ("no research") and `NU` rows carry a NULL `lpermno` and are not links.
+    #: The CCM link types that assert a real gvkey-to-PERMNO identity. ``NR``
+    #: ("no research") and ``NU`` rows carry a null ``lpermno`` and are not
+    #: links.
     LINK_TYPES = ("LC", "LU", "LS")
 
-    #: A membership stretch of at most this many CALENDAR days between two
-    #: links of one `(gvkey, iid)` is a seam in the link table, not a hole in
-    #: the universe: a long weekend plus a holiday is four days and no trading
-    #: happens in it. Wider than that, the days are genuinely unlinked.
+    #: A membership stretch of at most this many calendar days between two
+    #: links of one ``(gvkey, iid)`` is treated as a seam in the link table
+    #: rather than a hole in the universe (a long weekend plus a holiday is
+    #: four days with no trading). Wider gaps are genuinely unlinked.
     LINK_GAP_TOLERANCE_DAYS = 4
 
     def __init__(self, reference: CrspReference) -> None:
+        """Bind a reference directory and start with an empty report."""
         self.reference = reference
-        #: What was excluded, clipped, tolerated or left unlinked.
+        #: What the last ``permno_intervals()`` call excluded, clipped,
+        #: tolerated or left unlinked.
         self.report: dict = {}
         self._reset_report()
 
     def _reset_report(self) -> None:
+        """Reset every report key to its empty value."""
         self.report.update(
             {
                 "other_indno_rows": 0,
@@ -195,20 +172,41 @@ class CrspMembership:
         allow_unlinked: bool = False,
         window: tuple[date, date] | tuple[str, str] | None = None,
     ) -> pl.DataFrame:
-        """`(permno Int64, start_date Date, end_date Date)`, sorted.
+        """Return membership intervals as ``(permno, start_date, end_date)``.
 
-        One row per continuous membership of one PERMNO, both ends inclusive,
-        `end_date` never null and never later than
-        `CrspReference.product_end`. `allow_unlinked` only affects the
-        Nasdaq-100 branch (see `_nasdaq100_pieces`).
+        One row per continuous membership of one PERMNO, sorted, both ends
+        inclusive, ``end_date`` never null and never later than
+        ``CrspReference.product_end``. Adjacent spells are merged.
 
-        `window` scopes the UNLINKED REFUSAL and NOTHING ELSE. It never
-        filters the rows returned -- an interval entirely outside it still
-        comes back, because filtering is `permnos_in_range`'s job and doing it
-        in two places is how the two answers start to disagree. Like
-        `allow_unlinked` it only affects the Nasdaq-100 branch. Omitted (the
-        default), every uncovered span blocks, which is exactly today's
-        behaviour for every caller that does not pass it.
+        ``allow_unlinked`` and ``window`` affect only the Nasdaq-100 branch.
+        By default a Nasdaq-100 spell with membership days that no CCM link
+        covers raises, because dropping those days would silently remove a
+        real member; ``allow_unlinked=True`` records them in
+        ``report["unlinked"]`` instead. ``window`` narrows that refusal to
+        uncovered days the window could actually lose a member to; it never
+        filters the rows returned.
+
+        Args:
+            index: ``"crsp_sp500"`` or ``"comp_nasdaq100"``.
+            allow_unlinked: Record unlinked Nasdaq-100 days instead of raising.
+            window: ``(start, end)`` as dates or ISO strings; scopes the
+                unlinked refusal only.
+
+        Raises:
+            ValueError: If ``index`` is unknown, if ``window`` is inverted, or
+                if Nasdaq-100 membership days inside the window have no
+                PERMNO and ``allow_unlinked`` is false.
+
+        Example:
+            >>> membership.permno_intervals("crsp_sp500")
+            shape: (1, 3)
+            ┌────────┬────────────┬────────────┐
+            │ permno ┆ start_date ┆ end_date   │
+            │ ---    ┆ ---        ┆ ---        │
+            │ i64    ┆ date       ┆ date       │
+            ╞════════╪════════════╪════════════╡
+            │ 14593  ┆ 1982-11-18 ┆ 2025-12-31 │
+            └────────┴────────────┴────────────┘
         """
         if index not in self.INDEXES:
             raise ValueError(
@@ -245,27 +243,37 @@ class CrspMembership:
         *,
         allow_unlinked: bool = False,
     ) -> list[str]:
-        """Every PERMNO whose membership OVERLAPS `[start_date, end_date]`.
+        """Return every PERMNO whose membership overlaps ``[start_date, end_date]``.
 
-        This is the roster a full-window backfill pulls: the overlap predicate
-        is `start_date <= end AND end_date >= start`, the same one
-        `UniverseCatalog.get_symbols_in_range` uses, and it is what keeps
-        every security that left the index INSIDE the window -- dropping them
-        is precisely the survivorship bias this layer removes.
+        This is the roster a full-window backfill pulls. The test is overlap,
+        not containment (``start_date <= end and end_date >= start``), so a
+        security that left the index inside the window is still listed;
+        dropping it would be survivorship bias.
 
-        **The order is part of the contract, and it is NUMERIC** -- the
-        argument for why MOVED to
-        `quantlab/utils/symbol_axis.py:sort_symbol_axis` in 03.11-02, which is
-        now the single source of that contract and which this method calls.
-        It used to be stated here, and only here, while eight other call sites
-        each spelled their own bare `sorted()`; a contract stated in one place
-        and re-derived in eight is eight things that can drift apart.
+        The order is NUMERIC, as ``quantlab.utils.symbol_axis.sort_symbol_axis``
+        defines it, not lexicographic: ``"7000"`` sorts before ``"14593"``.
 
-        **The window reaches the refusal.** `[start_date, end_date]` is passed
-        down to `permno_intervals`, so a Nasdaq-100 roster is refused only for
-        uncovered membership days this window could actually lose a member to.
-        A link gap the window never touches is recorded in
-        `report['unlinked']` and logged, not raised.
+        The window is passed down to ``permno_intervals``, so a Nasdaq-100
+        roster is refused only for unlinked days inside this window.
+
+        Args:
+            index: ``"crsp_sp500"`` or ``"comp_nasdaq100"``.
+            start_date: Window start, as a ``date`` or ISO string.
+            end_date: Window end, inclusive.
+            allow_unlinked: Record unlinked Nasdaq-100 days instead of raising.
+
+        Returns:
+            PERMNOs as strings, in numeric order.
+
+        Raises:
+            ValueError: If ``start_date`` is after ``end_date``, or for the
+                reasons ``permno_intervals`` raises.
+
+        Example:
+            >>> membership.permnos_in_range("crsp_sp500", "2020-01-01", "2020-12-31")
+            ['14593']
+            >>> membership.permnos_in_range("crsp_sp500", "1970-01-01", "1980-12-31")
+            []
         """
         start = _as_date(start_date)
         end = _as_date(end_date)
@@ -286,15 +294,14 @@ class CrspMembership:
             for permno in sort_symbol_axis(set(overlapping["permno"].to_list()))
         ]
 
-    # -- S&P 500 (D-05) ------------------------------------------------------
+    # -- S&P 500 -------------------------------------------------------------
 
     def _sp500_pieces(self) -> list[tuple[int, date, date]]:
-        """`dsp500list_v2` -> `(permno, start, end)` with explicit ends.
+        """Read ``dsp500list_v2`` into ``(permno, start, end)`` with explicit ends.
 
-        Open membership in this table is already the product end rather than a
-        NULL (live check `L9_1`: 503 rows read `mbrenddt = 2025-12-31`, no
-        NULLs), so the NULL branch below is a guard against a future vintage
-        rather than a path today's data takes.
+        Open membership in this table is already recorded as the product end
+        rather than a null, so the null branch below guards against a future
+        vintage rather than describing today's data.
         """
         product_end = self.reference.product_end
         rows = (
@@ -337,7 +344,7 @@ class CrspMembership:
             pieces.append((permno, start, end))
         return pieces
 
-    # -- Nasdaq-100 (D-14) ---------------------------------------------------
+    # -- Nasdaq-100 ----------------------------------------------------------
 
     def _nasdaq100_pieces(
         self,
@@ -345,40 +352,23 @@ class CrspMembership:
         allow_unlinked: bool,
         window: tuple[date, date] | None = None,
     ) -> list[tuple[int, date, date]]:
-        """Compustat spells x CCM links -> `(permno, start, end)` pieces.
+        """Join Compustat spells to CCM links into ``(permno, start, end)`` pieces.
 
-        **The join is `gvkey` AND `iid = liid`, never `linkprim`.** Both
-        Alphabet classes are Nasdaq-100 members under ONE gvkey (160329, iid
-        01 -> GOOGL 90319 and iid 03 -> GOOG 14542, live check `L8_2`/`L7_4`).
-        The conventional `linkprim IN ('P','C')` filter keeps the primary
-        issue only, which would silently drop one of the two -- a member of
-        the index simply missing from the universe, and invisible downstream
-        because a missing security looks like a data gap.
+        The join is on ``gvkey`` and ``iid = liid``, never on ``linkprim``.
+        Both Alphabet classes are Nasdaq-100 members under one gvkey, and the
+        usual ``linkprim IN ('P', 'C')`` filter would silently drop one of
+        them.
 
-        **Every membership day must end up with a PERMNO.** After
-        intersecting the clipped spell with each matched link, the days no
-        piece covers are computed explicitly. Short stretches
-        (`LINK_GAP_TOLERANCE_DAYS`) between two links are recorded as
-        tolerated gaps; anything longer is UNLINKED and raises by default.
-        Refusing rather than dropping is the whole point: a dropped spell is
-        survivorship bias written into the universe (T-03.10-23), and
-        `allow_unlinked=True` moves the fact into `report["unlinked"]` rather
-        than making it disappear.
-
-        A spell with NO matching link at all is always unlinked, however short
-        it is: the tolerance bridges a seam BETWEEN two links, and with no
-        link there is nothing to bridge.
-
-        **The refusal is scoped to `window`, when one is given.** A span of
-        uncovered days that the requested window never touches cannot cost
-        that window a member, so refusing on it is an alarm that fires on
-        every single pull -- and an alarm that always fires trains the
-        operator to pass the escape hatch reflexively, which is precisely how
-        `allow_unlinked` stops being read on the run where it really does drop
-        members. A gate that always fires is not a gate. Scoped out of the
-        REFUSAL only: every unlinked spell still lands in `report['unlinked']`
-        and still emits a warning naming the window, and the subset that would
-        have refused is `report['unlinked_blocking']`.
+        Every membership day must end up with a PERMNO. After intersecting
+        each clipped spell with its matching links, the days no link covers
+        are computed explicitly. Gaps of at most ``LINK_GAP_TOLERANCE_DAYS``
+        between two links are recorded as tolerated; anything longer, and any
+        spell with no link at all, is unlinked. Unlinked days inside ``window``
+        (or anywhere, when ``window`` is ``None``) raise unless
+        ``allow_unlinked`` is set; unlinked days outside the window are logged
+        and recorded but never raise. Every unlinked spell lands in
+        ``report["unlinked"]``, and the subset that would refuse in
+        ``report["unlinked_blocking"]``.
         """
         product_end = self.reference.product_end
         spells = (
@@ -411,8 +401,8 @@ class CrspMembership:
                     f"a security or placed on a calendar."
                 )
             if start > product_end:
-                # Out of CRSP price coverage entirely -- not an unlinkable
-                # spell, so it must not reach the refusal below.
+                # Entirely outside CRSP price coverage, so not an unlinkable
+                # spell; it must not reach the refusal below.
                 self.report["dropped_after_product_end"] += 1
                 continue
             end = spell["thru"]
@@ -456,10 +446,8 @@ class CrspMembership:
                 else:
                     uncovered.append((gap_start, gap_end))
             if uncovered:
-                # The overlap test runs on the `date` tuples, HERE, while they
-                # still exist: the entry built below stringifies them, and a
-                # string compared against a date is either a TypeError or --
-                # worse -- a lexicographic answer that happens to look right.
+                # The overlap test runs on the date tuples here, before the
+                # report entry below turns them into strings.
                 blocks = window is None or any(
                     gap_start <= window[1] and gap_end >= window[0]
                     for gap_start, gap_end in uncovered
@@ -475,9 +463,8 @@ class CrspMembership:
                     ],
                 }
                 unlinked.append(entry)
-                # The SAME dict object in both lists, deliberately: the two
-                # report keys then cannot drift apart, and the whole cost is a
-                # second pointer.
+                # The same dict object goes into both lists, so the two
+                # report keys cannot drift apart.
                 if blocks:
                     blocking.append(entry)
 
@@ -487,9 +474,7 @@ class CrspMembership:
             self.report["unlinked"] = unlinked
             self.report["unlinked_blocking"] = blocking
             if blocking:
-                # Phrased without a verb agreeing with `len(blocking)`: "1 of
-                # them have" is the kind of wrong that makes an operator
-                # wonder whether the count itself is wrong.
+                # Phrased without a verb that has to agree with the count.
                 in_window = (
                     f" Uncovered days INSIDE the requested window "
                     f"{window[0]}..{window[1]}: {len(blocking)} of the "
@@ -505,10 +490,10 @@ class CrspMembership:
                     f"report['unlinked'] instead of raising." + in_window
                 )
             else:
-                # `blocking` can only be empty with a window: without one every
-                # span blocks. This branch therefore fires on runs that did NOT
-                # pass allow_unlinked -- which is the point. The out-of-window
-                # fact is scoped out of the REFUSAL, never out of the log.
+                # `blocking` can only be empty when a window was given, so
+                # this branch also fires on runs that did not pass
+                # allow_unlinked: out-of-window gaps skip the refusal, never
+                # the log.
                 logger.warning(
                     f"{type(self).__name__}: {len(unlinked)} Nasdaq-100 "
                     f"membership spell(s) have days no CRSP/Compustat link "
@@ -520,17 +505,13 @@ class CrspMembership:
         return pieces
 
     def _ccm_links_by_key(self) -> dict[tuple[str, str], list[dict]]:
-        """`(gvkey, liid) -> links`, keeping only real, dated identity links.
+        """Group real, dated CCM identity links by ``(gvkey, liid)``.
 
-        `lpermno` is `double precision` on the server (live check `L7_2`), so
-        it arrives as a float and a PERMNO is an integer. A non-integral value
-        would silently become a DIFFERENT, real security under a plain cast,
-        so it raises instead.
-
-        A link with a null `linkdt` is not used: it has no start, so no
-        interval can be intersected with it. It is not "dropped silently" --
-        the days it would have covered simply stay uncovered and reach the
-        unlinked refusal, which is the loud path.
+        ``lpermno`` arrives as a float because the server column is double
+        precision. A non-integral value would become a different, real
+        security under a plain cast, so the table is refused instead. A link
+        with a null ``linkdt`` is skipped: it has no start to intersect with,
+        and the days it would have covered reach the unlinked refusal.
         """
         links = self.reference.table("ccmxpf_lnkhist").filter(
             pl.col("linktype").is_in(self.LINK_TYPES)
@@ -566,11 +547,10 @@ class CrspMembership:
     def _assert_unambiguous(
         self, gvkey: str, iid: str, matched: list[tuple[int, date, date]]
     ) -> None:
-        """One `(gvkey, iid)` is ONE security; two PERMNOs on one day is not.
+        """Refuse when one ``(gvkey, iid)`` links to two PERMNOs on the same day.
 
-        Left unchecked, both PERMNOs would be emitted as members and the
-        universe would hold a security the index never contained
-        (T-03.10-25).
+        One Compustat issue is one security; left unchecked, both PERMNOs
+        would be emitted as members.
         """
         for index, (permno, start, end) in enumerate(matched):
             for other_permno, other_start, other_end in matched[index + 1 :]:
@@ -594,11 +574,11 @@ class CrspMembership:
         *,
         window: tuple[date, date] | None = None,
     ) -> str:
-        """The refusal: what BLOCKS, how much of it, and the remedy.
+        """Build the unlinked refusal: what blocks, how much, and the remedy.
 
-        `unlinked` is the BLOCKING subset, not every unlinked spell: with a
-        `window` the two differ, and listing spells that did not refuse would
-        make the message argue for a refusal it is not making.
+        ``unlinked`` is the blocking subset only; with a ``window`` the two
+        differ, and listing spells that did not refuse would misstate the
+        reason for refusing.
         """
         listed = []
         for record in unlinked[:_MAX_LISTED]:
@@ -641,7 +621,7 @@ class CrspMembership:
 
     @staticmethod
     def _frame(intervals: list[tuple[int, date, date]]) -> pl.DataFrame:
-        """The public frame shape, typed even when there are no intervals."""
+        """Return the public frame shape, correctly typed even when empty."""
         return pl.DataFrame(
             {
                 "permno": [permno for permno, _, _ in intervals],
