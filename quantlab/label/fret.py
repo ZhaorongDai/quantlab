@@ -20,16 +20,24 @@ from quantlab.base.factor import FactorKunQuant
 
 
 class Return(FactorKunQuant):
-    """Forward ``n``-bar return label, ``adjClose_{t+n} / adjClose_t - 1``.
+    """Forward n-bar open-to-open return label.
+
+    At signal timestamp t:
+
+        ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1``
+
+    The position is entered at the next bar's adjusted open and exited n bars
+    later at the adjusted open. The final n + 1 observations have no available
+    label and are NaN.
 
     The output column is ``ret_{n}``, where ``n`` is
     ``config.kwargs["n_forward_periods"]``. Set ``data_columns`` to
-    ``["adjClose"]``.
+    ``["adjOpen"]``.
 
     Example:
         >>> label = Return(FactorConfig(
         ...     window=5, dataset=dataset, mode="batch",
-        ...     data_columns=["adjClose"], kwargs={"n_forward_periods": 5},
+        ...     data_columns=["adjOpen"], kwargs={"n_forward_periods": 5},
         ...     file_path="ret.zarr",
         ... ))
         >>> label.cal().get_labels()   # forward 5-bar return at each t
@@ -44,11 +52,11 @@ class Return(FactorKunQuant):
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
-            close = Input("adjClose")
+            open_ = Input("adjOpen")
             return_ = op.SubConst(
                 op.Div(
-                    close,
-                    op.BackRef(close, self.config.kwargs["n_forward_periods"]),
+                    open_,
+                    op.BackRef(open_, self.config.kwargs["n_forward_periods"]),
                 ),
                 1.0,
             )
@@ -64,7 +72,9 @@ class Return(FactorKunQuant):
 
         The last ``n`` bars become NaN.
         """
-        data = data.shift(timestamp=-self.config.kwargs["n_forward_periods"])
+        data = data.shift(
+            timestamp=-(self.config.kwargs["n_forward_periods"] + 1)
+        )
         return data
 
     def _get_features(self, data: xr.Dataset):
@@ -73,19 +83,30 @@ class Return(FactorKunQuant):
 
 
 class BinaryReturn(FactorKunQuant):
-    """Forward ``n``-bar direction label, 1.0 for a positive return else 0.0.
+    """Forward n-bar next-open direction label.
 
-    The output column is ``ret_binary_{n}``, where ``n`` is
+    At signal timestamp t, the label is:
+
+        ``1.0 if adjOpen[t + n + 1] / adjOpen[t + 1] - 1 > 0 otherwise 0.0``
+
+    The position is entered at the next bar's adjusted open and evaluated n bars
+    later at the adjusted open. The final n + 1 observations have no available
+    label and are NaN.
+
+    The output column is ``ret_binary_open_{n}``, where ``n`` is
     ``config.kwargs["n_forward_periods"]``. Set ``data_columns`` to
-    ``["adjClose"]``.
+    ``["adjOpen"]``.
 
     Example:
         >>> label = BinaryReturn(FactorConfig(
-        ...     window=5, dataset=dataset, mode="batch",
-        ...     data_columns=["adjClose"], kwargs={"n_forward_periods": 5},
-        ...     file_path="ret_binary.zarr",
+        ...     window=5,
+        ...     dataset=dataset,
+        ...     mode="batch",
+        ...     data_columns=["adjOpen"],
+        ...     kwargs={"n_forward_periods": 5},
+        ...     file_path="ret_binary_open.zarr",
         ... ))
-        >>> label.cal().get_labels()   # 1.0 where the next 5 bars are up
+        >>> labels = label.cal().get_labels() # 1.0 when the next-open-to-open five-bar return is positive
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -97,11 +118,11 @@ class BinaryReturn(FactorKunQuant):
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
-            close = Input("adjClose")
+            open_ = Input("adjOpen")
             return_ = op.SubConst(
                 op.Div(
-                    close,
-                    op.BackRef(close, self.config.kwargs["n_forward_periods"]),
+                    open_,
+                    op.BackRef(open_, self.config.kwargs["n_forward_periods"]),
                 ),
                 1.0,
             )
@@ -120,7 +141,9 @@ class BinaryReturn(FactorKunQuant):
 
         The last ``n`` bars become NaN.
         """
-        data = data.shift(timestamp=-self.config.kwargs["n_forward_periods"])
+        data = data.shift(
+            timestamp=-(self.config.kwargs["n_forward_periods"] + 1)
+        )
         return data
 
     def _get_features(self, data: xr.Dataset):
