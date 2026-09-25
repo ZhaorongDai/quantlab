@@ -1,14 +1,24 @@
-"""Dataset base classes: from raw vendor files to the canonical panel.
+"""Dataset base classes: turning raw vendor files into a stored panel.
 
-This module is the first layer of the pipeline. ``BaseDataset`` owns the shared
-lifecycle of every dataset: a config with normalised ISO dates, a Zarr-backed
-storage backend, ``from_raw_data``/``save``/``read`` for whole-range conversion,
-and ``from_raw_data_chunked``/``update`` for converting one time window at a
-time with a resumable ledger. ``MarketDataset`` adds the two market-data exits,
-``to_kunquant`` and ``to_nautilus``. A concrete dataset lives under
-``quantlab/dataset/`` and implements ``_raw_data_to_xr``; the factor layer
-consumes the panel through ``get_xarray_dataset`` or ``get_lazyframe``.
-See ``docs/dataset.md`` and ``docs/chunking.md``.
+This module is the first layer of the pipeline (data, then factors, models
+and backtests). Every layer exchanges data as a *panel*: an
+``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``, with one data
+variable per field (``open``, ``close``, ``volume`` and so on). Panels are
+stored on disk as Zarr directories (a chunked array format), called *stores*
+below. The *raw tier* is the vendor's files as downloaded, before
+conversion.
+
+``BaseDataset`` holds the lifecycle shared by every dataset: a config with
+normalised ISO dates, a Zarr storage backend, ``from_raw_data``, ``save`` and
+``read`` for converting the whole date range at once, and
+``from_raw_data_chunked`` and ``update`` for converting one time window at a
+time so that an interrupted run can resume. ``MarketDataset`` adds two
+exports for market data: ``to_kunquant`` (arrays for the KunQuant factor
+engine) and ``to_nautilus`` (objects for the Nautilus Trader data catalog).
+
+A concrete dataset lives under ``quantlab/dataset/`` and implements
+``_raw_data_to_xr``. The factor layer reads the panel through
+``get_xarray_dataset`` or ``get_lazyframe``.
 """
 
 import datetime
@@ -39,11 +49,11 @@ from quantlab.utils.timer import Timer
 
 @dataclass(frozen=True)
 class ConversionResult:
-    """Summary of one chunked raw-to-Zarr conversion.
+    """Summary of one chunked conversion from raw files to a Zarr store.
 
-    ``BaseDataset.from_raw_data_chunked`` publishes an instance on
-    ``last_chunk_result`` when it completes, so a caller can render what the
-    run did without keeping the config alive.
+    ``BaseDataset.from_raw_data_chunked`` stores an instance on the
+    dataset's ``last_chunk_result`` attribute when it finishes, so a caller
+    can report what the run did. The attributes are documented inline below.
 
     Examples
     --------
@@ -55,50 +65,67 @@ class ConversionResult:
 
     #: The Zarr store that was written (``config.zarr_file_path``).
     zarr_path: str
-    #: Path of the chunk-ledger sidecar that records completed windows.
+    #: Path of the ledger file (a JSON sidecar next to the store) that records
+    #: completed windows.
     ledger_path: str
     #: Window granularity the run planned on (``"year"``, ``"quarter"``, ...).
     granularity: str
-    #: Number of symbols on the pinned whole-range axis.
+    #: Number of symbols on the pinned symbol axis, the fixed list of symbols
+    #: for the whole date range that every window is written on.
     pinned_symbols: int
     #: Number of windows the planner produced over the observed timestamps.
     windows_planned: int
-    #: Number of windows this run materialised and appended.
+    #: Number of windows this run built and appended.
     windows_written: int
     #: Number of windows skipped because the ledger already recorded them.
     windows_skipped: int
     #: Rows appended along the append dimension, summed over written windows.
     rows_written: int
-    #: Largest ``window.nbytes`` this run materialised; ``None`` when no
-    #: window was written.
+    #: Largest in-memory size (``window.nbytes``) of any window this run built;
+    #: ``None`` when no window was written.
     peak_window_bytes: int | None
-    #: The caller's pre-flight estimate, echoed back; ``None`` when none was
-    #: offered, which is the common case.
+    #: The caller's own estimate of the peak, passed through unchanged;
+    #: usually ``None``.
     predicted_peak_bytes: int | None = None
-    #: Whether at least one window was skipped, i.e. this run continued an
+    #: Whether at least one window was skipped, meaning this run continued an
     #: earlier one.
     resumed: bool = False
-    #: Whether a ``CancelToken`` stopped the loop at a window boundary. A
-    #: cancelled run with fewer windows written than planned is otherwise
-    #: indistinguishable from a run that simply had less work to do.
+    #: Whether a ``CancelToken`` stopped the loop between windows. Without this
+    #: flag a cancelled run would look like a run that had less work to do.
     cancelled: bool = False
-    #: Whether an ``on_new_listing="rebuild"`` run was rolled back before this
-    #: result was published, restoring the superseded store and ledger. Only
-    #: ever ``True`` together with ``cancelled``. When set, ``windows_written``
-    #: and ``rows_written`` describe work that no longer exists on disk.
+    #: Whether an ``on_new_listing="rebuild"`` run was cancelled and rolled
+    #: back, restoring the previous store and ledger. Only ``True`` together
+    #: with ``cancelled``. When set, ``windows_written`` and ``rows_written``
+    #: describe work that no longer exists on disk.
     rebuild_rolled_back: bool = False
 
 
 class BaseDataset(ABC):
-    """Storage-agnostic dataset contract shared by every dataset in quantlab.
+    """Abstract base class shared by every dataset in quantlab.
 
-    A subclass implements ``_raw_data_to_xr`` (raw files to a dense
-    ``(timestamp, symbol)`` panel) and inherits everything else: config
-    normalisation, Zarr persistence through ``XrBackend``, the cleaning hook,
-    and the chunked ingestion path with its ledger and new-listing strategies.
-    Datasets with no bars, KunQuant input or Nautilus catalog (a boolean
-    membership panel, say) subclass this directly; market data subclasses
+    A subclass implements ``_raw_data_to_xr``, which reads the raw files and
+    returns a *dense* panel (a full ``timestamp`` by ``symbol`` grid, with
+    NaN where a symbol has no value). Everything else is inherited: config
+    normalisation, Zarr storage through ``XrBackend``, the cleaning hook, and
+    chunked ingestion with its resume ledger and its handling of *new
+    listings* (symbols that appear in the raw tier but not yet in the store).
+    Datasets that are not price bars, such as a boolean index-membership
+    panel, derive from this class directly; market data derives from
     ``MarketDataset``.
+
+    Parameters
+    ----------
+    config : BaseDatasetConfig
+        The dataset config. It is modified in place on assignment; see the
+        ``config`` property.
+
+    Attributes
+    ----------
+    data_backend : XrBackend
+        Holds the panel in memory and reads and writes the Zarr store.
+    last_chunk_result : ConversionResult or None
+        Summary of the last ``from_raw_data_chunked`` or ``update`` run, or
+        ``None`` if neither has completed on this object.
 
     Examples
     --------
@@ -118,37 +145,37 @@ class BaseDataset(ABC):
     ``DatasetConfig`` covering ``2024-01-02`` to ``2024-01-05``.
     """
 
+    #: Accepted values of ``on_new_listing``: stop (``"refuse"``), rewrite the
+    #: whole store (``"rebuild"``), or add NaN columns (``"widen"``).
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
 
-    #: ``{field name: reason}`` for the factor-config fields that a factor
-    #: built over this dataset must not set. The factor base class reads this
-    #: declaration and raises in its config setter, appending the reason, so
-    #: the base never needs to know a concrete dataset class. Empty by default;
-    #: a subclass overrides it, for example to refuse ``symbols`` on a panel
-    #: whose symbol axis is not string-typed. Each reason should say why and
-    #: what to use instead.
+    #: ``{field name: reason}`` for factor-config fields that a factor built on
+    #: this dataset must not set. The factor base class reads this and raises,
+    #: quoting the reason, so it never needs to know concrete dataset classes.
+    #: Empty by default. A subclass may override it, for example to refuse
+    #: ``symbols`` on a panel whose symbol labels are not strings. Each reason
+    #: should say why and what to use instead.
     REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {}
 
-    #: Sentinel ``update()`` passes to ``from_raw_data_chunked()`` to ask for
-    #: the new-listing strategy to be resolved from raw-tier evidence. It is an
-    #: ``object()`` rather than a string so that no CLI flag, config file or
-    #: JSON round-trip can reach it; it is deliberately not a member of
-    #: ``NEW_LISTING_STRATEGIES``, which is what the CLI offers as choices.
+    #: Marker value that ``update()`` passes to ``from_raw_data_chunked()`` to
+    #: have the new-listing strategy chosen from raw-tier evidence. It is an
+    #: ``object()`` rather than a string so no command-line flag, config file
+    #: or JSON value can produce it, and it is not in
+    #: ``NEW_LISTING_STRATEGIES``, which is what the command line offers.
     _AUTOMATIC = object()
 
-    #: How many qualifying symbols the rebuild report names before it
-    #: truncates.
+    #: Maximum number of symbols named in a new-listing log message.
     NEW_LISTING_REPORT_LIMIT: int = 20
 
     def __init__(self, config: BaseDatasetConfig):
-        """Create the storage backend and assign the config.
+        """Initialize the dataset; see the class docstring for parameters.
 
-        The backend is created before the config is assigned because the
-        config setter may reach the backend; reversing the two lines raises
+        The backend is created before the config is assigned because a
+        config setter may use the backend; swapping the two steps raises
         ``AttributeError``.
         """
-        # Set before the two lines below: `from_raw_data_chunked()` publishes
-        # its outcome here and a dataset that was only `read()` reports `None`.
+        # `from_raw_data_chunked()` stores its summary here; a dataset that was
+        # only read reports None.
         self.last_chunk_result: "ConversionResult | None" = None
 
         self.data_backend = XrBackend()
@@ -178,17 +205,17 @@ class BaseDataset(ABC):
         Examples
         --------
         >>> ds.class_name
-        DemoDataset
+        'DemoDataset'
         """
         return self.__class__.__name__
 
     @property
     def _progress_vendor(self) -> str:
-        """Return the value placed in ``ProgressEvent.vendor`` by a conversion.
+        """Return the value for ``ProgressEvent.vendor`` during a conversion.
 
-        A conversion constructs no vendor client, so the config's own vendor
-        token is used when it has one and the class name otherwise; the field
-        is required and must not be empty.
+        A conversion has no vendor client, so the config's ``vendor`` is used
+        when it has one and the class name otherwise. The field must not be
+        empty.
         """
         return getattr(self.config, "vendor", None) or self.class_name
 
@@ -197,16 +224,17 @@ class BaseDataset(ABC):
     ) -> None:
         """Deliver one progress event to ``reporter`` without ever raising.
 
-        A ``None`` reporter is a no-op. An exception raised by the reporter is
-        logged at warning level and otherwise ignored, so a broken console
-        cannot end a multi-hour conversion. Events carry window dates, counts
-        and the class name only, so no credential scrubbing is needed here.
+        A ``None`` reporter does nothing. An exception raised by the reporter
+        is logged as a warning and otherwise ignored, so a broken display
+        cannot end a multi-hour conversion. Conversion events carry only
+        window dates, counts and the class name, so there are no credentials
+        to remove from them.
         """
         if reporter is None:
             return
         try:
             reporter.emit(event)
-        except Exception as exc:  # noqa: BLE001 -- isolation is the point
+        except Exception as exc:  # noqa: BLE001 -- a reporter must never stop the run
             logger.warning(
                 f"{self.class_name}: progress reporter "
                 f"{type(reporter).__name__} raised on a {event.kind!r} event "
@@ -231,8 +259,8 @@ class BaseDataset(ABC):
     def time_interval(self) -> np.timedelta64:
         """Return the most common spacing between consecutive timestamps.
 
-        The mode is used rather than the minimum so that gaps such as
-        weekends do not distort the answer.
+        The most common spacing (the mode) is used rather than the minimum so
+        that gaps such as weekends and holidays do not distort the answer.
 
         Examples
         --------
@@ -253,10 +281,12 @@ class BaseDataset(ABC):
     def import_path(self) -> str:
         """Return the dotted ``module.QualName`` path of the concrete class.
 
+        This is how a saved config names the class to rebuild.
+
         Examples
         --------
         >>> ds.import_path  # for a class defined in a script
-        __main__.DemoDataset
+        '__main__.DemoDataset'
         """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -277,7 +307,7 @@ class BaseDataset(ABC):
         >>> ds.config.start_date, ds.config.end_date
         ('2024-01-02', '2024-01-05')
         >>> ds.config.name
-        __main__.DemoDataset
+        '__main__.DemoDataset'
         """
         return self._config
 
@@ -285,12 +315,23 @@ class BaseDataset(ABC):
     def config(self, config: BaseDatasetConfig):
         """Assign the config, filling in defaults and checking its dates.
 
-        ``name`` is set to the class's import path, a missing ``start_date``
-        or ``end_date`` falls back to ``Date.START_DATE``/``Date.END_DATE``,
-        and both dates must be ISO ``YYYY-MM-DD`` strings (a ``date`` object
-        is accepted and stringified). Every date comparison downstream is a
-        plain string comparison, so a value such as ``"2007-2-1"`` would
-        compare wrong rather than fail to match, and is refused here instead.
+        The config is modified in place. ``name`` is set to the class's
+        import path. A missing ``start_date`` or ``end_date`` falls back to
+        ``Date.START_DATE`` or ``Date.END_DATE``. Both dates must be ISO
+        ``YYYY-MM-DD`` strings; a ``datetime.date`` is accepted and converted.
+        Later code compares dates as plain strings, so a value such as
+        ``"2007-2-1"`` would silently compare wrong; it is refused here
+        instead.
+
+        Parameters
+        ----------
+        config : BaseDatasetConfig
+            The config to assign.
+
+        Raises
+        ------
+        ValueError
+            If a date is not an ISO ``YYYY-MM-DD`` date.
 
         Examples
         --------
@@ -319,6 +360,8 @@ class BaseDataset(ABC):
     def _normalize_date(self, value: str, field_name: str) -> str:
         """Return ``value`` as a zero-padded ISO date string.
 
+        ``field_name`` is used only in the error message.
+
         Raises
         ------
         ValueError
@@ -343,9 +386,12 @@ class BaseDataset(ABC):
     def read(self, **kwargs):
         """Open the Zarr store and narrow it to the config's window.
 
-        Cleaning and densification do not happen here; they belong to
-        ``from_raw_data``. Keyword arguments are passed to
-        ``XrBackend.read``.
+        Nothing is cleaned or converted here; that is ``from_raw_data``'s job.
+
+        Parameters
+        ----------
+        **kwargs
+            Passed to ``XrBackend.read``.
 
         Returns
         -------
@@ -365,8 +411,12 @@ class BaseDataset(ABC):
     def save(self, **kwargs):
         """Narrow the loaded panel to the config's window and write it to Zarr.
 
-        The write replaces the whole store directory. Keyword arguments are
-        passed to ``XrBackend.write``.
+        The write replaces the whole store directory.
+
+        Parameters
+        ----------
+        **kwargs
+            Passed to ``XrBackend.write``.
 
         Examples
         --------
@@ -391,6 +441,9 @@ class BaseDataset(ABC):
     def get_lazyframe(self) -> pl.LazyFrame:
         """Return the loaded panel as a long-format polars ``LazyFrame``.
 
+        Long format means one row per ``(timestamp, symbol)`` pair, with one
+        column per variable.
+
         Examples
         --------
         >>> ds.get_lazyframe().collect().shape  # 4 days x 3 symbols, 8 columns
@@ -401,8 +454,14 @@ class BaseDataset(ABC):
     def head(self, n: int) -> pl.LazyFrame:
         """Return at most ``n`` rows of the store as a ``LazyFrame``.
 
-        The store is opened by path; the loaded panel and the config window
-        are left untouched, which makes this safe for probing column names.
+        The store is opened from disk; the panel in memory and the config's
+        date range are not used or changed, so this is a safe way to look at
+        column names.
+
+        Parameters
+        ----------
+        n : int
+            Maximum number of rows.
 
         Examples
         --------
@@ -422,11 +481,11 @@ class BaseDataset(ABC):
         return self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 
     def from_raw_data(self) -> Self:
-        """Convert the raw source for the whole configured range into memory.
+        """Convert the raw files for the whole configured range, in memory.
 
-        Runs ``_raw_data_to_xr``, then ``_clean``, and hands the result to the
-        backend. Nothing is written to disk until ``save`` is called. Every
-        call reconverts; there is no caching.
+        Runs ``_raw_data_to_xr``, then ``_clean``, and gives the result to
+        the backend. Nothing is written to disk until ``save`` is called.
+        Every call converts again; nothing is cached.
 
         Returns
         -------
@@ -447,11 +506,12 @@ class BaseDataset(ABC):
     def _raw_axes_in_range(self) -> tuple[list, "pd.DatetimeIndex"]:
         """Return ``(pinned_symbols, observed_timestamps)`` for the whole range.
 
-        The default converts the whole range through ``_raw_data_to_xr`` and
-        reads both axes off the result. The symbol order comes from
-        ``sort_symbol_axis`` and the label type is the raw panel's own, so a
-        later window ``reindex`` matches it. A subclass whose raw source can
-        project columns should override this to avoid the full materialisation.
+        The default converts the whole range with ``_raw_data_to_xr`` and
+        reads both axes from the result. ``sort_symbol_axis`` sets the symbol
+        order, and labels keep the raw panel's own type so that each window's
+        ``reindex`` matches them. A subclass whose raw files can be read one
+        column at a time should override this to avoid building the full
+        panel.
         """
         data = self._raw_data_to_xr()
         symbols = sort_symbol_axis(data["symbol"].values.tolist())
@@ -465,10 +525,10 @@ class BaseDataset(ABC):
     ) -> xr.Dataset:
         """Return the dense panel for one time window.
 
-        The default converts the whole range and slices it, so it bounds the
-        write but not the memory used to densify. When ``symbols`` is given
-        the result is reindexed onto exactly that axis, with absent symbols as
-        all-NaN columns.
+        The default converts the whole range and slices it, so it limits the
+        size of each write but not the memory used to build the panel. When
+        ``symbols`` is given, the result is reindexed onto exactly those
+        symbols, with missing ones as all-NaN columns.
         """
         data = self._raw_data_to_xr()
         data = data.sel(timestamp=slice(start_date, end_date))
@@ -484,21 +544,22 @@ class BaseDataset(ABC):
     ) -> Self:
         """Bring the store up to date, choosing the new-listing strategy itself.
 
-        Equivalent to ``from_raw_data_chunked`` with the strategy resolved
-        from evidence: when the store's symbol axis has drifted from the raw
-        tier, the raw tier is asked whether the added symbols already carry
-        rows inside the store's own time extent. If none do they are new
-        listings and the store is widened; if some do the store is rebuilt so
-        their history is recovered; a symbol that disappeared from the raw
-        tier resolves to ``"refuse"``. The choice is logged before it runs.
+        This is ``from_raw_data_chunked`` with ``on_new_listing`` chosen from
+        the data. When the raw tier has symbols the store lacks, the raw tier
+        is checked for rows of those symbols inside the store's existing date
+        range. If there are none, the symbols are genuinely new listings and
+        the store is widened with NaN history. If there are some, the store is
+        rebuilt so that their real history is included. If a symbol in the
+        store has disappeared from the raw tier, the run refuses. The choice
+        is logged before it runs.
 
         Parameters
         ----------
-        granularity : str
-            Window size handed to ``TimeChunkPlanner``.
-        ledger_path : str | None
-            Ledger sidecar path; defaults to one beside the store.
-        append_dim : str
+        granularity : str, default "year"
+            Window size, passed to ``TimeChunkPlanner``.
+        ledger_path : str or None, default None
+            Ledger file path; ``None`` uses ``<store>.chunks.json``.
+        append_dim : str, default "timestamp"
             Dimension windows are appended along.
 
         Returns
@@ -532,35 +593,38 @@ class BaseDataset(ABC):
         reporter: ProgressReporter | None = None,
         cancel: CancelToken | None = None,
     ) -> Self:
-        """Convert the raw source one time window at a time, appending to Zarr.
+        """Convert the raw files one time window at a time, appending to Zarr.
 
-        The symbol axis for the whole range is resolved once, before any
-        window, and every window is densified onto it. Completed windows are
-        recorded in a ledger sidecar, so a crashed or cancelled run resumes by
-        skipping them. Cleaning runs per window, which means a price jump
-        straddling a window boundary is not flagged.
+        The *pinned symbol axis*, the list of symbols for the whole date
+        range, is worked out once before any window, and every window is
+        built on exactly that axis so that all windows line up column by
+        column. Completed windows are recorded in a ledger file, so a
+        crashed or cancelled run resumes by skipping them. Cleaning runs per
+        window, so a price jump that spans two windows is not flagged.
 
         When the store already exists with a different symbol axis,
-        ``on_new_listing`` decides what happens: ``"refuse"`` halts,
-        ``"widen"`` adds the new symbols as NaN over the store's history, and
-        ``"rebuild"`` renames the store aside and re-densifies every window;
-        a failed or cancelled rebuild restores the original store.
+        ``on_new_listing`` decides what happens. ``"refuse"`` stops.
+        ``"widen"`` adds the new symbols with NaN over the store's existing
+        history. ``"rebuild"`` moves the store aside and rebuilds every window
+        from the raw files; if the rebuild fails or is cancelled, the
+        original store is put back.
 
         Parameters
         ----------
-        granularity : str
-            Window size handed to ``TimeChunkPlanner``
-            (``"year"``, ``"quarter"``, ``"month"``, ...).
-        ledger_path : str | None
-            Ledger sidecar path; defaults to one beside the store.
-        append_dim : str
+        granularity : str, default "year"
+            Window size, passed to ``TimeChunkPlanner`` (``"year"``,
+            ``"quarter"``, ``"month"``, ``"day"`` or ``"hour"``).
+        ledger_path : str or None, default None
+            Ledger file path; ``None`` uses ``<store>.chunks.json``.
+        append_dim : str, default "timestamp"
             Dimension windows are appended along.
-        on_new_listing : str | object
-            One of ``NEW_LISTING_STRATEGIES``.
-        reporter : ProgressReporter | None
-            Optional progress sink for per-window events.
-        cancel : CancelToken | None
-            Optional token checked at every window boundary.
+        on_new_listing : str, default "refuse"
+            One of ``NEW_LISTING_STRATEGIES``. ``update()`` passes a private
+            marker here instead, to have the strategy chosen automatically.
+        reporter : ProgressReporter or None, default None
+            Receives an event for each window.
+        cancel : CancelToken or None, default None
+            Checked before each window; when set, the run stops there.
 
         Returns
         -------
@@ -570,20 +634,20 @@ class BaseDataset(ABC):
         Raises
         ------
         ValueError
-            If ``on_new_listing`` is unknown, or a window comes
-            back on a symbol axis other than the pinned one.
+            If ``on_new_listing`` is unknown, if a window comes back on a
+            symbol axis other than the pinned one, or if the ledger and the
+            store disagree (see ``ChunkLedger.assert_consistent``).
 
         Examples
         --------
-        >>> ds = MyMarketDataset(config)
-        >>> ds.from_raw_data_chunked(granularity="quarter")
+        >>> ds = DemoDataset(config).from_raw_data_chunked(granularity="month")
         >>> ds.last_chunk_result.windows_written
-        8
+        1
         """
         from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 
-        # The private sentinel is accepted by identity; the message still lists
-        # only the public strategies.
+        # The private marker is accepted by identity; the error lists only the
+        # public strategies.
         if (
             on_new_listing is not self._AUTOMATIC
             and on_new_listing not in self.NEW_LISTING_STRATEGIES
@@ -602,10 +666,10 @@ class BaseDataset(ABC):
         )
         ledger = ChunkLedger(resolved_ledger_path, append_dim=append_dim)
 
-        # Reconcile the pinned axis against the store before the ledger check:
-        # `widen` and `rebuild` both change what that check looks at. The
-        # whole-range extent is passed so a widen re-pins the store's chunk
-        # grid from the full range rather than from a partial store.
+        # Handle a changed symbol axis before the ledger check, because widen
+        # and rebuild both change what that check looks at. The full timestamp
+        # count is passed so a widen sizes the store's Zarr chunks for the
+        # whole range, not just for what is stored so far.
         ledger, rebuild_asides = self._reconcile_new_listings(
             symbols,
             ledger,
@@ -613,12 +677,12 @@ class BaseDataset(ABC):
             on_new_listing,
             append_dim_size=len(timestamps),
         )
-        # Seeded before the `try` so the result below can read it on every path.
+        # Set before the `try` so the result below can always read it.
         rebuild_rolled_back: bool = False
 
         try:
-            # The ledger and the store are two records of the same truth; check
-            # they agree before the first irreversible append.
+            # The ledger and the store record the same history; check they agree
+            # before the first append, which cannot be undone.
             ledger.assert_consistent(symbols, self.config.zarr_file_path)
 
             logger.info(
@@ -644,7 +708,7 @@ class BaseDataset(ABC):
                     total=len(windows),
                     message=(
                         f"{self.class_name} {granularity} conversion "
-                        f"-> {self.config.zarr_file_path}"
+                        f"to {self.config.zarr_file_path}"
                     ),
                     detail={
                         "pinned_symbols": len(symbols),
@@ -654,12 +718,12 @@ class BaseDataset(ABC):
                 ),
             )
             for start, end in windows:
-                # Checked first, before any window is materialised.
+                # Check for cancellation before building the next window.
                 if cancel is not None and cancel.is_cancelled():
                     cancelled = True
                     resumability = (
                         "This run is a rebuild, so the windows written so far "
-                        "will be DISCARDED and the pre-rebuild store restored; "
+                        "will be discarded and the pre-rebuild store restored; "
                         "a later rebuild starts over."
                         if rebuild_asides is not None
                         else "Every recorded window stays resumable."
@@ -711,23 +775,23 @@ class BaseDataset(ABC):
                     continue
 
                 window = self._raw_data_to_xr_window(start, end, symbols)
-                # Compared in the pinned axis's own type, not as text: an
-                # integer-typed axis would never match its stringified form.
+                # Compare in the axis's own type, not as text: integer labels
+                # would never equal their string forms.
                 actual = list(window["symbol"].values.tolist())
                 if actual != list(symbols):
                     raise ValueError(
                         f"{self.class_name}: window {start.date()}..{end.date()} "
                         f"came back on a symbol axis of {len(actual)} label(s), "
                         f"but the pinned whole-range axis has {len(symbols)}. "
-                        f"Every window must be materialised on the pinned axis "
-                        f"(D-02); appending this one would silently misalign "
-                        f"every column in the store."
+                        f"Every window must be built on the pinned axis; "
+                        f"appending this one would silently misalign every "
+                        f"column in the store."
                     )
 
                 window = self._clean(window)
                 window = self._pin_append_dtypes(window)
-                # Measured after cleaning and dtype pinning: that is the object
-                # the append actually holds.
+                # Measure after cleaning and dtype promotion: that is what the
+                # append actually holds in memory.
                 window_bytes = int(window.nbytes)
                 if (
                     peak_window_bytes is None
@@ -738,13 +802,12 @@ class BaseDataset(ABC):
                     boundaries += 1
 
                 self.data_backend.to_internal(window)
-                # `widen_and_append` reconciles the symbol and variable axes
-                # and then appends; when both already agree it is a plain
-                # append, and a window missing a stored variable is still
-                # refused. `append_dim_size` is passed on every iteration
-                # because the store may be created on any of them (a resume
-                # skips windows, a rebuild moves the store aside), and the
-                # backend consults it only when the store does not exist yet.
+                # widen_and_append adds any missing symbols or variables to the
+                # store, then appends; if nothing is missing it is a plain
+                # append. append_dim_size is passed every time because any
+                # iteration may be the one that creates the store (a resume
+                # skips windows, a rebuild moves the store aside); the backend
+                # only uses it when creating the store.
                 self.data_backend.widen_and_append(
                     self.config.zarr_file_path,
                     append_dim=append_dim,
@@ -778,8 +841,8 @@ class BaseDataset(ABC):
                     ),
                 )
 
-            # Emitted whether the loop ran to the end or stopped on a cancel,
-            # so a reporter can always release what it opened.
+            # Emitted whether the loop finished or was cancelled, so a reporter
+            # can always release what it opened.
             self._emit_progress(
                 reporter,
                 ProgressEvent(
@@ -805,34 +868,33 @@ class BaseDataset(ABC):
             if boundaries:
                 logger.warning(
                     f"{self.class_name}: cleaning ran per window, so at "
-                    f"{boundaries} chunk-boundary timestamp(s) `flag_anomalies` "
-                    f"had no prior sample to diff against and a single-step jump "
-                    f"across that boundary is not flagged. A bounded, documented "
-                    f"consequence of chunking -- finer --chunk granularity "
-                    f"produces more such boundaries, not fewer."
+                    f"{boundaries} window-boundary timestamp(s) `flag_anomalies` "
+                    f"had no previous value to compare with, and a one-step jump "
+                    f"across that boundary is not flagged. This is an expected "
+                    f"side effect of chunking; a finer --chunk granularity "
+                    f"creates more such boundaries, not fewer."
                 )
         except BaseException:
-            # The originals were renamed aside, not deleted, so a failed
-            # rebuild is undone by renaming them back.
+            # The originals were renamed, not deleted, so a failed rebuild is
+            # undone by renaming them back.
             if rebuild_asides is not None:
                 self._restore_rebuild_asides(rebuild_asides)
             raise
         else:
             if rebuild_asides is not None:
                 if cancelled:
-                    # A cancelled rebuild has re-densified only some windows,
-                    # so the superseded copies are still the only complete
-                    # record; roll back rather than leave a truncated store at
-                    # the path every reader resolves. The flag takes the
-                    # method's answer, since the restore itself can fail.
+                    # A cancelled rebuild has rebuilt only some windows, so the
+                    # set-aside copies are still the only complete data. Roll
+                    # back rather than leave a truncated store where readers
+                    # look. The flag records whether the restore succeeded.
                     rebuild_rolled_back = self._restore_rebuild_asides(
                         rebuild_asides, reason="cancelled"
                     )
                 else:
                     self._discard_rebuild_asides(rebuild_asides)
 
-        # Published on the success path only; the `except` arm re-raises and
-        # must not leave a result describing a partial run.
+        # Only reached on success; the `except` branch re-raises and must not
+        # leave a result describing a partial run.
         self.last_chunk_result = ConversionResult(
             zarr_path=self.config.zarr_file_path,
             ledger_path=resolved_ledger_path,
@@ -849,11 +911,10 @@ class BaseDataset(ABC):
         )
         return self
 
-    #: Suffix appended to the store and ledger paths while a ``rebuild`` is in
-    #: flight. It is a reference to ``XrBackend.SUPERSEDED_SUFFIX`` rather than
-    #: a second literal so the backend's widen guard, which refuses to run over
-    #: a leftover aside, always recognises the aside a rebuild leaves behind
-    #: (a killed rebuild can leave one with nothing left to reclaim it).
+    #: Suffix added to the store and ledger paths while a rebuild is running
+    #: and the originals are set aside. It reuses ``XrBackend.SUPERSEDED_SUFFIX``
+    #: so the backend, which refuses to widen while a set-aside copy exists,
+    #: always recognises one left behind by a rebuild that was killed.
     SUPERSEDED_SUFFIX = XrBackend.SUPERSEDED_SUFFIX
 
     @staticmethod
@@ -862,9 +923,9 @@ class BaseDataset(ABC):
     ) -> Optional[list]:
         """Return the store's ``dim`` labels, or ``None`` if there is no store.
 
-        Only the coordinate is read, never the data variables. Labels come
-        back in the store's own type so the caller can compare them against
-        the pinned axis without a spurious mismatch.
+        Only the coordinate is read, never the data variables. Labels keep
+        the store's own type so that comparing them with the pinned axis does
+        not report a false mismatch.
         """
         if not Path(store_path).exists():
             return None
@@ -880,7 +941,7 @@ class BaseDataset(ABC):
     def _stored_append_extent(
         store_path: str, append_dim: str = "timestamp"
     ) -> Optional[tuple]:
-        """Return the store's first and last ``append_dim`` label.
+        """Return the store's first and last ``append_dim`` labels as a pair.
 
         Returns ``None`` when there is no store, no such coordinate, or the
         axis is empty.
@@ -901,17 +962,24 @@ class BaseDataset(ABC):
     def _added_symbols_with_raw_history(
         self, added: list, start, end
     ) -> dict[str, int]:
-        """Count raw rows each of ``added`` carries in the closed window.
+        """Count the raw rows each symbol in ``added`` has between ``start`` and ``end``.
 
-        This is the evidence ``update`` resolves the widen-versus-rebuild
-        choice from. The default densifies the whole window and counts, which
-        is correct but not memory-bounded; a subclass whose raw source can
-        push a symbol predicate down should override it.
+        ``update`` uses these counts to choose between widening and
+        rebuilding. The default builds the whole window and counts, which is
+        correct but uses memory for every symbol; a subclass whose raw files
+        can be filtered by symbol while reading should override it.
 
-        Symbols are compared as text because the raw tier stores its symbol
-        column as strings even when the pinned axis is integer-typed. Without
-        the cast the probe would find no rows for any added symbol and the
-        resolver would silently choose ``widen``.
+        Symbols are compared as text because the raw tier stores symbols as
+        strings even when the pinned axis uses integers. Without the
+        conversion no added symbol would ever match, and the resolver would
+        silently choose ``widen``.
+
+        Parameters
+        ----------
+        added : list
+            Symbols present in the raw tier but not in the store.
+        start, end : timestamp-like
+            The date range to check, both ends included.
 
         Returns
         -------
@@ -929,10 +997,9 @@ class BaseDataset(ABC):
             logger.warning(
                 f"{self.class_name}: _added_symbols_with_raw_history has not "
                 f"been overridden, so the raw-history probe is answered by "
-                f"densifying the whole window and counting. The answer is "
-                f"correct but the memory bound is absent -- override the seam "
-                f"for a source that can push a symbol predicate down before "
-                f"materialising."
+                f"building the whole window and counting. The answer is "
+                f"correct but memory is not bounded; override this method for "
+                f"a source that can filter by symbol while reading."
             )
 
         window = self._raw_data_to_xr_window(start, end, symbols=None)
@@ -959,8 +1026,9 @@ class BaseDataset(ABC):
     def _widen_fill_values(self) -> dict:
         """Return per-variable fill values used when widening the symbol axis.
 
-        Non-float variables need an explicit fill; the default covers the
-        boolean ``anomaly_flag`` added by cleaning.
+        Non-float variables need an explicit fill value because NaN is not
+        available for them. The default covers the boolean ``anomaly_flag``
+        that cleaning adds.
         """
         return {"anomaly_flag": False}
 
@@ -973,11 +1041,17 @@ class BaseDataset(ABC):
     ) -> str:
         """Choose a new-listing strategy from raw-tier evidence and log why.
 
-        A removed symbol resolves to ``"refuse"``, since neither ``widen``
-        nor ``rebuild`` can keep its history safely. Otherwise the added
-        symbols are probed over the store's own time extent: no raw rows
-        there means genuine new listings and ``"widen"``; any rows means a
-        widen would replace real history with NaN, so ``"rebuild"``.
+        If any stored symbol was removed, the answer is ``"refuse"``, since
+        neither widening nor rebuilding keeps its history safely. Otherwise
+        the raw tier is checked for rows of the added symbols inside the
+        store's existing date range. No rows means they are new listings, so
+        ``"widen"``. Any rows means widening would replace real history with
+        NaN, so ``"rebuild"``.
+
+        Returns
+        -------
+        str
+            ``"refuse"``, ``"widen"`` or ``"rebuild"``.
         """
         if removed:
             logger.warning(
@@ -985,14 +1059,14 @@ class BaseDataset(ABC):
                 f"store at {store_path} are absent from the pinned "
                 f"whole-range axis ({sorted(removed)[: self.NEW_LISTING_REPORT_LIMIT]}"
                 f"{', truncated' if len(removed) > self.NEW_LISTING_REPORT_LIMIT else ''}), "
-                f"so this resolves to 'refuse'. NEITHER other strategy is safe "
-                f"for a dropped label: 'widen' cannot express one at all "
+                f"so this resolves to 'refuse'. Neither other strategy is safe "
+                f"for a dropped symbol: 'widen' cannot remove one "
                 f"(widen_symbol_axis refuses a target axis that is not a "
                 f"superset of the stored one), and 'rebuild' would silently "
-                f"DISCARD that label's stored history. Choosing between losing "
-                f"history and halting is an operator's call -- re-run "
+                f"discard that symbol's stored history. Choosing between losing "
+                f"history and stopping is your call: re-run "
                 f"from_raw_data_chunked() with an explicit on_new_listing once "
-                f"you know which you mean."
+                f"you know which you want."
             )
             return "refuse"
 
@@ -1011,10 +1085,10 @@ class BaseDataset(ABC):
         if not evidence:
             logger.info(
                 f"{self.class_name}: the raw tier was asked about all "
-                f"{len(added)} added symbol(s) over the STORE's own extent "
+                f"{len(added)} added symbol(s) over the store's own date range "
                 f"({start}..{end}) and reported no rows there for any of them. "
                 f"They are genuine new listings, NaN is the correct value over "
-                f"the store's history, and a rebuild would be pure cost; "
+                f"the store's history, and a rebuild would gain nothing; "
                 f"resolving to 'widen'."
             )
             return "widen"
@@ -1030,13 +1104,13 @@ class BaseDataset(ABC):
         )
         logger.warning(
             f"{self.class_name}: {len(ranked)} of {len(added)} added symbol(s) "
-            f"ALREADY carry raw rows inside the store's own extent "
+            f"already have raw rows inside the store's own date range "
             f"({start}..{end}), so this resolves to 'rebuild' rather than "
-            f"'widen' -- a widen does not re-read raw, so it would replace "
-            f"that existing history with NaN and nothing would report it. "
+            f"'widen': a widen does not re-read the raw files, so it would "
+            f"replace that history with NaN and nothing would report it. "
             f"Qualifying symbol(s) by raw row count: {listing}{truncation}. "
-            f"Rebuild is a WHOLE-STORE operation, not a per-symbol one, so "
-            f"this run re-densifies EVERY window."
+            f"A rebuild rewrites the whole store, not just these symbols, so "
+            f"this run rebuilds every window."
         )
         return "rebuild"
 
@@ -1049,11 +1123,16 @@ class BaseDataset(ABC):
         *,
         append_dim_size: Optional[int] = None,
     ) -> tuple:
-        """Apply ``on_new_listing`` when the store's symbol axis has drifted.
+        """Apply ``on_new_listing`` when the store's symbols differ from ``symbols``.
 
-        Returns ``(ledger, rebuild_asides)``. ``rebuild_asides`` is ``None``
-        unless a rebuild was started, in which case it names the renamed-aside
-        store and ledger so they can be restored or discarded later.
+        Returns
+        -------
+        tuple
+            ``(ledger, rebuild_asides)``. ``ledger`` is the ledger to use from
+            now on. ``rebuild_asides`` is ``None`` unless a rebuild started,
+            in which case it is a dict naming the original and set-aside
+            paths of the store and ledger, so they can later be restored or
+            deleted.
         """
         store_path = self.config.zarr_file_path
         stored = self._stored_symbol_axis(store_path)
@@ -1063,15 +1142,15 @@ class BaseDataset(ABC):
         added = [symbol for symbol in symbols if symbol not in set(stored)]
         removed = [symbol for symbol in stored if symbol not in set(symbols)]
 
-        # Resolved only after the early return above, so the raw probe is
-        # never paid when the axes agree.
+        # Resolved only after the early return above, so the raw tier is not
+        # queried when the axes already agree.
         if on_new_listing is self._AUTOMATIC:
             on_new_listing = self._resolve_new_listing_strategy(
                 added, removed, store_path, append_dim
             )
 
         if on_new_listing == "refuse":
-            # Fall through unchanged; `assert_consistent` raises next.
+            # Leave everything unchanged; `assert_consistent` raises next.
             logger.info(
                 f"{self.class_name}: the store at {store_path} holds "
                 f"{len(stored)} symbol(s) but the pinned whole-range axis has "
@@ -1087,14 +1166,14 @@ class BaseDataset(ABC):
             logger.warning(
                 f"{self.class_name}: widening {store_path} from {len(stored)} "
                 f"to {len(symbols)} symbol(s); added={added}, "
-                f"removed={removed}. The added symbol(s) will carry NaN for "
-                f"the ENTIRE historical block -- a widen does not re-read raw, "
-                f"so history the vendor already has is not recovered. Use "
-                f"on_new_listing='rebuild' for that, which is now the ONLY "
-                f"reason to prefer it: the widen sizes itself and rewrites the "
-                f"store block by block when it would not fit in memory "
-                f"(XrBackend.MAX_WIDEN_BYTES), so 'rebuild' is no longer the "
-                f"strategy a large store forces."
+                f"removed={removed}. The added symbol(s) will be NaN for all "
+                f"existing history: a widen does not re-read the raw files, so "
+                f"history the vendor already has is not recovered. Use "
+                f"on_new_listing='rebuild' for that; it is the only reason to "
+                f"prefer it, since a widen that would not fit in memory "
+                f"rewrites the store block by block "
+                f"(XrBackend.MAX_WIDEN_BYTES), so store size does not force a "
+                f"rebuild."
             )
             self.data_backend.widen_symbol_axis(
                 store_path,
@@ -1103,20 +1182,20 @@ class BaseDataset(ABC):
                 fill_values=self._widen_fill_values(),
                 append_dim_size=append_dim_size,
             )
-            # The ledger fingerprints the symbol list, so it must be rebased in
-            # the same operation or the widened store is not resumable.
+            # The ledger stores a fingerprint of the symbol list, so update it
+            # now or the widened store cannot be resumed.
             ledger.rebase(symbols)
             return ledger, None
 
-        # rebuild
+        # Remaining case: on_new_listing == "rebuild".
         from quantlab.base.chunking import ChunkLedger
 
         logger.warning(
-            f"{self.class_name}: rebuilding {store_path} -- EVERY window will "
-            f"be re-densified from raw onto the new {len(symbols)}-symbol "
-            f"union (was {len(stored)}); added={added}, removed={removed}. "
-            f"This recovers the added symbol(s) REAL history rather than "
-            f"backfilling NaN, at the cost of a full re-densify."
+            f"{self.class_name}: rebuilding {store_path}: every window will "
+            f"be rebuilt from the raw files on the new {len(symbols)}-symbol "
+            f"axis (was {len(stored)}); added={added}, removed={removed}. "
+            f"This recovers the added symbol(s)' real history instead of "
+            f"filling it with NaN, at the cost of a full rebuild."
         )
         asides = {
             "store": store_path,
@@ -1125,25 +1204,34 @@ class BaseDataset(ABC):
             "ledger_aside": f"{ledger.path}{self.SUPERSEDED_SUFFIX}",
             "ledger_existed": Path(ledger.path).exists(),
         }
-        # Renamed aside, never deleted, so a failed rebuild can be undone.
+        # Rename rather than delete, so a failed rebuild can be undone.
         os.replace(asides["store"], asides["store_aside"])
         if asides["ledger_existed"]:
             os.replace(asides["ledger"], asides["ledger_aside"])
-        # A fresh ledger at the original path makes the run an ordinary first
-        # run.
+        # With a fresh ledger at the original path, the rebuild proceeds like
+        # an ordinary first run.
         return ChunkLedger(asides["ledger"], append_dim=append_dim), asides
 
     def _restore_rebuild_asides(
         self, asides: dict, *, reason: str = "failed"
     ) -> bool:
-        """Put the pre-rebuild store and ledger back, discarding the partial.
+        """Put the pre-rebuild store and ledger back, deleting the partial rebuild.
+
+        Parameters
+        ----------
+        asides : dict
+            The paths returned by ``_reconcile_new_listings``.
+        reason : str, default "failed"
+            Word used in the log message (``"failed"`` or ``"cancelled"``).
 
         Returns
         -------
         bool
-            ``True`` if the originals were restored, ``False`` if the
-            filesystem refused; in that case nothing is destroyed and the
-            error log names both copies so an operator can recover by hand.
+            ``True`` if the originals were restored. ``False`` if the
+            filesystem refused; then nothing is deleted, and the error log
+            names both copies so the user can recover by hand. The error is
+            logged rather than raised so it cannot hide the failure that
+            stopped the rebuild.
         """
         try:
             if Path(asides["store"]).exists():
@@ -1155,17 +1243,16 @@ class BaseDataset(ABC):
             logger.warning(
                 f"{self.class_name}: the rebuild of {asides['store']} was "
                 f"{reason}; the pre-rebuild store and ledger have been "
-                f"restored. Any window this run re-densified has been "
-                f"discarded with the partial store -- a resumed rebuild "
-                f"starts over."
+                f"restored. Any window this run rebuilt has been discarded "
+                f"with the partial store, so a later rebuild starts over."
             )
             return True
         except OSError as exc:
             logger.error(
                 f"{self.class_name}: the rebuild of {asides['store']} was "
-                f"{reason}, but the pre-rebuild copy could NOT be put back: "
-                f"{type(exc).__name__}: {exc}. NOTHING WAS DESTROYED -- the "
-                f"complete pre-rebuild copy is STILL at "
+                f"{reason}, but the pre-rebuild copy could not be put back: "
+                f"{type(exc).__name__}: {exc}. Nothing was deleted: the "
+                f"complete pre-rebuild copy is still at "
                 f"{asides['store_aside']}, and the partial rebuild is at "
                 f"{asides['store']}. Recover by hand: once you have dealt "
                 f"with whatever refused the rename, move "
@@ -1177,7 +1264,7 @@ class BaseDataset(ABC):
 
     @staticmethod
     def _discard_rebuild_asides(asides: dict) -> None:
-        """Delete the superseded store and ledger after a rebuild landed."""
+        """Delete the set-aside store and ledger after a successful rebuild."""
         shutil.rmtree(asides["store_aside"], ignore_errors=True)
         Path(asides["ledger_aside"]).unlink(missing_ok=True)
 
@@ -1185,8 +1272,10 @@ class BaseDataset(ABC):
     def _pin_append_dtypes(data: xr.Dataset) -> xr.Dataset:
         """Promote integer data variables to float64 before an append.
 
-        The first window written fixes each variable's dtype in the store; an
-        integer column would then silently cast later NaN cells to zero.
+        The first window written fixes each variable's dtype in the store. An
+        integer variable cannot hold NaN, so the missing cells of later
+        windows would be silently cast to integers; storing float64 keeps
+        them as NaN.
         """
         promoted = {
             name: variable.astype("float64")
@@ -1198,41 +1287,55 @@ class BaseDataset(ABC):
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
         """Validate and flag the converted panel before it is stored.
 
-        The default runs ``clean_market_data`` (OHLCV schema check plus
-        ``anomaly_flag``). Override it for panels whose columns are not
-        lowercase OHLCV, or that are not market data at all.
+        The default runs ``clean_market_data``, which checks for the OHLCV
+        columns (open, high, low, close, volume) and adds a boolean
+        ``anomaly_flag`` variable marking suspicious jumps. Override it for
+        panels whose columns are not lowercase OHLCV, or that are not market
+        data at all.
         """
         return clean_market_data(data)
 
     @abstractmethod
     def _raw_data_to_xr(self) -> xr.Dataset:
-        """Return the raw source as a dense ``(timestamp, symbol)`` panel.
+        """Return the raw files as a dense ``(timestamp, symbol)`` panel.
 
-        The result must cover the config's whole date range and carry a
-        unique ``(timestamp, symbol)`` index; deduplicate before calling
-        ``to_xarray``. Cleaning is applied by the caller, not here.
+        The result must cover the config's whole date range, and each
+        ``(timestamp, symbol)`` pair must appear once; remove duplicates
+        before converting a table with ``to_xarray``. The caller applies
+        cleaning, so do not clean here.
         """
 
 
 class MarketDataset(BaseDataset):
-    """Dataset of market bars with KunQuant and Nautilus exits.
+    """Dataset of market price bars, with KunQuant and Nautilus exports.
 
-    Adds ``to_kunquant`` (contiguous ``[time, symbol]`` float32 arrays for the
-    compiled factor graphs) and ``to_nautilus`` (bars and instruments written
-    to a ``ParquetDataCatalog``) on top of ``BaseDataset``. A subclass
-    implements ``_raw_data_to_xr``, ``_raw_data_to_xr_window``,
-    ``_to_kunquant`` and ``_to_nautilus``; an exit it does not support may
+    A *bar* is one period's open, high, low, close and volume for a symbol.
+    On top of ``BaseDataset`` this class adds ``to_kunquant``, which returns
+    contiguous ``[time, symbol]`` float32 arrays for KunQuant (the compiled
+    factor engine), and ``to_nautilus``, which builds Nautilus Trader bars
+    and instruments and can write them to a ``ParquetDataCatalog``. A
+    subclass implements ``_raw_data_to_xr``, ``_raw_data_to_xr_window``,
+    ``_to_kunquant`` and ``_to_nautilus``; an export it does not support may
     simply raise.
+
+    Parameters
+    ----------
+    config : DatasetConfig
+        The dataset config, including ``catalog_path`` for the Nautilus
+        catalog.
 
     Examples
     --------
-    >>> ds = MyMarketDataset(config).read()
+    Using the ``DemoDataset`` described on ``BaseDataset``:
+
+    >>> ds = DemoDataset(config).from_raw_data()
+    >>> ds.save()
     >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
     >>> inputs["close"].shape
-    (2516, 503)
+    (4, 3)
     """
 
-    # Narrowed for readers and type checkers only
+    # Narrower type annotation for readers and type checkers only.
     config: DatasetConfig
 
     #: The config class used to rebuild this dataset from a saved config.
@@ -1252,12 +1355,13 @@ class MarketDataset(BaseDataset):
 
         Parameters
         ----------
-        venue : str
-            Venue name used in the instrument identifiers.
-        n_jobs : int
+        venue : str, default "BINANCE"
+            Venue (exchange) name used in the instrument identifiers.
+        n_jobs : int, default 16
             Number of parallel workers for the per-symbol conversion.
-        write : bool
-            Whether to also write the result to the parquet catalog.
+        write : bool, default True
+            Whether to also write the result to the parquet catalog at
+            ``config.catalog_path``.
 
         Returns
         -------
@@ -1288,7 +1392,8 @@ class MarketDataset(BaseDataset):
         Parameters
         ----------
         data_columns : tuple[str, ...]
-            Column names, in KunQuant's vocabulary, to export.
+            Columns to export, named as KunQuant names them (``open``,
+            ``high``, ``low``, ``close``, ``volume``, ``amount``).
 
         Returns
         -------
@@ -1313,8 +1418,8 @@ class MarketDataset(BaseDataset):
     ) -> tuple[dict, np.ndarray, np.ndarray]:
         """Convert a panel to ``(inputs, symbols, timestamps)`` for KunQuant.
 
-        This is where vendor column names are mapped onto KunQuant's
-        (``open``/``high``/``low``/``close``/``volume``/``amount``).
+        This is where vendor column names are mapped onto KunQuant's names
+        (``open``, ``high``, ``low``, ``close``, ``volume``, ``amount``).
         """
 
     @abstractmethod
@@ -1332,6 +1437,7 @@ class MarketDataset(BaseDataset):
     ) -> xr.Dataset:
         """Return the dense panel for one time window, on ``symbols`` if given.
 
-        Declared abstract again here so that every market dataset states
-        explicitly how it joins the chunked conversion path.
+        Declared abstract again here so that every market dataset must say
+        explicitly how it builds one window for chunked conversion, rather
+        than inheriting the slow default.
         """
