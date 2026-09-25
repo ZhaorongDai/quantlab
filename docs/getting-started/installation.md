@@ -25,8 +25,8 @@ it downloads one. Linux and macOS are supported. A GPU is optional (see below).
 Clone the repository and let uv build the environment:
 
 ```bash
-git clone https://github.com/ZhaorongDai/quantlab2.git
-cd quantlab2
+git clone https://github.com/ZhaorongDai/quantlab.git
+cd quantlab
 uv sync
 ```
 

@@ -84,9 +84,9 @@ def test_non_duplicate_csvs_convert_with_unchanged_row_count(
 
 def test_build_dataset_config_raw_data_dir_none_is_noop() -> None:
     """Test 3: _build_dataset_config(args) with raw_data_dir=None returns a
-    DatasetConfig whose raw_data_dir_path equals spot_kline_config()'s own
-    default -- the override is a no-op when not passed."""
-    from quantlab.config import spot_kline_config
+    DatasetConfig whose raw_data_dir_path is the default CSV directory under
+    the storage root -- the override is a no-op when not passed."""
+    from quantlab.config import get_data_root
     from ingest_binance_spot import _build_dataset_config
 
     args = Namespace(
@@ -94,9 +94,10 @@ def test_build_dataset_config_raw_data_dir_none_is_noop() -> None:
     )
 
     config = _build_dataset_config(args)
-    default_config = spot_kline_config()
 
-    assert config.raw_data_dir_path == default_config.raw_data_dir_path
+    assert config.raw_data_dir_path == str(
+        get_data_root() / "downloads" / "crypto_spot" / "1d" / "spot" / "monthly" / "klines"
+    )
 
 
 def test_build_dataset_config_raw_data_dir_override_applies() -> None:
@@ -114,7 +115,9 @@ def test_build_dataset_config_raw_data_dir_override_applies() -> None:
     )
 
     config = _build_dataset_config(args)
-    default_config = spot_kline_config()
+    default_config = _build_dataset_config(
+        Namespace(symbols=None, start_date=None, end_date=None, raw_data_dir=None)
+    )
 
     assert config.raw_data_dir_path == "/custom/existing/csvs"
     assert config.market == default_config.market

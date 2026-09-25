@@ -1,20 +1,27 @@
-"""Resampling of NBBO quote records onto a right-closed bar grid.
+"""Resample NBBO quote records onto a regular bar grid.
 
-``NbboResampler`` turns individually timestamped NBBO records into one row
-per ``(symbol, bar label)`` for each trading session, after
-``NbboFilterPolicy`` has dropped the records the caller does not want. It is
-pure polars with no I/O; ``NbboPanelDataset`` in this package feeds it the
-raw shards and densifies its output onto the ``(timestamp, symbol)`` panel.
+The NBBO (National Best Bid and Offer) is the best bid and best ask across
+all US exchanges. Each NBBO *record* is one update of that quote, with a
+timestamp, a bid and ask price, and the size (shares) offered at each. A
+*session* is one trading day, with its open and close time.
 
-Bars are right-closed and labelled at their end: with session open ``o`` and
-bar length ``d``, the labels are ``o + k*d`` for ``k = 1..N`` and bar ``k``
-covers ``(o + (k-1)*d, o + k*d]``, so a label is the time its information
-was available. Snapshot variables are the last record at or before the
-label; ``tw_*`` variables are time-weighted averages over the bar. A quote
-stays in force until it is replaced, so a bar with no update reports the
-prevailing state with ``n_updates = 0``; that state never crosses a session
-date. A null side means no quote on that side: its price and size are NaN,
-never 0, and every derived variable is NaN while a side is missing.
+``NbboResampler`` turns these irregular records into one row per
+``(symbol, bar label)`` for each session, after ``NbboFilterPolicy`` has
+dropped the records the caller does not want. It is pure polars with no
+file access; ``NbboPanelDataset`` in this package feeds it the raw files and
+puts its output onto the ``(timestamp, symbol)`` panel.
+
+Bars are *right-closed* and labelled at their end. With session open ``o``
+and bar length ``d``, the labels are ``o + k*d`` for ``k = 1..N``, and bar
+``k`` covers ``(o + (k-1)*d, o + k*d]``, so a label is the time at which the
+bar's information was known. *Snapshot* variables (``bid``, ``ask``, ...)
+come from the last record at or before the label; ``tw_*`` variables are
+time-weighted averages over the bar. A quote stays in force until it is
+replaced, so a bar with no update reports the quote still in force, with
+``n_updates = 0``; a quote is never carried over from one session date to
+the next. A null side means there is no quote on that side: its price and
+size are NaN, never 0, and every variable derived from it is NaN while
+that side is missing.
 """
 
 from __future__ import annotations
@@ -27,11 +34,11 @@ from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 
 #: The output variables, in order. Shared with ``clean_nbbo_panel`` so the
-#: resampler and the validator cannot drift apart.
+#: resampler and the validator always agree.
 PANEL_VARIABLES = NBBO_PANEL_VARIABLES
 
-#: Columns of the per-(date, symbol) filter-stats frame after the two keys,
-#: all Int64.
+#: Count columns of the per-(date, symbol) filter-stats frame, after the
+#: ``date`` and ``symbol`` keys; all Int64.
 FILTER_STATS_COUNTS = (
     "records_in",
     "dropped_nonpositive_price",
@@ -44,11 +51,11 @@ FILTER_STATS_COUNTS = (
 
 _GROUP = ["symbol", "date"]
 
-#: Drop reasons in precedence order: a record matching several is counted
-#: under the first only.
+#: Drop reasons in priority order: a record matching several is counted
+#: under the first one only.
 _REASONS = ("nonpositive_price", "condition", "crossed", "locked")
 
-#: Time-weighted variables and the per-record column each integrates.
+#: Each time-weighted output variable and the record column it averages.
 _TW_SOURCES = {
     "tw_spread": "spread",
     "tw_bid_size": "bid_size",
@@ -58,18 +65,30 @@ _TW_SOURCES = {
 
 @dataclass(frozen=True)
 class NbboFilterPolicy:
-    """Record filter applied before resampling.
+    """Filter applied to NBBO records before resampling.
 
-    A dropped record never becomes a seed or a member of a tie; the previous
-    valid quote stays in force. ``drop_nonpositive_price`` drops a record
-    whose present bid or ask is ``<= 0`` (a null side is not a price).
-    ``keep_qu_cond``, when set, drops a record whose ``qu_cond`` is not in
-    the allow-list (a null condition is in no list). ``drop_crossed`` drops
-    ``bid > ask`` and ``drop_locked`` drops ``bid == ask``, both evaluated
-    only when both sides are present; locked quotes are a legitimate state
-    and are kept by default. A record is counted under the first matching
-    reason in the order nonpositive price, condition, crossed, locked, so the
-    per-reason counts partition the dropped records.
+    A dropped record is ignored completely: the previous valid quote stays
+    in force, and the record neither starts a session (as the *seed*, the
+    last quote before the open) nor takes part in a tie between records with
+    the same timestamp. A record matching several rules is counted under the
+    first in the order nonpositive price, condition, crossed, locked, so
+    each dropped record is counted exactly once.
+
+    Parameters
+    ----------
+    drop_crossed : bool, default True
+        Drop *crossed* quotes, where ``bid > ask``. Only checked when both
+        sides are present.
+    drop_locked : bool, default False
+        Drop *locked* quotes, where ``bid == ask``. Only checked when both
+        sides are present. Locked quotes do occur legitimately, so they are
+        kept by default.
+    drop_nonpositive_price : bool, default True
+        Drop a record whose bid or ask, where present, is ``<= 0``. A null
+        side is not a price and is not checked.
+    keep_qu_cond : sequence of str, optional
+        If set, keep only records whose quote condition code ``qu_cond`` is
+        in this list; a null condition is in no list. Stored as a tuple.
 
     Examples
     --------
@@ -85,13 +104,13 @@ class NbboFilterPolicy:
     keep_qu_cond: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
-        """Normalise ``keep_qu_cond`` to a tuple and reject a bare string.
+        """Convert ``keep_qu_cond`` to a tuple, refusing a bare string.
 
         Raises
         ------
         ValueError
-            If ``keep_qu_cond`` is a string rather than a
-            sequence of condition codes.
+            If ``keep_qu_cond`` is a string rather than a sequence of
+            condition codes.
         """
         if self.keep_qu_cond is None:
             return
@@ -106,6 +125,17 @@ class NbboFilterPolicy:
     @classmethod
     def from_config(cls, config) -> "NbboFilterPolicy":
         """Build a policy from the four filter fields of an ``NbboDatasetConfig``.
+
+        Parameters
+        ----------
+        config : NbboDatasetConfig
+            The dataset config holding ``drop_crossed``, ``drop_locked``,
+            ``drop_nonpositive_price`` and ``keep_qu_cond``.
+
+        Returns
+        -------
+        NbboFilterPolicy
+            The policy.
 
         Examples
         --------
@@ -124,10 +154,16 @@ class NbboFilterPolicy:
         )
 
     def reason(self) -> pl.Expr:
-        """Return an expression giving each record's drop reason, null if kept.
+        """Return an expression giving each record's drop reason, or null if it is kept.
 
-        Expects ``bid`` and ``ask`` columns with a missing side already null,
-        and a ``qu_cond`` column.
+        The frame must have ``bid`` and ``ask`` columns, with a missing side
+        already null, and a ``qu_cond`` column.
+
+        Returns
+        -------
+        pl.Expr
+            A string expression: ``"nonpositive_price"``, ``"condition"``,
+            ``"crossed"``, ``"locked"`` or null.
 
         Examples
         --------
@@ -183,26 +219,47 @@ class NbboFilterPolicy:
 class NbboResampler:
     """Resample NBBO records onto a regular right-closed bar grid.
 
-    Records are sorted by the total key ``(symbol, date, timestamp,
-    wrds_row_ord)`` with a stable sort, so the input row order never affects
-    the output. ``wrds_row_ord`` is the arrival ordinal recorded when the
-    records were fetched; it is the only tie-breaker available on tables
-    without a nanosecond field. All records of one instant count as updates,
-    but only the last by that key survives the collapse: it is the quote in
-    force after that instant, and its predecessors have zero duration.
+    Records are sorted by ``(symbol, date, timestamp, wrds_row_ord)`` with a
+    stable sort, so the input row order never changes the output.
+    ``wrds_row_ord`` is the position of the record in the order it was
+    downloaded; it is the only tie-breaker for tables without a nanosecond
+    field. All records at one instant count as updates, but only the last
+    one in that order is kept as the quote: it is the quote in force after
+    that instant, and the ones before it lasted zero time.
 
-    Data from 2018 onwards is unique on ``(symbol, time_m, time_m_nano)``,
-    so the key fully decides the order. Earlier tables carry microseconds
-    only, and a few percent of rows share a microsecond with a differently
-    valued record, where the arrival ordinal is the only evidence of order.
-    ``n_ambiguous_ties`` counts, per bar, the records that share their
-    timestamp with a differently valued record (identical duplicates count
-    0), so a consumer can see which bars' snapshots depend on that order.
+    Data from 2018 on is unique on ``(symbol, time_m, time_m_nano)``, so the
+    sort key fully decides the order. Earlier tables only have microseconds,
+    and a few percent of rows share a microsecond with a record holding
+    different values, where download order is the only clue to the true
+    order. ``n_ambiguous_ties`` counts, per bar, the records that share their
+    timestamp with a record holding different values (identical duplicates
+    count 0), so a user can see which bars depend on that order.
+
+    Parameters
+    ----------
+    bar_interval : str
+        A key of ``BAR_INTERVAL_SECONDS`` such as ``"1m"``.
+    policy : NbboFilterPolicy, optional
+        The record filter; ``NbboFilterPolicy()`` when ``None``.
+
+    Attributes
+    ----------
+    bar_interval : str
+        The bar size name.
+    seconds : int
+        The bar length in seconds.
+    policy : NbboFilterPolicy
+        The record filter in use.
+
+    Raises
+    ------
+    ValueError
+        If ``bar_interval`` is not a known bar size.
 
     Examples
     --------
-    A three-minute session, one symbol, four records (the third is
-    crossed and dropped by the default policy):
+    A three-minute session, one symbol, four records (the third is crossed
+    and dropped by the default policy):
 
     >>> sessions = pl.DataFrame({
     ...     "date": [date(2024, 1, 24)],
@@ -242,21 +299,7 @@ class NbboResampler:
     def __init__(
         self, bar_interval: str, policy: NbboFilterPolicy | None = None
     ) -> None:
-        """Create a resampler for one bar size and an optional filter policy.
-
-        Parameters
-        ----------
-        bar_interval : str
-            A key of ``BAR_INTERVAL_SECONDS`` such as ``"1m"``.
-        policy : NbboFilterPolicy | None
-            The record filter; the default ``NbboFilterPolicy()``
-            when ``None``.
-
-        Raises
-        ------
-        ValueError
-            If ``bar_interval`` is not a known bar size.
-        """
+        """Initialize the resampler; see the class docstring for parameters."""
         if bar_interval not in BAR_INTERVAL_SECONDS:
             raise ValueError(
                 f"NbboResampler: bar_interval {bar_interval!r} is not one of "
@@ -277,13 +320,14 @@ class NbboResampler:
         Parameters
         ----------
         sessions : pl.DataFrame
-            A frame with ``date``, ``open`` and ``close`` columns,
-            the last two in naive UTC.
+            A frame with ``date``, ``open`` and ``close`` columns, the last
+            two in naive UTC.
 
         Returns
         -------
         pl.DataFrame
-            One row per bar label, ascending; the open itself is not a label.
+            One row per bar label, in ascending order. The open itself is
+            not a label.
 
         Examples
         --------
@@ -304,14 +348,24 @@ class NbboResampler:
         )
 
     def _edges(self, sessions: pl.DataFrame) -> pl.DataFrame:
-        """Return every grid edge, open through close inclusive, per session.
+        """Return every bar boundary of each session, from open to close inclusive.
+
+        Parameters
+        ----------
+        sessions : pl.DataFrame
+            A frame with ``date``, ``open`` and ``close`` columns.
+
+        Returns
+        -------
+        pl.DataFrame
+            ``sessions`` with one row per boundary in an ``edge`` column.
 
         Raises
         ------
         ValueError
-            If a session's length is not a whole, positive number
-            of bars. A ragged last bar would differ in length from every
-            other bar, and truncating it would drop in-session quotes.
+            If a session's length is not a whole, positive number of bars.
+            A shorter last bar would differ in length from every other bar,
+            and cutting it off would drop quotes from inside the session.
         """
         sessions = sessions.with_columns(
             pl.col("open").cast(pl.Datetime("ns")),
@@ -346,7 +400,19 @@ class NbboResampler:
     def resample(
         self, records: pl.DataFrame, sessions: pl.DataFrame
     ) -> pl.DataFrame:
-        """Return the bar panel only; see ``resample_with_stats``.
+        """Return only the bar panel of ``resample_with_stats``.
+
+        Parameters
+        ----------
+        records : pl.DataFrame
+            NBBO records, as for ``resample_with_stats``.
+        sessions : pl.DataFrame
+            Session bounds, as for ``resample_with_stats``.
+
+        Returns
+        -------
+        pl.DataFrame
+            The bar panel.
 
         Examples
         --------
@@ -359,10 +425,11 @@ class NbboResampler:
 
     @staticmethod
     def _normalise(records: pl.DataFrame) -> pl.DataFrame:
-        """Return typed working columns; a null or NaN side nulls its size too.
+        """Return the working columns with fixed types; a null or NaN price also nulls its size.
 
-        A missing ``qu_cond`` column is added as all-null so the filter can
-        always refer to it.
+        The vendor columns are renamed to ``bid``, ``bid_size``, ``ask`` and
+        ``ask_size``. A missing ``qu_cond`` column is added as all-null so the
+        filter can always use it.
         """
         qu_cond = (
             pl.col("qu_cond").cast(pl.String)
@@ -380,15 +447,15 @@ class NbboResampler:
             pl.col("best_asksizeshares").cast(pl.Float64).alias("ask_size"),
             qu_cond,
         )
-        # No quote on a side means no size on it either, whatever size value
-        # arrived alongside the null price.
+        # No quote on a side means no size on it either, whatever size came
+        # with the null price.
         return frame.with_columns(
             pl.when(pl.col("bid").is_not_null()).then(pl.col("bid_size")).alias("bid_size"),
             pl.when(pl.col("ask").is_not_null()).then(pl.col("ask_size")).alias("ask_size"),
         )
 
     def _filter(self, records: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-        """Return ``(kept records, per-(date, symbol) stats)``."""
+        """Apply the filter policy and return the kept records and the per-(date, symbol) drop counts."""
         records = records.with_columns(self.policy.reason().alias("_reason"))
         kept = pl.col("_reason").is_null()
         n_present = pl.col("bid").is_not_null().cast(pl.Int64) + pl.col(
@@ -422,22 +489,23 @@ class NbboResampler:
         Parameters
         ----------
         records : pl.DataFrame
-            A frame with ``symbol``, ``date`` (session date),
-            ``timestamp`` (naive UTC), ``wrds_row_ord``, ``best_bid``,
-            ``best_bidsizeshares``, ``best_ask``, ``best_asksizeshares``
-            and optionally ``qu_cond``.
+            A frame with ``symbol``, ``date`` (session date), ``timestamp``
+            (naive UTC), ``wrds_row_ord``, ``best_bid``,
+            ``best_bidsizeshares``, ``best_ask``, ``best_asksizeshares`` and
+            optionally ``qu_cond``.
         sessions : pl.DataFrame
             A frame with ``date``, ``open`` and ``close`` columns.
 
         Returns
         -------
-        tuple[pl.DataFrame, pl.DataFrame]
-            A ``(panel, stats)`` pair. The panel has ``symbol``, ``date``,
-            ``timestamp`` and the ``PANEL_VARIABLES`` as float64, one row per
-            bar label for every ``(symbol, date)`` present in the input (a
-            pair whose records were all filtered out still gets its rows, all
-            NaN). The stats frame has one row per input ``(date, symbol)``
-            with the ``FILTER_STATS_COUNTS`` columns.
+        panel : pl.DataFrame
+            Columns ``symbol``, ``date``, ``timestamp`` and the
+            ``PANEL_VARIABLES`` as float64, with one row per bar label for
+            every ``(symbol, date)`` in the input. A pair whose records were
+            all filtered out still gets its rows, all NaN.
+        stats : pl.DataFrame
+            One row per input ``(date, symbol)`` with the
+            ``FILTER_STATS_COUNTS`` columns.
 
         Examples
         --------
@@ -464,7 +532,7 @@ class NbboResampler:
 
         records = (
             records
-            # Stable total order; the arrival ordinal breaks timestamp ties.
+            # Stable sort; download order breaks timestamp ties.
             .sort(
                 ["symbol", "date", "timestamp", "wrds_row_ord"],
                 maintain_order=True,
@@ -478,10 +546,10 @@ class NbboResampler:
         bar_index = (offset_ns + (interval - 1)) // interval
         edge_of_record = pl.col("open") + pl.duration(nanoseconds=bar_index * interval)
 
-        # A record is ambiguous when its (symbol, date, timestamp) group holds
-        # more than one distinct quote state. Null sides compare as values, so
-        # two identical one-sided records are not ambiguous. Counted after
-        # filtering and before the tie collapse.
+        # A record is ambiguous when its (symbol, date, timestamp) group has
+        # more than one distinct quote. Null sides compare as values, so two
+        # identical one-sided records are not ambiguous. Counted after
+        # filtering and before ties are collapsed.
         state_key = pl.concat_str(
             [
                 pl.col(name).cast(pl.String).fill_null("<null>")
@@ -494,9 +562,9 @@ class NbboResampler:
             (state_key.n_unique().over(tie) > 1).cast(pl.Float64).alias("_ambiguous")
         )
 
-        # n_updates counts every kept in-session record (each tied message is
-        # one update) in the bar whose right-closed span holds it. The seed
-        # is not an update inside any bar.
+        # n_updates counts every kept record inside the session (each tied
+        # record is one update) in the bar whose span holds it. The seed is
+        # not an update in any bar.
         updates = (
             records.filter(pl.col("timestamp") > pl.col("open"))
             .with_columns(edge_of_record.alias("edge"))
@@ -507,15 +575,15 @@ class NbboResampler:
             )
         )
 
-        # Tie collapse: the last record of each instant by the total order is
-        # the quote after that instant; its predecessors have zero duration
-        # and would otherwise be candidate as-of matches.
+        # Collapse ties: the last record at each instant is the quote after
+        # that instant. The earlier ones lasted zero time and must not be
+        # matched by the as-of join below.
         records = records.unique(
             subset=tie, keep="last", maintain_order=True
         ).drop("_ambiguous")
 
-        # Seed: of the records at or before the open keep only the last, and
-        # move it to the open.
+        # Seed: of the records at or before the open, keep only the last and
+        # move its timestamp to the open.
         pre = pl.col("timestamp") <= pl.col("open")
         records = (
             records.with_columns(
@@ -541,8 +609,8 @@ class NbboResampler:
             .alias("_dur")
         )
 
-        # Cumulative integrals: one value integral and one coverage integral
-        # (the time the variable was defined) per time-weighted source.
+        # Running integrals for each time-weighted source: value times time,
+        # and the time during which the value was defined.
         def exclusive_cum(expr: pl.Expr) -> pl.Expr:
             """Return the running sum of ``expr`` up to, not including, each row.
 
@@ -572,9 +640,9 @@ class NbboResampler:
             how="inner",
         )
 
-        # As-of backward join. With `by=` groups polars cannot check
-        # sortedness and silently mis-matches unsorted input, so both sides
-        # are sorted on (by..., on) immediately before the join.
+        # Backward as-of join (match the last record at or before each
+        # edge). With `by=` groups polars cannot check sort order and silently
+        # mismatches unsorted input, so both sides are sorted right before.
         right = records.rename({"timestamp": "_rec_ts"}).drop("open", "close")
         grid = grid.sort(["symbol", "date", "edge"])
         right = right.sort(["symbol", "date", "_rec_ts"], maintain_order=True)

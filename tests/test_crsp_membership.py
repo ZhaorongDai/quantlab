@@ -933,7 +933,7 @@ def test_the_permno_branch_and_its_numeric_order_contract_survive_intact():
     ):
         assert hasattr(CrspMembership, name), name
 
-    assert "NUMERIC" in CrspMembership.permnos_in_range.__doc__
+    assert "numeric" in CrspMembership.permnos_in_range.__doc__
 
 
 def test_permno_intervals_are_ordered_numerically_not_lexicographically(tmp_path):

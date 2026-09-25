@@ -1,14 +1,22 @@
-"""WRDS TAQ NBBO bar panel built from raw quote shards.
+"""NBBO quote-bar panel built from raw WRDS TAQ quote files.
 
-``NbboPanelDataset`` reads the tick-level raw tier the WRDS TAQ acquisition
-writes (``.../wrds/data_type=nbbo/date=.../symbol=.../*.pqt``), resamples
-each session onto a regular right-closed bar grid through
-``quantlab/dataset/nbbo/resample.py``, and produces the canonical
-``(timestamp, symbol)`` panel that the rest of the pipeline stores and
-consumes. The bar size is ``NbboDatasetConfig.bar_interval``; the raw
-tier's ``frequency`` stays ``"tick"``. Session opens and closes come from
-the XNYS exchange calendar, so half days, daylight-saving changes and
-non-sessions are handled there rather than here.
+The NBBO (National Best Bid and Offer) is the best bid and the best ask
+price for a US stock across all exchanges at each moment. TAQ (Trade and
+Quote) is NYSE's tick-level database of every trade and quote, sold through
+WRDS (Wharton Research Data Services). A *panel* is an ``xarray.Dataset``
+indexed by ``timestamp`` and ``symbol``, the format every quantlab layer
+exchanges.
+
+``NbboPanelDataset`` reads the tick-level raw files that the WRDS TAQ
+download writes (``.../wrds/data_type=nbbo/date=.../symbol=.../*.pqt``),
+resamples each trading session onto a regular bar grid with
+``quantlab.dataset.nbbo.resample``, and returns the panel the rest of the
+pipeline stores and uses. Bars are *right-closed*: a bar labelled 09:31
+covers quotes after 09:30 up to and including 09:31. The bar size is
+``NbboDatasetConfig.bar_interval``, while the raw data's ``frequency`` stays
+``"tick"``. Session opens and closes come from the NYSE (XNYS) exchange
+calendar, which handles half days, daylight-saving changes and non-trading
+days.
 """
 
 from __future__ import annotations
@@ -36,40 +44,54 @@ from quantlab.enums.data import BAR_INTERVAL_SECONDS
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.timer import Timer
 
-#: Appended to the store path to name the filter-stats sidecar, which sits
-#: beside the store directory rather than inside it.
+#: Appended to the store path to name the filter-stats sidecar, a JSON file
+#: next to the store directory rather than inside it.
 FILTER_STATS_SUFFIX = ".nbbo_filter_stats.json"
 
 
 class NbboPanelDataset(StockDataset):
     """Dense NBBO bar panel resampled from WRDS TAQ ``complete_nbbo`` records.
 
-    Inherits the vendor-root check, the tick ``data_type=`` scan root, the
-    hive schema and the raw-data probe from ``StockDataset``, and overrides
-    the axes, the window densifier and ``_clean`` (the panel has no OHLCV
-    columns, so it is validated by ``clean_nbbo_panel`` instead).
+    It inherits from ``StockDataset`` the vendor-root check, the tick-data
+    ``data_type=`` scan root, the hive schema and ``has_raw_data``. It
+    overrides how the axes and each window's panel are built, and
+    ``_clean``: the panel has no OHLCV (open, high, low, close, volume)
+    columns, so ``clean_nbbo_panel`` validates it instead.
 
-    The session window (``session_start``/``session_end``, US/Eastern wall
-    clock) defaults to regular hours 09:30 to 16:00 and may be set anywhere
+    The session window (``session_start``/``session_end``, US Eastern clock
+    time) defaults to regular hours, 09:30 to 16:00, and may be set anywhere
     inside 04:00 to 20:00; an edge outside that range is refused when the
-    dataset is constructed. On a half day only regular-hours edges are
-    clipped to the early close, so an extended-hours window still runs to
-    its wall-clock end and its post-close bars carry post-close quote state.
-    A ``date=`` directory that is not an exchange session fails the
-    conversion with ``ValueError``.
+    dataset is created. On a half day only regular-hours edges are clipped
+    to the early close, so an extended-hours window still runs to its clock
+    end, and its bars after the close hold after-close quotes. A ``date=``
+    directory that is not a trading session makes the conversion fail with
+    ``ValueError``.
 
-    Every window is seeded from the last valid quote at or before its start:
-    the raw tier is scanned by session date and holds the whole day, so the
-    record in force at the window's open is always present. Bar labels are
-    not confined to the session date's UTC calendar day; an extended close
-    lands on the next one. The filter fields of the config (``drop_crossed``,
-    ``drop_locked``, ``drop_nonpositive_price``, ``keep_qu_cond``) reach the
-    resampler as an ``NbboFilterPolicy``, and the per-session drop counts are
-    written to a JSON sidecar next to the store (see ``filter_stats_path``).
+    Every window starts from the last valid quote at or before its start.
+    The raw files are read by session date and hold the whole day, so the
+    quote in force when the window opens is always available. Bar labels can
+    fall outside the session date's UTC calendar day: an extended close
+    lands on the next one. The config's filter fields (``drop_crossed``,
+    ``drop_locked``, ``drop_nonpositive_price``, ``keep_qu_cond``) are passed
+    to the resampler as an ``NbboFilterPolicy``, and the number of quotes
+    dropped per session is written to a JSON sidecar next to the store (see
+    ``filter_stats_path``).
 
-    Convert sub-minute bars with ``granularity="day"``: a one-second bar
-    over a large universe is millions of rows per session, and one window
-    is materialised in memory at a time.
+    Convert bars shorter than a minute with ``granularity="day"``: one-second
+    bars over a large universe are millions of rows per session, and one
+    window is held in memory at a time.
+
+    Parameters
+    ----------
+    dataset_config : NbboDatasetConfig
+        Must have ``frequency="tick"`` and a ``bar_interval`` from
+        ``BAR_INTERVAL_SECONDS``; also sets the session window, the quote
+        filters and optionally ``symbols``.
+
+    Attributes
+    ----------
+    last_filter_stats : dict or None
+        The filter-stats sidecar content after the last window resampled.
 
     Examples
     --------
@@ -88,26 +110,31 @@ class NbboPanelDataset(StockDataset):
     ('timestamp', 'symbol')
     """
 
-    #: The config class a saved ``config.json`` is rebuilt with.
+    #: The config class used to rebuild the dataset from a saved ``config.json``.
     config_cls = NbboDatasetConfig
 
-    #: The raw tier's ``data_type=`` hive key this panel is built from.
+    #: The ``data_type=`` hive-key value of the raw files this panel reads.
     DATA_TYPE = "nbbo"
 
     #: The merged filter-stats sidecar content after the last window this
-    #: instance resampled; ``None`` until one has been. Windows the chunk
-    #: ledger skips leave it, and the sidecar, untouched.
+    #: instance resampled; ``None`` until then. Windows skipped because the
+    #: chunk ledger marks them done leave it, and the sidecar, unchanged.
     last_filter_stats: dict | None = None
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
-        """Assign the config and validate the NBBO-specific fields.
+        """Assign the config after checking the NBBO-specific fields.
 
-        After the shared lifecycle runs, the config must be an
+        After the base class processes the config, it must be an
         ``NbboDatasetConfig`` with ``frequency="tick"`` and a ``bar_interval``
-        from ``BAR_INTERVAL_SECONDS``. The session calendar is constructed
-        here so that a bad window fails at construction rather than on the
-        first conversion.
+        from ``BAR_INTERVAL_SECONDS``. The session calendar is created here
+        so that a bad window fails when the dataset is created rather than
+        on the first conversion.
+
+        Parameters
+        ----------
+        config : NbboDatasetConfig
+            The new configuration.
 
         Raises
         ------
@@ -137,7 +164,7 @@ class NbboPanelDataset(StockDataset):
             )
         if config.frequency != "tick":
             raise ValueError(
-                f"{self.class_name}: frequency must be 'tick' (the raw tier "
+                f"{self.class_name}: frequency must be 'tick' (the raw data "
                 f"holds one row per NBBO record); the panel's bar size is "
                 f"bar_interval. Got frequency {config.frequency!r}."
             )
@@ -146,18 +173,18 @@ class NbboPanelDataset(StockDataset):
                 f"{self.class_name}: bar_interval {config.bar_interval!r} is "
                 f"not one of {list(BAR_INTERVAL_SECONDS)}."
             )
-        # The exchange calendar itself loads lazily, on the first
-        # session_bounds call; only the window is validated here.
+        # The exchange calendar itself loads on the first session_bounds
+        # call; only the window is checked here.
         self._calendar = XnysSessionCalendar(config.session_start, config.session_end)
 
     @property
     def _tick_data_type(self) -> str:
-        """Return the ``data_type=`` value the scan root is built from."""
+        """Return the ``data_type=`` value used to build the scan root, ``"nbbo"``."""
         return self.DATA_TYPE
 
     @property
     def filter_stats_path(self) -> str:
-        """Return the path of the filter-stats sidecar beside the store.
+        """Return the path of the filter-stats sidecar next to the store.
 
         Examples
         --------
@@ -168,7 +195,7 @@ class NbboPanelDataset(StockDataset):
 
     @property
     def _resampler(self) -> NbboResampler:
-        """Return a resampler for the config's bar size and filter policy."""
+        """Return a new resampler for the configured bar size and quote filters."""
         return NbboResampler(
             self.config.bar_interval, NbboFilterPolicy.from_config(self.config)
         )
@@ -187,22 +214,43 @@ class NbboPanelDataset(StockDataset):
         return sorted(dates)
 
     def _session_bounds(self, dates) -> pl.DataFrame:
-        """Return ``(date, open, close)`` per session date in naive UTC.
+        """Return ``(date, open, close)`` for each session date, in naive UTC.
 
-        Delegates to ``XnysSessionCalendar.session_bounds``: a non-session
-        date raises ``ValueError``, and a session whose clipped window is
-        empty is omitted.
+        This calls ``XnysSessionCalendar.session_bounds``: a date that is not
+        a trading session raises ``ValueError``, and a session whose window is
+        empty after clipping is left out.
+
+        Parameters
+        ----------
+        dates : iterable of date
+            Session dates.
+
+        Returns
+        -------
+        pl.DataFrame
+            Columns ``date``, ``open`` and ``close``.
         """
         return self._calendar.session_bounds(dates)
 
     def _dates_in_config_range(self) -> list[date]:
-        """Return the raw session dates inside the config's date range."""
+        """Return the raw session dates inside the configured date range."""
         start = date.fromisoformat(self.config.start_date)
         end = date.fromisoformat(self.config.end_date)
         return [day for day in self._session_dates() if start <= day <= end]
 
     def _raw_symbols(self, dates) -> list[str]:
-        """Return the sorted ``symbol=`` directory names under ``dates``."""
+        """Return the sorted ``symbol=`` directory names found under the given dates.
+
+        Parameters
+        ----------
+        dates : iterable of date
+            Session dates whose ``date=`` directories to list.
+
+        Returns
+        -------
+        list of str
+            The distinct symbols, sorted.
+        """
         root = self._scan_root()
         symbols = set()
         for day in dates:
@@ -212,17 +260,25 @@ class NbboPanelDataset(StockDataset):
         return sorted(symbols)
 
     def _raw_axes_in_range(self) -> tuple[list[str], pd.DatetimeIndex]:
-        """Return ``(symbols, bar labels)`` for the config range without resampling.
+        """Return the symbols and bar labels for the configured range, without resampling.
 
         Symbols are ``config.symbols`` when set, otherwise the ``symbol=``
-        directory names. The timestamps are the session-grid labels of the
-        session dates present in raw, never the observed record timestamps.
+        directory names. The timestamps are the bar labels of the session
+        grid for the session dates present in the raw data, never the
+        timestamps of the quotes themselves.
+
+        Returns
+        -------
+        symbols : list of str
+            The symbol axis, sorted.
+        timestamps : pd.DatetimeIndex
+            The bar labels.
 
         Raises
         ------
         ValueError
-            If no symbols are found, since an empty pinned axis
-            would create a store with no labels to type.
+            If no symbols are found; a store with an empty symbol axis would
+            have no labels from which to set the axis dtype.
         """
         self._assert_vendor_root()
         dates = self._dates_in_config_range()
@@ -247,11 +303,21 @@ class NbboPanelDataset(StockDataset):
     ) -> dict:
         """Merge one window's per-(date, symbol) drop counts into the sidecar.
 
-        Every session date the window resampled is replaced wholesale (a
-        window resamples whole sessions over every pinned symbol, so its
-        counts for a date are complete) and other dates are kept. ``totals``
-        is recomputed over the merged sessions, so resampling a date again
-        never double-counts.
+        Every session date the window resampled is replaced completely (a
+        window resamples whole sessions for every symbol on the axis, so its
+        counts for a date are complete), and other dates are kept.
+        ``totals`` is recomputed over all merged sessions, so resampling a
+        date again never counts it twice.
+
+        Parameters
+        ----------
+        dates : list of date
+            The session dates the window resampled.
+        stats : pl.DataFrame or None
+            Per-(date, symbol) drop counts from the resampler, or ``None``
+            if the window had no records.
+        policy : NbboFilterPolicy
+            The quote filters used, recorded in the sidecar.
 
         Returns
         -------
@@ -295,7 +361,7 @@ class NbboPanelDataset(StockDataset):
             "totals": totals,
         }
         write_json_atomically(path, payload, indent=2, sort_keys=True)
-        # Round-tripped so the in-process value is exactly the file content.
+        # Round-trip through JSON so the value in memory equals the file.
         self.last_filter_stats = json.loads(json.dumps(payload, sort_keys=True))
         return self.last_filter_stats
 
@@ -304,21 +370,22 @@ class NbboPanelDataset(StockDataset):
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: list[str] | None = None
     ) -> xr.Dataset:
-        """Resample the sessions whose labels fall in the window onto a dense grid.
+        """Resample the sessions whose bar labels fall in the window onto a dense grid.
 
-        The raw tier is filtered on the ``date`` hive key, never on a
-        timestamp window, so the seed record before the open survives. A
-        ``(label, symbol)`` cell with no bar is NaN in every variable.
+        The raw files are filtered on the ``date`` hive key, never on a
+        timestamp window, so the last quote before the open (which seeds the
+        first bar) is kept. A ``(label, symbol)`` cell with no bar is NaN in
+        every variable.
 
         Parameters
         ----------
-        start_date
+        start_date : date-like
             First bar label to include, inclusive.
-        end_date
+        end_date : date-like
             Last bar label to include, inclusive.
-        symbols : list[str] | None
-            The symbol axis; ``config.symbols`` or the raw
-            ``symbol=`` directories when ``None``.
+        symbols : list of str, optional
+            The symbol axis. When ``None``, ``config.symbols`` or the raw
+            ``symbol=`` directories are used.
 
         Returns
         -------
@@ -329,8 +396,8 @@ class NbboPanelDataset(StockDataset):
         Raises
         ------
         ValueError
-            If there is no raw data under the scan root or the
-            symbol axis is empty.
+            If there is no raw data under the scan root or the symbol axis
+            is empty.
         """
         self._assert_vendor_root()
         if not self.has_raw_data():
@@ -355,8 +422,8 @@ class NbboPanelDataset(StockDataset):
             )
 
         resampler = self._resampler
-        # The config's range only: the same session set _raw_axes_in_range
-        # pinned, so a raw date outside the range is never asked about.
+        # Only the configured range, the same sessions _raw_axes_in_range
+        # used, so a raw date outside the range is never looked up.
         sessions = self._session_bounds(self._dates_in_config_range())
         labels = resampler.labels(sessions).filter(
             pl.col("timestamp").is_between(start, end, closed="both")
@@ -424,7 +491,12 @@ class NbboPanelDataset(StockDataset):
         )
 
     def _raw_data_to_xr(self) -> xr.Dataset:
-        """Resample the whole configured range in one window.
+        """Resample the whole configured range as one window.
+
+        Returns
+        -------
+        xr.Dataset
+            The panel for the configured range.
 
         Raises
         ------
@@ -443,15 +515,21 @@ class NbboPanelDataset(StockDataset):
             )
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
-        """Validate the NBBO panel instead of running the OHLCV cleaner."""
+        """Validate the NBBO panel with ``clean_nbbo_panel`` instead of the OHLCV cleaner."""
         return clean_nbbo_panel(data)
 
     def _widen_fill_values(self) -> dict:
-        """Return no explicit fill values for a widened symbol axis.
+        """Return no special fill values for symbols added to an existing store.
 
-        Every panel variable is float64 and NaN already means "no record
-        existed", which is what a newly widened symbol has over its
-        pre-listing history. This holds for ``n_updates`` too: NaN there is
-        distinct from 0, which means "in force, not updated".
+        When the symbol axis is widened, a new symbol's earlier history must
+        be filled with something. Every panel variable is float64, and NaN
+        already means "no quote existed", which is correct there. This holds
+        for ``n_updates`` too: NaN differs from 0, which means "a quote was
+        in force but did not change".
+
+        Returns
+        -------
+        dict
+            An empty dict, so every variable is filled with NaN.
         """
         return {}

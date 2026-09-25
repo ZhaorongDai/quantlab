@@ -24,7 +24,7 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
-from quantlab.my_ops.preprocess import WindowedZScore
+from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
 
 
 class Alpha158SpotKline(FactorKunQuant):
@@ -260,7 +260,7 @@ class Alpha158Stock(FactorKunQuant):
             alpha158, names = self._get_func_names()
             for v, k in zip(alpha158, names):
                 if k in factor_names:
-                    Output(v, k)
+                    Output(CrossSectionalZScore(v), k)
         return Function(builder.ops)
 
     def _get_factor_func(self):

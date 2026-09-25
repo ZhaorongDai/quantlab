@@ -101,8 +101,9 @@ config.raw_data_dir_path   # '/mnt/quant/downloads/us_equity/1d/us_all/tiingo'
 config.zarr_file_path      # '/mnt/quant/data/us_equity/1d/us_all.zarr'
 ```
 
-`spot_kline_config` does the same for Binance klines. See the module
-docstring of `quantlab.config` for the full layout.
+Binance spot klines have no factory; `scripts/ingest_binance_spot.py` builds
+their `DatasetConfig` under the same root. See the module docstring of
+`quantlab.config` for the full layout.
 
 ## Available datasets
 

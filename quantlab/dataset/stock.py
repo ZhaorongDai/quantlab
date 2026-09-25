@@ -1,11 +1,17 @@
-"""US-equity bars from a vendor's hive-partitioned parquet tree.
+"""US-equity bars read from one vendor's hive-partitioned parquet tree.
 
-``StockDataset`` reads the raw tier written by the acquisition layer
-(``downloads/{market}/{frequency}/{subdir}/{vendor}/<key>=<value>/*.pqt``),
-pushes the date window down into the parquet scan so only the partitions it
-needs are opened, and produces the canonical ``(timestamp, symbol)`` panel.
-It is the US-equity counterpart of ``quantlab/dataset/spot.py`` and the
-memory-bounded reference implementation of the chunked conversion path.
+A *hive-partitioned* tree stores data in directories named
+``<key>=<value>`` (for example ``month=2024-01/part.pqt``), so a reader can
+skip whole directories that fall outside a query. A *panel* is an
+``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``, the format every
+quantlab layer exchanges.
+
+``StockDataset`` reads the raw files written by the acquisition layer under
+``downloads/{market}/{frequency}/{subdir}/{vendor}/<key>=<value>/*.pqt``. It
+filters on the date window inside the parquet scan, so only the partitions it
+needs are opened, and returns the panel. It is the US-equity counterpart of
+``quantlab.dataset.spot``, and its window-by-window conversion keeps memory
+bounded by the size of one window.
 """
 
 from datetime import datetime, timedelta
@@ -32,13 +38,21 @@ from quantlab.utils.timer import Timer
 class StockDataset(MarketDataset):
     """US-equity dataset over a single vendor's hive-partitioned raw tree.
 
-    The raw root must end in the vendor's own directory and hold that vendor's
-    shards only; two vendors under one root would merge into a blended price
-    series with no error, so the root name, the ``vendor`` column and the
-    parquet schema are all checked before any row is used. Daily (``1d``)
-    data is partitioned by ``month``, intraday (``1m``) by session ``date``,
-    and ``tick`` by ``data_type``, ``date`` and ``symbol``; tick data has no
-    dense-panel form and is only reachable through ``_scan_raw``.
+    The raw root must be the vendor's own directory and hold only that
+    vendor's files (*shards*). Two vendors under one root would silently
+    merge into a blended price series, so the root name, the ``vendor``
+    column and the parquet schema are all checked before any row is used.
+    Daily (``1d``) data is partitioned by ``month``, minute (``1m``) data by
+    trading-session ``date``, and ``tick`` data by ``data_type``, ``date`` and
+    ``symbol``. Tick data has no dense-panel form and can only be read with
+    ``_scan_raw``.
+
+    Parameters
+    ----------
+    dataset_config : DatasetConfig
+        Paths, market, frequency, vendor and date range of the dataset. For
+        tick data, ``kwargs["data_type"]`` must be ``"quotes"`` or
+        ``"trades"``.
 
     Examples
     --------
@@ -55,45 +69,50 @@ class StockDataset(MarketDataset):
     >>> panel = StockDataset(config).read().get_xarray_dataset()
     """
 
-    #: Hive key dtypes per frequency, keyed to match ``RAW_HIVE_KEYS``.
-    #: Always passed to ``pl.scan_parquet`` explicitly: an inferred
-    #: numeric-looking value such as ``symbol=8686`` would become an integer
-    #: column and a string predicate against it would silently match nothing.
+    #: Hive key dtypes per frequency, with the same keys as ``RAW_HIVE_KEYS``.
+    #: Always passed to ``pl.scan_parquet`` explicitly: polars would infer a
+    #: numeric-looking value such as ``symbol=8686`` as an integer, and a
+    #: string filter on it would then silently match nothing.
     HIVE_SCHEMA_BY_FREQUENCY = {
         "1d": {"month": pl.String},
         "1m": {"date": pl.Date},
         "tick": {"data_type": pl.String, "date": pl.Date, "symbol": pl.String},
     }
 
-    #: Hive keys that are partition metadata only and are dropped after the
-    #: scan. ``symbol`` is deliberately absent: on the tick layout the path
-    #: segment is the only carrier of the symbol, so it must survive.
+    #: Hive keys that only describe the partition and are dropped after the
+    #: scan. ``symbol`` is left out on purpose: in the tick layout the
+    #: directory name is the only place the symbol is stored.
     DERIVED_HIVE_KEYS = ("month", "date", "data_type")
 
-    #: Filename suffix of one raw shard, shared by the scan glob and the
-    #: ``has_raw_data`` probe so both decide on the same set of files.
+    #: Filename suffix of one raw shard. The scan glob and ``has_raw_data``
+    #: both use it, so they always look at the same set of files.
     RAW_SHARD_SUFFIX = ".pqt"
 
     def __init__(self, dataset_config: DatasetConfig):
-        """Create the dataset from a ``DatasetConfig``."""
+        """Initialize the dataset; see the class docstring for parameters."""
         super().__init__(dataset_config)
 
     @property
     def _hive_keys(self) -> tuple[str, ...]:
         """Return the hive partition keys for this config's frequency.
 
-        Read from ``RAW_HIVE_KEYS``, the same mapping the acquisition layer
-        writes the tree with, so reader and writer cannot disagree.
+        They come from ``RAW_HIVE_KEYS``, the same mapping the acquisition
+        layer uses to write the tree, so reader and writer always agree.
         """
         return RAW_HIVE_KEYS[self.config.frequency]
 
     def _assert_vendor_root(self) -> Path:
         """Return the raw root after checking it is one vendor's directory.
 
-        ``pl.scan_parquet`` silently unions every shard beneath its root, and
-        the later dedup would then collapse two vendors' rows into one
-        arbitrary blend, so the root must terminate at the configured
+        ``pl.scan_parquet`` silently combines every shard below its root, and
+        the later deduplication would then collapse two vendors' rows into an
+        arbitrary blend. The root must therefore end at the configured
         vendor's own directory.
+
+        Returns
+        -------
+        Path
+            The raw root, ``config.raw_data_dir_path``.
 
         Raises
         ------
@@ -106,9 +125,10 @@ class StockDataset(MarketDataset):
                 f"{self.__class__.__name__}: DatasetConfig.vendor is not set, "
                 f"so there is no way to check that "
                 f"{self.config.raw_data_dir_path!r} holds exactly one vendor's "
-                f"data. Two vendors under one root merge with NO error and NO "
-                f"provenance (D-11), so this scan refuses rather than "
-                f"guessing. Set vendor=... on the config, or build it via "
+                f"data. Two vendors under one root would merge with no error and "
+                f"no record of which rows came from which vendor, so this scan "
+                f"refuses rather than guessing. Set vendor=... on the config, "
+                f"or build it via "
                 f"config.stock_kline_config(vendor=...)."
             )
 
@@ -117,11 +137,11 @@ class StockDataset(MarketDataset):
             raise ValueError(
                 f"{self.__class__.__name__}: raw_data_dir_path {str(root)!r} "
                 f"has basename {root.name!r} but the configured vendor is "
-                f"{self.config.vendor!r}. The raw path must TERMINATE at the "
-                f"vendor segment (D-11). A root pointed one level up walks "
-                f"into every vendor directory beneath it and merges them with "
-                f"no error and no provenance -- so this is refused rather than "
-                f"scanned. Expected a path ending in "
+                f"{self.config.vendor!r}. The raw path must terminate at the "
+                f"vendor directory. A root one level higher would read every "
+                f"vendor directory beneath it and merge them with no error and "
+                f"no record of origin, so this is refused rather than scanned. "
+                f"Expected a path ending in "
                 f"/{self.config.vendor}."
             )
         return root
@@ -130,11 +150,16 @@ class StockDataset(MarketDataset):
         """Return the directory handed to ``pl.scan_parquet``.
 
         For ``1d`` and ``1m`` this is the vendor root. For ``tick`` it is one
-        level deeper, ``{vendor_root}/data_type={quotes|trades}``: polars fixes
-        the scan's schema from the first file it finds and enforces it on
-        every file, including ones a predicate has pruned, so quotes and
-        trades (which have different columns) can only be separated by the
-        root, never by a filter.
+        level deeper, ``{vendor_root}/data_type={quotes|trades}``. Polars
+        takes the scan's schema from the first file it finds and enforces it
+        on every file, even files a filter would skip. Quotes and trades have
+        different columns, so they can only be separated by the root
+        directory, never by a filter.
+
+        Returns
+        -------
+        Path
+            The directory to scan.
         """
         root = Path(self.config.raw_data_dir_path)
         if "data_type" in self._hive_keys:
@@ -143,36 +168,46 @@ class StockDataset(MarketDataset):
 
     @property
     def _scanned_hive_keys(self) -> tuple[str, ...]:
-        """Return the hive keys the window predicate may filter on.
+        """Return the hive keys the date-window filter may use.
 
-        ``data_type`` is excluded because ``_scan_root`` already scopes the
-        scan to one value of it; a predicate would only restate that.
+        ``data_type`` is excluded because ``_scan_root`` already limits the
+        scan to one value of it.
         """
         return tuple(key for key in self._hive_keys if key != "data_type")
 
     @property
     def _materialised_hive_keys(self) -> tuple[str, ...]:
-        """Return every hive key polars materialises as a column.
+        """Return every hive key that polars turns into a column.
 
-        The recursive glob makes polars parse every ``key=value`` segment on
-        the path, including ``data_type`` above the scan root, so this is the
-        full key set: the hive schema must declare all of them and the
-        post-scan drop must remove all of the derived ones.
+        The recursive glob makes polars parse every ``key=value`` directory
+        on the path, including ``data_type`` above the scan root. So this is
+        the full key set: the hive schema must declare all of them, and the
+        drop after the scan must remove every one that is only metadata.
         """
         return self._hive_keys
 
     def _scanned_hive_schema(self) -> dict:
-        """Return ``HIVE_SCHEMA_BY_FREQUENCY`` narrowed to the materialised keys."""
+        """Return the ``HIVE_SCHEMA_BY_FREQUENCY`` entry, limited to keys polars turns into columns."""
         schema = self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency]
         keys = self._materialised_hive_keys
         return {name: dtype for name, dtype in schema.items() if name in keys}
 
     def _hive_window_predicate(self, start, end) -> pl.Expr:
-        """Return the predicate over the hive keys that prunes partitions.
+        """Return the filter on hive keys that skips partitions outside the window.
 
-        For ``1d`` the key is ``month``, a ``YYYY-MM`` string compared
-        lexicographically. The predicate includes both edge partitions in
-        full; the ``timestamp`` predicate applied beside it trims them.
+        For ``1d`` the key is ``month``, a ``YYYY-MM`` string compared as
+        text. The filter keeps both edge partitions whole; a separate
+        ``timestamp`` filter trims them to the exact window.
+
+        Parameters
+        ----------
+        start, end : datetime
+            Inclusive window edges.
+
+        Returns
+        -------
+        pl.Expr
+            A boolean polars expression over the hive key columns.
 
         Raises
         ------
@@ -185,8 +220,8 @@ class StockDataset(MarketDataset):
                 pl.col("month") <= pl.lit(end.strftime("%Y-%m"))
             )
         if keys in (("date",), ("date", "symbol")):
-            # `date` is the only prunable window key for both intraday tiers;
-            # a scan covers the whole roster, so `symbol` carries no predicate.
+            # ``date`` is the only window key for minute and tick data. A scan
+            # reads every symbol, so ``symbol`` gets no filter.
             return self._session_date_window_predicate(start, end)
         raise NotImplementedError(
             f"{self.__class__.__name__}: no hive window predicate for "
@@ -197,8 +232,9 @@ class StockDataset(MarketDataset):
     def _tick_data_type(self) -> str:
         """Return which tick data type (``quotes`` or ``trades``) to read.
 
-        Taken from ``config.kwargs["data_type"]``. The two share one vendor
-        root and have different columns, so the choice is required.
+        It comes from ``config.kwargs["data_type"]``. Quotes and trades share
+        one vendor root but have different columns, so the choice is
+        required.
 
         Raises
         ------
@@ -210,25 +246,24 @@ class StockDataset(MarketDataset):
             raise ValueError(
                 f"{self.__class__.__name__}: frequency "
                 f"{self.config.frequency!r} needs kwargs['data_type'] set to "
-                f"'quotes' or 'trades'; got {data_type!r}. The two land under "
-                f"one vendor root, distinguished by the leading `data_type=` "
-                f"hive key, and they carry DIFFERENT columns -- an unfiltered "
-                f"scan of a root holding both raises a schema error rather "
-                f"than returning a blended frame, which is the structural "
-                f"guarantee, not a bug. Say which one you want."
+                f"'quotes' or 'trades'; got {data_type!r}. Both are stored under "
+                f"one vendor root, separated by the leading `data_type=` "
+                f"hive key, and they have different columns. Scanning a root "
+                f"that holds both raises a schema error instead of returning a "
+                f"mixed frame. Say which one you want."
             )
         return str(data_type)
 
-    #: How far the intraday hive predicate widens the window at each edge.
-    #: The ``date=`` key is a session date in the writer's exchange time zone
-    #: while window edges arrive as naive UTC datetimes, and the two can
-    #: disagree by up to a day. One day of slack over-includes at most two
-    #: partitions, which the ``timestamp`` predicate trims exactly; without it
-    #: the tail of the window's first session would be silently lost.
+    #: How far the intraday ``date`` filter widens the window at each edge.
+    #: The ``date=`` key is a session date in the exchange's time zone, while
+    #: window edges are naive UTC datetimes, and the two can differ by up to a
+    #: day. One day of slack reads at most two extra partitions, which the
+    #: ``timestamp`` filter then trims exactly. Without it, the end of the
+    #: window's first session could be silently lost.
     SESSION_DATE_SLACK = timedelta(days=1)
 
     def _session_date_window_predicate(self, start, end) -> pl.Expr:
-        """Return the ``date`` predicate widened by ``SESSION_DATE_SLACK``."""
+        """Return the ``date`` filter for the window, widened by ``SESSION_DATE_SLACK`` on each side."""
         return (
             pl.col("date") >= pl.lit((start - self.SESSION_DATE_SLACK).date())
         ) & (pl.col("date") <= pl.lit((end + self.SESSION_DATE_SLACK).date()))
@@ -239,7 +274,17 @@ class StockDataset(MarketDataset):
         """Check the scanned ``vendor`` column holds one value, then drop it.
 
         This runs before ``dedup_raw_frame``, which would otherwise collapse
-        two vendors' overlapping rows and destroy the evidence of a merge.
+        two vendors' overlapping rows and hide the fact that they were mixed.
+
+        Parameters
+        ----------
+        data : pl.LazyFrame
+            The raw scan, still carrying the ``vendor`` column.
+
+        Returns
+        -------
+        pl.LazyFrame
+            The same scan without the ``vendor`` column.
 
         Raises
         ------
@@ -259,10 +304,10 @@ class StockDataset(MarketDataset):
                 f"{self.config.raw_data_dir_path!r} holds rows from "
                 f"{len(vendors)} vendors ({sorted(map(str, vendors))}) but is "
                 f"configured for {self.config.vendor!r} alone. Merging two "
-                f"vendors' bars produces an untraceable blended price series "
-                f"-- dedup on (timestamp, symbol) would then collapse the "
-                f"overlaps arbitrarily. Separate the vendors into sibling "
-                f"roots (D-11) rather than relaxing this assertion."
+                f"vendors' bars produces a blended price series that cannot "
+                f"be traced; deduplication on (timestamp, symbol) would then "
+                f"collapse the overlaps arbitrarily. Put each vendor in its "
+                f"own sibling directory rather than relaxing this check."
             )
         if vendors and str(vendors[0]) != self.config.vendor:
             raise ValueError(
@@ -278,12 +323,18 @@ class StockDataset(MarketDataset):
     def has_raw_data(self) -> bool:
         """Return whether the raw tree holds at least one shard to convert.
 
-        This is the single raw-presence check: ``_scan_raw`` uses it to tell
-        an absent root from a window that pruned to nothing, and the ingest
-        shells call it to refuse a conversion before it starts. It accounts
-        for the tick layout's ``data_type`` descent, which a bare check of
-        ``config.raw_data_dir_path`` would miss. It only stats the directory
-        and opens no parquet file.
+        This is the one place that checks whether raw data exists.
+        ``_scan_raw`` uses it to tell a missing root apart from a window that
+        simply has no rows, and the ingest scripts call it to refuse a
+        conversion before it starts. It looks inside the tick layout's
+        ``data_type=`` subdirectory, which a plain check of
+        ``config.raw_data_dir_path`` would miss. It only lists files and
+        opens no parquet file.
+
+        Returns
+        -------
+        bool
+            True if at least one ``.pqt`` shard exists below the scan root.
 
         Examples
         --------
@@ -297,42 +348,51 @@ class StockDataset(MarketDataset):
         return root.exists() and any(root.rglob(f"*{self.RAW_SHARD_SUFFIX}"))
 
     def _scan_raw(self, start_date=None, end_date=None) -> pl.LazyFrame:
-        """Return the lazy scan of the raw tree for a window, uncollected.
+        """Return the lazy (not yet collected) scan of the raw tree for a window.
 
-        Scans the shards, prunes partitions with the hive predicate, trims
-        the exact edges with a ``timestamp`` predicate, asserts single-vendor
-        provenance, drops the derived hive keys, sorts, and (except for tick
-        data) deduplicates on ``(timestamp, symbol)``. ``None`` for either
-        edge means the config's own edge.
+        The scan skips partitions outside the window using the hive keys,
+        trims the exact edges with a ``timestamp`` filter, checks that all
+        rows come from the configured vendor, drops the hive metadata
+        columns, and sorts. Except for tick data, it then removes duplicate
+        ``(timestamp, symbol)`` rows, keeping the last.
+
+        Parameters
+        ----------
+        start_date, end_date : date-like, optional
+            Inclusive window edges. ``None`` means the config's own edge.
+
+        Returns
+        -------
+        pl.LazyFrame
+            The filtered, sorted scan.
 
         Raises
         ------
         ValueError
-            If the raw tree is absent or empty.
+            If the vendor is unset or does not match the root, if the raw
+            tree is missing or empty, or if the rows come from another vendor.
         """
         self._assert_vendor_root()
         root = self._scan_root()
 
-        # An absent root would fail inside polars with an unhelpful schema
-        # error; a window that prunes to nothing is fine and yields an empty
-        # frame.
+        # A missing root would fail inside polars with an unhelpful schema
+        # error. A window with no rows is fine and yields an empty frame.
         if not self.has_raw_data():
             raise ValueError(
                 f"{self.__class__.__name__}: no raw data for vendor "
                 f"{self.config.vendor!r} at frequency "
                 f"{self.config.frequency!r} under {str(root)!r}. Fetch it "
                 f"first (e.g. `uv run python ingest_us_equity.py`) before "
-                f"converting. This is the absent-root case; a window that "
-                f"merely prunes to zero rows returns an empty frame instead."
+                f"converting. This means the raw root is missing; a window "
+                f"that merely has zero rows returns an empty frame instead."
             )
 
-        # A recursive glob over the shard suffix rather than the bare
-        # directory: polars refuses a directory holding mixed extensions, and
-        # a stray `.DS_Store` is enough to trigger that. Directory pruning
-        # still works with the glob. `hive_schema` is passed explicitly so a
-        # numeric-looking key is not inferred as an integer, and the
-        # `extra_columns`/`missing_columns` defaults are left raising: a
-        # mixed-schema scan is a shard written outside the expected columns.
+        # Glob for the shard suffix instead of passing the bare directory:
+        # polars refuses a directory with mixed file types, and one stray
+        # `.DS_Store` is enough. Partition skipping still works with a glob.
+        # `hive_schema` stops numeric-looking keys being read as integers.
+        # Polars' default of raising on extra or missing columns is kept, so a
+        # shard with unexpected columns is an error.
         data = pl.scan_parquet(
             str(root / "**" / f"*{self.RAW_SHARD_SUFFIX}"),
             hive_partitioning=True,
@@ -346,9 +406,9 @@ class StockDataset(MarketDataset):
             self.config.end_date if end_date is None else end_date
         )
 
-        # Both predicates are needed: the hive one prunes partitions at plan
-        # time (a `timestamp` predicate cannot), and the timestamp one trims
-        # the two partially covered edge partitions exactly.
+        # Both filters are needed. The hive filter skips whole partitions
+        # before reading (a `timestamp` filter cannot), and the timestamp
+        # filter trims the two partly covered edge partitions exactly.
         data = data.filter(self._hive_window_predicate(start, end))
         data = data.filter(
             pl.col("timestamp") >= pl.lit(start),
@@ -356,9 +416,9 @@ class StockDataset(MarketDataset):
         )
 
         data = self._assert_single_vendor_and_drop(data)
-        # Drop only the derived keys; `symbol` is a real data column that the
-        # tick layout expresses as a path segment. Iterates the materialised
-        # set so `data_type` is dropped too on the tick path.
+        # Drop only the metadata keys; `symbol` is real data that the tick
+        # layout stores as a directory name. Loop over every key polars
+        # created so `data_type` is dropped too for tick data.
         data = data.drop(
             [
                 key
@@ -369,27 +429,44 @@ class StockDataset(MarketDataset):
 
         data = data.sort(by=["timestamp", "symbol"])
         if self.config.frequency == "tick":
-            # Tick data has no dense-panel form, and many genuine quotes or
-            # trades share one (timestamp, symbol), so it is not deduplicated.
+            # Many genuine quotes or trades share one (timestamp, symbol), and
+            # tick data never becomes a dense panel, so it is not deduplicated.
             return data
         return dedup_raw_frame(data, keep="last")
 
     @staticmethod
     def _as_datetime(value) -> datetime:
-        """Normalise a window edge to a naive ``datetime``.
+        """Convert a window edge to a naive ``datetime``.
 
-        An ISO date string resolves to midnight of that date, so an inclusive
-        ``<=`` end edge keeps that whole day's daily bar. A ``pd.Timestamp``
-        from the chunk planner passes through with its time of day intact.
+        An ISO date string becomes midnight of that date, so an inclusive
+        ``<=`` end edge still keeps that day's daily bar. A ``pd.Timestamp``
+        passed by the chunked conversion keeps its time of day.
+
+        Parameters
+        ----------
+        value : str, date, datetime or pd.Timestamp
+            The window edge.
+
+        Returns
+        -------
+        datetime
+            The same instant as a Python ``datetime``.
         """
         return pd.Timestamp(value).to_pydatetime()
 
     def _raw_axes_in_range(self) -> tuple[list, pd.DatetimeIndex]:
-        """Return ``(pinned_symbols, observed_timestamps)`` from one lazy scan.
+        """Return the symbol axis and the observed timestamps of the raw data.
 
-        Only the two axis columns are collected; nothing is densified. The
-        symbol order comes from ``sort_symbol_axis`` and the label type is the
-        raw ``symbol`` column's own.
+        Only the two axis columns are collected, so no dense panel is built.
+        Symbols are ordered by ``sort_symbol_axis`` and keep the dtype of the
+        raw ``symbol`` column.
+
+        Returns
+        -------
+        symbols : list
+            Every symbol in the configured range, sorted.
+        timestamps : pd.DatetimeIndex
+            Every distinct timestamp in the configured range, sorted.
         """
         scan = self._scan_raw()
         symbols = sort_symbol_axis(
@@ -403,13 +480,26 @@ class StockDataset(MarketDataset):
     def _added_symbols_with_raw_history(
         self, added: list, start, end
     ) -> dict[str, int]:
-        """Count raw rows each of ``added`` carries in the closed window.
+        """Count the raw rows each symbol in ``added`` has inside a window.
 
-        The hive-pruned version of the base class probe: the symbol predicate
-        is pushed into the scan and only a group-by is collected. Symbols are
-        compared as text because the raw ``symbol`` column is stored as
-        strings even when the pinned axis is integer-typed; without the cast
-        the probe would find no rows and steer ``update`` to ``widen``.
+        This overrides the base-class check with a cheaper one: the symbol
+        filter runs inside the parquet scan and only a per-symbol count is
+        collected. Symbols are compared as text because the raw ``symbol``
+        column holds strings even when the stored symbol axis is integer.
+        Without that conversion no rows would match, and ``update`` would
+        wrongly treat the symbols as new listings with no history.
+
+        Parameters
+        ----------
+        added : list
+            Symbols that are new relative to the stored panel.
+        start, end : date-like
+            Inclusive window edges.
+
+        Returns
+        -------
+        dict of str to int
+            Row count per symbol that has at least one row.
         """
         wanted = [str(symbol) for symbol in added]
         if not wanted:
@@ -432,8 +522,21 @@ class StockDataset(MarketDataset):
     ) -> xr.Dataset:
         """Return the dense panel for one window, reindexed onto ``symbols``.
 
-        Only the window's partitions are scanned, so memory is bounded by the
-        window rather than by the whole configured range.
+        Only the window's partitions are scanned, so memory use depends on
+        the window size, not on the whole configured range.
+
+        Parameters
+        ----------
+        start_date, end_date : date-like
+            Inclusive window edges.
+        symbols : list of str, optional
+            If given, the result has exactly these symbols, in this order;
+            a symbol with no rows becomes an all-NaN column.
+
+        Returns
+        -------
+        xr.Dataset
+            The panel for the window.
         """
         data = self._scan_raw(start_date, end_date)
         data = data.collect().to_pandas().set_index(["timestamp", "symbol"])
@@ -443,7 +546,7 @@ class StockDataset(MarketDataset):
         return data
 
     def _raw_data_to_xr(self) -> xr.Dataset:
-        """Return the dense panel for the config's whole date range."""
+        """Return the dense panel for the whole configured date range."""
         with Timer(f" {self.__class__.__name__}: from pqt"):
             return self._raw_data_to_xr_window(
                 self.config.start_date, self.config.end_date, symbols=None
@@ -452,7 +555,25 @@ class StockDataset(MarketDataset):
     def _to_kunquant(
         self, data: xr.Dataset, data_columns: tuple
     ) -> tuple[dict, np.ndarray, np.ndarray]:
-        """Export the requested columns as contiguous ``[time, symbol]`` arrays."""
+        """Export the requested columns as float32 arrays for KunQuant.
+
+        Parameters
+        ----------
+        data : xr.Dataset
+            The panel to export.
+        data_columns : tuple of str
+            Variables to export.
+
+        Returns
+        -------
+        input_dict : dict of str to np.ndarray
+            One C-contiguous float32 array of shape ``[time, symbol]`` per
+            column.
+        symbols : np.ndarray
+            Symbol labels of the second axis.
+        timestamp : np.ndarray
+            Timestamps of the first axis.
+        """
         with Timer(f"{self.__class__.__name__}: to kunquant"):
             data = data.sortby(["timestamp", "symbol"])
             timestamp = data["timestamp"].values

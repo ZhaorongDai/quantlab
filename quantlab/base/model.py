@@ -424,8 +424,33 @@ class BaseModel(ABC):
         self.data_backend.to_internal(d)  # type: ignore
         return self
 
+    @staticmethod
+    def _variable_names(obj) -> tuple[str, ...]:
+        """Return the variables a factor or label object actually provides.
+
+        This is ``obj.get_factor_names()``, i.e. ``config.factor_names``: a
+        factor pinned to a subset computes only that subset, and ``Factor``
+        fills an unset ``config.factor_names`` from ``_get_factor_names()``.
+        Objects without ``get_factor_names`` (lightweight stand-ins) fall back
+        to ``_get_factor_names()``.
+
+        Examples
+        --------
+        >>> alpha158.config.factor_names       # pinned to two features
+        ('KMID', 'STD5')
+        >>> BaseModel._variable_names(alpha158)
+        ('KMID', 'STD5')
+        """
+        getter = getattr(obj, "get_factor_names", None)
+        if callable(getter):
+            return tuple(getter())
+        return tuple(obj._get_factor_names())
+
     def get_factor_names(self):
         """Return the feature variable names, in factor order then variable order.
+
+        Each factor contributes its pinned ``config.factor_names`` when set,
+        else every name its class can produce (see ``_variable_names``).
 
         Examples
         --------
@@ -434,7 +459,7 @@ class BaseModel(ABC):
         """
         return list(
             chain.from_iterable(
-                [factor._get_factor_names() for factor in self.config.factors]
+                [self._variable_names(factor) for factor in self.config.factors]
             )
         )
 
@@ -448,7 +473,7 @@ class BaseModel(ABC):
         """
         return list(
             chain.from_iterable(
-                [label._get_factor_names() for label in self.config.labels]
+                [self._variable_names(label) for label in self.config.labels]
             )
         )
 

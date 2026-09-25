@@ -158,10 +158,9 @@ threads (the default is 128). Pinning `factor_names` keeps the compiled graph
 small, and the full Alpha158 set compiles noticeably more slowly. Without the
 pin, `factor_names` resolves to all 169 names as soon as the object is built.
 
-`Alpha101Stock` currently fails in `cal()`, because it does not supply the
-`amount` (dollar volume) input the Alpha101 library requires and the US-equity
-stores carry no such column. Use `Alpha158Stock` for US equities until this is
-fixed.
+The US-equity stores carry no dollar-volume (`amount`) column, so
+`Alpha101Stock` and `Alpha158Stock` both use the adjusted typical price
+`(adjHigh + adjLow + adjClose) / 3` as VWAP.
 
 `ResidualMomentumFF3` expects a monthly panel that already carries each
 stock's return and the Fama-French market, size and value factors
@@ -450,12 +449,10 @@ combines with point-in-time index membership.
 - A KunQuant graph's `Input` names must match `data_columns`, which name
   variables in the store. The graph for a US-equity store reads `adjClose`,
   not `close`.
-- When a factor feeds a model, the model asks the factor class for every name
-  it can produce, not only the pinned `factor_names`. A built-in set with
-  pinned names, such as `Alpha158Stock` limited to three features, therefore
-  makes model training fail with a `KeyError` on the first missing feature.
-  Feed models the full set, or a subclass whose `_get_factor_names` returns
-  exactly the outputs you want (as in `examples/train_model.py`).
+- When a factor feeds a model, the model uses the factor's pinned
+  `factor_names`, so a built-in set limited to a few features, such as
+  `Alpha158Stock` with three, trains on exactly those three. An unpinned
+  factor contributes every name its class can produce.
 
 ## See also
 

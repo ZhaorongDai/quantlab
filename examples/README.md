@@ -16,6 +16,12 @@ uv run python examples/quickstart.py
 | [`train_model.py`](train_model.py) | A custom factor, a forward-return label, training and evaluating an XGBoost model, reloading it from its checkpoint, and walk-forward cross-validation | [Factors](../docs/user-guide/factors.md), [Models](../docs/user-guide/models.md) |
 | [`backtest.py`](backtest.py) | Long-only and long/short backtests, a delisted holding, rebuilding a run, and backtesting cross-validation folds as one stitched curve | [Backtesting](../docs/user-guide/backtesting.md) |
 
+## Real data
+
+| Script | What it shows | Guide |
+|--------|---------------|-------|
+| [`wrds_us_equity/pipeline.py`](wrds_us_equity/pipeline.py) | The full pipeline on CRSP daily data for the point-in-time S&P 500: Alpha101 + Alpha158 factors, a forward-return label, an `xgb`, `xgb_td` or `realmlp` model (single split or walk-forward), and a TopN backtest. Needs a WRDS account and a converted CRSP store; settings are a dataclass at the top of the script | [README](wrds_us_equity/README.md), [WRDS](../docs/wrds_crsp.md) |
+
 The prices are random walks, sometimes with a small planted effect so the model has something
 to find. The numbers the scripts print show what the output looks like; they say nothing about
 real markets.

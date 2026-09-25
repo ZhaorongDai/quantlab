@@ -1,4 +1,9 @@
-"""Binance spot klines as a ``(timestamp, symbol)`` panel.
+"""Binance spot klines loaded as a ``(timestamp, symbol)`` panel.
+
+A *kline* (candlestick) is one bar of open, high, low, close and volume
+(OHLCV) for a trading pair over a fixed interval. A *panel* is an
+``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``, the format every
+quantlab layer exchanges.
 
 ``SpotKlineDataset`` reads the monthly, header-less CSV files that Binance
 publishes for spot markets, stacks them into one panel per configured date
@@ -24,10 +29,16 @@ class SpotKlineDataset(MarketDataset):
     """Binance spot kline dataset built from monthly CSV files.
 
     The raw directory holds one header-less CSV per symbol and month, named
-    ``<SYMBOL>-...csv``; the columns come from ``BinanceCSVHeaders.SPOT`` and
-    the symbol from the file name. Column names keep Binance's Title-Case
-    (``Open``, ``High``, ...), and ``_to_kunquant`` maps them onto KunQuant's
-    lowercase vocabulary.
+    ``<SYMBOL>-...csv``. The column names come from
+    ``BinanceCSVHeaders.SPOT`` and the symbol comes from the file name.
+    Columns keep Binance's Title-Case spelling (``Open``, ``High``, ...);
+    ``_to_kunquant`` renames them to the lowercase names KunQuant expects.
+
+    Parameters
+    ----------
+    dataset_config : DatasetConfig
+        Paths (raw CSV directory, Zarr store, Nautilus catalog), market,
+        frequency and date range of the dataset.
 
     Examples
     --------
@@ -42,19 +53,29 @@ class SpotKlineDataset(MarketDataset):
     """
 
     # Binance columns are Title-Case, so the schema check cannot use the
-    # shared lowercase default; `_clean()` passes these names instead.
+    # shared lowercase default names; ``_clean`` passes these instead.
     _RAW_REQUIRED_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
 
     def __init__(self, dataset_config: DatasetConfig):
-        """Create the dataset from a ``DatasetConfig``."""
+        """Initialize the dataset; see the class docstring for parameters."""
         super().__init__(dataset_config)
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
-        """Validate the Title-Case OHLCV schema and add ``anomaly_flag``.
+        """Check the Title-Case OHLCV columns exist and add ``anomaly_flag``.
 
         ``flag_anomalies`` only inspects lowercase price columns, so on this
-        panel it adds an all-``False`` flag; it is kept for a consistent
-        variable set across datasets.
+        panel the flag is always ``False``. It is still added so every
+        dataset carries the same set of variables.
+
+        Parameters
+        ----------
+        data : xr.Dataset
+            The raw panel.
+
+        Returns
+        -------
+        xr.Dataset
+            The same panel with an ``anomaly_flag`` variable.
         """
         data = validate_schema(data, required_columns=self._RAW_REQUIRED_COLUMNS)
         data = flag_anomalies(data)
@@ -68,17 +89,27 @@ class SpotKlineDataset(MarketDataset):
     ) -> xr.Dataset:
         """Return the dense panel for one time window.
 
-        This is a non-memory-bounded implementation: it converts the whole
-        configured range through ``_raw_data_to_xr`` and slices afterwards,
-        so a chunked run bounds the write but not the densification, and pays
-        one whole-range conversion per window. A bounded version would push
-        the window down over the monthly file list with ``file_date_filter``
-        before materialising, the way ``StockDataset`` pushes predicates into
-        its parquet scan.
+        This is a non-memory-bounded implementation. It converts the whole
+        configured range with ``_raw_data_to_xr`` and slices afterwards, so
+        a chunked build limits the size of each write but not of the
+        conversion, and repeats the full conversion for every window. A
+        bounded version would filter the monthly file list by date with
+        ``file_date_filter`` before loading, the way ``StockDataset``
+        filters inside its parquet scan.
 
-        When ``symbols`` is given the result is reindexed onto exactly that
-        axis; a symbol with no row in the window comes back as an all-NaN
-        column rather than being dropped.
+        Parameters
+        ----------
+        start_date, end_date : date-like
+            Inclusive bounds of the window.
+        symbols : list of str, optional
+            If given, the result has exactly these symbols, in this order. A
+            symbol with no row in the window becomes an all-NaN column
+            instead of being dropped.
+
+        Returns
+        -------
+        xr.Dataset
+            The panel restricted to the window.
         """
         data = self._raw_data_to_xr()
         data = data.sel(timestamp=slice(start_date, end_date))
@@ -90,10 +121,22 @@ class SpotKlineDataset(MarketDataset):
     def _spot_kline_to_df(csv_file: Path, before_2025: bool) -> pl.LazyFrame:
         """Scan one monthly kline CSV into a ``LazyFrame`` with a ``symbol`` column.
 
-        Binance switched the ``Open time`` epoch unit from milliseconds to
-        microseconds in 2025, so ``before_2025`` selects the parse; both
-        paths yield microsecond timestamps. The symbol is the file name's
-        first dash-separated token.
+        Binance changed the unit of ``Open time`` from milliseconds to
+        microseconds in 2025, so ``before_2025`` picks the right parse. Both
+        paths return microsecond timestamps. The symbol is the part of the
+        file name before the first dash.
+
+        Parameters
+        ----------
+        csv_file : Path
+            One monthly kline CSV file.
+        before_2025 : bool
+            True if the file covers a month before 2025 (millisecond epochs).
+
+        Returns
+        -------
+        pl.LazyFrame
+            The file's rows with a parsed ``Open time`` and a ``symbol`` column.
         """
         df = pl.scan_csv(
             str(csv_file), has_header=False, new_columns=BinanceCSVHeaders.SPOT
@@ -115,11 +158,17 @@ class SpotKlineDataset(MarketDataset):
         return df
 
     def _raw_data_to_xr(self) -> xr.Dataset:
-        """Stack the CSV files in the config's date range into a dense panel.
+        """Stack the CSV files in the configured date range into a dense panel.
 
-        Files are selected by the date in their name, concatenated, sorted and
-        deduplicated on ``(timestamp, symbol)`` keeping the last row before the
-        pandas ``to_xarray`` densification.
+        Files are selected by the date in their name, concatenated and sorted.
+        Duplicate ``(timestamp, symbol)`` rows keep the last occurrence. The
+        result is then turned into a dense panel with pandas ``to_xarray``,
+        so missing ``(timestamp, symbol)`` cells become NaN.
+
+        Returns
+        -------
+        xr.Dataset
+            The dense panel for the configured date range.
 
         Raises
         ------
@@ -165,11 +214,27 @@ class SpotKlineDataset(MarketDataset):
     def _to_kunquant(
         self, data: xr.Dataset, data_columns: tuple
     ) -> tuple[dict, np.ndarray, np.ndarray]:
-        """Rename Binance columns to KunQuant's and export float32 arrays.
+        """Rename Binance columns to KunQuant's names and export float32 arrays.
 
-        ``Quote asset volume`` becomes ``amount``; the OHLCV columns are
-        lowercased. Each requested column is returned as a contiguous
-        ``[time, symbol]`` float32 array.
+        ``Quote asset volume`` (traded value in the quote currency) becomes
+        ``amount`` and the OHLCV columns are lowercased.
+
+        Parameters
+        ----------
+        data : xr.Dataset
+            The panel to export.
+        data_columns : tuple of str
+            KunQuant input names to export, e.g. ``("open", "close")``.
+
+        Returns
+        -------
+        input_dict : dict of str to np.ndarray
+            One C-contiguous float32 array of shape ``[time, symbol]`` per
+            requested column.
+        symbols : np.ndarray
+            Symbol labels of the second axis.
+        timestamp : np.ndarray
+            Timestamps of the first axis.
         """
         with Timer(f"{self.__class__.__name__}: to kunquant"):
             data = data.rename(
