@@ -1,0 +1,81 @@
+{
+  "whole": {
+    "Start": "2025-01-13T00:00:00",
+    "End": "2025-12-31T00:00:00",
+    "Period": "244 days 00:00:00",
+    "Start Value": 1000000.0,
+    "End Value": 1068309.1146814818,
+    "Total Return [%]": 6.83091146814818,
+    "Max Gross Exposure [%]": 100.00000000000036,
+    "Total Fees Paid": 25065.20494048725,
+    "Max Drawdown [%]": 24.375267172350448,
+    "Max Drawdown Duration": "118 days 00:00:00",
+    "Total Trades": 7391,
+    "Total Closed Trades": 7191,
+    "Total Open Trades": 200,
+    "Open Trade PnL": -11048.087758326139,
+    "Win Rate [%]": 57.182589347795854,
+    "Best Trade [%]": 607.072065115147,
+    "Worst Trade [%]": -83.61126403261784,
+    "Avg Winning Trade [%]": 8.493329968166554,
+    "Avg Losing Trade [%]": -5.4148749895294115,
+    "Avg Winning Trade Duration": "13 days 03:31:31.050583657",
+    "Avg Losing Trade Duration": "12 days 09:01:06.645014615",
+    "Profit Factor": 1.1119111393361512,
+    "Expectancy": 11.035628207454877,
+    "Sharpe Ratio": 0.42387773926909605,
+    "Calmar Ratio": 0.2897448287030653,
+    "Omega Ratio": 1.0812164000129805,
+    "Sortino Ratio": 0.6277874888661316,
+    "turnover": {
+      "mean_per_rebalance": 0.9969078202956104,
+      "sum": 48.84848319448491,
+      "annualized": 50.244154142898765
+    }
+  },
+  "in_sample": null,
+  "out_of_sample": {
+    "Start": "2025-01-13T00:00:00",
+    "End": "2025-12-31T00:00:00",
+    "Period": "244 days 00:00:00",
+    "Total Return [%]": 6.830911468148382,
+    "Annualized Return [%]": 7.062607611444127,
+    "Annualized Volatility [%]": 21.51511180035667,
+    "Max Drawdown [%]": 24.375267172350433,
+    "Max Drawdown Duration": "118 days 00:00:00",
+    "Sharpe Ratio": 0.42387773926909605,
+    "Calmar Ratio": 0.2897448287030653,
+    "Omega Ratio": 1.0812164000129805,
+    "Sortino Ratio": 0.6277874888661316,
+    "Skew": 0.5810576696859647,
+    "Kurtosis": 9.039627307832799,
+    "Tail Ratio": 1.057989708081001,
+    "Common Sense Ratio": 1.1327113697322253,
+    "Value at Risk": -0.019272919043400893,
+    "order_count": 14482,
+    "fees_paid": 25065.20494048774,
+    "traded_notional": 50130409.8809755,
+    "closed_trade_count": 7191,
+    "open_trade_count": 200,
+    "turnover": {
+      "mean_per_rebalance": 0.9969078202956104,
+      "sum": 48.84848319448491,
+      "annualized": 50.244154142898765
+    }
+  },
+  "training_window": [
+    "2016-01-04",
+    "2025-01-08"
+  ],
+  "in_sample_range": null,
+  "out_of_sample_ranges": [
+    [
+      "2025-01-13",
+      "2025-12-31"
+    ]
+  ],
+  "trained_checkpoint": "/home/zhrdai/projects/quantlab2/model_ckpt/XGBoostRegressor_trial_20260916_084043_269968/XGBoostRegressor_total/XGBoostRegressor_total.joblib",
+  "notes": [
+    "No borrow or short-financing cost is modelled, so short-side returns are optimistic."
+  ]
+}

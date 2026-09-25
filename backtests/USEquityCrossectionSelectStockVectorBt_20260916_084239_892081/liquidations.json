@@ -1,0 +1,74 @@
+[
+  {
+    "symbol": "CFB",
+    "signal_timestamp": "2025-03-05T00:00:00",
+    "fill_timestamp": "2025-03-06T00:00:00",
+    "price": 15.99
+  },
+  {
+    "symbol": "ALTR",
+    "signal_timestamp": "2025-03-26T00:00:00",
+    "fill_timestamp": "2025-03-27T00:00:00",
+    "price": 111.85
+  },
+  {
+    "symbol": "ACCD",
+    "signal_timestamp": "2025-04-09T00:00:00",
+    "fill_timestamp": "2025-04-10T00:00:00",
+    "price": 7.02
+  },
+  {
+    "symbol": "ATSG",
+    "signal_timestamp": "2025-04-16T00:00:00",
+    "fill_timestamp": "2025-04-17T00:00:00",
+    "price": 22.48
+  },
+  {
+    "symbol": "AGS",
+    "signal_timestamp": "2025-06-30T00:00:00",
+    "fill_timestamp": "2025-07-01T00:00:00",
+    "price": 12.48
+  },
+  {
+    "symbol": "ESGR",
+    "signal_timestamp": "2025-07-08T00:00:00",
+    "fill_timestamp": "2025-07-09T00:00:00",
+    "price": 337.91
+  },
+  {
+    "symbol": "AMED",
+    "signal_timestamp": "2025-08-19T00:00:00",
+    "fill_timestamp": "2025-08-20T00:00:00",
+    "price": 101.02
+  },
+  {
+    "symbol": "PPBI",
+    "signal_timestamp": "2025-09-03T00:00:00",
+    "fill_timestamp": "2025-09-04T00:00:00",
+    "price": 24.49
+  },
+  {
+    "symbol": "AACT",
+    "signal_timestamp": "2025-09-24T00:00:00",
+    "fill_timestamp": "2025-09-25T00:00:00",
+    "price": 9.25
+  },
+  {
+    "symbol": "AKRO",
+    "signal_timestamp": "2025-12-11T00:00:00",
+    "fill_timestamp": "2025-12-12T00:00:00",
+    "price": 54.65
+  },
+  {
+    "symbol": "NETD",
+    "signal_timestamp": "2025-12-11T00:00:00",
+    "fill_timestamp": "2025-12-12T00:00:00",
+    "price": 11.52
+  },
+  {
+    "symbol": "ALE",
+    "signal_timestamp": "2025-12-18T00:00:00",
+    "fill_timestamp": "2025-12-19T00:00:00",
+    "price": 67.97
+  }
+]

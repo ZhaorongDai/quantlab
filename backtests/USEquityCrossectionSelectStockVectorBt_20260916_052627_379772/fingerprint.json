@@ -1,0 +1,55 @@
+{
+  "train_factor[0]:Alpha101Stock": {
+    "algorithm": "sha256",
+    "digest": "7131e686d5aaba715ed2dd93bb4fad15e34f6c44d411d4329559932d21748cc9",
+    "variables": [
+      "adjClose",
+      "adjHigh",
+      "adjLow",
+      "adjOpen",
+      "adjVolume"
+    ],
+    "start": "2015-04-24T00:00:00",
+    "end": "2025-12-31T00:00:00",
+    "n_timestamps": 2689,
+    "n_symbols": 14430
+  },
+  "train_label[0]:Return": {
+    "algorithm": "sha256",
+    "digest": "c8ab04eabb9e5f179c6da2753c6562087a407f2a3caa50c409065f10170b26f4",
+    "variables": [
+      "adjClose"
+    ],
+    "start": "2015-12-28T00:00:00",
+    "end": "2025-12-31T00:00:00",
+    "n_timestamps": 2518,
+    "n_symbols": 14430
+  },
+  "factor[0]:Alpha101Stock": {
+    "algorithm": "sha256",
+    "digest": "dd0bda4d77cdb24d3bbf1b628fcd3b21b5bef6f3ebab0699d0ca5f4fe9c543e8",
+    "variables": [
+      "adjClose",
+      "adjHigh",
+      "adjLow",
+      "adjOpen",
+      "adjVolume"
+    ],
+    "start": "2023-05-03T00:00:00",
+    "end": "2025-12-31T00:00:00",
+    "n_timestamps": 669,
+    "n_symbols": 14430
+  },
+  "price_dataset": {
+    "algorithm": "sha256",
+    "digest": "9c8402f1ff377484b2bab4440d9210ab69f413db694a1a4fad9f87af98339a3a",
+    "variables": [
+      "adjClose",
+      "adjOpen"
+    ],
+    "start": "2025-01-13T00:00:00",
+    "end": "2025-12-31T00:00:00",
+    "n_timestamps": 244,
+    "n_symbols": 14430
+  }
+}

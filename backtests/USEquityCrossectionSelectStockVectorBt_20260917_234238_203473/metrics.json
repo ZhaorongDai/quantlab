@@ -1,0 +1,115 @@
+{
+  "whole": {
+    "Start": "2010-01-11T00:00:00",
+    "End": "2026-06-01T00:00:00",
+    "Period": "4125 days 00:00:00",
+    "Start Value": 1000000.0,
+    "End Value": 2634209.881992438,
+    "Total Return [%]": 163.42098819924382,
+    "Max Gross Exposure [%]": 102.80593187344714,
+    "Total Fees Paid": 1307609.5566817147,
+    "Max Drawdown [%]": 62.88178508897172,
+    "Max Drawdown Duration": "2662 days 00:00:00",
+    "Total Trades": 327490,
+    "Total Closed Trades": 327490,
+    "Total Open Trades": 0,
+    "Open Trade PnL": 0.0,
+    "Win Rate [%]": 50.88613392775352,
+    "Best Trade [%]": 1925.9123532507444,
+    "Worst Trade [%]": -29177.160317880476,
+    "Avg Winning Trade [%]": 6.335283255712895,
+    "Avg Losing Trade [%]": -6.0079199726766594,
+    "Avg Winning Trade Duration": "7 days 01:59:46.390394066",
+    "Avg Losing Trade Duration": "7 days 21:06:38.244250604",
+    "Profit Factor": 1.0399982336221207,
+    "Expectancy": 4.990106207807315,
+    "Sharpe Ratio": 0.5250994899319111,
+    "Calmar Ratio": 0.09693955182273196,
+    "Omega Ratio": 1.2134037152254749,
+    "Sortino Ratio": 0.5641913006751186,
+    "turnover": {
+      "mean_per_rebalance": 1.3530532429483653,
+      "sum": 1108.1506059747112,
+      "annualized": 68.19388344459762
+    },
+    "order_count": 780019
+  },
+  "in_sample": {
+    "Start": "2010-01-11T00:00:00",
+    "End": "2017-01-09T00:00:00",
+    "Period": "1762 days 00:00:00",
+    "Total Return [%]": 119.47071358814742,
+    "Annualized Return [%]": 11.898286859283935,
+    "Annualized Volatility [%]": 19.23397670046542,
+    "Max Drawdown [%]": 52.75147488046803,
+    "Max Drawdown Duration": "299 days 00:00:00",
+    "Sharpe Ratio": 0.7269623722102573,
+    "Calmar Ratio": 0.22555363402150946,
+    "Omega Ratio": 1.5108757961900277,
+    "Sortino Ratio": 0.7484299004686138,
+    "Skew": -37.13127237500253,
+    "Kurtosis": 1496.4210216195734,
+    "Tail Ratio": 1.6069618094529983,
+    "Common Sense Ratio": 1.7981627352608558,
+    "Value at Risk": -0.004063463612925446,
+    "order_count": 334781,
+    "fees_paid": 564286.9866717891,
+    "traded_notional": 1128573973.3435783,
+    "closed_trade_count": 141677,
+    "open_trade_count": 600,
+    "turnover": {
+      "mean_per_rebalance": 1.3598882324430215,
+      "sum": 480.0405460523866,
+      "annualized": 68.53836691512828
+    }
+  },
+  "out_of_sample": {
+    "Start": "2017-01-10T00:00:00",
+    "End": "2026-06-01T00:00:00",
+    "Period": "2363 days 00:00:00",
+    "Total Return [%]": 20.02557602914998,
+    "Annualized Return [%]": 1.965694746408686,
+    "Annualized Volatility [%]": 7.54033999347084,
+    "Max Drawdown [%]": 23.22634111438983,
+    "Max Drawdown Duration": "873 days 00:00:00",
+    "Sharpe Ratio": 0.29590536970220865,
+    "Calmar Ratio": 0.08463213111043325,
+    "Omega Ratio": 1.0573529337842902,
+    "Sortino Ratio": 0.42119461347468967,
+    "Skew": -0.38500786107741214,
+    "Kurtosis": 10.798605467278126,
+    "Tail Ratio": 1.062971570644235,
+    "Common Sense Ratio": 1.0838663469642067,
+    "Value at Risk": -0.006726687765465439,
+    "order_count": 445238,
+    "fees_paid": 743322.5700103797,
+    "traded_notional": 1486645140.0207596,
+    "closed_trade_count": 185813,
+    "open_trade_count": 0,
+    "turnover": {
+      "mean_per_rebalance": 1.347875665069366,
+      "sum": 628.1100599223246,
+      "annualized": 67.93293351949605
+    }
+  },
+  "training_window": [
+    "2000-01-03",
+    "2017-01-09"
+  ],
+  "in_sample_range": [
+    "2010-01-11",
+    "2017-01-09"
+  ],
+  "out_of_sample_ranges": [
+    [
+      "2017-01-10",
+      "2026-06-01"
+    ]
+  ],
+  "trained_checkpoint": "/home/zhrdai/projects/quantlab2/model_ckpt/XGBoostRegressor_trial_20260917_232033_141814/XGBoostRegressor_total/XGBoostRegressor_total.joblib",
+  "notes": [
+    "No borrow or short-financing cost is modelled, so short-side returns are optimistic.",
+    "The trade metrics are the position level view: one entry to flat round trip per symbol, so a partial trim of a holding is not counted as its own closed trade. Counting every trim as a closed trade is what vectorbt does by default, and it inflates the win rate. The row named order_count is the number of fills that actually happened over the window.",
+    "The two triangles on the equity curve mark the DEEPEST drawdown: the up triangle is its deepest bar, that is its valley, and the down triangle is the bar it recovered. The distance between them is how long it took to get from the bottom back to even, counted in trading days, that is in bars, never in calendar days. It is not the metric named Max Drawdown Duration, which measures the LONGEST drawdown and counts from where that drawdown began, so the two numbers usually differ."
+  ]
+}
