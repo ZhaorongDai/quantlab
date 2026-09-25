@@ -173,9 +173,8 @@ def test_the_fetch_guard_binds_the_shared_pattern_object_not_a_copy():
     The shared object lives in `enums/data.py` because neither module may
     import the other: `base/acquisition.py` importing `quantlab.universe`
     inverts the layering, and `quantlab/universe.py` importing
-    `base.acquisition` breaks `tests/test_volume_guard.py`'s structural
-    assertion that the volume guard lives where no acquisition client can be
-    constructed.
+    `base.acquisition` would drag an acquisition client into the universe
+    module for one regex.
 
     Reddened by: restoring the standalone `re.compile` at
     `base/acquisition.py:34`.

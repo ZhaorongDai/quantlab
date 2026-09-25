@@ -251,8 +251,8 @@ def test_unknown_granularity_lists_the_accepted_values() -> None:
 def test_the_granularity_ladder_carries_five_rungs_coarse_to_fine() -> None:
     """Asserted by TUPLE EQUALITY, not by membership.
 
-    The ladder is an ordered, closed literal: `add_chunk_args` renders it
-    verbatim as `--chunk`'s `choices`, and `_period_key` must answer every
+    The ladder is an ordered, closed literal: a `--chunk` flag renders it
+    verbatim as its `choices`, and `_period_key` must answer every
     member of it. A membership assertion would pass while a rung was missing
     from the CLI or while a sixth rung had appeared with no branch behind it.
     """
