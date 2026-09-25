@@ -17,7 +17,7 @@ phase 03.10:
   window spans two companies. A same-PERMNO rename (FB -> META) is NOT a seam;
 - the QQQ benchmark store (D-15) built by `CrspDatasetConfig.qqq_benchmark`,
   which is DATA ONLY (D-16): nothing here touches the backtester's
-  `benchmark_dataset`, which still raises `NotImplementedError`.
+  `benchmark_dataset`, which consumes the store from the backtest side.
 
 **Every quantlab import is INSIDE a test or helper body.** These tests are
 written before the names they assert on exist, and a module-scope import would
@@ -1116,19 +1116,20 @@ def test_the_equity_store_over_the_same_raw_tier_drops_qqq(
     assert report["dropped_by_type"]["NS/FUND/ETF/ACOR/Y"] == len(QQQ_DAYS)
 
 
-def test_qqq_is_data_only_benchmark_untouched(mock_crsp_session, tmp_path):
-    """D-16: this phase produces QQQ DATA and wires nothing.
+def test_qqq_store_stays_data_and_the_backtester_consumes_it(mock_crsp_session, tmp_path):
+    """D-16, amended when benchmark comparison landed.
 
-    Two halves, because either alone would pass while the promise was broken.
-    The identifier scan proves no CRSP module reaches for the backtester's
-    config slot; the AST check proves the slot is still refused, so a later
-    phase cannot find the guard quietly deleted and assume benchmarking works.
+    The CRSP layer still produces QQQ DATA only: no CRSP module reaches for the
+    backtester's `benchmark_dataset` slot, so the store never learns who reads
+    it. The backtester side changed: the slot used to be refused with
+    `NotImplementedError` (D-08) and now consumes a single-symbol dataset, so
+    the refusal must be gone rather than quietly left beside the new code.
     """
     import ast
 
     root = _repo_root()
-    crsp_files = sorted(root.glob("quantlab/dataset/crsp*.py")) + sorted(
-        root.glob("quantlab/acquisition/wrds*.py")
+    crsp_files = sorted((root / "quantlab" / "dataset" / "crsp").glob("*.py")) + sorted(
+        (root / "quantlab" / "acquisition" / "wrds").glob("*.py")
     )
     cli = root / "scripts" / "ingest_wrds_crsp.py"
     if cli.exists():
@@ -1156,7 +1157,7 @@ def test_qqq_is_data_only_benchmark_untouched(mock_crsp_session, tmp_path):
             for inner in ast.walk(node)
         )
     ]
-    assert refusals, ast.dump(tree)[:400]
+    assert refusals == [], "the D-08 benchmark refusal is back"
 
 
 def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
