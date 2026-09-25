@@ -44,6 +44,12 @@ class ConversionResult:
     ``BaseDataset.from_raw_data_chunked`` publishes an instance on
     ``last_chunk_result`` when it completes, so a caller can render what the
     run did without keeping the config alive.
+
+    Example:
+        >>> ds = DemoDataset(config).from_raw_data_chunked(granularity="month")
+        >>> result = ds.last_chunk_result
+        >>> result.windows_written, result.rows_written, result.resumed
+        (1, 6, False)
     """
 
     #: The Zarr store that was written (``config.zarr_file_path``).
@@ -103,6 +109,11 @@ class BaseDataset(ABC):
             ds = MembershipDataset(config)
             ds.from_raw_data().save()
             panel = MembershipDataset(config).read().get_xarray_dataset()
+
+        The method examples below use ``DemoDataset``, a ``MarketDataset``
+        subclass whose ``_raw_data_to_xr`` returns six business days of
+        synthetic OHLCV bars for ``AAA``, ``BBB`` and ``CCC``, built with a
+        ``DatasetConfig`` covering ``2024-01-02`` to ``2024-01-05``.
     """
 
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
@@ -147,14 +158,24 @@ class BaseDataset(ABC):
 
     @property
     def num_symbols(self) -> int:
-        """Return the number of symbols in the loaded panel."""
+        """Return the number of symbols in the loaded panel.
+
+        Example:
+            >>> ds.num_symbols
+            3
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).symbol.size
 
     @property
     def class_name(self) -> str:
-        """Return the concrete class name, used in log and error messages."""
+        """Return the concrete class name, used in log and error messages.
+
+        Example:
+            >>> ds.class_name
+            'DemoDataset'
+        """
         return self.__class__.__name__
 
     @property
@@ -191,7 +212,12 @@ class BaseDataset(ABC):
 
     @property
     def symbols(self) -> list[str]:
-        """Return the symbol labels of the loaded panel, in axis order."""
+        """Return the symbol labels of the loaded panel, in axis order.
+
+        Example:
+            >>> ds.symbols
+            ['AAA', 'BBB', 'CCC']
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).symbol.values.tolist()
@@ -202,6 +228,10 @@ class BaseDataset(ABC):
 
         The mode is used rather than the minimum so that gaps such as
         weekends do not distort the answer.
+
+        Example:
+            >>> ds.time_interval  # daily bars read back from Zarr
+            np.timedelta64(86400000000000,'ns')
         """
         timestamps = self.data_backend.get_xarray_dataset(["timestamp"])[
             "timestamp"
@@ -215,7 +245,12 @@ class BaseDataset(ABC):
 
     @property
     def import_path(self) -> str:
-        """Return the dotted ``module.QualName`` path of the concrete class."""
+        """Return the dotted ``module.QualName`` path of the concrete class.
+
+        Example:
+            >>> ds.import_path  # for a class defined in a script
+            '__main__.DemoDataset'
+        """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     def _filter(self):
@@ -228,18 +263,34 @@ class BaseDataset(ABC):
 
     @property
     def config(self) -> BaseDatasetConfig:
-        """Return the dataset config."""
+        """Return the dataset config.
+
+        Example:
+            >>> ds.config.start_date, ds.config.end_date
+            ('2024-01-02', '2024-01-05')
+            >>> ds.config.name
+            '__main__.DemoDataset'
+        """
         return self._config
 
     @config.setter
     def config(self, config: BaseDatasetConfig):
-        """Assign the config, filling in defaults and normalising its dates.
+        """Assign the config, filling in defaults and checking its dates.
 
         ``name`` is set to the class's import path, a missing ``start_date``
         or ``end_date`` falls back to ``Date.START_DATE``/``Date.END_DATE``,
-        and both dates are normalised to zero-padded ISO strings. Every date
-        comparison downstream is a plain string comparison, so a value such
-        as ``"2007-2-1"`` would compare wrong rather than fail to match.
+        and both dates must be ISO ``YYYY-MM-DD`` strings (a ``date`` object
+        is accepted and stringified). Every date comparison downstream is a
+        plain string comparison, so a value such as ``"2007-2-1"`` would
+        compare wrong rather than fail to match, and is refused here instead.
+
+        Example:
+            >>> ds.config = dataclasses.replace(ds.config, start_date="2024-01-03")
+            >>> ds.config.start_date
+            '2024-01-03'
+            >>> ds.config = dataclasses.replace(ds.config, start_date="01/02/2024")
+            Traceback (most recent call last):
+            ValueError: DemoDataset: start_date must be an ISO YYYY-MM-DD date ...
         """
         self._config = config
         self._config.name = self.import_path
@@ -287,6 +338,11 @@ class BaseDataset(ABC):
 
         Returns:
             ``self``, for chaining.
+
+        Example:
+            >>> panel = DemoDataset(config).read().get_xarray_dataset()
+            >>> dict(panel.sizes)  # narrowed to the config's four days
+            {'timestamp': 4, 'symbol': 3}
         """
         self.data_backend.read(self.config.zarr_file_path, **kwargs)
         self._filter()
@@ -297,17 +353,32 @@ class BaseDataset(ABC):
 
         The write replaces the whole store directory. Keyword arguments are
         passed to ``XrBackend.write``.
+
+        Example:
+            >>> DemoDataset(config).from_raw_data().save()
+            >>> Path(config.zarr_file_path).is_dir()
+            True
         """
         with Timer(f"{self.__class__.__name__}: save"):
             self._filter()
             self.data_backend.write(self.config.zarr_file_path, **kwargs)
 
     def get_config(self) -> dict:
-        """Return the config as a plain dictionary."""
+        """Return the config as a plain dictionary.
+
+        Example:
+            >>> ds.get_config()["start_date"]
+            '2024-01-02'
+        """
         return self.config.to_dict()  # type: ignore
 
     def get_lazyframe(self) -> pl.LazyFrame:
-        """Return the loaded panel as a long-format polars ``LazyFrame``."""
+        """Return the loaded panel as a long-format polars ``LazyFrame``.
+
+        Example:
+            >>> ds.get_lazyframe().collect().shape  # 4 days x 3 symbols, 8 columns
+            (12, 8)
+        """
         return self.data_backend.get_lazyframe()
 
     def head(self, n: int) -> pl.LazyFrame:
@@ -315,11 +386,20 @@ class BaseDataset(ABC):
 
         The store is opened by path; the loaded panel and the config window
         are left untouched, which makes this safe for probing column names.
+
+        Example:
+            >>> ds.head(2).collect().shape
+            (2, 8)
         """
         return self.data_backend.head(self.config.zarr_file_path, n)
 
     def get_xarray_dataset(self) -> xr.Dataset:
-        """Return the loaded panel indexed by ``(timestamp, symbol)``."""
+        """Return the loaded panel indexed by ``(timestamp, symbol)``.
+
+        Example:
+            >>> tuple(ds.get_xarray_dataset().dims)
+            ('timestamp', 'symbol')
+        """
         return self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 
     def from_raw_data(self) -> Self:
@@ -331,6 +411,11 @@ class BaseDataset(ABC):
 
         Returns:
             ``self``, for chaining.
+
+        Example:
+            >>> ds = DemoDataset(config).from_raw_data()
+            >>> list(ds.get_xarray_dataset().data_vars)  # cleaning adds the flag
+            ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
         """
         data = self._raw_data_to_xr()
         data = self._clean(data)
@@ -392,6 +477,14 @@ class BaseDataset(ABC):
 
         Returns:
             ``self``, with ``last_chunk_result`` populated.
+
+        Example:
+            >>> ds = DemoDataset(config).update(granularity="month")
+            >>> ds.last_chunk_result.windows_written
+            1
+            >>> again = DemoDataset(config).update(granularity="month")
+            >>> again.last_chunk_result.windows_skipped, again.last_chunk_result.resumed
+            (1, True)
         """
         return self.from_raw_data_chunked(
             granularity=granularity,
@@ -1119,6 +1212,11 @@ class MarketDataset(BaseDataset):
         Returns:
             A tuple ``(bars, instruments)`` where ``bars`` holds one list of
             ``Bar`` objects per symbol.
+
+        Example:
+            Needs a subclass whose ``_to_nautilus`` builds the instruments:
+
+            >>> bars, instruments = ds.to_nautilus(venue="NASDAQ", write=False)
         """
         data = self.read().get_xarray_dataset()
         data, instruments = self._to_nautilus(data, venue=venue, n_jobs=n_jobs)
@@ -1140,6 +1238,13 @@ class MarketDataset(BaseDataset):
         Returns:
             A tuple ``(inputs, symbols, timestamps)`` where ``inputs`` maps
             each column to a contiguous ``[time, symbol]`` float32 array.
+
+        Example:
+            >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+            >>> inputs["close"].shape, inputs["close"].dtype
+            ((4, 3), dtype('float32'))
+            >>> symbols.tolist()
+            ['AAA', 'BBB', 'CCC']
         """
         data = self.read().get_xarray_dataset()
         return self._to_kunquant(data, data_columns)

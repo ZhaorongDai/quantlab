@@ -276,6 +276,13 @@ class StockDataset(MarketDataset):
         for the tick layout's ``data_type`` descent, which a bare check of
         ``config.raw_data_dir_path`` would miss. It only stats the directory
         and opens no parquet file.
+
+        Example:
+            >>> ds = StockDataset(config)
+            >>> ds.has_raw_data()  # the vendor root exists but holds no shard
+            False
+            >>> ds.has_raw_data()  # once a month=2024-01/part.pqt shard lands
+            True
         """
         root = self._scan_root()
         return root.exists() and any(root.rglob(f"*{self.RAW_SHARD_SUFFIX}"))

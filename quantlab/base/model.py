@@ -1,3 +1,17 @@
+"""Framework-agnostic model layer: the shared training lifecycle of every model head.
+
+This module defines the three-level model hierarchy. ``BaseModel`` owns everything
+that does not depend on the training framework: config validation and date
+injection, collecting the factor and label panels into one ``xarray.Dataset``,
+the public ``train`` / ``train_cv`` / ``load`` / ``predict`` / ``predict_panel``
+entry points, the checkpoint directory layout with its ``config.json`` sidecar,
+and the rolling cross-validation fold geometry. ``DLModel`` is the torch variant
+(an epoch loop over ``DataLoader`` batches, early stopping, ``.pth`` checkpoints)
+and ``MLModel`` is the numpy variant for tree models and other libraries that do
+their own early stopping (``.joblib`` checkpoints). Concrete heads live in
+``quantlab/dl_model`` and ``quantlab/ml_model``; see ``docs/model.md``.
+"""
+
 import copy
 import json
 import random
@@ -31,91 +45,147 @@ from .config import DLConfig, MLConfig
 
 
 class BaseModel(ABC):
-    """模型层的框架无关基类，三层结构的顶层（260914-lno，2026-09-14）。
+    """Framework-agnostic base of every model head.
 
-    模型层拆成三层：
+    A model head is configured with a list of factor objects (its features) and
+    a list of label objects (its targets). ``collect()`` pulls both into one
+    panel indexed by ``(timestamp, symbol)``; ``train()`` fits the head on the
+    ``train_*`` dates of its config and writes a checkpoint; ``load()`` restores
+    one; ``predict()`` and ``predict_panel()`` run inference. Those public entry
+    points are implemented once, here, and are not overridden by any head.
 
-    - `BaseModel`（本类）：与训练框架无关的共享生命周期。配置与日期注入、
-      因子/标签收集、checkpoint 目录约定与 `config.json`、交叉验证的折几何
-      （`_cv_folds`，全仓唯一一份折边界算术）、wandb run 的创建。公开的
-      `train` / `train_cv` / `load` / `predict` 只在这里实现一份，任何具体的头
-      都不覆盖它们（`tests/test_model_hierarchy.py` 锁）。
-    - `DLModel`：torch 变体。device、张量转换、DataLoader 按 epoch 的训练循环、
-      state_dict checkpoint、refit 优化器都是它的细节；子类实现五个张量钩子。
-    - `MLModel`：numpy 变体（xgboost 这类树模型）。没有 epoch 循环，训练、早停
-      与最优模型回滚交给所属库的原生机制；子类实现四个钩子。
+    The training framework is the job of the two variants. ``DLModel`` is the
+    torch variant and ``MLModel`` the numpy variant; each declares two plain
+    class attributes that satisfy the abstract properties below:
 
-    为什么按框架拆：把非 torch 的分支硬塞进一个 torch 形状的基类，每个方法都会
-    长出「模型是不是 nn.Module」的分支。按框架拆开后，每一层只暴露自己需要的
-    钩子，而训练编排之外的东西——尤其是 CV 折边界——仍然只有一份。
+    - ``config_cls``: the config class the variant accepts. The ``config``
+      setter checks it first, and the config loader reads it from the class
+      before instantiating, so it must be a class attribute.
+    - ``checkpoint_suffix``: the checkpoint file suffix. ``train`` and
+      ``train_cv`` use it to name files; ``load()`` uses it to reject a file
+      of the wrong kind before building any model.
 
-    两个抽象类属性由具体变体用**普通类属性**满足：
+    Checkpoints are written under ``config.model_save_dir`` as
+    ``{class}_trial_{timestamp}/{experiment}/{experiment}{suffix}`` with a
+    ``config.json`` sidecar next to the file.
 
-    - `config_cls`：这个变体接受的配置类。`config` setter 第一件事就是检查它，
-      `utils/module.py:load_model_from_config` 也在实例化之前从类上读它，
-      所以它必须是类属性，不能只存在于实例上。
-    - `checkpoint_suffix`：checkpoint 文件后缀。`train` / `train_cv` 用它拼文件名，
-      `load()` 用它在构建任何模型之前拒收错误类型的文件。
+    Example:
+        Given a head ``MyHead`` (a subclass of ``MLModel`` or ``DLModel``), a
+        factor object exposing variables ``f_a`` and ``f_b``, and a label
+        object exposing ``ret``::
+
+            >>> model = MyHead(MLConfig(
+            ...     factors=[factor], labels=[label],
+            ...     model_save_dir="checkpoints",
+            ...     factor_data_strategy="read", label_data_strategy="read",
+            ...     train_start="2024-01-01", train_end="2024-01-30",
+            ...     test_start="2024-01-31", test_end="2024-02-09",
+            ... ))
+            >>> checkpoint = model.collect().train()
+            >>> checkpoint.name
+            'MyHead_total.joblib'
     """
 
     def __init__(self, config: DLConfig | MLConfig):
+        """Validate ``config``, seed the random generators and prepare empty state.
+
+        Args:
+            config: A ``DLConfig`` or ``MLConfig`` matching the variant's
+                ``config_cls``.
+
+        Raises:
+            TypeError: If ``config`` is not an instance of ``config_cls``.
+        """
         self.config = config
         self._set_random_seed(self.config.random_seed)
 
         self.model = None
-        # 训练面板的标的：`_save_model` 训练落盘时记下，`load` 从 checkpoint 旁的
-        # `config.json` 训练记录读回；没有记录时是 None（代码审查 WR-02）。
-        # 元素类型跟着面板的 symbol 轴走：int64 PERMNO 轴是 `int`，ticker 轴是
-        # `str`（03.11-04）。这里不是 `list[str]`。
+        # Symbols of the training panel. `_save_model` records them when a
+        # checkpoint is written and `load` reads them back from the sidecar
+        # `config.json`; None when no record exists. The element type follows
+        # the panel's symbol axis (`int` for an integer axis, `str` for tickers).
         self._trained_symbols: list | None = None
-        # 模型层 checkpoint 记录 warning 已经输出过的原文（G-03.7-9）：回测器在
-        # 特征计算前核对一次变量，`load()` 再核对一次，同一条 warning 只输出一次。
-        # 比较与报错从不跳过；每条 warning 都写明路径，换一个 checkpoint 仍会 warning。
+        # Checkpoint-record warnings already emitted by this instance. The
+        # backtester checks the variables before computing features and
+        # `load()` checks them again, so each distinct warning is logged once.
         self._emitted_load_warnings: set[str] = set()
-        # 把标的标签拼成人可读文本的可调用，签名 `(symbols, day) -> list[str]`，
-        # 只用于**消息**，从不参与选择或对齐。`None` 时回落成标的自己的拼写。
-        #
-        # 为什么是一个注入进来的可调用而不是模型自己去查：模型层只认识因子库，
-        # 不认识价格库，而名字表是价格库的 sidecar；而且模型层不该知道任何厂商
-        # （`tests/test_extensibility_contract.py` 的核心层纯净性）。回测器在调
-        # `predict_panel` 之前把它装上（`base/backtest.py:_align_and_predict`）。
+        # Optional callable `(symbols, day) -> list[str]` that renders symbol
+        # labels as human-readable text for log messages only. It never takes
+        # part in selection or alignment. The model layer knows nothing about
+        # price stores or vendors, so the caller (the backtester) injects it.
         self.symbol_labeller = None
 
         self.data_backend = XrBackend()
-        # self._pre_feature: Optional[xr.Dataset] = None
         self._wandb_recorder: wandb.sdk.wandb_run.Run = None  # type: ignore
 
     @property
     @abstractmethod
     def config_cls(self) -> type:
-        """这个变体接受的配置类（具体变体用类属性覆盖）。"""
+        """The config class this variant accepts.
+
+        Concrete variants satisfy it with a plain class attribute.
+
+        Example:
+            >>> DLModel.config_cls
+            <class 'quantlab.base.config.DLConfig'>
+        """
 
     @property
     @abstractmethod
     def checkpoint_suffix(self) -> str:
-        """checkpoint 文件后缀，含点号（具体变体用类属性覆盖）。"""
+        """The checkpoint file suffix, including the leading dot.
+
+        Concrete variants satisfy it with a plain class attribute.
+
+        Example:
+            >>> MLModel.checkpoint_suffix
+            '.joblib'
+        """
 
     @staticmethod
     def _set_random_seed(seed: int):
-        """只播种框架无关的两处：python `random` 与 numpy。
+        """Seed the framework-agnostic generators: ``random`` and numpy.
 
-        torch 的种子由 `DLModel._set_random_seed` 在此之上补齐。
+        ``DLModel._set_random_seed`` adds the torch seeds on top of this.
         """
         random.seed(seed)
         np.random.seed(seed)
 
     def __repr__(self) -> str:
+        """Return ``ClassName(config=...)``."""
         return f"{self.__class__.__name__}(config={self.config})"
 
     @property
     def config(self) -> DLConfig | MLConfig:
+        """The model's configuration object.
+
+        Example:
+            >>> model.config.model_save_dir
+            'checkpoints'
+        """
         return self._config
 
     @config.setter
     def config(self, config: DLConfig | MLConfig):
-        # 类型检查必须是第一条语句：先于给 `_config` 赋值，也先于触碰任何因子或
-        # 标签。拿错配置类的模型如果先把日期写进因子再报错，调用方手里的因子
-        # 对象就已经被改过了。
+        """Install ``config`` and push its dates down to every factor and label.
+
+        The type check runs before anything else so that a model handed the
+        wrong config class fails before any factor or label object has been
+        modified. Missing ``start_date`` / ``end_date`` fall back to the
+        project-wide defaults, and ``config.name`` is set to the model's import
+        path.
+
+        Raises:
+            TypeError: If ``config`` is not an instance of ``config_cls``.
+
+        Example:
+            >>> model.config = MLConfig(factors=[factor], labels=[label],
+            ...                         model_save_dir="checkpoints",
+            ...                         factor_data_strategy="read",
+            ...                         label_data_strategy="read")
+            >>> factor.config.start_date == model.config.start_date
+            True
+        """
         if not isinstance(config, self.config_cls):
             raise TypeError(
                 f"{self.class_name} requires a {self.config_cls.__name__}, "
@@ -124,7 +194,6 @@ class BaseModel(ABC):
         self._config = config
         self._config.name = self.import_path
 
-        # 初始化时间
         if self._config.start_date is None:
             self._config.start_date = Date.START_DATE
         if self._config.end_date is None:
@@ -135,28 +204,58 @@ class BaseModel(ABC):
 
     @property
     def num_times(self) -> int:
+        """Number of timestamps in the collected panel.
+
+        Example:
+            >>> model.num_times
+            40
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).timestamp.size
 
     @property
     def class_name(self) -> str:
+        """The head's class name.
+
+        Example:
+            >>> model.class_name
+            'MyHead'
+        """
         return self.__class__.__name__
 
     @property
     def num_symbols(self) -> int:
+        """Number of symbols in the collected panel.
+
+        Example:
+            >>> model.num_symbols
+            3
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).symbol.size
 
     @property
     def symbols(self) -> list[str]:
+        """Symbols of the collected panel, as a plain list.
+
+        Example:
+            >>> model.symbols
+            ['S0', 'S1', 'S2']
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).symbol.values.tolist()
 
     @property
     def num_null(self) -> int:
+        """Total number of NaN cells across every variable of the collected panel.
+
+        Example:
+            >>> model.num_null
+            0
+        """
         return int(
             self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
             .isnull()
@@ -168,40 +267,58 @@ class BaseModel(ABC):
 
     @property
     def import_path(self) -> str:
+        """Dotted ``module.QualName`` path of the head's class.
+
+        Example:
+            >>> model.import_path
+            '__main__.MyHead'
+        """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     @property
     def num_factors(self) -> int:
+        """Number of feature variables across all configured factors.
+
+        Example:
+            >>> model.num_factors
+            2
+        """
         return len(self.get_factor_names())
 
     @property
     def num_labels(self) -> int:
+        """Number of label variables across all configured labels.
+
+        Example:
+            >>> model.num_labels
+            1
+        """
         return len(self.get_label_names())
 
     def _reset_factors_config(self):
+        """Copy the model's dates onto every factor and re-derive their datasets."""
         for factor in self._config.factors:
-            # 覆盖因子配置文件日期
             factor.config.start_date = self._config.start_date
             factor.config.end_date = self._config.end_date
 
-            # 因子类重置数据集配置
             factor._reset_dataset_config()
 
     def _reset_labels_config(self):
+        """Copy the model's dates onto every label and re-derive their datasets."""
         for label in self._config.labels:
             label.config.start_date = self._config.start_date
             label.config.end_date = self._config.end_date
 
-            # 因子类重置数据集配置
             label._reset_dataset_config()
 
     def _collect_all_labels(self) -> xr.Dataset:
-        """把 `config.labels` 里的**每一个**标签取出来合成一块面板。
+        """Gather every label in ``config.labels`` into one sorted panel.
 
-        它以前叫 `_get_labels_batch`。这个模块里 `batch` 已经有一个确定的意思
-        ——`DataLoader` 切出来的 mini-batch（见 `_train_one_batch`）——而这里
-        既不切也不采样，是「全部收齐再 `combine_by_coords`」。同一个词在同一个
-        文件里指两件相反的事，名字就得让一个。
+        Each label is computed (``cal``) or read from its store (``read``)
+        according to ``config.label_data_strategy``.
+
+        Raises:
+            ValueError: If the strategy is neither ``"cal"`` nor ``"read"``.
         """
         all_ds = []
         for label in self.config.labels:
@@ -220,9 +337,13 @@ class BaseModel(ABC):
         return data
 
     def _collect_all_features(self) -> xr.Dataset:
-        """把 `config.factors` 里的**每一个**因子取出来合成一块面板。
+        """Gather every factor in ``config.factors`` into one panel.
 
-        命名理由见 `_collect_all_labels`：这里没有任何 mini-batch 语义。
+        Each factor is computed (``cal``) or read from its store (``read``)
+        according to ``config.factor_data_strategy``.
+
+        Raises:
+            ValueError: If the strategy is neither ``"cal"`` nor ``"read"``.
         """
         all_ds = []
         for factor in self.config.factors:
@@ -242,6 +363,19 @@ class BaseModel(ABC):
     def collect(
         self,
     ) -> Self:
+        """Load features and labels into the model's data backend.
+
+        The factor and label panels are merged on their shared
+        ``(timestamp, symbol)`` coordinates, sorted on both axes, and stored
+        in ``self.data_backend``. Call this before ``train()`` or ``train_cv()``.
+
+        Returns:
+            The model itself, for chaining.
+
+        Example:
+            >>> model.collect().num_times
+            40
+        """
         feature = self._collect_all_features()
         label = self._collect_all_labels()
         with Timer(f"{self.class_name}: collect merge"):
@@ -251,6 +385,12 @@ class BaseModel(ABC):
         return self
 
     def get_factor_names(self):
+        """Return the feature variable names, in factor order then variable order.
+
+        Example:
+            >>> model.get_factor_names()
+            ['f_a', 'f_b']
+        """
         return list(
             chain.from_iterable(
                 [factor._get_factor_names() for factor in self.config.factors]
@@ -258,6 +398,12 @@ class BaseModel(ABC):
         )
 
     def get_label_names(self):
+        """Return the label variable names, in label order then variable order.
+
+        Example:
+            >>> model.get_label_names()
+            ['ret']
+        """
         return list(
             chain.from_iterable(
                 [label._get_factor_names() for label in self.config.labels]
@@ -265,23 +411,46 @@ class BaseModel(ABC):
         )
 
     def get_config(self) -> dict:
+        """Return the config as a JSON-ready dict with nested factor and label configs.
+
+        The ``factors`` and ``labels`` entries are replaced by each object's own
+        ``get_config()`` so the dict can be written to ``config.json`` and
+        used to rebuild the model later.
+
+        Example:
+            >>> cfg = model.get_config()
+            >>> sorted(cfg)[:3]
+            ['early_stopping', 'early_stopping_patience', 'end_date']
+        """
         cfg = self.config.to_dict()
         cfg["factors"] = [factor.get_config() for factor in self.config.factors]  # type: ignore
         cfg["labels"] = [label.get_config() for label in self.config.labels]  # type: ignore
         return cfg  # type: ignore
 
     def _get_config_with_extra_kv(self, extra_kv: dict) -> dict:
+        """Return ``get_config()`` updated with ``extra_kv``."""
         cfg = self.get_config()
         cfg.update(extra_kv)
         return cfg
 
     def to_array(self, data: xr.Dataset, variables: list[str]) -> np.ndarray:
-        """把 `(timestamp, symbol)` 面板转成 `[num_times, num_symbols, len(variables)]` 的数组。
+        """Convert a panel to a ``[num_times, num_symbols, len(variables)]`` array.
 
-        最后一维严格按 `variables` 给定的顺序排列，这是这个方法存在的全部理由。
-        以前这条链上是 `.sortby(["timestamp", "symbol", "variable"])`，最后一维
-        于是按变量**名**字母序排，`y[..., 0]` 拿到的是 `ret_120` 而不是声明在
-        第一位的 `ret_30`。`.sel(variable=variables)` 才是按声明顺序取。
+        Both axes are sorted, and the last axis follows the order of
+        ``variables`` exactly (not alphabetical order), so ``x[..., i]`` is
+        always ``variables[i]``.
+
+        Args:
+            data: A dataset indexed by ``(timestamp, symbol)``.
+            variables: The data variables to stack, in the wanted order.
+
+        Example:
+            >>> panel = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+            >>> x = model.to_array(panel, ["f_b", "f_a"])
+            >>> x.shape
+            (40, 3, 2)
+            >>> np.allclose(x[..., 0], panel["f_b"].values)
+            True
         """
         return (
             data[variables]
@@ -292,52 +461,40 @@ class BaseModel(ABC):
             .values
         )
 
-    #: checkpoint 旁 `config.json` 里训练记录的键（代码审查 WR-02）。它是记录
-    #: 不是配置字段，`utils/module.py:load_model_from_config` 重建时丢弃它。
+    #: Key of the training record inside the checkpoint's ``config.json``. It is
+    #: a record, not a config field; the config loader drops it when rebuilding.
     TRAINED_ON_KEY = "trained_on"
 
     @staticmethod
     def _jsonable_symbol(symbol):
-        """把一个标的标签变成 `json.dump` 认识的值，**不改变它的类别**。
+        """Return ``symbol`` as a value ``json.dump`` accepts, keeping its kind.
 
-        `numpy.int64` 不是 `int` 的子类，`json.dump` 直接 `TypeError`；而
-        `.values.tolist()` 出来的已经是 python `int`/`str`，所以这里通常是恒等
-        的。它存在只为堵住「面板不经 `collect()`、后端交回 numpy 标量」这一路。
-
-        关键在于**分派而不是统一**：整数走 `int()`、其余走 `str()`。统一成
-        `str()` 正是 03.11-04 要拆掉的那行——它让 PERMNO 记录成了字符串，而面板
-        坐标是 int64。
+        Integers (including numpy integers) become ``int``; everything else
+        becomes ``str``. Dispatching rather than stringifying everything keeps
+        an integer symbol axis recorded as JSON integers, so the record can be
+        used with ``.sel()`` on that axis after it is read back.
         """
         if isinstance(symbol, bool):
-            # `bool` 是 `int` 的子类，但一个布尔标的轴是上游缺陷，不是整数轴。
+            # bool is a subclass of int, but a boolean symbol axis is an
+            # upstream defect, not an integer axis.
             return str(symbol)
         if isinstance(symbol, (int, np.integer)):
             return int(symbol)
         return str(symbol)
 
     def _save_model(self, p: Path):
-        """建 checkpoint 目录，写 `config.json` 与 checkpoint。
+        """Create the checkpoint directory, write ``config.json``, then the checkpoint.
 
-        `config.json` 是 `get_config()` 加一个训练记录 `trained_on`（代码审查
-        WR-02）：`factor_names`、`label_names` 与训练面板的 `symbols`。DL 头按
-        标的**位置**编码输入（MLP 展平 `[S*F]`，RNN 沿标的轴递推），换一组标的
-        预测会整体错位，所以必须知道训练时是哪些标的；记录同时写到
-        `_trained_symbols` 上，训练完直接预测时也用得上。
+        ``config.json`` holds ``get_config()`` plus a ``trained_on`` record with
+        the feature names, label names and the sorted training symbols. The
+        symbols are recorded in sorted order because ``to_array`` sorts the
+        symbol axis, so that is the layout the head was trained on. The same
+        symbols are kept on ``_trained_symbols`` for predictions made right
+        after training.
 
-        `symbols` 按标的**排序**记录，不是数据后端里的顺序（G-03.7-8）：`_fit`
-        经 `to_array` 训练，而 `to_array` 对标的轴排序，所以网络训练时看到的就是
-        排序后的布局。没经过 `collect()`（它会排序）就调 `train()` / `train_cv()`
-        时后端可以是乱序的，以前记录照抄后端顺序，成了一句关于训练的假话。
-
-        记录的元素**保留面板轴自己的拼写**（03.11-04）：int64 PERMNO 轴写出
-        JSON 整数数组，ticker 轴写出字符串数组。以前这里把 `self.symbols` 的
-        每个元素先 `str()` 再 `sorted()`，一个无条件的强转
-        ——在 ticker 轴上是恒等变换，所以三端（写 / 读 / 对齐）靠巧合一致；
-        在 PERMNO 轴上它把记录变成 `['10107', '14593', '7000']`，读回来的
-        字符串最终交给 `.sel()`，在 int64 坐标上抛
-        `KeyError: "not all values found in index 'symbol'"`
-        （03.11-RESEARCH B 实跑）。顺序走 `sort_symbol_axis`，与全仓其余钉轴点
-        同一个数值序来源（`quantlab/utils/symbol_axis.py`）。
+        Raises:
+            ValueError: If no model has been built.
+            RuntimeError: If the checkpoint directory already exists.
         """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError("Model not initialized")
@@ -356,7 +513,6 @@ class BaseModel(ABC):
             "label_names": [str(name) for name in self.get_label_names()],
             "symbols": symbols,
         }
-        # 先保存config为json
         with open(p.parent / Path("config.json"), "w") as f:
             json.dump({**self.get_config(), self.TRAINED_ON_KEY: record}, f, indent=4)
 
@@ -364,24 +520,30 @@ class BaseModel(ABC):
         self._write_checkpoint(p)
 
     def load(self, p: Path | str) -> Self:
-        """从 checkpoint 恢复模型，返回 self。
+        """Restore the model from a checkpoint file.
 
-        后缀校验先于任何模型构建：把 `.pth` 交给 joblib、或把 `.joblib` 交给
-        `torch.load`，失败方式要么是难懂的反序列化报错，要么是悄悄反序列化出
-        一个错误类型的对象。
+        The file suffix is checked first, so a ``.pth`` file is never handed to
+        joblib and a ``.joblib`` file never to ``torch.load``. The feature and
+        label variables recorded in the sidecar ``config.json`` must then match
+        this model's declared variables, name for name and in order; neither
+        torch nor a tree library would notice a permuted or substituted input
+        by itself. Finally the training symbols are read from the sidecar and
+        the checkpoint is loaded.
 
-        后缀校验之后、读 checkpoint 之前，先核对变量（`_assert_trained_variables`，
-        G-03.7-9）：checkpoint 训练记录里的因子与标签变量名和顺序必须与本模型
-        `get_factor_names()` / `get_label_names()` 一致，否则 ValueError，写明
-        两边的变量与路径。两类头都不会自己发现错位：xgboost 的 Booster 没有
-        特征名、`inplace_predict` 只核对列数，torch 的 `state_dict` 只核对形状。
-        所以这一步必须在 `_read_checkpoint` 之前，DL 头换了因子个数时拿到的是
-        这条带名字的错误，而不是 torch 的 `size mismatch`。
+        Args:
+            p: Path to a checkpoint file ending in ``checkpoint_suffix``.
 
-        然后从旁边的 `config.json` 取训练记录里的标的
-        （`_read_trained_symbols`，代码审查 WR-02）：DL 头据此确定网络的
-        `num_symbols`，`predict_panel` 据此核对输入面板的标的。没有记录时为
-        None，行为与以前一样。
+        Returns:
+            The model itself, for chaining.
+
+        Raises:
+            FileNotFoundError: If ``p`` does not exist.
+            ValueError: If the suffix is wrong or the recorded variables differ
+                from the model's declared variables.
+
+        Example:
+            >>> model.load(checkpoint) is model
+            True
         """
         if isinstance(p, str):
             p = Path(p)
@@ -401,10 +563,12 @@ class BaseModel(ABC):
         return self
 
     def _read_checkpoint_sidecar(self, p: Path) -> dict | None:
-        """checkpoint 旁 `config.json` 的唯一解析入口；文件不存在时 None。
+        """Parse the ``config.json`` next to checkpoint ``p``; None if absent.
 
-        文件存在但不是 JSON 对象时 ValueError 写明文件：损坏与缺失不是一回事，
-        把它当成「没有记录」会悄悄跳过所有核对。
+        Raises:
+            ValueError: If the file exists but is not a JSON object. A corrupt
+                sidecar must not be treated as a missing one, since that would
+                silently skip every check that depends on it.
         """
         sidecar = p.parent / "config.json"
         if not sidecar.is_file():
@@ -417,41 +581,22 @@ class BaseModel(ABC):
         return saved
 
     def _assert_trained_variables(self, p: Path) -> None:
-        """checkpoint 训练用过的因子与标签变量（名字与顺序）必须与本模型声明的一致（G-03.7-9）。
+        """Check the checkpoint's recorded variables against the model's own.
 
-        记录取 `config.json` 里的 `trained_on.factor_names` / `label_names`：
-        `_save_model` 用构建训练数组的同一组 `get_factor_names()` /
-        `get_label_names()` 调用写下它们，所以它们就是训练时的变量顺序。**不**
-        取因子配置字段 `factors[].factor_names`：那是用户可以自己填的配置，
-        可以与训练真正用的名字（`_get_factor_names()`）顺序不同。
+        The feature and label names (and their order) the checkpoint was
+        trained on are taken from ``trained_on`` in its ``config.json``. If
+        that record is missing, the older ``factors[]`` / ``labels[]``
+        ``factor_names`` config fields are used instead; because a user can
+        order those freely, they are compared as sets, and a difference in
+        order only logs a warning. When neither is available the checkpoint
+        is loaded as given, with a warning.
 
-        不一致时 ValueError，写明 checkpoint 路径、记录的变量与本模型声明的
-        变量，先因子后标签。因子错位意味着模型吃到别的或错位的输入；标签错位
-        意味着输出被贴上错的变量名。
+        Only ``config.json`` is read, so the check can run before any data is
+        collected. Each distinct warning is logged once per model instance.
 
-        旧 checkpoint 按 WR-01/WR-02 的策略处理，每类变量各自取最好的那份记录：
-
-        - 有 `trained_on` 的列表：按它严格核对；
-        - 没有 `trained_on`（记录出现之前训练的 checkpoint），但每个
-          `factors[]` / `labels[]` 条目都有 `factor_names`：按这份旧配置字段
-          核对，另外输出**一条** warning，写明它是比 `trained_on` 弱的记录、
-          适用于哪几类变量。这个字段是用户可以任意排序的配置，证明不了训练
-          顺序（REVIEW WR-01），所以**按集合**核对：变量集合不同照样
-          ValueError；只是顺序不同时每类变量再输出一条顺序无法核对的
-          warning，照常加载；
-        - 两者都没有、或者旁边根本没有 `config.json`（例如只拷走了权重文件）：
-          无从核对，输出**一条** warning 后继续加载。这条 warning 刻意不含
-          回测器自己那句 "has no config.json"，回测器那条只管训练日期。
-
-        先比较两类变量、先因子后标签地报错，最后才输出 warning。比较与报错
-        每次调用都执行；只有同一个模型实例上原文完全相同的 warning 才不再重复
-        输出（`_warn_load_record_once`）。回测器在特征计算前调用一次、
-        `load()` 再调用一次，同一条 warning 因此只出现一次。每条 warning 都
-        写明 checkpoint 路径与记录的变量，换一个 checkpoint 或改过的
-        `config.json` 仍会 warning。
-
-        本方法只读 `config.json`，不需要任何数据，所以回测器可以在特征计算之前
-        调用它；`load()` 自己也调用，直接加载的调用方同样受保护。
+        Raises:
+            ValueError: If the recorded and declared variables differ, naming
+                the checkpoint and both variable lists.
         """
         saved = self._read_checkpoint_sidecar(p)
         record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
@@ -480,9 +625,8 @@ class BaseModel(ABC):
             if recorded == current:
                 continue
             if source != "trained_on" and sorted(recorded) == sorted(current):
-                # 旧配置字段是用户可以任意排序的 `config.factor_names`，训练却按
-                # `_get_factor_names()` 的派生顺序建数组，所以它证明不了训练顺序：
-                # 只能按集合核对，顺序不同时 warning 而不拒收（REVIEW WR-01）。
+                # The legacy config field cannot certify the training order,
+                # so a pure reordering is a warning rather than a rejection.
                 self._warn_load_record_once(
                     f"{self.class_name}: checkpoint {p}: the legacy "
                     f"{entries_key}[].factor_names record lists {kind} variables "
@@ -530,7 +674,11 @@ class BaseModel(ABC):
 
     @staticmethod
     def _legacy_variable_names(entries) -> list[str] | None:
-        """旧 `config.json` 里 `factors[]` / `labels[]` 按顺序展开的 `factor_names`；不全时 None。"""
+        """Flatten ``factor_names`` of ``factors[]`` / ``labels[]`` entries in order.
+
+        Returns None when ``entries`` is not a list or any entry lacks
+        ``factor_names``.
+        """
         if not isinstance(entries, list):
             return None
         names: list[str] = []
@@ -541,25 +689,18 @@ class BaseModel(ABC):
         return names
 
     def _warn_load_record_once(self, message: str) -> None:
-        """同一个模型实例上原文相同的 checkpoint 记录 warning 只输出一次（G-03.7-9）。"""
+        """Log ``message`` as a warning unless this instance already logged it."""
         if message in self._emitted_load_warnings:
             return
         self._emitted_load_warnings.add(message)
         logger.warning(message)
 
     def _read_trained_symbols(self, p: Path) -> list | None:
-        """checkpoint 旁 `config.json` 训练记录里的标的；没有文件或没有记录时 None。
+        """Return the training symbols recorded beside checkpoint ``p``, or None.
 
-        **原样返回，不做类型转换**（03.11-04）。JSON 已经决定了类别：整数数组
-        读回 `list[int]`，字符串数组读回 `list[str]`。以前最后一行是
-        `[str(symbol) for symbol in symbols]`，于是一个 int64 面板训练出来的
-        记录在读回时又变成字符串，`_align_prediction_symbols` 拿它去 `.sel()`
-        一个 int64 坐标——这是写侧强转之外的**第二个**独立的破坏点，单修写侧
-        并不能让这条链路走通。
-
-        顺序经 `sort_symbol_axis` 归一：记录里只有**成员**是权威的
-        （见 `DLModel._align_prediction_symbols`），顺序由数值序契约决定，而
-        手改过或由别的生产者写出的记录可以是乱序的。
+        The values are returned as JSON decoded them (integers stay ``int``,
+        strings stay ``str``) and are sorted with ``sort_symbol_axis``; only
+        the membership of the record is authoritative, never its order.
         """
         saved = self._read_checkpoint_sidecar(p)
         record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
@@ -571,7 +712,19 @@ class BaseModel(ABC):
     def predict(
         self, data: torch.Tensor | np.ndarray
     ) -> torch.Tensor | np.ndarray:
-        """对 `[T, S, F]` 输入给出 `[T, S, L]` 预测；具体转换由变体的 `_predict` 决定。"""
+        """Return ``[T, S, L]`` predictions for a ``[T, S, F]`` input.
+
+        The variant's ``_predict`` decides the accepted and returned types: the
+        torch variant returns a tensor, the numpy variant an array.
+
+        Raises:
+            ValueError: If neither ``train()`` nor ``load()`` has been called.
+
+        Example:
+            >>> x = np.random.default_rng(0).standard_normal((5, 3, 2))
+            >>> model.predict(x).shape
+            (5, 3, 1)
+        """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError(
                 "Model not initialized, please call load() or train() first"
@@ -579,22 +732,32 @@ class BaseModel(ABC):
         return self._predict(data)
 
     def predict_panel(self, features: xr.Dataset) -> xr.Dataset:
-        """对 `(timestamp, symbol)` 特征面板给出同维度的预测面板（03.7 D-29）。
+        """Predict from a feature panel and return a panel of the same shape.
 
-        返回的 `xr.Dataset` 每个标签名一个变量，维度 `("timestamp", "symbol")`，
-        坐标取自 `to_array` 实际消费的那块排序后的面板，所以坐标与数值不会错位。
-        `_align_prediction_symbols` 钩子返回之后会再按 `["timestamp", "symbol"]`
-        排一次序，坐标就从这块重排后的面板读（G-03.7-8）：以前坐标取自钩子返回的
-        面板，而 `to_array` 会重新排序，钩子一返回乱序面板（例如 DL 头按乱序的
-        训练记录选标的），每个预测就落到别的标的坐标上。现在任何钩子都无法让两者分叉。
-        xarray -> 数组 -> 预测 -> xarray 这条管道只在模型层实现一份，DL 与 ML
-        共用；变体之间的差别只在 `_predict_panel_array` 这一个钩子里。
+        The result has one variable per label name, on ``("timestamp",
+        "symbol")``, with coordinates taken from the sorted panel that was
+        actually fed to ``to_array``, so values and coordinates cannot drift
+        apart. Positions where every feature is NaN get NaN for every label:
+        a head that fills NaN with zero would otherwise produce finite
+        predictions for symbols that do not exist yet.
 
-        所有特征都是 NaN 的 `(t, s)` 位置，所有标签的预测都置为 NaN：xgboost 与
-        先 `nan_to_num` 输入的 DL 头会给还没上市的标的算出有限预测，不屏蔽的话
-        回测会把它们选进去（03.7-RESEARCH.md Pitfall 7）。
+        The variant hook ``_align_prediction_symbols`` may restrict the symbol
+        axis first (the torch variant aligns it to the training symbols), and
+        ``_predict_panel_array`` performs the numeric prediction.
 
-        走公开的 `predict`，「Model not initialized」的守卫在那里。
+        Args:
+            features: A dataset containing every variable named by
+                ``get_factor_names()``.
+
+        Raises:
+            ValueError: If a factor variable is missing, or if the prediction
+                does not have shape ``[num_times, num_symbols, num_labels]``.
+
+        Example:
+            >>> feats = panel[["f_a", "f_b"]].isel(timestamp=slice(0, 5))
+            >>> out = model.predict_panel(feats)
+            >>> dict(out.sizes), list(out.data_vars)
+            ({'timestamp': 5, 'symbol': 3}, ['ret'])
         """
         factors = self.get_factor_names()
         labels = self.get_label_names()
@@ -605,7 +768,8 @@ class BaseModel(ABC):
                 f"variable(s) {missing}"
             )
 
-        # 钩子之后再排一次：坐标与 `to_array` 的布局来自同一块面板（G-03.7-8）。
+        # Sort again after the hook so the coordinates and the array layout
+        # come from the same panel, whatever the hook returned.
         feats = self._align_prediction_symbols(
             features[factors].sortby(["timestamp", "symbol"])
         ).sortby(["timestamp", "symbol"])
@@ -632,32 +796,32 @@ class BaseModel(ABC):
         )
 
     def _align_prediction_symbols(self, feats: xr.Dataset) -> xr.Dataset:
-        """`predict_panel` 的标的轴钩子：默认原样返回（代码审查 WR-02）。
+        """Symbol-axis hook of ``predict_panel``; the default returns ``feats`` as is.
 
-        ML 头逐个 `(t, s)` 预测，与标的轴上有哪些标的、顺序如何无关，所以默认
-        不核对。按标的**位置**编码输入的变体（`DLModel`）覆盖本钩子，把面板对齐
-        到训练时的标的。刻意是普通方法而不是抽象方法，理由同
-        `_predict_panel_array`。
+        A numpy head predicts each ``(t, s)`` cell independently, so it does
+        not care which symbols are present. Variants that encode symbol
+        position (``DLModel``) override this to align the panel to the
+        training symbols. It is a plain method rather than an abstract one so
+        that the set of abstract methods of each variant stays unchanged.
         """
         return feats
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """`predict_panel` 的变体钩子：`[T, S, F]` numpy 进，`[T, S, L]` numpy 出。
+        """Variant hook of ``predict_panel``: ``[T, S, F]`` array in, ``[T, S, L]`` out.
 
-        刻意是普通方法而不是抽象方法：抽象的话每一层的 `__abstractmethods__`
-        都会变，`tests/test_model_hierarchy.py` 锁的正是这些集合。
+        A plain method rather than an abstract one, for the same reason as
+        ``_align_prediction_symbols``.
         """
         raise NotImplementedError(
             f"{self.class_name} does not implement _predict_panel_array"
         )
 
     def _new_project_name(self) -> str:
-        """`{class}_trial_{%Y%m%d_%H%M%S_%f}`，在 `model_save_dir` 下从不与已有目录重名（代码审查 WR-04）。
+        """Return a fresh ``{class}_trial_{%Y%m%d_%H%M%S_%f}`` directory name.
 
-        以前只精确到秒，而 `_save_model` 遇到已存在的目录会 RuntimeError：一次
-        train 模式回测和紧接着的重建重跑落在同一秒就撞名，测试只能 sleep 等时钟。
-        现在带微秒，并且目录已存在时追加 `_1`、`_2`……，所以即使时钟不走
-        （或被调回）也不会撞名。`train` 与 `train_cv` 都经过这里。
+        The name is guaranteed not to exist under ``model_save_dir`` yet: if
+        it does, ``_1``, ``_2``, ... are appended. Both ``train`` and
+        ``train_cv`` go through here.
         """
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         base = f"{self.class_name}_trial_{stamp}"
@@ -669,11 +833,21 @@ class BaseModel(ABC):
         return name
 
     def train(self) -> Path:
-        """按配置里的四个日期训练一次并落盘，返回 checkpoint 文件的绝对路径。
+        """Train once on the config's ``train_*`` / ``test_*`` dates and save.
 
-        返回路径是为了让调用方记录「训练出的是哪个模型」（代码审查 WR-04）：
-        train 模式的回测把它写进运行目录，之后可以用 load 模式精确回放同一个
-        模型，而不是再训练一个（torch / GPU 训练不能逐位复现）。
+        A new trial directory is created under ``model_save_dir``, a wandb run
+        is opened, and the variant's ``_fit`` trains, evaluates and writes the
+        checkpoint. Returning the path lets a caller record exactly which
+        model was trained and reload it later instead of retraining.
+
+        Returns:
+            Absolute path of the checkpoint file, named
+            ``{class}_total{checkpoint_suffix}``.
+
+        Example:
+            >>> checkpoint = model.train()
+            >>> checkpoint.name, checkpoint.parent.name
+            ('MyHead_total.joblib', 'MyHead_total')
         """
         project_name = self._new_project_name()
         experiment_name = f"{self.class_name}_total"
@@ -695,20 +869,22 @@ class BaseModel(ABC):
     def _cv_folds(
         timestamps, train_periods: int, gap_periods: int
     ) -> list[dict]:
-        """滚动前推交叉验证的折几何。这是折边界算术在全仓**唯一**的实现。
+        """Compute the fold boundaries of a rolling walk-forward cross-validation.
 
-        `train_cv` 的顺序分支与并行分支、DL 与 ML 都消费这一个生成器，所以它们
-        不可能各自漂移（重构前两个分支各抄了一份同样的算术）。几何逐字沿用
-        重构前的写法，由 `tests/test_model_cv.py` 里重构前捕获的 golden 锁定：
+        This is the only implementation of the fold arithmetic; both the
+        sequential and the parallel branch of ``train_cv`` use it. With
+        ``test_periods = train_periods // 5``, fold ``i`` trains on positions
+        ``[i * test_periods, i * test_periods + train_periods)``, skips
+        ``gap_periods`` positions, then tests on the next ``test_periods``
+        positions. The number of folds is
+        ``max(1, (len(timestamps) - train_periods - gap_periods) // test_periods)``;
+        a fold whose test segment runs past the end is logged and skipped, so
+        the result can be empty.
 
-        - `test_periods = train_periods // 5`；
-        - 第 i 折训练段是下标 `[i*test_periods, i*test_periods + train_periods)`，
-          之后空出 `gap_periods` 个时间点，再接 `test_periods` 个时间点的测试段；
-        - 折数 `max(1, (总长 - train_periods - gap_periods) // test_periods)`；
-          测试段越过数据末尾的折记 warning 并跳过，所以数据不足时返回 `[]`。
-
-        每折产出 `{"fold", "train_start", "train_end", "test_start", "test_end"}`，
-        日期由 `np.datetime_as_string` 生成，两端都是闭区间。
+        Returns:
+            One dict per fold with keys ``fold``, ``train_start``,
+            ``train_end``, ``test_start`` and ``test_end``. Dates are
+            ``np.datetime_as_string`` values and both ends are inclusive.
         """
         total_periods = len(timestamps)
         test_periods = train_periods // 5  # Test set is 20% of training set
@@ -718,20 +894,17 @@ class BaseModel(ABC):
 
         folds: list[dict] = []
         for i in range(n_splits):
-            # Calculate indices for each fold
             train_start_idx = i * test_periods
             train_end_idx = train_start_idx + train_periods
             test_start_idx = train_end_idx + gap_periods
             test_end_idx = test_start_idx + test_periods
 
-            # Check if test set exceeds data range
             if test_end_idx > total_periods:
                 logger.warning(
                     f"Skipping fold {i}: test set exceeds data range"
                 )
                 continue
 
-            # Convert indices to timestamps
             folds.append(
                 {
                     "fold": i,
@@ -752,14 +925,12 @@ class BaseModel(ABC):
         return folds
 
     def _train_one_fold(self, fold: dict, project_name: str) -> dict:
-        """在**本实例**上训练一折，返回该折的结果 dict。
+        """Train one fold on this instance and return its result dict.
 
-        结果 = 折 dict 的五个键 + `experiment_name` + `checkpoint`（该折落盘的
-        文件的**绝对**路径）+ `_fit` 返回的 test 指标（不产出指标的变体没有这部分）。
-
-        `checkpoint` 写绝对路径（代码审查 WR-03）：`cv_folds.json` 由另一个
-        进程、从另一个工作目录读，相对 `model_save_dir` 写出的相对路径到那里
-        要么找不到，要么指到工作目录下另一次训练的同名文件。
+        The result is the fold dict plus ``experiment_name``, ``checkpoint``
+        (the absolute path of the fold's checkpoint, since the manifest may be
+        read from another working directory) and whatever ``test_*`` metrics
+        ``_fit`` returned.
         """
         self.config.train_start = fold["train_start"]
         self.config.train_end = fold["train_end"]
@@ -793,32 +964,33 @@ class BaseModel(ABC):
         }
 
     def _train_fold_with_config(self, fold: dict, project_name: str) -> dict:
-        """并行分支用：在本实例的深拷贝上训练一折。
+        """Train one fold on a deep copy of this instance (parallel branch).
 
-        每折一份 `copy.deepcopy(self)`，折之间不共享配置日期、模型与 wandb run；
-        代价是面板数据被复制 njobs 份。
+        Each fold gets its own copy so folds share no config dates, model or
+        wandb run; the price is one copy of the panel per job.
         """
         return copy.deepcopy(self)._train_one_fold(fold, project_name)
 
-    #: `train_cv` 在项目目录里写的折清单文件名（03.7 D-30）。
+    #: Name of the fold manifest ``train_cv`` writes into the trial directory.
     CV_FOLDS_FILENAME = "cv_folds.json"
-    #: 折清单的格式版本（03.7 D-36）。`run_cv` 会读旧训练 run 的清单，并拒收
-    #: 它不认识的版本；改动清单结构时必须递增这里。
+    #: Format version written into the manifest. Readers reject versions they
+    #: do not know, so bump this whenever the manifest structure changes.
     CV_FOLDS_FORMAT_VERSION = 1
 
-    #: 折 dict 自带的键。`test_start` / `test_end` 也以 `test_` 开头，但它们是
-    #: 日期不是指标，求 CV 均值时必须排除。
+    #: Keys every fold dict carries. ``test_start`` / ``test_end`` start with
+    #: ``test_`` but are dates, not metrics, and are excluded from CV means.
     _CV_FOLD_KEYS = frozenset(
         {"fold", "train_start", "train_end", "test_start", "test_end"}
     )
 
     @staticmethod
     def _cv_mean_metrics(results: list[dict]) -> dict:
-        """对各折的 `test_*` 指标求均值，键名 `cv_mean_{key}`，另加 `cv_n_folds`。
+        """Average the ``test_*`` metrics over folds as ``cv_mean_{key}``.
 
-        只取有限的数值；某个指标在所有折上都不是有限值时均值为 NaN（显式计数，
-        不走会发 RuntimeWarning 的空集求均值）。没有任何 `test_*` 指标时——比如
-        DL 变体的 `_fit` 不返回指标——返回空 dict，`train_cv` 也就不开 summary run。
+        Only finite numeric values count; a metric with no finite value in
+        any fold averages to NaN. ``cv_n_folds`` is added. Returns an empty
+        dict when no fold carries a ``test_*`` metric (the torch variant's
+        ``_fit`` returns none), in which case ``train_cv`` opens no summary run.
         """
         keys: list[str] = []
         for result in results:
@@ -854,34 +1026,50 @@ class BaseModel(ABC):
         parallel: bool = False,
         njobs: int = -1,
     ) -> list[dict]:
-        """滚动前推交叉验证，返回逐折结果 list。
+        """Run a rolling walk-forward cross-validation and return per-fold results.
 
-        折几何见 `_cv_folds`。每折有自己的 wandb run 与 checkpoint 目录
-        `{class}_cv_fold_{i}/`。各折的 `test_*` 指标求均值后写进一个独立的
-        `{class}_cv_summary` run 的 summary（`cv_mean_test_*` 与 `cv_n_folds`）：
-        每折的 `_fit` 结束时已经 finish 了自己的 run，均值算出来时没有还开着的
-        run 可写。`parallel=True` 在 joblib threading 后端上为每折深拷贝本实例。
+        Folds are laid out by ``_cv_folds`` over the timestamps between
+        ``config.start_date`` and ``config.end_date``. Every fold trains on
+        its own dates, gets its own wandb run and its own checkpoint directory
+        ``{class}_cv_fold_{i}/`` inside one trial directory. The mean of the
+        folds' ``test_*`` metrics is written to the summary of a separate
+        ``{class}_cv_summary`` run.
 
-        返回前把折清单写到 `{model_save_dir}/{project_name}/cv_folds.json`
-        （03.7 D-30 / D-36），内容是 `{"format_version": 1, "folds": [...]}`：
-        `folds` 就是本方法返回的这个 list 的 JSON 形式（`to_jsonable` 转换，NaN /
-        inf 写成 null，所以文件是严格 JSON），不多不少。折数为 0 时照样写，
-        `folds` 为 `[]`。经 `write_json_atomically` 落盘，中断的 run 不会留下
-        写了一半的文件。
+        Before returning, the manifest ``cv_folds.json`` is written atomically
+        into the trial directory as ``{"format_version": 1, "folds": [...]}``,
+        where ``folds`` is the JSON form of the returned list (NaN and inf
+        become null). Backtesters replay a CV run from that file.
 
-        之所以带 `format_version`：`run_cv` 要读**旧**训练 run 留下的清单来回测
-        每折的样本外段，清单因此是一个持久化格式，结构改动必须递增
-        `CV_FOLDS_FORMAT_VERSION`，`run_cv` 拒收不认识的版本。清单不改变返回值：
-        返回的折 dict 里没有任何清单的键。
+        Args:
+            train_periods: Number of timestamps in each training segment; the
+                test segment is one fifth of it.
+            gap_periods: Timestamps left out between a training segment and
+                its test segment.
+            parallel: Train the folds concurrently on deep copies of this
+                model using a threading pool.
+            njobs: Number of jobs for the parallel branch (``-1`` for all
+                cores).
+
+        Returns:
+            One dict per fold: the fold boundaries, ``experiment_name``, the
+            absolute ``checkpoint`` path and the fold's ``test_*`` metrics.
+
+        Raises:
+            ValueError: If no timestamps fall inside the config's date range.
+
+        Example:
+            >>> results = model.train_cv(train_periods=20, gap_periods=2)
+            >>> len(results)
+            4
+            >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
+            (0, True)
         """
         start_date = self.config.start_date
         end_date = self.config.end_date
 
-        # 与 train() 共用的防撞名项目目录名（代码审查 WR-04）。
         project_name = self._new_project_name()
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 
-        # Filter data by date range
         data_in_range = data.sel(timestamp=slice(start_date, end_date))
         timestamps = data_in_range.timestamp.values
 
@@ -925,8 +1113,7 @@ class BaseModel(ABC):
                 self._wandb_recorder.summary.update(means)
                 self._wandb_recorder.finish()
 
-        # 放在两个分支之后：顺序与并行都经过这里。写入的是 `to_jsonable` 转出的
-        # 新对象，`results` 本身原样返回（D-30 要求返回值不变）。
+        # The manifest is a converted copy; `results` is returned unchanged.
         write_json_atomically(
             Path(self.config.model_save_dir)
             / project_name
@@ -941,6 +1128,7 @@ class BaseModel(ABC):
         return results
 
     def _assert_shape_match_y(self, data: np.ndarray | torch.Tensor):
+        """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_labels]``."""
         num_symbols, num_labels = (
             self.num_symbols,
             self.num_labels,
@@ -951,6 +1139,7 @@ class BaseModel(ABC):
             )
 
     def _assert_shape_match_x(self, data: np.ndarray | torch.Tensor):
+        """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_factors]``."""
         num_symbols, num_features = (
             self.num_symbols,
             self.num_factors,
@@ -961,6 +1150,7 @@ class BaseModel(ABC):
             )
 
     def _init_wandb(self, project_name: str, experiment_name: str):
+        """Open a wandb run for this experiment with ``get_config()`` as its config."""
         self._wandb_recorder = wandb.init(
             project=project_name, name=experiment_name, config=self.get_config()
         )
@@ -969,37 +1159,75 @@ class BaseModel(ABC):
     def _fit(
         self, project_name: str, experiment_name: str, model_name: str
     ) -> dict | None:
-        """按 `config` 里的四个日期训练一次、评估、落盘，并 finish 当前 wandb run。
+        """Train, evaluate and save once, then finish the current wandb run.
 
-        checkpoint 写到 `model_save_dir / project_name / experiment_name / model_name`。
-        返回 test 指标 dict（键带 `test_` 前缀，`train_cv` 据此求 CV 均值）；
-        不产出指标的实现返回 None。
+        The checkpoint goes to ``model_save_dir / project_name /
+        experiment_name / model_name``. Returns the test metrics as a dict
+        whose keys start with ``test_`` (``train_cv`` averages them), or None
+        when the variant produces no metrics.
         """
 
     @abstractmethod
     def _predict(self, data: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
-        """`predict` 的变体实现；调用时 `self.model` 保证已存在。"""
+        """Variant implementation of ``predict``; ``self.model`` is guaranteed set."""
 
     @abstractmethod
     def _write_checkpoint(self, path: Path) -> None:
-        """把 `self.model` 写到 `path`（目录与 `config.json` 已由 `_save_model` 备好）。"""
+        """Write ``self.model`` to ``path``; the directory and sidecar already exist."""
 
     @abstractmethod
     def _read_checkpoint(self, path: Path) -> None:
-        """从 `path` 恢复 `self.model`；后缀已由 `load()` 校验过。"""
+        """Restore ``self.model`` from ``path``; the suffix is already checked."""
 
 
 class DLModel(BaseModel):
-    """torch 变体：DataLoader 按 epoch 的训练循环。
+    """Torch variant: an epoch loop over ``DataLoader`` batches.
 
-    device、`to_tensor`、epoch 循环、按 epoch 的早停与最优 state_dict 回滚、
-    `.pth` checkpoint、refit 优化器都在这一层。子类实现五个张量钩子：
-    `_init_model`、`_train_one_batch`、`_val_one_batch`、`_test_one_batch`、
-    `_preprocess`。
+    This layer owns the device, tensor conversion (``to_tensor``), the epoch
+    loop with per-epoch early stopping and rollback to the best ``state_dict``,
+    ``.pth`` checkpoints and the optional refit optimizer. A head implements
+    five tensor hooks: ``_init_model``, ``_train_one_batch``,
+    ``_val_one_batch``, ``_test_one_batch`` and ``_preprocess``, and in
+    practice also ``_init_optim``. Inputs are ``[num_times, num_symbols,
+    num_features]`` tensors, so a head sees every symbol of a bar at once and
+    may encode symbol position; ``predict_panel`` therefore aligns the symbol
+    axis to the training symbols before predicting.
 
-    DL 的早停保持按 epoch 判定并回滚到最优 epoch：神经网络一次参数更新作用于
-    整个模型，没有「前 k 棵树」那种可以廉价切片回退的结构，所以只能在 epoch
-    边界上快照权重。
+    Early stopping is decided at epoch boundaries and rolls back to the best
+    epoch's weights: a network has no cheaply sliceable structure like the
+    first ``k`` trees of a boosted model, so the weights are snapshotted
+    instead.
+
+    Example:
+        A minimal head; the base class supplies everything else::
+
+            >>> class LinearHead(DLModel):
+            ...     def _init_model(self, num_symbols, num_features, num_labels,
+            ...                     hyperparameters):
+            ...         return nn.Linear(num_features, num_labels)
+            ...     def _init_optim(self, model):
+            ...         return torch.optim.SGD(model.parameters(), lr=1e-3)
+            ...     def _preprocess(self, data):
+            ...         return torch.nan_to_num(data, nan=0.0)
+            ...     def _train_one_batch(self, epoch, x, y):
+            ...         self.optim.zero_grad()
+            ...         loss = nn.functional.mse_loss(self.model(x), y)
+            ...         loss.backward()
+            ...         self.optim.step()
+            ...         return loss.detach()
+            ...     def _val_one_batch(self, epoch, x, y):
+            ...         return nn.functional.mse_loss(self.model(x), y)
+            ...     def _test_one_batch(self, epoch, x, y):
+            ...         return nn.functional.mse_loss(self.model(x), y)
+            >>> head = LinearHead(DLConfig(
+            ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+            ...     factor_data_strategy="read", label_data_strategy="read",
+            ...     epochs=2, batch_size=8, num_workers=0,
+            ...     train_start="2024-01-01", train_end="2024-01-30",
+            ...     test_start="2024-01-31", test_end="2024-02-09",
+            ... ))
+            >>> head.collect().train().suffix
+            '.pth'
     """
 
     config_cls = DLConfig
@@ -1007,6 +1235,7 @@ class DLModel(BaseModel):
 
     @staticmethod
     def _set_random_seed(seed: int):
+        """Seed ``random``, numpy and torch (CPU and CUDA); make cuDNN deterministic."""
         BaseModel._set_random_seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
@@ -1015,15 +1244,21 @@ class DLModel(BaseModel):
 
     @property
     def device(self) -> str:
+        """``"cuda"`` when a CUDA device is available, else ``"cpu"``.
+
+        Example:
+            >>> head.device
+            'cpu'
+        """
         return "cuda" if torch.cuda.is_available() else "cpu"
 
     @staticmethod
     def _to_default_float(tensor: torch.Tensor) -> torch.Tensor:
-        """浮点张量统一到 torch 的默认浮点 dtype；非浮点张量原样返回。
+        """Cast a floating tensor to torch's default float dtype; others pass through.
 
-        `torch.from_numpy` 保留 numpy 的 dtype，而 pandas/polars 这两条数据路径
-        给出的是 float64，模型参数却是 float32，不统一就在第一个 Linear 层报
-        dtype 不匹配。
+        ``torch.from_numpy`` keeps numpy's dtype, and the data paths deliver
+        float64 while model parameters are float32; without this cast the
+        first linear layer raises a dtype mismatch.
         """
         default_dtype = torch.get_default_dtype()
         if tensor.is_floating_point() and tensor.dtype != default_dtype:
@@ -1031,25 +1266,37 @@ class DLModel(BaseModel):
         return tensor
 
     def to_tensor(self, data: xr.Dataset, variables: list[str]) -> torch.Tensor:
-        """把 `(timestamp, symbol)` 面板转成 `[num_times, num_symbols, len(variables)]`。
+        """Convert a panel to a ``[num_times, num_symbols, len(variables)]`` tensor.
 
-        `BaseModel.to_array` 的张量包装：变量轴顺序的保证来自 `to_array`，
-        这里只负责转张量并统一浮点 dtype。
+        A thin wrapper over ``BaseModel.to_array``: the variable order comes
+        from there, and this method only converts to a tensor in the default
+        float dtype.
+
+        Example:
+            >>> t = head.to_tensor(panel, ["f_a", "f_b"])
+            >>> t.shape, t.dtype
+            (torch.Size([40, 3, 2]), torch.float32)
         """
         return self._to_default_float(
             torch.from_numpy(self.to_array(data, variables))
         )
 
     def _predict(self, data: torch.Tensor | np.ndarray) -> torch.Tensor:
+        """Run the network in eval mode under ``no_grad`` and return its output.
+
+        Numpy input is converted to a default-float tensor. The model is left
+        in eval mode afterwards; the training loop switches it back itself.
+
+        Raises:
+            TypeError: If ``data`` is neither a tensor nor an array.
+        """
         if isinstance(data, np.ndarray):
             data = self._to_default_float(torch.from_numpy(data))
         elif not isinstance(data, torch.Tensor):
             raise TypeError(f"Unsupported data type: {type(data)}")
-        # 推理必须切 eval + no_grad。`load()` 新建的 nn.Module 默认处在 training
-        # 模式，以前这里两样都没做：dropout 是开着的（train_model.py 的配置里
-        # 首层就是 0.5），同一份输入每次调用给出的结果都不一样；而且整张计算图
-        # 被留下来白吃内存。切过之后模型就留在 eval 模式——要继续训练的话，
-        # 训练循环开头本来就会调 `self.model.train()`。
+        # A freshly built nn.Module is in training mode: without eval() any
+        # dropout stays active and the same input gives a different answer on
+        # every call, and without no_grad() the graph is kept alive for nothing.
         self.model.eval()  # type: ignore[union-attr]
         with torch.no_grad():
             data = data.to(self.device)
@@ -1057,7 +1304,14 @@ class DLModel(BaseModel):
             return self.model(data)  # type: ignore[misc]
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """张量输出转 numpy；`forward` 返回 tuple 的头必须自己覆盖本钩子（D-33）。"""
+        """Convert the network's tensor output to a numpy ``[T, S, L]`` array.
+
+        A head whose ``forward`` returns a tuple or list must override this
+        hook and map its output onto one channel per label.
+
+        Raises:
+            TypeError: If the prediction is not a single tensor.
+        """
         raw = self.predict(x)
         if isinstance(raw, torch.Tensor):
             return raw.detach().cpu().numpy()
@@ -1073,6 +1327,12 @@ class DLModel(BaseModel):
         )
 
     def _init_model_and_optim(self):
+        """Build the network from the collected panel's shape and its optimizer.
+
+        The network is moved to ``device``. ``_init_optim`` may return None
+        to signal that the head updates parameters inside its own training
+        hook; ``self.optim`` is then left untouched.
+        """
         self.model = self._init_model(
             num_symbols=self.num_symbols,
             num_features=self.num_factors,
@@ -1090,6 +1350,21 @@ class DLModel(BaseModel):
         experiment_name: str,
         model_name: str,
     ):
+        """Train with the epoch loop, save the checkpoint and finish the wandb run.
+
+        The training window is split by time: the first ``1 - val_size``
+        share of its timestamps trains, the rest validates. Each epoch trains
+        over shuffled batches, then evaluates the validation and test loaders
+        without gradients. With ``config.early_stopping`` on, the
+        sample-weighted mean of ``_val_one_batch`` is the epoch's validation
+        loss; the weights of the best epoch are snapshotted and restored at
+        the end, and training stops after ``early_stopping_patience`` epochs
+        without improvement. Returns None: this variant reports no metrics.
+
+        Raises:
+            ValueError: If any of the four ``train_*`` / ``test_*`` dates is
+                unset.
+        """
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
             self.config.train_end,
@@ -1133,8 +1408,8 @@ class DLModel(BaseModel):
         train_split = int(train_x_t_all.shape[0] * (1 - self.config.val_size))
         train_x_t = train_x_t_all[:train_split]
         train_y_t = train_y_t_all[:train_split]
-        # 切点用 `train_split:` 而不是 `train_split + 1:`：后者会让第 train_split
-        # 行既不在训练集也不在验证集，被静默丢掉。
+        # `train_split:` rather than `train_split + 1:`, so that no row falls
+        # between the two splits.
         val_x_t = train_x_t_all[train_split:]
         val_y_t = train_y_t_all[train_split:]
 
@@ -1229,32 +1504,25 @@ class DLModel(BaseModel):
         self.optim = None
 
     def _align_prediction_symbols(self, feats: xr.Dataset) -> xr.Dataset:
-        """DL 头只在训练过的标的上预测，布局是按标的排序后的训练标的（代码审查 WR-02，G-03.7-8）。
+        """Restrict ``feats`` to the sorted training symbols.
 
-        DL 头按标的**位置**编码输入：`MLPRegressor` 把每个 bar 展平成
-        `[S*F]`，只核对总长度；RNN 头沿标的轴递推，一个标的的预测依赖排在它
-        前面的所有标的。换一组标的（追加了 ticker 的库、另一份价格或因子数据）
-        的面板会让每个预测悄悄错位。`_trained_symbols` 已知时：
+        A torch head encodes symbol position (an MLP flattens each bar to
+        ``[S * F]``, a recurrent head steps along the symbol axis), so a panel
+        with a different symbol set would silently misplace every prediction.
+        When training symbols are known: a panel missing any of them raises
+        ``ValueError``; symbols the model never saw are dropped with a warning
+        and get no prediction; the result is ``feats.sel(symbol=sorted
+        training symbols)``, the layout ``to_array`` produced during training.
+        Only the membership of the record matters, never its order. Without a
+        training record ``feats`` is returned as is.
 
-        - 面板缺训练标的：ValueError，写明缺了哪些（同样个数、换了成员的面板
-          也在这里暴露）；
-        - 面板多出训练时没有的标的：logger.warning 写明它们，并丢掉；它们没有
-          预测，回测器 reindex 后是 NaN，因此不可选；
-        - 取出的是 `sorted(训练标的)`，按标的排序。网络训练时看到的就是这个
-          布局：`to_array` 对标的轴排序，`DLModel._fit` 经 `to_tensor ->
-          to_array` 训练（自 6b3c603 起一直排序）。所以训练记录里只有**成员**
-          是权威的，记录的顺序无关紧要。以前这里按记录顺序取，记录一旦不是
-          排好序的（没经过 `collect()` 就训练、或手改过 `trained_on`），坐标就
-          跟着记录走、数值跟着排序走，位置敏感的头每个预测都落到别的标的上
-          （G-03.7-8）。
+        The symbol labels are compared in the panel's own spelling, and the
+        label type is checked before membership (see
+        ``_assert_symbol_types_match``).
 
-        `_trained_symbols` 未知（没有训练记录的旧 checkpoint）时原样返回。
-
-        标的标签**按面板轴自己的拼写**比较（03.11-04）：以前 `present` 是
-        `[str(symbol) for symbol in ...]`，于是 int64 PERMNO 面板与字符串记录
-        两边都成了字符串，成员检查一路通过，直到最后一行 `.sel()` 才在 int64
-        坐标上抛 `KeyError`——而那条错误说的是「索引里找不到」，不是「dtype 不
-        对」。类型守卫因此放在成员检查**之前**，见 `_assert_symbol_types_match`。
+        Raises:
+            ValueError: If the panel lacks training symbols, or the label
+                types of the record and the panel disagree.
         """
         trained = self._trained_symbols
         if trained is None:
@@ -1288,12 +1556,11 @@ class DLModel(BaseModel):
 
     @staticmethod
     def _panel_as_of(feats: xr.Dataset):
-        """面板最后一个 bar 的日期，名字的 as-of 基准。
+        """Return the date of the panel's last bar, used to render symbol names.
 
-        标的名是**有时效的**——13407 在 2022-06-08 叫 FB、次日叫 META——所以「用
-        哪一天去查」必须说清楚。取窗口末尾：这两条消息讲的是**这次预测**要用的
-        面板，而不是历史上某一天，所以最新的那个拼写就是读者手里正在看的那个。
-        面板没有时间轴时返回 `None`，查表随即整体回落。
+        Symbol names change over time, so a lookup needs an as-of date; the
+        end of the window is the spelling a reader of the message has in
+        front of them. Returns None when the panel has no time axis.
         """
         stamps = feats["timestamp"].values if "timestamp" in feats.coords else []
         if len(stamps) == 0:
@@ -1301,18 +1568,11 @@ class DLModel(BaseModel):
         return pd.Timestamp(stamps[-1]).date()
 
     def _spell(self, symbols: list, as_of) -> list[str]:
-        """标的标签拼成人可读文本，**只用于消息**。
+        """Render symbol labels as text for a log message.
 
-        没装 `symbol_labeller`（单独训练、非 CRSP 面板、没有 sidecar 的库）时
-        返回标签自己的拼写，也就是这两条消息在 03.11-09 之前一直打的东西。
-        查表**从不**抛错：一条日志不该因为审计文件缺失**或格式损坏**而变成一次
-        崩溃。这里是裸调用、且在快乐路径上——面板多出未训练标的本来只是丢弃加
-        一条 warning、预测照常完成——所以守卫落在查表层（`CrspTickerLookup.label`），
-        而不是给这三个调用点各包一个 try：全仓库只有三个调用点
-        （`quantlab/dataset/_support/masking.py:262`、`backtest/engine_vectorbt.py:303`、
-        以及本方法这一处，经 `predict_panel` 的 missing / extra 两条分支各到达一次），
-        它们合起来渲染六条人可见消息。守卫写在查表层是一份拼写，
-        抄到调用点就是三份，且每多一个展示入口就多一次忘记的机会。
+        Without a ``symbol_labeller`` (or without an as-of date) the labels'
+        own spelling is returned. The labeller is expected never to raise: a
+        log message must not turn a warning into a crash.
         """
         if self.symbol_labeller is None or as_of is None:
             return [str(symbol) for symbol in symbols]
@@ -1320,10 +1580,10 @@ class DLModel(BaseModel):
 
     @staticmethod
     def _symbol_type_name(symbol) -> str:
-        """标的标签的**类别**名：整数一律叫 `int`，其余叫它自己的类型名。
+        """Return a symbol label's kind: ``"int"`` for any integer, else its type name.
 
-        比较的是类别不是具体类型：`numpy.int64` 与 python `int` 在 `.sel()`
-        面前等价，把它们报成两种类型只会制造一条假的不匹配。
+        ``numpy.int64`` and ``int`` are interchangeable for ``.sel()``, so
+        they are reported as one kind rather than as a spurious mismatch.
         """
         if isinstance(symbol, bool):
             return type(symbol).__name__
@@ -1334,19 +1594,16 @@ class DLModel(BaseModel):
     def _assert_symbol_types_match(
         self, trained: list, present: list, feats: xr.Dataset
     ) -> None:
-        """训练记录与面板轴的标签类别必须一致，否则在**入口**拒绝（03.11-04）。
+        """Refuse to align when the record and the panel use different label types.
 
-        这道守卫必须在成员检查之前，因为成员检查看不见这个缺陷：两边都
-        `str()` 之后 `'10107' in {'10107', ...}` 为真，检查通过，错误一路拖到
-        最后一行 `.sel()`。03.11-RESEARCH B 的实跑输出是
+        This runs before the membership check because that check cannot see
+        the problem: stringified, every label is "found", and the failure only
+        surfaces on the closing ``.sel()`` as a misleading ``KeyError`` about
+        a missing index entry. Neither side is coerced: a string record
+        coerced onto an integer axis could match the wrong columns silently.
 
-            membership check at model.py:1201-1203 passes: True
-            KeyError: "not all values found in index 'symbol'"
-
-        那条 `KeyError` 说的是「索引里没有这些值」，于是操作者去查面板少了哪个
-        标的——而面板一个都不少，少的是类型的一致。**不做硬转**：把字符串记录
-        转成 int 会让一份 ticker 轴的旧 checkpoint 悄悄对上 PERMNO 列，那不是
-        兼容，是静默的张冠李戴（D-04 不写兼容层）。
+        Raises:
+            ValueError: If the two sides disagree on the label type.
         """
         if not trained or not present:
             return
@@ -1376,11 +1633,17 @@ class DLModel(BaseModel):
         )
 
     def _write_checkpoint(self, path: Path) -> None:
+        """Save the network's ``state_dict`` to ``path`` with ``torch.save``."""
         torch.save(self.model.state_dict(), path)  # type: ignore[union-attr]
 
     def _read_checkpoint(self, path: Path) -> None:
-        # 网络的标的数取训练记录（代码审查 WR-02）：按当前面板建网络，标的不一致
-        # 就永远无从暴露，而且加载前还必须先 collect。没有记录时退回当前面板。
+        """Rebuild the network and load the ``state_dict`` stored at ``path``.
+
+        The network's symbol count comes from the training record when one
+        exists, so a checkpoint can be loaded without collecting data first
+        and a symbol mismatch is caught later by ``predict_panel``; without a
+        record the current panel's symbol count is used.
+        """
         num_symbols = (
             len(self._trained_symbols)
             if self._trained_symbols is not None
@@ -1401,7 +1664,12 @@ class DLModel(BaseModel):
         num_features: int,
         num_labels: int,
         hyperparameters: dict,
-    ): ...
+    ):
+        """Build and return the ``nn.Module`` for the given panel shape.
+
+        The base class moves it to ``device``. ``hyperparameters`` is
+        ``config.hyperparameters``, a free-form dict.
+        """
 
     @abstractmethod
     def _test_one_batch(
@@ -1409,7 +1677,12 @@ class DLModel(BaseModel):
         epoch: int,
         x: np.ndarray | torch.Tensor,
         y: np.ndarray | torch.Tensor,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """Evaluate one test batch; called each epoch in eval mode without gradients.
+
+        The return value is not used by the base class; heads typically log
+        metrics here.
+        """
 
     @abstractmethod
     def _train_one_batch(
@@ -1417,7 +1690,14 @@ class DLModel(BaseModel):
         epoch: int,
         x: np.ndarray | torch.Tensor,
         y: np.ndarray | torch.Tensor,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """Run one optimisation step on one batch and return its loss.
+
+        The base class has already called ``model.train()`` and moved ``x``
+        and ``y`` to ``device``; the hook performs ``zero_grad``, forward,
+        loss, ``backward`` and ``step``. ``x`` is ``[batch, num_symbols,
+        num_features]`` and ``y`` is ``[batch, num_symbols, num_labels]``.
+        """
 
     @abstractmethod
     def _val_one_batch(
@@ -1425,15 +1705,37 @@ class DLModel(BaseModel):
         epoch: int,
         x: np.ndarray | torch.Tensor,
         y: np.ndarray | torch.Tensor,
-    ) -> torch.Tensor: ...
+    ) -> torch.Tensor:
+        """Return the validation loss of one batch as a scalar tensor.
+
+        Called in eval mode under ``no_grad``. The base class averages the
+        returned values (weighted by batch size) into the epoch's validation
+        loss, which drives early stopping and the best-epoch snapshot, so the
+        result must be convertible with ``float()``.
+        """
 
     @abstractmethod
-    def _preprocess(self, data: torch.Tensor) -> torch.Tensor: ...
+    def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
+        """Preprocess a ``[T, S, *]`` tensor; shared by training and inference.
+
+        Using one hook for both keeps the input distribution identical at
+        training and prediction time. Heads typically replace NaN with zero.
+        """
 
     def _init_optim(self, model: torch.nn.Module):
+        """Return the optimizer for ``model``, or None if the head updates itself.
+
+        The default raises ``NotImplementedError`` and ``_init_model_and_optim``
+        calls it unguarded, so every head that trains must override it.
+        """
         raise NotImplementedError
 
     def _get_refit_optim(self) -> torch.optim.Optimizer:
+        """Return a cached AdamW optimizer with ``config.lr_refit`` for online refits.
+
+        The optimizer is rebuilt only when ``self.model`` is replaced or
+        ``lr_refit`` changes, so its state survives across refit calls.
+        """
         key = (self.model, self.config.lr_refit)
         cached = getattr(self, "_refit_optim_cache", None)
         if (
@@ -1452,24 +1754,42 @@ class DLModel(BaseModel):
 
 
 class MLModel(BaseModel):
-    """numpy 变体：非 torch 的 ML / 树模型（xgboost 等）。
+    """Numpy variant for tree models and other non-torch libraries.
 
-    **没有 epoch 循环，也不做任何模型拷贝回滚。** 训练、早停与最优模型的选取
-    全部交给所属库的原生机制（`_fit_model` 负责），理由有三：
+    There is no epoch loop and no copy-based rollback. Training, early
+    stopping and the choice of the best model are left to the library's own
+    mechanism inside ``_fit_model``: boosting libraries decide early stopping
+    per round with cached validation scores, and rolling back to the best
+    round is a matter of keeping the first ``k`` trees, both of which an
+    outer epoch loop would only make coarser and slower.
 
-    - 粒度：xgboost / LightGBM / CatBoost 都是逐棵树（逐轮）判定早停，外层按
-      「epoch」包一圈只会把判定粒度变粗；
-    - 成本：库内的验证分数靠预测缓存增量计算，总成本随轮数线性增长；外层每个
-      epoch 用全部树把验证集重算一遍，总成本是二次的；
-    - 回滚：树模型回到最优轮只需切片保留前 k 棵树（xgboost 的
-      `EarlyStopping(save_best=True)`），不需要拷贝整个模型。
+    A head implements four hooks: ``_init_model``, ``_preprocess``,
+    ``_fit_model`` and ``_forward``. ``_loss``, ``_compute_metrics``,
+    ``_evaluate`` and ``_resolved_hyperparameters`` have default
+    implementations that may be overridden. Checkpoints are ``.joblib`` files
+    written through ``MlBackend``; they are pickles, so only load files you
+    trust.
 
-    DL 仍按 epoch 走（见 `DLModel`），因为神经网络没有这种可切片的结构。
+    Example:
+        A minimal head that predicts the first feature for every label::
 
-    子类实现四个钩子：`_init_model`、`_preprocess`、`_fit_model`、`_forward`。
-    `_loss` / `_compute_metrics` / `_evaluate` 有可用的默认实现，可按需覆盖。
-    checkpoint 是 `.joblib`，经 `ml_model/backend.py:MlBackend` 读写——本质是
-    pickle，只加载自己信任的文件。
+            >>> class FirstFeatureHead(MLModel):
+            ...     def _init_model(self, num_features, num_labels, hyperparameters):
+            ...         return {"num_labels": num_labels}
+            ...     def _preprocess(self, data):
+            ...         return np.array(data, dtype=np.float64, copy=True)
+            ...     def _fit_model(self, train_x, train_y, val_x, val_y):
+            ...         pass
+            ...     def _forward(self, x):
+            ...         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
+            >>> head = FirstFeatureHead(MLConfig(
+            ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+            ...     factor_data_strategy="read", label_data_strategy="read",
+            ...     train_start="2024-01-01", train_end="2024-01-30",
+            ...     test_start="2024-01-31", test_end="2024-02-09",
+            ... ))
+            >>> head.collect().train().suffix
+            '.joblib'
     """
 
     config_cls = MLConfig
@@ -1479,17 +1799,20 @@ class MLModel(BaseModel):
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict
     ):
-        """根据特征数、标签数与超参准备模型；返回值原样赋给 `self.model`。
+        """Prepare the model for the given shape; the result becomes ``self.model``.
 
-        树模型往往要到 `_fit_model` 里才真正建出模型，此时可以只解析超参并返回 None。
-        `load()` 不调用本方法：checkpoint 里就是完整模型。
+        Tree libraries often build the real model only inside ``_fit_model``,
+        in which case this may just resolve the hyperparameters and return
+        None. ``load()`` does not call it: the checkpoint holds the whole
+        model.
         """
 
     @abstractmethod
     def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """对 `[T, S, *]` 数组做预处理，返回新数组；不得原地修改入参。
+        """Preprocess a ``[T, S, *]`` array and return a new one; never modify in place.
 
-        训练时四份数组（train/test 的 x 与 y）各调用一次，推理时对输入调用一次。
+        Called once per training array (train and test, x and y) and once on
+        the input at inference.
         """
 
     @abstractmethod
@@ -1500,31 +1823,39 @@ class MLModel(BaseModel):
         val_x: np.ndarray | None,
         val_y: np.ndarray | None,
     ) -> None:
-        """训练模型。入参是 `[T, S, F]` / `[T, S, L]`。
+        """Fit the model on ``[T, S, F]`` features and ``[T, S, L]`` labels.
 
-        验证段为空（`val_size == 0`）时 `val_x` 与 `val_y` 都是 None。早停与最优
-        模型回滚由本方法用库的原生机制完成，遵循 `config.early_stopping` 与
-        `config.early_stopping_patience`；返回时 `self.model` 必须已经是要保存的
-        模型。
+        ``val_x`` and ``val_y`` are None when the validation segment is empty
+        (``val_size == 0``). Early stopping and rollback to the best model are
+        the hook's job, using the library's native mechanism and honouring
+        ``config.early_stopping`` and ``config.early_stopping_patience``. On
+        return ``self.model`` must be the model to save.
         """
 
     @abstractmethod
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """对已预处理的 `[T, S, F]` 输入返回 `[T, S, L]` 预测。"""
+        """Return ``[T, S, L]`` predictions for a preprocessed ``[T, S, F]`` input."""
 
     def _resolved_hyperparameters(self) -> dict | None:
-        """实际生效的超参记录（默认值合并用户覆盖之后），默认 None 表示不记录。
+        """Return the hyperparameters actually in effect, or None to record nothing.
 
-        头在 `_init_model` 里解析出库参数后覆盖本钩子返回它们。非 None 时，
-        `_fit` 把它写进 wandb run config，`get_config` 把它放进 `config.json`
-        的顶层 `resolved_hyperparameters`——这样日后库默认值或头的默认参数改了，
-        这次训练仍能按记录复现。它是记录不是输入：`config.hyperparameters`
-        保持用户原样，`load_model_from_config` 重建配置时丢弃这个键。
+        A head that merges user overrides into library defaults in
+        ``_init_model`` overrides this to expose the merged result. When not
+        None, ``_fit`` adds it to the wandb run config and ``get_config`` adds
+        it to ``config.json`` as ``resolved_hyperparameters``, so a run stays
+        reproducible after defaults change. It is a record, not an input:
+        ``config.hyperparameters`` is left as the user wrote it, and the
+        config loader drops the key when rebuilding.
         """
         return None
 
     def get_config(self) -> dict:
-        """在 `BaseModel.get_config` 之上，追加非 None 的 `resolved_hyperparameters`。"""
+        """Return ``BaseModel.get_config()`` plus any resolved hyperparameters.
+
+        Example:
+            >>> "resolved_hyperparameters" in head.get_config()
+            False
+        """
         cfg = super().get_config()
         resolved = self._resolved_hyperparameters()
         if resolved is not None:
@@ -1532,9 +1863,9 @@ class MLModel(BaseModel):
         return cfg
 
     def _loss(self, y: np.ndarray, pred: np.ndarray) -> float:
-        """默认损失：所有标签都有限的 `(t, s)` 位置上、对全部标签求 MSE。
+        """Return the MSE over all labels at positions where every label is finite.
 
-        没有有效位置时返回 NaN（显式计数，不发 RuntimeWarning）。
+        Returns NaN when no position qualifies.
         """
         y = np.asarray(y, dtype=np.float64)
         pred = np.asarray(pred, dtype=np.float64)
@@ -1546,17 +1877,17 @@ class MLModel(BaseModel):
         return float(np.sum(diff * diff) / diff.size)
 
     def _compute_metrics(self, y: np.ndarray, pred: np.ndarray) -> dict:
-        """默认指标：主标签（最后一维第 0 个）上的 `regression_panel_metrics`。"""
+        """Return ``regression_panel_metrics`` for the primary label (index 0)."""
         return regression_panel_metrics(pred[..., 0], y[..., 0])
 
     def _evaluate(
         self, split: str, x: np.ndarray, y: np.ndarray
     ) -> dict[str, float]:
-        """在一个切分上评估，返回带前缀的指标 dict 并写入 wandb summary。
+        """Evaluate one split and write the prefixed metrics to the wandb summary.
 
-        键为 `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`（下划线）。
-        写的是 summary 里的最终值、不带 step，不和逐轮 `log(step=...)` 的曲线
-        争抢 step。
+        Keys are ``{split}_loss`` and ``{split}_{mse,rmse,mae,r2,ic,rank_ic}``.
+        They go to the run summary (final values, no step), so they do not
+        interfere with per-round ``log(step=...)`` curves.
         """
         pred = self._forward(x)
         metrics = {f"{split}_loss": self._loss(y, pred)}
@@ -1569,11 +1900,19 @@ class MLModel(BaseModel):
     def _fit(
         self, project_name: str, experiment_name: str, model_name: str
     ) -> dict:
-        """一次 ML 训练：切分 -> `_fit_model` 一次 -> 评估 -> 落盘 -> finish。
+        """Split, fit once with ``_fit_model``, evaluate, save and finish the run.
 
-        验证段是训练段尾部的 `val_size` 比例（与 DL 的切法一致）。空切分一律
-        跳过评估：没有验证段就没有 `val_*` 指标，测试段为空时返回 `{}`。
-        返回 test 指标 dict。
+        The validation segment is the trailing ``val_size`` share of the
+        training window, as in the torch variant. Empty splits skip
+        evaluation: no validation segment means no ``val_*`` metrics, and an
+        empty test segment returns ``{}``.
+
+        Returns:
+            The ``test_*`` metrics dict.
+
+        Raises:
+            ValueError: If any of the four ``train_*`` / ``test_*`` dates is
+                unset, or ``val_size`` leaves no timestamps to fit on.
         """
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
@@ -1593,7 +1932,8 @@ class MLModel(BaseModel):
         )
         resolved = self._resolved_hyperparameters()
         if resolved is not None and self._wandb_recorder is not None:
-            # run 在 `_init_wandb` 时已经打开，那时参数还没解析；这里补记。
+            # The run was opened in `_init_wandb`, before the hyperparameters
+            # were resolved; record them now.
             self._wandb_recorder.config.update(
                 {"resolved_hyperparameters": dict(resolved)},
                 allow_val_change=True,
@@ -1659,6 +1999,11 @@ class MLModel(BaseModel):
         return test_metrics
 
     def _predict(self, data: torch.Tensor | np.ndarray) -> np.ndarray:
+        """Preprocess ``data`` (tensors are converted to numpy) and run ``_forward``.
+
+        Raises:
+            TypeError: If ``data`` is neither a tensor nor an array.
+        """
         if isinstance(data, torch.Tensor):
             data = data.detach().cpu().numpy()
         if not isinstance(data, np.ndarray):
@@ -1666,13 +2011,18 @@ class MLModel(BaseModel):
         return self._forward(self._preprocess(data))
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """ML 头的 `_forward` 本来就返回 `[T, S, L]` numpy，这里只做 `np.asarray`。"""
+        """Return ``predict(x)`` as an array; ``_forward`` yields ``[T, S, L]``."""
         return np.asarray(self.predict(x))
 
     def _write_checkpoint(self, path: Path) -> None:
+        """Serialize ``self.model`` to ``path`` through ``MlBackend``."""
         MlBackend().to_internal(self.model).write(str(path))
 
     def _read_checkpoint(self, path: Path) -> None:
-        # 不调 `_init_model`：joblib 文件里就是完整模型，重建一个空模型再覆盖既
-        # 多余，又要求新实例先 collect 才知道特征数。
+        """Load the whole model from ``path`` through ``MlBackend``.
+
+        ``_init_model`` is not called: the file holds the complete model, and
+        rebuilding an empty one first would require collecting data to know
+        the feature count.
+        """
         self.model = MlBackend().read(str(path)).get_model()

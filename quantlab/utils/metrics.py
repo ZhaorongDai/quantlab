@@ -36,7 +36,14 @@ def _joint(pred, target) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def mse(pred, target) -> float:
-    """Return the mean squared error over the jointly finite cells, or NaN if none."""
+    """Return the mean squared error over the jointly finite cells, or NaN if none.
+
+    Example:
+        >>> mse([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 6.0])
+        1.0
+        >>> mse([1.0, np.nan], [np.nan, 2.0])
+        nan
+    """
     p, t, mask = _joint(pred, target)
     n = int(mask.sum())
     if n == 0:
@@ -46,13 +53,23 @@ def mse(pred, target) -> float:
 
 
 def rmse(pred, target) -> float:
-    """Return ``sqrt(mse(pred, target))``, or NaN when the MSE is undefined."""
+    """Return ``sqrt(mse(pred, target))``, or NaN when the MSE is undefined.
+
+    Example:
+        >>> rmse([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 6.0])
+        1.0
+    """
     value = mse(pred, target)
     return float(np.sqrt(value)) if np.isfinite(value) else float("nan")
 
 
 def mae(pred, target) -> float:
-    """Return the mean absolute error over the jointly finite cells, or NaN if none."""
+    """Return the mean absolute error over the jointly finite cells, or NaN if none.
+
+    Example:
+        >>> mae([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 6.0])
+        0.5
+    """
     p, t, mask = _joint(pred, target)
     n = int(mask.sum())
     if n == 0:
@@ -66,6 +83,12 @@ def r2(pred, target) -> float:
     NaN is returned when fewer than two cells are usable or when the target is
     constant over the usable cells (``SS_tot == 0``), because R2 is undefined
     in both cases.
+
+    Example:
+        >>> r2([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 6.0])
+        0.7142857142857143
+        >>> r2([1.0, 2.0], [3.0, 3.0])
+        nan
     """
     p, t, mask = _joint(pred, target)
     n = int(mask.sum())
@@ -94,6 +117,12 @@ def cross_sectional_ic(pred, target) -> float:
 
     Raises:
         ValueError: If the inputs are not 2-D or differ in shape.
+
+    Example:
+        >>> pred = np.array([[3.0, 1.0, 2.0], [1.0, 3.0, 2.0]])
+        >>> target = np.array([[9.0, 1.0, 4.0], [1.0, 9.0, 4.0]])
+        >>> cross_sectional_ic(pred, target)
+        0.989743318610787
     """
     p, t, mask = _joint(pred, target)
     if p.ndim != 2:
@@ -139,6 +168,13 @@ def cross_sectional_rank_ic(pred, target) -> float:
 
     Raises:
         ValueError: If the inputs are not 2-D or differ in shape.
+
+    Example:
+        The panel from ``cross_sectional_ic`` orders every row the same way
+        on both sides, so its rank correlation is exactly 1:
+
+        >>> cross_sectional_rank_ic(pred, target)
+        1.0
     """
     p, t, mask = _joint(pred, target)
     if p.ndim != 2:
@@ -154,8 +190,11 @@ def regression_panel_metrics(pred, target) -> dict[str, float]:
     """Return all six panel metrics keyed ``mse, rmse, mae, r2, ic, rank_ic``.
 
     Example:
-        >>> regression_panel_metrics(pred, target)["rank_ic"]
-        0.031
+        >>> metrics = regression_panel_metrics(pred, target)
+        >>> sorted(metrics)
+        ['ic', 'mae', 'mse', 'r2', 'rank_ic', 'rmse']
+        >>> metrics["rank_ic"]
+        1.0
     """
     return {
         "mse": mse(pred, target),

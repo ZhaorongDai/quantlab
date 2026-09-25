@@ -1,71 +1,53 @@
-"""Pull WRDS NYSE TAQ consolidated NBBO records for a symbol roster and,
-optionally, resample them locally into a `[timestamp, symbol]` bar panel.
+"""Command-line ingest of NYSE TAQ consolidated NBBO quotes from WRDS.
 
-What it does
-------------
-Each trading day's raw NBBO records are read from
-`taqm_{YYYY}.complete_nbbo_{YYYYMMDD}` (the complete NBBO table, not `nbbom`,
-which misses single-venue NBBO states) with one PostgreSQL `COPY` per
-(trading day, symbol batch). The raw tier lands under
-`<data root>/downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/` as hive
-shards, every record kept in arrival order. With `--to-zarr` the raw tier is
-resampled by `quantlab.registry.convert()` into a right-closed
-bar panel (`--bar-interval`, default 1m) over the session window
-(`--session-start`/`--session-end`, default regular hours 09:30-16:00 ET),
-and a `<store>.nbbo_filter_stats.json` sidecar records what the default
-filters dropped per session date and symbol.
+The script pulls each trading day's raw NBBO records from
+``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}`` (the complete NBBO table, not
+``nbbom``, which misses single-venue NBBO states) for a symbol roster, one
+PostgreSQL ``COPY`` per trading day and symbol batch, and writes them as hive
+shards (partition ``data_type=nbbo``) under
+``<data root>/downloads/us_equity/tick/wrds_taq/wrds/``, every record kept in
+arrival order. With ``--to-zarr`` the raw tier is resampled locally by
+``quantlab.registry.convert()`` into a right-closed bar panel on
+``(timestamp, symbol)`` at ``--bar-interval`` (default 1m) over the session
+window ``--session-start`` to ``--session-end`` (default regular hours, 09:30
+to 16:00 ET), and a ``<store>.nbbo_filter_stats.json`` sidecar records what
+the default filters dropped per session date and symbol.
 
-This script names no vendor class: it resolves its source with
-`DataSourceRegistry.get("wrds")`, builds the acquisition config through
-`SOURCE.config_factory` and constructs the dataset config directly. It calls
-no `quantlab/config` factory function.
+The vendor is resolved through ``DataSourceRegistry.get("wrds")``, the
+acquisition config is built by ``SOURCE.config_factory`` and the dataset
+config is constructed directly; no vendor class is named here.
 
-Credentials
------------
-`WRDS_USERNAME` is read from the ENVIRONMENT. The password is never read by
-this code at all: libpq reads it from `~/.pgpass` (mode 600), one line of the
-form `wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>`. No
-argument accepts a username or a password, and nothing this script prints
-contains either: a credential on the command line lands in shell history and
-in every process listing, and this repo has already leaked one real key.
+Credentials: ``WRDS_USERNAME`` must be set in the environment. The password
+is never read by this code; libpq takes it from ``~/.pgpass`` (mode 600), one
+line of the form
+``wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>``. No
+argument accepts either value and nothing printed contains one. The volume
+probe, the pull and the conversion share one WRDS connection, opened through
+``WrdsSession.shared()`` and closed in a ``finally``, so a run costs at most
+one Duo push; a broken session is never reopened, and the next run resumes
+from the recorded pages.
 
-One Duo push per run
---------------------
-Every new WRDS connection can push a Duo prompt to the account holder's phone.
-The volume probe, the pull and the conversion therefore share ONE session
-(`WrdsSession.shared()`), closed in a `finally` when the run ends. The pull
-runs on that one connection; there is no worker-count flag to raise, and
-`wait_for_quota` is not offered either: after a session failure the run stops
-(a broken session is never reopened) and the next run resumes from the
-recorded pages.
-
-Order of checks
----------------
-1. Arguments, including the session window (checked by `XnysSessionCalendar`
-   before any connection, so a bad window costs no WRDS query).
-2. Entitlement: every year of the window must be readable (`taqm_YYYY`);
-   an unentitled year stops the run before any count or COPY.
-3. Volume: rows are counted with `count(*)` per (trading day, symbol batch)
-   BEFORE any data is pulled, and `SqlVolumeGuard` refuses a pull over the
-   20 GiB raw-byte ceiling (or the 700M row ceiling). Long ranges run as
-   several guarded date segments; a refusal names the longest segment from
-   `--start-date` that fits. `--force-volume` skips the refusal, never the
-   arithmetic.
-4. The pull (`registry.run`), then the optional conversion.
+Before any row is copied the run checks, in this order: the arguments,
+including the session window (validated by ``XnysSessionCalendar`` before
+any connection); the account's entitlement to every ``taqm_YYYY`` schema in
+the window; and the row volume, counted with ``count(*)`` per trading day
+and symbol batch and refused above the ``SqlVolumeGuard`` ceilings unless
+``--force-volume`` is given (a refusal names the longest segment from
+``--start-date`` that would fit). See ``docs/wrds_taq.md``.
 
 Usage:
     export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
 
     # Raw NBBO records for an explicit roster (dot notation: BRK.B).
-    uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
+    uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \\
         --start-date 2024-01-24 --end-date 2024-01-25
 
     # The same pull, resampled to 1-minute bars afterwards.
-    uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
+    uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \\
         --start-date 2024-01-24 --end-date 2024-01-25 --to-zarr --bar-interval 1m
 
     # Point-in-time S&P 500 constituents over the window (interval overlap).
-    uv run python scripts/ingest_wrds_taq.py --universe sp500 \
+    uv run python scripts/ingest_wrds_taq.py --universe sp500 \\
         --start-date 2024-01-24 --end-date 2024-01-24 --to-zarr
 """
 
@@ -94,27 +76,28 @@ from quantlab.utils.cli import (
     resolve_symbols,
 )
 
-#: The one place this script's vendor is named, as a registry token.
+#: The vendor descriptor, resolved from its registry token.
 SOURCE = DataSourceRegistry.get("wrds")
 
-#: The universes WRDS pulls are offered for: the point-in-time index
-#: rosters, which use the dot notation TAQ needs (D-15). `nasdaq_all` and
-#: `us_all` are exchange listings in hyphen notation and far too large for a
+#: The universes a WRDS pull is offered for: the point-in-time index rosters,
+#: which use the dot notation TAQ needs. The exchange listings (``nasdaq_all``
+#: and ``us_all``) use hyphen notation and are far too large for a
 #: quote-level pull.
 UNIVERSES: tuple[str, ...] = ("sp500", "nasdaq100")
 
-#: Bar sizes, derived from the locked `BarInterval` literal.
+#: Bar sizes, derived from the ``BarInterval`` literal.
 BAR_INTERVALS: tuple[str, ...] = typing.get_args(BarInterval)
 
-#: The Zarr store a `--to-zarr` run writes to, under
-#: `<data root>/data/us_equity/tick/`. The session window is part of the
-#: name: the conversion ledger fingerprints only the symbol axis, so two
-#: windows sharing one store would silently skip the second window's dates
-#: as already written.
+#: The Zarr store a ``--to-zarr`` run writes, under
+#: ``<data root>/data/us_equity/tick/``. The session window is part of the
+#: name because the conversion ledger fingerprints only the symbol axis, so
+#: two windows sharing one store would silently skip the second window's
+#: dates as already written.
 DEFAULT_STORE_TEMPLATE = "wrds_nbbo_{bar_interval}_{session_start}-{session_end}.zarr"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for this script."""
     parser = argparse.ArgumentParser(
         description=(
             "Pull WRDS TAQ consolidated NBBO records and optionally resample "
@@ -138,7 +121,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=list(UNIVERSES),
         default=None,
         help=(
-            "Point-in-time index constituents, resolved by interval OVERLAP "
+            "Point-in-time index constituents, resolved by interval overlap "
             "over [--start-date, --end-date]: every symbol that was a member "
             "at any point in the window, in dot notation (BRK.B)."
         ),
@@ -197,8 +180,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate(parser: argparse.ArgumentParser, args) -> XnysSessionCalendar:
-    """Every argument refusal, BEFORE any WRDS session exists. Returns the
-    session calendar the window check built."""
+    """Refuse bad arguments before any WRDS session exists.
+
+    Returns:
+        The session calendar built while checking the session window.
+    """
     if bool(args.symbols) == bool(args.universe):
         parser.error("Exactly one of --symbols or --universe must be set.")
     if not args.start_date or not args.end_date:
@@ -233,7 +219,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before any path is derived from the data root (DDIR-04).
+    # The data root must be applied before any path is derived from it.
     apply_data_dir(args)
 
     calendar = _validate(parser, args)
@@ -261,8 +247,8 @@ if __name__ == "__main__":
         kwargs={"batch_size": batch_size},
     )
 
-    # Imported here so the module attribute is read at run time (the test
-    # suite patches it with an offline double).
+    # Imported at run time rather than at module scope so the session class is
+    # looked up when the run starts, which lets an offline double replace it.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.taq import WrdsNbboVolumeProbe, WrdsSession
 
@@ -272,8 +258,8 @@ if __name__ == "__main__":
         parser.exit(1, f"{exc}\n")
 
     try:
-        # Entitlement, then count(*) per (day, batch), then the guard -- all
-        # BEFORE the first COPY (D-16, D-21, D-24).
+        # Entitlement, then count(*) per (day, batch), then the guard, all
+        # before the first COPY.
         try:
             rows_by_day = WrdsNbboVolumeProbe(
                 session, batch_size=batch_size

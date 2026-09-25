@@ -1,8 +1,18 @@
+"""Ad hoc example: Alpha101 factors, a forward-return label, XGBoost, backtest.
+
+A cell-style (``# %%``) walkthrough of the whole pipeline on daily US-equity
+data: compute Alpha101 factors, build a 5-day forward-return label, train an
+``XGBoostRegressor`` and run a cross-sectional long/short top-N backtest.
+Runs at import with hardcoded, machine-specific store paths; edit them before
+running. Not part of the library.
+"""
+
 # %%
 import os
 import sys
 
-# macOS 上同一进程混用 torch 与 xgboost 需要单线程 OpenMP（见 example/model.md），必须在 import quantlab 之前设置。
+# Mixing torch and xgboost in one process on macOS needs single-threaded
+# OpenMP (see docs/model.md); it must be set before quantlab is imported.
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
@@ -24,7 +34,16 @@ data_columns = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
 
 
 def us_equity() -> StockDataset:
-    """每个使用方一个独立的数据集对象，互不改写日期。"""
+    """Return a fresh ``StockDataset`` for the daily US-equity store.
+
+    Each consumer gets its own instance so that none of them rewrites another
+    one's date window.
+
+    Example:
+        >>> ds = us_equity()
+        >>> ds.config.market
+        'us_equity'
+    """
     return StockDataset(
         DatasetConfig(
             zarr_file_path="/home/zhrdai/projects/quantlab2/data/data/us_equity/1d/us_all.zarr",
@@ -38,6 +57,17 @@ def us_equity() -> StockDataset:
 
 
 def alpha101(**kwargs) -> Alpha101Stock:
+    """Return an ``Alpha101Stock`` factor over a fresh dataset.
+
+    Args:
+        **kwargs: Extra ``FactorConfig`` fields, typically ``start_date`` and
+            ``end_date``.
+
+    Example:
+        >>> factor = alpha101(start_date="2020-01-01", end_date="2026-01-01")
+        >>> factor.config.window
+        252
+    """
     return Alpha101Stock(
         FactorConfig(
             window=252,
@@ -61,8 +91,10 @@ factor.cal()
 factor.get_features()
 
 # %%
-# 流水线：Alpha101 因子 -> 5 日远期收益标签 -> XGBoost -> 截面 TopN 回测
-# W&B：模型训练会开一个 run，use_wandb=True 再为回测开一个 run（需要先 `wandb login` 或设置 WANDB_API_KEY）。
+# Pipeline: Alpha101 factors, 5-day forward-return label, XGBoost, then a
+# cross-sectional top-N backtest.
+# W&B: training opens one run, and use_wandb=True opens a second one for the
+# backtest (run `wandb login` first or set WANDB_API_KEY).
 
 label = Return(
     FactorConfig(
@@ -98,11 +130,11 @@ backtester = USEquityCrossectionSelectStockVectorBt(
     CrossSectionBacktestConfig(
         price_dataset=us_equity(),
         model=model,
-        model_mode="train",  # 用模型自己的 train/test 日期训练，再回测
+        model_mode="train",  # train on the model's own train/test dates, then backtest
         start_date="2024-01-10",
         end_date=end_date,
         output_dir="./backtests",
-        rebalance_periods=5,  # 每 5 个 bar 调仓一次
+        rebalance_periods=5,  # rebalance every 5 bars
         direction="long_short",
         top_n=50,
         use_wandb=True,

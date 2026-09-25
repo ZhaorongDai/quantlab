@@ -58,6 +58,17 @@ def dedup_raw_frame(
 
     Returns:
         The frame with at most one row per ``(timestamp, symbol)`` pair.
+
+    Example:
+        >>> frame = pl.DataFrame({
+        ...     "timestamp": ["2024-01-02", "2024-01-02"],
+        ...     "symbol": ["AAA", "AAA"],
+        ...     "close": [10.0, 10.5],
+        ... }).lazy()
+        >>> dedup_raw_frame(frame).collect()["close"].to_list()
+        [10.5]
+        >>> dedup_raw_frame(frame, keep="first").collect()["close"].to_list()
+        [10.0]
     """
     return data.unique(subset=["timestamp", "symbol"], keep=keep)
 
@@ -77,6 +88,20 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
     Returns:
         ``data`` with an additional ``anomaly_flag`` variable on the same
         dimensions.
+
+    Example:
+        ``BBB`` prints a zero close and ``AAA`` jumps from 10.5 to 20.0:
+
+        >>> panel["close"].values
+        array([[10. ,  5. ],
+               [10.5,  0. ],
+               [20. ,  5.2],
+               [20.5,  5.3]])
+        >>> flag_anomalies(panel)["anomaly_flag"].values
+        array([[False, False],
+               [False,  True],
+               [ True, False],
+               [False, False]])
     """
     present_price_columns = [
         c for c in _PRICE_LIKE_COLUMNS if c in data.data_vars
@@ -155,6 +180,15 @@ def validate_schema(
 
     Raises:
         ValueError: If any of ``required_columns`` is missing.
+
+    Example:
+        >>> validate_schema(ohlcv) is ohlcv
+        True
+        >>> validate_schema(ohlcv.drop_vars("volume"))
+        Traceback (most recent call last):
+        ValueError: validate_schema: required column(s) missing from dataset: ['volume']
+        >>> validate_schema(quotes, required_columns=("bid", "ask")) is quotes
+        True
     """
     missing = [col for col in required_columns if col not in data.data_vars]
     if missing:
@@ -246,6 +280,13 @@ def clean_market_data(data: xr.Dataset) -> xr.Dataset:
 
     Returns:
         ``data`` with an ``anomaly_flag`` variable added.
+
+    Example:
+        >>> cleaned = clean_market_data(ohlcv)
+        >>> list(cleaned.data_vars)
+        ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
+        >>> cleaned["anomaly_flag"].dtype
+        dtype('bool')
     """
     data = validate_schema(data)
     data = flag_anomalies(data)
@@ -274,6 +315,13 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
             or if the ``timestamp`` coordinate is not strictly increasing.
             Label-based date slicing silently returns wrong results on an
             unsorted index, which is why the last case is refused.
+
+    Example:
+        >>> clean_membership_panel(membership) is membership
+        True
+        >>> clean_membership_panel(membership.astype(int))
+        Traceback (most recent call last):
+        ValueError: clean_membership_panel: 'is_member' must have dtype bool, got int64
     """
     variables = set(data.data_vars)
     if variables != {"is_member"}:
@@ -348,6 +396,13 @@ def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
             if any variable is not float64 or not on ``("timestamp",
             "symbol")``, or if the ``timestamp`` coordinate is not strictly
             increasing.
+
+    Example:
+        >>> clean_nbbo_panel(quotes) is quotes
+        True
+        >>> clean_nbbo_panel(quotes.drop_vars("mid"))
+        Traceback (most recent call last):
+        ValueError: clean_nbbo_panel: expected exactly the variables ['ask', ...
     """
     variables = set(data.data_vars)
     expected = set(NBBO_PANEL_VARIABLES)

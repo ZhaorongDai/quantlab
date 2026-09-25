@@ -1,95 +1,55 @@
-"""Pull WRDS CRSP Stock v2 daily data for a PERMNO roster and, optionally,
-convert it into `[timestamp, symbol]` Zarr panels.
+"""Command-line ingest of CRSP daily stock data from WRDS for an index roster.
 
-What it does
-------------
-Daily rows are read from `crsp_a_stock.dsf_v2` with one PostgreSQL `COPY` per
-(calendar year, PERMNO batch). The raw tier lands under
-`<data root>/downloads/us_equity/1d/wrds_crsp/wrds/month=YYYY-MM/` with one row
-per `(permno, dlycaldt)`, exactly as CRSP serves it -- no derived price, no
-adjusted series, no filter.
+The script pulls ``crsp_a_stock.dsf_v2`` rows for a PERMNO roster (an index
+universe, an explicit ``--permnos`` list, the QQQ ETF, or any combination)
+and writes them as raw parquet shards under
+``<data root>/downloads/us_equity/1d/wrds_crsp/wrds/``, one row per
+``(permno, dlycaldt)`` exactly as CRSP serves them. Beside that raw root it
+fills ``_reference/`` with the small CRSP, Compustat and CCM tables that map a
+PERMNO to its period-correct ticker and answer index membership; they are
+pulled before the roster is resolved because the roster is read from them.
 
-Beside that raw root the run also fills `_reference/`: the small CRSP /
-Compustat / CCM tables (`stksecurityinfohist`, `stkdelists`,
-`stkdistributions`, and per universe `dsp500list_v2` or
-`idxcst_his` + `ccmxpf_lnkhist`). They are what turns a PERMNO into a
-period-correct ticker, so they are pulled BEFORE the roster is resolved.
+With ``--to-zarr`` the raw tier is also converted into up to three Zarr
+stores: the equity panel ``wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr`` with
+its JSON sidecars (adjustment anchor, security-filter report, symbology
+report); the QQQ benchmark ``wrds_crsp_qqq_1d.zarr`` when ``--qqq`` is given,
+kept in its own store because an ETF ranked against the constituents it holds
+would be the index competing with itself; and the membership panel
+``wrds_crsp_{sp500|nasdaq100}_membership.zarr`` when ``--universe`` is given.
 
-With `--to-zarr` the raw tier is converted into up to three stores:
+The vendor is resolved through ``DataSourceRegistry.get("wrds")`` and its
+``("us_equity", "1d", "crsp_daily")`` capability, so no vendor class is named
+here, and every config is constructed directly.
 
-- the equity panel `wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr` (with its
-  three JSON sidecars: the adjustment anchor, the security-filter report and
-  the symbology report);
-- the QQQ benchmark `wrds_crsp_qqq_1d.zarr` when `--qqq` was given -- its OWN
-  store, because an ETF ranked against the constituents it holds is the index
-  competing with itself (D-15);
-- the universe's membership panel `wrds_crsp_{sp500|nasdaq100}_membership.zarr`
-  when `--universe` was given.
+Credentials: ``WRDS_USERNAME`` must be set in the environment. The password
+is never read by this code; libpq takes it from ``~/.pgpass`` (mode 600), one
+line of the form
+``wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>``. No
+argument accepts either value and nothing printed contains one. Every step
+of a run shares one WRDS connection, opened through ``WrdsSession.shared()``
+and closed in a ``finally``, so a run costs at most one Duo push.
 
-This script names no vendor class: it resolves its source with
-`DataSourceRegistry.get("wrds")` and reads both the acquisition class and the
-config factory off the `("us_equity", "1d", "crsp_daily")` capability. It calls
-no `quantlab/config` factory function.
-
-Credentials
------------
-`WRDS_USERNAME` is read from the ENVIRONMENT. The password is never read by
-this code at all: libpq reads it from `~/.pgpass` (mode 600), one line of the
-form `wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>`. No
-argument accepts a username or a password, and nothing this script prints
-contains either: a credential on the command line lands in shell history and
-in every process listing, and this repo has already leaked one real key.
-
-One Duo push per run
---------------------
-Every new WRDS connection can push a Duo prompt to the account holder's phone.
-The entitlement probe, the product-end probe, the reference pull, the volume
-probe, the daily pull and the conversion therefore share ONE session
-(`WrdsSession.shared()`), closed in a `finally` when the run ends. The pull
-runs on that one connection; there is no worker-count flag to raise.
-
-An ANNUAL product
------------------
-`crsp_a_stock` is the annual-update product, so its last day is a hard edge
-rather than "data not in yet". An `--end-date` past it is CLIPPED and the clip
-is printed verbatim; a `--start-date` past it is refused, because clipping
-cannot rescue a window that is entirely past the edge. A new CRSP vintage is a
-new raw tier: the acquisition stamps the vintage beside the raw root and
-refuses to mix two releases in one.
-
-Volume
-------
-Rows are counted with `count(*)` per (calendar year, PERMNO batch) BEFORE any
-data is pulled, and `SqlVolumeGuard` refuses a pull over the 20 GiB raw-byte
-ceiling (or the 700M row ceiling). The estimate's buckets are YEARS here, not
-trading days, because a CRSP page is a calendar year -- so a refusal names a
-boundary a re-run can actually be given. The 150 B/row figure is an ASSUMPTION
-until a live smoke measures real shard bytes/row. `--force-volume` skips the
-refusal, never the arithmetic.
-
-Order of checks
----------------
-1. Arguments (roster, PERMNO shape, both dates), before any connection.
-2. Entitlement: every schema this run needs, probed first, so an unsubscribed
-   product stops the run with zero COPY calls.
-3. The product-end probe and the window clip.
-4. The reference tables, then the point-in-time roster resolved from them.
-5. Volume: `count(*)` per year page, then `SqlVolumeGuard`.
-6. The pull (`registry.run`), then the optional conversions.
+Before any daily row is copied the run checks, in this order: the arguments;
+the account's entitlement to every schema the run reads; the CRSP annual
+product end (an ``--end-date`` past it is clipped and the clip printed, a
+``--start-date`` past it is refused); the reference tables and the roster
+resolved from them; and the row volume, counted with ``count(*)`` per
+calendar year and PERMNO batch and refused above the ``SqlVolumeGuard``
+ceilings unless ``--force-volume`` is given. See ``docs/wrds_crsp.md``.
 
 Usage:
     export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
 
     # CRSP's own point-in-time S&P 500, converted to a panel and a mask.
-    uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
+    uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \\
         --start-date 2000-01-01 --end-date 2025-12-31 --to-zarr
 
     # An explicit PERMNO roster (AAPL, META).
-    uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407 \
+    uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407 \\
         --start-date 2020-01-01 --end-date 2024-12-31 --to-zarr
 
     # The QQQ benchmark, in its own store.
-    uv run python scripts/ingest_wrds_crsp.py --qqq \
+    uv run python scripts/ingest_wrds_crsp.py --qqq \\
         --start-date 1999-01-01 --end-date 2025-12-31 --to-zarr
 """
 
@@ -123,43 +83,41 @@ from quantlab.utils.cli import (
     refuse_conversion_without_raw_data,
 )
 
-#: The one place this script's vendor is named, as a registry token.
+#: The vendor descriptor, resolved from its registry token.
 SOURCE = DataSourceRegistry.get("wrds")
 
-#: The capability this script drives. One WRDS account serves several products
-#: (03.10 D-12), so BOTH the acquisition class and the config factory are read
-#: off this key rather than off the descriptor's TAQ defaults.
+#: The capability this script drives. One WRDS account serves several
+#: products, so both the acquisition class and the config factory are read
+#: off this key rather than off the descriptor's defaults.
 CAPABILITY = ("us_equity", "1d", "crsp_daily")
 
-#: The CRSP daily acquisition class, resolved -- never named. Read for its
-#: class-level knobs (`DEFAULT_BATCH_SIZE`) and its two window/path
-#: classmethods; never constructed here, because `registry.run()` owns that.
+#: The CRSP daily acquisition class, resolved rather than named. Used for its
+#: class-level defaults and its window and path helpers; ``run()`` constructs
+#: it.
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
 
-#: The point-in-time universes this vendor serves, derived from the membership
-#: layer so adding one there makes it selectable here with no edit.
+#: The point-in-time universes this vendor serves, taken from the membership
+#: layer so a universe added there becomes selectable here without an edit.
 UNIVERSES = CrspMembership.INDEXES
 
-#: `{universe: the short name its stores carry}`. The store names are short
-#: because they are typed by humans; the universe ids are long because they
-#: name a VENDOR and an index (`crsp_sp500` is not the Wikipedia S&P panel).
+#: Map from universe id to the short name its stores carry. Store names are
+#: short because people type them; universe ids name a vendor and an index.
 UNIVERSE_SHORT_NAMES: dict[str, str] = {
     CrspMembership.SP500: "sp500",
     CrspMembership.NASDAQ100: "nasdaq100",
 }
 
-#: `{universe: the constituent dataset class that builds its mask}`.
+#: Map from universe id to the constituent dataset class that builds its mask.
 CONSTITUENT_CLASSES: dict[str, type] = {
     CrspMembership.SP500: CrspSP500ConstituentDataset,
     CrspMembership.NASDAQ100: CompustatNasdaq100ConstituentDataset,
 }
 
-#: The equity panel's store name. `custom` is the name an explicit `--permnos`
-#: roster gets: it is not any index, and calling it `sp500` because the caller
-#: happened to list S&P members would be a lie the store then carries forever.
+#: The equity panel's store name. An explicit ``--permnos`` roster is stored
+#: as ``custom``: it is not an index, whatever its members happen to be.
 STORE_TEMPLATE = "wrds_crsp_{name}_1d.zarr"
 
-#: The QQQ benchmark's own store (D-15).
+#: The QQQ benchmark's own store.
 QQQ_STORE = "wrds_crsp_qqq_1d.zarr"
 
 #: The universe membership mask's store.
@@ -167,6 +125,7 @@ MEMBERSHIP_TEMPLATE = "wrds_crsp_{name}_membership.zarr"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for this script."""
     parser = argparse.ArgumentParser(
         description=(
             "Pull WRDS CRSP Stock v2 daily data and optionally convert it "
@@ -181,10 +140,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=list(UNIVERSES),
         default=None,
         help=(
-            "A CRSP-VENDOR point-in-time universe, resolved by interval "
-            "OVERLAP over [--start-date, --end-date]: every PERMNO that was a "
-            "member at any point in the window, which is what keeps the "
-            "securities that LEFT the index and removes survivorship bias. "
+            "A CRSP-vendor point-in-time universe, resolved by interval "
+            "overlap over [--start-date, --end-date]: every PERMNO that was a "
+            "member at any point in the window, which keeps the securities "
+            "that left the index and removes survivorship bias. "
             "'crsp_sp500' is CRSP's own dsp500list_v2 membership (from 1925); "
             "'comp_nasdaq100' is Compustat's gvkeyx 000208 linked through CCM "
             "(left-censored at 1995)."
@@ -206,7 +165,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             f"Also pull the QQQ ETF (PERMNO {QQQ_PERMNO}) and, with --to-zarr, "
-            f"write it to its OWN benchmark store. It is never a column of "
+            f"write it to its own benchmark store. It is never a column of "
             f"the equity panel: an ETF ranked against the constituents it "
             f"holds is the index competing with itself in one cross section."
         ),
@@ -246,7 +205,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Proceed when a Nasdaq-100 membership spell has no CCM link. A "
             "spell with no PERMNO has no security at all, so by default it "
-            "STOPS the run rather than silently shrinking the universe."
+            "stops the run rather than silently shrinking the universe."
         ),
     )
     parser.add_argument(
@@ -255,10 +214,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=sorted(SECURITY_FILTER_PRESETS),
         default="equity_common",
         help=(
-            "WHICH securities the equity panel holds (default equity_common: "
+            "Which securities the equity panel holds (default equity_common: "
             "common stock, REITs included, ADRs/units/funds/ETFs dropped). "
             "'shrcd_10_11' is the narrower US-corporate-common reading; "
-            "'none' keeps every security type. Evaluated PER DATE against "
+            "'none' keeps every security type. Evaluated per date against "
             "dsf_v2's own type columns, and reported in the "
             ".crsp_filter_report.json sidecar."
         ),
@@ -269,9 +228,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
-    """Every argument refusal, BEFORE any WRDS session exists.
+    """Refuse bad arguments before any WRDS session exists.
 
-    Returns the explicit `--permnos` roster as a tuple (possibly empty).
+    Returns:
+        The explicit ``--permnos`` roster as a tuple, possibly empty.
     """
     if not (args.universe or args.permnos or args.qqq):
         parser.error(
@@ -308,9 +268,11 @@ def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
 
 
 def _schemas_for(universe: str | None) -> tuple[str, ...]:
-    """Exactly the schemas this run reads, so an S&P-only pull never asks
-    whether this account can read Compustat -- a question whose answer is "no"
-    for most CRSP subscriptions and which nothing in that pull needs."""
+    """Return exactly the WRDS schemas a run for ``universe`` reads.
+
+    An S&P-only pull never asks whether the account can read Compustat,
+    which most CRSP subscriptions cannot and which that pull does not need.
+    """
     from quantlab.acquisition.wrds.crsp import CrspQueries
 
     schemas = [CrspQueries.STOCK_SCHEMA]
@@ -325,7 +287,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before any path is derived from the data root (DDIR-04).
+    # The data root must be applied before any path is derived from it.
     apply_data_dir(args)
 
     explicit_permnos = _validate(parser, args)
@@ -333,10 +295,8 @@ if __name__ == "__main__":
     batch_size = args.batch_size or ACQ.DEFAULT_BATCH_SIZE
     kwargs = {"batch_size": batch_size, "clip_to_product_end": True}
 
-    # Imported here so the module attributes are read at RUN time: the test
-    # suite patches `wrds.taq.WrdsSession` with an offline double, and a
-    # module-scope binding would capture the real class at import time
-    # (RESEARCH Pattern 1).
+    # Imported at run time rather than at module scope so the session class is
+    # looked up when the run starts, which lets an offline double replace it.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.crsp import CrspQueries, CrspVolumeProbe
     from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
@@ -348,16 +308,14 @@ if __name__ == "__main__":
         parser.exit(1, f"{exc}\n")
 
     try:
-        # 1. Entitlement FIRST: an unsubscribed schema stops the run with zero
-        #    COPY calls and zero reference files, rather than failing later in
-        #    a way that leaves a half-filled tier behind (D-03, D-21).
+        # 1. Entitlement first: an unsubscribed schema stops the run with no
+        #    COPY issued and no reference file written.
         try:
             CrspQueries.assert_entitled(session, _schemas_for(args.universe))
         except (RuntimeError, ValueError) as exc:
             parser.exit(1, f"{exc}\n")
 
-        # 2. The annual product edge. Probed once; the clip is PRINTED, never
-        #    silent (T-03.10-37).
+        # 2. The annual product end, probed once; a clip is always printed.
         try:
             start_date, end_date, clipped = ACQ.resolve_window(
                 session, args.start_date, args.end_date, clip=True
@@ -374,8 +332,9 @@ if __name__ == "__main__":
             "end_date": end_date.isoformat(),
         }
 
-        # 3. THE one config-factory call. The roster is filled in at step 5,
-        #    once the reference tables can answer who is in the universe.
+        # 3. The acquisition config, built once with an empty roster; the
+        #    roster is filled in at step 5, after the reference tables can
+        #    answer who is in the universe.
         acq_config = SOURCE.config_factory_for(*CAPABILITY)(
             symbols=(),
             start_date=window["start_date"],
@@ -384,8 +343,8 @@ if __name__ == "__main__":
         )
         reference_dir = ACQ.reference_dir_for(acq_config)
 
-        # 4. The reference tier, on the SAME session. Scoped to what this run
-        #    needs, and skipped entirely when this vintage's tier is complete.
+        # 4. The reference tier, on the same session, scoped to what this run
+        #    needs and skipped entirely when this vintage's tier is complete.
         try:
             manifest = CrspReferenceTables(session, reference_dir).pull(
                 product_end=end_date,
@@ -400,9 +359,8 @@ if __name__ == "__main__":
             rows = entry.get("rows") if isinstance(entry, dict) else entry
             print(f"  {name}: {rows:,} row(s)")
 
-        # 5. The roster, resolved to PERMNOs BEFORE it reaches the config.
-        #    `_assert_permnos` refuses the whole run on a ticker (03.10-03), so
-        #    a universe MUST arrive here already resolved.
+        # 5. The roster, resolved to PERMNOs before it reaches the config: the
+        #    acquisition refuses a ticker roster outright.
         roster: list[str] = []
         if args.universe:
             try:
@@ -428,8 +386,8 @@ if __name__ == "__main__":
         print(f"Roster ({len(roster)} PERMNO(s)): {', '.join(roster)}")
         acq_config = replace(acq_config, symbols=tuple(roster))
 
-        # 6. count(*) per year page, then the guard -- BOTH before the first
-        #    COPY of any daily row (D-03, T-03.10-35).
+        # 6. count(*) per year page, then the guard, both before the first
+        #    COPY of any daily row.
         try:
             counts = CrspVolumeProbe(
                 session, batch_size=batch_size
@@ -469,23 +427,18 @@ if __name__ == "__main__":
             catalog_path = str(get_data_root() / "data" / "catalog")
             short_name = UNIVERSE_SHORT_NAMES.get(args.universe, "custom")
 
-            # The equity panel. QQQ is excluded by ROSTER and not only by the
-            # security filter: `--security-filter none` is a legitimate choice,
-            # and it must not silently pull the benchmark into the panel.
+            # QQQ is excluded from the equity panel by roster, not only by the
+            # security filter: `--security-filter none` is a legitimate choice
+            # and must not silently pull the benchmark into the panel.
             equity_permnos = tuple(
                 permno
                 for permno in roster
                 if not (args.qqq and permno == QQQ_PERMNO)
             )
-            # GAP-D. An EMPTY equity roster is not a conversion (WR-01): `--qqq`
-            # with no --permnos and no --universe leaves nothing here but the
-            # benchmark, and running the equity path anyway named its store
-            # `custom` (the fallback), collided with whatever earlier run had
-            # written that name, and died on the anchor gate BEFORE the QQQ
-            # block -- which is why `--qqq --to-zarr` has never produced a
-            # benchmark store. The skip is PRINTED because an empty roster is an
-            # outcome the operator has to be able to see: a silent one is
-            # indistinguishable from a conversion that quietly wrote nothing.
+            # An empty equity roster (`--qqq` alone) skips the equity
+            # conversion rather than writing a `custom` store that would hold
+            # nothing but the benchmark. The skip is printed so that it cannot
+            # be mistaken for a conversion that quietly wrote nothing.
             if equity_permnos:
                 ds_config = CrspDatasetConfig(
                     zarr_file_path=str(
@@ -500,10 +453,9 @@ if __name__ == "__main__":
                     security_filter=args.security_filter,
                     roster_universe=args.universe,
                 )
-                # `ds_config` directly: the former `replace(ds_config,
-                # symbols=None)` was a no-op, since `symbols` is already None on
-                # this config, and each construction re-runs the config setter
-                # and re-resolves the security filter (IN-06).
+                # One dataset serves both the raw-data probe and the sidecar
+                # path; constructing it re-resolves the security filter, so it
+                # is built once.
                 probe_dataset = CrspStockDataset(ds_config)
                 refuse_conversion_without_raw_data(probe_dataset, result)
                 print(

@@ -214,12 +214,25 @@ class UniverseFilteredFactor(FactorKunQuant):
         warm-up, ``config.kwargs["n_forward_periods"]`` and
         ``config.data_columns`` all resolve on the inner factor, which is what
         makes the wrapper a drop-in replacement.
+
+        Example:
+            >>> wrapped = UniverseFilteredFactor(inner, window=3)
+            >>> wrapped.config is inner.config
+            True
         """
         return self.factor.config
 
     @config.setter
     def config(self, value):
-        """Assign the config to the inner factor, then re-widen its dates."""
+        """Assign the config to the inner factor, then re-widen its dates.
+
+        Example:
+            >>> wrapped.config = new_config        # start_date "2024-02-01"
+            >>> wrapped.factor.config is new_config
+            True
+            >>> new_config.dataset.config.start_date   # widened for warm-up
+            '2024-01-16'
+        """
         self.factor.config = value
         self._reset_dataset_config()
 
@@ -285,6 +298,20 @@ class UniverseFilteredFactor(FactorKunQuant):
             ValueError: If either raw column is missing. Failing loudly is
                 preferred to returning an all-out (or all-in) mask that would
                 let the pipeline quietly produce empty results.
+
+        Example:
+            >>> panel = xr.Dataset(
+            ...     {"close": (("timestamp", "symbol"), [[10.0, 4.0]] * 4),
+            ...      "volume": (("timestamp", "symbol"), [[2e5, 2e5]] * 4)},
+            ...     coords={"timestamp": pd.bdate_range("2024-01-01", periods=4),
+            ...             "symbol": ["AAA", "BBB"]},
+            ... )
+            >>> wrapped = UniverseFilteredFactor(inner, window=3)
+            >>> wrapped.compute_universe_mask(panel).values   # BBB is under $5
+            array([[nan, nan],
+                   [nan, nan],
+                   [ 1., nan],
+                   [ 1., nan]])
         """
         for column in (self.PRICE_COLUMN, self.VOLUME_COLUMN):
             if column not in panel.data_vars:
@@ -333,6 +360,14 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         Returns:
             ``self``, for chaining.
+
+        Example:
+            >>> features = wrapped.cal().get_features()
+            >>> features.sizes                     # the symbol axis is intact
+            Frozen({'timestamp': 21, 'symbol': 16})
+            >>> # a symbol under $5 all window is an all-NaN column, not dropped
+            >>> bool(features["rank_close"].sel(symbol="PENY").isnull().all())
+            True
         """
         input_dict, symbols, timestamps = self.config.dataset.to_kunquant(
             data_columns=self.config.data_columns
@@ -385,6 +420,11 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         Returns:
             ``self``, for chaining.
+
+        Example:
+            >>> wrapped.cal().save(mode="w")
+            >>> wrapped.read().get_features().sizes
+            Frozen({'timestamp': 21, 'symbol': 16})
         """
         self.config.dataset.read(overwrite=overwrite)
         self._universe_mask = self.compute_universe_mask(
@@ -406,6 +446,12 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         Returns:
             ``self``, for chaining.
+
+        Example:
+            >>> wrapped.init_stream() is wrapped     # config.mode == "stream"
+            True
+            >>> "universe_mask" in wrapped._buffer_name_to_id
+            True
         """
         super().init_stream()
         if self._uses_mask:
@@ -436,6 +482,11 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         Raises:
             ValueError: If ``close`` or ``volume`` is missing from ``data``.
+
+        Example:
+            >>> bar = {"adjClose": adj[step], "close": close[step], "volume": vol[step]}
+            >>> wrapped.cal_stream(bar, step, symbols).get_features().sizes
+            Frozen({'timestamp': 1, 'symbol': 16})
         """
         missing = [
             column
@@ -556,6 +607,13 @@ class UniverseFilteredFactor(FactorKunQuant):
         There is deliberately no top-level ``"dataset"`` key: the dataset
         belongs to the inner factor, and a copy would rebuild as a second
         dataset object reading the same store.
+
+        Example:
+            >>> cfg = wrapped.get_config()
+            >>> sorted(cfg)
+            ['factor', 'min_dollar_volume', 'min_price', 'name', 'window']
+            >>> cfg["window"], cfg["min_price"]
+            (3, 5.0)
         """
         return {
             "name": self.import_path,
@@ -587,6 +645,14 @@ class UniverseFilteredFactor(FactorKunQuant):
             ValueError: If the ``factor`` key is absent, or the parameter keys
                 do not exactly match ``min_price``, ``min_dollar_volume`` and
                 ``window``.
+
+        Example:
+            >>> rebuilt = UniverseFilteredFactor.from_config(wrapped.get_config())
+            >>> rebuilt.window, rebuilt.min_price, rebuilt.min_dollar_volume
+            (3, 5.0, 1000000.0)
+            >>> UniverseFilteredFactor.from_config({"factor": inner_cfg, "window": 3})
+            Traceback (most recent call last):
+            ValueError: UniverseFilteredFactor.from_config: refusing to rebuild -- ...
         """
         config = dict(config)
         config.pop("name", None)

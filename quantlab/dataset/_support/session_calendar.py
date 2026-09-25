@@ -115,7 +115,12 @@ class XnysSessionCalendar:
 
     @property
     def calendar(self) -> xcals.ExchangeCalendar:
-        """The ``exchange_calendars`` XNYS calendar, built on first use."""
+        """The ``exchange_calendars`` XNYS calendar, built on first use.
+
+        Example:
+            >>> cal.calendar.name, cal.calendar.first_session
+            ('XNYS', Timestamp('2003-01-02 00:00:00'))
+        """
         if self._calendar is None:
             self._calendar = xcals.get_calendar(
                 self.EXCHANGE, start=self.CALENDAR_START
@@ -138,7 +143,14 @@ class XnysSessionCalendar:
         return label
 
     def is_session(self, day: date) -> bool:
-        """Return whether ``day`` is an XNYS trading session."""
+        """Return whether ``day`` is an XNYS trading session.
+
+        Example:
+            >>> cal.is_session(date(2024, 11, 28))  # Thanksgiving
+            False
+            >>> cal.is_session(date(2024, 11, 29))  # the half day after it
+            True
+        """
         return bool(self.calendar.is_session(self._label(day)))
 
     def _is_regular(self, edge: time) -> bool:
@@ -174,6 +186,15 @@ class XnysSessionCalendar:
         Raises:
             ValueError: If a date is not an XNYS session or lies outside the
                 calendar's range.
+
+        Example:
+            >>> bounds = cal.session_bounds([date(2024, 11, 27), date(2024, 11, 29)])
+            >>> bounds["close"].dt.hour().to_list()  # 16:00 ET, then the 13:00 close
+            [21, 18]
+            >>> XnysSessionCalendar("13:30", "16:00").session_bounds(
+            ...     [date(2024, 11, 29)]
+            ... ).height  # the window is empty after clipping, so no row
+            0
         """
         cal = self.calendar
         rows = []

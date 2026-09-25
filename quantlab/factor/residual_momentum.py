@@ -38,7 +38,13 @@ from quantlab.utils.timer import Timer
 
 @dataclass(frozen=True)
 class ResidualMomentumParameters:
-    """Formula parameters read from ``FactorConfig.kwargs``."""
+    """Formula parameters read from ``FactorConfig.kwargs``.
+
+    Example:
+        >>> params = ResidualMomentumParameters(regression_window=24)
+        >>> params.regression_window, params.formation_lookback
+        (24, 12)
+    """
 
     regression_window: int = 36
     formation_lookback: int = 12
@@ -55,7 +61,17 @@ class ResidualMomentumParameters:
 
     @classmethod
     def from_config(cls, config: FactorConfig) -> "ResidualMomentumParameters":
-        """Build parameters from the recognized entries in ``config.kwargs``."""
+        """Build parameters from the recognized entries in ``config.kwargs``.
+
+        Raises:
+            ValueError: If ``config.kwargs`` holds an unknown key or a value
+                that fails :meth:`validate`.
+
+        Example:
+            >>> config.kwargs = {"regression_window": 24}
+            >>> ResidualMomentumParameters.from_config(config).regression_window
+            24
+        """
         kwargs = config.kwargs or {}
         known = {field.name for field in fields(cls)}
         unknown = sorted(set(kwargs) - known)
@@ -70,12 +86,22 @@ class ResidualMomentumParameters:
 
     @property
     def formation_window(self) -> int:
-        """Number of observations left after skipping the latest months."""
+        """Number of observations left after skipping the latest months.
+
+        Example:
+            >>> ResidualMomentumParameters().formation_window
+            11
+        """
         return self.formation_lookback - self.skip_recent
 
     @property
     def input_columns(self) -> tuple[str, ...]:
-        """Dataset variables consumed by the operator graph."""
+        """Dataset variables consumed by the operator graph.
+
+        Example:
+            >>> ResidualMomentumParameters().input_columns
+            ('stock_return', 'risk_free', 'mkt_rf', 'smb', 'hml')
+        """
         return (
             self.return_column,
             self.risk_free_column,
@@ -85,7 +111,18 @@ class ResidualMomentumParameters:
         )
 
     def validate(self) -> None:
-        """Reject windows, safeguards and input mappings that cannot work."""
+        """Reject windows, safeguards and input mappings that cannot work.
+
+        Raises:
+            ValueError: If a window is too short, a floor is not positive, or
+                the input column names are empty or repeated.
+
+        Example:
+            >>> ResidualMomentumParameters(regression_window=3).validate()
+            Traceback (most recent call last):
+                ...
+            ValueError: regression_window must be at least 4 for FF3 + intercept
+        """
         if self.regression_window < 4:
             raise ValueError(
                 "regression_window must be at least 4 for FF3 + intercept"
@@ -219,6 +256,26 @@ class ResidualMomentumFF3(FactorKunQuant):
 
     The signal at month ``d`` estimates FF3 on ``d-35:d`` by default and uses
     residuals from ``d-11:d-1``.  It is therefore tradable from month ``d+1``.
+
+    Example:
+        ``dataset`` is a monthly panel that already carries the five input
+        variables (``stock_return``, ``risk_free``, ``mkt_rf``, ``smb``,
+        ``hml``) on ``(timestamp, symbol)``.
+
+        >>> config = FactorConfig(
+        ...     window=0,
+        ...     dataset=dataset,
+        ...     start_date=dataset.config.start_date,
+        ...     end_date=dataset.config.end_date,
+        ...     mode="batch",
+        ...     data_columns=("stock_return", "risk_free", "mkt_rf", "smb", "hml"),
+        ...     factor_names=("resmom_raw", "resmom_rank"),
+        ...     file_path="resmom.zarr",
+        ...     kwargs={"regression_window": 24},
+        ... )
+        >>> factor = ResidualMomentumFF3(config)
+        >>> factor.get_factor_names()
+        ('resmom_raw', 'resmom_rank')
     """
 
     _CORE_FACTOR_NAMES = ("resmom_raw", "resmom_rank")
@@ -344,6 +401,17 @@ class ResidualMomentumFF3(FactorKunQuant):
         added for panels whose width is not divisible by four.  NaN dummy
         symbols do not enter the cross-sectional rank, and outputs are sliced
         back to the real symbol axis before they reach the factor backend.
+
+        Example:
+            On a 60-month panel of 7 symbols, the last row of ``resmom_rank``
+            is the cross-sectional rank of each symbol in ``[0, 1]``.
+
+            >>> factor.cal()  # doctest: +SKIP
+            >>> out = factor.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+            >>> list(out.data_vars), dict(out.sizes)  # doctest: +SKIP
+            (['resmom_raw', 'resmom_rank'], {'timestamp': 60, 'symbol': 7})
+            >>> out["resmom_rank"].isel(timestamp=-1).round(3).values  # doctest: +SKIP
+            array([0.286, 0.143, 1.   , 0.429, 0.857, 0.571, 0.714])
         """
         input_dict, symbols, timestamps = self.config.dataset.to_kunquant(
             data_columns=self.config.data_columns

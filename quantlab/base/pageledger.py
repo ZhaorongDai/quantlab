@@ -99,6 +99,14 @@ class PageLedger:
         sorted because a batch is a set: requesting ``["B", "A"]`` and
         ``["A", "B"]`` issues the same vendor request and returns the same
         rows, so the two must share a ledger.
+
+        Example:
+            >>> PageLedger.batch_key("alpaca", "1m", "2024-01-02", "2024-01-05",
+            ...                      ["AAPL", "MSFT"])
+            '91c9dc202fdc2cc1'
+            >>> PageLedger.batch_key("alpaca", "1m", "2024-01-02", "2024-01-05",
+            ...                      ["MSFT", "AAPL"])
+            '91c9dc202fdc2cc1'
         """
         payload = "|".join(
             [
@@ -116,13 +124,25 @@ class PageLedger:
         """Return the SHA-256 of the sorted, newline-joined roster.
 
         Order-insensitive for the same reason ``batch_key`` is.
+
+        Example:
+            >>> PageLedger.fingerprint(["AAPL", "MSFT"])[:16]
+            '4a1c2f2b7fca8c6a'
+            >>> PageLedger.fingerprint(["MSFT", "AAPL"])[:16]
+            '4a1c2f2b7fca8c6a'
         """
         joined = "\n".join(sorted(str(symbol) for symbol in symbols))
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
     @classmethod
     def default_path(cls, watermark_path: str, batch_key: str) -> str:
-        """Return ``{watermark_path}/_pages/{batch_key}.pages.json``."""
+        """Return ``{watermark_path}/_pages/{batch_key}.pages.json``.
+
+        Example:
+            >>> PageLedger.default_path("/data/_watermarks/alpaca",
+            ...                         "5f2a9c1e0b7d4e63")
+            '/data/_watermarks/alpaca/_pages/5f2a9c1e0b7d4e63.pages.json'
+        """
         return str(Path(watermark_path) / cls.DIRNAME / f"{batch_key}{cls.SUFFIX}")
 
     # -- storage ------------------------------------------------------------
@@ -195,17 +215,32 @@ class PageLedger:
 
     @property
     def pages(self) -> list[dict]:
-        """Return a copy of the recorded page records, in fetch order."""
+        """Return a copy of the recorded page records, in fetch order.
+
+        Example:
+            >>> ledger.pages[0]["index"], ledger.pages[0]["next_token"]
+            (0, 'tok1')
+        """
         return list(self._payload["pages"])
 
     @property
     def symbol_fingerprint(self) -> Optional[str]:
-        """Return the stored roster fingerprint, or None before ``describe``."""
+        """Return the stored roster fingerprint, or None before ``describe``.
+
+        Example:
+            >>> ledger.symbol_fingerprint == PageLedger.fingerprint(roster)
+            True
+        """
         return self._payload["symbol_fingerprint"]
 
     @property
     def symbol_count(self) -> Optional[int]:
-        """Return the stored roster size, or None before ``describe``."""
+        """Return the stored roster size, or None before ``describe``.
+
+        Example:
+            >>> ledger.symbol_count
+            2
+        """
         return self._payload["symbol_count"]
 
     def resume_point(self) -> tuple[int, Optional[str]]:
@@ -215,6 +250,10 @@ class PageLedger:
         a resumed run's first request is the one that was interrupted rather
         than one that already succeeded. ``(0, None)`` means nothing has been
         recorded yet.
+
+        Example:
+            >>> ledger.resume_point()
+            (1, 'tok1')
         """
         pages = self._payload["pages"]
         if not pages:
@@ -230,11 +269,20 @@ class PageLedger:
         0 of a 100-symbol batch may legitimately hold a single symbol;
         judging "queried but no data" per page would wrongly stamp the other
         99 as empty and skip them on every later run.
+
+        Example:
+            >>> ledger.symbols_seen()
+            {'AAPL'}
         """
         return {str(symbol) for symbol in self._payload["symbols_with_data"]}
 
     def is_complete(self) -> bool:
-        """Return whether the page chain has been recorded as terminated."""
+        """Return whether the page chain has been recorded as terminated.
+
+        Example:
+            >>> ledger.is_complete()
+            False
+        """
         return bool(self._payload["complete"])
 
     # -- writes -------------------------------------------------------------
@@ -254,6 +302,12 @@ class PageLedger:
         a batch that fails on page 0. Without it, a ledger with pages but no
         fingerprint could be resumed onto by a different roster; ``_load``
         refuses such a ledger, and this method keeps one from being written.
+
+        Example:
+            >>> ledger.describe(key, "alpaca", "1m", "2024-01-02", "2024-01-05",
+            ...                 roster)
+            >>> ledger.symbol_count, Path(ledger.path).exists()
+            (2, True)
         """
         self._payload["batch_key"] = str(batch_key)
         self._payload["vendor"] = str(vendor)
@@ -295,6 +349,14 @@ class PageLedger:
             shard_paths: Parquet files the page's rows were written to.
             last_symbol: Symbol of the page's final row, if known.
             last_timestamp: Timestamp of the page's final row, if known.
+
+        Example:
+            >>> ledger.record_page(1, None, rows=120, seen=["AAPL", "MSFT"],
+            ...                    shard_paths=["raw/part-00001.pqt"])
+            >>> ledger.resume_point()
+            (2, None)
+            >>> sorted(ledger.symbols_seen())
+            ['AAPL', 'MSFT']
         """
         accumulated = set(self._payload["symbols_with_data"])
         accumulated.update(str(symbol) for symbol in seen)
@@ -323,6 +385,13 @@ class PageLedger:
         overwrites the same path, so a redo costs requests and never
         duplicates a row. Nothing is written to disk until the next
         ``record_page`` or ``mark_complete``.
+
+        Example:
+            >>> ledger.reset()
+            >>> ledger.resume_point()
+            (0, None)
+            >>> ledger.symbol_count
+            2
         """
         identity = {
             key: self._payload[key]
@@ -344,6 +413,11 @@ class PageLedger:
 
         Only after this is ``symbols_seen()`` a statement about the whole
         batch rather than about how far it happened to get.
+
+        Example:
+            >>> ledger.mark_complete()
+            >>> ledger.is_complete()
+            True
         """
         self._payload["complete"] = True
         self._flush()
@@ -368,6 +442,14 @@ class PageLedger:
         Raises:
             ValueError: If a recorded page names no shard, or names a shard
                 that does not exist. The message says how to recover.
+
+        Example:
+            >>> ledger.assert_consistent(raw_root)  # every shard present
+            >>> Path(raw_root, "raw", "part-00000.pqt").unlink()
+            >>> ledger.assert_consistent(raw_root)
+            Traceback (most recent call last):
+                ...
+            ValueError: PageLedger: refusing to resume ...
         """
         root = Path(raw_root)
         for page in self._payload["pages"]:

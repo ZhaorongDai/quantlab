@@ -41,8 +41,12 @@ class UniverseMask:
     Example:
         >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
         >>> mask.report()["missing_count"]
-        0
+        1
         >>> panel = mask.apply()  # non-member cells are NaN
+
+        The method examples below use a market panel of ``AAA``, ``BBB`` and
+        ``CCC`` over four business days and a membership panel over six
+        calendar days in which ``AAA`` and ``DDD`` are members throughout.
     """
 
     def __init__(
@@ -101,6 +105,13 @@ class UniverseMask:
 
         Returns:
             A ``UniverseMask`` over the two panels read from disk.
+
+        Example:
+            >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
+            >>> mask
+            UniverseMask(timestamps=4, symbols=2)
+            >>> mask.missing_members
+            ['DDD']
         """
         return cls(
             market_dataset.read().get_xarray_dataset(),
@@ -112,7 +123,12 @@ class UniverseMask:
 
     @property
     def timestamps(self) -> pd.DatetimeIndex:
-        """The overlapping timestamp axis, a sorted inner join."""
+        """The overlapping timestamp axis, a sorted inner join.
+
+        Example:
+            >>> len(mask.timestamps), mask.timestamps[0]
+            (4, Timestamp('2024-01-01 00:00:00'))
+        """
         market = pd.DatetimeIndex(self.market["timestamp"].values)
         membership = pd.DatetimeIndex(self.membership["timestamp"].values)
         return market.intersection(membership).sort_values()
@@ -125,6 +141,10 @@ class UniverseMask:
         type is whatever the two axes share (integers for a PERMNO-keyed
         universe, strings for a ticker-keyed one). Ordering comes from
         ``sort_symbol_axis`` so both axis kinds follow one rule.
+
+        Example:
+            >>> mask.symbols
+            ['AAA', 'BBB']
         """
         market = pd.Index(self.market["symbol"].values)
         membership = pd.Index(self.membership["symbol"].values)
@@ -138,6 +158,10 @@ class UniverseMask:
         carries all-False columns for symbols whose membership falls entirely
         outside it, and those are not coverage gaps. Labels keep the
         membership axis's own dtype.
+
+        Example:
+            >>> mask.in_window_members
+            ['AAA', 'DDD']
         """
         overlap = self.timestamps
         if len(overlap) == 0:
@@ -156,6 +180,10 @@ class UniverseMask:
 
         A set difference, so both sides must use the same label type; the
         properties feeding it deliberately convert nothing.
+
+        Example:
+            >>> mask.missing_members
+            ['DDD']
         """
         market = set(self.market["symbol"].values.tolist())
         return sort_symbol_axis(set(self.in_window_members) - market)
@@ -174,6 +202,11 @@ class UniverseMask:
         Labels are looked up as of the last overlapping timestamp, the newest
         spelling in the window being aligned. With no overlap the labels are
         the raw axis values.
+
+        Example:
+            >>> report = mask.report()  # also logs the full missing list
+            >>> report["missing_count"], report["missing_symbols"]
+            (1, ['DDD'])
         """
         members = self.in_window_members
         missing = self.missing_members
@@ -224,6 +257,14 @@ class UniverseMask:
             ValueError: If the two panels share no timestamp or no symbol. An
                 empty panel would flow into a backtest as "no positions"
                 instead of surfacing the misconfiguration.
+
+        Example:
+            >>> masked = mask.apply()
+            >>> masked["close"].values  # BBB is never a member, so NaN throughout
+            array([[ 0., nan],
+                   [ 3., nan],
+                   [ 6., nan],
+                   [ 9., nan]])
         """
         self.report()
 

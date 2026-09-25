@@ -33,6 +33,10 @@ def get_cls_from_path(path: str):
         ModuleNotFoundError: If the module part cannot be imported. Configs
             written under a previous package layout are not remapped.
         AttributeError: If the module has no such attribute.
+
+    Example:
+        >>> get_cls_from_path("quantlab.dataset.stock.StockDataset")
+        <class 'quantlab.dataset.stock.StockDataset'>
     """
     module_path, class_name = path.rsplit(".", 1)
     module = importlib.import_module(module_path)
@@ -72,6 +76,13 @@ def load_dataset_from_config(config: dict):
 
     Returns:
         A dataset instance.
+
+    Example:
+        With ``dataset`` any dataset built earlier:
+
+        >>> rebuilt = load_dataset_from_config(dataset.get_config())
+        >>> type(rebuilt) is type(dataset), rebuilt.config == dataset.config
+        (True, True)
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
@@ -95,6 +106,16 @@ def load_factor_from_config(config: dict):
 
     Returns:
         A factor instance.
+
+    Example:
+        With ``factor`` any factor built earlier (``get_config`` nests its
+        dataset's config under ``"dataset"``):
+
+        >>> rebuilt = load_factor_from_config(factor.get_config())
+        >>> type(rebuilt) is type(factor)
+        True
+        >>> rebuilt.config.factor_names == factor.config.factor_names
+        True
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
@@ -123,6 +144,15 @@ def load_model_from_config(config: dict):
 
     Returns:
         A model instance (untrained; call ``load`` to restore a checkpoint).
+
+    Example:
+        Given the ``config.json`` written beside a checkpoint:
+
+        >>> import json
+        >>> with open("/data/models/xgb/config.json") as f:
+        ...     config = json.load(f)
+        >>> model = load_model_from_config(config)
+        >>> model = model.load("/data/models/xgb/best.joblib")
     """
     config = copy.deepcopy(config)
     # `resolved_hyperparameters` (what the library actually trained with) and
@@ -167,6 +197,15 @@ def load_backtester_from_config(config: dict):
         TypeError: If ``config["name"]`` is not a ``BaseBacktester`` subclass.
             This is checked before any nested dataset or model is built.
         ValueError: If any config field other than ``name`` is missing.
+
+    Example:
+        Given the run directory of an earlier backtest:
+
+        >>> import json
+        >>> with open("/data/backtests/2024-06-01/config.json") as f:
+        ...     config = json.load(f)
+        >>> backtester = load_backtester_from_config(config)
+        >>> result = backtester.run()
     """
     # Imported here so this module does not import the backtest layer at
     # import time.

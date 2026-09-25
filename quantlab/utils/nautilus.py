@@ -29,6 +29,11 @@ def get_crypto_currency(symbol: str) -> Currency:
 
     Codes Nautilus does not know are registered on the fly as crypto
     currencies with the default precision of 8.
+
+    Example:
+        >>> btc = get_crypto_currency("BTC")
+        >>> btc.code, btc.precision
+        ('BTC', 8)
     """
     return Currency.from_str(symbol)
 
@@ -64,6 +69,15 @@ def get_crypto_currency_pair(
     Raises:
         ValueError: If the symbol is missing and the venue has no live
             fetcher.
+
+    Example:
+        >>> base, quote = get_crypto_currency("BTC"), get_crypto_currency("USDT")
+        >>> pair = get_crypto_currency_pair("BTCUSDT", "BINANCE", base, quote)
+        >>> str(pair.id), pair.price_precision, pair.size_precision
+        ('BTCUSDT.BINANCE', 8, 8)
+
+        A symbol absent from the packaged file is fetched from the venue, so
+        that path needs network access.
     """
     config_data = _load_instrument_config(venue)
 
@@ -169,6 +183,10 @@ def parse_symbol_currencies(symbol: str) -> tuple[str, str]:
 
     Raises:
         ValueError: If ``symbol`` does not end in ``USDT``.
+
+    Example:
+        >>> parse_symbol_currencies("ETHUSDT")
+        ('ETH', 'USDT')
     """
     if symbol.endswith("USDT"):
         base_symbol = symbol[:-4]

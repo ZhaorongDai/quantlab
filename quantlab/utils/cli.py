@@ -87,6 +87,14 @@ def add_window_args(
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> import argparse
+        >>> parser = add_window_args(
+        ...     argparse.ArgumentParser(), default_start_date="2016-01-01"
+        ... )
+        >>> parser.parse_args(["--end-date", "2024-12-31"])
+        Namespace(start_date='2016-01-01', end_date='2024-12-31')
     """
     help_text = _WINDOW_HELP[semantics]
     parser.add_argument(
@@ -115,6 +123,11 @@ def add_universe_args(
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> parser = add_universe_args(argparse.ArgumentParser())
+        >>> parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
+        Namespace(symbols=None, universe='sp500', as_of_date='2024-06-28')
     """
     parser.add_argument(
         "--symbols",
@@ -174,6 +187,11 @@ def add_to_zarr_arg(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> parser = add_to_zarr_arg(argparse.ArgumentParser())
+        >>> parser.parse_args(["--to-zarr"])
+        Namespace(to_zarr=True)
     """
     parser.add_argument(
         "--to-zarr",
@@ -215,6 +233,16 @@ def refuse_conversion_without_raw_data(dataset, result) -> None:
     Raises:
         SystemExit: With an explanatory message when there is nothing to
             convert.
+
+    Example:
+        Called by an ingest script between acquisition and conversion:
+
+        >>> refuse_conversion_without_raw_data(dataset, result)
+
+        The call returns ``None`` when ``result.succeeded`` is non-empty or
+        ``dataset.has_raw_data()`` is true. Otherwise it raises
+        ``SystemExit`` with a message beginning ``Refusing to convert: this
+        run fetched 0 symbol(s) successfully``.
     """
     if result.succeeded or dataset.has_raw_data():
         return
@@ -253,6 +281,13 @@ def add_chunk_args(
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> parser = add_chunk_args(argparse.ArgumentParser())
+        >>> parser.parse_args([])
+        Namespace(chunk='year', on_new_listing='refuse')
+        >>> parser.parse_args(["--chunk", "month", "--on-new-listing", "widen"])
+        Namespace(chunk='month', on_new_listing='widen')
     """
     parser.add_argument(
         "--chunk",
@@ -301,6 +336,13 @@ def add_concurrency_args(
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> parser = add_concurrency_args(
+        ...     argparse.ArgumentParser(), default_max_workers=8
+        ... )
+        >>> parser.parse_args(["--limit", "50"])
+        Namespace(limit=50, max_workers=8)
     """
     parser.add_argument(
         "--limit",
@@ -336,6 +378,15 @@ def validate_roster_args(
     ``--as-of-date`` is additionally required with ``--universe``. Misuse goes
     through ``parser.error``, so it exits with status 2 and the usage block
     like every other argparse error.
+
+    Example:
+        >>> parser = add_universe_args(argparse.ArgumentParser(prog="ingest"))
+        >>> args = parser.parse_args(["--symbols", "AAPL,MSFT"])
+        >>> validate_roster_args(parser, args)
+
+        With ``--universe sp500`` and no ``--as-of-date`` the same call
+        prints the usage block followed by ``ingest: error: --as-of-date is
+        required when --universe is set.`` and exits with status 2.
     """
     if bool(args.symbols) == bool(args.universe):
         parser.error("Exactly one of --symbols or --universe must be set.")
@@ -351,6 +402,14 @@ def roster_category(args: argparse.Namespace) -> str | None:
     which names the category directly. ``None`` means an explicit
     ``--symbols`` list, so a caller can size it differently instead of
     treating it as a roster.
+
+    Example:
+        >>> roster_category(argparse.Namespace(universe="nasdaq100"))
+        'nasdaq100_constituent'
+        >>> roster_category(argparse.Namespace(category="us_all"))
+        'us_all'
+        >>> print(roster_category(argparse.Namespace(symbols="AAPL", universe=None)))
+        None
     """
     universe = getattr(args, "universe", None)
     if universe:
@@ -390,6 +449,19 @@ def resolve_symbols(
 
     Raises:
         ValueError: If ``mode`` is not one of ``ROSTER_MODES``.
+
+    Example:
+        An explicit list needs no catalog; ``--limit`` truncates it:
+
+        >>> args = argparse.Namespace(symbols="AAPL,MSFT,NVDA", universe=None, limit=2)
+        >>> resolve_symbols(args, None, mode="as_of")
+        ('AAPL', 'MSFT')
+
+        A category resolves through ``catalog``, a ``UniverseCatalog`` built
+        from the universe table:
+
+        >>> args = parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
+        >>> symbols = resolve_symbols(args, catalog, mode="as_of")
     """
     if mode not in ROSTER_MODES:
         raise ValueError(
@@ -427,6 +499,11 @@ def add_data_dir_arg(
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> parser = add_data_dir_arg(argparse.ArgumentParser())
+        >>> parser.parse_args(["--data-dir", "/mnt/quant"])
+        Namespace(data_dir='/mnt/quant')
     """
     parser.add_argument(
         "--data-dir",
@@ -465,6 +542,12 @@ def apply_data_dir(args: argparse.Namespace) -> "object | None":
         The stored root ``Path``, or ``None`` when the flag was absent, in
         which case ``QUANTLAB_DATA_DIR`` or the repository default still
         applies.
+
+    Example:
+        >>> apply_data_dir(parser.parse_args(["--data-dir", "/mnt/quant"]))
+        PosixPath('/mnt/quant')
+        >>> apply_data_dir(parser.parse_args([])) is None
+        True
     """
     value = getattr(args, "data_dir", None)
     if value is None:
@@ -490,6 +573,11 @@ def add_volume_guard_args(
 
     Returns:
         ``parser``, for chaining.
+
+    Example:
+        >>> parser = add_volume_guard_args(argparse.ArgumentParser())
+        >>> parser.parse_args(["--force-volume", "--rows-per-symbol-day", "250000"])
+        Namespace(force_volume=True, rows_per_symbol_day=250000)
     """
     parser.add_argument(
         "--force-volume",
@@ -698,6 +786,17 @@ def volume_pricing(
         ``pricing`` is the object to call the guard on, ``category`` is the
         name to report, and ``window_assumed`` says whether the window came
         from the fallbacks in ``_sizing_window``.
+
+    Example:
+        >>> args = argparse.Namespace(
+        ...     symbols="AAPL,MSFT", start_date="2024-01-01", end_date="2024-12-31"
+        ... )
+        >>> symbols = resolve_symbols(args, None, mode="as_of")
+        >>> pricing, category, start, end, assumed = volume_pricing(
+        ...     args, None, symbols=symbols
+        ... )
+        >>> category, start, end, assumed
+        ('(explicit --symbols list)', '2024-01-01', '2024-12-31', False)
     """
     category = roster_category(args)
     truncated = getattr(args, "limit", None) is not None
@@ -745,6 +844,25 @@ def print_volume_estimate(
 
     Returns:
         ``estimate``, unchanged, so a call site can compose.
+
+    Example:
+        Continuing from ``volume_pricing``, two symbols over 2024:
+
+        >>> estimate = pricing.assert_acquisition_volume_fits(
+        ...     category, start, end, frequency="1d", batch_size=1
+        ... )
+        >>> _ = print_volume_estimate(
+        ...     estimate, category=category, start_date=start, end_date=end
+        ... )
+        Pre-flight volume estimate (zero vendor requests issued):
+          roster:            (explicit --symbols list)
+          window:            2024-01-01 .. 2024-12-31
+          symbols:           2
+          trading days (~):  253
+          rows (~):          506 (1/symbol-day, density 1.000)
+          raw on disk (~):   0.00 GiB
+          requests (~):      2 (batch_size=1, page_limit=10,000)
+          wall clock (~):    0.0 h at 200 req/min
     """
     if window_assumed:
         print_fn(
@@ -801,6 +919,19 @@ def print_sql_volume_estimate(
 
     Returns:
         ``estimate``, unchanged.
+
+    Example:
+        With ``estimate`` from ``SqlVolumeGuard.estimate`` for two symbols
+        over two trading days:
+
+        >>> lines = []
+        >>> _ = print_sql_volume_estimate(estimate, print_fn=lines.append)
+        >>> lines[1]
+        '  symbols:           2'
+        >>> lines[4]
+        '  rows:              400,000'
+        >>> lines[5]
+        '  bytes/row:         30 (ASSUMPTION: default, not a measured shard size)'
     """
     # Imported at call time so this module stays light at import.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
@@ -851,6 +982,18 @@ def print_conversion_result(result, *, print_fn=print):
 
     Returns:
         ``result``, unchanged, so a call site can compose.
+
+    Example:
+        With ``result`` a ``ConversionResult`` whose run wrote five yearly
+        windows:
+
+        >>> _ = print_conversion_result(result)
+        Zarr store written at: /mnt/quant/data/us_equity/1d/stock.zarr
+          windows:           5 written, 0 skipped of 5 planned (year)
+          symbols pinned:    2
+          rows appended:     2,516
+          peak window:       0.00 GiB
+          chunk ledger:      /mnt/quant/data/us_equity/1d/stock.zarr.chunks.json
     """
     print_fn(f"Zarr store written at: {result.zarr_path}")
     print_fn(

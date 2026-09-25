@@ -30,6 +30,15 @@ def get_instrument_info(symbols: list[str]) -> dict:
 
     Raises:
         requests.RequestException: If the exchange-info request fails.
+
+    Example:
+        Needs network access to ``api.binance.com``:
+
+        >>> info = get_instrument_info(["BTCUSDT", "ETHUSDT"])
+        >>> sorted(info["instruments"])
+        ['BTCUSDT', 'ETHUSDT']
+        >>> sorted(info["instruments"]["BTCUSDT"])[:3]
+        ['max_price', 'max_quantity', 'min_notional']
     """
     exchange_info = _get_binance_exchange_info()
     symbol_map = {s["symbol"]: s for s in exchange_info["symbols"]}

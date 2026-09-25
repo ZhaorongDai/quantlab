@@ -68,6 +68,13 @@ class XrBackend(DataBackend):
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
+
+        Example:
+            >>> backend = XrBackend().read("prices.zarr")
+            >>> dict(backend.data.sizes)
+            {'timestamp': 4, 'symbol': 2}
+            >>> backend.read("prices.zarr") is backend  # already loaded, no reload
+            True
         """
         if not overwrite and hasattr(self, "data"):
             return self
@@ -108,6 +115,12 @@ class XrBackend(DataBackend):
         Args:
             path: Directory of the Zarr store.
             **kwargs: Passed through to ``Dataset.to_zarr``.
+
+        Example:
+            >>> XrBackend().to_internal(panel).write("prices.zarr")
+            XrBackend()
+            >>> Path("prices.zarr").is_dir()
+            True
         """
         if not Path(path).exists():
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +171,17 @@ class XrBackend(DataBackend):
 
         Raises:
             ValueError: If the window fails any compatibility check.
+
+        Example:
+            Two windows on the same symbol axis; the first call creates the
+            store, the second extends it:
+
+            >>> XrBackend().to_internal(first_window).append("prices.zarr")
+            XrBackend()
+            >>> XrBackend().to_internal(next_window).append("prices.zarr")
+            XrBackend()
+            >>> xr.open_zarr("prices.zarr").sizes["timestamp"]
+            6
         """
         target = Path(path)
         if not target.exists():
@@ -252,6 +276,15 @@ class XrBackend(DataBackend):
             ValueError: If crash residue makes the store's identity
                 ambiguous, if ``symbols`` would drop a stored label, or if a
                 non-floating variable has no fill value.
+
+        Example:
+            >>> XrBackend().widen_symbol_axis("prices.zarr", ["AAA", "BBB", "CCC"])
+            XrBackend()
+            >>> stored = xr.open_zarr("prices.zarr")
+            >>> stored["symbol"].values.tolist()
+            ['AAA', 'BBB', 'CCC']
+            >>> stored["close"].sel(symbol="CCC").values  # backfilled history
+            array([nan, nan, nan, nan, nan, nan])
         """
         target = Path(path)
         widening = Path(f"{path}{self.WIDENING_SUFFIX}")
@@ -636,6 +669,17 @@ class XrBackend(DataBackend):
         Raises:
             FileNotFoundError: If no store exists at ``path``.
             ValueError: If a new non-floating variable has no fill value.
+
+        Example:
+            >>> XrBackend().widen_data_vars("prices.zarr", {"volume": "float64"})
+            XrBackend()
+            >>> XrBackend().widen_data_vars(
+            ...     "prices.zarr", {"flag": "bool"}, fill_values={"flag": False}
+            ... )
+            XrBackend()
+            >>> stored = xr.open_zarr("prices.zarr")
+            >>> sorted(stored.data_vars), stored["flag"].dtype
+            (['close', 'flag', 'volume'], dtype('bool'))
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -756,6 +800,17 @@ class XrBackend(DataBackend):
             fill_values: Per-variable fill for non-floating variables, passed
                 to both widens and used to reindex ``data``.
             **kwargs: Passed through to ``append``.
+
+        Example:
+            A window carrying a symbol and a variable the store has not seen:
+
+            >>> XrBackend().to_internal(window).widen_and_append(
+            ...     "prices.zarr", fill_values={"flag": False}
+            ... )
+            XrBackend()
+            >>> stored = xr.open_zarr("prices.zarr")
+            >>> stored["symbol"].values.tolist(), sorted(stored.data_vars)
+            (['AAA', 'BBB', 'CCC', 'DDD'], ['amount', 'close', 'flag', 'volume'])
         """
         # Read with `get`, never `pop`: every `append(...)` exit below
         # forwards `**kwargs` verbatim, and consuming the key here would
@@ -1009,17 +1064,37 @@ class XrBackend(DataBackend):
             existing.close()
 
     def to_internal(self, data: xr.Dataset) -> Self:
-        """Adopt an in-memory ``xarray.Dataset`` as ``data``."""
+        """Adopt an in-memory ``xarray.Dataset`` as ``data``.
+
+        Example:
+            >>> backend = XrBackend().to_internal(panel)
+            >>> backend.data is panel
+            True
+        """
         self.data = data
         return self
 
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
-        """Narrow ``data`` in place to the label slice ``start_date..end_date``."""
+        """Narrow ``data`` in place to the label slice ``start_date..end_date``.
+
+        Example:
+            >>> backend.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
+            XrBackend()
+            >>> backend.data["timestamp"].values.astype("datetime64[D]")
+            array(['2024-01-02', '2024-01-03'], dtype='datetime64[D]')
+        """
         self.data = self.data.sel({col: slice(start_date, end_date)})
         return self
 
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
-        """Narrow ``data`` in place to the given labels on ``col``."""
+        """Narrow ``data`` in place to the given labels on ``col``.
+
+        Example:
+            >>> backend.filter_by_symbol("symbol", ("BBB",))
+            XrBackend()
+            >>> backend.data["symbol"].values.tolist()
+            ['BBB']
+        """
         self.data = self.data.sel({col: list(symbols)})
         return self
 
@@ -1043,6 +1118,15 @@ class XrBackend(DataBackend):
 
         Raises:
             ValueError: If a requested name is not a dimension of ``data``.
+
+        Example:
+            >>> ds = backend.get_xarray_dataset(["timestamp", "symbol"])
+            >>> tuple(ds.dims)
+            ('timestamp', 'symbol')
+            >>> backend.get_xarray_dataset(["symbol", "timestamp"])["close"].dims
+            ('symbol', 'timestamp')
+            >>> backend.get_xarray_dataset() is backend.data
+            True
         """
         if indexes is None:
             return self.data
@@ -1070,7 +1154,12 @@ class XrBackend(DataBackend):
         return result.transpose(*indexes, ...)
 
     def get_lazyframe(self) -> pl.LazyFrame:
-        """Return ``data`` as a long-format ``polars.LazyFrame``."""
+        """Return ``data`` as a long-format ``polars.LazyFrame``.
+
+        Example:
+            >>> backend.get_lazyframe().collect().columns
+            ['timestamp', 'symbol', 'close']
+        """
         data = self.data.to_dataframe().reset_index()
         return pl.from_pandas(data).lazy()
 
@@ -1085,6 +1174,10 @@ class XrBackend(DataBackend):
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
+
+        Example:
+            >>> XrBackend().head("prices.zarr", 2).collect().shape
+            (2, 3)
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1117,6 +1210,11 @@ class PlBackend(DataBackend):
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
+
+        Example:
+            >>> table = PlBackend().read("universe.parquet")
+            >>> type(table.data).__name__
+            'LazyFrame'
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1124,17 +1222,34 @@ class PlBackend(DataBackend):
         return self
 
     def write(self, path: str, **kwargs) -> Self:
-        """Collect ``data`` and write it to ``path`` as Parquet."""
+        """Collect ``data`` and write it to ``path`` as Parquet.
+
+        Example:
+            >>> PlBackend().to_internal(frame.lazy()).write("universe.parquet")
+            PlBackend()
+        """
         self.data.collect().write_parquet(path, **kwargs)
         return self
 
     def to_internal(self, data: pl.LazyFrame) -> Self:
-        """Adopt an in-memory ``polars.LazyFrame`` as ``data``."""
+        """Adopt an in-memory ``polars.LazyFrame`` as ``data``.
+
+        Example:
+            >>> PlBackend().to_internal(frame.lazy())
+            PlBackend()
+        """
         self.data = data
         return self
 
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
-        """Narrow ``data`` in place to rows whose ``col`` lies in the range."""
+        """Narrow ``data`` in place to rows whose ``col`` lies in the range.
+
+        Example:
+            >>> table.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
+            PlBackend()
+            >>> table.get_lazyframe().collect().height  # two days of two symbols
+            4
+        """
         self.data = self.data.filter(
             pl.col(col).is_between(
                 pl.lit(pd.to_datetime(start_date)),
@@ -1144,12 +1259,25 @@ class PlBackend(DataBackend):
         return self
 
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
-        """Narrow ``data`` in place to rows whose ``col`` is in ``symbols``."""
+        """Narrow ``data`` in place to rows whose ``col`` is in ``symbols``.
+
+        Example:
+            >>> table = PlBackend().read("universe.parquet")
+            >>> table.filter_by_symbol("symbol", ("BBB",))
+            PlBackend()
+            >>> table.get_lazyframe().collect()["symbol"].unique().to_list()
+            ['BBB']
+        """
         self.data = self.data.filter(pl.col(col).is_in(symbols))
         return self
 
     def get_lazyframe(self) -> pl.LazyFrame:
-        """Return the held lazy frame."""
+        """Return the held lazy frame.
+
+        Example:
+            >>> table.get_lazyframe().collect().shape
+            (8, 3)
+        """
         return self.data
 
     def head(self, path: str, n: int) -> pl.LazyFrame:
@@ -1162,6 +1290,10 @@ class PlBackend(DataBackend):
 
         Raises:
             FileNotFoundError: If ``path`` does not exist.
+
+        Example:
+            >>> PlBackend().head("universe.parquet", 3).collect().shape
+            (3, 3)
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1181,6 +1313,11 @@ class PlBackend(DataBackend):
 
         Raises:
             ValueError: If ``indexes`` is ``None``.
+
+        Example:
+            >>> ds = table.get_xarray_dataset(["timestamp", "symbol"])
+            >>> tuple(ds.dims), list(ds.data_vars)
+            (('timestamp', 'symbol'), ['close'])
         """
         if indexes is None:
             raise ValueError(

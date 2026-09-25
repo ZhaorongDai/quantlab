@@ -1,6 +1,14 @@
-"""XGBoost 回归头：用 xgboost 原生早停预测未来收益（260914-lno）。
+"""XGBoost regression head for the tree-model layer.
 
-文件名刻意叫 `xgb.py`：叫 `xgboost.py` 会在包内遮蔽顶层的 `xgboost` 包。
+``XGBoostRegressor`` is an ``MLModel`` that trains a Booster with ``xgb.train``
+on the flattened ``(num_times * num_symbols, num_features)`` rows of the
+factor panel and predicts future returns as ``[num_times, num_symbols,
+num_labels]``. Early stopping uses xgboost's native callback on a pooled
+concordance-correlation loss (``pooled_ccc_loss``), and per-factor feature
+importance is recorded to Weights and Biases after training.
+
+The module is named ``xgb.py`` rather than ``xgboost.py`` so it does not
+shadow the ``xgboost`` package inside this package.
 """
 
 import numpy as np
@@ -11,12 +19,12 @@ from loguru import logger
 from quantlab.base.config import MLConfig
 from quantlab.base.model import MLModel
 
-#: sklearn 风格别名 -> xgboost 原生（`xgb.train`）键名。
-#:
-#: 必须在合并默认参数**之前**、只在用户字典上归一化：xgboost 对这些别名的处理
-#: 不一致（3.4.1 实测）——`learning_rate` 与默认 `eta` 同时出现时谁生效只取决于
-#: 字典顺序；`n_estimators` 被忽略、只给一条 "not used" 警告，轮数仍取
-#: `num_boost_round`；`random_state` 在已有 `seed` 时被**静默**忽略，连警告都没有。
+#: scikit-learn style aliases mapped to the native ``xgb.train`` parameter
+#: names. Aliases are rewritten on the user's dict before it is merged with
+#: the defaults, because xgboost handles them inconsistently: ``learning_rate``
+#: next to ``eta`` wins or loses by dict order, ``n_estimators`` is ignored
+#: with a warning, and ``random_state`` is silently ignored when ``seed`` is
+#: present.
 _PARAM_ALIASES: dict[str, str] = {
     "n_estimators": "num_boost_round",
     "learning_rate": "eta",
@@ -26,43 +34,47 @@ _PARAM_ALIASES: dict[str, str] = {
     "reg_lambda": "lambda",
 }
 
-#: 训练结束写进 wandb summary 的 `Booster.get_score` 重要性类型：分裂次数、
-#: 平均每次分裂的增益、总增益（见 `XGBoostRegressor._record_feature_importance`）。
+#: ``Booster.get_score`` importance types written to the run summary after
+#: training: split count, mean gain per split and total gain.
 _IMPORTANCE_TYPES: tuple[str, ...] = ("weight", "gain", "total_gain")
 
-#: 重要性柱状图只画前 N 个因子（D-04）。其余因子一个都没丢——它们仍然整份留在同一次
-#: `log` 发出的 `wandb.Table` 里；截断只针对图，因为几百根柱子的图没法看。
+#: Number of factors drawn in the importance bar chart. The accompanying
+#: table still lists every factor; only the chart is truncated.
 _IMPORTANCE_CHART_TOP_N = 30
 
-#: Charts 对象的键前缀，**刻意**与 summary 标量的 `importance_` 前缀分属两个命名
-#: 空间：两者永不相撞，而且只看键名就能分辨这是 Charts 里的图表对象
-#: （`feature_importance/{类型}`、`feature_importance_table/{类型}`），还是 Overview
-#: 里的每因子标量（`importance_{类型}/{因子名}`）。
+#: Key prefix of the chart objects. It is distinct from the ``importance_``
+#: prefix of the per-factor summary scalars so the two never collide.
 _IMPORTANCE_CHART_PREFIX = "feature_importance"
 
 
 def pooled_ccc_loss(y_true, y_pred) -> float:
-    """池化（pooled）一致性相关系数损失 `1 - ccc`，越小越好。
+    """Return ``1 - ccc``, the pooled concordance correlation loss.
 
-    ccc = 2·cov / (var_pred + var_true + (mu_pred - mu_true)²)，其中 cov 与两个
-    方差都是**总体矩**（`np.var` 默认 ddof=0）。改成 ddof=1 会改变数值，别改。
+    ``ccc = 2 * cov / (var_pred + var_true + (mu_pred - mu_true)^2)`` with
+    population moments (``ddof=0``). Both inputs are flattened and scored as
+    one pool, without any per-timestamp grouping, so the loss also rewards
+    predicting the market-wide move of each day and penalises a correctly
+    shrunk prediction whose variance is below the label's.
 
-    「池化」指把传进来的两个向量当成一个整体算一次，不分时间截面——`_to_rows`
-    交给它的行早就丢掉了日期归属，这个形状天然就是池化的。
+    Only positions where both inputs are finite are used. When fewer than one
+    such position remains, or the denominator is exactly zero, the worst
+    loss ``1.0`` is returned rather than NaN, so that early stopping keeps
+    comparing.
 
-    **这个形式由用户明确选定，不是疏忽**；它自带两点代价，写在这里免得日后被当成
-    bug「修」掉：所有 `(t, s)` 行一起算、不做截面内比较，所以它仍然会奖励「预测对
-    每天全市场的共同涨跌」；分母里的 `var_pred + var_true` 会惩罚一个被正确收缩的
-    预测——低信噪比数据里，最优预测的方差本来就远低于标签方差。早停判据这一侧的
-    说明见 `XGBoostRegressor` 类 docstring 的「早停」段落。
+    Args:
+        y_true: Observed values, any shape.
+        y_pred: Predicted values, the same number of elements as ``y_true``.
 
-    降级约定（对全部有限、非退化的输入不改变数值）：
+    Raises:
+        ValueError: If the two inputs have different lengths after flattening.
 
-    - 先取两边**同时有限**的位置，与 `quantlab/utils/metrics.py:_joint` 的惯例一致；
-    - 有效位置少于 1 个，或分母恰好为 0（两个向量都是常数且相等，ccc 此时无定义）
-      时返回 `1.0`，即最差的损失。返回 NaN 会让 `EarlyStopping` 的每一次比较都为
-      假（NaN 与任何数比较都是 False），早停就此失灵；返回 0.0 更糟，会把一轮完全
-      退化的结果记成最优。两者都会安静地毁掉早停，所以退化一律取最差值。
+    Example:
+        >>> pooled_ccc_loss([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        0.0
+        >>> pooled_ccc_loss([1.0, 2.0, 3.0], [1.1, 1.9, 3.2])
+        0.014084507042253502
+        >>> pooled_ccc_loss([1, 2, 3], [3, 2, 1])
+        2.0
     """
     true = np.asarray(y_true, dtype=np.float64).reshape(-1)
     pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
@@ -91,24 +103,27 @@ def pooled_ccc_loss(y_true, y_pred) -> float:
 
 
 def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]:
-    """`xgb.train(custom_metric=...)` 适配器：返回 `("ccc_loss", 损失值)`。
+    """Score a Booster's predictions for ``xgb.train(custom_metric=...)``.
 
-    xgboost 3.4.1 的 `custom_metric` 契约是 `(predt, dtrain) -> (名字, 数值)`，
-    标签只能从 `dtrain.get_label()` 拿，而用户的参考实现吃的是 `(y_true, y_pred)`
-    两个向量，所以这层适配是免不了的。
+    Only the primary label (column 0) is scored. With multiple labels
+    ``dtrain.get_label()`` returns a ``(n_rows, n_labels)`` array and the
+    prediction has the same layout; both are reshaped to ``(n_rows, -1)``
+    before column 0 is taken, which is a no-op for a single label.
 
-    **多输出标签的实测布局（xgboost 3.4.1，3 行 2 标签的 DMatrix 实测）**：
-    `get_label()` 直接返回 `(n_rows, n_labels)` 的**二维**数组，行优先——标签
-    `[[10,20],[11,21],[12,22]]` 原样取回 `[[10,20],[11,21],[12,22]]`，不是先前
-    以为的展平向量。单标签时返回的是 `(n_rows,)` 一维。`reshape(num_row(), -1)`
-    把两种形状统一成 `(n_rows, n_labels)`，对二维那种是恒等操作。
+    Args:
+        predt: The Booster's predictions for ``dtrain``.
+        dtrain: The evaluated ``DMatrix``, whose labels are read back.
 
-    只给**主标签**（最后一维第 0 个）打分，与 `MLModel._compute_metrics` 的
-    `pred[..., 0]` 以及本类「多标签」文档段落的约定一致。本项目当前是单标签，
-    第 0 列就是整个向量，数值与参考实现逐位相同。
+    Returns:
+        ``("ccc_loss", value)`` as xgboost expects from a custom metric.
 
-    标签与预测的元素个数对不上时抛 `ValueError` 点名两个数字，绝不广播——广播出
-    来的分数看着正常，却是拿错位的两列算的。
+    Raises:
+        ValueError: If the label and prediction element counts differ.
+
+    Example:
+        >>> dm = xgb.DMatrix(np.zeros((3, 2)), label=np.array([1.0, 2.0, 3.0]))
+        >>> ccc_loss_metric(np.array([1.1, 1.9, 3.2]), dm)
+        ('ccc_loss', 0.014084507042253502)
     """
     label = np.asarray(dtrain.get_label(), dtype=np.float64)
     pred = np.asarray(predt, dtype=np.float64)
@@ -124,27 +139,34 @@ def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]
 
 
 class _WandbEvalCallback(xgb.callback.TrainingCallback):
-    """逐轮把 xgboost 的 eval 结果写进模型头**当前**的 wandb run。
+    """Log every boosting round's eval results to the head's current run.
 
-    构造时只持有模型头的引用，每轮调用时再去读 `head._wandb_recorder`：并行交叉
-    验证下每折是 deepcopy 出来的头，而回调是在 `_fit_model` 里现场用 `self`
-    构造的，所以它指向的是折副本和折副本自己的 run。
-
-    键用 xgboost 原生的连字符形式（`train-rmse`、`val-rmse`），`step` 是轮次
-    （从 0 开始）；刻意与 `MLModel._evaluate` 写进 summary 的下划线形式
-    （`val_rmse`）区分——前者是曲线，后者是最终值。
-
-    每轮还把刚记过的轮次写回头上的 `_last_log_step`（2026-09-16）：训练结束后
-    `_record_feature_importance` 要拿它当重要性图表那次 `log` 的 `step`，好让图表并进
-    最后一轮已有的行、不新开一步。写的同样是 `self._head`，所以交叉验证的折副本各自
-    记在自己的 run 和自己的步上。
+    The callback holds a reference to the head and reads
+    ``head._wandb_recorder`` on each round, so a deep-copied cross-validation
+    fold logs to its own run. Keys use xgboost's hyphenated form
+    (``train-rmse``, ``val-ccc_loss``) with ``step`` equal to the round
+    index, which distinguishes these curves from the underscored final
+    values ``MLModel._evaluate`` writes to the summary. The last logged round
+    is stored on the head as ``_last_log_step`` so the feature-importance
+    charts can be logged on the same step.
     """
 
     def __init__(self, head: "XGBoostRegressor"):
+        """Keep a reference to the head whose recorder receives the rows."""
         super().__init__()
         self._head = head
 
     def after_iteration(self, model, epoch: int, evals_log) -> bool:
+        """Log the latest value of every metric and return ``False`` to continue.
+
+        Called by xgboost after each boosting round.
+
+        Example:
+            >>> booster = xgb.train(
+            ...     params, dtrain, evals=[(dtrain, "train"), (dval, "val")],
+            ...     callbacks=[_WandbEvalCallback(head)],
+            ... )
+        """
         recorder = self._head._wandb_recorder
         if recorder is not None:
             row = {
@@ -158,106 +180,66 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
 
 
 class XGBoostRegressor(MLModel):
-    """XGBoost 回归头：预测未来收益，输出 `[T, S, L]`。
+    """Predict future returns with an XGBoost Booster.
 
-    训练
-        `xgb.train` 在展平后的 `(T*S, F)` 行上训练；标签含 NaN 的行被丢弃（任一
-        标签缺失即丢弃整行），特征里的 ±inf 转成 NaN 交给 xgboost 当缺失值处理
-        （xgboost 遇到 inf 会直接报错）。
+    Training flattens the ``[T, S, F]`` features and ``[T, S, L]`` labels to
+    rows, drops every row with a non-finite label, converts infinite feature
+    values to NaN (which xgboost treats as missing) and calls ``xgb.train``.
+    Each label is one output of a multi-output regression; headline metrics
+    are computed on the primary label, index 0.
 
-    早停
-        `config.early_stopping=True` 且验证段里有标签有限的行时，追加
-        `xgb.callback.EarlyStopping(rounds=patience, data_name="val", save_best=True)`：
+    Hyperparameters come from ``config.hyperparameters``. ``num_boost_round``
+    (default 1000) is taken out separately; every other key overrides the
+    matching entry of ``DEFAULT_PARAMS``, and ``seed`` defaults to
+    ``config.random_seed``. scikit-learn style aliases such as
+    ``learning_rate`` or ``n_estimators`` are rewritten to the native names
+    first; giving both an alias and its native name raises ``ValueError``.
+    The user's dict is never modified, and the parameters actually used are
+    recorded under ``resolved_hyperparameters`` in the checkpoint's
+    ``config.json`` and in the run config.
 
-        - patience 按 **boosting 轮数**计，不是 epoch；
-        - 判据是验证集上的池化 CCC 损失 `ccc_loss`（`1 - ccc`，见 `pooled_ccc_loss`），
-          **不是 RMSE，也不是 IC**：本模块的 `ccc_loss_metric` 经
-          `xgb.train(custom_metric=...)` 注册，而内建的 `eval_metric`（默认 rmse）
-          排在每个数据集指标列表的**第一个**、只当观测曲线用，自定义指标排在
-          **最后一个**，`EarlyStopping(metric_name=None)` 解析到的正是最后一个。
-          它是**损失、越小越好**，所以不传 `maximize`（默认 `maximize=False` 正是
-          对的）；
-        - 「池化」这个形式由用户明确选定，它自带的代价记在 `pooled_ccc_loss` 的
-          docstring 里；
-        - `save_best=True` 让返回的 Booster 已截断到 `best_iteration + 1` 棵树，
-          落盘的 `.joblib` 就是最优模型；`best_iteration` / `best_score` 同时写进
-          wandb summary。**注意 `best_score` 现在是一个 CCC 损失**，与本次改动之前
-          任何一次运行记录的 `best_score`（那时是 RMSE）都不可比——键名、类型都没
-          变，只有含义变了。
+    With ``config.early_stopping`` set and a validation segment that has at
+    least one finite-label row, ``xgb.callback.EarlyStopping`` watches the
+    validation ``ccc_loss`` (see ``pooled_ccc_loss``); the built-in
+    ``eval_metric`` (RMSE by default) is logged as a curve only. Patience
+    counts boosting rounds. ``save_best=True`` means the returned Booster is
+    already truncated to ``best_iteration + 1`` trees, so the ``.joblib``
+    checkpoint is the best model, and ``best_iteration`` and ``best_score``
+    (a CCC loss) are written to the run summary. Without a usable validation
+    segment a warning is logged and all rounds are trained.
 
-        没有可用的验证段时记一条 warning，跳过早停，训练满 `num_boost_round` 轮。
+    After training, per-factor importance (``weight``, ``gain`` and
+    ``total_gain``) is written to the run summary as
+    ``importance_{type}/{factor}`` and logged as a sorted table plus a
+    top-30 bar chart. This is best effort: a Booster that cannot report an
+    importance type only logs a warning, and the checkpoint is never lost
+    because of it.
 
-    超参（`config.hyperparameters`）
-        `num_boost_round`（默认 1000）单独取出，不进 xgboost params；其余键逐键
-        覆盖 `DEFAULT_PARAMS`，用户键优先，未指定的键保留默认。`seed` 默认取
-        `config.random_seed`。sklearn 风格别名（`n_estimators`、`learning_rate`、
-        `random_state`、`n_jobs`、`reg_alpha`、`reg_lambda`）先归一化成原生键再
-        合并；别名与原生键同时给出时抛 `ValueError`。`config.hyperparameters`
-        本身不会被修改——它记录用户输入；实际生效的参数（含轮数）经
-        `_resolved_hyperparameters` 写进 `config.json` 的
-        `resolved_hyperparameters` 与 wandb run config，日后 `DEFAULT_PARAMS`
-        改了也能复现这次训练。
+    ``train_cv`` is inherited: each fold does its own native early stopping
+    and writes its own ``.joblib``. With ``parallel=True`` the folds run on
+    threads while xgboost itself uses every core, so set ``nthread`` in the
+    hyperparameters to roughly ``os.cpu_count() // njobs``; the value is
+    passed through unchanged.
 
-    多标签
-        每个标签一个输出（xgboost 多输出回归）。头条指标（`{split}_ic` 等）只看
-        主标签，即最后一维第 0 个标签。
-
-    wandb
-        逐轮曲线 `train-rmse` / `val-rmse` 与 `train-ccc_loss` / `val-ccc_loss`
-        （连字符，`step=iteration`）；训练结束
-        summary 里是 `{split}_loss` 与 `{split}_{mse,rmse,mae,r2,ic,rank_ic}`
-        （下划线），以及早停启用时的 `best_iteration` / `best_score`。
-
-        另有每个因子的重要性（03.7-18，G-03.7-9）：训练结束后对 Booster 调
-        `get_score`，结果同时写进两个**互不相交**的命名空间——
-
-        - Overview（summary）：每因子标量 `importance_{weight,gain,total_gain}/{因子名}`
-          （D-02），键名与数值自 03.7-18 起未变，wandb API 可按键逐个读回；
-        - Charts：`feature_importance_table/{类型}`（`wandb.Table`，含全部因子）与
-          `feature_importance/{类型}`（柱状图，只画前 `_IMPORTANCE_CHART_TOP_N` 个），
-          按重要性降序（2026-09-16，D-01/D-03/D-04）。这三对对象由**一次** `log`
-          发出，`step` 取逐轮回调记下的最后一轮，因此并进那一轮已有的行、不新开
-          一步，逐轮曲线的 step 序列与此前完全相同。
-
-        Booster 不带特征名，键 `f{i}` 按列下标映射到 `get_factor_names()[i]`；从未
-        分裂的因子补 0.0。多标签（多输出）模型的重要性由 xgboost 在各输出之间汇总，
-        不分标签。变量顺序由 `BaseModel.load()` 核对，不靠 xgboost 的特征名。重要性
-        全程尽力而为：`gblinear` 整段跳过，拿不到或非标量的类型记 warning 后跳过，
-        画图或 log 失败同样只记 warning，从不因此丢掉 checkpoint（REVIEW CR-01）。
-
-    交叉验证
-        `train_cv` 继承自 `BaseModel`：每折在折内训练段尾部的验证段上独立做
-        原生早停，每折一个 `.joblib`。`parallel=True` 时各折在 joblib threading
-        后端上并发，而 xgboost 默认用满全部核，会造成 CPU 超额订阅——建议在
-        hyperparameters 里设 `nthread ≈ 核数 // njobs`。本类原样透传 `nthread`，
-        不会替用户改写。
-
-    用法::
-
-        from quantlab.base.config import MLConfig
-        from quantlab.label.fret import Return
-        from quantlab.ml_model.xgb import XGBoostRegressor
-
-        model = XGBoostRegressor(
-            MLConfig(
-                factors=[...],
-                labels=[Return(...)],
-                model_save_dir="checkpoints",
-                factor_data_strategy="read",
-                label_data_strategy="read",
-                train_start="2020-01-01", train_end="2023-12-31",
-                test_start="2024-01-01", test_end="2024-12-31",
-                early_stopping=True,
-                early_stopping_patience=50,
-                hyperparameters={"num_boost_round": 1000},
-            )
-        ).collect()
-        model.train()
-
-        # 滚动交叉验证：4 折并发，每折 xgboost 用 核数 // 4 个线程
-        results = model.train_cv(
-            train_periods=500, gap_periods=5, parallel=True, njobs=4
-        )  # 同时在 hyperparameters 里设 "nthread": os.cpu_count() // 4
+    Example:
+        >>> config = MLConfig(
+        ...     factors=[alpha],            # factor objects
+        ...     labels=[fwd_return],        # label objects
+        ...     model_save_dir="checkpoints",
+        ...     factor_data_strategy="read",
+        ...     label_data_strategy="read",
+        ...     train_start="2024-01-01", train_end="2024-02-09",
+        ...     test_start="2024-02-10", test_end="2024-02-29",
+        ...     early_stopping=True, early_stopping_patience=5,
+        ...     hyperparameters={"num_boost_round": 20, "max_depth": 3},
+        ... )
+        >>> model = XGBoostRegressor(config)
+        >>> checkpoint = model.collect().train()
+        >>> checkpoint.name
+        'XGBoostRegressor_total.joblib'
+        >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
+        (5, 2, 1)
+        >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
     """
 
     DEFAULT_PARAMS: dict = {
@@ -273,19 +255,20 @@ class XGBoostRegressor(MLModel):
     DEFAULT_NUM_BOOST_ROUND = 1000
 
     def __init__(self, config: MLConfig):
+        """Store the config; parameters are resolved later by ``_init_model``."""
         super().__init__(config)
         self._params: dict | None = None
         self._num_boost_round: int | None = None
-        #: 逐轮回调最后一次 `log` 用的 step，训练结束后给重要性图表那次 `log` 用
-        #: （见 `_WandbEvalCallback` 与 `_record_feature_importance`）。
+        #: Round index of the last per-round log, reused as the step of the
+        #: feature-importance charts.
         self._last_log_step: int | None = None
 
     @staticmethod
     def _normalize_aliases(hyperparameters: dict) -> dict:
-        """返回用户超参的副本，sklearn 风格别名换成原生键名（见 `_PARAM_ALIASES`）。
+        """Return a copy of ``hyperparameters`` with aliases renamed to native keys.
 
-        别名与原生键同时出现（如 `eta` 与 `learning_rate`）时抛 `ValueError`，
-        点名两个键——绝不静默挑一个。入参不被修改。
+        Raises:
+            ValueError: If an alias and its native key are both present.
         """
         user = dict(hyperparameters)
         for alias, canonical in _PARAM_ALIASES.items():
@@ -302,12 +285,14 @@ class XGBoostRegressor(MLModel):
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict
     ):
-        """解析超参；Booster 要到 `_fit_model` 里由 `xgb.train` 建出，这里返回 None。
+        """Resolve the training parameters and return ``None``.
 
-        顺序：先在用户字典副本上归一化别名，再取出 `num_boost_round`，最后逐键
-        覆盖 `DEFAULT_PARAMS`（用户键优先，未指定的键保留默认）。所以别名同样能
-        覆盖默认值，例如 `learning_rate=0.3` 覆盖默认 `eta=0.05`、`random_state=7`
-        覆盖 `config.random_seed`。
+        The Booster itself is built by ``xgb.train`` inside ``_fit_model``.
+        Aliases are normalised first, then ``num_boost_round`` is split off,
+        then the remaining keys override ``DEFAULT_PARAMS`` and the seed.
+
+        Raises:
+            ValueError: If ``num_boost_round`` is below 1.
         """
         user = self._normalize_aliases(hyperparameters)
         num_boost_round = int(
@@ -326,20 +311,20 @@ class XGBoostRegressor(MLModel):
         return None
 
     def _resolved_hyperparameters(self) -> dict | None:
-        """实际交给 `xgb.train` 的参数（默认值 + 用户覆盖 + 别名归一化）加轮数。"""
+        """Return the parameters handed to ``xgb.train`` plus ``num_boost_round``."""
         if self._params is None:
             return None
         return {**self._params, "num_boost_round": self._num_boost_round}
 
     def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """返回新的 float32 数组，±inf 替换为 NaN，NaN 保留；不修改入参。"""
+        """Return a float32 copy with infinities replaced by NaN."""
         out = np.array(data, dtype=np.float32, copy=True)
         out[np.isinf(out)] = np.nan
         return out
 
     @staticmethod
     def _to_rows(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """`[T,S,F]`、`[T,S,L]` 展平成 `(T*S, F)`、`(T*S, L)`，只保留标签全部有限的行。"""
+        """Flatten ``[T, S, F]`` and ``[T, S, L]`` to rows with finite labels."""
         n_times, n_symbols, n_features = x.shape
         x_rows = x.reshape(n_times * n_symbols, n_features)
         y_rows = y.reshape(n_times * n_symbols, y.shape[-1])
@@ -353,8 +338,13 @@ class XGBoostRegressor(MLModel):
         val_x: np.ndarray | None,
         val_y: np.ndarray | None,
     ) -> None:
-        # 每次训练重新记步：并行交叉验证的折副本是 deepcopy 出来的，不重置的话，一个
-        # 之前训练过的头会把它的末轮 step 带给折副本，重要性图就会记到错误的步上。
+        """Train the Booster with ``xgb.train`` and record the run's summary.
+
+        Raises:
+            ValueError: If the training segment has no row with finite labels.
+        """
+        # Reset per training run: a deep-copied cross-validation fold would
+        # otherwise inherit the last step of a previously trained head.
         self._last_log_step = None
         x_rows, y_rows = self._to_rows(train_x, train_y)
         if x_rows.shape[0] == 0:
@@ -376,9 +366,9 @@ class XGBoostRegressor(MLModel):
                     "with finite labels; training without a validation set."
                 )
 
-        # 顺序必须是记录回调在前、EarlyStopping 在后：xgboost 的回调容器按短路
-        # 方式依次调用，排在 EarlyStopping 之后的回调会漏掉触发停止的那一轮
-        # （xgboost 3.4.1 实测）。
+        # The logging callback must precede EarlyStopping: xgboost short-
+        # circuits its callback list, so a callback placed after EarlyStopping
+        # misses the round that triggered the stop.
         callbacks: list[xgb.callback.TrainingCallback] = [
             _WandbEvalCallback(self)
         ]
@@ -420,46 +410,26 @@ class XGBoostRegressor(MLModel):
             self._record_feature_importance()
 
     def _record_feature_importance(self) -> None:
-        """把每个因子的重要性写进 wandb summary，并把图表发到 Charts（03.7-18，
-        G-03.7-9；图表部分 2026-09-16）。
+        """Write per-factor importance to the run summary and log the charts.
 
-        Booster 不带特征名：`get_score` 的键是 `f{i}`，`i` 是列下标，而
-        `_fit_model` 按 `get_factor_names()` 的顺序排列，所以 `f{i}` 就是第 `i`
-        个因子名。从未分裂的因子 `get_score` 不返回，这里补 0.0。早停时
-        `self.model` 已是截断后的 Booster，重要性描述的就是落盘的模型。
+        ``Booster.get_score`` keys features as ``f{i}`` by column index, and
+        columns follow ``get_factor_names()``, so ``f{i}`` maps to the
+        ``i``-th factor. Factors that were never split on get ``0.0``. For
+        every type in ``_IMPORTANCE_TYPES`` the scalars go to the summary as
+        ``importance_{type}/{factor}``, and one ``log`` call at
+        ``_last_log_step`` carries a full table sorted by importance plus a
+        bar chart of the top ``_IMPORTANCE_CHART_TOP_N`` factors.
 
-        写到哪里（两个互不相交的命名空间）：
+        Everything here is telemetry and must not cost the checkpoint:
+        ``booster="gblinear"`` (no split importance) is skipped with an info
+        message; a type that raises ``XGBoostError`` or returns non-scalar
+        scores is skipped with a warning; a failure while building or logging
+        the charts is also only a warning.
 
-        - **每因子标量只进 summary**：`importance_{类型}/{因子名}`（D-02）。键名和
-          数值与这次改动之前逐位一致，wandb API 仍可按键逐个读回；
-        - **另外**用**一次** `log` 发出图表对象（D-01）：每个重要性类型一张按值降序
-          （D-03）的 `wandb.Table`（`feature_importance_table/{类型}`，含**全部**因子，
-          包括补 0.0 的），和一张只画前 `_IMPORTANCE_CHART_TOP_N` 个的柱状图
-          （`feature_importance/{类型}`，D-04）。
-
-        那次 `log` 的 `step` 取逐轮回调记下的最后一轮（`_last_log_step`）：**在当前
-        step 上 log 会并进那一轮已有的行**，不新开一步，所以逐轮曲线的 step 序列与改
-        动前完全相同、依旧连续。**从不传 `commit=`**，两个独立的理由——本项目的
-        recorder 协议就是 `log(data, step=None)`（11 个调用点、两个测试替身都没有这个
-        参数），传了会直接 `TypeError`；而 `commit=False` 会把这一行挂起，等一个永远
-        不会到来的下一次 `log`。
-
-        键解析不成 `f<int>` 或下标越界时抛 `ValueError`：那说明 Booster 不是这里
-        按列顺序训练出来的，悄悄丢掉会把重要性记错到别的因子上。
-
-        重要性只是遥测，尽力而为（REVIEW CR-01）：本方法在 `_fit_model` 里、
-        `_save_model` 之前运行，一个合法配置在这里抛异常就会丢掉整次训练的
-        checkpoint。所以：
-
-        - `booster="gblinear"` 没有分裂重要性（`gain` 直接 XGBoostError，多标签
-          时 `weight` 还返回每个输出一个值的列表），整段跳过，记一条 info；
-        - 某个重要性类型 `get_score` 报 XGBoostError，或返回的不是标量（多输出
-          按输出分列），记一条 warning 并跳过**该类型**，其余类型照常写入；
-          绝不对列表做 `float()`；
-        - 建图或 `log` 本身抛任何异常，记一条 warning 后跳过该类型 / 整次 log。这里
-          用 `except Exception`、比上面那侧的 `except XGBoostError` 宽，是刻意的：
-          `get_score` 的失败模式是已知且写下来的，而图表渲染没有任何声明过的异常
-          契约。图与 Table 要么一起进 payload、要么都不进，不会出现只画了一半的类型。
+        Raises:
+            ValueError: If a score key is not ``f<index>`` for one of the
+                factors, which means the Booster was not trained on these
+                columns.
         """
         booster_type = str((self._params or {}).get("booster", "gbtree"))
         if booster_type == "gblinear":
@@ -512,8 +482,8 @@ class XGBoostRegressor(MLModel):
             )
 
             try:
-                # `sorted` 是稳定排序：值相等时保持 `values` 的插入顺序，也就是因子
-                # 顺序，所以补 0.0 的那些从未分裂的因子按因子序排在最后。
+                # Stable sort: ties keep factor order, so never-split factors
+                # at 0.0 end up last in factor order.
                 ordered = sorted(
                     values.items(), key=lambda item: item[1], reverse=True
                 )
@@ -541,7 +511,7 @@ class XGBoostRegressor(MLModel):
                     f"(the summary entries are unaffected): {exc}"
                 )
                 continue
-            # 两个对象都建成了才一起进 payload——半张图比没有图更难排查。
+            # Chart and table enter the payload together or not at all.
             charts[f"{_IMPORTANCE_CHART_PREFIX}/{importance_type}"] = top_chart
             charts[f"{_IMPORTANCE_CHART_PREFIX}_table/{importance_type}"] = (
                 full_table
@@ -558,13 +528,11 @@ class XGBoostRegressor(MLModel):
                 )
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """`[T, S, F]` -> `[T, S, L]`。
+        """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.
 
-        先走 `inplace_predict`（树模型的快路径）；`booster="gblinear"` 不支持
-        inplace 预测（xgboost 3.4.1 实测报 "Inplace predict is not supported by
-        the current booster"），此时退回 `predict(DMatrix)`。两条路径 NaN 都当
-        缺失值，树模型上结果一致。否则 gblinear 会在 `_fit` 的 `_evaluate`
-        （`_save_model` 之前）报错，照样丢掉 checkpoint（REVIEW CR-01）。
+        ``inplace_predict`` is tried first; boosters that do not support it
+        (``gblinear``) fall back to ``predict`` on a ``DMatrix``. NaN is
+        treated as missing on both paths.
         """
         n_times, n_symbols, n_features = x.shape
         rows = x.reshape(n_times * n_symbols, n_features)

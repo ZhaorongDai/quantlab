@@ -34,6 +34,16 @@ def asdict_customized(obj, dict_factory=dict):
 
     Returns:
         A plain-data mirror of ``obj``.
+
+    Example:
+        >>> import threading
+        >>> from dataclasses import dataclass, field
+        >>> @dataclass
+        ... class Job:
+        ...     name: str
+        ...     lock: object = field(default_factory=threading.Lock)
+        >>> asdict_customized(Job("nightly"))
+        {'name': 'nightly', 'lock': None}
     """
     if _is_dataclass_instance(obj):
         # fast path for the common case

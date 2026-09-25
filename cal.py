@@ -1,3 +1,10 @@
+"""Ad hoc example: open a US-equity Zarr store and print its symbols.
+
+Runs at import with a hardcoded, machine-specific ``zarr_file_path``; edit
+the path before running. The commented-out block below shows how factor and
+label objects were computed and saved with the config factories. Not part of
+the library.
+"""
 
 from quantlab.factor.alpha101 import Alpha101SpotKline
 from quantlab.factor.alpha158 import Alpha158SpotKline

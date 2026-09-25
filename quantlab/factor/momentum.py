@@ -47,7 +47,12 @@ class Momentum(FactorPolars):
 
     @property
     def horizon(self) -> int:
-        """Momentum horizon in bars, from ``config.kwargs["n"]`` (default 20)."""
+        """Momentum horizon in bars, from ``config.kwargs["n"]`` (default 20).
+
+        Example:
+            >>> factor.horizon
+            20
+        """
         kwargs = self.config.kwargs or {}
         return kwargs.get("n", _DEFAULT_HORIZON)
 

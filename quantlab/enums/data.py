@@ -14,7 +14,14 @@ from typing import Literal
 
 @dataclass
 class BinanceCSVHeaders:
-    """Column names of the raw Binance kline CSV files, which ship without a header."""
+    """Column names of the raw Binance kline CSV files, which ship without a header.
+
+    Example:
+        >>> BinanceCSVHeaders.SPOT[:4]
+        ['Open time', 'Open', 'High', 'Low']
+        >>> len(BinanceCSVHeaders.SPOT)
+        12
+    """
 
     SPOT = [
         "Open time",
@@ -89,6 +96,10 @@ class TiingoColumns:
     Always pass this rather than relying on the client's default field set:
     the stock dataset expects the ``adj*`` columns to be present, and their
     absence only surfaces at conversion time, not at download time.
+
+    Example:
+        >>> TiingoColumns.EOD.split(",")[:4]
+        ['open', 'high', 'low', 'close']
     """
 
     EOD = (

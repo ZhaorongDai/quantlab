@@ -15,6 +15,7 @@ be applied before the first factory call.
 Example:
     >>> from quantlab.config import set_data_root, stock_kline_config
     >>> set_data_root("/mnt/quant")
+    PosixPath('/mnt/quant')
     >>> cfg = stock_kline_config(start_date="2020-01-01", symbols=("AAPL",))
     >>> cfg.zarr_file_path
     '/mnt/quant/data/us_equity/1d/stock.zarr'
@@ -62,6 +63,12 @@ def set_data_root(path: "str | os.PathLike | None") -> Path | None:
         ValueError: If ``path`` is an empty or whitespace-only string. An
             empty environment variable falls through to the default, but a
             root someone typed explicitly should not silently mean "default".
+
+    Example:
+        >>> set_data_root("/mnt/quant")
+        PosixPath('/mnt/quant')
+        >>> set_data_root(None) is None
+        True
     """
     global _DATA_ROOT_OVERRIDE
     if path is None:
@@ -83,6 +90,12 @@ def get_data_root() -> Path:
     Resolution order: the override set by ``set_data_root`` (what
     ``--data-dir`` drives), then the ``QUANTLAB_DATA_DIR`` environment
     variable, then the ``data/`` directory beside the repository root.
+
+    Example:
+        >>> set_data_root("/mnt/quant")
+        PosixPath('/mnt/quant')
+        >>> get_data_root()
+        PosixPath('/mnt/quant')
     """
     if _DATA_ROOT_OVERRIDE is not None:
         return _DATA_ROOT_OVERRIDE
@@ -125,6 +138,17 @@ def spot_kline_config(
         kwargs: Extra dataset options.
         market: Market label used in the storage paths.
         frequency: Bar frequency used in the storage paths.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = spot_kline_config(
+        ...     start_date="2024-01-01", end_date="2024-06-30", symbols=["BTCUSDT"]
+        ... )
+        >>> cfg.raw_data_dir_path
+        '/mnt/quant/downloads/crypto_spot/1d/spot/monthly/klines'
+        >>> cfg.zarr_file_path
+        '/mnt/quant/data/crypto_spot/1d/klines.zarr'
     """
     return DatasetConfig(
         raw_data_dir_path=str(
@@ -181,6 +205,17 @@ def stock_kline_config(
         vendor: Vendor whose shards the raw directory holds, also recorded on
             the config. Defaults to ``"tiingo"``, which is what existing
             callers have on disk.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = stock_kline_config(start_date="2020-01-01", symbols=("AAPL",))
+        >>> cfg.raw_data_dir_path
+        '/mnt/quant/downloads/us_equity/1d/nasdaq_data/tiingo'
+        >>> cfg.zarr_file_path
+        '/mnt/quant/data/us_equity/1d/stock.zarr'
+        >>> stock_kline_config(subdir="us_all", store_name="us_all.zarr").zarr_file_path
+        '/mnt/quant/data/us_equity/1d/us_all.zarr'
     """
     return DatasetConfig(
         raw_data_dir_path=str(
@@ -230,6 +265,17 @@ def stock_acquisition_config(
         subdir: Raw-data subdirectory beneath the market/frequency root.
         vendor: Vendor to fetch from. Defaults to ``"tiingo"``, which is what
             existing callers have on disk.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = stock_acquisition_config(
+        ...     symbols=("AAPL", "MSFT"), start_date="2020-01-01"
+        ... )
+        >>> cfg.raw_data_dir_path
+        '/mnt/quant/downloads/us_equity/1d/nasdaq_data/tiingo'
+        >>> cfg.watermark_path
+        '/mnt/quant/downloads/us_equity/1d/nasdaq_data/_watermarks/tiingo'
     """
     downloads = _market_downloads_root(market, frequency) / subdir
     return AcquisitionConfig(
@@ -252,6 +298,15 @@ def universe_config(kwargs: dict = None) -> UniverseConfig:  # type: ignore
     parquet under ``data/reference/`` instead of a
     ``data/{market}/{frequency}/`` Zarr store, with a ``_cache`` directory
     beside it for fetcher snapshots.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = universe_config()
+        >>> cfg.output_path
+        '/mnt/quant/data/reference/universe.parquet'
+        >>> cfg.cache_dir
+        '/mnt/quant/data/reference/_cache'
     """
     return UniverseConfig(
         output_path=str(
@@ -283,6 +338,17 @@ def sp500_constituent_config(
         symbols: Symbols to keep, converted to a tuple; ``None`` keeps all.
         as_of: Optional date to resolve membership as of.
         kwargs: Extra dataset options.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = sp500_constituent_config(
+        ...     start_date="2020-01-01", end_date="2020-12-31", symbols=["AAPL", "MSFT"]
+        ... )
+        >>> cfg.zarr_file_path
+        '/mnt/quant/data/us_equity/1d/sp500_constituent.zarr'
+        >>> cfg.symbols
+        ('AAPL', 'MSFT')
     """
     return ConstituentDatasetConfig(
         zarr_file_path=str(
@@ -321,6 +387,15 @@ def nasdaq100_constituent_config(
         symbols: Symbols to keep, converted to a tuple; ``None`` keeps all.
         as_of: Optional date to resolve membership as of.
         kwargs: Extra dataset options.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = nasdaq100_constituent_config(as_of="2024-06-30")
+        >>> cfg.zarr_file_path
+        '/mnt/quant/data/us_equity/1d/nasdaq100_constituent.zarr'
+        >>> cfg.symbols is None
+        True
     """
     return ConstituentDatasetConfig(
         zarr_file_path=str(
@@ -357,6 +432,19 @@ def alpha101_config(
         symbols: Symbols to compute; ``None`` means all.
         mode: ``"batch"`` for a full historical run, ``"stream"`` for
             incremental per-bar updates.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = alpha101_config(
+        ...     start_date="2024-01-01",
+        ...     end_date="2024-06-30",
+        ...     factor_names=["alpha001", "alpha002"],
+        ... )
+        >>> cfg.file_path
+        '/mnt/quant/data/factor/alpha101.zarr'
+        >>> type(cfg.dataset).__name__, cfg.mode, cfg.window
+        ('SpotKlineDataset', 'batch', 128)
     """
     return FactorConfig(
         file_path=str(get_data_root() / "data" / "factor" / "alpha101.zarr"),
@@ -408,6 +496,17 @@ def stock_alpha101_config(
             incremental per-bar updates.
         market: Market label used in the storage paths.
         frequency: Bar frequency used in the storage paths.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = stock_alpha101_config(
+        ...     start_date="2020-01-01", end_date="2020-12-31", symbols=["AAPL", "MSFT"]
+        ... )
+        >>> cfg.file_path
+        '/mnt/quant/data/factor/alpha101_stock.zarr'
+        >>> cfg.dataset.config.raw_data_dir_path
+        '/mnt/quant/downloads/us_equity/1d/nasdaq_data/tiingo'
     """
     return FactorConfig(
         file_path=str(
@@ -455,6 +554,15 @@ def alpha158_config(
         symbols: Symbols to compute; ``None`` means all.
         mode: ``"batch"`` for a full historical run, ``"stream"`` for
             incremental per-bar updates.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = alpha158_config(start_date="2024-01-01", end_date="2024-06-30")
+        >>> cfg.file_path
+        '/mnt/quant/data/factor/alpha158.zarr'
+        >>> cfg.window
+        128
     """
     return FactorConfig(
         file_path=str(get_data_root() / "data" / "factor" / "alpha158.zarr"),
@@ -505,6 +613,15 @@ def stock_alpha158_config(
             incremental per-bar updates.
         market: Market label used in the storage paths.
         frequency: Bar frequency used in the storage paths.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = stock_alpha158_config(start_date="2020-01-01", end_date="2023-12-31")
+        >>> cfg.file_path
+        '/mnt/quant/data/factor/alpha158_stock.zarr'
+        >>> type(cfg.dataset).__name__
+        'StockDataset'
     """
     return FactorConfig(
         file_path=str(
@@ -555,6 +672,15 @@ def momentum_config(
         n: Momentum horizon, in bars.
         market: Market label used in the storage paths.
         frequency: Bar frequency used in the storage paths.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = momentum_config(start_date="2024-01-01", end_date="2024-06-30", n=10)
+        >>> cfg.file_path
+        '/mnt/quant/data/factor/momentum.zarr'
+        >>> cfg.window, cfg.kwargs
+        (10, {'n': 10})
     """
     return PolarsFactorConfig(
         file_path=str(get_data_root() / "data" / "factor" / "momentum.zarr"),
@@ -593,6 +719,15 @@ def spot_label_config(
         mode: ``"batch"`` for a full historical run, ``"stream"`` for
             incremental per-bar updates.
         n_forward_periods: Horizon of the forward return, in bars.
+
+    Example:
+        With the storage root set to ``/mnt/quant``:
+
+        >>> cfg = spot_label_config("ret5", start_date="2024-01-01", n_forward_periods=5)
+        >>> cfg.file_path
+        '/mnt/quant/data/label/spot_label_ret5.zarr'
+        >>> cfg.symbols, cfg.factor_names, cfg.kwargs
+        (['_all_'], ['_all_'], {'n_forward_periods': 5})
     """
     if symbols is None:
         symbols = ["_all_"]

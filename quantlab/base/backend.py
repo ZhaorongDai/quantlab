@@ -52,6 +52,13 @@ class DataBackend(ABC):
                 unpopulated backend fails immediately rather than returning
                 an empty dataset that downstream code would mistake for
                 "no data in this range".
+
+        Example:
+            >>> XrBackend().to_internal(panel).data is panel
+            True
+            >>> XrBackend().data
+            Traceback (most recent call last):
+            AttributeError: Please cal 'read' or 'to_internal' first.
         """
         try:
             return self._data
@@ -60,7 +67,12 @@ class DataBackend(ABC):
 
     @data.setter
     def data(self, data):
-        """Replace the held object."""
+        """Replace the held object.
+
+        Example:
+            >>> backend = XrBackend()
+            >>> backend.data = panel
+        """
         self._data = data
 
     @abstractmethod
@@ -72,12 +84,22 @@ class DataBackend(ABC):
         Args:
             indexes: The dimensions the returned dataset must be indexed by,
                 in order. ``None`` asks for no particular shape.
+
+        Example:
+            >>> backend = XrBackend().to_internal(panel)
+            >>> tuple(backend.get_xarray_dataset(["timestamp", "symbol"]).dims)
+            ('timestamp', 'symbol')
         """
         ...
 
     @abstractmethod
     def get_lazyframe(self) -> pl.LazyFrame:
-        """Return the held data as a ``polars.LazyFrame``."""
+        """Return the held data as a ``polars.LazyFrame``.
+
+        Example:
+            >>> backend.get_lazyframe().collect().columns
+            ['timestamp', 'symbol', 'close']
+        """
         ...
 
     @abstractmethod
@@ -87,32 +109,65 @@ class DataBackend(ABC):
         Implementations must not materialise the whole store, must not touch
         ``data``, and must raise ``FileNotFoundError`` when ``path`` does not
         exist rather than deferring the failure to a later collect.
+
+        Example:
+            >>> XrBackend().head("prices.zarr", 2).collect().shape
+            (2, 3)
         """
         ...
 
     @abstractmethod
     def read(self, path: str, **kwargs) -> Self:
-        """Load the store at ``path`` into ``data`` and return ``self``."""
+        """Load the store at ``path`` into ``data`` and return ``self``.
+
+        Example:
+            >>> dict(XrBackend().read("prices.zarr").data.sizes)
+            {'timestamp': 4, 'symbol': 2}
+        """
         ...
 
     @abstractmethod
     def write(self, path: str, **kwargs) -> Self:
-        """Persist ``data`` to ``path`` and return ``self``."""
+        """Persist ``data`` to ``path`` and return ``self``.
+
+        Example:
+            >>> XrBackend().to_internal(panel).write("prices.zarr")
+            XrBackend()
+        """
         ...
 
     @abstractmethod
     def to_internal(self, data) -> Self:
-        """Adopt an in-memory object as ``data``, bypassing disk."""
+        """Adopt an in-memory object as ``data``, bypassing disk.
+
+        Example:
+            >>> XrBackend().to_internal(panel).data is panel
+            True
+        """
         ...
 
     @abstractmethod
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
-        """Narrow ``data`` in place to ``start_date..end_date`` on ``col``."""
+        """Narrow ``data`` in place to ``start_date..end_date`` on ``col``.
+
+        Example:
+            >>> backend.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
+            XrBackend()
+            >>> backend.data["timestamp"].values.astype("datetime64[D]")
+            array(['2024-01-02', '2024-01-03'], dtype='datetime64[D]')
+        """
         ...
 
     @abstractmethod
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
-        """Narrow ``data`` in place to the rows whose ``col`` is in ``symbols``."""
+        """Narrow ``data`` in place to the rows whose ``col`` is in ``symbols``.
+
+        Example:
+            >>> backend.filter_by_symbol("symbol", ("BBB",))
+            XrBackend()
+            >>> backend.data["symbol"].values.tolist()
+            ['BBB']
+        """
         ...
 
 
@@ -123,6 +178,14 @@ class ModelBackend(ABC):
     dimensions or coordinates, only how to load a model from a path, save it
     back, or adopt one already in memory. The concrete implementation used
     by the tree-model layer is ``quantlab/ml_model/backend.py:MlBackend``.
+
+    Example:
+        Any picklable object can stand in for a fitted model:
+
+        >>> MlBackend().to_internal(fitted).write("checkpoints/model.joblib")
+        MlBackend()
+        >>> MlBackend().read("checkpoints/model.joblib").get_model() == fitted
+        True
     """
 
     def __repr__(self) -> str:
@@ -135,6 +198,13 @@ class ModelBackend(ABC):
 
         Raises:
             AttributeError: If nothing has been loaded yet.
+
+        Example:
+            >>> MlBackend().to_internal(fitted).model is fitted
+            True
+            >>> MlBackend().model
+            Traceback (most recent call last):
+            AttributeError: Please call 'read' or 'to_internal' first.
         """
         try:
             return self._model
@@ -143,25 +213,50 @@ class ModelBackend(ABC):
 
     @model.setter
     def model(self, model):
-        """Replace the held model."""
+        """Replace the held model.
+
+        Example:
+            >>> backend = MlBackend()
+            >>> backend.model = fitted
+        """
         self._model = model
 
     @abstractmethod
     def get_model(self):
-        """Return the held model object."""
+        """Return the held model object.
+
+        Example:
+            >>> MlBackend().to_internal(fitted).get_model() is fitted
+            True
+        """
         ...
 
     @abstractmethod
     def read(self, path: str, **kwargs) -> Self:
-        """Load the model stored at ``path`` and return ``self``."""
+        """Load the model stored at ``path`` and return ``self``.
+
+        Example:
+            >>> MlBackend().read("checkpoints/model.joblib")
+            MlBackend()
+        """
         ...
 
     @abstractmethod
     def write(self, path: str, **kwargs) -> Self:
-        """Persist the held model to ``path`` and return ``self``."""
+        """Persist the held model to ``path`` and return ``self``.
+
+        Example:
+            >>> MlBackend().to_internal(fitted).write("checkpoints/model.joblib")
+            MlBackend()
+        """
         ...
 
     @abstractmethod
     def to_internal(self, model) -> Self:
-        """Adopt an in-memory model object, bypassing disk."""
+        """Adopt an in-memory model object, bypassing disk.
+
+        Example:
+            >>> MlBackend().to_internal(fitted)
+            MlBackend()
+        """
         ...

@@ -31,6 +31,15 @@ class WindowedZScore(WindowedCompositiveOp):
 
         Args:
             options: Decomposition options passed by KunQuant; unused.
+
+        Example:
+            KunQuant calls this while compiling; it can also be called
+            directly on an op built inside a ``Builder``:
+
+            >>> with Builder():
+            ...     z = WindowedZScore(Input("close"), 20)
+            >>> [type(op).__name__ for op in z.decompose({})]
+            ['WindowedAvg', 'WindowedStddev', 'Sub', 'Div']
         """
         window: int = self.attrs["window"]  # type: ignore
         b = Builder(self.get_parent())
@@ -76,11 +85,24 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
         super().__init__([v], None)
 
     def generate_head(self) -> str:
-        """Return no per-function preamble."""
+        """Return no per-function preamble.
+
+        Example:
+            >>> CrossSectionalZScore(Input("close")).generate_head()
+            ''
+        """
         return ""
 
     def generate_body(self) -> str:
-        """Return the C++ loop that z-scores ``input_0`` into ``output_0``."""
+        """Return the C++ loop that z-scores ``input_0`` into ``output_0``.
+
+        KunQuant calls this when it emits the C++ for the graph.
+
+        Example:
+            >>> body = CrossSectionalZScore(Input("close")).generate_body()
+            >>> body.strip().splitlines()[0]
+            'T sum = 0;'
+        """
         return """
         T sum = 0;
         size_t n = 0;
