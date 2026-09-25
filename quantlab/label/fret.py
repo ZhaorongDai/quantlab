@@ -155,9 +155,7 @@ class BinaryReturn(FactorKunQuant):
 
         The last ``n + 1`` timestamps become NaN.
         """
-        data = data.shift(
-            timestamp=-(self.config.kwargs["n_forward_periods"] + 1)
-        )
+        data = data.shift(timestamp=-(self.config.kwargs["n_forward_periods"] + 1))
         return data
 
     def _get_features(self, data: xr.Dataset):

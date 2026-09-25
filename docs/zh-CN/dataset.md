@@ -1,12 +1,12 @@
-# Dataset
+# Dataset（数据集）
 
-English | [简体中文](zh-CN/dataset.md)
+[English](../dataset.md) | 简体中文
 
-A dataset converts the raw files a vendor delivers into the panel that every later stage of quantlab consumes: an `xarray.Dataset` indexed by `(timestamp, symbol)`, stored as Zarr. Each market or vendor has one subclass of `BaseDataset` or `MarketDataset`. Factors, models and backtests read the panel and never see the raw format.
+Dataset 负责把 vendor（数据供应商）交付的原始文件转换成 quantlab 后续各阶段共用的面板：一个以 `(timestamp, symbol)` 为索引的 `xarray.Dataset`，以 Zarr 格式落盘。每个市场或每个 vendor 对应一个 `BaseDataset` 或 `MarketDataset` 的子类。因子、模型和回测只读取面板，不接触原始格式。
 
-## Prerequisites
+## 前置条件
 
-The raw files come from the acquisition layer (see the acquisition guide). The sessions below run on a small synthetic raw tree in a temporary directory, so no network access or credentials are needed. The tree follows the layout `StockDataset` reads: one Parquet shard per month under a directory named after the vendor, with a `vendor` column in every row.
+原始文件由 acquisition 层下载（见 acquisition 指南）。下面的示例在临时目录里造了一棵很小的合成原始数据树，不需要网络，也不需要任何凭证。这棵树遵循 `StockDataset` 读取的布局：以 vendor 名命名的目录下，每月一个 Parquet 分片，每一行带有 `vendor` 列。
 
 ```python
 import tempfile
@@ -16,7 +16,7 @@ from pathlib import Path
 import polars as pl
 from loguru import logger
 
-logger.remove()  # quantlab logs through loguru at INFO level; silence it here
+logger.remove()  # quantlab 通过 loguru 输出 INFO 日志；这里先关掉
 
 root = Path(tempfile.mkdtemp())
 raw = root / "downloads/us_equity/1d/us_all/tiingo"
@@ -32,15 +32,15 @@ for month, days in {"2024-01": [2, 3, 4], "2024-02": [1, 2]}.items():
     pl.DataFrame(rows).with_columns(vendor=pl.lit("tiingo")).write_parquet(part / "part-0.pqt")
 ```
 
-## The basics
+## 基础
 
-### The panel
+### 面板
 
-Every dataset produces the same shape of object: an `xarray.Dataset` whose data variables all lie on the two dimensions `timestamp` and `symbol`. The panel is dense. When a symbol has no bar at a timestamp, the cell holds NaN in every variable rather than the row being absent. Variables keep the names the vendor uses (`open`, `close`, `adjClose`, `Volume`, and so on), and cleaning adds one boolean variable, `anomaly_flag`.
+所有 dataset 产出的对象形状相同：一个 `xarray.Dataset`，全部数据变量都落在 `timestamp` 和 `symbol` 两个维度上。面板是稠密的：某个标的在某个时间戳没有 bar 时，该单元格在所有变量中都是 NaN，而不是缺少一行。变量沿用 vendor 自己的列名（`open`、`close`、`adjClose`、`Volume` 等），清洗步骤会再加一个布尔变量 `anomaly_flag`。
 
-### The config
+### 配置
 
-A dataset is built from a config dataclass. `BaseDatasetConfig` carries what every dataset needs: `zarr_file_path`, `start_date`, `end_date`, `symbols` and a free-form `kwargs` dictionary. `DatasetConfig` adds the fields of a market-data panel: `raw_data_dir_path`, `catalog_path`, `market`, `frequency` and `vendor`. The dataset class never branches on `market` or `frequency`; they are labels used by the vendor registry to pick a converter.
+Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 dataset 都需要的字段：`zarr_file_path`、`start_date`、`end_date`、`symbols` 和自由格式的 `kwargs` 字典。`DatasetConfig` 在此基础上增加行情面板的字段：`raw_data_dir_path`、`catalog_path`、`market`、`frequency` 和 `vendor`。Dataset 类不会根据 `market` 或 `frequency` 分支，它们只是 vendor registry 用来挑选转换器的标签。
 
 ```python
 >>> import dataclasses
@@ -61,7 +61,7 @@ A dataset is built from a config dataclass. `BaseDatasetConfig` carries what eve
 'quantlab.dataset.stock.StockDataset'
 ```
 
-Assigning a config fills in `name` with the dotted import path of the class, which is how a saved config is turned back into an object. A missing `start_date` or `end_date` becomes `1900-01-01` or `2100-01-01`, so a date filter always has two ends. Both dates must be ISO `YYYY-MM-DD` strings, because every date comparison in the pipeline is a string comparison.
+给 dataset 赋值 config 时，会把 `name` 填成类的点分导入路径，保存下来的 config 就是靠它还原成对象的。缺少 `start_date` 或 `end_date` 时分别取 `1900-01-01` 和 `2100-01-01`，这样日期过滤总有两个端点。两个日期都必须是 ISO `YYYY-MM-DD` 字符串，因为流水线里所有日期比较都是字符串比较。
 
 ```python
 >>> open_ended = dataclasses.replace(config, start_date=None, end_date=None)
@@ -77,9 +77,9 @@ Assigning a config fills in `name` with the dotted import path of the class, whi
 StockDataset: end_date must be an ISO YYYY-MM-DD date string, got '2024-2-29'. Dates are compared lexicographically throughout this pipeline, so a non-ISO value compares wrong rather than failing to match.
 ```
 
-### Convert, save and read
+### 转换、保存和读取
 
-Three methods cover the storage lifecycle. `from_raw_data()` reads the raw files for the configured range, runs the dataset's cleaning step and holds the result in memory. `save()` writes it to `zarr_file_path`. `read()` opens the Zarr store later and narrows it to the configured dates and symbols. Each returns the dataset, so the calls chain, and `get_xarray_dataset()` returns the panel.
+存储生命周期由三个方法完成。`from_raw_data()` 读取配置范围内的原始文件，运行该 dataset 的清洗步骤，并把结果留在内存里。`save()` 把它写到 `zarr_file_path`。`read()` 之后再打开 Zarr store，并按配置的日期和标的收窄。每个方法都返回 dataset 本身，所以可以链式调用；`get_xarray_dataset()` 返回面板。
 
 ```python
 >>> ds = ds.from_raw_data()
@@ -108,11 +108,11 @@ timestamp
 2024-02-02  102.0  302.0
 ```
 
-Only weekdays that exist in the raw files appear on the time axis; the window `2024-01-01` to `2024-02-29` does not create rows for days without data.
+时间轴上只出现原始文件里确实存在的交易日；`2024-01-01` 到 `2024-02-29` 这个窗口不会为没有数据的日子造出行。
 
-### Looking at a stored panel
+### 查看已存储的面板
 
-A dataset that has been read exposes a few cheap properties. `time_interval` is the most common gap between timestamps, so a weekend or a holiday does not change it. `get_lazyframe()` returns the same data as a long-format polars `LazyFrame`, and `head(n)` opens the store by path and returns at most `n` rows without touching the loaded panel.
+读取过的 dataset 提供几个开销很小的属性。`time_interval` 是相邻时间戳之间最常见的间隔，所以周末或假期不会改变它。`get_lazyframe()` 以长格式 polars `LazyFrame` 返回同样的数据；`head(n)` 按路径打开 store，最多返回 `n` 行，不影响已加载的面板。
 
 ```python
 >>> ds = StockDataset(config).read()
@@ -126,11 +126,11 @@ np.timedelta64(86400000000000,'ns')
 ['timestamp', 'symbol', 'anomaly_flag', 'close', 'high', 'low', 'open', 'volume']
 ```
 
-## Common tasks
+## 常见任务
 
-### Restrict the dates or symbols on read
+### 读取时限定日期或标的
 
-`read()` applies `start_date`, `end_date` and, when it is set, `symbols`. A different config over the same store gives a different view.
+`read()` 会应用 `start_date`、`end_date`，以及设置了时的 `symbols`。同一个 store 配不同的 config，得到不同的视图。
 
 ```python
 >>> feb = dataclasses.replace(config, start_date="2024-02-01", symbols=("MSFT",))
@@ -141,9 +141,9 @@ timestamp
 2024-02-02  302.0
 ```
 
-### Read the anomaly flags
+### 读取异常标记
 
-Cleaning runs inside `from_raw_data()`. It checks that the required columns exist, reports nulls, and adds `anomaly_flag`. A cell is flagged when a price is zero or negative, or when `close` moves by more than 50 percent from a positive previous close. Values are never changed, filled or dropped; the flag only marks them. The functions can be called on any panel.
+清洗在 `from_raw_data()` 内部运行。它检查必需列是否存在，报告空值，并添加 `anomaly_flag`。当某个价格为零或负数，或者 `close` 相对于为正的前一个收盘价变动超过 50% 时，该单元格被标记。数值本身不会被修改、填充或删除，标记只是做记号。这些函数可以对任意面板调用。
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
@@ -166,7 +166,7 @@ timestamp
 True
 ```
 
-`BBB` prints a zero close on 2024-01-03, and `AAA` jumps from 10.5 to 20.0 on 2024-01-04. A missing required column is the one cleaning failure that raises:
+`BBB` 在 2024-01-03 的收盘价为零，`AAA` 在 2024-01-04 从 10.5 跳到 20.0。缺少必需列是清洗中唯一会抛异常的情形：
 
 ```python
 >>> validate_schema(panel.drop_vars("volume"))
@@ -175,11 +175,11 @@ Traceback (most recent call last):
 ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 ```
 
-Duplicate `(timestamp, symbol)` rows must be removed before a frame is converted to xarray. `dedup_raw_frame(frame, keep="last")` does this on a polars `LazyFrame` and keeps the last row by default, because a later vendor file more often carries a correction; `keep="first"` keeps the earlier one.
+在把 frame 转成 xarray 之前，必须先去掉重复的 `(timestamp, symbol)` 行。`dedup_raw_frame(frame, keep="last")` 在 polars `LazyFrame` 上完成这件事，默认保留最后一行，因为后到的 vendor 文件更可能带有更正；`keep="first"` 则保留较早的一行。
 
-### Export arrays for KunQuant
+### 导出 KunQuant 数组
 
-`MarketDataset.to_kunquant` reads the store and returns a dictionary of contiguous `[time, symbol]` float32 arrays, plus the symbol and timestamp axes. The factor layer calls it; it can also be called directly.
+`MarketDataset.to_kunquant` 读取 store，返回由连续的 `[time, symbol]` float32 数组组成的字典，外加 symbol 轴和 timestamp 轴。因子层会调用它，也可以直接调用。
 
 ```python
 >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
@@ -189,9 +189,9 @@ Duplicate `(timestamp, symbol)` rows must be removed before a frame is converted
 ['AAPL', 'MSFT']
 ```
 
-### Convert one window at a time
+### 按窗口分段转换
 
-For a long history, `from_raw_data_chunked()` converts a month, quarter or year at a time and appends each to the store, and `update()` continues a store that already exists. The chunking guide covers both in detail.
+历史很长时，`from_raw_data_chunked()` 每次转换一个月、一个季度或一年，并把每段追加到 store；`update()` 则接着已有的 store 继续。两者的细节见 chunking 指南。
 
 ```python
 >>> monthly = dataclasses.replace(config, zarr_file_path=str(root / "data/monthly.zarr"))
@@ -201,11 +201,11 @@ For a long history, `from_raw_data_chunked()` converts a month, quarter or year 
 (2, 2, 5)
 ```
 
-## Extending
+## 扩展
 
-### A new market source
+### 新增一个市场数据源
 
-A new source needs one subclass of `MarketDataset` and a config. Four methods are required. `_raw_data_to_xr` returns the panel for the whole configured range, deduplicated and unique on `(timestamp, symbol)`. `_raw_data_to_xr_window` returns one date window, reindexed onto `symbols` when they are given; the simplest form slices the whole-range result. `_to_kunquant` maps the panel onto arrays, and `_to_nautilus` may raise if there is no Nautilus exit. The example reads one CSV per symbol and is saved as `csv_daily.py`.
+新增一个数据源只需要一个 `MarketDataset` 子类和一个 config。必须实现四个方法。`_raw_data_to_xr` 返回整个配置范围的面板，已去重，`(timestamp, symbol)` 唯一。`_raw_data_to_xr_window` 返回一个日期窗口，给出 `symbols` 时要 reindex 到这些标的；最简单的写法是对整段结果做切片。`_to_kunquant` 把面板映射成数组；没有 Nautilus 出口时，`_to_nautilus` 可以直接抛异常。下面的例子每个标的读一个 CSV，保存为 `csv_daily.py`。
 
 ```python
 # csv_daily.py
@@ -219,7 +219,7 @@ from quantlab.base.data import MarketDataset
 
 
 class CsvDailyDataset(MarketDataset):
-    """One CSV file per symbol with columns date,open,high,low,close,volume."""
+    """每个标的一个 CSV 文件，列为 date,open,high,low,close,volume。"""
 
     def _raw_data_to_xr(self) -> xr.Dataset:
         frames = []
@@ -243,7 +243,7 @@ class CsvDailyDataset(MarketDataset):
         raise NotImplementedError("this dataset has no Nautilus exit")
 ```
 
-`to_xarray()` builds the dense grid, so `BBB` below gets NaN on the day it has no file row. The subclass needs no other change to work with the rest of the pipeline.
+`to_xarray()` 会构造稠密网格，所以下面的 `BBB` 在它没有文件行的那一天得到 NaN。子类不需要其他改动，就能配合流水线的其余部分工作。
 
 ```python
 >>> csv_raw = root / "csv"
@@ -281,7 +281,7 @@ Traceback (most recent call last):
 NotImplementedError: this dataset has no Nautilus exit
 ```
 
-A subclass that leaves out a required method cannot be constructed:
+缺少必需方法的子类无法被构造：
 
 ```python
 >>> from quantlab.base.data import BaseDataset
@@ -294,11 +294,11 @@ Traceback (most recent call last):
 TypeError: Can't instantiate abstract class Incomplete without an implementation for abstract method '_raw_data_to_xr'
 ```
 
-For a raw source that can filter by date before it loads, implement `_raw_data_to_xr_window` to read only that window. `StockDataset` does so by pruning Parquet partitions, which bounds memory by the window. The slicing form above bounds only the write.
+如果原始数据源能在加载前按日期过滤，就让 `_raw_data_to_xr_window` 只读取那个窗口。`StockDataset` 通过裁剪 Parquet 分区做到这一点，内存上限由窗口决定；上面的切片写法只限制了写入的量。
 
-### A dataset that is not OHLCV
+### 非 OHLCV 的 dataset
 
-A panel without price columns subclasses `BaseDataset` directly, uses `BaseDatasetConfig`, and overrides `_clean`. The default `_clean` requires OHLCV columns, so a boolean membership panel is validated with its own function instead. `clean_membership_panel` checks the dtype, dimensions and time order and returns the panel unchanged.
+没有价格列的面板直接继承 `BaseDataset`，使用 `BaseDatasetConfig`，并覆写 `_clean`。默认的 `_clean` 要求 OHLCV 列，所以布尔型成分面板改用自己的校验函数。`clean_membership_panel` 检查 dtype、维度和时间顺序，并原样返回面板。
 
 ```python
 >>> from quantlab.base.config import BaseDatasetConfig
@@ -323,13 +323,13 @@ timestamp
 2024-01-04  True   True
 ```
 
-## Notes
+## 注意事项
 
-Cleaning belongs to `from_raw_data()`. `read()` only opens the store and narrows it, so a store written earlier is returned as it was saved.
+清洗属于 `from_raw_data()`。`read()` 只负责打开 store 并收窄，所以早先写入的 store 会按保存时的样子返回。
 
-`save()` narrows the panel to the config window and replaces the whole store directory. Zarr may print a `ZarrUserWarning` about consolidated metadata on write; it is harmless.
+`save()` 会先把面板收窄到 config 窗口，再替换整个 store 目录。写入时 Zarr 可能打印关于 consolidated metadata 的 `ZarrUserWarning`，可以忽略。
 
-`read()` narrows the loaded panel in place and does nothing if the dataset already holds data. Changing `dataset.config` to a wider window and calling `read()` again keeps the narrow panel. Pass `overwrite=True` to reload the store from disk.
+`read()` 就地收窄已加载的面板，并且当 dataset 已持有数据时什么也不做。把 `dataset.config` 改成更宽的窗口后再调用 `read()`，得到的仍是收窄后的面板。传入 `overwrite=True` 才会从磁盘重新加载 store。
 
 ```python
 >>> ds = StockDataset(dataclasses.replace(config, end_date="2024-01-03")).read()
@@ -340,18 +340,18 @@ Cleaning belongs to `from_raw_data()`. `read()` only opens the store and narrows
 5
 ```
 
-Cleaning never fills or repairs a value. Chunked conversion cleans one window at a time, so a price jump that straddles a window boundary is not flagged.
+清洗从不填充或修复任何数值。分块转换按窗口逐个清洗，因此跨越窗口边界的价格跳变不会被标记。
 
-Reading a store that does not exist raises `FileNotFoundError: File .../missing.zarr does not exist.`
+读取一个不存在的 store 会抛出 `FileNotFoundError: File .../missing.zarr does not exist.`
 
-`StockDataset` reads one vendor's directory only. The raw root must end in the vendor name and `DatasetConfig.vendor` must be set; otherwise the scan refuses, for example with `StockDataset: DatasetConfig.vendor is not set, so there is no way to check that ... holds exactly one vendor's data.` or `StockDataset: raw_data_dir_path '...' has basename 'tiingo' but the configured vendor is 'alpaca'.` An empty or missing raw tree raises `StockDataset: no raw data for vendor 'tiingo' at frequency '1d' under '...'.` `SpotKlineDataset` raises `No CSV file matching the configured date range was found under ...` when no monthly file falls in the range.
+`StockDataset` 只读取单个 vendor 的目录。原始数据根目录必须以 vendor 名结尾，并且必须设置 `DatasetConfig.vendor`，否则扫描会被拒绝，例如 `StockDataset: DatasetConfig.vendor is not set, so there is no way to check that ... holds exactly one vendor's data.` 或 `StockDataset: raw_data_dir_path '...' has basename 'tiingo' but the configured vendor is 'alpaca'.` 原始数据树为空或不存在时抛出 `StockDataset: no raw data for vendor 'tiingo' at frequency '1d' under '...'.` 当范围内没有任何月度文件时，`SpotKlineDataset` 抛出 `No CSV file matching the configured date range was found under ...`
 
-Intraday datasets use `XnysSessionCalendar` (`quantlab.dataset._support.session_calendar`) to turn an Eastern-time window into each date's real exchange open and close, half days included, as naive UTC timestamps.
+盘中 dataset 用 `XnysSessionCalendar`（`quantlab.dataset._support.session_calendar`）把东部时间窗口转换成每个日期实际的交易所开收盘时间，半日市也考虑在内，结果是不带时区的 UTC 时间戳。
 
-`StockDataset` has no Nautilus exit; `to_nautilus()` raises `ValueError("Not finished")`. Both built-in datasets implement `to_kunquant()`.
+`StockDataset` 没有 Nautilus 出口，`to_nautilus()` 会抛出 `ValueError("Not finished")`。两个内置 dataset 都实现了 `to_kunquant()`。
 
-Two rows with the same `(timestamp, symbol)` reaching `to_xarray()` raise `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`. Deduplicate first.
+两行相同的 `(timestamp, symbol)` 到达 `to_xarray()` 时会抛出 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`，需要先去重。
 
-## See also
+## 另请参阅
 
-The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.base.data`, `quantlab.base.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.
+chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.base.data`、`quantlab.base.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。

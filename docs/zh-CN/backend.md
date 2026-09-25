@@ -1,23 +1,23 @@
-# Storage backends
+# 存储后端（Storage backends）
 
-English | [简体中文](zh-CN/backend.md)
+[English](../backend.md) | 简体中文
 
-A storage backend separates where data is kept from what the data means. Datasets, factors and models each hold a backend object and call the same small set of methods on it, so the storage medium can change without touching the code above it. quantlab ships two data backends: `XrBackend`, which keeps an `xarray.Dataset` in memory and stores it as a Zarr directory, and `PlBackend`, which keeps a `polars.LazyFrame` and stores it as a Parquet file.
+存储后端把“数据放在哪里”和“数据是什么”分开。数据集、因子和模型各自持有一个后端对象，只调用它提供的那一小组方法，因此更换存储介质不需要改动上层代码。quantlab 自带两个数据后端：`XrBackend` 在内存中持有 `xarray.Dataset`，以 Zarr 目录落盘；`PlBackend` 持有 `polars.LazyFrame`，以 Parquet 文件落盘。
 
-## The basics
+## 基础
 
-Every data backend implements `DataBackend` from `quantlab.base.backend`. It holds one object in its `data` attribute and offers `read`, `write`, `to_internal` (adopt an object that is already in memory), `filter_by_date`, `filter_by_symbol`, `get_xarray_dataset`, `get_lazyframe` and `head`. Methods that change the backend return `self`, so calls can be chained.
+所有数据后端都实现 `quantlab.base.backend` 中的 `DataBackend`。后端把一个对象放在 `data` 属性里，并提供 `read`、`write`、`to_internal`（接管一个已在内存中的对象）、`filter_by_date`、`filter_by_symbol`、`get_xarray_dataset`、`get_lazyframe` 和 `head`。会修改后端状态的方法都返回 `self`，因此可以链式调用。
 
-The two backends differ in what they hold and what they are used for.
+两个后端持有的对象和适用场景不同。
 
 | | `XrBackend` | `PlBackend` |
 |---|---|---|
-| Medium | Zarr directory | one Parquet file |
-| `data` holds | `xarray.Dataset` | `polars.LazyFrame` |
-| Typical use | panels indexed by `(timestamp, symbol)`: prices, factors, weights | flat reference tables such as a symbol universe |
-| Extra methods | `append`, `widen_symbol_axis`, `widen_data_vars`, `widen_and_append` | none |
+| 介质 | Zarr 目录 | 单个 Parquet 文件 |
+| `data` 的类型 | `xarray.Dataset` | `polars.LazyFrame` |
+| 典型用途 | 以 `(timestamp, symbol)` 为索引的面板：行情、因子、权重 | 扁平的参考表，例如股票池 |
+| 额外方法 | `append`、`widen_symbol_axis`、`widen_data_vars`、`widen_and_append` | 无 |
 
-A panel is written with `to_internal` followed by `write`, and loaded with `read`. Paths below are relative to the working directory. Reading `data` on a backend that holds nothing raises an error rather than returning an empty dataset.
+写入面板用 `to_internal` 加 `write`，读取用 `read`。下面的路径都是相对于当前工作目录的相对路径。对一个还没有加载任何数据的后端读取 `data` 会直接报错，不会返回空数据集。
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
@@ -40,7 +40,7 @@ Traceback (most recent call last):
 AttributeError: Please cal 'read' or 'to_internal' first.
 ```
 
-`filter_by_date` and `filter_by_symbol` narrow `data` in place. Every object that shares the backend sees the narrowed data. `get_xarray_dataset(indexes)` returns the data indexed by exactly the dimensions named, in that order; variables laid out on other dimensions are dropped, and `None` returns the held object unchanged. `get_lazyframe()` returns a long-format `polars.LazyFrame`.
+`filter_by_date` 和 `filter_by_symbol` 会就地收窄 `data`，所有共用这个后端对象的代码都会看到收窄后的数据。`get_xarray_dataset(indexes)` 返回恰好以所给维度为索引的数据，维度顺序与传入顺序一致；铺在其他维度上的变量会被丢弃，传 `None` 则原样返回后端持有的对象。`get_lazyframe()` 返回长表形式的 `polars.LazyFrame`。
 
 ```python
 >>> backend.filter_by_date("timestamp", "2024-01-03", "2024-01-04")
@@ -68,7 +68,7 @@ shape: (2, 3)
 └─────────────────────┴────────┴───────┘
 ```
 
-`head(path, n)` is the read-only counterpart of the filters. It opens the store at `path`, returns at most `n` rows as a lazy frame, and leaves `data` untouched, so it works on a backend that has not read anything.
+`head(path, n)` 是与就地过滤相对的只读操作：它自己打开 `path` 处的存储，最多返回 `n` 行的惰性表，不触碰 `data`，因此可以在一个还没读取任何数据的后端上使用。
 
 ```python
 >>> XrBackend().head("data/prices.zarr", 1).collect_schema()
@@ -86,11 +86,11 @@ Traceback (most recent call last):
 FileNotFoundError: File data/missing.zarr does not exist.
 ```
 
-## Common tasks
+## 常见任务
 
-### Work with a Parquet table
+### 处理 Parquet 表
 
-`PlBackend` scans lazily; nothing is read until a result is collected or converted. `get_xarray_dataset` requires `indexes` because a frame has no dimensions of its own, and it turns the named columns into dimensions and the remaining columns into data variables. `PlBackend.write` does not create missing parent directories.
+`PlBackend` 惰性扫描，收集或转换之前不会读取任何内容。`get_xarray_dataset` 必须给出 `indexes`，因为表本身没有维度；给定的列会成为维度，其余的列成为数据变量。`PlBackend.write` 不会创建缺失的上级目录。
 
 ```python
 >>> import polars as pl
@@ -125,11 +125,11 @@ Traceback (most recent call last):
 ValueError: PlBackend.get_xarray_dataset: `indexes` is required. A LazyFrame has no dimensions to fall back on -- name the columns that should become the dataset's index, e.g. ["timestamp", "symbol"].
 ```
 
-### Grow a Zarr store one window at a time
+### 按时间窗口逐步扩充 Zarr 存储
 
-`append` creates the store on its first call and extends it along a dimension (`timestamp` by default) on later calls. A new window must start after the stored end, and must carry the same symbols, variables and dtypes. A gap between windows is allowed; overlap is refused. If the final length of the store is known, `append_dim_size=` can be passed on each call; it only affects the call that creates the store, where it sets the chunk length (capped by `XrBackend.APPEND_DIM_CHUNK`, 512).
+`append` 第一次调用时创建存储，之后沿某个维度（默认 `timestamp`）向后延长。新窗口必须从已存储的末尾之后开始，并且标的、变量和 dtype 都要与存储一致。窗口之间允许有间隔，不允许重叠。如果事先知道存储的最终长度，可以在每次调用时传 `append_dim_size=`；它只影响创建存储的那一次调用，用来确定 chunk 长度（上限为 `XrBackend.APPEND_DIM_CHUNK`，即 512）。
 
-The helper `window` below builds a small panel. The last two calls show the refusals: an overlapping window, and a window whose symbols differ from the store, even though the count is the same.
+下面的辅助函数 `window` 构造一个小面板。最后两次调用展示两种拒绝情形：窗口重叠，以及标的与存储不同（即使数量相同）。
 
 ```python
 >>> def window(days, symbols, start=0.0, **extra):
@@ -157,9 +157,9 @@ Traceback (most recent call last):
 ValueError: XrBackend.append: refusing to append to data/grow.zarr -- the 'symbol' coordinate does not match the store (2 incoming label(s) vs 2 stored). Zarr would OVERWRITE the stored labels without complaint, silently re-attributing every previously written row. Pin the 'symbol' axis over the whole range before the first window, the way BaseDataset.from_raw_data_chunked() does.
 ```
 
-### Add a symbol or a variable to an existing store
+### 给已有存储增加标的或变量
 
-`widen_and_append` is the explicit way to append a window that has new symbols or new variables. It rewrites the store onto the sorted union of symbols, backfills new variables with NaN over the dates already stored, and then runs the ordinary `append`, so all its checks still apply. When nothing has changed it calls `append` directly, so it is cheap to use on every refresh.
+`widen_and_append` 是追加带有新标的或新变量的窗口时的显式入口。它把存储重写到标的的有序并集上，在已存储的日期上用 NaN 回填新变量，然后执行普通的 `append`，所以 `append` 的全部检查依然生效。没有任何变化时它直接调用 `append`，因此每次刷新都调用它开销也很小。
 
 ```python
 >>> new = window(["2024-01-08"], ["AAA", "CCC"], 20, volume=100.0)
@@ -186,11 +186,11 @@ timestamp
 2024-01-08  100.0  NaN  100.0
 ```
 
-Existing symbols keep their history. The new symbol is NaN before its first row, and a symbol missing from the new window is NaN on the new date. `widen_symbol_axis(path, symbols)` and `widen_data_vars(path, variables)` perform the two halves separately and do not need a panel in memory. A widen rewrites the store: up to `XrBackend.MAX_WIDEN_BYTES` (4 GiB) in one pass, above that block by block with a logged warning. The stored result is the same.
+已有标的保留原有历史。新标的在它第一行之前是 NaN，而新窗口中缺席的标的在新日期上是 NaN。`widen_symbol_axis(path, symbols)` 和 `widen_data_vars(path, variables)` 可以分别完成这两半工作，且不需要在内存中持有面板。加宽会重写存储：不超过 `XrBackend.MAX_WIDEN_BYTES`（4 GiB）时一次性在内存中完成，超过则分块重写并记录一条警告，两种方式得到的存储相同。
 
-### Reload a store that changed
+### 重新加载已变化的存储
 
-`XrBackend.read` returns immediately when the backend already holds data. Pass `overwrite=True` to reload from disk.
+`XrBackend.read` 在后端已持有数据时立即返回。传 `overwrite=True` 可以从磁盘重新加载。
 
 ```python
 >>> shared = XrBackend().read("data/grow.zarr")
@@ -202,13 +202,13 @@ XrBackend()
 {'timestamp': 5, 'symbol': 3}
 ```
 
-### Replace dates a store already holds
+### 替换存储中已有的日期
 
-`append` never overwrites. To recompute a range that a store already contains, build the complete panel in memory from source data and call `write`, which replaces the whole directory. Write to a new path if the panel is still being read lazily from the old one.
+`append` 从不覆盖。要重算存储里已有的区间，就用源数据在内存中构造完整面板，再调用 `write`，它会替换整个目录。如果面板仍在从旧路径惰性读取，请写到一个新路径。
 
-## Extending
+## 扩展
 
-A new backend subclasses `DataBackend` and implements the eight abstract methods. The module below stores a panel as one long-format CSV file. Save it as `csv_backend.py`.
+新后端继承 `DataBackend` 并实现八个抽象方法。下面的模块把面板存成单个长表 CSV 文件，保存为 `csv_backend.py`。
 
 ```python
 from datetime import datetime
@@ -222,7 +222,7 @@ from quantlab.base.backend import DataBackend
 
 
 class CsvBackend(DataBackend):
-    """Store a panel as one long-format CSV file."""
+    """把面板存成单个长表 CSV 文件。"""
 
     def read(self, path: str, **kwargs) -> Self:
         if not Path(path).exists():
@@ -261,13 +261,13 @@ class CsvBackend(DataBackend):
         return xr.Dataset.from_dataframe(frame)
 
     def head(self, path: str, n: int) -> pl.LazyFrame:
-        # Open the file here, never touch self.data, fail now if missing.
+        # 在这里自己打开文件，不碰 self.data，路径缺失时立即报错。
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
         return pl.scan_csv(path, try_parse_dates=True).head(n)
 ```
 
-The class is used like the built-in backends. A subclass that omits an abstract method cannot be instantiated.
+用法与内置后端一致。子类漏掉任何一个抽象方法就无法实例化。
 
 ```python
 >>> from datetime import datetime
@@ -309,17 +309,17 @@ Traceback (most recent call last):
 TypeError: Can't instantiate abstract class Incomplete without an implementation for abstract methods 'filter_by_date', 'filter_by_symbol', 'get_lazyframe', 'get_xarray_dataset', 'head', 'to_internal', 'write'
 ```
 
-A dataset, factor or model picks its backend in `__init__` by assigning `self.data_backend`; a subclass can assign its own backend after calling `super().__init__`. Chunked ingestion additionally calls `append` on the backend, which is not part of `DataBackend`, so a backend used for that needs its own `append`. Parts of the dataset and factor base classes still assume a Zarr store, so a new backend is best tried on the read and write paths first.
+数据集、因子或模型在 `__init__` 里通过给 `self.data_backend` 赋值来选择后端；子类可以在调用 `super().__init__` 之后换成自己的后端。分块摄取还会调用后端的 `append`，而 `append` 不属于 `DataBackend`，所以用于分块摄取的后端需要自己实现 `append`。数据集和因子基类的某些部分仍然假定存储是 Zarr，因此新后端最好先在读写路径上试用。
 
-## Notes
+## 注意事项
 
-`read` and `head` raise `FileNotFoundError` immediately for a missing path. `head` does not read or modify `data`; a `head` implementation should not copy the in-place behavior of `filter_by_date`.
+`read` 和 `head` 遇到不存在的路径会立即抛出 `FileNotFoundError`。`head` 不读取也不修改 `data`；实现 `head` 时不要照搬 `filter_by_date` 的就地行为。
 
-A backend that has not been loaded raises `AttributeError: Please cal 'read' or 'to_internal' first.` (the spelling "cal" is the library's). Call `read(path)` or `to_internal(obj)` first.
+尚未加载的后端会抛出 `AttributeError: Please cal 'read' or 'to_internal' first.`（其中 “cal” 的拼写来自库本身）。先调用 `read(path)` 或 `to_internal(obj)`。
 
-Zarr prints a `ZarrUserWarning` about consolidated metadata when a store is written. It comes from the Zarr library.
+写入 Zarr 存储时会打印一条关于 consolidated metadata 的 `ZarrUserWarning`，它来自 Zarr 库。
 
-Append refusals are `ValueError`s raised before anything is written. The messages are long; three of them follow.
+追加被拒绝时抛出的是 `ValueError`，且发生在写入任何内容之前。消息很长，下面展示其中三条。
 
 ```python
 >>> ints = window(["2024-01-02"], ["A", "B"]).assign(volume=lambda d: d["close"].astype(int))
@@ -342,12 +342,12 @@ Traceback (most recent call last):
 ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store holds data variable(s) ['close'] that the incoming panel does not. Zarr extends exactly the variables it is handed, so the absent one(s) would stay STUCK at their stored length while every other variable grows, and the store afterwards cannot be OPENED at all (measured 2026-09-07: conflicting sizes for dimension 'timestamp'). What it loses was valid before this call. This direction has no opt-in and is not given one: backfilling the absent variable across the incoming window would write NaN into recent dates of a variable that was COMPLETE, and afterwards the store is indistinguishable from one where those values were genuinely missing. Recompute this window over the store's FULL variable set, or replace the store with save(mode="w").
 ```
 
-The overlap and symbol-mismatch messages appear in the append session above. The fixes, in order: an overlapping window is dropped or the store rewritten with `write`; a changed symbol set goes through `widen_and_append`; a dtype mismatch is fixed by casting the incoming variable to the stored dtype; a new variable goes through `widen_and_append`; a variable missing from the incoming window is recomputed, because there is no opt-in for it. The messages that mention `save(mode="w")` refer to `write`.
+重叠和标的不一致的消息见前面的 append 示例。对应的处理方式依次是：重叠的窗口要丢弃重叠行，或者用 `write` 重写存储；标的集合变化时走 `widen_and_append`；dtype 不一致时先把新变量转成存储的 dtype；新增变量时走 `widen_and_append`；新窗口缺少存储中已有的变量时需要重算这个窗口，这种情形没有可选的放行方式。消息中提到的 `save(mode="w")` 指的就是 `write`。
 
-If a crash leaves a `.superseded.tmp` directory next to a store, `widen_symbol_axis` refuses to continue and its message names the rename to perform by hand.
+如果崩溃在存储旁留下了 `.superseded.tmp` 目录，`widen_symbol_axis` 会拒绝继续，并在消息里给出需要手工执行的重命名操作。
 
-`XrBackend.get_lazyframe` converts the whole panel to a long table in memory. `PlBackend.get_lazyframe` returns the lazy scan unchanged.
+`XrBackend.get_lazyframe` 会把整个面板在内存中转成长表；`PlBackend.get_lazyframe` 直接返回惰性扫描结果。
 
-## See also
+## 另请参阅
 
-`dataset.md` describes how datasets persist panels through `XrBackend`; `chunking.md` covers building a store window by window with `append`; `factor.md` shows how Polars factors consume `get_lazyframe`. Modules: `quantlab.base.backend` (`DataBackend`, `ModelBackend`), `quantlab.backend` (`XrBackend`, `PlBackend`) and `quantlab.ml_model.backend` (`MlBackend`, the model-side backend).
+`dataset.md` 介绍数据集如何通过 `XrBackend` 持久化面板；`chunking.md` 介绍用 `append` 按窗口构建存储；`factor.md` 介绍 Polars 因子如何使用 `get_lazyframe`。相关模块：`quantlab.base.backend`（`DataBackend`、`ModelBackend`）、`quantlab.backend`（`XrBackend`、`PlBackend`）和 `quantlab.ml_model.backend`（模型侧的 `MlBackend`）。

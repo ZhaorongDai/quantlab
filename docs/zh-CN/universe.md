@@ -1,28 +1,28 @@
-# Price and liquidity universe filter (universe)
+# 价格与流动性股票池过滤（universe）
 
-English | [简体中文](zh-CN/universe.md)
+[English](../universe.md) | 简体中文
 
-`UniverseFilteredFactor` restricts a KunQuant factor or label to the symbols that are tradable at each bar: raw close above a price floor and trailing average dollar volume above a liquidity floor. It is a factor wrapper. The wrapper is itself a `FactorKunQuant`, so it can be placed in `MLConfig.factors` and `MLConfig.labels` and used with a backtester without any change to the model or backtest layers.
+`UniverseFilteredFactor` 把 KunQuant 因子或标签限制在每根 bar 上可交易的标的范围内：原始收盘价高于价格下限，且滚动平均成交额高于流动性下限。它是一个因子包装类。包装后的对象本身仍是 `FactorKunQuant`，因此可以直接放进 `MLConfig.factors` 和 `MLConfig.labels`，也可以配合回测器使用，模型层和回测层无需任何改动。
 
-The filter is separate from index membership (see the `constituent` guide). Membership says which symbols belong to an index on a date; this filter says which symbols are expensive and liquid enough to trade. The two can be used together.
+这个过滤器与指数成分是两回事（见 `constituent` 指南）。成分回答"某天哪些标的属于某个指数"，这个过滤器回答"哪些标的足够贵、足够活跃，可以交易"。两者可以组合使用。
 
-## Prerequisites
+## 前置条件
 
-The factor backend is KunQuant, which compiles the factor graph and needs a working C++ compiler. Batch runs need the number of symbols to be a multiple of the SIMD block width of the host; 16 symbols work on the machine used for this page.
+因子后端是 KunQuant，它会编译因子计算图，需要可用的 C++ 编译器。批量计算要求标的数量是当前主机 SIMD 块宽度的整数倍；在编写本页所用的机器上，16 个标的可以运行。
 
-## The basics
+## 基础
 
-### The rule
+### 判定规则
 
-A symbol is in the universe at bar `t` when two conditions hold. The raw `close` at `t` is at least `min_price`, and the mean of raw `close * volume` over the `window` bars ending at `t` is at least `min_dollar_volume`. Both use the raw columns and never the adjusted ones, because adjusted history is changed by later splits and dividends and cannot say whether a stock was cheap at the time. Nothing after `t` affects the decision at `t`. A window that is not yet full, or that contains a NaN, counts as out of the universe.
+一个标的在第 `t` 根 bar 上属于股票池，需同时满足两个条件：`t` 时刻的原始 `close` 不低于 `min_price`；截至 `t` 的 `window` 根 bar 上，原始 `close * volume` 的均值不低于 `min_dollar_volume`。两者都使用原始列，不使用复权列，因为复权历史会被后来的拆股和分红改变，无法说明当时这只股票是不是低价股。`t` 之后的任何数据都不影响 `t` 时刻的判定。窗口未满或窗口内含 NaN，一律视为不在池内。
 
-| Parameter | Default | Meaning |
+| 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `min_price` | `5.0` | Minimum raw close |
-| `min_dollar_volume` | `1_000_000.0` | Minimum trailing mean of raw `close * volume` |
-| `window` | `20` | Number of bars in the trailing mean |
+| `min_price` | `5.0` | 原始收盘价下限 |
+| `min_dollar_volume` | `1_000_000.0` | 原始 `close * volume` 滚动均值下限 |
+| `window` | `20` | 滚动均值的 bar 数 |
 
-The examples use a synthetic 30-bar panel with 16 symbols: thirteen ordinary names `S00` to `S12`, `PENY` (raw close of $1 but the highest adjusted close, so an unfiltered ranking prefers it), `ILQD` (ordinary price, tiny volume) and `DRPX` (in the universe until bar 20, then raw close falls to $1). The first session builds the store and a small KunQuant factor with one cross-sectional output (`Rank`) and one time-series output (`WindowedAvg`).
+示例使用一份合成的 30 根 bar、16 个标的的面板：十三个普通标的 `S00` 到 `S12`；`PENY`（原始收盘价 1 美元，但复权收盘价是全面板最高，所以不过滤时排名会把它排第一）；`ILQD`（价格正常，成交量极小）；`DRPX`（到第 20 根 bar 前都在池内，之后原始收盘价跌到 1 美元）。第一个会话构建存储，并定义一个小的 KunQuant 因子，含一个截面输出（`Rank`）和一个时序输出（`WindowedAvg`）。
 
 ```python
 >>> import os, tempfile
@@ -81,9 +81,9 @@ The examples use a synthetic 30-bar panel with 16 symbols: thirteen ordinary nam
 ...     return RankClose(config)
 ```
 
-### Wrapping a factor
+### 包装一个因子
 
-The wrapper takes the inner factor and the three parameters. Its `config` is the inner factor's own config object, not a copy, so dates written by a model or backtester land on the inner factor.
+包装类接收内部因子和三个参数。它的 `config` 就是内部因子自己的 config 对象，不是副本，所以模型或回测器写入的日期会落在内部因子上。
 
 ```python
 >>> wrapped = UniverseFilteredFactor(make_factor(), min_price=5.0, min_dollar_volume=1_000_000.0, window=3)
@@ -91,7 +91,7 @@ The wrapper takes the inner factor and the three parameters. Its `config` is the
 True
 ```
 
-`compute_universe_mask` returns the mask for a panel: 1.0 where a symbol is in the universe and NaN elsewhere. The first `window - 1` rows are NaN for everyone because the trailing mean needs a full window. PENY fails on price and ILQD on dollar volume at every bar. DRPX is in until bar 19 (2024-01-26) and out from bar 20.
+`compute_universe_mask` 返回一个面板的掩码：在池内为 1.0，其余为 NaN。前 `window - 1` 行对所有标的都是 NaN，因为滚动均值需要满窗口。PENY 每根 bar 都因价格不达标被排除，ILQD 则因成交额不达标被排除。DRPX 到第 19 根 bar（2024-01-26）都在池内，从第 20 根 bar 起出池。
 
 ```python
 >>> panel = StockDataset(dataset_config).read().get_xarray_dataset()
@@ -106,9 +106,9 @@ timestamp
 2024-01-29  1.0   NaN   NaN   NaN
 ```
 
-### Symbols are masked, not dropped
+### 出池只是置 NaN，不删除标的
 
-`cal()` runs the compiled graph and `get_features()` returns the result with the mask applied. Being out of the universe blanks cells; it never removes a column. The symbol axis of the output equals the input's, and a symbol that is out for the whole window stays as an all-NaN column. The symbol axis therefore does not depend on the date window, so a model trained on one window can be given a panel from another.
+`cal()` 运行编译后的计算图，`get_features()` 返回已应用掩码的结果。出池只会把格子置空，绝不会删掉一列。输出的标的轴与输入完全一致，整个窗口都出池的标的会保留为全 NaN 列。因此标的轴不依赖日期窗口，用一个窗口训练出的模型可以拿到另一个窗口的面板。
 
 ```python
 >>> features = wrapped.cal().get_features()
@@ -118,11 +118,11 @@ Frozen({'timestamp': 30, 'symbol': 16})
 True
 ```
 
-### Cross-sectional operators see only the universe
+### 截面算子只看池内标的
 
-Blanking the output of an out-of-universe symbol would not be enough for an operator such as `Rank`, because the symbol would still take part in every rank. The wrapper therefore rewrites the factor graph: the mask is added as an extra input, and every input of every cross-sectional operator is divided by it. Dividing by 1.0 leaves a value unchanged and dividing by NaN gives NaN, so out-of-universe symbols are absent from every rank and cross-sectional z-score. Time-series operators are not rewritten and still see full history.
+对 `Rank` 这类算子来说，只把出池标的的输出置空是不够的，因为它仍然参与了每一次排名。所以包装类会改写因子计算图：把掩码作为一个额外输入加入，并把每个截面算子的每个输入都除以它。除以 1.0 不改变数值，除以 NaN 得到 NaN，因此出池标的从所有排名和截面 z-score 中消失。时序算子不做改写，仍然能看到完整历史。
 
-The last-bar ranks below show the effect. Without the filter PENY ranks first (1.0) among 16 symbols; with it PENY is absent, and the remaining symbols are ranked among 13.
+下面最后一根 bar 上的排名展示了效果。不过滤时，PENY 在 16 个标的中排第一（1.0）；过滤后 PENY 不存在，其余标的在 13 个之间排名。
 
 ```python
 >>> unfiltered = make_factor().cal().get_features()
@@ -142,7 +142,7 @@ DRPX         NaN
 Name: rank_close, dtype: float32
 ```
 
-The purely time-series output `ma_close` is identical with and without the filter wherever the filtered output is defined.
+纯时序输出 `ma_close` 在过滤后输出有定义的位置上，与不过滤时完全相同。
 
 ```python
 >>> in_universe = features["ma_close"].notnull()
@@ -150,11 +150,11 @@ The purely time-series output `ma_close` is identical with and without the filte
 True
 ```
 
-## Common tasks
+## 常见任务
 
-### Wrap the factors and the labels of a model
+### 同时包装模型的因子和标签
 
-Wrap both. If only the factors are wrapped, label rows for out-of-universe symbols remain; if only the labels are wrapped, the cross-sectional operators in the factors are still affected by those symbols. The price dataset given to the backtester is not wrapped: the prices of held positions must stay available. Model and backtester calls are shown here as a shape only.
+因子和标签都要包装。只包装因子，标签里仍会保留出池标的的行；只包装标签，因子里的截面算子仍会受到这些标的的影响。交给回测器的价格数据集不要包装：持仓标的的价格必须一直可用。模型和回测器的调用这里只展示形状。
 
 ```python
 from quantlab.factor.alpha101 import Alpha101Stock
@@ -166,13 +166,13 @@ labels = [UniverseFilteredFactor(Return(label_config))]
 model = XGBoostRegressor(MLConfig(factors=factors, labels=labels, ...))
 ```
 
-The wrapper moves the inner dataset's start date earlier by `2 * window + 10` calendar days so that the trailing mean is full at the first requested bar. It never moves a start date later.
+包装类会把内部数据集的起始日期提前 `2 * window + 10` 个日历日，使第一根被请求的 bar 上滚动均值已经是满窗口。它只会把起始日期往前挪，不会往后挪。
 
-### Labels are masked at their own timestamp
+### 标签在它自己的时间戳上打掩码
 
-A forward-return label at bar `t` describes a position opened after `t`. The wrapper applies the mask after the label's forward shift, so the mask at `t` decides the label at `t`. A symbol that is in the universe at its last in-universe bar keeps its label for that bar, including the return earned as it drops out. Masking before the shift would have used the universe at a later bar to decide an earlier one.
+第 `t` 根 bar 上的前向收益标签描述的是 `t` 之后开仓的仓位。包装类在标签做完前向位移之后才应用掩码，所以 `t` 时刻的掩码决定 `t` 时刻的标签。一个标的在其最后一根池内 bar 上仍保留该 bar 的标签，包括它离开股票池时赚到的那段收益。如果先打掩码再位移，就会用较晚一根 bar 的股票池状态去决定较早一根 bar 的标签。
 
-`Return` with `n_forward_periods=1` is the open-to-open return from the next open to the open after it. DRPX leaves the universe at bar 20 (2024-01-29); its label at bar 19 is unchanged and the labels from bar 20 are blank.
+`n_forward_periods=1` 的 `Return` 是从下一个开盘价到再下一个开盘价的开盘对开盘收益。DRPX 在第 20 根 bar（2024-01-29）出池；它在第 19 根 bar 的标签保持不变，从第 20 根 bar 起的标签为空。
 
 ```python
 >>> from quantlab.label.fret import Return
@@ -202,11 +202,11 @@ timestamp
 Name: ret_1, dtype: float32
 ```
 
-### A holding that leaves the universe
+### 掉出股票池的持仓
 
-A symbol that drops out has all-NaN features, so a model's prediction for it is NaN, and a NaN score is not selectable. The filter does not act on positions directly. At the first rebalance bar after the drop the symbol is no longer selectable, its target weight becomes zero, and the position is closed at the next bar's open. Eligibility is only re-evaluated on rebalance bars, so a holding can be kept for up to `rebalance_periods - 1` bars after it leaves. A smaller `rebalance_periods` shortens the delay.
+一个标的出池后，特征全为 NaN，模型对它的预测也是 NaN，而 NaN 分数不可被选中。过滤器不会直接操作持仓。掉出池之后的第一个调仓 bar 上，该标的不再可选，目标权重变为零，仓位在下一根 bar 的开盘价平掉。资格只在调仓 bar 上重新评估，所以持仓在离开股票池之后最多还会被持有 `rebalance_periods - 1` 根 bar。`rebalance_periods` 越小，延迟越短。
 
-The session below uses the ranks computed above as stand-in scores and the top-2 selector of the backtest layer, rebalancing on rows 0 and 3 of a six-bar window. DRPX is selected at the first rebalance (2024-01-25, before it drops) and has weight 0.0 at the second (2024-01-30). Rows without a rebalance are all NaN, which means "keep the current position".
+下面的会话用上面算出的排名充当分数，用回测层的 top-2 选择器，在一个六根 bar 窗口的第 0 行和第 3 行调仓。DRPX 在第一次调仓（2024-01-25，出池之前）被选中，在第二次调仓（2024-01-30）权重为 0.0。没有调仓的行整行都是 NaN，意思是"保持现有仓位"。
 
 ```python
 >>> from quantlab.backtest.selection import CrossSectionTopNSelector, rebalance_mask
@@ -221,9 +221,9 @@ timestamp
 2024-01-30   0.0  0.5  0.5
 ```
 
-### Save and read back
+### 保存与读回
 
-Factor stores written through the wrapper hold the outputs of the rewritten graph, before the output mask. `read()` recomputes the mask from the dataset's raw close and volume and applies it to what `get_features()` returns. A store must therefore be written by the wrapper: a store written by the unwrapped inner factor already contains cross-sectional values that include out-of-universe symbols, and reading it through the wrapper cannot remove them.
+通过包装类写出的因子库，保存的是改写后计算图的输出，也就是打输出掩码之前的值。`read()` 会根据数据集的原始收盘价和成交量重新计算掩码，并把它应用到 `get_features()` 返回的结果上。因此因子库必须由包装类写出：由未包装的内部因子写出的库，其截面值已经包含了出池标的，经包装类读取也无法把它们去掉。
 
 ```python
 >>> root = tempfile.mkdtemp()
@@ -241,9 +241,9 @@ Frozen({'timestamp': 30, 'symbol': 16})
 True
 ```
 
-### Serialize and rebuild
+### 序列化与重建
 
-`get_config()` returns the wrapper's three parameters and the inner factor's config under `"factor"`. `from_config()` rebuilds the wrapper and the inner factor from that dict. It does not fill a missing parameter from the current defaults, so a stored run cannot be rebuilt with a different universe than it used.
+`get_config()` 返回包装类的三个参数，以及放在 `"factor"` 键下的内部因子配置。`from_config()` 根据这个字典重建包装类和内部因子。它不会用当前默认值补全缺失的参数，所以保存过的运行不会被重建成另一个股票池。
 
 ```python
 >>> cfg = wrapped.get_config()
@@ -257,11 +257,11 @@ Traceback (most recent call last):
 ValueError: UniverseFilteredFactor.from_config: refusing to rebuild -- missing key(s) ['min_dollar_volume', 'min_price'], unknown key(s) []. Missing parameters are NOT filled from the current defaults, ...
 ```
 
-## Extending
+## 扩展
 
-The thresholds are parameters; the rule itself is the method `compute_universe_mask(panel)`, which returns a `(timestamp, symbol)` array that is 1.0 in the universe and NaN elsewhere. A subclass can add a condition by refining that result. The batch path (`cal()` and `read()`) calls the method. The streaming path builds its mask row inside `cal_stream()` and does not, so a rule that must also apply to streaming has to be repeated there.
+阈值是参数；规则本身是方法 `compute_universe_mask(panel)`，它返回一个 `(timestamp, symbol)` 数组，在池内为 1.0，其余为 NaN。子类可以通过收窄这个结果来增加条件。批量路径（`cal()` 和 `read()`）会调用这个方法；流式路径在 `cal_stream()` 内部自己构造掩码这一行，不会调用它，所以需要同时作用于流式的规则要在那里重复实现。
 
-The example adds a cap on the raw close. Ordinary symbols start near 85 and drift, so only 5 of the 13 stay under 80 on the last bar.
+示例增加了原始收盘价的上限。普通标的起始价在 85 左右并随机漂移，所以最后一根 bar 上 13 个里只有 5 个低于 80。
 
 ```python
 >>> class CappedUniverse(UniverseFilteredFactor):
@@ -275,9 +275,9 @@ The example adds a cap on the raw close. Ordinary symbols start near 85 and drif
 13
 ```
 
-## Notes
+## 注意事项
 
-The wrapper wraps `FactorKunQuant` subclasses only. A Polars factor is refused because its cross-sectional logic is a Polars expression and cannot be rewritten, and masking only its outputs would leave out-of-universe symbols inside every rank. Wrapping a wrapper is refused, because the two masks would compose silently. The window must be at least one bar.
+包装类只包装 `FactorKunQuant` 子类。Polars 因子会被拒绝，因为它的截面逻辑是 Polars 表达式，无法改写，而只掩输出会把出池标的留在每一次排名里面。包装一个已包装的对象也会被拒绝，因为两层掩码会悄悄叠加。`window` 至少为一根 bar。
 
 ```python
 >>> UniverseFilteredFactor(object())
@@ -294,7 +294,7 @@ Traceback (most recent call last):
 ValueError: window must be >= 1 bar, got 0; it is the number of bars the trailing dollar-volume mean is taken over.
 ```
 
-The mask needs the raw `close` and `volume` variables in the dataset. A panel that lacks either raises `ValueError` from `compute_universe_mask`, which lists the variables that are present. Calling `get_features()` or `get_labels()` before `cal()`, `read()` or `cal_stream()` raises `RuntimeError`.
+掩码需要数据集里有原始的 `close` 和 `volume` 变量。缺少任何一个时，`compute_universe_mask` 会抛出 `ValueError`，并列出当前存在的变量。在 `cal()`、`read()` 或 `cal_stream()` 之前调用 `get_features()` 或 `get_labels()` 会抛出 `RuntimeError`。
 
 ```python
 >>> wrapped.compute_universe_mask(panel.drop_vars("volume"))
@@ -307,7 +307,7 @@ Traceback (most recent call last):
 RuntimeError: UniverseFilteredFactor: no universe mask has been computed yet, so the outputs cannot be masked. Call cal(), read() or cal_stream() first.
 ```
 
-Two KunQuant limits apply to every caller. Batch runs always start at bar 0, because in KunQuant 0.1.11 a non-zero start gives wrong results for every cross-sectional operator. The number of symbols must be a multiple of the SIMD block width. A panel with 13 symbols on the machine used for this page fails with the KunQuant error below, and the fix is to pad or trim the symbol set.
+KunQuant 有两条限制，对所有调用方都适用。批量计算总是从第 0 根 bar 开始，因为在 KunQuant 0.1.11 中，非零的起点会让所有截面算子给出错误结果。标的数量必须是 SIMD 块宽度的整数倍。在编写本页的机器上，13 个标的的面板会以下面这个 KunQuant 错误失败，解决办法是补齐或裁剪标的集合。
 
 ```python
 >>> symbols13 = [f"S{i:02d}" for i in range(10)] + ["PENY", "ILQD", "DRPX"]
@@ -320,8 +320,8 @@ Traceback (most recent call last):
 RuntimeError: Bad shape at adjClose
 ```
 
-In streaming mode, each bar's `data` dict passed to `cal_stream()` must include the raw `close` and `volume` arrays in addition to `config.data_columns`; the inherited push sends only `data_columns`, and a missing key raises `ValueError`. A time-series operator applied on top of a cross-sectional one is NaN for its whole window after a symbol re-enters the universe, because its input was NaN while the symbol was out.
+流式模式下，传给 `cal_stream()` 的每根 bar 的 `data` 字典，除了 `config.data_columns` 之外，还必须包含原始 `close` 和 `volume` 数组；继承来的推送只发送 `data_columns`，缺少键会抛出 `ValueError`。截面算子之上的时序算子，在标的重新入池之后的一整个窗口内都是 NaN，因为标的出池期间它的输入是 NaN。
 
-## See also
+## 另请参阅
 
-The `constituent` guide covers index membership panels, which answer a different question and can be combined with this filter. The `factor` guide covers `FactorKunQuant` and the operators, `model` covers passing wrapped factors to a model, and `backtest` covers rebalancing and how positions are closed. Class docstring: `quantlab.factor.universe_filter.UniverseFilteredFactor`.
+`constituent` 指南介绍指数成分面板，它回答的是另一个问题，可以与这个过滤器组合使用。`factor` 指南介绍 `FactorKunQuant` 和算子，`model` 介绍如何把包装后的因子交给模型，`backtest` 介绍调仓以及仓位如何被平掉。类文档字符串：`quantlab.factor.universe_filter.UniverseFilteredFactor`。
