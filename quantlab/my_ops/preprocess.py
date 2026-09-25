@@ -1,10 +1,18 @@
-"""Custom KunQuant operators for factor normalization.
+"""Custom KunQuant operators that normalize a factor.
 
-``WindowedZScore`` standardizes each symbol against its own trailing window
-(time-series); ``CrossSectionalZScore`` standardizes each timestamp across
-all symbols (cross-sectional). Which axis to normalize on is a property of
-the strategy consuming the factor, so the two are alternatives, not
-interchangeable implementations.
+KunQuant is the library this project uses to compute most factors. A factor
+formula is written as a graph of operators (``WindowedAvg``, ``Rank``, ...),
+and KunQuant compiles that graph to native C++ code that runs over a whole
+``(timestamp, symbol)`` array at once. This module adds two operators to
+that vocabulary.
+
+``WindowedZScore`` is a *time-series* normalization: each symbol is compared
+with its own recent past. ``CrossSectionalZScore`` is a *cross-sectional*
+normalization: at each timestamp, each symbol is compared with all the other
+symbols on the same bar. Which one is right depends on the strategy that
+consumes the factor. A strategy that trades one asset over time wants the
+first; a strategy that ranks many assets against each other wants the
+second. They are not two implementations of the same thing.
 """
 
 from KunQuant.Op import Builder
@@ -14,31 +22,46 @@ from KunQuant.ops import *
 class WindowedZScore(WindowedCompositiveOp):
     """Rolling z-score along time, ``(x - rolling_mean) / rolling_std``.
 
-    Each symbol is standardized against its own trailing ``window`` bars,
-    which is a time-series normalization; nothing is computed across
-    symbols. No missing-value handling is applied: NaN inputs propagate, and
-    the first ``window - 1`` bars are NaN until the window is full, as with
-    every KunQuant rolling operator. Fill values in the caller if you need
-    them.
+    Each symbol is standardized against its own trailing ``window`` bars;
+    nothing is computed across symbols. NaN inputs propagate, and the first
+    ``window - 1`` bars are NaN until the window is full, as with every
+    KunQuant rolling operator. No fill is applied, so fill missing values in
+    the caller if you need them.
+
+    The operator is a *composite* op: KunQuant replaces it with simpler
+    built-in operators (see ``decompose``) while compiling.
+
+    Parameters
+    ----------
+    v : OpBase
+        The input series, usually a factor expression.
+    window : int
+        Number of trailing bars the mean and standard deviation use.
 
     Examples
     --------
     >>> Output(WindowedZScore(alpha(all_data), 20), "alpha001")
     """
 
-    # `options` is required by KunQuant's CompositiveOp interface.
     def decompose(self, options: dict) -> list[OpBase]:
         """Expand into ``WindowedAvg``, ``WindowedStddev``, ``Sub`` and ``Div``.
+
+        KunQuant calls this while compiling the graph.
 
         Parameters
         ----------
         options : dict
-            Decomposition options passed by KunQuant; unused.
+            Decomposition options passed by KunQuant. Unused, but required
+            by KunQuant's composite-operator interface.
+
+        Returns
+        -------
+        list[OpBase]
+            The replacement operators, in dependency order.
 
         Examples
         --------
-        KunQuant calls this while compiling; it can also be called
-        directly on an op built inside a ``Builder``:
+        It can also be called directly on an op built inside a ``Builder``:
 
         >>> with Builder():
         ...     z = WindowedZScore(Input("close"), 20)
@@ -60,25 +83,32 @@ class WindowedZScore(WindowedCompositiveOp):
 class CrossSectionalZScore(GenericCrossSectionalOp):
     """Cross-sectional z-score, ``(x - mean_t) / std_t`` over symbols per bar.
 
-    At every timestamp the NaN-aware mean and sample standard deviation
+    At every timestamp the mean and the sample standard deviation
     (``ddof=1``, matching pandas ``.std()`` and KunQuant's
-    ``WindowedStddev``) are taken over all symbols. NaN inputs stay NaN, and
-    a row with fewer than two valid values or zero standard deviation is NaN
-    throughout. No fill is applied.
+    ``WindowedStddev``) are taken over all symbols, ignoring NaN. NaN inputs
+    stay NaN. A bar with fewer than two valid values, or with zero standard
+    deviation, is NaN for every symbol. No fill is applied.
 
-    It is a ``GenericCrossSectionalOp`` with a hand-written C++ body because a
-    ``CompositiveOp`` can only decompose into time-series operators. Three
-    KunQuant constraints follow. The body must not depend on the op's
-    attributes, since KunQuant deduplicates generated C++ functions by class
-    name and layout only; a parameterized variant needs a class of its own.
-    Batch runs must start at bar 0: in KunQuant 0.1.11 a non-zero ``start``
-    gives wrong results for every ``GenericCrossSectionalOp``. And the number
-    of symbols must be a multiple of the SIMD block width on the host, in
-    both the ``TS`` and ``STREAM`` layouts.
+    KunQuant's composite ops can only be built from time-series operators,
+    so this op is a ``GenericCrossSectionalOp`` whose loop body is
+    hand-written C++ (see ``generate_body``). That choice brings three
+    constraints. First, the C++ body must not read any parameter of the op:
+    KunQuant reuses generated C++ functions by class name and data layout
+    alone, so a parameterized variant needs a class of its own. Second, batch
+    runs must start at bar 0, because in KunQuant 0.1.11 a non-zero start
+    index gives wrong results for every ``GenericCrossSectionalOp``. Third,
+    the number of symbols must be a multiple of the host's SIMD block width
+    (the number of values the CPU's vector instructions process at once), in
+    both the time-major ``TS`` layout used for batch runs and the ``STREAM``
+    layout used for bar-by-bar runs.
 
-    This op and ``WindowedZScore`` normalize along different axes; which one
-    a factor uses is a strategy decision, and no factor class applies this
-    one by default.
+    No factor class applies this op by default; choosing it over
+    ``WindowedZScore`` is a strategy decision.
+
+    Parameters
+    ----------
+    v : OpBase
+        The input series, usually a factor expression.
 
     Examples
     --------
@@ -86,11 +116,11 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
     """
 
     def __init__(self, v: OpBase) -> None:
-        """Wrap a single input op."""
+        """Initialize the operator; see the class docstring for parameters."""
         super().__init__([v], None)
 
     def generate_head(self) -> str:
-        """Return no per-function preamble.
+        """Return the C++ preamble for the generated function, which is empty.
 
         Examples
         --------
@@ -102,7 +132,9 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
     def generate_body(self) -> str:
         """Return the C++ loop that z-scores ``input_0`` into ``output_0``.
 
-        KunQuant calls this when it emits the C++ for the graph.
+        KunQuant calls this when it emits the C++ for the graph. The loop
+        runs once per timestamp over ``num_stocks`` symbols: one pass for
+        the mean, one for the variance, and one to write the scores.
 
         Examples
         --------
