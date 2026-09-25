@@ -10,8 +10,8 @@ configuration object, so any run can be saved, rebuilt and repeated exactly.
 
 - **Documentation:** [docs/README.md](docs/README.md)
 - **Examples:** [examples/](examples/README.md)
-- **Source code:** https://github.com/ZhaorongDai/quantlab2
-- **Bug reports:** https://github.com/ZhaorongDai/quantlab2/issues
+- **Source code:** https://github.com/ZhaorongDai/quantlab
+- **Bug reports:** https://github.com/ZhaorongDai/quantlab/issues
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ```text
@@ -49,8 +49,8 @@ quantlab needs Python 3.13 or newer, [uv](https://docs.astral.sh/uv/) and a C++ 
 (KunQuant compiles factor code at run time).
 
 ```bash
-git clone https://github.com/ZhaorongDai/quantlab2.git
-cd quantlab2
+git clone https://github.com/ZhaorongDai/quantlab.git
+cd quantlab
 uv sync
 ```
 

@@ -6,7 +6,7 @@ we look for in a pull request.
 
 ## Reporting a bug or asking a question
 
-Open an issue at https://github.com/ZhaorongDai/quantlab2/issues. For a bug, include the
+Open an issue at https://github.com/ZhaorongDai/quantlab/issues. For a bug, include the
 command or code you ran, the full error message, your operating system and your Python
 version. A small example that reproduces the problem on synthetic data is the most helpful
 thing you can provide. Never paste API keys, WRDS passwords or other credentials into an
@@ -15,8 +15,8 @@ issue.
 ## Setting up a development environment
 
 ```bash
-git clone https://github.com/ZhaorongDai/quantlab2.git
-cd quantlab2
+git clone https://github.com/ZhaorongDai/quantlab.git
+cd quantlab
 uv sync
 uv run pytest
 ```

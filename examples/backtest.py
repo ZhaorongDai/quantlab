@@ -131,6 +131,7 @@ class PastReturn(FactorPolars):
     """``past_ret_{n}``: the adjusted close over the close ``n`` bars earlier, minus 1."""
 
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """Compute the trailing ``n``-bar return of ``adjClose`` for every symbol."""
         n = self.config.kwargs["n"]
         close = pl.col("adjClose")
         return (
@@ -140,6 +141,7 @@ class PastReturn(FactorPolars):
         )
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
+        """Return the factor values unchanged; no post-processing is needed."""
         return data
 
 
@@ -152,6 +154,7 @@ class ForwardReturn(FactorPolars):
     """
 
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """Compute the open-to-open forward return that starts at the next bar."""
         n = self.config.kwargs["n_forward_periods"]
         open_ = pl.col("adjOpen")
         entry = open_.shift(-1).over("symbol")
@@ -163,6 +166,7 @@ class ForwardReturn(FactorPolars):
         )
 
     def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
+        """Return the label values unchanged; the frame already looks forward."""
         return data
 
 
@@ -170,12 +174,15 @@ class LeastSquaresHead(MLModel):
     """Linear regression of every label on the features, fitted with numpy."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
+        """Return no model object; the coefficients are created when fitting."""
         return None  # the coefficients are created in _fit_model
 
     def _preprocess(self, data):
+        """Convert the input array to a float64 copy."""
         return np.array(data, dtype=np.float64, copy=True)
 
     def _fit_model(self, train_x, train_y, val_x, val_y):
+        """Fit an ordinary least-squares regression on the rows with no missing values."""
         x = train_x.reshape(-1, train_x.shape[-1])
         y = train_y.reshape(-1, train_y.shape[-1])
         rows = np.isfinite(x).all(axis=1) & np.isfinite(y).all(axis=1)
@@ -184,6 +191,7 @@ class LeastSquaresHead(MLModel):
         self.model = {"coef": coef}
 
     def _forward(self, x):
+        """Predict every label as the fitted linear combination of the features."""
         coef = self.model["coef"]
         return coef[0] + x @ coef[1:]
 
@@ -228,6 +236,7 @@ def show(title: str, result) -> None:
 
 
 def main() -> None:
+    """Run the backtest walkthrough in a temporary directory."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         prices = write_synthetic_prices(root)
