@@ -63,7 +63,6 @@ def _build_dataset_config(args: argparse.Namespace) -> DatasetConfig:
             root / "downloads" / "crypto_spot" / "1d" / "spot" / "monthly" / "klines"
         ),
         zarr_file_path=str(root / "data" / "crypto_spot" / "1d" / "klines.zarr"),
-        catalog_path=str(root / "data" / "catalog"),
         market="crypto_spot",
         frequency="1d",
         start_date=args.start_date,
