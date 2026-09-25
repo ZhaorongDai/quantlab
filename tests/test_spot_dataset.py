@@ -7,7 +7,6 @@ Tests 3-4 cover ingest_binance_spot.py:_build_dataset_config()'s
 --raw-data-dir override behavior (Task 2).
 """
 
-import inspect
 from argparse import Namespace
 from typing import Callable
 
@@ -25,7 +24,6 @@ def _make_config(raw_data_dir_path: str) -> DatasetConfig:
         zarr_file_path=str(
             __import__("pathlib").Path(raw_data_dir_path).parent / "klines.zarr"
         ),
-        catalog_path=raw_data_dir_path,
         market="crypto_spot",
         frequency="1d",
     )
@@ -105,8 +103,8 @@ def test_build_dataset_config_raw_data_dir_none_is_noop() -> None:
 def test_build_dataset_config_raw_data_dir_override_applies() -> None:
     """Test 4: _build_dataset_config(args) with raw_data_dir set returns a
     DatasetConfig whose raw_data_dir_path equals that override exactly, with
-    no other field (market, frequency, zarr_file_path, catalog_path)
-    altered."""
+    no other field (market, frequency, zarr_file_path) altered."""
+    from quantlab.config import spot_kline_config
     from ingest_binance_spot import _build_dataset_config
 
     args = Namespace(
@@ -125,57 +123,6 @@ def test_build_dataset_config_raw_data_dir_override_applies() -> None:
     assert config.market == default_config.market
     assert config.frequency == default_config.frequency
     assert config.zarr_file_path == default_config.zarr_file_path
-    assert config.catalog_path == default_config.catalog_path
-
-
-# --------------------------------------------------------------------------
-# utils/nautilus.py:get_crypto_currency -- spelling and signature
-# --------------------------------------------------------------------------
-
-
-def test_get_crypto_currency_is_spelled_correctly() -> None:
-    """`utils/nautilus.py` defined `get_crypot_currency` -- "crypot" for
-    "crypto" -- right next to a correctly-spelled `get_crypto_currency_pair`,
-    and `dataset/spot.py` imported the typo.
-    """
-    import quantlab.utils.nautilus as nautilus
-
-    assert hasattr(nautilus, "get_crypto_currency")
-    assert not hasattr(nautilus, "get_crypot_currency"), (
-        "the misspelling must not survive as an alias"
-    )
-
-
-def test_get_crypto_currency_takes_only_a_symbol() -> None:
-    """The old signature accepted `name: Optional[str] = None` and the body
-    never referenced it -- `Currency.from_str(code, strict=False)` has no
-    `name` argument at all, so it could not have been honoured without
-    switching to the `Currency(...)` constructor and inventing a precision and
-    currency type per coin.
-
-    Dropped rather than wired up. This test pins the decision so a future edit
-    has to argue with it instead of quietly re-adding an ignored parameter.
-    """
-    from quantlab.utils.nautilus import get_crypto_currency
-
-    params = list(inspect.signature(get_crypto_currency).parameters)
-    assert params == ["symbol"], f"unexpected signature: {params}"
-
-
-def test_get_crypto_currency_returns_the_currency_for_its_code() -> None:
-    """Both call sites in `dataset/spot.py` split a pair into base and quote
-    and ask for each half, so the round-trip through the code is the whole
-    contract."""
-    from nautilus_trader.model.objects import Currency
-
-    from quantlab.utils.nautilus import get_crypto_currency
-
-    btc = get_crypto_currency("BTC")
-    usdt = get_crypto_currency("USDT")
-
-    assert isinstance(btc, Currency)
-    assert str(btc) == "BTC"
-    assert str(usdt) == "USDT"
 
 
 def test_spot_windowed_seam_reproduces_the_inherited_whole_range_densify(

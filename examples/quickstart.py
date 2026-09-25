@@ -99,7 +99,6 @@ def write_synthetic_prices(root: Path) -> DatasetConfig:
         zarr_file_path=str(zarr_path),
         # No raw download tree is needed because the Zarr store already exists.
         raw_data_dir_path=str(root / "downloads" / "tiingo"),
-        catalog_path=str(root / "catalog"),
         market="us_equity",
         frequency="1d",
         vendor="tiingo",

@@ -172,7 +172,6 @@ def _make_config(root: Path, vendor: str = "tiingo", **overrides) -> DatasetConf
     kwargs = dict(
         raw_data_dir_path=str(root),
         zarr_file_path=str(root.parent / "out.zarr"),
-        catalog_path=str(root.parent / "catalog"),
         market="us_equity",
         frequency="1d",
         vendor=vendor,

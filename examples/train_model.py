@@ -107,7 +107,6 @@ def write_synthetic_prices(root: Path) -> DatasetConfig:
     return DatasetConfig(
         zarr_file_path=str(zarr_path),
         raw_data_dir_path=str(root / "downloads"),  # unused: the store exists
-        catalog_path=str(root / "catalog"),
         market="us_equity",
         frequency="1d",
     )

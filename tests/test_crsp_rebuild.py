@@ -286,7 +286,6 @@ def _crsp_config(root: Path, *, store_name: str = "crsp.zarr") -> CrspDatasetCon
         raw_data_dir_path=str(
             root / "data" / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "wrds"
         ),
-        catalog_path=str(root / "data" / "data" / "catalog"),
         reference_dir=str(
             root
             / "data"

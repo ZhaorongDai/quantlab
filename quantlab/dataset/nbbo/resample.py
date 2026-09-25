@@ -141,7 +141,6 @@ class NbboFilterPolicy:
         --------
         >>> config = NbboDatasetConfig(
         ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
-        ...     catalog_path="data/us_equity/catalog",
         ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1m.zarr",
         ... )
         >>> NbboFilterPolicy.from_config(config).drop_crossed

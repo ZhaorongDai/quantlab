@@ -41,8 +41,7 @@ class IndexConstituentDataset(BaseDataset):
     raises ``start_date`` to the coverage start, ``_densify`` turns the
     intervals into the ``is_member`` grid, and ``_clean`` validates the panel
     instead of running the price-data (OHLCV) cleaner. The class derives
-    from ``BaseDataset`` directly, so it has no conversions to bars, KunQuant
-    arrays or Nautilus objects.
+    from ``BaseDataset`` directly, so it has no KunQuant export.
 
     Two conventions matter to a consumer. The ``timestamp`` axis covers every
     calendar day, weekends and holidays included, so to combine it with a

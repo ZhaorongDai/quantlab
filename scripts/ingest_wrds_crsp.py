@@ -455,7 +455,6 @@ if __name__ == "__main__":
 
         if args.to_zarr:
             data_dir = get_data_root() / "data" / "us_equity" / "1d"
-            catalog_path = str(get_data_root() / "data" / "catalog")
             short_name = UNIVERSE_SHORT_NAMES.get(args.universe, "custom")
 
             # Exclude QQQ by roster, not only by the security filter, because
@@ -473,7 +472,6 @@ if __name__ == "__main__":
                         data_dir / STORE_TEMPLATE.format(name=short_name)
                     ),
                     raw_data_dir_path=acq_config.raw_data_dir_path,
-                    catalog_path=catalog_path,
                     reference_dir=str(reference_dir),
                     start_date=window["start_date"],
                     end_date=window["end_date"],
@@ -518,7 +516,6 @@ if __name__ == "__main__":
                 qqq_config = CrspDatasetConfig.qqq_benchmark(
                     zarr_file_path=str(data_dir / QQQ_STORE),
                     raw_data_dir_path=acq_config.raw_data_dir_path,
-                    catalog_path=catalog_path,
                     reference_dir=str(reference_dir),
                     start_date=window["start_date"],
                     end_date=window["end_date"],

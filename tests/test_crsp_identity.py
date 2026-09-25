@@ -227,7 +227,6 @@ def _dataset_config(
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / store),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(reference_dir),
         start_date=start,
         end_date=end,
@@ -247,7 +246,6 @@ def _bare_config(tmp_path, **overrides):
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / "crsp.zarr"),
         raw_data_dir_path=str(tmp_path / "raw"),
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(tmp_path / "_reference"),
         start_date="2020-01-01",
         end_date="2020-12-31",
@@ -1047,7 +1045,6 @@ def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     benchmark = CrspDatasetConfig.qqq_benchmark(
         zarr_file_path=str(tmp_path / "qqq.zarr"),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=reference_dir,
         start_date=QQQ_WINDOW_START,
         end_date=QQQ_WINDOW_END,
@@ -1181,7 +1178,6 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
         CrspDatasetConfig(
             zarr_file_path=str(tmp_path / "crsp.zarr"),
             raw_data_dir_path=str(tmp_path / "raw"),
-            catalog_path=str(tmp_path / "catalog"),
             reference_dir=str(tmp_path / "_reference"),
             start_date="2010-01-01",
             end_date="2020-12-31",
@@ -1943,7 +1939,6 @@ def test_a_non_crsp_dataset_still_accepts_config_symbols(tmp_path):
         DatasetConfig(
             zarr_file_path=str(tmp_path / "stock.zarr"),
             raw_data_dir_path=str(tmp_path / "raw"),
-            catalog_path=str(tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
             start_date="2020-01-01",
@@ -2014,7 +2009,6 @@ def _tiingo_dataset_for_factor(tmp_path):
         DatasetConfig(
             zarr_file_path=str(tmp_path / "stock.zarr"),
             raw_data_dir_path=str(tmp_path / "raw"),
-            catalog_path=str(tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
             start_date="2020-01-01",
