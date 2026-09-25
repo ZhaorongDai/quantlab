@@ -6,7 +6,8 @@ drawdown and the compounded monthly returns on a shared time axis, a
 year-by-month heatmap of those monthly returns, a metric table with one column
 per window slice, and the notes. The in-sample range is shaded across the
 figure and the deepest drawdown is marked by a pair of triangles on the
-equity curve.
+equity curve. *In-sample* means the bars the model was trained on;
+*out-of-sample* means the bars it never saw, which are the honest test.
 
 The module knows no metric name: the table's rows are derived from whatever
 mapping it is given, and any value it cannot render becomes a dash. That is
@@ -193,11 +194,9 @@ def write_backtest_report(
     fig.update_yaxes(title_text="value", row=1, col=1)
     fig.update_yaxes(title_text="drawdown", tickformat=".1%", row=2, col=1)
     fig.update_yaxes(title_text="monthly return", tickformat=".1%", row=3, col=1)
-    # The explicit height matters: a y-axis title is rotated, so its length is
-    # measured against the row height. At plotly's 450px default the margins
-    # leave rows 2 and 3 about 44px each, shorter than the titles "drawdown"
-    # and "monthly return", and the three titles collide. At 900px the rows
-    # are roughly 328, 140 and 140px and every title fits.
+    # Rotated y-axis titles must fit in their row. At plotly's default 450px
+    # rows 2 and 3 are about 44px tall and the titles collide; at 900px they
+    # are about 140px and every title fits.
     fig.update_layout(
         height=900,
         margin={"b": 140},
@@ -568,8 +567,8 @@ def _metrics_section(metrics: dict | None) -> str:
         for key in column:
             if key not in seen:
                 seen.append(key)
-    # Gate on membership, not truthiness: a None slice is still present (as an
-    # empty column) and must give dashed deltas rather than drop the column.
+    # Test membership, not truthiness: a None slice is still shown as an
+    # empty column and needs dashed deltas rather than no delta column.
     show_delta = "in_sample" in present and "out_of_sample" in present
     for key in seen:
         cells = "".join(
