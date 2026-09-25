@@ -1,19 +1,34 @@
 """Registry of every data source quantlab can download from.
 
-Each vendor is described once by a ``SourceDescriptor``: the names of the
-environment variables that hold its credentials, the ``Acquisition`` class
-that downloads from it, and the ``Capability`` rows (market, frequency, data
-type) it actually serves. ``DataSourceRegistry`` enumerates the descriptors,
-and the two module-level entry points ``run()`` and ``convert()`` let a caller
-download a raw tier and convert it to Zarr without naming a vendor class.
-Descriptors register themselves through ``register_source`` beside the
-acquisition class they describe; the vendor modules are imported at the bottom
-of this file so that ``import quantlab.registry`` alone enumerates every
-source.
+A data source is one vendor, such as Tiingo, Alpaca or WRDS. Each vendor is
+described once by a ``SourceDescriptor``: the names of the environment
+variables that hold its credentials, the ``Acquisition`` class that downloads
+from it, and the ``Capability`` rows it actually serves. A capability is one
+``(market, frequency, data_type)`` combination, for example US equities at
+daily frequency.
 
-Descriptors carry environment variable names only. No function here returns,
+Downloading and converting are two separate steps. An acquisition writes a
+raw tier: the vendor's data as parquet files on disk, plus small watermark
+files that record how far each symbol has been downloaded so that a later run
+can resume. A dataset class then converts the raw tier into a Zarr store
+holding a panel, an ``xarray.Dataset`` indexed by ``timestamp`` and
+``symbol``. The module-level functions ``run()`` and ``convert()`` perform
+these two steps without the caller naming any vendor class.
+
+Descriptors register themselves by calling ``register_source`` beside the
+acquisition class they describe. The vendor modules are imported at the
+bottom of this file, so ``import quantlab.registry`` alone makes every source
+available.
+
+Descriptors hold environment variable names only. No function here returns,
 logs or embeds a credential value, not even a masked one, and no descriptor
-carries a base URL or host. See ``docs/registry.md`` for a tour.
+holds a base URL or host.
+
+Examples
+--------
+>>> from quantlab.registry import DataSourceRegistry
+>>> [d.vendor for d in DataSourceRegistry.all()]
+['alpaca', 'tiingo', 'wrds']
 """
 
 import dataclasses
@@ -32,51 +47,70 @@ from quantlab.enums.data import Frequency, Market, UniverseCategory, Vendor
 class Capability:
     """One ``(market, frequency, data_type)`` combination a vendor serves.
 
-    A descriptor lists capabilities explicitly rather than as a product of
-    markets and frequencies, because vendors serve irregular combinations
-    (Alpaca's tick data is US-equity only and splits into quotes and trades).
-    Anything that varies per combination, such as the earliest available date
-    or the dataset class that converts it, lives here rather than on the
-    descriptor. The class is frozen; extend it by adding optional fields.
+    A descriptor lists its capabilities one by one rather than as every
+    pairing of its markets and frequencies, because vendors serve irregular
+    combinations. For example, Alpaca serves tick data for US equities only,
+    and splits it into quotes and trades. Anything that differs between
+    combinations, such as the earliest available date or the dataset class
+    that converts the data, is stored here rather than on the descriptor.
+    The class is frozen; extend it by adding optional fields.
+
+    Parameters
+    ----------
+    market : Market
+        The market, for example ``"us_equity"``.
+    frequency : Frequency
+        The bar frequency, for example ``"1d"`` or ``"tick"``.
+    data_type : str or None, default None
+        ``"bars"``, ``"quotes"``, ``"trades"`` and so on, or ``None`` when
+        the vendor makes no such distinction. ``None`` means "no data type",
+        not "any data type".
+    earliest_available : str or None, default None
+        ISO date of the earliest data the vendor serves, when known. It is
+        informational; nothing checks against it.
+    entitlement : str or None, default None
+        The subscription this capability needs, when the vendor sells
+        several.
+    dataset_cls : type[MarketDataset] or None, default None
+        The dataset class that converts this capability's raw tier into
+        Zarr, or ``None`` when no dataset can hold the data. Tick data, for
+        example, arrives at irregular times and does not fit a regular
+        ``(timestamp, symbol)`` grid. ``convert()`` refuses a capability
+        whose ``dataset_cls`` is ``None``, so adding a conversion means
+        filling this field, not adding a branch to ``convert()``.
+    acquisition_cls : type[Acquisition] or None, default None
+        The class that downloads this capability, or ``None`` to use the
+        descriptor's own ``acquisition_cls``. One vendor account can serve
+        several products through different classes; WRDS, for example,
+        serves both TAQ quote data and CRSP daily data.
+    config_factory : callable or None, default None
+        The function that builds an ``AcquisitionConfig`` for this
+        capability, or ``None`` to use the descriptor's own
+        ``config_factory``.
+
+    Notes
+    -----
+    The class fields are direct class references, never dotted import
+    paths. They are annotated with the abstract base classes so that the top
+    of this module imports no vendor module.
 
     Examples
     --------
     >>> from quantlab.registry import Capability
     >>> cap = Capability(market="us_equity", frequency="1d", data_type="bars")
     >>> cap.data_type
-    bars
+    'bars'
     >>> cap.dataset_cls is None
     True
     """
 
     market: Market
     frequency: Frequency
-    #: ``"bars"``, ``"quotes"``, ``"trades"`` and so on, or ``None`` when the
-    #: vendor draws no such distinction. ``None`` is the absence of a data
-    #: type, not a wildcard.
     data_type: str | None = None
-    #: ISO date of the earliest data the vendor serves, when known. Advisory;
-    #: nothing gates on it.
     earliest_available: str | None = None
-    #: The subscription tier this capability needs, when the vendor has tiers.
     entitlement: str | None = None
-    #: The ``MarketDataset`` subclass that converts this capability's raw tier
-    #: into Zarr, or ``None`` when no dataset can express its axis (tick data
-    #: on an irregular event axis). ``convert()`` refuses a capability whose
-    #: ``dataset_cls`` is ``None``, so adding a conversion means filling this
-    #: field, not adding a branch. A direct class reference, never a dotted
-    #: path; annotated with the abstract base so this module's top stays free
-    #: of vendor imports.
     dataset_cls: type[MarketDataset] | None = None
-    #: The ``Acquisition`` subclass that downloads this capability, or ``None``
-    #: to use the descriptor's own ``acquisition_cls``. One vendor account may
-    #: serve several products through several classes (WRDS serves both TAQ
-    #: NBBO and CRSP daily data), which makes the downloading class a
-    #: per-capability fact. A direct class reference, never a dotted path.
     acquisition_cls: type[Acquisition] | None = None
-    #: The ``AcquisitionConfig`` factory for this capability, or ``None`` to
-    #: use the descriptor's own ``config_factory``. Resolved by the same rule
-    #: as ``acquisition_cls``.
     config_factory: Callable[..., AcquisitionConfig] | None = None
 
 
@@ -84,23 +118,52 @@ class Capability:
 class SourceDescriptor:
     """Everything the registry knows about one vendor.
 
-    Vendor-level facts (credential names, display name, the default
-    acquisition class and config factory) are stated once here; everything
-    that varies by market, frequency or data type lives in ``capabilities``.
-    Exactly one descriptor is registered per vendor.
+    Facts about the vendor as a whole (credential names, display name, the
+    default acquisition class and config factory) are stated once here.
+    Everything that differs by market, frequency or data type is stored in
+    ``capabilities``. Exactly one descriptor is registered per vendor.
 
-    ``acquisition_cls`` is a direct class reference rather than a dotted path
-    resolved at runtime. The accepted cost is that importing this module
-    imports every vendor SDK. The annotation names the ``Acquisition`` base
-    class so the top of this module imports no vendor module, which is what
-    lets each descriptor be defined beside the class it describes.
+    Parameters
+    ----------
+    vendor : Vendor
+        The vendor's short name, for example ``"tiingo"``.
+    display_name : str
+        A human-readable name for listings.
+    acquisition_cls : type[Acquisition]
+        The default class that downloads from this vendor. A capability may
+        name a different one.
+    config_factory : callable
+        The default function that builds an ``AcquisitionConfig`` for this
+        vendor, usually a ``functools.partial`` over the shared config
+        factory with ``vendor`` filled in.
+    capabilities : tuple of Capability
+        Every ``(market, frequency, data_type)`` combination the vendor
+        serves. Must not be empty.
+    required_env : tuple of str
+        Names of the environment variables that hold the vendor's
+        credentials. Never a value, and never anything derived from one.
+        They are written out here rather than read from ``acquisition_cls``
+        so that a test can check the two against each other.
+    universe_categories : tuple of UniverseCategory, default ()
+        Symbol universes, such as S&P 500 constituents, that a user interface
+        might offer beside this source. Informational only: the actual symbol
+        list comes from ``UniverseCatalog``, and ``run()`` never reads this
+        field.
+
+    Notes
+    -----
+    ``acquisition_cls`` is a direct class reference, not a dotted path
+    resolved at runtime. The cost is that importing this module imports
+    every vendor's client library. The annotation names the ``Acquisition``
+    base class, so the top of this module imports no vendor module, and each
+    descriptor can be defined beside the class it describes.
 
     Examples
     --------
     >>> from quantlab.registry import DataSourceRegistry
     >>> source = DataSourceRegistry.get("tiingo")
     >>> source.display_name
-    Tiingo EOD
+    'Tiingo EOD'
     >>> source.required_env
     ('TIINGO_API_KEY',)
     >>> [(c.market, c.frequency) for c in source.capabilities]
@@ -110,19 +173,9 @@ class SourceDescriptor:
     vendor: Vendor
     display_name: str
     acquisition_cls: type[Acquisition]
-    #: Builds an ``AcquisitionConfig`` for this vendor; usually a
-    #: ``functools.partial`` over the shared config factory with ``vendor``
-    #: bound.
     config_factory: Callable[..., AcquisitionConfig]
     capabilities: tuple[Capability, ...]
-    #: Names of the environment variables that hold this vendor's credentials.
-    #: Never a value, and never anything derived from one. Restated here as
-    #: literals rather than read off ``acquisition_cls`` so that a test can
-    #: check the two against each other.
     required_env: tuple[str, ...]
-    #: Universe categories a console might offer beside this source. Advisory
-    #: only: the roster comes from ``UniverseCatalog``, and ``run()`` never
-    #: reads this field.
     universe_categories: tuple[UniverseCategory, ...] = ()
 
     def supports(
@@ -133,8 +186,22 @@ class SourceDescriptor:
     ) -> bool:
         """Return whether this source serves ``(market, frequency, data_type)``.
 
-        ``data_type=None`` means "any data type". The match rule itself lives
-        in ``capabilities_for``; this is its boolean form.
+        This is the yes/no form of ``capabilities_for``, which holds the
+        matching rule.
+
+        Parameters
+        ----------
+        market : Market
+            The requested market, for example ``"us_equity"``.
+        frequency : Frequency
+            The requested frequency, for example ``"1d"``.
+        data_type : str or None, default None
+            The requested data type, or ``None`` to match any data type.
+
+        Returns
+        -------
+        bool
+            True if at least one capability matches.
 
         Examples
         --------
@@ -156,10 +223,25 @@ class SourceDescriptor:
     ) -> tuple[Capability, ...]:
         """Return every capability matching ``(market, frequency, data_type)``.
 
-        ``data_type=None`` matches any data type, so a vendor that serves two
-        data types at one ``(market, frequency)`` returns both; ``convert()``
-        relies on seeing all of them so it can refuse an ambiguous request
-        instead of picking one. No match returns ``()`` rather than raising.
+        With ``data_type=None``, a vendor that serves two data types at one
+        ``(market, frequency)`` returns both. ``convert()`` relies on seeing
+        all of them, so it can refuse an ambiguous request instead of
+        picking one.
+
+        Parameters
+        ----------
+        market : Market
+            The requested market, for example ``"us_equity"``.
+        frequency : Frequency
+            The requested frequency, for example ``"1d"``.
+        data_type : str or None, default None
+            The requested data type, or ``None`` to match any data type.
+
+        Returns
+        -------
+        tuple of Capability
+            The matching capabilities in declaration order, or ``()`` when
+            none match.
 
         Examples
         --------
@@ -186,13 +268,13 @@ class SourceDescriptor:
     ) -> object:
         """Resolve ``field`` for a request, preferring the capability's value.
 
-        The one rule behind ``acquisition_cls_for`` and ``config_factory_for``.
-        With no matching capability the descriptor's own field is returned.
-        Matching capabilities that leave the field ``None`` contribute the
-        descriptor default, so several rows served by one class agree. Matches
-        that disagree raise ``ValueError`` rather than being resolved by
-        declaration order, because the wrong class demands the wrong
-        credential.
+        This is the shared rule behind ``acquisition_cls_for`` and
+        ``config_factory_for``. With no matching capability, the descriptor's
+        own field is returned. A matching capability that leaves the field
+        ``None`` contributes the descriptor's default, so several capabilities
+        served by one class agree. If the matches disagree, ``ValueError`` is
+        raised instead of picking the first one, because the wrong class
+        would ask for the wrong credential and reach the wrong product.
         """
         matches = self.capabilities_for(market, frequency, data_type)
         if not matches:
@@ -202,9 +284,8 @@ class SourceDescriptor:
             getattr(capability, field) or getattr(self, field)
             for capability in matches
         ]
-        # Identity-then-equality: a class reference compares by identity, a
-        # `functools.partial` config factory does not, and both must count as
-        # "the same value" here.
+        # Two `functools.partial` factories are never identical objects, so
+        # fall back to equality; class references compare by identity.
         first = resolved[0]
         if any(value is not first and value != first for value in resolved[1:]):
             requested = (market, frequency, data_type)
@@ -224,10 +305,24 @@ class SourceDescriptor:
         frequency: Frequency,
         data_type: str | None = None,
     ) -> type[Acquisition]:
-        """Return the ``Acquisition`` subclass serving a request.
+        """Return the ``Acquisition`` subclass that serves a request.
 
-        The matching capability's ``acquisition_cls`` when it names one, this
-        descriptor's default otherwise.
+        This is the matching capability's ``acquisition_cls`` when it names
+        one, and the descriptor's default otherwise.
+
+        Parameters
+        ----------
+        market : Market
+            The requested market, for example ``"us_equity"``.
+        frequency : Frequency
+            The requested frequency, for example ``"1d"``.
+        data_type : str or None, default None
+            The requested data type, or ``None`` to match any data type.
+
+        Returns
+        -------
+        type[Acquisition]
+            The class to construct for the download.
 
         Raises
         ------
@@ -239,9 +334,9 @@ class SourceDescriptor:
         --------
         >>> source = DataSourceRegistry.get("wrds")
         >>> source.acquisition_cls_for("us_equity", "1d").__name__
-        WrdsCrspDailyAcquisition
+        'WrdsCrspDailyAcquisition'
         >>> source.acquisition_cls_for("us_equity", "tick", "nbbo").__name__
-        WrdsTaqNbboAcquisition
+        'WrdsTaqNbboAcquisition'
         """
         return self._resolve_capability_field(  # type: ignore[return-value]
             "acquisition_cls", market, frequency, data_type
@@ -253,10 +348,29 @@ class SourceDescriptor:
         frequency: Frequency,
         data_type: str | None = None,
     ) -> Callable[..., AcquisitionConfig]:
-        """Return the ``AcquisitionConfig`` factory serving a request.
+        """Return the ``AcquisitionConfig`` factory that serves a request.
 
-        The companion of ``acquisition_cls_for``, resolved by the same rule
-        and raising ``ValueError`` on the same ambiguity.
+        Resolved by the same rule as ``acquisition_cls_for``.
+
+        Parameters
+        ----------
+        market : Market
+            The requested market, for example ``"us_equity"``.
+        frequency : Frequency
+            The requested frequency, for example ``"1d"``.
+        data_type : str or None, default None
+            The requested data type, or ``None`` to match any data type.
+
+        Returns
+        -------
+        callable
+            The function that builds the download's ``AcquisitionConfig``.
+
+        Raises
+        ------
+        ValueError
+            If two matching capabilities name different factories.
+            Pass ``data_type`` to disambiguate.
 
         Examples
         --------
@@ -270,11 +384,16 @@ class SourceDescriptor:
 
 
 class DataSourceRegistry:
-    """Enumeration of every registered ``SourceDescriptor``.
+    """The collection of every registered ``SourceDescriptor``.
 
-    Descriptors are added by ``register_source`` when their vendor module is
-    imported, so defining a source registers it. Read the registry through
-    ``all()`` and ``get()``.
+    ``register_source`` adds a descriptor when its vendor module is imported,
+    so defining a source registers it. Read the registry through ``all()``
+    and ``get()``; the class is never instantiated.
+
+    Attributes
+    ----------
+    SOURCES : tuple of SourceDescriptor
+        Every registered descriptor, in registration order.
 
     Examples
     --------
@@ -282,30 +401,33 @@ class DataSourceRegistry:
     >>> [d.vendor for d in DataSourceRegistry.all()]
     ['alpaca', 'tiingo', 'wrds']
     >>> DataSourceRegistry.get("tiingo").display_name
-    Tiingo EOD
+    'Tiingo EOD'
     """
 
-    #: Every registered descriptor, in registration order; ``all()`` sorts.
-    #: A tuple that ``register_source`` rebinds and never mutates in place, so
-    #: that a caller who saves this attribute and restores it later (a test
-    #: fixture isolating the registry, for instance) gets the old contents
-    #: back.
+    # A tuple that `register_source` replaces and never mutates in place, so a
+    # test that saves this attribute and restores it later gets the old
+    # contents back.
     SOURCES: tuple[SourceDescriptor, ...] = ()
 
     @classmethod
     def all(cls) -> tuple[SourceDescriptor, ...]:
         """Return every registered descriptor, sorted by vendor.
 
-        Sorted rather than in import order so that a display built from this
-        call does not depend on which module the caller imported first. An
-        empty registry returns ``()``.
+        Sorting makes the result independent of which vendor module the
+        caller happened to import first.
+
+        Returns
+        -------
+        tuple of SourceDescriptor
+            The descriptors sorted by ``vendor``, or ``()`` when nothing is
+            registered.
 
         Examples
         --------
         >>> len(DataSourceRegistry.all())
         3
         >>> DataSourceRegistry.all()[0].vendor
-        alpaca
+        'alpaca'
         """
         return tuple(sorted(cls.SOURCES, key=lambda d: d.vendor))
 
@@ -313,17 +435,27 @@ class DataSourceRegistry:
     def get(cls, vendor: str) -> SourceDescriptor:
         """Return the descriptor registered for ``vendor``.
 
+        Parameters
+        ----------
+        vendor : str
+            The vendor's short name, for example ``"tiingo"``.
+
+        Returns
+        -------
+        SourceDescriptor
+            The registered descriptor.
+
         Raises
         ------
         ValueError
-            If no descriptor is registered for ``vendor``. The
-            message lists the vendors that are registered.
+            If no descriptor is registered for ``vendor``. The message lists
+            the vendors that are registered.
 
         Examples
         --------
         >>> DataSourceRegistry.get("tiingo").vendor
-        tiingo
-        >>> DataSourceRegistry.get("bloomberg")
+        'tiingo'
+        >>> DataSourceRegistry.get("bloomberg")  # doctest: +ELLIPSIS
         Traceback (most recent call last):
         ...
         ValueError: No data source is registered for vendor 'bloomberg'. ...
@@ -344,16 +476,26 @@ class DataSourceRegistry:
 def register_source(descriptor: SourceDescriptor) -> SourceDescriptor:
     """Register ``descriptor`` and return it unchanged.
 
-    Meant to wrap a module-level descriptor literal beside the acquisition
+    Call it around a module-level descriptor defined beside the acquisition
     class it describes, so the module-level name is the descriptor itself.
+
+    Parameters
+    ----------
+    descriptor : SourceDescriptor
+        The vendor's descriptor.
+
+    Returns
+    -------
+    SourceDescriptor
+        ``descriptor`` itself.
 
     Raises
     ------
     ValueError
-        If a descriptor for the same vendor is already registered
-        (a second market or frequency is another ``Capability`` on the
-        existing descriptor, not a second descriptor), or if
-        ``descriptor.capabilities`` is empty.
+        If ``descriptor.capabilities`` is empty, or if a descriptor for the
+        same vendor is already registered. A second market or frequency for
+        a vendor is another ``Capability`` on its existing descriptor, not a
+        second descriptor.
 
     Examples
     --------
@@ -378,32 +520,42 @@ def register_source(descriptor: SourceDescriptor) -> SourceDescriptor:
         raise ValueError(
             f"Refusing to register vendor {descriptor.vendor!r} with an empty "
             f"`capabilities` tuple. A source that serves nothing is a "
-            f"definition error, not an enumerable source -- declare at least "
-            f"one Capability(market=..., frequency=...)."
+            f"definition error; declare at least one "
+            f"Capability(market=..., frequency=...)."
         )
 
     for existing in DataSourceRegistry.SOURCES:
         if existing.vendor == descriptor.vendor:
             raise ValueError(
                 f"vendor {descriptor.vendor!r} is already registered "
-                f"({existing.display_name!r}). ONE descriptor per VENDOR "
-                f"(D-01) -- express a second market/frequency/data_type as "
-                f"another Capability on the existing descriptor, not as a "
-                f"second descriptor."
+                f"({existing.display_name!r}). Each vendor has exactly one "
+                f"descriptor; express a second market, frequency or data type "
+                f"as another Capability on the existing descriptor."
             )
 
-    # Rebound, never appended in place: see the `SOURCES` comment above.
+    # Replace the tuple rather than mutate it; see the `SOURCES` comment.
     DataSourceRegistry.SOURCES += (descriptor,)
     return descriptor
 
 
 def is_configured(descriptor: SourceDescriptor) -> bool:
-    """Return whether every env var the source names is set and non-empty.
+    """Return whether every credential variable the source names is set.
 
     Answers ``False`` rather than raising on an unconfigured machine, and
-    never reads a credential value into anything but the boolean. An env var
-    set to the empty string counts as unset, which is the same predicate the
-    vendor clients apply at construction.
+    never turns a credential value into anything but this boolean. A variable
+    set to the empty string counts as unset, which matches the check the
+    vendor clients apply when they are constructed.
+
+    Parameters
+    ----------
+    descriptor : SourceDescriptor
+        The source to check.
+
+    Returns
+    -------
+    bool
+        True if every name in ``descriptor.required_env`` is set and
+        non-empty.
 
     Examples
     --------
@@ -417,11 +569,21 @@ def is_configured(descriptor: SourceDescriptor) -> bool:
 
 
 def credential_status(descriptor: SourceDescriptor) -> dict[str, bool]:
-    """Return ``{env_var_name: is_set}`` for each credential the source names.
+    """Return ``{variable_name: is_set}`` for each credential the source names.
 
-    The values are booleans only; no code path here returns, logs or masks a
-    credential value. A descriptor with no ``required_env`` returns ``{}``
-    without reading the environment.
+    The values are booleans only; nothing here returns, logs or masks a
+    credential value.
+
+    Parameters
+    ----------
+    descriptor : SourceDescriptor
+        The source to check.
+
+    Returns
+    -------
+    dict of str to bool
+        One entry per name in ``descriptor.required_env``, or ``{}`` when the
+        source needs no credentials.
 
     Examples
     --------
@@ -442,14 +604,14 @@ def run(
     reporter: ProgressReporter | None = None,
     cancel: CancelToken | None = None,
 ) -> AcquisitionResult:
-    """Download a raw tier in-process and return the run's outcome.
+    """Download a raw tier in the current process and return the outcome.
 
-    The acquisition class is resolved from the descriptor's capability for
+    The acquisition class is looked up from the descriptor's capability for
     ``(config.market, config.frequency, config.kwargs["data_type"])``, so the
     caller never names a vendor class. Constructing that class is the first
-    point at which a credential is demanded. The run writes raw parquet
-    shards and watermark sidecars and stops there; converting them to Zarr is
-    the separate ``convert()`` call below.
+    point at which a credential is required. The run writes raw parquet files
+    (shards) and watermark files and stops there; converting them to Zarr is
+    the separate ``convert()`` step.
 
     Parameters
     ----------
@@ -458,23 +620,24 @@ def run(
     config : AcquisitionConfig
         What to download; its ``market``, ``frequency`` and optional
         ``kwargs["data_type"]`` pick the capability.
-    refresh : bool
-        Call ``refresh()`` (re-download the covered window) instead
-        of ``download()`` (fill what is missing).
-    reporter : ProgressReporter | None
-        Receives a ``ProgressEvent`` per batch. ``None`` keeps the
-        default stderr progress bar.
-    cancel : CancelToken | None
-        A ``CancelToken``; setting it stops the run at the next batch
-        boundary. Completed batches stay on disk and a later call resumes.
+    refresh : bool, default False
+        If True, call ``refresh()``, which downloads the covered window
+        again. Otherwise call ``download()``, which fills only what is
+        missing.
+    reporter : ProgressReporter or None, default None
+        Receives a ``ProgressEvent`` per batch. ``None`` keeps the default
+        progress bar on stderr.
+    cancel : CancelToken or None, default None
+        Setting the token stops the run at the next batch boundary.
+        Completed batches stay on disk, and a later call resumes from them.
 
     Returns
     -------
     AcquisitionResult
-        The ``AcquisitionResult`` the run published on ``last_result``. Its
-        ``failures`` are the ones this run met; the on-disk failure manifest
-        accumulates across runs and may name more symbols (read it through
-        ``SourceInspector.failures``).
+        The result the acquisition stored on its ``last_result`` attribute.
+        Its ``failures`` are the ones this run met. The failure manifest on
+        disk (a JSON file of failed symbols) accumulates across runs and may
+        name more symbols; read it through ``SourceInspector.failures``.
 
     Examples
     --------
@@ -519,18 +682,18 @@ def convert(
     reporter: ProgressReporter | None = None,
     cancel: CancelToken | None = None,
 ) -> ConversionResult:
-    """Convert an already-downloaded raw tier into a Zarr store, in-process.
+    """Convert an already downloaded raw tier into a Zarr store, in-process.
 
-    The counterpart of ``run()``: it reads the raw parquet tier and writes the
-    store through the capability's ``dataset_cls`` and its chunked conversion
-    loop, and touches no vendor client or credential. The capability is
-    looked up by ``(dataset_config.market, dataset_config.frequency,
-    data_type)``.
+    This is the second step after ``run()``. It reads the raw parquet tier
+    and writes the store through the capability's ``dataset_cls``, one time
+    window at a time. It uses no vendor client and no credential. The
+    capability is looked up by ``(dataset_config.market,
+    dataset_config.frequency, data_type)``.
 
-    No memory guard runs here. An over-sized window goes straight to an
-    out-of-memory error, so size the window (or pass a smaller
-    ``granularity``) yourself; ``predicted_peak_bytes`` is only echoed into
-    the result for reporting.
+    No memory check runs here. A window too large for memory fails with an
+    out-of-memory error, so choose the window size (``granularity``)
+    yourself. ``predicted_peak_bytes`` is only copied into the result for
+    reporting.
 
     Parameters
     ----------
@@ -538,40 +701,39 @@ def convert(
         The source whose raw tier is being converted.
     dataset_config : DatasetConfig
         Where the raw tier is and where the store goes.
-    data_type : str | None
-        Picks one capability when the vendor serves several at
-        this ``(market, frequency)``.
-    granularity : str
-        Window size of the chunked conversion (``"year"``,
-        ``"quarter"``, ...).
-    on_new_listing : str
-        How a symbol absent from the pinned axis is handled;
-        forwarded to ``from_raw_data_chunked``.
-    predicted_peak_bytes : int | None
-        A caller's own estimate, copied into the result.
-    reporter : ProgressReporter | None
+    data_type : str or None, default None
+        Picks one capability when the vendor serves several at this
+        ``(market, frequency)``.
+    granularity : str, default "year"
+        Length of each conversion window, such as ``"year"`` or
+        ``"quarter"``.
+    on_new_listing : str, default "refuse"
+        What to do with a symbol that is not on the store's fixed symbol
+        axis; passed to ``from_raw_data_chunked``.
+    predicted_peak_bytes : int or None, default None
+        The caller's own memory estimate, copied into the result.
+    reporter : ProgressReporter or None, default None
         Receives a ``ProgressEvent`` per window.
-    cancel : CancelToken | None
-        A ``CancelToken``, observed at window boundaries. Windows
-        already written stay in the store and the chunk ledger, so a later
-        call over the same config resumes at the first unwritten window
-        and reports ``resumed=True``.
+    cancel : CancelToken or None, default None
+        Checked between windows. Windows already written stay in the store
+        and in its record of finished windows, so a later call with the same
+        config resumes at the first unwritten window and reports
+        ``resumed=True``.
 
     Returns
     -------
     ConversionResult
-        The ``ConversionResult`` the dataset published on
-        ``last_chunk_result``, with ``predicted_peak_bytes`` filled in.
+        The result the dataset stored on ``last_chunk_result``, with
+        ``predicted_peak_bytes`` filled in.
 
     Raises
     ------
     ValueError
-        In three distinguishable cases: the descriptor serves no
-        such capability (the message lists what it does serve); several
-        capabilities match with different conversion targets (pass
-        ``data_type``); or the matching capability has no ``dataset_cls``
-        because its raw tier is an irregular event stream no panel can
-        express.
+        In three cases: the descriptor serves no such capability (the
+        message lists what it does serve); several capabilities match with
+        different dataset classes (pass ``data_type``); or the matching
+        capability has no ``dataset_cls``, because its data is a stream of
+        irregularly timed events that no panel can hold.
 
     Examples
     --------
@@ -600,7 +762,8 @@ def convert(
     ...     frequency="tick", vendor="alpaca",
     ...     start_date="2024-01-01", end_date="2024-01-31",
     ... )
-    >>> convert(DataSourceRegistry.get("alpaca"), tick_config, data_type="quotes")
+    >>> convert(DataSourceRegistry.get("alpaca"), tick_config,
+    ...         data_type="quotes")  # doctest: +ELLIPSIS
     Traceback (most recent call last):
     ...
     ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ...
@@ -623,8 +786,8 @@ def convert(
             f"vendor class, never adding a branch here."
         )
 
-    # Ambiguous: several rows matched and disagree about the conversion
-    # target. Refuse rather than let declaration order pick the class that
+    # Ambiguous: several capabilities match and name different dataset
+    # classes. Refuse rather than let declaration order pick the one that
     # writes the store.
     targets = {capability.dataset_cls for capability in matches}
     if len(targets) > 1:
@@ -639,20 +802,19 @@ def convert(
 
     capability = matches[0]
 
-    # No conversion target: the vendor serves this capability, but no dataset
-    # class can express its axis. The absent field is the refusal.
+    # The vendor serves this capability, but no dataset class can hold its
+    # data; a missing `dataset_cls` is how a capability says so.
     if capability.dataset_cls is None:
         raise ValueError(
             f"{descriptor.display_name}: no raw-to-Zarr conversion exists for "
-            f"{requested!r}. This capability's raw tier is a stream of "
-            f"individually-timestamped events on an irregular event axis, and "
-            f"the dense [timestamp, symbol] panel every Dataset subclass "
-            f"writes cannot express one -- flattening it onto a dense grid "
-            f"would produce a plausible-looking panel that is scientifically "
-            f"wrong, and a wrong panel that loads is worse than this refusal. "
-            f"That axis is phase 03.3's work (03.4 D-18). Until it lands, the "
-            f"raw parquet shards this capability acquires ARE the deliverable "
-            f"and are already queryable with polars."
+            f"{requested!r}. This capability's raw data is a stream of "
+            f"individually timestamped events at irregular times (an "
+            f"irregular event axis), and the regular [timestamp, symbol] "
+            f"panel that every Dataset subclass writes cannot hold it. "
+            f"Forcing it onto a regular grid would produce a panel that "
+            f"looks plausible but is wrong. Conversion for this kind of data "
+            f"is not supported yet; the raw parquet files that the download "
+            f"writes are the usable output and can be queried with polars."
         )
 
     dataset = capability.dataset_cls(dataset_config)
@@ -673,29 +835,20 @@ def convert(
     )
 
 
-# ---------------------------------------------------------------------------
 # Vendor module imports, deliberately last.
 #
-# The registry is populated by `register_source` as vendor modules are
-# imported, so this module must import every vendor module for a cold
-# `import quantlab.registry` to enumerate every source. They cannot go at the
-# top: each vendor module imports this module for the decorator, so the
-# descriptor and the class it describes could not share a file. They also do
-# not go in `quantlab/acquisition/__init__.py`, which stays empty so that the
-# credential-free read surface (`quantlab.acquisition._support.inspector`) can
-# be imported without any vendor client being loaded ahead of it.
+# Importing a vendor module registers its descriptor, so this module imports
+# all of them to make `import quantlab.registry` alone list every source.
+# They cannot go at the top, because each vendor module imports this module
+# for `register_source`. They also stay out of
+# `quantlab/acquisition/__init__.py`, which is kept empty so that the
+# credential-free inspector in `quantlab.acquisition._support` can be
+# imported without loading any vendor client.
 #
-# Module-object form (`from quantlab.acquisition import tiingo`) rather than
-# `from quantlab.acquisition.tiingo import TiingoAcquisition`: when a caller
-# imports a vendor module first, this module runs while that module is only
-# partially initialised, and binding the module object is safe where reading
-# an attribute off it would raise. Order between the three lines does not
-# matter; `all()` sorts.
-#
-# `wrds` is a neutral module holding the one WRDS descriptor and importing the
-# WRDS provider modules (TAQ, CRSP) itself, because one WRDS account serves
-# several products through several acquisition classes.
-# ---------------------------------------------------------------------------
+# Import the module objects, not names from them: if a caller imports a
+# vendor module first, that module is only partly initialised while this code
+# runs, and reading an attribute from it would fail. `wrds` holds the single
+# WRDS descriptor and imports the TAQ and CRSP modules itself.
 from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
 from quantlab.acquisition import wrds as _wrds  # noqa: E402,F401

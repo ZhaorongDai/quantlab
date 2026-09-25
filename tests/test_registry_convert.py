@@ -271,7 +271,7 @@ def test_tick_is_refused_because_no_capability_carries_a_conversion_target(
         convert(DataSourceRegistry.get("alpaca"), config)
 
     message = str(excinfo.value)
-    assert "03.3" in message
+    assert "not supported yet" in message
     assert "irregular event" in message
     assert not Path(config.zarr_file_path).exists()
 
