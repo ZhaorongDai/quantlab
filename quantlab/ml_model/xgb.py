@@ -3,9 +3,11 @@
 ``XGBoostRegressor`` is an ``MLModel`` that trains a Booster with ``xgb.train``
 on the flattened ``(num_times * num_symbols, num_features)`` rows of the
 factor panel and predicts future returns as ``[num_times, num_symbols,
-num_labels]``. Early stopping uses xgboost's native callback on a pooled
-concordance-correlation loss (``pooled_ccc_loss``), and per-factor feature
-importance is recorded to Weights and Biases after training.
+num_labels]``. The Booster is fit on a pooled concordance-correlation loss
+(``pooled_ccc_loss``) through the custom objective ``ccc_objective``, early
+stopping uses xgboost's native callback on the validation RMSE, and
+per-factor feature importance is recorded to Weights and Biases after
+training.
 
 The module is named ``xgb.py`` rather than ``xgboost.py`` so it does not
 shadow the ``xgboost`` package inside this package.
@@ -108,6 +110,79 @@ def pooled_ccc_loss(y_true, y_pred) -> float:
     return float(1.0 - 2.0 * cov / denominator)
 
 
+def ccc_objective(
+    predt: np.ndarray, dtrain: xgb.DMatrix
+) -> tuple[np.ndarray, np.ndarray]:
+    """Gradient and hessian of the pooled CCC loss for ``xgb.train(obj=...)``.
+
+    With ``mse = mean((p - t)^2)`` and ``D = var_p + var_t + (mu_p - mu_t)^2``
+    the loss is ``L = 1 - ccc = mse / D``, whose derivative with respect to
+    one prediction is ``2 / (n * D) * ((p_i - t_i) - L * (p_i - mu_t))``.
+    Both gradient and hessian are multiplied by ``n``, which leaves the
+    optimum unchanged but keeps the Newton steps from being swamped by the
+    L2 regularisation ``lambda``. The exact hessian is dense and its diagonal
+    turns negative when ``ccc < 0``, so the positive constant ``2 / D`` (the
+    curvature of the numerator ``mse`` with ``D`` held fixed) is used instead.
+
+    Each label column is its own pooled loss, so a multi-label DMatrix
+    trains every output on its own CCC. A column whose ``D`` is not a
+    positive finite number (for example constant predictions and labels that
+    are equal) gets a zero gradient and a unit hessian for that round.
+
+    Parameters
+    ----------
+    predt : np.ndarray
+        The Booster's current raw predictions for ``dtrain``.
+    dtrain : xgb.DMatrix
+        The training ``DMatrix``, whose labels are read back. Rows with
+        non-finite labels must already have been dropped.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(grad, hess)``, each shaped like ``predt``.
+
+    Raises
+    ------
+    ValueError
+        If the label and prediction element counts differ.
+
+    Examples
+    --------
+    >>> dm = xgb.DMatrix(np.zeros((3, 2)), label=np.array([1.0, 2.0, 3.0]))
+    >>> grad, hess = ccc_objective(np.array([1.0, 2.0, 3.0]), dm)
+    >>> grad
+    array([0., 0., 0.], dtype=float32)
+    """
+    label = np.asarray(dtrain.get_label(), dtype=np.float64)
+    pred = np.asarray(predt, dtype=np.float64)
+    if label.size != pred.size:
+        raise ValueError(
+            f"ccc_objective: the DMatrix carries {label.size} label values but "
+            f"the prediction has {pred.size}; they must match."
+        )
+    n_rows = dtrain.num_row()
+    true = label.reshape(n_rows, -1)
+    pred = pred.reshape(n_rows, -1)
+    grad = np.zeros_like(pred)
+    hess = np.ones_like(pred)
+    for j in range(pred.shape[1]):
+        t = true[:, j]
+        p = pred[:, j]
+        mu_true = np.mean(t)
+        mu_pred = np.mean(p)
+        denominator = np.var(p) + np.var(t) + (mu_pred - mu_true) ** 2
+        if not (np.isfinite(denominator) and denominator > 0.0):
+            continue
+        loss = np.mean((p - t) ** 2) / denominator
+        grad[:, j] = 2.0 / denominator * ((p - t) - loss * (p - mu_true))
+        hess[:, j] = 2.0 / denominator
+    return (
+        grad.reshape(np.shape(predt)).astype(np.float32),
+        hess.reshape(np.shape(predt)).astype(np.float32),
+    )
+
+
 def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]:
     """Score a Booster's predictions for ``xgb.train(custom_metric=...)``.
 
@@ -203,6 +278,15 @@ class XGBoostRegressor(MLModel):
     Each label is one output of a multi-output regression; headline metrics
     are computed on the primary label, index 0.
 
+    The training objective is the pooled CCC loss ``1 - ccc`` (see
+    ``ccc_objective``), applied to every label column on its own. Unless
+    ``base_score`` is given, the Booster starts from the mean of the
+    finite training labels (written to the run summary as ``base_score``)
+    instead of xgboost's ``0.5``, because the CCC
+    gradient barely corrects a constant offset while ``ccc`` is near zero.
+    Setting ``objective`` in the hyperparameters switches back to that
+    built-in xgboost objective.
+
     Hyperparameters come from ``config.hyperparameters``. ``num_boost_round``
     (default 1000) is taken out separately; every other key overrides the
     matching entry of ``DEFAULT_PARAMS``, and ``seed`` defaults to
@@ -215,12 +299,13 @@ class XGBoostRegressor(MLModel):
 
     With ``config.early_stopping`` set and a validation segment that has at
     least one finite-label row, ``xgb.callback.EarlyStopping`` watches the
-    validation ``ccc_loss`` (see ``pooled_ccc_loss``); the built-in
-    ``eval_metric`` (RMSE by default) is logged as a curve only. Patience
-    counts boosting rounds. ``save_best=True`` means the returned Booster is
-    already truncated to ``best_iteration + 1`` trees, so the ``.joblib``
-    checkpoint is the best model, and ``best_iteration`` and ``best_score``
-    (a CCC loss) are written to the run summary. Without a usable validation
+    validation ``rmse``; ``rmse`` is appended to a user ``eval_metric`` that
+    lacks it. Every other metric, and the ``ccc_loss`` curve of the training
+    objective, is logged only. Patience counts boosting rounds.
+    ``save_best=True`` means the returned Booster is already truncated to
+    ``best_iteration + 1`` trees, so the ``.joblib`` checkpoint is the best
+    model, and ``best_iteration`` and ``best_score`` (an RMSE) are written to
+    the run summary. Without a usable validation
     segment a warning is logged and all rounds are trained.
 
     After training, per-factor importance (``weight``, ``gain`` and
@@ -259,7 +344,6 @@ class XGBoostRegressor(MLModel):
     """
 
     DEFAULT_PARAMS: dict = {
-        "objective": "reg:squarederror",
         "tree_method": "hist",
         "eta": 0.05,
         "max_depth": 6,
@@ -269,6 +353,8 @@ class XGBoostRegressor(MLModel):
         "eval_metric": "rmse",
     }
     DEFAULT_NUM_BOOST_ROUND = 1000
+    #: Metric watched by early stopping on the validation segment.
+    EARLY_STOPPING_METRIC = "rmse"
 
     def __init__(self, config: MLConfig):
         """Store the config; parameters are resolved later by ``_init_model``."""
@@ -308,6 +394,8 @@ class XGBoostRegressor(MLModel):
         The Booster itself is built by ``xgb.train`` inside ``_fit_model``.
         Aliases are normalised first, then ``num_boost_round`` is split off,
         then the remaining keys override ``DEFAULT_PARAMS`` and the seed.
+        With early stopping on, ``rmse`` is appended to an ``eval_metric``
+        that lacks it.
 
         Raises
         ------
@@ -328,13 +416,32 @@ class XGBoostRegressor(MLModel):
             "seed": self.config.random_seed,
             **user,
         }
+        if self.config.early_stopping:
+            metrics = self._params["eval_metric"]
+            metrics = [metrics] if isinstance(metrics, str) else list(metrics)
+            if self.EARLY_STOPPING_METRIC not in metrics:
+                metrics.append(self.EARLY_STOPPING_METRIC)
+                self._params["eval_metric"] = metrics
         return None
 
+    @property
+    def _uses_ccc_objective(self) -> bool:
+        """Whether training uses ``ccc_objective`` rather than a built-in one."""
+        return "objective" not in (self._params or {})
+
     def _resolved_hyperparameters(self) -> dict | None:
-        """Return the parameters handed to ``xgb.train`` plus ``num_boost_round``."""
+        """Return the parameters handed to ``xgb.train`` plus ``num_boost_round``.
+
+        With the CCC objective, ``objective`` reads ``"ccc_objective"``. A
+        ``base_score`` derived from the labels is data, not a
+        hyperparameter, so it goes to the run summary instead.
+        """
         if self._params is None:
             return None
-        return {**self._params, "num_boost_round": self._num_boost_round}
+        resolved = {**self._params, "num_boost_round": self._num_boost_round}
+        if self._uses_ccc_objective:
+            resolved["objective"] = "ccc_objective"
+        return resolved
 
     def _preprocess(self, data: np.ndarray) -> np.ndarray:
         """Return a float32 copy with infinities replaced by NaN."""
@@ -373,6 +480,13 @@ class XGBoostRegressor(MLModel):
             raise ValueError(
                 "The training segment has no rows with finite labels."
             )
+        params = dict(self._params)
+        if self._uses_ccc_objective and "base_score" not in params:
+            params["base_score"] = float(np.mean(y_rows, dtype=np.float64))
+            if self._wandb_recorder is not None:
+                self._wandb_recorder.summary.update(
+                    {"base_score": params["base_score"]}
+                )
         dtrain = xgb.DMatrix(x_rows, label=y_rows)
         evals = [(dtrain, "train")]
 
@@ -400,6 +514,7 @@ class XGBoostRegressor(MLModel):
                 xgb.callback.EarlyStopping(
                     rounds=self.config.early_stopping_patience,
                     data_name="val",
+                    metric_name=self.EARLY_STOPPING_METRIC,
                     save_best=True,
                 )
             )
@@ -411,10 +526,11 @@ class XGBoostRegressor(MLModel):
             )
 
         self.model = xgb.train(
-            self._params,
+            params,
             dtrain,
             num_boost_round=self._num_boost_round,
             evals=evals,
+            obj=ccc_objective if self._uses_ccc_objective else None,
             custom_metric=ccc_loss_metric,
             callbacks=callbacks,
             verbose_eval=False,
