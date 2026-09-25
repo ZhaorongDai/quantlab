@@ -173,7 +173,6 @@ def paths(s: Settings) -> dict[str, Path]:
         "membership_store": stores / "wrds_crsp_sp500_membership.zarr",
         "raw_dir": crsp_downloads / "wrds",
         "reference_dir": crsp_downloads / "_reference",
-        "catalog": root / "data" / "catalog",
         # Written by this pipeline.
         "prices": work / "prices.zarr",
         "members": work / "members.zarr",
@@ -193,7 +192,6 @@ def stock_dataset(store: Path) -> StockDataset:
     return StockDataset(DatasetConfig(
         zarr_file_path=str(store),
         raw_data_dir_path=str(P["raw_dir"]),
-        catalog_path=str(P["catalog"]),
         market="us_equity",
         frequency="1d",
     ))
@@ -213,7 +211,6 @@ def read_crsp(s: Settings) -> tuple[xr.Dataset, xr.Dataset]:
     crsp = CrspStockDataset(CrspDatasetConfig(
         zarr_file_path=str(P["crsp_store"]),
         raw_data_dir_path=str(P["raw_dir"]),
-        catalog_path=str(P["catalog"]),
         reference_dir=str(P["reference_dir"]),
     ))
     membership = CrspSP500ConstituentDataset(ConstituentDatasetConfig(
