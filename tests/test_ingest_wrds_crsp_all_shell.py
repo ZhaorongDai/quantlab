@@ -1,19 +1,12 @@
 """Structural and refusal gates for `scripts/ingest_wrds_crsp_all.py`.
 
-**Why this file exists separately from `tests/test_ingest_shells.py`.** That
-file holds this repository's shared shell contracts -- no vendor class named in
-a shell, the source resolved through the registry, `apply_data_dir` before any
-config factory -- but it currently looks for the shells at the REPOSITORY ROOT
-(`repo_root / name`) while they live in `scripts/`, so every one of its
-assertions has been passing over an empty set or failing on a missing file.
-Roughly 55 tests across six files share that single root cause. Repairing it
-was weighed and deliberately deferred; until it happens, a new shell added
-under `scripts/` would be covered by nothing at all.
+The shell is loaded by FILE PATH, never by module name: `scripts/` is not on
+`sys.path` and must never be, because a `scripts/wrds/` folder would shadow
+the `wrds` package the WRDS session imports.
 
-So these gates are stated here, over the ONE shell this file names, with the
-path resolved correctly. They are deliberately the same PROPERTIES the shared
-file asserts, so that when the shared gates are repaired this file becomes
-redundant and can be deleted rather than reconciled.
+The properties asserted here are the shared shell contracts -- no vendor class
+named in a shell, the source resolved through the registry, `apply_data_dir`
+before any config factory -- stated over this one shell.
 
 Every check is offline: the shell is behind an `if __name__ == "__main__":`
 guard, so importing it runs nothing, and `--help` needs no WRDS credential.
@@ -22,6 +15,7 @@ guard, so importing it runs nothing, and `--help` needs no WRDS credential.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -301,11 +295,10 @@ def test_the_entitlement_check_is_scoped_to_what_the_run_needs(
     the shell's own module so the test reads the real function rather than a
     restatement of it.
     """
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        import ingest_wrds_crsp_all as shell
-    finally:
-        sys.path.pop(0)
+    spec = importlib.util.spec_from_file_location("ingest_wrds_crsp_all", SHELL)
+    assert spec is not None and spec.loader is not None
+    shell = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shell)
 
     schemas = shell._schemas_for(with_index)
 

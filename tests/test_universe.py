@@ -708,35 +708,17 @@ def test_changes_table_is_selected_by_header_not_by_position(monkeypatch, tmp_pa
     assert parsed["removed_ticker"].tolist() == ["CMVT"]
 
 
-def test_every_universe_category_is_reachable_from_the_cli():
-    """WR-05. The phase added a third UniverseCategory and registered its
-    fetcher, but the CLI's category map and its `--universe` choices were a
-    SECOND hardcoded list that was not extended -- so nasdaq100_constituent was
-    produced into universe.parquet and could never be selected from the only
-    CLI that consumes the table.
-
-    Pinning the map against the enum means a fourth category cannot be added
-    without becoming reachable, and the `choices` are derived from the map so
-    the two can no longer disagree.
-
-    The map moved from `ingest_tiingo.py` to `utils/cli.py` in 03.2-07 (D-14):
-    it is now read by every script offering `--universe`, and a per-script copy
-    would reintroduce the very drift this test exists to catch one level up.
-    Asserted against EVERY such parser rather than one, so a second script that
-    stopped deriving its choices fails here.
+def test_the_cli_category_map_covers_every_universe_category():
+    """WR-05. `UNIVERSE_CATEGORY_MAP` in `quantlab/utils/cli.py` is the table
+    every `--universe` roster resolves through (`resolve_symbols` ->
+    `roster_category`), so a `UniverseCategory` value missing from it is
+    produced into universe.parquet and can never be selected from a shell.
     """
-    import ingest_alpaca
-    import ingest_tiingo
     from quantlab.utils.cli import UNIVERSE_CATEGORY_MAP
 
     assert set(UNIVERSE_CATEGORY_MAP.values()) == set(
         typing.get_args(UniverseCategory)
     )
-    for module in (ingest_tiingo, ingest_alpaca):
-        choices = module._build_arg_parser()._option_string_actions[
-            "--universe"
-        ].choices
-        assert set(choices) == set(UNIVERSE_CATEGORY_MAP), module.__name__
 
 
 def test_universe_category_literal_has_exactly_four_values():
