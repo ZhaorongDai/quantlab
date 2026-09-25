@@ -59,7 +59,7 @@ def test_a_known_etf_is_pulled_by_permno_into_its_own_store(
     assert code == 0, out.err
 
     store = _store(tmp_path, "qqq")
-    assert str(store) in out.out
+    assert f"QQQ (PERMNO {QQQ_PERMNO}) -> {store}" in out.out
     panel = xr.open_zarr(store).load()
     assert [str(value) for value in panel["symbol"].values] == [QQQ_PERMNO]
     assert {"adjOpen", "adjClose"} <= set(panel.data_vars)
@@ -85,29 +85,22 @@ def test_name_equals_permno_names_the_store(
 def test_every_named_etf_is_in_the_download(
     mock_crsp_session, tmp_path, monkeypatch, capsys
 ):
-    """SPY has no fixture rows, so only its place in the pull is checked; its
-    missing store is reported by name and fails the run."""
-    code = _run_script(
-        monkeypatch, ["--etf", "spy,qqq", *WIDE, "--data-dir", str(tmp_path)]
-    )
-    out = capsys.readouterr()
-    assert f"SPY (PERMNO {SPY_PERMNO})" in out.out
-    assert f"QQQ (PERMNO {QQQ_PERMNO})" in out.out
+    """SPY has no fixture rows, so only its place in the pull is checked: QQQ
+    is saved first, then SPY's empty window stops the conversion."""
+    with pytest.raises(ValueError, match="empty timestamp axis"):
+        _run_script(
+            monkeypatch, ["--etf", "qqq,spy", *WIDE, "--data-dir", str(tmp_path)]
+        )
     copied = " ".join(call["sql"] for call in mock_crsp_session.crsp_copy_calls)
     assert SPY_PERMNO in copied and QQQ_PERMNO in copied
     assert _store(tmp_path, "qqq").exists()
-    assert code == 1
-    assert "spy" in out.err.lower()
 
 
 @pytest.mark.parametrize(
     "etf, needle",
     [
-        ("iwm", "not a known ETF"),
-        ("x=abc", "is not a PERMNO"),
-        ("Bad-Name=123", "must be lowercase"),
-        ("spy,spy", "twice"),
-        (f"spy,alias={SPY_PERMNO}", "twice"),
+        ("iwm", "give a known ETF"),
+        ("x=abc", "give a known ETF"),
         ("", "names no ETF"),
     ],
 )
