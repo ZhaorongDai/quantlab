@@ -6,7 +6,7 @@ quantlab 是一个用于量化股票研究的 Python 后端。它用五个步骤
 下载价格数据，整理成干净的面板，计算因子和标签，训练预测未来收益的模型，再对这些预测所对应的投资组合做回测。
 每一步都由一个小的配置对象驱动，所以任何一次运行都可以保存、重建并完全复现。
 
-- **文档（英文）：** [docs/README.md](docs/README.md)
+- **文档：** [docs/README.md](docs/README.md)（英文），[docs/zh-CN/README.md](docs/zh-CN/README.md)（中文）
 - **示例：** [examples/](examples/README.md)
 - **源代码：** https://github.com/ZhaorongDai/quantlab2
 - **问题反馈：** https://github.com/ZhaorongDai/quantlab2/issues
@@ -80,7 +80,7 @@ quantlab 只从环境变量中读取凭证。凭证从不通过命令行传入�
 
 ## 文档
 
-[文档](docs/README.md)目前只有英文版，分为三部分：*入门*介绍安装和快速上手；*用户指南*为流水线的每个步骤各写一页，
+[英文文档](docs/README.md)分为三部分：*入门*介绍安装和快速上手；*用户指南*为流水线的每个步骤各写一页，
 包括数据源、WRDS、数据集、股票池、因子、模型和回测；*开发者指南*说明如何添加自己的数据源、数据集、存储后端、因子、
 模型或回测规则，并解释让长时间任务可以安全中断的内部机制。
 

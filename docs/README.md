@@ -1,5 +1,7 @@
 # quantlab documentation
 
+English | [简体中文](zh-CN/README.md)
+
 quantlab is a configuration-driven backend for quantitative equity research: it downloads
 market data, turns it into panels, computes factors, trains return models and backtests the
 resulting portfolios. This documentation is organised in three parts. If you are new, read
@@ -55,6 +57,30 @@ working example.
 [Internals](developer-guide/internals.md) describes the machinery that makes long jobs safe to
 interrupt: resumable downloads and conversions, rebuilds, the volume check, atomic writes and
 data fingerprints.
+
+## Topic reference
+
+The topic pages below go deeper into one subsystem each. They overlap with the user guide
+but cover more detail, and are useful once you know which part of the pipeline you are
+working on.
+
+| Page | What it covers |
+|------|----------------|
+| [Acquisition](acquisition.md) | How a download runs: batches, failure isolation, incremental refresh, the raw file layout and the volume guard |
+| [Data source registry](registry.md) | The catalogue of sources, `run()` and `convert()`, progress events and the read-only inspector |
+| [Resumable downloads](pageledger.md) | How a multi-page download resumes after an interruption |
+| [WRDS CRSP daily stocks](wrds_crsp.md) | US daily data by PERMNO, total-return adjustment and delisting returns |
+| [WRDS TAQ quotes](wrds_taq.md) | National best bid and offer quotes and their resampling to bars |
+| [Index constituents](constituent.md) | Point-in-time membership panels for the S&P 500 and Nasdaq-100 |
+| [Universe filtering](universe.md) | Price and liquidity filters implemented as a factor wrapper |
+| [Datasets](dataset.md) | From raw files to the `(timestamp, symbol)` panel, and adding a market |
+| [Chunked conversion](chunking.md) | Converting a large date range one window at a time |
+| [Storage backends](backend.md) | Zarr and Parquet storage, appending, and writing a backend |
+| [Factors](factor.md) | The KunQuant and Polars factor backends, labels and normalization |
+| [Models](model.md) | The model hierarchy, training, cross-validation and checkpoints |
+| [Backtesting](backtest.md) | Target weights, simulation, metrics and run directories |
+
+A Chinese translation of the topic pages is in [zh-CN](zh-CN/README.md).
 
 ## Examples and API reference
 
