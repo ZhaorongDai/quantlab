@@ -92,7 +92,7 @@ Coordinates:
   * timestamp  (timestamp) datetime64[s] 2kB 2024-01-01 ... 2024-07-18
   * symbol     (symbol) <U3 240B 'S00' 'S01' 'S02' 'S03' ... 'S17' 'S18' 'S19'
 Data variables:
-    ret        (timestamp, symbol) float64 32kB -0.001596 -0.01424 ... -0.03463
+    ret        (timestamp, symbol) float64 32kB -0.002638 -0.01672 ... -0.04101
 >>> model.predict(np.zeros((5, 20, 2))).shape
 (5, 20, 1)
 ```
@@ -117,7 +117,7 @@ True
 ...     label.ds["ret"].sel(timestamp=test).values,
 ... )
 >>> {name: round(value, 3) for name, value in scores.items()}
-{'mse': 0.003, 'rmse': 0.051, 'mae': 0.041, 'r2': 0.48, 'ic': 0.703, 'rank_ic': 0.683}
+{'mse': 0.003, 'rmse': 0.05, 'mae': 0.04, 'r2': 0.501, 'ic': 0.706, 'rank_ic': 0.686}
 ```
 
 ### 类层次
@@ -135,7 +135,7 @@ True
 
 ### 提前停止
 
-设置 `early_stopping=True` 后，当验证损失连续 `early_stopping_patience` 轮没有改善时停止训练（`MLModel` 的单位是 boosting 轮数，`DLModel` 的单位是 epoch），并保留最优模型。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 pooled 一致性相关系数（concordance correlation）损失。
+设置 `early_stopping=True` 后，当验证损失连续 `early_stopping_patience` 轮没有改善时停止训练（`MLModel` 的单位是 boosting 轮数，`DLModel` 的单位是 epoch），并保留最优模型。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/ml_model/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
 
 ```python
 >>> from dataclasses import replace
@@ -144,7 +144,7 @@ True
 >>> stopped = XGBoostRegressor(stopping).collect()
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
-(181, 180)
+(66, 65)
 ```
 
 ### walk-forward 交叉验证
@@ -158,7 +158,7 @@ True
 >>> [(str(r["train_start"])[:10], str(r["test_start"])[:10], str(r["test_end"])[:10]) for r in results]
 [('2024-01-01', '2024-04-12', '2024-05-01'), ('2024-01-21', '2024-05-02', '2024-05-21'), ('2024-02-10', '2024-05-22', '2024-06-10'), ('2024-03-01', '2024-06-11', '2024-06-30')]
 >>> [round(r["test_rank_ic"], 3) for r in results]
-[0.669, 0.68, 0.688, 0.66]
+[0.674, 0.689, 0.696, 0.669]
 ```
 
 所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即包含 `format_version` 和折列表的清单文件。回测器根据这个文件回放一次交叉验证。
