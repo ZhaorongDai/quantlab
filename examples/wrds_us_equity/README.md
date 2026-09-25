@@ -27,7 +27,7 @@ uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 --benchmark 
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
 ```
 
-`--benchmark` also downloads the ETF that tracks the index, by its CRSP PERMNO (SPY `84398` for `crsp_sp500`, QQQ `86755` for `comp_nasdaq100`), and writes it to its own store `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`.
+`--benchmark` also downloads the ETF that tracks the index, by its CRSP PERMNO (SPY `84398` for `crsp_sp500`, QQQ `86755` for `comp_nasdaq100`), and writes it to its own store `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`. To fetch only the benchmarks, for example after a whole-market download, run `uv run python scripts/ingest_wrds_crsp_etf.py --etf spy,qqq --start-date 2010-01-01 --end-date 2024-12-31`, which writes the same stores.
 
 Each writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<universe>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<universe>_membership.zarr` (`is_member` per day), with `<universe>` = `sp500` or `nasdaq100`. The pipeline reads both from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `Settings.data_root`).
 

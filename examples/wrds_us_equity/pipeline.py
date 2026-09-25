@@ -424,10 +424,10 @@ def benchmark_dataset(s: Settings) -> CrspStockDataset | None:
         raise FileNotFoundError(
             f"No {name.upper()} benchmark store at {P['benchmark']}. Download "
             f"it by its PERMNO {permno}: uv run python "
-            f"scripts/ingest_wrds_crsp.py --universe "
-            f"{BENCHMARK_INGEST_UNIVERSE[name]} --benchmark --start-date "
-            f"<start> --end-date <end> --to-zarr, or set Settings.benchmark="
-            f"None."
+            f"scripts/ingest_wrds_crsp_etf.py --etf {name} --start-date "
+            f"<start> --end-date <end> (or add --benchmark to "
+            f"ingest_wrds_crsp.py --universe {BENCHMARK_INGEST_UNIVERSE[name]}), "
+            f"or set Settings.benchmark=None."
         )
     return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
         permno=permno,

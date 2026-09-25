@@ -243,7 +243,7 @@ It writes `wrds_crsp_all_1d.zarr` and the listing mask `wrds_crsp_all_membership
 
 ### Add a benchmark ETF
 
-An ETF ranked against the stocks it holds would compete with itself, so the benchmark lives in its own store. `CrspDatasetConfig.etf_benchmark(permno=...)` fixes the two settings that matter, the PERMNO and `security_filter="none"`; `qqq_benchmark` is the same for QQQ (`QQQ_PERMNO`, 86755), and `SPY_PERMNO` (84398) is the S&P 500's ETF. In the script, `--benchmark` pulls the ETF that tracks `--universe` (SPY for `crsp_sp500`, QQQ for `comp_nasdaq100`) into `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`, and `--qqq` pulls QQQ on its own.
+An ETF ranked against the stocks it holds would compete with itself, so the benchmark lives in its own store. `CrspDatasetConfig.etf_benchmark(permno=...)` fixes the two settings that matter, the PERMNO and `security_filter="none"`; `qqq_benchmark` is the same for QQQ (`QQQ_PERMNO`, 86755), and `SPY_PERMNO` (84398) is the S&P 500's ETF. In the script, `--benchmark` pulls the ETF that tracks `--universe` (SPY for `crsp_sp500`, QQQ for `comp_nasdaq100`) into `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`, and `--qqq` pulls QQQ on its own. To download ETFs alone, one store each, use `scripts/ingest_wrds_crsp_etf.py --etf spy,qqq` (any other ETF as `name=PERMNO`).
 
 ```python
 >>> etf = CrspDatasetConfig.qqq_benchmark(
