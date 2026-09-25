@@ -32,6 +32,9 @@ from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 
 
+_ADJUSTED_STOCK_COLUMNS = ["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"]
+
+
 def _factor_config(
     dataset_config: DatasetConfig,
     factor_names: list[str],
@@ -194,9 +197,10 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     """D-02 regression lock: before 03-03 this exact construction raised
     `RuntimeError: Bad inputs, given <class 'NoneType'>` inside
     `Alpha101.AllData.__init__` -- `Alpha101Stock._get_factor_func()` never
-    passed `amount`, yet `AllData` unconditionally builds `vwap` from it. With
-    the `Input("amount")` node wired in and `StockDataset._to_kunquant()`
-    feeding it, the US-equity Alpha101 batch path computes real values.
+    passed `amount`, yet `AllData` builds `vwap` from it unless one is given.
+    The class now reads the adjusted columns and passes the adjusted typical
+    price as `vwap` (as `Alpha158Stock` does), so the US-equity Alpha101 batch
+    path computes real values, including the vwap-based `alpha041`.
 
     Note the absence of any normalization assertion: `Alpha101Stock` emits raw
     factor values by design (NORM-01 / D-09, locked below).
@@ -205,8 +209,8 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     factor = Alpha101Stock(
         _factor_config(
             dataset_config,
-            factor_names=["alpha001"],
-            data_columns=["open", "high", "low", "close", "volume", "amount"],
+            factor_names=["alpha001", "alpha041"],
+            data_columns=_ADJUSTED_STOCK_COLUMNS,
             tmp_path=tmp_path,
             dataset_cls=StockDataset,
         )
@@ -217,9 +221,8 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     assert isinstance(result, xr.Dataset)
     assert "alpha001" in result.data_vars
     assert np.isfinite(result["alpha001"].to_numpy()).sum() > 0
-
-
-_ADJUSTED_STOCK_COLUMNS = ["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"]
+    # alpha041 = sqrt(high * low) - vwap, so it exercises the vwap input.
+    assert np.isfinite(result["alpha041"].to_numpy()).sum() > 0
 
 
 def test_alpha158_stock_batch_cal_returns_xarray_dataset(
