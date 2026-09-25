@@ -19,20 +19,15 @@
 ```bash
 export WRDS_USERNAME=<your-wrds-username>   # 密码放在 ~/.pgpass
 # S&P 500（CRSP 自带的成分股记录，从 1925 年起）
-uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
+uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 --benchmark \
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
 # Nasdaq-100（Compustat 成分股，经 CCM 映射到 PERMNO，从 1995 年起；
 # 需要 Compustat 和 CCM 权限）
-uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 \
+uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 --benchmark \
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
-
-# 基准。QQQ 会直接转换成自己的仓库；SPY（PERMNO 84398）只需下载，
-# pipeline 首次使用时会把它转换到单独的仓库。
-uv run python scripts/ingest_wrds_crsp.py --qqq \
-    --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
-uv run python scripts/ingest_wrds_crsp.py --permnos 84398 \
-    --start-date 2010-01-01 --end-date 2024-12-31
 ```
+
+`--benchmark` 会按 CRSP PERMNO 额外下载跟踪该指数的 ETF（`crsp_sp500` 对应 SPY `84398`，`comp_nasdaq100` 对应 QQQ `86755`），并写入它自己的仓库 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`。
 
 每条命令在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<universe>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<universe>_membership.zarr`（每日的 `is_member`），其中 `<universe>` 为 `sp500` 或 `nasdaq100`。pipeline 从同一个数据根目录读取两者（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或 `Settings.data_root`）。
 
@@ -92,6 +87,8 @@ backtests/<model>/...         权重、净值、metrics.json、report.html
 - **回测**：在 `USEquityCrossectionSelectStockVectorBt_backtest` 项目下一个 run，以运行目录命名：带数据指纹的回测配置、全区间/样本内/样本外指标（写入 summary；有基准时还有 `benchmark/...` 和 `relative/...`），以及 HTML 报告。
 
 ## 基准对比
+
+基准数据是 ETF 在 CRSP 日线表（`crsp_a_stock.dsf_v2`，按 PERMNO 选取）中的逐日记录，和其他 CRSP 面板一样转换：`adjOpen`/`adjClose` 是全收益复权价，所以买入持有包含 ETF 的分红（扣除管理费，和真实持有一致）。它是可交易的 ETF，不是指数点位。
 
 启用基准时（默认启用），回测会用同样的 `init_cash`、手续费、滑点和"下一根 bar 开盘成交"的规则买入并持有 ETF，所以两条净值曲线可以逐 bar 对比。每个 ETF 放在自己的单标的仓库里（`wrds_crsp_spy_1d.zarr`、`wrds_crsp_qqq_1d.zarr`），不会进入股票面板，否则它会和自己的成分股一起参与排序。`metrics.json` 会多出两个指标块，各自按全区间/样本内/样本外拆分：
 

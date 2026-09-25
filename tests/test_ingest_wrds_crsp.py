@@ -372,6 +372,65 @@ def test_qqq_gets_its_own_benchmark_store(
     ] == [QQQ_PERMNO]
 
 
+#: SPY's PERMNO (`quantlab.base.config.SPY_PERMNO`), restated for the same
+#: reason as QQQ's.
+SPY_PERMNO = "84398"
+
+
+def test_benchmark_adds_the_sp500_etf_by_permno_to_the_roster(
+    mock_crsp_session, tmp_path, monkeypatch, capsys
+):
+    """`--universe crsp_sp500 --benchmark` pulls SPY (84398) beside the members."""
+    code = _run_script(
+        monkeypatch, _universe_args(tmp_path, "crsp_sp500", "--benchmark")
+    )
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    roster_line = next(
+        line for line in out.out.splitlines() if line.startswith("Roster (")
+    )
+    assert SPY_PERMNO in roster_line and AAPL_PERMNO in roster_line
+    assert QQQ_PERMNO not in roster_line
+
+
+def test_benchmark_adds_the_nasdaq100_etf_by_permno_to_the_roster(
+    mock_crsp_session, tmp_path, monkeypatch, capsys
+):
+    """`--universe comp_nasdaq100 --benchmark` pulls QQQ (86755), not SPY.
+
+    Writing the ETF's own store is the loop `--qqq` also runs, locked by the
+    QQQ store tests below.
+    """
+    code = _run_script(
+        monkeypatch,
+        [
+            "--universe", "comp_nasdaq100", "--benchmark",
+            "--start-date", "2015-01-01", "--end-date", "2015-12-31",
+            "--data-dir", str(tmp_path),
+        ],
+    )
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    roster_line = next(
+        line for line in out.out.splitlines() if line.startswith("Roster (")
+    )
+    assert QQQ_PERMNO in roster_line and "90319" in roster_line
+    assert SPY_PERMNO not in roster_line
+
+
+def test_etf_benchmark_configs_select_the_etf_alone():
+    from quantlab.base.config import CrspDatasetConfig
+
+    paths = dict(
+        zarr_file_path="spy.zarr", raw_data_dir_path="raw/wrds", reference_dir="ref"
+    )
+    spy = CrspDatasetConfig.etf_benchmark(permno=SPY_PERMNO, **paths)
+    assert (spy.permnos, spy.security_filter) == ((SPY_PERMNO,), "none")
+    assert CrspDatasetConfig.qqq_benchmark(**paths) == CrspDatasetConfig.etf_benchmark(
+        permno=QQQ_PERMNO, **paths
+    )
+
+
 #: The stable prefix the script prints when the equity roster holds no equity
 #: PERMNO. Restated here so a reworded line fails this test rather than silently
 #: turning the skip back into an unreported one (GAP-D).
@@ -533,6 +592,7 @@ def test_the_universe_conversion_also_writes_the_membership_panel(
             "counted server-side",
         ),
         (["--universe", "sp500", *AUG_2020], "invalid choice"),
+        (["--benchmark", *AUG_2020], "--benchmark pulls the ETF"),
         (
             ["--permnos", AAPL_PERMNO, *AUG_2020, "--security-filter", "bogus"],
             "invalid choice",
