@@ -1,0 +1,344 @@
+[
+  {
+    "symbol": "CLOER",
+    "signal_timestamp": "2025-01-21T00:00:00",
+    "fill_timestamp": "2025-01-22T00:00:00",
+    "price": 0.0009
+  },
+  {
+    "symbol": "HYZNW",
+    "signal_timestamp": "2025-02-04T00:00:00",
+    "fill_timestamp": "2025-02-05T00:00:00",
+    "price": 0.003
+  },
+  {
+    "symbol": "GNS-R",
+    "signal_timestamp": "2025-02-19T00:00:00",
+    "fill_timestamp": "2025-02-20T00:00:00",
+    "price": 0.002
+  },
+  {
+    "symbol": "GSMGW",
+    "signal_timestamp": "2025-02-19T00:00:00",
+    "fill_timestamp": "2025-02-20T00:00:00",
+    "price": 0.000201
+  },
+  {
+    "symbol": "JFR-R",
+    "signal_timestamp": "2025-02-19T00:00:00",
+    "fill_timestamp": "2025-02-20T00:00:00",
+    "price": 0.0315
+  },
+  {
+    "symbol": "NRO-R",
+    "signal_timestamp": "2025-02-19T00:00:00",
+    "fill_timestamp": "2025-02-20T00:00:00",
+    "price": 0.008
+  },
+  {
+    "symbol": "AFARW",
+    "signal_timestamp": "2025-03-19T00:00:00",
+    "fill_timestamp": "2025-03-20T00:00:00",
+    "price": 0.0288
+  },
+  {
+    "symbol": "APXIW",
+    "signal_timestamp": "2025-04-02T00:00:00",
+    "fill_timestamp": "2025-04-03T00:00:00",
+    "price": 0.0599
+  },
+  {
+    "symbol": "BTCTW",
+    "signal_timestamp": "2025-04-02T00:00:00",
+    "fill_timestamp": "2025-04-03T00:00:00",
+    "price": 0.0031
+  },
+  {
+    "symbol": "JQC-R",
+    "signal_timestamp": "2025-04-09T00:00:00",
+    "fill_timestamp": "2025-04-10T00:00:00",
+    "price": 0.01
+  },
+  {
+    "symbol": "SST-WS",
+    "signal_timestamp": "2025-04-09T00:00:00",
+    "fill_timestamp": "2025-04-10T00:00:00",
+    "price": 0.0062
+  },
+  {
+    "symbol": "FINS-R-W",
+    "signal_timestamp": "2025-04-24T00:00:00",
+    "fill_timestamp": "2025-04-25T00:00:00",
+    "price": 0.0781
+  },
+  {
+    "symbol": "PAVMZ",
+    "signal_timestamp": "2025-05-01T00:00:00",
+    "fill_timestamp": "2025-05-02T00:00:00",
+    "price": 0.002
+  },
+  {
+    "symbol": "PITAW",
+    "signal_timestamp": "2025-05-01T00:00:00",
+    "fill_timestamp": "2025-05-02T00:00:00",
+    "price": 0.0114
+  },
+  {
+    "symbol": "FINS-R",
+    "signal_timestamp": "2025-05-15T00:00:00",
+    "fill_timestamp": "2025-05-16T00:00:00",
+    "price": 0.0292
+  },
+  {
+    "symbol": "BHK-R-W",
+    "signal_timestamp": "2025-05-30T00:00:00",
+    "fill_timestamp": "2025-06-02T00:00:00",
+    "price": 0.08101
+  },
+  {
+    "symbol": "RSF-R-W",
+    "signal_timestamp": "2025-06-06T00:00:00",
+    "fill_timestamp": "2025-06-09T00:00:00",
+    "price": 0.075
+  },
+  {
+    "symbol": "BHK-R",
+    "signal_timestamp": "2025-06-23T00:00:00",
+    "fill_timestamp": "2025-06-24T00:00:00",
+    "price": 0.0925
+  },
+  {
+    "symbol": "LGHLW",
+    "signal_timestamp": "2025-06-23T00:00:00",
+    "fill_timestamp": "2025-06-24T00:00:00",
+    "price": 0.005
+  },
+  {
+    "symbol": "VRMEW",
+    "signal_timestamp": "2025-06-23T00:00:00",
+    "fill_timestamp": "2025-06-24T00:00:00",
+    "price": 0.023
+  },
+  {
+    "symbol": "IMTXW",
+    "signal_timestamp": "2025-06-30T00:00:00",
+    "fill_timestamp": "2025-07-01T00:00:00",
+    "price": 0.008
+  },
+  {
+    "symbol": "RSF-R",
+    "signal_timestamp": "2025-07-08T00:00:00",
+    "fill_timestamp": "2025-07-09T00:00:00",
+    "price": 0.053
+  },
+  {
+    "symbol": "PETWW",
+    "signal_timestamp": "2025-07-29T00:00:00",
+    "fill_timestamp": "2025-07-30T00:00:00",
+    "price": 0.0037
+  },
+  {
+    "symbol": "BIT-R-W",
+    "signal_timestamp": "2025-08-26T00:00:00",
+    "fill_timestamp": "2025-08-27T00:00:00",
+    "price": 0.0801
+  },
+  {
+    "symbol": "HPKEW",
+    "signal_timestamp": "2025-08-26T00:00:00",
+    "fill_timestamp": "2025-08-27T00:00:00",
+    "price": 0.1095
+  },
+  {
+    "symbol": "MODV",
+    "signal_timestamp": "2025-09-03T00:00:00",
+    "fill_timestamp": "2025-09-04T00:00:00",
+    "price": 0.5305
+  },
+  {
+    "symbol": "BIT-R",
+    "signal_timestamp": "2025-09-10T00:00:00",
+    "fill_timestamp": "2025-09-11T00:00:00",
+    "price": 0.101
+  },
+  {
+    "symbol": "RIV-R-W",
+    "signal_timestamp": "2025-09-17T00:00:00",
+    "fill_timestamp": "2025-09-18T00:00:00",
+    "price": 0.0401
+  },
+  {
+    "symbol": "SYTAW",
+    "signal_timestamp": "2025-09-24T00:00:00",
+    "fill_timestamp": "2025-09-25T00:00:00",
+    "price": 0.0051
+  },
+  {
+    "symbol": "GOVXW",
+    "signal_timestamp": "2025-10-01T00:00:00",
+    "fill_timestamp": "2025-10-02T00:00:00",
+    "price": 0.0065
+  },
+  {
+    "symbol": "OUSTW",
+    "signal_timestamp": "2025-10-01T00:00:00",
+    "fill_timestamp": "2025-10-02T00:00:00",
+    "price": 0.0018
+  },
+  {
+    "symbol": "HYMCL",
+    "signal_timestamp": "2025-10-08T00:00:00",
+    "fill_timestamp": "2025-10-09T00:00:00",
+    "price": 0.003
+  },
+  {
+    "symbol": "RIV-R",
+    "signal_timestamp": "2025-10-08T00:00:00",
+    "fill_timestamp": "2025-10-09T00:00:00",
+    "price": 0.009
+  },
+  {
+    "symbol": "CURIW",
+    "signal_timestamp": "2025-10-15T00:00:00",
+    "fill_timestamp": "2025-10-16T00:00:00",
+    "price": 0.0125
+  },
+  {
+    "symbol": "EMO-R",
+    "signal_timestamp": "2025-10-15T00:00:00",
+    "fill_timestamp": "2025-10-16T00:00:00",
+    "price": 0.007
+  },
+  {
+    "symbol": "PXSAW",
+    "signal_timestamp": "2025-10-15T00:00:00",
+    "fill_timestamp": "2025-10-16T00:00:00",
+    "price": 0.03
+  },
+  {
+    "symbol": "UTF-R",
+    "signal_timestamp": "2025-10-15T00:00:00",
+    "fill_timestamp": "2025-10-16T00:00:00",
+    "price": 0.0216
+  },
+  {
+    "symbol": "BKT-R",
+    "signal_timestamp": "2025-10-22T00:00:00",
+    "fill_timestamp": "2025-10-23T00:00:00",
+    "price": 0.0856
+  },
+  {
+    "symbol": "EMISU",
+    "signal_timestamp": "2025-10-22T00:00:00",
+    "fill_timestamp": "2025-10-23T00:00:00",
+    "price": 10.01
+  },
+  {
+    "symbol": "BRW-R",
+    "signal_timestamp": "2025-10-29T00:00:00",
+    "fill_timestamp": "2025-10-30T00:00:00",
+    "price": 0.002
+  },
+  {
+    "symbol": "CPAAW",
+    "signal_timestamp": "2025-10-29T00:00:00",
+    "fill_timestamp": "2025-10-30T00:00:00",
+    "price": 0.0079
+  },
+  {
+    "symbol": "CCRD",
+    "signal_timestamp": "2025-11-05T00:00:00",
+    "fill_timestamp": "2025-11-06T00:00:00",
+    "price": 24.0
+  },
+  {
+    "symbol": "NLSPW",
+    "signal_timestamp": "2025-11-05T00:00:00",
+    "fill_timestamp": "2025-11-06T00:00:00",
+    "price": 0.0204
+  },
+  {
+    "symbol": "JGH-R",
+    "signal_timestamp": "2025-11-19T00:00:00",
+    "fill_timestamp": "2025-11-20T00:00:00",
+    "price": 0.0022
+  },
+  {
+    "symbol": "OPP-R",
+    "signal_timestamp": "2025-11-19T00:00:00",
+    "fill_timestamp": "2025-11-20T00:00:00",
+    "price": 0.0017
+  },
+  {
+    "symbol": "SRDX",
+    "signal_timestamp": "2025-11-19T00:00:00",
+    "fill_timestamp": "2025-11-20T00:00:00",
+    "price": 42.98
+  },
+  {
+    "symbol": "UKOMW",
+    "signal_timestamp": "2025-11-19T00:00:00",
+    "fill_timestamp": "2025-11-20T00:00:00",
+    "price": 0.0007
+  },
+  {
+    "symbol": "GFR-R-W",
+    "signal_timestamp": "2025-11-26T00:00:00",
+    "fill_timestamp": "2025-11-28T00:00:00",
+    "price": 1.09
+  },
+  {
+    "symbol": "NETDW",
+    "signal_timestamp": "2025-11-26T00:00:00",
+    "fill_timestamp": "2025-11-28T00:00:00",
+    "price": 0.0015
+  },
+  {
+    "symbol": "ATMVU",
+    "signal_timestamp": "2025-12-11T00:00:00",
+    "fill_timestamp": "2025-12-12T00:00:00",
+    "price": 11.2
+  },
+  {
+    "symbol": "GHLD",
+    "signal_timestamp": "2025-12-11T00:00:00",
+    "fill_timestamp": "2025-12-12T00:00:00",
+    "price": 20.01
+  },
+  {
+    "symbol": "HTOOW",
+    "signal_timestamp": "2025-12-11T00:00:00",
+    "fill_timestamp": "2025-12-12T00:00:00",
+    "price": 0.0026
+  },
+  {
+    "symbol": "LVTX",
+    "signal_timestamp": "2025-12-11T00:00:00",
+    "fill_timestamp": "2025-12-12T00:00:00",
+    "price": 1.74
+  },
+  {
+    "symbol": "BARK-WS",
+    "signal_timestamp": "2025-12-18T00:00:00",
+    "fill_timestamp": "2025-12-19T00:00:00",
+    "price": 0.0052
+  },
+  {
+    "symbol": "RBOT-WS",
+    "signal_timestamp": "2025-12-18T00:00:00",
+    "fill_timestamp": "2025-12-19T00:00:00",
+    "price": 0.0082
+  },
+  {
+    "symbol": "RVPHW",
+    "signal_timestamp": "2025-12-18T00:00:00",
+    "fill_timestamp": "2025-12-19T00:00:00",
+    "price": 0.004
+  },
+  {
+    "symbol": "BTMDW",
+    "signal_timestamp": "2025-12-26T00:00:00",
+    "fill_timestamp": "2025-12-29T00:00:00",
+    "price": 0.0145
+  }
+]

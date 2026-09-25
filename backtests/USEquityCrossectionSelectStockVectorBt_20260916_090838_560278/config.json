@@ -1,0 +1,279 @@
+{
+  "model_mode": "train",
+  "start_date": "2025-01-11",
+  "end_date": "2026-01-01",
+  "output_dir": "/home/zhrdai/projects/quantlab2/backtests",
+  "rebalance_periods": 5,
+  "checkpoint": null,
+  "cv_project_dir": null,
+  "fees": 0.0005,
+  "slippage": 0.0005,
+  "init_cash": 1000000.0,
+  "use_wandb": true,
+  "name": "quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt",
+  "direction": "long_only",
+  "top_n": 200,
+  "score_label": null,
+  "price_dataset": {
+    "zarr_file_path": "/home/zhrdai/projects/quantlab2/data/data/us_equity/1d/us_all.zarr",
+    "start_date": "2025-01-11",
+    "end_date": "2026-01-01",
+    "symbols": null,
+    "kwargs": null,
+    "name": "quantlab.dataset.stock.StockDataset",
+    "raw_data_dir_path": "/home/zhrdai/projects/quantlab2/data/downloads",
+    "catalog_path": "",
+    "market": "us_equity",
+    "frequency": "1d",
+    "vendor": "tiingo"
+  },
+  "model": {
+    "factors": [
+      {
+        "name": "quantlab.factor.universe_filter.UniverseFilteredFactor",
+        "factor": {
+          "window": 252,
+          "dataset": {
+            "zarr_file_path": "/home/zhrdai/projects/quantlab2/data/data/us_equity/1d/us_all.zarr",
+            "start_date": "2023-05-03",
+            "end_date": "2026-01-01",
+            "symbols": null,
+            "kwargs": null,
+            "name": "quantlab.dataset.stock.StockDataset",
+            "raw_data_dir_path": "/home/zhrdai/projects/quantlab2/data/downloads",
+            "catalog_path": "",
+            "market": "us_equity",
+            "frequency": "1d",
+            "vendor": "tiingo"
+          },
+          "file_path": null,
+          "factor_names": [
+            "alpha001",
+            "alpha002",
+            "alpha003",
+            "alpha004",
+            "alpha005",
+            "alpha006",
+            "alpha007",
+            "alpha008",
+            "alpha009",
+            "alpha010",
+            "alpha011",
+            "alpha012",
+            "alpha013",
+            "alpha014",
+            "alpha015",
+            "alpha016",
+            "alpha017",
+            "alpha018",
+            "alpha019",
+            "alpha020",
+            "alpha021",
+            "alpha022",
+            "alpha023",
+            "alpha024",
+            "alpha025",
+            "alpha026",
+            "alpha027",
+            "alpha028",
+            "alpha029",
+            "alpha030",
+            "alpha031",
+            "alpha032",
+            "alpha033",
+            "alpha034",
+            "alpha035",
+            "alpha036",
+            "alpha037",
+            "alpha038",
+            "alpha039",
+            "alpha040",
+            "alpha041",
+            "alpha042",
+            "alpha043",
+            "alpha044",
+            "alpha045",
+            "alpha046",
+            "alpha047",
+            "alpha049",
+            "alpha050",
+            "alpha051",
+            "alpha052",
+            "alpha053",
+            "alpha054",
+            "alpha055",
+            "alpha057",
+            "alpha060",
+            "alpha061",
+            "alpha062",
+            "alpha064",
+            "alpha065",
+            "alpha066",
+            "alpha068",
+            "alpha071",
+            "alpha072",
+            "alpha073",
+            "alpha074",
+            "alpha075",
+            "alpha077",
+            "alpha078",
+            "alpha081",
+            "alpha083",
+            "alpha084",
+            "alpha085",
+            "alpha086",
+            "alpha088",
+            "alpha092",
+            "alpha094",
+            "alpha095",
+            "alpha096",
+            "alpha098",
+            "alpha099",
+            "alpha101"
+          ],
+          "start_date": "2024-01-10",
+          "end_date": "2026-01-01",
+          "symbols": null,
+          "kwargs": null,
+          "name": "quantlab.factor.alpha101.Alpha101Stock",
+          "mode": "batch",
+          "data_columns": [
+            "adjOpen",
+            "adjHigh",
+            "adjLow",
+            "adjClose",
+            "adjVolume"
+          ],
+          "njobs": 64
+        },
+        "min_price": 5.0,
+        "min_dollar_volume": 1000000.0,
+        "window": 20,
+        "exclude_non_common": true
+      }
+    ],
+    "labels": [
+      {
+        "name": "quantlab.factor.universe_filter.UniverseFilteredFactor",
+        "factor": {
+          "window": 5,
+          "dataset": {
+            "zarr_file_path": "/home/zhrdai/projects/quantlab2/data/data/us_equity/1d/us_all.zarr",
+            "start_date": "2009-11-12",
+            "end_date": "2026-01-01",
+            "symbols": null,
+            "kwargs": null,
+            "name": "quantlab.dataset.stock.StockDataset",
+            "raw_data_dir_path": "/home/zhrdai/projects/quantlab2/data/downloads",
+            "catalog_path": "",
+            "market": "us_equity",
+            "frequency": "1d",
+            "vendor": "tiingo"
+          },
+          "file_path": null,
+          "factor_names": [
+            "fret_5"
+          ],
+          "start_date": "2010-01-01",
+          "end_date": "2026-01-01",
+          "symbols": null,
+          "kwargs": {
+            "n_forward_periods": 5
+          },
+          "name": "quantlab.label.fret.Return",
+          "mode": "batch",
+          "data_columns": [
+            "adjClose"
+          ],
+          "njobs": 64
+        },
+        "min_price": 5.0,
+        "min_dollar_volume": 1000000.0,
+        "window": 20,
+        "exclude_non_common": true
+      }
+    ],
+    "model_save_dir": "./model_ckpt",
+    "factor_data_strategy": "cal",
+    "label_data_strategy": "cal",
+    "start_date": "2010-01-01",
+    "end_date": "2026-01-01",
+    "hyperparameters": {
+      "early_stopping_rounds": 50,
+      "device": "cuda"
+    },
+    "early_stopping": true,
+    "early_stopping_patience": 50,
+    "val_size": 0.2,
+    "random_seed": 42,
+    "train_start": "2016-01-01",
+    "train_end": "2024-12-31",
+    "test_start": "2025-01-10",
+    "test_end": "2026-01-01",
+    "name": "quantlab.ml_model.xgb.XGBoostRegressor",
+    "resolved_hyperparameters": {
+      "device": "cuda",
+      "eval_metric": "rmse",
+      "seed": 42,
+      "early_stopping_rounds": 50,
+      "num_boost_round": 1000
+    }
+  },
+  "benchmark_dataset": null,
+  "data_fingerprint": {
+    "train_factor[0]:UniverseFilteredFactor": {
+      "algorithm": "sha256",
+      "digest": "de84237e9f7f39b55e7b6be90d9a2e3ffb43ff289c384e7a434c0e0a88e12715",
+      "variables": [
+        "adjClose",
+        "adjHigh",
+        "adjLow",
+        "adjOpen",
+        "adjVolume"
+      ],
+      "start": "2009-04-24T00:00:00",
+      "end": "2025-12-31T00:00:00",
+      "n_timestamps": 4199,
+      "n_symbols": 14430
+    },
+    "train_label[0]:UniverseFilteredFactor": {
+      "algorithm": "sha256",
+      "digest": "4f64ad5bc12d865bfa6fe0b50d18f92f8c11c60f0d36526889fce38d7e8e2992",
+      "variables": [
+        "adjClose"
+      ],
+      "start": "2009-11-12T00:00:00",
+      "end": "2025-12-31T00:00:00",
+      "n_timestamps": 4058,
+      "n_symbols": 14430
+    },
+    "factor[0]:UniverseFilteredFactor": {
+      "algorithm": "sha256",
+      "digest": "dd0bda4d77cdb24d3bbf1b628fcd3b21b5bef6f3ebab0699d0ca5f4fe9c543e8",
+      "variables": [
+        "adjClose",
+        "adjHigh",
+        "adjLow",
+        "adjOpen",
+        "adjVolume"
+      ],
+      "start": "2023-05-03T00:00:00",
+      "end": "2025-12-31T00:00:00",
+      "n_timestamps": 669,
+      "n_symbols": 14430
+    },
+    "price_dataset": {
+      "algorithm": "sha256",
+      "digest": "9c8402f1ff377484b2bab4440d9210ab69f413db694a1a4fad9f87af98339a3a",
+      "variables": [
+        "adjClose",
+        "adjOpen"
+      ],
+      "start": "2025-01-13T00:00:00",
+      "end": "2025-12-31T00:00:00",
+      "n_timestamps": 244,
+      "n_symbols": 14430
+    }
+  },
+  "trained_checkpoint": "/home/zhrdai/projects/quantlab2/model_ckpt/XGBoostRegressor_trial_20260916_090642_602310/XGBoostRegressor_total/XGBoostRegressor_total.joblib"
+}

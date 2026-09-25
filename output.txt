@@ -1,0 +1,20 @@
+Reference tables at: /home/zhrdai/projects/quantlab2/data/downloads/us_equity/1d/wrds_crsp/_reference
+  ccmxpf_lnkhist: 1,222 row(s)
+  idxcst_his: 523 row(s)
+  stkdelists: 29,833 row(s)
+  stkdistributions: 1,101,681 row(s)
+  stksecurityinfohist: 191,048 row(s)
+Roster (153 PERMNO(s)): 10107, 10145, 10696, 10909, 11403, 11618, 11896, 12084, 12308, 13323, 13379, 13407, 13511, 13628, 13641, 13856, 13949, 14008, 14542, 14593, 14655, 14702, 15358, 15408, 15488, 15579, 15850, 15909, 16048, 16309, 16649, 16968, 17341, 17685, 17942, 17972, 18143, 18312, 18420, 18421, 18484, 18726, 18911, 18940, 19502, 19751, 19788, 20189, 20190, 20894, 21020, 21776, 22206, 22265, 22623, 22976, 23570, 23660, 23931, 24109, 24252, 25062, 27549, 44644, 45911, 46886, 48486, 53613, 59328, 60506, 60871, 61241, 61621, 62148, 66384, 75034, 75510, 75828, 76076, 76201, 76614, 76709, 76744, 76841, 77037, 77178, 77274, 77338, 77357, 77702, 78975, 78987, 79103, 79363, 79678, 79906, 80320, 80924, 81472, 81481, 82598, 82686, 83111, 83621, 83639, 84761, 84788, 85631, 85753, 85913, 86158, 86211, 86288, 86356, 86580, 86783, 87055, 87056, 88031, 88182, 88351, 88352, 88360, 88362, 88446, 88860, 88949, 89006, 89017, 89031, 89393, 89444, 89525, 89641, 89927, 90178, 90227, 90319, 90455, 90664, 90808, 90857, 91103, 91556, 91907, 91937, 92203, 92221, 92322, 93002, 93089, 93132, 93436
+Pre-flight WRDS volume estimate (counted with count(*) per symbol batch, no data pulled):
+  symbols:           153
+  window:            2020-01-01 .. 2025-12-31
+  year buckets:      6
+  rows:              216,674
+  bytes/row:         150
+  raw on disk (~):   0.03 GiB
+  ceilings:          raw-bytes 20.00 GiB, raw-rows 700,000,000
+  note:              bytes/row 150 is an ASSUMPTION for CRSP's 50 mostly-short columns, not a measured shard size; a live smoke run should replace it.
+Acquiring 153 PERMNO(s) from WRDS (NYSE TAQ millisecond NBBO; CRSP Stock v2 daily) over 2020-01-01..2025-12-31 (refresh=False)
+0 PERMNO(s) succeeded, 0 failed
+Raw data written under: /home/zhrdai/projects/quantlab2/data/downloads/us_equity/1d/wrds_crsp/wrds
+Converting 153 PERMNO(s) to the equity panel in year windows (resumable), filter 'equity_common'
