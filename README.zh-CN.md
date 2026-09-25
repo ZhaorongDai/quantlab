@@ -8,8 +8,8 @@ quantlab 是一个用于量化股票研究的 Python 后端。它用五个步骤
 
 - **文档：** [docs/README.md](docs/README.md)（英文），[docs/zh-CN/README.md](docs/zh-CN/README.md)（中文）
 - **示例：** [examples/](examples/README.md)
-- **源代码：** https://github.com/ZhaorongDai/quantlab2
-- **问题反馈：** https://github.com/ZhaorongDai/quantlab2/issues
+- **源代码：** https://github.com/ZhaorongDai/quantlab
+- **问题反馈：** https://github.com/ZhaorongDai/quantlab/issues
 - **参与贡献：** [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ```text
@@ -42,8 +42,8 @@ quantlab 需要 Python 3.13 或更高版本、[uv](https://docs.astral.sh/uv/) �
 （KunQuant 在运行时编译因子代码）。
 
 ```bash
-git clone https://github.com/ZhaorongDai/quantlab2.git
-cd quantlab2
+git clone https://github.com/ZhaorongDai/quantlab.git
+cd quantlab
 uv sync
 ```
 

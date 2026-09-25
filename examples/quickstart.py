@@ -152,6 +152,7 @@ def make_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoos
 
 
 def main() -> None:
+    """Run the end-to-end tour in a temporary directory."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
 
