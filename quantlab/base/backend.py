@@ -3,7 +3,8 @@
 This module defines the two interfaces the rest of the pipeline uses to keep
 "where something is stored" separate from "what it means". ``DataBackend`` is
 the contract a dataset or factor object talks to when it reads, writes,
-filters or converts its panel; concrete implementations live in
+filters or converts its *panel* (an ``xarray.Dataset`` indexed by
+``timestamp`` and ``symbol``). Concrete implementations live in
 ``quantlab/backend.py`` (``XrBackend`` for Zarr, ``PlBackend`` for Parquet).
 ``ModelBackend`` is the much smaller counterpart for persisting a fitted
 model object. Neither contract assumes a particular schema, so a backend can
@@ -62,12 +63,12 @@ class DataBackend(ABC):
         True
         >>> XrBackend().data
         Traceback (most recent call last):
-        AttributeError: Please cal 'read' or 'to_internal' first.
+        AttributeError: Please call 'read' or 'to_internal' first.
         """
         try:
             return self._data
         except AttributeError:
-            raise AttributeError("Please cal 'read' or 'to_internal' first.")
+            raise AttributeError("Please call 'read' or 'to_internal' first.")
 
     @data.setter
     def data(self, data):
@@ -88,7 +89,7 @@ class DataBackend(ABC):
 
         Parameters
         ----------
-        indexes : Optional[list[str]]
+        indexes : list[str], optional
             The dimensions the returned dataset must be indexed by,
             in order. ``None`` asks for no particular shape.
 
@@ -119,6 +120,13 @@ class DataBackend(ABC):
         ``data``, and must raise ``FileNotFoundError`` when ``path`` does not
         exist rather than deferring the failure to a later collect.
 
+        Parameters
+        ----------
+        path : str
+            Location of the store.
+        n : int
+            Maximum number of rows to return.
+
         Examples
         --------
         >>> XrBackend().head("prices.zarr", 2).collect().shape
@@ -129,6 +137,13 @@ class DataBackend(ABC):
     @abstractmethod
     def read(self, path: str, **kwargs) -> Self:
         """Load the store at ``path`` into ``data`` and return ``self``.
+
+        Parameters
+        ----------
+        path : str
+            Location of the store.
+        **kwargs
+            Options for the underlying reader.
 
         Examples
         --------
@@ -141,6 +156,13 @@ class DataBackend(ABC):
     def write(self, path: str, **kwargs) -> Self:
         """Persist ``data`` to ``path`` and return ``self``.
 
+        Parameters
+        ----------
+        path : str
+            Location of the store.
+        **kwargs
+            Options for the underlying writer.
+
         Examples
         --------
         >>> XrBackend().to_internal(panel).write("prices.zarr")
@@ -152,6 +174,12 @@ class DataBackend(ABC):
     def to_internal(self, data) -> Self:
         """Adopt an in-memory object as ``data``, bypassing disk.
 
+        Parameters
+        ----------
+        data : object
+            The object to hold, typically an ``xarray.Dataset`` or a
+            ``polars.LazyFrame``.
+
         Examples
         --------
         >>> XrBackend().to_internal(panel).data is panel
@@ -162,6 +190,15 @@ class DataBackend(ABC):
     @abstractmethod
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
         """Narrow ``data`` in place to ``start_date..end_date`` on ``col``.
+
+        Parameters
+        ----------
+        col : str
+            The date column or dimension to filter on.
+        start_date : str
+            First date to keep, inclusive.
+        end_date : str
+            Last date to keep, inclusive.
 
         Examples
         --------
@@ -175,6 +212,13 @@ class DataBackend(ABC):
     @abstractmethod
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
         """Narrow ``data`` in place to the rows whose ``col`` is in ``symbols``.
+
+        Parameters
+        ----------
+        col : str
+            The symbol column or dimension to filter on.
+        symbols : tuple[str, ...]
+            The symbols to keep.
 
         Examples
         --------
@@ -256,6 +300,13 @@ class ModelBackend(ABC):
     def read(self, path: str, **kwargs) -> Self:
         """Load the model stored at ``path`` and return ``self``.
 
+        Parameters
+        ----------
+        path : str
+            Location of the checkpoint file.
+        **kwargs
+            Options for the underlying loader.
+
         Examples
         --------
         >>> MlBackend().read("checkpoints/model.joblib")
@@ -267,6 +318,13 @@ class ModelBackend(ABC):
     def write(self, path: str, **kwargs) -> Self:
         """Persist the held model to ``path`` and return ``self``.
 
+        Parameters
+        ----------
+        path : str
+            Location of the checkpoint file.
+        **kwargs
+            Options for the underlying writer.
+
         Examples
         --------
         >>> MlBackend().to_internal(fitted).write("checkpoints/model.joblib")
@@ -277,6 +335,11 @@ class ModelBackend(ABC):
     @abstractmethod
     def to_internal(self, model) -> Self:
         """Adopt an in-memory model object, bypassing disk.
+
+        Parameters
+        ----------
+        model : object
+            The fitted model to hold.
 
         Examples
         --------

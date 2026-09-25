@@ -658,7 +658,7 @@ def test_append_refuses_a_changed_dtype(tmp_path: Path) -> None:
 #: all three places is what stops a message true of a single shape from
 #: surviving by being checked only where it happens to hold.
 _OVERLAP_CONSEQUENCE = (
-    "no longer STRICTLY increasing -- duplicate labels, out-of-order labels, "
+    "no longer strictly increasing -- duplicate labels, out-of-order labels, "
     "or both"
 )
 
