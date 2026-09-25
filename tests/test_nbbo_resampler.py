@@ -308,7 +308,6 @@ def test_filter_policy_defaults_follow_d10_and_come_from_the_config() -> None:
     config = NbboDatasetConfig(
         zarr_file_path="/tmp/nbbo-filter-policy-unused/panel.zarr",
         raw_data_dir_path="/tmp/nbbo-filter-policy-unused/raw",
-        catalog_path="/tmp/nbbo-filter-policy-unused/catalog",
         drop_locked=True,
         keep_qu_cond=["R", "O"],  # a JSON round trip hands back a list
     )

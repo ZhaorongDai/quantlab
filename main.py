@@ -23,7 +23,6 @@ ds = StockDataset(
     DatasetConfig(
         zarr_file_path='/Users/daizhaorong/projects/quantlab/data/data/us_equity/1d/us_all.zarr',
         symbols=('NVDA', 'AMZN', 'AMD'),
-        catalog_path='',
         raw_data_dir_path='',
         market='us_equity',
         frequency='1d',

@@ -329,7 +329,6 @@ def _config(root: Path) -> CrspDatasetConfig:
             / "wrds_crsp_sp500_1d.zarr"
         ),
         raw_data_dir_path=str(raw_dir),
-        catalog_path=str(root / "data" / "data" / "catalog"),
         reference_dir=str(reference_dir),
         start_date=START_DATE,
         end_date=END_DATE,

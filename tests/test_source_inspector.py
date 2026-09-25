@@ -990,7 +990,6 @@ def _browse_dataset_config(tmp_path: Path, vendor: str = "tiingo"):
     return DatasetConfig(
         raw_data_dir_path=str(parent / vendor),
         zarr_file_path=str(tmp_path / "out.zarr"),
-        catalog_path=str(tmp_path / "catalog"),
         market="us_equity",
         frequency="1d",
         vendor=vendor,
@@ -1293,7 +1292,6 @@ def test_browse_zarr_says_an_integer_axis_is_permnos_and_where_the_names_are(
     config = DatasetConfig(
         raw_data_dir_path=str(tmp_path / "crsp" / "raw"),
         zarr_file_path=str(store),
-        catalog_path=str(tmp_path / "crsp" / "catalog"),
         market="us_equity",
         frequency="1d",
     )
@@ -1388,7 +1386,6 @@ def test_browse_raw_reads_no_store_at_construction(
     config = DatasetConfig(
         raw_data_dir_path=str(parent / "tiingo"),
         zarr_file_path=str(tmp_path / "absent.zarr"),
-        catalog_path=str(tmp_path / "catalog"),
         market="us_equity",
         frequency="1d",
         vendor="tiingo",

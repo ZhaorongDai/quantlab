@@ -119,9 +119,6 @@ def test_sp500_constituent_config_uses_market_frequency_path_convention() -> Non
     cfg = sp500_constituent_config()
 
     assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
-    # CONFLICT 4's user-visible consequence: a membership panel is never handed
-    # a nautilus catalog destination, because it has no bar representation.
-    assert "catalog_path" not in cfg.to_dict()
 
 
 def test_nasdaq100_constituent_config_uses_market_frequency_path_convention() -> None:

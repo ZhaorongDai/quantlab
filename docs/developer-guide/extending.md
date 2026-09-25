@@ -141,7 +141,6 @@ print("second run coverage:", again.coverage)
 dataset_config = DatasetConfig(
     raw_data_dir_path=config.raw_data_dir_path,
     zarr_file_path=str(root / "demo.zarr"),
-    catalog_path=str(root / "catalog"),
     market="us_equity", frequency="1d", vendor="demo",
 )
 conversion = convert(source, dataset_config, granularity="month")
@@ -196,12 +195,11 @@ For a real vendor, a few more steps apply:
 ## A dataset
 
 A dataset converts a raw tier into a dense panel and stores it. For market
-bars, subclass `MarketDataset` (`quantlab.base.data`) and implement four
+bars, subclass `MarketDataset` (`quantlab.base.data`) and implement three
 hooks: `_raw_data_to_xr` returns the panel for the configured date range,
 `_raw_data_to_xr_window` returns one time window of it on a given symbol axis
-(used by chunked conversion), and `_to_kunquant` and `_to_nautilus` export to
-the KunQuant factor engine and the Nautilus Trader catalog. An export you do
-not support may raise. Everything else, including dates, storage, cleaning and
+(used by chunked conversion), and `_to_kunquant` exports to the KunQuant
+factor engine. Everything else, including dates, storage, cleaning and
 resumable chunked conversion, is inherited.
 
 This dataset reads daily bars from a single long-format CSV file:
@@ -245,9 +243,6 @@ class CsvBarDataset(MarketDataset):
             for column in data_columns
         }
         return arrays, data["symbol"].values, data["timestamp"].values
-
-    def _to_nautilus(self, data, venue, n_jobs):
-        raise NotImplementedError("CsvBarDataset has no Nautilus export")
 ```
 
 With a CSV of three symbols over 60 business days written to `root`, the whole
@@ -257,7 +252,6 @@ lifecycle works unchanged, including resumable month-by-month conversion:
 config = DatasetConfig(
     raw_data_dir_path=str(root / "bars.csv"),
     zarr_file_path=str(root / "bars.zarr"),
-    catalog_path=str(root / "catalog"),
     market="us_equity", frequency="1d",
     start_date="2024-01-02", end_date="2024-03-29",
 )

@@ -40,7 +40,7 @@ Every dataset produces the same shape of object: an `xarray.Dataset` whose data 
 
 ### The config
 
-A dataset is built from a config dataclass. `BaseDatasetConfig` carries what every dataset needs: `zarr_file_path`, `start_date`, `end_date`, `symbols` and a free-form `kwargs` dictionary. `DatasetConfig` adds the fields of a market-data panel: `raw_data_dir_path`, `catalog_path`, `market`, `frequency` and `vendor`. The dataset class never branches on `market` or `frequency`; they are labels used by the vendor registry to pick a converter.
+A dataset is built from a config dataclass. `BaseDatasetConfig` carries what every dataset needs: `zarr_file_path`, `start_date`, `end_date`, `symbols` and a free-form `kwargs` dictionary. `DatasetConfig` adds the fields of a market-data panel: `raw_data_dir_path`, `market`, `frequency` and `vendor`. The dataset class never branches on `market` or `frequency`; they are labels used by the vendor registry to pick a converter.
 
 ```python
 >>> import dataclasses
@@ -49,7 +49,6 @@ A dataset is built from a config dataclass. `BaseDatasetConfig` carries what eve
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
 ...     zarr_file_path=str(root / "data/us_all.zarr"),
-...     catalog_path=str(root / "catalog"),
 ...     market="us_equity",
 ...     frequency="1d",
 ...     vendor="tiingo",
@@ -205,7 +204,7 @@ For a long history, `from_raw_data_chunked()` converts a month, quarter or year 
 
 ### A new market source
 
-A new source needs one subclass of `MarketDataset` and a config. Four methods are required. `_raw_data_to_xr` returns the panel for the whole configured range, deduplicated and unique on `(timestamp, symbol)`. `_raw_data_to_xr_window` returns one date window, reindexed onto `symbols` when they are given; the simplest form slices the whole-range result. `_to_kunquant` maps the panel onto arrays, and `_to_nautilus` may raise if there is no Nautilus exit. The example reads one CSV per symbol and is saved as `csv_daily.py`.
+A new source needs one subclass of `MarketDataset` and a config. Three methods are required. `_raw_data_to_xr` returns the panel for the whole configured range, deduplicated and unique on `(timestamp, symbol)`. `_raw_data_to_xr_window` returns one date window, reindexed onto `symbols` when they are given; the simplest form slices the whole-range result. `_to_kunquant` maps the panel onto arrays. The example reads one CSV per symbol and is saved as `csv_daily.py`.
 
 ```python
 # csv_daily.py
@@ -238,9 +237,6 @@ class CsvDailyDataset(MarketDataset):
         inputs = {c: np.ascontiguousarray(data[c].to_numpy().astype(np.float32))
                   for c in data_columns}
         return inputs, data["symbol"].values, data["timestamp"].values
-
-    def _to_nautilus(self, data, venue, n_jobs):
-        raise NotImplementedError("this dataset has no Nautilus exit")
 ```
 
 `to_xarray()` builds the dense grid, so `BBB` below gets NaN on the day it has no file row. The subclass needs no other change to work with the rest of the pipeline.
@@ -258,7 +254,6 @@ class CsvDailyDataset(MarketDataset):
 >>> csv_config = DatasetConfig(
 ...     raw_data_dir_path=str(csv_raw),
 ...     zarr_file_path=str(root / "csv_daily.zarr"),
-...     catalog_path=str(root / "catalog"),
 ...     market="us_equity",
 ...     frequency="1d",
 ... )
@@ -275,10 +270,6 @@ timestamp
 >>> inputs, symbols, timestamps = ds.to_kunquant(("close",))
 >>> inputs["close"].shape, symbols.tolist()
 ((5, 2), ['AAA', 'BBB'])
->>> ds.to_nautilus(write=False)
-Traceback (most recent call last):
-    ...
-NotImplementedError: this dataset has no Nautilus exit
 ```
 
 A subclass that leaves out a required method cannot be constructed:
@@ -348,7 +339,7 @@ Reading a store that does not exist raises `FileNotFoundError: File .../missing.
 
 Intraday datasets use `XnysSessionCalendar` (`quantlab.dataset._support.session_calendar`) to turn an Eastern-time window into each date's real exchange open and close, half days included, as naive UTC timestamps.
 
-`StockDataset` has no Nautilus exit; `to_nautilus()` raises `ValueError("Not finished")`. Both built-in datasets implement `to_kunquant()`.
+Both built-in datasets implement `to_kunquant()`.
 
 Two rows with the same `(timestamp, symbol)` reaching `to_xarray()` raise `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`. Deduplicate first.
 

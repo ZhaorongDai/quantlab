@@ -101,7 +101,6 @@ def three_year_stock_config(
         return DatasetConfig(
             raw_data_dir_path=str(raw_dir / "tiingo"),
             zarr_file_path=str(tmp_path / store_name),
-            catalog_path=str(tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
             vendor="tiingo",
@@ -1976,7 +1975,6 @@ class _GrowingRoster:
         return DatasetConfig(
             raw_data_dir_path=str(self._raw_dir / "tiingo"),
             zarr_file_path=str(self._tmp_path / store_name),
-            catalog_path=str(self._tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
             vendor="tiingo",
@@ -2391,7 +2389,6 @@ class _ExtendableRaw:
         return DatasetConfig(
             raw_data_dir_path=str(self._raw_dir / "tiingo"),
             zarr_file_path=str(self._tmp_path / store_name),
-            catalog_path=str(self._tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
             vendor="tiingo",
@@ -2727,7 +2724,6 @@ def test_stock_raw_axes_pins_in_numeric_order_without_recasting(
     config = DatasetConfig(
         raw_data_dir_path=str(raw_dir / "tiingo"),
         zarr_file_path=str(tmp_path / "stock.zarr"),
-        catalog_path=str(tmp_path / "catalog"),
         market="us_equity",
         frequency="1d",
         vendor="tiingo",

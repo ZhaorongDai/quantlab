@@ -77,7 +77,6 @@ class NbboPanelDataset(StockDataset):
 
     >>> config = NbboDatasetConfig(
     ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
-    ...     catalog_path="data/us_equity/catalog",
     ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1m.zarr",
     ...     start_date="2024-01-24",
     ...     end_date="2024-01-25",
@@ -123,7 +122,6 @@ class NbboPanelDataset(StockDataset):
         --------
         >>> ds.config = NbboDatasetConfig(
         ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
-        ...     catalog_path="data/us_equity/catalog",
         ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1h.zarr",
         ...     bar_interval="1h",
         ... )

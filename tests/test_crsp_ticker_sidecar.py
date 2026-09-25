@@ -135,7 +135,6 @@ def test_the_suffix_and_the_path_follow_the_filter_report_s_shape():
     config = CrspDatasetConfig(
         zarr_file_path="/tmp/does-not-exist/crsp.zarr",
         raw_data_dir_path="/tmp/does-not-exist",
-        catalog_path="/tmp/does-not-exist/catalog",
         reference_dir="/tmp/does-not-exist/reference",
         start_date="2022-06-01",
         end_date="2022-06-30",
@@ -249,7 +248,6 @@ def test_an_existing_store_blocks_the_write(tmp_path):
     config = CrspDatasetConfig(
         zarr_file_path=str(store),
         raw_data_dir_path=str(tmp_path),
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(tmp_path / "reference"),
         start_date="2022-06-01",
         end_date="2022-06-30",

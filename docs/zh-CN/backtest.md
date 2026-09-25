@@ -50,7 +50,7 @@ def write_price_store(root, n_bars=60, delist=None):
     ).to_zarr(root / "prices.zarr", mode="w")
     return DatasetConfig(
         raw_data_dir_path=str(root / "raw"), zarr_file_path=str(root / "prices.zarr"),
-        catalog_path=str(root / "catalog"), market="us_equity", frequency="1d",
+        market="us_equity", frequency="1d",
     )
 
 

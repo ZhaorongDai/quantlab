@@ -113,8 +113,8 @@ class FakeDataset(MarketDataset):
     sufficient by construction, with zero modification to any file outside
     this test module.
 
-    `_to_kunquant`/`_to_nautilus` are not exercised by the lifecycle under
-    test (`from_raw_data`/`save`/`read`), so they simply raise
+    `_to_kunquant` is not exercised by the lifecycle under test
+    (`from_raw_data`/`save`/`read`), so it simply raises
     `NotImplementedError`.
 
     `_raw_data_to_xr_window` IS implemented, and had to be: 03.5 D-08 makes
@@ -153,9 +153,6 @@ class FakeDataset(MarketDataset):
     def _to_kunquant(self, data: xr.Dataset, data_columns: tuple[str, ...]):
         raise NotImplementedError
 
-    def _to_nautilus(self, data: xr.Dataset, venue: str, n_jobs: int):
-        raise NotImplementedError
-
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: "list[str] | None" = None
     ) -> xr.Dataset:
@@ -180,7 +177,6 @@ def _fake_dataset_config(tmp_path: Path) -> DatasetConfig:
         frequency="1d",
         raw_data_dir_path=str(tmp_path),
         zarr_file_path=str(tmp_path / "fake.zarr"),
-        catalog_path=str(tmp_path / "catalog"),
     )
 
 

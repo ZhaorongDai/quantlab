@@ -45,7 +45,6 @@ class StockDataset(MarketDataset):
     >>> config = DatasetConfig(
     ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
     ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
-    ...     catalog_path="data/us_equity/catalog",
     ...     market="us_equity",
     ...     frequency="1d",
     ...     vendor="tiingo",
@@ -464,20 +463,3 @@ class StockDataset(MarketDataset):
                     data[col].to_numpy().astype(np.float32)
                 )  # [time, symbol]
             return input_dict, symbols, timestamp
-
-    @staticmethod
-    def _get_instrument(symbol: str, venue: str):
-        """Not implemented: this dataset has no Nautilus instrument model yet."""
-        raise ValueError("Not finished")
-
-    def _xr_to_bars(
-        self, data: xr.Dataset, symbol: str, venue: str = "BINANCE"
-    ):
-        """Not implemented: this dataset has no Nautilus bar conversion yet."""
-        raise ValueError("Not finished")
-
-    def _to_nautilus(
-        self, data: xr.Dataset, venue: str = "BINANCE", n_jobs: int = 16
-    ):
-        """Not implemented: the Nautilus exit is refused for US equities."""
-        raise ValueError("Not finished")

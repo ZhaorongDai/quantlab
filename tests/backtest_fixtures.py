@@ -94,7 +94,6 @@ def write_price_store(
     return DatasetConfig(
         raw_data_dir_path=str(stock_dir / "raw"),
         zarr_file_path=str(zarr_path),
-        catalog_path=str(stock_dir / "catalog"),
         market="us_equity",
         frequency="1d",
     )

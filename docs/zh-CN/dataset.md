@@ -40,7 +40,7 @@ for month, days in {"2024-01": [2, 3, 4], "2024-02": [1, 2]}.items():
 
 ### 配置
 
-Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 dataset 都需要的字段：`zarr_file_path`、`start_date`、`end_date`、`symbols` 和自由格式的 `kwargs` 字典。`DatasetConfig` 在此基础上增加行情面板的字段：`raw_data_dir_path`、`catalog_path`、`market`、`frequency` 和 `vendor`。Dataset 类不会根据 `market` 或 `frequency` 分支，它们只是 vendor registry 用来挑选转换器的标签。
+Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 dataset 都需要的字段：`zarr_file_path`、`start_date`、`end_date`、`symbols` 和自由格式的 `kwargs` 字典。`DatasetConfig` 在此基础上增加行情面板的字段：`raw_data_dir_path`、`market`、`frequency` 和 `vendor`。Dataset 类不会根据 `market` 或 `frequency` 分支，它们只是 vendor registry 用来挑选转换器的标签。
 
 ```python
 >>> import dataclasses
@@ -49,7 +49,6 @@ Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 datase
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
 ...     zarr_file_path=str(root / "data/us_all.zarr"),
-...     catalog_path=str(root / "catalog"),
 ...     market="us_equity",
 ...     frequency="1d",
 ...     vendor="tiingo",
@@ -205,7 +204,7 @@ ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 
 ### 新增一个市场数据源
 
-新增一个数据源只需要一个 `MarketDataset` 子类和一个 config。必须实现四个方法。`_raw_data_to_xr` 返回整个配置范围的面板，已去重，`(timestamp, symbol)` 唯一。`_raw_data_to_xr_window` 返回一个日期窗口，给出 `symbols` 时要 reindex 到这些标的；最简单的写法是对整段结果做切片。`_to_kunquant` 把面板映射成数组；没有 Nautilus 出口时，`_to_nautilus` 可以直接抛异常。下面的例子每个标的读一个 CSV，保存为 `csv_daily.py`。
+新增一个数据源只需要一个 `MarketDataset` 子类和一个 config。必须实现三个方法。`_raw_data_to_xr` 返回整个配置范围的面板，已去重，`(timestamp, symbol)` 唯一。`_raw_data_to_xr_window` 返回一个日期窗口，给出 `symbols` 时要 reindex 到这些标的；最简单的写法是对整段结果做切片。`_to_kunquant` 把面板映射成数组。下面的例子每个标的读一个 CSV，保存为 `csv_daily.py`。
 
 ```python
 # csv_daily.py
@@ -238,9 +237,6 @@ class CsvDailyDataset(MarketDataset):
         inputs = {c: np.ascontiguousarray(data[c].to_numpy().astype(np.float32))
                   for c in data_columns}
         return inputs, data["symbol"].values, data["timestamp"].values
-
-    def _to_nautilus(self, data, venue, n_jobs):
-        raise NotImplementedError("this dataset has no Nautilus exit")
 ```
 
 `to_xarray()` 会构造稠密网格，所以下面的 `BBB` 在它没有文件行的那一天得到 NaN。子类不需要其他改动，就能配合流水线的其余部分工作。
@@ -258,7 +254,6 @@ class CsvDailyDataset(MarketDataset):
 >>> csv_config = DatasetConfig(
 ...     raw_data_dir_path=str(csv_raw),
 ...     zarr_file_path=str(root / "csv_daily.zarr"),
-...     catalog_path=str(root / "catalog"),
 ...     market="us_equity",
 ...     frequency="1d",
 ... )
@@ -275,10 +270,6 @@ timestamp
 >>> inputs, symbols, timestamps = ds.to_kunquant(("close",))
 >>> inputs["close"].shape, symbols.tolist()
 ((5, 2), ['AAA', 'BBB'])
->>> ds.to_nautilus(write=False)
-Traceback (most recent call last):
-    ...
-NotImplementedError: this dataset has no Nautilus exit
 ```
 
 缺少必需方法的子类无法被构造：
@@ -348,7 +339,7 @@ timestamp
 
 盘中 dataset 用 `XnysSessionCalendar`（`quantlab.dataset._support.session_calendar`）把东部时间窗口转换成每个日期实际的交易所开收盘时间，半日市也考虑在内，结果是不带时区的 UTC 时间戳。
 
-`StockDataset` 没有 Nautilus 出口，`to_nautilus()` 会抛出 `ValueError("Not finished")`。两个内置 dataset 都实现了 `to_kunquant()`。
+两个内置 dataset 都实现了 `to_kunquant()`。
 
 两行相同的 `(timestamp, symbol)` 到达 `to_xarray()` 时会抛出 `ValueError: cannot convert a DataFrame with a non-unique MultiIndex into xarray`，需要先去重。
 
