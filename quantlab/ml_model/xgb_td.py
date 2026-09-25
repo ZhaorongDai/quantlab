@@ -4,10 +4,12 @@
 ``pytabkit.XGB_TD_Regressor``, XGBoost with the tuned defaults from
 Holzmüller et al., "Better by Default" (NeurIPS 2024). It is the pytabkit
 counterpart of ``XGBoostRegressor`` (``xgb.py``), which drives ``xgboost``
-directly: this head takes pytabkit's parameter set and preprocessing, that
-one takes xgboost's raw parameters, a CCC early-stopping criterion and
-feature-importance charts. Both predict future returns as ``[num_times,
-num_symbols, num_labels]`` from the flattened factor panel.
+directly. This head takes pytabkit's parameter set and preprocessing. The
+other one takes xgboost's raw parameters, stops early on a concordance
+correlation (CCC) loss and logs feature-importance charts. Both predict
+future returns as ``[num_times, num_symbols, num_labels]`` from the
+flattened factor panel, an ``xarray.Dataset`` indexed by ``timestamp`` and
+``symbol``.
 
 pytabkit's XGBoost estimator is single-output, so one estimator is fitted
 per label.
@@ -79,11 +81,17 @@ class XGBTDRegressor(TabkitRegressor):
     estimator is pinned to predict with all of them (see
     ``_pin_all_rounds``). No per-round curve is logged.
 
-    ``train_cv`` is inherited: each fold selects its own best round and
-    writes its own ``.joblib``. With ``parallel=True`` the folds run on
-    threads while pytabkit uses every physical core by default, so set
-    ``n_threads`` in the hyperparameters to roughly
-    ``os.cpu_count() // njobs``.
+    ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
+    fold selects its own best round and writes its own ``.joblib``. With
+    ``parallel=True`` the folds run on threads while pytabkit uses every
+    physical core by default, so set ``n_threads`` in the hyperparameters to
+    roughly ``os.cpu_count() // njobs`` to avoid oversubscribing the CPU.
+
+    Parameters
+    ----------
+    config : MLConfig
+        Factors, labels, date ranges, early-stopping settings and
+        hyperparameters. See ``MLConfig``.
 
     Examples
     --------
@@ -123,6 +131,9 @@ class XGBTDRegressor(TabkitRegressor):
     ) -> list[_XGBTDEstimator]:
         """Resolve the parameters and return one unfitted estimator per label.
 
+        ``num_features`` is unused; pytabkit infers it from the arrays passed
+        to ``fit``.
+
         Raises
         ------
         TypeError
@@ -153,6 +164,10 @@ class XGBTDRegressor(TabkitRegressor):
         val_y: np.ndarray | None,
     ) -> None:
         """Fit one estimator per label and record the best rounds in the summary.
+
+        Label ``i`` is fitted on column ``i`` of the label rows. Without a
+        usable validation segment each estimator is pinned to predict with
+        all of its rounds.
 
         Raises
         ------
@@ -209,7 +224,11 @@ class XGBTDRegressor(TabkitRegressor):
         return out
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array."""
+        """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.
+
+        Missing feature values are imputed with ``0.0`` first, as in
+        training, and each estimator fills one label column.
+        """
         n_times, n_symbols, n_features = x.shape
         rows = self._impute_features(x.reshape(n_times * n_symbols, n_features))
         columns = [

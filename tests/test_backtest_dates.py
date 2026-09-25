@@ -642,7 +642,7 @@ def test_load_uses_the_checkpoints_train_dates_over_stale_config_dates(
     stale_warnings = [
         m
         for m in warning_messages
-        if "WR-01" in m and _day(bars[24]) in m and _day(bars[10]) in m
+        if "using the checkpoint's dates" in m and _day(bars[24]) in m and _day(bars[10]) in m
     ]
     assert len(stale_warnings) == 1, warning_messages
 
@@ -858,7 +858,7 @@ def test_dl_load_without_config_json_warns_once_per_concern(tmp_path, warning_me
     no_sidecar = [m for m in warning_messages if "has no config.json" in m]
     assert len(no_sidecar) == 1, warning_messages
     assert str(checkpoint) in no_sidecar[0]
-    unchecked = [m for m in warning_messages if "G-03.7-9" in m]
+    unchecked = [m for m in warning_messages if "trained on cannot be checked" in m]
     assert len(unchecked) == 1, warning_messages
     assert str(checkpoint) in unchecked[0]
     first = result.predictions["fwd_ret_1"].isel(timestamp=0)

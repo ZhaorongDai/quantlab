@@ -1,25 +1,34 @@
 """Download daily US-equity bars from Tiingo into raw parquet.
 
-The script resolves a symbol roster (an explicit ``--symbols`` list, or a
-point-in-time ``--universe`` category on ``--as-of-date``), prices the request
-against the pre-flight volume guard, then downloads through
-``quantlab.registry.run``. Raw parquet under the configured
-``raw_data_dir_path`` is the default deliverable. ``--to-zarr`` additionally
-converts it into the Zarr store through ``quantlab.registry.convert``, one
-``--chunk`` window at a time, resuming at the first unwritten window. Nothing
-checks that a window fits in memory, so pick a finer ``--chunk`` for a large
-roster. No vendor class is named here; every vendor fact is read off the
-registry descriptor ``SOURCE``.
+The script resolves a symbol roster, checks the request against the
+pre-flight volume guard (an estimate of rows, bytes, requests and run time
+that refuses a download above its ceilings before any request is sent) and
+then downloads through ``quantlab.registry.run``. The roster is either an
+explicit ``--symbols`` list or a ``--universe`` category resolved
+point-in-time, meaning the index members as they stood on ``--as-of-date``
+rather than today. Raw parquet under the configured ``raw_data_dir_path`` is
+the default output. Each symbol keeps a watermark, a small sidecar file
+recording the last date already downloaded, so ``--refresh`` can continue
+from it.
 
-Requires ``TIINGO_API_KEY`` in the environment. The key is never printed or
-logged; only symbol lists, date ranges and paths are.
+``--to-zarr`` also converts the raw files into a Zarr store (a chunked
+on-disk array format that ``xarray`` reads) through
+``quantlab.registry.convert``, one ``--chunk`` window at a time, resuming at
+the first unwritten window. Nothing checks that a window fits in memory, so
+pick a finer ``--chunk`` for a large roster. No vendor class is named here;
+every vendor fact is read off the registry descriptor ``SOURCE``.
 
-Usage:
+``TIINGO_API_KEY`` must be set in the environment. The key is never printed
+or logged; only symbol lists, date ranges and paths are.
+
+Usage::
+
+    uv run python scripts/ingest_tiingo.py --help
     export TIINGO_API_KEY=your-key-here
 
     # Raw parquet only (the default).
     uv run python scripts/ingest_tiingo.py --symbols AAPL,MSFT
-    uv run python scripts/ingest_tiingo.py --symbols AAPL \
+    uv run python scripts/ingest_tiingo.py --symbols AAPL \\
         --start-date 2024-01-01 --end-date 2024-12-31
     uv run python scripts/ingest_tiingo.py --symbols AAPL,MSFT --refresh
 
@@ -27,14 +36,13 @@ Usage:
     uv run python scripts/ingest_tiingo.py --symbols AAPL,MSFT --to-zarr
 
     # A roster from the point-in-time universe table (build it first with
-    # scripts/refresh_us_equity_universe.py). The roster is sorted, and
-    # --limit N keeps its first N symbols, so a second run with the same
-    # flags resumes where the first stopped.
-    uv run python scripts/ingest_tiingo.py --universe sp500 \
+    # scripts/refresh_us_equity_universe.py). The roster is sorted, so a
+    # second run with the same flags meets the watermarks the first wrote.
+    uv run python scripts/ingest_tiingo.py --universe sp500 \\
         --as-of-date 2015-06-01
-    uv run python scripts/ingest_tiingo.py --universe nasdaq100 \
+    uv run python scripts/ingest_tiingo.py --universe nasdaq100 \\
         --as-of-date 2015-06-01
-    uv run python scripts/ingest_tiingo.py --universe us_all \
+    uv run python scripts/ingest_tiingo.py --universe us_all \\
         --as-of-date 2020-01-01 --to-zarr
 """
 
@@ -84,8 +92,8 @@ def _build_configs(
     ----------
     args : argparse.Namespace
         Parsed command-line arguments.
-    catalog
-        An already-loaded ``UniverseCatalog``, or ``None`` to load
+    catalog : UniverseCatalog, optional
+        An already-loaded universe table, or ``None`` (the default) to load
         one on demand when a category is requested.
 
     Returns
@@ -96,8 +104,8 @@ def _build_configs(
     """
     if catalog is None and args.universe:
         catalog = UniverseCatalog.load(universe_config())
-    # Membership is resolved point-in-time on one day. ``ingest_us_equity.py``
-    # asks the same helper for interval overlap instead.
+    # Membership is taken as of one day. ``ingest_us_equity.py`` asks the
+    # same helper for every symbol listed at any time in the window instead.
     symbols = resolve_symbols(args, catalog, mode="as_of")
 
     # ``SOURCE.config_factory`` already has the vendor bound, so it is not
@@ -132,8 +140,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--refresh",
         action="store_true",
         help=(
-            "Incrementally refresh from each symbol's last recorded "
-            "watermark instead of a full download() backfill."
+            "Continue each symbol from its last recorded watermark instead "
+            "of downloading the whole window again."
         ),
     )
     # The conversion flags are shared with the other ingest scripts because
@@ -147,8 +155,8 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Must run before any config factory is called: the factories snapshot
-    # their paths at construction time, so a later root override is ignored.
+    # Must run before any config factory is called: the factories copy the
+    # data root into their paths when called, so a later override is ignored.
     apply_data_dir(args)
 
     validate_roster_args(parser, args)
@@ -156,7 +164,7 @@ if __name__ == "__main__":
     catalog = UniverseCatalog.load(universe_config()) if args.universe else None
     acq_config, ds_config = _build_configs(args, catalog)
 
-    # Pre-flight: no client has been constructed and no request issued yet.
+    # Pre-flight: no client exists and no request has been sent yet.
     pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
         args, catalog, symbols=acq_config.symbols
     )
@@ -193,8 +201,7 @@ if __name__ == "__main__":
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.to_zarr:
-        # The probe dataset exists only to answer ``has_raw_data()``;
-        # ``symbols=None`` says so at the call site.
+        # This dataset only answers ``has_raw_data()``, so it needs no symbols.
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
@@ -202,8 +209,8 @@ if __name__ == "__main__":
             f"Converting/persisting symbols={ds_config.symbols} to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        # The conversion is the registry's; this script only renders the
-        # result it returns, so what is printed is what was written.
+        # Print the registry's own result, so what is printed is what was
+        # written.
         conversion = convert(
             SOURCE,
             ds_config,
@@ -213,6 +220,6 @@ if __name__ == "__main__":
         print_conversion_result(conversion)
     else:
         print(
-            "Skipping Zarr conversion (default). The raw shards above are the "
-            "deliverable; pass --to-zarr to convert them."
+            "Skipping Zarr conversion (default). The raw files above are the "
+            "run's output; pass --to-zarr to convert them."
         )

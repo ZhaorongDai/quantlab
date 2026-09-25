@@ -1,20 +1,25 @@
 """Download daily NASDAQ price history from Tiingo into per-ticker parquet.
 
-A standalone, cell-style (``# %%``) script that predates the registry. It
-reads the ticker list from ``nasdaq_stocks.parquet`` beside the repository
-(or the file named by ``QUANTLAB_NASDAQ_STOCKS_PARQUET``), downloads each
-ticker's daily prices from 1990-08-01 to 2026-09-01 with 32 parallel workers
-and writes ``downloads/nasdaq_data/{ticker}/data.pqt`` relative to the
-current working directory. The maintained download path is
-``scripts/ingest_tiingo.py``; use this only as a one-off.
+A standalone, one-off downloader that does not use the ``quantlab`` data
+registry. The ``# %%`` markers split it into cells that VS Code or Jupyter
+can run one at a time. It reads the ticker list from the ``ticker`` column
+of ``nasdaq_stocks.parquet`` in the repository root, or of the file named by
+``QUANTLAB_NASDAQ_STOCKS_PARQUET``. It then downloads each ticker's daily
+prices from 1990-08-01 to 2026-09-01 with 32 parallel workers and writes
+``downloads/nasdaq_data/{ticker}/data.pqt`` relative to the current working
+directory. The date range is fixed in the file. For routine downloads use
+``scripts/ingest_tiingo.py`` instead, which resumes, isolates failures and
+converts to Zarr. The script has no command-line options.
 
-Requires ``TIINGO_API_KEY`` in the environment; the script refuses to start
-without it and never prints the key.
+``TIINGO_API_KEY`` must be set in the environment. The script refuses to
+start without it and never prints the key.
 
-Usage:
+Usage::
+
     export TIINGO_API_KEY=your-key-here
     uv run python scripts/download_stock_data_from_tiingo.py
-    QUANTLAB_NASDAQ_STOCKS_PARQUET=/path/to/tickers.parquet \
+
+    QUANTLAB_NASDAQ_STOCKS_PARQUET=/path/to/tickers.parquet \\
         uv run python scripts/download_stock_data_from_tiingo.py
 """
 
@@ -28,7 +33,7 @@ from joblib import Parallel, delayed
 from tiingo import TiingoClient
 from tqdm import tqdm
 
-# Export TIINGO_API_KEY in your shell before running; it is read below.
+# Fail fast, before the ticker list is read, when the key is missing.
 if not os.environ.get("TIINGO_API_KEY"):
     raise RuntimeError(
         "TIINGO_API_KEY environment variable is not set. Export it before "
@@ -40,7 +45,6 @@ config = {}
 # Reuse one HTTP session across API calls.
 config["session"] = True
 
-# The API key comes from the environment and is never hardcoded here.
 config["api_key"] = os.environ["TIINGO_API_KEY"]
 
 client = TiingoClient(config)
@@ -84,7 +88,7 @@ def download_stock(stock):
 
     Parameters
     ----------
-    stock
+    stock : str
         The ticker to download.
 
     Examples

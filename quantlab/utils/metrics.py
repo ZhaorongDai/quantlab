@@ -7,10 +7,13 @@ cells where both prediction and target are finite take part in any sum or
 ranking; and an empty set of usable cells yields NaN without raising a
 ``RuntimeWarning``.
 
-Cross-sectional IC is the per-timestamp Pearson correlation averaged over
-time; RankIC ranks each row first (average ranks on ties) and then computes
-IC on the ranks. Both are fully vectorised, with no per-row Python loop, since
-a panel can hold tens of thousands of timestamps.
+The IC (information coefficient) measures how well predictions order the
+symbols. Cross-sectional IC is the Pearson correlation between prediction and
+target across the symbols of one timestamp, averaged over time. RankIC ranks
+each row first (average ranks on ties) and then computes IC on the ranks, so
+it is a per-timestamp Spearman correlation and is not dominated by
+outliers. Both are fully vectorised, with no per-row Python loop, since a
+panel can hold tens of thousands of timestamps.
 """
 
 import numpy as np
@@ -19,6 +22,8 @@ from scipy.stats import rankdata
 
 def _joint(pred, target) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Cast both inputs to float64, check shapes, and return them with the joint mask.
+
+    The joint mask marks cells where both inputs are finite.
 
     Returns
     -------
@@ -42,6 +47,13 @@ def _joint(pred, target) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def mse(pred, target) -> float:
     """Return the mean squared error over the jointly finite cells, or NaN if none.
 
+    Parameters
+    ----------
+    pred : array_like
+        Predictions, any shape.
+    target : array_like
+        Realised values, the same shape as ``pred``.
+
     Examples
     --------
     >>> mse([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 6.0])
@@ -60,6 +72,13 @@ def mse(pred, target) -> float:
 def rmse(pred, target) -> float:
     """Return ``sqrt(mse(pred, target))``, or NaN when the MSE is undefined.
 
+    Parameters
+    ----------
+    pred : array_like
+        Predictions, any shape.
+    target : array_like
+        Realised values, the same shape as ``pred``.
+
     Examples
     --------
     >>> rmse([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 6.0])
@@ -71,6 +90,13 @@ def rmse(pred, target) -> float:
 
 def mae(pred, target) -> float:
     """Return the mean absolute error over the jointly finite cells, or NaN if none.
+
+    Parameters
+    ----------
+    pred : array_like
+        Predictions, any shape.
+    target : array_like
+        Realised values, the same shape as ``pred``.
 
     Examples
     --------
@@ -90,6 +116,13 @@ def r2(pred, target) -> float:
     NaN is returned when fewer than two cells are usable or when the target is
     constant over the usable cells (``SS_tot == 0``), because R2 is undefined
     in both cases.
+
+    Parameters
+    ----------
+    pred : array_like
+        Predictions, any shape.
+    target : array_like
+        Realised values, the same shape as ``pred``.
 
     Examples
     --------
@@ -121,9 +154,9 @@ def cross_sectional_ic(pred, target) -> float:
 
     Parameters
     ----------
-    pred
+    pred : array_like
         A 2-D ``[T, S]`` panel of predictions.
-    target
+    target : array_like
         A 2-D ``[T, S]`` panel of realised values.
 
     Raises
@@ -178,9 +211,9 @@ def cross_sectional_rank_ic(pred, target) -> float:
 
     Parameters
     ----------
-    pred
+    pred : array_like
         A 2-D ``[T, S]`` panel of predictions.
-    target
+    target : array_like
         A 2-D ``[T, S]`` panel of realised values.
 
     Raises
@@ -208,6 +241,13 @@ def cross_sectional_rank_ic(pred, target) -> float:
 
 def regression_panel_metrics(pred, target) -> dict[str, float]:
     """Return all six panel metrics keyed ``mse, rmse, mae, r2, ic, rank_ic``.
+
+    Parameters
+    ----------
+    pred : array_like
+        A 2-D ``[T, S]`` panel of predictions.
+    target : array_like
+        A 2-D ``[T, S]`` panel of realised values.
 
     Examples
     --------

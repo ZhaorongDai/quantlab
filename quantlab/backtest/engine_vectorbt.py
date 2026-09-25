@@ -8,6 +8,10 @@ only module in the package that imports vectorbt; concrete backtesters such
 as ``quantlab.backtest.us_equity`` subclass it and supply the market
 conventions and the signal rule. The module is named ``engine_vectorbt``
 rather than ``vectorbt`` so it cannot shadow the library it imports.
+
+A *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``.
+A *target-percent weight* is the fraction of portfolio value a symbol should
+hold after the order fills; a negative weight is a short position.
 """
 
 import numpy as np
@@ -19,10 +23,9 @@ from vectorbt.generic.enums import DrawdownStatus
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 
-#: The integer ``status`` a recovered drawdown carries in ``Drawdowns.records``
-#: (the readable view has strings, the raw view has ints). Taken from
-#: vectorbt's enum rather than written as a literal so that a renumbering of
-#: the enum cannot silently swap "recovered" and "still in drawdown".
+#: The integer ``status`` of a recovered drawdown in vectorbt's raw
+#: ``Drawdowns.records``. Read from vectorbt's enum rather than written as a
+#: literal, so a renumbering upstream cannot swap "recovered" and "active".
 DRAWDOWN_RECOVERED = int(DrawdownStatus.Recovered)
 
 
@@ -30,8 +33,10 @@ class VectorBtBacktester(BaseBacktester):
     """Abstract backtester that simulates target weights with vectorbt.
 
     Subclasses supply ``config_cls``, ``MARKET`` and ``_generate_signals``;
-    everything from the weights onward is implemented here. Three engine
-    conventions matter to a reader of the results:
+    everything from the weights onward is implemented here. The constructor
+    takes one ``config`` argument, an instance of ``config_cls``; see
+    ``BaseBacktester``. Three engine conventions matter to a reader of the
+    results:
 
     - A weight row formed at bar ``t`` fills at bar ``t + 1`` at the market's
       fill price (the weights are shifted one bar before they reach
@@ -48,9 +53,9 @@ class VectorBtBacktester(BaseBacktester):
     and has no raw fill price on bar ``t + 1`` is sold there at its last known
     price while the other symbols rebalance normally. Each such forced
     liquidation is recorded in ``SimulationResult.liquidations`` as a dict
-    with the keys ``symbol`` (the display name: the ticker the symbol wore on
-    the fill day when the price store has a ticker sidecar, otherwise the axis
-    label), ``axis_symbol`` (the label on the panel's ``symbol`` axis),
+    with the keys ``symbol`` (the display name: the ticker the symbol traded
+    under on the fill day when the price store has a ticker lookup file,
+    otherwise the axis label), ``axis_symbol`` (the label on the panel's ``symbol`` axis),
     ``signal_timestamp``, ``fill_timestamp`` and ``price`` (the last known
     fill price). A symbol whose prices are NaN at the start of the window and
     that was never held is not yet listed rather than delisted, and trades
@@ -135,9 +140,8 @@ class VectorBtBacktester(BaseBacktester):
             If fewer than two price bars are given, or a weight row
             mixes NaN and finite values.
         """
-        # The base class checks the weights contract in run() only; a caller
-        # that invokes `_simulate` directly bypasses it, so the engine boundary
-        # asserts again before any pandas conversion.
+        # The base class checks the weights in run(), but a caller of
+        # _simulate would skip that check, so check again here.
         self._refuse_mixed_weight_rows(weights)
 
         cfg = self.config
@@ -267,8 +271,7 @@ class VectorBtBacktester(BaseBacktester):
                 f"{self.class_name}: weight row at {first} mixes NaN and finite "
                 f"values; a rebalance row must be all-finite and a hold row "
                 f"all-NaN (vectorbt reads NaN on a rebalance row as 'keep the "
-                f"position' and silently blocks the rest of the rebalance, "
-                f"03.7-RESEARCH.md Pitfall 3)"
+                f"position' and silently blocks the rest of the rebalance)"
             )
 
     @staticmethod
@@ -333,8 +336,8 @@ class VectorBtBacktester(BaseBacktester):
         n_bars = timestamps.size
         held = self._signed_order_sizes(orders, timestamps, symbols).values
         sizes = np.abs(np.asarray(orders["size"].values, dtype=np.float64))
-        # A position that netted out to a floating-point residue is not a
-        # holding: the tolerance is 1e-9 of the largest single fill size.
+        # A position that nets out to floating-point residue is not a holding.
+        # The tolerance is 1e-9 of the largest single fill size.
         tolerance = 1e-9 * max(1.0, float(sizes.max(initial=0.0)))
 
         records = []
@@ -346,9 +349,9 @@ class VectorBtBacktester(BaseBacktester):
             )
             if delisted.size == 0:
                 continue
-            # These records are for people (the log and liquidations.json), and
-            # on a PERMNO axis the axis label is a bare number, so the display
-            # name is looked up as of the fill day, one batch per bar.
+            # These records are read by people (the log and liquidations.json).
+            # On a PERMNO axis (CRSP's permanent numeric security id) the label
+            # is a bare number, so look up the ticker as of the fill day.
             fill_day = pd.Timestamp(timestamps[t + 1]).date()
             named = self.ticker_lookup.label(
                 [symbols[j] for j in delisted], fill_day
@@ -363,7 +366,7 @@ class VectorBtBacktester(BaseBacktester):
                 }
                 logger.info(
                     f"{self.class_name}: forced liquidation of {record['symbol']} "
-                    f"(D-07): signal {record['signal_timestamp']}, fill "
+                    f"(no fill price on the next bar): signal {record['signal_timestamp']}, fill "
                     f"{record['fill_timestamp']} at last price {record['price']}"
                 )
                 records.append(record)
@@ -421,16 +424,15 @@ class VectorBtBacktester(BaseBacktester):
 
         peak = records["peak_val"].to_numpy(dtype=np.float64)
         valley = records["valley_val"].to_numpy(dtype=np.float64)
-        # A record whose peak is not positive has no meaningful percentage
-        # depth; a NaN denominator yields NaN without a division warning.
+        # A non-positive peak has no meaningful percentage depth. Dividing by
+        # NaN gives NaN without a division warning.
         depth = valley / np.where(peak > 0.0, peak, np.nan) - 1.0
         if not np.isfinite(depth).any():
             return None
 
         row = int(np.nanargmin(depth))
-        # Each column is read as an array and the chosen element cast to int:
-        # `.iloc[row]` would upcast the mixed int/float row to float64, and a
-        # float cannot index a DatetimeIndex.
+        # Read each column as an array: `.iloc[row]` would upcast the mixed
+        # int/float row to float64, and a float cannot index timestamps.
         valley_idx = int(records["valley_idx"].to_numpy()[row])
         end = int(records["end_idx"].to_numpy()[row])
         status = int(records["status"].to_numpy()[row])
@@ -463,13 +465,13 @@ class VectorBtBacktester(BaseBacktester):
             "trade is what vectorbt does by default, and it inflates the win "
             "rate. The row named order_count is the number of fills that "
             "actually happened over the window.",
-            "The two triangles on the equity curve mark the DEEPEST drawdown: "
+            "The two triangles on the equity curve mark the deepest drawdown: "
             "the up triangle is its deepest bar, that is its valley, and the "
             "down triangle is the bar it recovered. The distance between them "
             "is how long it took to get from the bottom back to even, counted "
             "in trading days, that is in bars, never in calendar days. It is "
             "not the metric named Max Drawdown Duration, which measures the "
-            "LONGEST drawdown and counts from where that drawdown began, so "
+            "longest drawdown and counts from where that drawdown began, so "
             "the two numbers usually differ.",
         ]
 

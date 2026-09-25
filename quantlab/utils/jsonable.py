@@ -6,10 +6,11 @@ non-standard ``NaN`` and ``Infinity`` tokens, which strict parsers reject, or
 raises on the timestamp types. Every JSON artifact a backtest run persists is
 passed through ``to_jsonable`` first.
 
-The conversion is lossless or loud: arrays, Series, Indexes and sets become
-full lists, dict keys that collide after ``str()`` raise ``ValueError``, and an
-unsupported type raises ``TypeError`` instead of being stringified. This
-module has no project-internal imports.
+The conversion either keeps every value or fails with an error; it never
+silently loses data. Arrays, Series, Indexes and sets become full lists, dict
+keys that collide after ``str()`` raise ``ValueError``, and an unsupported
+type raises ``TypeError`` instead of being stringified. This module has no
+project-internal imports, so any layer can use it.
 """
 
 import datetime
@@ -35,7 +36,11 @@ def _is_nat(value: object) -> bool:
 
 
 def _canonical(item: object) -> str:
-    """Return a total, deterministic sort key for an already-converted JSON value."""
+    """Return a deterministic sort key for an already-converted JSON value.
+
+    Serialising to a JSON string makes values of mixed types comparable, so
+    a set of them can always be sorted.
+    """
     return json.dumps(item, sort_keys=True)
 
 

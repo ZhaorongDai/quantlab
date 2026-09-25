@@ -7,16 +7,29 @@ from loguru import logger
 class Timer:
     """Log the start of a task on entry and its elapsed wall-clock time on exit.
 
+    Parameters
+    ----------
+    task_name : str
+        Name used in both log lines.
+
+    Attributes
+    ----------
+    timein : float
+        Elapsed seconds of the last completed block; ``0`` before any block
+        has finished.
+
     Examples
     --------
     >>> with Timer("compute factors") as timer:
     ...     factors.cal()
-    >>> timer.timein  # elapsed seconds
-    12.34
+    >>> elapsed_seconds = timer.timein
     """
 
     def __init__(self, task_name: str):
-        """Create a timer for ``task_name``; nothing is measured until entry."""
+        """Initialize the timer; see the class docstring for parameters.
+
+        Nothing is measured until the ``with`` block is entered.
+        """
         self.timein = 0
         self.task_name = task_name
 
@@ -27,7 +40,10 @@ class Timer:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Store the elapsed seconds in ``timein`` and log them."""
+        """Store the elapsed seconds in ``timein`` and log them.
+
+        Exceptions raised inside the block are not suppressed.
+        """
         self.timeend = time.perf_counter()
         self.timein = self.timeend - self.timestart
         logger.info(f"{self.task_name} consumed time: {self.timein:.2f}s")

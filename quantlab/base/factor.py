@@ -1,13 +1,22 @@
 """Abstract factor layer and its two computation backends.
 
-A factor turns the ``(timestamp, symbol)`` panel held by a dataset into a
-panel of engineered features (or, for label classes, prediction targets) of
-the same shape. ``Factor`` is the backend-agnostic contract the model layer
-programs against. ``FactorKunQuant`` compiles a declarative KunQuant op graph
-to native code and runs it in batch or streaming mode; ``FactorPolars`` is a
-batch-only backend whose factor logic is a Polars expression chain. Concrete
-factor sets live under ``quantlab/factor`` and labels under
-``quantlab/label``. See ``docs/factor.md``.
+A *factor* turns market data into engineered features, for example a
+20-day momentum or a moving-average deviation. It reads the *panel* held by
+a dataset (an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``)
+and produces a panel of the same shape. Label classes use the same machinery
+to produce prediction targets, such as forward returns.
+
+``Factor`` is the backend-agnostic contract the model layer programs
+against. ``FactorKunQuant`` describes a factor as a KunQuant operator graph;
+KunQuant compiles that graph to native code and runs it either over the whole
+history (batch mode) or one bar at a time (streaming mode, for live data).
+``FactorPolars`` is a batch-only backend whose factor logic is a Polars
+expression chain. Concrete factor sets live under ``quantlab/factor`` and
+labels under ``quantlab/label``.
+
+Rolling operators need history before the first bar they report. That extra
+history is the *warm-up*; a factor asks its dataset for ``config.window``
+extra calendar days and trims them off again afterwards.
 """
 
 from abc import ABC, abstractmethod
@@ -50,6 +59,17 @@ class Factor(ABC):
     warm on the first requested bar. Factor names are therefore known as soon
     as the object is constructed, before anything is computed.
 
+    Parameters
+    ----------
+    config : BaseFactorConfig
+        The factor config. Its ``dataset`` field is the dataset the factor
+        reads from. The object normalizes the config in place.
+
+    Attributes
+    ----------
+    data_backend : XrBackend
+        Holds the computed or loaded factor panel.
+
     Examples
     --------
     >>> factor = MyFactor(config)
@@ -58,10 +78,9 @@ class Factor(ABC):
     """
 
     def __init__(self, config: BaseFactorConfig):
-        """Store ``config`` and create the storage backend."""
-        # Ordering matters: assigning `self.config` runs the property setter
-        # before `self.data_backend` exists, so nothing the setter reaches may
-        # read the storage backend.
+        """Initialize the factor; see the class docstring for parameters."""
+        # The config setter runs before `self.data_backend` exists, so nothing
+        # the setter reaches may use the storage backend.
         self.config = config
         self.data_backend = XrBackend()
 
@@ -88,7 +107,7 @@ class Factor(ABC):
         >>> factor.config is config
         True
         >>> factor.config.name
-        quantlab.factor.momentum.Momentum
+        'quantlab.factor.momentum.Momentum'
         """
         return self._config
 
@@ -212,7 +231,7 @@ class Factor(ABC):
         Examples
         --------
         >>> factor.import_path
-        quantlab.factor.momentum.Momentum
+        'quantlab.factor.momentum.Momentum'
         """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -236,7 +255,7 @@ class Factor(ABC):
         Examples
         --------
         >>> factor.class_name
-        Momentum
+        'Momentum'
         """
         return self.__class__.__name__
 
@@ -245,11 +264,11 @@ class Factor(ABC):
 
         Parameters
         ----------
-        overwrite : bool
-            Re-open the store even if the backend already holds
-            data. The default reuses the cached panel and only narrows
-            it; pass ``True`` after changing ``config.start_date`` or
-            ``config.end_date``, since the cached panel was cut to the
+        overwrite : bool, default False
+            Re-open the store even if the backend already holds data. By
+            default the cached panel is reused and only narrowed. Pass
+            ``True`` after changing ``config.start_date`` or
+            ``config.end_date``, because the cached panel was cut to the
             old dates.
 
         Returns
@@ -275,11 +294,11 @@ class Factor(ABC):
 
         Parameters
         ----------
-        mode : Literal['a', 'w']
-            ``"a"`` (the default) overwrites variables in an existing
-            store and fails if that store has a different time or symbol
-            axis; ``"w"`` replaces the store. To extend a store with a
-            later date range use ``update()`` instead.
+        mode : {"a", "w"}, default "a"
+            ``"a"`` overwrites variables in an existing store and fails if
+            that store has a different time or symbol axis. ``"w"``
+            replaces the store. To extend a store with a later date range,
+            use ``update()`` instead.
         **kwargs
             Passed through to the backend's ``write``.
 
@@ -317,15 +336,14 @@ class Factor(ABC):
                 raise ValueError(
                     f'{self.class_name}.save(mode="a"): cannot write this '
                     f"date range into the existing store at "
-                    f'{self.config.file_path}. zarr\'s "a" means "overwrite '
-                    f'variables in an existing store", NOT "append along '
-                    f'time", so a second, differently-sized date range is '
+                    f'{self.config.file_path}. In zarr, mode "a" means '
+                    f'"overwrite variables in an existing store", not "append '
+                    f'along time", so a date range of a different size is '
                     f'rejected. Use save(mode="w") to replace the store, or '
-                    f"delete it first. To EXTEND it with a later date range "
-                    f"instead, call update(), which reconciles the timestamp, "
-                    f"symbol and variable axes automatically and inherits "
-                    f"XrBackend.append()'s guards. save() writes wholesale; "
-                    f"update() extends. "
+                    f"delete it first. To extend the store with a later date "
+                    f"range, call update() instead: it widens the timestamp, "
+                    f"symbol and variable axes to fit and applies the same "
+                    f"safety checks as XrBackend.append(). "
                     f"Original error: {exc}"
                 ) from exc
             return self
@@ -447,7 +465,7 @@ class Factor(ABC):
         --------
         >>> cfg = factor.get_config()
         >>> cfg["name"]
-        quantlab.factor.momentum.Momentum
+        'quantlab.factor.momentum.Momentum'
         >>> cfg["kwargs"], cfg["dataset"]["frequency"]
         ({'n': 20}, '1d')
         """
@@ -473,13 +491,13 @@ class Factor(ABC):
         Examples
         --------
         A backend override computes a ``(timestamp, symbol)`` panel, hands
-        it to the storage backend and narrows it to the configured window:
+        it to the storage backend and narrows it to the configured window::
 
-        def cal(self) -> Self:
-            panel = self._compute()            # an xarray.Dataset
-            self.data_backend.to_internal(panel)
-            self._auto_filter()
-            return self
+            def cal(self) -> Self:
+                panel = self._compute()            # an xarray.Dataset
+                self.data_backend.to_internal(panel)
+                self._auto_filter()
+                return self
         """
         ...
 
@@ -498,28 +516,40 @@ class FactorKunQuant(Factor):
     Compilation needs a working C++ compiler and dominates run time on small
     panels; pinning ``config.factor_names`` to the columns you need keeps the
     compiled graph small. In batch mode the number of symbols must be a
-    multiple of the SIMD block width KunQuant uses on the host.
+    multiple of the SIMD block width KunQuant uses on the host, that is, the
+    number of values the CPU processes in one vector instruction.
+
+    Parameters
+    ----------
+    config : FactorConfig
+        The factor config, including ``mode`` (``"batch"`` or
+        ``"stream"``), ``data_columns`` and ``njobs``.
 
     Examples
     --------
-    class MaDeviation(FactorKunQuant):
-        def _get_factor_names(self):
-            return ("ma_dev_5",)
+    A factor measuring how far the close is above its 5-bar average::
 
-        def _get_factor_func(self):
-            builder = Builder()
-            with builder:
-                close = Input("close")
-                dev = op.Div(close, op.WindowedAvg(close, 5))
-                Output(op.SubConst(dev, 1.0), "ma_dev_5")
-            return Function(builder.ops)
+        class MaDeviation(FactorKunQuant):
+            def _get_factor_names(self):
+                return ("ma_dev_5",)
+
+            def _get_factor_func(self):
+                builder = Builder()
+                with builder:
+                    close = Input("close")
+                    dev = op.Div(close, op.WindowedAvg(close, 5))
+                    Output(op.SubConst(dev, 1.0), "ma_dev_5")
+                return Function(builder.ops)
     """
 
     #: The config class ``load_factor_from_config`` rebuilds this factor with.
     config_cls = FactorConfig
 
     def __init__(self, config: FactorConfig):
-        """Create the factor with no compiled library or stream context yet."""
+        """Initialize the factor; see the class docstring for parameters.
+
+        No graph is compiled and no stream context exists yet.
+        """
         super().__init__(config)
         self._stream_context: kr.StreamContext = None
         self._lib = None
@@ -812,19 +842,26 @@ class FactorPolars(Factor):
     Column names are whatever the underlying store holds; unlike the KunQuant
     path, no per-market renaming is applied.
 
+    Parameters
+    ----------
+    config : PolarsFactorConfig
+        The factor config.
+
     Examples
     --------
-    class RelativeVolume(FactorPolars):
-        def _get_factor_lazyframe(self, lf):
-            volume = pl.col("Volume")
-            return (
-                lf.sort(["symbol", "timestamp"])
-                .with_columns(
-                    (volume / volume.rolling_mean(20).over("symbol") - 1.0)
-                    .alias("rel_volume_20")
+    A factor comparing each bar's volume with its 20-bar average::
+
+        class RelativeVolume(FactorPolars):
+            def _get_factor_lazyframe(self, lf):
+                volume = pl.col("Volume")
+                return (
+                    lf.sort(["symbol", "timestamp"])
+                    .with_columns(
+                        (volume / volume.rolling_mean(20).over("symbol") - 1.0)
+                        .alias("rel_volume_20")
+                    )
+                    .select(["timestamp", "symbol", "rel_volume_20"])
                 )
-                .select(["timestamp", "symbol", "rel_volume_20"])
-            )
     """
 
     #: The config class ``load_factor_from_config`` rebuilds this factor with.
@@ -837,7 +874,11 @@ class FactorPolars(Factor):
     _SCHEMA_PROBE_ROWS = 8
 
     def __init__(self, config: PolarsFactorConfig):
-        """Create the factor; factor names are derived from the store at once."""
+        """Initialize the factor; see the class docstring for parameters.
+
+        The factor names are derived at once by reading a few rows of the
+        dataset store.
+        """
         super().__init__(config)
 
     def _get_factor_names(self) -> tuple[str, ...]:

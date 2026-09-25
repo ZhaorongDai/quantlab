@@ -2,67 +2,88 @@
 
 English | [简体中文](zh-CN/README.md)
 
-This is the user guide for quantlab. Each page introduces one part of the pipeline and works
-through runnable examples. Start with the guide for the stage you need, or read them in order:
-the guides follow the path that data takes, from a vendor to a backtest report.
+quantlab is a configuration-driven backend for quantitative equity research: it downloads
+market data, turns it into panels, computes factors, trains return models and backtests the
+resulting portfolios. This documentation is organised in three parts. If you are new, read
+*Getting started* first, then the *Concepts* page, then whichever user-guide page matches what
+you want to do.
 
-Every code example that prints output shows output that was produced by running it. Examples
-that need a vendor account say what they need and do not print results.
+## Getting started
 
-## Getting data
+[Installation](getting-started/installation.md) covers requirements, installing with `uv`,
+running the tests, GPU and macOS notes, and the environment variables that hold vendor
+credentials.
 
-| Guide | What it covers |
-|-------|----------------|
+[Quickstart](getting-started/quickstart.md) is a ten-minute tour of the whole pipeline on
+synthetic data, from a price panel to a backtest report.
+
+## User guide
+
+[Concepts](user-guide/concepts.md) explains the pipeline stages and what each consumes and
+produces, the panel format, configuration objects, and the directories that models and
+backtests write.
+
+[Data sources](user-guide/data-sources.md) explains how to download from Tiingo, Alpaca and
+WRDS, where the files go, how to resume an interrupted download, and how to check what is
+already on disk.
+
+[WRDS: CRSP and TAQ](user-guide/wrds.md) covers the research-grade US stock data available
+through a WRDS account: CRSP daily stock files and TAQ best-quote data.
+
+[Datasets and storage](user-guide/datasets.md) explains how raw files become a panel, how to
+filter and store it, and how to convert histories too large to fit in memory.
+
+[Universes](user-guide/universes.md) explains survivorship bias, point-in-time index
+membership, and how to restrict factors and backtests to the stocks that were actually
+tradable on each day.
+
+[Factors and labels](user-guide/factors.md) shows how to compute the built-in factor sets and
+how to write your own factors with KunQuant or Polars, plus the forward-return labels models
+learn to predict.
+
+[Models](user-guide/models.md) covers the available model heads, training, prediction,
+evaluation, walk-forward cross-validation and checkpoints.
+
+[Backtesting](user-guide/backtesting.md) explains how predictions become target weights, when
+trades are filled, how delisted holdings are handled, and how to read and reproduce a
+backtest run.
+
+## Developer guide
+
+[Extending quantlab](developer-guide/extending.md) walks through adding a data source, a
+dataset, a storage backend, a factor, a model head and a backtest rule, each with a minimal
+working example.
+
+[Internals](developer-guide/internals.md) describes the machinery that makes long jobs safe to
+interrupt: resumable downloads and conversions, rebuilds, the volume check, atomic writes and
+data fingerprints.
+
+## Topic reference
+
+The topic pages below go deeper into one subsystem each. They overlap with the user guide
+but cover more detail, and are useful once you know which part of the pipeline you are
+working on.
+
+| Page | What it covers |
+|------|----------------|
 | [Acquisition](acquisition.md) | How a download runs: batches, failure isolation, incremental refresh, the raw file layout and the volume guard |
-| [Data source registry](registry.md) | The catalogue of sources, the `run()` and `convert()` entry points, progress events and the read-only inspector |
+| [Data source registry](registry.md) | The catalogue of sources, `run()` and `convert()`, progress events and the read-only inspector |
 | [Resumable downloads](pageledger.md) | How a multi-page download resumes after an interruption |
-| [WRDS CRSP daily stocks](wrds_crsp.md) | Research-grade US daily data by PERMNO, total-return adjustment and delisting returns |
+| [WRDS CRSP daily stocks](wrds_crsp.md) | US daily data by PERMNO, total-return adjustment and delisting returns |
 | [WRDS TAQ quotes](wrds_taq.md) | National best bid and offer quotes and their resampling to bars |
-
-## Universes
-
-| Guide | What it covers |
-|-------|----------------|
 | [Index constituents](constituent.md) | Point-in-time membership panels for the S&P 500 and Nasdaq-100 |
 | [Universe filtering](universe.md) | Price and liquidity filters implemented as a factor wrapper |
-
-## Building panels
-
-| Guide | What it covers |
-|-------|----------------|
 | [Datasets](dataset.md) | From raw files to the `(timestamp, symbol)` panel, and adding a market |
 | [Chunked conversion](chunking.md) | Converting a large date range one window at a time |
 | [Storage backends](backend.md) | Zarr and Parquet storage, appending, and writing a backend |
-
-## Research
-
-| Guide | What it covers |
-|-------|----------------|
 | [Factors](factor.md) | The KunQuant and Polars factor backends, labels and normalization |
 | [Models](model.md) | The model hierarchy, training, cross-validation and checkpoints |
 | [Backtesting](backtest.md) | Target weights, simulation, metrics and run directories |
 
-## Package layout
+A Chinese translation of the topic pages is in [zh-CN](zh-CN/README.md).
 
-```text
-quantlab/
-  base/         abstract contracts: datasets, factors, models, backtesters, acquisition
-  acquisition/  Tiingo, Alpaca and WRDS downloaders
-  dataset/      concrete datasets: spot klines, US stocks, CRSP, NBBO, index constituents
-  factor/       factor sets: Alpha101, Alpha158, momentum, universe filter
-  label/        forward-return labels
-  dl_model/     PyTorch model heads: MLP, GRU and LSTM
-  ml_model/     XGBoost head and checkpoint storage for non-torch models
-  backtest/     vectorbt engine, top-N selection, US-equity backtester
-  backend.py    Zarr and Parquet storage backends
-  registry.py   catalogue of data sources and the run() and convert() entry points
-  universe.py   point-in-time symbol universes and the download volume guard
-  config/       config factories and packaged instrument metadata
-  utils/        command-line helpers, metrics, serialization, report writer
-scripts/        command-line entry points for downloading and converting data
-tests/          the test suite
-```
+## Examples and API reference
 
-Every public class and function also has a docstring in the numpydoc format, with an
-`Examples` section. Use `help()` on a class to read it, for example
-`help(quantlab.base.model.DLModel)`.
+The [examples](../examples/README.md) directory has runnable scripts that go with these pages.
+Every public class and function has a numpydoc docstring; read it with `help()` in Python or
+in your editor.
