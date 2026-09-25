@@ -503,12 +503,6 @@ def test_pinned_factor_names_win_over_every_producible_name(tmp_path, recorders)
     assert model.fit_calls[0]["train_x"][-1] == 2
 
 
-def test_the_all_placeholder_falls_back_to_the_class_names(tmp_path):
-    factor = PinnedPanel(["f_a", "f_b"], pinned=["_all_"], seed=1)
-
-    assert BaseModel._variable_names(factor) == ("f_a", "f_b")
-
-
 def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, recorders):
     dataset_config = spot_kline_zarr(periods=N_TIMES, seed=0)
     factor = Alpha158SpotKline(

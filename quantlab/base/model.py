@@ -431,8 +431,8 @@ class BaseModel(ABC):
         This is ``obj.get_factor_names()``, i.e. ``config.factor_names``: a
         factor pinned to a subset computes only that subset, and ``Factor``
         fills an unset ``config.factor_names`` from ``_get_factor_names()``.
-        Objects without ``get_factor_names`` (lightweight stand-ins) and the
-        legacy ``["_all_"]`` placeholder fall back to ``_get_factor_names()``.
+        Objects without ``get_factor_names`` (lightweight stand-ins) fall back
+        to ``_get_factor_names()``.
 
         Examples
         --------
@@ -442,9 +442,8 @@ class BaseModel(ABC):
         ('KMID', 'STD5')
         """
         getter = getattr(obj, "get_factor_names", None)
-        pinned = getter() if callable(getter) else None
-        if pinned is not None and list(pinned) != ["_all_"]:
-            return tuple(pinned)
+        if callable(getter):
+            return tuple(getter())
         return tuple(obj._get_factor_names())
 
     def get_factor_names(self):
