@@ -241,7 +241,7 @@ uv run python scripts/ingest_wrds_crsp_all.py \
 
 ### 加入基准 ETF
 
-让 ETF 与它持有的股票一起排名，等于让它和自己竞争，所以基准放在单独的 store 里。`CrspDatasetConfig.etf_benchmark(permno=...)` 固定了两个关键设置：PERMNO 和 `security_filter="none"`；`qqq_benchmark` 是 QQQ（`QQQ_PERMNO`，86755）的同一配置，`SPY_PERMNO`（84398）是 S&P 500 的 ETF。脚本中，`--benchmark` 会下载跟踪 `--universe` 的 ETF（`crsp_sp500` 对应 SPY，`comp_nasdaq100` 对应 QQQ），写入 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`；`--qqq` 单独下载 QQQ。
+让 ETF 与它持有的股票一起排名，等于让它和自己竞争，所以基准放在单独的 store 里。`CrspDatasetConfig.etf_benchmark(permno=...)` 固定了两个关键设置：PERMNO 和 `security_filter="none"`；`qqq_benchmark` 是 QQQ（`QQQ_PERMNO`，86755）的同一配置，`SPY_PERMNO`（84398）是 S&P 500 的 ETF。脚本中，`--benchmark` 会下载跟踪 `--universe` 的 ETF（`crsp_sp500` 对应 SPY，`comp_nasdaq100` 对应 QQQ），写入 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`；`--qqq` 单独下载 QQQ。只下载 ETF、每只一个仓库时，用 `scripts/ingest_wrds_crsp_etf.py --etf spy,qqq`（其他 ETF 写成 `name=PERMNO`）。
 
 ```python
 >>> etf = CrspDatasetConfig.qqq_benchmark(
