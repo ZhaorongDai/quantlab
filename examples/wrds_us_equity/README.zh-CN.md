@@ -27,7 +27,7 @@ uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 --benchmark 
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
 ```
 
-`--benchmark` 会按 CRSP PERMNO 额外下载跟踪该指数的 ETF（`crsp_sp500` 对应 SPY `84398`，`comp_nasdaq100` 对应 QQQ `86755`），并写入它自己的仓库 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`。
+`--benchmark` 会按 CRSP PERMNO 额外下载跟踪该指数的 ETF（`crsp_sp500` 对应 SPY `84398`，`comp_nasdaq100` 对应 QQQ `86755`），并写入它自己的仓库 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`。如果只想下载基准（例如已经做过全市场下载），运行 `uv run python scripts/ingest_wrds_crsp_etf.py --etf spy,qqq --start-date 2010-01-01 --end-date 2024-12-31`，写出的是同样的仓库。
 
 每条命令在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<universe>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<universe>_membership.zarr`（每日的 `is_member`），其中 `<universe>` 为 `sp500` 或 `nasdaq100`。pipeline 从同一个数据根目录读取两者（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或 `Settings.data_root`）。
 
