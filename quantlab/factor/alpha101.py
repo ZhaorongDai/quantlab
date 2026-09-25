@@ -88,9 +88,10 @@ class Alpha101SpotKline(FactorKunQuant):
 class Alpha101Stock(FactorKunQuant):
     """Alpha101 factors over adjusted US-equity bars, emitted raw.
 
-    Reads ``adjOpen``/``adjHigh``/``adjLow``/``adjClose``/``adjVolume``; the
-    stock stores carry no dollar-volume column, so KunQuant derives
-    ``amount`` as ``close * volume``. Outputs are not normalized: US equities
+    Reads ``adjOpen``/``adjHigh``/``adjLow``/``adjClose``/``adjVolume``; list
+    exactly these in ``data_columns``. The stock stores carry no dollar-volume
+    column, so ``vwap`` is the adjusted typical price
+    ``(adjHigh + adjLow + adjClose) / 3``, as in ``Alpha158Stock``. Outputs are not normalized: US equities
     are traded with cross-sectional strategies here, and a rolling
     time-series z-score would change how symbols compare on the same day, so
     normalization across symbols is left to the consumer.
@@ -120,12 +121,17 @@ class Alpha101Stock(FactorKunQuant):
             high = Input("adjHigh")
             vopen = Input("adjOpen")
             vol = Input("adjVolume")
+            # KunQuant derives vwap from `amount` unless one is given, and the
+            # stock stores carry no dollar volume; the adjusted typical price
+            # keeps vwap on the adjusted scale, as in `Alpha158Stock`.
+            vwap = (high + low + close) / 3.0
             all_data = Alpha101.AllData(
                 low=low,
                 high=high,
                 close=close,
                 open=vopen,
                 volume=vol,
+                vwap=vwap,
             )
             for alpha in Alpha101.all_alpha:
                 if alpha.__name__ in factor_names:
