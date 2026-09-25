@@ -54,7 +54,7 @@ SECINFO_PERMNO_COUNT_HINT: int = 40_518
 #: The name of this roster on the command line, next to the index names in
 #: ``CrspMembership.INDEXES``. It is not in that tuple because a whole-market
 #: roster has no index-membership panel behind it.
-MARKET = "crsp_all"
+MARKET = "crsp_market"
 
 
 class CrspMarketRoster:
