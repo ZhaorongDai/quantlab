@@ -1,6 +1,0 @@
-date	path	retired_sentence	replacement_digest
-2026-09-09	quantlab/base/coverage.py	def read_failure_manifest(self) -> dict[str, str]: "The last run's `_failures.json` as `{symbol: reason}`, or `{}`.	4e7254d4bb5a
-2026-09-09	quantlab/acquisition/inspector.py	def failures(self, config: AcquisitionConfig) -> dict[str, str]: "The last run's `_failures.json` as `{symbol: reason}`, or `{}`.	7813d82ff088
-2026-09-09	example/registry.md	上一次 run 的 `_failures.json`，`{symbol: 原因}`	1657182a79f0
-2026-09-09	quantlab/base/acquisition.py	Trips the global abort and is EXCLUDED from the manifest: recording a global condition as one ticker's fault would defame a perfectly good symbol and make the manifest lie about what the last run did.	d81f1f5fa1ec
-2026-09-09	tests/test_tiingo_quota.py	def test_the_quota_condition_never_lands_in_the_failure_manifest( mock_tiingo_client, tmp_path ): "Recording a GLOBAL condition as one ticker's fault would defame a perfectly good symbol and make the manifest lie about what the last run did -- and the next run would "retry" a symbol that never failed.	53eb522cf07f

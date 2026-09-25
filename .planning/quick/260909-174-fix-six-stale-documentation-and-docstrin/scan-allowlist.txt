@@ -1,7 +1,0 @@
-.planning/WINDOWS.md|P00|2
-.planning/WINDOWS.md|P04|2
-example/acquisition.md|P00|1
-example/acquisition.md|P07|1
-example/registry.md|P00|1
-quantlab/base/acquisition.py|P00|1
-tests/test_acquisition_progress.py|P00|2
