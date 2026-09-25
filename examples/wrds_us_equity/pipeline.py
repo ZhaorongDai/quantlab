@@ -14,9 +14,9 @@ Every setting lives in the ``Settings`` block below: edit it and run the file
 Prerequisite: a converted CRSP store and its membership panel for the chosen
 index, as written by ``scripts/ingest_wrds_crsp.py --universe crsp_sp500
 --to-zarr`` or ``--universe comp_nasdaq100 --to-zarr`` (see
-``docs/wrds_crsp.md`` and this directory's README). The benchmark needs its
-ETF in the raw tier: ``--qqq --to-zarr`` writes the QQQ store directly, and
-SPY is downloaded with ``--permnos 84398`` and converted here on first use.
+``docs/wrds_crsp.md`` and this directory's README). Adding ``--benchmark``
+to that command also writes the index's ETF (SPY or QQQ, by PERMNO) to its
+own benchmark store.
 
 Why two derived stores are written in step 1:
 
@@ -56,6 +56,7 @@ from loguru import logger
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     QQQ_PERMNO,
+    SPY_PERMNO,
     ConstituentDatasetConfig,
     CrossSectionBacktestConfig,
     CrspDatasetConfig,
@@ -94,13 +95,15 @@ UNIVERSES = {
 }
 
 #: Buy-and-hold benchmarks selectable through ``Settings.benchmark``: the
-#: ETF's CRSP PERMNO and the store it lives in. Each gets a store of its own,
-#: never a column of the equity panel, where it would be ranked against its
-#: own constituents.
+#: ETF's CRSP PERMNO and the store ``ingest_wrds_crsp.py --benchmark`` (or
+#: ``--qqq``) writes it to. Each ETF has a store of its own, never a column
+#: of the equity panel, where it would be ranked against its own holdings.
 BENCHMARKS = {
-    "spy": ("84398", "wrds_crsp_spy_1d.zarr"),  # SPDR S&P 500 ETF
-    "qqq": (QQQ_PERMNO, "wrds_crsp_qqq_1d.zarr"),  # Invesco QQQ (Nasdaq-100)
+    "spy": (SPY_PERMNO, "wrds_crsp_spy_1d.zarr"),  # SPDR S&P 500 ETF Trust
+    "qqq": (QQQ_PERMNO, "wrds_crsp_qqq_1d.zarr"),  # Invesco QQQ Trust
 }
+#: The ingest ``--universe`` whose ``--benchmark`` ETF each benchmark is.
+BENCHMARK_INGEST_UNIVERSE = {"spy": "crsp_sp500", "qqq": "comp_nasdaq100"}
 #: The benchmark ``benchmark="auto"`` picks for each universe.
 DEFAULT_BENCHMARK = {"sp500": "spy", "nasdaq100": "qqq"}
 
@@ -412,39 +415,26 @@ def train(s: Settings) -> Path:
 
 # %% 5. Backtest
 def benchmark_dataset(s: Settings) -> CrspStockDataset | None:
-    """The benchmark ETF's single-symbol dataset, converted on first use."""
+    """The benchmark ETF's single-symbol CRSP store, or ``None``."""
     name = benchmark_name(s)
     if name is None:
         return None
     permno, _ = BENCHMARKS[name]
-    config = CrspDatasetConfig(
+    if not P["benchmark"].exists():
+        raise FileNotFoundError(
+            f"No {name.upper()} benchmark store at {P['benchmark']}. Download "
+            f"it by its PERMNO {permno}: uv run python "
+            f"scripts/ingest_wrds_crsp.py --universe "
+            f"{BENCHMARK_INGEST_UNIVERSE[name]} --benchmark --start-date "
+            f"<start> --end-date <end> --to-zarr, or set Settings.benchmark="
+            f"None."
+        )
+    return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
+        permno=permno,
         zarr_file_path=str(P["benchmark"]),
         raw_data_dir_path=str(P["raw_dir"]),
         reference_dir=str(P["reference_dir"]),
-        permnos=(permno,),
-        # ETFs are funds, which the default equity filter drops.
-        security_filter="none",
-    )
-    if not P["benchmark"].exists():
-        logger.info(f"converting the {name.upper()} benchmark into {P['benchmark']}")
-        try:
-            converted = CrspStockDataset(config).from_raw_data()
-            panel = converted.get_xarray_dataset()
-            if panel.sizes.get("symbol", 0) == 0 or not bool(
-                panel["adjClose"].notnull().any()
-            ):
-                raise ValueError(f"the raw tier holds no rows for PERMNO {permno}")
-            converted.save()
-        except Exception as exc:
-            ingest = "--qqq --to-zarr" if name == "qqq" else f"--permnos {permno}"
-            raise FileNotFoundError(
-                f"No {name.upper()} benchmark store at {P['benchmark']} and it "
-                f"could not be converted from the raw tier ({exc}). Download "
-                f"it first: uv run python scripts/ingest_wrds_crsp.py {ingest} "
-                f"--start-date <start> --end-date <end>, or set "
-                f"Settings.benchmark=None."
-            ) from exc
-    return CrspStockDataset(config)
+    ))
 
 
 def backtest(s: Settings, trained: Path):
