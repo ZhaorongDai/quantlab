@@ -708,19 +708,6 @@ def test_changes_table_is_selected_by_header_not_by_position(monkeypatch, tmp_pa
     assert parsed["removed_ticker"].tolist() == ["CMVT"]
 
 
-def test_the_cli_category_map_covers_every_universe_category():
-    """WR-05. `UNIVERSE_CATEGORY_MAP` in `quantlab/utils/cli.py` is the table
-    every `--universe` roster resolves through (`resolve_symbols` ->
-    `roster_category`), so a `UniverseCategory` value missing from it is
-    produced into universe.parquet and can never be selected from a shell.
-    """
-    from quantlab.utils.cli import UNIVERSE_CATEGORY_MAP
-
-    assert set(UNIVERSE_CATEGORY_MAP.values()) == set(
-        typing.get_args(UniverseCategory)
-    )
-
-
 def test_universe_category_literal_has_exactly_four_values():
     """03.1-CONTEXT.md D-02: `nasdaq100_constituent` is a category alongside
     `nasdaq_all`, never a replacement for it. 260906-0iy D-01/D-02 adds
@@ -1249,8 +1236,8 @@ def test_get_symbols_as_of_rejects_iso_basic_form_before_coverage(
     at index 4, so the basic form sorts AFTER every dashed date in the same
     year and the strict `<` never fires. Before normalisation this call
     returned a roster for a date 17 days inside the left-censored region --
-    the guard's own bypass, reachable straight off `--as-of-date`, which
-    `utils/cli.py:add_window_args` declares as a bare `type=str`.
+    the guard's own bypass, reachable straight off an `--as-of-date` flag
+    declared as a bare `type=str`.
 
     The `match=` pins the NORMALISED date, so it fails both if the guard stops
     firing and if the validator goes back to discarding its parse.
@@ -1320,42 +1307,6 @@ def test_iso_basic_form_inside_coverage_answers_as_its_dashed_equivalent(
     assert sorted(
         catalog.get_symbols_as_of("nasdaq100_constituent", "20180101")
     ) == sorted(catalog.get_symbols_as_of("nasdaq100_constituent", "2018-01-01"))
-
-
-# ---------------------------------------------------------------------------
-# Roster-window profile arithmetic (260906-0iy Task 3, T-0iy-03; re-expressed
-# by 03.6-02 after SC-3 deleted the dense-panel sizing this section began as)
-# ---------------------------------------------------------------------------
-
-
-def test_the_roster_window_profile_reports_a_coherent_density(
-    mock_universe_fetchers, tmp_path
-):
-    """The profile must be internally consistent: `dense_cells` is exactly
-    `symbols * trading_days`, and `density` is `observed / dense` and lands in
-    `(0, 1]` -- a density above 1 would mean more observations than grid
-    cells, which is the arithmetic bug this pins.
-
-    This test read `estimate_dense_panel` until phase 03.6 SC-3 deleted it. The
-    density arithmetic is ROSTER arithmetic and is exactly what the SURVIVING
-    `estimate_acquisition_volume` reads for its symbol count, trading-day count
-    and density -- so it was repointed at `_roster_window_profile` rather than
-    deleted with the RAM guard. The two byte assertions that closed this test
-    (`dense_bytes`, `observed_bytes`, both `cells * 12 * 8`) DID go: bytes were
-    the deleted half, and the profile does not compute them.
-    """
-    catalog = UniverseCatalog(_make_config(tmp_path)).build()
-
-    est = catalog._roster_window_profile("us_all", "2006-01-01", "2026-09-06")
-
-    assert est["symbols"] == len(
-        catalog.get_symbols_in_range("us_all", "2006-01-01", "2026-09-06")
-    )
-    assert est["trading_days"] > 0
-    assert est["dense_cells"] == est["symbols"] * est["trading_days"]
-    assert 0 < est["observed_cells"] <= est["dense_cells"]
-    assert est["density"] == est["observed_cells"] / est["dense_cells"]
-    assert 0 < est["density"] <= 1
 
 
 # ---------------------------------------------------------------------------
@@ -1993,7 +1944,7 @@ def test_both_roster_queries_return_the_same_order_every_call(
 ):
     """G-03.4-2. `--limit N` must truncate to the SAME N symbols every run.
 
-    `quantlab/utils/cli.py:resolve_symbols` slices `symbols[:limit]`, so an
+    A shell that slices `symbols[:limit]` depends on this order, so an
     order that varies between calls hands a DIFFERENT batch to each run: the
     second run never reaches the watermarks the first one wrote, and
     resume/skip can never fire. That is CLAUDE.md's reproducibility

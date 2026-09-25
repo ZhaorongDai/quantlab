@@ -10,8 +10,7 @@ This example needs no API key, no WRDS account and no network. It shows:
    a small stand-in acquisition class that invents prices locally and writes
    them in the Tiingo raw layout;
 3. read-only inspection of the files on disk with ``SourceInspector``;
-4. conversion of the raw files into a Zarr panel with ``quantlab.registry.convert``;
-5. the SQL volume guard refusing an over-sized request.
+4. conversion of the raw files into a Zarr panel with ``quantlab.registry.convert``.
 
 Everything is written to a temporary directory that is deleted at the end.
 
@@ -30,7 +29,6 @@ import polars as pl
 from loguru import logger
 
 from quantlab.acquisition._support.inspector import SourceInspector
-from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
 from quantlab.acquisition.tiingo import TiingoAcquisition
 from quantlab.base.acquisition import Acquisition
 from quantlab.base.progress import CallbackProgressReporter, CancelToken
@@ -223,19 +221,3 @@ with tempfile.TemporaryDirectory() as tmp:
     print("    dims:", zarr_info["dims"])
     panel = inspector.browse_zarr(ds_config, ["AAPL", "MSFT"], "2024-01-02", "2024-01-04")
     print(panel["close"].to_pandas())
-
-# ---------------------------------------------------------------------------
-# 5. The SQL volume guard, which prices a WRDS pull from row counts before
-#    anything is copied. The counts would normally come from a count(*) probe;
-#    here they are made up: 250 million quote rows per day is roughly an
-#    S&P 500-sized roster of NBBO records.
-# ---------------------------------------------------------------------------
-section("Volume guard")
-guard = SqlVolumeGuard()
-rows_by_day = {f"2024-01-{day:02d}": 250_000_000 for day in (22, 23, 24, 25)}
-try:
-    guard.assert_acquisition_volume_fits(
-        rows_by_day, symbols=500, start_date="2024-01-22", end_date="2024-01-25"
-    )
-except ValueError as exc:
-    print("refused:", exc)

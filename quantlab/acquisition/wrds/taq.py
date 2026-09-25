@@ -22,9 +22,7 @@ pages, and one page is one trading day for one batch of symbols, fetched
 with a plain ``COPY (SELECT ... WHERE ...)``. Each NBBO record becomes one
 row of the raw tier (the parquet files on disk), unfiltered and unsorted,
 and the order in which the server sent the rows is kept in the
-``wrds_row_ord`` column. ``WrdsNbboVolumeProbe`` counts the rows a download
-would move, so that the volume guard (a check that estimates the size of a
-download before it runs) can refuse one that is too large.
+``wrds_row_ord`` column.
 
 Sorting, de-duplicating and resampling the raw records happen later, in
 ``quantlab.dataset.nbbo``. The ``wrds`` package from PyPI is not used: its
@@ -690,7 +688,7 @@ class WrdsSession:
     def assert_entitled(self, years) -> None:
         """Check that the account may read the TAQ schema of every year given.
 
-        Called before the first data query of a download or a probe, so a
+        Called before the first data query of a download, so a
         year outside the subscription stops the run before any data is
         copied, instead of failing every batch of every day.
 
@@ -868,8 +866,7 @@ def trading_days_between(session, start: date, end: date) -> list[date]:
     """Return the trading days in ``[start, end]``, ascending.
 
     A trading day is a day that has a ``complete_nbbo`` table, listed per
-    year through ``session.trading_days``. The acquisition and the volume
-    probe both use this function, so they cover exactly the same days.
+    year through ``session.trading_days``.
 
     Parameters
     ----------
@@ -1480,119 +1477,3 @@ class WrdsTaqNbboAcquisition(Acquisition):
             end_date=end_date,
             kwargs=merged,
         )
-
-
-class WrdsNbboVolumeProbe:
-    """Count the ``complete_nbbo`` rows a download would fetch, per trading day.
-
-    The counts feed the volume guard, which estimates the size of a download
-    before it runs and refuses one that is too large. One ``count(*)`` is
-    issued per (trading day, symbol batch). The batches are split exactly
-    like ``Acquisition._batches`` and the WHERE is built by the same
-    ``WrdsSession.where_clause`` the copy uses, so the rows counted are the
-    rows the download will move. Each count is fast on the server, and a
-    whole table is never counted because ``where_clause`` refuses an empty
-    batch. Counts are not saved to disk, because the download counts each
-    page again anyway when ``verify_page_counts`` is on.
-
-    Parameters
-    ----------
-    session : WrdsSession
-        The shared WRDS session.
-    batch_size : int, default 25
-        Symbols per count query; the acquisition's ``DEFAULT_BATCH_SIZE``.
-
-    Examples
-    --------
-    Needs a live ``WrdsSession``::
-
-        probe = WrdsNbboVolumeProbe(WrdsSession.shared(), batch_size=25)
-        rows_by_day = probe.count_rows_by_day(
-            ["AAPL", "MSFT"], "2024-01-24", "2024-01-25"
-        )
-    """
-
-    #: Log progress every this many trading days.
-    LOG_EVERY_DAYS = 20
-
-    def __init__(
-        self,
-        session,
-        batch_size: int = WrdsTaqNbboAcquisition.DEFAULT_BATCH_SIZE,
-    ) -> None:
-        """Initialize the probe; see the class docstring for parameters."""
-        self.session = session
-        self.batch_size = max(1, int(batch_size))
-
-    def _batches(self, symbols: list[str]) -> list[list[str]]:
-        """Split ``symbols`` into batches of ``batch_size``, keeping their order."""
-        return [
-            symbols[index : index + self.batch_size]
-            for index in range(0, len(symbols), self.batch_size)
-        ]
-
-    def count_rows_by_day(
-        self, symbols, start_date: str, end_date: str
-    ) -> dict[str, int]:
-        """Return ``{ISO trading day: rows}`` over ``[start_date, end_date]``.
-
-        Rows are summed over the symbol batches. The subscription is checked
-        first, so a year outside it raises ``WrdsEntitlementError`` before
-        any count is issued.
-
-        Parameters
-        ----------
-        symbols : iterable of str
-            Tickers in dot notation.
-        start_date, end_date : str
-            The window, inclusive, as ISO dates.
-
-        Returns
-        -------
-        dict of str to int
-            Row counts keyed by trading day.
-
-        Raises
-        ------
-        ValueError
-            If ``symbols`` is empty or contains a value that is
-            not a tradeable ticker.
-
-        Examples
-        --------
-        Needs a live ``WrdsSession``::
-
-            counts = probe.count_rows_by_day(["AAPL"], "2024-01-24", "2024-01-24")
-        """
-        symbols = [str(symbol) for symbol in symbols]
-        if not symbols:
-            raise ValueError(
-                "WrdsNbboVolumeProbe.count_rows_by_day: no symbols; refusing to "
-                "count a table without a sym_root predicate."
-            )
-        for symbol in symbols:
-            if not TRADEABLE_TICKER_PATTERN.fullmatch(symbol):
-                raise ValueError(
-                    f"WrdsNbboVolumeProbe: {symbol!r} is not a tradeable ticker."
-                )
-        batches = [
-            [WrdsTaqNbboAcquisition.symbol_to_pair(symbol) for symbol in batch]
-            for batch in self._batches(symbols)
-        ]
-        start = date.fromisoformat(str(start_date)[:10])
-        end = date.fromisoformat(str(end_date)[:10])
-        self.session.assert_entitled(range(start.year, end.year + 1))
-
-        days = trading_days_between(self.session, start, end)
-        counts: dict[str, int] = {}
-        for position, day in enumerate(days, start=1):
-            counts[day.isoformat()] = sum(
-                self.session.count_rows(day, pairs) for pairs in batches
-            )
-            if position % self.LOG_EVERY_DAYS == 0 or position == len(days):
-                logger.info(
-                    f"WRDS NBBO volume probe: {position}/{len(days)} trading "
-                    f"day(s) counted ({len(batches)} batch(es) per day, "
-                    f"{sum(counts.values()):,} rows so far)."
-                )
-        return counts

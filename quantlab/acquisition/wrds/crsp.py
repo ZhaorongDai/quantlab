@@ -21,9 +21,7 @@ later, when ``quantlab.dataset.crsp`` converts the raw data into a panel.
 
 ``CrspQueries`` builds the SQL statements (pure functions that can be tested
 without a server) and hands them to the session. ``year_pages`` defines the
-page boundaries. ``CrspVolumeProbe`` uses the same pages to count the rows a
-download would move, so that the volume guard (a check that estimates the
-size of a download before it runs) can refuse one that is too large.
+page boundaries.
 
 ``crsp_a_stock`` is CRSP's annual-update product: WRDS replaces it once a
 year with a new release, called a vintage, that ends on a fixed last day. A
@@ -540,8 +538,7 @@ class CrspQueries:
 def year_pages(start, end) -> list[tuple[date, date]]:
     """Split ``[start, end]`` into calendar-year pages, clipped to the window.
 
-    The acquisition downloads one page per year, and ``CrspVolumeProbe``
-    counts the same pages, so both use this one definition. A page is also
+    The acquisition downloads one page per year. A page is also
     the unit of resume: a failed page is downloaded again in full. A year
     keeps a retry to about 250 trading days per PERMNO while keeping a long
     history to a few dozen pages per batch.
@@ -642,10 +639,6 @@ class WrdsCrspDailyAcquisition(Acquisition):
     #: page if the copied row count differs. Overridable through
     #: ``kwargs["verify_page_counts"]``.
     DEFAULT_VERIFY_PAGE_COUNTS = True
-
-    #: Rough size of one raw row in bytes, used to estimate download volume:
-    #: 50 columns of mostly short numbers.
-    DEFAULT_BYTES_PER_ROW = 150
 
     CREDENTIAL_ENV_VARS = (_wrds.USERNAME_ENV,)
     REDACTION = "<WRDS CREDENTIAL REDACTED>"
@@ -916,7 +909,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
                     f"end_date {end.isoformat()} is past the CRSP product end "
                     f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is "
                     f"the annual update product and gains a year only when "
-                    f"WRDS loads the new release. Lower --end-date to "
+                    f"WRDS loads the new release. Lower end_date to "
                     f"{product_end.isoformat()}, or pass "
                     f"kwargs['clip_to_product_end']=True to have the window "
                     f"clipped for you; nothing was downloaded."
@@ -1115,8 +1108,6 @@ class WrdsCrspDailyAcquisition(Acquisition):
         # a file path. `_run` checks the whole list; this covers direct calls.
         self._assert_permnos(symbols)
 
-        # The shared page definition, so `CrspVolumeProbe` counts exactly
-        # these pages.
         pages = year_pages(start_date, end_date)
         if not pages:
             return self._empty_page(), None
@@ -1310,8 +1301,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
             The window, inclusive, as ISO dates.
         kwargs : dict or None, default None
             Extra options, such as ``clip_to_product_end`` or
-            ``verify_page_counts``. ``data_type`` is set to ``"crsp_daily"``
-            and ``bytes_per_row`` defaults to ``DEFAULT_BYTES_PER_ROW``.
+            ``verify_page_counts``. ``data_type`` is set to ``"crsp_daily"``.
         subdir : str, default "wrds_crsp"
             Directory under ``downloads/us_equity/1d`` that holds this raw
             tier. Use a new one to start a fresh tier for a new CRSP release.
@@ -1333,7 +1323,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
         ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
         ... )
         >>> cfg.kwargs
-        {'data_type': 'crsp_daily', 'bytes_per_row': 150}
+        {'data_type': 'crsp_daily'}
 
         ``cfg.raw_data_dir_path`` is
         ``'<data root>/downloads/us_equity/1d/wrds_crsp/wrds'``.
@@ -1347,7 +1337,6 @@ class WrdsCrspDailyAcquisition(Acquisition):
                 f"{cls.DATA_TYPE!r}."
             )
         merged["data_type"] = cls.DATA_TYPE
-        merged.setdefault("bytes_per_row", cls.DEFAULT_BYTES_PER_ROW)
         downloads = get_data_root() / "downloads" / "us_equity" / "1d" / subdir
         return AcquisitionConfig(
             market="us_equity",
@@ -1391,139 +1380,3 @@ class WrdsCrspDailyAcquisition(Acquisition):
             # PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_reference')
         """
         return Path(config.raw_data_dir_path).parent / cls.REFERENCE_DIR_NAME
-
-
-class CrspVolumeProbe:
-    """Count the ``dsf_v2`` rows a download would fetch, per calendar-year page.
-
-    The counts feed the volume guard, which estimates the size of a download
-    before it runs and refuses one that is too large. A CRSP page is a
-    calendar year, so this probe counts per year, and a refusal names a
-    boundary that a smaller re-run can actually use. One ``count(*)`` is
-    issued per (year, PERMNO batch), with the pages from ``year_pages`` and
-    the WHERE from ``CrspQueries.daily_where``. The acquisition uses the same
-    two, so the rows counted are the rows that will be downloaded.
-    ``daily_where`` refuses an empty batch, so the whole table is never
-    counted.
-
-    The guard's result fields are named ``rows_by_day`` and
-    ``trading_days``; for this probe they mean rows per year and the number
-    of years. Counts are not saved to disk, because the download counts each
-    page again anyway when ``verify_page_counts`` is on.
-
-    Parameters
-    ----------
-    session : WrdsSession
-        The shared WRDS session.
-    batch_size : int, default 200
-        PERMNOs per count query; the acquisition's ``DEFAULT_BATCH_SIZE``.
-
-    Examples
-    --------
-    Needs a live ``WrdsSession``::
-
-        probe = CrspVolumeProbe(WrdsSession.shared(), batch_size=200)
-        rows_by_year = probe.count_rows_by_year(
-            ["14593", "10107"], "2018-06-01", "2020-03-31"
-        )
-
-    The keys are the page ends from ``year_pages``: ``2018-12-31``,
-    ``2019-12-31`` and ``2020-03-31``.
-    """
-
-    #: Log progress every this many year pages.
-    LOG_EVERY_PAGES = 5
-
-    def __init__(
-        self,
-        session,
-        batch_size: int = WrdsCrspDailyAcquisition.DEFAULT_BATCH_SIZE,
-    ) -> None:
-        """Initialize the probe; see the class docstring for parameters."""
-        self.session = session
-        self.batch_size = max(1, int(batch_size))
-
-    def _batches(self, permnos: list[str]) -> list[list[str]]:
-        """Split ``permnos`` into batches of ``batch_size``, keeping their order.
-
-        The same split as ``Acquisition._batches``, repeated here because
-        that method reads an acquisition config and this probe runs before
-        any acquisition exists.
-        """
-        return [
-            permnos[index : index + self.batch_size]
-            for index in range(0, len(permnos), self.batch_size)
-        ]
-
-    def count_rows_by_year(
-        self, permnos, start_date: str, end_date: str
-    ) -> dict[str, int]:
-        """Return ``{ISO page end: rows}`` over ``[start_date, end_date]``.
-
-        Keys are the last day of each year page (``2019-12-31``,
-        ``2020-12-31``, and the window's own end for a final partial year).
-        Each value is summed over the PERMNO batches. The subscription is
-        checked first, so an unsubscribed account raises
-        ``WrdsEntitlementError`` before any count is issued.
-
-        Parameters
-        ----------
-        permnos : iterable
-            PERMNOs as digit strings or integers.
-        start_date, end_date : str
-            The window, inclusive, as ISO dates.
-
-        Returns
-        -------
-        dict of str to int
-            Row counts keyed by page end.
-
-        Raises
-        ------
-        ValueError
-            If ``permnos`` is empty or contains a value that is
-            not a digit string.
-
-        Examples
-        --------
-        Needs a live ``WrdsSession``::
-
-            counts = probe.count_rows_by_year(["14593"], "2020-01-01", "2020-12-31")
-        """
-        permnos = [str(permno) for permno in permnos]
-        if not permnos:
-            raise ValueError(
-                "CrspVolumeProbe.count_rows_by_year: no PERMNOs; refusing to "
-                "count the daily table without a PERMNO predicate."
-            )
-        for permno in permnos:
-            if not permno.isdigit():
-                raise ValueError(
-                    f"CrspVolumeProbe: {permno!r} is not a PERMNO. The CRSP "
-                    f"raw tier is keyed by PERMNO (a digit string), not by "
-                    f"ticker; resolve the roster to PERMNOs first."
-                )
-
-        batches = self._batches(permnos)
-        pages = year_pages(start_date, end_date)
-
-        CrspQueries.assert_entitled(self.session, (CrspQueries.STOCK_SCHEMA,))
-
-        counts: dict[str, int] = {}
-        for position, (page_start, page_end) in enumerate(pages, start=1):
-            counts[page_end.isoformat()] = sum(
-                CrspQueries.count(
-                    self.session,
-                    CrspQueries.STOCK_SCHEMA,
-                    CrspQueries.DAILY_TABLE,
-                    CrspQueries.daily_where(batch, page_start, page_end),
-                )
-                for batch in batches
-            )
-            if position % self.LOG_EVERY_PAGES == 0 or position == len(pages):
-                logger.info(
-                    f"CRSP daily volume probe: {position}/{len(pages)} year "
-                    f"page(s) counted ({len(batches)} batch(es) per page, "
-                    f"{sum(counts.values()):,} rows so far)."
-                )
-        return counts

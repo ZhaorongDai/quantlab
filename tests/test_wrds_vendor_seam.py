@@ -345,12 +345,9 @@ def test_enumeration_survives_any_import_order(first_module) -> None:
     - `quantlab.acquisition.alpaca` -- a NON-WRDS vendor first. Every previous
       parameter entered through the WRDS side, so a regression that only the
       wrds entry point masked would have gone unseen.
-    - `quantlab.universe` -- the volume guard first. Beyond import order, this
-      proves the guard module's own import path stays clean of the registry's
-      vendor pull: if importing `quantlab.universe` ever started dragging in a
-      client, this child would still print the right list, but
-      `tests/test_volume_guard.py`'s structural arm and this order together
-      pin both halves.
+    - `quantlab.universe` -- a module outside the acquisition package first,
+      so enumeration is proved from an entry point that never imports a
+      vendor itself.
 
     All FIVE orders are asserted, in fresh interpreters, with `WRDS_USERNAME`
     stripped -- so this doubles as a proof that enumeration needs no credential.

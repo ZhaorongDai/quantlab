@@ -785,59 +785,6 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     assert "Traceback" not in child.stderr
 
 
-def test_the_acquisition_package_init_is_still_empty() -> None:
-    """L-3: `quantlab/acquisition/__init__.py` stays empty, and the vendor
-    imports live at the bottom of `registry.py` instead.
-
-    A non-empty package `__init__` runs on EVERY
-    `import quantlab.acquisition.<anything>`, including
-    `quantlab.universe` -- the one module whose entire structural
-    guarantee is that no acquisition client can be constructed there, whatever
-    the call order. That is what makes the volume guard refuse BEFORE any
-    client exists rather than refuse if called in the right order.
-
-    The erosion would be SILENT: `tests/test_volume_guard.py`'s structural arm
-    is an `ast` scan of `universe.py`'s OWN source plus a
-    `vars(universe_module)` sweep, and neither can see a transitive import
-    dragged in by a package `__init__`. So the property is asserted here
-    directly, on the file, rather than trusted to a test that cannot see it.
-    """
-    init = Path("quantlab/acquisition/__init__.py")
-
-    assert init.exists()
-    assert init.read_text(encoding="utf-8").strip() == ""
-
-
-def test_importing_universe_binds_no_acquisition_client() -> None:
-    """The RUNTIME half of the L-3 guarantee, which the structural test cannot
-    see.
-
-    `tests/test_volume_guard.py` proves `universe.py` does not itself import an
-    acquisition module. This proves the stronger, transitive fact: importing
-    that module ALONE, in a fresh interpreter, leaves no `Acquisition`
-    subclass bound in it and does not drag the vendor modules into
-    `sys.modules` at all. That is the property a non-empty package `__init__`
-    would destroy while every existing test stayed green.
-    """
-    child = _run_child(
-        "import json, sys\n"
-        "import quantlab.universe as u\n"
-        "print(json.dumps({\n"
-        "    'bound': [n for n in vars(u) if n.endswith('Acquisition')],\n"
-        "    'tiingo_imported': 'quantlab.acquisition.tiingo' in sys.modules,\n"
-        "    'alpaca_imported': 'quantlab.acquisition.alpaca' in sys.modules,\n"
-        "    'registry_imported': 'quantlab.registry' in sys.modules,\n"
-        "}))\n"
-    )
-
-    assert child.returncode == 0, child.stderr
-    observed = json.loads(child.stdout)
-    assert observed["bound"] == []
-    assert observed["tiingo_imported"] is False
-    assert observed["alpaca_imported"] is False
-    assert observed["registry_imported"] is False
-
-
 def _no_network(monkeypatch) -> None:
     """Make ANY socket allocation raise.
 
