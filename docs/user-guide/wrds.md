@@ -102,7 +102,17 @@ uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407 \
 # The QQQ benchmark, in a store of its own
 uv run python scripts/ingest_wrds_crsp.py --qqq \
     --start-date 1999-01-01 --end-date 2025-12-31 --to-zarr
+
+# ETFs only, one store each (spy, qqq, or any ETF as name=PERMNO)
+uv run python scripts/ingest_wrds_crsp_etf.py --etf spy,qqq \
+    --start-date 2000-01-01 --end-date 2025-12-31
 ```
+
+`scripts/ingest_wrds_crsp_etf.py` downloads ETFs alone, by PERMNO, and always
+converts each into `data/us_equity/1d/wrds_crsp_<name>_1d.zarr`, the store a
+backtest reads as `benchmark_dataset`. `spy` (84398) and `qqq` (86755) are known
+by name; any other ETF is `name=PERMNO`. It shares the raw tier and watermarks
+with the equity scripts, so `--refresh` extends an ETF like any other PERMNO.
 
 Other flags: `--security-filter` (below), `--batch-size` (PERMNOs per query,
 default 200), `--refresh`, `--refresh-reference`, `--allow-unlinked-ndx`, and
