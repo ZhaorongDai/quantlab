@@ -32,13 +32,14 @@ class SqlVolumeGuard:
     arithmetic, and it is a per-call argument; no environment variable or
     config key disables the guard wholesale.
 
-    Example:
-        >>> from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
-        >>> guard = SqlVolumeGuard()
-        >>> guard.max_raw_rows, guard.bytes_per_row
-        (700000000, 30)
-        >>> SqlVolumeGuard({"max_raw_rows": 1_000_000}).max_raw_rows
-        1000000
+    Examples
+    --------
+    >>> from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
+    >>> guard = SqlVolumeGuard()
+    >>> guard.max_raw_rows, guard.bytes_per_row
+    (700000000, 30)
+    >>> SqlVolumeGuard({"max_raw_rows": 1_000_000}).max_raw_rows
+    1000000
     """
 
     #: Raw-byte ceiling for one fetch: 20 GiB, kept equal to the universe
@@ -132,29 +133,38 @@ class SqlVolumeGuard:
         bytes stay within both ceilings, or ``None`` when not even the first
         bucket fits. Keys are ISO dates, so a string sort is a date sort.
 
-        Args:
-            rows_by_day: ``{iso_date: row_count}``, one entry per bucket.
-            symbols: How many symbols the counts cover; echoed into the result.
-            start_date: Start of the requested window; echoed into the result.
-            end_date: End of the requested window; echoed into the result.
-            unit: The word a message uses for one bucket (``"trading day"``
-                for TAQ, ``"calendar year"`` for CRSP). It changes wording
-                only; the returned key is always ``trading_days``.
+        Parameters
+        ----------
+        rows_by_day : Mapping[str, int]
+            ``{iso_date: row_count}``, one entry per bucket.
+        symbols : int
+            How many symbols the counts cover; echoed into the result.
+        start_date : str
+            Start of the requested window; echoed into the result.
+        end_date : str
+            End of the requested window; echoed into the result.
+        unit : str
+            The word a message uses for one bucket (``"trading day"``
+            for TAQ, ``"calendar year"`` for CRSP). It changes wording
+            only; the returned key is always ``trading_days``.
 
-        Returns:
+        Returns
+        -------
+        dict
             A dict with the inputs echoed, ``trading_days`` (bucket count),
             ``rows``, ``bytes_per_row``, ``raw_bytes``, both ceilings,
             ``crossed`` (labels of exceeded ceilings), ``fitting_end_date``
             and ``forced`` (always ``False`` here).
 
-        Example:
-            >>> guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
-            >>> estimate = guard.estimate(
-            ...     {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
-            ...     symbols=1, start_date="2024-01-02", end_date="2024-01-03",
-            ... )
-            >>> estimate["rows"], estimate["crossed"], estimate["fitting_end_date"]
-            (2500000, ['raw-rows'], '2024-01-02')
+        Examples
+        --------
+        >>> guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
+        >>> estimate = guard.estimate(
+        ...     {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
+        ...     symbols=1, start_date="2024-01-02", end_date="2024-01-03",
+        ... )
+        >>> estimate["rows"], estimate["crossed"], estimate["fitting_end_date"]
+        (2500000, ['raw-rows'], '2024-01-02')
         """
         days = sorted(rows_by_day)
         rows = 0
@@ -199,38 +209,50 @@ class SqlVolumeGuard:
         ``forced=True`` and ``crossed`` still naming every crossed ceiling.
         Never touches the network.
 
-        Args:
-            rows_by_day: ``{iso_date: row_count}``, one entry per bucket.
-            symbols: How many symbols the counts cover.
-            start_date: Start of the requested window.
-            end_date: End of the requested window.
-            force: Return the estimate instead of raising when over a ceiling.
-            unit: The word a message uses for one bucket; see ``estimate``.
+        Parameters
+        ----------
+        rows_by_day : Mapping[str, int]
+            ``{iso_date: row_count}``, one entry per bucket.
+        symbols : int
+            How many symbols the counts cover.
+        start_date : str
+            Start of the requested window.
+        end_date : str
+            End of the requested window.
+        force : bool
+            Return the estimate instead of raising when over a ceiling.
+        unit : str
+            The word a message uses for one bucket; see ``estimate``.
 
-        Returns:
+        Returns
+        -------
+        dict
             The dict ``estimate`` returns, with ``forced`` set when ``force``
             overrode a refusal.
 
-        Raises:
-            ValueError: If any ceiling is crossed and ``force`` is false. The
-                message names every crossed ceiling with the constant and
-                kwargs key that raise it, a date segment that would fit (or
-                that none does), and the ``--force-volume`` override.
+        Raises
+        ------
+        ValueError
+            If any ceiling is crossed and ``force`` is false. The
+            message names every crossed ceiling with the constant and
+            kwargs key that raise it, a date segment that would fit (or
+            that none does), and the ``--force-volume`` override.
 
-        Example:
-            >>> guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
-            >>> guard.assert_acquisition_volume_fits(
-            ...     {"2024-01-02": 1_200_000}, symbols=1,
-            ...     start_date="2024-01-02", end_date="2024-01-02",
-            ... )["crossed"]
-            []
-            >>> guard.assert_acquisition_volume_fits(
-            ...     {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
-            ...     symbols=1, start_date="2024-01-02", end_date="2024-01-03",
-            ... )
-            Traceback (most recent call last):
-            ...
-            ValueError: Refusing to pull 1 symbol(s) over 2024-01-02..2024-01-03: ...
+        Examples
+        --------
+        >>> guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
+        >>> guard.assert_acquisition_volume_fits(
+        ...     {"2024-01-02": 1_200_000}, symbols=1,
+        ...     start_date="2024-01-02", end_date="2024-01-02",
+        ... )["crossed"]
+        []
+        >>> guard.assert_acquisition_volume_fits(
+        ...     {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
+        ...     symbols=1, start_date="2024-01-02", end_date="2024-01-03",
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValueError: Refusing to pull 1 symbol(s) over 2024-01-02..2024-01-03: ...
         """
         estimate = self.estimate(
             rows_by_day,

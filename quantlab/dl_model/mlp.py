@@ -19,16 +19,22 @@ from quantlab.base.model import DLModel
 class MLP(nn.Module):
     """Two-hidden-layer perceptron with ReLU activations.
 
-    Args:
-        input_size: Width of the input rows.
-        hidden_size1: Width of the first hidden layer.
-        hidden_size2: Width of the second hidden layer.
-        output_size: Width of the output rows.
+    Parameters
+    ----------
+    input_size
+        Width of the input rows.
+    hidden_size1
+        Width of the first hidden layer.
+    hidden_size2
+        Width of the second hidden layer.
+    output_size
+        Width of the output rows.
 
-    Example:
-        >>> net = MLP(input_size=6, hidden_size1=16, hidden_size2=8, output_size=4)
-        >>> net(torch.zeros(5, 6)).shape
-        torch.Size([5, 4])
+    Examples
+    --------
+    >>> net = MLP(input_size=6, hidden_size1=16, hidden_size2=8, output_size=4)
+    >>> net(torch.zeros(5, 6)).shape
+    torch.Size([5, 4])
     """
 
     def __init__(self, input_size, hidden_size1, hidden_size2, output_size):
@@ -43,10 +49,11 @@ class MLP(nn.Module):
     def forward(self, x):
         """Map a ``[batch, input_size]`` matrix to ``[batch, output_size]``.
 
-        Example:
-            >>> net = MLP(6, 16, 8, 4)
-            >>> net.forward(torch.zeros(5, 6)).shape
-            torch.Size([5, 4])
+        Examples
+        --------
+        >>> net = MLP(6, 16, 8, 4)
+        >>> net.forward(torch.zeros(5, 6)).shape
+        torch.Size([5, 4])
         """
         out = self.fc1(x)
         out = self.relu1(out)
@@ -75,24 +82,25 @@ class MLPRegressor(DLModel):
     flattened ``[num_times, num_symbols * num_labels]`` output, while
     ``predict_panel`` works on the ``(timestamp, symbol)`` panel.
 
-    Example:
-        >>> config = DLConfig(
-        ...     factors=[alpha],            # factor objects
-        ...     labels=[fwd_return],        # label objects
-        ...     model_save_dir="checkpoints",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2024-01-01", train_end="2024-02-09",
-        ...     test_start="2024-02-10", test_end="2024-02-29",
-        ...     epochs=2, batch_size=8, num_workers=0,
-        ...     hyperparameters={"hidden_size1": 16, "hidden_size2": 8},
-        ... )
-        >>> model = MLPRegressor(config)
-        >>> checkpoint = model.collect().train()
-        >>> checkpoint.name
-        'MLPRegressor_total.pth'
-        >>> model.predict(torch.zeros(5, model.num_symbols * model.num_factors)).shape
-        torch.Size([5, 4])
+    Examples
+    --------
+    >>> config = DLConfig(
+    ...     factors=[alpha],            # factor objects
+    ...     labels=[fwd_return],        # label objects
+    ...     model_save_dir="checkpoints",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2024-01-01", train_end="2024-02-09",
+    ...     test_start="2024-02-10", test_end="2024-02-29",
+    ...     epochs=2, batch_size=8, num_workers=0,
+    ...     hyperparameters={"hidden_size1": 16, "hidden_size2": 8},
+    ... )
+    >>> model = MLPRegressor(config)
+    >>> checkpoint = model.collect().train()
+    >>> checkpoint.name
+    MLPRegressor_total.pth
+    >>> model.predict(torch.zeros(5, model.num_symbols * model.num_factors)).shape
+    torch.Size([5, 4])
     """
 
     def __init__(self, config: DLConfig):

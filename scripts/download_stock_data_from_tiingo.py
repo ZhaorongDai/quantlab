@@ -82,13 +82,16 @@ def download_stock(stock):
     under the current working directory. Nothing is written when the vendor
     returns no rows.
 
-    Args:
-        stock: The ticker to download.
+    Parameters
+    ----------
+    stock
+        The ticker to download.
 
-    Example:
-        Needs ``TIINGO_API_KEY`` and network access::
+    Examples
+    --------
+    Needs ``TIINGO_API_KEY`` and network access::
 
-            download_stock("AAPL")
+        download_stock("AAPL")
     """
     data = pl.DataFrame(
         client.get_ticker_price(

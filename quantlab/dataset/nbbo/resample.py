@@ -71,11 +71,12 @@ class NbboFilterPolicy:
     reason in the order nonpositive price, condition, crossed, locked, so the
     per-reason counts partition the dropped records.
 
-    Example:
-        >>> NbboFilterPolicy().drop_locked
-        False
-        >>> NbboFilterPolicy(drop_locked=True, keep_qu_cond=["R", "C"]).keep_qu_cond
-        ('R', 'C')
+    Examples
+    --------
+    >>> NbboFilterPolicy().drop_locked
+    False
+    >>> NbboFilterPolicy(drop_locked=True, keep_qu_cond=["R", "C"]).keep_qu_cond
+    ('R', 'C')
     """
 
     drop_crossed: bool = True
@@ -86,9 +87,11 @@ class NbboFilterPolicy:
     def __post_init__(self) -> None:
         """Normalise ``keep_qu_cond`` to a tuple and reject a bare string.
 
-        Raises:
-            ValueError: If ``keep_qu_cond`` is a string rather than a
-                sequence of condition codes.
+        Raises
+        ------
+        ValueError
+            If ``keep_qu_cond`` is a string rather than a
+            sequence of condition codes.
         """
         if self.keep_qu_cond is None:
             return
@@ -104,14 +107,15 @@ class NbboFilterPolicy:
     def from_config(cls, config) -> "NbboFilterPolicy":
         """Build a policy from the four filter fields of an ``NbboDatasetConfig``.
 
-        Example:
-            >>> config = NbboDatasetConfig(
-            ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
-            ...     catalog_path="data/us_equity/catalog",
-            ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1m.zarr",
-            ... )
-            >>> NbboFilterPolicy.from_config(config).drop_crossed
-            True
+        Examples
+        --------
+        >>> config = NbboDatasetConfig(
+        ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
+        ...     catalog_path="data/us_equity/catalog",
+        ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1m.zarr",
+        ... )
+        >>> NbboFilterPolicy.from_config(config).drop_crossed
+        True
         """
         return cls(
             drop_crossed=config.drop_crossed,
@@ -126,25 +130,26 @@ class NbboFilterPolicy:
         Expects ``bid`` and ``ask`` columns with a missing side already null,
         and a ``qu_cond`` column.
 
-        Example:
-            >>> policy = NbboFilterPolicy(drop_locked=True)
-            >>> frame = pl.DataFrame({
-            ...     "bid": [1.0, 2.0, None, 0.0],
-            ...     "ask": [1.0, 1.5, 2.0, 1.0],
-            ...     "qu_cond": ["R", "R", "R", "R"],
-            ... })
-            >>> frame.with_columns(policy.reason().alias("reason"))
-            shape: (4, 4)
-            ┌──────┬─────┬─────────┬───────────────────┐
-            │ bid  ┆ ask ┆ qu_cond ┆ reason            │
-            │ ---  ┆ --- ┆ ---     ┆ ---               │
-            │ f64  ┆ f64 ┆ str     ┆ str               │
-            ╞══════╪═════╪═════════╪═══════════════════╡
-            │ 1.0  ┆ 1.0 ┆ R       ┆ locked            │
-            │ 2.0  ┆ 1.5 ┆ R       ┆ crossed           │
-            │ null ┆ 2.0 ┆ R       ┆ null              │
-            │ 0.0  ┆ 1.0 ┆ R       ┆ nonpositive_price │
-            └──────┴─────┴─────────┴───────────────────┘
+        Examples
+        --------
+        >>> policy = NbboFilterPolicy(drop_locked=True)
+        >>> frame = pl.DataFrame({
+        ...     "bid": [1.0, 2.0, None, 0.0],
+        ...     "ask": [1.0, 1.5, 2.0, 1.0],
+        ...     "qu_cond": ["R", "R", "R", "R"],
+        ... })
+        >>> frame.with_columns(policy.reason().alias("reason"))
+        shape: (4, 4)
+        ┌──────┬─────┬─────────┬───────────────────┐
+        │ bid  ┆ ask ┆ qu_cond ┆ reason            │
+        │ ---  ┆ --- ┆ ---     ┆ ---               │
+        │ f64  ┆ f64 ┆ str     ┆ str               │
+        ╞══════╪═════╪═════════╪═══════════════════╡
+        │ 1.0  ┆ 1.0 ┆ R       ┆ locked            │
+        │ 2.0  ┆ 1.5 ┆ R       ┆ crossed           │
+        │ null ┆ 2.0 ┆ R       ┆ null              │
+        │ 0.0  ┆ 1.0 ┆ R       ┆ nonpositive_price │
+        └──────┴─────┴─────────┴───────────────────┘
         """
         bid_present = pl.col("bid").is_not_null()
         ask_present = pl.col("ask").is_not_null()
@@ -195,43 +200,44 @@ class NbboResampler:
     timestamp with a differently valued record (identical duplicates count
     0), so a consumer can see which bars' snapshots depend on that order.
 
-    Example:
-        A three-minute session, one symbol, four records (the third is
-        crossed and dropped by the default policy):
+    Examples
+    --------
+    A three-minute session, one symbol, four records (the third is
+    crossed and dropped by the default policy):
 
-        >>> sessions = pl.DataFrame({
-        ...     "date": [date(2024, 1, 24)],
-        ...     "open": [datetime(2024, 1, 24, 14, 30)],
-        ...     "close": [datetime(2024, 1, 24, 14, 33)],
-        ... })
-        >>> records = pl.DataFrame({
-        ...     "symbol": ["AAPL"] * 4,
-        ...     "date": [date(2024, 1, 24)] * 4,
-        ...     "timestamp": [
-        ...         datetime(2024, 1, 24, 14, 29, 50),
-        ...         datetime(2024, 1, 24, 14, 30, 30),
-        ...         datetime(2024, 1, 24, 14, 31, 0),
-        ...         datetime(2024, 1, 24, 14, 32, 10),
-        ...     ],
-        ...     "wrds_row_ord": [1, 2, 3, 4],
-        ...     "best_bid": [100.0, 100.1, 100.3, 100.2],
-        ...     "best_bidsizeshares": [200.0, 300.0, 100.0, 100.0],
-        ...     "best_ask": [100.2, 100.3, 100.2, 100.4],
-        ...     "best_asksizeshares": [100.0, 100.0, 100.0, 300.0],
-        ...     "qu_cond": ["R"] * 4,
-        ... })
-        >>> panel = NbboResampler("1m").resample(records, sessions)
-        >>> panel.select("timestamp", "bid", "ask", "mid", "n_updates")
-        shape: (3, 5)
-        ┌─────────────────────┬───────┬───────┬───────┬───────────┐
-        │ timestamp           ┆ bid   ┆ ask   ┆ mid   ┆ n_updates │
-        │ ---                 ┆ ---   ┆ ---   ┆ ---   ┆ ---       │
-        │ datetime[ns]        ┆ f64   ┆ f64   ┆ f64   ┆ f64       │
-        ╞═════════════════════╪═══════╪═══════╪═══════╪═══════════╡
-        │ 2024-01-24 14:31:00 ┆ 100.1 ┆ 100.3 ┆ 100.2 ┆ 1.0       │
-        │ 2024-01-24 14:32:00 ┆ 100.1 ┆ 100.3 ┆ 100.2 ┆ 0.0       │
-        │ 2024-01-24 14:33:00 ┆ 100.2 ┆ 100.4 ┆ 100.3 ┆ 1.0       │
-        └─────────────────────┴───────┴───────┴───────┴───────────┘
+    >>> sessions = pl.DataFrame({
+    ...     "date": [date(2024, 1, 24)],
+    ...     "open": [datetime(2024, 1, 24, 14, 30)],
+    ...     "close": [datetime(2024, 1, 24, 14, 33)],
+    ... })
+    >>> records = pl.DataFrame({
+    ...     "symbol": ["AAPL"] * 4,
+    ...     "date": [date(2024, 1, 24)] * 4,
+    ...     "timestamp": [
+    ...         datetime(2024, 1, 24, 14, 29, 50),
+    ...         datetime(2024, 1, 24, 14, 30, 30),
+    ...         datetime(2024, 1, 24, 14, 31, 0),
+    ...         datetime(2024, 1, 24, 14, 32, 10),
+    ...     ],
+    ...     "wrds_row_ord": [1, 2, 3, 4],
+    ...     "best_bid": [100.0, 100.1, 100.3, 100.2],
+    ...     "best_bidsizeshares": [200.0, 300.0, 100.0, 100.0],
+    ...     "best_ask": [100.2, 100.3, 100.2, 100.4],
+    ...     "best_asksizeshares": [100.0, 100.0, 100.0, 300.0],
+    ...     "qu_cond": ["R"] * 4,
+    ... })
+    >>> panel = NbboResampler("1m").resample(records, sessions)
+    >>> panel.select("timestamp", "bid", "ask", "mid", "n_updates")
+    shape: (3, 5)
+    ┌─────────────────────┬───────┬───────┬───────┬───────────┐
+    │ timestamp           ┆ bid   ┆ ask   ┆ mid   ┆ n_updates │
+    │ ---                 ┆ ---   ┆ ---   ┆ ---   ┆ ---       │
+    │ datetime[ns]        ┆ f64   ┆ f64   ┆ f64   ┆ f64       │
+    ╞═════════════════════╪═══════╪═══════╪═══════╪═══════════╡
+    │ 2024-01-24 14:31:00 ┆ 100.1 ┆ 100.3 ┆ 100.2 ┆ 1.0       │
+    │ 2024-01-24 14:32:00 ┆ 100.1 ┆ 100.3 ┆ 100.2 ┆ 0.0       │
+    │ 2024-01-24 14:33:00 ┆ 100.2 ┆ 100.4 ┆ 100.3 ┆ 1.0       │
+    └─────────────────────┴───────┴───────┴───────┴───────────┘
     """
 
     def __init__(
@@ -239,13 +245,18 @@ class NbboResampler:
     ) -> None:
         """Create a resampler for one bar size and an optional filter policy.
 
-        Args:
-            bar_interval: A key of ``BAR_INTERVAL_SECONDS`` such as ``"1m"``.
-            policy: The record filter; the default ``NbboFilterPolicy()``
-                when ``None``.
+        Parameters
+        ----------
+        bar_interval : str
+            A key of ``BAR_INTERVAL_SECONDS`` such as ``"1m"``.
+        policy : NbboFilterPolicy | None
+            The record filter; the default ``NbboFilterPolicy()``
+            when ``None``.
 
-        Raises:
-            ValueError: If ``bar_interval`` is not a known bar size.
+        Raises
+        ------
+        ValueError
+            If ``bar_interval`` is not a known bar size.
         """
         if bar_interval not in BAR_INTERVAL_SECONDS:
             raise ValueError(
@@ -264,25 +275,30 @@ class NbboResampler:
     def labels(self, sessions: pl.DataFrame) -> pl.DataFrame:
         """Return ``(date, timestamp)`` for every bar label of every session.
 
-        Args:
-            sessions: A frame with ``date``, ``open`` and ``close`` columns,
-                the last two in naive UTC.
+        Parameters
+        ----------
+        sessions : pl.DataFrame
+            A frame with ``date``, ``open`` and ``close`` columns,
+            the last two in naive UTC.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             One row per bar label, ascending; the open itself is not a label.
 
-        Example:
-            >>> NbboResampler("1m").labels(sessions)
-            shape: (3, 2)
-            ┌────────────┬─────────────────────┐
-            │ date       ┆ timestamp           │
-            │ ---        ┆ ---                 │
-            │ date       ┆ datetime[ns]        │
-            ╞════════════╪═════════════════════╡
-            │ 2024-01-24 ┆ 2024-01-24 14:31:00 │
-            │ 2024-01-24 ┆ 2024-01-24 14:32:00 │
-            │ 2024-01-24 ┆ 2024-01-24 14:33:00 │
-            └────────────┴─────────────────────┘
+        Examples
+        --------
+        >>> NbboResampler("1m").labels(sessions)
+        shape: (3, 2)
+        ┌────────────┬─────────────────────┐
+        │ date       ┆ timestamp           │
+        │ ---        ┆ ---                 │
+        │ date       ┆ datetime[ns]        │
+        ╞════════════╪═════════════════════╡
+        │ 2024-01-24 ┆ 2024-01-24 14:31:00 │
+        │ 2024-01-24 ┆ 2024-01-24 14:32:00 │
+        │ 2024-01-24 ┆ 2024-01-24 14:33:00 │
+        └────────────┴─────────────────────┘
         """
         return self._edges(sessions).filter(pl.col("edge") > pl.col("open")).select(
             "date", pl.col("edge").alias("timestamp")
@@ -291,10 +307,12 @@ class NbboResampler:
     def _edges(self, sessions: pl.DataFrame) -> pl.DataFrame:
         """Return every grid edge, open through close inclusive, per session.
 
-        Raises:
-            ValueError: If a session's length is not a whole, positive number
-                of bars. A ragged last bar would differ in length from every
-                other bar, and truncating it would drop in-session quotes.
+        Raises
+        ------
+        ValueError
+            If a session's length is not a whole, positive number
+            of bars. A ragged last bar would differ in length from every
+            other bar, and truncating it would drop in-session quotes.
         """
         sessions = sessions.with_columns(
             pl.col("open").cast(pl.Datetime("ns")),
@@ -331,9 +349,10 @@ class NbboResampler:
     ) -> pl.DataFrame:
         """Return the bar panel only; see ``resample_with_stats``.
 
-        Example:
-            >>> NbboResampler("1m").resample(records, sessions).shape
-            (3, 16)
+        Examples
+        --------
+        >>> NbboResampler("1m").resample(records, sessions).shape
+        (3, 16)
         """
         return self.resample_with_stats(records, sessions)[0]
 
@@ -401,14 +420,19 @@ class NbboResampler:
     ) -> tuple[pl.DataFrame, pl.DataFrame]:
         """Resample ``records`` and return the bar panel with the filter stats.
 
-        Args:
-            records: A frame with ``symbol``, ``date`` (session date),
-                ``timestamp`` (naive UTC), ``wrds_row_ord``, ``best_bid``,
-                ``best_bidsizeshares``, ``best_ask``, ``best_asksizeshares``
-                and optionally ``qu_cond``.
-            sessions: A frame with ``date``, ``open`` and ``close`` columns.
+        Parameters
+        ----------
+        records : pl.DataFrame
+            A frame with ``symbol``, ``date`` (session date),
+            ``timestamp`` (naive UTC), ``wrds_row_ord``, ``best_bid``,
+            ``best_bidsizeshares``, ``best_ask``, ``best_asksizeshares``
+            and optionally ``qu_cond``.
+        sessions : pl.DataFrame
+            A frame with ``date``, ``open`` and ``close`` columns.
 
-        Returns:
+        Returns
+        -------
+        tuple[pl.DataFrame, pl.DataFrame]
             A ``(panel, stats)`` pair. The panel has ``symbol``, ``date``,
             ``timestamp`` and the ``PANEL_VARIABLES`` as float64, one row per
             bar label for every ``(symbol, date)`` present in the input (a
@@ -416,19 +440,20 @@ class NbboResampler:
             NaN). The stats frame has one row per input ``(date, symbol)``
             with the ``FILTER_STATS_COUNTS`` columns.
 
-        Example:
-            >>> panel, stats = NbboResampler("1m").resample_with_stats(
-            ...     records, sessions
-            ... )
-            >>> stats.select("symbol", "records_in", "dropped_crossed")
-            shape: (1, 3)
-            ┌────────┬────────────┬─────────────────┐
-            │ symbol ┆ records_in ┆ dropped_crossed │
-            │ ---    ┆ ---        ┆ ---             │
-            │ str    ┆ i64        ┆ i64             │
-            ╞════════╪════════════╪═════════════════╡
-            │ AAPL   ┆ 4          ┆ 1               │
-            └────────┴────────────┴─────────────────┘
+        Examples
+        --------
+        >>> panel, stats = NbboResampler("1m").resample_with_stats(
+        ...     records, sessions
+        ... )
+        >>> stats.select("symbol", "records_in", "dropped_crossed")
+        shape: (1, 3)
+        ┌────────┬────────────┬─────────────────┐
+        │ symbol ┆ records_in ┆ dropped_crossed │
+        │ ---    ┆ ---        ┆ ---             │
+        │ str    ┆ i64        ┆ i64             │
+        ╞════════╪════════════╪═════════════════╡
+        │ AAPL   ┆ 4          ┆ 1               │
+        └────────┴────────────┴─────────────────┘
         """
         sessions = sessions.with_columns(
             pl.col("open").cast(pl.Datetime("ns")),
@@ -522,8 +547,9 @@ class NbboResampler:
         def exclusive_cum(expr: pl.Expr) -> pl.Expr:
             """Return the running sum of ``expr`` up to, not including, each row.
 
-            Example:
-                Over per-record durations 1, 2, 3 the result is 0, 1, 3.
+            Examples
+            --------
+            Over per-record durations 1, 2, 3 the result is 0, 1, 3.
             """
             return expr.cum_sum().shift(1, fill_value=0.0).over(_GROUP)
 
@@ -586,8 +612,9 @@ class NbboResampler:
         def delta(column: str) -> pl.Expr:
             """Return the change of ``column`` since the previous bar of the group.
 
-            Example:
-                Over cumulative values 1, 3, 6 the result is 1, 2, 3.
+            Examples
+            --------
+            Over cumulative values 1, 3, 6 the result is 1, 2, 3.
             """
             return pl.col(column) - pl.col(column).shift(1).over(_GROUP).fill_null(0.0)
 

@@ -50,15 +50,20 @@ def sort_symbol_axis(values: Iterable) -> list:
     come back as digit strings; converting them is ``normalize_to_axis_dtype``'s
     job.
 
-    Args:
-        values: The labels to sort.
+    Parameters
+    ----------
+    values : Iterable
+        The labels to sort.
 
-    Returns:
+    Returns
+    -------
+    list
         A new sorted list, empty for empty input.
 
-    Example:
-        >>> sort_symbol_axis(["10107", "14593", "7000"])
-        ['7000', '10107', '14593']
+    Examples
+    --------
+    >>> sort_symbol_axis(["10107", "14593", "7000"])
+    ['7000', '10107', '14593']
     """
     materialised = list(values)
     if not materialised:
@@ -78,22 +83,30 @@ def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
     never by width, because a fixed-width store's width depends on the labels
     it happens to hold.
 
-    Args:
-        labels: The labels a caller wants to select or reindex with.
-        stored_index: The axis of the store being indexed.
+    Parameters
+    ----------
+    labels : Iterable
+        The labels a caller wants to select or reindex with.
+    stored_index : pd.Index
+        The axis of the store being indexed.
 
-    Returns:
+    Returns
+    -------
+    list
         A list of labels in the stored dtype, empty for empty input.
 
-    Raises:
-        ValueError: If any label has no spelling in the stored dtype. The
-            message names the offending labels. Labels are never coerced to a
-            guess or dropped, since either would hand ``reindex`` a request
-            that misses silently.
+    Raises
+    ------
+    ValueError
+        If any label has no spelling in the stored dtype. The
+        message names the offending labels. Labels are never coerced to a
+        guess or dropped, since either would hand ``reindex`` a request
+        that misses silently.
 
-    Example:
-        >>> normalize_to_axis_dtype(["10107", "7000"], pd.Index([7000, 10107]))
-        [10107, 7000]
+    Examples
+    --------
+    >>> normalize_to_axis_dtype(["10107", "7000"], pd.Index([7000, 10107]))
+    [10107, 7000]
     """
     materialised = list(labels)
     if not materialised:

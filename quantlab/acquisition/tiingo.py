@@ -70,24 +70,25 @@ class TiingoAcquisition(Acquisition):
     never assigned to the config or to any attribute a serialiser could reach,
     and its value is redacted from every captured message.
 
-    Example:
-        Needs ``TIINGO_API_KEY`` exported; ``download()`` reaches the network.
+    Examples
+    --------
+    Needs ``TIINGO_API_KEY`` exported; ``download()`` reaches the network.
 
-        >>> from quantlab.base.config import AcquisitionConfig
-        >>> cfg = AcquisitionConfig(
-        ...     market="us_equity", frequency="1d", vendor="tiingo",
-        ...     raw_data_dir_path="downloads/nasdaq_data/tiingo",
-        ...     watermark_path="downloads/nasdaq_data/_watermarks/tiingo",
-        ...     symbols=("AAPL", "MSFT"), start_date="2024-01-02",
-        ...     end_date="2024-01-03",
-        ... )
-        >>> acq = TiingoAcquisition(cfg).download()
-        >>> acq.coverage_report()
-        {'requested': 2, 'pending': 0, 'skipped': 2, 'covered': 2,
-         'widened': 0, 'legacy': 0, 'no_data': 0}
+    >>> from quantlab.base.config import AcquisitionConfig
+    >>> cfg = AcquisitionConfig(
+    ...     market="us_equity", frequency="1d", vendor="tiingo",
+    ...     raw_data_dir_path="downloads/nasdaq_data/tiingo",
+    ...     watermark_path="downloads/nasdaq_data/_watermarks/tiingo",
+    ...     symbols=("AAPL", "MSFT"), start_date="2024-01-02",
+    ...     end_date="2024-01-03",
+    ... )
+    >>> acq = TiingoAcquisition(cfg).download()
+    >>> acq.coverage_report()
+    {'requested': 2, 'pending': 0, 'skipped': 2, 'covered': 2,
+     'widened': 0, 'legacy': 0, 'no_data': 0}
 
-        Each symbol lands as one parquet shard under ``month=YYYY-MM/``
-        beneath ``raw_data_dir_path``, projected to ``RAW_COLUMNS``.
+    Each symbol lands as one parquet shard under ``month=YYYY-MM/``
+    beneath ``raw_data_dir_path``, projected to ``RAW_COLUMNS``.
     """
 
     VENDOR = "tiingo"
@@ -140,8 +141,10 @@ class TiingoAcquisition(Acquisition):
     def __init__(self, config: AcquisitionConfig):
         """Open the Tiingo client with the API key from the environment.
 
-        Raises:
-            RuntimeError: If ``TIINGO_API_KEY`` is unset or empty.
+        Raises
+        ------
+        RuntimeError
+            If ``TIINGO_API_KEY`` is unset or empty.
         """
         super().__init__(config)
 
@@ -269,11 +272,16 @@ class TiingoAcquisition(Acquisition):
         ``symbols`` is looped because the endpoint is single-symbol; at
         ``DEFAULT_BATCH_SIZE = 1`` the loop has one iteration.
 
-        Args:
-            symbols: The batch's symbols.
-            start_date: First date of the window, inclusive.
-            end_date: Last date of the window, inclusive.
-            page_token: Ignored; this vendor never issues one.
+        Parameters
+        ----------
+        symbols : list[str]
+            The batch's symbols.
+        start_date : str
+            First date of the window, inclusive.
+        end_date : str
+            Last date of the window, inclusive.
+        page_token : str | None
+            Ignored; this vendor never issues one.
         """
         frames = []
         for symbol in symbols:

@@ -86,9 +86,11 @@ class _AlpacaMarketDataClient:
     def __init__(self) -> None:
         """Open a session that carries the credentials from the environment.
 
-        Raises:
-            RuntimeError: If ``APCA_API_KEY_ID`` or ``APCA_API_SECRET_KEY`` is
-                unset or empty.
+        Raises
+        ------
+        RuntimeError
+            If ``APCA_API_KEY_ID`` or ``APCA_API_SECRET_KEY`` is
+            unset or empty.
         """
         key = os.environ.get(self.KEY_ENV)
         secret = os.environ.get(self.SECRET_ENV)
@@ -115,28 +117,36 @@ class _AlpacaMarketDataClient:
         the reason this class exists instead of the SDK's page-looping client.
         TLS verification is left at the ``requests`` default.
 
-        Args:
-            path: Endpoint path below ``BASE_URL``, such as ``"/stocks/bars"``.
-            params: Query parameters, sent as given.
+        Parameters
+        ----------
+        path : str
+            Endpoint path below ``BASE_URL``, such as ``"/stocks/bars"``.
+        params : dict
+            Query parameters, sent as given.
 
-        Returns:
+        Returns
+        -------
+        dict
             The decoded response body: the rows keyed by data type (``bars``,
             ``quotes`` or ``trades``) plus ``next_page_token``.
 
-        Raises:
-            requests.HTTPError: On any non-2xx status.
+        Raises
+        ------
+        requests.HTTPError
+            On any non-2xx status.
 
-        Example:
-            Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported;
-            this call reaches the network.
+        Examples
+        --------
+        Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported;
+        this call reaches the network.
 
-            >>> client = _AlpacaMarketDataClient()
-            >>> page = client.get_page(
-            ...     "/stocks/bars",
-            ...     {"symbols": "AAPL", "timeframe": "1Day",
-            ...      "start": "2024-01-02", "end": "2024-01-03"},
-            ... )
-            >>> page["bars"]["AAPL"], page["next_page_token"]
+        >>> client = _AlpacaMarketDataClient()
+        >>> page = client.get_page(
+        ...     "/stocks/bars",
+        ...     {"symbols": "AAPL", "timeframe": "1Day",
+        ...      "start": "2024-01-02", "end": "2024-01-03"},
+        ... )
+        >>> page["bars"]["AAPL"], page["next_page_token"]
         """
         response = self._session.get(
             f"{self.BASE_URL}{path}",
@@ -203,24 +213,25 @@ class AlpacaAcquisition(Acquisition):
     serialises to JSON beside model checkpoints and a key stored there would
     end up on disk. Their values are redacted from every captured message.
 
-    Example:
-        Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported.
+    Examples
+    --------
+    Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported.
 
-        >>> from quantlab.base.config import AcquisitionConfig
-        >>> cfg = AcquisitionConfig(
-        ...     market="us_equity", frequency="1d", vendor="alpaca",
-        ...     raw_data_dir_path="downloads/nasdaq_data/alpaca",
-        ...     watermark_path="downloads/nasdaq_data/_watermarks/alpaca",
-        ...     symbols=("AAPL",), start_date="2024-01-02",
-        ...     end_date="2024-01-03",
-        ... )
-        >>> acq = AlpacaAcquisition(cfg).download()
-        >>> acq.coverage_report()
-        {'requested': 1, 'pending': 0, 'skipped': 1, 'covered': 1,
-         'widened': 0, 'legacy': 0, 'no_data': 0}
+    >>> from quantlab.base.config import AcquisitionConfig
+    >>> cfg = AcquisitionConfig(
+    ...     market="us_equity", frequency="1d", vendor="alpaca",
+    ...     raw_data_dir_path="downloads/nasdaq_data/alpaca",
+    ...     watermark_path="downloads/nasdaq_data/_watermarks/alpaca",
+    ...     symbols=("AAPL",), start_date="2024-01-02",
+    ...     end_date="2024-01-03",
+    ... )
+    >>> acq = AlpacaAcquisition(cfg).download()
+    >>> acq.coverage_report()
+    {'requested': 1, 'pending': 0, 'skipped': 1, 'covered': 1,
+     'widened': 0, 'legacy': 0, 'no_data': 0}
 
-        Trades at full resolution use ``frequency="tick"`` together with
-        ``kwargs={"data_type": "trades"}``.
+    Trades at full resolution use ``frequency="tick"`` together with
+    ``kwargs={"data_type": "trades"}``.
     """
 
     VENDOR = "alpaca"
@@ -476,9 +487,12 @@ class AlpacaAcquisition(Acquisition):
         rather than inside a worker thread, where it would be filed in the
         failure manifest as if the vendor had rejected the batch.
 
-        Raises:
-            ValueError: If an option is outside its accepted set.
-            RuntimeError: If the credentials are missing from the environment.
+        Raises
+        ------
+        ValueError
+            If an option is outside its accepted set.
+        RuntimeError
+            If the credentials are missing from the environment.
         """
         super().__init__(config)
         self._assert_knobs_are_in_range()
@@ -495,9 +509,11 @@ class AlpacaAcquisition(Acquisition):
         token selects the endpoint and the shard projection, so the two
         cannot disagree.
 
-        Raises:
-            ValueError: If ``frequency`` is not a bar frequency and
-                ``data_type`` is missing or not in ``TICK_DATA_TYPES``.
+        Raises
+        ------
+        ValueError
+            If ``frequency`` is not a bar frequency and
+            ``data_type`` is missing or not in ``TICK_DATA_TYPES``.
         """
         frequency = self.config.frequency
         if frequency in self.TIMEFRAME_MAP:
@@ -524,10 +540,11 @@ class AlpacaAcquisition(Acquisition):
         depends on which endpoint the run reads. ``RAW_COLUMNS_BY_DATA_TYPE``
         remains the class-level source of truth.
 
-        Example:
-            >>> acq.RAW_COLUMNS
-            ('timestamp', 'symbol', 'vendor', 'open', 'high', 'low', 'close',
-             'volume', 'trade_count', 'vwap')
+        Examples
+        --------
+        >>> acq.RAW_COLUMNS
+        ('timestamp', 'symbol', 'vendor', 'open', 'high', 'low', 'close',
+         'volume', 'trade_count', 'vwap')
         """
         return self.RAW_COLUMNS_BY_DATA_TYPE[self._data_type]
 
@@ -535,9 +552,10 @@ class AlpacaAcquisition(Acquisition):
     def RAW_SCHEMA(self) -> dict:  # noqa: N802 - matches RAW_COLUMNS
         """Return the explicit column dtypes for this run's data type.
 
-        Example:
-            >>> acq.RAW_SCHEMA["timestamp"]
-            Datetime(time_unit='us', time_zone=None)
+        Examples
+        --------
+        >>> acq.RAW_SCHEMA["timestamp"]
+        Datetime(time_unit='us', time_zone=None)
         """
         return self.RAW_SCHEMA_BY_DATA_TYPE[self._data_type]
 
@@ -636,16 +654,23 @@ class AlpacaAcquisition(Acquisition):
         "resample ticks to save space" edit would destroy the resolution the
         tick tier exists to capture.
 
-        Args:
-            symbols: The batch's symbols, joined into one ``symbols`` value.
-            start_date: First date of the window, inclusive.
-            end_date: Last date of the window, inclusive.
-            page_token: The token from the previous page, or ``None`` for the
-                first page.
+        Parameters
+        ----------
+        symbols : list[str]
+            The batch's symbols, joined into one ``symbols`` value.
+        start_date : str
+            First date of the window, inclusive.
+        end_date : str
+            Last date of the window, inclusive.
+        page_token : str | None
+            The token from the previous page, or ``None`` for the
+            first page.
 
-        Raises:
-            ValueError: If a required column is missing from the envelope,
-                which means the field map no longer matches the vendor.
+        Raises
+        ------
+        ValueError
+            If a required column is missing from the envelope,
+            which means the field map no longer matches the vendor.
         """
         symbols = self._validate_symbols(symbols)
         data_type = self._data_type

@@ -20,25 +20,32 @@ def get_instrument_info(symbols: list[str]) -> dict:
     picked out of it. A symbol Binance does not list is logged as a warning and
     omitted from the result rather than raising.
 
-    Args:
-        symbols: Binance spot symbols such as ``"BTCUSDT"``.
+    Parameters
+    ----------
+    symbols : list[str]
+        Binance spot symbols such as ``"BTCUSDT"``.
 
-    Returns:
+    Returns
+    -------
+    dict
         A dict with a single ``"instruments"`` key mapping each found symbol to
         the precision, increment, quantity, price and notional limits produced
         by ``_parse_symbol_info``.
 
-    Raises:
-        requests.RequestException: If the exchange-info request fails.
+    Raises
+    ------
+    requests.RequestException
+        If the exchange-info request fails.
 
-    Example:
-        Needs network access to ``api.binance.com``:
+    Examples
+    --------
+    Needs network access to ``api.binance.com``:
 
-        >>> info = get_instrument_info(["BTCUSDT", "ETHUSDT"])
-        >>> sorted(info["instruments"])
-        ['BTCUSDT', 'ETHUSDT']
-        >>> sorted(info["instruments"]["BTCUSDT"])[:3]
-        ['max_price', 'max_quantity', 'min_notional']
+    >>> info = get_instrument_info(["BTCUSDT", "ETHUSDT"])
+    >>> sorted(info["instruments"])
+    ['BTCUSDT', 'ETHUSDT']
+    >>> sorted(info["instruments"]["BTCUSDT"])[:3]
+    ['max_price', 'max_quantity', 'min_notional']
     """
     exchange_info = _get_binance_exchange_info()
     symbol_map = {s["symbol"]: s for s in exchange_info["symbols"]}

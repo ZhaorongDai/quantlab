@@ -84,14 +84,15 @@ class TiingoRosterFetcher:
     turns that silent truncation into an error before the catalog can overwrite
     a good reference table with an empty one.
 
-    Example:
-        >>> class NyseUniverseFetcher(TiingoRosterFetcher):
-        ...     EXCHANGE_FILTER = ("NYSE",)
-        ...     MIN_ROSTER_ROWS = 1000
-        ...     CATEGORY = "us_all"
-        >>> roster = NyseUniverseFetcher().fetch()  # downloads from Tiingo
-        >>> roster.columns
-        ['symbol', 'start_date', 'end_date']
+    Examples
+    --------
+    >>> class NyseUniverseFetcher(TiingoRosterFetcher):
+    ...     EXCHANGE_FILTER = ("NYSE",)
+    ...     MIN_ROSTER_ROWS = 1000
+    ...     CATEGORY = "us_all"
+    >>> roster = NyseUniverseFetcher().fetch()  # downloads from Tiingo
+    >>> roster.columns
+    ['symbol', 'start_date', 'end_date']
     """
 
     SOURCE_URL = "https://apimedia.tiingo.com/docs/tiingo/daily/supported_tickers.zip"
@@ -123,17 +124,22 @@ class TiingoRosterFetcher:
         layer would refuse to fetch them. The row-count floor is checked last, on
         the rows that will actually be persisted.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             A frame with columns ``symbol``, ``start_date`` and ``end_date``, one
             row per exchange listing (a ticker that moved venue has two rows).
 
-        Raises:
-            ValueError: If fewer than ``MIN_ROSTER_ROWS`` rows survive the filter.
+        Raises
+        ------
+        ValueError
+            If fewer than ``MIN_ROSTER_ROWS`` rows survive the filter.
 
-        Example:
-            >>> roster = USEquityUniverseFetcher().fetch()  # downloads from Tiingo
-            >>> roster.columns
-            ['symbol', 'start_date', 'end_date']
+        Examples
+        --------
+        >>> roster = USEquityUniverseFetcher().fetch()  # downloads from Tiingo
+        >>> roster.columns
+        ['symbol', 'start_date', 'end_date']
         """
         response = requests.get(self.SOURCE_URL, timeout=30)
         response.raise_for_status()
@@ -201,10 +207,11 @@ class NasdaqUniverseFetcher(TiingoRosterFetcher):
     Preferred shares and baby bonds listed on NASDAQ stay in this roster; only
     ``USEquityUniverseFetcher`` opts into dropping them.
 
-    Example:
-        >>> roster = NasdaqUniverseFetcher().fetch()  # downloads from Tiingo
-        >>> roster.columns
-        ['symbol', 'start_date', 'end_date']
+    Examples
+    --------
+    >>> roster = NasdaqUniverseFetcher().fetch()  # downloads from Tiingo
+    >>> roster.columns
+    ['symbol', 'start_date', 'end_date']
     """
 
     # NASDAQ-listed only: no OTC or expert-market tiers.
@@ -233,10 +240,11 @@ class USEquityUniverseFetcher(TiingoRosterFetcher):
     strict superset of ``NasdaqUniverseFetcher``'s roster: a NASDAQ-listed
     preferred share appears there and not here, by design.
 
-    Example:
-        >>> roster = USEquityUniverseFetcher().fetch()  # downloads from Tiingo
-        >>> roster.columns
-        ['symbol', 'start_date', 'end_date']
+    Examples
+    --------
+    >>> roster = USEquityUniverseFetcher().fetch()  # downloads from Tiingo
+    >>> roster.columns
+    ['symbol', 'start_date', 'end_date']
     """
 
     EXCHANGE_FILTER = ("NASDAQ", "NYSE", "AMEX", "NYSE MKT")
@@ -296,11 +304,12 @@ class IndexMembershipFetcher(ABC):
     parse failure the cached snapshot is returned and the cache file is left
     untouched.
 
-    Example:
-        >>> fetcher = SP500MembershipFetcher(cache_dir="data/reference/_cache")
-        >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
-        >>> intervals.columns
-        ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
+    Examples
+    --------
+    >>> fetcher = SP500MembershipFetcher(cache_dir="data/reference/_cache")
+    >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
+    >>> intervals.columns
+    ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
     """
 
     ANCHOR_URL: str
@@ -345,16 +354,17 @@ class IndexMembershipFetcher(ABC):
         ``reconstruct_intervals`` then falls back to ``PIT_COVERAGE_START`` for
         those symbols.
 
-        Example:
-            A subclass whose source is a CSV with ``Symbol`` and ``Date added``
-            columns::
+        Examples
+        --------
+        A subclass whose source is a CSV with ``Symbol`` and ``Date added``
+        columns::
 
-                def fetch_anchor(self) -> pl.DataFrame:
-                    response = requests.get(self.ANCHOR_URL, timeout=30)
-                    response.raise_for_status()
-                    data = pl.read_csv(io.StringIO(response.text))
-                    data = data.rename({"Symbol": "symbol", "Date added": "date_added"})
-                    return data.select(["symbol", "date_added"])
+            def fetch_anchor(self) -> pl.DataFrame:
+                response = requests.get(self.ANCHOR_URL, timeout=30)
+                response.raise_for_status()
+                data = pl.read_csv(io.StringIO(response.text))
+                data = data.rename({"Symbol": "symbol", "Date added": "date_added"})
+                return data.select(["symbol", "date_added"])
         """
 
     @staticmethod
@@ -397,18 +407,24 @@ class IndexMembershipFetcher(ABC):
         normalized, blank cells become ``None``, and anything left that is not a
         well-formed ticker raises. Dates are parsed and re-rendered as ISO strings.
 
-        Args:
-            html_text: The page body of ``CHANGES_URL``.
+        Parameters
+        ----------
+        html_text : str
+            The page body of ``CHANGES_URL``.
 
-        Returns:
+        Returns
+        -------
+        pd.DataFrame
             A frame with columns ``effective_date``, ``added_ticker`` and
             ``removed_ticker``; the ticker columns hold ``None`` where a row has no
             ticker on that side.
 
-        Raises:
-            ValueError: If the header constants contradict each other, no table
-                carries the expected header, a ticker cell is malformed after
-                normalization, or a date cell cannot be parsed.
+        Raises
+        ------
+        ValueError
+            If the header constants contradict each other, no table
+            carries the expected header, a ticker cell is malformed after
+            normalization, or a date cell cannot be parsed.
         """
         # Do not let pandas infer missing values: its default vocabulary
         # (`NA`, `N/A`, `-`, ...) overlaps the ticker namespace, and `NA` is
@@ -549,20 +565,25 @@ class IndexMembershipFetcher(ABC):
         instead, the cache file is left untouched, and ``changes_are_stale`` is set
         so the catalog can refuse to persist the result.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             A frame with columns ``effective_date``, ``added_ticker`` and
             ``removed_ticker``.
 
-        Raises:
-            RuntimeError: If the live fetch failed and no cached snapshot exists.
+        Raises
+        ------
+        RuntimeError
+            If the live fetch failed and no cached snapshot exists.
 
-        Example:
-            >>> fetcher = SP500MembershipFetcher(cache_dir="data/reference/_cache")
-            >>> changes = fetcher.fetch_changes()  # downloads from Wikipedia
-            >>> changes.columns
-            ['effective_date', 'added_ticker', 'removed_ticker']
-            >>> fetcher.changes_are_stale
-            False
+        Examples
+        --------
+        >>> fetcher = SP500MembershipFetcher(cache_dir="data/reference/_cache")
+        >>> changes = fetcher.fetch_changes()  # downloads from Wikipedia
+        >>> changes.columns
+        ['effective_date', 'added_ticker', 'removed_ticker']
+        >>> fetcher.changes_are_stale
+        False
         """
         cached_row_count = 0
         if self._cache_path.exists():
@@ -665,40 +686,46 @@ class IndexMembershipFetcher(ABC):
         A removal with no prior addition opens at ``PIT_COVERAGE_START``, and a
         duplicate addition keeps the earlier open date.
 
-        Args:
-            anchor: A ``[symbol, date_added]`` frame as returned by
-                ``fetch_anchor``.
-            changes: A frame as returned by ``fetch_changes``, with ``None`` where
-                a row has no ticker on one side.
+        Parameters
+        ----------
+        anchor : pl.DataFrame
+            A ``[symbol, date_added]`` frame as returned by
+            ``fetch_anchor``.
+        changes : pl.DataFrame
+            A frame as returned by ``fetch_changes``, with ``None`` where
+            a row has no ticker on one side.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             A frame with columns ``symbol``, ``start_date``, ``end_date`` (null for
             a current member) and ``end_date_is_inferred``.
 
-        Example:
-            >>> fetcher = SP500MembershipFetcher(cache_dir="/tmp/cache")
-            >>> anchor = pl.DataFrame(
-            ...     {"symbol": ["AAA", "BBB"], "date_added": ["1999-01-01", None]}
-            ... )
-            >>> changes = pl.DataFrame(
-            ...     {
-            ...         "effective_date": ["2010-05-03", "2015-09-21"],
-            ...         "added_ticker": ["BBB", "DDD"],
-            ...         "removed_ticker": ["ZZZ", None],
-            ...     }
-            ... )
-            >>> fetcher.reconstruct_intervals(anchor, changes).sort("symbol")
-            shape: (4, 4)
-            ┌────────┬────────────┬────────────┬──────────────────────┐
-            │ symbol ┆ start_date ┆ end_date   ┆ end_date_is_inferred │
-            │ ---    ┆ ---        ┆ ---        ┆ ---                  │
-            │ str    ┆ str        ┆ str        ┆ bool                 │
-            ╞════════╪════════════╪════════════╪══════════════════════╡
-            │ AAA    ┆ 1999-01-01 ┆ null       ┆ false                │
-            │ BBB    ┆ 2010-05-03 ┆ null       ┆ false                │
-            │ DDD    ┆ 2015-09-21 ┆ 2015-09-21 ┆ true                 │
-            │ ZZZ    ┆ 1976-07-01 ┆ 2010-05-03 ┆ false                │
-            └────────┴────────────┴────────────┴──────────────────────┘
+        Examples
+        --------
+        >>> fetcher = SP500MembershipFetcher(cache_dir="/tmp/cache")
+        >>> anchor = pl.DataFrame(
+        ...     {"symbol": ["AAA", "BBB"], "date_added": ["1999-01-01", None]}
+        ... )
+        >>> changes = pl.DataFrame(
+        ...     {
+        ...         "effective_date": ["2010-05-03", "2015-09-21"],
+        ...         "added_ticker": ["BBB", "DDD"],
+        ...         "removed_ticker": ["ZZZ", None],
+        ...     }
+        ... )
+        >>> fetcher.reconstruct_intervals(anchor, changes).sort("symbol")
+        shape: (4, 4)
+        ┌────────┬────────────┬────────────┬──────────────────────┐
+        │ symbol ┆ start_date ┆ end_date   ┆ end_date_is_inferred │
+        │ ---    ┆ ---        ┆ ---        ┆ ---                  │
+        │ str    ┆ str        ┆ str        ┆ bool                 │
+        ╞════════╪════════════╪════════════╪══════════════════════╡
+        │ AAA    ┆ 1999-01-01 ┆ null       ┆ false                │
+        │ BBB    ┆ 2010-05-03 ┆ null       ┆ false                │
+        │ DDD    ┆ 2015-09-21 ┆ 2015-09-21 ┆ true                 │
+        │ ZZZ    ┆ 1976-07-01 ┆ 2010-05-03 ┆ false                │
+        └────────┴────────────┴────────────┴──────────────────────┘
         """
         anchor_symbols = set(anchor["symbol"])
         anchor_date_added = dict(zip(anchor["symbol"], anchor["date_added"]))
@@ -794,11 +821,12 @@ class IndexMembershipFetcher(ABC):
     def build_intervals(self) -> pl.DataFrame:
         """Fetch the anchor and change log and return the reconstructed intervals.
 
-        Example:
-            >>> fetcher = Nasdaq100MembershipFetcher(cache_dir="data/reference/_cache")
-            >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
-            >>> intervals.columns
-            ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
+        Examples
+        --------
+        >>> fetcher = Nasdaq100MembershipFetcher(cache_dir="data/reference/_cache")
+        >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
+        >>> intervals.columns
+        ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
         """
         anchor = self.fetch_anchor()
         changes = self.fetch_changes()
@@ -813,11 +841,12 @@ class SP500MembershipFetcher(IndexMembershipFetcher):
     Wikipedia change table (1976-07-01), not the earlier coverage the page's
     prose claims; queries before it are refused.
 
-    Example:
-        >>> fetcher = SP500MembershipFetcher(cache_dir="data/reference/_cache")
-        >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
-        >>> intervals.columns
-        ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
+    Examples
+    --------
+    >>> fetcher = SP500MembershipFetcher(cache_dir="data/reference/_cache")
+    >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
+    >>> intervals.columns
+    ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
     """
 
     ANCHOR_URL = (
@@ -849,11 +878,12 @@ class SP500MembershipFetcher(IndexMembershipFetcher):
     def fetch_anchor(self) -> pl.DataFrame:
         """Download the constituents CSV and return ``[symbol, date_added]``.
 
-        Example:
-            >>> fetcher = SP500MembershipFetcher(cache_dir="/tmp/cache")
-            >>> anchor = fetcher.fetch_anchor()  # downloads from GitHub
-            >>> anchor.columns
-            ['symbol', 'date_added']
+        Examples
+        --------
+        >>> fetcher = SP500MembershipFetcher(cache_dir="/tmp/cache")
+        >>> anchor = fetcher.fetch_anchor()  # downloads from GitHub
+        >>> anchor.columns
+        ['symbol', 'date_added']
         """
         response = requests.get(self.ANCHOR_URL, timeout=30)
         response.raise_for_status()
@@ -879,11 +909,12 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
     ``date_added`` column, so the anchor's is all null and every member without
     a change-log event opens at ``PIT_COVERAGE_START``.
 
-    Example:
-        >>> fetcher = Nasdaq100MembershipFetcher(cache_dir="data/reference/_cache")
-        >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
-        >>> intervals.columns
-        ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
+    Examples
+    --------
+    >>> fetcher = Nasdaq100MembershipFetcher(cache_dir="data/reference/_cache")
+    >>> intervals = fetcher.build_intervals()  # downloads anchor and change log
+    >>> intervals.columns
+    ['symbol', 'start_date', 'end_date', 'end_date_is_inferred']
     """
 
     ANCHOR_URL = "https://stockanalysis.com/list/nasdaq-100-stocks/"
@@ -920,15 +951,18 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
         the string ``"nan"``, so that pandas' missing-value vocabulary cannot
         swallow a real ticker.
 
-        Raises:
-            ValueError: If no table carries a ``Symbol`` column, or fewer than
-                ``MIN_ANCHOR_ROWS`` symbols survive cleaning.
+        Raises
+        ------
+        ValueError
+            If no table carries a ``Symbol`` column, or fewer than
+            ``MIN_ANCHOR_ROWS`` symbols survive cleaning.
 
-        Example:
-            >>> fetcher = Nasdaq100MembershipFetcher(cache_dir="/tmp/cache")
-            >>> anchor = fetcher.fetch_anchor()  # downloads the listing page
-            >>> anchor.columns
-            ['symbol', 'date_added']
+        Examples
+        --------
+        >>> fetcher = Nasdaq100MembershipFetcher(cache_dir="/tmp/cache")
+        >>> anchor = fetcher.fetch_anchor()  # downloads the listing page
+        >>> anchor.columns
+        ['symbol', 'date_added']
         """
         response = requests.get(self.ANCHOR_URL, timeout=30)
         response.raise_for_status()
@@ -1003,28 +1037,29 @@ class UniverseCatalog:
     ``assert_acquisition_volume_fits`` work purely from the listing intervals,
     issue no vendor request and construct no client.
 
-    Example:
-        Build the table from the live sources and persist it::
+    Examples
+    --------
+    Build the table from the live sources and persist it::
 
-            config = UniverseConfig(
-                output_path="data/reference/universe.parquet",
-                cache_dir="data/reference/_cache",
-            )
-            UniverseCatalog(config).build().save()  # downloads from Tiingo/Wikipedia
+        config = UniverseConfig(
+            output_path="data/reference/universe.parquet",
+            cache_dir="data/reference/_cache",
+        )
+        UniverseCatalog(config).build().save()  # downloads from Tiingo/Wikipedia
 
-        Load a table already on disk and query it (here a three-row table
-        written by hand):
+    Load a table already on disk and query it (here a three-row table
+    written by hand):
 
-        >>> pl.DataFrame({
-        ...     "symbol": ["AAPL", "MSFT", "OLD1"],
-        ...     "category": ["us_all"] * 3,
-        ...     "start_date": ["1980-12-12", "1986-03-13", "1980-01-01"],
-        ...     "end_date": [None, None, "1997-06-30"],
-        ...     "end_date_is_inferred": [False] * 3,
-        ... }).write_parquet(config.output_path)
-        >>> catalog = UniverseCatalog.load(config)
-        >>> catalog.get_symbols_as_of("us_all", "2020-01-01")
-        ['AAPL', 'MSFT']
+    >>> pl.DataFrame({
+    ...     "symbol": ["AAPL", "MSFT", "OLD1"],
+    ...     "category": ["us_all"] * 3,
+    ...     "start_date": ["1980-12-12", "1986-03-13", "1980-01-01"],
+    ...     "end_date": [None, None, "1997-06-30"],
+    ...     "end_date_is_inferred": [False] * 3,
+    ... }).write_parquet(config.output_path)
+    >>> catalog = UniverseCatalog.load(config)
+    >>> catalog.get_symbols_as_of("us_all", "2020-01-01")
+    ['AAPL', 'MSFT']
     """
 
     #: The index membership fetchers this catalog carries. Registration here
@@ -1060,22 +1095,29 @@ class UniverseCatalog:
         ``CATALOG_COLUMNS`` before concatenation. Nothing is written to disk until
         ``save``.
 
-        Args:
-            allow_stale: Whether to accept a membership fetcher that fell back to
-                its cached change-log snapshot. Off by default, because a stale
-                reconstruction persisted by ``save`` is indistinguishable from a
-                fresh one and would silently freeze the universe at the cache date.
+        Parameters
+        ----------
+        allow_stale : bool
+            Whether to accept a membership fetcher that fell back to
+            its cached change-log snapshot. Off by default, because a stale
+            reconstruction persisted by ``save`` is indistinguishable from a
+            fresh one and would silently freeze the universe at the cache date.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, so ``build`` and ``save`` chain.
 
-        Raises:
-            ValueError: If a membership fetcher is stale and ``allow_stale`` is
-                false.
+        Raises
+        ------
+        ValueError
+            If a membership fetcher is stale and ``allow_stale`` is
+            false.
 
-        Example:
-            >>> catalog = UniverseCatalog(config).build()  # downloads every source
-            >>> catalog.save()
+        Examples
+        --------
+        >>> catalog = UniverseCatalog(config).build()  # downloads every source
+        >>> catalog.save()
         """
         frames = [
             roster_cls()
@@ -1160,14 +1202,19 @@ class UniverseCatalog:
 
         Parent directories are created as needed.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``.
 
-        Raises:
-            ValueError: If any known category has no rows in the staged table.
+        Raises
+        ------
+        ValueError
+            If any known category has no rows in the staged table.
 
-        Example:
-            >>> UniverseCatalog(config).build().save()  # downloads, then writes
+        Examples
+        --------
+        >>> UniverseCatalog(config).build().save()  # downloads, then writes
         """
         self._assert_every_category_is_populated()
         Path(self.config.output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1178,14 +1225,17 @@ class UniverseCatalog:
     def load(cls, config: UniverseConfig) -> "UniverseCatalog":
         """Return a catalog whose table is read from ``config.output_path``.
 
-        Args:
-            config: The same config the table was built with; only
-                ``output_path`` is read here.
+        Parameters
+        ----------
+        config : UniverseConfig
+            The same config the table was built with; only
+            ``output_path`` is read here.
 
-        Example:
-            >>> catalog = UniverseCatalog.load(config)
-            >>> sorted(catalog.known_categories())
-            ['nasdaq100_constituent', 'nasdaq_all', 'sp500_constituent', 'us_all']
+        Examples
+        --------
+        >>> catalog = UniverseCatalog.load(config)
+        >>> sorted(catalog.known_categories())
+        ['nasdaq100_constituent', 'nasdaq_all', 'sp500_constituent', 'us_all']
         """
         catalog = cls(config)
         catalog._backend.read(config.output_path)
@@ -1208,9 +1258,10 @@ class UniverseCatalog:
         The union of both registries, so a category cannot exist without a fetcher
         and a registered fetcher is automatically a known category.
 
-        Example:
-            >>> sorted(catalog.known_categories())
-            ['nasdaq100_constituent', 'nasdaq_all', 'sp500_constituent', 'us_all']
+        Examples
+        --------
+        >>> sorted(catalog.known_categories())
+        ['nasdaq100_constituent', 'nasdaq_all', 'sp500_constituent', 'us_all']
         """
         return {roster_cls.CATEGORY for roster_cls in self.ROSTER_FETCHERS} | {
             fetcher_cls.CATEGORY for fetcher_cls in self.MEMBERSHIP_FETCHERS
@@ -1239,12 +1290,17 @@ class UniverseCatalog:
         week dates, which would compare wrong in the same way; callers must
         therefore use the returned string, not the argument they passed.
 
-        Args:
-            value: The date string to check.
-            field: The argument name used in the error message.
+        Parameters
+        ----------
+        value : str
+            The date string to check.
+        field : str
+            The argument name used in the error message.
 
-        Raises:
-            ValueError: If ``value`` is not an ISO date.
+        Raises
+        ------
+        ValueError
+            If ``value`` is not an ISO date.
         """
         try:
             return datetime.date.fromisoformat(value).isoformat()
@@ -1306,23 +1362,32 @@ class UniverseCatalog:
         the contract: callers slice it for ``--limit``, so it must depend only on
         the membership set and not on the parquet layout.
 
-        Args:
-            category: A token from ``known_categories``.
-            start_date: ISO date, inclusive. For an index category it must not
-                precede that index's coverage start; it is refused, not clamped,
-                because clamping would return the same truncated roster silently.
-            end_date: ISO date, inclusive.
+        Parameters
+        ----------
+        category : str
+            A token from ``known_categories``.
+        start_date : str
+            ISO date, inclusive. For an index category it must not
+            precede that index's coverage start; it is refused, not clamped,
+            because clamping would return the same truncated roster silently.
+        end_date : str
+            ISO date, inclusive.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             Sorted, de-duplicated symbols.
 
-        Raises:
-            ValueError: For an unknown category, a non-ISO date, or a
-                ``start_date`` before the category's coverage start.
+        Raises
+        ------
+        ValueError
+            For an unknown category, a non-ISO date, or a
+            ``start_date`` before the category's coverage start.
 
-        Example:
-            >>> catalog.get_symbols_in_range("us_all", "1995-01-01", "2000-12-31")
-            ['AAPL', 'MSFT', 'OLD1']
+        Examples
+        --------
+        >>> catalog.get_symbols_in_range("us_all", "1995-01-01", "2000-12-31")
+        ['AAPL', 'MSFT', 'OLD1']
         """
         self._validate_category(category)
         start_date = self._normalize_iso_date(start_date, "start_date")
@@ -1369,21 +1434,30 @@ class UniverseCatalog:
         full-market roster because most symbols are listed for only part of any
         long window.
 
-        Args:
-            category: A token from ``known_categories``.
-            start_date: ISO date, inclusive.
-            end_date: ISO date, inclusive.
-            bars_per_day: Rows one symbol produces per trading day; 1 for daily
-                bars, 390 for minute bars.
+        Parameters
+        ----------
+        category : str
+            A token from ``known_categories``.
+        start_date : str
+            ISO date, inclusive.
+        end_date : str
+            ISO date, inclusive.
+        bars_per_day : int
+            Rows one symbol produces per trading day; 1 for daily
+            bars, 390 for minute bars.
 
-        Returns:
+        Returns
+        -------
+        dict
             A dict with ``symbols``, ``trading_days``, ``bars_per_day``,
             ``timestamps``, ``dense_cells``, ``observed_cells`` and ``density``.
             Counts are cells, never bytes.
 
-        Raises:
-            ValueError: For an unknown category, a non-ISO date or
-                ``bars_per_day < 1``.
+        Raises
+        ------
+        ValueError
+            For an unknown category, a non-ISO date or
+            ``bars_per_day < 1``.
         """
         self._validate_category(category)
         start_date = self._normalize_iso_date(start_date, "start_date")
@@ -1496,9 +1570,11 @@ class UniverseCatalog:
         Each knob arrives from a CLI flag or ``config.kwargs``, so it is checked
         here rather than surfacing later as a ``ZeroDivisionError``.
 
-        Raises:
-            ValueError: For a frequency this estimator cannot size, or a knob
-                below 1.
+        Raises
+        ------
+        ValueError
+            For a frequency this estimator cannot size, or a knob
+            below 1.
         """
         if frequency not in self.BARS_PER_DAY_BY_FREQUENCY and frequency != "tick":
             raise ValueError(
@@ -1548,35 +1624,49 @@ class UniverseCatalog:
         ``frequency="tick"`` the dense count is used and ``rows_per_symbol_day`` is
         required, since tick volume cannot be derived from a calendar.
 
-        Args:
-            category: A token from ``known_categories``.
-            start_date: ISO date, inclusive.
-            end_date: ISO date, inclusive.
-            frequency: ``"1d"``, ``"1m"`` or ``"tick"``.
-            batch_size: Symbols per request; a fetch issues at least one request
-                per batch.
-            page_limit: Maximum rows one response can carry.
-            rate_limit_per_min: Requests per minute; ``None`` uses
-                ``DEFAULT_RATE_LIMIT_PER_MIN``.
-            rows_per_symbol_day: Measured rows per symbol-day, required for
-                ``"tick"`` and ignored otherwise.
+        Parameters
+        ----------
+        category : str
+            A token from ``known_categories``.
+        start_date : str
+            ISO date, inclusive.
+        end_date : str
+            ISO date, inclusive.
+        frequency : str
+            ``"1d"``, ``"1m"`` or ``"tick"``.
+        batch_size : int
+            Symbols per request; a fetch issues at least one request
+            per batch.
+        page_limit : int
+            Maximum rows one response can carry.
+        rate_limit_per_min : int | None
+            Requests per minute; ``None`` uses
+            ``DEFAULT_RATE_LIMIT_PER_MIN``.
+        rows_per_symbol_day : int | None
+            Measured rows per symbol-day, required for
+            ``"tick"`` and ignored otherwise.
 
-        Returns:
+        Returns
+        -------
+        dict
             A dict with ``symbols``, ``trading_days``, ``density``,
             ``bars_per_day``, ``rows``, ``raw_bytes``, ``requests`` and
             ``wall_clock_hours``, plus the inputs and resolved knobs so a caller
             can print a refusal without recomputing.
 
-        Raises:
-            ValueError: For an unsizable frequency, a knob below 1, or a tick
-                estimate without ``rows_per_symbol_day``.
+        Raises
+        ------
+        ValueError
+            For an unsizable frequency, a knob below 1, or a tick
+            estimate without ``rows_per_symbol_day``.
 
-        Example:
-            >>> estimate = catalog.estimate_acquisition_volume(
-            ...     "us_all", "2020-01-01", "2020-12-31", frequency="1d", batch_size=100
-            ... )
-            >>> estimate["symbols"], estimate["trading_days"], estimate["requests"]
-            (2, 253, 1)
+        Examples
+        --------
+        >>> estimate = catalog.estimate_acquisition_volume(
+        ...     "us_all", "2020-01-01", "2020-12-31", frequency="1d", batch_size=100
+        ... )
+        >>> estimate["symbols"], estimate["trading_days"], estimate["requests"]
+        (2, 253, 1)
         """
         rate_limit_per_min = self._resolve_volume_knobs(
             frequency, batch_size, page_limit, rate_limit_per_min
@@ -1678,7 +1768,9 @@ class UniverseCatalog:
         of times; when nothing fits, the per-batch floor alone is over a ceiling
         and only a smaller roster can help.
 
-        Returns:
+        Returns
+        -------
+        tuple[str, dict | None, int]
             ``(window_end, narrowed_estimate or None, max_symbols)``, where
             ``max_symbols`` is the roster size that would fit the original window.
         """
@@ -1772,42 +1864,60 @@ class UniverseCatalog:
         keyword that raises it, and a concrete narrowing (fewer symbols or a
         shorter window) that would fit.
 
-        Args:
-            category: A token from ``known_categories``.
-            start_date: ISO date, inclusive.
-            end_date: ISO date, inclusive.
-            frequency: ``"1d"``, ``"1m"`` or ``"tick"``.
-            batch_size: Symbols per request.
-            page_limit: Maximum rows one response can carry.
-            rate_limit_per_min: Requests per minute; ``None`` uses the default.
-            rows_per_symbol_day: Required for ``"tick"``, ignored otherwise.
-            max_raw_bytes: Overrides ``MAX_RAW_BYTES`` when given.
-            max_requests: Overrides ``MAX_ACQUISITION_REQUESTS`` when given.
-            max_wall_clock_hours: Overrides ``MAX_ACQUISITION_WALL_CLOCK_HOURS``
-                when given.
-            force: Skip the raise but still compute the estimate. There is no
-                environment variable or config key that disables the guard.
+        Parameters
+        ----------
+        category : str
+            A token from ``known_categories``.
+        start_date : str
+            ISO date, inclusive.
+        end_date : str
+            ISO date, inclusive.
+        frequency : str
+            ``"1d"``, ``"1m"`` or ``"tick"``.
+        batch_size : int
+            Symbols per request.
+        page_limit : int
+            Maximum rows one response can carry.
+        rate_limit_per_min : int | None
+            Requests per minute; ``None`` uses the default.
+        rows_per_symbol_day : int | None
+            Required for ``"tick"``, ignored otherwise.
+        max_raw_bytes : int | None
+            Overrides ``MAX_RAW_BYTES`` when given.
+        max_requests : int | None
+            Overrides ``MAX_ACQUISITION_REQUESTS`` when given.
+        max_wall_clock_hours : float | None
+            Overrides ``MAX_ACQUISITION_WALL_CLOCK_HOURS``
+            when given.
+        force : bool
+            Skip the raise but still compute the estimate. There is no
+            environment variable or config key that disables the guard.
 
-        Returns:
+        Returns
+        -------
+        dict
             The dict from ``estimate_acquisition_volume``.
 
-        Raises:
-            ValueError: If any ceiling is crossed and ``force`` is false, or for
-                the input errors ``estimate_acquisition_volume`` raises.
+        Raises
+        ------
+        ValueError
+            If any ceiling is crossed and ``force`` is false, or for
+            the input errors ``estimate_acquisition_volume`` raises.
 
-        Example:
-            >>> estimate = catalog.assert_acquisition_volume_fits(
-            ...     "us_all", "2020-01-01", "2020-12-31", frequency="1d", batch_size=100
-            ... )
-            >>> estimate["rows"]
-            505
-            >>> catalog.assert_acquisition_volume_fits(
-            ...     "us_all", "2020-01-01", "2020-12-31", frequency="1d",
-            ...     batch_size=100, max_raw_bytes=1000,
-            ... )
-            Traceback (most recent call last):
-            ...
-            ValueError: Refusing to fetch us_all 1d over 2020-01-01..2020-12-31: ...
+        Examples
+        --------
+        >>> estimate = catalog.assert_acquisition_volume_fits(
+        ...     "us_all", "2020-01-01", "2020-12-31", frequency="1d", batch_size=100
+        ... )
+        >>> estimate["rows"]
+        505
+        >>> catalog.assert_acquisition_volume_fits(
+        ...     "us_all", "2020-01-01", "2020-12-31", frequency="1d",
+        ...     batch_size=100, max_raw_bytes=1000,
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValueError: Refusing to fetch us_all 1d over 2020-01-01..2020-12-31: ...
         """
         estimate = self.estimate_acquisition_volume(
             category,
@@ -1903,25 +2013,33 @@ class UniverseCatalog:
         ascending, and the order is part of the contract for the same reason as
         there.
 
-        Args:
-            category: A token from ``known_categories``.
-            as_of_date: ISO date. For an index category it must not precede that
-                index's coverage start.
+        Parameters
+        ----------
+        category : str
+            A token from ``known_categories``.
+        as_of_date : str
+            ISO date. For an index category it must not precede that
+            index's coverage start.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             Sorted, de-duplicated symbols.
 
-        Raises:
-            ValueError: For an unknown category, a non-ISO date, or a date before
-                the category's coverage start.
+        Raises
+        ------
+        ValueError
+            For an unknown category, a non-ISO date, or a date before
+            the category's coverage start.
 
-        Example:
-            >>> catalog.get_symbols_as_of("us_all", "1990-01-01")
-            ['AAPL', 'MSFT', 'OLD1']
-            >>> catalog.get_symbols_as_of("sp500_constituent", "1970-01-01")
-            Traceback (most recent call last):
-            ...
-            ValueError: Cannot answer sp500_constituent membership before 1976-07-01 ...
+        Examples
+        --------
+        >>> catalog.get_symbols_as_of("us_all", "1990-01-01")
+        ['AAPL', 'MSFT', 'OLD1']
+        >>> catalog.get_symbols_as_of("sp500_constituent", "1970-01-01")
+        Traceback (most recent call last):
+        ...
+        ValueError: Cannot answer sp500_constituent membership before 1976-07-01 ...
         """
         # Both arguments arrive unvalidated from CLI flags. An empty list is a
         # legitimate answer, so a typo must raise rather than silently select

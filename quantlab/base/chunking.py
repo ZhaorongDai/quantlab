@@ -32,13 +32,14 @@ class TimeChunkPlanner:
     new granularity needs both a new token there and a matching branch in
     ``_period_key``; the latter raises if the two lists drift apart.
 
-    Example:
-        >>> planner = TimeChunkPlanner("month")
-        >>> planner.plan_from_timestamps(
-        ...     pd.to_datetime(["2024-01-02", "2024-01-31", "2024-02-01"])
-        ... )
-        [(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-31 00:00:00')),
-         (Timestamp('2024-02-01 00:00:00'), Timestamp('2024-02-01 00:00:00'))]
+    Examples
+    --------
+    >>> planner = TimeChunkPlanner("month")
+    >>> planner.plan_from_timestamps(
+    ...     pd.to_datetime(["2024-01-02", "2024-01-31", "2024-02-01"])
+    ... )
+    [(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-31 00:00:00')),
+     (Timestamp('2024-02-01 00:00:00'), Timestamp('2024-02-01 00:00:00'))]
     """
 
     #: Accepted granularity tokens, coarse to fine. Also the choices the
@@ -48,8 +49,10 @@ class TimeChunkPlanner:
     def __init__(self, granularity: str = "year") -> None:
         """Store the granularity after checking it is a known token.
 
-        Raises:
-            ValueError: If ``granularity`` is not in ``GRANULARITIES``.
+        Raises
+        ------
+        ValueError
+            If ``granularity`` is not in ``GRANULARITIES``.
         """
         if granularity not in self.GRANULARITIES:
             raise ValueError(
@@ -71,10 +74,12 @@ class TimeChunkPlanner:
         natural calendar number (the ``year`` rung returns ``0``; the
         ``hour`` rung combines day-of-year and hour).
 
-        Raises:
-            ValueError: If the granularity is in ``GRANULARITIES`` but has no
-                branch here. Unreachable while the two agree, since
-                ``__init__`` refuses unknown tokens; it exists to catch drift.
+        Raises
+        ------
+        ValueError
+            If the granularity is in ``GRANULARITIES`` but has no
+            branch here. Unreachable while the two agree, since
+            ``__init__`` refuses unknown tokens; it exists to catch drift.
         """
         ts = pd.Timestamp(timestamp)
         if self.granularity == "year":
@@ -121,26 +126,33 @@ class TimeChunkPlanner:
     ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
         """Return the windows covering ``timestamps``, with observed edges.
 
-        Args:
-            timestamps: Any iterable convertible to a ``DatetimeIndex``;
-                duplicates are dropped and the axis is sorted first.
+        Parameters
+        ----------
+        timestamps : Iterable
+            Any iterable convertible to a ``DatetimeIndex``;
+            duplicates are dropped and the axis is sorted first.
 
-        Returns:
+        Returns
+        -------
+        list[tuple[pd.Timestamp, pd.Timestamp]]
             Time-ordered, non-overlapping ``(start, end)`` pairs that together
             cover the de-duplicated axis exactly once. Both edges of each pair
             are timestamps present in the input.
 
-        Raises:
-            ValueError: If the axis is empty; planning zero windows would
-                silently write an empty store.
+        Raises
+        ------
+        ValueError
+            If the axis is empty; planning zero windows would
+            silently write an empty store.
 
-        Example:
-            >>> planner = TimeChunkPlanner("quarter")
-            >>> planner.plan_from_timestamps(
-            ...     pd.date_range("2024-01-01", "2024-06-30", freq="B")
-            ... )
-            [(Timestamp('2024-01-01 00:00:00'), Timestamp('2024-03-29 00:00:00')),
-             (Timestamp('2024-04-01 00:00:00'), Timestamp('2024-06-28 00:00:00'))]
+        Examples
+        --------
+        >>> planner = TimeChunkPlanner("quarter")
+        >>> planner.plan_from_timestamps(
+        ...     pd.date_range("2024-01-01", "2024-06-30", freq="B")
+        ... )
+        [(Timestamp('2024-01-01 00:00:00'), Timestamp('2024-03-29 00:00:00')),
+         (Timestamp('2024-04-01 00:00:00'), Timestamp('2024-06-28 00:00:00'))]
         """
         index = pd.DatetimeIndex(pd.unique(pd.DatetimeIndex(timestamps))).sort_values()
         if len(index) == 0:
@@ -162,16 +174,17 @@ class ChunkLedger:
     question a resume asks is whether the roster is unchanged. A missing file
     is an empty ledger, the normal state of a first run.
 
-    Example:
-        >>> ledger = ChunkLedger(ChunkLedger.default_path("panel.zarr"))
-        >>> ledger.assert_consistent(symbols, "panel.zarr")
-        >>> if not ledger.is_written(start, end):
-        ...     backend.append("panel.zarr")
-        ...     ledger.record(start, end, rows=n, symbols=symbols)
+    Examples
+    --------
+    >>> ledger = ChunkLedger(ChunkLedger.default_path("panel.zarr"))
+    >>> ledger.assert_consistent(symbols, "panel.zarr")
+    >>> if not ledger.is_written(start, end):
+    ...     backend.append("panel.zarr")
+    ...     ledger.record(start, end, rows=n, symbols=symbols)
 
-        The method examples below continue from a ledger that has recorded
-        one window, ``2024-01-02`` to ``2024-01-31``, of 3 rows on the axis
-        ``symbols = ["AAPL", "MSFT"]``.
+    The method examples below continue from a ledger that has recorded
+    one window, ``2024-01-02`` to ``2024-01-31``, of 3 rows on the axis
+    ``symbols = ["AAPL", "MSFT"]``.
     """
 
     #: Appended to the store path to derive the default sidecar location.
@@ -180,9 +193,12 @@ class ChunkLedger:
     def __init__(self, path: str, append_dim: str = "timestamp") -> None:
         """Load the ledger at ``path``, or start an empty one if absent.
 
-        Args:
-            path: The sidecar file.
-            append_dim: The dimension the store is appended along.
+        Parameters
+        ----------
+        path : str
+            The sidecar file.
+        append_dim : str
+            The dimension the store is appended along.
         """
         self.path = str(path)
         self.append_dim = append_dim
@@ -196,9 +212,10 @@ class ChunkLedger:
     def default_path(cls, zarr_file_path: str) -> str:
         """Return ``<store>.chunks.json``, a sibling of the store directory.
 
-        Example:
-            >>> ChunkLedger.default_path("/data/panel.zarr")
-            '/data/panel.zarr.chunks.json'
+        Examples
+        --------
+        >>> ChunkLedger.default_path("/data/panel.zarr")
+        '/data/panel.zarr.chunks.json'
         """
         return f"{zarr_file_path}{cls.SUFFIX}"
 
@@ -209,11 +226,12 @@ class ChunkLedger:
         Order-sensitive on purpose: the pinned axis is an ordered coordinate,
         and the same set in a different order would align columns differently.
 
-        Example:
-            >>> ChunkLedger.fingerprint(["AAPL", "MSFT"])[:16]
-            '4a1c2f2b7fca8c6a'
-            >>> ChunkLedger.fingerprint(["MSFT", "AAPL"])[:16]
-            '66c9ca2d14cccb5a'
+        Examples
+        --------
+        >>> ChunkLedger.fingerprint(["AAPL", "MSFT"])[:16]
+        '4a1c2f2b7fca8c6a'
+        >>> ChunkLedger.fingerprint(["MSFT", "AAPL"])[:16]
+        '66c9ca2d14cccb5a'
         """
         joined = "\n".join(str(symbol) for symbol in symbols)
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
@@ -252,9 +270,10 @@ class ChunkLedger:
     def windows(self) -> list[dict]:
         """A copy of the recorded windows, each ``{"start", "end", "rows"}``.
 
-        Example:
-            >>> ledger.windows[0]["end"], ledger.windows[0]["rows"]
-            ('2024-01-31T00:00:00', 3)
+        Examples
+        --------
+        >>> ledger.windows[0]["end"], ledger.windows[0]["rows"]
+        ('2024-01-31T00:00:00', 3)
         """
         return list(self._payload["windows"])
 
@@ -262,9 +281,10 @@ class ChunkLedger:
     def symbol_count(self) -> Optional[int]:
         """The symbol count the ledger was last written against, or None.
 
-        Example:
-            >>> ledger.symbol_count
-            2
+        Examples
+        --------
+        >>> ledger.symbol_count
+        2
         """
         return self._payload["symbol_count"]
 
@@ -272,9 +292,10 @@ class ChunkLedger:
     def symbol_fingerprint(self) -> Optional[str]:
         """The fingerprint of the axis the ledger was last written against.
 
-        Example:
-            >>> ledger.symbol_fingerprint == ChunkLedger.fingerprint(symbols)
-            True
+        Examples
+        --------
+        >>> ledger.symbol_fingerprint == ChunkLedger.fingerprint(symbols)
+        True
         """
         return self._payload["symbol_fingerprint"]
 
@@ -282,9 +303,10 @@ class ChunkLedger:
     def last_end(self) -> Optional[str]:
         """The ``end`` of the last recorded window, or None for an empty ledger.
 
-        Example:
-            >>> ledger.last_end
-            '2024-01-31T00:00:00'
+        Examples
+        --------
+        >>> ledger.last_end
+        '2024-01-31T00:00:00'
         """
         if not self._payload["windows"]:
             return None
@@ -293,11 +315,12 @@ class ChunkLedger:
     def is_written(self, start, end) -> bool:
         """Return whether the window ``(start, end)`` is already recorded.
 
-        Example:
-            >>> ledger.is_written("2024-01-02", "2024-01-31")
-            True
-            >>> ledger.is_written(pd.Timestamp("2024-02-01"), "2024-02-29")
-            False
+        Examples
+        --------
+        >>> ledger.is_written("2024-01-02", "2024-01-31")
+        True
+        >>> ledger.is_written(pd.Timestamp("2024-02-01"), "2024-02-29")
+        False
         """
         key = (self._key(start), self._key(end))
         return any(
@@ -312,16 +335,22 @@ class ChunkLedger:
         destination, so a crash mid-write leaves either the previous ledger
         or the new one, never a half-written file the next run cannot parse.
 
-        Args:
-            start: First timestamp of the window.
-            end: Last timestamp of the window.
-            rows: Number of rows appended for it.
-            symbols: The pinned symbol axis the window was written on.
+        Parameters
+        ----------
+        start
+            First timestamp of the window.
+        end
+            Last timestamp of the window.
+        rows : int
+            Number of rows appended for it.
+        symbols : Sequence[str]
+            The pinned symbol axis the window was written on.
 
-        Example:
-            >>> ledger.record("2024-02-01", "2024-02-29", rows=20, symbols=symbols)
-            >>> ledger.last_end
-            '2024-02-29T00:00:00'
+        Examples
+        --------
+        >>> ledger.record("2024-02-01", "2024-02-29", rows=20, symbols=symbols)
+        >>> ledger.last_end
+        '2024-02-29T00:00:00'
         """
         self._payload["append_dim"] = self.append_dim
         self._payload["symbol_count"] = len(symbols)
@@ -347,10 +376,11 @@ class ChunkLedger:
         not which windows have been written, and clearing them would make a
         complete store append every window a second time.
 
-        Example:
-            >>> ledger.rebase([*symbols, "NVDA"])  # the store was widened first
-            >>> ledger.symbol_count, len(ledger.windows)
-            (3, 1)
+        Examples
+        --------
+        >>> ledger.rebase([*symbols, "NVDA"])  # the store was widened first
+        >>> ledger.symbol_count, len(ledger.windows)
+        (3, 1)
         """
         self._payload["append_dim"] = self.append_dim
         self._payload["symbol_count"] = len(symbols)
@@ -364,26 +394,32 @@ class ChunkLedger:
         cannot be undone, so a resume trusts neither alone. Only the append
         dimension's coordinate is read from the store.
 
-        Args:
-            symbols: The pinned symbol axis of the run about to start.
-            store_path: The Zarr store the ledger describes.
+        Parameters
+        ----------
+        symbols : Sequence[str]
+            The pinned symbol axis of the run about to start.
+        store_path : str
+            The Zarr store the ledger describes.
 
-        Raises:
-            ValueError: If the recorded fingerprint differs from ``symbols``
-                (the roster changed between runs); if a store exists with an
-                empty ledger (no record of what it holds); if the ledger has
-                windows but no store exists; or if the store's last
-                coordinate value differs from the last recorded window's end
-                (a crash landed between the store write and the ledger
-                update). A missing store with an empty ledger is the normal
-                first run and passes.
+        Raises
+        ------
+        ValueError
+            If the recorded fingerprint differs from ``symbols``
+            (the roster changed between runs); if a store exists with an
+            empty ledger (no record of what it holds); if the ledger has
+            windows but no store exists; or if the store's last
+            coordinate value differs from the last recorded window's end
+            (a crash landed between the store write and the ledger
+            update). A missing store with an empty ledger is the normal
+            first run and passes.
 
-        Example:
-            >>> ledger.assert_consistent(symbols, "panel.zarr")
-            >>> ledger.assert_consistent([*symbols, "NVDA"], "panel.zarr")
-            Traceback (most recent call last):
-                ...
-            ValueError: ChunkLedger: refusing to resume panel.zarr -- the pinned ...
+        Examples
+        --------
+        >>> ledger.assert_consistent(symbols, "panel.zarr")
+        >>> ledger.assert_consistent([*symbols, "NVDA"], "panel.zarr")
+        Traceback (most recent call last):
+            ...
+        ValueError: ChunkLedger: refusing to resume panel.zarr -- the pinned ...
         """
         store_exists = Path(store_path).exists()
         recorded = self._payload["windows"]

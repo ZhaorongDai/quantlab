@@ -20,19 +20,21 @@ class MlBackend(ModelBackend):
     ``write``, ``read`` and ``to_internal`` all return ``self`` so calls can
     be chained. ``write`` creates missing parent directories.
 
-    Example:
-        >>> MlBackend().to_internal({"coef": 2.5}).write("ckpt/model.joblib")
-        MlBackend()
-        >>> MlBackend().read("ckpt/model.joblib").get_model()
-        {'coef': 2.5}
+    Examples
+    --------
+    >>> MlBackend().to_internal({"coef": 2.5}).write("ckpt/model.joblib")
+    MlBackend()
+    >>> MlBackend().read("ckpt/model.joblib").get_model()
+    {'coef': 2.5}
     """
 
     def get_model(self):
         """Return the held model object.
 
-        Example:
-            >>> MlBackend().to_internal({"coef": 2.5}).get_model()
-            {'coef': 2.5}
+        Examples
+        --------
+        >>> MlBackend().to_internal({"coef": 2.5}).get_model()
+        {'coef': 2.5}
         """
         return self.model
 
@@ -43,10 +45,11 @@ class MlBackend(ModelBackend):
         arguments are forwarded to ``joblib.dump`` (for example
         ``compress=3``).
 
-        Example:
-            >>> backend = MlBackend().to_internal({"coef": 2.5})
-            >>> backend.write("ckpt/model.joblib", compress=3)
-            MlBackend()
+        Examples
+        --------
+        >>> backend = MlBackend().to_internal({"coef": 2.5})
+        >>> backend.write("ckpt/model.joblib", compress=3)
+        MlBackend()
         """
         if not Path(path).parent.exists():
             Path(path).parent.mkdir(parents=True)
@@ -58,12 +61,15 @@ class MlBackend(ModelBackend):
 
         Extra keyword arguments are forwarded to ``joblib.load``.
 
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If ``path`` does not exist.
 
-        Example:
-            >>> MlBackend().read("ckpt/model.joblib").get_model()
-            {'coef': 2.5}
+        Examples
+        --------
+        >>> MlBackend().read("ckpt/model.joblib").get_model()
+        {'coef': 2.5}
         """
         self.model = joblib.load(path, **kwargs)
         return self
@@ -71,9 +77,10 @@ class MlBackend(ModelBackend):
     def to_internal(self, model) -> Self:
         """Adopt an in-memory model object and return ``self``.
 
-        Example:
-            >>> MlBackend().to_internal({"coef": 2.5})
-            MlBackend()
+        Examples
+        --------
+        >>> MlBackend().to_internal({"coef": 2.5})
+        MlBackend()
         """
         self.model = model
         return self

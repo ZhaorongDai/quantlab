@@ -56,15 +56,16 @@ class CrspMarketRoster:
     ``CrspReference`` over parquet on disk. ``report`` describes the most
     recent ``permno_intervals()`` call.
 
-    Example:
-        >>> from quantlab.dataset.crsp.market import CrspMarketRoster
-        >>> from quantlab.dataset.crsp.reference import CrspReference
-        >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
-        >>> roster = CrspMarketRoster(ref)
-        >>> roster.permnos_in_range("2010-01-01", "2010-12-31")
-        ['10001', '10002']
-        >>> roster.report["permnos_after_type_filter"]
-        2
+    Examples
+    --------
+    >>> from quantlab.dataset.crsp.market import CrspMarketRoster
+    >>> from quantlab.dataset.crsp.reference import CrspReference
+    >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+    >>> roster = CrspMarketRoster(ref)
+    >>> roster.permnos_in_range("2010-01-01", "2010-12-31")
+    ['10001', '10002']
+    >>> roster.report["permnos_after_type_filter"]
+    2
     """
 
     #: The table this roster is read from. Always present in a reference tier.
@@ -108,26 +109,31 @@ class CrspMarketRoster:
         that was an ADR and later ordinary common comes back as the ordinary
         stretch alone.
 
-        Args:
-            security_filter: A preset name (``"equity_common"``,
-                ``"shrcd_10_11"``, ``"none"``) or a ``{column: allowed
-                values}`` mapping, resolved by ``resolve_security_filter``.
+        Parameters
+        ----------
+        security_filter : str | dict
+            A preset name (``"equity_common"``,
+            ``"shrcd_10_11"``, ``"none"``) or a ``{column: allowed
+            values}`` mapping, resolved by ``resolve_security_filter``.
 
-        Raises:
-            ValueError: If ``security_filter`` is not a valid preset or
-                mapping, or if a source row has a null PERMNO or start.
+        Raises
+        ------
+        ValueError
+            If ``security_filter`` is not a valid preset or
+            mapping, or if a source row has a null PERMNO or start.
 
-        Example:
-            >>> roster.permno_intervals()
-            shape: (2, 3)
-            ┌────────┬────────────┬────────────┐
-            │ permno ┆ start_date ┆ end_date   │
-            │ ---    ┆ ---        ┆ ---        │
-            │ i64    ┆ date       ┆ date       │
-            ╞════════╪════════════╪════════════╡
-            │ 10001  ┆ 2000-01-03 ┆ 2025-12-31 │
-            │ 10002  ┆ 2000-01-03 ┆ 2010-06-30 │
-            └────────┴────────────┴────────────┘
+        Examples
+        --------
+        >>> roster.permno_intervals()
+        shape: (2, 3)
+        ┌────────┬────────────┬────────────┐
+        │ permno ┆ start_date ┆ end_date   │
+        │ ---    ┆ ---        ┆ ---        │
+        │ i64    ┆ date       ┆ date       │
+        ╞════════╪════════════╪════════════╡
+        │ 10001  ┆ 2000-01-03 ┆ 2025-12-31 │
+        │ 10002  ┆ 2000-01-03 ┆ 2010-06-30 │
+        └────────┴────────────┴────────────┘
         """
         resolved = resolve_security_filter(
             security_filter, owner=type(self).__name__
@@ -164,24 +170,33 @@ class CrspMarketRoster:
         The order is numeric, as ``quantlab.utils.symbol_axis.sort_symbol_axis``
         defines it, not lexicographic: ``"7000"`` sorts before ``"14593"``.
 
-        Args:
-            start_date: Window start, as a ``date`` or ISO string.
-            end_date: Window end, inclusive.
-            security_filter: As for ``permno_intervals``.
+        Parameters
+        ----------
+        start_date
+            Window start, as a ``date`` or ISO string.
+        end_date
+            Window end, inclusive.
+        security_filter : str | dict
+            As for ``permno_intervals``.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             PERMNOs as strings, in numeric order.
 
-        Raises:
-            ValueError: If ``start_date`` is after ``end_date``.
+        Raises
+        ------
+        ValueError
+            If ``start_date`` is after ``end_date``.
 
-        Example:
-            >>> roster.permnos_in_range("2011-01-01", "2011-12-31")
-            ['10001']
-            >>> roster.permnos_in_range(
-            ...     "2011-01-01", "2011-12-31", security_filter="none"
-            ... )
-            ['10001', '10004']
+        Examples
+        --------
+        >>> roster.permnos_in_range("2011-01-01", "2011-12-31")
+        ['10001']
+        >>> roster.permnos_in_range(
+        ...     "2011-01-01", "2011-12-31", security_filter="none"
+        ... )
+        ['10001', '10004']
         """
         start = _as_date(start_date)
         end = _as_date(end_date)

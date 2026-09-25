@@ -76,25 +76,32 @@ def add_window_args(
 ) -> argparse.ArgumentParser:
     """Add ``--start-date`` and ``--end-date`` to ``parser``.
 
-    Args:
-        parser: The parser to extend.
-        default_start_date: Default for ``--start-date``; ``None`` leaves it
-            unset.
-        semantics: Which help text the two flags carry. ``"request-range"``
-            describes a per-symbol request range; ``"interval-overlap"``
-            describes a window that also filters the roster, which is the
-            less obvious of the two and gets the longer text.
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
+    default_start_date : str | None
+        Default for ``--start-date``; ``None`` leaves it
+        unset.
+    semantics : WindowSemantics
+        Which help text the two flags carry. ``"request-range"``
+        describes a per-symbol request range; ``"interval-overlap"``
+        describes a window that also filters the roster, which is the
+        less obvious of the two and gets the longer text.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> import argparse
-        >>> parser = add_window_args(
-        ...     argparse.ArgumentParser(), default_start_date="2016-01-01"
-        ... )
-        >>> parser.parse_args(["--end-date", "2024-12-31"])
-        Namespace(start_date='2016-01-01', end_date='2024-12-31')
+    Examples
+    --------
+    >>> import argparse
+    >>> parser = add_window_args(
+    ...     argparse.ArgumentParser(), default_start_date="2016-01-01"
+    ... )
+    >>> parser.parse_args(["--end-date", "2024-12-31"])
+    Namespace(start_date='2016-01-01', end_date='2024-12-31')
     """
     help_text = _WINDOW_HELP[semantics]
     parser.add_argument(
@@ -121,13 +128,16 @@ def add_universe_args(
     help text spells out the domain distinctions users trip over, such as the
     Nasdaq-100 index versus the full NASDAQ roster.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> parser = add_universe_args(argparse.ArgumentParser())
-        >>> parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
-        Namespace(symbols=None, universe='sp500', as_of_date='2024-06-28')
+    Examples
+    --------
+    >>> parser = add_universe_args(argparse.ArgumentParser())
+    >>> parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
+    Namespace(symbols=None, universe='sp500', as_of_date='2024-06-28')
     """
     parser.add_argument(
         "--symbols",
@@ -185,13 +195,16 @@ def add_to_zarr_arg(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     stops at the raw shards and says so. The conversion it enables is the
     chunked, resumable one that ``--chunk`` governs.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> parser = add_to_zarr_arg(argparse.ArgumentParser())
-        >>> parser.parse_args(["--to-zarr"])
-        Namespace(to_zarr=True)
+    Examples
+    --------
+    >>> parser = add_to_zarr_arg(argparse.ArgumentParser())
+    >>> parser.parse_args(["--to-zarr"])
+    Namespace(to_zarr=True)
     """
     parser.add_argument(
         "--to-zarr",
@@ -224,25 +237,31 @@ def refuse_conversion_without_raw_data(dataset, result) -> None:
     The message names paths and counts only; it never includes a credential
     or a vendor response body.
 
-    Args:
-        dataset: A constructed dataset whose ``config.raw_data_dir_path`` is
-            the raw tree the conversion would read.
-        result: An acquisition result with ``succeeded`` and ``failures``
-            collections.
+    Parameters
+    ----------
+    dataset
+        A constructed dataset whose ``config.raw_data_dir_path`` is
+        the raw tree the conversion would read.
+    result
+        An acquisition result with ``succeeded`` and ``failures``
+        collections.
 
-    Raises:
-        SystemExit: With an explanatory message when there is nothing to
-            convert.
+    Raises
+    ------
+    SystemExit
+        With an explanatory message when there is nothing to
+        convert.
 
-    Example:
-        Called by an ingest script between acquisition and conversion:
+    Examples
+    --------
+    Called by an ingest script between acquisition and conversion:
 
-        >>> refuse_conversion_without_raw_data(dataset, result)
+    >>> refuse_conversion_without_raw_data(dataset, result)
 
-        The call returns ``None`` when ``result.succeeded`` is non-empty or
-        ``dataset.has_raw_data()`` is true. Otherwise it raises
-        ``SystemExit`` with a message beginning ``Refusing to convert: this
-        run fetched 0 symbol(s) successfully``.
+    The call returns ``None`` when ``result.succeeded`` is non-empty or
+    ``dataset.has_raw_data()`` is true. Otherwise it raises
+    ``SystemExit`` with a message beginning ``Refusing to convert: this
+    run fetched 0 symbol(s) successfully``.
     """
     if result.succeeded or dataset.has_raw_data():
         return
@@ -275,19 +294,25 @@ def add_chunk_args(
     in this group because it is a knob on the same chunked ``--to-zarr``
     conversion that ``--chunk`` governs.
 
-    Args:
-        parser: The parser to extend.
-        default: Default granularity for ``--chunk``.
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
+    default : str
+        Default granularity for ``--chunk``.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> parser = add_chunk_args(argparse.ArgumentParser())
-        >>> parser.parse_args([])
-        Namespace(chunk='year', on_new_listing='refuse')
-        >>> parser.parse_args(["--chunk", "month", "--on-new-listing", "widen"])
-        Namespace(chunk='month', on_new_listing='widen')
+    Examples
+    --------
+    >>> parser = add_chunk_args(argparse.ArgumentParser())
+    >>> parser.parse_args([])
+    Namespace(chunk='year', on_new_listing='refuse')
+    >>> parser.parse_args(["--chunk", "month", "--on-new-listing", "widen"])
+    Namespace(chunk='month', on_new_listing='widen')
     """
     parser.add_argument(
         "--chunk",
@@ -328,21 +353,27 @@ def add_concurrency_args(
 ) -> argparse.ArgumentParser:
     """Add ``--limit`` and ``--max-workers`` to ``parser``.
 
-    Args:
-        parser: The parser to extend.
-        default_max_workers: Default for ``--max-workers``. It is a parameter
-            rather than an import so this module does not depend on any one
-            vendor's acquisition class.
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
+    default_max_workers : int
+        Default for ``--max-workers``. It is a parameter
+        rather than an import so this module does not depend on any one
+        vendor's acquisition class.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> parser = add_concurrency_args(
-        ...     argparse.ArgumentParser(), default_max_workers=8
-        ... )
-        >>> parser.parse_args(["--limit", "50"])
-        Namespace(limit=50, max_workers=8)
+    Examples
+    --------
+    >>> parser = add_concurrency_args(
+    ...     argparse.ArgumentParser(), default_max_workers=8
+    ... )
+    >>> parser.parse_args(["--limit", "50"])
+    Namespace(limit=50, max_workers=8)
     """
     parser.add_argument(
         "--limit",
@@ -379,14 +410,15 @@ def validate_roster_args(
     through ``parser.error``, so it exits with status 2 and the usage block
     like every other argparse error.
 
-    Example:
-        >>> parser = add_universe_args(argparse.ArgumentParser(prog="ingest"))
-        >>> args = parser.parse_args(["--symbols", "AAPL,MSFT"])
-        >>> validate_roster_args(parser, args)
+    Examples
+    --------
+    >>> parser = add_universe_args(argparse.ArgumentParser(prog="ingest"))
+    >>> args = parser.parse_args(["--symbols", "AAPL,MSFT"])
+    >>> validate_roster_args(parser, args)
 
-        With ``--universe sp500`` and no ``--as-of-date`` the same call
-        prints the usage block followed by ``ingest: error: --as-of-date is
-        required when --universe is set.`` and exits with status 2.
+    With ``--universe sp500`` and no ``--as-of-date`` the same call
+    prints the usage block followed by ``ingest: error: --as-of-date is
+    required when --universe is set.`` and exits with status 2.
     """
     if bool(args.symbols) == bool(args.universe):
         parser.error("Exactly one of --symbols or --universe must be set.")
@@ -403,13 +435,14 @@ def roster_category(args: argparse.Namespace) -> str | None:
     ``--symbols`` list, so a caller can size it differently instead of
     treating it as a roster.
 
-    Example:
-        >>> roster_category(argparse.Namespace(universe="nasdaq100"))
-        'nasdaq100_constituent'
-        >>> roster_category(argparse.Namespace(category="us_all"))
-        'us_all'
-        >>> print(roster_category(argparse.Namespace(symbols="AAPL", universe=None)))
-        None
+    Examples
+    --------
+    >>> roster_category(argparse.Namespace(universe="nasdaq100"))
+    nasdaq100_constituent
+    >>> roster_category(argparse.Namespace(category="us_all"))
+    us_all
+    >>> print(roster_category(argparse.Namespace(symbols="AAPL", universe=None)))
+    None
     """
     universe = getattr(args, "universe", None)
     if universe:
@@ -429,39 +462,48 @@ def resolve_symbols(
     be ``None`` on that path. Otherwise the category is resolved through
     ``catalog`` in one of two modes, and ``--limit`` truncates the result.
 
-    Args:
-        args: Parsed arguments carrying ``symbols``, ``as_of_date``,
-            ``start_date``, ``end_date`` and optionally ``limit``,
-            ``universe`` or ``category``.
-        catalog: A ``UniverseCatalog`` (or compatible object) used to resolve
-            a category; ignored for an explicit list.
-        mode: ``"as_of"`` resolves point-in-time membership on
-            ``args.as_of_date``. ``"in_range"`` resolves interval overlap
-            across ``args.start_date .. args.end_date``, keeping every symbol
-            that traded at any point in the window, delisted names included.
-            Keyword-only with no default, because the two rosters differ and
-            a silent default would hide a survivorship bias that nothing
-            notices unless it looks for delisted tickers.
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed arguments carrying ``symbols``, ``as_of_date``,
+        ``start_date``, ``end_date`` and optionally ``limit``,
+        ``universe`` or ``category``.
+    catalog
+        A ``UniverseCatalog`` (or compatible object) used to resolve
+        a category; ignored for an explicit list.
+    mode : RosterMode
+        ``"as_of"`` resolves point-in-time membership on
+        ``args.as_of_date``. ``"in_range"`` resolves interval overlap
+        across ``args.start_date .. args.end_date``, keeping every symbol
+        that traded at any point in the window, delisted names included.
+        Keyword-only with no default, because the two rosters differ and
+        a silent default would hide a survivorship bias that nothing
+        notices unless it looks for delisted tickers.
 
-    Returns:
+    Returns
+    -------
+    tuple[str, ...]
         The resolved symbols as a tuple, in the order the catalog returned
         them.
 
-    Raises:
-        ValueError: If ``mode`` is not one of ``ROSTER_MODES``.
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not one of ``ROSTER_MODES``.
 
-    Example:
-        An explicit list needs no catalog; ``--limit`` truncates it:
+    Examples
+    --------
+    An explicit list needs no catalog; ``--limit`` truncates it:
 
-        >>> args = argparse.Namespace(symbols="AAPL,MSFT,NVDA", universe=None, limit=2)
-        >>> resolve_symbols(args, None, mode="as_of")
-        ('AAPL', 'MSFT')
+    >>> args = argparse.Namespace(symbols="AAPL,MSFT,NVDA", universe=None, limit=2)
+    >>> resolve_symbols(args, None, mode="as_of")
+    ('AAPL', 'MSFT')
 
-        A category resolves through ``catalog``, a ``UniverseCatalog`` built
-        from the universe table:
+    A category resolves through ``catalog``, a ``UniverseCatalog`` built
+    from the universe table:
 
-        >>> args = parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
-        >>> symbols = resolve_symbols(args, catalog, mode="as_of")
+    >>> args = parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
+    >>> symbols = resolve_symbols(args, catalog, mode="as_of")
     """
     if mode not in ROSTER_MODES:
         raise ValueError(
@@ -497,13 +539,16 @@ def add_data_dir_arg(
     Defined once here so the flag name, help text and precedence story are
     identical on every entry point that offers it. See ``apply_data_dir``.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> parser = add_data_dir_arg(argparse.ArgumentParser())
-        >>> parser.parse_args(["--data-dir", "/mnt/quant"])
-        Namespace(data_dir='/mnt/quant')
+    Examples
+    --------
+    >>> parser = add_data_dir_arg(argparse.ArgumentParser())
+    >>> parser.parse_args(["--data-dir", "/mnt/quant"])
+    Namespace(data_dir='/mnt/quant')
     """
     parser.add_argument(
         "--data-dir",
@@ -534,20 +579,25 @@ def apply_data_dir(args: argparse.Namespace) -> "object | None":
     site. The ``quantlab.config`` import is deferred to call time to keep
     this module light at import.
 
-    Args:
-        args: Parsed arguments. An object without a ``data_dir`` attribute is
-            treated as if the flag were absent.
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed arguments. An object without a ``data_dir`` attribute is
+        treated as if the flag were absent.
 
-    Returns:
+    Returns
+    -------
+    object | None
         The stored root ``Path``, or ``None`` when the flag was absent, in
         which case ``QUANTLAB_DATA_DIR`` or the repository default still
         applies.
 
-    Example:
-        >>> apply_data_dir(parser.parse_args(["--data-dir", "/mnt/quant"]))
-        PosixPath('/mnt/quant')
-        >>> apply_data_dir(parser.parse_args([])) is None
-        True
+    Examples
+    --------
+    >>> apply_data_dir(parser.parse_args(["--data-dir", "/mnt/quant"]))
+    PosixPath('/mnt/quant')
+    >>> apply_data_dir(parser.parse_args([])) is None
+    True
     """
     value = getattr(args, "data_dir", None)
     if value is None:
@@ -571,13 +621,16 @@ def add_volume_guard_args(
     derived from a calendar; the guard refuses to size a tick fetch without a
     measured figure rather than inventing one.
 
-    Returns:
+    Returns
+    -------
+    argparse.ArgumentParser
         ``parser``, for chaining.
 
-    Example:
-        >>> parser = add_volume_guard_args(argparse.ArgumentParser())
-        >>> parser.parse_args(["--force-volume", "--rows-per-symbol-day", "250000"])
-        Namespace(force_volume=True, rows_per_symbol_day=250000)
+    Examples
+    --------
+    >>> parser = add_volume_guard_args(argparse.ArgumentParser())
+    >>> parser.parse_args(["--force-volume", "--rows-per-symbol-day", "250000"])
+    Namespace(force_volume=True, rows_per_symbol_day=250000)
     """
     parser.add_argument(
         "--force-volume",
@@ -651,8 +704,10 @@ def _explicit_symbol_catalog(symbol_count: int):
     is imported here rather than at module scope to keep this module light
     at import.
 
-    Args:
-        symbol_count: Number of symbols in the explicit list.
+    Parameters
+    ----------
+    symbol_count : int
+        Number of symbols in the explicit list.
     """
     global _EXPLICIT_CATALOG_CLASS
     if _EXPLICIT_CATALOG_CLASS is None:
@@ -775,28 +830,35 @@ def volume_pricing(
     through ``_explicit_symbol_catalog``; only a whole, untruncated category
     is priced through the catalog's density-adjusted estimate.
 
-    Args:
-        args: Parsed arguments.
-        catalog: The ``UniverseCatalog`` that resolved ``symbols``; may be
-            ``None`` for an explicit list.
-        symbols: The resolved roster, as returned by ``resolve_symbols``.
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed arguments.
+    catalog
+        The ``UniverseCatalog`` that resolved ``symbols``; may be
+        ``None`` for an explicit list.
+    symbols
+        The resolved roster, as returned by ``resolve_symbols``.
 
-    Returns:
+    Returns
+    -------
+    tuple[object, str, str, str, bool]
         ``(pricing, category, start_date, end_date, window_assumed)``, where
         ``pricing`` is the object to call the guard on, ``category`` is the
         name to report, and ``window_assumed`` says whether the window came
         from the fallbacks in ``_sizing_window``.
 
-    Example:
-        >>> args = argparse.Namespace(
-        ...     symbols="AAPL,MSFT", start_date="2024-01-01", end_date="2024-12-31"
-        ... )
-        >>> symbols = resolve_symbols(args, None, mode="as_of")
-        >>> pricing, category, start, end, assumed = volume_pricing(
-        ...     args, None, symbols=symbols
-        ... )
-        >>> category, start, end, assumed
-        ('(explicit --symbols list)', '2024-01-01', '2024-12-31', False)
+    Examples
+    --------
+    >>> args = argparse.Namespace(
+    ...     symbols="AAPL,MSFT", start_date="2024-01-01", end_date="2024-12-31"
+    ... )
+    >>> symbols = resolve_symbols(args, None, mode="as_of")
+    >>> pricing, category, start, end, assumed = volume_pricing(
+    ...     args, None, symbols=symbols
+    ... )
+    >>> category, start, end, assumed
+    ('(explicit --symbols list)', '2024-01-01', '2024-12-31', False)
     """
     category = roster_category(args)
     truncated = getattr(args, "limit", None) is not None
@@ -832,37 +894,48 @@ def print_volume_estimate(
     ``--force-volume`` line that distinguishes "under every ceiling" from
     "over one and overridden".
 
-    Args:
-        estimate: The dict returned by ``assert_acquisition_volume_fits``.
-        category: Roster name to print.
-        start_date: Window start used for sizing.
-        end_date: Window end used for sizing.
-        window_assumed: Whether the window came from the sizing fallbacks;
-            if so, a line saying so is printed first.
-        forced: Whether ``--force-volume`` was set.
-        print_fn: Output function, injectable for tests.
+    Parameters
+    ----------
+    estimate : dict
+        The dict returned by ``assert_acquisition_volume_fits``.
+    category : str
+        Roster name to print.
+    start_date : str
+        Window start used for sizing.
+    end_date : str
+        Window end used for sizing.
+    window_assumed : bool
+        Whether the window came from the sizing fallbacks;
+        if so, a line saying so is printed first.
+    forced : bool
+        Whether ``--force-volume`` was set.
+    print_fn
+        Output function, injectable for tests.
 
-    Returns:
+    Returns
+    -------
+    dict
         ``estimate``, unchanged, so a call site can compose.
 
-    Example:
-        Continuing from ``volume_pricing``, two symbols over 2024:
+    Examples
+    --------
+    Continuing from ``volume_pricing``, two symbols over 2024:
 
-        >>> estimate = pricing.assert_acquisition_volume_fits(
-        ...     category, start, end, frequency="1d", batch_size=1
-        ... )
-        >>> _ = print_volume_estimate(
-        ...     estimate, category=category, start_date=start, end_date=end
-        ... )
-        Pre-flight volume estimate (zero vendor requests issued):
-          roster:            (explicit --symbols list)
-          window:            2024-01-01 .. 2024-12-31
-          symbols:           2
-          trading days (~):  253
-          rows (~):          506 (1/symbol-day, density 1.000)
-          raw on disk (~):   0.00 GiB
-          requests (~):      2 (batch_size=1, page_limit=10,000)
-          wall clock (~):    0.0 h at 200 req/min
+    >>> estimate = pricing.assert_acquisition_volume_fits(
+    ...     category, start, end, frequency="1d", batch_size=1
+    ... )
+    >>> _ = print_volume_estimate(
+    ...     estimate, category=category, start_date=start, end_date=end
+    ... )
+    Pre-flight volume estimate (zero vendor requests issued):
+      roster:            (explicit --symbols list)
+      window:            2024-01-01 .. 2024-12-31
+      symbols:           2
+      trading days (~):  253
+      rows (~):          506 (1/symbol-day, density 1.000)
+      raw on disk (~):   0.00 GiB
+      requests (~):      2 (batch_size=1, page_limit=10,000)
+      wall clock (~):    0.0 h at 200 req/min
     """
     if window_assumed:
         print_fn(
@@ -912,26 +985,33 @@ def print_sql_volume_estimate(
     years. An estimate without a ``unit`` key is treated as a TAQ estimate.
     Only counts, dates and ceilings are printed, never a credential.
 
-    Args:
-        estimate: The dict returned by the SQL volume guard.
-        forced: Whether ``--force-volume`` was set.
-        print_fn: Output function, injectable for tests.
+    Parameters
+    ----------
+    estimate : dict
+        The dict returned by the SQL volume guard.
+    forced : bool
+        Whether ``--force-volume`` was set.
+    print_fn
+        Output function, injectable for tests.
 
-    Returns:
+    Returns
+    -------
+    dict
         ``estimate``, unchanged.
 
-    Example:
-        With ``estimate`` from ``SqlVolumeGuard.estimate`` for two symbols
-        over two trading days:
+    Examples
+    --------
+    With ``estimate`` from ``SqlVolumeGuard.estimate`` for two symbols
+    over two trading days:
 
-        >>> lines = []
-        >>> _ = print_sql_volume_estimate(estimate, print_fn=lines.append)
-        >>> lines[1]
-        '  symbols:           2'
-        >>> lines[4]
-        '  rows:              400,000'
-        >>> lines[5]
-        '  bytes/row:         30 (ASSUMPTION: default, not a measured shard size)'
+    >>> lines = []
+    >>> _ = print_sql_volume_estimate(estimate, print_fn=lines.append)
+    >>> lines[1]
+    '  symbols:           2'
+    >>> lines[4]
+    '  rows:              400,000'
+    >>> lines[5]
+    '  bytes/row:         30 (ASSUMPTION: default, not a measured shard size)'
     """
     # Imported at call time so this module stays light at import.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
@@ -976,24 +1056,30 @@ def print_conversion_result(result, *, print_fn=print):
     printed. The argument is left unannotated so this module does not import
     the result class.
 
-    Args:
-        result: The conversion result to render.
-        print_fn: Output function, injectable for tests.
+    Parameters
+    ----------
+    result
+        The conversion result to render.
+    print_fn
+        Output function, injectable for tests.
 
-    Returns:
+    Returns
+    -------
+    ConversionResult
         ``result``, unchanged, so a call site can compose.
 
-    Example:
-        With ``result`` a ``ConversionResult`` whose run wrote five yearly
-        windows:
+    Examples
+    --------
+    With ``result`` a ``ConversionResult`` whose run wrote five yearly
+    windows:
 
-        >>> _ = print_conversion_result(result)
-        Zarr store written at: /mnt/quant/data/us_equity/1d/stock.zarr
-          windows:           5 written, 0 skipped of 5 planned (year)
-          symbols pinned:    2
-          rows appended:     2,516
-          peak window:       0.00 GiB
-          chunk ledger:      /mnt/quant/data/us_equity/1d/stock.zarr.chunks.json
+    >>> _ = print_conversion_result(result)
+    Zarr store written at: /mnt/quant/data/us_equity/1d/stock.zarr
+      windows:           5 written, 0 skipped of 5 planned (year)
+      symbols pinned:    2
+      rows appended:     2,516
+      peak window:       0.00 GiB
+      chunk ledger:      /mnt/quant/data/us_equity/1d/stock.zarr.chunks.json
     """
     print_fn(f"Zarr store written at: {result.zarr_path}")
     print_fn(

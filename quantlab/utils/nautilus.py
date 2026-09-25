@@ -30,10 +30,11 @@ def get_crypto_currency(symbol: str) -> Currency:
     Codes Nautilus does not know are registered on the fly as crypto
     currencies with the default precision of 8.
 
-    Example:
-        >>> btc = get_crypto_currency("BTC")
-        >>> btc.code, btc.precision
-        ('BTC', 8)
+    Examples
+    --------
+    >>> btc = get_crypto_currency("BTC")
+    >>> btc.code, btc.precision
+    ('BTC', 8)
     """
     return Currency.from_str(symbol)
 
@@ -57,27 +58,37 @@ def get_crypto_currency_pair(
     ``fees`` and ``margin`` sections. A symbol absent from the file is fetched
     from the exchange for this call only, without updating the file.
 
-    Args:
-        symbol: The venue's symbol, such as ``"BTCUSDT"``.
-        venue: The venue name as spelled in ``instruments.yaml``.
-        base: The base currency.
-        quote: The quote currency.
+    Parameters
+    ----------
+    symbol : str
+        The venue's symbol, such as ``"BTCUSDT"``.
+    venue : str
+        The venue name as spelled in ``instruments.yaml``.
+    base : Currency
+        The base currency.
+    quote : Currency
+        The quote currency.
 
-    Returns:
+    Returns
+    -------
+    CurrencyPair
         A ``CurrencyPair`` with ``ts_event`` and ``ts_init`` set to 0.
 
-    Raises:
-        ValueError: If the symbol is missing and the venue has no live
-            fetcher.
+    Raises
+    ------
+    ValueError
+        If the symbol is missing and the venue has no live
+        fetcher.
 
-    Example:
-        >>> base, quote = get_crypto_currency("BTC"), get_crypto_currency("USDT")
-        >>> pair = get_crypto_currency_pair("BTCUSDT", "BINANCE", base, quote)
-        >>> str(pair.id), pair.price_precision, pair.size_precision
-        ('BTCUSDT.BINANCE', 8, 8)
+    Examples
+    --------
+    >>> base, quote = get_crypto_currency("BTC"), get_crypto_currency("USDT")
+    >>> pair = get_crypto_currency_pair("BTCUSDT", "BINANCE", base, quote)
+    >>> str(pair.id), pair.price_precision, pair.size_precision
+    ('BTCUSDT.BINANCE', 8, 8)
 
-        A symbol absent from the packaged file is fetched from the venue, so
-        that path needs network access.
+    A symbol absent from the packaged file is fetched from the venue, so
+    that path needs network access.
     """
     config_data = _load_instrument_config(venue)
 
@@ -151,9 +162,10 @@ def generate_bar_type_str(
     whole days as ``DAY``, whole hours as ``HOUR``, anything else in minutes.
     Bars are always ``LAST`` priced and ``EXTERNAL`` aggregated.
 
-    Example:
-        >>> generate_bar_type_str(np.timedelta64(4, "h"), "BTCUSDT")
-        'BTCUSDT.BINANCE-4-HOUR-LAST-EXTERNAL'
+    Examples
+    --------
+    >>> generate_bar_type_str(np.timedelta64(4, "h"), "BTCUSDT")
+    'BTCUSDT.BINANCE-4-HOUR-LAST-EXTERNAL'
     """
     time_interval_minutes = time_interval.astype("timedelta64[m]").astype(
         "int64"
@@ -181,12 +193,15 @@ def parse_symbol_currencies(symbol: str) -> tuple[str, str]:
 
     Only USDT-quoted symbols are recognised.
 
-    Raises:
-        ValueError: If ``symbol`` does not end in ``USDT``.
+    Raises
+    ------
+    ValueError
+        If ``symbol`` does not end in ``USDT``.
 
-    Example:
-        >>> parse_symbol_currencies("ETHUSDT")
-        ('ETH', 'USDT')
+    Examples
+    --------
+    >>> parse_symbol_currencies("ETHUSDT")
+    ('ETH', 'USDT')
     """
     if symbol.endswith("USDT"):
         base_symbol = symbol[:-4]

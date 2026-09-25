@@ -42,13 +42,14 @@ class XrBackend(DataBackend):
     created, and ``MAX_WIDEN_BYTES`` is the largest panel a widen will hold
     in memory at once before switching to a block-by-block rewrite.
 
-    Example:
-        >>> backend = XrBackend().to_internal(panel)
-        >>> backend.write("prices.zarr")
-        >>> backend.to_internal(next_month).widen_and_append("prices.zarr")
-        >>> ds = XrBackend().read("prices.zarr").get_xarray_dataset(
-        ...     ["timestamp", "symbol"]
-        ... )
+    Examples
+    --------
+    >>> backend = XrBackend().to_internal(panel)
+    >>> backend.write("prices.zarr")
+    >>> backend.to_internal(next_month).widen_and_append("prices.zarr")
+    >>> ds = XrBackend().read("prices.zarr").get_xarray_dataset(
+    ...     ["timestamp", "symbol"]
+    ... )
     """
 
     def __init__(self) -> None:
@@ -61,20 +62,27 @@ class XrBackend(DataBackend):
         A backend that already holds data returns immediately unless
         ``overwrite`` is true, so repeated reads do not reload the store.
 
-        Args:
-            path: Directory of the Zarr store.
-            overwrite: Reload even if ``data`` is already populated.
-            **kwargs: Passed through to ``xarray.open_dataset``.
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        overwrite : bool
+            Reload even if ``data`` is already populated.
+        **kwargs
+            Passed through to ``xarray.open_dataset``.
 
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If ``path`` does not exist.
 
-        Example:
-            >>> backend = XrBackend().read("prices.zarr")
-            >>> dict(backend.data.sizes)
-            {'timestamp': 4, 'symbol': 2}
-            >>> backend.read("prices.zarr") is backend  # already loaded, no reload
-            True
+        Examples
+        --------
+        >>> backend = XrBackend().read("prices.zarr")
+        >>> dict(backend.data.sizes)
+        {'timestamp': 4, 'symbol': 2}
+        >>> backend.read("prices.zarr") is backend  # already loaded, no reload
+        True
         """
         if not overwrite and hasattr(self, "data"):
             return self
@@ -112,15 +120,19 @@ class XrBackend(DataBackend):
         ``"w"``. No chunk encoding is applied, so the store lands on Zarr's
         default chunk grid.
 
-        Args:
-            path: Directory of the Zarr store.
-            **kwargs: Passed through to ``Dataset.to_zarr``.
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        **kwargs
+            Passed through to ``Dataset.to_zarr``.
 
-        Example:
-            >>> XrBackend().to_internal(panel).write("prices.zarr")
-            XrBackend()
-            >>> Path("prices.zarr").is_dir()
-            True
+        Examples
+        --------
+        >>> XrBackend().to_internal(panel).write("prices.zarr")
+        XrBackend()
+        >>> Path("prices.zarr").is_dir()
+        True
         """
         if not Path(path).exists():
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -156,32 +168,40 @@ class XrBackend(DataBackend):
         stored variable is refused outright, since the only fill would be
         NaN over the incoming dates of a variable that was complete.
 
-        Args:
-            path: Directory of the Zarr store.
-            append_dim: The dimension the store grows along.
-            append_dim_size: The store's eventual total length along
-                ``append_dim``, if the caller knows it. Only the creating
-                write reads it; it pins the chunk grid to the value a single
-                whole-range write would have chosen instead of the first
-                window's length. Ignored against an existing store, so an
-                incremental writer may pass it on every window.
-            **kwargs: Passed through to ``Dataset.to_zarr``. An ``encoding``
-                entry is dropped on the append path because xarray rejects
-                it there.
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        append_dim : str
+            The dimension the store grows along.
+        append_dim_size : Optional[int]
+            The store's eventual total length along
+            ``append_dim``, if the caller knows it. Only the creating
+            write reads it; it pins the chunk grid to the value a single
+            whole-range write would have chosen instead of the first
+            window's length. Ignored against an existing store, so an
+            incremental writer may pass it on every window.
+        **kwargs
+            Passed through to ``Dataset.to_zarr``. An ``encoding``
+            entry is dropped on the append path because xarray rejects
+            it there.
 
-        Raises:
-            ValueError: If the window fails any compatibility check.
+        Raises
+        ------
+        ValueError
+            If the window fails any compatibility check.
 
-        Example:
-            Two windows on the same symbol axis; the first call creates the
-            store, the second extends it:
+        Examples
+        --------
+        Two windows on the same symbol axis; the first call creates the
+        store, the second extends it:
 
-            >>> XrBackend().to_internal(first_window).append("prices.zarr")
-            XrBackend()
-            >>> XrBackend().to_internal(next_window).append("prices.zarr")
-            XrBackend()
-            >>> xr.open_zarr("prices.zarr").sizes["timestamp"]
-            6
+        >>> XrBackend().to_internal(first_window).append("prices.zarr")
+        XrBackend()
+        >>> XrBackend().to_internal(next_window).append("prices.zarr")
+        XrBackend()
+        >>> xr.open_zarr("prices.zarr").sizes["timestamp"]
+        6
         """
         target = Path(path)
         if not target.exists():
@@ -254,37 +274,48 @@ class XrBackend(DataBackend):
         recover data a vendor may have had. Rebuilding from raw data is the
         route when that history matters.
 
-        Args:
-            path: Directory of the Zarr store.
-            symbols: The labels the rewritten ``dim`` axis must contain. Must
-                be a superset of the stored axis.
-            dim: The axis being widened.
-            append_dim: The store's append dimension, used to size blocks and
-                to pin the rewritten chunk grid.
-            fill_values: Per-variable fill for variables carrying ``dim``
-                that are not floating-point. Without an entry such a
-                variable is refused, because an unfilled reindex would
-                silently upcast it to float64.
-            append_dim_size: The store's eventual length along
-                ``append_dim``. This rewrite re-pins the chunk grid, so a
-                caller widening a store that has not yet reached its final
-                extent states the extent here; ``None`` sizes the grid from
-                the store as it is now.
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        symbols : Sequence[str]
+            The labels the rewritten ``dim`` axis must contain. Must
+            be a superset of the stored axis.
+        dim : str
+            The axis being widened.
+        append_dim : str
+            The store's append dimension, used to size blocks and
+            to pin the rewritten chunk grid.
+        fill_values : Optional[Mapping[str, object]]
+            Per-variable fill for variables carrying ``dim``
+            that are not floating-point. Without an entry such a
+            variable is refused, because an unfilled reindex would
+            silently upcast it to float64.
+        append_dim_size : Optional[int]
+            The store's eventual length along
+            ``append_dim``. This rewrite re-pins the chunk grid, so a
+            caller widening a store that has not yet reached its final
+            extent states the extent here; ``None`` sizes the grid from
+            the store as it is now.
 
-        Raises:
-            FileNotFoundError: If no store exists at ``path``.
-            ValueError: If crash residue makes the store's identity
-                ambiguous, if ``symbols`` would drop a stored label, or if a
-                non-floating variable has no fill value.
+        Raises
+        ------
+        FileNotFoundError
+            If no store exists at ``path``.
+        ValueError
+            If crash residue makes the store's identity
+            ambiguous, if ``symbols`` would drop a stored label, or if a
+            non-floating variable has no fill value.
 
-        Example:
-            >>> XrBackend().widen_symbol_axis("prices.zarr", ["AAA", "BBB", "CCC"])
-            XrBackend()
-            >>> stored = xr.open_zarr("prices.zarr")
-            >>> stored["symbol"].values.tolist()
-            ['AAA', 'BBB', 'CCC']
-            >>> stored["close"].sel(symbol="CCC").values  # backfilled history
-            array([nan, nan, nan, nan, nan, nan])
+        Examples
+        --------
+        >>> XrBackend().widen_symbol_axis("prices.zarr", ["AAA", "BBB", "CCC"])
+        XrBackend()
+        >>> stored = xr.open_zarr("prices.zarr")
+        >>> stored["symbol"].values.tolist()
+        ['AAA', 'BBB', 'CCC']
+        >>> stored["close"].sel(symbol="CCC").values  # backfilled history
+        array([nan, nan, nan, nan, nan, nan])
         """
         target = Path(path)
         widening = Path(f"{path}{self.WIDENING_SUFFIX}")
@@ -437,13 +468,20 @@ class XrBackend(DataBackend):
         Only metadata is read, so the estimate is free relative to the
         rewrite it decides.
 
-        Args:
-            stored: The already-open store.
-            requested: The target ``dim`` axis.
-            dim: The axis being widened.
-            append_dim: The store's append dimension.
+        Parameters
+        ----------
+        stored : xr.Dataset
+            The already-open store.
+        requested : Sequence[str]
+            The target ``dim`` axis.
+        dim : str
+            The axis being widened.
+        append_dim : str
+            The store's append dimension.
 
-        Returns:
+        Returns
+        -------
+        dict
             A dict with ``stored_symbols``, ``symbols``, ``timestamps``,
             ``variables``, ``widened_bytes`` (the whole widened panel, every
             variable) and ``row_bytes`` (the bytes of one ``append_dim`` row,
@@ -483,9 +521,11 @@ class XrBackend(DataBackend):
         because a bounded loop is still better than the whole-store
         allocation it replaces.
 
-        Args:
-            row_bytes: Bytes of one ``append_dim`` row, from
-                ``_estimate_widen_bytes``.
+        Parameters
+        ----------
+        row_bytes : int
+            Bytes of one ``append_dim`` row, from
+            ``_estimate_widen_bytes``.
         """
         chunk = XrBackend.APPEND_DIM_CHUNK
         raw = XrBackend.MAX_WIDEN_BYTES // row_bytes if row_bytes > 0 else 0
@@ -651,35 +691,45 @@ class XrBackend(DataBackend):
         needed because a failed partial write raises and leaves the store
         intact.
 
-        Args:
-            path: Directory of the Zarr store.
-            variables: Maps each variable name to its dtype. The dtype is
-                all the filler needs, so the caller's panel is never held.
-            append_dim: The store's append dimension, used to pin the
-                filler's chunk grid to the store's.
-            fill_values: Per-variable fill for new variables that are not
-                floating-point. Without an entry such a variable is refused,
-                because ``np.full`` with NaN yields ``0`` for integers and
-                ``True`` for booleans, fabricating history.
-            append_dim_size: The store's eventual length along
-                ``append_dim``, so a filler added to a store that has not
-                reached its final extent joins on the same grid as the
-                variables already there.
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        variables : Mapping[str, object]
+            Maps each variable name to its dtype. The dtype is
+            all the filler needs, so the caller's panel is never held.
+        append_dim : str
+            The store's append dimension, used to pin the
+            filler's chunk grid to the store's.
+        fill_values : Optional[Mapping[str, object]]
+            Per-variable fill for new variables that are not
+            floating-point. Without an entry such a variable is refused,
+            because ``np.full`` with NaN yields ``0`` for integers and
+            ``True`` for booleans, fabricating history.
+        append_dim_size : Optional[int]
+            The store's eventual length along
+            ``append_dim``, so a filler added to a store that has not
+            reached its final extent joins on the same grid as the
+            variables already there.
 
-        Raises:
-            FileNotFoundError: If no store exists at ``path``.
-            ValueError: If a new non-floating variable has no fill value.
+        Raises
+        ------
+        FileNotFoundError
+            If no store exists at ``path``.
+        ValueError
+            If a new non-floating variable has no fill value.
 
-        Example:
-            >>> XrBackend().widen_data_vars("prices.zarr", {"volume": "float64"})
-            XrBackend()
-            >>> XrBackend().widen_data_vars(
-            ...     "prices.zarr", {"flag": "bool"}, fill_values={"flag": False}
-            ... )
-            XrBackend()
-            >>> stored = xr.open_zarr("prices.zarr")
-            >>> sorted(stored.data_vars), stored["flag"].dtype
-            (['close', 'flag', 'volume'], dtype('bool'))
+        Examples
+        --------
+        >>> XrBackend().widen_data_vars("prices.zarr", {"volume": "float64"})
+        XrBackend()
+        >>> XrBackend().widen_data_vars(
+        ...     "prices.zarr", {"flag": "bool"}, fill_values={"flag": False}
+        ... )
+        XrBackend()
+        >>> stored = xr.open_zarr("prices.zarr")
+        >>> sorted(stored.data_vars), stored["flag"].dtype
+        (['close', 'flag', 'volume'], dtype('bool'))
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -793,24 +843,31 @@ class XrBackend(DataBackend):
         grid for what this call writes. Variables the store held from an
         earlier write keep whatever grid they were created with.
 
-        Args:
-            path: Directory of the Zarr store.
-            append_dim: The dimension the store grows along.
-            dim: The symbol axis to reconcile.
-            fill_values: Per-variable fill for non-floating variables, passed
-                to both widens and used to reindex ``data``.
-            **kwargs: Passed through to ``append``.
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        append_dim : str
+            The dimension the store grows along.
+        dim : str
+            The symbol axis to reconcile.
+        fill_values : Optional[Mapping[str, object]]
+            Per-variable fill for non-floating variables, passed
+            to both widens and used to reindex ``data``.
+        **kwargs
+            Passed through to ``append``.
 
-        Example:
-            A window carrying a symbol and a variable the store has not seen:
+        Examples
+        --------
+        A window carrying a symbol and a variable the store has not seen:
 
-            >>> XrBackend().to_internal(window).widen_and_append(
-            ...     "prices.zarr", fill_values={"flag": False}
-            ... )
-            XrBackend()
-            >>> stored = xr.open_zarr("prices.zarr")
-            >>> stored["symbol"].values.tolist(), sorted(stored.data_vars)
-            (['AAA', 'BBB', 'CCC', 'DDD'], ['amount', 'close', 'flag', 'volume'])
+        >>> XrBackend().to_internal(window).widen_and_append(
+        ...     "prices.zarr", fill_values={"flag": False}
+        ... )
+        XrBackend()
+        >>> stored = xr.open_zarr("prices.zarr")
+        >>> stored["symbol"].values.tolist(), sorted(stored.data_vars)
+        (['AAA', 'BBB', 'CCC', 'DDD'], ['amount', 'close', 'flag', 'volume'])
         """
         # Read with `get`, never `pop`: every `append(...)` exit below
         # forwards `**kwargs` verbatim, and consuming the key here would
@@ -893,20 +950,26 @@ class XrBackend(DataBackend):
         write in this class routes through here so the chunk rule has one
         source.
 
-        Args:
-            append_dim: The store's append dimension.
-            data: The panel whose shape to encode; defaults to ``data``.
-                The widen paths pass the widened panel so non-append
-                dimensions are pinned at their widened length.
-            append_dim_size: A lower bound on the store's total extent along
-                ``append_dim``. The effective extent is
-                ``max(panel length, append_dim_size)``, so a caller holding
-                only a window of a larger store can raise the grid to what a
-                whole-range write would have chosen, while a stated value
-                narrower than the panel cannot shrink it. ``None`` uses the
-                panel's own length.
+        Parameters
+        ----------
+        append_dim : str
+            The store's append dimension.
+        data : Optional[xr.Dataset]
+            The panel whose shape to encode; defaults to ``data``.
+            The widen paths pass the widened panel so non-append
+            dimensions are pinned at their widened length.
+        append_dim_size : Optional[int]
+            A lower bound on the store's total extent along
+            ``append_dim``. The effective extent is
+            ``max(panel length, append_dim_size)``, so a caller holding
+            only a window of a larger store can raise the grid to what a
+            whole-range write would have chosen, while a stated value
+            narrower than the panel cannot shrink it. ``None`` uses the
+            panel's own length.
 
-        Returns:
+        Returns
+        -------
+        dict
             A dict mapping variable names to ``{"chunks": (...)}`` entries.
         """
         panel = self.data if data is None else data
@@ -952,8 +1015,10 @@ class XrBackend(DataBackend):
         reported before the added one because it has no remedy short of
         recomputing.
 
-        Raises:
-            ValueError: On the first check that fails.
+        Raises
+        ------
+        ValueError
+            On the first check that fails.
         """
         existing = xr.open_zarr(path)
         try:
@@ -1066,10 +1131,11 @@ class XrBackend(DataBackend):
     def to_internal(self, data: xr.Dataset) -> Self:
         """Adopt an in-memory ``xarray.Dataset`` as ``data``.
 
-        Example:
-            >>> backend = XrBackend().to_internal(panel)
-            >>> backend.data is panel
-            True
+        Examples
+        --------
+        >>> backend = XrBackend().to_internal(panel)
+        >>> backend.data is panel
+        True
         """
         self.data = data
         return self
@@ -1077,11 +1143,12 @@ class XrBackend(DataBackend):
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
         """Narrow ``data`` in place to the label slice ``start_date..end_date``.
 
-        Example:
-            >>> backend.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
-            XrBackend()
-            >>> backend.data["timestamp"].values.astype("datetime64[D]")
-            array(['2024-01-02', '2024-01-03'], dtype='datetime64[D]')
+        Examples
+        --------
+        >>> backend.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
+        XrBackend()
+        >>> backend.data["timestamp"].values.astype("datetime64[D]")
+        array(['2024-01-02', '2024-01-03'], dtype='datetime64[D]')
         """
         self.data = self.data.sel({col: slice(start_date, end_date)})
         return self
@@ -1089,11 +1156,12 @@ class XrBackend(DataBackend):
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
         """Narrow ``data`` in place to the given labels on ``col``.
 
-        Example:
-            >>> backend.filter_by_symbol("symbol", ("BBB",))
-            XrBackend()
-            >>> backend.data["symbol"].values.tolist()
-            ['BBB']
+        Examples
+        --------
+        >>> backend.filter_by_symbol("symbol", ("BBB",))
+        XrBackend()
+        >>> backend.data["symbol"].values.tolist()
+        ['BBB']
         """
         self.data = self.data.sel({col: list(symbols)})
         return self
@@ -1112,21 +1180,26 @@ class XrBackend(DataBackend):
         object the backend holds. ``data`` is never modified here; the
         ``filter_by_*`` methods are the in-place ones.
 
-        Args:
-            indexes: The dimensions to index by, or ``None`` for no shape
-                request.
+        Parameters
+        ----------
+        indexes : Optional[list[str]]
+            The dimensions to index by, or ``None`` for no shape
+            request.
 
-        Raises:
-            ValueError: If a requested name is not a dimension of ``data``.
+        Raises
+        ------
+        ValueError
+            If a requested name is not a dimension of ``data``.
 
-        Example:
-            >>> ds = backend.get_xarray_dataset(["timestamp", "symbol"])
-            >>> tuple(ds.dims)
-            ('timestamp', 'symbol')
-            >>> backend.get_xarray_dataset(["symbol", "timestamp"])["close"].dims
-            ('symbol', 'timestamp')
-            >>> backend.get_xarray_dataset() is backend.data
-            True
+        Examples
+        --------
+        >>> ds = backend.get_xarray_dataset(["timestamp", "symbol"])
+        >>> tuple(ds.dims)
+        ('timestamp', 'symbol')
+        >>> backend.get_xarray_dataset(["symbol", "timestamp"])["close"].dims
+        ('symbol', 'timestamp')
+        >>> backend.get_xarray_dataset() is backend.data
+        True
         """
         if indexes is None:
             return self.data
@@ -1156,9 +1229,10 @@ class XrBackend(DataBackend):
     def get_lazyframe(self) -> pl.LazyFrame:
         """Return ``data`` as a long-format ``polars.LazyFrame``.
 
-        Example:
-            >>> backend.get_lazyframe().collect().columns
-            ['timestamp', 'symbol', 'close']
+        Examples
+        --------
+        >>> backend.get_lazyframe().collect().columns
+        ['timestamp', 'symbol', 'close']
         """
         data = self.data.to_dataframe().reset_index()
         return pl.from_pandas(data).lazy()
@@ -1172,12 +1246,15 @@ class XrBackend(DataBackend):
         a probe must not observe or inherit the in-place narrowing that
         ``filter_by_date`` leaves behind.
 
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If ``path`` does not exist.
 
-        Example:
-            >>> XrBackend().head("prices.zarr", 2).collect().shape
-            (2, 3)
+        Examples
+        --------
+        >>> XrBackend().head("prices.zarr", 2).collect().shape
+        (2, 3)
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1199,22 +1276,26 @@ class PlBackend(DataBackend):
     them. Used for reference tables that are tabular rather than panel
     shaped.
 
-    Example:
-        >>> table = PlBackend().read("universe.parquet")
-        >>> frame = table.filter_by_symbol("symbol", ("AAPL",)).get_lazyframe()
-        >>> frame.collect()
+    Examples
+    --------
+    >>> table = PlBackend().read("universe.parquet")
+    >>> frame = table.filter_by_symbol("symbol", ("AAPL",)).get_lazyframe()
+    >>> frame.collect()
     """
 
     def read(self, path: str, **kwargs) -> Self:
         """Lazily scan the Parquet file at ``path`` into ``data``.
 
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If ``path`` does not exist.
 
-        Example:
-            >>> table = PlBackend().read("universe.parquet")
-            >>> type(table.data).__name__
-            'LazyFrame'
+        Examples
+        --------
+        >>> table = PlBackend().read("universe.parquet")
+        >>> type(table.data).__name__
+        LazyFrame
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1224,9 +1305,10 @@ class PlBackend(DataBackend):
     def write(self, path: str, **kwargs) -> Self:
         """Collect ``data`` and write it to ``path`` as Parquet.
 
-        Example:
-            >>> PlBackend().to_internal(frame.lazy()).write("universe.parquet")
-            PlBackend()
+        Examples
+        --------
+        >>> PlBackend().to_internal(frame.lazy()).write("universe.parquet")
+        PlBackend()
         """
         self.data.collect().write_parquet(path, **kwargs)
         return self
@@ -1234,9 +1316,10 @@ class PlBackend(DataBackend):
     def to_internal(self, data: pl.LazyFrame) -> Self:
         """Adopt an in-memory ``polars.LazyFrame`` as ``data``.
 
-        Example:
-            >>> PlBackend().to_internal(frame.lazy())
-            PlBackend()
+        Examples
+        --------
+        >>> PlBackend().to_internal(frame.lazy())
+        PlBackend()
         """
         self.data = data
         return self
@@ -1244,11 +1327,12 @@ class PlBackend(DataBackend):
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
         """Narrow ``data`` in place to rows whose ``col`` lies in the range.
 
-        Example:
-            >>> table.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
-            PlBackend()
-            >>> table.get_lazyframe().collect().height  # two days of two symbols
-            4
+        Examples
+        --------
+        >>> table.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
+        PlBackend()
+        >>> table.get_lazyframe().collect().height  # two days of two symbols
+        4
         """
         self.data = self.data.filter(
             pl.col(col).is_between(
@@ -1261,12 +1345,13 @@ class PlBackend(DataBackend):
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
         """Narrow ``data`` in place to rows whose ``col`` is in ``symbols``.
 
-        Example:
-            >>> table = PlBackend().read("universe.parquet")
-            >>> table.filter_by_symbol("symbol", ("BBB",))
-            PlBackend()
-            >>> table.get_lazyframe().collect()["symbol"].unique().to_list()
-            ['BBB']
+        Examples
+        --------
+        >>> table = PlBackend().read("universe.parquet")
+        >>> table.filter_by_symbol("symbol", ("BBB",))
+        PlBackend()
+        >>> table.get_lazyframe().collect()["symbol"].unique().to_list()
+        ['BBB']
         """
         self.data = self.data.filter(pl.col(col).is_in(symbols))
         return self
@@ -1274,9 +1359,10 @@ class PlBackend(DataBackend):
     def get_lazyframe(self) -> pl.LazyFrame:
         """Return the held lazy frame.
 
-        Example:
-            >>> table.get_lazyframe().collect().shape
-            (8, 3)
+        Examples
+        --------
+        >>> table.get_lazyframe().collect().shape
+        (8, 3)
         """
         return self.data
 
@@ -1288,12 +1374,15 @@ class PlBackend(DataBackend):
         here because ``scan_parquet`` on a missing file only fails at
         collect time.
 
-        Raises:
-            FileNotFoundError: If ``path`` does not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If ``path`` does not exist.
 
-        Example:
-            >>> PlBackend().head("universe.parquet", 3).collect().shape
-            (3, 3)
+        Examples
+        --------
+        >>> PlBackend().head("universe.parquet", 3).collect().shape
+        (3, 3)
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
@@ -1307,17 +1396,22 @@ class PlBackend(DataBackend):
         The named columns become the dataset's dimensions and every other
         column becomes a data variable.
 
-        Args:
-            indexes: The columns to index by. Required: a lazy frame has no
-                dimensions to fall back on.
+        Parameters
+        ----------
+        indexes : Optional[list[str]]
+            The columns to index by. Required: a lazy frame has no
+            dimensions to fall back on.
 
-        Raises:
-            ValueError: If ``indexes`` is ``None``.
+        Raises
+        ------
+        ValueError
+            If ``indexes`` is ``None``.
 
-        Example:
-            >>> ds = table.get_xarray_dataset(["timestamp", "symbol"])
-            >>> tuple(ds.dims), list(ds.data_vars)
-            (('timestamp', 'symbol'), ['close'])
+        Examples
+        --------
+        >>> ds = table.get_xarray_dataset(["timestamp", "symbol"])
+        >>> tuple(ds.dims), list(ds.data_vars)
+        (('timestamp', 'symbol'), ['close'])
         """
         if indexes is None:
             raise ValueError(

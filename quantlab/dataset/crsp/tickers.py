@@ -61,14 +61,15 @@ class CrspTickerLookup:
     path and nothing else, and a constructor that hit the disk would make
     "build a lookup just in case" cost an I/O per call site.
 
-    Example:
-        >>> from datetime import date
-        >>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
-        >>> lookup = CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
-        >>> lookup.as_of(13407, date(2022, 6, 8)), lookup.as_of(13407, date(2022, 6, 9))
-        ('FB', 'META')
-        >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
-        ['FB', 'AAPL', '99999']
+    Examples
+    --------
+    >>> from datetime import date
+    >>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
+    >>> lookup = CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
+    >>> lookup.as_of(13407, date(2022, 6, 8)), lookup.as_of(13407, date(2022, 6, 9))
+    ('FB', 'META')
+    >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
+    ['FB', 'AAPL', '99999']
     """
 
     def __init__(self, sidecar_path: str | Path) -> None:
@@ -99,9 +100,10 @@ class CrspTickerLookup:
         package, which is safe only because it runs at call time, when the
         parent is fully initialised.
 
-        Example:
-            >>> CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
-            CrspTickerLookup('data/data/us_equity/1d/crsp.zarr.crsp_tickers.json')
+        Examples
+        --------
+        >>> CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
+        CrspTickerLookup('data/data/us_equity/1d/crsp.zarr.crsp_tickers.json')
         """
         from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 
@@ -113,18 +115,22 @@ class CrspTickerLookup:
     def payload(self) -> dict:
         """Return the sidecar as parsed JSON, read at most once per instance.
 
-        Raises:
-            FileNotFoundError: If the sidecar is absent. The message names
-                the class, the path and the remedy (a rebuild), because the
-                file is written by a conversion and cannot be created by hand.
-            ValueError: If the bytes cannot be read or parsed. This includes
-                ``RecursionError`` from JSON nested deeper than the parser's
-                stack, which is a ``RuntimeError`` and would otherwise escape
-                both entry points unshaped.
+        Raises
+        ------
+        FileNotFoundError
+            If the sidecar is absent. The message names
+            the class, the path and the remedy (a rebuild), because the
+            file is written by a conversion and cannot be created by hand.
+        ValueError
+            If the bytes cannot be read or parsed. This includes
+            ``RecursionError`` from JSON nested deeper than the parser's
+            stack, which is a ``RuntimeError`` and would otherwise escape
+            both entry points unshaped.
 
-        Example:
-            >>> sorted(lookup.payload)
-            ['generated_from', 'intervals', 'vintage_product_end']
+        Examples
+        --------
+        >>> sorted(lookup.payload)
+        ['generated_from', 'intervals', 'vintage_product_end']
         """
         if self._payload is None:
             if not self.sidecar_path.exists():
@@ -235,14 +241,18 @@ class CrspTickerLookup:
         object is refused, with the same shaped error ``as_of`` gives; a
         broken interval table does not affect this property.
 
-        Raises:
-            FileNotFoundError: If the sidecar is absent.
-            ValueError: If it cannot be parsed or its top level is not an
-                object.
+        Raises
+        ------
+        FileNotFoundError
+            If the sidecar is absent.
+        ValueError
+            If it cannot be parsed or its top level is not an
+            object.
 
-        Example:
-            >>> lookup.product_end
-            datetime.date(2025, 12, 31)
+        Examples
+        --------
+        >>> lookup.product_end
+        datetime.date(2025, 12, 31)
         """
         recorded = self._object_payload().get("vintage_product_end")
         if not recorded:
@@ -263,22 +273,29 @@ class CrspTickerLookup:
         The spans are scanned linearly: a security's whole naming history is
         a handful of intervals, and an index would cost more than it saves.
 
-        Args:
-            permno: The PERMNO, as an int or anything ``int()`` accepts.
-            day: The date to look up; anything whose ``str()`` starts with
-                an ISO date works.
+        Parameters
+        ----------
+        permno : int
+            The PERMNO, as an int or anything ``int()`` accepts.
+        day : date
+            The date to look up; anything whose ``str()`` starts with
+            an ISO date works.
 
-        Raises:
-            FileNotFoundError: If the sidecar is absent.
-            ValueError: If it cannot be parsed or is not shaped like a
-                sidecar (top level, ``intervals``, or a span lacking
-                ``start``, ``end`` or ``ticker``).
+        Raises
+        ------
+        FileNotFoundError
+            If the sidecar is absent.
+        ValueError
+            If it cannot be parsed or is not shaped like a
+            sidecar (top level, ``intervals``, or a span lacking
+            ``start``, ``end`` or ``ticker``).
 
-        Example:
-            >>> lookup.as_of(13407, date(2022, 6, 8))
-            'FB'
-            >>> lookup.as_of(13407, date(2000, 1, 1)) is None
-            True
+        Examples
+        --------
+        >>> lookup.as_of(13407, date(2022, 6, 8))
+        FB
+        >>> lookup.as_of(13407, date(2000, 1, 1)) is None
+        True
         """
         spans = self._intervals().get(str(int(permno)))
         if not spans:
@@ -330,18 +347,24 @@ class CrspTickerLookup:
         module still reaches the caller instead of being printed as digits
         that look like a legitimate "no name on that day" answer.
 
-        Args:
-            permnos: PERMNOs as ints, digit strings, or plain symbols.
-            day: The date to spell them as of.
+        Parameters
+        ----------
+        permnos : Sequence
+            PERMNOs as ints, digit strings, or plain symbols.
+        day : date
+            The date to spell them as of.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             One label per input, in the input's order.
 
-        Example:
-            >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
-            ['FB', 'AAPL', '99999']
-            >>> lookup.label(["AAPL", "MSFT"], date(2020, 1, 1))
-            ['AAPL', 'MSFT']
+        Examples
+        --------
+        >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
+        ['FB', 'AAPL', '99999']
+        >>> lookup.label(["AAPL", "MSFT"], date(2020, 1, 1))
+        ['AAPL', 'MSFT']
         """
         try:
             intervals = self._intervals()

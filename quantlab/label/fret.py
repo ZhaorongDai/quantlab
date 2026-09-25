@@ -34,13 +34,14 @@ class Return(FactorKunQuant):
     ``config.kwargs["n_forward_periods"]``. Set ``data_columns`` to
     ``["adjOpen"]``.
 
-    Example:
-        >>> label = Return(FactorConfig(
-        ...     window=5, dataset=dataset, mode="batch",
-        ...     data_columns=["adjOpen"], kwargs={"n_forward_periods": 5},
-        ...     file_path="ret.zarr",
-        ... ))
-        >>> label.cal().get_labels()   # forward 5-bar return at each t
+    Examples
+    --------
+    >>> label = Return(FactorConfig(
+    ...     window=5, dataset=dataset, mode="batch",
+    ...     data_columns=["adjOpen"], kwargs={"n_forward_periods": 5},
+    ...     file_path="ret.zarr",
+    ... ))
+    >>> label.cal().get_labels()   # forward 5-bar return at each t
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -97,16 +98,17 @@ class BinaryReturn(FactorKunQuant):
     ``config.kwargs["n_forward_periods"]``. Set ``data_columns`` to
     ``["adjOpen"]``.
 
-    Example:
-        >>> label = BinaryReturn(FactorConfig(
-        ...     window=5,
-        ...     dataset=dataset,
-        ...     mode="batch",
-        ...     data_columns=["adjOpen"],
-        ...     kwargs={"n_forward_periods": 5},
-        ...     file_path="ret_binary_open.zarr",
-        ... ))
-        >>> labels = label.cal().get_labels() # 1.0 when the next-open-to-open five-bar return is positive
+    Examples
+    --------
+    >>> label = BinaryReturn(FactorConfig(
+    ...     window=5,
+    ...     dataset=dataset,
+    ...     mode="batch",
+    ...     data_columns=["adjOpen"],
+    ...     kwargs={"n_forward_periods": 5},
+    ...     file_path="ret_binary_open.zarr",
+    ... ))
+    >>> labels = label.cal().get_labels() # 1.0 when the next-open-to-open five-bar return is positive
     """
 
     def __init__(self, factor_config: FactorConfig):

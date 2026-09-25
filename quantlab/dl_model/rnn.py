@@ -28,28 +28,38 @@ from quantlab.base.model import DLModel
 class ModelRBaseCrypto(nn.Module):
     """Stack of GRU or LSTM layers followed by a linear head with one output.
 
-    Args:
-        input_size: Number of input features per sequence element.
-        hidden_sizes: Hidden width of each recurrent layer, in order.
-        dropout_rates: Dropout applied after each recurrent layer; same
-            length as ``hidden_sizes``.
-        hidden_sizes_linear: Widths of the hidden linear layers after the
-            recurrent stack. May be empty.
-        dropout_rates_linear: Dropout after each hidden linear layer; same
-            length as ``hidden_sizes_linear``.
-        model_type: ``"gru"`` or ``"lstm"``.
+    Parameters
+    ----------
+    input_size : int
+        Number of input features per sequence element.
+    hidden_sizes : list[int]
+        Hidden width of each recurrent layer, in order.
+    dropout_rates : list[float]
+        Dropout applied after each recurrent layer; same
+        length as ``hidden_sizes``.
+    hidden_sizes_linear : list[int]
+        Widths of the hidden linear layers after the
+        recurrent stack. May be empty.
+    dropout_rates_linear : list[float]
+        Dropout after each hidden linear layer; same
+        length as ``hidden_sizes_linear``.
+    model_type : str
+        ``"gru"`` or ``"lstm"``.
 
-    Raises:
-        ValueError: If ``model_type`` is neither ``"gru"`` nor ``"lstm"``.
+    Raises
+    ------
+    ValueError
+        If ``model_type`` is neither ``"gru"`` nor ``"lstm"``.
 
-    Example:
-        >>> block = ModelRBaseCrypto(
-        ...     input_size=3, hidden_sizes=[8, 8], dropout_rates=[0.0, 0.0],
-        ...     hidden_sizes_linear=[8], dropout_rates_linear=[0.0],
-        ...     model_type="gru",
-        ... )
-        >>> block(torch.zeros(4, 2, 3)).shape
-        torch.Size([4, 2, 1])
+    Examples
+    --------
+    >>> block = ModelRBaseCrypto(
+    ...     input_size=3, hidden_sizes=[8, 8], dropout_rates=[0.0, 0.0],
+    ...     hidden_sizes_linear=[8], dropout_rates_linear=[0.0],
+    ...     model_type="gru",
+    ... )
+    >>> block(torch.zeros(4, 2, 3)).shape
+    torch.Size([4, 2, 1])
     """
 
     def __init__(
@@ -112,10 +122,11 @@ class ModelRBaseCrypto(nn.Module):
         The linear head is applied to every sequence element, so the output
         keeps the batch and sequence axes of the input.
 
-        Example:
-            >>> block = ModelRBaseCrypto(3, [8], [0.0], [], [], "lstm")
-            >>> block.forward(torch.zeros(4, 2, 3)).shape
-            torch.Size([4, 2, 1])
+        Examples
+        --------
+        >>> block = ModelRBaseCrypto(3, [8], [0.0], [], [], "lstm")
+        >>> block.forward(torch.zeros(4, 2, 3)).shape
+        torch.Size([4, 2, 1])
         """
         D, T, _ = x.shape
         recurrent_output = x
@@ -137,27 +148,38 @@ class ModelRCrypto(nn.Module):
     labels are also fed through one linear layer to produce a second,
     combined estimate of the primary target.
 
-    Args:
-        input_size: Number of input features per sequence element.
-        num_labels: Total number of labels; must be at least 2.
-        hidden_sizes: Hidden width of each recurrent layer in every tower.
-        dropout_rates: Dropout after each recurrent layer.
-        hidden_sizes_linear: Widths of the hidden linear layers in every tower.
-        dropout_rates_linear: Dropout after each hidden linear layer.
-        model_type: ``"gru"`` or ``"lstm"``.
+    Parameters
+    ----------
+    input_size : int
+        Number of input features per sequence element.
+    num_labels : int
+        Total number of labels; must be at least 2.
+    hidden_sizes : list[int]
+        Hidden width of each recurrent layer in every tower.
+    dropout_rates : list[float]
+        Dropout after each recurrent layer.
+    hidden_sizes_linear : list[int]
+        Widths of the hidden linear layers in every tower.
+    dropout_rates_linear : list[float]
+        Dropout after each hidden linear layer.
+    model_type : str
+        ``"gru"`` or ``"lstm"``.
 
-    Raises:
-        ValueError: If ``num_labels`` is less than 2.
+    Raises
+    ------
+    ValueError
+        If ``num_labels`` is less than 2.
 
-    Example:
-        >>> net = ModelRCrypto(
-        ...     input_size=3, num_labels=2, hidden_sizes=[8, 8],
-        ...     dropout_rates=[0.0, 0.0], hidden_sizes_linear=[8],
-        ...     dropout_rates_linear=[0.0], model_type="gru",
-        ... )
-        >>> combined, direct = net(torch.zeros(4, 2, 3))
-        >>> combined.shape, direct.shape
-        (torch.Size([4, 2, 1]), torch.Size([4, 2, 2]))
+    Examples
+    --------
+    >>> net = ModelRCrypto(
+    ...     input_size=3, num_labels=2, hidden_sizes=[8, 8],
+    ...     dropout_rates=[0.0, 0.0], hidden_sizes_linear=[8],
+    ...     dropout_rates_linear=[0.0], model_type="gru",
+    ... )
+    >>> combined, direct = net(torch.zeros(4, 2, 3))
+    >>> combined.shape, direct.shape
+    (torch.Size([4, 2, 1]), torch.Size([4, 2, 2]))
     """
 
     def __init__(
@@ -201,17 +223,20 @@ class ModelRCrypto(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(combined_primary, all_direct)`` for a ``[D, T, F]`` input.
 
-        Returns:
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
             A pair. ``combined_primary`` has shape ``[D, T, 1]`` and is the
             primary target estimated from the auxiliary predictions.
             ``all_direct`` has shape ``[D, T, num_labels]`` with channel
             ``i`` the direct prediction of label ``i`` by its own tower.
 
-        Example:
-            >>> net = ModelRCrypto(3, 2, [8], [0.0], [], [], "gru")
-            >>> combined, direct = net.forward(torch.zeros(4, 2, 3))
-            >>> direct.shape
-            torch.Size([4, 2, 2])
+        Examples
+        --------
+        >>> net = ModelRCrypto(3, 2, [8], [0.0], [], [], "gru")
+        >>> combined, direct = net.forward(torch.zeros(4, 2, 3))
+        >>> direct.shape
+        torch.Size([4, 2, 2])
         """
         D, T, _ = x.shape
 
@@ -251,28 +276,29 @@ class RNNRegressor(DLModel):
     module; ``predict_panel`` exposes one variable per label taken from the
     direct channels.
 
-    Example:
-        >>> config = DLConfig(
-        ...     factors=[alpha],            # factor objects
-        ...     labels=[ret_30, ret_60],    # label objects, primary first
-        ...     model_save_dir="checkpoints",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2024-01-01", train_end="2024-02-09",
-        ...     test_start="2024-02-10", test_end="2024-02-29",
-        ...     epochs=2, batch_size=8, num_workers=0,
-        ...     hyperparameters={
-        ...         "hidden_sizes": [8, 8], "dropout_rates": [0.0, 0.0],
-        ...         "hidden_sizes_linear": [8], "dropout_rates_linear": [0.0],
-        ...         "model_type": "gru",
-        ...     },
-        ... )
-        >>> model = RNNRegressor(config)
-        >>> model.collect().train().name
-        'RNNRegressor_total.pth'
-        >>> combined, direct = model.predict(torch.zeros(5, 2, 3))
-        >>> combined.shape, direct.shape
-        (torch.Size([5, 2, 1]), torch.Size([5, 2, 2]))
+    Examples
+    --------
+    >>> config = DLConfig(
+    ...     factors=[alpha],            # factor objects
+    ...     labels=[ret_30, ret_60],    # label objects, primary first
+    ...     model_save_dir="checkpoints",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2024-01-01", train_end="2024-02-09",
+    ...     test_start="2024-02-10", test_end="2024-02-29",
+    ...     epochs=2, batch_size=8, num_workers=0,
+    ...     hyperparameters={
+    ...         "hidden_sizes": [8, 8], "dropout_rates": [0.0, 0.0],
+    ...         "hidden_sizes_linear": [8], "dropout_rates_linear": [0.0],
+    ...         "model_type": "gru",
+    ...     },
+    ... )
+    >>> model = RNNRegressor(config)
+    >>> model.collect().train().name
+    RNNRegressor_total.pth
+    >>> combined, direct = model.predict(torch.zeros(5, 2, 3))
+    >>> combined.shape, direct.shape
+    (torch.Size([5, 2, 1]), torch.Size([5, 2, 2]))
     """
 
     def __init__(self, config: DLConfig):
@@ -465,16 +491,22 @@ class RNNRegressor(DLModel):
         ``config.lr_refit`` is ``0.0`` (the default), which disables online
         updating.
 
-        Args:
-            x: Features of shape ``[batch, num_symbols, num_features]``.
-            y: Labels of shape ``[batch, num_symbols, num_labels]``.
+        Parameters
+        ----------
+        x : torch.Tensor
+            Features of shape ``[batch, num_symbols, num_features]``.
+        y : torch.Tensor
+            Labels of shape ``[batch, num_symbols, num_labels]``.
 
-        Raises:
-            RuntimeError: If no model has been trained or loaded yet.
+        Raises
+        ------
+        RuntimeError
+            If no model has been trained or loaded yet.
 
-        Example:
-            >>> model.config.lr_refit = 1e-4
-            >>> model.update(torch.randn(4, 2, 3), torch.randn(4, 2, 2))
+        Examples
+        --------
+        >>> model.config.lr_refit = 1e-4
+        >>> model.update(torch.randn(4, 2, 3), torch.randn(4, 2, 2))
         """
         if self.config.lr_refit <= 0.0:
             return

@@ -53,26 +53,27 @@ CRSP_SIDECAR_SUFFIXES: tuple[str, ...] = (
 class CrspStoreRebuilder(BaseStoreRebuilder):
     """Re-convert one CRSP store from the raw tier and measure the result.
 
-    Example:
-        >>> from quantlab.base.config import CrspDatasetConfig
-        >>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
-        >>> config = CrspDatasetConfig(
-        ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",
-        ...     raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
-        ...     catalog_path="data/data/catalog",
-        ...     reference_dir="data/downloads/us_equity/1d/wrds_crsp/_reference",
-        ...     start_date="2024-01-01",
-        ...     end_date="2024-12-31",
-        ...     security_filter="equity_common",
-        ...     roster_universe="crsp_sp500",
-        ... )
-        >>> rebuilder = CrspStoreRebuilder(config, data_root="/path/to/repo")
-        >>> [p.name for p in rebuilder.sidecar_paths()][:2]
-        ['crsp.zarr.chunks.json', 'crsp.zarr.crsp_adjustment.json']
-        >>> measurement = rebuilder.rebuild(backup_dir=Path("/path/to/backup"))
+    Examples
+    --------
+    >>> from quantlab.base.config import CrspDatasetConfig
+    >>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
+    >>> config = CrspDatasetConfig(
+    ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",
+    ...     raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
+    ...     catalog_path="data/data/catalog",
+    ...     reference_dir="data/downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2024-01-01",
+    ...     end_date="2024-12-31",
+    ...     security_filter="equity_common",
+    ...     roster_universe="crsp_sp500",
+    ... )
+    >>> rebuilder = CrspStoreRebuilder(config, data_root="/path/to/repo")
+    >>> [p.name for p in rebuilder.sidecar_paths()][:2]
+    ['crsp.zarr.chunks.json', 'crsp.zarr.crsp_adjustment.json']
+    >>> measurement = rebuilder.rebuild(backup_dir=Path("/path/to/backup"))
 
-        The last line needs a real raw and reference tier under ``data_root``;
-        without them ``rebuild()`` refuses before deleting anything.
+    The last line needs a real raw and reference tier under ``data_root``;
+    without them ``rebuild()`` refuses before deleting anything.
     """
 
     SIDECAR_SUFFIXES = CRSP_SIDECAR_SUFFIXES

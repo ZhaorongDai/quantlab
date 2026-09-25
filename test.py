@@ -39,10 +39,11 @@ def us_equity() -> StockDataset:
     Each consumer gets its own instance so that none of them rewrites another
     one's date window.
 
-    Example:
-        >>> ds = us_equity()
-        >>> ds.config.market
-        'us_equity'
+    Examples
+    --------
+    >>> ds = us_equity()
+    >>> ds.config.market
+    us_equity
     """
     return StockDataset(
         DatasetConfig(
@@ -59,14 +60,17 @@ def us_equity() -> StockDataset:
 def alpha101(**kwargs) -> Alpha101Stock:
     """Return an ``Alpha101Stock`` factor over a fresh dataset.
 
-    Args:
-        **kwargs: Extra ``FactorConfig`` fields, typically ``start_date`` and
-            ``end_date``.
+    Parameters
+    ----------
+    **kwargs
+        Extra ``FactorConfig`` fields, typically ``start_date`` and
+        ``end_date``.
 
-    Example:
-        >>> factor = alpha101(start_date="2020-01-01", end_date="2026-01-01")
-        >>> factor.config.window
-        252
+    Examples
+    --------
+    >>> factor = alpha101(start_date="2020-01-01", end_date="2026-01-01")
+    >>> factor.config.window
+    252
     """
     return Alpha101Stock(
         FactorConfig(

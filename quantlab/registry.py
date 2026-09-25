@@ -39,13 +39,14 @@ class Capability:
     or the dataset class that converts it, lives here rather than on the
     descriptor. The class is frozen; extend it by adding optional fields.
 
-    Example:
-        >>> from quantlab.registry import Capability
-        >>> cap = Capability(market="us_equity", frequency="1d", data_type="bars")
-        >>> cap.data_type
-        'bars'
-        >>> cap.dataset_cls is None
-        True
+    Examples
+    --------
+    >>> from quantlab.registry import Capability
+    >>> cap = Capability(market="us_equity", frequency="1d", data_type="bars")
+    >>> cap.data_type
+    bars
+    >>> cap.dataset_cls is None
+    True
     """
 
     market: Market
@@ -94,15 +95,16 @@ class SourceDescriptor:
     class so the top of this module imports no vendor module, which is what
     lets each descriptor be defined beside the class it describes.
 
-    Example:
-        >>> from quantlab.registry import DataSourceRegistry
-        >>> source = DataSourceRegistry.get("tiingo")
-        >>> source.display_name
-        'Tiingo EOD'
-        >>> source.required_env
-        ('TIINGO_API_KEY',)
-        >>> [(c.market, c.frequency) for c in source.capabilities]
-        [('us_equity', '1d')]
+    Examples
+    --------
+    >>> from quantlab.registry import DataSourceRegistry
+    >>> source = DataSourceRegistry.get("tiingo")
+    >>> source.display_name
+    Tiingo EOD
+    >>> source.required_env
+    ('TIINGO_API_KEY',)
+    >>> [(c.market, c.frequency) for c in source.capabilities]
+    [('us_equity', '1d')]
     """
 
     vendor: Vendor
@@ -134,14 +136,15 @@ class SourceDescriptor:
         ``data_type=None`` means "any data type". The match rule itself lives
         in ``capabilities_for``; this is its boolean form.
 
-        Example:
-            >>> source = DataSourceRegistry.get("alpaca")
-            >>> source.supports("us_equity", "tick")
-            True
-            >>> source.supports("us_equity", "tick", "quotes")
-            True
-            >>> DataSourceRegistry.get("tiingo").supports("us_equity", "tick")
-            False
+        Examples
+        --------
+        >>> source = DataSourceRegistry.get("alpaca")
+        >>> source.supports("us_equity", "tick")
+        True
+        >>> source.supports("us_equity", "tick", "quotes")
+        True
+        >>> DataSourceRegistry.get("tiingo").supports("us_equity", "tick")
+        False
         """
         return bool(self.capabilities_for(market, frequency, data_type))
 
@@ -158,12 +161,13 @@ class SourceDescriptor:
         relies on seeing all of them so it can refuse an ambiguous request
         instead of picking one. No match returns ``()`` rather than raising.
 
-        Example:
-            >>> source = DataSourceRegistry.get("alpaca")
-            >>> [c.data_type for c in source.capabilities_for("us_equity", "tick")]
-            ['quotes', 'trades']
-            >>> DataSourceRegistry.get("tiingo").capabilities_for("us_equity", "tick")
-            ()
+        Examples
+        --------
+        >>> source = DataSourceRegistry.get("alpaca")
+        >>> [c.data_type for c in source.capabilities_for("us_equity", "tick")]
+        ['quotes', 'trades']
+        >>> DataSourceRegistry.get("tiingo").capabilities_for("us_equity", "tick")
+        ()
         """
         return tuple(
             capability
@@ -225,16 +229,19 @@ class SourceDescriptor:
         The matching capability's ``acquisition_cls`` when it names one, this
         descriptor's default otherwise.
 
-        Raises:
-            ValueError: If two matching capabilities name different classes.
-                Pass ``data_type`` to disambiguate.
+        Raises
+        ------
+        ValueError
+            If two matching capabilities name different classes.
+            Pass ``data_type`` to disambiguate.
 
-        Example:
-            >>> source = DataSourceRegistry.get("wrds")
-            >>> source.acquisition_cls_for("us_equity", "1d").__name__
-            'WrdsCrspDailyAcquisition'
-            >>> source.acquisition_cls_for("us_equity", "tick", "nbbo").__name__
-            'WrdsTaqNbboAcquisition'
+        Examples
+        --------
+        >>> source = DataSourceRegistry.get("wrds")
+        >>> source.acquisition_cls_for("us_equity", "1d").__name__
+        WrdsCrspDailyAcquisition
+        >>> source.acquisition_cls_for("us_equity", "tick", "nbbo").__name__
+        WrdsTaqNbboAcquisition
         """
         return self._resolve_capability_field(  # type: ignore[return-value]
             "acquisition_cls", market, frequency, data_type
@@ -251,10 +258,11 @@ class SourceDescriptor:
         The companion of ``acquisition_cls_for``, resolved by the same rule
         and raising ``ValueError`` on the same ambiguity.
 
-        Example:
-            >>> source = DataSourceRegistry.get("tiingo")
-            >>> source.config_factory_for("us_equity", "1d") is source.config_factory
-            True
+        Examples
+        --------
+        >>> source = DataSourceRegistry.get("tiingo")
+        >>> source.config_factory_for("us_equity", "1d") is source.config_factory
+        True
         """
         return self._resolve_capability_field(  # type: ignore[return-value]
             "config_factory", market, frequency, data_type
@@ -268,12 +276,13 @@ class DataSourceRegistry:
     imported, so defining a source registers it. Read the registry through
     ``all()`` and ``get()``.
 
-    Example:
-        >>> from quantlab.registry import DataSourceRegistry
-        >>> [d.vendor for d in DataSourceRegistry.all()]
-        ['alpaca', 'tiingo', 'wrds']
-        >>> DataSourceRegistry.get("tiingo").display_name
-        'Tiingo EOD'
+    Examples
+    --------
+    >>> from quantlab.registry import DataSourceRegistry
+    >>> [d.vendor for d in DataSourceRegistry.all()]
+    ['alpaca', 'tiingo', 'wrds']
+    >>> DataSourceRegistry.get("tiingo").display_name
+    Tiingo EOD
     """
 
     #: Every registered descriptor, in registration order; ``all()`` sorts.
@@ -291,11 +300,12 @@ class DataSourceRegistry:
         call does not depend on which module the caller imported first. An
         empty registry returns ``()``.
 
-        Example:
-            >>> len(DataSourceRegistry.all())
-            3
-            >>> DataSourceRegistry.all()[0].vendor
-            'alpaca'
+        Examples
+        --------
+        >>> len(DataSourceRegistry.all())
+        3
+        >>> DataSourceRegistry.all()[0].vendor
+        alpaca
         """
         return tuple(sorted(cls.SOURCES, key=lambda d: d.vendor))
 
@@ -303,17 +313,20 @@ class DataSourceRegistry:
     def get(cls, vendor: str) -> SourceDescriptor:
         """Return the descriptor registered for ``vendor``.
 
-        Raises:
-            ValueError: If no descriptor is registered for ``vendor``. The
-                message lists the vendors that are registered.
+        Raises
+        ------
+        ValueError
+            If no descriptor is registered for ``vendor``. The
+            message lists the vendors that are registered.
 
-        Example:
-            >>> DataSourceRegistry.get("tiingo").vendor
-            'tiingo'
-            >>> DataSourceRegistry.get("bloomberg")
-            Traceback (most recent call last):
-            ...
-            ValueError: No data source is registered for vendor 'bloomberg'. ...
+        Examples
+        --------
+        >>> DataSourceRegistry.get("tiingo").vendor
+        tiingo
+        >>> DataSourceRegistry.get("bloomberg")
+        Traceback (most recent call last):
+        ...
+        ValueError: No data source is registered for vendor 'bloomberg'. ...
         """
         for descriptor in cls.SOURCES:
             if descriptor.vendor == vendor:
@@ -334,29 +347,32 @@ def register_source(descriptor: SourceDescriptor) -> SourceDescriptor:
     Meant to wrap a module-level descriptor literal beside the acquisition
     class it describes, so the module-level name is the descriptor itself.
 
-    Raises:
-        ValueError: If a descriptor for the same vendor is already registered
-            (a second market or frequency is another ``Capability`` on the
-            existing descriptor, not a second descriptor), or if
-            ``descriptor.capabilities`` is empty.
+    Raises
+    ------
+    ValueError
+        If a descriptor for the same vendor is already registered
+        (a second market or frequency is another ``Capability`` on the
+        existing descriptor, not a second descriptor), or if
+        ``descriptor.capabilities`` is empty.
 
-    Example:
-        Defined beside the acquisition class it describes::
+    Examples
+    --------
+    Defined beside the acquisition class it describes::
 
-            EXAMPLE_SOURCE = register_source(
-                SourceDescriptor(
-                    vendor="example",
-                    display_name="Example Vendor",
-                    acquisition_cls=ExampleAcquisition,
-                    config_factory=functools.partial(
-                        stock_acquisition_config, vendor="example"
-                    ),
-                    capabilities=(
-                        Capability(market="us_equity", frequency="1d"),
-                    ),
-                    required_env=("EXAMPLE_API_KEY",),
-                )
+        EXAMPLE_SOURCE = register_source(
+            SourceDescriptor(
+                vendor="example",
+                display_name="Example Vendor",
+                acquisition_cls=ExampleAcquisition,
+                config_factory=functools.partial(
+                    stock_acquisition_config, vendor="example"
+                ),
+                capabilities=(
+                    Capability(market="us_equity", frequency="1d"),
+                ),
+                required_env=("EXAMPLE_API_KEY",),
             )
+        )
     """
     if not descriptor.capabilities:
         raise ValueError(
@@ -389,12 +405,13 @@ def is_configured(descriptor: SourceDescriptor) -> bool:
     set to the empty string counts as unset, which is the same predicate the
     vendor clients apply at construction.
 
-    Example:
-        With ``TIINGO_API_KEY`` unset in the environment:
+    Examples
+    --------
+    With ``TIINGO_API_KEY`` unset in the environment:
 
-        >>> from quantlab.registry import DataSourceRegistry, is_configured
-        >>> is_configured(DataSourceRegistry.get("tiingo"))
-        False
+    >>> from quantlab.registry import DataSourceRegistry, is_configured
+    >>> is_configured(DataSourceRegistry.get("tiingo"))
+    False
     """
     return all(os.environ.get(name) for name in descriptor.required_env)
 
@@ -406,12 +423,13 @@ def credential_status(descriptor: SourceDescriptor) -> dict[str, bool]:
     credential value. A descriptor with no ``required_env`` returns ``{}``
     without reading the environment.
 
-    Example:
-        With neither Alpaca variable set in the environment:
+    Examples
+    --------
+    With neither Alpaca variable set in the environment:
 
-        >>> from quantlab.registry import DataSourceRegistry, credential_status
-        >>> credential_status(DataSourceRegistry.get("alpaca"))
-        {'APCA_API_KEY_ID': False, 'APCA_API_SECRET_KEY': False}
+    >>> from quantlab.registry import DataSourceRegistry, credential_status
+    >>> credential_status(DataSourceRegistry.get("alpaca"))
+    {'APCA_API_KEY_ID': False, 'APCA_API_SECRET_KEY': False}
     """
     return {name: bool(os.environ.get(name)) for name in descriptor.required_env}
 
@@ -433,41 +451,50 @@ def run(
     shards and watermark sidecars and stops there; converting them to Zarr is
     the separate ``convert()`` call below.
 
-    Args:
-        descriptor: The source to download from.
-        config: What to download; its ``market``, ``frequency`` and optional
-            ``kwargs["data_type"]`` pick the capability.
-        refresh: Call ``refresh()`` (re-download the covered window) instead
-            of ``download()`` (fill what is missing).
-        reporter: Receives a ``ProgressEvent`` per batch. ``None`` keeps the
-            default stderr progress bar.
-        cancel: A ``CancelToken``; setting it stops the run at the next batch
-            boundary. Completed batches stay on disk and a later call resumes.
+    Parameters
+    ----------
+    descriptor : SourceDescriptor
+        The source to download from.
+    config : AcquisitionConfig
+        What to download; its ``market``, ``frequency`` and optional
+        ``kwargs["data_type"]`` pick the capability.
+    refresh : bool
+        Call ``refresh()`` (re-download the covered window) instead
+        of ``download()`` (fill what is missing).
+    reporter : ProgressReporter | None
+        Receives a ``ProgressEvent`` per batch. ``None`` keeps the
+        default stderr progress bar.
+    cancel : CancelToken | None
+        A ``CancelToken``; setting it stops the run at the next batch
+        boundary. Completed batches stay on disk and a later call resumes.
 
-    Returns:
+    Returns
+    -------
+    AcquisitionResult
         The ``AcquisitionResult`` the run published on ``last_result``. Its
         ``failures`` are the ones this run met; the on-disk failure manifest
         accumulates across runs and may name more symbols (read it through
         ``SourceInspector.failures``).
 
-    Example:
-        Needs the vendor's credential in the environment and network access::
+    Examples
+    --------
+    Needs the vendor's credential in the environment and network access::
 
-            from quantlab.base.config import AcquisitionConfig
-            from quantlab.base.progress import CancelToken
-            from quantlab.registry import DataSourceRegistry, run
+        from quantlab.base.config import AcquisitionConfig
+        from quantlab.base.progress import CancelToken
+        from quantlab.registry import DataSourceRegistry, run
 
-            source = DataSourceRegistry.get("tiingo")
-            config = AcquisitionConfig(
-                market="us_equity", frequency="1d", vendor="tiingo",
-                raw_data_dir_path="data/us_equity/1d/nasdaq_data/tiingo",
-                watermark_path="data/us_equity/1d/nasdaq_data/_watermarks/tiingo",
-                symbols=("AAPL", "MSFT"),
-                start_date="2024-01-01", end_date="2024-05-31",
-            )
-            token = CancelToken()
-            result = run(source, config, cancel=token)
-            result.failures  # {symbol: reason} for this run only
+        source = DataSourceRegistry.get("tiingo")
+        config = AcquisitionConfig(
+            market="us_equity", frequency="1d", vendor="tiingo",
+            raw_data_dir_path="data/us_equity/1d/nasdaq_data/tiingo",
+            watermark_path="data/us_equity/1d/nasdaq_data/_watermarks/tiingo",
+            symbols=("AAPL", "MSFT"),
+            start_date="2024-01-01", end_date="2024-05-31",
+        )
+        token = CancelToken()
+        result = run(source, config, cancel=token)
+        result.failures  # {symbol: reason} for this run only
     """
     acquisition_cls = descriptor.acquisition_cls_for(
         config.market, config.frequency, (config.kwargs or {}).get("data_type")
@@ -505,64 +532,78 @@ def convert(
     ``granularity``) yourself; ``predicted_peak_bytes`` is only echoed into
     the result for reporting.
 
-    Args:
-        descriptor: The source whose raw tier is being converted.
-        dataset_config: Where the raw tier is and where the store goes.
-        data_type: Picks one capability when the vendor serves several at
-            this ``(market, frequency)``.
-        granularity: Window size of the chunked conversion (``"year"``,
-            ``"quarter"``, ...).
-        on_new_listing: How a symbol absent from the pinned axis is handled;
-            forwarded to ``from_raw_data_chunked``.
-        predicted_peak_bytes: A caller's own estimate, copied into the result.
-        reporter: Receives a ``ProgressEvent`` per window.
-        cancel: A ``CancelToken``, observed at window boundaries. Windows
-            already written stay in the store and the chunk ledger, so a later
-            call over the same config resumes at the first unwritten window
-            and reports ``resumed=True``.
+    Parameters
+    ----------
+    descriptor : SourceDescriptor
+        The source whose raw tier is being converted.
+    dataset_config : DatasetConfig
+        Where the raw tier is and where the store goes.
+    data_type : str | None
+        Picks one capability when the vendor serves several at
+        this ``(market, frequency)``.
+    granularity : str
+        Window size of the chunked conversion (``"year"``,
+        ``"quarter"``, ...).
+    on_new_listing : str
+        How a symbol absent from the pinned axis is handled;
+        forwarded to ``from_raw_data_chunked``.
+    predicted_peak_bytes : int | None
+        A caller's own estimate, copied into the result.
+    reporter : ProgressReporter | None
+        Receives a ``ProgressEvent`` per window.
+    cancel : CancelToken | None
+        A ``CancelToken``, observed at window boundaries. Windows
+        already written stay in the store and the chunk ledger, so a later
+        call over the same config resumes at the first unwritten window
+        and reports ``resumed=True``.
 
-    Returns:
+    Returns
+    -------
+    ConversionResult
         The ``ConversionResult`` the dataset published on
         ``last_chunk_result``, with ``predicted_peak_bytes`` filled in.
 
-    Raises:
-        ValueError: In three distinguishable cases: the descriptor serves no
-            such capability (the message lists what it does serve); several
-            capabilities match with different conversion targets (pass
-            ``data_type``); or the matching capability has no ``dataset_cls``
-            because its raw tier is an irregular event stream no panel can
-            express.
+    Raises
+    ------
+    ValueError
+        In three distinguishable cases: the descriptor serves no
+        such capability (the message lists what it does serve); several
+        capabilities match with different conversion targets (pass
+        ``data_type``); or the matching capability has no ``dataset_cls``
+        because its raw tier is an irregular event stream no panel can
+        express.
 
-    Example:
-        Needs a raw tier already downloaded by ``run()``::
+    Examples
+    --------
+    Needs a raw tier already downloaded by ``run()``::
 
-            from quantlab.base.config import DatasetConfig
-            from quantlab.registry import DataSourceRegistry, convert
+        from quantlab.base.config import DatasetConfig
+        from quantlab.registry import DataSourceRegistry, convert
 
-            source = DataSourceRegistry.get("tiingo")
-            dataset_config = DatasetConfig(
-                raw_data_dir_path="data/us_equity/1d/nasdaq_data/tiingo",
-                zarr_file_path="data/us_equity/1d/tiingo_1d.zarr",
-                catalog_path="data/catalog",
-                market="us_equity", frequency="1d", vendor="tiingo",
-                start_date="2024-01-01", end_date="2024-05-31",
-            )
-            result = convert(source, dataset_config, granularity="year")
-            result.windows_written
+        source = DataSourceRegistry.get("tiingo")
+        dataset_config = DatasetConfig(
+            raw_data_dir_path="data/us_equity/1d/nasdaq_data/tiingo",
+            zarr_file_path="data/us_equity/1d/tiingo_1d.zarr",
+            catalog_path="data/catalog",
+            market="us_equity", frequency="1d", vendor="tiingo",
+            start_date="2024-01-01", end_date="2024-05-31",
+        )
+        result = convert(source, dataset_config, granularity="year")
+        result.windows_written
 
-        A capability the vendor serves but no dataset can express is refused
-        without touching disk:
+    A capability the vendor serves but no dataset can express is refused
+    without touching disk:
 
-        >>> tick_config = DatasetConfig(
-        ...     raw_data_dir_path="data/alpaca", zarr_file_path="data/out.zarr",
-        ...     catalog_path="data/catalog", market="us_equity",
-        ...     frequency="tick", vendor="alpaca",
-        ...     start_date="2024-01-01", end_date="2024-01-31",
-        ... )
-        >>> convert(DataSourceRegistry.get("alpaca"), tick_config, data_type="quotes")
-        Traceback (most recent call last):
-        ...
-        ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ...
+    >>> tick_config = DatasetConfig(
+    ...     raw_data_dir_path="data/alpaca", zarr_file_path="data/out.zarr",
+    ...     catalog_path="data/catalog", market="us_equity",
+    ...     frequency="tick", vendor="alpaca",
+    ...     start_date="2024-01-01", end_date="2024-01-31",
+    ... )
+    >>> convert(DataSourceRegistry.get("alpaca"), tick_config, data_type="quotes")
+    Traceback (most recent call last):
+    ...
+    ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ...
     """
     matches = descriptor.capabilities_for(
         dataset_config.market, dataset_config.frequency, data_type

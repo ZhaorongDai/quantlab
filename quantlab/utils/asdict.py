@@ -27,23 +27,29 @@ def asdict_customized(obj, dict_factory=dict):
     Every other value is deep-copied; if the copy raises ``TypeError`` the value
     is replaced by ``None`` rather than aborting the whole conversion.
 
-    Args:
-        obj: The dataclass instance, container or leaf value to convert.
-        dict_factory: Callable that builds the mapping for each dataclass
-            level, as in ``dataclasses.asdict``.
+    Parameters
+    ----------
+    obj
+        The dataclass instance, container or leaf value to convert.
+    dict_factory
+        Callable that builds the mapping for each dataclass
+        level, as in ``dataclasses.asdict``.
 
-    Returns:
+    Returns
+    -------
+    dict
         A plain-data mirror of ``obj``.
 
-    Example:
-        >>> import threading
-        >>> from dataclasses import dataclass, field
-        >>> @dataclass
-        ... class Job:
-        ...     name: str
-        ...     lock: object = field(default_factory=threading.Lock)
-        >>> asdict_customized(Job("nightly"))
-        {'name': 'nightly', 'lock': None}
+    Examples
+    --------
+    >>> import threading
+    >>> from dataclasses import dataclass, field
+    >>> @dataclass
+    ... class Job:
+    ...     name: str
+    ...     lock: object = field(default_factory=threading.Lock)
+    >>> asdict_customized(Job("nightly"))
+    {'name': 'nightly', 'lock': None}
     """
     if _is_dataclass_instance(obj):
         # fast path for the common case

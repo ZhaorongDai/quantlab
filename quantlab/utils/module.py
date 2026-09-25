@@ -8,12 +8,13 @@ any nested objects (a factor's dataset, a model's factors and labels, a
 backtester's price dataset and model) and construct the object with the config
 class the class itself declares through ``config_cls``.
 
-Example:
-    >>> import json
-    >>> from quantlab.utils.module import load_backtester_from_config
-    >>> config = json.load(open("runs/2024-06-01/config.json"))
-    >>> backtester = load_backtester_from_config(config)
-    >>> result = backtester.run()
+Examples
+--------
+>>> import json
+>>> from quantlab.utils.module import load_backtester_from_config
+>>> config = json.load(open("runs/2024-06-01/config.json"))
+>>> backtester = load_backtester_from_config(config)
+>>> result = backtester.run()
 """
 
 import copy
@@ -23,20 +24,28 @@ import importlib
 def get_cls_from_path(path: str):
     """Import ``path`` (``"pkg.module.ClassName"``) and return the class.
 
-    Args:
-        path: A dotted path whose last segment is the attribute to fetch.
+    Parameters
+    ----------
+    path : str
+        A dotted path whose last segment is the attribute to fetch.
 
-    Returns:
+    Returns
+    -------
+    type
         The attribute named by the final segment, normally a class.
 
-    Raises:
-        ModuleNotFoundError: If the module part cannot be imported. Configs
-            written under a previous package layout are not remapped.
-        AttributeError: If the module has no such attribute.
+    Raises
+    ------
+    ModuleNotFoundError
+        If the module part cannot be imported. Configs
+        written under a previous package layout are not remapped.
+    AttributeError
+        If the module has no such attribute.
 
-    Example:
-        >>> get_cls_from_path("quantlab.dataset.stock.StockDataset")
-        <class 'quantlab.dataset.stock.StockDataset'>
+    Examples
+    --------
+    >>> get_cls_from_path("quantlab.dataset.stock.StockDataset")
+    <class 'quantlab.dataset.stock.StockDataset'>
     """
     module_path, class_name = path.rsplit(".", 1)
     module = importlib.import_module(module_path)
@@ -51,9 +60,11 @@ def _config_cls_of(cls) -> type:
     instantiated with a config dict, so a class without ``config_cls`` is
     refused.
 
-    Raises:
-        TypeError: If ``cls`` has no ``config_cls`` attribute, or it is not a
-            type.
+    Raises
+    ------
+    TypeError
+        If ``cls`` has no ``config_cls`` attribute, or it is not a
+        type.
     """
     config_cls = getattr(cls, "config_cls", None)
     if not isinstance(config_cls, type):
@@ -71,18 +82,23 @@ def load_dataset_from_config(config: dict):
     own declared config class. The input dict is deep-copied first and is
     returned to the caller unchanged.
 
-    Args:
-        config: The dict a dataset's ``config.to_dict()`` produced.
+    Parameters
+    ----------
+    config : dict
+        The dict a dataset's ``config.to_dict()`` produced.
 
-    Returns:
+    Returns
+    -------
+    BaseDataset
         A dataset instance.
 
-    Example:
-        With ``dataset`` any dataset built earlier:
+    Examples
+    --------
+    With ``dataset`` any dataset built earlier:
 
-        >>> rebuilt = load_dataset_from_config(dataset.get_config())
-        >>> type(rebuilt) is type(dataset), rebuilt.config == dataset.config
-        (True, True)
+    >>> rebuilt = load_dataset_from_config(dataset.get_config())
+    >>> type(rebuilt) is type(dataset), rebuilt.config == dataset.config
+    (True, True)
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
@@ -100,22 +116,27 @@ def load_factor_from_config(config: dict):
     rebuilt dataset and the factor is constructed with its declared config
     class. The caller's dict is never modified.
 
-    Args:
-        config: The dict a factor's ``config.to_dict()`` produced, including a
-            nested ``dataset`` dict unless the class provides ``from_config``.
+    Parameters
+    ----------
+    config : dict
+        The dict a factor's ``config.to_dict()`` produced, including a
+        nested ``dataset`` dict unless the class provides ``from_config``.
 
-    Returns:
+    Returns
+    -------
+    Factor
         A factor instance.
 
-    Example:
-        With ``factor`` any factor built earlier (``get_config`` nests its
-        dataset's config under ``"dataset"``):
+    Examples
+    --------
+    With ``factor`` any factor built earlier (``get_config`` nests its
+    dataset's config under ``"dataset"``):
 
-        >>> rebuilt = load_factor_from_config(factor.get_config())
-        >>> type(rebuilt) is type(factor)
-        True
-        >>> rebuilt.config.factor_names == factor.config.factor_names
-        True
+    >>> rebuilt = load_factor_from_config(factor.get_config())
+    >>> type(rebuilt) is type(factor)
+    True
+    >>> rebuilt.config.factor_names == factor.config.factor_names
+    True
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
@@ -138,21 +159,26 @@ def load_model_from_config(config: dict):
     before construction; any other unknown key still fails loudly. The caller's
     dict is never modified.
 
-    Args:
-        config: The dict written beside a checkpoint, with ``factors`` and
-            ``labels`` as lists of factor config dicts.
+    Parameters
+    ----------
+    config : dict
+        The dict written beside a checkpoint, with ``factors`` and
+        ``labels`` as lists of factor config dicts.
 
-    Returns:
+    Returns
+    -------
+    BaseModel
         A model instance (untrained; call ``load`` to restore a checkpoint).
 
-    Example:
-        Given the ``config.json`` written beside a checkpoint:
+    Examples
+    --------
+    Given the ``config.json`` written beside a checkpoint:
 
-        >>> import json
-        >>> with open("/data/models/xgb/config.json") as f:
-        ...     config = json.load(f)
-        >>> model = load_model_from_config(config)
-        >>> model = model.load("/data/models/xgb/best.joblib")
+    >>> import json
+    >>> with open("/data/models/xgb/config.json") as f:
+    ...     config = json.load(f)
+    >>> model = load_model_from_config(config)
+    >>> model = model.load("/data/models/xgb/best.joblib")
     """
     config = copy.deepcopy(config)
     # `resolved_hyperparameters` (what the library actually trained with) and
@@ -187,25 +213,33 @@ def load_backtester_from_config(config: dict):
     are not filled from the current dataclass defaults, because a default that
     changed since the run would silently produce a different backtest.
 
-    Args:
-        config: The dict read from a run directory's ``config.json``.
+    Parameters
+    ----------
+    config : dict
+        The dict read from a run directory's ``config.json``.
 
-    Returns:
+    Returns
+    -------
+    BaseBacktester
         A backtester instance ready to run.
 
-    Raises:
-        TypeError: If ``config["name"]`` is not a ``BaseBacktester`` subclass.
-            This is checked before any nested dataset or model is built.
-        ValueError: If any config field other than ``name`` is missing.
+    Raises
+    ------
+    TypeError
+        If ``config["name"]`` is not a ``BaseBacktester`` subclass.
+        This is checked before any nested dataset or model is built.
+    ValueError
+        If any config field other than ``name`` is missing.
 
-    Example:
-        Given the run directory of an earlier backtest:
+    Examples
+    --------
+    Given the run directory of an earlier backtest:
 
-        >>> import json
-        >>> with open("/data/backtests/2024-06-01/config.json") as f:
-        ...     config = json.load(f)
-        >>> backtester = load_backtester_from_config(config)
-        >>> result = backtester.run()
+    >>> import json
+    >>> with open("/data/backtests/2024-06-01/config.json") as f:
+    ...     config = json.load(f)
+    >>> backtester = load_backtester_from_config(config)
+    >>> result = backtester.run()
     """
     # Imported here so this module does not import the backtest layer at
     # import time.

@@ -99,15 +99,16 @@ class CrspMembership:
     call excluded, clipped, tolerated or left unlinked; its keys are reset on
     every call.
 
-    Example:
-        >>> from quantlab.dataset.crsp.membership import CrspMembership
-        >>> from quantlab.dataset.crsp.reference import CrspReference
-        >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
-        >>> membership = CrspMembership(ref)
-        >>> membership.permnos_in_range("comp_nasdaq100", "2010-01-01", "2020-12-31")
-        ['14542', '90319']
-        >>> membership.report["clipped_to_product_end"]
-        2
+    Examples
+    --------
+    >>> from quantlab.dataset.crsp.membership import CrspMembership
+    >>> from quantlab.dataset.crsp.reference import CrspReference
+    >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+    >>> membership = CrspMembership(ref)
+    >>> membership.permnos_in_range("comp_nasdaq100", "2010-01-01", "2020-12-31")
+    ['14542', '90319']
+    >>> membership.report["clipped_to_product_end"]
+    2
     """
 
     #: CRSP's own S&P 500 membership.
@@ -186,27 +187,34 @@ class CrspMembership:
         uncovered days the window could actually lose a member to; it never
         filters the rows returned.
 
-        Args:
-            index: ``"crsp_sp500"`` or ``"comp_nasdaq100"``.
-            allow_unlinked: Record unlinked Nasdaq-100 days instead of raising.
-            window: ``(start, end)`` as dates or ISO strings; scopes the
-                unlinked refusal only.
+        Parameters
+        ----------
+        index : str
+            ``"crsp_sp500"`` or ``"comp_nasdaq100"``.
+        allow_unlinked : bool
+            Record unlinked Nasdaq-100 days instead of raising.
+        window : tuple[date, date] | tuple[str, str] | None
+            ``(start, end)`` as dates or ISO strings; scopes the
+            unlinked refusal only.
 
-        Raises:
-            ValueError: If ``index`` is unknown, if ``window`` is inverted, or
-                if Nasdaq-100 membership days inside the window have no
-                PERMNO and ``allow_unlinked`` is false.
+        Raises
+        ------
+        ValueError
+            If ``index`` is unknown, if ``window`` is inverted, or
+            if Nasdaq-100 membership days inside the window have no
+            PERMNO and ``allow_unlinked`` is false.
 
-        Example:
-            >>> membership.permno_intervals("crsp_sp500")
-            shape: (1, 3)
-            ┌────────┬────────────┬────────────┐
-            │ permno ┆ start_date ┆ end_date   │
-            │ ---    ┆ ---        ┆ ---        │
-            │ i64    ┆ date       ┆ date       │
-            ╞════════╪════════════╪════════════╡
-            │ 14593  ┆ 1982-11-18 ┆ 2025-12-31 │
-            └────────┴────────────┴────────────┘
+        Examples
+        --------
+        >>> membership.permno_intervals("crsp_sp500")
+        shape: (1, 3)
+        ┌────────┬────────────┬────────────┐
+        │ permno ┆ start_date ┆ end_date   │
+        │ ---    ┆ ---        ┆ ---        │
+        │ i64    ┆ date       ┆ date       │
+        ╞════════╪════════════╪════════════╡
+        │ 14593  ┆ 1982-11-18 ┆ 2025-12-31 │
+        └────────┴────────────┴────────────┘
         """
         if index not in self.INDEXES:
             raise ValueError(
@@ -256,24 +264,34 @@ class CrspMembership:
         The window is passed down to ``permno_intervals``, so a Nasdaq-100
         roster is refused only for unlinked days inside this window.
 
-        Args:
-            index: ``"crsp_sp500"`` or ``"comp_nasdaq100"``.
-            start_date: Window start, as a ``date`` or ISO string.
-            end_date: Window end, inclusive.
-            allow_unlinked: Record unlinked Nasdaq-100 days instead of raising.
+        Parameters
+        ----------
+        index : str
+            ``"crsp_sp500"`` or ``"comp_nasdaq100"``.
+        start_date
+            Window start, as a ``date`` or ISO string.
+        end_date
+            Window end, inclusive.
+        allow_unlinked : bool
+            Record unlinked Nasdaq-100 days instead of raising.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             PERMNOs as strings, in numeric order.
 
-        Raises:
-            ValueError: If ``start_date`` is after ``end_date``, or for the
-                reasons ``permno_intervals`` raises.
+        Raises
+        ------
+        ValueError
+            If ``start_date`` is after ``end_date``, or for the
+            reasons ``permno_intervals`` raises.
 
-        Example:
-            >>> membership.permnos_in_range("crsp_sp500", "2020-01-01", "2020-12-31")
-            ['14593']
-            >>> membership.permnos_in_range("crsp_sp500", "1970-01-01", "1980-12-31")
-            []
+        Examples
+        --------
+        >>> membership.permnos_in_range("crsp_sp500", "2020-01-01", "2020-12-31")
+        ['14593']
+        >>> membership.permnos_in_range("crsp_sp500", "1970-01-01", "1980-12-31")
+        []
         """
         start = _as_date(start_date)
         end = _as_date(end_date)

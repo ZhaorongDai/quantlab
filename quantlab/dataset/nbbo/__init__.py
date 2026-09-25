@@ -71,21 +71,22 @@ class NbboPanelDataset(StockDataset):
     over a large universe is millions of rows per session, and one window
     is materialised in memory at a time.
 
-    Example:
-        Needs a raw NBBO tier on disk under the configured vendor root:
+    Examples
+    --------
+    Needs a raw NBBO tier on disk under the configured vendor root:
 
-        >>> config = NbboDatasetConfig(
-        ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
-        ...     catalog_path="data/us_equity/catalog",
-        ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1m.zarr",
-        ...     start_date="2024-01-24",
-        ...     end_date="2024-01-25",
-        ...     bar_interval="1m",
-        ... )
-        >>> NbboPanelDataset(config).from_raw_data_chunked(granularity="day")
-        >>> panel = NbboPanelDataset(config).read().get_xarray_dataset()
-        >>> panel["bid"].dims
-        ('timestamp', 'symbol')
+    >>> config = NbboDatasetConfig(
+    ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
+    ...     catalog_path="data/us_equity/catalog",
+    ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1m.zarr",
+    ...     start_date="2024-01-24",
+    ...     end_date="2024-01-25",
+    ...     bar_interval="1m",
+    ... )
+    >>> NbboPanelDataset(config).from_raw_data_chunked(granularity="day")
+    >>> panel = NbboPanelDataset(config).read().get_xarray_dataset()
+    >>> panel["bid"].dims
+    ('timestamp', 'symbol')
     """
 
     #: The config class a saved ``config.json`` is rebuilt with.
@@ -109,22 +110,26 @@ class NbboPanelDataset(StockDataset):
         here so that a bad window fails at construction rather than on the
         first conversion.
 
-        Raises:
-            TypeError: If ``config`` is not an ``NbboDatasetConfig``.
-            ValueError: If ``frequency`` is not ``"tick"``, ``bar_interval``
-                is unknown, or the session window is malformed or outside
-                04:00 to 20:00 ET.
+        Raises
+        ------
+        TypeError
+            If ``config`` is not an ``NbboDatasetConfig``.
+        ValueError
+            If ``frequency`` is not ``"tick"``, ``bar_interval``
+            is unknown, or the session window is malformed or outside
+            04:00 to 20:00 ET.
 
-        Example:
-            >>> ds.config = NbboDatasetConfig(
-            ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
-            ...     catalog_path="data/us_equity/catalog",
-            ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1h.zarr",
-            ...     bar_interval="1h",
-            ... )
-            Traceback (most recent call last):
-            ...
-            ValueError: NbboPanelDataset: bar_interval '1h' is not one of ...
+        Examples
+        --------
+        >>> ds.config = NbboDatasetConfig(
+        ...     raw_data_dir_path="downloads/us_equity/tick/wrds_taq/wrds",
+        ...     catalog_path="data/us_equity/catalog",
+        ...     zarr_file_path="data/us_equity/tick/wrds_nbbo_1h.zarr",
+        ...     bar_interval="1h",
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValueError: NbboPanelDataset: bar_interval '1h' is not one of ...
         """
         BaseDataset.config.fset(self, config)
         if not isinstance(config, NbboDatasetConfig):
@@ -156,9 +161,10 @@ class NbboPanelDataset(StockDataset):
     def filter_stats_path(self) -> str:
         """Return the path of the filter-stats sidecar beside the store.
 
-        Example:
-            >>> ds.filter_stats_path
-            'data/us_equity/tick/wrds_nbbo_1m.zarr.nbbo_filter_stats.json'
+        Examples
+        --------
+        >>> ds.filter_stats_path
+        'data/us_equity/tick/wrds_nbbo_1m.zarr.nbbo_filter_stats.json'
         """
         return f"{self.config.zarr_file_path}{FILTER_STATS_SUFFIX}"
 
@@ -214,9 +220,11 @@ class NbboPanelDataset(StockDataset):
         directory names. The timestamps are the session-grid labels of the
         session dates present in raw, never the observed record timestamps.
 
-        Raises:
-            ValueError: If no symbols are found, since an empty pinned axis
-                would create a store with no labels to type.
+        Raises
+        ------
+        ValueError
+            If no symbols are found, since an empty pinned axis
+            would create a store with no labels to type.
         """
         self._assert_vendor_root()
         dates = self._dates_in_config_range()
@@ -247,7 +255,9 @@ class NbboPanelDataset(StockDataset):
         is recomputed over the merged sessions, so resampling a date again
         never double-counts.
 
-        Returns:
+        Returns
+        -------
+        dict
             The sidecar content as written, also stored on
             ``last_filter_stats``.
         """
@@ -302,19 +312,27 @@ class NbboPanelDataset(StockDataset):
         timestamp window, so the seed record before the open survives. A
         ``(label, symbol)`` cell with no bar is NaN in every variable.
 
-        Args:
-            start_date: First bar label to include, inclusive.
-            end_date: Last bar label to include, inclusive.
-            symbols: The symbol axis; ``config.symbols`` or the raw
-                ``symbol=`` directories when ``None``.
+        Parameters
+        ----------
+        start_date
+            First bar label to include, inclusive.
+        end_date
+            Last bar label to include, inclusive.
+        symbols : list[str] | None
+            The symbol axis; ``config.symbols`` or the raw
+            ``symbol=`` directories when ``None``.
 
-        Returns:
+        Returns
+        -------
+        xr.Dataset
             A dataset with the ``NBBO_PANEL_VARIABLES`` as float64 variables
             on ``(timestamp, symbol)``.
 
-        Raises:
-            ValueError: If there is no raw data under the scan root or the
-                symbol axis is empty.
+        Raises
+        ------
+        ValueError
+            If there is no raw data under the scan root or the
+            symbol axis is empty.
         """
         self._assert_vendor_root()
         if not self.has_raw_data():
@@ -410,8 +428,10 @@ class NbboPanelDataset(StockDataset):
     def _raw_data_to_xr(self) -> xr.Dataset:
         """Resample the whole configured range in one window.
 
-        Raises:
-            ValueError: If no session inside the range has raw data.
+        Raises
+        ------
+        ValueError
+            If no session inside the range has raw data.
         """
         with Timer(f" {self.__class__.__name__}: from pqt"):
             symbols, timestamps = self._raw_axes_in_range()

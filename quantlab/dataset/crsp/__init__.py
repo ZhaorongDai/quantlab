@@ -175,28 +175,36 @@ def resolve_security_filter(
     than falling back to the default or to "keep everything", because a
     silently different panel is indistinguishable from a correct one.
 
-    Args:
-        value: A preset name or a ``{column: allowed values}`` mapping.
-        owner: Class name used as the prefix of every error message.
+    Parameters
+    ----------
+    value : str | dict
+        A preset name or a ``{column: allowed values}`` mapping.
+    owner : str
+        Class name used as the prefix of every error message.
 
-    Returns:
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
         The resolved mapping; empty for the ``"none"`` preset.
 
-    Raises:
-        ValueError: If the preset name is unknown, ``value`` is neither a
-            string nor a dict, a column is not filterable, an allow-list is a
-            bare string, or an allow-list is empty.
+    Raises
+    ------
+    ValueError
+        If the preset name is unknown, ``value`` is neither a
+        string nor a dict, a column is not filterable, an allow-list is a
+        bare string, or an allow-list is empty.
 
-    Example:
-        >>> resolve_security_filter("none")
-        {}
-        >>> resolve_security_filter("equity_common")["sharetype"]
-        ('NS', 'SB', 'CE')
-        >>> resolve_security_filter({"securitytype": ["EQTY"], "primaryexch": ["N"]})
-        {'securitytype': ('EQTY',), 'primaryexch': ('N',)}
-        >>> resolve_security_filter("common")
-        Traceback (most recent call last):
-        ValueError: CrspStockDataset: security_filter 'common' is not a preset. ...
+    Examples
+    --------
+    >>> resolve_security_filter("none")
+    {}
+    >>> resolve_security_filter("equity_common")["sharetype"]
+    ('NS', 'SB', 'CE')
+    >>> resolve_security_filter({"securitytype": ["EQTY"], "primaryexch": ["N"]})
+    {'securitytype': ('EQTY',), 'primaryexch': ('N',)}
+    >>> resolve_security_filter("common")
+    Traceback (most recent call last):
+    ValueError: CrspStockDataset: security_filter 'common' is not a preset. ...
     """
     if isinstance(value, str):
         try:
@@ -266,29 +274,30 @@ class CrspStockDataset(StockDataset):
     two sidecars beside the store, the filter report and the ticker table (see
     ``filter_report_path`` and ``ticker_sidecar_path``).
 
-    Example:
-        Build the store from a raw tier already pulled through WRDS (the paths
-        follow the layout the pull writes under the data root), then read it
-        back as a panel whose ``symbol`` axis is the integer PERMNO:
+    Examples
+    --------
+    Build the store from a raw tier already pulled through WRDS (the paths
+    follow the layout the pull writes under the data root), then read it
+    back as a panel whose ``symbol`` axis is the integer PERMNO:
 
-        >>> config = CrspDatasetConfig(
-        ...     zarr_file_path="/data/crsp.zarr",
-        ...     raw_data_dir_path="/data/downloads/us_equity/1d/wrds_crsp/wrds",
-        ...     catalog_path="/data/catalog",
-        ...     reference_dir="/data/downloads/us_equity/1d/wrds_crsp/_reference",
-        ...     start_date="2008-01-01",
-        ...     end_date="2020-12-31",
-        ... )
-        >>> ds = CrspStockDataset(config)
-        >>> ds.from_raw_data().save()
-        >>> panel = CrspStockDataset(config).read().get_xarray_dataset()
-        >>> panel.symbol.values.tolist()
-        [14593, 80599]
-        >>> panel["ret"].sel(symbol=80599).to_pandas().dropna().tail(2)
-        timestamp
-        2008-09-17   -0.566667
-        2008-09-18   -0.600000
-        Name: ret, dtype: float64
+    >>> config = CrspDatasetConfig(
+    ...     zarr_file_path="/data/crsp.zarr",
+    ...     raw_data_dir_path="/data/downloads/us_equity/1d/wrds_crsp/wrds",
+    ...     catalog_path="/data/catalog",
+    ...     reference_dir="/data/downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2008-01-01",
+    ...     end_date="2020-12-31",
+    ... )
+    >>> ds = CrspStockDataset(config)
+    >>> ds.from_raw_data().save()
+    >>> panel = CrspStockDataset(config).read().get_xarray_dataset()
+    >>> panel.symbol.values.tolist()
+    [14593, 80599]
+    >>> panel["ret"].sel(symbol=80599).to_pandas().dropna().tail(2)
+    timestamp
+    2008-09-17   -0.566667
+    2008-09-18   -0.600000
+    Name: ret, dtype: float64
     """
 
     #: The config class the module loader rebuilds this dataset with.
@@ -337,18 +346,22 @@ class CrspStockDataset(StockDataset):
         Validation happens here rather than at first use so that a wrong
         field is reported by name before any raw data has been scanned.
 
-        Raises:
-            TypeError: If ``config`` is not a ``CrspDatasetConfig``.
-            ValueError: For any of the field refusals listed above.
+        Raises
+        ------
+        TypeError
+            If ``config`` is not a ``CrspDatasetConfig``.
+        ValueError
+            For any of the field refusals listed above.
 
-        Example:
-            >>> from dataclasses import replace
-            >>> ds.config = replace(config, permnos=(14593,))
-            >>> ds.config.permnos
-            ('14593',)
-            >>> ds.config = replace(config, symbols=("AAPL",))
-            Traceback (most recent call last):
-            ValueError: CrspStockDataset: config.symbols is not selectable ...
+        Examples
+        --------
+        >>> from dataclasses import replace
+        >>> ds.config = replace(config, permnos=(14593,))
+        >>> ds.config.permnos
+        ('14593',)
+        >>> ds.config = replace(config, symbols=("AAPL",))
+        Traceback (most recent call last):
+        ValueError: CrspStockDataset: config.symbols is not selectable ...
         """
         BaseDataset.config.fset(self, config)
         if not isinstance(config, CrspDatasetConfig):
@@ -464,13 +477,17 @@ class CrspStockDataset(StockDataset):
         earlier than the previous anchor. Neither is detected; the remedy is
         a rebuild.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             One row per raw ``(permno, timestamp)`` that survives the security
             filter, projected onto the panel's variables by ``_finalise``.
 
-        Raises:
-            ValueError: If a PERMNO has no usable anchor or its return chain
-                is zero or non-finite at the anchor.
+        Raises
+        ------
+        ValueError
+            If a PERMNO has no usable anchor or its return chain
+            is zero or non-finite at the anchor.
         """
         cached = getattr(self, "_derivation_cache", None)
         if cached is not None:
@@ -582,8 +599,10 @@ class CrspStockDataset(StockDataset):
         all-NaN or infinite column, and both cases hit exactly the delisted
         securities the panel exists to keep.
 
-        Raises:
-            ValueError: Naming the offending PERMNOs and the configured window.
+        Raises
+        ------
+        ValueError
+            Naming the offending PERMNOs and the configured window.
         """
         missing = (
             derived.filter(pl.col("_close_anchor").is_null())
@@ -715,7 +734,9 @@ class CrspStockDataset(StockDataset):
         per spell, or a materialised ``(permno, date)`` set, would both cost
         far more on a real index history.
 
-        Returns:
+        Returns
+        -------
+        tuple[pl.Expr, list[str]]
             ``(expression, sources)``, with ``sources`` from
             ``_roster_sources``.
         """
@@ -798,7 +819,9 @@ class CrspStockDataset(StockDataset):
         The report is built here and written once per conversion by
         ``_write_identity_reports``.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             ``derived`` without the rejected rows and the working columns.
         """
         rows_total = derived.height
@@ -906,13 +929,19 @@ class CrspStockDataset(StockDataset):
         The no-ticker warning is logged here because both branches of
         ``_apply_security_filter`` reach this method exactly once.
 
-        Args:
-            rows_total: Row count of the derivation before filtering.
-            dropped: The rows the filter removed.
-            rescued: The rows an explicit roster kept that the filter would
-                have removed.
-            sources: The roster descriptions from ``_roster_sources``.
-            kept: The surviving rows, used for the no-ticker count.
+        Parameters
+        ----------
+        rows_total : int
+            Row count of the derivation before filtering.
+        dropped : pl.DataFrame
+            The rows the filter removed.
+        rescued : pl.DataFrame | None
+            The rows an explicit roster kept that the filter would
+            have removed.
+        sources : list[str] | tuple[str, ...]
+            The roster descriptions from ``_roster_sources``.
+        kept : pl.DataFrame | None
+            The surviving rows, used for the no-ticker count.
         """
         report: dict = {
             "filter": {
@@ -1084,18 +1113,20 @@ class CrspStockDataset(StockDataset):
     def filter_report_path(self) -> Path:
         """Return the path of the filter report written beside the store.
 
-        Example:
-            >>> ds.filter_report_path()
-            PosixPath('/data/crsp.zarr.crsp_filter_report.json')
+        Examples
+        --------
+        >>> ds.filter_report_path()
+        PosixPath('/data/crsp.zarr.crsp_filter_report.json')
         """
         return Path(str(self.config.zarr_file_path) + FILTER_REPORT_SUFFIX)
 
     def ticker_sidecar_path(self) -> Path:
         """Return the path of the ticker sidecar written beside the store.
 
-        Example:
-            >>> ds.ticker_sidecar_path()
-            PosixPath('/data/crsp.zarr.crsp_tickers.json')
+        Examples
+        --------
+        >>> ds.ticker_sidecar_path()
+        PosixPath('/data/crsp.zarr.crsp_tickers.json')
         """
         return Path(str(self.config.zarr_file_path) + TICKER_SIDECAR_SUFFIX)
 
@@ -1251,7 +1282,9 @@ class CrspStockDataset(StockDataset):
         ``from_raw_data_chunked`` calls it once, after the derivation has
         succeeded and before the first append.
 
-        Returns:
+        Returns
+        -------
+        tuple[list[int], pandas.DatetimeIndex]
             ``(symbols, timestamps)``: a sorted list of ints and a
             ``pandas.DatetimeIndex``.
         """
@@ -1306,14 +1339,20 @@ class CrspStockDataset(StockDataset):
     ) -> xr.Dataset:
         """Densify one window of the cached derivation.
 
-        Args:
-            start_date: First timestamp of the window, inclusive.
-            end_date: Last timestamp of the window, inclusive.
-            symbols: Integer PERMNOs to keep and reindex onto, or ``None`` for
-                every PERMNO in the derivation. The base signature says
-                ``list[str]`` because most vendors key on a ticker.
+        Parameters
+        ----------
+        start_date
+            First timestamp of the window, inclusive.
+        end_date
+            Last timestamp of the window, inclusive.
+        symbols : list[int] | None
+            Integer PERMNOs to keep and reindex onto, or ``None`` for
+            every PERMNO in the derivation. The base signature says
+            ``list[str]`` because most vendors key on a ticker.
 
-        Returns:
+        Returns
+        -------
+        xr.Dataset
             A dataset on ``(timestamp, symbol)`` for that window.
         """
         start = self._as_datetime(start_date)
@@ -1367,8 +1406,10 @@ class CrspStockDataset(StockDataset):
         securities were confused. The inherited deduplication would collapse
         the duplicates into one series silently, which is why this raises.
 
-        Raises:
-            ValueError: Listing the first few colliding keys.
+        Raises
+        ------
+        ValueError
+            Listing the first few colliding keys.
         """
         duplicates = (
             window.group_by(["timestamp", "symbol"])

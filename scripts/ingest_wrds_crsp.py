@@ -230,7 +230,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
     """Refuse bad arguments before any WRDS session exists.
 
-    Returns:
+    Returns
+    -------
+    tuple[str, ...]
         The explicit ``--permnos`` roster as a tuple, possibly empty.
     """
     if not (args.universe or args.permnos or args.qqq):

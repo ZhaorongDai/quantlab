@@ -35,22 +35,30 @@ def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
     order its name and its float64 values on ``(timestamp, symbol)`` after NaN
     and signed-zero canonicalisation.
 
-    Args:
-        ds: A panel indexed by ``timestamp`` and ``symbol``.
-        variables: Names of the data variables to include.
+    Parameters
+    ----------
+    ds : xr.Dataset
+        A panel indexed by ``timestamp`` and ``symbol``.
+    variables : list[str]
+        Names of the data variables to include.
 
-    Returns:
+    Returns
+    -------
+    dict
         A dict with keys ``algorithm`` (``"sha256"``), ``digest``, ``variables``
         (sorted), ``start`` and ``end`` (ISO strings, ``None`` when the
         timestamp axis is empty), ``n_timestamps`` and ``n_symbols``.
 
-    Raises:
-        ValueError: If any requested variable is not in ``ds``.
+    Raises
+    ------
+    ValueError
+        If any requested variable is not in ``ds``.
 
-    Example:
-        >>> record = dataset_fingerprint(prices, ["open", "close"])
-        >>> record["digest"] == stored_record["digest"]
-        True
+    Examples
+    --------
+    >>> record = dataset_fingerprint(prices, ["open", "close"])
+    >>> record["digest"] == stored_record["digest"]
+    True
     """
     names = sorted(variables)
     missing = [name for name in names if name not in ds.data_vars]

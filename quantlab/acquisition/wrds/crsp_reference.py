@@ -57,16 +57,17 @@ class CrspReferenceTables:
     finish. Every value reaching SQL travels as ``sql.Literal`` and every
     identifier as ``sql.Identifier``.
 
-    Example:
-        Needs a live ``WrdsSession``; the reference directory comes from
-        ``WrdsCrspDailyAcquisition.reference_dir_for(cfg)``.
+    Examples
+    --------
+    Needs a live ``WrdsSession``; the reference directory comes from
+    ``WrdsCrspDailyAcquisition.reference_dir_for(cfg)``.
 
-        >>> tables = CrspReferenceTables(WrdsSession.shared(), reference_dir)
-        >>> manifest = tables.pull(product_end="2025-12-31", include_sp500=True)
-        >>> sorted(manifest)
-        ['product_end', 'pulled_at', 'tables']
-        >>> sorted(manifest["tables"])
-        ['dsp500list_v2', 'stkdelists', 'stkdistributions', 'stksecurityinfohist']
+    >>> tables = CrspReferenceTables(WrdsSession.shared(), reference_dir)
+    >>> manifest = tables.pull(product_end="2025-12-31", include_sp500=True)
+    >>> sorted(manifest)
+    ['product_end', 'pulled_at', 'tables']
+    >>> sorted(manifest["tables"])
+    ['dsp500list_v2', 'stkdelists', 'stkdistributions', 'stksecurityinfohist']
     """
 
     #: Refuse any single reference table larger than this. Generous against
@@ -99,9 +100,10 @@ class CrspReferenceTables:
     def path_for(self, name: str) -> Path:
         """Return the parquet path for the reference table ``name``.
 
-        Example:
-            >>> tables.path_for("stkdelists").name
-            'stkdelists.parquet'
+        Examples
+        --------
+        >>> tables.path_for("stkdelists").name
+        stkdelists.parquet
         """
         return self.reference_dir / f"{name}.parquet"
 
@@ -109,9 +111,10 @@ class CrspReferenceTables:
     def manifest_path(self) -> Path:
         """Return the ``manifest.json`` path inside the reference directory.
 
-        Example:
-            >>> tables.manifest_path.name
-            'manifest.json'
+        Examples
+        --------
+        >>> tables.manifest_path.name
+        manifest.json
         """
         return self.reference_dir / MANIFEST_NAME
 
@@ -123,9 +126,10 @@ class CrspReferenceTables:
         which is the safe direction, and refusing to pull because a sidecar
         is corrupt would leave the tier unrepairable except by hand.
 
-        Example:
-            >>> tables.read_manifest() is None
-            True
+        Examples
+        --------
+        >>> tables.read_manifest() is None
+        True
         """
         import json
 
@@ -147,9 +151,10 @@ class CrspReferenceTables:
     ) -> tuple[str, ...]:
         """Return the table names a pull covers, in pull order.
 
-        Example:
-            >>> tables.requested_tables(include_sp500=True, include_nasdaq100=False)
-            ('stksecurityinfohist', 'stkdelists', 'stkdistributions', 'dsp500list_v2')
+        Examples
+        --------
+        >>> tables.requested_tables(include_sp500=True, include_nasdaq100=False)
+        ('stksecurityinfohist', 'stkdelists', 'stkdistributions', 'dsp500list_v2')
         """
         names = list(self.STOCK_TABLES)
         if include_sp500:
@@ -180,27 +185,35 @@ class CrspReferenceTables:
         tables' schemas, so an S&P-only pull never asks whether the account
         can read ``comp``.
 
-        Args:
-            product_end: The CRSP product's last day (ISO string or date),
-                as probed by ``CrspQueries.product_end``.
-            include_sp500: Also pull ``dsp500list_v2``.
-            include_nasdaq100: Also pull ``idxcst_his`` and
-                ``ccmxpf_lnkhist``, which need the Compustat and CCM
-                subscriptions.
-            refresh: Re-pull tables that are already on disk for this
-                vintage.
+        Parameters
+        ----------
+        product_end
+            The CRSP product's last day (ISO string or date),
+            as probed by ``CrspQueries.product_end``.
+        include_sp500 : bool
+            Also pull ``dsp500list_v2``.
+        include_nasdaq100 : bool
+            Also pull ``idxcst_his`` and
+            ``ccmxpf_lnkhist``, which need the Compustat and CCM
+            subscriptions.
+        refresh : bool
+            Re-pull tables that are already on disk for this
+            vintage.
 
-        Returns:
+        Returns
+        -------
+        dict
             The manifest written to ``manifest.json``: ``product_end``,
             ``pulled_at`` and a ``tables`` map of ``{schema, table, rows,
             where}`` entries.
 
-        Example:
-            >>> manifest = tables.pull(product_end="2025-12-31")
-            >>> manifest["tables"]["stkdelists"]["schema"]
-            'crsp_a_stock'
-            >>> tables.pull(product_end="2025-12-31") == manifest
-            True
+        Examples
+        --------
+        >>> manifest = tables.pull(product_end="2025-12-31")
+        >>> manifest["tables"]["stkdelists"]["schema"]
+        crsp_a_stock
+        >>> tables.pull(product_end="2025-12-31") == manifest
+        True
         """
         product_end = _as_date(product_end)
         requested = self.requested_tables(

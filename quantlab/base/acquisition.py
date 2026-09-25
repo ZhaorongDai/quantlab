@@ -72,18 +72,24 @@ class BatchOutcome:
     symbol-major can legitimately return a single symbol on the first page of
     a hundred-symbol batch, so an incomplete batch says nothing about absence.
 
-    Attributes:
-        symbols: The symbols the batch requested.
-        symbols_with_data: Symbols for which at least one row has landed.
-        pages: Pages fetched so far, including those resumed from the ledger.
-        complete: Whether the vendor has returned its final page.
+    Attributes
+    ----------
+    symbols : tuple[str, ...]
+        The symbols the batch requested.
+    symbols_with_data : set[str]
+        Symbols for which at least one row has landed.
+    pages : int
+        Pages fetched so far, including those resumed from the ledger.
+    complete : bool
+        Whether the vendor has returned its final page.
 
-    Example:
-        >>> outcome = BatchOutcome(symbols=("AAPL", "MSFT"))
-        >>> outcome.pages, outcome.complete
-        (0, False)
-        >>> outcome.symbols_with_data
-        set()
+    Examples
+    --------
+    >>> outcome = BatchOutcome(symbols=("AAPL", "MSFT"))
+    >>> outcome.pages, outcome.complete
+    (0, False)
+    >>> outcome.symbols_with_data
+    set()
     """
 
     symbols: tuple[str, ...]
@@ -109,23 +115,32 @@ class AcquisitionResult:
     It is defined here rather than beside the vendor registry because the
     base layer must not import a module that constructs vendor clients.
 
-    Attributes:
-        vendor: The vendor token the run fetched from.
-        requested: Every symbol the run was asked for, after validation.
-        succeeded: Symbols whose batches completed, sorted.
-        failures: ``{symbol: scrubbed message}`` for this run's failures.
-        cancelled: Whether the caller's cancel token stopped the run.
-        quota_aborted: Whether the vendor's request allocation ran out.
-        coverage: ``coverage_report()`` computed after the run.
+    Attributes
+    ----------
+    vendor : str
+        The vendor token the run fetched from.
+    requested : tuple[str, ...]
+        Every symbol the run was asked for, after validation.
+    succeeded : tuple[str, ...]
+        Symbols whose batches completed, sorted.
+    failures : dict[str, str]
+        ``{symbol: scrubbed message}`` for this run's failures.
+    cancelled : bool
+        Whether the caller's cancel token stopped the run.
+    quota_aborted : bool
+        Whether the vendor's request allocation ran out.
+    coverage : dict
+        ``coverage_report()`` computed after the run.
 
-    Example:
-        >>> result = acq.download().last_result
-        >>> result.succeeded, result.failures
-        (('AAPL', 'MSFT'), {})
-        >>> result.cancelled, result.quota_aborted
-        (False, False)
-        >>> result.coverage["covered"]
-        2
+    Examples
+    --------
+    >>> result = acq.download().last_result
+    >>> result.succeeded, result.failures
+    (('AAPL', 'MSFT'), {})
+    >>> result.cancelled, result.quota_aborted
+    (False, False)
+    >>> result.coverage["covered"]
+    2
     """
 
     vendor: str
@@ -168,24 +183,27 @@ class Acquisition(ABC):
     ``quota_wait_seconds``, ``quota_max_waits``, ``legacy_watermarks``,
     ``rate_limit_backoff_seconds`` and ``rate_limit_max_retries``.
 
-    Args:
-        config: The acquisition config. ``start_date`` and ``end_date`` are
-            filled with open-ended defaults when left ``None``.
+    Parameters
+    ----------
+    config : AcquisitionConfig
+        The acquisition config. ``start_date`` and ``end_date`` are
+        filled with open-ended defaults when left ``None``.
 
-    Example:
-        >>> class DemoAcquisition(Acquisition):
-        ...     VENDOR = "tiingo"
-        ...     RAW_COLUMNS = ("timestamp", "symbol", "close", "vendor")
-        ...
-        ...     def _fetch_page(self, symbols, start_date, end_date,
-        ...                     page_token=None):
-        ...         frame = client.bars(symbols, start_date, end_date)
-        ...         return frame, None
-        >>> acq = DemoAcquisition(config)
-        >>> acq.download().last_result.succeeded
-        ('AAPL', 'MSFT')
-        >>> acq.coverage_report()["covered"]
-        2
+    Examples
+    --------
+    >>> class DemoAcquisition(Acquisition):
+    ...     VENDOR = "tiingo"
+    ...     RAW_COLUMNS = ("timestamp", "symbol", "close", "vendor")
+    ...
+    ...     def _fetch_page(self, symbols, start_date, end_date,
+    ...                     page_token=None):
+    ...         frame = client.bars(symbols, start_date, end_date)
+    ...         return frame, None
+    >>> acq = DemoAcquisition(config)
+    >>> acq.download().last_result.succeeded
+    ('AAPL', 'MSFT')
+    >>> acq.coverage_report()["covered"]
+    2
     """
 
     def __init__(self, config: AcquisitionConfig):
@@ -217,23 +235,29 @@ class Acquisition(ABC):
         either argument clears it, so the same object can be handed to a
         second, unobserved run without inheriting the first run's reporter.
 
-        Args:
-            reporter: Destination for ``ProgressEvent`` objects. When
-                ``None``, the ``progress`` knob decides between a tqdm bar
-                and silence.
-            cancel: Token the caller sets to stop the run at the next batch
-                boundary.
+        Parameters
+        ----------
+        reporter : ProgressReporter | None
+            Destination for ``ProgressEvent`` objects. When
+            ``None``, the ``progress`` knob decides between a tqdm bar
+            and silence.
+        cancel : CancelToken | None
+            Token the caller sets to stop the run at the next batch
+            boundary.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, so the call chains into ``download()`` or ``refresh()``.
 
-        Example:
-            >>> token = CancelToken()
-            >>> acq.attach(reporter=NullProgressReporter(), cancel=token) is acq
-            True
-            >>> acq.download().last_result.cancelled
-            False
-            >>> acq.attach()  # clear both for the next run
+        Examples
+        --------
+        >>> token = CancelToken()
+        >>> acq.attach(reporter=NullProgressReporter(), cancel=token) is acq
+        True
+        >>> acq.download().last_result.cancelled
+        False
+        >>> acq.attach()  # clear both for the next run
         """
         self._reporter = reporter
         self._cancel_token = cancel
@@ -250,9 +274,10 @@ class Acquisition(ABC):
     def config(self) -> AcquisitionConfig:
         """The acquisition config this object runs with.
 
-        Example:
-            >>> acq.config.symbols
-            ('AAPL', 'MSFT')
+        Examples
+        --------
+        >>> acq.config.symbols
+        ('AAPL', 'MSFT')
         """
         return self._config
 
@@ -265,10 +290,11 @@ class Acquisition(ABC):
         replaced with the open-ended defaults ``Date.START_DATE`` and
         ``Date.END_DATE``.
 
-        Example:
-            >>> acq.config = AcquisitionConfig(..., start_date=None)
-            >>> acq.config.start_date, acq.config.end_date
-            ('1900-01-01', '2100-01-01')
+        Examples
+        --------
+        >>> acq.config = AcquisitionConfig(..., start_date=None)
+        >>> acq.config.start_date, acq.config.end_date
+        ('1900-01-01', '2100-01-01')
         """
         self._config = config
         self._config.name = self.import_path
@@ -282,9 +308,10 @@ class Acquisition(ABC):
     def import_path(self) -> str:
         """Return the dotted import path of this object's class.
 
-        Example:
-            >>> TiingoAcquisition(config).import_path
-            'quantlab.acquisition.tiingo.TiingoAcquisition'
+        Examples
+        --------
+        >>> TiingoAcquisition(config).import_path
+        quantlab.acquisition.tiingo.TiingoAcquisition
         """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -292,9 +319,10 @@ class Acquisition(ABC):
     def class_name(self) -> str:
         """Return the bare class name.
 
-        Example:
-            >>> acq.class_name
-            'DemoAcquisition'
+        Examples
+        --------
+        >>> acq.class_name
+        DemoAcquisition
         """
         return self.__class__.__name__
 
@@ -379,17 +407,22 @@ class Acquisition(ABC):
         start are left untouched, and an existing ``no_data`` marker is
         carried through unchanged. No vendor requests are issued.
 
-        Args:
-            start_date: The covered start to record, as ``YYYY-MM-DD``.
+        Parameters
+        ----------
+        start_date : str
+            The covered start to record, as ``YYYY-MM-DD``.
 
-        Returns:
+        Returns
+        -------
+        int
             How many sidecars were rewritten.
 
-        Example:
-            >>> acq.stamp_watermarks("2020-01-01")
-            1
-            >>> acq.stamp_watermarks("2020-01-01")  # nothing left to stamp
-            0
+        Examples
+        --------
+        >>> acq.stamp_watermarks("2020-01-01")
+        1
+        >>> acq.stamp_watermarks("2020-01-01")  # nothing left to stamp
+        0
         """
         directory = self._watermark_root
         if not directory.exists():
@@ -784,8 +817,10 @@ class Acquisition(ABC):
         day, and a one-trading-day query would then be wrong at both edges in
         a way that reads as sparse data rather than as a bug.
 
-        Raises:
-            NotImplementedError: If ``SESSION_TIME_ZONE`` is ``None``.
+        Raises
+        ------
+        NotImplementedError
+            If ``SESSION_TIME_ZONE`` is ``None``.
         """
         if self.SESSION_TIME_ZONE is None:
             raise NotImplementedError(
@@ -825,9 +860,12 @@ class Acquisition(ABC):
         the only place the per-frequency key tuples are declared and adding a
         frequency that reuses existing keys needs no change here.
 
-        Raises:
-            ValueError: If ``key`` is ``data_type`` and ``_data_type`` is None.
-            NotImplementedError: If ``key`` has no derivation here.
+        Raises
+        ------
+        ValueError
+            If ``key`` is ``data_type`` and ``_data_type`` is None.
+        NotImplementedError
+            If ``key`` has no derivation here.
         """
         if key == "month":
             # `YYYY-MM` as a string, which is what the reader's `hive_schema`
@@ -944,7 +982,9 @@ class Acquisition(ABC):
         parquet is written beneath the raw root: a directory scan walks every
         file it finds, and a stray ``.json`` there would break it.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             The written paths, which the page ledger records so a resume can
             cross-check itself against the disk.
         """
@@ -1047,18 +1087,26 @@ class Acquisition(ABC):
         propagates, but only after every page that did complete has been
         recorded, so the next run resumes instead of restarting.
 
-        Args:
-            symbols: The batch, validated here before any path is built.
-            start_date: First date to request, inclusive.
-            end_date: Last date to request, inclusive.
-            ledger: The batch's page ledger, built from the other arguments
-                when omitted.
-            batch_key: The ledger's batch key, built when omitted.
+        Parameters
+        ----------
+        symbols : Sequence[str]
+            The batch, validated here before any path is built.
+        start_date : str
+            First date to request, inclusive.
+        end_date : str
+            Last date to request, inclusive.
+        ledger : PageLedger | None
+            The batch's page ledger, built from the other arguments
+            when omitted.
+        batch_key : str | None
+            The ledger's batch key, built when omitted.
 
-        Raises:
-            ValueError: If the vendor returns the same page token it was
-                given, which would otherwise loop forever writing a new shard
-                per iteration.
+        Raises
+        ------
+        ValueError
+            If the vendor returns the same page token it was
+            given, which would otherwise loop forever writing a new shard
+            per iteration.
         """
         symbols = self._validate_symbols(symbols)
         if ledger is None or batch_key is None:
@@ -1146,17 +1194,22 @@ class Acquisition(ABC):
         ``config.kwargs["resume"]`` is false. A widened ``start_date``
         re-fetches the symbols whose recorded coverage starts later.
 
-        Args:
-            symbols: The symbols to fetch; defaults to ``config.symbols``.
+        Parameters
+        ----------
+        symbols : list[str] | None
+            The symbols to fetch; defaults to ``config.symbols``.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``; the outcome is on ``last_result``.
 
-        Example:
-            >>> acq.download().last_result.succeeded
-            ('AAPL', 'MSFT')
-            >>> acq.download(["AAPL"]).last_result.coverage["skipped"]
-            1
+        Examples
+        --------
+        >>> acq.download().last_result.succeeded
+        ('AAPL', 'MSFT')
+        >>> acq.download(["AAPL"]).last_result.coverage["skipped"]
+        1
         """
         return self._run(symbols, from_watermark=False)
 
@@ -1168,16 +1221,21 @@ class Acquisition(ABC):
         stays unknown. It never honours a widened ``config.start_date``;
         widening the covered range is ``download()``'s job.
 
-        Args:
-            symbols: The symbols to refresh; defaults to ``config.symbols``.
+        Parameters
+        ----------
+        symbols : list[str] | None
+            The symbols to refresh; defaults to ``config.symbols``.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``; the outcome is on ``last_result``.
 
-        Example:
-            >>> acq.config.end_date = "2024-01-08"
-            >>> acq.refresh().last_result.succeeded
-            ('AAPL', 'MSFT')
+        Examples
+        --------
+        >>> acq.config.end_date = "2024-01-08"
+        >>> acq.refresh().last_result.succeeded
+        ('AAPL', 'MSFT')
         """
         return self._run(symbols, from_watermark=True)
 
@@ -1338,7 +1396,9 @@ class Acquisition(ABC):
         than broken out of: once the abort is set every remaining batch is a
         microsecond no-op, and draining makes worker teardown deterministic.
 
-        Returns:
+        Returns
+        -------
+        tuple[bool, dict[str, str], set[str], bool]
             ``(quota_aborted, failures, succeeded, cancelled)``. ``failures``
             maps each failed symbol to its scrubbed message and ``succeeded``
             holds the symbols whose batches completed; a symbol skipped by
@@ -1369,9 +1429,10 @@ class Acquisition(ABC):
             statement of ``_attempt_batch`` is what actually stops the vendor
             requests.
 
-            Example:
-                >>> list(inputs())
-                [['AAPL', 'MSFT'], ['GOOG']]
+            Examples
+            --------
+            >>> list(inputs())
+            [['AAPL', 'MSFT'], ['GOOG']]
             """
             for batch in batches:
                 if self._should_stop():
@@ -1521,19 +1582,24 @@ class Acquisition(ABC):
         anything before committing to a multi-hour job, or to confirm that
         ``stamp_watermarks`` cleared every legacy sidecar.
 
-        Args:
-            symbols: The symbols to classify; defaults to ``config.symbols``.
+        Parameters
+        ----------
+        symbols : list[str] | None
+            The symbols to classify; defaults to ``config.symbols``.
 
-        Returns:
+        Returns
+        -------
+        dict
             Counts under ``requested``, ``pending``, ``skipped``, ``covered``,
             ``widened``, ``legacy`` and ``no_data``.
 
-        Example:
-            >>> acq.coverage_report()
-            {'requested': 2, 'pending': 0, 'skipped': 2, 'covered': 2,
-             'widened': 0, 'legacy': 0, 'no_data': 0}
-            >>> acq.coverage_report(["AAPL"])["pending"]
-            0
+        Examples
+        --------
+        >>> acq.coverage_report()
+        {'requested': 2, 'pending': 0, 'skipped': 2, 'covered': 2,
+         'widened': 0, 'legacy': 0, 'no_data': 0}
+        >>> acq.coverage_report(["AAPL"])["pending"]
+        0
         """
         # Same reason as `_run`: `_partition_by_coverage` builds a watermark
         # path per symbol, so validation has to precede it here too.
@@ -1863,11 +1929,16 @@ class Acquisition(ABC):
         returns ``None`` on every call, which is a complete implementation.
         Implementations must not touch xarray or Zarr storage.
 
-        Args:
-            symbols: The batch to request.
-            start_date: First date to request, inclusive.
-            end_date: Last date to request, inclusive.
-            page_token: The token the previous page returned, or ``None`` for
-                the first page.
+        Parameters
+        ----------
+        symbols : list[str]
+            The batch to request.
+        start_date : str
+            First date to request, inclusive.
+        end_date : str
+            Last date to request, inclusive.
+        page_token : str | None
+            The token the previous page returned, or ``None`` for
+            the first page.
         """
         ...

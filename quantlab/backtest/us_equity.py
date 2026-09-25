@@ -43,28 +43,29 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     every engine behaviour comes from ``VectorBtBacktester``. It is configured
     with a ``CrossSectionBacktestConfig``.
 
-    Example:
-        >>> from quantlab.base.config import CrossSectionBacktestConfig
-        >>> backtester = USEquityCrossectionSelectStockVectorBt(
-        ...     CrossSectionBacktestConfig(
-        ...         price_dataset=prices,  # a StockDataset over a Zarr store
-        ...         model=model,  # a model whose checkpoint is given below
-        ...         model_mode="load",
-        ...         checkpoint="models/first_feature/checkpoint.joblib",
-        ...         start_date="2024-02-12",
-        ...         end_date="2024-03-11",
-        ...         output_dir="runs",
-        ...         rebalance_periods=5,
-        ...         direction="long_only",
-        ...         top_n=2,
-        ...     )
-        ... )
-        >>> result = backtester.run()
-        >>> sorted(p.name for p in result.run_dir.iterdir())
-        ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
-         'metrics.json', 'report.html', 'weights.zarr']
-        >>> result.weights["weight"].dims
-        ('timestamp', 'symbol')
+    Examples
+    --------
+    >>> from quantlab.base.config import CrossSectionBacktestConfig
+    >>> backtester = USEquityCrossectionSelectStockVectorBt(
+    ...     CrossSectionBacktestConfig(
+    ...         price_dataset=prices,  # a StockDataset over a Zarr store
+    ...         model=model,  # a model whose checkpoint is given below
+    ...         model_mode="load",
+    ...         checkpoint="models/first_feature/checkpoint.joblib",
+    ...         start_date="2024-02-12",
+    ...         end_date="2024-03-11",
+    ...         output_dir="runs",
+    ...         rebalance_periods=5,
+    ...         direction="long_only",
+    ...         top_n=2,
+    ...     )
+    ... )
+    >>> result = backtester.run()
+    >>> sorted(p.name for p in result.run_dir.iterdir())
+    ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
+     'metrics.json', 'report.html', 'weights.zarr']
+    >>> result.weights["weight"].dims
+    ('timestamp', 'symbol')
     """
 
     config_cls = CrossSectionBacktestConfig

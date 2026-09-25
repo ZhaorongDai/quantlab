@@ -69,32 +69,37 @@ class BaseModel(ABC):
     ``{class}_trial_{timestamp}/{experiment}/{experiment}{suffix}`` with a
     ``config.json`` sidecar next to the file.
 
-    Example:
-        Given a head ``MyHead`` (a subclass of ``MLModel`` or ``DLModel``), a
-        factor object exposing variables ``f_a`` and ``f_b``, and a label
-        object exposing ``ret``::
+    Examples
+    --------
+    Given a head ``MyHead`` (a subclass of ``MLModel`` or ``DLModel``), a
+    factor object exposing variables ``f_a`` and ``f_b``, and a label
+    object exposing ``ret``::
 
-            >>> model = MyHead(MLConfig(
-            ...     factors=[factor], labels=[label],
-            ...     model_save_dir="checkpoints",
-            ...     factor_data_strategy="read", label_data_strategy="read",
-            ...     train_start="2024-01-01", train_end="2024-01-30",
-            ...     test_start="2024-01-31", test_end="2024-02-09",
-            ... ))
-            >>> checkpoint = model.collect().train()
-            >>> checkpoint.name
-            'MyHead_total.joblib'
+        >>> model = MyHead(MLConfig(
+        ...     factors=[factor], labels=[label],
+        ...     model_save_dir="checkpoints",
+        ...     factor_data_strategy="read", label_data_strategy="read",
+        ...     train_start="2024-01-01", train_end="2024-01-30",
+        ...     test_start="2024-01-31", test_end="2024-02-09",
+        ... ))
+        >>> checkpoint = model.collect().train()
+        >>> checkpoint.name
+        MyHead_total.joblib
     """
 
     def __init__(self, config: DLConfig | MLConfig):
         """Validate ``config``, seed the random generators and prepare empty state.
 
-        Args:
-            config: A ``DLConfig`` or ``MLConfig`` matching the variant's
-                ``config_cls``.
+        Parameters
+        ----------
+        config : DLConfig | MLConfig
+            A ``DLConfig`` or ``MLConfig`` matching the variant's
+            ``config_cls``.
 
-        Raises:
-            TypeError: If ``config`` is not an instance of ``config_cls``.
+        Raises
+        ------
+        TypeError
+            If ``config`` is not an instance of ``config_cls``.
         """
         self.config = config
         self._set_random_seed(self.config.random_seed)
@@ -125,9 +130,10 @@ class BaseModel(ABC):
 
         Concrete variants satisfy it with a plain class attribute.
 
-        Example:
-            >>> DLModel.config_cls
-            <class 'quantlab.base.config.DLConfig'>
+        Examples
+        --------
+        >>> DLModel.config_cls
+        <class 'quantlab.base.config.DLConfig'>
         """
 
     @property
@@ -137,9 +143,10 @@ class BaseModel(ABC):
 
         Concrete variants satisfy it with a plain class attribute.
 
-        Example:
-            >>> MLModel.checkpoint_suffix
-            '.joblib'
+        Examples
+        --------
+        >>> MLModel.checkpoint_suffix
+        '.joblib'
         """
 
     @staticmethod
@@ -159,9 +166,10 @@ class BaseModel(ABC):
     def config(self) -> DLConfig | MLConfig:
         """The model's configuration object.
 
-        Example:
-            >>> model.config.model_save_dir
-            'checkpoints'
+        Examples
+        --------
+        >>> model.config.model_save_dir
+        checkpoints
         """
         return self._config
 
@@ -175,16 +183,19 @@ class BaseModel(ABC):
         project-wide defaults, and ``config.name`` is set to the model's import
         path.
 
-        Raises:
-            TypeError: If ``config`` is not an instance of ``config_cls``.
+        Raises
+        ------
+        TypeError
+            If ``config`` is not an instance of ``config_cls``.
 
-        Example:
-            >>> model.config = MLConfig(factors=[factor], labels=[label],
-            ...                         model_save_dir="checkpoints",
-            ...                         factor_data_strategy="read",
-            ...                         label_data_strategy="read")
-            >>> factor.config.start_date == model.config.start_date
-            True
+        Examples
+        --------
+        >>> model.config = MLConfig(factors=[factor], labels=[label],
+        ...                         model_save_dir="checkpoints",
+        ...                         factor_data_strategy="read",
+        ...                         label_data_strategy="read")
+        >>> factor.config.start_date == model.config.start_date
+        True
         """
         if not isinstance(config, self.config_cls):
             raise TypeError(
@@ -206,9 +217,10 @@ class BaseModel(ABC):
     def num_times(self) -> int:
         """Number of timestamps in the collected panel.
 
-        Example:
-            >>> model.num_times
-            40
+        Examples
+        --------
+        >>> model.num_times
+        40
         """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
@@ -218,9 +230,10 @@ class BaseModel(ABC):
     def class_name(self) -> str:
         """The head's class name.
 
-        Example:
-            >>> model.class_name
-            'MyHead'
+        Examples
+        --------
+        >>> model.class_name
+        MyHead
         """
         return self.__class__.__name__
 
@@ -228,9 +241,10 @@ class BaseModel(ABC):
     def num_symbols(self) -> int:
         """Number of symbols in the collected panel.
 
-        Example:
-            >>> model.num_symbols
-            3
+        Examples
+        --------
+        >>> model.num_symbols
+        3
         """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
@@ -240,9 +254,10 @@ class BaseModel(ABC):
     def symbols(self) -> list[str]:
         """Symbols of the collected panel, as a plain list.
 
-        Example:
-            >>> model.symbols
-            ['S0', 'S1', 'S2']
+        Examples
+        --------
+        >>> model.symbols
+        ['S0', 'S1', 'S2']
         """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
@@ -252,9 +267,10 @@ class BaseModel(ABC):
     def num_null(self) -> int:
         """Total number of NaN cells across every variable of the collected panel.
 
-        Example:
-            >>> model.num_null
-            0
+        Examples
+        --------
+        >>> model.num_null
+        0
         """
         return int(
             self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
@@ -269,9 +285,10 @@ class BaseModel(ABC):
     def import_path(self) -> str:
         """Dotted ``module.QualName`` path of the head's class.
 
-        Example:
-            >>> model.import_path
-            '__main__.MyHead'
+        Examples
+        --------
+        >>> model.import_path
+        __main__.MyHead
         """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -279,9 +296,10 @@ class BaseModel(ABC):
     def num_factors(self) -> int:
         """Number of feature variables across all configured factors.
 
-        Example:
-            >>> model.num_factors
-            2
+        Examples
+        --------
+        >>> model.num_factors
+        2
         """
         return len(self.get_factor_names())
 
@@ -289,9 +307,10 @@ class BaseModel(ABC):
     def num_labels(self) -> int:
         """Number of label variables across all configured labels.
 
-        Example:
-            >>> model.num_labels
-            1
+        Examples
+        --------
+        >>> model.num_labels
+        1
         """
         return len(self.get_label_names())
 
@@ -317,8 +336,10 @@ class BaseModel(ABC):
         Each label is computed (``cal``) or read from its store (``read``)
         according to ``config.label_data_strategy``.
 
-        Raises:
-            ValueError: If the strategy is neither ``"cal"`` nor ``"read"``.
+        Raises
+        ------
+        ValueError
+            If the strategy is neither ``"cal"`` nor ``"read"``.
         """
         all_ds = []
         for label in self.config.labels:
@@ -342,8 +363,10 @@ class BaseModel(ABC):
         Each factor is computed (``cal``) or read from its store (``read``)
         according to ``config.factor_data_strategy``.
 
-        Raises:
-            ValueError: If the strategy is neither ``"cal"`` nor ``"read"``.
+        Raises
+        ------
+        ValueError
+            If the strategy is neither ``"cal"`` nor ``"read"``.
         """
         all_ds = []
         for factor in self.config.factors:
@@ -369,12 +392,15 @@ class BaseModel(ABC):
         ``(timestamp, symbol)`` coordinates, sorted on both axes, and stored
         in ``self.data_backend``. Call this before ``train()`` or ``train_cv()``.
 
-        Returns:
+        Returns
+        -------
+        Self
             The model itself, for chaining.
 
-        Example:
-            >>> model.collect().num_times
-            40
+        Examples
+        --------
+        >>> model.collect().num_times
+        40
         """
         feature = self._collect_all_features()
         label = self._collect_all_labels()
@@ -387,9 +413,10 @@ class BaseModel(ABC):
     def get_factor_names(self):
         """Return the feature variable names, in factor order then variable order.
 
-        Example:
-            >>> model.get_factor_names()
-            ['f_a', 'f_b']
+        Examples
+        --------
+        >>> model.get_factor_names()
+        ['f_a', 'f_b']
         """
         return list(
             chain.from_iterable(
@@ -400,9 +427,10 @@ class BaseModel(ABC):
     def get_label_names(self):
         """Return the label variable names, in label order then variable order.
 
-        Example:
-            >>> model.get_label_names()
-            ['ret']
+        Examples
+        --------
+        >>> model.get_label_names()
+        ['ret']
         """
         return list(
             chain.from_iterable(
@@ -417,10 +445,11 @@ class BaseModel(ABC):
         ``get_config()`` so the dict can be written to ``config.json`` and
         used to rebuild the model later.
 
-        Example:
-            >>> cfg = model.get_config()
-            >>> sorted(cfg)[:3]
-            ['early_stopping', 'early_stopping_patience', 'end_date']
+        Examples
+        --------
+        >>> cfg = model.get_config()
+        >>> sorted(cfg)[:3]
+        ['early_stopping', 'early_stopping_patience', 'end_date']
         """
         cfg = self.config.to_dict()
         cfg["factors"] = [factor.get_config() for factor in self.config.factors]  # type: ignore
@@ -440,17 +469,21 @@ class BaseModel(ABC):
         ``variables`` exactly (not alphabetical order), so ``x[..., i]`` is
         always ``variables[i]``.
 
-        Args:
-            data: A dataset indexed by ``(timestamp, symbol)``.
-            variables: The data variables to stack, in the wanted order.
+        Parameters
+        ----------
+        data : xr.Dataset
+            A dataset indexed by ``(timestamp, symbol)``.
+        variables : list[str]
+            The data variables to stack, in the wanted order.
 
-        Example:
-            >>> panel = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-            >>> x = model.to_array(panel, ["f_b", "f_a"])
-            >>> x.shape
-            (40, 3, 2)
-            >>> np.allclose(x[..., 0], panel["f_b"].values)
-            True
+        Examples
+        --------
+        >>> panel = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        >>> x = model.to_array(panel, ["f_b", "f_a"])
+        >>> x.shape
+        (40, 3, 2)
+        >>> np.allclose(x[..., 0], panel["f_b"].values)
+        True
         """
         return (
             data[variables]
@@ -492,9 +525,12 @@ class BaseModel(ABC):
         symbols are kept on ``_trained_symbols`` for predictions made right
         after training.
 
-        Raises:
-            ValueError: If no model has been built.
-            RuntimeError: If the checkpoint directory already exists.
+        Raises
+        ------
+        ValueError
+            If no model has been built.
+        RuntimeError
+            If the checkpoint directory already exists.
         """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError("Model not initialized")
@@ -530,20 +566,28 @@ class BaseModel(ABC):
         by itself. Finally the training symbols are read from the sidecar and
         the checkpoint is loaded.
 
-        Args:
-            p: Path to a checkpoint file ending in ``checkpoint_suffix``.
+        Parameters
+        ----------
+        p : Path | str
+            Path to a checkpoint file ending in ``checkpoint_suffix``.
 
-        Returns:
+        Returns
+        -------
+        Self
             The model itself, for chaining.
 
-        Raises:
-            FileNotFoundError: If ``p`` does not exist.
-            ValueError: If the suffix is wrong or the recorded variables differ
-                from the model's declared variables.
+        Raises
+        ------
+        FileNotFoundError
+            If ``p`` does not exist.
+        ValueError
+            If the suffix is wrong or the recorded variables differ
+            from the model's declared variables.
 
-        Example:
-            >>> model.load(checkpoint) is model
-            True
+        Examples
+        --------
+        >>> model.load(checkpoint) is model
+        True
         """
         if isinstance(p, str):
             p = Path(p)
@@ -565,10 +609,12 @@ class BaseModel(ABC):
     def _read_checkpoint_sidecar(self, p: Path) -> dict | None:
         """Parse the ``config.json`` next to checkpoint ``p``; None if absent.
 
-        Raises:
-            ValueError: If the file exists but is not a JSON object. A corrupt
-                sidecar must not be treated as a missing one, since that would
-                silently skip every check that depends on it.
+        Raises
+        ------
+        ValueError
+            If the file exists but is not a JSON object. A corrupt
+            sidecar must not be treated as a missing one, since that would
+            silently skip every check that depends on it.
         """
         sidecar = p.parent / "config.json"
         if not sidecar.is_file():
@@ -594,9 +640,11 @@ class BaseModel(ABC):
         Only ``config.json`` is read, so the check can run before any data is
         collected. Each distinct warning is logged once per model instance.
 
-        Raises:
-            ValueError: If the recorded and declared variables differ, naming
-                the checkpoint and both variable lists.
+        Raises
+        ------
+        ValueError
+            If the recorded and declared variables differ, naming
+            the checkpoint and both variable lists.
         """
         saved = self._read_checkpoint_sidecar(p)
         record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
@@ -717,13 +765,16 @@ class BaseModel(ABC):
         The variant's ``_predict`` decides the accepted and returned types: the
         torch variant returns a tensor, the numpy variant an array.
 
-        Raises:
-            ValueError: If neither ``train()`` nor ``load()`` has been called.
+        Raises
+        ------
+        ValueError
+            If neither ``train()`` nor ``load()`` has been called.
 
-        Example:
-            >>> x = np.random.default_rng(0).standard_normal((5, 3, 2))
-            >>> model.predict(x).shape
-            (5, 3, 1)
+        Examples
+        --------
+        >>> x = np.random.default_rng(0).standard_normal((5, 3, 2))
+        >>> model.predict(x).shape
+        (5, 3, 1)
         """
         if not hasattr(self, "model") or self.model is None:
             raise ValueError(
@@ -745,19 +796,24 @@ class BaseModel(ABC):
         axis first (the torch variant aligns it to the training symbols), and
         ``_predict_panel_array`` performs the numeric prediction.
 
-        Args:
-            features: A dataset containing every variable named by
-                ``get_factor_names()``.
+        Parameters
+        ----------
+        features : xr.Dataset
+            A dataset containing every variable named by
+            ``get_factor_names()``.
 
-        Raises:
-            ValueError: If a factor variable is missing, or if the prediction
-                does not have shape ``[num_times, num_symbols, num_labels]``.
+        Raises
+        ------
+        ValueError
+            If a factor variable is missing, or if the prediction
+            does not have shape ``[num_times, num_symbols, num_labels]``.
 
-        Example:
-            >>> feats = panel[["f_a", "f_b"]].isel(timestamp=slice(0, 5))
-            >>> out = model.predict_panel(feats)
-            >>> dict(out.sizes), list(out.data_vars)
-            ({'timestamp': 5, 'symbol': 3}, ['ret'])
+        Examples
+        --------
+        >>> feats = panel[["f_a", "f_b"]].isel(timestamp=slice(0, 5))
+        >>> out = model.predict_panel(feats)
+        >>> dict(out.sizes), list(out.data_vars)
+        ({'timestamp': 5, 'symbol': 3}, ['ret'])
         """
         factors = self.get_factor_names()
         labels = self.get_label_names()
@@ -840,14 +896,17 @@ class BaseModel(ABC):
         checkpoint. Returning the path lets a caller record exactly which
         model was trained and reload it later instead of retraining.
 
-        Returns:
+        Returns
+        -------
+        Path
             Absolute path of the checkpoint file, named
             ``{class}_total{checkpoint_suffix}``.
 
-        Example:
-            >>> checkpoint = model.train()
-            >>> checkpoint.name, checkpoint.parent.name
-            ('MyHead_total.joblib', 'MyHead_total')
+        Examples
+        --------
+        >>> checkpoint = model.train()
+        >>> checkpoint.name, checkpoint.parent.name
+        ('MyHead_total.joblib', 'MyHead_total')
         """
         project_name = self._new_project_name()
         experiment_name = f"{self.class_name}_total"
@@ -881,7 +940,9 @@ class BaseModel(ABC):
         a fold whose test segment runs past the end is logged and skipped, so
         the result can be empty.
 
-        Returns:
+        Returns
+        -------
+        list[dict]
             One dict per fold with keys ``fold``, ``train_start``,
             ``train_end``, ``test_start`` and ``test_end``. Dates are
             ``np.datetime_as_string`` values and both ends are inclusive.
@@ -1040,29 +1101,39 @@ class BaseModel(ABC):
         where ``folds`` is the JSON form of the returned list (NaN and inf
         become null). Backtesters replay a CV run from that file.
 
-        Args:
-            train_periods: Number of timestamps in each training segment; the
-                test segment is one fifth of it.
-            gap_periods: Timestamps left out between a training segment and
-                its test segment.
-            parallel: Train the folds concurrently on deep copies of this
-                model using a threading pool.
-            njobs: Number of jobs for the parallel branch (``-1`` for all
-                cores).
+        Parameters
+        ----------
+        train_periods : int
+            Number of timestamps in each training segment; the
+            test segment is one fifth of it.
+        gap_periods : int
+            Timestamps left out between a training segment and
+            its test segment.
+        parallel : bool
+            Train the folds concurrently on deep copies of this
+            model using a threading pool.
+        njobs : int
+            Number of jobs for the parallel branch (``-1`` for all
+            cores).
 
-        Returns:
+        Returns
+        -------
+        list[dict]
             One dict per fold: the fold boundaries, ``experiment_name``, the
             absolute ``checkpoint`` path and the fold's ``test_*`` metrics.
 
-        Raises:
-            ValueError: If no timestamps fall inside the config's date range.
+        Raises
+        ------
+        ValueError
+            If no timestamps fall inside the config's date range.
 
-        Example:
-            >>> results = model.train_cv(train_periods=20, gap_periods=2)
-            >>> len(results)
-            4
-            >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
-            (0, True)
+        Examples
+        --------
+        >>> results = model.train_cv(train_periods=20, gap_periods=2)
+        >>> len(results)
+        4
+        >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
+        (0, True)
         """
         start_date = self.config.start_date
         end_date = self.config.end_date
@@ -1198,36 +1269,37 @@ class DLModel(BaseModel):
     first ``k`` trees of a boosted model, so the weights are snapshotted
     instead.
 
-    Example:
-        A minimal head; the base class supplies everything else::
+    Examples
+    --------
+    A minimal head; the base class supplies everything else::
 
-            >>> class LinearHead(DLModel):
-            ...     def _init_model(self, num_symbols, num_features, num_labels,
-            ...                     hyperparameters):
-            ...         return nn.Linear(num_features, num_labels)
-            ...     def _init_optim(self, model):
-            ...         return torch.optim.SGD(model.parameters(), lr=1e-3)
-            ...     def _preprocess(self, data):
-            ...         return torch.nan_to_num(data, nan=0.0)
-            ...     def _train_one_batch(self, epoch, x, y):
-            ...         self.optim.zero_grad()
-            ...         loss = nn.functional.mse_loss(self.model(x), y)
-            ...         loss.backward()
-            ...         self.optim.step()
-            ...         return loss.detach()
-            ...     def _val_one_batch(self, epoch, x, y):
-            ...         return nn.functional.mse_loss(self.model(x), y)
-            ...     def _test_one_batch(self, epoch, x, y):
-            ...         return nn.functional.mse_loss(self.model(x), y)
-            >>> head = LinearHead(DLConfig(
-            ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
-            ...     factor_data_strategy="read", label_data_strategy="read",
-            ...     epochs=2, batch_size=8, num_workers=0,
-            ...     train_start="2024-01-01", train_end="2024-01-30",
-            ...     test_start="2024-01-31", test_end="2024-02-09",
-            ... ))
-            >>> head.collect().train().suffix
-            '.pth'
+        >>> class LinearHead(DLModel):
+        ...     def _init_model(self, num_symbols, num_features, num_labels,
+        ...                     hyperparameters):
+        ...         return nn.Linear(num_features, num_labels)
+        ...     def _init_optim(self, model):
+        ...         return torch.optim.SGD(model.parameters(), lr=1e-3)
+        ...     def _preprocess(self, data):
+        ...         return torch.nan_to_num(data, nan=0.0)
+        ...     def _train_one_batch(self, epoch, x, y):
+        ...         self.optim.zero_grad()
+        ...         loss = nn.functional.mse_loss(self.model(x), y)
+        ...         loss.backward()
+        ...         self.optim.step()
+        ...         return loss.detach()
+        ...     def _val_one_batch(self, epoch, x, y):
+        ...         return nn.functional.mse_loss(self.model(x), y)
+        ...     def _test_one_batch(self, epoch, x, y):
+        ...         return nn.functional.mse_loss(self.model(x), y)
+        >>> head = LinearHead(DLConfig(
+        ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+        ...     factor_data_strategy="read", label_data_strategy="read",
+        ...     epochs=2, batch_size=8, num_workers=0,
+        ...     train_start="2024-01-01", train_end="2024-01-30",
+        ...     test_start="2024-01-31", test_end="2024-02-09",
+        ... ))
+        >>> head.collect().train().suffix
+        '.pth'
     """
 
     config_cls = DLConfig
@@ -1246,9 +1318,10 @@ class DLModel(BaseModel):
     def device(self) -> str:
         """``"cuda"`` when a CUDA device is available, else ``"cpu"``.
 
-        Example:
-            >>> head.device
-            'cpu'
+        Examples
+        --------
+        >>> head.device
+        cpu
         """
         return "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -1272,10 +1345,11 @@ class DLModel(BaseModel):
         from there, and this method only converts to a tensor in the default
         float dtype.
 
-        Example:
-            >>> t = head.to_tensor(panel, ["f_a", "f_b"])
-            >>> t.shape, t.dtype
-            (torch.Size([40, 3, 2]), torch.float32)
+        Examples
+        --------
+        >>> t = head.to_tensor(panel, ["f_a", "f_b"])
+        >>> t.shape, t.dtype
+        (torch.Size([40, 3, 2]), torch.float32)
         """
         return self._to_default_float(
             torch.from_numpy(self.to_array(data, variables))
@@ -1287,8 +1361,10 @@ class DLModel(BaseModel):
         Numpy input is converted to a default-float tensor. The model is left
         in eval mode afterwards; the training loop switches it back itself.
 
-        Raises:
-            TypeError: If ``data`` is neither a tensor nor an array.
+        Raises
+        ------
+        TypeError
+            If ``data`` is neither a tensor nor an array.
         """
         if isinstance(data, np.ndarray):
             data = self._to_default_float(torch.from_numpy(data))
@@ -1309,8 +1385,10 @@ class DLModel(BaseModel):
         A head whose ``forward`` returns a tuple or list must override this
         hook and map its output onto one channel per label.
 
-        Raises:
-            TypeError: If the prediction is not a single tensor.
+        Raises
+        ------
+        TypeError
+            If the prediction is not a single tensor.
         """
         raw = self.predict(x)
         if isinstance(raw, torch.Tensor):
@@ -1361,9 +1439,11 @@ class DLModel(BaseModel):
         the end, and training stops after ``early_stopping_patience`` epochs
         without improvement. Returns None: this variant reports no metrics.
 
-        Raises:
-            ValueError: If any of the four ``train_*`` / ``test_*`` dates is
-                unset.
+        Raises
+        ------
+        ValueError
+            If any of the four ``train_*`` / ``test_*`` dates is
+            unset.
         """
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
@@ -1520,9 +1600,11 @@ class DLModel(BaseModel):
         label type is checked before membership (see
         ``_assert_symbol_types_match``).
 
-        Raises:
-            ValueError: If the panel lacks training symbols, or the label
-                types of the record and the panel disagree.
+        Raises
+        ------
+        ValueError
+            If the panel lacks training symbols, or the label
+            types of the record and the panel disagree.
         """
         trained = self._trained_symbols
         if trained is None:
@@ -1602,8 +1684,10 @@ class DLModel(BaseModel):
         a missing index entry. Neither side is coerced: a string record
         coerced onto an integer axis could match the wrong columns silently.
 
-        Raises:
-            ValueError: If the two sides disagree on the label type.
+        Raises
+        ------
+        ValueError
+            If the two sides disagree on the label type.
         """
         if not trained or not present:
             return
@@ -1770,26 +1854,27 @@ class MLModel(BaseModel):
     written through ``MlBackend``; they are pickles, so only load files you
     trust.
 
-    Example:
-        A minimal head that predicts the first feature for every label::
+    Examples
+    --------
+    A minimal head that predicts the first feature for every label::
 
-            >>> class FirstFeatureHead(MLModel):
-            ...     def _init_model(self, num_features, num_labels, hyperparameters):
-            ...         return {"num_labels": num_labels}
-            ...     def _preprocess(self, data):
-            ...         return np.array(data, dtype=np.float64, copy=True)
-            ...     def _fit_model(self, train_x, train_y, val_x, val_y):
-            ...         pass
-            ...     def _forward(self, x):
-            ...         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
-            >>> head = FirstFeatureHead(MLConfig(
-            ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
-            ...     factor_data_strategy="read", label_data_strategy="read",
-            ...     train_start="2024-01-01", train_end="2024-01-30",
-            ...     test_start="2024-01-31", test_end="2024-02-09",
-            ... ))
-            >>> head.collect().train().suffix
-            '.joblib'
+        >>> class FirstFeatureHead(MLModel):
+        ...     def _init_model(self, num_features, num_labels, hyperparameters):
+        ...         return {"num_labels": num_labels}
+        ...     def _preprocess(self, data):
+        ...         return np.array(data, dtype=np.float64, copy=True)
+        ...     def _fit_model(self, train_x, train_y, val_x, val_y):
+        ...         pass
+        ...     def _forward(self, x):
+        ...         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
+        >>> head = FirstFeatureHead(MLConfig(
+        ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+        ...     factor_data_strategy="read", label_data_strategy="read",
+        ...     train_start="2024-01-01", train_end="2024-01-30",
+        ...     test_start="2024-01-31", test_end="2024-02-09",
+        ... ))
+        >>> head.collect().train().suffix
+        '.joblib'
     """
 
     config_cls = MLConfig
@@ -1852,9 +1937,10 @@ class MLModel(BaseModel):
     def get_config(self) -> dict:
         """Return ``BaseModel.get_config()`` plus any resolved hyperparameters.
 
-        Example:
-            >>> "resolved_hyperparameters" in head.get_config()
-            False
+        Examples
+        --------
+        >>> "resolved_hyperparameters" in head.get_config()
+        False
         """
         cfg = super().get_config()
         resolved = self._resolved_hyperparameters()
@@ -1907,12 +1993,16 @@ class MLModel(BaseModel):
         evaluation: no validation segment means no ``val_*`` metrics, and an
         empty test segment returns ``{}``.
 
-        Returns:
+        Returns
+        -------
+        dict
             The ``test_*`` metrics dict.
 
-        Raises:
-            ValueError: If any of the four ``train_*`` / ``test_*`` dates is
-                unset, or ``val_size`` leaves no timestamps to fit on.
+        Raises
+        ------
+        ValueError
+            If any of the four ``train_*`` / ``test_*`` dates is
+            unset, or ``val_size`` leaves no timestamps to fit on.
         """
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
@@ -2001,8 +2091,10 @@ class MLModel(BaseModel):
     def _predict(self, data: torch.Tensor | np.ndarray) -> np.ndarray:
         """Preprocess ``data`` (tensors are converted to numpy) and run ``_forward``.
 
-        Raises:
-            TypeError: If ``data`` is neither a tensor nor an array.
+        Raises
+        ------
+        TypeError
+            If ``data`` is neither a tensor nor an array.
         """
         if isinstance(data, torch.Tensor):
             data = data.detach().cpu().numpy()

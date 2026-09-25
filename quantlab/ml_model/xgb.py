@@ -61,20 +61,26 @@ def pooled_ccc_loss(y_true, y_pred) -> float:
     loss ``1.0`` is returned rather than NaN, so that early stopping keeps
     comparing.
 
-    Args:
-        y_true: Observed values, any shape.
-        y_pred: Predicted values, the same number of elements as ``y_true``.
+    Parameters
+    ----------
+    y_true
+        Observed values, any shape.
+    y_pred
+        Predicted values, the same number of elements as ``y_true``.
 
-    Raises:
-        ValueError: If the two inputs have different lengths after flattening.
+    Raises
+    ------
+    ValueError
+        If the two inputs have different lengths after flattening.
 
-    Example:
-        >>> pooled_ccc_loss([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
-        0.0
-        >>> pooled_ccc_loss([1.0, 2.0, 3.0], [1.1, 1.9, 3.2])
-        0.014084507042253502
-        >>> pooled_ccc_loss([1, 2, 3], [3, 2, 1])
-        2.0
+    Examples
+    --------
+    >>> pooled_ccc_loss([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    0.0
+    >>> pooled_ccc_loss([1.0, 2.0, 3.0], [1.1, 1.9, 3.2])
+    0.014084507042253502
+    >>> pooled_ccc_loss([1, 2, 3], [3, 2, 1])
+    2.0
     """
     true = np.asarray(y_true, dtype=np.float64).reshape(-1)
     pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
@@ -110,20 +116,28 @@ def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]
     prediction has the same layout; both are reshaped to ``(n_rows, -1)``
     before column 0 is taken, which is a no-op for a single label.
 
-    Args:
-        predt: The Booster's predictions for ``dtrain``.
-        dtrain: The evaluated ``DMatrix``, whose labels are read back.
+    Parameters
+    ----------
+    predt : np.ndarray
+        The Booster's predictions for ``dtrain``.
+    dtrain : xgb.DMatrix
+        The evaluated ``DMatrix``, whose labels are read back.
 
-    Returns:
+    Returns
+    -------
+    tuple[str, float]
         ``("ccc_loss", value)`` as xgboost expects from a custom metric.
 
-    Raises:
-        ValueError: If the label and prediction element counts differ.
+    Raises
+    ------
+    ValueError
+        If the label and prediction element counts differ.
 
-    Example:
-        >>> dm = xgb.DMatrix(np.zeros((3, 2)), label=np.array([1.0, 2.0, 3.0]))
-        >>> ccc_loss_metric(np.array([1.1, 1.9, 3.2]), dm)
-        ('ccc_loss', 0.014084507042253502)
+    Examples
+    --------
+    >>> dm = xgb.DMatrix(np.zeros((3, 2)), label=np.array([1.0, 2.0, 3.0]))
+    >>> ccc_loss_metric(np.array([1.1, 1.9, 3.2]), dm)
+    ('ccc_loss', 0.014084507042253502)
     """
     label = np.asarray(dtrain.get_label(), dtype=np.float64)
     pred = np.asarray(predt, dtype=np.float64)
@@ -161,11 +175,12 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
 
         Called by xgboost after each boosting round.
 
-        Example:
-            >>> booster = xgb.train(
-            ...     params, dtrain, evals=[(dtrain, "train"), (dval, "val")],
-            ...     callbacks=[_WandbEvalCallback(head)],
-            ... )
+        Examples
+        --------
+        >>> booster = xgb.train(
+        ...     params, dtrain, evals=[(dtrain, "train"), (dval, "val")],
+        ...     callbacks=[_WandbEvalCallback(head)],
+        ... )
         """
         recorder = self._head._wandb_recorder
         if recorder is not None:
@@ -221,25 +236,26 @@ class XGBoostRegressor(MLModel):
     hyperparameters to roughly ``os.cpu_count() // njobs``; the value is
     passed through unchanged.
 
-    Example:
-        >>> config = MLConfig(
-        ...     factors=[alpha],            # factor objects
-        ...     labels=[fwd_return],        # label objects
-        ...     model_save_dir="checkpoints",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2024-01-01", train_end="2024-02-09",
-        ...     test_start="2024-02-10", test_end="2024-02-29",
-        ...     early_stopping=True, early_stopping_patience=5,
-        ...     hyperparameters={"num_boost_round": 20, "max_depth": 3},
-        ... )
-        >>> model = XGBoostRegressor(config)
-        >>> checkpoint = model.collect().train()
-        >>> checkpoint.name
-        'XGBoostRegressor_total.joblib'
-        >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
-        (5, 2, 1)
-        >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
+    Examples
+    --------
+    >>> config = MLConfig(
+    ...     factors=[alpha],            # factor objects
+    ...     labels=[fwd_return],        # label objects
+    ...     model_save_dir="checkpoints",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2024-01-01", train_end="2024-02-09",
+    ...     test_start="2024-02-10", test_end="2024-02-29",
+    ...     early_stopping=True, early_stopping_patience=5,
+    ...     hyperparameters={"num_boost_round": 20, "max_depth": 3},
+    ... )
+    >>> model = XGBoostRegressor(config)
+    >>> checkpoint = model.collect().train()
+    >>> checkpoint.name
+    XGBoostRegressor_total.joblib
+    >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
+    (5, 2, 1)
+    >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
     """
 
     DEFAULT_PARAMS: dict = {
@@ -267,8 +283,10 @@ class XGBoostRegressor(MLModel):
     def _normalize_aliases(hyperparameters: dict) -> dict:
         """Return a copy of ``hyperparameters`` with aliases renamed to native keys.
 
-        Raises:
-            ValueError: If an alias and its native key are both present.
+        Raises
+        ------
+        ValueError
+            If an alias and its native key are both present.
         """
         user = dict(hyperparameters)
         for alias, canonical in _PARAM_ALIASES.items():
@@ -291,8 +309,10 @@ class XGBoostRegressor(MLModel):
         Aliases are normalised first, then ``num_boost_round`` is split off,
         then the remaining keys override ``DEFAULT_PARAMS`` and the seed.
 
-        Raises:
-            ValueError: If ``num_boost_round`` is below 1.
+        Raises
+        ------
+        ValueError
+            If ``num_boost_round`` is below 1.
         """
         user = self._normalize_aliases(hyperparameters)
         num_boost_round = int(
@@ -340,8 +360,10 @@ class XGBoostRegressor(MLModel):
     ) -> None:
         """Train the Booster with ``xgb.train`` and record the run's summary.
 
-        Raises:
-            ValueError: If the training segment has no row with finite labels.
+        Raises
+        ------
+        ValueError
+            If the training segment has no row with finite labels.
         """
         # Reset per training run: a deep-copied cross-validation fold would
         # otherwise inherit the last step of a previously trained head.
@@ -426,10 +448,12 @@ class XGBoostRegressor(MLModel):
         scores is skipped with a warning; a failure while building or logging
         the charts is also only a warning.
 
-        Raises:
-            ValueError: If a score key is not ``f<index>`` for one of the
-                factors, which means the Booster was not trained on these
-                columns.
+        Raises
+        ------
+        ValueError
+            If a score key is not ``f<index>`` for one of the
+            factors, which means the Booster was not trained on these
+            columns.
         """
         booster_type = str((self._params or {}).get("booster", "gbtree"))
         if booster_type == "gblinear":

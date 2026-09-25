@@ -114,12 +114,17 @@ def _build_configs(
     ``--universe`` category has to be resolved; ``__main__`` passes the one
     it has already loaded so the table is read once.
 
-    Args:
-        args: Parsed command-line arguments.
-        catalog: An already-loaded ``UniverseCatalog``, or ``None`` to load
-            one on demand when a category is requested.
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+    catalog
+        An already-loaded ``UniverseCatalog``, or ``None`` to load
+        one on demand when a category is requested.
 
-    Returns:
+    Returns
+    -------
+    tuple[AcquisitionConfig, DatasetConfig]
         An ``(acquisition_config, dataset_config)`` pair. The dataset config
         is built for every frequency but only used for ``1d`` and ``1m``.
     """

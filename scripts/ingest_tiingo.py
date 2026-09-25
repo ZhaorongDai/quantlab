@@ -80,12 +80,17 @@ def _build_configs(
     never built the reference table. ``__main__`` passes the catalog it has
     already loaded so the table is read once.
 
-    Args:
-        args: Parsed command-line arguments.
-        catalog: An already-loaded ``UniverseCatalog``, or ``None`` to load
-            one on demand when a category is requested.
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+    catalog
+        An already-loaded ``UniverseCatalog``, or ``None`` to load
+        one on demand when a category is requested.
 
-    Returns:
+    Returns
+    -------
+    tuple[AcquisitionConfig, DatasetConfig]
         An ``(acquisition_config, dataset_config)`` pair for the same roster
         and date window.
     """

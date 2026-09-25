@@ -68,15 +68,16 @@ class MarketSpec:
     bodies read them from ``self.MARKET`` and never spell them out, so a new
     market is a new spec rather than a change to the base class.
 
-    Example:
-        >>> spec = MarketSpec(
-        ...     fill_price_column="open",
-        ...     valuation_price_column="close",
-        ...     trading_days_per_year=252,
-        ...     session_minutes_per_day=390,
-        ... )
-        >>> spec.year_freq("1D")
-        Timedelta('252 days 00:00:00')
+    Examples
+    --------
+    >>> spec = MarketSpec(
+    ...     fill_price_column="open",
+    ...     valuation_price_column="close",
+    ...     trading_days_per_year=252,
+    ...     session_minutes_per_day=390,
+    ... )
+    >>> spec.year_freq("1D")
+    Timedelta('252 days 00:00:00')
     """
 
     fill_price_column: str
@@ -96,23 +97,30 @@ class MarketSpec:
         the bar's days, capped at ``trading_days_per_year``. The function is
         continuous at one day and non-increasing in the interval.
 
-        Args:
-            bar_interval: Anything ``pd.Timedelta`` accepts, such as
-                ``"1D"``, ``"5min"`` or a ``numpy.timedelta64``.
+        Parameters
+        ----------
+        bar_interval
+            Anything ``pd.Timedelta`` accepts, such as
+            ``"1D"``, ``"5min"`` or a ``numpy.timedelta64``.
 
-        Returns:
+        Returns
+        -------
+        pd.Timedelta
             The year length as a ``pd.Timedelta``.
 
-        Raises:
-            ValueError: If ``bar_interval`` is not positive.
+        Raises
+        ------
+        ValueError
+            If ``bar_interval`` is not positive.
 
-        Example:
-            >>> spec.year_freq("1min") / pd.Timedelta("1min")
-            98280.0
-            >>> spec.year_freq("1D") / pd.Timedelta("1D")
-            252.0
-            >>> round(spec.year_freq("7D") / pd.Timedelta("7D"), 2)
-            52.18
+        Examples
+        --------
+        >>> spec.year_freq("1min") / pd.Timedelta("1min")
+        98280.0
+        >>> spec.year_freq("1D") / pd.Timedelta("1D")
+        252.0
+        >>> round(spec.year_freq("7D") / pd.Timedelta("7D"), 2)
+        52.18
         """
         interval = pd.Timedelta(bar_interval)
         if interval <= pd.Timedelta(0):
@@ -145,14 +153,15 @@ class SimulationResult:
     holdings. ``native`` is the engine's own result object and is read only
     by the engine that produced it.
 
-    Example:
-        >>> sim = result.simulation  # from ``BaseBacktester.run()``
-        >>> sim.value.dims, int(sim.value.values[0])
-        (('timestamp',), 1000000)
-        >>> list(sim.orders.data_vars)
-        ['timestamp', 'symbol', 'size', 'price', 'fees', 'side']
-        >>> sim.bar_interval
-        np.timedelta64(86400000000000,'ns')
+    Examples
+    --------
+    >>> sim = result.simulation  # from ``BaseBacktester.run()``
+    >>> sim.value.dims, int(sim.value.values[0])
+    (('timestamp',), 1000000)
+    >>> list(sim.orders.data_vars)
+    ['timestamp', 'symbol', 'size', 'price', 'fees', 'side']
+    >>> sim.bar_interval
+    np.timedelta64(86400000000000,'ns')
     """
 
     value: xr.DataArray
@@ -173,14 +182,15 @@ class BacktestResult:
     covering exactly the backtest window; ``metrics`` is the same mapping
     written to ``metrics.json``.
 
-    Example:
-        >>> result = backtester.run()
-        >>> sorted(p.name for p in result.run_dir.iterdir())
-        ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
-         'metrics.json', 'report.html', 'weights.zarr']
-        >>> sorted(result.metrics)
-        ['in_sample', 'in_sample_range', 'notes', 'out_of_sample',
-         'out_of_sample_ranges', 'training_window', 'whole']
+    Examples
+    --------
+    >>> result = backtester.run()
+    >>> sorted(p.name for p in result.run_dir.iterdir())
+    ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
+     'metrics.json', 'report.html', 'weights.zarr']
+    >>> sorted(result.metrics)
+    ['in_sample', 'in_sample_range', 'notes', 'out_of_sample',
+     'out_of_sample_ranges', 'training_window', 'whole']
     """
 
     run_dir: Path
@@ -214,13 +224,14 @@ class CVBacktestResult:
     them. ``metrics`` mirrors ``metrics.json`` with the keys ``stitched``,
     ``folds`` and ``notes``.
 
-    Example:
-        >>> cv = backtester.run_cv()
-        >>> len(cv.folds), sorted(cv.metrics)
-        (8, ['folds', 'notes', 'stitched'])
-        >>> sorted(cv.metrics["stitched"])
-        ['in_sample', 'in_sample_ranges', 'out_of_sample', 'out_of_sample_ranges',
-         'training_windows', 'whole']
+    Examples
+    --------
+    >>> cv = backtester.run_cv()
+    >>> len(cv.folds), sorted(cv.metrics)
+    (8, ['folds', 'notes', 'stitched'])
+    >>> sorted(cv.metrics["stitched"])
+    ['in_sample', 'in_sample_ranges', 'out_of_sample', 'out_of_sample_ranges',
+     'training_windows', 'whole']
     """
 
     run_dir: Path
@@ -246,18 +257,19 @@ class BaseBacktester(ABC):
     dates and predict, generate signals, simulate, compute metrics, then
     write the run directory.
 
-    Example:
-        A concrete class over the vectorbt engine needs only three members::
+    Examples
+    --------
+    A concrete class over the vectorbt engine needs only three members::
 
-            class EqualWeightBacktester(VectorBtBacktester):
-                config_cls = BacktestConfig
-                MARKET = MarketSpec("open", "close", 252, 390)
+        class EqualWeightBacktester(VectorBtBacktester):
+            config_cls = BacktestConfig
+            MARKET = MarketSpec("open", "close", 252, 390)
 
-                def _generate_signals(self, predictions, prices):
-                    ...  # return a ``weight`` panel on (timestamp, symbol)
+            def _generate_signals(self, predictions, prices):
+                ...  # return a ``weight`` panel on (timestamp, symbol)
 
-        >>> backtester = EqualWeightBacktester(config)
-        >>> result = backtester.run()
+    >>> backtester = EqualWeightBacktester(config)
+    >>> result = backtester.run()
     """
 
     MARKET: MarketSpec | None = None
@@ -290,10 +302,11 @@ class BaseBacktester(ABC):
         exists beside the store, ``label()`` falls back to each symbol's own
         spelling, so panels from other vendors are unaffected.
 
-        Example:
-            >>> from datetime import date
-            >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
-            ['AAA', 'BBB']
+        Examples
+        --------
+        >>> from datetime import date
+        >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
+        ['AAA', 'BBB']
         """
         if self._ticker_lookup is None:
             self._ticker_lookup = CrspTickerLookup.beside_store(
@@ -309,20 +322,22 @@ class BaseBacktester(ABC):
         Concrete classes satisfy it with a plain class attribute; the
         ``config`` setter checks ``isinstance(config, config_cls)`` first.
 
-        Example:
-            >>> class MyBacktester(VectorBtBacktester):
-            ...     config_cls = BacktestConfig
-            ...     MARKET = MarketSpec("open", "close", 252, 390)
-            ...     def _generate_signals(self, predictions, prices): ...
+        Examples
+        --------
+        >>> class MyBacktester(VectorBtBacktester):
+        ...     config_cls = BacktestConfig
+        ...     MARKET = MarketSpec("open", "close", 252, 390)
+        ...     def _generate_signals(self, predictions, prices): ...
         """
 
     @property
     def config(self) -> BacktestConfig:
         """The validated config this backtester was built with.
 
-        Example:
-            >>> backtester.config.start_date, backtester.config.rebalance_periods
-            ('2024-02-12', 5)
+        Examples
+        --------
+        >>> backtester.config.start_date, backtester.config.rebalance_periods
+        ('2024-02-12', 5)
         """
         return self._config
 
@@ -340,21 +355,26 @@ class BaseBacktester(ABC):
         same run from any working directory. ``config.name`` is set to this
         class's import path and ``_validate_config`` runs last.
 
-        Raises:
-            TypeError: If ``config`` is not a ``config_cls``, ``MARKET`` is
-                unset, or ``config.model`` is not a ``BaseModel``.
-            ValueError: If ``model_mode``, the load-mode paths,
-                ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``
-                or the date order are invalid.
-            NotImplementedError: If ``benchmark_dataset`` is supplied.
+        Raises
+        ------
+        TypeError
+            If ``config`` is not a ``config_cls``, ``MARKET`` is
+            unset, or ``config.model`` is not a ``BaseModel``.
+        ValueError
+            If ``model_mode``, the load-mode paths,
+            ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``
+            or the date order are invalid.
+        NotImplementedError
+            If ``benchmark_dataset`` is supplied.
 
-        Example:
-            >>> backtester.config = config
-            >>> backtester.config.name
-            'mypkg.backtest.MyBacktester'
-            >>> MyBacktester(object())
-            Traceback (most recent call last):
-            TypeError: MyBacktester requires a BacktestConfig, got object
+        Examples
+        --------
+        >>> backtester.config = config
+        >>> backtester.config.name
+        mypkg.backtest.MyBacktester
+        >>> MyBacktester(object())
+        Traceback (most recent call last):
+        TypeError: MyBacktester requires a BacktestConfig, got object
         """
         # The type check must stay the first statement, as in BaseModel.
         if not isinstance(config, self.config_cls):
@@ -436,9 +456,10 @@ class BaseBacktester(ABC):
     def class_name(self) -> str:
         """The class's short name, used as the prefix of every message it logs.
 
-        Example:
-            >>> backtester.class_name
-            'MyBacktester'
+        Examples
+        --------
+        >>> backtester.class_name
+        MyBacktester
         """
         return self.__class__.__name__
 
@@ -446,9 +467,10 @@ class BaseBacktester(ABC):
     def import_path(self) -> str:
         """The dotted import path recorded as ``config.name``.
 
-        Example:
-            >>> backtester.import_path
-            'mypkg.backtest.MyBacktester'
+        Examples
+        --------
+        >>> backtester.import_path
+        mypkg.backtest.MyBacktester
         """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -461,12 +483,13 @@ class BaseBacktester(ABC):
         the run read, and after a train-mode run ``trained_checkpoint``, so a
         saved ``config.json`` can rebuild and replay the same run.
 
-        Example:
-            >>> cfg = backtester.get_config()
-            >>> cfg["name"], cfg["model_mode"], cfg["rebalance_periods"]
-            ('mypkg.backtest.MyBacktester', 'load', 5)
-            >>> sorted(cfg["data_fingerprint"])  # present once run() has read
-            ['factor[0]:PastReturnFactor', 'price_dataset']
+        Examples
+        --------
+        >>> cfg = backtester.get_config()
+        >>> cfg["name"], cfg["model_mode"], cfg["rebalance_periods"]
+        ('mypkg.backtest.MyBacktester', 'load', 5)
+        >>> sorted(cfg["data_fingerprint"])  # present once run() has read
+        ['factor[0]:PastReturnFactor', 'price_dataset']
         """
         cfg = self.config.to_dict()
         cfg["price_dataset"] = self.config.price_dataset.get_config()
@@ -546,32 +569,37 @@ class BaseBacktester(ABC):
         under ``config.output_dir``. Data fingerprints are compared against
         ``expected_fingerprint`` when one is set, also on the failure path.
 
-        Returns:
+        Returns
+        -------
+        BacktestResult
             A ``BacktestResult`` with the run directory, the predictions and
             weights on the window bars, the simulation and the metrics.
 
-        Raises:
-            ValueError: If ``model_mode="load"`` without ``config.checkpoint``,
-                or the window has no price bars.
+        Raises
+        ------
+        ValueError
+            If ``model_mode="load"`` without ``config.checkpoint``,
+            or the window has no price bars.
 
-        Example:
-            >>> backtester = MyBacktester(
-            ...     BacktestConfig(
-            ...         price_dataset=prices,
-            ...         model=model,
-            ...         model_mode="load",
-            ...         checkpoint="models/head.joblib",
-            ...         start_date="2024-02-12",
-            ...         end_date="2024-03-11",
-            ...         output_dir="runs",
-            ...         rebalance_periods=5,
-            ...     )
-            ... )
-            >>> result = backtester.run()
-            >>> result.weights["weight"].dims, result.simulation.value.sizes
-            (('timestamp', 'symbol'), Frozen({'timestamp': 21}))
-            >>> result.metrics["out_of_sample_ranges"]
-            [('2024-02-12', '2024-03-11')]
+        Examples
+        --------
+        >>> backtester = MyBacktester(
+        ...     BacktestConfig(
+        ...         price_dataset=prices,
+        ...         model=model,
+        ...         model_mode="load",
+        ...         checkpoint="models/head.joblib",
+        ...         start_date="2024-02-12",
+        ...         end_date="2024-03-11",
+        ...         output_dir="runs",
+        ...         rebalance_periods=5,
+        ...     )
+        ... )
+        >>> result = backtester.run()
+        >>> result.weights["weight"].dims, result.simulation.value.sizes
+        (('timestamp', 'symbol'), Frozen({'timestamp': 21}))
+        >>> result.metrics["out_of_sample_ranges"]
+        [('2024-02-12', '2024-03-11')]
         """
         if self.config.model_mode == "load" and self.config.checkpoint is None:
             raise ValueError(
@@ -648,35 +676,41 @@ class BaseBacktester(ABC):
         a checkpoint whose recorded training dates select different bars
         only logs a warning.
 
-        Returns:
+        Returns
+        -------
+        CVBacktestResult
             A ``CVBacktestResult`` with the run directory, the per-fold
             records, and the stitched weights, simulation and metrics.
 
-        Raises:
-            ValueError: If ``config.cv_project_dir`` is unset, ``model_mode``
-                is not ``"load"``, the manifest is malformed, no fold falls
-                inside the window, or the fold test segments are not
-                contiguous.
-            FileNotFoundError: If the manifest or a fold checkpoint is missing.
+        Raises
+        ------
+        ValueError
+            If ``config.cv_project_dir`` is unset, ``model_mode``
+            is not ``"load"``, the manifest is malformed, no fold falls
+            inside the window, or the fold test segments are not
+            contiguous.
+        FileNotFoundError
+            If the manifest or a fold checkpoint is missing.
 
-        Example:
-            >>> backtester = MyBacktester(
-            ...     BacktestConfig(
-            ...         price_dataset=prices,
-            ...         model=model,
-            ...         model_mode="load",
-            ...         cv_project_dir="models/head_trial_20260925",
-            ...         start_date="2024-02-12",
-            ...         end_date="2024-04-17",
-            ...         output_dir="runs",
-            ...         rebalance_periods=2,
-            ...     )
-            ... )
-            >>> cv = backtester.run_cv()
-            >>> len(cv.folds), cv.weights.sizes
-            (8, Frozen({'timestamp': 48, 'symbol': 6}))
-            >>> cv.metrics["stitched"]["in_sample_ranges"][:2]
-            [('2024-02-12', '2024-02-13'), ('2024-02-20', '2024-02-21')]
+        Examples
+        --------
+        >>> backtester = MyBacktester(
+        ...     BacktestConfig(
+        ...         price_dataset=prices,
+        ...         model=model,
+        ...         model_mode="load",
+        ...         cv_project_dir="models/head_trial_20260925",
+        ...         start_date="2024-02-12",
+        ...         end_date="2024-04-17",
+        ...         output_dir="runs",
+        ...         rebalance_periods=2,
+        ...     )
+        ... )
+        >>> cv = backtester.run_cv()
+        >>> len(cv.folds), cv.weights.sizes
+        (8, Frozen({'timestamp': 48, 'symbol': 6}))
+        >>> cv.metrics["stitched"]["in_sample_ranges"][:2]
+        [('2024-02-12', '2024-02-13'), ('2024-02-20', '2024-02-21')]
         """
         if self.config.cv_project_dir is None:
             raise ValueError(
@@ -836,13 +870,18 @@ class BaseBacktester(ABC):
         are kept under ``_train_bounds`` for ``_training_window``, which
         slices the model layer's way and needs them at full resolution.
 
-        Returns:
+        Returns
+        -------
+        list[dict]
             The folds sorted by ``fold``.
 
-        Raises:
-            FileNotFoundError: If the manifest does not exist.
-            ValueError: If the format version is unsupported, ``folds`` is
-                not a non-empty list, or a fold entry is invalid.
+        Raises
+        ------
+        FileNotFoundError
+            If the manifest does not exist.
+        ValueError
+            If the format version is unsupported, ``folds`` is
+            not a non-empty list, or a fold entry is invalid.
         """
         path = Path(self.config.cv_project_dir) / BaseModel.CV_FOLDS_FILENAME  # type: ignore[arg-type]
         if not path.is_file():
@@ -916,9 +955,11 @@ class BaseBacktester(ABC):
         Relative entries are never resolved against the working directory,
         which could silently load a same-named checkpoint of another run.
 
-        Raises:
-            FileNotFoundError: If neither candidate exists; the message
-                names both.
+        Raises
+        ------
+        FileNotFoundError
+            If neither candidate exists; the message
+            names both.
         """
         project_dir = Path(self.config.cv_project_dir)  # type: ignore[arg-type]
         recorded_path = Path(str(recorded))
@@ -940,9 +981,11 @@ class BaseBacktester(ABC):
         ISO date strings compare in time order. An info line lists the
         selection when some folds are dropped.
 
-        Raises:
-            ValueError: If no fold remains; the message gives the window and
-                the span of the manifest's test segments.
+        Raises
+        ------
+        ValueError
+            If no fold remains; the message gives the window and
+            the span of the manifest's test segments.
         """
         start = self._iso_date(self.config.start_date)
         end = self._iso_date(self.config.end_date)
@@ -975,9 +1018,11 @@ class BaseBacktester(ABC):
         by the stitched curve, a smaller one means bars traded by two
         models.
 
-        Raises:
-            ValueError: On a gap, an overlap, or a fold with no price bars;
-                the message names the folds and dates involved.
+        Raises
+        ------
+        ValueError
+            On a gap, an overlap, or a fold with no price bars;
+            the message names the folds and dates involved.
         """
         cal = np.asarray(calendar).astype("datetime64[ns]")
         one_day = np.timedelta64(1, "D")
@@ -1040,8 +1085,10 @@ class BaseBacktester(ABC):
         the benchmark and compute the metrics. The model must already be
         prepared.
 
-        Raises:
-            ValueError: If the window contains no price bars.
+        Raises
+        ------
+        ValueError
+            If the window contains no price bars.
         """
         predictions = self._align_and_predict(start_date, end_date, calendar)
 
@@ -1196,12 +1243,16 @@ class BaseBacktester(ABC):
         first, because rebuilding the network reads ``num_symbols`` from it;
         an ``MLModel`` checkpoint is the whole model and skips this.
 
-        Returns:
+        Returns
+        -------
+        dict | None
             The mapping read from the ``config.json`` beside the checkpoint,
             or ``None`` when there is none.
 
-        Raises:
-            FileNotFoundError: If ``checkpoint`` does not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If ``checkpoint`` does not exist.
         """
         model = self.config.model
         path = Path(checkpoint)
@@ -1223,8 +1274,10 @@ class BaseBacktester(ABC):
         is used as given, which is legitimate for a hand-copied checkpoint,
         so this only warns. Variable checks are the model layer's job.
 
-        Raises:
-            ValueError: If the file exists but is not a JSON object.
+        Raises
+        ------
+        ValueError
+            If the file exists but is not a JSON object.
         """
         sidecar = path.parent / "config.json"
         if not sidecar.is_file():
@@ -1339,8 +1392,10 @@ class BaseBacktester(ABC):
         shared with a factor whose dates change later. The price
         fingerprint is recorded here.
 
-        Raises:
-            ValueError: If either price column is missing from the store.
+        Raises
+        ------
+        ValueError
+            If either price column is missing from the store.
         """
         dataset = self.config.price_dataset
         dataset.config.start_date = start_date
@@ -1453,8 +1508,10 @@ class BaseBacktester(ABC):
         difference, and keys expected but not yet read are skipped, since
         "not read yet" is not "not read".
 
-        Args:
-            partial: Whether this is the failure-path comparison.
+        Parameters
+        ----------
+        partial : bool
+            Whether this is the failure-path comparison.
         """
         expected = self.expected_fingerprint
         if expected is None:
@@ -1533,8 +1590,10 @@ class BaseBacktester(ABC):
         (hold) or all-finite (rebalance), and a rebalance row's gross
         exposure, the sum of absolute weights, is at most 1.
 
-        Raises:
-            ValueError: On the first violated rule, naming the offending bar.
+        Raises
+        ------
+        ValueError
+            On the first violated rule, naming the offending bar.
         """
         if "weight" not in weights.data_vars:
             raise ValueError(
@@ -1769,8 +1828,10 @@ class BaseBacktester(ABC):
         before the fills keeps the bar's own profit or loss out of the
         ratio. An empty array is returned when there are no orders.
 
-        Raises:
-            ValueError: If an order timestamp is not on the equity axis.
+        Raises
+        ------
+        ValueError
+            If an order timestamp is not on the equity axis.
         """
         orders = simulation.orders
         if orders.sizes.get("order", 0) == 0:
@@ -2124,7 +2185,9 @@ class BaseBacktester(ABC):
         holds; nothing is selected or computed here, so a change in the
         metric set cannot make the report raise and discard the staged run.
 
-        Returns:
+        Returns
+        -------
+        Path
             The final run directory.
         """
         # Everything is written to a staging directory that is renamed into
@@ -2176,9 +2239,11 @@ class BaseBacktester(ABC):
         and the error re-raised, so ``output_dir`` only ever contains
         complete run directories that a loader can safely rebuild from.
 
-        Raises:
-            RuntimeError: If the final directory already exists; it is never
-                overwritten.
+        Raises
+        ------
+        RuntimeError
+            If the final directory already exists; it is never
+            overwritten.
         """
         import shutil
 
@@ -2268,7 +2333,9 @@ class BaseBacktester(ABC):
         ``folds/fold_{i}/`` as ``weights.zarr`` and ``equity.zarr``, where
         ``i`` is the manifest's fold number.
 
-        Returns:
+        Returns
+        -------
+        Path
             The final run directory.
         """
         # As in run(): write to a staging directory, rename when complete.

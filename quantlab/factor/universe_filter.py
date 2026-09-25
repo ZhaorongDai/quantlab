@@ -55,10 +55,14 @@ def _mask_cross_sectional_inputs(
     callers must pass a freshly built graph; rewriting a graph twice masks it
     twice.
 
-    Args:
-        ops: The ops of a freshly built factor graph.
+    Parameters
+    ----------
+    ops : list[OpBase]
+        The ops of a freshly built factor graph.
 
-    Returns:
+    Returns
+    -------
+    tuple[list[OpBase], bool]
         ``(ops, uses_mask)``: the topologically sorted ops and whether a mask
         ``Input`` was added. When the graph has no cross-sectional operator
         the ops are returned unchanged and no mask input is declared, because
@@ -100,24 +104,33 @@ class UniverseFilteredFactor(FactorKunQuant):
     mask; ``read()`` recomputes the mask from the dataset and applies it, so
     a store read through the wrapper must have been written by the wrapper.
 
-    Args:
-        factor: The KunQuant factor or label to wrap. Polars factors are
-            refused because their cross-sectional logic is not a KunQuant
-            graph and cannot be rewritten; already-wrapped factors are
-            refused because the two masks would silently compose.
-        min_price: Minimum raw close for a symbol to be in the universe.
-        min_dollar_volume: Minimum trailing mean of raw ``close * volume``.
-        window: Number of bars the dollar-volume mean is taken over.
+    Parameters
+    ----------
+    factor : FactorKunQuant
+        The KunQuant factor or label to wrap. Polars factors are
+        refused because their cross-sectional logic is not a KunQuant
+        graph and cannot be rewritten; already-wrapped factors are
+        refused because the two masks would silently compose.
+    min_price : float
+        Minimum raw close for a symbol to be in the universe.
+    min_dollar_volume : float
+        Minimum trailing mean of raw ``close * volume``.
+    window : int
+        Number of bars the dollar-volume mean is taken over.
 
-    Raises:
-        TypeError: If ``factor`` is not a ``FactorKunQuant`` or is itself a
-            ``UniverseFilteredFactor``.
-        ValueError: If ``window`` is less than 1.
+    Raises
+    ------
+    TypeError
+        If ``factor`` is not a ``FactorKunQuant`` or is itself a
+        ``UniverseFilteredFactor``.
+    ValueError
+        If ``window`` is less than 1.
 
-    Example:
-        >>> factors = [UniverseFilteredFactor(Alpha101Stock(factor_config))]
-        >>> labels = [UniverseFilteredFactor(Return(label_config))]
-        >>> model = XGBoostRegressor(MLConfig(factors=factors, labels=labels, ...))
+    Examples
+    --------
+    >>> factors = [UniverseFilteredFactor(Alpha101Stock(factor_config))]
+    >>> labels = [UniverseFilteredFactor(Return(label_config))]
+    >>> model = XGBoostRegressor(MLConfig(factors=factors, labels=labels, ...))
     """
 
     #: Raw columns the mask reads, never the adjusted ones: adjusted history
@@ -215,10 +228,11 @@ class UniverseFilteredFactor(FactorKunQuant):
         ``config.data_columns`` all resolve on the inner factor, which is what
         makes the wrapper a drop-in replacement.
 
-        Example:
-            >>> wrapped = UniverseFilteredFactor(inner, window=3)
-            >>> wrapped.config is inner.config
-            True
+        Examples
+        --------
+        >>> wrapped = UniverseFilteredFactor(inner, window=3)
+        >>> wrapped.config is inner.config
+        True
         """
         return self.factor.config
 
@@ -226,12 +240,13 @@ class UniverseFilteredFactor(FactorKunQuant):
     def config(self, value):
         """Assign the config to the inner factor, then re-widen its dates.
 
-        Example:
-            >>> wrapped.config = new_config        # start_date "2024-02-01"
-            >>> wrapped.factor.config is new_config
-            True
-            >>> new_config.dataset.config.start_date   # widened for warm-up
-            '2024-01-16'
+        Examples
+        --------
+        >>> wrapped.config = new_config        # start_date "2024-02-01"
+        >>> wrapped.factor.config is new_config
+        True
+        >>> new_config.dataset.config.start_date   # widened for warm-up
+        '2024-01-16'
         """
         self.factor.config = value
         self._reset_dataset_config()
@@ -285,33 +300,40 @@ class UniverseFilteredFactor(FactorKunQuant):
     def compute_universe_mask(self, panel: xr.Dataset) -> xr.DataArray:
         """Compute the ``(timestamp, symbol)`` mask from raw close and volume.
 
-        Args:
-            panel: The dataset panel; must carry the raw ``close`` and
-                ``volume`` variables.
+        Parameters
+        ----------
+        panel : xr.Dataset
+            The dataset panel; must carry the raw ``close`` and
+            ``volume`` variables.
 
-        Returns:
+        Returns
+        -------
+        xr.DataArray
             A ``DataArray`` named ``universe_mask`` that is 1.0 where the
             symbol is in the universe and NaN elsewhere. A window that is not
             yet full, or that contains a NaN, counts as out of the universe.
 
-        Raises:
-            ValueError: If either raw column is missing. Failing loudly is
-                preferred to returning an all-out (or all-in) mask that would
-                let the pipeline quietly produce empty results.
+        Raises
+        ------
+        ValueError
+            If either raw column is missing. Failing loudly is
+            preferred to returning an all-out (or all-in) mask that would
+            let the pipeline quietly produce empty results.
 
-        Example:
-            >>> panel = xr.Dataset(
-            ...     {"close": (("timestamp", "symbol"), [[10.0, 4.0]] * 4),
-            ...      "volume": (("timestamp", "symbol"), [[2e5, 2e5]] * 4)},
-            ...     coords={"timestamp": pd.bdate_range("2024-01-01", periods=4),
-            ...             "symbol": ["AAA", "BBB"]},
-            ... )
-            >>> wrapped = UniverseFilteredFactor(inner, window=3)
-            >>> wrapped.compute_universe_mask(panel).values   # BBB is under $5
-            array([[nan, nan],
-                   [nan, nan],
-                   [ 1., nan],
-                   [ 1., nan]])
+        Examples
+        --------
+        >>> panel = xr.Dataset(
+        ...     {"close": (("timestamp", "symbol"), [[10.0, 4.0]] * 4),
+        ...      "volume": (("timestamp", "symbol"), [[2e5, 2e5]] * 4)},
+        ...     coords={"timestamp": pd.bdate_range("2024-01-01", periods=4),
+        ...             "symbol": ["AAA", "BBB"]},
+        ... )
+        >>> wrapped = UniverseFilteredFactor(inner, window=3)
+        >>> wrapped.compute_universe_mask(panel).values   # BBB is under $5
+        array([[nan, nan],
+               [nan, nan],
+               [ 1., nan],
+               [ 1., nan]])
         """
         for column in (self.PRICE_COLUMN, self.VOLUME_COLUMN):
             if column not in panel.data_vars:
@@ -358,16 +380,19 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         The graph always runs from bar 0; see the module docstring.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> features = wrapped.cal().get_features()
-            >>> features.sizes                     # the symbol axis is intact
-            Frozen({'timestamp': 21, 'symbol': 16})
-            >>> # a symbol under $5 all window is an all-NaN column, not dropped
-            >>> bool(features["rank_close"].sel(symbol="PENY").isnull().all())
-            True
+        Examples
+        --------
+        >>> features = wrapped.cal().get_features()
+        >>> features.sizes                     # the symbol axis is intact
+        Frozen({'timestamp': 21, 'symbol': 16})
+        >>> # a symbol under $5 all window is an all-NaN column, not dropped
+        >>> bool(features["rank_close"].sel(symbol="PENY").isnull().all())
+        True
         """
         input_dict, symbols, timestamps = self.config.dataset.to_kunquant(
             data_columns=self.config.data_columns
@@ -415,16 +440,21 @@ class UniverseFilteredFactor(FactorKunQuant):
         because its cross-sectional values already include out-of-universe
         symbols.
 
-        Args:
-            overwrite: Re-open the stores even if cached data is held.
+        Parameters
+        ----------
+        overwrite : bool
+            Re-open the stores even if cached data is held.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> wrapped.cal().save(mode="w")
-            >>> wrapped.read().get_features().sizes
-            Frozen({'timestamp': 21, 'symbol': 16})
+        Examples
+        --------
+        >>> wrapped.cal().save(mode="w")
+        >>> wrapped.read().get_features().sizes
+        Frozen({'timestamp': 21, 'symbol': 16})
         """
         self.config.dataset.read(overwrite=overwrite)
         self._universe_mask = self.compute_universe_mask(
@@ -444,14 +474,17 @@ class UniverseFilteredFactor(FactorKunQuant):
         operator; otherwise KunQuant has pruned the mask input and the lookup
         would fail.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> wrapped.init_stream() is wrapped     # config.mode == "stream"
-            True
-            >>> "universe_mask" in wrapped._buffer_name_to_id
-            True
+        Examples
+        --------
+        >>> wrapped.init_stream() is wrapped     # config.mode == "stream"
+        True
+        >>> "universe_mask" in wrapped._buffer_name_to_id
+        True
         """
         super().init_stream()
         if self._uses_mask:
@@ -470,23 +503,32 @@ class UniverseFilteredFactor(FactorKunQuant):
         path's ``min_periods=window`` semantics exactly; the two paths must
         agree or streaming and batch factor values would diverge.
 
-        Args:
-            data: Column name to array. Besides ``config.data_columns`` it
-                must carry the raw ``close`` and ``volume`` keys, which the
-                mask reads; the inherited push sends only ``data_columns``.
-            timestamp: The bar's timestamp.
-            symbols: Symbol coordinate values, in array order.
+        Parameters
+        ----------
+        data : dict[str, np.ndarray]
+            Column name to array. Besides ``config.data_columns`` it
+            must carry the raw ``close`` and ``volume`` keys, which the
+            mask reads; the inherited push sends only ``data_columns``.
+        timestamp : int
+            The bar's timestamp.
+        symbols : list[str]
+            Symbol coordinate values, in array order.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Raises:
-            ValueError: If ``close`` or ``volume`` is missing from ``data``.
+        Raises
+        ------
+        ValueError
+            If ``close`` or ``volume`` is missing from ``data``.
 
-        Example:
-            >>> bar = {"adjClose": adj[step], "close": close[step], "volume": vol[step]}
-            >>> wrapped.cal_stream(bar, step, symbols).get_features().sizes
-            Frozen({'timestamp': 1, 'symbol': 16})
+        Examples
+        --------
+        >>> bar = {"adjClose": adj[step], "close": close[step], "volume": vol[step]}
+        >>> wrapped.cal_stream(bar, step, symbols).get_features().sizes
+        Frozen({'timestamp': 1, 'symbol': 16})
         """
         missing = [
             column
@@ -546,9 +588,11 @@ class UniverseFilteredFactor(FactorKunQuant):
     def _assert_computed(self) -> None:
         """Raise if no mask has been computed yet.
 
-        Raises:
-            RuntimeError: If none of ``cal()``, ``read()`` or ``cal_stream()``
-                has run.
+        Raises
+        ------
+        RuntimeError
+            If none of ``cal()``, ``read()`` or ``cal_stream()``
+            has run.
         """
         if self._universe_mask is None:
             raise RuntimeError(
@@ -608,12 +652,13 @@ class UniverseFilteredFactor(FactorKunQuant):
         belongs to the inner factor, and a copy would rebuild as a second
         dataset object reading the same store.
 
-        Example:
-            >>> cfg = wrapped.get_config()
-            >>> sorted(cfg)
-            ['factor', 'min_dollar_volume', 'min_price', 'name', 'window']
-            >>> cfg["window"], cfg["min_price"]
-            (3, 5.0)
+        Examples
+        --------
+        >>> cfg = wrapped.get_config()
+        >>> sorted(cfg)
+        ['factor', 'min_dollar_volume', 'min_price', 'name', 'window']
+        >>> cfg["window"], cfg["min_price"]
+        (3, 5.0)
         """
         return {
             "name": self.import_path,
@@ -635,24 +680,31 @@ class UniverseFilteredFactor(FactorKunQuant):
         filled from the current default: a default that changes later would
         silently rebuild a stored run with a different universe.
 
-        Args:
-            config: A dict as produced by ``get_config()``.
+        Parameters
+        ----------
+        config : dict
+            A dict as produced by ``get_config()``.
 
-        Returns:
+        Returns
+        -------
+        UniverseFilteredFactor
             A new ``UniverseFilteredFactor``.
 
-        Raises:
-            ValueError: If the ``factor`` key is absent, or the parameter keys
-                do not exactly match ``min_price``, ``min_dollar_volume`` and
-                ``window``.
+        Raises
+        ------
+        ValueError
+            If the ``factor`` key is absent, or the parameter keys
+            do not exactly match ``min_price``, ``min_dollar_volume`` and
+            ``window``.
 
-        Example:
-            >>> rebuilt = UniverseFilteredFactor.from_config(wrapped.get_config())
-            >>> rebuilt.window, rebuilt.min_price, rebuilt.min_dollar_volume
-            (3, 5.0, 1000000.0)
-            >>> UniverseFilteredFactor.from_config({"factor": inner_cfg, "window": 3})
-            Traceback (most recent call last):
-            ValueError: UniverseFilteredFactor.from_config: refusing to rebuild -- ...
+        Examples
+        --------
+        >>> rebuilt = UniverseFilteredFactor.from_config(wrapped.get_config())
+        >>> rebuilt.window, rebuilt.min_price, rebuilt.min_dollar_volume
+        (3, 5.0, 1000000.0)
+        >>> UniverseFilteredFactor.from_config({"factor": inner_cfg, "window": 3})
+        Traceback (most recent call last):
+        ValueError: UniverseFilteredFactor.from_config: refusing to rebuild -- ...
         """
         config = dict(config)
         config.pop("name", None)

@@ -50,19 +50,20 @@ class SP500ConstituentDataset(IndexConstituentDataset):
     axis holds tickers. The source URLs and the coverage constant live on
     the fetcher, not here.
 
-    Example:
-        Building the panel fetches the change log over the network (or reads
-        the snapshot cached under ``cache_dir``):
+    Examples
+    --------
+    Building the panel fetches the change log over the network (or reads
+    the snapshot cached under ``cache_dir``):
 
-        >>> config = ConstituentDatasetConfig(
-        ...     zarr_file_path="data/reference/sp500_constituent.zarr",
-        ...     cache_dir="data/reference/_cache",
-        ...     start_date="2015-01-01",
-        ...     end_date="2024-12-31",
-        ...     as_of="2024-12-31",
-        ... )
-        >>> SP500ConstituentDataset(config).from_raw_data().save()
-        >>> panel = SP500ConstituentDataset(config).read().get_xarray_dataset()
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/sp500_constituent.zarr",
+    ...     cache_dir="data/reference/_cache",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     as_of="2024-12-31",
+    ... )
+    >>> SP500ConstituentDataset(config).from_raw_data().save()
+    >>> panel = SP500ConstituentDataset(config).read().get_xarray_dataset()
     """
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
@@ -93,18 +94,19 @@ class Nasdaq100ConstituentDataset(IndexConstituentDataset):
     The index carries several share classes of some issuers (for example
     GOOGL and GOOG), so the member count on a given day exceeds one hundred.
 
-    Example:
-        Building the panel fetches the change log over the network (or reads
-        the snapshot cached under ``cache_dir``):
+    Examples
+    --------
+    Building the panel fetches the change log over the network (or reads
+    the snapshot cached under ``cache_dir``):
 
-        >>> config = ConstituentDatasetConfig(
-        ...     zarr_file_path="data/reference/nasdaq100_constituent.zarr",
-        ...     cache_dir="data/reference/_cache",
-        ...     start_date="2015-01-01",
-        ...     end_date="2024-12-31",
-        ...     as_of="2024-12-31",
-        ... )
-        >>> Nasdaq100ConstituentDataset(config).from_raw_data().save()
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/nasdaq100_constituent.zarr",
+    ...     cache_dir="data/reference/_cache",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     as_of="2024-12-31",
+    ... )
+    >>> Nasdaq100ConstituentDataset(config).from_raw_data().save()
     """
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
@@ -136,18 +138,19 @@ class CrspSP500ConstituentDataset(IndexConstituentDataset):
     tier's product end, so the panel's right edge is that product end and
     never today.
 
-    Example:
-        Needs a CRSP reference directory on disk; no WRDS connection is made:
+    Examples
+    --------
+    Needs a CRSP reference directory on disk; no WRDS connection is made:
 
-        >>> config = ConstituentDatasetConfig(
-        ...     zarr_file_path="data/reference/crsp_sp500.zarr",
-        ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
-        ...     start_date="2015-01-01",
-        ...     end_date="2024-12-31",
-        ... )
-        >>> panel = CrspSP500ConstituentDataset(config).from_raw_data()
-        >>> panel.get_xarray_dataset()["symbol"].dtype
-        dtype('int64')
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/crsp_sp500.zarr",
+    ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ... )
+    >>> panel = CrspSP500ConstituentDataset(config).from_raw_data()
+    >>> panel.get_xarray_dataset()["symbol"].dtype
+    dtype('int64')
     """
 
     #: The ``CrspMembership`` universe this class binds to, named once so the
@@ -192,17 +195,18 @@ class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
     that tolerated the gap says so in its own ``config.json``. Only gaps
     inside this panel's configured window count.
 
-    Example:
-        Needs a CRSP reference directory on disk; no WRDS connection is made:
+    Examples
+    --------
+    Needs a CRSP reference directory on disk; no WRDS connection is made:
 
-        >>> config = ConstituentDatasetConfig(
-        ...     zarr_file_path="data/reference/compustat_nasdaq100.zarr",
-        ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
-        ...     start_date="2015-01-01",
-        ...     end_date="2024-12-31",
-        ...     kwargs={"allow_unlinked": True},
-        ... )
-        >>> CompustatNasdaq100ConstituentDataset(config).from_raw_data().save()
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/compustat_nasdaq100.zarr",
+    ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     kwargs={"allow_unlinked": True},
+    ... )
+    >>> CompustatNasdaq100ConstituentDataset(config).from_raw_data().save()
     """
 
     #: The ``CrspMembership`` universe this class binds to.
@@ -248,17 +252,18 @@ class CrspMarketConstituentDataset(IndexConstituentDataset):
     identity: it is read from ``kwargs["security_filter"]`` (default
     ``"equity_common"``) and therefore recorded in the run's ``config.json``.
 
-    Example:
-        Needs a CRSP reference directory on disk; no WRDS connection is made:
+    Examples
+    --------
+    Needs a CRSP reference directory on disk; no WRDS connection is made:
 
-        >>> config = ConstituentDatasetConfig(
-        ...     zarr_file_path="data/reference/crsp_market.zarr",
-        ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
-        ...     start_date="2020-01-01",
-        ...     end_date="2024-12-31",
-        ...     kwargs={"security_filter": "equity_common"},
-        ... )
-        >>> CrspMarketConstituentDataset(config).from_raw_data().save()
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/crsp_market.zarr",
+    ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2020-01-01",
+    ...     end_date="2024-12-31",
+    ...     kwargs={"security_filter": "equity_common"},
+    ... )
+    >>> CrspMarketConstituentDataset(config).from_raw_data().save()
     """
 
     #: Start of CRSP's daily file; a whole-market universe cannot be answered

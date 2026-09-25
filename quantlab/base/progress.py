@@ -77,20 +77,29 @@ class ProgressEvent:
     text. The dataclass is frozen so one reporter cannot mutate an event that
     another reporter is about to receive.
 
-    Attributes:
-        kind: The event kind, one of ``EVENT_KINDS``.
-        vendor: The vendor token, or the dataset's stand-in for one.
-        completed: How many units have finished so far.
-        total: How many units the pass will process.
-        symbols: The symbols the event concerns, when it concerns any.
-        message: A human-readable description, already scrubbed.
-        detail: Structured extras specific to the kind.
+    Attributes
+    ----------
+    kind : str
+        The event kind, one of ``EVENT_KINDS``.
+    vendor : str
+        The vendor token, or the dataset's stand-in for one.
+    completed : int
+        How many units have finished so far.
+    total : int
+        How many units the pass will process.
+    symbols : tuple[str, ...]
+        The symbols the event concerns, when it concerns any.
+    message : str | None
+        A human-readable description, already scrubbed.
+    detail : dict
+        Structured extras specific to the kind.
 
-    Example:
-        >>> event = ProgressEvent(kind="batch_completed", vendor="tiingo",
-        ...                       completed=3, total=10, symbols=("AAPL",))
-        >>> event.kind, event.completed, event.total
-        ('batch_completed', 3, 10)
+    Examples
+    --------
+    >>> event = ProgressEvent(kind="batch_completed", vendor="tiingo",
+    ...                       completed=3, total=10, symbols=("AAPL",))
+    >>> event.kind, event.completed, event.total
+    ('batch_completed', 3, 10)
     """
 
     kind: str
@@ -110,10 +119,11 @@ class ProgressReporter(ABC):
     design: cancellation goes through ``CancelToken``, so a reporter that only
     wants to log cannot halt a multi-hour backfill by accident.
 
-    Example:
-        >>> class PrintReporter(ProgressReporter):
-        ...     def emit(self, event: ProgressEvent) -> None:
-        ...         print(event.kind, event.completed, event.total)
+    Examples
+    --------
+    >>> class PrintReporter(ProgressReporter):
+    ...     def emit(self, event: ProgressEvent) -> None:
+    ...         print(event.kind, event.completed, event.total)
     """
 
     @abstractmethod
@@ -123,26 +133,28 @@ class ProgressReporter(ABC):
         Should not raise. If it does, the caller catches and logs the
         exception rather than letting a reporting bug end a backfill.
 
-        Example:
-            >>> class ListReporter(ProgressReporter):
-            ...     def __init__(self):
-            ...         self.events = []
-            ...     def emit(self, event: ProgressEvent) -> None:
-            ...         self.events.append(event)
+        Examples
+        --------
+        >>> class ListReporter(ProgressReporter):
+        ...     def __init__(self):
+        ...         self.events = []
+        ...     def emit(self, event: ProgressEvent) -> None:
+        ...         self.events.append(event)
         """
         ...
 
     def close(self) -> None:
         """Release anything ``emit`` acquired. The default is a no-op.
 
-        Example:
-            >>> class FileReporter(ProgressReporter):
-            ...     def __init__(self, path):
-            ...         self._handle = open(path, "a")
-            ...     def emit(self, event: ProgressEvent) -> None:
-            ...         print(event.kind, file=self._handle)
-            ...     def close(self) -> None:
-            ...         self._handle.close()
+        Examples
+        --------
+        >>> class FileReporter(ProgressReporter):
+        ...     def __init__(self, path):
+        ...         self._handle = open(path, "a")
+        ...     def emit(self, event: ProgressEvent) -> None:
+        ...         print(event.kind, file=self._handle)
+        ...     def close(self) -> None:
+        ...         self._handle.close()
         """
         return None
 
@@ -157,20 +169,22 @@ class NullProgressReporter(ProgressReporter):
     This is what ``config.kwargs["progress"] = False`` resolves to, and the
     reporter to attach in tests that are not about progress.
 
-    Example:
-        >>> reporter = NullProgressReporter()
-        >>> reporter.emit(ProgressEvent(kind="run_started", vendor="tiingo",
-        ...                             total=3))
-        >>> reporter.close()
+    Examples
+    --------
+    >>> reporter = NullProgressReporter()
+    >>> reporter.emit(ProgressEvent(kind="run_started", vendor="tiingo",
+    ...                             total=3))
+    >>> reporter.close()
     """
 
     def emit(self, event: ProgressEvent) -> None:
         """Discard ``event``.
 
-        Example:
-            >>> NullProgressReporter().emit(
-            ...     ProgressEvent(kind="cancelled", vendor="tiingo")
-            ... )
+        Examples
+        --------
+        >>> NullProgressReporter().emit(
+        ...     ProgressEvent(kind="cancelled", vendor="tiingo")
+        ... )
         """
         return None
 
@@ -188,12 +202,15 @@ class TqdmProgressReporter(ProgressReporter):
     opens a fresh one, so a resume loop that runs one pass per attempt renders
     one bar per pass.
 
-    Args:
-        disable: Passed through to ``tqdm``; when true nothing is rendered.
+    Parameters
+    ----------
+    disable : bool
+        Passed through to ``tqdm``; when true nothing is rendered.
 
-    Example:
-        >>> reporter = TqdmProgressReporter()
-        >>> acquisition.attach(reporter=reporter).download()  # doctest: +SKIP
+    Examples
+    --------
+    >>> reporter = TqdmProgressReporter()
+    >>> acquisition.attach(reporter=reporter).download()  # doctest: +SKIP
     """
 
     def __init__(self, *, disable: bool = False) -> None:
@@ -205,14 +222,15 @@ class TqdmProgressReporter(ProgressReporter):
     def emit(self, event: ProgressEvent) -> None:
         """Open, advance, relabel or close the bar according to ``event``.
 
-        Example:
-            >>> reporter = TqdmProgressReporter(disable=True)
-            >>> reporter.emit(ProgressEvent(kind="run_started", vendor="tiingo",
-            ...                             total=2, message="tiingo 1d"))
-            >>> reporter.emit(ProgressEvent(kind="batch_completed",
-            ...                             vendor="tiingo", completed=1, total=2))
-            >>> reporter.emit(ProgressEvent(kind="run_finished", vendor="tiingo",
-            ...                             completed=2, total=2))
+        Examples
+        --------
+        >>> reporter = TqdmProgressReporter(disable=True)
+        >>> reporter.emit(ProgressEvent(kind="run_started", vendor="tiingo",
+        ...                             total=2, message="tiingo 1d"))
+        >>> reporter.emit(ProgressEvent(kind="batch_completed",
+        ...                             vendor="tiingo", completed=1, total=2))
+        >>> reporter.emit(ProgressEvent(kind="run_finished", vendor="tiingo",
+        ...                             completed=2, total=2))
         """
         if event.kind == "run_started":
             self.close()
@@ -239,9 +257,10 @@ class TqdmProgressReporter(ProgressReporter):
     def close(self) -> None:
         """Close the open bar, if any.
 
-        Example:
-            >>> reporter = TqdmProgressReporter(disable=True)
-            >>> reporter.close()  # a no-op while no bar is open
+        Examples
+        --------
+        >>> reporter = TqdmProgressReporter(disable=True)
+        >>> reporter.close()  # a no-op while no bar is open
         """
         if self._bar is not None:
             self._bar.close()
@@ -258,15 +277,18 @@ class CallbackProgressReporter(ProgressReporter):
     run continues; a callback that raises on every batch therefore logs on
     every batch, which keeps a broken consumer visible.
 
-    Args:
-        callback: Called once per event with the ``ProgressEvent``.
+    Parameters
+    ----------
+    callback : Callable[[ProgressEvent], None]
+        Called once per event with the ``ProgressEvent``.
 
-    Example:
-        >>> events = []
-        >>> reporter = CallbackProgressReporter(events.append)
-        >>> reporter.emit(ProgressEvent(kind="run_started", vendor="x", total=3))
-        >>> events[0].total
-        3
+    Examples
+    --------
+    >>> events = []
+    >>> reporter = CallbackProgressReporter(events.append)
+    >>> reporter.emit(ProgressEvent(kind="run_started", vendor="x", total=3))
+    >>> events[0].total
+    3
     """
 
     def __init__(self, callback: Callable[[ProgressEvent], None]) -> None:
@@ -276,12 +298,13 @@ class CallbackProgressReporter(ProgressReporter):
     def emit(self, event: ProgressEvent) -> None:
         """Pass ``event`` to the callback and discard its result.
 
-        Example:
-            >>> events = []
-            >>> reporter = CallbackProgressReporter(events.append)
-            >>> reporter.emit(ProgressEvent(kind="cancelled", vendor="tiingo"))
-            >>> events[-1].kind
-            'cancelled'
+        Examples
+        --------
+        >>> events = []
+        >>> reporter = CallbackProgressReporter(events.append)
+        >>> reporter.emit(ProgressEvent(kind="cancelled", vendor="tiingo"))
+        >>> events[-1].kind
+        cancelled
         """
         self._callback(event)
 
@@ -297,13 +320,14 @@ class CancelToken:
     never take the quota path, which may sleep and then resume the run the
     operator just cancelled.
 
-    Example:
-        >>> token = CancelToken()
-        >>> token.is_cancelled()
-        False
-        >>> token.cancel()
-        >>> token.is_cancelled()
-        True
+    Examples
+    --------
+    >>> token = CancelToken()
+    >>> token.is_cancelled()
+    False
+    >>> token.cancel()
+    >>> token.is_cancelled()
+    True
     """
 
     def __init__(self) -> None:
@@ -313,21 +337,23 @@ class CancelToken:
     def cancel(self) -> None:
         """Request a stop. Idempotent and safe to call from any thread.
 
-        Example:
-            >>> token = CancelToken()
-            >>> token.cancel()
-            >>> token
-            CancelToken(cancelled=True)
+        Examples
+        --------
+        >>> token = CancelToken()
+        >>> token.cancel()
+        >>> token
+        CancelToken(cancelled=True)
         """
         self._event.set()
 
     def is_cancelled(self) -> bool:
         """Return whether ``cancel()`` has been called since the last reset.
 
-        Example:
-            >>> token = CancelToken()
-            >>> token.is_cancelled()
-            False
+        Examples
+        --------
+        >>> token = CancelToken()
+        >>> token.is_cancelled()
+        False
         """
         return self._event.is_set()
 
@@ -338,12 +364,13 @@ class CancelToken:
         caller, and a run that silently un-cancelled it would make "cancel
         then start" a race the caller cannot win.
 
-        Example:
-            >>> token = CancelToken()
-            >>> token.cancel()
-            >>> token.reset()
-            >>> token.is_cancelled()
-            False
+        Examples
+        --------
+        >>> token = CancelToken()
+        >>> token.cancel()
+        >>> token.reset()
+        >>> token.is_cancelled()
+        False
         """
         self._event.clear()
 

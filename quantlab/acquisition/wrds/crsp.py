@@ -49,14 +49,15 @@ class CrspProductEndError(ValueError):
     because ``crsp_a_stock`` is updated once a year. It is raised before any
     COPY, so the message can promise that nothing was downloaded.
 
-    Example:
-        >>> try:
-        ...     WrdsCrspDailyAcquisition.window_for_product_end(
-        ...         "2025-12-31", "2020-01-01", "2026-06-30", clip=False
-        ...     )
-        ... except CrspProductEndError as exc:
-        ...     print(str(exc)[:59])
-        end_date 2026-06-30 is past the CRSP product end 2025-12-31
+    Examples
+    --------
+    >>> try:
+    ...     WrdsCrspDailyAcquisition.window_for_product_end(
+    ...         "2025-12-31", "2020-01-01", "2026-06-30", clip=False
+    ...     )
+    ... except CrspProductEndError as exc:
+    ...     print(str(exc)[:59])
+    end_date 2026-06-30 is past the CRSP product end 2025-12-31
     """
 
 
@@ -68,11 +69,12 @@ class CrspVintageError(ValueError):
     would produce a panel that is neither, with nothing on disk recording the
     seam. Raised before any COPY.
 
-    Example:
-        >>> try:
-        ...     acq.download()
-        ... except CrspVintageError as exc:
-        ...     print("start a fresh raw tier:", exc)
+    Examples
+    --------
+    >>> try:
+    ...     acq.download()
+    ... except CrspVintageError as exc:
+    ...     print("start a fresh raw tier:", exc)
     """
 
 
@@ -87,14 +89,15 @@ class CrspQueries:
     statement text is assembled by string formatting, which also quotes
     reserved column names such as ``comp.idxcst_his``'s ``from`` and ``thru``.
 
-    Example:
-        >>> where = CrspQueries.daily_where([14593], "2020-08-01", "2020-08-31")
-        >>> query = CrspQueries.copy_query(
-        ...     "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt", "dlyprc"), where
-        ... )
-        >>> raw = CrspQueries.copy(
-        ...     session, "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt"), where
-        ... )
+    Examples
+    --------
+    >>> where = CrspQueries.daily_where([14593], "2020-08-01", "2020-08-31")
+    >>> query = CrspQueries.copy_query(
+    ...     "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt", "dlyprc"), where
+    ... )
+    >>> raw = CrspQueries.copy(
+    ...     session, "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt"), where
+    ... )
     """
 
     STOCK_SCHEMA = "crsp_a_stock"
@@ -116,19 +119,22 @@ class CrspQueries:
         PERMNOs are coerced to ``int`` so a value that is not a PERMNO cannot
         reach the statement even as a literal.
 
-        Raises:
-            ValueError: If ``permnos`` is empty. Without the PERMNO predicate
-                this would be a query over the whole 110-million-row table.
+        Raises
+        ------
+        ValueError
+            If ``permnos`` is empty. Without the PERMNO predicate
+            this would be a query over the whole 110-million-row table.
 
-        Example:
-            >>> where = CrspQueries.daily_where(
-            ...     ["14593", "10107"], "2020-01-01", "2020-12-31"
-            ... )
+        Examples
+        --------
+        >>> where = CrspQueries.daily_where(
+        ...     ["14593", "10107"], "2020-01-01", "2020-12-31"
+        ... )
 
-            which renders as::
+        which renders as::
 
-                "permno" = ANY(ARRAY[14593, 10107])
-                AND "dlycaldt" BETWEEN '2020-01-01' AND '2020-12-31'
+            "permno" = ANY(ARRAY[14593, 10107])
+            AND "dlycaldt" BETWEEN '2020-01-01' AND '2020-12-31'
         """
         values = [int(permno) for permno in permnos]
         if not values:
@@ -152,25 +158,31 @@ class CrspQueries:
 
         The statement carries no ORDER BY, GROUP BY or DISTINCT.
 
-        Args:
-            schema: Schema name, quoted as an identifier.
-            table: Table name, quoted as an identifier.
-            columns: Column names to select, in this order.
-            where: An optional ``psycopg2.sql`` predicate.
+        Parameters
+        ----------
+        schema
+            Schema name, quoted as an identifier.
+        table
+            Table name, quoted as an identifier.
+        columns
+            Column names to select, in this order.
+        where
+            An optional ``psycopg2.sql`` predicate.
 
-        Example:
-            >>> query = CrspQueries.copy_query(
-            ...     "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt", "dlyprc"),
-            ...     CrspQueries.daily_where([14593], "2020-08-01", "2020-08-31"),
-            ... )
+        Examples
+        --------
+        >>> query = CrspQueries.copy_query(
+        ...     "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt", "dlyprc"),
+        ...     CrspQueries.daily_where([14593], "2020-08-01", "2020-08-31"),
+        ... )
 
-            which renders as::
+        which renders as::
 
-                COPY (SELECT "permno", "dlycaldt", "dlyprc"
-                      FROM "crsp_a_stock"."dsf_v2"
-                      WHERE "permno" = ANY(ARRAY[14593])
-                        AND "dlycaldt" BETWEEN '2020-08-01' AND '2020-08-31')
-                TO STDOUT WITH (FORMAT csv, HEADER true)
+            COPY (SELECT "permno", "dlycaldt", "dlyprc"
+                  FROM "crsp_a_stock"."dsf_v2"
+                  WHERE "permno" = ANY(ARRAY[14593])
+                    AND "dlycaldt" BETWEEN '2020-08-01' AND '2020-08-31')
+            TO STDOUT WITH (FORMAT csv, HEADER true)
         """
         projection = sql.SQL(", ").join(
             sql.Identifier(name) for name in columns
@@ -191,12 +203,13 @@ class CrspQueries:
         Sharing the predicate object means a count and the pull it checks
         cannot select different rows.
 
-        Example:
-            >>> query = CrspQueries.count_query("crsp_a_stock", "stkdelists")
+        Examples
+        --------
+        >>> query = CrspQueries.count_query("crsp_a_stock", "stkdelists")
 
-            which renders as::
+        which renders as::
 
-                SELECT count(*) FROM "crsp_a_stock"."stkdelists"
+            SELECT count(*) FROM "crsp_a_stock"."stkdelists" 
         """
         query = sql.SQL("SELECT count(*) FROM {table}").format(
             table=sql.Identifier(schema, table)
@@ -215,14 +228,15 @@ class CrspQueries:
         literals. Ordering by ``ordinal_position`` is done locally rather
         than with ORDER BY, keeping the module free of ordering clauses.
 
-        Example:
-            >>> query = CrspQueries.columns_query("crsp_a_stock", "dsf_v2")
+        Examples
+        --------
+        >>> query = CrspQueries.columns_query("crsp_a_stock", "dsf_v2")
 
-            which renders as::
+        which renders as::
 
-                SELECT "column_name", "ordinal_position"
-                FROM "information_schema"."columns"
-                WHERE "table_schema" = 'crsp_a_stock' AND "table_name" = 'dsf_v2'
+            SELECT "column_name", "ordinal_position"
+            FROM "information_schema"."columns"
+            WHERE "table_schema" = 'crsp_a_stock' AND "table_name" = 'dsf_v2'
         """
         return sql.SQL(
             "SELECT {name}, {position} FROM {catalog} "
@@ -243,12 +257,13 @@ class CrspQueries:
 
         The answer says which annual vintage the account currently holds.
 
-        Example:
-            >>> query = CrspQueries.product_end_query()
+        Examples
+        --------
+        >>> query = CrspQueries.product_end_query()
 
-            which renders as::
+        which renders as::
 
-                SELECT max("dlycaldt") FROM "crsp_a_stock"."dsf_v2"
+            SELECT max("dlycaldt") FROM "crsp_a_stock"."dsf_v2" 
         """
         return sql.SQL("SELECT max({column}) FROM {table}").format(
             column=sql.Identifier("dlycaldt"),
@@ -264,8 +279,9 @@ class CrspQueries:
         Run before the first data query of a pull, so an unsubscribed product
         stops the run with zero COPY calls rather than failing every batch.
 
-        Example:
-            >>> CrspQueries.assert_entitled(session, (CrspQueries.STOCK_SCHEMA,))
+        Examples
+        --------
+        >>> CrspQueries.assert_entitled(session, (CrspQueries.STOCK_SCHEMA,))
         """
         missing = [
             schema for schema in schemas if not session.schema_usable(schema)
@@ -284,11 +300,14 @@ class CrspQueries:
     def product_end(cls, session) -> date:
         """Return the daily table's last day, the current annual vintage.
 
-        Raises:
-            CrspProductEndError: If the table reports no maximum date.
+        Raises
+        ------
+        CrspProductEndError
+            If the table reports no maximum date.
 
-        Example:
-            >>> product_end = CrspQueries.product_end(session)
+        Examples
+        --------
+        >>> product_end = CrspQueries.product_end(session)
         """
         rows = session.fetch_rows(cls.product_end_query())
         if not rows or rows[0][0] is None:
@@ -303,8 +322,9 @@ class CrspQueries:
     def table_columns(cls, session, schema, table) -> tuple[str, ...]:
         """Return the table's column names in server order.
 
-        Example:
-            >>> columns = CrspQueries.table_columns(session, "crsp_a_stock", "dsf_v2")
+        Examples
+        --------
+        >>> columns = CrspQueries.table_columns(session, "crsp_a_stock", "dsf_v2")
         """
         rows = session.fetch_rows(cls.columns_query(schema, table))
         return tuple(
@@ -315,8 +335,9 @@ class CrspQueries:
     def count(cls, session, schema, table, where) -> int:
         """Return ``count(*)`` for the table under ``where``.
 
-        Example:
-            >>> rows = CrspQueries.count(session, "crsp_a_stock", "stkdelists", None)
+        Examples
+        --------
+        >>> rows = CrspQueries.count(session, "crsp_a_stock", "stkdelists", None)
         """
         rows = session.fetch_rows(cls.count_query(schema, table, where))
         return int(rows[0][0])
@@ -325,10 +346,11 @@ class CrspQueries:
     def copy(cls, session, schema, table, columns, where) -> bytes:
         """Run ``copy_query`` through the session and return the CSV bytes.
 
-        Example:
-            >>> raw = CrspQueries.copy(
-            ...     session, "crsp_a_stock", "stkdelists", spec.columns, None
-            ... )
+        Examples
+        --------
+        >>> raw = CrspQueries.copy(
+        ...     session, "crsp_a_stock", "stkdelists", spec.columns, None
+        ... )
         """
         return session.copy_csv(cls.copy_query(schema, table, columns, where))
 
@@ -353,17 +375,20 @@ def year_pages(start, end) -> list[tuple[date, date]]:
     trading days per PERMNO while keeping a long backfill to a few dozen
     pages per batch.
 
-    Returns:
+    Returns
+    -------
+    list[tuple[date, date]]
         ``[(page_start, page_end), ...]`` ascending, or ``[]`` for an
         inverted window.
 
-    Example:
-        >>> year_pages("2018-06-01", "2020-03-31")
-        [(datetime.date(2018, 6, 1), datetime.date(2018, 12, 31)),
-         (datetime.date(2019, 1, 1), datetime.date(2019, 12, 31)),
-         (datetime.date(2020, 1, 1), datetime.date(2020, 3, 31))]
-        >>> year_pages("2020-03-31", "2018-06-01")
-        []
+    Examples
+    --------
+    >>> year_pages("2018-06-01", "2020-03-31")
+    [(datetime.date(2018, 6, 1), datetime.date(2018, 12, 31)),
+     (datetime.date(2019, 1, 1), datetime.date(2019, 12, 31)),
+     (datetime.date(2020, 1, 1), datetime.date(2020, 3, 31))]
+    >>> year_pages("2020-03-31", "2018-06-01")
+    []
     """
     start = CrspQueries._as_date(start)
     end = CrspQueries._as_date(end)
@@ -399,19 +424,20 @@ class WrdsCrspDailyAcquisition(Acquisition):
     recorded vintage matches the one the account now serves. ``max_workers``
     other than 1 is refused because every connection can push a Duo prompt.
 
-    Example:
-        Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
-        opens the connection and may push a Duo prompt.
+    Examples
+    --------
+    Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
+    opens the connection and may push a Duo prompt.
 
-        >>> cfg = WrdsCrspDailyAcquisition.build_config(
-        ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
-        ... )
-        >>> acq = WrdsCrspDailyAcquisition(cfg).download()
-        >>> report = acq.coverage_report()
+    >>> cfg = WrdsCrspDailyAcquisition.build_config(
+    ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
+    ... )
+    >>> acq = WrdsCrspDailyAcquisition(cfg).download()
+    >>> report = acq.coverage_report()
 
-        Shards land under ``.../wrds_crsp/wrds/month=2020-08/``, watermarks
-        under ``.../wrds_crsp/_watermarks/wrds/`` and the vintage stamp at
-        ``.../wrds_crsp/_vintage/wrds.json``.
+    Shards land under ``.../wrds_crsp/wrds/month=2020-08/``, watermarks
+    under ``.../wrds_crsp/_watermarks/wrds/`` and the vintage stamp at
+    ``.../wrds_crsp/_vintage/wrds.json``.
     """
 
     VENDOR = "wrds"
@@ -610,10 +636,11 @@ class WrdsCrspDailyAcquisition(Acquisition):
         it probes once and reuses the answer for both the window and the
         vintage stamp.
 
-        Example:
-            >>> WrdsCrspDailyAcquisition.resolve_window(
-            ...     session, "2020-01-01", "2026-06-30", clip=True
-            ... )
+        Examples
+        --------
+        >>> WrdsCrspDailyAcquisition.resolve_window(
+        ...     session, "2020-01-01", "2026-06-30", clip=True
+        ... )
         """
         return cls.window_for_product_end(
             CrspQueries.product_end(session), start, end, clip=clip
@@ -632,23 +659,28 @@ class WrdsCrspDailyAcquisition(Acquisition):
         preferred to returning an empty result, which would look exactly like
         a roster with no members. Pure: it touches no session.
 
-        Returns:
+        Returns
+        -------
+        tuple[date, date, date | None]
             ``(start, effective_end, clipped_product_end_or_None)``.
 
-        Raises:
-            CrspProductEndError: If ``start`` is past the product end, or
-                ``end`` is and ``clip`` is false.
+        Raises
+        ------
+        CrspProductEndError
+            If ``start`` is past the product end, or
+            ``end`` is and ``clip`` is false.
 
-        Example:
-            >>> WrdsCrspDailyAcquisition.window_for_product_end(
-            ...     "2025-12-31", "2020-01-01", "2026-06-30", clip=True
-            ... )
-            (datetime.date(2020, 1, 1), datetime.date(2025, 12, 31),
-             datetime.date(2025, 12, 31))
-            >>> WrdsCrspDailyAcquisition.window_for_product_end(
-            ...     "2025-12-31", "2020-01-01", "2024-12-31", clip=False
-            ... )
-            (datetime.date(2020, 1, 1), datetime.date(2024, 12, 31), None)
+        Examples
+        --------
+        >>> WrdsCrspDailyAcquisition.window_for_product_end(
+        ...     "2025-12-31", "2020-01-01", "2026-06-30", clip=True
+        ... )
+        (datetime.date(2020, 1, 1), datetime.date(2025, 12, 31),
+         datetime.date(2025, 12, 31))
+        >>> WrdsCrspDailyAcquisition.window_for_product_end(
+        ...     "2025-12-31", "2020-01-01", "2024-12-31", clip=False
+        ... )
+        (datetime.date(2020, 1, 1), datetime.date(2024, 12, 31), None)
         """
         start = CrspQueries._as_date(start)
         end = CrspQueries._as_date(end)
@@ -688,9 +720,10 @@ class WrdsCrspDailyAcquisition(Acquisition):
         PERMNO, and the dataset's raw scan walks every file below the raw
         root.
 
-        Example:
-            >>> WrdsCrspDailyAcquisition.vintage_path_for(cfg)
-            PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_vintage/wrds.json')
+        Examples
+        --------
+        >>> WrdsCrspDailyAcquisition.vintage_path_for(cfg)
+        PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_vintage/wrds.json')
         """
         return (
             Path(config.raw_data_dir_path).parent
@@ -1023,18 +1056,21 @@ class WrdsCrspDailyAcquisition(Acquisition):
         Symbols are stored as strings; ``bytes_per_row`` defaults to
         ``DEFAULT_BYTES_PER_ROW``. No credential goes into the config.
 
-        Raises:
-            ValueError: If ``kwargs["data_type"]`` is set to anything but
-                ``"crsp_daily"``.
+        Raises
+        ------
+        ValueError
+            If ``kwargs["data_type"]`` is set to anything but
+            ``"crsp_daily"``.
 
-        Example:
-            >>> cfg = WrdsCrspDailyAcquisition.build_config(
-            ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
-            ... )
-            >>> cfg.raw_data_dir_path
-            '<data root>/downloads/us_equity/1d/wrds_crsp/wrds'
-            >>> cfg.kwargs
-            {'data_type': 'crsp_daily', 'bytes_per_row': 150}
+        Examples
+        --------
+        >>> cfg = WrdsCrspDailyAcquisition.build_config(
+        ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
+        ... )
+        >>> cfg.raw_data_dir_path
+        '<data root>/downloads/us_equity/1d/wrds_crsp/wrds'
+        >>> cfg.kwargs
+        {'data_type': 'crsp_daily', 'bytes_per_row': 150}
         """
         merged = dict(kwargs or {})
         data_type = merged.get("data_type", cls.DATA_TYPE)
@@ -1069,9 +1105,10 @@ class WrdsCrspDailyAcquisition(Acquisition):
         from the config rather than from ``get_data_root()`` so a config
         pointed at a custom root keeps its reference tier beside its raw tier.
 
-        Example:
-            >>> WrdsCrspDailyAcquisition.reference_dir_for(cfg)
-            PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_reference')
+        Examples
+        --------
+        >>> WrdsCrspDailyAcquisition.reference_dir_for(cfg)
+        PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_reference')
         """
         return Path(config.raw_data_dir_path).parent / cls.REFERENCE_DIR_NAME
 
@@ -1094,16 +1131,17 @@ class CrspVolumeProbe:
     Counts are not cached on disk: the pull re-counts each page anyway when
     ``verify_page_counts`` is on.
 
-    Example:
-        Needs a live ``WrdsSession``.
+    Examples
+    --------
+    Needs a live ``WrdsSession``.
 
-        >>> probe = CrspVolumeProbe(WrdsSession.shared(), batch_size=200)
-        >>> rows_by_year = probe.count_rows_by_year(
-        ...     ["14593", "10107"], "2018-06-01", "2020-03-31"
-        ... )
+    >>> probe = CrspVolumeProbe(WrdsSession.shared(), batch_size=200)
+    >>> rows_by_year = probe.count_rows_by_year(
+    ...     ["14593", "10107"], "2018-06-01", "2020-03-31"
+    ... )
 
-        The keys are the page ends from ``year_pages``: ``2018-12-31``,
-        ``2019-12-31`` and ``2020-03-31``.
+    The keys are the page ends from ``year_pages``: ``2018-12-31``,
+    ``2019-12-31`` and ``2020-03-31``.
     """
 
     #: Log progress every this many year pages.
@@ -1140,12 +1178,15 @@ class CrspVolumeProbe:
         PERMNO batches. Entitlement is checked first, so an unsubscribed
         account raises ``WrdsEntitlementError`` before any count is issued.
 
-        Raises:
-            ValueError: If ``permnos`` is empty or contains a value that is
-                not a digit string.
+        Raises
+        ------
+        ValueError
+            If ``permnos`` is empty or contains a value that is
+            not a digit string.
 
-        Example:
-            >>> counts = probe.count_rows_by_year(["14593"], "2020-01-01", "2020-12-31")
+        Examples
+        --------
+        >>> counts = probe.count_rows_by_year(["14593"], "2020-01-01", "2020-12-31")
         """
         permnos = [str(permno) for permno in permnos]
         if not permnos:

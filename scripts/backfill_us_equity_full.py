@@ -54,17 +54,18 @@ class BackfillPlan:
     The plan is frozen so that what the stages print is what they ran. Vary
     it with ``dataclasses.replace``, which returns a new plan.
 
-    Example:
-        >>> import dataclasses
-        >>> plan = BackfillPlan(granularity="quarter")
-        >>> plan.start_date, plan.category
-        ('2000-01-01', 'us_all')
-        >>> dataclasses.replace(plan, max_workers=4).max_workers
-        4
-        >>> plan.granularity = "year"
-        Traceback (most recent call last):
-        ...
-        dataclasses.FrozenInstanceError: cannot assign to field 'granularity'
+    Examples
+    --------
+    >>> import dataclasses
+    >>> plan = BackfillPlan(granularity="quarter")
+    >>> plan.start_date, plan.category
+    ('2000-01-01', 'us_all')
+    >>> dataclasses.replace(plan, max_workers=4).max_workers
+    4
+    >>> plan.granularity = "year"
+    Traceback (most recent call last):
+    ...
+    dataclasses.FrozenInstanceError: cannot assign to field 'granularity'
     """
 
     #: The request window, both bounds inclusive. Stated explicitly because
@@ -161,16 +162,17 @@ class FullHistoryBackfill:
     their paths as strings when called; that is why it lives in ``__init__``
     rather than inside a stage.
 
-    Example:
-        Needs ``TIINGO_API_KEY`` for ``acquire()``; the other calls shown do
-        not touch the network once the universe table exists.
+    Examples
+    --------
+    Needs ``TIINGO_API_KEY`` for ``acquire()``; the other calls shown do
+    not touch the network once the universe table exists.
 
-        >>> job = FullHistoryBackfill(BackfillPlan(granularity="quarter"))
-        >>> job.source.display_name
-        'Tiingo EOD'
-        >>> job.preflight()["rows"]   # sizes the fetch, issues no request
-        >>> job.acquire()             # raw parquet, resumable
-        >>> job.to_zarr()             # Zarr store, resumable per window
+    >>> job = FullHistoryBackfill(BackfillPlan(granularity="quarter"))
+    >>> job.source.display_name
+    Tiingo EOD
+    >>> job.preflight()["rows"]   # sizes the fetch, issues no request
+    >>> job.acquire()             # raw parquet, resumable
+    >>> job.to_zarr()             # Zarr store, resumable per window
     """
 
     def __init__(self, plan: BackfillPlan) -> None:
@@ -201,12 +203,13 @@ class FullHistoryBackfill:
         swallow a corrupt table and silently overwrite it, and a corrupt
         table should raise. ``save()`` creates its own parent directories.
 
-        Example:
-            Builds the table on first use when it is missing, which reads
-            public endpoints.
+        Examples
+        --------
+        Builds the table on first use when it is missing, which reads
+        public endpoints.
 
-            >>> catalog = job.catalog
-            >>> "us_all" in catalog.known_categories()
+        >>> catalog = job.catalog
+        >>> "us_all" in catalog.known_categories()
         """
         if self._catalog is None:
             config = universe_config()
@@ -234,10 +237,11 @@ class FullHistoryBackfill:
         resolve the same roster across runs, so that watermarks written by
         one run are met by the next.
 
-        Example:
-            Needs the universe table.
+        Examples
+        --------
+        Needs the universe table.
 
-            >>> job.symbols[:3]
+        >>> job.symbols[:3]
         """
         if self._symbols is None:
             self._symbols = tuple(
@@ -260,13 +264,14 @@ class FullHistoryBackfill:
         is the single reader. ``extra_knobs`` is merged last and therefore
         wins, including over ``max_workers``.
 
-        Example:
-            >>> import dataclasses
-            >>> FullHistoryBackfill(BackfillPlan()).acquisition_knobs()
-            {'resume': True}
-            >>> plan = BackfillPlan(max_workers=4, extra_knobs={"wait_for_quota": True})
-            >>> FullHistoryBackfill(plan).acquisition_knobs()
-            {'resume': True, 'max_workers': 4, 'wait_for_quota': True}
+        Examples
+        --------
+        >>> import dataclasses
+        >>> FullHistoryBackfill(BackfillPlan()).acquisition_knobs()
+        {'resume': True}
+        >>> plan = BackfillPlan(max_workers=4, extra_knobs={"wait_for_quota": True})
+        >>> FullHistoryBackfill(plan).acquisition_knobs()
+        {'resume': True, 'max_workers': 4, 'wait_for_quota': True}
         """
         knobs = {
             # Stated rather than left to the reader's default so that "this
@@ -288,11 +293,12 @@ class FullHistoryBackfill:
         Going through the descriptor pins the vendor by the registry rather
         than by a factory default.
 
-        Example:
-            Needs the universe table, since the config carries the roster.
+        Examples
+        --------
+        Needs the universe table, since the config carries the roster.
 
-            >>> config = job.acquisition_config()
-            >>> config.vendor, len(config.symbols)
+        >>> config = job.acquisition_config()
+        >>> config.vendor, len(config.symbols)
         """
         return self.source.config_factory(
             symbols=self.symbols,
@@ -305,10 +311,11 @@ class FullHistoryBackfill:
     def dataset_config(self) -> DatasetConfig:
         """Build the dataset config that maps the raw tier to the Zarr store.
 
-        Example:
-            Needs the universe table, since the config carries the roster.
+        Examples
+        --------
+        Needs the universe table, since the config carries the roster.
 
-            >>> job.dataset_config().zarr_file_path
+        >>> job.dataset_config().zarr_file_path
         """
         return stock_kline_config(
             symbols=list(self.symbols),
@@ -329,17 +336,22 @@ class FullHistoryBackfill:
         that runs after the client exists has already spent what it was
         meant to save.
 
-        Returns:
+        Returns
+        -------
+        dict
             The volume estimate from
             ``UniverseCatalog.assert_acquisition_volume_fits``.
 
-        Raises:
-            ValueError: If a ceiling is crossed and ``plan.force_volume`` is
-                false; the message carries the arithmetic.
+        Raises
+        ------
+        ValueError
+            If a ceiling is crossed and ``plan.force_volume`` is
+            false; the message carries the arithmetic.
 
-        Example:
-            >>> estimate = job.preflight()
-            >>> estimate["rows"], estimate["requests"]
+        Examples
+        --------
+        >>> estimate = job.preflight()
+        >>> estimate["rows"], estimate["requests"]
         """
         return self.catalog.assert_acquisition_volume_fits(
             self.plan.category,
@@ -362,16 +374,19 @@ class FullHistoryBackfill:
         Asks the registry whether every variable the source names is present.
         Never reads or reports a value.
 
-        Raises:
-            RuntimeError: If a required environment variable is unset.
+        Raises
+        ------
+        RuntimeError
+            If a required environment variable is unset.
 
-        Example:
-            With ``TIINGO_API_KEY`` unset:
+        Examples
+        --------
+        With ``TIINGO_API_KEY`` unset:
 
-            >>> job.assert_credentials()
-            Traceback (most recent call last):
-            ...
-            RuntimeError: Tiingo EOD is not configured: set TIINGO_API_KEY in ...
+        >>> job.assert_credentials()
+        Traceback (most recent call last):
+        ...
+        RuntimeError: Tiingo EOD is not configured: set TIINGO_API_KEY in ...
         """
         if not is_configured(self.source):
             missing = ", ".join(self.source.required_env)
@@ -388,15 +403,18 @@ class FullHistoryBackfill:
         are skipped, so a job killed at ticker 20,000 restarts near ticker
         20,000 rather than at the top.
 
-        Returns:
+        Returns
+        -------
+        AcquisitionResult
             The run's ``AcquisitionResult``.
 
-        Example:
-            Needs ``TIINGO_API_KEY`` and network access; runs for hours on
-            the full market.
+        Examples
+        --------
+        Needs ``TIINGO_API_KEY`` and network access; runs for hours on
+        the full market.
 
-            >>> result = job.acquire()
-            >>> len(result.succeeded), len(result.failures)
+        >>> result = job.acquire()
+        >>> len(result.succeeded), len(result.failures)
         """
         self.assert_credentials()
         config = self.acquisition_config()
@@ -424,17 +442,22 @@ class FullHistoryBackfill:
         Resumable per window: a run interrupted at window 12 of 21 resumes at
         window 12.
 
-        Returns:
+        Returns
+        -------
+        ConversionResult
             The ``ConversionResult`` of this run.
 
-        Raises:
-            RuntimeError: If no raw data exists under the configured root.
+        Raises
+        ------
+        RuntimeError
+            If no raw data exists under the configured root.
 
-        Example:
-            Needs a raw tier already written by ``acquire()``.
+        Examples
+        --------
+        Needs a raw tier already written by ``acquire()``.
 
-            >>> result = job.to_zarr()
-            >>> result.windows_written, result.windows_skipped
+        >>> result = job.to_zarr()
+        >>> result.windows_written, result.windows_skipped
         """
         ds_config = self.dataset_config()
 
@@ -477,8 +500,9 @@ class FullHistoryBackfill:
 
         Normally the stages are run separately, since each takes hours.
 
-        Example:
-            >>> acquired, converted = job.run()
+        Examples
+        --------
+        >>> acquired, converted = job.run()
         """
         self.preflight()
         acquired = self.acquire()

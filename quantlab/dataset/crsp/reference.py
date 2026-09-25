@@ -48,13 +48,14 @@ class ReferenceTableSpec:
     compared element by element against ``information_schema``. ``dtypes``
     maps every one of those columns to the polars type it is read as.
 
-    Example:
-        >>> from quantlab.dataset.crsp.reference import REFERENCE_TABLES_BY_NAME
-        >>> spec = REFERENCE_TABLES_BY_NAME["dsp500list_v2"]
-        >>> spec.schema, spec.table
-        ('crsp_a_indexes', 'dsp500list_v2')
-        >>> spec.columns
-        ('permno', 'indno', 'mbrstartdt', 'mbrenddt', 'mbrflg', 'indfam')
+    Examples
+    --------
+    >>> from quantlab.dataset.crsp.reference import REFERENCE_TABLES_BY_NAME
+    >>> spec = REFERENCE_TABLES_BY_NAME["dsp500list_v2"]
+    >>> spec.schema, spec.table
+    ('crsp_a_indexes', 'dsp500list_v2')
+    >>> spec.columns
+    ('permno', 'indno', 'mbrstartdt', 'mbrenddt', 'mbrflg', 'indfam')
     """
 
     name: str
@@ -72,22 +73,27 @@ class ReferenceTableSpec:
         added as all-null, so a table pulled before a column was added still
         reads with the current schema.
 
-        Args:
-            frame: A frame whose columns are all ``String``.
+        Parameters
+        ----------
+        frame : pl.DataFrame
+            A frame whose columns are all ``String``.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             A frame holding exactly ``columns``, in order, typed by ``dtypes``.
 
-        Example:
-            >>> import polars as pl
-            >>> raw = pl.DataFrame(
-            ...     {"permno": ["14593"], "indno": ["1000500"],
-            ...      "mbrstartdt": ["1982-11-18"], "mbrenddt": [None],
-            ...      "mbrflg": ["NORM"]},
-            ... )
-            >>> spec.cast(raw).schema
-            Schema({'permno': Int64, 'indno': Int64, 'mbrstartdt': Date,
-                    'mbrenddt': Date, 'mbrflg': String, 'indfam': Int64})
+        Examples
+        --------
+        >>> import polars as pl
+        >>> raw = pl.DataFrame(
+        ...     {"permno": ["14593"], "indno": ["1000500"],
+        ...      "mbrstartdt": ["1982-11-18"], "mbrenddt": [None],
+        ...      "mbrflg": ["NORM"]},
+        ... )
+        >>> spec.cast(raw).schema
+        Schema({'permno': Int64, 'indno': Int64, 'mbrstartdt': Date,
+                'mbrenddt': Date, 'mbrflg': String, 'indfam': Int64})
         """
         missing = [name for name in self.columns if name not in frame.columns]
         if missing:
@@ -271,13 +277,14 @@ class CrspReference:
     asks for ``stksecurityinfohist`` and a universe build that asks for two
     more tables each pay for one read.
 
-    Example:
-        >>> from quantlab.dataset.crsp.reference import CrspReference
-        >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
-        >>> ref.table("dsp500list_v2").columns
-        ['permno', 'indno', 'mbrstartdt', 'mbrenddt', 'mbrflg', 'indfam']
-        >>> ref.product_end
-        datetime.date(2025, 12, 31)
+    Examples
+    --------
+    >>> from quantlab.dataset.crsp.reference import CrspReference
+    >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+    >>> ref.table("dsp500list_v2").columns
+    ['permno', 'indno', 'mbrstartdt', 'mbrenddt', 'mbrflg', 'indfam']
+    >>> ref.product_end
+    datetime.date(2025, 12, 31)
     """
 
     def __init__(self, reference_dir) -> None:
@@ -289,36 +296,43 @@ class CrspReference:
     def path_for(self, name: str) -> Path:
         """Return the parquet path a table of this name is stored at.
 
-        Example:
-            >>> ref.path_for("stkdelists").name
-            'stkdelists.parquet'
+        Examples
+        --------
+        >>> ref.path_for("stkdelists").name
+        stkdelists.parquet
         """
         return self.reference_dir / f"{name}.parquet"
 
     def table(self, name: str) -> pl.DataFrame:
         """Return one reference table, typed by its spec and cached.
 
-        Args:
-            name: A key of ``REFERENCE_TABLES_BY_NAME``.
+        Parameters
+        ----------
+        name : str
+            A key of ``REFERENCE_TABLES_BY_NAME``.
 
-        Raises:
-            KeyError: If ``name`` is not a CRSP reference table.
-            FileNotFoundError: If the parquet file is absent. The message
-                names the directory and the command that fills it, because
-                this is the error a user meets when they convert before
-                pulling the reference tier.
+        Raises
+        ------
+        KeyError
+            If ``name`` is not a CRSP reference table.
+        FileNotFoundError
+            If the parquet file is absent. The message
+            names the directory and the command that fills it, because
+            this is the error a user meets when they convert before
+            pulling the reference tier.
 
-        Example:
-            >>> ref.table("stksecurityinfohist").select("permno", "ticker").head(2)
-            shape: (2, 2)
-            ┌────────┬────────┐
-            │ permno ┆ ticker │
-            │ ---    ┆ ---    │
-            │ i64    ┆ str    │
-            ╞════════╪════════╡
-            │ 14593  ┆ AAPL   │
-            │ 14593  ┆ AAPL   │
-            └────────┴────────┘
+        Examples
+        --------
+        >>> ref.table("stksecurityinfohist").select("permno", "ticker").head(2)
+        shape: (2, 2)
+        ┌────────┬────────┐
+        │ permno ┆ ticker │
+        │ ---    ┆ ---    │
+        │ i64    ┆ str    │
+        ╞════════╪════════╡
+        │ 14593  ┆ AAPL   │
+        │ 14593  ┆ AAPL   │
+        └────────┴────────┘
         """
         if name not in REFERENCE_TABLES_BY_NAME:
             raise KeyError(
@@ -347,15 +361,18 @@ class CrspReference:
     def manifest(self) -> dict:
         """Return ``manifest.json`` as a dict, read at most once.
 
-        Raises:
-            FileNotFoundError: If the directory has no manifest. A tier
-                without one has no recorded CRSP vintage, and a panel built
-                against an unknown vintage cannot be checked against a later
-                pull.
+        Raises
+        ------
+        FileNotFoundError
+            If the directory has no manifest. A tier
+            without one has no recorded CRSP vintage, and a panel built
+            against an unknown vintage cannot be checked against a later
+            pull.
 
-        Example:
-            >>> ref.manifest["product_end"]
-            '2025-12-31'
+        Examples
+        --------
+        >>> ref.manifest["product_end"]
+        '2025-12-31'
         """
         if self._manifest is None:
             path = self.reference_dir / MANIFEST_NAME
@@ -372,8 +389,9 @@ class CrspReference:
     def product_end(self) -> date:
         """Return the CRSP product end date this tier was pulled against.
 
-        Example:
-            >>> ref.product_end
-            datetime.date(2025, 12, 31)
+        Examples
+        --------
+        >>> ref.product_end
+        datetime.date(2025, 12, 31)
         """
         return date.fromisoformat(str(self.manifest["product_end"])[:10])

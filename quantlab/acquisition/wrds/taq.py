@@ -58,11 +58,12 @@ class WrdsSessionError(RuntimeError):
     manifest, because a batch-by-batch retry would reconnect and each
     connection can push a Duo prompt.
 
-    Example:
-        >>> try:
-        ...     WrdsSession.shared().trading_days(2024)
-        ... except WrdsSessionError as exc:
-        ...     print("session unusable:", exc)
+    Examples
+    --------
+    >>> try:
+    ...     WrdsSession.shared().trading_days(2024)
+    ... except WrdsSessionError as exc:
+    ...     print("session unusable:", exc)
     """
 
 
@@ -72,11 +73,12 @@ class WrdsEntitlementError(RuntimeError):
     For TAQ this means a ``taqm_YYYY`` schema without ``USAGE``. Like
     ``WrdsSessionError`` it stops the whole run rather than one batch.
 
-    Example:
-        >>> try:
-        ...     WrdsSession.shared().assert_entitled([2012, 2024])
-        ... except WrdsEntitlementError as exc:
-        ...     print(exc)
+    Examples
+    --------
+    >>> try:
+    ...     WrdsSession.shared().assert_entitled([2012, 2024])
+    ... except WrdsEntitlementError as exc:
+    ...     print(exc)
     """
 
 
@@ -125,13 +127,14 @@ class WrdsSession:
     provider (``schema_usable``, ``fetch_rows``, ``copy_csv``), and TAQ-shaped
     network methods built on those helpers.
 
-    Example:
-        Needs ``WRDS_USERNAME`` and a matching ``~/.pgpass`` line; the first
-        query opens the connection and may push a Duo prompt.
+    Examples
+    --------
+    Needs ``WRDS_USERNAME`` and a matching ``~/.pgpass`` line; the first
+    query opens the connection and may push a Duo prompt.
 
-        >>> session = WrdsSession.shared()
-        >>> days = session.trading_days(2024)
-        >>> WrdsSession.close_shared()
+    >>> session = WrdsSession.shared()
+    >>> days = session.trading_days(2024)
+    >>> WrdsSession.close_shared()
     """
 
     HOST = "wrds-pgdata.wharton.upenn.edu"
@@ -177,13 +180,16 @@ class WrdsSession:
         The variable is read on every call, so a changed username gets its
         own session rather than a stale one.
 
-        Raises:
-            RuntimeError: If ``WRDS_USERNAME`` is unset or empty.
+        Raises
+        ------
+        RuntimeError
+            If ``WRDS_USERNAME`` is unset or empty.
 
-        Example:
-            >>> session = WrdsSession.shared()
-            >>> session is WrdsSession.shared()
-            True
+        Examples
+        --------
+        >>> session = WrdsSession.shared()
+        >>> session is WrdsSession.shared()
+        True
         """
         username = os.environ.get(USERNAME_ENV)
         if not username:
@@ -203,8 +209,9 @@ class WrdsSession:
     def close_shared(cls) -> None:
         """Close and forget every shared session.
 
-        Example:
-            >>> WrdsSession.close_shared()
+        Examples
+        --------
+        >>> WrdsSession.close_shared()
         """
         sessions = list(cls._shared.values())
         cls._shared.clear()
@@ -214,8 +221,9 @@ class WrdsSession:
     def close(self) -> None:
         """Close the underlying connection if one was opened.
 
-        Example:
-            >>> session.close()
+        Examples
+        --------
+        >>> session.close()
         """
         conn, self._conn = self._conn, None
         if conn is not None:
@@ -345,10 +353,11 @@ class WrdsSession:
     def table_identifier(day: date) -> sql.Identifier:
         """Return the ``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}`` identifier.
 
-        Example:
-            >>> from datetime import date
-            >>> WrdsSession.table_identifier(date(2024, 1, 24))
-            Identifier('taqm_2024', 'complete_nbbo_20240124')
+        Examples
+        --------
+        >>> from datetime import date
+        >>> WrdsSession.table_identifier(date(2024, 1, 24))
+        Identifier('taqm_2024', 'complete_nbbo_20240124')
         """
         return sql.Identifier(f"taqm_{day:%Y}", f"complete_nbbo_{day:%Y%m%d}")
 
@@ -360,22 +369,27 @@ class WrdsSession:
         chunk-group filters prune on; the second picks the exact share
         classes. Every value is a ``sql.Literal``, never interpolated text.
 
-        Args:
-            pairs: ``(root, suffix)`` tuples; a ``None`` or empty suffix means
-                the plain root.
+        Parameters
+        ----------
+        pairs
+            ``(root, suffix)`` tuples; a ``None`` or empty suffix means
+            the plain root.
 
-        Raises:
-            ValueError: If ``pairs`` is empty. Without a ``sym_root``
-                predicate the query would scan a whole day table, which this
-                class never issues.
+        Raises
+        ------
+        ValueError
+            If ``pairs`` is empty. Without a ``sym_root``
+            predicate the query would scan a whole day table, which this
+            class never issues.
 
-        Example:
-            >>> clause = WrdsSession.where_clause([("AAPL", None), ("BRK", "B")])
+        Examples
+        --------
+        >>> clause = WrdsSession.where_clause([("AAPL", None), ("BRK", "B")])
 
-            which renders as::
+        which renders as::
 
-                sym_root = ANY(ARRAY['AAPL', 'BRK']) AND
-                (sym_root, coalesce(sym_suffix, '')) IN (('AAPL', ''), ('BRK', 'B'))
+            sym_root = ANY(ARRAY['AAPL', 'BRK']) AND
+            (sym_root, coalesce(sym_suffix, '')) IN (('AAPL', ''), ('BRK', 'B'))
         """
         pairs = [(str(root), str(suffix or "")) for root, suffix in pairs]
         if not pairs:
@@ -404,18 +418,19 @@ class WrdsSession:
         physical row order is the only tie-breaker between records that share
         a microsecond.
 
-        Example:
-            >>> query = WrdsSession.copy_query(
-            ...     date(2024, 1, 24), [("AAPL", None)], ("date", "time_m", "best_bid")
-            ... )
+        Examples
+        --------
+        >>> query = WrdsSession.copy_query(
+        ...     date(2024, 1, 24), [("AAPL", None)], ("date", "time_m", "best_bid")
+        ... )
 
-            which renders as::
+        which renders as::
 
-                COPY (SELECT "date", "time_m", "best_bid"
-                      FROM "taqm_2024"."complete_nbbo_20240124"
-                      WHERE sym_root = ANY(ARRAY['AAPL']) AND
-                            (sym_root, coalesce(sym_suffix, '')) IN (('AAPL', '')))
-                TO STDOUT WITH (FORMAT csv, HEADER true)
+            COPY (SELECT "date", "time_m", "best_bid"
+                  FROM "taqm_2024"."complete_nbbo_20240124"
+                  WHERE sym_root = ANY(ARRAY['AAPL']) AND
+                        (sym_root, coalesce(sym_suffix, '')) IN (('AAPL', '')))
+            TO STDOUT WITH (FORMAT csv, HEADER true)
         """
         return sql.SQL(
             "COPY (SELECT {columns} FROM {table} WHERE {where}) "
@@ -433,14 +448,15 @@ class WrdsSession:
         Sharing the WHERE means a count and the pull it checks cannot select
         different rows.
 
-        Example:
-            >>> query = WrdsSession.count_query(date(2024, 1, 24), [("AAPL", None)])
+        Examples
+        --------
+        >>> query = WrdsSession.count_query(date(2024, 1, 24), [("AAPL", None)])
 
-            which renders as::
+        which renders as::
 
-                SELECT count(*) FROM "taqm_2024"."complete_nbbo_20240124"
-                WHERE sym_root = ANY(ARRAY['AAPL']) AND
-                      (sym_root, coalesce(sym_suffix, '')) IN (('AAPL', ''))
+            SELECT count(*) FROM "taqm_2024"."complete_nbbo_20240124"
+            WHERE sym_root = ANY(ARRAY['AAPL']) AND
+                  (sym_root, coalesce(sym_suffix, '')) IN (('AAPL', ''))
         """
         return sql.SQL("SELECT count(*) FROM {table} WHERE {where}").format(
             table=cls.table_identifier(day),
@@ -466,15 +482,17 @@ class WrdsSession:
         schema returns no row and reads as ``False``, the same answer as "not
         subscribed". The schema travels as a query parameter.
 
-        Example:
-            >>> usable = session.schema_usable("crsp_a_stock")
+        Examples
+        --------
+        >>> usable = session.schema_usable("crsp_a_stock")
         """
 
         def work(conn):
             """Fetch the privilege row for the schema.
 
-            Example:
-                >>> row = self._query(work)
+            Examples
+            --------
+            >>> row = self._query(work)
             """
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -494,19 +512,23 @@ class WrdsSession:
         uses ``copy_csv`` instead, which streams a full day of records
         without materialising Python tuples.
 
-        Args:
-            query: A ``psycopg2.sql`` composable or plain SQL text.
+        Parameters
+        ----------
+        query
+            A ``psycopg2.sql`` composable or plain SQL text.
 
-        Example:
-            >>> from psycopg2 import sql
-            >>> rows = session.fetch_rows(sql.SQL("SELECT 1"))
+        Examples
+        --------
+        >>> from psycopg2 import sql
+        >>> rows = session.fetch_rows(sql.SQL("SELECT 1"))
         """
 
         def work(conn):
             """Execute the query and fetch all rows.
 
-            Example:
-                >>> rows = self._query(work)
+            Examples
+            --------
+            >>> rows = self._query(work)
             """
             with conn.cursor() as cursor:
                 cursor.execute(query)
@@ -521,17 +543,19 @@ class WrdsSession:
         is assembled outside ``psycopg2.sql``. Up to ``COPY_SPOOL_BYTES`` stay
         in memory before the buffer spills to a temporary file.
 
-        Example:
-            >>> raw = session.copy_csv(
-            ...     WrdsSession.copy_query(day, [("AAPL", None)], columns)
-            ... )
+        Examples
+        --------
+        >>> raw = session.copy_csv(
+        ...     WrdsSession.copy_query(day, [("AAPL", None)], columns)
+        ... )
         """
 
         def work(conn):
             """Stream the COPY output through a spooled buffer.
 
-            Example:
-                >>> raw = self._query(work)
+            Examples
+            --------
+            >>> raw = self._query(work)
             """
             with tempfile.SpooledTemporaryFile(
                 max_size=self.COPY_SPOOL_BYTES
@@ -550,8 +574,9 @@ class WrdsSession:
         A TAQ-shaped name over ``schema_usable``; only the schema naming
         differs.
 
-        Example:
-            >>> entitled = session.has_schema_usage(2024)
+        Examples
+        --------
+        >>> entitled = session.has_schema_usage(2024)
         """
         return self.schema_usable(f"taqm_{int(year)}")
 
@@ -562,8 +587,9 @@ class WrdsSession:
         unentitled year stops the run with zero COPY calls instead of failing
         every batch of every day.
 
-        Example:
-            >>> session.assert_entitled(range(2020, 2025))
+        Examples
+        --------
+        >>> session.assert_entitled(range(2020, 2025))
         """
         missing = [
             f"taqm_{int(year)}"
@@ -582,16 +608,18 @@ class WrdsSession:
     def count_rows(self, day: date, pairs) -> int:
         """Return how many rows ``copy_query(day, pairs, ...)`` would return.
 
-        Example:
-            >>> session.count_rows(date(2024, 1, 24), [("AAPL", None)])
+        Examples
+        --------
+        >>> session.count_rows(date(2024, 1, 24), [("AAPL", None)])
         """
         query = self.count_query(day, pairs)
 
         def work(conn):
             """Execute the count and fetch its single row.
 
-            Example:
-                >>> row = self._query(work)
+            Examples
+            --------
+            >>> row = self._query(work)
             """
             with conn.cursor() as cursor:
                 cursor.execute(query)
@@ -606,15 +634,17 @@ class WrdsSession:
         Listed ascending from ``information_schema`` rather than probed per
         calendar day, so a missing table cannot be mistaken for a holiday.
 
-        Example:
-            >>> days = session.trading_days(2024)
+        Examples
+        --------
+        >>> days = session.trading_days(2024)
         """
 
         def work(conn):
             """List the day-table names in the year's schema.
 
-            Example:
-                >>> names = self._query(work)
+            Examples
+            --------
+            >>> names = self._query(work)
             """
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -635,15 +665,17 @@ class WrdsSession:
     def table_columns(self, day: date) -> tuple[str, ...]:
         """Return the day table's column names in server order.
 
-        Example:
-            >>> columns = session.table_columns(date(2024, 1, 24))
+        Examples
+        --------
+        >>> columns = session.table_columns(date(2024, 1, 24))
         """
 
         def work(conn):
             """Read the column names and positions from the catalogue.
 
-            Example:
-                >>> rows = self._query(work)
+            Examples
+            --------
+            >>> rows = self._query(work)
             """
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -663,10 +695,11 @@ class WrdsSession:
         The header line is included. The statement is exactly the one
         ``copy_query`` builds, with no ordering or time predicate added.
 
-        Example:
-            >>> raw = session.copy_nbbo_csv(
-            ...     date(2024, 1, 24), [("AAPL", None)], session.table_columns(day)
-            ... )
+        Examples
+        --------
+        >>> raw = session.copy_nbbo_csv(
+        ...     date(2024, 1, 24), [("AAPL", None)], session.table_columns(day)
+        ... )
         """
         return self.copy_csv(self.copy_query(day, pairs, columns))
 
@@ -678,11 +711,12 @@ def trading_days_between(session, start: date, end: date) -> list[date]:
     through ``session.trading_days``. The acquisition and the volume probe
     both use this function so they walk exactly the same days.
 
-    Example:
-        Needs a live ``WrdsSession``.
+    Examples
+    --------
+    Needs a live ``WrdsSession``.
 
-        >>> from datetime import date
-        >>> days = trading_days_between(session, date(2024, 1, 1), date(2024, 3, 31))
+    >>> from datetime import date
+    >>> days = trading_days_between(session, date(2024, 1, 1), date(2024, 3, 31))
     """
     days: set[date] = set()
     for year in range(start.year, end.year + 1):
@@ -713,18 +747,19 @@ class WrdsTaqNbboAcquisition(Acquisition):
     connection can push a Duo prompt. Symbols use dot notation for share
     classes (``BRK.B``); a hyphenated form is refused.
 
-    Example:
-        Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
-        opens the connection and may push a Duo prompt.
+    Examples
+    --------
+    Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
+    opens the connection and may push a Duo prompt.
 
-        >>> cfg = WrdsTaqNbboAcquisition.build_config(
-        ...     ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
-        ... )
-        >>> acq = WrdsTaqNbboAcquisition(cfg).download()
-        >>> report = acq.coverage_report()
+    >>> cfg = WrdsTaqNbboAcquisition.build_config(
+    ...     ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
+    ... )
+    >>> acq = WrdsTaqNbboAcquisition(cfg).download()
+    >>> report = acq.coverage_report()
 
-        Shards land under ``.../wrds_taq/wrds/data_type=nbbo/date=2024-01-24/
-        symbol=AAPL/`` and the watermarks under ``.../wrds_taq/_watermarks/wrds/``.
+    Shards land under ``.../wrds_taq/wrds/data_type=nbbo/date=2024-01-24/
+    symbol=AAPL/`` and the watermarks under ``.../wrds_taq/_watermarks/wrds/``.
     """
 
     VENDOR = "wrds"
@@ -899,11 +934,12 @@ class WrdsTaqNbboAcquisition(Acquisition):
         ``sym_root = 'BRK-B'`` would silently return nothing. More than one
         dot, or an empty root or suffix, is refused too.
 
-        Example:
-            >>> WrdsTaqNbboAcquisition.symbol_to_pair("BRK.B")
-            ('BRK', 'B')
-            >>> WrdsTaqNbboAcquisition.symbol_to_pair("AAPL")
-            ('AAPL', None)
+        Examples
+        --------
+        >>> WrdsTaqNbboAcquisition.symbol_to_pair("BRK.B")
+        ('BRK', 'B')
+        >>> WrdsTaqNbboAcquisition.symbol_to_pair("AAPL")
+        ('AAPL', None)
         """
         text = str(symbol)
         if "-" in text:
@@ -924,11 +960,12 @@ class WrdsTaqNbboAcquisition(Acquisition):
     def pair_to_symbol(cls, root: str, suffix: str | None) -> str:
         """Join a TAQ ``(sym_root, sym_suffix)`` pair back into a dotted symbol.
 
-        Example:
-            >>> WrdsTaqNbboAcquisition.pair_to_symbol("BRK", "B")
-            'BRK.B'
-            >>> WrdsTaqNbboAcquisition.pair_to_symbol("AAPL", None)
-            'AAPL'
+        Examples
+        --------
+        >>> WrdsTaqNbboAcquisition.pair_to_symbol("BRK", "B")
+        BRK.B
+        >>> WrdsTaqNbboAcquisition.pair_to_symbol("AAPL", None)
+        AAPL
         """
         return str(root) if not suffix else f"{root}{cls.SUFFIX_DELIMITER}{suffix}"
 
@@ -1163,18 +1200,21 @@ class WrdsTaqNbboAcquisition(Acquisition):
         ``get_data_root() / "downloads" / "us_equity" / "tick"``. No
         credential goes into the config.
 
-        Raises:
-            ValueError: If ``kwargs["data_type"]`` is set to anything but
-                ``"nbbo"``.
+        Raises
+        ------
+        ValueError
+            If ``kwargs["data_type"]`` is set to anything but
+            ``"nbbo"``.
 
-        Example:
-            >>> cfg = WrdsTaqNbboAcquisition.build_config(
-            ...     ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
-            ... )
-            >>> cfg.raw_data_dir_path
-            '<data root>/downloads/us_equity/tick/wrds_taq/wrds'
-            >>> cfg.kwargs
-            {'data_type': 'nbbo'}
+        Examples
+        --------
+        >>> cfg = WrdsTaqNbboAcquisition.build_config(
+        ...     ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
+        ... )
+        >>> cfg.raw_data_dir_path
+        '<data root>/downloads/us_equity/tick/wrds_taq/wrds'
+        >>> cfg.kwargs
+        {'data_type': 'nbbo'}
         """
         merged = dict(kwargs or {})
         data_type = merged.get("data_type", "nbbo")
@@ -1211,13 +1251,14 @@ class WrdsNbboVolumeProbe:
     ``where_clause`` refuses an empty batch. Counts are not cached on disk:
     the pull re-counts each page anyway when ``verify_page_counts`` is on.
 
-    Example:
-        Needs a live ``WrdsSession``.
+    Examples
+    --------
+    Needs a live ``WrdsSession``.
 
-        >>> probe = WrdsNbboVolumeProbe(WrdsSession.shared(), batch_size=25)
-        >>> rows_by_day = probe.count_rows_by_day(
-        ...     ["AAPL", "MSFT"], "2024-01-24", "2024-01-25"
-        ... )
+    >>> probe = WrdsNbboVolumeProbe(WrdsSession.shared(), batch_size=25)
+    >>> rows_by_day = probe.count_rows_by_day(
+    ...     ["AAPL", "MSFT"], "2024-01-24", "2024-01-25"
+    ... )
     """
 
     #: Log progress every this many trading days.
@@ -1248,12 +1289,15 @@ class WrdsNbboVolumeProbe:
         first, so an unentitled year raises ``WrdsEntitlementError`` before
         any count is issued.
 
-        Raises:
-            ValueError: If ``symbols`` is empty or contains a value that is
-                not a tradeable ticker.
+        Raises
+        ------
+        ValueError
+            If ``symbols`` is empty or contains a value that is
+            not a tradeable ticker.
 
-        Example:
-            >>> counts = probe.count_rows_by_day(["AAPL"], "2024-01-24", "2024-01-24")
+        Examples
+        --------
+        >>> counts = probe.count_rows_by_day(["AAPL"], "2024-01-24", "2024-01-24")
         """
         symbols = [str(symbol) for symbol in symbols]
         if not symbols:

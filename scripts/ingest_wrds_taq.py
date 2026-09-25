@@ -182,7 +182,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def _validate(parser: argparse.ArgumentParser, args) -> XnysSessionCalendar:
     """Refuse bad arguments before any WRDS session exists.
 
-    Returns:
+    Returns
+    -------
+    XnysSessionCalendar
         The session calendar built while checking the session window.
     """
     if bool(args.symbols) == bool(args.universe):

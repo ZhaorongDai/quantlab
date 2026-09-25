@@ -40,19 +40,20 @@ class StockDataset(MarketDataset):
     and ``tick`` by ``data_type``, ``date`` and ``symbol``; tick data has no
     dense-panel form and is only reachable through ``_scan_raw``.
 
-    Example:
-        >>> config = DatasetConfig(
-        ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
-        ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
-        ...     catalog_path="data/us_equity/catalog",
-        ...     market="us_equity",
-        ...     frequency="1d",
-        ...     vendor="tiingo",
-        ...     start_date="2024-01-01",
-        ...     end_date="2024-12-31",
-        ... )
-        >>> StockDataset(config).from_raw_data_chunked(granularity="quarter")
-        >>> panel = StockDataset(config).read().get_xarray_dataset()
+    Examples
+    --------
+    >>> config = DatasetConfig(
+    ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
+    ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
+    ...     catalog_path="data/us_equity/catalog",
+    ...     market="us_equity",
+    ...     frequency="1d",
+    ...     vendor="tiingo",
+    ...     start_date="2024-01-01",
+    ...     end_date="2024-12-31",
+    ... )
+    >>> StockDataset(config).from_raw_data_chunked(granularity="quarter")
+    >>> panel = StockDataset(config).read().get_xarray_dataset()
     """
 
     #: Hive key dtypes per frequency, keyed to match ``RAW_HIVE_KEYS``.
@@ -95,9 +96,11 @@ class StockDataset(MarketDataset):
         arbitrary blend, so the root must terminate at the configured
         vendor's own directory.
 
-        Raises:
-            ValueError: If ``config.vendor`` is unset or the root's basename
-                differs from it.
+        Raises
+        ------
+        ValueError
+            If ``config.vendor`` is unset or the root's basename
+            differs from it.
         """
         if not self.config.vendor:
             raise ValueError(
@@ -172,8 +175,10 @@ class StockDataset(MarketDataset):
         lexicographically. The predicate includes both edge partitions in
         full; the ``timestamp`` predicate applied beside it trims them.
 
-        Raises:
-            NotImplementedError: For a frequency with no known window key.
+        Raises
+        ------
+        NotImplementedError
+            For a frequency with no known window key.
         """
         keys = self._scanned_hive_keys
         if keys == ("month",):
@@ -196,8 +201,10 @@ class StockDataset(MarketDataset):
         Taken from ``config.kwargs["data_type"]``. The two share one vendor
         root and have different columns, so the choice is required.
 
-        Raises:
-            ValueError: If the config does not say which one to read.
+        Raises
+        ------
+        ValueError
+            If the config does not say which one to read.
         """
         data_type = (self.config.kwargs or {}).get("data_type")
         if not data_type:
@@ -235,9 +242,11 @@ class StockDataset(MarketDataset):
         This runs before ``dedup_raw_frame``, which would otherwise collapse
         two vendors' overlapping rows and destroy the evidence of a merge.
 
-        Raises:
-            ValueError: If more than one vendor is present, or the one
-                present is not the configured vendor.
+        Raises
+        ------
+        ValueError
+            If more than one vendor is present, or the one
+            present is not the configured vendor.
         """
         vendors = (
             data.select(pl.col("vendor").unique())
@@ -277,12 +286,13 @@ class StockDataset(MarketDataset):
         ``config.raw_data_dir_path`` would miss. It only stats the directory
         and opens no parquet file.
 
-        Example:
-            >>> ds = StockDataset(config)
-            >>> ds.has_raw_data()  # the vendor root exists but holds no shard
-            False
-            >>> ds.has_raw_data()  # once a month=2024-01/part.pqt shard lands
-            True
+        Examples
+        --------
+        >>> ds = StockDataset(config)
+        >>> ds.has_raw_data()  # the vendor root exists but holds no shard
+        False
+        >>> ds.has_raw_data()  # once a month=2024-01/part.pqt shard lands
+        True
         """
         root = self._scan_root()
         return root.exists() and any(root.rglob(f"*{self.RAW_SHARD_SUFFIX}"))
@@ -296,8 +306,10 @@ class StockDataset(MarketDataset):
         data) deduplicates on ``(timestamp, symbol)``. ``None`` for either
         edge means the config's own edge.
 
-        Raises:
-            ValueError: If the raw tree is absent or empty.
+        Raises
+        ------
+        ValueError
+            If the raw tree is absent or empty.
         """
         self._assert_vendor_root()
         root = self._scan_root()

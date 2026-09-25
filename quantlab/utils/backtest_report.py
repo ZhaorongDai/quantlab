@@ -84,58 +84,70 @@ def write_backtest_report(
     below it. Everything after ``title`` is optional; a section whose input
     is missing is simply left off the page.
 
-    Args:
-        value: Portfolio value on the ``timestamp`` dimension. It is drawn as
-            is, so the page and the persisted equity carry the same numbers.
-        path: The ``report.html`` to write.
-        in_sample_range: ``(first, last)`` bar labels of the in-sample part of
-            the window, shaded grey, or ``None`` for a fully out-of-sample
-            window. A midnight bar is labelled by its ISO date and any other
-            bar by its full ISO timestamp; plotly reads both.
-        notes: Lines printed below the plot, such as what the simulation does
-            not model.
-        title: Page title, typically the run directory name.
-        summary: Ordered mapping of display label to already-formatted text,
-            rendered as the dates-and-setup table. Nothing is computed or
-            formatted here, so the page can state the same strings the run's
-            ``metrics.json`` carries.
-        metrics: The metrics mapping of one curve, whose ``whole``,
-            ``in_sample`` and ``out_of_sample`` entries become the table's
-            columns. An entry may be absent or ``None``; the rows are derived
-            from the keys present, with nested dicts flattened to dotted
-            paths. When both slice columns exist a fourth column shows
-            ``out_of_sample - in_sample`` wherever both values are finite
-            numbers.
-        returns: Per-bar portfolio returns on ``timestamp``, compounded per
-            calendar month for the bar panel and the heatmap.
-        init_cash: Starting capital, used only to show equity as a multiple of
-            it in the hover text.
-        drawdown_span: The deepest drawdown as a dict with ``valley`` and
-            ``end`` (bar labels), ``bars`` (bars from the valley to the end),
-            ``depth`` (a negative float) and ``recovered`` (bool). It is drawn
-            as an up triangle at the valley and a down triangle at the
-            recovery bar, so the pair spans bottom-back-to-even rather than
-            the whole episode. The caller chooses the episode; an endpoint the
-            equity axis does not carry drops that marker rather than raising.
+    Parameters
+    ----------
+    value : xr.DataArray
+        Portfolio value on the ``timestamp`` dimension. It is drawn as
+        is, so the page and the persisted equity carry the same numbers.
+    path : str | Path
+        The ``report.html`` to write.
+    in_sample_range : tuple[str, str] | None
+        ``(first, last)`` bar labels of the in-sample part of
+        the window, shaded grey, or ``None`` for a fully out-of-sample
+        window. A midnight bar is labelled by its ISO date and any other
+        bar by its full ISO timestamp; plotly reads both.
+    notes : list[str]
+        Lines printed below the plot, such as what the simulation does
+        not model.
+    title : str
+        Page title, typically the run directory name.
+    summary : dict[str, str] | None
+        Ordered mapping of display label to already-formatted text,
+        rendered as the dates-and-setup table. Nothing is computed or
+        formatted here, so the page can state the same strings the run's
+        ``metrics.json`` carries.
+    metrics : dict | None
+        The metrics mapping of one curve, whose ``whole``,
+        ``in_sample`` and ``out_of_sample`` entries become the table's
+        columns. An entry may be absent or ``None``; the rows are derived
+        from the keys present, with nested dicts flattened to dotted
+        paths. When both slice columns exist a fourth column shows
+        ``out_of_sample - in_sample`` wherever both values are finite
+        numbers.
+    returns : xr.DataArray | None
+        Per-bar portfolio returns on ``timestamp``, compounded per
+        calendar month for the bar panel and the heatmap.
+    init_cash : float | None
+        Starting capital, used only to show equity as a multiple of
+        it in the hover text.
+    drawdown_span : dict | None
+        The deepest drawdown as a dict with ``valley`` and
+        ``end`` (bar labels), ``bars`` (bars from the valley to the end),
+        ``depth`` (a negative float) and ``recovered`` (bool). It is drawn
+        as an up triangle at the valley and a down triangle at the
+        recovery bar, so the pair spans bottom-back-to-even rather than
+        the whole episode. The caller chooses the episode; an endpoint the
+        equity axis does not carry drops that marker rather than raising.
 
-    Example:
-        >>> import pandas as pd, xarray as xr
-        >>> ts = pd.bdate_range("2024-01-01", periods=5)
-        >>> value = xr.DataArray([100.0, 104.0, 98.0, 103.0, 110.0],
-        ...                      dims=("timestamp",), coords={"timestamp": ts})
-        >>> write_backtest_report(
-        ...     value,
-        ...     "report.html",
-        ...     in_sample_range=("2024-01-01", "2024-01-02"),
-        ...     notes=["No borrow cost is modelled."],
-        ...     title="demo_run",
-        ...     metrics={"whole": {"Total Return [%]": 10.0},
-        ...              "in_sample": {"Total Return [%]": 4.0},
-        ...              "out_of_sample": {"Total Return [%]": 6.0}},
-        ...     init_cash=100.0,
-        ... )
-        >>> "<h1>demo_run</h1>" in open("report.html").read()
-        True
+    Examples
+    --------
+    >>> import pandas as pd, xarray as xr
+    >>> ts = pd.bdate_range("2024-01-01", periods=5)
+    >>> value = xr.DataArray([100.0, 104.0, 98.0, 103.0, 110.0],
+    ...                      dims=("timestamp",), coords={"timestamp": ts})
+    >>> write_backtest_report(
+    ...     value,
+    ...     "report.html",
+    ...     in_sample_range=("2024-01-01", "2024-01-02"),
+    ...     notes=["No borrow cost is modelled."],
+    ...     title="demo_run",
+    ...     metrics={"whole": {"Total Return [%]": 10.0},
+    ...              "in_sample": {"Total Return [%]": 4.0},
+    ...              "out_of_sample": {"Total Return [%]": 6.0}},
+    ...     init_cash=100.0,
+    ... )
+    >>> "<h1>demo_run</h1>" in open("report.html").read()
+    True
     """
     equity = value.to_pandas()
     drawdown = equity / equity.cummax() - 1.0

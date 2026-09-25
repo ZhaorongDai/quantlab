@@ -42,43 +42,44 @@ class IndexConstituentDataset(BaseDataset):
     closed on both ends: a symbol removed on date ``D`` reads ``True`` on
     ``D`` and ``False`` on ``D + 1``.
 
-    Example:
-        A minimal index over an in-memory interval table::
+    Examples
+    --------
+    A minimal index over an in-memory interval table::
 
-            class DemoPanel(IndexConstituentDataset):
-                def _pit_coverage_start(self) -> str:
-                    return "2020-01-01"
+        class DemoPanel(IndexConstituentDataset):
+            def _pit_coverage_start(self) -> str:
+                return "2020-01-01"
 
-                def _build_intervals(self) -> pl.DataFrame:
-                    return pl.DataFrame(
-                        [
-                            ("AAA", "2020-01-01", None),
-                            ("BBB", "2020-01-01", "2020-01-05"),
-                            ("CCC", "2020-01-04", None),
-                        ],
-                        schema=["symbol", "start_date", "end_date"],
-                        orient="row",
-                    )
+            def _build_intervals(self) -> pl.DataFrame:
+                return pl.DataFrame(
+                    [
+                        ("AAA", "2020-01-01", None),
+                        ("BBB", "2020-01-01", "2020-01-05"),
+                        ("CCC", "2020-01-04", None),
+                    ],
+                    schema=["symbol", "start_date", "end_date"],
+                    orient="row",
+                )
 
-        >>> config = ConstituentDatasetConfig(
-        ...     zarr_file_path="data/demo.zarr",
-        ...     cache_dir="data/demo_cache",
-        ...     start_date="2020-01-01",
-        ...     end_date="2020-01-08",
-        ...     as_of="2020-01-08",
-        ... )
-        >>> panel = DemoPanel(config).from_raw_data().get_xarray_dataset()
-        >>> panel["is_member"].to_pandas().astype(int)
-        symbol      AAA  BBB  CCC
-        timestamp
-        2020-01-01    1    1    0
-        2020-01-02    1    1    0
-        2020-01-03    1    1    0
-        2020-01-04    1    1    1
-        2020-01-05    1    1    1
-        2020-01-06    1    0    1
-        2020-01-07    1    0    1
-        2020-01-08    1    0    1
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/demo.zarr",
+    ...     cache_dir="data/demo_cache",
+    ...     start_date="2020-01-01",
+    ...     end_date="2020-01-08",
+    ...     as_of="2020-01-08",
+    ... )
+    >>> panel = DemoPanel(config).from_raw_data().get_xarray_dataset()
+    >>> panel["is_member"].to_pandas().astype(int)
+    symbol      AAA  BBB  CCC
+    timestamp
+    2020-01-01    1    1    0
+    2020-01-02    1    1    0
+    2020-01-03    1    1    0
+    2020-01-04    1    1    1
+    2020-01-05    1    1    1
+    2020-01-06    1    0    1
+    2020-01-07    1    0    1
+    2020-01-08    1    0    1
     """
 
     #: The config class a saved ``config.json`` is rebuilt with.
@@ -92,9 +93,10 @@ class IndexConstituentDataset(BaseDataset):
         shared lifecycle has run, and to narrow the return type to the
         membership-panel config.
 
-        Example:
-            >>> ds.config.start_date
-            '2020-01-01'
+        Examples
+        --------
+        >>> ds.config.start_date
+        '2020-01-01'
         """
         return self._config  # type: ignore[return-value]
 
@@ -106,14 +108,15 @@ class IndexConstituentDataset(BaseDataset):
         ``start_date``/``end_date``; the clamp reads the resolved
         ``start_date`` and would otherwise see ``None``.
 
-        Example:
-            A requested date before the coverage start is raised, with a
-            warning, at assignment time:
+        Examples
+        --------
+        A requested date before the coverage start is raised, with a
+        warning, at assignment time:
 
-            >>> config.start_date = "2019-06-01"
-            >>> ds.config = config
-            >>> ds.config.start_date
-            '2020-01-01'
+        >>> config.start_date = "2019-06-01"
+        >>> ds.config = config
+        >>> ds.config.start_date
+        '2020-01-01'
         """
         BaseDataset.config.fset(self, config)  # type: ignore[attr-defined]
         self._clamp_coverage_start()
@@ -171,18 +174,24 @@ class IndexConstituentDataset(BaseDataset):
         sentinel is truncated silently. Each interval fills inclusively on
         both ends, and a null ``end_date`` fills through the right edge.
 
-        Args:
-            intervals: A frame with ``symbol``, ``start_date`` and
-                ``end_date`` columns; a null ``end_date`` means still a
-                member.
+        Parameters
+        ----------
+        intervals : pl.DataFrame
+            A frame with ``symbol``, ``start_date`` and
+            ``end_date`` columns; a null ``end_date`` means still a
+            member.
 
-        Returns:
+        Returns
+        -------
+        xr.Dataset
             A dataset with one boolean ``is_member`` variable on
             ``(timestamp, symbol)`` over a contiguous daily ``timestamp``.
 
-        Raises:
-            ValueError: If the table is empty, any row has a null
-                ``start_date``, or the resolved window is empty.
+        Raises
+        ------
+        ValueError
+            If the table is empty, any row has a null
+            ``start_date``, or the resolved window is empty.
         """
         rows = intervals.select(
             ["symbol", "start_date", "end_date"]

@@ -53,18 +53,19 @@ class SourceInspector:
     file system. The inspector holds no state, so one instance can be kept
     and reused or built per call.
 
-    Example:
-        ``acq_cfg`` is an ``AcquisitionConfig`` and ``ds_cfg`` a
-        ``DatasetConfig`` for the same source.
+    Examples
+    --------
+    ``acq_cfg`` is an ``AcquisitionConfig`` and ``ds_cfg`` a
+    ``DatasetConfig`` for the same source.
 
-        >>> from quantlab.acquisition._support.inspector import SourceInspector
-        >>> inspector = SourceInspector()
-        >>> inspector
-        SourceInspector()
-        >>> inspector.coverage(acq_cfg)["pending"]
-        1
-        >>> inspector.inventory(acq_cfg)["raw"]["shards"]
-        5
+    >>> from quantlab.acquisition._support.inspector import SourceInspector
+    >>> inspector = SourceInspector()
+    >>> inspector
+    SourceInspector()
+    >>> inspector.coverage(acq_cfg)["pending"]
+    1
+    >>> inspector.inventory(acq_cfg)["raw"]["shards"]
+    5
     """
 
     def __repr__(self) -> str:
@@ -85,19 +86,25 @@ class SourceInspector:
         Symbols are validated before any path is built, because a symbol
         becomes a sidecar filename.
 
-        Args:
-            config: Locates the watermark sidecars and supplies the window.
-            symbols: The symbols to classify; ``config.symbols`` by default.
+        Parameters
+        ----------
+        config : AcquisitionConfig
+            Locates the watermark sidecars and supplies the window.
+        symbols : Sequence[str] | None
+            The symbols to classify; ``config.symbols`` by default.
 
-        Returns:
+        Returns
+        -------
+        dict
             A dict with ``requested``, ``pending`` (need a download),
             ``skipped`` (already satisfied), and the per-state counts
             ``covered``, ``widened``, ``legacy`` and ``no_data``.
 
-        Example:
-            >>> report = inspector.coverage(acq_cfg, ["AAPL", "MSFT"])
-            >>> report["requested"], report["pending"], report["covered"]
-            (2, 1, 1)
+        Examples
+        --------
+        >>> report = inspector.coverage(acq_cfg, ["AAPL", "MSFT"])
+        >>> report["requested"], report["pending"], report["covered"]
+        (2, 1, 1)
         """
         ledger = CoverageLedger.for_config(config)
         requested = ledger.validate_symbols(
@@ -125,12 +132,15 @@ class SourceInspector:
         unreadable manifest returns ``{}``. Resume does not read the
         manifest; it is driven by sidecar presence alone.
 
-        Returns:
+        Returns
+        -------
+        dict[str, str]
             ``{symbol: reason}``, or ``{}``.
 
-        Example:
-            >>> inspector.failures(acq_cfg)
-            {'ZZZZ': 'HTTP 404'}
+        Examples
+        --------
+        >>> inspector.failures(acq_cfg)
+        {'ZZZZ': 'HTTP 404'}
         """
         return CoverageLedger.for_config(config).read_failure_manifest()
 
@@ -149,25 +159,31 @@ class SourceInspector:
         directory walk is cheap), so every figure comes from one walk and one
         sidecar pass.
 
-        Args:
-            config: Locates the raw tier and its sidecars.
-            dataset_config: Locates the Zarr store. When omitted, ``"zarr"``
-                is ``None``, meaning "not asked" rather than "absent".
+        Parameters
+        ----------
+        config : AcquisitionConfig
+            Locates the raw tier and its sidecars.
+        dataset_config : DatasetConfig | None
+            Locates the Zarr store. When omitted, ``"zarr"``
+            is ``None``, meaning "not asked" rather than "absent".
 
-        Returns:
+        Returns
+        -------
+        dict
             ``{"raw": {...}, "zarr": {...} | None}``. The raw dict carries the
             root, shard count, byte total, sidecar count, coverage span and
             failure count; the zarr dict carries the path, byte total, dims,
             variable names and timestamp span.
 
-        Example:
-            >>> report = inspector.inventory(acq_cfg, ds_cfg)
-            >>> report["raw"]["shards"], report["raw"]["symbols_with_watermark"]
-            (5, 2)
-            >>> report["zarr"]["exists"]
-            False
-            >>> inspector.inventory(acq_cfg)["zarr"] is None
-            True
+        Examples
+        --------
+        >>> report = inspector.inventory(acq_cfg, ds_cfg)
+        >>> report["raw"]["shards"], report["raw"]["symbols_with_watermark"]
+        (5, 2)
+        >>> report["zarr"]["exists"]
+        False
+        >>> inspector.inventory(acq_cfg)["zarr"] is None
+        True
         """
         ledger = CoverageLedger.for_config(config)
         return {
@@ -350,26 +366,36 @@ class SourceInspector:
         frequency ``symbol`` is a hive key and the same predicate prunes
         directories.
 
-        Args:
-            dataset_config: Locates the vendor's raw root.
-            symbols: Non-empty sequence of tickers to keep.
-            start_date: Inclusive ISO start of the window.
-            end_date: Inclusive ISO end of the window.
+        Parameters
+        ----------
+        dataset_config : DatasetConfig
+            Locates the vendor's raw root.
+        symbols : Sequence[str]
+            Non-empty sequence of tickers to keep.
+        start_date : str
+            Inclusive ISO start of the window.
+        end_date : str
+            Inclusive ISO end of the window.
 
-        Returns:
+        Returns
+        -------
+        pl.LazyFrame
             A ``polars.LazyFrame`` sorted by ``(timestamp, symbol)``, so
             repeated collection yields the same row order.
 
-        Raises:
-            ValueError: If ``symbols`` is empty or contains an invalid ticker.
+        Raises
+        ------
+        ValueError
+            If ``symbols`` is empty or contains an invalid ticker.
 
-        Example:
-            >>> frame = inspector.browse_raw(
-            ...     ds_cfg, ["AAPL"], "2024-02-01", "2024-03-31"
-            ... )
-            >>> rows = frame.collect()
-            >>> rows.height, rows["symbol"].unique().to_list()
-            (2, ['AAPL'])
+        Examples
+        --------
+        >>> frame = inspector.browse_raw(
+        ...     ds_cfg, ["AAPL"], "2024-02-01", "2024-03-31"
+        ... )
+        >>> rows = frame.collect()
+        >>> rows.height, rows["symbol"].unique().to_list()
+        (2, ['AAPL'])
         """
         listed = self._require_symbols(symbols, "browse_raw")
         listed = validate_symbols(
@@ -403,26 +429,36 @@ class SourceInspector:
         by PERMNO) the message also says so and points at the ticker sidecar
         beside the store, since a ticker can never match that axis.
 
-        Args:
-            dataset_config: Locates the Zarr store.
-            symbols: Non-empty sequence of symbol labels to select.
-            start_date: Inclusive ISO start of the window.
-            end_date: Inclusive ISO end of the window.
+        Parameters
+        ----------
+        dataset_config : DatasetConfig
+            Locates the Zarr store.
+        symbols : Sequence[str]
+            Non-empty sequence of symbol labels to select.
+        start_date : str
+            Inclusive ISO start of the window.
+        end_date : str
+            Inclusive ISO end of the window.
 
-        Returns:
+        Returns
+        -------
+        xr.Dataset
             The selected ``xarray.Dataset``, with the store's lazy arrays.
 
-        Raises:
-            ValueError: If ``symbols`` is empty, or if the store does not
-                carry every requested symbol. The message names the store,
-                the missing symbols and how many symbols the store carries.
+        Raises
+        ------
+        ValueError
+            If ``symbols`` is empty, or if the store does not
+            carry every requested symbol. The message names the store,
+            the missing symbols and how many symbols the store carries.
 
-        Example:
-            >>> view = inspector.browse_zarr(
-            ...     ds_cfg, ["AAPL"], "2024-01-10", "2024-01-12"
-            ... )
-            >>> dict(view.sizes)
-            {'timestamp': 3, 'symbol': 1}
+        Examples
+        --------
+        >>> view = inspector.browse_zarr(
+        ...     ds_cfg, ["AAPL"], "2024-01-10", "2024-01-12"
+        ... )
+        >>> dict(view.sizes)
+        {'timestamp': 3, 'symbol': 1}
         """
         listed = self._require_symbols(symbols, "browse_zarr")
         # Not validated against the ticker pattern, unlike `browse_raw`: here a

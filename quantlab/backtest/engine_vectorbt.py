@@ -67,24 +67,25 @@ class VectorBtBacktester(BaseBacktester):
     inflates the win rate. The number of fills is reported separately as
     ``order_count`` in the metrics.
 
-    Example:
-        A concrete engine names its config class and market conventions and
-        turns predictions into target weights::
+    Examples
+    --------
+    A concrete engine names its config class and market conventions and
+    turns predictions into target weights::
 
-            class MyBacktester(VectorBtBacktester):
-                config_cls = CrossSectionBacktestConfig
-                MARKET = MarketSpec(
-                    fill_price_column="open",
-                    valuation_price_column="close",
-                    trading_days_per_year=252,
-                    session_minutes_per_day=390,
-                )
+        class MyBacktester(VectorBtBacktester):
+            config_cls = CrossSectionBacktestConfig
+            MARKET = MarketSpec(
+                fill_price_column="open",
+                valuation_price_column="close",
+                trading_days_per_year=252,
+                session_minutes_per_day=390,
+            )
 
-                def _generate_signals(self, predictions, prices):
-                    ...  # a Dataset with ``weight`` on (timestamp, symbol)
+            def _generate_signals(self, predictions, prices):
+                ...  # a Dataset with ``weight`` on (timestamp, symbol)
 
-            result = MyBacktester(config).run()
-            result.simulation.orders  # one record per fill
+        result = MyBacktester(config).run()
+        result.simulation.orders  # one record per fill
     """
 
     #: The ``Portfolio.stats`` metric names reported for the whole window.
@@ -128,9 +129,11 @@ class VectorBtBacktester(BaseBacktester):
         back onto the engine-neutral ``SimulationResult``. The bar interval is
         the most common difference between consecutive timestamps.
 
-        Raises:
-            ValueError: If fewer than two price bars are given, or a weight row
-                mixes NaN and finite values.
+        Raises
+        ------
+        ValueError
+            If fewer than two price bars are given, or a weight row
+            mixes NaN and finite values.
         """
         # The base class checks the weights contract in run() only; a caller
         # that invokes `_simulate` directly bypasses it, so the engine boundary
@@ -279,9 +282,11 @@ class VectorBtBacktester(BaseBacktester):
         order records alone, not from the portfolio object, so the result does
         not depend on how vectorbt groups columns.
 
-        Raises:
-            ValueError: If an order timestamp is not on the price axis, or an
-                order side is neither ``Buy`` nor ``Sell``.
+        Raises
+        ------
+        ValueError
+            If an order timestamp is not on the price axis, or an
+            order side is neither ``Buy`` nor ``Sell``.
         """
         ts = np.asarray(timestamps).astype("datetime64[ns]")
         syms = [str(s) for s in symbols]
@@ -481,8 +486,10 @@ class VectorBtBacktester(BaseBacktester):
         past the labelled one. The annualisation frequency matches the
         whole-window statistics.
 
-        Raises:
-            ValueError: If no simulated return falls inside ``ranges``.
+        Raises
+        ------
+        ValueError
+            If no simulated return falls inside ``ranges``.
         """
         returns = simulation.native.returns()  # type: ignore[union-attr]
         pieces = [

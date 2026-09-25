@@ -46,16 +46,20 @@ def update_instruments_config(
     ``quantlab.utils.paths``, so the same packaged file is read and written
     whatever the current working directory is.
 
-    Args:
-        symbols: Symbols to refresh. ``None`` refreshes every symbol already
-            present in the file.
-        config_path: The YAML file to update; created if missing.
+    Parameters
+    ----------
+    symbols : list
+        Symbols to refresh. ``None`` refreshes every symbol already
+        present in the file.
+    config_path : str
+        The YAML file to update; created if missing.
 
-    Example:
-        Needs network access to the Binance API::
+    Examples
+    --------
+    Needs network access to the Binance API::
 
-            update_instruments_config(["BTCUSDT", "ETHUSDT"])
-            update_instruments_config(config_path="./instruments.yaml")
+        update_instruments_config(["BTCUSDT", "ETHUSDT"])
+        update_instruments_config(config_path="./instruments.yaml")
     """
 
     print("Fetching Binance exchange info...")
@@ -119,17 +123,22 @@ def get_all_usdt_pairs(limit: int = 50):
     considered. If the 24-hour ticker request fails, every pair is ranked
     with volume 0 and the order is Binance's own. The first ten are printed.
 
-    Args:
-        limit: How many pairs to return.
+    Parameters
+    ----------
+    limit : int
+        How many pairs to return.
 
-    Returns:
+    Returns
+    -------
+    list[str]
         A list of symbol strings, highest volume first.
 
-    Example:
-        Needs network access to the Binance API::
+    Examples
+    --------
+    Needs network access to the Binance API::
 
-            top = get_all_usdt_pairs(limit=20)
-            update_instruments_config(top)
+        top = get_all_usdt_pairs(limit=20)
+        update_instruments_config(top)
     """
     print("Fetching Binance exchange info...")
     exchange_info = _get_binance_exchange_info()

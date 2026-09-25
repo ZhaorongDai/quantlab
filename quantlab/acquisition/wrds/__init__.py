@@ -17,13 +17,14 @@ provider classes, because either provider would otherwise have to import its
 sibling to declare the other capability. The providers import nothing from the
 registry or from this module.
 
-Example:
-    >>> from quantlab.acquisition.wrds import WRDS_SOURCE
-    >>> sorted((c.market, c.frequency, c.data_type)
-    ...        for c in WRDS_SOURCE.capabilities)
-    [('us_equity', '1d', 'crsp_daily'), ('us_equity', 'tick', 'nbbo')]
-    >>> WRDS_SOURCE.required_env
-    ('WRDS_USERNAME',)
+Examples
+--------
+>>> from quantlab.acquisition.wrds import WRDS_SOURCE
+>>> sorted((c.market, c.frequency, c.data_type)
+...        for c in WRDS_SOURCE.capabilities)
+[('us_equity', '1d', 'crsp_daily'), ('us_equity', 'tick', 'nbbo')]
+>>> WRDS_SOURCE.required_env
+('WRDS_USERNAME',)
 """
 
 from quantlab.acquisition.wrds import crsp, taq

@@ -48,21 +48,22 @@ class CrspSymbology:
     returns it. The single public method, ``symbol_intervals()``, is cached
     on the instance because a conversion reads it more than once.
 
-    Example:
-        >>> from quantlab.dataset.crsp.reference import CrspReference
-        >>> from quantlab.dataset.crsp.symbology import CrspSymbology
-        >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
-        >>> symbology = CrspSymbology(ref.table("stksecurityinfohist"))
-        >>> symbology.symbol_intervals().filter(pl.col("permno") == 13407)
-        shape: (2, 4)
-        ┌────────┬────────┬────────────┬────────────┐
-        │ permno ┆ symbol ┆ start_date ┆ end_date   │
-        │ ---    ┆ ---    ┆ ---        ┆ ---        │
-        │ i64    ┆ str    ┆ date       ┆ date       │
-        ╞════════╪════════╪════════════╪════════════╡
-        │ 13407  ┆ FB     ┆ 2012-05-18 ┆ 2022-06-08 │
-        │ 13407  ┆ META   ┆ 2022-06-09 ┆ 2025-12-31 │
-        └────────┴────────┴────────────┴────────────┘
+    Examples
+    --------
+    >>> from quantlab.dataset.crsp.reference import CrspReference
+    >>> from quantlab.dataset.crsp.symbology import CrspSymbology
+    >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+    >>> symbology = CrspSymbology(ref.table("stksecurityinfohist"))
+    >>> symbology.symbol_intervals().filter(pl.col("permno") == 13407)
+    shape: (2, 4)
+    ┌────────┬────────┬────────────┬────────────┐
+    │ permno ┆ symbol ┆ start_date ┆ end_date   │
+    │ ---    ┆ ---    ┆ ---        ┆ ---        │
+    │ i64    ┆ str    ┆ date       ┆ date       │
+    ╞════════╪════════╪════════════╪════════════╡
+    │ 13407  ┆ FB     ┆ 2012-05-18 ┆ 2022-06-08 │
+    │ 13407  ┆ META   ┆ 2022-06-09 ┆ 2025-12-31 │
+    └────────┴────────┴────────────┴────────────┘
     """
 
     SUFFIX_DELIMITER = SUFFIX_DELIMITER
@@ -87,17 +88,18 @@ class CrspSymbology:
         kept so that "this PERMNO never had a ticker" remains visible; call
         ``.drop_nulls("symbol")`` for named intervals only.
 
-        Example:
-            >>> symbology.symbol_intervals().filter(pl.col("permno") == 83443)
-            shape: (2, 4)
-            ┌────────┬────────┬────────────┬────────────┐
-            │ permno ┆ symbol ┆ start_date ┆ end_date   │
-            │ ---    ┆ ---    ┆ ---        ┆ ---        │
-            │ i64    ┆ str    ┆ date       ┆ date       │
-            ╞════════╪════════╪════════════╪════════════╡
-            │ 83443  ┆ BRK    ┆ 1996-05-09 ┆ 2002-01-01 │
-            │ 83443  ┆ BRK.B  ┆ 2002-01-02 ┆ 2025-12-31 │
-            └────────┴────────┴────────────┴────────────┘
+        Examples
+        --------
+        >>> symbology.symbol_intervals().filter(pl.col("permno") == 83443)
+        shape: (2, 4)
+        ┌────────┬────────┬────────────┬────────────┐
+        │ permno ┆ symbol ┆ start_date ┆ end_date   │
+        │ ---    ┆ ---    ┆ ---        ┆ ---        │
+        │ i64    ┆ str    ┆ date       ┆ date       │
+        ╞════════╪════════╪════════════╪════════════╡
+        │ 83443  ┆ BRK    ┆ 1996-05-09 ┆ 2002-01-01 │
+        │ 83443  ┆ BRK.B  ┆ 2002-01-02 ┆ 2025-12-31 │
+        └────────┴────────┴────────────┴────────────┘
         """
         if self._intervals is not None:
             return self._intervals

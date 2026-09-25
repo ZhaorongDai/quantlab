@@ -50,10 +50,11 @@ class Factor(ABC):
     warm on the first requested bar. Factor names are therefore known as soon
     as the object is constructed, before anything is computed.
 
-    Example:
-        >>> factor = MyFactor(config)
-        >>> factor.get_factor_names()          # known before cal()
-        >>> panel = factor.cal().save(mode="w").get_features()
+    Examples
+    --------
+    >>> factor = MyFactor(config)
+    >>> factor.get_factor_names()          # known before cal()
+    >>> panel = factor.cal().save(mode="w").get_features()
     """
 
     def __init__(self, config: BaseFactorConfig):
@@ -82,11 +83,12 @@ class Factor(ABC):
     def config(self) -> BaseFactorConfig:
         """The factor's config; assigning it normalizes the config in place.
 
-        Example:
-            >>> factor.config is config
-            True
-            >>> factor.config.name
-            'quantlab.factor.momentum.Momentum'
+        Examples
+        --------
+        >>> factor.config is config
+        True
+        >>> factor.config.name
+        quantlab.factor.momentum.Momentum
         """
         return self._config
 
@@ -101,18 +103,21 @@ class Factor(ABC):
         Nothing here touches the storage backend, which does not exist yet
         when ``__init__`` assigns the config.
 
-        Args:
-            config: The factor config to install.
+        Parameters
+        ----------
+        config : BaseFactorConfig
+            The factor config to install.
 
-        Example:
-            >>> factor.config = PolarsFactorConfig(
-            ...     window=5, dataset=dataset, kwargs={"n": 5},
-            ...     start_date="2024-02-01", file_path="momentum_5.zarr",
-            ... )
-            >>> factor.get_factor_names()
-            ('momentum_5',)
-            >>> factor.config.dataset.config.start_date   # 5 days of warm-up
-            '2024-01-27'
+        Examples
+        --------
+        >>> factor.config = PolarsFactorConfig(
+        ...     window=5, dataset=dataset, kwargs={"n": 5},
+        ...     start_date="2024-02-01", file_path="momentum_5.zarr",
+        ... )
+        >>> factor.get_factor_names()
+        ('momentum_5',)
+        >>> factor.config.dataset.config.start_date   # 5 days of warm-up
+        '2024-01-27'
         """
         self._config = config
         self._config.name = self.import_path
@@ -141,8 +146,10 @@ class Factor(ABC):
         surfacing later as a ``KeyError`` deep inside a ``.sel`` call. Only
         the mapping is read; this module names no dataset class.
 
-        Raises:
-            ValueError: If any declared field is set on the config.
+        Raises
+        ------
+        ValueError
+            If any declared field is set on the config.
         """
         dataset = getattr(self._config, "dataset", None)
         rejected = getattr(dataset, "REJECTED_FACTOR_CONFIG_FIELDS", None) or {}
@@ -180,9 +187,10 @@ class Factor(ABC):
 
         The dataset must already be loaded; ``cal()`` loads it.
 
-        Example:
-            >>> factor.cal().num_symbols
-            8
+        Examples
+        --------
+        >>> factor.cal().num_symbols
+        8
         """
         return self.config.dataset.num_symbols
 
@@ -190,9 +198,10 @@ class Factor(ABC):
     def num_factors(self) -> int:
         """Number of columns this factor produces.
 
-        Example:
-            >>> factor.num_factors
-            1
+        Examples
+        --------
+        >>> factor.num_factors
+        1
         """
         return len(self.get_factor_names())
 
@@ -200,9 +209,10 @@ class Factor(ABC):
     def import_path(self) -> str:
         """Dotted ``module.QualName`` path used to rebuild this class from a config.
 
-        Example:
-            >>> factor.import_path
-            'quantlab.factor.momentum.Momentum'
+        Examples
+        --------
+        >>> factor.import_path
+        quantlab.factor.momentum.Momentum
         """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
@@ -212,9 +222,10 @@ class Factor(ABC):
 
         The dataset must already be loaded; ``cal()`` loads it.
 
-        Example:
-            >>> factor.cal().symbols[:3]
-            ['S0USDT', 'S1USDT', 'S2USDT']
+        Examples
+        --------
+        >>> factor.cal().symbols[:3]
+        ['S0USDT', 'S1USDT', 'S2USDT']
         """
         return self.config.dataset.symbols
 
@@ -222,32 +233,38 @@ class Factor(ABC):
     def class_name(self) -> str:
         """Bare class name, used in log and error messages.
 
-        Example:
-            >>> factor.class_name
-            'Momentum'
+        Examples
+        --------
+        >>> factor.class_name
+        Momentum
         """
         return self.__class__.__name__
 
     def read(self, overwrite: bool = False) -> Self:
         """Open the factor store and narrow it to the configured window.
 
-        Args:
-            overwrite: Re-open the store even if the backend already holds
-                data. The default reuses the cached panel and only narrows
-                it; pass ``True`` after changing ``config.start_date`` or
-                ``config.end_date``, since the cached panel was cut to the
-                old dates.
+        Parameters
+        ----------
+        overwrite : bool
+            Re-open the store even if the backend already holds
+            data. The default reuses the cached panel and only narrows
+            it; pass ``True`` after changing ``config.start_date`` or
+            ``config.end_date``, since the cached panel was cut to the
+            old dates.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> # config dates 2024-02-01 to 2024-02-10, store holds 60 bars
-            >>> factor.read().get_features().sizes
-            Frozen({'timestamp': 10, 'symbol': 8})
-            >>> factor.config.end_date = "2024-02-20"
-            >>> factor.read(overwrite=True).get_features().sizes
-            Frozen({'timestamp': 20, 'symbol': 8})
+        Examples
+        --------
+        >>> # config dates 2024-02-01 to 2024-02-10, store holds 60 bars
+        >>> factor.read().get_features().sizes
+        Frozen({'timestamp': 10, 'symbol': 8})
+        >>> factor.config.end_date = "2024-02-20"
+        >>> factor.read(overwrite=True).get_features().sizes
+        Frozen({'timestamp': 20, 'symbol': 8})
         """
         self.data_backend.read(self.config.file_path, overwrite=overwrite)
         self._auto_filter()
@@ -256,25 +273,33 @@ class Factor(ABC):
     def save(self, mode: Literal["a", "w"] = "a", **kwargs) -> Self:
         """Write the held panel to ``config.file_path`` as a Zarr store.
 
-        Args:
-            mode: ``"a"`` (the default) overwrites variables in an existing
-                store and fails if that store has a different time or symbol
-                axis; ``"w"`` replaces the store. To extend a store with a
-                later date range use ``update()`` instead.
-            **kwargs: Passed through to the backend's ``write``.
+        Parameters
+        ----------
+        mode : Literal['a', 'w']
+            ``"a"`` (the default) overwrites variables in an existing
+            store and fails if that store has a different time or symbol
+            axis; ``"w"`` replaces the store. To extend a store with a
+            later date range use ``update()`` instead.
+        **kwargs
+            Passed through to the backend's ``write``.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Raises:
-            ValueError: If ``mode="a"`` meets a store whose dimension sizes
-                differ from the panel being written.
+        Raises
+        ------
+        ValueError
+            If ``mode="a"`` meets a store whose dimension sizes
+            differ from the panel being written.
 
-        Example:
-            >>> factor.cal().save(mode="w")    # replace the store
-            >>> sorted(p.name for p in Path(factor.config.file_path).iterdir())
-            ['momentum_20', 'symbol', 'timestamp', 'zarr.json']
-            >>> factor.save()                  # same axes: rewrite in place
+        Examples
+        --------
+        >>> factor.cal().save(mode="w")    # replace the store
+        >>> sorted(p.name for p in Path(factor.config.file_path).iterdir())
+        ['momentum_20', 'symbol', 'timestamp', 'zarr.json']
+        >>> factor.save()                  # same axes: rewrite in place
         """
         with Timer(f"{self.__class__.__name__}: save"):
             self._auto_filter()
@@ -313,20 +338,25 @@ class Factor(ABC):
         appended. Cells created by widening are filled from
         ``_widen_fill_values()``.
 
-        Args:
-            **kwargs: Passed through to the backend's ``widen_and_append``.
+        Parameters
+        ----------
+        **kwargs
+            Passed through to the backend's ``widen_and_append``.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> factor.read().get_features().sizes       # the store so far
-            Frozen({'timestamp': 60, 'symbol': 8})
-            >>> later.cal().get_features().sizes         # same store, later dates
-            Frozen({'timestamp': 30, 'symbol': 8})
-            >>> later.update()
-            >>> factor.read(overwrite=True).get_features().sizes
-            Frozen({'timestamp': 90, 'symbol': 8})
+        Examples
+        --------
+        >>> factor.read().get_features().sizes       # the store so far
+        Frozen({'timestamp': 60, 'symbol': 8})
+        >>> later.cal().get_features().sizes         # same store, later dates
+        Frozen({'timestamp': 30, 'symbol': 8})
+        >>> later.update()
+        >>> factor.read(overwrite=True).get_features().sizes
+        Frozen({'timestamp': 90, 'symbol': 8})
         """
         with Timer(f"{self.__class__.__name__}: update"):
             self._auto_filter()
@@ -357,45 +387,52 @@ class Factor(ABC):
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
         """Turn the held panel into features; factor classes override this.
 
-        Raises:
-            NotImplementedError: Unless a subclass overrides it.
+        Raises
+        ------
+        NotImplementedError
+            Unless a subclass overrides it.
         """
         raise NotImplementedError
 
     def get_features(self) -> xr.Dataset:
         """Return the computed panel as model features.
 
-        Example:
-            >>> panel = factor.cal().get_features()
-            >>> list(panel.data_vars), dict(panel.sizes)
-            (['momentum_20'], {'timestamp': 60, 'symbol': 8})
+        Examples
+        --------
+        >>> panel = factor.cal().get_features()
+        >>> list(panel.data_vars), dict(panel.sizes)
+        (['momentum_20'], {'timestamp': 60, 'symbol': 8})
         """
         return self._get_features(self._get_xarray_dataset())
 
     def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
         """Turn the held panel into labels; label classes override this.
 
-        Raises:
-            NotImplementedError: Unless a subclass overrides it.
+        Raises
+        ------
+        NotImplementedError
+            Unless a subclass overrides it.
         """
         raise NotImplementedError
 
     def get_labels(self) -> xr.Dataset:
         """Return the computed panel as model labels.
 
-        Example:
-            >>> panel = label.cal().get_labels()     # a label class
-            >>> list(panel.data_vars), panel.sizes
-            (['ret_1'], Frozen({'timestamp': 21, 'symbol': 16}))
+        Examples
+        --------
+        >>> panel = label.cal().get_labels()     # a label class
+        >>> list(panel.data_vars), panel.sizes
+        (['ret_1'], Frozen({'timestamp': 21, 'symbol': 16}))
         """
         return self._get_labels(self._get_xarray_dataset())
 
     def get_factor_names(self) -> tuple[str, ...]:
         """Return the names of the columns this factor produces.
 
-        Example:
-            >>> factor.get_factor_names()
-            ('momentum_20',)
+        Examples
+        --------
+        >>> factor.get_factor_names()
+        ('momentum_20',)
         """
         return self.config.factor_names
 
@@ -406,12 +443,13 @@ class Factor(ABC):
         ``quantlab.utils.module.load_factor_from_config`` rebuilds the factor
         from the result.
 
-        Example:
-            >>> cfg = factor.get_config()
-            >>> cfg["name"]
-            'quantlab.factor.momentum.Momentum'
-            >>> cfg["kwargs"], cfg["dataset"]["frequency"]
-            ({'n': 20}, '1d')
+        Examples
+        --------
+        >>> cfg = factor.get_config()
+        >>> cfg["name"]
+        quantlab.factor.momentum.Momentum
+        >>> cfg["kwargs"], cfg["dataset"]["frequency"]
+        ({'n': 20}, '1d')
         """
         ds_config = self.config.dataset.get_config()
         cfg = self.config.to_dict()
@@ -427,18 +465,21 @@ class Factor(ABC):
     def cal(self) -> Self:
         """Compute the factor panel and hold it in the storage backend.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            A backend override computes a ``(timestamp, symbol)`` panel, hands
-            it to the storage backend and narrows it to the configured window:
+        Examples
+        --------
+        A backend override computes a ``(timestamp, symbol)`` panel, hands
+        it to the storage backend and narrows it to the configured window:
 
-            def cal(self) -> Self:
-                panel = self._compute()            # an xarray.Dataset
-                self.data_backend.to_internal(panel)
-                self._auto_filter()
-                return self
+        def cal(self) -> Self:
+            panel = self._compute()            # an xarray.Dataset
+            self.data_backend.to_internal(panel)
+            self._auto_filter()
+            return self
         """
         ...
 
@@ -459,18 +500,19 @@ class FactorKunQuant(Factor):
     compiled graph small. In batch mode the number of symbols must be a
     multiple of the SIMD block width KunQuant uses on the host.
 
-    Example:
-        class MaDeviation(FactorKunQuant):
-            def _get_factor_names(self):
-                return ("ma_dev_5",)
+    Examples
+    --------
+    class MaDeviation(FactorKunQuant):
+        def _get_factor_names(self):
+            return ("ma_dev_5",)
 
-            def _get_factor_func(self):
-                builder = Builder()
-                with builder:
-                    close = Input("close")
-                    dev = op.Div(close, op.WindowedAvg(close, 5))
-                    Output(op.SubConst(dev, 1.0), "ma_dev_5")
-                return Function(builder.ops)
+        def _get_factor_func(self):
+            builder = Builder()
+            with builder:
+                close = Input("close")
+                dev = op.Div(close, op.WindowedAvg(close, 5))
+                Output(op.SubConst(dev, 1.0), "ma_dev_5")
+            return Function(builder.ops)
     """
 
     #: The config class ``load_factor_from_config`` rebuilds this factor with.
@@ -495,13 +537,16 @@ class FactorKunQuant(Factor):
         Batch mode asks the dataset; stream mode reads the symbol list pinned
         on the dataset config, since no panel has been loaded.
 
-        Raises:
-            ValueError: If ``config.mode`` is neither ``"batch"`` nor
-                ``"stream"``.
+        Raises
+        ------
+        ValueError
+            If ``config.mode`` is neither ``"batch"`` nor
+            ``"stream"``.
 
-        Example:
-            >>> factor.num_symbols        # stream config pinning 16 symbols
-            16
+        Examples
+        --------
+        >>> factor.num_symbols        # stream config pinning 16 symbols
+        16
         """
         if self.config.mode == "batch":
             return super().num_symbols
@@ -517,13 +562,16 @@ class FactorKunQuant(Factor):
         Batch mode asks the dataset; stream mode reads the symbol list pinned
         on the dataset config.
 
-        Raises:
-            ValueError: If ``config.mode`` is neither ``"batch"`` nor
-                ``"stream"``.
+        Raises
+        ------
+        ValueError
+            If ``config.mode`` is neither ``"batch"`` nor
+            ``"stream"``.
 
-        Example:
-            >>> factor.symbols[:3]
-            ['AAPL', 'MSFT', 'NVDA']
+        Examples
+        --------
+        >>> factor.symbols[:3]
+        ['AAPL', 'MSFT', 'NVDA']
         """
         if self.config.mode == "batch":
             return super().symbols
@@ -542,14 +590,17 @@ class FactorKunQuant(Factor):
         ``Output``: KunQuant prunes unused inputs and the handle lookup for a
         pruned one fails.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> factor.init_stream() is factor    # config.mode == "stream"
-            True
-            >>> sorted(factor._buffer_name_to_id)  # one input, three outputs
-            ['adjClose', 'ma_close', 'ma_rank', 'rank_close']
+        Examples
+        --------
+        >>> factor.init_stream() is factor    # config.mode == "stream"
+        True
+        >>> sorted(factor._buffer_name_to_id)  # one input, three outputs
+        ['adjClose', 'ma_close', 'ma_rank', 'rank_close']
         """
         with Timer(f"{self.__class__.__name__}: init stream"):
             lib = self._make_stream()
@@ -576,12 +627,18 @@ class FactorKunQuant(Factor):
     ):
         """Wrap raw ``[time, symbol]`` arrays in an ``xarray.Dataset`` and hold it.
 
-        Args:
-            raw_factor: Factor name to a ``[num_times, num_symbols]`` array.
-            timestamps: Coordinate values for the time axis.
-            symbols: Coordinate values for the symbol axis.
+        Parameters
+        ----------
+        raw_factor : dict[str, np.ndarray]
+            Factor name to a ``[num_times, num_symbols]`` array.
+        timestamps : np.ndarray
+            Coordinate values for the time axis.
+        symbols : np.ndarray
+            Coordinate values for the symbol axis.
 
-        Returns:
+        Returns
+        -------
+        Factor
             ``self``, for chaining.
         """
         ds = xr.Dataset(
@@ -612,14 +669,17 @@ class FactorKunQuant(Factor):
         ``config.njobs`` threads, and the outputs are wrapped as a panel. The
         compiled library is dropped afterwards, so each call compiles again.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> factor.get_factor_names()
-            ('rank_close', 'ma_close', 'ma_rank')
-            >>> factor.cal().get_features().sizes   # 21 configured bars
-            Frozen({'timestamp': 21, 'symbol': 16})
+        Examples
+        --------
+        >>> factor.get_factor_names()
+        ('rank_close', 'ma_close', 'ma_rank')
+        >>> factor.cal().get_features().sizes   # 21 configured bars
+        Frozen({'timestamp': 21, 'symbol': 16})
         """
         input_dict, symbols, timestamp = self.config.dataset.to_kunquant(
             data_columns=self.config.data_columns
@@ -649,25 +709,32 @@ class FactorKunQuant(Factor):
 
         The stream is initialized on first use.
 
-        Args:
-            data: Column name to a 1-D array of length ``num_symbols`` for
-                every name in ``config.data_columns``.
-            timestamp: The bar's timestamp, used as the single time
-                coordinate.
-            symbols: Symbol coordinate values, in the order the arrays are
-                laid out.
+        Parameters
+        ----------
+        data : dict[str, np.ndarray]
+            Column name to a 1-D array of length ``num_symbols`` for
+            every name in ``config.data_columns``.
+        timestamp : int
+            The bar's timestamp, used as the single time
+            coordinate.
+        symbols : list[str]
+            Symbol coordinate values, in the order the arrays are
+            laid out.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, holding a ``(1, num_symbols)`` panel for this bar.
 
-        Example:
-            >>> for step in range(3):                  # replay three bars
-            ...     bar = {"adjClose": adj_close[step]}  # float32, per symbol
-            ...     row = factor.cal_stream(bar, step, symbols).get_features()
-            >>> row.sizes
-            Frozen({'timestamp': 1, 'symbol': 16})
-            >>> list(row.data_vars)
-            ['rank_close', 'ma_close', 'ma_rank']
+        Examples
+        --------
+        >>> for step in range(3):                  # replay three bars
+        ...     bar = {"adjClose": adj_close[step]}  # float32, per symbol
+        ...     row = factor.cal_stream(bar, step, symbols).get_features()
+        >>> row.sizes
+        Frozen({'timestamp': 1, 'symbol': 16})
+        >>> list(row.data_vars)
+        ['rank_close', 'ma_close', 'ma_rank']
         """
         if self._stream_context is None:
             self.init_stream()
@@ -745,18 +812,19 @@ class FactorPolars(Factor):
     Column names are whatever the underlying store holds; unlike the KunQuant
     path, no per-market renaming is applied.
 
-    Example:
-        class RelativeVolume(FactorPolars):
-            def _get_factor_lazyframe(self, lf):
-                volume = pl.col("Volume")
-                return (
-                    lf.sort(["symbol", "timestamp"])
-                    .with_columns(
-                        (volume / volume.rolling_mean(20).over("symbol") - 1.0)
-                        .alias("rel_volume_20")
-                    )
-                    .select(["timestamp", "symbol", "rel_volume_20"])
+    Examples
+    --------
+    class RelativeVolume(FactorPolars):
+        def _get_factor_lazyframe(self, lf):
+            volume = pl.col("Volume")
+            return (
+                lf.sort(["symbol", "timestamp"])
+                .with_columns(
+                    (volume / volume.rolling_mean(20).over("symbol") - 1.0)
+                    .alias("rel_volume_20")
                 )
+                .select(["timestamp", "symbol", "rel_volume_20"])
+            )
     """
 
     #: The config class ``load_factor_from_config`` rebuilds this factor with.
@@ -790,11 +858,15 @@ class FactorPolars(Factor):
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
         """Return the factor as a lazy frame; the one method a subclass writes.
 
-        Args:
-            lf: The dataset as a ``LazyFrame`` with the store's own column
-                names.
+        Parameters
+        ----------
+        lf : pl.LazyFrame
+            The dataset as a ``LazyFrame`` with the store's own column
+            names.
 
-        Returns:
+        Returns
+        -------
+        pl.LazyFrame
             A lazy frame with exactly ``timestamp``, ``symbol`` and the factor
             columns. Do not call ``collect`` here.
         """
@@ -805,12 +877,15 @@ class FactorPolars(Factor):
 
         ``config.factor_names`` is refreshed from the collected schema.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
 
-        Example:
-            >>> factor.cal().get_features().sizes
-            Frozen({'timestamp': 60, 'symbol': 8})
+        Examples
+        --------
+        >>> factor.cal().get_features().sizes
+        Frozen({'timestamp': 60, 'symbol': 8})
         """
         lf = self.config.dataset.read().get_lazyframe()
         factor_lf = self._get_factor_lazyframe(lf)

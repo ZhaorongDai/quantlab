@@ -30,15 +30,16 @@ class BaseDatasetConfig:
     Both market panels and constituent (index membership) panels build on
     this class. Market-specific fields live on ``DatasetConfig``.
 
-    Example:
-        >>> cfg = BaseDatasetConfig(
-        ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
-        ...     start_date="2020-01-01",
-        ...     end_date="2020-12-31",
-        ...     symbols=("AAPL", "MSFT"),
-        ... )
-        >>> cfg.kwargs, cfg.name
-        (None, None)
+    Examples
+    --------
+    >>> cfg = BaseDatasetConfig(
+    ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
+    ...     start_date="2020-01-01",
+    ...     end_date="2020-12-31",
+    ...     symbols=("AAPL", "MSFT"),
+    ... )
+    >>> cfg.kwargs, cfg.name
+    (None, None)
     """
 
     #: Path of the Zarr store the dataset reads from and writes to.
@@ -60,9 +61,10 @@ class BaseDatasetConfig:
     def to_dict(self):
         """Return the config as a plain dict via ``dataclasses.asdict``.
 
-        Example:
-            >>> sorted(cfg.to_dict())
-            ['end_date', 'kwargs', 'name', 'start_date', 'symbols', 'zarr_file_path']
+        Examples
+        --------
+        >>> sorted(cfg.to_dict())
+        ['end_date', 'kwargs', 'name', 'start_date', 'symbols', 'zarr_file_path']
         """
         return asdict(self)
 
@@ -76,19 +78,20 @@ class DatasetConfig(BaseDatasetConfig):
     entry of ``kwargs`` they form the key the vendor registry uses to pick the
     converter for this dataset.
 
-    Example:
-        >>> cfg = DatasetConfig(
-        ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
-        ...     raw_data_dir_path="/data/downloads/us_equity/1d/tiingo",
-        ...     catalog_path="/data/catalog",
-        ...     market="us_equity",
-        ...     frequency="1d",
-        ...     vendor="tiingo",
-        ...     start_date="2020-01-01",
-        ...     symbols=("AAPL",),
-        ... )
-        >>> cfg.market, cfg.frequency, cfg.vendor
-        ('us_equity', '1d', 'tiingo')
+    Examples
+    --------
+    >>> cfg = DatasetConfig(
+    ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
+    ...     raw_data_dir_path="/data/downloads/us_equity/1d/tiingo",
+    ...     catalog_path="/data/catalog",
+    ...     market="us_equity",
+    ...     frequency="1d",
+    ...     vendor="tiingo",
+    ...     start_date="2020-01-01",
+    ...     symbols=("AAPL",),
+    ... )
+    >>> cfg.market, cfg.frequency, cfg.vendor
+    ('us_equity', '1d', 'tiingo')
     """
 
     #: Root of the raw download tree the panel is converted from.
@@ -114,18 +117,19 @@ class NbboDatasetConfig(DatasetConfig):
     resampler's record filter and are config fields, not ``kwargs``, so a
     rebuild from ``config.json`` reproduces the panel exactly.
 
-    Example:
-        >>> cfg = NbboDatasetConfig(
-        ...     zarr_file_path="/data/us_equity/tick/nbbo_5m.zarr",
-        ...     raw_data_dir_path="/data/downloads/us_equity/tick/wrds",
-        ...     catalog_path="/data/catalog",
-        ...     bar_interval="5m",
-        ...     start_date="2024-01-02",
-        ...     end_date="2024-01-31",
-        ...     symbols=("AAPL",),
-        ... )
-        >>> cfg.frequency, cfg.bar_interval, cfg.drop_crossed
-        ('tick', '5m', True)
+    Examples
+    --------
+    >>> cfg = NbboDatasetConfig(
+    ...     zarr_file_path="/data/us_equity/tick/nbbo_5m.zarr",
+    ...     raw_data_dir_path="/data/downloads/us_equity/tick/wrds",
+    ...     catalog_path="/data/catalog",
+    ...     bar_interval="5m",
+    ...     start_date="2024-01-02",
+    ...     end_date="2024-01-31",
+    ...     symbols=("AAPL",),
+    ... )
+    >>> cfg.frequency, cfg.bar_interval, cfg.drop_crossed
+    ('tick', '5m', True)
     """
 
     #: Always US equity for this vendor.
@@ -169,20 +173,21 @@ class CrspDatasetConfig(DatasetConfig):
     ticker-side ``symbols`` field is refused by the dataset's config setter;
     use ``permnos`` instead. See ``docs/wrds_crsp.md``.
 
-    Example:
-        >>> cfg = CrspDatasetConfig(
-        ...     zarr_file_path="/data/us_equity/1d/crsp.zarr",
-        ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
-        ...     catalog_path="/data/catalog",
-        ...     reference_dir="/data/reference/crsp",
-        ...     start_date="2015-01-01",
-        ...     end_date="2024-12-31",
-        ...     permnos=("14593", "10107"),
-        ... )
-        >>> cfg.market, cfg.frequency, cfg.vendor
-        ('us_equity', '1d', 'wrds')
-        >>> cfg.security_filter
-        'equity_common'
+    Examples
+    --------
+    >>> cfg = CrspDatasetConfig(
+    ...     zarr_file_path="/data/us_equity/1d/crsp.zarr",
+    ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
+    ...     catalog_path="/data/catalog",
+    ...     reference_dir="/data/reference/crsp",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     permnos=("14593", "10107"),
+    ... )
+    >>> cfg.market, cfg.frequency, cfg.vendor
+    ('us_equity', '1d', 'wrds')
+    >>> cfg.security_filter
+    equity_common
     """
 
     #: Always US equity for this vendor.
@@ -250,25 +255,33 @@ class CrspDatasetConfig(DatasetConfig):
         This store is data only; ``BacktestConfig.benchmark_dataset`` does not
         yet consume it.
 
-        Args:
-            zarr_file_path: Path of the benchmark's own Zarr store.
-            raw_data_dir_path: Root of the CRSP raw download tree.
-            catalog_path: Nautilus catalog directory (unused by CRSP but
-                required by ``DatasetConfig``).
-            reference_dir: Directory of the CRSP reference tables.
-            start_date: First date to keep, inclusive.
-            end_date: Last date to keep, inclusive.
+        Parameters
+        ----------
+        zarr_file_path : str
+            Path of the benchmark's own Zarr store.
+        raw_data_dir_path : str
+            Root of the CRSP raw download tree.
+        catalog_path : str
+            Nautilus catalog directory (unused by CRSP but
+            required by ``DatasetConfig``).
+        reference_dir : str
+            Directory of the CRSP reference tables.
+        start_date : str | None
+            First date to keep, inclusive.
+        end_date : str | None
+            Last date to keep, inclusive.
 
-        Example:
-            >>> cfg = CrspDatasetConfig.qqq_benchmark(
-            ...     zarr_file_path="/data/us_equity/1d/qqq.zarr",
-            ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
-            ...     catalog_path="/data/catalog",
-            ...     reference_dir="/data/reference/crsp",
-            ...     start_date="2015-01-01",
-            ... )
-            >>> cfg.permnos, cfg.security_filter
-            (('86755',), 'none')
+        Examples
+        --------
+        >>> cfg = CrspDatasetConfig.qqq_benchmark(
+        ...     zarr_file_path="/data/us_equity/1d/qqq.zarr",
+        ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
+        ...     catalog_path="/data/catalog",
+        ...     reference_dir="/data/reference/crsp",
+        ...     start_date="2015-01-01",
+        ... )
+        >>> cfg.permnos, cfg.security_filter
+        (('86755',), 'none')
         """
         return cls(
             zarr_file_path=zarr_file_path,
@@ -286,16 +299,17 @@ class CrspDatasetConfig(DatasetConfig):
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 
-    Example:
-        >>> cfg = ConstituentDatasetConfig(
-        ...     zarr_file_path="/data/us_equity/1d/sp500_constituent.zarr",
-        ...     cache_dir="/data/reference/_cache",
-        ...     start_date="2020-01-01",
-        ...     end_date="2020-12-31",
-        ...     as_of="2024-06-30",
-        ... )
-        >>> cfg.as_of
-        '2024-06-30'
+    Examples
+    --------
+    >>> cfg = ConstituentDatasetConfig(
+    ...     zarr_file_path="/data/us_equity/1d/sp500_constituent.zarr",
+    ...     cache_dir="/data/reference/_cache",
+    ...     start_date="2020-01-01",
+    ...     end_date="2020-12-31",
+    ...     as_of="2024-06-30",
+    ... )
+    >>> cfg.as_of
+    '2024-06-30'
     """
 
     #: Directory holding the membership source the panel is built from (the
@@ -310,19 +324,20 @@ class ConstituentDatasetConfig(BaseDatasetConfig):
 class AcquisitionConfig:
     """Config of a raw-data download for one market, frequency and vendor.
 
-    Example:
-        >>> cfg = AcquisitionConfig(
-        ...     market="us_equity",
-        ...     frequency="1d",
-        ...     vendor="tiingo",
-        ...     raw_data_dir_path="/data/downloads/us_equity/1d/tiingo",
-        ...     watermark_path="/data/downloads/us_equity/1d/_watermarks/tiingo",
-        ...     symbols=("AAPL", "MSFT"),
-        ...     start_date="2020-01-01",
-        ...     kwargs={"max_workers": 4},
-        ... )
-        >>> cfg.symbols
-        ('AAPL', 'MSFT')
+    Examples
+    --------
+    >>> cfg = AcquisitionConfig(
+    ...     market="us_equity",
+    ...     frequency="1d",
+    ...     vendor="tiingo",
+    ...     raw_data_dir_path="/data/downloads/us_equity/1d/tiingo",
+    ...     watermark_path="/data/downloads/us_equity/1d/_watermarks/tiingo",
+    ...     symbols=("AAPL", "MSFT"),
+    ...     start_date="2020-01-01",
+    ...     kwargs={"max_workers": 4},
+    ... )
+    >>> cfg.symbols
+    ('AAPL', 'MSFT')
     """
 
     #: The market being downloaded.
@@ -352,9 +367,10 @@ class AcquisitionConfig:
     def to_dict(self):
         """Return the config as a plain dict via ``dataclasses.asdict``.
 
-        Example:
-            >>> cfg.to_dict()["kwargs"]
-            {'max_workers': 4}
+        Examples
+        --------
+        >>> cfg.to_dict()["kwargs"]
+        {'max_workers': 4}
         """
         return asdict(self)
 
@@ -363,13 +379,14 @@ class AcquisitionConfig:
 class UniverseConfig:
     """Config of the point-in-time universe catalog builder.
 
-    Example:
-        >>> cfg = UniverseConfig(
-        ...     output_path="/data/reference/universe.parquet",
-        ...     cache_dir="/data/reference/_cache",
-        ... )
-        >>> cfg.kwargs is None
-        True
+    Examples
+    --------
+    >>> cfg = UniverseConfig(
+    ...     output_path="/data/reference/universe.parquet",
+    ...     cache_dir="/data/reference/_cache",
+    ... )
+    >>> cfg.kwargs is None
+    True
     """
 
     #: File the built catalog is written to.
@@ -384,9 +401,10 @@ class UniverseConfig:
     def to_dict(self):
         """Return the config as a plain dict via ``dataclasses.asdict``.
 
-        Example:
-            >>> cfg.to_dict()["output_path"]
-            '/data/reference/universe.parquet'
+        Examples
+        --------
+        >>> cfg.to_dict()["output_path"]
+        '/data/reference/universe.parquet'
         """
         return asdict(self)
 
@@ -400,18 +418,19 @@ class BaseFactorConfig:
     ``start_date`` so rolling computations are warm at the first requested
     bar.
 
-    Example:
-        With ``dataset`` a market dataset built earlier:
+    Examples
+    --------
+    With ``dataset`` a market dataset built earlier:
 
-        >>> cfg = BaseFactorConfig(
-        ...     window=20,
-        ...     dataset=dataset,
-        ...     file_path="/data/factor/momentum.zarr",
-        ...     start_date="2020-01-01",
-        ...     end_date="2020-12-31",
-        ... )
-        >>> cfg.factor_names, cfg.symbols
-        (None, None)
+    >>> cfg = BaseFactorConfig(
+    ...     window=20,
+    ...     dataset=dataset,
+    ...     file_path="/data/factor/momentum.zarr",
+    ...     start_date="2020-01-01",
+    ...     end_date="2020-12-31",
+    ... )
+    >>> cfg.factor_names, cfg.symbols
+    (None, None)
     """
 
     #: Lookback, in calendar days, read before ``start_date`` to warm up
@@ -440,9 +459,10 @@ class BaseFactorConfig:
     def to_dict(self):
         """Return the config as a plain dict via ``dataclasses.asdict``.
 
-        Example:
-            >>> cfg.to_dict()["window"]
-            20
+        Examples
+        --------
+        >>> cfg.to_dict()["window"]
+        20
         """
         return asdict(self)
 
@@ -451,19 +471,20 @@ class BaseFactorConfig:
 class FactorConfig(BaseFactorConfig):
     """Config of a KunQuant-computed factor.
 
-    Example:
-        >>> cfg = FactorConfig(
-        ...     window=128,
-        ...     dataset=dataset,
-        ...     file_path="/data/factor/alpha101.zarr",
-        ...     mode="batch",
-        ...     data_columns=("open", "high", "low", "close", "volume", "amount"),
-        ...     factor_names=("alpha001", "alpha002"),
-        ...     start_date="2020-01-01",
-        ...     end_date="2020-12-31",
-        ... )
-        >>> cfg.mode, cfg.njobs
-        ('batch', 128)
+    Examples
+    --------
+    >>> cfg = FactorConfig(
+    ...     window=128,
+    ...     dataset=dataset,
+    ...     file_path="/data/factor/alpha101.zarr",
+    ...     mode="batch",
+    ...     data_columns=("open", "high", "low", "close", "volume", "amount"),
+    ...     factor_names=("alpha001", "alpha002"),
+    ...     start_date="2020-01-01",
+    ...     end_date="2020-12-31",
+    ... )
+    >>> cfg.mode, cfg.njobs
+    ('batch', 128)
     """
 
     #: ``"batch"`` compiles the graph for a full historical window;
@@ -482,15 +503,16 @@ class PolarsFactorConfig(BaseFactorConfig):
     Adds no fields to ``BaseFactorConfig``. The Polars backend is batch-only,
     so there is no ``mode``.
 
-    Example:
-        >>> cfg = PolarsFactorConfig(
-        ...     window=20,
-        ...     dataset=dataset,
-        ...     file_path="/data/factor/momentum.zarr",
-        ...     kwargs={"n": 20},
-        ... )
-        >>> hasattr(cfg, "mode")
-        False
+    Examples
+    --------
+    >>> cfg = PolarsFactorConfig(
+    ...     window=20,
+    ...     dataset=dataset,
+    ...     file_path="/data/factor/momentum.zarr",
+    ...     kwargs={"n": 20},
+    ... )
+    >>> hasattr(cfg, "mode")
+    False
     """
 
 
@@ -502,24 +524,25 @@ class DLConfig:
     training and test windows; rolling cross-validation overwrites them fold
     by fold. See ``docs/model.md``.
 
-    Example:
-        With ``factors`` and ``labels`` lists of factor objects built earlier:
+    Examples
+    --------
+    With ``factors`` and ``labels`` lists of factor objects built earlier:
 
-        >>> cfg = DLConfig(
-        ...     factors=factors,
-        ...     labels=labels,
-        ...     model_save_dir="/data/models/mlp",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2018-01-01",
-        ...     train_end="2022-12-31",
-        ...     test_start="2023-01-01",
-        ...     test_end="2023-12-31",
-        ...     hyperparameters={"hidden_size": 64, "dropout": 0.1},
-        ...     epochs=50,
-        ... )
-        >>> cfg.batch_size, cfg.val_size
-        (1024, 0.2)
+    >>> cfg = DLConfig(
+    ...     factors=factors,
+    ...     labels=labels,
+    ...     model_save_dir="/data/models/mlp",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2018-01-01",
+    ...     train_end="2022-12-31",
+    ...     test_start="2023-01-01",
+    ...     test_end="2023-12-31",
+    ...     hyperparameters={"hidden_size": 64, "dropout": 0.1},
+    ...     epochs=50,
+    ... )
+    >>> cfg.batch_size, cfg.val_size
+    (1024, 0.2)
     """
 
     #: The factors whose values form the model's input features.
@@ -576,9 +599,10 @@ class DLConfig:
     def to_dict(self):
         """Return the config as a plain dict via ``dataclasses.asdict``.
 
-        Example:
-            >>> cfg.to_dict()["epochs"]
-            50
+        Examples
+        --------
+        >>> cfg.to_dict()["epochs"]
+        50
         """
         return asdict(self)
 
@@ -591,25 +615,26 @@ class MLConfig:
     ``early_stopping_patience`` counts boosting rounds (or the library's own
     unit) through the library's native early stopping. See ``docs/model.md``.
 
-    Example:
-        With ``factors`` and ``labels`` lists of factor objects built earlier:
+    Examples
+    --------
+    With ``factors`` and ``labels`` lists of factor objects built earlier:
 
-        >>> cfg = MLConfig(
-        ...     factors=factors,
-        ...     labels=labels,
-        ...     model_save_dir="/data/models/xgb",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2018-01-01",
-        ...     train_end="2022-12-31",
-        ...     test_start="2023-01-01",
-        ...     test_end="2023-12-31",
-        ...     hyperparameters={"max_depth": 6, "learning_rate": 0.05},
-        ...     early_stopping=True,
-        ...     early_stopping_patience=20,
-        ... )
-        >>> hasattr(cfg, "epochs")
-        False
+    >>> cfg = MLConfig(
+    ...     factors=factors,
+    ...     labels=labels,
+    ...     model_save_dir="/data/models/xgb",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2018-01-01",
+    ...     train_end="2022-12-31",
+    ...     test_start="2023-01-01",
+    ...     test_end="2023-12-31",
+    ...     hyperparameters={"max_depth": 6, "learning_rate": 0.05},
+    ...     early_stopping=True,
+    ...     early_stopping_patience=20,
+    ... )
+    >>> hasattr(cfg, "epochs")
+    False
     """
 
     #: The factors whose values form the model's input features.
@@ -654,9 +679,10 @@ class MLConfig:
     def to_dict(self):
         """Return the config as a plain dict via ``dataclasses.asdict``.
 
-        Example:
-            >>> cfg.to_dict()["hyperparameters"]
-            {'max_depth': 6, 'learning_rate': 0.05}
+        Examples
+        --------
+        >>> cfg.to_dict()["hyperparameters"]
+        {'max_depth': 6, 'learning_rate': 0.05}
         """
         return asdict(self)
 
@@ -669,22 +695,23 @@ class BacktestConfig:
     ``CrossSectionBacktestConfig``, so a time-series backtester does not carry
     cross-sectional fields. See ``docs/backtest.md``.
 
-    Example:
-        With ``price_dataset`` a market dataset and ``model`` a model built
-        earlier:
+    Examples
+    --------
+    With ``price_dataset`` a market dataset and ``model`` a model built
+    earlier:
 
-        >>> cfg = BacktestConfig(
-        ...     price_dataset=price_dataset,
-        ...     model=model,
-        ...     model_mode="load",
-        ...     checkpoint="/data/models/xgb/best.joblib",
-        ...     start_date="2023-01-01",
-        ...     end_date="2023-12-31",
-        ...     output_dir="/data/backtests",
-        ...     rebalance_periods=5,
-        ... )
-        >>> cfg.fees, cfg.slippage, cfg.init_cash
-        (0.0005, 0.0005, 1000000.0)
+    >>> cfg = BacktestConfig(
+    ...     price_dataset=price_dataset,
+    ...     model=model,
+    ...     model_mode="load",
+    ...     checkpoint="/data/models/xgb/best.joblib",
+    ...     start_date="2023-01-01",
+    ...     end_date="2023-12-31",
+    ...     output_dir="/data/backtests",
+    ...     rebalance_periods=5,
+    ... )
+    >>> cfg.fees, cfg.slippage, cfg.init_cash
+    (0.0005, 0.0005, 1000000.0)
     """
 
     #: The dataset whose prices the simulation trades on.
@@ -739,11 +766,12 @@ class BacktestConfig:
         ``dataclasses.asdict`` is avoided on purpose: it would deep-copy the
         panels already read into memory and the trained model on every call.
 
-        Example:
-            >>> "model" in cfg.to_dict()
-            False
-            >>> cfg.to_dict()["rebalance_periods"]
-            5
+        Examples
+        --------
+        >>> "model" in cfg.to_dict()
+        False
+        >>> cfg.to_dict()["rebalance_periods"]
+        5
         """
         return {
             f.name: getattr(self, f.name)
@@ -756,21 +784,22 @@ class BacktestConfig:
 class CrossSectionBacktestConfig(BacktestConfig):
     """Config of a cross-sectional top-N selection backtest.
 
-    Example:
-        >>> cfg = CrossSectionBacktestConfig(
-        ...     price_dataset=price_dataset,
-        ...     model=model,
-        ...     model_mode="load",
-        ...     checkpoint="/data/models/xgb/best.joblib",
-        ...     start_date="2023-01-01",
-        ...     end_date="2023-12-31",
-        ...     output_dir="/data/backtests",
-        ...     rebalance_periods=5,
-        ...     direction="long_short",
-        ...     top_n=20,
-        ... )
-        >>> cfg.score_label is None
-        True
+    Examples
+    --------
+    >>> cfg = CrossSectionBacktestConfig(
+    ...     price_dataset=price_dataset,
+    ...     model=model,
+    ...     model_mode="load",
+    ...     checkpoint="/data/models/xgb/best.joblib",
+    ...     start_date="2023-01-01",
+    ...     end_date="2023-12-31",
+    ...     output_dir="/data/backtests",
+    ...     rebalance_periods=5,
+    ...     direction="long_short",
+    ...     top_n=20,
+    ... )
+    >>> cfg.score_label is None
+    True
     """
 
     #: ``"long_only"`` holds the top ``top_n`` names; ``"long_short"`` also

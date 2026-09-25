@@ -66,30 +66,37 @@ class CoverageLedger:
     ledger can be built without constructing a vendor client and therefore
     without credentials; ``for_config`` does exactly that.
 
-    Args:
-        config: The acquisition config whose watermark tree to read.
-        data_type: Raw-tier data type (for example ``"quotes"`` or
-            ``"trades"``) for frequencies whose hive layout partitions on
-            one; ``None`` otherwise.
-        legacy_policies: Accepted values of the ``legacy_watermarks`` knob.
-        default_legacy_policy: Policy used when the knob is unset.
-        owner_label: Name reported in ``validate_symbols`` error messages.
+    Parameters
+    ----------
+    config : AcquisitionConfig
+        The acquisition config whose watermark tree to read.
+    data_type : str | None
+        Raw-tier data type (for example ``"quotes"`` or
+        ``"trades"``) for frequencies whose hive layout partitions on
+        one; ``None`` otherwise.
+    legacy_policies : Sequence[str]
+        Accepted values of the ``legacy_watermarks`` knob.
+    default_legacy_policy : str
+        Policy used when the knob is unset.
+    owner_label : str
+        Name reported in ``validate_symbols`` error messages.
 
-    Example:
-        With sidecars on disk for ``AAPL`` (fully covered), ``MSFT`` (no
-        recorded start) and ``NVDA`` (recorded start later than requested,
-        carrying the ``no_data`` marker), and none for ``TSLA``:
+    Examples
+    --------
+    With sidecars on disk for ``AAPL`` (fully covered), ``MSFT`` (no
+    recorded start) and ``NVDA`` (recorded start later than requested,
+    carrying the ``no_data`` marker), and none for ``TSLA``:
 
-        >>> ledger = CoverageLedger.for_config(config)
-        >>> pending, counts = ledger.partition_by_coverage(
-        ...     ["AAPL", "MSFT", "NVDA", "TSLA"], from_watermark=False
-        ... )
-        >>> pending
-        ['NVDA', 'TSLA']
-        >>> counts
-        {'covered': 1, 'widened': 1, 'legacy': 1, 'no_data': 1}
+    >>> ledger = CoverageLedger.for_config(config)
+    >>> pending, counts = ledger.partition_by_coverage(
+    ...     ["AAPL", "MSFT", "NVDA", "TSLA"], from_watermark=False
+    ... )
+    >>> pending
+    ['NVDA', 'TSLA']
+    >>> counts
+    {'covered': 1, 'widened': 1, 'legacy': 1, 'no_data': 1}
 
-        The method examples below continue from this ledger.
+    The method examples below continue from this ledger.
     """
 
     def __init__(
@@ -136,17 +143,23 @@ class CoverageLedger:
         invalid value simply names a directory that does not exist, so every
         symbol reads back as uncovered.
 
-        Args:
-            config: The acquisition config whose watermark tree to read.
-            owner_label: Name reported in ``validate_symbols`` error messages.
+        Parameters
+        ----------
+        config : AcquisitionConfig
+            The acquisition config whose watermark tree to read.
+        owner_label : str
+            Name reported in ``validate_symbols`` error messages.
 
-        Raises:
-            ValueError: If the frequency partitions on ``data_type`` and the
-                config does not set it.
+        Raises
+        ------
+        ValueError
+            If the frequency partitions on ``data_type`` and the
+            config does not set it.
 
-        Example:
-            >>> CoverageLedger.for_config(config)
-            CoverageLedger(vendor='tiingo', frequency='1d', data_type=None)
+        Examples
+        --------
+        >>> CoverageLedger.for_config(config)
+        CoverageLedger(vendor='tiingo', frequency='1d', data_type=None)
         """
         return cls(
             config,
@@ -164,8 +177,10 @@ class CoverageLedger:
         data type, so guessing would let a completed backfill of one type
         tell a run for another that every symbol is already covered.
 
-        Raises:
-            ValueError: If the layout uses ``data_type`` and it is unset.
+        Raises
+        ------
+        ValueError
+            If the layout uses ``data_type`` and it is unset.
         """
         if "data_type" not in RAW_HIVE_KEYS[config.frequency]:
             return None
@@ -206,11 +221,12 @@ class CoverageLedger:
         covered, and that run would skip the whole roster. Frequencies whose
         layout has no ``data_type`` key are unaffected.
 
-        Example:
-            >>> ledger.watermark_root == Path(config.watermark_path)
-            True
-            >>> CoverageLedger.for_config(tick_config).watermark_root.name
-            'quotes'
+        Examples
+        --------
+        >>> ledger.watermark_root == Path(config.watermark_path)
+        True
+        >>> CoverageLedger.for_config(tick_config).watermark_root.name
+        quotes
         """
         root = Path(self.config.watermark_path)
         if "data_type" in self._hive_keys:
@@ -220,9 +236,10 @@ class CoverageLedger:
     def watermark_path(self, symbol: str) -> Path:
         """Return the watermark sidecar path for ``symbol``.
 
-        Example:
-            >>> ledger.watermark_path("AAPL").name
-            'AAPL.json'
+        Examples
+        --------
+        >>> ledger.watermark_path("AAPL").name
+        AAPL.json
         """
         return self.watermark_root / f"{symbol}.json"
 
@@ -233,9 +250,10 @@ class CoverageLedger:
         Defined on the ledger so the reader and the writer share one path
         expression, including the data-type namespacing.
 
-        Example:
-            >>> ledger.failure_manifest_path.name
-            '_failures.json'
+        Examples
+        --------
+        >>> ledger.failure_manifest_path.name
+        _failures.json
         """
         return self.watermark_root / FAILURE_MANIFEST_NAME
 
@@ -250,12 +268,15 @@ class CoverageLedger:
         when they were written, so this method adds no new path for raw
         vendor exception text.
 
-        Returns:
+        Returns
+        -------
+        dict[str, str]
             A ``{symbol: reason}`` mapping, empty when nothing is recorded.
 
-        Example:
-            >>> ledger.read_failure_manifest()
-            {'GOOG': 'HTTP 500'}
+        Examples
+        --------
+        >>> ledger.read_failure_manifest()
+        {'GOOG': 'HTTP 500'}
         """
         path = self.failure_manifest_path
         if not path.exists():
@@ -276,9 +297,10 @@ class CoverageLedger:
         manifest and the page-ledger directory are skipped explicitly so that
         neither is reported as a symbol.
 
-        Example:
-            >>> list(ledger.iter_watermark_symbols())
-            ['AAPL', 'MSFT', 'NVDA']
+        Examples
+        --------
+        >>> list(ledger.iter_watermark_symbols())
+        ['AAPL', 'MSFT', 'NVDA']
         """
         root = self.watermark_root
         if not root.exists():
@@ -300,11 +322,12 @@ class CoverageLedger:
         ``read_coverage`` share, so there is exactly one failure policy for a
         corrupt sidecar.
 
-        Example:
-            >>> ledger.read_sidecar("AAPL")
-            {'start_date': '2024-01-01', 'last_date': '2024-01-31'}
-            >>> ledger.read_sidecar("TSLA") is None
-            True
+        Examples
+        --------
+        >>> ledger.read_sidecar("AAPL")
+        {'start_date': '2024-01-01', 'last_date': '2024-01-31'}
+        >>> ledger.read_sidecar("TSLA") is None
+        True
         """
         path = self.watermark_path(symbol)
         if not path.exists():
@@ -326,11 +349,12 @@ class CoverageLedger:
         This is what an incremental refresh uses to compute its start date;
         the covered start is not needed there.
 
-        Example:
-            >>> ledger.read_watermark("AAPL")
-            '2024-01-31'
-            >>> ledger.read_watermark("TSLA") is None
-            True
+        Examples
+        --------
+        >>> ledger.read_watermark("AAPL")
+        '2024-01-31'
+        >>> ledger.read_watermark("TSLA") is None
+        True
         """
         payload = self.read_sidecar(symbol)
         return None if payload is None else payload.get("last_date")
@@ -349,11 +373,12 @@ class CoverageLedger:
         before the marker existed, since those were only written after a
         successful fetch.
 
-        Example:
-            >>> ledger.read_coverage("AAPL")
-            {'start_date': '2024-01-01', 'last_date': '2024-01-31', 'no_data': False}
-            >>> ledger.read_coverage("MSFT")
-            {'start_date': None, 'last_date': '2024-01-31', 'no_data': False}
+        Examples
+        --------
+        >>> ledger.read_coverage("AAPL")
+        {'start_date': '2024-01-01', 'last_date': '2024-01-31', 'no_data': False}
+        >>> ledger.read_coverage("MSFT")
+        {'start_date': None, 'last_date': '2024-01-31', 'no_data': False}
         """
         payload = self.read_sidecar(symbol)
         if payload is None:
@@ -369,13 +394,16 @@ class CoverageLedger:
     def legacy_policy(self) -> str:
         """Return the ``legacy_watermarks`` policy in force.
 
-        Raises:
-            ValueError: If the knob is set to a value outside
-                ``legacy_policies``.
+        Raises
+        ------
+        ValueError
+            If the knob is set to a value outside
+            ``legacy_policies``.
 
-        Example:
-            >>> ledger.legacy_policy()
-            'warn'
+        Examples
+        --------
+        >>> ledger.legacy_policy()
+        warn
         """
         policy = self._knob("legacy_watermarks", self.default_legacy_policy)
         if policy not in self.legacy_policies:
@@ -393,25 +421,29 @@ class CoverageLedger:
         ``YYYY-MM-DD`` strings compared lexically, so no parsing or time zone
         is involved.
 
-        Args:
-            symbol: The symbol whose sidecar to read.
-            from_watermark: True for an incremental refresh, which requests
-                ``[watermark, end_date]`` per symbol rather than
-                ``config.start_date``. Only the end date is then checked:
-                judging a refresh against a widened start would mark every
-                symbol pending on every run while the refresh could never
-                close the gap. Widening the covered range is the job of a
-                full download.
+        Parameters
+        ----------
+        symbol : str
+            The symbol whose sidecar to read.
+        from_watermark : bool
+            True for an incremental refresh, which requests
+            ``[watermark, end_date]`` per symbol rather than
+            ``config.start_date``. Only the end date is then checked:
+            judging a refresh against a widened start would mark every
+            symbol pending on every run while the refresh could never
+            close the gap. Widening the covered range is the job of a
+            full download.
 
-        Example:
-            >>> ledger.coverage_status("AAPL")
-            'covered'
-            >>> ledger.coverage_status("NVDA")
-            'widened'
-            >>> ledger.coverage_status("MSFT")
-            'legacy'
-            >>> ledger.coverage_status("MSFT", from_watermark=True)
-            'covered'
+        Examples
+        --------
+        >>> ledger.coverage_status("AAPL")
+        covered
+        >>> ledger.coverage_status("NVDA")
+        widened
+        >>> ledger.coverage_status("MSFT")
+        legacy
+        >>> ledger.coverage_status("MSFT", from_watermark=True)
+        covered
         """
         return self.classify_coverage(self.read_coverage(symbol), from_watermark)
 
@@ -442,18 +474,22 @@ class CoverageLedger:
         the symbol, so a later request for a deeper window can still reach
         the vendor.
 
-        Args:
-            coverage: A dict from ``read_coverage``, or None.
-            from_watermark: See ``coverage_status``.
+        Parameters
+        ----------
+        coverage : dict | None
+            A dict from ``read_coverage``, or None.
+        from_watermark : bool
+            See ``coverage_status``.
 
-        Example:
-            >>> ledger.classify_coverage(
-            ...     {"start_date": "2024-01-15", "last_date": "2024-01-31",
-            ...      "no_data": False}
-            ... )
-            'widened'
-            >>> ledger.classify_coverage(None)
-            'uncovered'
+        Examples
+        --------
+        >>> ledger.classify_coverage(
+        ...     {"start_date": "2024-01-15", "last_date": "2024-01-31",
+        ...      "no_data": False}
+        ... )
+        widened
+        >>> ledger.classify_coverage(None)
+        uncovered
         """
         if coverage is None or coverage["last_date"] != self.config.end_date:
             return "uncovered"
@@ -470,11 +506,12 @@ class CoverageLedger:
 
         A ``"legacy"`` symbol is skipped only under the ``"warn"`` policy.
 
-        Example:
-            >>> ledger.covers("AAPL")
-            True
-            >>> ledger.covers("NVDA")
-            False
+        Examples
+        --------
+        >>> ledger.covers("AAPL")
+        True
+        >>> ledger.covers("NVDA")
+        False
         """
         status = self.coverage_status(symbol, from_watermark)
         if status == "legacy":
@@ -491,24 +528,30 @@ class CoverageLedger:
         how many symbols the vendor had nothing for separately from how many
         failed.
 
-        Args:
-            requested: Symbols in the order they were requested.
-            from_watermark: See ``coverage_status``.
+        Parameters
+        ----------
+        requested : list[str]
+            Symbols in the order they were requested.
+        from_watermark : bool
+            See ``coverage_status``.
 
-        Returns:
+        Returns
+        -------
+        tuple[list[str], dict[str, int]]
             ``(pending, counts)`` where ``pending`` preserves request order
             and ``counts`` has the keys ``covered``, ``widened``, ``legacy``
             and ``no_data``. Legacy symbols are included in ``pending`` only
             under the ``"refetch"`` policy.
 
-        Example:
-            >>> pending, counts = ledger.partition_by_coverage(
-            ...     ["AAPL", "MSFT", "NVDA", "TSLA"], from_watermark=False
-            ... )
-            >>> pending
-            ['NVDA', 'TSLA']
-            >>> counts
-            {'covered': 1, 'widened': 1, 'legacy': 1, 'no_data': 1}
+        Examples
+        --------
+        >>> pending, counts = ledger.partition_by_coverage(
+        ...     ["AAPL", "MSFT", "NVDA", "TSLA"], from_watermark=False
+        ... )
+        >>> pending
+        ['NVDA', 'TSLA']
+        >>> counts
+        {'covered': 1, 'widened': 1, 'legacy': 1, 'no_data': 1}
         """
         legacy_is_skipped = self.legacy_policy() == "warn"
         pending: list[str] = []
@@ -543,19 +586,24 @@ class CoverageLedger:
         that already hold a ledger; the free function exists for readers that
         hold only a dataset config.
 
-        Returns:
+        Returns
+        -------
+        list[str]
             The validated symbols as strings, in the given order.
 
-        Raises:
-            ValueError: On the first symbol that does not match the pattern.
+        Raises
+        ------
+        ValueError
+            On the first symbol that does not match the pattern.
 
-        Example:
-            >>> ledger.validate_symbols(["AAPL", "BRK-B"])
-            ['AAPL', 'BRK-B']
-            >>> ledger.validate_symbols(["../etc"])
-            Traceback (most recent call last):
-                ...
-            ValueError: SourceInspector: refusing to fetch '../etc' -- ...
+        Examples
+        --------
+        >>> ledger.validate_symbols(["AAPL", "BRK-B"])
+        ['AAPL', 'BRK-B']
+        >>> ledger.validate_symbols(["../etc"])
+        Traceback (most recent call last):
+            ...
+        ValueError: SourceInspector: refusing to fetch '../etc' -- ...
         """
         return validate_symbols(
             symbols,
@@ -579,25 +627,34 @@ def validate_symbols(
     persists is admitted here. It allows digits and up to two hyphenated
     suffix segments, both of which real tickers use.
 
-    Args:
-        symbols: The symbols to check.
-        owner_label: Name reported at the front of the error message.
-        raw_root: The raw data directory named in the error message.
+    Parameters
+    ----------
+    symbols : Sequence[str]
+        The symbols to check.
+    owner_label : str
+        Name reported at the front of the error message.
+    raw_root : str
+        The raw data directory named in the error message.
 
-    Returns:
+    Returns
+    -------
+    list[str]
         The symbols as strings, in the given order.
 
-    Raises:
-        ValueError: On the first symbol that does not match the pattern.
+    Raises
+    ------
+    ValueError
+        On the first symbol that does not match the pattern.
 
-    Example:
-        >>> validate_symbols(["AAPL", "BRK-B"], owner_label="Inspector",
-        ...                  raw_root="/data/raw")
-        ['AAPL', 'BRK-B']
-        >>> validate_symbols(["a,b"], owner_label="Inspector", raw_root="/data/raw")
-        Traceback (most recent call last):
-            ...
-        ValueError: Inspector: refusing to fetch 'a,b' -- ...
+    Examples
+    --------
+    >>> validate_symbols(["AAPL", "BRK-B"], owner_label="Inspector",
+    ...                  raw_root="/data/raw")
+    ['AAPL', 'BRK-B']
+    >>> validate_symbols(["a,b"], owner_label="Inspector", raw_root="/data/raw")
+    Traceback (most recent call last):
+        ...
+    ValueError: Inspector: refusing to fetch 'a,b' -- ...
     """
     validated = []
     for symbol in symbols:

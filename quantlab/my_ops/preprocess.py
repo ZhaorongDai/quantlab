@@ -21,25 +21,29 @@ class WindowedZScore(WindowedCompositiveOp):
     every KunQuant rolling operator. Fill values in the caller if you need
     them.
 
-    Example:
-        >>> Output(WindowedZScore(alpha(all_data), 20), "alpha001")
+    Examples
+    --------
+    >>> Output(WindowedZScore(alpha(all_data), 20), "alpha001")
     """
 
     # `options` is required by KunQuant's CompositiveOp interface.
     def decompose(self, options: dict) -> list[OpBase]:
         """Expand into ``WindowedAvg``, ``WindowedStddev``, ``Sub`` and ``Div``.
 
-        Args:
-            options: Decomposition options passed by KunQuant; unused.
+        Parameters
+        ----------
+        options : dict
+            Decomposition options passed by KunQuant; unused.
 
-        Example:
-            KunQuant calls this while compiling; it can also be called
-            directly on an op built inside a ``Builder``:
+        Examples
+        --------
+        KunQuant calls this while compiling; it can also be called
+        directly on an op built inside a ``Builder``:
 
-            >>> with Builder():
-            ...     z = WindowedZScore(Input("close"), 20)
-            >>> [type(op).__name__ for op in z.decompose({})]
-            ['WindowedAvg', 'WindowedStddev', 'Sub', 'Div']
+        >>> with Builder():
+        ...     z = WindowedZScore(Input("close"), 20)
+        >>> [type(op).__name__ for op in z.decompose({})]
+        ['WindowedAvg', 'WindowedStddev', 'Sub', 'Div']
         """
         window: int = self.attrs["window"]  # type: ignore
         b = Builder(self.get_parent())
@@ -76,8 +80,9 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
     a factor uses is a strategy decision, and no factor class applies this
     one by default.
 
-    Example:
-        >>> Output(CrossSectionalZScore(alpha(all_data)), "alpha001_cs")
+    Examples
+    --------
+    >>> Output(CrossSectionalZScore(alpha(all_data)), "alpha001_cs")
     """
 
     def __init__(self, v: OpBase) -> None:
@@ -87,9 +92,10 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
     def generate_head(self) -> str:
         """Return no per-function preamble.
 
-        Example:
-            >>> CrossSectionalZScore(Input("close")).generate_head()
-            ''
+        Examples
+        --------
+        >>> CrossSectionalZScore(Input("close")).generate_head()
+        ''
         """
         return ""
 
@@ -98,10 +104,11 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
 
         KunQuant calls this when it emits the C++ for the graph.
 
-        Example:
-            >>> body = CrossSectionalZScore(Input("close")).generate_body()
-            >>> body.strip().splitlines()[0]
-            'T sum = 0;'
+        Examples
+        --------
+        >>> body = CrossSectionalZScore(Input("close")).generate_body()
+        >>> body.strip().splitlines()[0]
+        'T sum = 0;'
         """
         return """
         T sum = 0;

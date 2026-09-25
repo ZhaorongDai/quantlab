@@ -25,19 +25,27 @@ def rebalance_mask(n_bars: int, rebalance_periods: int) -> np.ndarray:
     after it. The last bar never rebalances: a signal formed there has no
     following bar inside the window to fill on.
 
-    Args:
-        n_bars: Number of bars in the backtest window.
-        rebalance_periods: Rebalance every this many bars.
+    Parameters
+    ----------
+    n_bars : int
+        Number of bars in the backtest window.
+    rebalance_periods : int
+        Rebalance every this many bars.
 
-    Returns:
+    Returns
+    -------
+    np.ndarray
         A boolean array of length ``n_bars``.
 
-    Raises:
-        ValueError: If ``rebalance_periods`` is smaller than 1.
+    Raises
+    ------
+    ValueError
+        If ``rebalance_periods`` is smaller than 1.
 
-    Example:
-        >>> rebalance_mask(7, 3)
-        array([ True, False, False,  True, False, False, False])
+    Examples
+    --------
+    >>> rebalance_mask(7, 3)
+    array([ True, False, False,  True, False, False, False])
     """
     if rebalance_periods < 1:
         raise ValueError(
@@ -55,22 +63,30 @@ def resolve_score_label(score_label: str | None, label_names: list[str]) -> str:
 
     ``None`` selects the model's first label.
 
-    Args:
-        score_label: The requested label name, or ``None``.
-        label_names: The label names the model declares, in order.
+    Parameters
+    ----------
+    score_label : str | None
+        The requested label name, or ``None``.
+    label_names : list[str]
+        The label names the model declares, in order.
 
-    Returns:
+    Returns
+    -------
+    str
         The label name to score by.
 
-    Raises:
-        ValueError: If the model declares no labels, or ``score_label`` is not
-            one of them.
+    Raises
+    ------
+    ValueError
+        If the model declares no labels, or ``score_label`` is not
+        one of them.
 
-    Example:
-        >>> resolve_score_label(None, ["fwd_ret_1", "fwd_ret_5"])
-        'fwd_ret_1'
-        >>> resolve_score_label("fwd_ret_5", ["fwd_ret_1", "fwd_ret_5"])
-        'fwd_ret_5'
+    Examples
+    --------
+    >>> resolve_score_label(None, ["fwd_ret_1", "fwd_ret_5"])
+    fwd_ret_1
+    >>> resolve_score_label("fwd_ret_5", ["fwd_ret_1", "fwd_ret_5"])
+    fwd_ret_5
     """
     if not label_names:
         raise ValueError("the model declares no labels to score by")
@@ -95,18 +111,24 @@ class CrossSectionTopNSelector:
     so the gross exposure is 100% and the net exposure is zero. ``k`` is
     ``top_n``, reduced when fewer symbols are eligible.
 
-    Attributes:
-        direction: ``"long_only"`` or ``"long_short"``.
-        top_n: Number of symbols selected per book on each rebalance bar.
+    Attributes
+    ----------
+    direction : Literal['long_only', 'long_short']
+        ``"long_only"`` or ``"long_short"``.
+    top_n : int
+        Number of symbols selected per book on each rebalance bar.
 
-    Raises:
-        ValueError: If ``direction`` is not one of the two literals or
-            ``top_n`` is smaller than 1.
+    Raises
+    ------
+    ValueError
+        If ``direction`` is not one of the two literals or
+        ``top_n`` is smaller than 1.
 
-    Example:
-        >>> selector = CrossSectionTopNSelector(direction="long_only", top_n=2)
-        >>> selector
-        CrossSectionTopNSelector(direction='long_only', top_n=2)
+    Examples
+    --------
+    >>> selector = CrossSectionTopNSelector(direction="long_only", top_n=2)
+    >>> selector
+    CrossSectionTopNSelector(direction='long_only', top_n=2)
     """
 
     direction: Literal["long_only", "long_short"]
@@ -134,9 +156,11 @@ class CrossSectionTopNSelector:
         is refused instead of being treated as "not eligible", because a
         misaligned time axis would silently make every row unselectable.
 
-        Raises:
-            ValueError: If either axis has duplicate labels, or the two label
-                sets differ on either axis.
+        Raises
+        ------
+        ValueError
+            If either axis has duplicate labels, or the two label
+            sets differ on either axis.
         """
         for dim in ("timestamp", "symbol"):
             wanted = pd.Index(scores[dim].values)
@@ -181,36 +205,45 @@ class CrossSectionTopNSelector:
         the book is split among those that are and a warning names the bar;
         with no eligible symbol at all the row is all ``0.0``, that is, flat.
 
-        Args:
-            scores: Model scores on ``(timestamp, symbol)``; higher is better.
-            next_fill_price: The price each symbol would fill at on the next
-                bar, on the same labels as ``scores`` (in any order).
-            rebalance: Boolean mask with one entry per timestamp, ``True`` on
-                rebalance bars.
+        Parameters
+        ----------
+        scores : xr.DataArray
+            Model scores on ``(timestamp, symbol)``; higher is better.
+        next_fill_price : xr.DataArray
+            The price each symbol would fill at on the next
+            bar, on the same labels as ``scores`` (in any order).
+        rebalance : np.ndarray
+            Boolean mask with one entry per timestamp, ``True`` on
+            rebalance bars.
 
-        Returns:
+        Returns
+        -------
+        xr.Dataset
             A dataset with one ``weight`` variable on ``(timestamp, symbol)``.
 
-        Raises:
-            ValueError: If ``rebalance`` does not have one entry per timestamp
-                or the two panels' labels do not match.
+        Raises
+        ------
+        ValueError
+            If ``rebalance`` does not have one entry per timestamp
+            or the two panels' labels do not match.
 
-        Example:
-            >>> ts = pd.bdate_range("2024-01-01", periods=3)
-            >>> scores = xr.DataArray(
-            ...     [[0.3, 0.1, np.nan, 0.2],
-            ...      [0.0, 0.5, 0.4, 0.1],
-            ...      [0.9, 0.8, 0.7, 0.6]],
-            ...     dims=("timestamp", "symbol"),
-            ...     coords={"timestamp": ts, "symbol": ["AAA", "BBB", "CCC", "DDD"]},
-            ... )
-            >>> next_fill = xr.full_like(scores, 100.0)
-            >>> selector = CrossSectionTopNSelector(direction="long_only", top_n=2)
-            >>> weights = selector.select(scores, next_fill, rebalance_mask(3, 2))
-            >>> weights["weight"].values
-            array([[0.5, 0. , 0. , 0.5],
-                   [nan, nan, nan, nan],
-                   [nan, nan, nan, nan]])
+        Examples
+        --------
+        >>> ts = pd.bdate_range("2024-01-01", periods=3)
+        >>> scores = xr.DataArray(
+        ...     [[0.3, 0.1, np.nan, 0.2],
+        ...      [0.0, 0.5, 0.4, 0.1],
+        ...      [0.9, 0.8, 0.7, 0.6]],
+        ...     dims=("timestamp", "symbol"),
+        ...     coords={"timestamp": ts, "symbol": ["AAA", "BBB", "CCC", "DDD"]},
+        ... )
+        >>> next_fill = xr.full_like(scores, 100.0)
+        >>> selector = CrossSectionTopNSelector(direction="long_only", top_n=2)
+        >>> weights = selector.select(scores, next_fill, rebalance_mask(3, 2))
+        >>> weights["weight"].values
+        array([[0.5, 0. , 0. , 0.5],
+               [nan, nan, nan, nan],
+               [nan, nan, nan, nan]])
         """
         scores = scores.transpose("timestamp", "symbol")
         next_fill_price = self._align_to_scores(
