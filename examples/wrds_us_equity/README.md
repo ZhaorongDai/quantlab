@@ -19,17 +19,17 @@ Download and convert the roster of the index you want once (this needs a WRDS ac
 ```bash
 export WRDS_USERNAME=<your-wrds-username>   # password in ~/.pgpass
 # S&P 500 (CRSP's own membership, from 1925)
-uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 --benchmark \
-    --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
+uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-12-31
 # Nasdaq-100 (Compustat membership linked through CCM, from 1995;
 # needs the Compustat and CCM schemas)
-uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 --benchmark \
-    --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
+uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
+# The benchmark ETFs, by CRSP PERMNO (SPY 84398, QQQ 86755), one store each
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31
 ```
 
-`--benchmark` also downloads the ETF that tracks the index, by its CRSP PERMNO (SPY `84398` for `crsp_sp500`, QQQ `86755` for `comp_nasdaq100`), and writes it to its own store `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`. To fetch only the benchmarks, for example after a whole-market download, run `uv run python scripts/ingest_wrds_crsp_etf.py --etf spy,qqq --start-date 2010-01-01 --end-date 2024-12-31`, which writes the same stores.
+`--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark; `--data-dir` overrides the data root.
 
-Each writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<universe>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<universe>_membership.zarr` (`is_member` per day), with `<universe>` = `sp500` or `nasdaq100`. The pipeline reads both from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `Settings.data_root`).
+Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `Settings.data_root`).
 
 KunQuant compiles the factor graphs, so a C++ compiler is required. The script sets `OMP_NUM_THREADS=1` on macOS itself (xgboost and torch in one process).
 

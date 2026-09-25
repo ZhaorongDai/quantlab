@@ -29,8 +29,7 @@ stored on disk as Zarr, and models train on them directly, so there is no conver
 from DataFrames between stages.
 
 Data comes from Tiingo, Alpaca and WRDS (CRSP daily stock files and TAQ quotes). Downloads
-can be interrupted and resumed, and a volume check refuses a request that would be too large
-before it starts. To avoid *survivorship bias*, the error of testing only on companies that
+can be interrupted and resumed. To avoid *survivorship bias*, the error of testing only on companies that
 still exist today, quantlab can build universes from historical index membership and from
 full-market listings that include delisted stocks.
 
@@ -141,10 +140,11 @@ command line and never written to a configuration file or a log.
 | `WANDB_API_KEY` | Optional Weights & Biases logging during training |
 | `QUANTLAB_DATA_DIR` | Optional root directory for downloaded and converted data |
 
-The download scripts live in `scripts/` and each prints its options with `--help`, for
-example `uv run python scripts/ingest_tiingo.py --help`. The
-[data sources guide](docs/user-guide/data-sources.md) explains where files are written and how
-to resume an interrupted download.
+The download scripts live in `scripts/wrds/` (`index.py`, `market.py`, `etf.py`, `nbbo.py`)
+and each prints its options with `--help`, for example
+`uv run python scripts/wrds/index.py --help`. Tiingo, Alpaca and Binance have library
+interfaces only. The [data sources guide](docs/user-guide/data-sources.md) explains where files
+are written and how to resume an interrupted download.
 
 ## Documentation
 

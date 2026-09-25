@@ -3,8 +3,8 @@
 This page describes the machinery that keeps quantlab's long-running jobs
 safe to interrupt and its results safe to trust: how downloads and
 conversions resume where they stopped, how a store is rebuilt without losing
-the old one, how the volume guard refuses an oversized download before it
-starts, how files are written atomically, and how data fingerprints tie a
+the old one, why three package `__init__.py` files stay empty, how files are
+written atomically, and how data fingerprints tie a
 backtest to the data it read. It is written for contributors who change these
 parts of the code or add a component that has to cooperate with them. Users
 only need the behaviour, which [Data sources](../user-guide/data-sources.md),
@@ -145,49 +145,16 @@ returned only after the conversion succeeded. `data_root` is required and has
 no default, because a rebuild run from a git worktree, which has no `data/`
 directory, must not report success against a tree it never read.
 
-## The volume guard
+## Empty package `__init__` files
 
-A download that would fill the disk or run for two days should be refused
-before it starts, not discovered hours in. The volume guard prices a download
-before any vendor client exists and raises `ValueError` if it crosses a
-ceiling. The ingest scripts call it after the roster is known and before the
-acquisition is constructed; `--force-volume` skips the refusal but still
-prints the estimate. No environment variable or config key turns it off.
-
-There are two implementations, because the risks differ. For REST vendors,
-`UniverseCatalog.assert_acquisition_volume_fits` (`quantlab.universe`)
-estimates rows, raw bytes, request count and wall-clock hours from the
-point-in-time universe's listing intervals and checks three independent
-ceilings (`MAX_RAW_BYTES`, `MAX_ACQUISITION_REQUESTS`,
-`MAX_ACQUISITION_WALL_CLOCK_HOURS`), since any single one lets a bad case
-through. For SQL sources such as WRDS, which have no request quota,
-`SqlVolumeGuard` (`quantlab.acquisition._support.sql_volume`) prices a pull
-from real per-day or per-year `count(*)` results against a byte and a row
-ceiling. Both name the constant and keyword that raise each crossed ceiling
-and a narrower request that would fit:
-
-```python
-from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
-
-guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
-guard.assert_acquisition_volume_fits(
-    {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
-    symbols=1, start_date="2024-01-02", end_date="2024-01-03",
-)
-```
-
-```text
-ValueError: Refusing to pull 1 symbol(s) over 2024-01-02..2024-01-03: 2 trading day(s), 2,500,000 row(s) (counted with count(*)) x 30 B/row = 0.07 GiB. over the raw-rows ceiling (2,500,000 > 2,000,000 rows; raise MAX_RAW_ROWS or the 'max_raw_rows' kwargs key). A date segment that fits: --start-date 2024-01-02 --end-date 2024-01-02; run the rest as further guarded segments, each checked the same way. Or pass --force-volume to proceed anyway.
-```
-
-The guard's promise is that it can refuse before any client, and therefore
-any credential, is involved. That holds only while its modules import no
-acquisition client, directly or through a package `__init__.py`. This is why
 `quantlab/__init__.py`, `quantlab/acquisition/__init__.py` and
-`quantlab/acquisition/_support/__init__.py` must stay empty:
-`tests/test_volume_guard.py` and `tests/test_source_inspector.py` fail if a
-vendor client becomes reachable from the guard or from the credential-free
-source inspector. Do not add imports to those files.
+`quantlab/acquisition/_support/__init__.py` are empty. A package `__init__`
+runs on every import beneath it, and the credential-free `SourceInspector`
+(`quantlab.acquisition._support.inspector`) must be importable without loading
+a vendor client: `tests/test_source_inspector.py` fails if a client becomes
+reachable from it. Do not add imports to those files. Downloads are not
+estimated or refused by size; see
+[ADR 0001](../adr/0001-no-download-volume-guard.md).
 
 ## Atomic writes
 

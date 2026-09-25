@@ -8,8 +8,7 @@ download, what the CRSP panel's adjusted and delisting returns mean, how
 securities are filtered, how point-in-time index universes are built, how
 quotes are resampled into bars, and what the common errors mean. It assumes you
 have read [Data sources](data-sources.md), which explains the raw tier,
-watermarks, resuming and the volume guard that WRDS downloads share with the
-other vendors.
+watermarks and resuming that WRDS downloads share with the other vendors.
 
 ## The products
 
@@ -85,66 +84,57 @@ run checks these before copying anything.
 
 ## Downloading CRSP daily stock data
 
-`scripts/ingest_wrds_crsp.py` downloads CRSP daily rows for a roster of
-PERMNOs. The roster is an index universe (`--universe`), an explicit list
-(`--permnos`), the QQQ ETF (`--qqq`), or any combination. Both dates are
-required. These commands need a WRDS account, so no output is shown:
+Three scripts under `scripts/wrds/` download CRSP daily rows, one per kind of
+roster, and every run converts to Zarr. Each takes `--start` and, optionally,
+`--end` (default today, clipped to the last day of the annual CRSP release),
+`--refresh` (continue each PERMNO from its watermark) and `--data-dir`. These
+commands need a WRDS account, so no output is shown:
 
 ```bash
-# CRSP's own point-in-time S&P 500, converted to a panel
-uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
-    --start-date 2000-01-01 --end-date 2025-12-31 --to-zarr
+# An index's point-in-time members: the bars and the membership panel
+uv run python scripts/wrds/index.py --index sp500 --start 2000-01-01
+uv run python scripts/wrds/index.py --index nasdaq100 --start 2000-01-01 \
+    --end 2024-12-31
 
-# An explicit roster: 14593 is Apple, 13407 is Facebook/Meta
-uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407 \
-    --start-date 2020-01-01 --end-date 2024-12-31 --to-zarr
+# The whole market, filtered to common stock by default
+uv run python scripts/wrds/market.py --start 2024-01-01 \
+    --security-filter equity_common
 
-# The QQQ benchmark, in a store of its own
-uv run python scripts/ingest_wrds_crsp.py --qqq \
-    --start-date 1999-01-01 --end-date 2025-12-31 --to-zarr
-
-# ETFs only, one store each (spy, qqq, or any ETF as name=PERMNO)
-uv run python scripts/ingest_wrds_crsp_etf.py --etf spy,qqq \
-    --start-date 2000-01-01 --end-date 2025-12-31
+# ETFs, one store each (spy, qqq, or any ETF as name=PERMNO)
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 2000-01-01
 ```
 
-`scripts/ingest_wrds_crsp_etf.py` downloads ETFs alone, by PERMNO, and always
-converts each into `data/us_equity/1d/wrds_crsp_<name>_1d.zarr`, the store a
-backtest reads as `benchmark_dataset`. `spy` (84398) and `qqq` (86755) are known
-by name; any other ETF is `name=PERMNO`. It shares the raw tier and watermarks
-with the equity scripts, so `--refresh` extends an ETF like any other PERMNO.
+`index.py` resolves the members of `sp500` or `nasdaq100` over the window,
+downloads their rows, and writes `wrds_crsp_{index}_1d.zarr` and
+`wrds_crsp_{index}_membership.zarr` under `data/us_equity/1d/`. `market.py`
+takes every security passing `--security-filter` (below) over the window,
+about 5,500 PERMNOs for 2024 alone, and writes `wrds_crsp_market_1d.zarr` and
+the listing panel `wrds_crsp_market_membership.zarr`. `etf.py` downloads each
+ETF by PERMNO and converts it into `wrds_crsp_<name>_1d.zarr`, the store a
+backtest reads as `benchmark_dataset`; `spy` (84398) and `qqq` (86755) are known
+by name, any other ETF is `name=PERMNO`. An ETF lives in its own store because
+an ETF ranked in the same cross-section as the stocks it holds would be the
+index competing against itself.
 
-Other flags: `--security-filter` (below), `--batch-size` (PERMNOs per query,
-default 200), `--refresh`, `--refresh-reference`, `--allow-unlinked-ndx`, and
-the shared `--chunk`, `--on-new-listing`, `--force-volume` and `--data-dir`.
-For the whole market rather than an index, use
-`scripts/ingest_wrds_crsp_all.py`, whose roster is every security passing the
-security filter over the window (about 5,500 PERMNOs for 2024 alone). Run it a
-year at a time.
+The three scripts share one raw tier and one set of watermarks, so `--refresh`
+extends an ETF like any other PERMNO and a PERMNO already downloaded by one
+script is not downloaded again by another. Batch size and conversion chunking
+come from the library defaults.
 
-Before any daily row is copied, a run checks, in order: the arguments; your
-entitlement to every schema it will read; the product end (an `--end-date`
-past it is clipped and the clip is printed; a `--start-date` past it is
-refused); the *reference tables*; and the volume, counted with `count(*)` per
-calendar year and PERMNO batch and priced by `SqlVolumeGuard`. The reference
-tables are small CRSP, Compustat and CCM tables (security history, delisting
-events, distributions, index membership, the CRSP/Compustat link) that quantlab
-copies whole into a `_reference/` directory beside the raw tier. They map
-PERMNOs to tickers and answer index-membership questions, which is why they are
-fetched before the roster is resolved.
+Before any daily row is copied, a run checks, in order: your entitlement to
+every schema it will read; the product end (an `--end` past it is clipped and
+the clip is printed; a `--start` past it is refused); and the *reference
+tables*. The reference tables are small CRSP, Compustat and CCM tables
+(security history, delisting events, distributions, index membership, the
+CRSP/Compustat link) that quantlab copies whole into a `_reference/` directory
+beside the raw tier. They map PERMNOs to tickers and answer index-membership
+questions, which is why they are fetched before the roster is resolved, and
+tables already on disk for the same CRSP release are reused rather than
+downloaded again.
 
 The raw tier lands under `downloads/us_equity/1d/wrds_crsp/wrds/month=YYYY-MM/`,
-one row per PERMNO and day, exactly as CRSP serves it. With `--to-zarr` the
-script writes, under `data/us_equity/1d/`:
-
-- `wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr`, the equity panel (`custom`
-  when the roster is an explicit PERMNO list);
-- `wrds_crsp_qqq_1d.zarr`, the QQQ benchmark, when `--qqq` is given;
-- `wrds_crsp_{sp500|nasdaq100}_membership.zarr`, the membership panel, when
-  `--universe` is given.
-
-QQQ lives in its own store because an ETF ranked in the same cross-section as
-the stocks it holds would be the index competing against itself.
+one row per PERMNO and day, exactly as CRSP serves it. The Zarr stores go
+under `data/us_equity/1d/`, named as above.
 
 ### The product end and the vintage
 
@@ -166,7 +156,7 @@ except CrspProductEndError as exc:
 
 ```text
 (datetime.date(2020, 1, 1), datetime.date(2025, 12, 31), datetime.date(2025, 12, 31))
-end_date 2026-06-30 is past the CRSP product end 2025-12-31. crsp_a_stock is the ANNUAL UPDATE product and gains a year at the WRDS refresh. Lower --end-date to 2025-12-31, or pass kwargs['clip_to_product_end']=True to have the window clipped for you; nothing was downloaded.
+end_date 2026-06-30 is past the CRSP product end 2025-12-31. crsp_a_stock is the annual update product and gains a year only when WRDS loads the new release. Lower end_date to 2025-12-31, or pass kwargs['clip_to_product_end']=True to have the window clipped for you; nothing was downloaded.
 ```
 
 CRSP also revises history between annual releases (restated delisting returns,
@@ -191,9 +181,8 @@ config = factory(("14593", "13407"), start_date="2020-01-01", end_date="2024-12-
 result = run(wrds, config)
 ```
 
-This downloads the raw tier only. The ingest script adds the reference pull,
-the volume guard and the conversions; for anything beyond a small roster, use
-it.
+This downloads the raw tier only. The scripts add the reference pull and the
+conversions; for anything beyond a small roster, use them.
 
 ## The CRSP panel
 
@@ -239,9 +228,9 @@ raw `close`, and afterwards it grows exactly as a reinvested holding would.
 contributes no change, because CRSP's next valid return already spans the gap.
 `ret` itself keeps a missing return as NaN rather than 0.
 
-Two practical consequences. Extending `--end-date` and converting again
+Two practical consequences. Extending `--end` and converting again
 appends to the store without changing values already written. Moving
-`--start-date`, or adding raw history earlier than what the store was built
+`--start`, or adding raw history earlier than what the store was built
 from, changes each security's starting point and therefore every adjusted
 value; nothing detects this, so rebuild the store instead
 (`quantlab.dataset.crsp.rebuild.CrspStoreRebuilder` rebuilds it offline from
@@ -293,8 +282,8 @@ corporations' common stock only). `none` keeps everything, which is what the
 QQQ benchmark store uses. You can also pass a `{column: allowed values}`
 mapping.
 
-An explicit roster takes precedence over the filter. A PERMNO you listed with
-`--permnos` keeps all its rows, and an index member keeps its rows for the
+The roster takes precedence over the filter. An ETF downloaded by PERMNO keeps
+all its rows, and an index member keeps its rows for the
 periods it was a member, even when its security type would otherwise be
 filtered out (CRSP records Carnival, for instance, with a share type that
 `equity_common` excludes from 2003 on, while it was an S&P 500 member). What the filter removed and what the roster kept is written to
@@ -304,57 +293,58 @@ filtered out (CRSP records Carnival, for instance, with a share type that
 
 A backtest over "the S&P 500" must use the index members as of each date,
 including those later removed; using today's members would build survivorship
-bias into the results. The CRSP script offers two point-in-time universes,
-resolved by interval overlap: every PERMNO that was a member at any time in
-your window.
+bias into the results. `scripts/wrds/index.py` offers two point-in-time
+indexes, resolved by interval overlap: every PERMNO that was a member at any
+time in your window.
 
-`crsp_sp500` is CRSP's own S&P 500 membership history, available from 1925.
-`comp_nasdaq100` is Compustat's Nasdaq-100 history, linked to PERMNOs through
-the CRSP/Compustat link table; Compustat's records start in 1995. If a
-Nasdaq-100 membership period inside your window has no link to any PERMNO,
-the run stops and lists it, because silently dropping it would shrink the
-universe; `--allow-unlinked-ndx` proceeds after you have checked, and records
-the decision.
+`sp500` is CRSP's own S&P 500 membership history (`crsp_sp500` in the
+library), available from 1925. `nasdaq100` is Compustat's Nasdaq-100 history
+(`comp_nasdaq100`), linked to PERMNOs through the CRSP/Compustat link table;
+Compustat's records start in 1995. If a Nasdaq-100 membership period inside
+your window has no link to any PERMNO, the run stops and lists it, because
+silently dropping it would shrink the universe; from Python,
+`allow_unlinked=True` on `CrspMembership.permnos_in_range` or in a
+`ConstituentDatasetConfig`'s `kwargs` proceeds after you have checked, and
+records the decision.
 
-With `--to-zarr` the membership is also written as a panel on the same
-`(timestamp, PERMNO)` axes, whose `is_member` variable is true where a
-security was a member on that date, which the
-backtester and universe filters use as a mask. See
+The membership is also written as a panel on the same `(timestamp, PERMNO)`
+axes, whose `is_member` variable is true where a security was a member on
+that date, which the backtester and universe filters use as a mask. See
 [Universes](universes.md) for how masks are applied.
 
-The TAQ script's `--universe sp500` and `--universe nasdaq100` are different:
-they come from the point-in-time universe table built by
-`scripts/refresh_us_equity_universe.py`, which uses tickers rather than
-PERMNOs.
+`scripts/wrds/nbbo.py --index sp500|nasdaq100` resolves the same membership
+and maps each PERMNO to the tickers it traded under over the window, so the
+intraday roster comes from the same reference tables as the daily one.
 
 ## Downloading TAQ quotes
 
-`scripts/ingest_wrds_taq.py` downloads each trading day's NBBO records for a
-roster, one query per trading day and batch of symbols. Symbols use dot
-notation for share classes (`BRK.B` is root `BRK`, suffix `B`); the hyphenated
-form `BRK-B` is refused. These commands need a WRDS account:
+`scripts/wrds/nbbo.py` downloads each trading day's NBBO records for a
+roster, one query per trading day and batch of symbols, and resamples them
+into a bar panel. The roster is exactly one of `--symbols` or `--index`.
+Symbols use dot notation for share classes (`BRK.B` is root `BRK`, suffix
+`B`); the hyphenated form `BRK-B` is refused. `--end` defaults to today and
+is clipped to the last trading day TAQ has published. These commands need a
+WRDS account:
 
 ```bash
-# Raw NBBO records only
-uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
-    --start-date 2024-01-24 --end-date 2024-01-25
+# Three symbols, resampled to 1-minute bars over regular hours
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+    --start 2024-01-24 --end 2024-01-25
 
-# The same, resampled to 1-minute bars over regular hours
-uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
-    --start-date 2024-01-24 --end-date 2024-01-25 --to-zarr --bar-interval 1m
+# The same, as 5-minute bars over a narrower session
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+    --start 2024-01-24 --end 2024-01-25 --interval 5m --session 10:00-15:00
 
-# Point-in-time S&P 500 members, one day
-uv run python scripts/ingest_wrds_taq.py --universe sp500 \
-    --start-date 2024-01-24 --end-date 2024-01-24 --to-zarr
+# Point-in-time S&P 500 members, one day (needs the CRSP subscription too)
+uv run python scripts/wrds/nbbo.py --index sp500 \
+    --start 2024-01-24 --end 2024-01-24
 ```
 
 Quote data is large. On 2024-01-24, Apple alone had about 1.2 million NBBO
-records and the whole market about 314 million. The volume guard counts the
-rows on the server before copying and refuses more than 20 GiB or 700 million
-rows by default, which is a few days of the S&P 500. A refusal names the
-longest date range from `--start-date` that fits; run long windows as several
-such segments. `--rows-per-symbol-day` does not apply to WRDS, because the
-rows are counted, not estimated.
+records and the whole market about 314 million. Nothing estimates or refuses a
+download by size (see the ADR
+[Downloads run without a volume guard](../adr/0001-no-download-volume-guard.md)),
+so scope a pull by symbol list and date range.
 
 Every record is kept in the raw tier, unfiltered, under
 `downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=AAPL/`.
@@ -365,8 +355,8 @@ timestamps and several records can share one.
 
 ## Resampling NBBO quotes into bars
 
-With `--to-zarr`, or by calling `quantlab.registry.convert` with an
-`NbboDatasetConfig`, the raw records are resampled into a regular bar panel on
+The script, or a call to `quantlab.registry.convert` with an
+`NbboDatasetConfig`, resamples the raw records into a regular bar panel on
 `(timestamp, symbol)`, written to
 `data/us_equity/tick/wrds_nbbo_{interval}_{start}-{end}.zarr` (for example
 `wrds_nbbo_1m_0930-1600.zarr`). Resampling reads only local files, so you can
@@ -391,13 +381,12 @@ The rules, in plain words:
   (`drop_crossed`, `drop_locked`, `drop_nonpositive_price`, `keep_qu_cond`).
 
 The session window defaults to regular hours, 09:30 to 16:00 US/Eastern, and
-can be set anywhere between 04:00 and 20:00 with `--session-start` and
-`--session-end`. The exchange calendar handles holidays, daylight-saving
-changes and half days: on a half day, an edge inside regular hours is moved to
-the early close, while an extended-hours edge is kept. `--bar-interval` offers
-sizes from `1s` to `30m`, all of which divide both a 390-minute regular session
-and a 210-minute half day. Convert sub-minute bars with `--chunk day` (the
-default for this script).
+can be set anywhere between 04:00 and 20:00 with `--session HH:MM-HH:MM`. The
+exchange calendar handles holidays, daylight-saving changes and half days: on
+a half day, an edge inside regular hours is moved to the early close, while an
+extended-hours edge is kept. `--interval` offers sizes from `1s` to `30m`, all
+of which divide both a 390-minute regular session and a 210-minute half day.
+The script converts one day at a time.
 
 The panel variables are `bid`, `ask`, `bid_size`, `ask_size`, `mid`, `spread`,
 `spread_bps`, `imbalance`, `n_updates`, the time-weighted averages `tw_spread`,
@@ -492,26 +481,19 @@ delete the old raw tier with its `_watermarks/wrds` and `_vintage` siblings and
 download again.
 
 `symbol 'AAPL' is not a PERMNO.`
-CRSP downloads are keyed by PERMNO. Pass PERMNOs, or use `--universe`.
+CRSP downloads are keyed by PERMNO. Pass PERMNOs (`etf.py --etf name=PERMNO`),
+or let `index.py` or `market.py` resolve the roster.
 
 `--symbols ['BRK-B'] use a hyphen; WRDS TAQ uses dot notation`
 Write share classes as `BRK.B`.
-
-`--start-date and --end-date are both required`
-WRDS windows are counted and priced before any download, so there is no
-default window.
-
-`Refusing to pull N symbol(s) over START..END: ...`
-The volume guard's estimate is over a ceiling. Run the date segment the message
-suggests, then the rest; or pass `--force-volume` if you have the disk space.
 
 `kwargs['max_workers']=4 is refused`
 WRDS downloads use one shared connection. Remove the setting.
 
 A Nasdaq-100 run stops and lists *unlinked* membership periods.
 Compustat lists an index member for which the link table has no PERMNO in your
-window. Check the listed periods, then rerun with `--allow-unlinked-ndx` to
-proceed without them.
+window. Check the listed periods, then build the panel from Python with
+`allow_unlinked=True` to proceed without them.
 
 A run stops because the connection broke.
 quantlab does not reconnect by itself, to avoid repeated Duo prompts. Run the

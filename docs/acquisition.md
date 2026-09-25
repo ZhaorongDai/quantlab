@@ -266,28 +266,11 @@ Some vendors cap the number of requests per period. A vendor class decides which
 
 Running the same call again later continues from CCC. Setting `kwargs["wait_for_quota"] = True` makes the run sleep `quota_wait_seconds` (default 3600) and resume by itself, at most `quota_max_waits` (default 3) times.
 
-### Check a download's size before starting
+### Download size
 
-`UniverseCatalog` (see the [universe](universe.md) guide) prices a download from the symbols' listing dates, without a client and without credentials. `assert_acquisition_volume_fits` raises when the estimate crosses a ceiling on raw bytes (20 GiB), requests (50,000) or wall-clock hours (4). The three ceilings can be raised with keyword arguments, and `force=True` skips the check. The command-line scripts run this check before constructing the client.
-
-```python
->>> from quantlab.base.config import UniverseConfig
->>> from quantlab.universe import UniverseCatalog
->>> uconfig = UniverseConfig(output_path=str(root / "universe.parquet"), cache_dir=str(root / "_cache"))
->>> pl.DataFrame({
-...     "symbol": ["AAPL", "MSFT", "GOOG"], "category": ["us_all"] * 3,
-...     "start_date": ["1980-12-12", "1986-03-13", "2004-08-19"],
-...     "end_date": [None] * 3, "end_date_is_inferred": [False] * 3,
-... }).write_parquet(uconfig.output_path)
->>> catalog = UniverseCatalog.load(uconfig)
->>> estimate = catalog.estimate_acquisition_volume("us_all", "2023-01-01", "2023-12-31", frequency="1m", batch_size=100)
->>> estimate["rows"], estimate["raw_bytes"], estimate["requests"]
-(294450, 17667000, 30)
->>> catalog.assert_acquisition_volume_fits("us_all", "2023-01-01", "2023-12-31", frequency="1m", batch_size=100, max_raw_bytes=10_000_000)
-Traceback (most recent call last):
-    ...
-ValueError: Refusing to fetch us_all 1m over 2023-01-01..2023-12-31: 3 symbol(s) x 252 trading day(s) x 390 row(s)/symbol-day = 294,450 row(s) -> 30 request(s), 0.02 GiB, 0.0 h at 200 req/min (batch_size=100, page_limit=10,000). Over the raw-bytes ceiling (0.02 GiB > 0.01 GiB, MAX_RAW_BYTES) -- 1.8x the tightest ceiling. A narrowing that fits: the same window at <= 1 symbol(s) (a smaller --universe, e.g. an index-constituent category), or this roster over <= 206 calendar day(s) (2023-01-01..2023-07-25), which is ~17 request(s), ~0.01 GiB, ~0.0 h. Or raise that ceiling deliberately via the max_raw_bytes keyword (readable from config.kwargs), or pass force=True (--force-volume) to proceed anyway.
-```
+No size estimate runs before a download and nothing refuses a request for being large
+([ADR 0001](adr/0001-no-download-volume-guard.md)). Scope a request with the symbol list and
+the date window.
 
 ### Fill in missing covered starts
 
@@ -306,18 +289,22 @@ Sidecars written by an older version record only `last_date`. They are classifie
 
 ### Run against a real vendor
 
-The scripts in `scripts/` wrap the vendors. They read the credentials from the environment and print no output that includes them. These commands reach the network and are shown without output.
+The scripts under `scripts/wrds/` wrap the WRDS products, one script per kind of data. They
+read `WRDS_USERNAME` from the environment (the password comes from `~/.pgpass`) and print no
+output that includes it. Each script downloads, converts to Zarr and closes the session; `--end`
+defaults to today and is clipped to the product's last date; `--refresh` continues from each
+symbol's watermark. These commands reach the network and are shown without output.
 
 ```bash
-export TIINGO_API_KEY=your-key
-uv run python scripts/ingest_us_equity.py --dry-run     # size the job, no request, no key needed
-uv run python scripts/ingest_us_equity.py               # backfill; run again to resume
-uv run python scripts/ingest_us_equity.py --refresh     # top up from each symbol's own watermark
-uv run python scripts/ingest_us_equity.py --wait-for-quota
-
-export APCA_API_KEY_ID=your-id APCA_API_SECRET_KEY=your-secret
-uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --start-date 2024-01-01 --end-date 2024-12-31
+export WRDS_USERNAME=your-username
+uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01
+uv run python scripts/wrds/market.py --start 2015-01-01 --security-filter equity_common
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT --start 2024-01-02 --end 2024-01-31
 ```
+
+Tiingo, Alpaca and Binance have library interfaces only: their acquisition classes are driven
+through `quantlab.registry.run` and `convert` as in this guide.
 
 The storage root is `--data-dir`, else the environment variable `QUANTLAB_DATA_DIR`, else the repository's `data/` directory.
 
@@ -375,4 +362,4 @@ Raw tick data is written exactly as the vendor sent it, with no resampling and n
 
 ## See also
 
-The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universe](universe.md) guide for the symbol roster and the volume guard, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.base.coverage.CoverageLedger` and `quantlab.base.progress` list every option.
+The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universe](universe.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.base.coverage.CoverageLedger` and `quantlab.base.progress` list every option.

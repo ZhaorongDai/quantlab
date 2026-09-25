@@ -66,7 +66,7 @@ working on.
 
 | Page | What it covers |
 |------|----------------|
-| [Acquisition](acquisition.md) | How a download runs: batches, failure isolation, incremental refresh, the raw file layout and the volume guard |
+| [Acquisition](acquisition.md) | How a download runs: batches, failure isolation, incremental refresh and the raw file layout |
 | [Data source registry](registry.md) | The catalogue of sources, `run()` and `convert()`, progress events and the read-only inspector |
 | [Resumable downloads](pageledger.md) | How a multi-page download resumes after an interruption |
 | [WRDS CRSP daily stocks](wrds_crsp.md) | US daily data by PERMNO, total-return adjustment and delisting returns |

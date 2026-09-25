@@ -3,8 +3,8 @@
 This page explains how quantlab gets market data onto your disk. It covers the
 three vendors quantlab can download from, how to give it credentials, how to
 start a download from the command line or from Python, where the files land,
-how an interrupted download resumes, how vendor rate limits and the pre-flight
-volume guard behave, how to look at what is already downloaded without any
+how an interrupted download resumes, how vendor rate limits behave, how to
+look at what is already downloaded without any
 credentials, and how raw downloads become the `(timestamp, symbol)` panel the
 rest of the pipeline reads. Read it before your first download. WRDS (CRSP daily
 stock files and TAQ quotes) has enough of its own concepts that it has a
@@ -46,9 +46,10 @@ Alpaca's quotes and trades are individually timestamped events on an irregular
 time axis. No dense panel can represent them without inventing data, so they
 stay in the raw tier, where you can query them with polars.
 
-Binance crypto klines are handled differently: `scripts/ingest_binance_spot.py`
-converts monthly CSV files you have already downloaded from Binance's public
-bulk-download site. It needs no credentials and is not a registry source.
+Binance crypto klines are handled differently: `SpotKlineDataset` converts
+monthly CSV files you have already downloaded from Binance's public
+bulk-download site. It needs no credentials, is not a registry source, and has
+no download script.
 
 ### Listing sources in Python
 
@@ -114,73 +115,39 @@ inspecting files, converting raw files to a panel) works without one.
 
 ## Downloading from the command line
 
-Each vendor has an ingest script under `scripts/`. They share one set of flags.
+The download scripts live under `scripts/wrds/`, one per kind of data the WRDS
+account serves. Each is a thin shell: it parses the few arguments that change
+between runs, downloads the raw tier and converts it to Zarr in the same run.
+Batch size, chunk granularity and concurrency come from the library defaults.
 
-| Flag | Meaning |
-|---|---|
-| `--symbols AAPL,MSFT` | An explicit list of tickers. |
-| `--universe sp500 --as-of-date 2015-06-01` | A roster from the point-in-time universe table instead (see [Universes](universes.md)). Choices: `sp500`, `nasdaq100`, `nasdaq_all`, `us_all`. |
-| `--start-date`, `--end-date` | The window, inclusive. |
-| `--refresh` | Fetch forward from each symbol's last downloaded date instead of backfilling the window. |
-| `--to-zarr`, `--chunk`, `--on-new-listing` | Also convert the raw tier to a panel (see below). |
-| `--force-volume`, `--rows-per-symbol-day` | Volume-guard controls (see below). |
-| `--data-dir` | Storage root for this run. |
+| Script | Downloads | Roster argument |
+|---|---|---|
+| `index.py` | An index's daily bars and its membership panel | `--index sp500\|nasdaq100` |
+| `market.py` | Every CRSP security's daily bars and the listing panel | `--security-filter` preset |
+| `etf.py` | One store per ETF | `--etf spy,qqq,name=PERMNO` |
+| `nbbo.py` | TAQ NBBO quotes resampled into a bar panel | `--symbols` or `--index` |
 
-A *point-in-time* roster lists the securities that belonged to an index or
-exchange on a given date, including those that have since been delisted.
-Downloading only today's members would give you *survivorship bias*: a history
-made only of companies that survived, which makes past returns look better
-than they were. Build the universe table once with
-`uv run python scripts/refresh_us_equity_universe.py` before using `--universe`.
-
-The scripts, with the examples from their own help text:
+They share `--start` (required), `--end` (default today, clipped to the
+vendor product's last date), `--refresh` (fetch forward from each symbol's
+last downloaded date instead of backfilling the window) and `--data-dir` (the
+storage root for this run). The rosters are *point-in-time*: an index roster
+holds every security that belonged to the index at any time in the window,
+including those since delisted, which keeps *survivorship bias* (a history
+made only of companies that survived) out of the data.
 
 ```bash
-# Tiingo daily bars
-uv run python scripts/ingest_tiingo.py --symbols AAPL,MSFT \
-    --start-date 2024-01-01 --end-date 2024-12-31
-uv run python scripts/ingest_tiingo.py --universe sp500 --as-of-date 2015-06-01
-
-# The whole US listed market from Tiingo (about 15,000 symbols, several hours)
-uv run python scripts/ingest_us_equity.py --dry-run     # sizes the job, needs no key
-uv run python scripts/ingest_us_equity.py
-
-# Alpaca: daily or minute bars, or full-resolution quotes and trades
-uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency 1m \
-    --start-date 2024-01-02 --end-date 2024-01-31
-uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency tick \
-    --data-type quotes --rows-per-symbol-day 1000000 \
-    --start-date 2024-01-02 --end-date 2024-01-02
+uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01
+uv run python scripts/wrds/market.py --start 2024-01-01
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+    --start 2024-01-24 --end 2024-01-25 --interval 1m
 ```
 
-`ingest_us_equity.py` resolves its roster by *interval overlap*: every symbol
-that traded at any point in the window, not just the members on one day. It
-adds `--category`, `--limit N` (the first N symbols, handy for a smoke test),
-`--max-workers`, and the quota flags described under rate limits.
-`scripts/backfill_us_equity_full.py` wraps the same full-market job as a Python
-plan object with separately callable stages. The WRDS scripts are described in
-[WRDS: CRSP and TAQ](wrds.md). Run any script with `--help` for its complete
-flag list.
-
-Without credentials a script still runs its pre-flight size estimate, then
-stops when the vendor client is built:
-
-```text
-$ uv run python scripts/ingest_tiingo.py --symbols AAPL,MSFT \
-      --start-date 2024-01-01 --end-date 2024-06-30
-Pre-flight volume estimate (zero vendor requests issued):
-  roster:            (explicit --symbols list)
-  window:            2024-01-01 .. 2024-06-30
-  symbols:           2
-  trading days (~):  126
-  rows (~):          252 (1/symbol-day, density 1.000)
-  raw on disk (~):   0.00 GiB
-  requests (~):      2 (batch_size=1, page_limit=10,000)
-  wall clock (~):    0.0 h at 200 req/min
-Acquiring symbols=('AAPL', 'MSFT') via Tiingo EOD (refresh=False)
-...
-RuntimeError: TIINGO_API_KEY environment variable is not set. Export it before running acquisition (see Tiingo dashboard for your key).
-```
+The scripts are described in [WRDS: CRSP and TAQ](wrds.md); run any of them
+with `--help` for its complete flag list. Tiingo, Alpaca and Binance have
+library interfaces only: their acquisition and dataset classes are driven from
+Python through `quantlab.registry.run` and `quantlab.registry.convert`, as in
+the next section.
 
 ## Downloading from Python
 
@@ -307,11 +274,15 @@ locations are:
 
 | Download | Raw tier | Panel |
 |---|---|---|
-| `ingest_tiingo.py` | `downloads/us_equity/1d/nasdaq_data/tiingo` | `data/us_equity/1d/stock.zarr` |
-| `ingest_us_equity.py` | `downloads/us_equity/1d/us_all/tiingo` | `data/us_equity/1d/us_all.zarr` |
-| `ingest_alpaca.py` | `downloads/us_equity/{1d,1m,tick}/nasdaq_data/alpaca` | `data/us_equity/{1d,1m}/stock_alpaca.zarr` |
-| `ingest_wrds_crsp.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_*_1d.zarr` |
-| `ingest_wrds_taq.py` | `downloads/us_equity/tick/wrds_taq/wrds` | `data/us_equity/tick/wrds_nbbo_*.zarr` |
+| `scripts/wrds/index.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_{sp500,nasdaq100}_1d.zarr` and `_membership.zarr` |
+| `scripts/wrds/market.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
+| `scripts/wrds/etf.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_{name}_1d.zarr` |
+| `scripts/wrds/nbbo.py` | `downloads/us_equity/tick/wrds_taq/wrds` | `data/us_equity/tick/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
+| Tiingo (library) | `downloads/us_equity/1d/nasdaq_data/tiingo` | `data/us_equity/1d/stock.zarr` |
+| Alpaca (library) | `downloads/us_equity/{1d,1m,tick}/nasdaq_data/alpaca` | `data/us_equity/{1d,1m}/stock_alpaca.zarr` |
+
+The three CRSP scripts share one raw tier, one set of watermarks and one
+reference directory (`downloads/us_equity/1d/wrds_crsp/_reference`).
 
 ## Resuming an interrupted download
 
@@ -330,7 +301,7 @@ coverage: {'requested': 3, 'pending': 0, 'skipped': 3, 'covered': 3, 'widened': 
 ```
 
 The counts mean: `covered`, already downloaded over the window; `widened`,
-downloaded but starting later than the new `--start-date`, so fetched again;
+downloaded but starting later than the new `start_date`, so fetched again;
 `legacy`, a sidecar from an older version that records no start date;
 `no_data`, the vendor was asked about this window and returned nothing, which
 is recorded so the same window is not asked again (a longer window still is);
@@ -352,9 +323,9 @@ Two situations need a deliberate choice. `download()` (the default) fills in
 the requested window, while `--refresh` / `refresh()` starts each symbol from
 its own last date and never widens the start. And sidecars written by older
 versions of quantlab may lack a start date; by default they are skipped with a
-warning on every run. `ingest_us_equity.py --stamp-legacy-watermarks
-2016-01-01` records the start you know they were fetched from, issuing no
-requests, and `--legacy-watermarks refetch` treats them as not covered instead.
+warning on every run. `acquisition.stamp_watermarks("2016-01-01")` records the
+start you know they were fetched from, issuing no requests, and
+`kwargs["legacy_watermarks"] = "refetch"` treats them as not covered instead.
 
 ## Rate limits and quotas
 
@@ -365,9 +336,9 @@ Tiingo answers HTTP 429 when the account's hourly request allocation is spent.
 That affects every remaining symbol, so the run stops sending requests at once
 (the progress bar reads `QUOTA EXHAUSTED -- draining, not fetching`),
 `result.quota_aborted` is true, and a later run resumes. To have the run wait
-instead, set `kwargs["wait_for_quota"] = True` or pass `--wait-for-quota` to
-`ingest_us_equity.py`: it then sleeps `quota_wait_seconds` (default 3600) and
-retries, at most `quota_max_waits` times (default 3).
+instead, set `kwargs["wait_for_quota"] = True`: the run then sleeps
+`quota_wait_seconds` (default 3600) and retries, at most `quota_max_waits`
+times (default 3).
 
 Alpaca answers 429 when a per-minute ceiling is hit, which clears in seconds.
 The batch that hit it waits `rate_limit_backoff_seconds` (default 5) and
@@ -377,45 +348,12 @@ requests per minute and the paid plan about 10,000; at 200 per minute a
 full-market daily backfill takes about 8 minutes but a full-market minute-bar
 backfill takes about 50 hours.
 
-WRDS has no request quota. Its limits are disk space, which the SQL volume
-guard protects, and Duo two-factor prompts, which is why a WRDS run uses one
-connection and stops instead of reconnecting (see [WRDS](wrds.md)).
-
-## The volume guard
-
-Before any vendor client is created, every ingest script estimates how much
-the request will download and refuses a request that is too large. For the
-REST vendors (Tiingo, Alpaca) the estimate is arithmetic over the roster and a
-trading calendar, and three independent ceilings apply: 20 GiB of raw files,
-50,000 requests, and 4 hours of wall-clock time at the assumed request rate.
-Any one alone would let a bad case through: a tick request can pass the request
-count and still fill the disk.
-
-Tick volume cannot be derived from a calendar, so an Alpaca tick request must
-say how many rows one symbol produces in one day (`--rows-per-symbol-day`,
-measured by sampling one symbol-day). A year of quotes for two very liquid
-names is refused, and the message suggests a narrower request that fits:
-
-```text
-$ uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --frequency tick \
-      --data-type quotes --rows-per-symbol-day 1000000 \
-      --start-date 2024-01-01 --end-date 2024-12-31
-...
-ValueError: Refusing to fetch (explicit --symbols list) tick over 2024-01-01..2024-12-31: 2 symbol(s) x 253 trading day(s) x 1,000,000 row(s)/symbol-day = 506,000,000 row(s) -> 50,600 request(s), 28.27 GiB, 4.2 h at 200 req/min (batch_size=100, page_limit=10,000). Over the raw-bytes ceiling (28.27 GiB > 20.00 GiB, MAX_RAW_BYTES); over the request ceiling (50,600 > 50,000, MAX_ACQUISITION_REQUESTS); over the wall-clock ceiling (4.2 h > 4.0 h, MAX_ACQUISITION_WALL_CLOCK_HOURS) -- 1.4x the tightest ceiling. A narrowing that fits: the same window at <= 1 symbol(s) (a smaller --universe, e.g. an index-constituent category), or this roster over <= 258 calendar day(s) (2024-01-01..2024-09-14), which is ~35,600 request(s), ~19.89 GiB, ~3.0 h. Or raise that ceiling deliberately via the max_raw_bytes / max_requests / max_wall_clock_hours keyword (readable from config.kwargs), or pass force=True (--force-volume) to proceed anyway.
-```
-
-`--force-volume` skips the refusal for one run; the estimate is still printed.
-There is intentionally no environment variable or config setting that turns
-the guard off everywhere. The guard itself is
-`quantlab.universe.UniverseCatalog.assert_acquisition_volume_fits`.
-
-WRDS requests are priced differently, from real row counts that the server
-returns for `count(*)` queries, by `SqlVolumeGuard` (20 GiB and 700 million
-rows by default). The example script shows its refusal on made-up counts:
-
-```text
-refused: Refusing to pull 500 symbol(s) over 2024-01-22..2024-01-25: 4 trading day(s), 1,000,000,000 row(s) (counted with count(*)) x 30 B/row = 27.94 GiB. over the raw-bytes ceiling (27.94 GiB > 20.00 GiB; raise MAX_RAW_BYTES or the 'max_raw_bytes' kwargs key); over the raw-rows ceiling (1,000,000,000 > 700,000,000 rows; raise MAX_RAW_ROWS or the 'max_raw_rows' kwargs key). A date segment that fits: --start-date 2024-01-22 --end-date 2024-01-23; run the rest as further guarded segments ...
-```
+WRDS has no request quota. Its limits are disk space and Duo two-factor
+prompts, which is why a WRDS run uses one connection and stops instead of
+reconnecting (see [WRDS](wrds.md)). Nothing estimates a download's size before
+it runs (see the ADR
+[Downloads run without a volume guard](../adr/0001-no-download-volume-guard.md)),
+so scope a request by roster and window.
 
 ## Inspecting what is on disk
 
@@ -450,13 +388,13 @@ requested symbols are still to fetch, and `inventory` summarises the raw tier:
 `browse_raw` and `browse_zarr` require a symbol list and a date window, so
 what they return is always narrow. `browse_zarr` raises for a symbol the store
 does not hold rather than returning an empty column, because an empty column
-would look like a security with no history. `ingest_us_equity.py --dry-run`
-prints the same coverage report for the full-market job.
+would look like a security with no history.
 
 ## Converting raw downloads into a panel
 
-Add `--to-zarr` to an ingest script to convert after downloading, or call
-`quantlab.registry.convert(descriptor, dataset_config)` in Python. Conversion
+The WRDS scripts convert after downloading with the library defaults; for
+other options call `quantlab.registry.convert(descriptor, dataset_config)` in
+Python. Conversion
 reads only local files, so it needs no credentials. In the example it converts
 the raw tier written above:
 
@@ -475,15 +413,15 @@ print(result.windows_written, result.windows_planned, result.rows_written)
     dims: {'timestamp': 65, 'symbol': 4}
 ```
 
-The conversion runs one time window at a time (`granularity`, or `--chunk`:
-`year` by default, down to `day` or `hour`) and records each finished window,
+The conversion runs one time window at a time (`granularity`: `year` by
+default, down to `day` or `hour`) and records each finished window,
 so an interrupted or cancelled conversion resumes at the first unwritten
 window. It accepts `reporter=` and `cancel=` like `run()`. Nothing checks that a
 window fits in memory, so choose a finer granularity for a large roster or for
 minute data.
 
 When the roster has grown since the store was built (a new listing between two
-refreshes), `--on-new-listing` decides what happens: `refuse` (the default)
+refreshes), `on_new_listing` decides what happens: `refuse` (the default)
 stops and leaves the store untouched; `widen` adds the new symbols with empty
 history, which is right for a genuine new listing; `rebuild` rebuilds every
 window from the raw tier, which is right when a symbol already had history.

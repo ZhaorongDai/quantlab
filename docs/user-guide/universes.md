@@ -64,17 +64,27 @@ inferred and `end_date_is_inferred` is `True`. `nasdaq100_constituent` is
 about 100 names at a time and has nothing to do with `nasdaq_all`, which has
 no index concept; they only share a word.
 
-Build or refresh the table with the script below. It downloads from Tiingo
-and Wikipedia, needs no API key, and writes
-`data/reference/universe.parquet` under the data root:
+Build or refresh the table from Python. `UniverseCatalog.build()` downloads
+from Tiingo and Wikipedia, needs no API key, and `save()` writes the table to
+`output_path`, by convention `data/reference/universe.parquet` under the data
+root; no script wraps this step:
 
-```bash
-uv run python scripts/refresh_us_equity_universe.py
+```python
+from quantlab.base.config import UniverseConfig
+from quantlab.config import get_data_root
+from quantlab.universe import UniverseCatalog
+
+reference = get_data_root() / "data" / "reference"
+config = UniverseConfig(
+    output_path=str(reference / "universe.parquet"),
+    cache_dir=str(reference / "_cache"),
+)
+UniverseCatalog(config).build().save()
 ```
 
-The script refuses to save a table rebuilt from a cached copy of a source
-that failed to download, because a stale table looks exactly like a fresh
-one; `--allow-stale` accepts it knowingly.
+`build()` refuses a table rebuilt from a cached copy of a source that failed
+to download, because a stale table looks exactly like a fresh one;
+`build(allow_stale=True)` accepts it knowingly.
 
 ### Query the catalog
 
@@ -142,8 +152,9 @@ security identifier, and line up with a `CrspStockDataset` column for column;
 they read the CRSP reference tables already on disk (`cache_dir`) and make no
 WRDS connection. `CrspMarketConstituentDataset` answers "was this security
 listed on this day", which lets you tell "not listed" apart from "listed, no
-trade" in a wide panel. `scripts/ingest_wrds_crsp.py` can build the price
-store and its membership panel together; see [WRDS](wrds.md).
+trade" in a wide panel. `scripts/wrds/index.py` builds an index's price
+store and its membership panel together, and `scripts/wrds/market.py` the
+market store and its listing panel; see [WRDS](wrds.md).
 
 A few properties of these panels matter when you use them:
 

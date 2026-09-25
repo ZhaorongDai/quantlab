@@ -54,10 +54,10 @@ quantlab/
   backtest/     vectorbt 引擎、TopN 选股、美股回测器
   backend.py    Zarr 与 Parquet 存储后端
   registry.py   数据源登记表，以及 run() 与 convert() 入口
-  universe.py   时点股票池与下载体量护栏
+  universe.py   时点股票池
   config/       配置工厂与随包发布的标的元数据
   utils/        命令行辅助、指标、序列化、报告生成
-scripts/        下载与转换数据的命令行入口
+scripts/wrds/   WRDS 下载脚本：index.py、market.py、etf.py、nbbo.py
 tests/          测试套件
 ```
 

@@ -43,7 +43,7 @@ fails if one appears there. Credentials are read from environment variables,
 never from configs or source files.
 
 Package `__init__.py` files are empty on purpose (a few guarantees depend on
-it, see [Internals](internals.md#the-volume-guard)). Import implementation
+it, see [Internals](internals.md#empty-package-__init__-files)). Import implementation
 modules by their full dotted path, and do not add re-exports.
 
 ## A data source

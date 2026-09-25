@@ -12,11 +12,10 @@ Every setting lives in the ``Settings`` block below: edit it and run the file
 ``# %%`` cells in VS Code / Jupyter. There is no command-line interface.
 
 Prerequisite: a converted CRSP store and its membership panel for the chosen
-index, as written by ``scripts/ingest_wrds_crsp.py --universe crsp_sp500
---to-zarr`` or ``--universe comp_nasdaq100 --to-zarr`` (see
-``docs/wrds_crsp.md`` and this directory's README). Adding ``--benchmark``
-to that command also writes the index's ETF (SPY or QQQ, by PERMNO) to its
-own benchmark store.
+index, as written by ``scripts/wrds/index.py --index sp500`` or ``--index
+nasdaq100`` (see ``docs/wrds_crsp.md`` and this directory's README), and the
+index's ETF (SPY or QQQ, by PERMNO) in its own benchmark store, as written by
+``scripts/wrds/etf.py --etf spy,qqq``.
 
 Why two derived stores are written in step 1:
 
@@ -86,24 +85,22 @@ MODELS = {
     "realmlp": RealMLPRegressor,
 }
 
-#: Index universes selectable through ``Settings.universe``: the membership
-#: panel class, the ``--universe`` value of ``scripts/ingest_wrds_crsp.py``
-#: and the default ``top_n`` (the index has ~500 or ~100 members).
+#: Index universes selectable through ``Settings.universe`` (the same names
+#: as ``scripts/wrds/index.py --index``): the membership panel class and the
+#: default ``top_n`` (the index has ~500 or ~100 members).
 UNIVERSES = {
-    "sp500": (CrspSP500ConstituentDataset, "crsp_sp500", 50),
-    "nasdaq100": (CompustatNasdaq100ConstituentDataset, "comp_nasdaq100", 10),
+    "sp500": (CrspSP500ConstituentDataset, 50),
+    "nasdaq100": (CompustatNasdaq100ConstituentDataset, 10),
 }
 
 #: Buy-and-hold benchmarks selectable through ``Settings.benchmark``: the
-#: ETF's CRSP PERMNO and the store ``ingest_wrds_crsp.py --benchmark`` (or
-#: ``--qqq``) writes it to. Each ETF has a store of its own, never a column
-#: of the equity panel, where it would be ranked against its own holdings.
+#: ETF's CRSP PERMNO and the store ``scripts/wrds/etf.py --etf <name>`` writes
+#: it to. Each ETF has a store of its own, never a column of the equity
+#: panel, where it would be ranked against its own holdings.
 BENCHMARKS = {
     "spy": (SPY_PERMNO, "wrds_crsp_spy_1d.zarr"),  # SPDR S&P 500 ETF Trust
     "qqq": (QQQ_PERMNO, "wrds_crsp_qqq_1d.zarr"),  # Invesco QQQ Trust
 }
-#: The ingest ``--universe`` whose ``--benchmark`` ETF each benchmark is.
-BENCHMARK_INGEST_UNIVERSE = {"spy": "crsp_sp500", "qqq": "comp_nasdaq100"}
 #: The benchmark ``benchmark="auto"`` picks for each universe.
 DEFAULT_BENCHMARK = {"sp500": "spy", "nasdaq100": "qqq"}
 
@@ -224,7 +221,7 @@ def paths(s: Settings) -> dict[str, Path]:
     u = s.universe
     work = root / "data" / "pipeline" / f"wrds_{u}"
     return {
-        # Written by scripts/ingest_wrds_crsp.py --universe <index> --to-zarr.
+        # Written by scripts/wrds/index.py --index <index>.
         "crsp_store": stores / f"wrds_crsp_{u}_1d.zarr",
         "membership_store": stores / f"wrds_crsp_{u}_membership.zarr",
         "raw_dir": crsp_downloads / "wrds",
@@ -258,14 +255,13 @@ def stock_dataset(store: Path) -> StockDataset:
 # %% 1. Read the CRSP data and write the prices / members stores
 def read_crsp(s: Settings) -> tuple[xr.Dataset, xr.Dataset]:
     """Read the CRSP price panel and the index's point-in-time membership."""
-    membership_cls, ingest_universe, _ = UNIVERSES[s.universe]
+    membership_cls, _ = UNIVERSES[s.universe]
     for key in ("crsp_store", "membership_store"):
         if not P[key].exists():
             raise FileNotFoundError(
                 f"{P[key]} not found. Download and convert the CRSP roster "
-                f"first: uv run python scripts/ingest_wrds_crsp.py "
-                f"--universe {ingest_universe} --start-date <start> "
-                f"--end-date <end> --to-zarr (see "
+                f"first: uv run python scripts/wrds/index.py "
+                f"--index {s.universe} --start <start> --end <end> (see "
                 f"examples/wrds_us_equity/README.md)."
             )
     crsp = CrspStockDataset(CrspDatasetConfig(
@@ -423,11 +419,9 @@ def benchmark_dataset(s: Settings) -> CrspStockDataset | None:
     if not P["benchmark"].exists():
         raise FileNotFoundError(
             f"No {name.upper()} benchmark store at {P['benchmark']}. Download "
-            f"it by its PERMNO {permno}: uv run python "
-            f"scripts/ingest_wrds_crsp_etf.py --etf {name} --start-date "
-            f"<start> --end-date <end> (or add --benchmark to "
-            f"ingest_wrds_crsp.py --universe {BENCHMARK_INGEST_UNIVERSE[name]}), "
-            f"or set Settings.benchmark=None."
+            f"it by its PERMNO {permno}: uv run python scripts/wrds/etf.py "
+            f"--etf {name} --start <start> --end <end>, or set "
+            f"Settings.benchmark=None."
         )
     return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
         permno=permno,
@@ -450,7 +444,7 @@ def backtest(s: Settings, trained: Path):
         output_dir=str(P["backtests"]),
         rebalance_periods=s.rebalance_periods,
         direction=s.direction,
-        top_n=s.top_n if s.top_n is not None else UNIVERSES[s.universe][2],
+        top_n=s.top_n if s.top_n is not None else UNIVERSES[s.universe][1],
         fees=s.fees,
         slippage=s.slippage,
         init_cash=s.init_cash,

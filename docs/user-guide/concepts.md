@@ -256,8 +256,9 @@ quantlab/
     enums/           shared literal types (markets, frequencies, vendors)
     backend.py       XrBackend (Zarr) and PlBackend (parquet)
     registry.py      DataSourceRegistry: which vendor serves which data
-    universe.py      point-in-time symbol universe and the download volume guard
-scripts/             command-line entry points for downloading and converting data
+    universe.py      point-in-time symbol universe
+scripts/             command-line entry points, one folder per vendor
+    wrds/            index.py, market.py, etf.py, nbbo.py: download and convert WRDS data
 tests/               the pytest suite, fully offline
 examples/            runnable example scripts
 ```
