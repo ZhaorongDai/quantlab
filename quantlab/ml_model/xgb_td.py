@@ -30,11 +30,12 @@ class _XGBTDEstimator(XGB_TD_Regressor):
     is not a scikit-learn parameter, so ``get_params`` does not report it;
     it is pickled with the estimator.
 
-    Example:
-        >>> est = _XGBTDEstimator(n_estimators=100)
-        >>> est.early_stopping_rounds = 10
-        >>> est.get_config()["early_stopping_rounds"]
-        10
+    Examples
+    --------
+    >>> est = _XGBTDEstimator(n_estimators=100)
+    >>> est.early_stopping_rounds = 10
+    >>> est.get_config()["early_stopping_rounds"]
+    10
     """
 
     early_stopping_rounds: int | None = None
@@ -84,25 +85,26 @@ class XGBTDRegressor(TabkitRegressor):
     ``n_threads`` in the hyperparameters to roughly
     ``os.cpu_count() // njobs``.
 
-    Example:
-        >>> config = MLConfig(
-        ...     factors=[alpha],            # factor objects
-        ...     labels=[fwd_return],        # label objects
-        ...     model_save_dir="checkpoints",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2024-01-01", train_end="2024-02-09",
-        ...     test_start="2024-02-10", test_end="2024-02-29",
-        ...     early_stopping=True, early_stopping_patience=50,
-        ...     hyperparameters={"n_estimators": 500, "n_threads": 4},
-        ... )
-        >>> model = XGBTDRegressor(config)
-        >>> checkpoint = model.collect().train()
-        >>> checkpoint.name
-        'XGBTDRegressor_total.joblib'
-        >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
-        (5, 2, 1)
-        >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
+    Examples
+    --------
+    >>> config = MLConfig(
+    ...     factors=[alpha],            # factor objects
+    ...     labels=[fwd_return],        # label objects
+    ...     model_save_dir="checkpoints",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2024-01-01", train_end="2024-02-09",
+    ...     test_start="2024-02-10", test_end="2024-02-29",
+    ...     early_stopping=True, early_stopping_patience=50,
+    ...     hyperparameters={"n_estimators": 500, "n_threads": 4},
+    ... )
+    >>> model = XGBTDRegressor(config)
+    >>> checkpoint = model.collect().train()
+    >>> checkpoint.name
+    'XGBTDRegressor_total.joblib'
+    >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
+    (5, 2, 1)
+    >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
     """
 
     DEFAULT_PARAMS: dict = {
@@ -121,9 +123,11 @@ class XGBTDRegressor(TabkitRegressor):
     ) -> list[_XGBTDEstimator]:
         """Resolve the parameters and return one unfitted estimator per label.
 
-        Raises:
-            TypeError: From pytabkit, if a hyperparameter key is not an
-                ``XGB_TD_Regressor`` constructor argument.
+        Raises
+        ------
+        TypeError
+            From pytabkit, if a hyperparameter key is not an
+            ``XGB_TD_Regressor`` constructor argument.
         """
         params = self._resolve_params(hyperparameters)
         rounds = self._early_stopping_rounds()
@@ -150,8 +154,10 @@ class XGBTDRegressor(TabkitRegressor):
     ) -> None:
         """Fit one estimator per label and record the best rounds in the summary.
 
-        Raises:
-            ValueError: If the training segment has no row with finite labels.
+        Raises
+        ------
+        ValueError
+            If the training segment has no row with finite labels.
         """
         x_rows, y_rows = self._training_rows(train_x, train_y)
         val_rows = self._validation_rows(val_x, val_y)

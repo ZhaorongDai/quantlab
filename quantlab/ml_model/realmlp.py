@@ -49,25 +49,26 @@ class RealMLPRegressor(TabkitRegressor):
     ``n_threads`` in the hyperparameters to roughly
     ``os.cpu_count() // njobs``.
 
-    Example:
-        >>> config = MLConfig(
-        ...     factors=[alpha],            # factor objects
-        ...     labels=[fwd_return],        # label objects
-        ...     model_save_dir="checkpoints",
-        ...     factor_data_strategy="read",
-        ...     label_data_strategy="read",
-        ...     train_start="2024-01-01", train_end="2024-02-09",
-        ...     test_start="2024-02-10", test_end="2024-02-29",
-        ...     early_stopping=True, early_stopping_patience=5,
-        ...     hyperparameters={"n_epochs": 50, "n_threads": 4},
-        ... )
-        >>> model = RealMLPRegressor(config)
-        >>> checkpoint = model.collect().train()
-        >>> checkpoint.name
-        'RealMLPRegressor_total.joblib'
-        >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
-        (5, 2, 1)
-        >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
+    Examples
+    --------
+    >>> config = MLConfig(
+    ...     factors=[alpha],            # factor objects
+    ...     labels=[fwd_return],        # label objects
+    ...     model_save_dir="checkpoints",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2024-01-01", train_end="2024-02-09",
+    ...     test_start="2024-02-10", test_end="2024-02-29",
+    ...     early_stopping=True, early_stopping_patience=5,
+    ...     hyperparameters={"n_epochs": 50, "n_threads": 4},
+    ... )
+    >>> model = RealMLPRegressor(config)
+    >>> checkpoint = model.collect().train()
+    >>> checkpoint.name
+    'RealMLPRegressor_total.joblib'
+    >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
+    (5, 2, 1)
+    >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
     """
 
     DEFAULT_PARAMS: dict = {
@@ -93,9 +94,11 @@ class RealMLPRegressor(TabkitRegressor):
     ) -> RealMLP_TD_Regressor:
         """Resolve the parameters and return an unfitted estimator.
 
-        Raises:
-            TypeError: From pytabkit, if a hyperparameter key is not a
-                ``RealMLP_TD_Regressor`` constructor argument.
+        Raises
+        ------
+        TypeError
+            From pytabkit, if a hyperparameter key is not a
+            ``RealMLP_TD_Regressor`` constructor argument.
         """
         return RealMLP_TD_Regressor(**self._resolve_params(hyperparameters))
 
@@ -108,8 +111,10 @@ class RealMLPRegressor(TabkitRegressor):
     ) -> None:
         """Fit the estimator and record the stopping epoch in the run summary.
 
-        Raises:
-            ValueError: If the training segment has no row with finite labels.
+        Raises
+        ------
+        ValueError
+            If the training segment has no row with finite labels.
         """
         x_rows, y_rows = self._training_rows(train_x, train_y)
         val_rows = self._validation_rows(val_x, val_y)

@@ -52,14 +52,15 @@ class TabkitRegressor(MLModel):
     Subclasses implement ``_init_model``, ``_fit_model`` and ``_forward``;
     ``_early_stopping_params`` is an optional hook.
 
-    Example:
-        A head is used like any other ``MLModel``; see ``RealMLPRegressor``
-        and ``XGBTDRegressor`` for the estimator-specific parts::
+    Examples
+    --------
+    A head is used like any other ``MLModel``; see ``RealMLPRegressor``
+    and ``XGBTDRegressor`` for the estimator-specific parts::
 
-            >>> issubclass(RealMLPRegressor, TabkitRegressor)
-            True
-            >>> RealMLPRegressor.DEFAULT_PARAMS["val_fraction"]
-            0.0
+        >>> issubclass(RealMLPRegressor, TabkitRegressor)
+        True
+        >>> RealMLPRegressor.DEFAULT_PARAMS["val_fraction"]
+        0.0
     """
 
     #: Estimator constructor arguments applied before the config seed, the
@@ -128,8 +129,10 @@ class TabkitRegressor(MLModel):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return the training rows.
 
-        Raises:
-            ValueError: If the training segment has no row with finite labels.
+        Raises
+        ------
+        ValueError
+            If the training segment has no row with finite labels.
         """
         x_rows, y_rows = self._to_rows(train_x, train_y)
         if x_rows.shape[0] == 0:
