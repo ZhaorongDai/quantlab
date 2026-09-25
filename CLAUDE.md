@@ -211,7 +211,7 @@ No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skill
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues (`ZhaorongDai/quantlab2`), operated through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in this repo's GitHub Issues (`ZhaorongDai/quantlab`), operated through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
