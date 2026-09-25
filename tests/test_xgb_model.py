@@ -40,6 +40,7 @@ from quantlab.base.model import BaseModel, MLModel
 from quantlab.ml_model.xgb import (
     XGBoostRegressor,
     ccc_loss_metric,
+    ccc_objective,
     pooled_ccc_loss,
 )
 from quantlab.utils.metrics import regression_panel_metrics
@@ -691,6 +692,7 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
         "eta": 0.3,
         "max_depth": 2,
         "num_boost_round": 4,
+        "objective": "ccc_objective",
     }
     assert resolved == expected
     assert "learning_rate" not in resolved
@@ -1061,14 +1063,14 @@ def test_booster_stays_nameless_and_predictions_are_unchanged(tmp_path, recorder
 
 
 # --------------------------------------------------------------------------
-# Pooled CCC loss as the early-stopping criterion (scope addition 2026-09-15)
+# Pooled CCC loss (training objective since 2026-09-25) and RMSE early stopping
 # --------------------------------------------------------------------------
 #
-# `1 - ccc` on the validation set replaces RMSE as the DECISION metric, while
-# rmse stays first in the metric list and therefore stays an observation curve.
-# `EarlyStopping(metric_name=None)` resolves to the LAST metric, which is the
-# custom one -- so the wiring is what these tests have to prove, not just the
-# arithmetic.
+# `1 - ccc` is what the Booster is fit on (`ccc_objective`) and stays logged as
+# the `ccc_loss` curve, while the validation RMSE is the early-stopping
+# DECISION metric. `EarlyStopping(metric_name=None)` would resolve to the LAST
+# metric, which is the custom ccc one -- so `metric_name="rmse"` is wiring
+# these tests have to prove, not just the arithmetic.
 
 
 def _reference_ccc_loss(y_true, y_pred):
@@ -1127,26 +1129,26 @@ def test_pooled_ccc_loss_equals_the_reference_under_a_large_mean_offset():
     )
 
 
-#: Pinned by a search over seeds 10..59 driving this exact harness (noise
-#: label, 300 rounds, patience 10): on seed 17 the `val-ccc_loss` argmin is
-#: round 65 while the `val-rmse` argmin is round 45 -- a 20-round gap, so the
-#: divergence assertion below is not riding on a rounding accident. Many seeds
-#: do NOT diverge (13 puts both argmins on round 1), which is why this constant
-#: is a measured choice and not an arbitrary one.
+#: Pinned by a search over seeds 10..39 driving this exact harness (noise
+#: label, CCC objective, 300 rounds, patience 10): on seed 17 the `val-rmse`
+#: argmin is round 24 while the `val-ccc_loss` argmin is round 32 -- an
+#: 8-round gap, so the divergence assertion below is not riding on a rounding
+#: accident. Many seeds do NOT diverge (13 puts both argmins on round 6),
+#: which is why this constant is a measured choice and not an arbitrary one.
 CRITERION_SEED = 17
 CRITERION_ROUNDS = 300
 CRITERION_PATIENCE = 10
 
 
-def test_early_stopping_selects_the_round_minimising_val_ccc_loss(tmp_path, recorders):
-    """`best_iteration` is the argmin of the recorded `val-ccc_loss` series and
-    `best_score` is that minimum -- so the custom metric really is what
-    `EarlyStopping` watches (T-weq-01).
+def test_early_stopping_selects_the_round_minimising_val_rmse(tmp_path, recorders):
+    """`best_iteration` is the argmin of the recorded `val-rmse` series and
+    `best_score` is that minimum -- so RMSE, not the last (custom ccc) metric,
+    is what `EarlyStopping` watches.
 
     The last assertion is what stops this test being vacuous. The seed is
-    pinned precisely because on it the `val-rmse` argmin lands on a DIFFERENT
-    round: without that arm, a change that silently reverted the criterion to
-    RMSE would leave every other assertion here green.
+    pinned precisely because on it the `val-ccc_loss` argmin lands on a
+    DIFFERENT round: without that arm, a change that silently reverted the
+    criterion to the last metric would leave every other assertion here green.
     """
     factors, labels = _panels(seed=CRITERION_SEED, signal=False)
     _train(
@@ -1164,9 +1166,10 @@ def test_early_stopping_selects_the_round_minimising_val_ccc_loss(tmp_path, reco
     ccc_curve = [row["val-ccc_loss"] for row, _ in curve]
     rmse_curve = [row["val-rmse"] for row, _ in curve]
 
-    assert booster.best_iteration == int(np.argmin(ccc_curve))
-    assert booster.best_score == pytest.approx(ccc_curve[booster.best_iteration])
-    assert int(np.argmin(rmse_curve)) != booster.best_iteration
+    assert booster.best_iteration == int(np.argmin(rmse_curve))
+    assert booster.best_score == pytest.approx(rmse_curve[booster.best_iteration])
+    assert int(np.argmin(ccc_curve)) != booster.best_iteration
+    assert rec.summary["best_score"] == pytest.approx(rmse_curve[booster.best_iteration])
 
 
 def test_every_round_records_both_ccc_curves(tmp_path, recorders):
@@ -1189,8 +1192,7 @@ def test_every_round_records_both_ccc_curves(tmp_path, recorders):
 
 
 def test_a_better_tracking_prediction_scores_a_smaller_loss():
-    """Lower is better -- which is why `EarlyStopping` is left at its default
-    `maximize=False` and `maximize=True` is never passed."""
+    """Lower is better, as the objective minimises it."""
     rng = np.random.default_rng(62)
     target = rng.standard_normal(300)
     tracks_well = target + 0.05 * rng.standard_normal(300)
@@ -1287,3 +1289,112 @@ def test_the_adapter_refuses_a_prediction_of_the_wrong_size():
 
     with pytest.raises(ValueError, match="4 label values but the prediction has 3"):
         ccc_loss_metric(np.zeros(3), dmatrix)
+
+
+# --------------------------------------------------------------------------
+# The CCC loss as the training objective
+# --------------------------------------------------------------------------
+
+
+def _numeric_ccc_gradient(y_true, y_pred, eps=1e-6):
+    """Central differences of `n * pooled_ccc_loss`, the scaled loss
+    `ccc_objective` differentiates."""
+    n = y_pred.size
+    grad = np.empty(n)
+    for i in range(n):
+        up, down = y_pred.copy(), y_pred.copy()
+        up[i] += eps
+        down[i] -= eps
+        grad[i] = n * (pooled_ccc_loss(y_true, up) - pooled_ccc_loss(y_true, down)) / (2 * eps)
+    return grad
+
+
+def test_ccc_objective_gradient_matches_finite_differences():
+    """The analytic gradient is the derivative of `n * (1 - ccc)`, and the
+    hessian is the positive constant `2 / D`."""
+    rng = np.random.default_rng(70)
+    n = 30
+    y_true = rng.standard_normal(n)
+    y_pred = 0.3 * y_true + 0.5 * rng.standard_normal(n) + 0.2
+    dmatrix = xgb.DMatrix(np.zeros((n, 2)), label=y_true)
+    stored = dmatrix.get_label().astype(np.float64)
+
+    grad, hess = ccc_objective(y_pred, dmatrix)
+
+    assert grad.shape == hess.shape == (n,)
+    assert np.allclose(grad, _numeric_ccc_gradient(stored, y_pred), rtol=1e-4, atol=1e-6)
+    denominator = np.var(y_pred) + np.var(stored) + (y_pred.mean() - stored.mean()) ** 2
+    assert np.allclose(hess, 2.0 / denominator, rtol=1e-6)
+
+
+def test_ccc_objective_scores_each_label_column_on_its_own():
+    rng = np.random.default_rng(71)
+    n = 25
+    labels = np.column_stack([rng.standard_normal(n), rng.standard_normal(n) + 3.0])
+    predictions = np.column_stack([rng.standard_normal(n), rng.standard_normal(n)])
+    dmatrix = xgb.DMatrix(np.zeros((n, 2)), label=labels)
+    stored = dmatrix.get_label().reshape(n, -1).astype(np.float64)
+
+    grad, _ = ccc_objective(predictions, dmatrix)
+
+    assert grad.shape == (n, 2)
+    for j in range(2):
+        assert np.allclose(
+            grad[:, j], _numeric_ccc_gradient(stored[:, j], predictions[:, j]), rtol=1e-4, atol=1e-6
+        )
+
+
+def test_ccc_objective_is_zero_on_a_degenerate_column_and_never_warns():
+    dmatrix = xgb.DMatrix(np.zeros((3, 2)), label=np.full(3, 2.0))
+    with np.errstate(invalid="raise", divide="raise", over="raise"):
+        grad, hess = ccc_objective(np.full(3, 2.0), dmatrix)
+    assert np.array_equal(grad, np.zeros(3))
+    assert np.array_equal(hess, np.ones(3))
+
+
+def test_training_uses_the_ccc_objective_and_starts_from_the_label_mean(tmp_path, recorders):
+    """The saved Booster starts from the training-label mean, not xgboost's
+    0.5, and fitting it drives the train ccc_loss down."""
+    factors, labels = _panels(seed=72)
+    model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 30})
+
+    booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
+    saved = json.loads(booster.save_config())["learner"]
+    base_score = float(saved["learner_model_param"]["base_score"].strip("[]"))
+    assert recorders[0].summary["base_score"] == pytest.approx(base_score, rel=1e-5)
+    assert abs(base_score) < 0.1
+    curve = [row["train-ccc_loss"] for row, _ in _curve_rows(recorders[0])]
+    assert curve[-1] < 0.5 * curve[0]
+    assert model._resolved_hyperparameters()["objective"] == "ccc_objective"
+
+
+def test_a_user_objective_replaces_the_ccc_objective(tmp_path, recorders):
+    factors, labels = _panels(seed=73)
+    model = _train(
+        tmp_path,
+        factors,
+        labels,
+        hyperparameters={"num_boost_round": 5, "objective": "reg:absoluteerror"},
+    )
+
+    booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
+    saved = json.loads(booster.save_config())["learner"]
+    assert saved["objective"]["name"] == "reg:absoluteerror"
+    assert model._resolved_hyperparameters()["objective"] == "reg:absoluteerror"
+    assert "base_score" not in recorders[0].summary
+
+
+def test_early_stopping_adds_rmse_to_a_user_eval_metric(tmp_path, recorders):
+    """A user `eval_metric` without rmse still early-stops on rmse; the
+    config's own dict is left untouched."""
+    hyper = {"num_boost_round": 40, "eval_metric": "mae"}
+    factors, labels = _panels(seed=74, signal=False)
+    model = _train(
+        tmp_path, factors, labels, early_stopping=True, patience=3, hyperparameters=dict(hyper)
+    )
+
+    assert model._params["eval_metric"] == ["mae", "rmse"]
+    assert model.config.hyperparameters == hyper
+    booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
+    rmse_curve = [row["val-rmse"] for row, _ in _curve_rows(recorders[0])]
+    assert booster.best_iteration == int(np.argmin(rmse_curve))

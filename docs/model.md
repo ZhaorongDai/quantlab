@@ -92,7 +92,7 @@ Coordinates:
   * timestamp  (timestamp) datetime64[s] 2kB 2024-01-01 ... 2024-07-18
   * symbol     (symbol) <U3 240B 'S00' 'S01' 'S02' 'S03' ... 'S17' 'S18' 'S19'
 Data variables:
-    ret        (timestamp, symbol) float64 32kB -0.001596 -0.01424 ... -0.03463
+    ret        (timestamp, symbol) float64 32kB -0.002638 -0.01672 ... -0.04101
 >>> model.predict(np.zeros((5, 20, 2))).shape
 (5, 20, 1)
 ```
@@ -117,7 +117,7 @@ True
 ...     label.ds["ret"].sel(timestamp=test).values,
 ... )
 >>> {name: round(value, 3) for name, value in scores.items()}
-{'mse': 0.003, 'rmse': 0.051, 'mae': 0.041, 'r2': 0.48, 'ic': 0.703, 'rank_ic': 0.683}
+{'mse': 0.003, 'rmse': 0.05, 'mae': 0.04, 'r2': 0.501, 'ic': 0.706, 'rank_ic': 0.686}
 ```
 
 ### The class hierarchy
@@ -135,7 +135,7 @@ Shipped heads: `XGBoostRegressor` (`MLModel`), `MLPRegressor` (a two-hidden-laye
 
 ### Stop training early
 
-With `early_stopping=True`, training stops when the validation loss has not improved for `early_stopping_patience` rounds (boosting rounds for `MLModel` heads, epochs for `DLModel` heads) and the best model is kept. For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is a pooled concordance correlation loss on the validation segment.
+With `early_stopping=True`, training stops when the validation loss has not improved for `early_stopping_patience` rounds (boosting rounds for `MLModel` heads, epochs for `DLModel` heads) and the best model is kept. For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/ml_model/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
 
 ```python
 >>> from dataclasses import replace
@@ -144,7 +144,7 @@ With `early_stopping=True`, training stops when the validation loss has not impr
 >>> stopped = XGBoostRegressor(stopping).collect()
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
-(181, 180)
+(66, 65)
 ```
 
 ### Cross-validate over walk-forward folds
@@ -158,7 +158,7 @@ With `early_stopping=True`, training stops when the validation loss has not impr
 >>> [(str(r["train_start"])[:10], str(r["test_start"])[:10], str(r["test_end"])[:10]) for r in results]
 [('2024-01-01', '2024-04-12', '2024-05-01'), ('2024-01-21', '2024-05-02', '2024-05-21'), ('2024-02-10', '2024-05-22', '2024-06-10'), ('2024-03-01', '2024-06-11', '2024-06-30')]
 >>> [round(r["test_rank_ic"], 3) for r in results]
-[0.669, 0.68, 0.688, 0.66]
+[0.674, 0.689, 0.696, 0.669]
 ```
 
 All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` and the fold list. A backtester replays a cross-validation run from this file.
