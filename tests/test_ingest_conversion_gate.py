@@ -294,7 +294,7 @@ def test_alpaca_refuses_tick_with_to_zarr_at_exit_2():
 
     assert completed.returncode == 2, completed.stderr
     assert "--to-zarr is not available with --frequency tick" in completed.stderr
-    assert "D-18" in completed.stderr
+    assert "irregular event axis" in completed.stderr
 
 
 # ---------------------------------------------------------------------------

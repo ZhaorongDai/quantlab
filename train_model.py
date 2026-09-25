@@ -1,12 +1,25 @@
 """Ad hoc example: load an RNN classifier on BTCUSDT and backtest its signals.
 
-Builds Alpha101 and Alpha158 factors plus three forward-return labels for
-BTCUSDT through the config factories, loads an ``RNNClassifier`` checkpoint
-(``QUANTLAB_CHECKPOINT_PATH`` or a hardcoded trial path), predicts a
-two-month window, turns the predicted classes into long/short signals
-resampled to 30 minutes and runs a ``vectorbt`` signal backtest, writing
-``portfolio_plot.html``. Runs at import with machine-specific paths and a
-checkpoint that must already exist. Not part of the library.
+The script builds Alpha101 and Alpha158 factors and three forward-return
+labels (30, 60 and 120 bars ahead) for BTCUSDT through the
+``quantlab.config`` factories, then loads a trained ``RNNClassifier``
+checkpoint. It predicts January and February 2024, turns the predicted
+class into a signal (class 0 is short, any other class long), resamples
+it to 30-minute bars and runs a ``vectorbt`` signal backtest. The
+statistics are printed and the equity plot is written to
+``portfolio_plot.html`` in the current directory. It is not part of the
+library and has no command-line options.
+
+It needs a checkpoint that already exists. Set ``QUANTLAB_CHECKPOINT_PATH``
+to its ``.pth`` file, otherwise a hardcoded trial path under
+``./model_ckpt`` is used. The factor and label factories read
+machine-specific paths from ``quantlab.config``, so the Binance kline data
+and the precomputed factor stores must exist there.
+
+Usage::
+
+    QUANTLAB_CHECKPOINT_PATH=/path/to/RNNClassifier_total.pth \\
+        uv run python train_model.py
 """
 
 import json
@@ -76,9 +89,8 @@ data = model.data_backend.get_xarray_dataset()
 
 data = data.sel(timestamp=slice("2024-01-01", "2024-03-01"))
 factors = model.get_factor_names()
-# ``DLModel.to_tensor`` orders the last axis exactly as ``factors`` declares
-# it, with the same code training used. Sorting the columns by hand here
-# would silently misalign them.
+# ``to_tensor`` orders the feature axis exactly as training did. Sorting the
+# columns by hand here would silently misalign them.
 data = model.to_tensor(data[factors].fillna(0), factors)
 predicts, _ = model.predict(data)
 pred_probs = torch.softmax(predicts, dim=-1)
@@ -125,7 +137,7 @@ print(data)
 # short_entries = np.where(signals == 0, True, False)
 # short_exits = np.where(signals == 1, True, False)
 
-# Set signals with confidence below the threshold to -1.
+# Treat low-confidence predictions as short signals.
 # signals[confidence < 0.8] = -1
 # signals[signals == 1] = -1
 
