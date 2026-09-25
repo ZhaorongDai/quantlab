@@ -382,7 +382,7 @@ class StockDataset(MarketDataset):
                 f"{self.__class__.__name__}: no raw data for vendor "
                 f"{self.config.vendor!r} at frequency "
                 f"{self.config.frequency!r} under {str(root)!r}. Fetch it "
-                f"first (e.g. `uv run python ingest_us_equity.py`) before "
+                f"first with the vendor's ingest script before "
                 f"converting. This means the raw root is missing; a window "
                 f"that merely has zero rows returns an empty frame instead."
             )

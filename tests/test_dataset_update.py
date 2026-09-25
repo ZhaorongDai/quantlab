@@ -395,9 +395,7 @@ def test_the_sentinel_is_absent_from_the_published_strategies(
     sentinel to it would put an object no operator can type onto the
     command-line surface and advertise it in every error message.
 
-    RED under: adding the sentinel to the tuple (M9), which also reddens the
-    `--on-new-listing` choices assertion in
-    `tests/test_ingest_tiingo_universe_wiring.py`.
+    RED under: adding the sentinel to the tuple (M9).
     """
     config = growing_roster.config("never-built.zarr")
     growing_roster.write_initial()

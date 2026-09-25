@@ -1,10 +1,8 @@
 """Shared argparse helpers for the ingest entry points.
 
 An *ingest* script downloads raw market data from a vendor and, optionally,
-converts it into a Zarr store. The scripts under ``scripts/``
-(``ingest_tiingo.py``, ``ingest_us_equity.py``, ``ingest_alpaca.py`` and the
-WRDS shells) share most of their command line: ``--symbols`` / ``--universe``
-/ ``--as-of-date``, the date window, ``--chunk``, ``--to-zarr``,
+converts it into a Zarr store. The WRDS shells under ``scripts/`` share most
+of their command line: the date window, ``--chunk``, ``--to-zarr``,
 ``--data-dir`` and the pre-flight volume guard flags. This module defines each
 of those groups once, resolves the symbol *roster* (the list of symbols to
 fetch) the flags select, and renders the value objects (volume estimates,
@@ -123,80 +121,6 @@ def add_window_args(
         type=str,
         default=None,
         help=help_text["end"],
-    )
-    return parser
-
-
-def add_universe_args(
-    parser: argparse.ArgumentParser,
-) -> argparse.ArgumentParser:
-    """Add ``--symbols``, ``--universe`` and ``--as-of-date`` to ``parser``.
-
-    The ``--universe`` choices are derived from ``UNIVERSE_CATEGORY_MAP``. The
-    help text spells out the domain distinctions users trip over, such as the
-    Nasdaq-100 index versus the full NASDAQ roster.
-
-    Parameters
-    ----------
-    parser : argparse.ArgumentParser
-        The parser to extend.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        ``parser``, for chaining.
-
-    Examples
-    --------
-    >>> parser = add_universe_args(argparse.ArgumentParser())
-    >>> parser.parse_args(["--universe", "sp500", "--as-of-date", "2024-06-28"])
-    Namespace(symbols=None, universe='sp500', as_of_date='2024-06-28')
-    """
-    parser.add_argument(
-        "--symbols",
-        type=str,
-        required=False,
-        default=None,
-        help=(
-            "Comma-separated tickers (e.g. AAPL,MSFT). Mutually exclusive "
-            "with --universe. This is the ticker-side entry point: a CRSP "
-            "panel's symbol axis is the int64 PERMNO, so a CRSP conversion "
-            "takes --permnos instead, and the ticker a PERMNO wore on a "
-            "given day is read from the '.crsp_tickers.json' sidecar beside "
-            "the store."
-        ),
-    )
-    parser.add_argument(
-        "--universe",
-        type=str,
-        choices=sorted(UNIVERSE_CATEGORY_MAP),
-        default=None,
-        help=(
-            "Resolve a symbol list from the persisted universe table "
-            "instead of --symbols. 'sp500' resolves point-in-time S&P 500 "
-            "constituent membership; 'nasdaq100' resolves point-in-time "
-            "Nasdaq-100 (NDX) index membership; 'nasdaq_all' resolves the "
-            "full NASDAQ-listed Common Stock roster (current + delisted); "
-            "'us_all' resolves the full US listed-equity roster -- NYSE + "
-            "NASDAQ + AMEX common stock, delisted included (~15.4k tickers). "
-            "Note that 'nasdaq100' and 'nasdaq_all' are different universes "
-            "that merely share the word Nasdaq: the former is the ~100-name "
-            "index, the latter every symbol ever listed on the exchange. "
-            "'us_all' is a strict superset of 'nasdaq_all'; both are kept "
-            "deliberately. Requires --as-of-date. For a full-window backfill "
-            "of every symbol that traded at any point in a date range "
-            "(rather than membership on one day), use ingest_us_equity.py, "
-            "which queries by interval overlap instead."
-        ),
-    )
-    parser.add_argument(
-        "--as-of-date",
-        type=str,
-        default=None,
-        help=(
-            "Required with --universe; point-in-time date (YYYY-MM-DD) to "
-            "resolve membership as of."
-        ),
     )
     return parser
 
@@ -364,101 +288,14 @@ def add_chunk_args(
     return parser
 
 
-def add_concurrency_args(
-    parser: argparse.ArgumentParser,
-    *,
-    default_max_workers: int,
-) -> argparse.ArgumentParser:
-    """Add ``--limit`` and ``--max-workers`` to ``parser``.
-
-    Parameters
-    ----------
-    parser : argparse.ArgumentParser
-        The parser to extend.
-    default_max_workers : int
-        Default for ``--max-workers``. It is a parameter rather than an
-        import so this module does not depend on any one vendor's
-        acquisition class.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        ``parser``, for chaining.
-
-    Examples
-    --------
-    >>> parser = add_concurrency_args(
-    ...     argparse.ArgumentParser(), default_max_workers=8
-    ... )
-    >>> parser.parse_args(["--limit", "50"])
-    Namespace(limit=50, max_workers=8)
-    """
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help=(
-            "Process only the first N resolved symbols, in ascending symbol "
-            "order. The roster queries return sorted lists on purpose, so the "
-            "same --universe/--limit pair truncates to the same N symbols on "
-            "every run and a second run meets the watermarks the first one "
-            "wrote. Useful for smoke-testing the pipeline end to end before "
-            "committing to the full roster."
-        ),
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=default_max_workers,
-        help=(
-            "Concurrent in-flight symbol fetches (default "
-            f"{default_max_workers}). Passed "
-            "through config.kwargs, so it stays config-driven."
-        ),
-    )
-    return parser
-
-
-def validate_roster_args(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> None:
-    """Enforce that exactly one of ``--symbols`` and ``--universe`` is set.
-
-    ``--as-of-date`` is additionally required with ``--universe``. Misuse goes
-    through ``parser.error``, so it exits with status 2 and the usage block
-    like every other argparse error.
-
-    Parameters
-    ----------
-    parser : argparse.ArgumentParser
-        The parser that produced ``args``, used to report errors.
-    args : argparse.Namespace
-        The parsed arguments to check.
-
-    Examples
-    --------
-    >>> parser = add_universe_args(argparse.ArgumentParser(prog="ingest"))
-    >>> args = parser.parse_args(["--symbols", "AAPL,MSFT"])
-    >>> validate_roster_args(parser, args)
-
-    With ``--universe sp500`` and no ``--as-of-date`` the same call
-    prints the usage block followed by ``ingest: error: --as-of-date is
-    required when --universe is set.`` and exits with status 2.
-    """
-    if bool(args.symbols) == bool(args.universe):
-        parser.error("Exactly one of --symbols or --universe must be set.")
-    if args.universe and not args.as_of_date:
-        parser.error("--as-of-date is required when --universe is set.")
-
-
 def roster_category(args: argparse.Namespace) -> str | None:
     """Return the universe category ``args`` selects, or ``None``.
 
     Two spellings reach here: ``--universe``, whose token is mapped through
-    ``UNIVERSE_CATEGORY_MAP``, and ``ingest_us_equity.py``'s ``--category``,
-    which names the category directly. ``None`` means an explicit
-    ``--symbols`` list, so a caller can size it differently instead of
-    treating it as a roster.
+    ``UNIVERSE_CATEGORY_MAP``, and a ``category`` attribute that names the
+    category directly (the spelling ``volume_pricing`` sizes against).
+    ``None`` means an explicit ``--symbols`` list, so a caller can size it
+    differently instead of treating it as a roster.
 
     Parameters
     ----------
@@ -596,10 +433,7 @@ def add_data_dir_arg(
             "(raw downloads, watermarks, Zarr stores, the universe table) is "
             "derived from it. Precedence is --data-dir > QUANTLAB_DATA_DIR > "
             "the repo-root data/ directory. The directory does not need to "
-            "exist; the run creates what it needs. It relocates the whole "
-            "root; ingest_binance_spot.py's --raw-data-dir is a different "
-            "knob that points at one pre-existing raw CSV directory, and the "
-            "two compose."
+            "exist; the run creates what it needs."
         ),
     )
     return parser
