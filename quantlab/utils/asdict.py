@@ -29,16 +29,18 @@ def asdict_customized(obj, dict_factory=dict):
 
     Parameters
     ----------
-    obj
+    obj : object
         The dataclass instance, container or leaf value to convert.
-    dict_factory
-        Callable that builds the mapping for each dataclass
-        level, as in ``dataclasses.asdict``.
+    dict_factory : callable, default dict
+        Callable that builds the mapping for each dataclass level from a
+        list of ``(name, value)`` pairs, as in ``dataclasses.asdict``.
 
     Returns
     -------
-    dict
-        A plain-data mirror of ``obj``.
+    object
+        A plain-data mirror of ``obj``: a dict for a dataclass instance, the
+        same container type for a container, and a deep copy (or None) for
+        any other value.
 
     Examples
     --------
@@ -52,7 +54,7 @@ def asdict_customized(obj, dict_factory=dict):
     {'name': 'nightly', 'lock': None}
     """
     if _is_dataclass_instance(obj):
-        # fast path for the common case
+        # Plain ``dict`` needs no intermediate list of pairs.
         if dict_factory is dict:
             return {
                 f.name: asdict_customized(getattr(obj, f.name), dict)
@@ -65,13 +67,12 @@ def asdict_customized(obj, dict_factory=dict):
                 result.append((f.name, value))
             return dict_factory(result)
     elif isinstance(obj, tuple) and hasattr(obj, "_fields"):
-        # A namedtuple is rebuilt as the same namedtuple type (positional
-        # construction) rather than through its own `_asdict`, which neither
-        # recurses into nested fields nor returns the tuple type json expects.
+        # Rebuild the same namedtuple type positionally. Its own ``_asdict``
+        # would not recurse into nested fields.
         return type(obj)(*[asdict_customized(v, dict_factory) for v in obj])  # type: ignore
     elif isinstance(obj, (list, tuple)):
-        # Assume the container type accepts a generator (namedtuples, which do
-        # not, were handled above).
+        # Plain lists and tuples accept a generator; namedtuples do not, which
+        # is why they are handled above.
         return type(obj)(asdict_customized(v, dict_factory) for v in obj)
     elif isinstance(obj, dict):
         if hasattr(type(obj), "default_factory"):

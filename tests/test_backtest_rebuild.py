@@ -601,7 +601,7 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
     assert len(control) == 2, control
     assert any("'factor[0]:PastReturnFactor'" in m for m in control), control
     assert any("'price_dataset'" in m for m in control), control
-    assert all(m.endswith("(D-27); continuing") for m in control), control
+    assert all(m.endswith("; continuing") for m in control), control
     assert all(PARTIAL_WARNING not in m for m in control), control
 
     # --- probe: a raise inside the window, after a fingerprint exists --------

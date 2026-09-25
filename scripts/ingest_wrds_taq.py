@@ -1,41 +1,50 @@
-"""Command-line ingest of NYSE TAQ consolidated NBBO quotes from WRDS.
+"""Download NYSE TAQ consolidated NBBO quotes from WRDS.
 
-The script pulls each trading day's raw NBBO records from
-``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}`` (the complete NBBO table, not
-``nbbom``, which misses single-venue NBBO states) for a symbol roster, one
-PostgreSQL ``COPY`` per trading day and symbol batch, and writes them as hive
-shards (partition ``data_type=nbbo``) under
-``<data root>/downloads/us_equity/tick/wrds_taq/wrds/``, every record kept in
-arrival order. With ``--to-zarr`` the raw tier is resampled locally by
-``quantlab.registry.convert()`` into a right-closed bar panel on
-``(timestamp, symbol)`` at ``--bar-interval`` (default 1m) over the session
-window ``--session-start`` to ``--session-end`` (default regular hours, 09:30
-to 16:00 ET), and a ``<store>.nbbo_filter_stats.json`` sidecar records what
-the default filters dropped per session date and symbol.
+TAQ (Trade and Quote) is the NYSE database of every US-listed trade and
+quote, served through WRDS (Wharton Research Data Services). The NBBO
+(National Best Bid and Offer) is the highest bid and lowest ask across all
+US exchanges at each moment. For each trading day the script pulls the raw
+NBBO records of a symbol roster from ``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}``.
+That is the complete NBBO table; the smaller ``nbbom`` table misses states
+where the best quote sits on a single exchange. It runs one PostgreSQL
+``COPY`` per trading day and symbol batch and writes the records, in arrival
+order, as parquet files under
+``<data root>/downloads/us_equity/tick/wrds_taq/wrds/`` in a
+``data_type=nbbo`` subdirectory.
+
+With ``--to-zarr`` the raw files are then resampled locally by
+``quantlab.registry.convert()`` into a bar panel, an ``xarray`` dataset on
+``(timestamp, symbol)``, stored as Zarr (a chunked on-disk array format).
+Bars are ``--bar-interval`` long (default 1m) and labelled by their end
+time, over the session window ``--session-start`` to ``--session-end``
+(default regular hours, 09:30 to 16:00 ET). A
+``<store>.nbbo_filter_stats.json`` sidecar records what the default quote
+filters dropped per date and symbol.
 
 The vendor is resolved through ``DataSourceRegistry.get("wrds")``, the
-acquisition config is built by ``SOURCE.config_factory`` and the dataset
+download config is built by ``SOURCE.config_factory`` and the dataset
 config is constructed directly; no vendor class is named here.
 
-Credentials: ``WRDS_USERNAME`` must be set in the environment. The password
-is never read by this code; libpq takes it from ``~/.pgpass`` (mode 600), one
-line of the form
+``WRDS_USERNAME`` must be set in the environment. The password is never read
+by this code; the PostgreSQL client library (libpq) takes it from
+``~/.pgpass`` (mode 600), one line of the form
 ``wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>``. No
-argument accepts either value and nothing printed contains one. The volume
-probe, the pull and the conversion share one WRDS connection, opened through
-``WrdsSession.shared()`` and closed in a ``finally``, so a run costs at most
-one Duo push; a broken session is never reopened, and the next run resumes
-from the recorded pages.
+argument accepts either value and nothing printed contains one. The row
+count, the download and the conversion share one WRDS connection, so a run
+triggers at most one Duo two-factor prompt. A broken connection is never
+reopened; the next run resumes from what was already recorded.
 
-Before any row is copied the run checks, in this order: the arguments,
-including the session window (validated by ``XnysSessionCalendar`` before
-any connection); the account's entitlement to every ``taqm_YYYY`` schema in
-the window; and the row volume, counted with ``count(*)`` per trading day
-and symbol batch and refused above the ``SqlVolumeGuard`` ceilings unless
-``--force-volume`` is given (a refusal names the longest segment from
-``--start-date`` that would fit). See ``docs/wrds_taq.md``.
+Before any row is copied the run checks, in order: the arguments, including
+the session window (validated before any connection); that the account may
+read every ``taqm_YYYY`` schema in the window; and the row count, counted
+server-side per trading day and symbol batch and refused above the
+volume-guard ceilings unless ``--force-volume`` is given. A refusal names
+the longest stretch from ``--start-date`` that would fit. See
+``docs/wrds_taq.md``.
 
-Usage:
+Usage::
+
+    uv run python scripts/ingest_wrds_taq.py --help
     export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
 
     # Raw NBBO records for an explicit roster (dot notation: BRK.B).
@@ -46,7 +55,8 @@ Usage:
     uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \\
         --start-date 2024-01-24 --end-date 2024-01-25 --to-zarr --bar-interval 1m
 
-    # Point-in-time S&P 500 constituents over the window (interval overlap).
+    # Point-in-time S&P 500 constituents: every symbol that was a member at
+    # any time in the window.
     uv run python scripts/ingest_wrds_taq.py --universe sp500 \\
         --start-date 2024-01-24 --end-date 2024-01-24 --to-zarr
 """
@@ -79,10 +89,9 @@ from quantlab.utils.cli import (
 #: The vendor descriptor, resolved from its registry token.
 SOURCE = DataSourceRegistry.get("wrds")
 
-#: The universes a WRDS pull is offered for: the point-in-time index rosters,
+#: The universes offered for a TAQ pull: the point-in-time index rosters,
 #: which use the dot notation TAQ needs. The exchange listings (``nasdaq_all``
-#: and ``us_all``) use hyphen notation and are far too large for a
-#: quote-level pull.
+#: and ``us_all``) use hyphen notation and are far too large for quote data.
 UNIVERSES: tuple[str, ...] = ("sp500", "nasdaq100")
 
 #: Bar sizes, derived from the ``BarInterval`` literal.
@@ -90,7 +99,7 @@ BAR_INTERVALS: tuple[str, ...] = typing.get_args(BarInterval)
 
 #: The Zarr store a ``--to-zarr`` run writes, under
 #: ``<data root>/data/us_equity/tick/``. The session window is part of the
-#: name because the conversion ledger fingerprints only the symbol axis, so
+#: name because the record of written dates ignores the session window, so
 #: two windows sharing one store would silently skip the second window's
 #: dates as already written.
 DEFAULT_STORE_TEMPLATE = "wrds_nbbo_{bar_interval}_{session_start}-{session_end}.zarr"
@@ -134,7 +143,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Symbols per COPY and per count(*) (default "
+            "Symbols per download query and per row-count query (default "
             f"{SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE})."
         ),
     )
@@ -142,8 +151,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--refresh",
         action="store_true",
         help=(
-            "Incrementally refresh from each symbol's recorded watermark "
-            "instead of a full backfill of the window."
+            "Continue each symbol from its recorded watermark instead of "
+            "downloading the whole window again."
         ),
     )
     add_to_zarr_arg(parser)
@@ -154,15 +163,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=list(BAR_INTERVALS),
         default="1m",
         help=(
-            "Bar size of the --to-zarr panel (default 1m). Labels are "
-            "right-closed bar ends. Every choice divides both a 390-minute "
-            "regular session and a 210-minute half day."
+            "Bar size of the --to-zarr panel (default 1m). Each bar is "
+            "labelled by its end time and includes that instant. Every "
+            "choice divides both a 390-minute regular session and a "
+            "210-minute half day."
         ),
     )
     window_help = (
-        "ET wall clock HH:MM. The window may be anywhere inside 04:00-20:00 "
-        "ET. On a half day only an edge inside regular hours (09:30-16:00) "
-        "follows the early close; an extended-hours edge stays as given."
+        "US Eastern time as HH:MM, anywhere inside 04:00-20:00. On a half "
+        "day, an edge inside regular hours (09:30-16:00) moves to the early "
+        "close; an edge in extended hours stays as given."
     )
     parser.add_argument(
         "--session-start",
@@ -180,19 +190,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate(parser: argparse.ArgumentParser, args) -> XnysSessionCalendar:
-    """Refuse bad arguments before any WRDS session exists.
+    """Refuse bad arguments before any WRDS connection is opened.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser, used to report an error and exit with status 2.
+    args : argparse.Namespace
+        Parsed command-line arguments.
 
     Returns
     -------
     XnysSessionCalendar
-        The session calendar built while checking the session window.
+        The NYSE session calendar built while checking the session window.
     """
     if bool(args.symbols) == bool(args.universe):
         parser.error("Exactly one of --symbols or --universe must be set.")
     if not args.start_date or not args.end_date:
         parser.error(
             "--start-date and --end-date are both required: the window is "
-            "counted and priced before any data is pulled."
+            "sized before any data is pulled."
         )
     if args.rows_per_symbol_day is not None:
         parser.error(
@@ -221,7 +238,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # The data root must be applied before any path is derived from it.
+    # Must run before any path is derived from the data root.
     apply_data_dir(args)
 
     calendar = _validate(parser, args)
@@ -235,8 +252,8 @@ if __name__ == "__main__":
                 cache_dir=str(reference / "_cache"),
             )
         )
-    # Interval overlap across the window, never one as-of day: a backfill
-    # wants every symbol that was a member at any point in it.
+    # Every symbol that was a member at any time in the window, not only on
+    # one day.
     symbols = resolve_symbols(args, catalog, mode="in_range")
     if not symbols:
         parser.error("the roster resolved to no symbols.")
@@ -249,8 +266,8 @@ if __name__ == "__main__":
         kwargs={"batch_size": batch_size},
     )
 
-    # Imported at run time rather than at module scope so the session class is
-    # looked up when the run starts, which lets an offline double replace it.
+    # Imported here rather than at the top so that tests can replace the
+    # session class with an offline stand-in before the run starts.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.taq import WrdsNbboVolumeProbe, WrdsSession
 
@@ -260,8 +277,8 @@ if __name__ == "__main__":
         parser.exit(1, f"{exc}\n")
 
     try:
-        # Entitlement, then count(*) per (day, batch), then the guard, all
-        # before the first COPY.
+        # Check access, count rows per day and batch, and check the volume
+        # ceilings, all before the first row is copied.
         try:
             rows_by_day = WrdsNbboVolumeProbe(
                 session, batch_size=batch_size
@@ -325,8 +342,8 @@ if __name__ == "__main__":
             print(f"Filter statistics sidecar: {probe_dataset.filter_stats_path}")
         else:
             print(
-                "Skipping Zarr conversion (default). The raw shards above are "
-                "the deliverable; pass --to-zarr to resample them into bars."
+                "Skipping Zarr conversion (default). The raw files above are "
+                "the run's output; pass --to-zarr to resample them into bars."
             )
     finally:
         WrdsSession.close_shared()

@@ -1,26 +1,39 @@
 """Download US-equity bars, quotes or trades from Alpaca Market Data.
 
-Alpaca is a second source beside Tiingo, not a replacement: raw files land
-under a vendor-namespaced path built by the config factories, so the two
-vendors' shards never merge. ``--frequency 1d`` and ``--frequency 1m`` fetch
-bars; ``--frequency tick`` fetches ``--data-type quotes`` or ``trades`` at
-full resolution with no resampling. Every run lands raw parquet and stops
-there. ``--to-zarr`` converts bars into the Zarr store through
-``quantlab.registry.convert``, one ``--chunk`` window at a time; it is
-refused for tick data, which has no dense panel representation. Nothing
-checks that a window fits in memory, and a minute-bar window is far larger
-than its trading-day count suggests, so choose ``--chunk`` accordingly. No
-vendor class is named here; every vendor fact is read off the registry
-descriptor ``SOURCE``.
+The script resolves a symbol roster, checks the request against the
+pre-flight volume guard (an estimate of rows, bytes, requests and run time
+that refuses a download above its ceilings before any request is sent) and
+then downloads through ``quantlab.registry.run``. The roster is either an
+explicit ``--symbols`` list or a ``--universe`` category resolved
+point-in-time, meaning the index members as they stood on ``--as-of-date``
+rather than today. Every run writes raw parquet files and stops there by
+default. Each symbol keeps a watermark, a small sidecar file recording the
+last date already downloaded, so ``--refresh`` can continue from it.
 
-Requires ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` in the environment.
-Neither is accepted as an argument or ever printed, because a credential on
-the command line lands in shell history and one on a config dataclass lands
-in every serialised config.
+``--frequency 1d`` and ``--frequency 1m`` fetch daily and minute bars.
+``--frequency tick`` fetches ``--data-type quotes`` or ``trades`` at full
+resolution with no resampling. ``--to-zarr`` also converts bars into a Zarr
+store (a chunked on-disk array format that ``xarray`` reads) through
+``quantlab.registry.convert``, one ``--chunk`` window at a time. It is
+refused for tick data, because irregular tick events do not fit the dense
+``(timestamp, symbol)`` grid of a panel. Nothing checks that a window fits
+in memory, and a minute-bar window is far larger than its trading-day count
+suggests, so choose ``--chunk`` accordingly.
 
-Vendor knobs such as ``feed``, ``adjustment``, ``asof`` and ``page_limit``
+Alpaca is a second source beside Tiingo. Its raw files land under a
+vendor-specific path built by the config factories, so the two vendors'
+files never mix, and ``--to-zarr`` writes its own ``stock_alpaca.zarr``
+store. No vendor class is named here; every vendor fact is read off the
+registry descriptor ``SOURCE``.
+
+``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` must be set in the
+environment. Neither is accepted as an argument or ever printed, because a
+credential on the command line lands in shell history and one on a config
+object lands in every saved config.
+
+Vendor options such as ``feed``, ``adjustment``, ``asof`` and ``page_limit``
 have no flag; they travel in ``config.kwargs``. ``feed`` is left unset by
-default so the vendor picks the best feed the account allows. To set one,
+default so that Alpaca picks the best feed the account allows. To set one,
 build the config directly::
 
     from quantlab.config import stock_acquisition_config
@@ -29,33 +42,35 @@ build the config directly::
         vendor="alpaca", kwargs={"batch_size": 200, "feed": "sip"},
     )
 
-Usage:
+Usage::
+
+    uv run python scripts/ingest_alpaca.py --help
     export APCA_API_KEY_ID=your-key-id APCA_API_SECRET_KEY=your-secret
 
     # Daily bars for an explicit symbol list.
-    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT \
+    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT \\
         --start-date 2024-01-01 --end-date 2024-12-31
 
     # The same fetch, converted to the Zarr store afterwards.
-    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --to-zarr \
+    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --to-zarr \\
         --start-date 2024-01-01 --end-date 2024-12-31
 
     # Daily bars for a point-in-time roster.
-    uv run python scripts/ingest_alpaca.py --universe sp500 \
+    uv run python scripts/ingest_alpaca.py --universe sp500 \\
         --as-of-date 2024-01-02 --start-date 2024-01-01 --end-date 2024-12-31
 
     # Minute bars.
-    uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency 1m \
+    uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency 1m \\
         --start-date 2024-01-02 --end-date 2024-01-31
 
     # Quotes at full resolution. --data-type is required here and rejected
-    # elsewhere; --rows-per-symbol-day sizes the volume guard and has no
-    # default because tick volume cannot be derived from a calendar.
-    uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency tick \
-        --data-type quotes --rows-per-symbol-day 1000000 \
+    # elsewhere. --rows-per-symbol-day sizes the volume guard and has no
+    # default, because tick volume cannot be derived from a calendar.
+    uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency tick \\
+        --data-type quotes --rows-per-symbol-day 1000000 \\
         --start-date 2024-01-02 --end-date 2024-01-02
 
-    # Top up an existing backfill from each symbol's own watermark.
+    # Top up an existing download from each symbol's own watermark.
     uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --refresh
 """
 
@@ -118,8 +133,8 @@ def _build_configs(
     ----------
     args : argparse.Namespace
         Parsed command-line arguments.
-    catalog
-        An already-loaded ``UniverseCatalog``, or ``None`` to load
+    catalog : UniverseCatalog, optional
+        An already-loaded universe table, or ``None`` (the default) to load
         one on demand when a category is requested.
 
     Returns
@@ -130,8 +145,8 @@ def _build_configs(
     """
     if catalog is None and args.universe:
         catalog = UniverseCatalog.load(universe_config())
-    # Membership is resolved point-in-time on one day; a full-window backfill
-    # wants interval overlap instead (see ``resolve_symbols``).
+    # Membership is taken as of one day. A full-window backfill would want
+    # every symbol that was a member at any time in the window instead.
     symbols = resolve_symbols(args, catalog, mode="as_of")
 
     kwargs: dict = {}
@@ -191,11 +206,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=list(SOURCE.acquisition_cls.TICK_DATA_TYPES),
         default=None,
         help=(
-            "Required with --frequency tick and rejected otherwise. Quotes "
-            "and trades land under the same vendor root, told apart only by "
-            "the leading data_type= hive key, so there is deliberately no "
-            "default: guessing would file one as the other with the other's "
-            "column projection applied."
+            "Which tick data to fetch. Required with --frequency tick and "
+            "rejected otherwise. Quotes and trades are stored under the same "
+            "vendor directory and told apart only by their data_type= "
+            "subdirectory, so there is no default: a wrong guess would file "
+            "one as the other with the wrong columns."
         ),
     )
     parser.add_argument(
@@ -203,20 +218,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Symbols per request. Defaults to the source's own "
-            f"DEFAULT_BATCH_SIZE ({SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE}), "
-            "a conservative working value rather than a verified vendor "
-            "ceiling; the real limit is undocumented. Passed through "
-            "config.kwargs, and also handed to the pre-flight volume guard, "
-            "which prices requests partly by the batch size."
+            "Symbols per request (default "
+            f"{SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE}). The default is a "
+            "conservative working value; Alpaca does not document the real "
+            "limit. The value is passed through config.kwargs and also to the "
+            "pre-flight volume guard, which counts requests by it."
         ),
     )
     parser.add_argument(
         "--refresh",
         action="store_true",
         help=(
-            "Incrementally refresh from each symbol's last recorded "
-            "watermark instead of a full download() backfill."
+            "Continue each symbol from its last recorded watermark instead "
+            "of downloading the whole window again."
         ),
     )
     # The conversion flags are shared with the other ingest scripts because
@@ -227,19 +241,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate_data_type(parser: argparse.ArgumentParser, args) -> None:
-    """Reject inconsistent ``--frequency`` / ``--data-type`` / ``--to-zarr``.
+    """Reject inconsistent ``--frequency``, ``--data-type`` and ``--to-zarr``.
 
     ``--data-type`` is required for tick and rejected otherwise, and
     ``--to-zarr`` is rejected for tick. Each case exits through
     ``parser.error`` rather than being ignored, because a silently dropped
     flag would let the user believe a fetch or conversion happened.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser, used to report the error and exit with status 2.
+    args : argparse.Namespace
+        Parsed command-line arguments.
     """
     if args.frequency == "tick" and args.data_type is None:
         parser.error(
             "--data-type is required when --frequency is tick "
             f"(one of {list(SOURCE.acquisition_cls.TICK_DATA_TYPES)}); there is no "
-            "default, because quotes and trades share a vendor root and are "
-            "told apart only by the data_type= hive key."
+            "default, because quotes and trades share a vendor directory and "
+            "are told apart only by their data_type= subdirectory."
         )
     if args.frequency != "tick" and args.data_type is not None:
         parser.error(
@@ -247,14 +268,12 @@ def _validate_data_type(parser: argparse.ArgumentParser, args) -> None:
             f"--frequency {args.frequency}."
         )
     if args.frequency == "tick" and args.to_zarr:
-        # There is no tick conversion: the dense (timestamp, symbol) panel
-        # cannot express an irregular event axis.
         parser.error(
-            "--to-zarr is not available with --frequency tick: the "
-            "quotes/trades raw-to-xarray conversion needs an irregular event "
-            "axis the dense [timestamp, symbol] panel cannot express, and "
-            "arrives in phase 03.3 (D-18). Drop --to-zarr; a tick run's raw "
-            "shards are the deliverable."
+            "--to-zarr is not available with --frequency tick: converting "
+            "quotes/trades to xarray needs an irregular event axis that the "
+            "dense [timestamp, symbol] panel cannot express, and that "
+            "conversion is not implemented yet. Drop --to-zarr; a tick run's "
+            "raw files are its output."
         )
 
 
@@ -262,8 +281,8 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Must run before any config factory is called: the factories snapshot
-    # their paths at construction time, so a later root override is ignored.
+    # Must run before any config factory is called: the factories copy the
+    # data root into their paths when called, so a later override is ignored.
     apply_data_dir(args)
 
     validate_roster_args(parser, args)
@@ -272,9 +291,9 @@ if __name__ == "__main__":
     catalog = UniverseCatalog.load(universe_config()) if args.universe else None
     acq_config, ds_config = _build_configs(args, catalog)
 
-    # Pre-flight: no client has been constructed and no request issued yet.
-    # The guard is given the batch size the run will actually use, since it
-    # prices the request count partly by it.
+    # Pre-flight: no client exists and no request has been sent yet. The
+    # guard gets the batch size the run will use, since it counts requests
+    # by it.
     pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
         args, catalog, symbols=acq_config.symbols
     )
@@ -302,8 +321,8 @@ if __name__ == "__main__":
         f"refresh={args.refresh})"
     )
     result = run(SOURCE, acq_config, refresh=args.refresh)
-    # These counts describe this run only. The ``_failures.json`` manifest is
-    # the cross-run record and may name symbols this run never requested.
+    # These counts cover this run only. The ``_failures.json`` manifest
+    # accumulates across runs and may name symbols this run never requested.
     print(
         f"{len(result.succeeded)} symbol(s) succeeded, "
         f"{len(result.failures)} failed"
@@ -311,17 +330,15 @@ if __name__ == "__main__":
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.frequency == "tick":
-        # Tick data stops at raw: there is no conversion for it, and saying
-        # so beats leaving the user waiting for a store that is never written.
+        # Say so explicitly, so nobody waits for a store that is never written.
         print(
-            "Stopping at raw for tick: the quotes/trades raw-to-xarray "
-            "conversion needs an irregular event axis the dense "
-            "[timestamp, symbol] panel cannot express, and arrives in phase "
-            "03.3 (D-18). The raw shards above are the deliverable."
+            "Stopping at raw files for tick data: converting quotes/trades to "
+            "xarray needs an irregular event axis that the dense "
+            "[timestamp, symbol] panel cannot express, and that conversion is "
+            "not implemented yet. The raw files above are the run's output."
         )
     elif args.to_zarr:
-        # The probe dataset exists only to answer ``has_raw_data()``;
-        # ``symbols=None`` says so at the call site.
+        # This dataset only answers ``has_raw_data()``, so it needs no symbols.
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
@@ -329,8 +346,8 @@ if __name__ == "__main__":
             f"Converting/persisting symbols={ds_config.symbols} to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        # The conversion is the registry's; this script only renders the
-        # result it returns, so what is printed is what was written.
+        # Print the registry's own result, so what is printed is what was
+        # written.
         conversion = convert(
             SOURCE,
             ds_config,
@@ -340,6 +357,6 @@ if __name__ == "__main__":
         print_conversion_result(conversion)
     else:
         print(
-            "Skipping Zarr conversion (default). The raw shards above are the "
-            "deliverable; pass --to-zarr to convert them."
+            "Skipping Zarr conversion (default). The raw files above are the "
+            "run's output; pass --to-zarr to convert them."
         )

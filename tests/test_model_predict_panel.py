@@ -454,7 +454,7 @@ def test_dl_checkpoint_records_its_symbols_and_predict_panel_aligns_onto_them(
 
     assert pred.symbol.values.tolist() == SYMBOLS
     xr.testing.assert_allclose(pred, fresh.predict_panel(base))
-    assert any("S9" in m and "WR-02" in m for m in warning_messages), warning_messages
+    assert any("S9" in m and "was not trained on" in m for m in warning_messages), warning_messages
 
 
 @pytest.mark.parametrize(
@@ -541,7 +541,7 @@ def test_int64_trained_symbols_align(tmp_path, warning_messages):
     assert pred.symbol.dtype.kind == "i"
     xr.testing.assert_allclose(pred, fresh.predict_panel(base))
     assert any(
-        "99999" in m and "WR-02" in m for m in warning_messages
+        "99999" in m and "was not trained on" in m for m in warning_messages
     ), warning_messages
 
 
@@ -603,7 +603,7 @@ def test_ticker_trained_symbols_still_align_unchanged(tmp_path, warning_messages
     assert pred.symbol.values.tolist() == SYMBOLS
     xr.testing.assert_allclose(pred, fresh.predict_panel(base))
     assert any(
-        "S9" in m and "WR-02" in m for m in warning_messages
+        "S9" in m and "was not trained on" in m for m in warning_messages
     ), warning_messages
 
 
@@ -671,7 +671,7 @@ def test_a_symbol_labeller_spells_the_dropped_permnos(tmp_path, warning_messages
 
     assert pred.symbol.values.tolist() == SORTED_PERMNOS
     assert any(
-        "GHOST" in m and "WR-02" in m for m in warning_messages
+        "GHOST" in m and "was not trained on" in m for m in warning_messages
     ), warning_messages
 
 
@@ -698,7 +698,7 @@ def test_a_missing_ticker_sidecar_leaves_the_warning_working(
 
     assert pred.symbol.values.tolist() == SORTED_PERMNOS
     assert any(
-        "99999" in m and "WR-02" in m for m in warning_messages
+        "99999" in m and "was not trained on" in m for m in warning_messages
     ), warning_messages
 
 
@@ -744,7 +744,7 @@ def test_a_corrupt_ticker_sidecar_leaves_the_warning_working(
 
     assert pred.symbol.values.tolist() == SORTED_PERMNOS
     assert any(
-        "99999" in m and "WR-02" in m for m in warning_messages
+        "99999" in m and "was not trained on" in m for m in warning_messages
     ), warning_messages
     assert not any("GHOST" in m for m in warning_messages), warning_messages
 
@@ -1029,7 +1029,7 @@ def test_single_symbol_training_record_predicts_only_that_symbol(
 
     assert pred.symbol.values.tolist() == ["S1"]
     assert any(
-        "S0" in m and "S2" in m and "WR-02" in m for m in warning_messages
+        "S0" in m and "S2" in m and "was not trained on" in m for m in warning_messages
     ), warning_messages
     expected = _mlp_sorted_layout_prediction(fresh, features, ["S1"])
     _assert_each_coord_holds_its_own_prediction(pred, expected, ["S1"])

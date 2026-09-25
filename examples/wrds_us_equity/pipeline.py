@@ -29,6 +29,17 @@ host's SIMD block width (8 with AVX2, 16 with AVX-512).
 """
 
 # %% Settings
+import os
+import sys
+
+# Set before torch or xgboost is imported. W&B: every training run calls
+# wandb.init(); set WANDB_MODE=online (after `wandb login`) to track runs.
+os.environ.setdefault("WANDB_MODE", "disabled")
+# macOS only: xgboost and torch ship different OpenMP runtimes that clash in
+# one process unless OpenMP runs single-threaded.
+if sys.platform == "darwin":
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import json
 import shutil
 from dataclasses import dataclass, field
