@@ -1,20 +1,20 @@
-"""Build/refresh the survivorship-bias-free, point-in-time US-equity universe.
+"""Build or refresh the point-in-time US-equity universe table.
 
-Thin CLI entry point -- all logic lives in `quantlab.universe.
-UniverseCatalog` (02-08-PLAN.md); this script is glue only. Requires no
-Tiingo API key: the NASDAQ roster and S&P 500 membership sources are both
-public/unauthenticated.
+The table is the survivorship-free reference that the ingest scripts resolve
+their rosters from. All of the work happens in
+``quantlab.universe.UniverseCatalog``; this script builds the catalog, saves
+it and prints where it landed. No API key is needed: the NASDAQ roster and
+the S&P 500 membership sources are public.
 
-By default this refuses to persist a table built from a fetcher's cached
-snapshot: `save()` overwrites `universe.parquet` in place, so a stale
-reconstruction written there is indistinguishable from a fresh one and a
-permanently-broken source would silently freeze the universe at the cache
-date. Pass --allow-stale to accept a knowingly-frozen table.
+By default the run refuses to persist a table built from a fetcher's cached
+snapshot, because ``save()`` overwrites ``universe.parquet`` in place and a
+stale reconstruction is indistinguishable from a fresh one. Pass
+``--allow-stale`` to accept a knowingly frozen table.
 
 Usage:
-    uv run python refresh_us_equity_universe.py
-    uv run python refresh_us_equity_universe.py --allow-stale
-    uv run python refresh_us_equity_universe.py --data-dir /Volumes/BigDisk
+    uv run python scripts/refresh_us_equity_universe.py
+    uv run python scripts/refresh_us_equity_universe.py --allow-stale
+    uv run python scripts/refresh_us_equity_universe.py --data-dir /Volumes/BigDisk
 """
 
 import argparse
@@ -25,6 +25,7 @@ from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         description=(
             "Build/refresh the point-in-time US-equity universe reference "
@@ -47,9 +48,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     args = _build_arg_parser().parse_args()
 
-    # Before `universe_config()`, and the position is load-bearing: the config
-    # factories snapshot their paths as strings at construction time, so a root
-    # override applied afterwards silently does nothing (DDIR-04).
+    # Must run before ``universe_config()`` is called: the factories snapshot
+    # their paths at construction time, so a later root override is ignored.
     apply_data_dir(args)
 
     config = universe_config()

@@ -1,3 +1,17 @@
+"""Backtester base class and the result types every backtest run produces.
+
+This module sits at the end of the pipeline: a trained return model and a
+price dataset go in, a run directory holding target weights, an equity
+curve, metrics and an HTML report comes out. ``BaseBacktester`` owns the two
+public entry points, ``run()`` (backtest one model) and ``run_cv()`` (replay
+every fold of a ``train_cv`` run as one stitched curve), and every
+engine-independent step between them: warm-up, date alignment, the
+in-sample/out-of-sample split, metrics, persistence and data fingerprints.
+Engine layers such as ``VectorBtBacktester`` implement the simulation hooks;
+concrete classes add a ``MarketSpec`` and a signal generator. See
+``docs/backtest.md``.
+"""
+
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -12,12 +26,10 @@ from loguru import logger
 
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.backend import XrBackend
-# `tickers` is a SUBMODULE of the `crsp` package now, so this line runs
-# `quantlab/dataset/crsp/__init__.py` -- the whole CRSP converter, polars and
-# the reference tier. Measured at +0.99s / +196 modules on top of this module's
-# 3.13s / 3118-module import, and accepted deliberately: the alternative was a
-# compatibility shim at the old flat path. If a slow backtest import ever sends
-# someone bisecting, this is the answer.
+# `tickers` is a submodule of the `crsp` package, so this import also runs
+# that package's `__init__` (the CRSP converter and polars). The extra import
+# time is accepted; this line is the answer if a slow backtest import is
+# ever bisected.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
@@ -28,12 +40,13 @@ from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig
 
-#: 数据指纹比较的字段（D-27）：任一不同就 warning。
+#: Fields of a data fingerprint that are compared against the expected run;
+#: any difference logs a warning.
 FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
 
-#: 失败路径上做的那次指纹比较的结尾（D-03.11-UAT-A），代替正常的 "continuing"。
-#: `tests/test_backtest_rebuild.py` 用其中的子串 `"comparison is PARTIAL"`
-#: （那边叫 `PARTIAL_WARNING`）识别部分比较，所以以后改写措辞也必须保留这个子串。
+#: Tail of every fingerprint warning emitted on the failure path, replacing
+#: the usual "continuing". Diagnostics identify a partial comparison by the
+#: substring ``"comparison is PARTIAL"``, so any rewording must keep it.
 FINGERPRINT_PARTIAL_NOTE = (
     "this comparison is PARTIAL: the run failed before it finished reading, so "
     "a differing digest/start/end/n_timestamps may reflect the interrupted read "
@@ -41,16 +54,30 @@ FINGERPRINT_PARTIAL_NOTE = (
     "original error follows"
 )
 
-#: 一个日历年的平均天数。长于一天的 bar 是日历跨度（周线、月线），按它年化
-#: （`MarketSpec.year_freq`，代码审查 CR-02）。
+#: Mean length of a calendar year in days. Bars longer than one day span
+#: calendar time (weekly, monthly), so ``MarketSpec.year_freq`` annualizes
+#: them against this number.
 CALENDAR_DAYS_PER_YEAR = 365.25
 
 
 @dataclass(frozen=True)
 class MarketSpec:
-    """一个市场的回测约定：成交价列、估值价列与年化口径（03.7 D-04）。
+    """Backtest conventions of one market: price columns and annualization.
 
-    列名只允许出现在具体市场的规格实例上，回测器的方法体里不写任何列名。
+    Column names live only on a market's spec instance; backtester method
+    bodies read them from ``self.MARKET`` and never spell them out, so a new
+    market is a new spec rather than a change to the base class.
+
+    Examples
+    --------
+    >>> spec = MarketSpec(
+    ...     fill_price_column="open",
+    ...     valuation_price_column="close",
+    ...     trading_days_per_year=252,
+    ...     session_minutes_per_day=390,
+    ... )
+    >>> spec.year_freq("1D")
+    Timedelta('252 days 00:00:00')
     """
 
     fill_price_column: str
@@ -59,27 +86,41 @@ class MarketSpec:
     session_minutes_per_day: int
 
     def year_freq(self, bar_interval) -> pd.Timedelta:
-        """一年的时长，用 vectorbt 的口径表示：`year_freq / freq` 即每年 bar 数。
+        """Return one year in vectorbt's convention for bars of ``bar_interval``.
 
-        - 日内频率：每年 bar 数 = 交易日数 x 每日交易分钟数 / bar 分钟数，
-          1 分钟得 252 x 390（03.7-RESEARCH.md Pitfall 6：vectorbt 默认按 365 天）；
-        - 恰好一天：每年 bar 数 = 交易日数，日频得 252。交易日历上的日线
-          时间戳差分的众数是 1 天，一个 bar 就是一个交易日；
-        - 长于一天：一个 bar 是一段**日历**跨度（周线每个日历周一个 bar，
-          节假日不会让一周消失；月线同理），所以每年 bar 数 =
-          `CALENDAR_DAYS_PER_YEAR` / bar 天数，并以交易日数封顶：一个 bar 不会
-          短于一个交易日。周线约 52.18，30 天约 12.18，31 天约 11.78。
+        ``year_freq / bar_interval`` is the number of bars per year. Intraday
+        bars use trading days times session minutes divided by the bar's
+        minutes (one-minute bars: 252 x 390). A bar of exactly one day is one
+        trading day, giving ``trading_days_per_year``. A longer bar spans
+        calendar time (a weekly bar is one calendar week whatever the
+        holidays), so bars per year is ``CALENDAR_DAYS_PER_YEAR`` divided by
+        the bar's days, capped at ``trading_days_per_year``. The function is
+        continuous at one day and non-increasing in the interval.
 
-        这个分段在一天处连续、且随间隔单调不增：`min(交易日数, 365.25 / 天数)`
-        在一天时取 252，到约 1.45 天两者相等，之后按日历跨度下降。
+        Parameters
+        ----------
+        bar_interval
+            Anything ``pd.Timedelta`` accepts, such as
+            ``"1D"``, ``"5min"`` or a ``numpy.timedelta64``.
 
-        **代码审查 CR-02 更正。** 以前长于一天的频率用「交易日数 x (一天 /
-        间隔)」，把**交易日**计数除以**日历日**间隔：周线得 36、31 天月线得
-        8.13，周线的 Sharpe / Sortino 被低估约 sqrt(52/36) 倍，Calmar、年化
-        收益和年化换手也跟着错，而且不报任何错。被放弃的另两种做法：审查建议
-        的「日历天数 x 5/7 取整作为每 bar 交易日数」（周线 50.4、31 天月线
-        11.45，把节假日当成会删掉整周/整月的 bar），以及对长于一天的频率直接
-        报错（项目是多频率的，D-18 明确调仓与频率无关）。
+        Returns
+        -------
+        pd.Timedelta
+            The year length as a ``pd.Timedelta``.
+
+        Raises
+        ------
+        ValueError
+            If ``bar_interval`` is not positive.
+
+        Examples
+        --------
+        >>> spec.year_freq("1min") / pd.Timedelta("1min")
+        98280.0
+        >>> spec.year_freq("1D") / pd.Timedelta("1D")
+        252.0
+        >>> round(spec.year_freq("7D") / pd.Timedelta("7D"), 2)
+        52.18
         """
         interval = pd.Timedelta(bar_interval)
         if interval <= pd.Timedelta(0):
@@ -100,15 +141,27 @@ class MarketSpec:
 
 @dataclass
 class SimulationResult:
-    """引擎模拟的产出，除 `native` 外全部是引擎无关的 xarray / 纯 Python 值。
+    """Output of one engine simulation in engine-independent form.
 
-    - `value` / `returns`：组合净值与收益，维度 `timestamp`；
-    - `orders`：维度 `order`，变量 `timestamp`、`symbol`、`size`、`price`、`fees`、`side`；
-    - `liquidations`：强制平仓记录；
-    - `bar_interval`：模拟使用的 bar 间隔；
-    - `trades`：维度 `trade`，变量 `symbol`、`entry_timestamp`、`exit_timestamp`、
-      `pnl`、`return`、`status`（`Open` / `Closed`）；没有交易时是空 Dataset；
-    - `native`：引擎自己的结果对象，只由产出它的引擎读取。
+    ``value`` and ``returns`` are the portfolio value and per-bar returns on
+    the ``timestamp`` dimension. ``orders`` is a dataset on an ``order``
+    dimension with the variables ``timestamp``, ``symbol``, ``size``,
+    ``price``, ``fees`` and ``side``. ``trades`` is a dataset on a ``trade``
+    dimension with ``symbol``, ``entry_timestamp``, ``exit_timestamp``,
+    ``pnl``, ``return`` and ``status`` (``"Open"`` or ``"Closed"``), empty
+    when nothing traded. ``liquidations`` records forced exits of delisted
+    holdings. ``native`` is the engine's own result object and is read only
+    by the engine that produced it.
+
+    Examples
+    --------
+    >>> sim = result.simulation  # from ``BaseBacktester.run()``
+    >>> sim.value.dims, int(sim.value.values[0])
+    (('timestamp',), 1000000)
+    >>> list(sim.orders.data_vars)
+    ['timestamp', 'symbol', 'size', 'price', 'fees', 'side']
+    >>> sim.bar_interval
+    np.timedelta64(86400000000000,'ns')
     """
 
     value: xr.DataArray
@@ -122,7 +175,23 @@ class SimulationResult:
 
 @dataclass
 class BacktestResult:
-    """`run()` 的返回值；`run_dir` 是这次回测落盘的目录。"""
+    """Return value of ``BaseBacktester.run()``.
+
+    ``run_dir`` is the directory this run wrote its artifacts to.
+    ``predictions`` and ``weights`` are panels on ``(timestamp, symbol)``
+    covering exactly the backtest window; ``metrics`` is the same mapping
+    written to ``metrics.json``.
+
+    Examples
+    --------
+    >>> result = backtester.run()
+    >>> sorted(p.name for p in result.run_dir.iterdir())
+    ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
+     'metrics.json', 'report.html', 'weights.zarr']
+    >>> sorted(result.metrics)
+    ['in_sample', 'in_sample_range', 'notes', 'out_of_sample',
+     'out_of_sample_ranges', 'training_window', 'whole']
+    """
 
     run_dir: Path
     predictions: xr.Dataset
@@ -133,7 +202,7 @@ class BacktestResult:
 
 @dataclass
 class _BacktestWindow:
-    """一个回测窗口跑完、尚未落盘的中间产物；`run()` 与 `run_cv()` 的每折共用。"""
+    """One backtested window before persistence, shared by ``run()`` and each fold."""
 
     predictions: xr.Dataset
     prices: xr.Dataset
@@ -145,13 +214,24 @@ class _BacktestWindow:
 
 @dataclass
 class CVBacktestResult:
-    """`run_cv()` 的返回值（D-16、D-35）。
+    """Return value of ``BaseBacktester.run_cv()``.
 
-    - `run_dir`：这次 CV 回测落盘的目录；
-    - `folds`：每折一条记录，含 `fold`、四个日期、`checkpoint`，以及该折自己的
-      `predictions`、`weights`、`simulation`、`metrics`（独立的逐折模拟）；
-    - `weights` / `simulation`：拼接后的样本外权重与**一次**连续模拟；
-    - `metrics`：与 metrics.json 相同的结构，`stitched`、`folds`、`notes`。
+    ``folds`` holds one record per replayed fold: the manifest fields
+    (``fold``, the four dates, ``checkpoint``) plus that fold's own
+    ``predictions``, ``weights``, ``simulation`` and ``metrics`` from an
+    independent per-fold simulation. ``weights`` and ``simulation`` are the
+    concatenated fold weights and the single continuous simulation over
+    them. ``metrics`` mirrors ``metrics.json`` with the keys ``stitched``,
+    ``folds`` and ``notes``.
+
+    Examples
+    --------
+    >>> cv = backtester.run_cv()
+    >>> len(cv.folds), sorted(cv.metrics)
+    (8, ['folds', 'notes', 'stitched'])
+    >>> sorted(cv.metrics["stitched"])
+    ['in_sample', 'in_sample_ranges', 'out_of_sample', 'out_of_sample_ranges',
+     'training_windows', 'whole']
     """
 
     run_dir: Path
@@ -160,55 +240,73 @@ class CVBacktestResult:
     simulation: SimulationResult
     metrics: dict = field(default_factory=dict)
 
-
 class BaseBacktester(ABC):
-    """回测层的基类（03.7 D-01、D-02）。
+    """Abstract base of every backtester: the template methods and shared steps.
 
-    **D-01：引擎靠继承变化，市场与选股逻辑靠组合变化。** 层级是
-    `BaseBacktester`（本类）-> 引擎层（如 `VectorBtBacktester`）-> 具名的具体类
-    （如 `USEquityCrossectionSelectStockVectorBt`）。具体类只是把一个市场规格
-    （`MARKET`，一个 `MarketSpec`）和一个选股组件组合到某个引擎上。这样市场 x
-    风格 x 引擎不会乘出一大堆类，将来的时序兄弟类、事件驱动兄弟类也不需要改动
-    本类。
+    The engine varies by inheritance and the market and selection logic by
+    composition. The hierarchy is ``BaseBacktester`` (this class), then an
+    engine layer such as ``VectorBtBacktester`` that implements
+    ``_simulate``, ``_simulate_benchmark``, ``_engine_stats`` and
+    ``_period_returns_stats``, then a named concrete class that composes a
+    ``MarketSpec`` (the ``MARKET`` class attribute) and a signal generator
+    (``_generate_signals``) onto that engine. Concrete classes also set
+    ``config_cls``, the config class the ``config`` setter accepts.
 
-    **D-02：公开入口是本类上的模板方法，子类从不覆盖。** `run()` 按固定顺序
-    执行：准备模型 -> 对齐因子日期并预测 -> 生成信号 -> 模拟 -> 基准 -> 指标 ->
-    报告与落盘。可变的步骤是下面的抽象钩子；引擎相关的 `_simulate` /
-    `_simulate_benchmark` / `_engine_stats` 由引擎层实现，`_generate_signals`
-    由具体类实现。
+    The public entry points ``run()`` and ``run_cv()`` are template methods
+    defined here and never overridden: prepare the model, align the factor
+    dates and predict, generate signals, simulate, compute metrics, then
+    write the run directory.
 
-    两个类属性由具体类用**普通类属性**满足：`config_cls`（接受的配置类，
-    `config` setter 第一件事就检查它）与 `MARKET`（市场规格）。
+    Examples
+    --------
+    A concrete class over the vectorbt engine needs only three members::
+
+        class EqualWeightBacktester(VectorBtBacktester):
+            config_cls = BacktestConfig
+            MARKET = MarketSpec("open", "close", 252, 390)
+
+            def _generate_signals(self, predictions, prices):
+                ...  # return a ``weight`` panel on (timestamp, symbol)
+
+    >>> backtester = EqualWeightBacktester(config)
+    >>> result = backtester.run()
     """
 
     MARKET: MarketSpec | None = None
 
     def __init__(self, config: BacktestConfig):
-        # 指纹状态先于 config 赋值（D-27），setter 与校验钩子里都可以放心读它们。
-        # `expected_fingerprint`：从已存的 fingerprint.json（或 config.json 的
-        # `data_fingerprint`）重建回测时设置，run() 用它比对本次读到的数据。
+        """Validate and store ``config`` after resetting the per-run state."""
+        # Fingerprint state is created before the config is assigned so the
+        # setter and the validation hook can read it. `expected_fingerprint`
+        # is set when a run is rebuilt from a saved fingerprint.json (or the
+        # `data_fingerprint` of a config.json); run() compares against it.
         self.expected_fingerprint: dict | None = None
         self._fingerprints: dict = {}
-        # train 模式下本次 run() 训练出的 checkpoint 绝对路径；load 模式与未运行时
-        # 为 None（代码审查 WR-04）。get_config 与 metrics 据此记录。
+        # Absolute path of the checkpoint this run() trained in train mode;
+        # None in load mode and before any run. Recorded by get_config and
+        # in the metrics.
         self._trained_checkpoint: str | None = None
-        # 价格库旁边那份 ticker sidecar 的读取器，惰性构造（`ticker_lookup`）。
+        # Lazily built reader of the ticker sidecar beside the price store.
         self._ticker_lookup: "CrspTickerLookup | None" = None
         self.config = config
 
     @property
     def ticker_lookup(self) -> CrspTickerLookup:
-        """价格库旁边那份 `.crsp_tickers.json` 的读取器。
+        """Reader of the ``.crsp_tickers.json`` sidecar beside the price store.
 
-        **回测器是这条链上唯一知道价格库在哪的层**，所以标的名的还原从这里发源：
-        引擎拿它打强平日志与 `liquidations.json`，模型拿它的 `label` 打
-        missing/extra 清单。三处各自构造一遍，就是把「sidecar 在哪」这件事
-        复制三份。
+        The backtester is the only layer that knows where the price store
+        is, so symbol labelling starts here: the engine uses it for
+        liquidation records and the model for its missing/extra symbol
+        lists. The lookup is built on first access and reset whenever a new
+        config is assigned. It is not a CRSP-only branch: when no sidecar
+        exists beside the store, ``label()`` falls back to each symbol's own
+        spelling, so panels from other vendors are unaffected.
 
-        **这不是「CRSP 专用分支」。** 判据是**盘上有没有那个文件**，不是面板
-        属于哪个厂商：Tiingo / Alpaca 的库旁边没有 sidecar，`label()` 于是原样
-        回落成标的自己的拼写，那几行日志一个字不变（control arm）。
-        `as_of` 的严格失败留给想要拒绝的调用者，展示层一律走 `label`。
+        Examples
+        --------
+        >>> from datetime import date
+        >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
+        ['AAA', 'BBB']
         """
         if self._ticker_lookup is None:
             self._ticker_lookup = CrspTickerLookup.beside_store(
@@ -219,15 +317,66 @@ class BaseBacktester(ABC):
     @property
     @abstractmethod
     def config_cls(self) -> type:
-        """这个回测器接受的配置类（具体类用类属性覆盖）。"""
+        """The config class this backtester accepts.
+
+        Concrete classes satisfy it with a plain class attribute; the
+        ``config`` setter checks ``isinstance(config, config_cls)`` first.
+
+        Examples
+        --------
+        >>> class MyBacktester(VectorBtBacktester):
+        ...     config_cls = BacktestConfig
+        ...     MARKET = MarketSpec("open", "close", 252, 390)
+        ...     def _generate_signals(self, predictions, prices): ...
+        """
 
     @property
     def config(self) -> BacktestConfig:
+        """The validated config this backtester was built with.
+
+        Examples
+        --------
+        >>> backtester.config.start_date, backtester.config.rebalance_periods
+        ('2024-02-12', 5)
+        """
         return self._config
 
     @config.setter
     def config(self, config: BacktestConfig):
-        # 类型检查必须是第一条语句，先于任何校验与赋值（与 BaseModel 同一规则）。
+        """Validate ``config``, normalize its paths and store it.
+
+        The type check is the first statement, before any other validation,
+        so a wrong config class fails with a message naming the expected
+        class. ``model_mode="load"`` needs at least one of ``checkpoint``
+        (used by ``run()``) and ``cv_project_dir`` (used by ``run_cv()``);
+        whichever entry point is called later rejects the missing one. The
+        ``checkpoint``, ``cv_project_dir`` and ``output_dir`` fields are
+        rewritten as absolute paths so a saved ``config.json`` rebuilds the
+        same run from any working directory. ``config.name`` is set to this
+        class's import path and ``_validate_config`` runs last.
+
+        Raises
+        ------
+        TypeError
+            If ``config`` is not a ``config_cls``, ``MARKET`` is
+            unset, or ``config.model`` is not a ``BaseModel``.
+        ValueError
+            If ``model_mode``, the load-mode paths,
+            ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``
+            or the date order are invalid.
+        NotImplementedError
+            If ``benchmark_dataset`` is supplied.
+
+        Examples
+        --------
+        >>> backtester.config = config
+        >>> backtester.config.name
+        mypkg.backtest.MyBacktester
+        >>> MyBacktester(object())
+        Traceback (most recent call last):
+        TypeError: MyBacktester requires a BacktestConfig, got object
+        """
+        # The type check must stay the first statement, as in BaseModel.
         if not isinstance(config, self.config_cls):
             raise TypeError(
                 f"{self.class_name} requires a {self.config_cls.__name__}, "
@@ -249,8 +398,9 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: model_mode must be 'train' or 'load', got "
                 f"{config.model_mode!r}"
             )
-        # load 模式二者至少有其一：run() 读 checkpoint，run_cv() 读 cv_project_dir。
-        # 缺的恰好是某个入口自己要的那一个时，由该入口在运行时拒绝（D-13、D-16）。
+        # Load mode needs at least one of the two; run() reads the checkpoint
+        # and run_cv() reads cv_project_dir, and each rejects its own missing
+        # field at call time.
         if (
             config.model_mode == "load"
             and config.checkpoint is None
@@ -286,8 +436,8 @@ class BaseBacktester(ABC):
                 f"exists; the benchmark_dataset config slot is kept, leave it None"
             )
 
-        # 路径字段一律存绝对路径（代码审查 WR-03）：config.json 会在另一个进程、
-        # 另一个工作目录里重建回测（D-25），相对路径到那里指向别处。
+        # Path fields are stored absolute: config.json is used to rebuild the
+        # run in another process and working directory.
         for name in ("checkpoint", "cv_project_dir", "output_dir"):
             value = getattr(config, name)
             if value is not None:
@@ -295,27 +445,51 @@ class BaseBacktester(ABC):
 
         self._config = config
         self._config.name = self.import_path
-        # 与 `_fingerprints` 同一个理由：缓存是对**这份**配置的价格库说的话，
-        # 换了价格库就不能留着上一份 sidecar 的名字。
+        # The cached lookup describes the previous config's price store.
         self._ticker_lookup = None
         self._validate_config()
 
     def _validate_config(self) -> None:
-        """具体类的额外构造期校验；默认什么都不做。"""
+        """Run extra construction-time checks of a concrete class; a no-op here."""
 
     @property
     def class_name(self) -> str:
+        """The class's short name, used as the prefix of every message it logs.
+
+        Examples
+        --------
+        >>> backtester.class_name
+        MyBacktester
+        """
         return self.__class__.__name__
 
     @property
     def import_path(self) -> str:
+        """The dotted import path recorded as ``config.name``.
+
+        Examples
+        --------
+        >>> backtester.import_path
+        mypkg.backtest.MyBacktester
+        """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     def get_config(self) -> dict:
-        """标量字段 + 逐个嵌套的数据集与模型配置；不对整个配置 `asdict`。
+        """Return the scalar config fields plus the nested dataset and model configs.
 
-        跑过一次之后，顶层多一个 `data_fingerprint`（D-25、D-27）：本次读到的
-        每个数据集的指纹。落盘的 config.json 因此带着重建时比对所需的记录。
+        The whole config is never passed through ``asdict``: the live objects
+        are replaced by their own ``get_config()`` output. After a run the
+        mapping also carries ``data_fingerprint``, one fingerprint per dataset
+        the run read, and after a train-mode run ``trained_checkpoint``, so a
+        saved ``config.json`` can rebuild and replay the same run.
+
+        Examples
+        --------
+        >>> cfg = backtester.get_config()
+        >>> cfg["name"], cfg["model_mode"], cfg["rebalance_periods"]
+        ('mypkg.backtest.MyBacktester', 'load', 5)
+        >>> sorted(cfg["data_fingerprint"])  # present once run() has read
+        ['factor[0]:PastReturnFactor', 'price_dataset']
         """
         cfg = self.config.to_dict()
         cfg["price_dataset"] = self.config.price_dataset.get_config()
@@ -327,31 +501,32 @@ class BaseBacktester(ABC):
         )
         if self._fingerprints:
             cfg["data_fingerprint"] = dict(self._fingerprints)
-        # train 模式跑过之后再多一个记录 `trained_checkpoint`（代码审查 WR-04）：
-        # 本次训练出的 checkpoint，用 load 模式可以精确回放同一个模型。
+        # After a train-mode run, record the checkpoint it produced so load
+        # mode can replay exactly this model.
         if self._trained_checkpoint is not None:
             cfg["trained_checkpoint"] = self._trained_checkpoint
         return cfg
 
     @staticmethod
     def _iso_date(value) -> str:
-        """把任意日期样式的值规范成 ISO `YYYY-MM-DD` 字符串（03.7-RESEARCH.md Pitfall 10）。
+        """Normalize any date-like value to an ISO ``YYYY-MM-DD`` string.
 
-        本模块写进数据集或因子配置的每一个日期都经过这里：数据集 setter 的 ISO
-        规范化只在整份配置赋值时发生，直接改 `config.start_date` 不会经过它，而
-        下游的日期比较是字符串字典序。先 `str(value)`，因为 `pd.Timestamp` 不接受
-        `numpy.str_`；真实数据上的折日期形如 `'2026-08-07T00:00:00.000000000'`。
+        Every date this module writes into a dataset or factor config goes
+        through here: the config setters only normalize dates when a whole
+        config is assigned, and downstream date comparisons are string
+        comparisons. ``str(value)`` comes first because ``pd.Timestamp``
+        rejects ``numpy.str_``, which is what fold manifests hold.
         """
         return pd.Timestamp(str(value)).strftime("%Y-%m-%d")
 
     @staticmethod
     def _bar_label(value) -> str:
-        """一个 bar 时间戳的持久化标签：午夜的 bar 写 ISO 日期，其余写完整 ISO 时间。
+        """Return the persisted label of a bar timestamp.
 
-        样本内外的区间端点（`training_window`、`in_sample_range`、
-        `out_of_sample_ranges`）都经过这里（代码审查 CR-01）。日线的 bar 都在
-        午夜，所以日线的标签与以前一样是日期；日内 bar 保留时刻，区间端点不会
-        被截到当天。读回标签时一律按**精确时间戳**比较（`_label_ns`），不再按天。
+        A bar at midnight is written as an ISO date, any other bar as a full
+        ISO timestamp, so daily labels stay dates while intraday range
+        endpoints keep their time of day. Labels are read back by
+        ``_label_ns`` and compared as exact timestamps, never by day.
         """
         ts = pd.Timestamp(str(value)) if isinstance(value, str) else pd.Timestamp(value)
         if ts == ts.normalize():
@@ -360,31 +535,71 @@ class BaseBacktester(ABC):
 
     @staticmethod
     def _label_ns(label) -> np.datetime64:
-        """把 `_bar_label` 写出的标签还原成精确的 `datetime64[ns]`（日期即午夜）。"""
+        """Convert a ``_bar_label`` string back to an exact ``datetime64[ns]``."""
         return np.datetime64(pd.Timestamp(str(label)).to_datetime64(), "ns")
 
     @staticmethod
     def _slice_bound(value):
-        """模型层切片端点的原样形式：字符串保持字符串，其余转 `pd.Timestamp`。
+        """Return a training-window endpoint in the form the model layer slices with.
 
-        模型层按 `data.sel(timestamp=slice(train_start, train_end))` 训练，而
-        xarray 把这个切片交给 pandas 的 `slice_indexer`。字符串端点按其**分辨率**
-        解释：`"2024-05-17"` 包含当天全部 bar，`"2024-05-17T13:00"` 只到 13:00。
-        `_training_window` 用同一个 `slice_indexer` 定位训练段，所以必须把端点
-        原样交过去，不能先截成日期（代码审查 CR-01）。`str()` 是因为
-        `numpy.str_` 不是所有 pandas 入口都接受。
+        The model trains on ``data.sel(timestamp=slice(train_start,
+        train_end))``, and pandas interprets a string endpoint at its own
+        resolution: ``"2024-05-17"`` includes the whole day while
+        ``"2024-05-17T13:00"`` stops at 13:00. Strings are therefore passed
+        through unchanged (as plain ``str``) and other values become
+        ``pd.Timestamp``, so ``_training_window`` selects the same bars the
+        model trained on.
         """
         if isinstance(value, str):
             return str(value)
         return pd.Timestamp(value)
 
     def run(self) -> BacktestResult:
-        """模型回测的模板方法（D-02）。子类不覆盖。
+        """Backtest one model over the configured window and write a run directory.
 
-        load 模式下 D-17 用 checkpoint 自己 `config.json` 记录的训练日期
-        （代码审查 WR-01）。记录与 `config.model` 的日期选中的训练 bar 不同时
-        （`_warn_if_config_model_dates_differ`，G-03.7-7）warning 一次，仍用
-        记录的日期。这个比较需要价格日历，所以在 `_price_calendar` 之后做。
+        A template method that subclasses do not override. In train mode the
+        model is trained on its own dates first; in load mode the checkpoint
+        is restored and the training dates recorded beside it define the
+        in-sample split (a warning is logged if they select different bars
+        than ``config.model``'s dates). The factors are re-dated to cover the
+        warm-up, the model predicts the window, the concrete class turns the
+        predictions into target weights, the engine simulates them, metrics
+        are computed for the whole window and for the in-sample and
+        out-of-sample parts, and everything is written to a new directory
+        under ``config.output_dir``. Data fingerprints are compared against
+        ``expected_fingerprint`` when one is set, also on the failure path.
+
+        Returns
+        -------
+        BacktestResult
+            A ``BacktestResult`` with the run directory, the predictions and
+            weights on the window bars, the simulation and the metrics.
+
+        Raises
+        ------
+        ValueError
+            If ``model_mode="load"`` without ``config.checkpoint``,
+            or the window has no price bars.
+
+        Examples
+        --------
+        >>> backtester = MyBacktester(
+        ...     BacktestConfig(
+        ...         price_dataset=prices,
+        ...         model=model,
+        ...         model_mode="load",
+        ...         checkpoint="models/head.joblib",
+        ...         start_date="2024-02-12",
+        ...         end_date="2024-03-11",
+        ...         output_dir="runs",
+        ...         rebalance_periods=5,
+        ...     )
+        ... )
+        >>> result = backtester.run()
+        >>> result.weights["weight"].dims, result.simulation.value.sizes
+        (('timestamp', 'symbol'), Frozen({'timestamp': 21}))
+        >>> result.metrics["out_of_sample_ranges"]
+        [('2024-02-12', '2024-03-11')]
         """
         if self.config.model_mode == "load" and self.config.checkpoint is None:
             raise ValueError(
@@ -393,20 +608,22 @@ class BaseBacktester(ABC):
             )
         start_date = self._iso_date(self.config.start_date)
         end_date = self._iso_date(self.config.end_date)
-        # 每次运行重新记录指纹：同一个回测器跑第二次，不能带着上一次的记录。
+        # Per-run state: a second run() on the same object starts clean.
         self._fingerprints = {}
-        # 训练出的 checkpoint 同理（代码审查 WR-04）：只有本次 train 模式才有。
         self._trained_checkpoint = None
 
-        # 这一段里任何一处抛异常，下面那次指纹比对就跑不到了，可它的输入已经存在
-        # 而且可能已经不一样（D-03.11-UAT-A）。`_prepare_model` 特意包在里面：
-        # train 模式下它在 `model.train()` 之前记训练段指纹（WR-05），而 train()
-        # 完全可能因为同样的数据原因抛异常。
+        # Any exception in this block would skip the fingerprint comparison
+        # below although fingerprints have already been recorded and may
+        # already differ. `_prepare_model` is inside on purpose: in train
+        # mode it records the training-data fingerprints before
+        # `model.train()`, which can fail for the same data reasons.
         try:
-            # load 模式下训练日期取自 checkpoint 自己的 config.json（代码审查 WR-01）。
+            # In load mode the training dates come from the checkpoint's own
+            # config.json.
             train_bounds = self._prepare_model()
             calendar = self._price_calendar(end_date)
-            # 与 config.model 的日期比较按日历上选中的 bar 做（G-03.7-7），所以在日历之后。
+            # The comparison with config.model's dates is bar-based, so it
+            # needs the calendar.
             if self.config.model_mode == "load":
                 self._warn_if_config_model_dates_differ(calendar, train_bounds)
             window = self._backtest_window(
@@ -415,7 +632,7 @@ class BaseBacktester(ABC):
         except Exception:
             self._compare_fingerprints_on_failure()
             raise
-        # 正常路径的这次比较不在 try 里，也不走 finally：否则顺利跑完会比两次。
+        # Outside the try (and not in a finally) so a clean run compares once.
         self._compare_fingerprints()
 
         metrics = window.metrics
@@ -425,7 +642,7 @@ class BaseBacktester(ABC):
         run_dir = self._report_and_persist(
             window.predictions, window.weights, window.simulation, metrics
         )
-        # wandb 默认关闭（D-28）：只有显式打开才会有任何数据离开本机。
+        # wandb is off by default; nothing leaves the machine unless enabled.
         if self.config.use_wandb:
             self._log_to_wandb(run_dir, metrics)
 
@@ -438,40 +655,62 @@ class BaseBacktester(ABC):
         )
 
     def run_cv(self) -> CVBacktestResult:
-        """模型 CV 回测的模板方法（D-02、D-16、D-17、D-35、D-36）。子类不覆盖。
+        """Replay a ``train_cv`` run fold by fold and simulate the stitched weights.
 
-        回放一次 `train_cv` 的交叉验证：读它在项目目录里写的 `cv_folds.json`，
-        每折用**该折自己的** checkpoint，只回测该折的样本外测试段。顺序：
+        A template method that subclasses do not override. It reads the
+        ``cv_folds.json`` manifest under ``config.cv_project_dir``, keeps the
+        folds whose test segment lies inside the backtest window, and checks
+        on the price calendar that those test segments are contiguous and
+        non-overlapping before any model is loaded (a stitched curve with a
+        gap or an overlap corresponds to no real trading path). Each fold is
+        then backtested on its own test segment with its own checkpoint, and
+        its in-sample split uses that fold's training dates, so with no gap
+        between folds the first label-horizon bars of every fold are
+        in-sample.
 
-        1. 读清单并校验格式（`_read_cv_folds`），只留测试段落在回测窗口内的折
-           （`_select_folds`）；
-        2. 在价格日历上断言这些折的测试段首尾相接、互不重叠
-           （`_assert_contiguous_folds`）。这一步先于任何模型加载与模拟：拼接
-           一个有缺口或重叠的序列得到的曲线不对应任何真实的交易路径；
-        3. 逐折：加载该折 checkpoint，`_backtest_window` 回测该折测试段（含预热）。
-           样本内/外按**该折**的 train 日期加标签期限划分（D-17 逐折），所以
-           gap 为 0 时每折开头的期限个 bar 是样本内，并各自 warning。
+        The per-fold weights are concatenated and simulated once over the
+        prices from the first ``test_start`` to the last ``test_end``, with
+        capital carried across fold boundaries; per-fold metrics still come
+        from the independent per-fold simulations. Fingerprints cover the
+        whole stitched window. The manifest's fold dates are authoritative;
+        a checkpoint whose recorded training dates select different bars
+        only logs a warning.
 
-        4. 拼接（D-35）：各折测试段权重沿 `timestamp` 拼起来，对「首折
-           test_start .. 末折 test_end」的价格跑**一次**连续模拟，资金在折边界
-           不重置；逐折指标仍来自上面各自独立的逐折模拟。拼接曲线按构造是样本
-           外的，只有每折开头的标签期限个 bar 是样本内，`in_sample_ranges`
-           逐段记下它们（`_stitched_split`）；
-        5. 指纹覆盖整个拼接窗口（D-27）：因子重新定到「首折预热起点 .. 末折
-           test_end」并重读后记录，价格指纹取自拼接价格，然后比对。某折的窗口
-           或这次拼接重读中途抛异常时，先做一次**部分**指纹比较
-           （`_compare_fingerprints_on_failure`，D-03.11-UAT-A），再把原始异常
-           原样抛出；
-        6. 落盘（`_persist_cv`），可选 wandb，返回 `CVBacktestResult`。
+        Returns
+        -------
+        CVBacktestResult
+            A ``CVBacktestResult`` with the run directory, the per-fold
+            records, and the stitched weights, simulation and metrics.
 
-        折日期经 `_iso_date` 规范成 ISO 日期（真实数据上是纳秒字符串），所以
-        判定按日期粒度进行。
+        Raises
+        ------
+        ValueError
+            If ``config.cv_project_dir`` is unset, ``model_mode``
+            is not ``"load"``, the manifest is malformed, no fold falls
+            inside the window, or the fold test segments are not
+            contiguous.
+        FileNotFoundError
+            If the manifest or a fold checkpoint is missing.
 
-        训练日期（WR-01、G-03.7-7）：每折以清单的训练日期为准。checkpoint 自己
-        记录的训练日期只与清单核对，按两对日期在价格日历上选中的 bar 比较
-        （`_same_training_bars`），不同时 warning 一次。每折的训练段本来就与
-        回测模型配置里那一段不同，所以这里从不与它比较；那个比较只属于
-        `run()` 的 load 模式。
+        Examples
+        --------
+        >>> backtester = MyBacktester(
+        ...     BacktestConfig(
+        ...         price_dataset=prices,
+        ...         model=model,
+        ...         model_mode="load",
+        ...         cv_project_dir="models/head_trial_20260925",
+        ...         start_date="2024-02-12",
+        ...         end_date="2024-04-17",
+        ...         output_dir="runs",
+        ...         rebalance_periods=2,
+        ...     )
+        ... )
+        >>> cv = backtester.run_cv()
+        >>> len(cv.folds), cv.weights.sizes
+        (8, Frozen({'timestamp': 48, 'symbol': 6}))
+        >>> cv.metrics["stitched"]["in_sample_ranges"][:2]
+        [('2024-02-12', '2024-02-13'), ('2024-02-20', '2024-02-21')]
         """
         if self.config.cv_project_dir is None:
             raise ValueError(
@@ -486,7 +725,7 @@ class BaseBacktester(ABC):
                 f"{self.config.model_mode!r}"
             )
         self._fingerprints = {}
-        # run_cv 只加载不训练：不能带着之前某次 train 模式 run() 的记录（WR-04）。
+        # run_cv only loads; never carry a checkpoint trained by an earlier run().
         self._trained_checkpoint = None
 
         folds = self._select_folds(self._read_cv_folds())
@@ -495,14 +734,13 @@ class BaseBacktester(ABC):
 
         records: list[dict] = []
         for fold in folds:
-            # 在项目目录下解析，而不是按进程工作目录（代码审查 WR-03）；解析后的
-            # 路径也就是逐折记录与 metrics.json 里落盘的 checkpoint。
+            # Resolved under the project directory, never the working
+            # directory; the resolved path is what the records persist.
             fold["checkpoint"] = self._resolve_fold_checkpoint(fold["checkpoint"])
             saved = self._load_model_checkpoint(fold["checkpoint"])
-            # D-16 以清单的折日期为准。checkpoint 自己记的训练日期只与清单核对
-            # （代码审查 WR-01、G-03.7-7）：两者本应出自同一次 train_cv。每折的
-            # 训练段本来就各不相同，所以这里从不与回测模型配置里的日期比较；
-            # 比较的是两对日期在价格日历上选中的 bar，不是文本。
+            # The manifest's dates are authoritative. The checkpoint's own
+            # recorded dates are only cross-checked against them, by the bars
+            # they select on the calendar rather than by text.
             recorded = self._recorded_train_bounds(saved)
             manifest_bounds = fold["_train_bounds"]
             if recorded is not None and not self._same_training_bars(
@@ -515,9 +753,10 @@ class BaseBacktester(ABC):
                     f"{manifest_bounds[0]}..{manifest_bounds[1]}; using the "
                     f"manifest's dates (D-16, WR-01)"
                 )
-            # 折窗口抛异常时补一次部分指纹比较（D-03.11-UAT-A）。循环体更前面
-            # （解析 / 加载 checkpoint）失败时手上要么没有指纹、要么还是上一折
-            # 的，所以特意不包进来。
+            # A partial fingerprint comparison on failure of the fold window.
+            # Earlier failures in the loop body (resolving or loading the
+            # checkpoint) hold no fingerprints, or the previous fold's, so
+            # they are deliberately outside the try.
             try:
                 window = self._backtest_window(
                     fold["test_start"],
@@ -538,15 +777,18 @@ class BaseBacktester(ABC):
                 }
             )
 
-        # D-35：拼接权重，对整段拼接价格跑一次连续模拟（资金不在折边界重置）。
+        # Concatenate the fold weights and simulate the whole span once, with
+        # capital carried across fold boundaries.
         first_start = folds[0]["test_start"]
         last_end = folds[-1]["test_end"]
         stitched_weights = xr.concat(
             [record["weights"] for record in records], dim="timestamp"
         )
 
-        # D-27：逐折记录的只是最后一折的窗口。重置后把因子定到整个拼接窗口
-        # （含首折预热）重读并记录，价格指纹取自拼接价格，然后比对。
+        # The per-fold loop left only the last fold's fingerprints. Re-date
+        # the factors to the whole stitched window (with the first fold's
+        # warm-up), re-read, take the price fingerprint from the stitched
+        # prices, then compare.
         self._fingerprints = {}
         try:
             self._redate_factors(first_start, last_end, calendar)
@@ -594,7 +836,7 @@ class BaseBacktester(ABC):
         run_dir = self._persist_cv(
             records, stitched_weights, stitched_simulation, metrics
         )
-        # wandb 默认关闭（D-28）；打开时记的是拼接曲线的指标。
+        # wandb is off by default; when enabled it logs the stitched metrics.
         if self.config.use_wandb:
             self._log_to_wandb(run_dir, stitched_metrics)
 
@@ -606,7 +848,8 @@ class BaseBacktester(ABC):
             metrics=metrics,
         )
 
-    #: 每折记录与 metrics.json 里逐折条目共有的清单字段。
+    #: Manifest fields shared by each fold record and the per-fold entries of
+    #: metrics.json.
     _CV_RECORD_KEYS = (
         "fold",
         "train_start",
@@ -617,16 +860,28 @@ class BaseBacktester(ABC):
     )
 
     def _read_cv_folds(self) -> list[dict]:
-        """读 `cv_project_dir` 下的折清单并校验（D-36），按 `fold` 排序返回。
+        """Read and validate the fold manifest under ``cv_project_dir``.
 
-        - 文件不存在：FileNotFoundError，写明路径；
-        - 没有 `format_version`，或不等于 `BaseModel.CV_FOLDS_FORMAT_VERSION`：
-          ValueError，写明读到的值与支持的版本。清单是持久化格式，猜着读一个
-          不认识的版本会悄悄读错旧（或将来）的训练 run；
-        - `folds` 不是非空 list：ValueError；
-        - 某折缺清单字段，或测试段起点晚于终点：ValueError，写明折号。
+        The manifest is a persisted format, so an absent or unsupported
+        ``format_version`` is refused rather than guessed at. Each fold must
+        carry every ``_CV_RECORD_KEYS`` field and a test segment that does
+        not end before it starts. The four dates are normalized with
+        ``_iso_date`` on a copy of each entry, and the raw training endpoints
+        are kept under ``_train_bounds`` for ``_training_window``, which
+        slices the model layer's way and needs them at full resolution.
 
-        每折的四个日期经 `_iso_date` 规范；返回的是新 dict，不改动读到的对象。
+        Returns
+        -------
+        list[dict]
+            The folds sorted by ``fold``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the manifest does not exist.
+        ValueError
+            If the format version is unsupported, ``folds`` is
+            not a non-empty list, or a fold entry is invalid.
         """
         path = Path(self.config.cv_project_dir) / BaseModel.CV_FOLDS_FILENAME  # type: ignore[arg-type]
         if not path.is_file():
@@ -675,9 +930,9 @@ class BaseBacktester(ABC):
                     f"is missing {missing}"
                 )
             fold = dict(entry)
-            # 训练段端点原样保留一份给 `_training_window`（代码审查 CR-01）：
-            # 清单里是 `np.datetime_as_string` 的纳秒字符串，模型层按它精确切片；
-            # 截成日期后日内折的整个 train_end 当天都会被当成训练段。
+            # Keep the training endpoints as written (nanosecond strings) for
+            # `_training_window`: truncating them to dates would make the
+            # whole train_end day count as training on intraday data.
             fold["_train_bounds"] = (entry["train_start"], entry["train_end"])
             for key in ("train_start", "train_end", "test_start", "test_end"):
                 fold[key] = self._iso_date(fold[key])
@@ -690,17 +945,21 @@ class BaseBacktester(ABC):
         return sorted(folds, key=lambda fold: fold["fold"])
 
     def _resolve_fold_checkpoint(self, recorded) -> str:
-        """清单里一折的 checkpoint 记录 -> 实际要加载的文件（代码审查 WR-03）。
+        """Resolve a manifest checkpoint entry to the file to load.
 
-        `train_cv` 的布局固定是 `{cv_project_dir}/{experiment_name}/{model_name}`，
-        所以先在 `cv_project_dir` 下按记录路径的**最后两段**找。项目目录整体
-        搬走了、或者清单里是相对 `model_save_dir` 写出的相对路径，都能找到，
-        而且与进程的工作目录无关。
+        ``train_cv`` lays checkpoints out as
+        ``{cv_project_dir}/{experiment}/{model}``, so the entry's last two
+        path components are first looked up under ``cv_project_dir``; this
+        survives moving the project directory and relative manifest entries
+        alike. Failing that, an absolute entry that exists is accepted.
+        Relative entries are never resolved against the working directory,
+        which could silently load a same-named checkpoint of another run.
 
-        找不到时，再接受记录里本身存在的**绝对**路径（比如只把清单拷到别处，
-        checkpoint 仍在原处）。相对路径从不按当前工作目录解析：那样换个目录
-        运行会找不到，更糟的是会悄悄加载工作目录下另一次训练的同名
-        checkpoint。两处都没有时 FileNotFoundError，写明两个候选路径。
+        Raises
+        ------
+        FileNotFoundError
+            If neither candidate exists; the message
+            names both.
         """
         project_dir = Path(self.config.cv_project_dir)  # type: ignore[arg-type]
         recorded_path = Path(str(recorded))
@@ -717,10 +976,16 @@ class BaseBacktester(ABC):
         )
 
     def _select_folds(self, folds: list[dict]) -> list[dict]:
-        """只留测试段整段落在 `[config.start_date, config.end_date]` 内的折。
+        """Keep the folds whose whole test segment lies inside the backtest window.
 
-        一个也不剩时 ValueError，写明回测窗口与清单测试段的覆盖范围。ISO 日期
-        字符串的字典序就是时间序。
+        ISO date strings compare in time order. An info line lists the
+        selection when some folds are dropped.
+
+        Raises
+        ------
+        ValueError
+            If no fold remains; the message gives the window and
+            the span of the manifest's test segments.
         """
         start = self._iso_date(self.config.start_date)
         end = self._iso_date(self.config.end_date)
@@ -744,20 +1009,26 @@ class BaseBacktester(ABC):
         return selected
 
     def _assert_contiguous_folds(self, folds: list[dict], calendar: np.ndarray) -> None:
-        """在价格日历上断言各折测试段首尾相接、互不重叠（D-35）。
+        """Check on the price calendar that the fold test segments abut exactly.
 
-        每折测试段在日历上的首 bar 是第一个不早于 `test_start` 的 bar，末 bar
-        是最后一个不晚于 `test_end` 当天的 bar。相邻两折必须满足「后一折首 bar =
-        前一折末 bar + 1」：
-        - 更大：缺口，中间的 bar 不属于任何折，拼接曲线会悄悄跳过它们；
-        - 更小或相等：重叠，同一批 bar 会被两个模型各交易一次。
-        两种情况都 ValueError，写明两折的折号与交界处的两个日期。某折测试段在
-        日历上没有 bar 同样报错。
+        A fold's first bar is the first calendar bar on or after
+        ``test_start`` and its last bar the last one on ``test_end``'s day.
+        Each fold must start exactly one bar after the previous one ends: a
+        larger index means bars that belong to no fold and would be skipped
+        by the stitched curve, a smaller one means bars traded by two
+        models.
+
+        Raises
+        ------
+        ValueError
+            On a gap, an overlap, or a fold with no price bars;
+            the message names the folds and dates involved.
         """
         cal = np.asarray(calendar).astype("datetime64[ns]")
         one_day = np.timedelta64(1, "D")
 
         def _span(fold: dict) -> tuple[int, int]:
+            """Return the (first, last) calendar indices of ``fold``'s test segment."""
             day_start = np.datetime64(fold["test_start"], "D").astype("datetime64[ns]")
             day_after_end = (np.datetime64(fold["test_end"], "D") + one_day).astype(
                 "datetime64[ns]"
@@ -804,11 +1075,20 @@ class BaseBacktester(ABC):
         train_start,
         train_end,
     ) -> _BacktestWindow:
-        """一个回测窗口的全部步骤，不落盘；`run()` 与 `run_cv()` 的每折共用。
+        """Run every step of one backtest window without persisting anything.
 
-        对齐因子日期并预测 -> 读价格 -> 预测铺到价格轴（D-06）-> 按
-        `[train_start, train_end + 标签期限]` 划分样本内外（D-17）-> 生成信号 ->
-        权重契约 -> 模拟 -> 基准 -> 指标。调用前模型必须已经准备好。
+        Shared by ``run()`` and by each fold of ``run_cv()``: align the factor
+        dates and predict, load the prices, reindex the predictions onto the
+        price axes (symbols without a prediction become NaN and are never
+        selected), split the window against ``[train_start, train_end +
+        label horizon]``, generate and check the weights, simulate, simulate
+        the benchmark and compute the metrics. The model must already be
+        prepared.
+
+        Raises
+        ------
+        ValueError
+            If the window contains no price bars.
         """
         predictions = self._align_and_predict(start_date, end_date, calendar)
 
@@ -819,7 +1099,8 @@ class BaseBacktester(ABC):
                 f"{end_date}"
             )
 
-        # 预测铺到价格数据集的全部标的上：缺的标的是 NaN，也就不可选（D-06）。
+        # Spread the predictions over every price symbol; a missing symbol is
+        # NaN and therefore never selectable.
         predictions = predictions.reindex(
             timestamp=prices.timestamp.values, symbol=prices.symbol.values
         )
@@ -846,16 +1127,15 @@ class BaseBacktester(ABC):
         )
 
     def _prepare_model(self) -> tuple:
-        """按 `model_mode` 准备模型（D-13），返回 D-17 用的训练段端点 `(train_start, train_end)`。
+        """Train or load the model and return its ``(train_start, train_end)``.
 
-        - `train`：`collect()` 再 `train()`，用的是**模型自己**配置里的
-          train/test 日期。回测窗口从不写进这些日期：回测窗口只决定预测区间和
-          样本内/外的划分，改写它们会让训练集跟着回测参数漂移。返回模型配置里
-          的两个日期。
-        - `load`：`_load_model_checkpoint(config.checkpoint)`。checkpoint 旁
-          `config.json` 记录的才是这个模型真正训练过的日期（代码审查 WR-01），
-          所以有记录（`_recorded_train_bounds`）时返回记录的日期，没有时返回
-          `config.model` 的日期。
+        In train mode the model is collected and trained on the dates in its
+        own config; the backtest window never overwrites them, because it
+        only decides the prediction span and the in-sample split. In load
+        mode the checkpoint is restored and the dates recorded in the
+        ``config.json`` beside it are returned when present, since those are
+        the dates the checkpoint was really trained on; otherwise
+        ``config.model``'s dates are returned.
         """
         model = self.config.model
         if self.config.model_mode == "load":
@@ -865,23 +1145,22 @@ class BaseBacktester(ABC):
                 return recorded
             return model.config.train_start, model.config.train_end
         model.collect()
-        # 训练段数据的指纹（代码审查 WR-05）：collect 刚读完、train 之前记录。
+        # Fingerprint the training data right after collect() and before
+        # train().
         self._record_training_fingerprints()
-        # 记下训练出的 checkpoint（代码审查 WR-04），config.json 与 metrics.json 据此记录。
+        # The checkpoint train() wrote is recorded in config.json and metrics.
         self._trained_checkpoint = str(model.train())
         return model.config.train_start, model.config.train_end
 
     def _warn_if_config_model_dates_differ(self, calendar, train_bounds: tuple) -> None:
-        """`run()` 的 load 模式：`train_bounds` 与 `config.model` 的训练日期选中的 bar 不同时 warning。
+        """Warn when the checkpoint's training dates and ``config.model``'s disagree.
 
-        `config.model` 的日期可能是手工重建模型时写的、或者早就过时的：拿它们
-        判定样本内，会把真正训练过的 bar 悄悄算成样本外（代码审查 WR-01）。
-        所以 D-17 用 checkpoint 记录的日期，两者不同时写明两对日期与
-        checkpoint 路径。比较走 `_same_training_bars`（G-03.7-7），同一段训练
-        bar 换一种文本写法不算不同。
-
-        checkpoint 没有记录时 `train_bounds` 就是 `config.model` 自己的日期，
-        两对原样相同，不会 warning。只在 `run()` 调用：`run_cv` 每折只与清单比较。
+        Used by ``run()`` in load mode only. ``config.model``'s dates may be
+        stale or hand-written; the split uses ``train_bounds`` (the
+        checkpoint's recorded dates) regardless, and this warning names both
+        pairs and the checkpoint path. Two pairs count as equal when they
+        select the same bars on ``calendar``, so a different spelling of the
+        same window does not warn.
         """
         model = self.config.model
         configured = (model.config.train_start, model.config.train_end)
@@ -897,12 +1176,11 @@ class BaseBacktester(ABC):
 
     @staticmethod
     def _recorded_train_bounds(saved: dict | None) -> tuple | None:
-        """checkpoint 旁 `config.json` 记录的 `(train_start, train_end)`；缺任一个时 None。
+        """Return the ``(train_start, train_end)`` recorded beside a checkpoint.
 
-        纯读取：不 warning，也不看 `config.model`。`_save_model` 在训练时写下
-        这两个日期，它们是这个 checkpoint 真正用过的训练段（代码审查 WR-01）。
-        与谁比较、不同时怎么办由调用方决定：`run()` 的 load 模式与
-        `config.model` 比，`run_cv` 每折只与清单比（G-03.7-7）。
+        Returns ``None`` when ``saved`` is not a mapping or either date is
+        missing. Pure read: no warning and no comparison, which the callers
+        do themselves.
         """
         if not isinstance(saved, dict):
             return None
@@ -912,31 +1190,24 @@ class BaseBacktester(ABC):
 
     @classmethod
     def _same_training_bars(cls, calendar, a: tuple, b: tuple) -> bool:
-        """两对 `(train_start, train_end)` 是否选中价格日历上同一段训练 bar（G-03.7-7）。
+        """Return whether two ``(train_start, train_end)`` pairs select the same bars.
 
-        所有训练日期的一致性判定都走这里，不比较日期的文本。同一个时刻可以写成
-        `"2024-01-01"`、`"2024-01-01T00:00:00"` 或 `np.datetime_as_string` 的
-        纳秒字符串；按文本比较会把它们判成不同，每次正常的 `run_cv` 都会
-        误报。
+        Every training-date consistency check goes through here instead of
+        comparing text: one instant can be spelled ``"2024-01-01"``,
+        ``"2024-01-01T00:00:00"`` or as a nanosecond string, and plain
+        ``pd.Timestamp`` equality is not enough either, because the model
+        slices string endpoints at their own resolution (on intraday data
+        ``"2024-02-09"`` includes the whole day while a midnight nanosecond
+        string stops at the previous bar). The pairs are therefore run
+        through the same pandas ``slice_indexer`` as ``_training_window``.
 
-        也不用裸的 `pd.Timestamp` 相等。模型层按
-        `data.sel(timestamp=slice(train_start, train_end))` 训练，字符串端点
-        按分辨率解释（代码审查 CR-01）：日内数据上 `"2024-02-09"` 包含当天全部
-        bar，而纳秒字符串的午夜只到前一个交易日的最后一个 bar。两者 Timestamp
-        相等，训练段却不同。所以这里与 `_training_window` 共用同一个 pandas
-        `slice_indexer` 和 `_slice_bound`，比较两对端点选中的 bar 位置。
-
-        规则：
-        - 两对原样相同：相同；
-        - 否则任一端点为 None：不同；
-        - 日历为空：两对端点逐个 `pd.Timestamp` 相等才相同；
-        - 否则两对选中的 (start, stop) bar 位置必须相同，并且落在日历首尾 bar
-          之外的端点必须与对应端点 `pd.Timestamp` 相等。`run()` 的日历只到
-          回测 `end_date`，两个都晚于它的不同 `train_end` 会截到同一个 stop；
-          没有这一条，过时的日期就不会被发现。
-
-        结果只决定是否 warning，从不决定用哪对日期。无法解析的日期文本由
-        pandas 直接报错，不会被悄悄当成相同。
+        Identical pairs are equal; a ``None`` endpoint in a non-identical
+        pair makes them different; on an empty calendar the endpoints are
+        compared as timestamps; otherwise the selected ``(start, stop)``
+        positions must match and any endpoint lying outside the calendar
+        must equal its counterpart as a timestamp, so two different
+        ``train_end`` values past the calendar's last bar do not collapse
+        into the same stop. Unparseable dates raise from pandas.
         """
         if tuple(a) == tuple(b):
             return True
@@ -962,30 +1233,26 @@ class BaseBacktester(ABC):
         return True
 
     def _load_model_checkpoint(self, checkpoint) -> dict | None:
-        """把 `checkpoint` 加载进 `config.model`；`run()` 与 `run_cv()` 的每折共用。
+        """Load ``checkpoint`` into ``config.model`` and return its ``config.json``.
 
-        1. 先检查 checkpoint 文件存在，缺了直接报错并写明路径。这一步必须在
-           任何特征计算之前，否则一个拼错的路径要白算一遍特征才暴露。
-        2. 读 checkpoint 旁的 `config.json`（`_read_checkpoint_config`），调用方
-           从中取训练日期。
-        3. 核对因子与标签的变量名和顺序，交给模型层唯一的一份检查
-           `model._assert_trained_variables`（G-03.7-9）。它按 `trained_on`
-           核对，没有 `trained_on` 时退回旧的配置字段并 warning，一点记录都
-           没有时 warning 后继续。这一步同样先于任何特征计算，拒收时不白算
-           特征。回测器自己不再比较变量：以前它拿因子配置字段
-           `factors[].factor_names` 比较，既会拒收模型自己的 checkpoint（该
-           字段与训练真正用的名字顺序不同时），也会放过错位的输入（派生的
-           名字漂移到恰好等于过时的配置字段时）。
-        4. 只对 `DLModel`，先把特征面板放进模型的 data backend。
-           `DLModel._read_checkpoint` 用 `num_symbols` 重建网络，而
-           `num_symbols` 读的正是这个 backend，空着就会在 `load()` 里报错
-           （03.7-RESEARCH.md Pitfall 11）。`MLModel` 的 checkpoint 就是完整
-           模型，不调 `_init_model`，所以跳过这一步。
-        5. `model.load(checkpoint)`。`load()` 会再核对一次变量，直接加载的
-           调用方因此同样受保护；模型对同一条 warning 只输出一次，这里不会
-           重复。
+        Shared by ``run()`` and each fold of ``run_cv()``. The file's
+        existence and the factor/label variable check
+        (``model._assert_trained_variables``) both run before any feature is
+        computed, so a wrong path or a mismatched model fails cheaply. For a
+        ``DLModel`` the feature panel is placed in the model's data backend
+        first, because rebuilding the network reads ``num_symbols`` from it;
+        an ``MLModel`` checkpoint is the whole model and skips this.
 
-        返回读到的 `config.json`（没有时 None），调用方从中取训练日期。
+        Returns
+        -------
+        dict | None
+            The mapping read from the ``config.json`` beside the checkpoint,
+            or ``None`` when there is none.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``checkpoint`` does not exist.
         """
         model = self.config.model
         path = Path(checkpoint)
@@ -1001,12 +1268,16 @@ class BaseBacktester(ABC):
         return saved
 
     def _read_checkpoint_config(self, path: Path) -> dict | None:
-        """checkpoint 旁由 `_save_model` 写下的 `config.json`；没有时 warning 并返回 None。
+        """Read the ``config.json`` beside a checkpoint, or warn and return ``None``.
 
-        回测器从中取训练日期。没有它就无从核对训练日期，只能照 `config.model`
-        原样使用。这不一定是错（比如手工拷贝的 checkpoint），所以只 warning
-        不中断。这条 warning 只管日期：因子与标签变量能否核对，由模型层的
-        `_assert_trained_variables` 自己说明（G-03.7-9）。
+        Without it the training dates cannot be checked and ``config.model``
+        is used as given, which is legitimate for a hand-copied checkpoint,
+        so this only warns. Variable checks are the model layer's job.
+
+        Raises
+        ------
+        ValueError
+            If the file exists but is not a JSON object.
         """
         sidecar = path.parent / "config.json"
         if not sidecar.is_file():
@@ -1024,11 +1295,12 @@ class BaseBacktester(ABC):
         return saved
 
     def _price_calendar(self, end_date: str) -> np.ndarray:
-        """价格数据集自己的交易日历（截至 `end_date`），用于按 bar 计数。
+        """Return the price dataset's sorted bar timestamps up to ``end_date``.
 
-        日期直接写 ISO 字符串进数据集配置：数据集 setter 的 ISO 规范化只在整份
-        配置赋值时发生。`overwrite=True` 绕过 XrBackend 的读缓存，否则拿回的是
-        之前更窄的一次读取（03.7-RESEARCH.md Pitfall 1）。
+        Used wherever the backtester counts bars. The dates are written
+        straight into the dataset config as ISO strings, and
+        ``read(overwrite=True)`` bypasses the backend's read cache, which
+        would otherwise return an earlier, narrower read.
         """
         dataset = self.config.price_dataset
         dataset.config.start_date = Date.START_DATE
@@ -1037,10 +1309,12 @@ class BaseBacktester(ABC):
         return np.sort(dataset.get_xarray_dataset().timestamp.values)
 
     def _warmup_start(self, calendar: np.ndarray, start_date: str) -> str:
-        """预热起点：在价格日历上从 `start_date` 往前数最大因子窗口个 bar（D-15）。
+        """Return the bar-counted warm-up start before ``start_date``.
 
-        按 bar 计数，不做日历日减法。`Factor._reset_dataset_config` 自己减的日历日
-        只是额外缓冲，这里不依赖它。
+        Counted in calendar bars, not calendar days; the calendar-day buffer
+        a factor subtracts on its own is only extra slack. When the calendar
+        is too short the start is clamped to its first bar and a warning
+        says by how many bars.
         """
         factors = self.config.model.config.factors
         window = max((int(f.config.window) for f in factors), default=0)
@@ -1060,17 +1334,16 @@ class BaseBacktester(ABC):
         return warmup
 
     def _refresh_factor_reads(self, factor) -> None:
-        """改过日期之后，强制重读因子背后的数据（D-14，03.7-RESEARCH.md Pitfall 1）。
+        """Force ``factor``'s underlying data to be re-read after its dates changed.
 
-        XrBackend 的 `read` 一旦已经持有数据就直接返回，不再打开存储；而
-        `BaseDataset.read()` 的 `_filter` 与 `Factor.read()` 的 `_auto_filter`
-        都是**就地**收窄这份缓存。所以模型先按自己的日期 collect/train 过之后，
-        再把因子日期放宽到「预热 + 回测窗口」重读，拿回的仍是先前那段更窄的
-        窗口：不报错，只是缺 bar——预热悄悄变短，或首个调仓日整行没有预测。
-
-        - 数据集总是 `read(overwrite=True)`：`cal` 策略的因子从数据集现算；
-        - `factor_data_strategy == "read"` 时，因子库本身也 `read(overwrite=True)`
-          （03.7-02 加的开关）：`read` 策略的特征直接来自因子库的缓存。
+        The Zarr backend returns its cached data once it holds any, and both
+        the dataset and the factor narrow that cache in place when they
+        filter. After the model has collected on its own dates, widening the
+        factor dates to warm-up plus window without this refresh would
+        silently return the old, narrower panel: a shorter warm-up or a
+        first rebalance bar with no predictions. The dataset is always
+        re-read; the factor store is re-read as well under the ``"read"``
+        strategy, whose features come from that store.
         """
         factor.config.dataset.read(overwrite=True)
         if self.config.model.config.factor_data_strategy == "read":
@@ -1079,11 +1352,12 @@ class BaseBacktester(ABC):
     def _redate_factors(
         self, start_date: str, end_date: str, calendar: np.ndarray
     ) -> None:
-        """把每个因子的日期定到「预热起点 .. end_date」、强制重读，并记录因子指纹。
+        """Re-date every factor to warm-up plus window, re-read and fingerprint it.
 
-        预热按 bar 计（`_warmup_start`，D-15），重读绕过读缓存（D-14），重读后
-        立刻记录指纹：此时数据集持有的正是「预热 + 窗口」（D-27）。`run()` 的
-        窗口与 `run_cv()` 的每折、以及拼接窗口的指纹都经过这里。
+        Used for the ``run()`` window, each ``run_cv()`` fold and the
+        stitched window. The fingerprints are recorded right after the
+        re-read, when each factor's dataset holds exactly warm-up plus
+        window.
         """
         warmup = self._warmup_start(calendar, start_date)
         for factor in self.config.model.config.factors:
@@ -1096,12 +1370,13 @@ class BaseBacktester(ABC):
     def _align_and_predict(
         self, start_date: str, end_date: str, calendar: np.ndarray
     ) -> xr.Dataset:
-        """改因子配置日期（含预热）-> 只算特征 -> 预测 -> 切回回测窗口（D-14）。"""
+        """Re-date the factors, compute the features, predict, and cut to the window."""
         with Timer(f"{self.class_name}: align_and_predict"):
             model = self.config.model
-            # 模型的 missing/extra 清单在 PERMNO 轴上是一串裸数字。模型层拿不到
-            # 价格库的路径（它只认因子库），所以由这里把还原函数递过去——模型自己
-            # 不认识任何厂商，只认识一个 `(symbols, day) -> list[str]` 的可调用。
+            # The model's missing/extra symbol lists are bare identifiers.
+            # It cannot reach the price store, so the labelling callable is
+            # handed over here; the model knows no vendor, only a
+            # `(symbols, day) -> list[str]` callable.
             model.symbol_labeller = self.ticker_lookup.label
             self._redate_factors(start_date, end_date, calendar)
 
@@ -1111,9 +1386,16 @@ class BaseBacktester(ABC):
             )
 
     def _load_prices(self, start_date: str, end_date: str) -> xr.Dataset:
-        """回测窗口内的成交价与估值价两列，深拷贝后返回，并记录价格数据集的指纹。
+        """Return the fill and valuation price columns over the window.
 
-        深拷贝：价格数据集对象可能与某个因子共用，之后再改日期不能改到这里。
+        The result is a deep copy, because the price dataset object may be
+        shared with a factor whose dates change later. The price
+        fingerprint is recorded here.
+
+        Raises
+        ------
+        ValueError
+            If either price column is missing from the store.
         """
         dataset = self.config.price_dataset
         dataset.config.start_date = start_date
@@ -1133,7 +1415,7 @@ class BaseBacktester(ABC):
         return prices
 
     def _record_price_fingerprint(self, prices: xr.Dataset) -> None:
-        """价格数据集的指纹，键 `price_dataset`，只覆盖成交价与估值价两列（D-27）。"""
+        """Record the fingerprint of the two price columns under ``price_dataset``."""
         columns = [
             self.MARKET.fill_price_column,  # type: ignore[union-attr]
             self.MARKET.valuation_price_column,  # type: ignore[union-attr]
@@ -1142,10 +1424,11 @@ class BaseBacktester(ABC):
 
     @staticmethod
     def _dataset_variables_fingerprint(factor) -> dict:
-        """一个因子（或标签）背后数据集当前持有范围的指纹，覆盖它真正消费的列。
+        """Fingerprint the data a factor (or label) consumes from its dataset.
 
-        KunQuant 因子（`FactorConfig`）是 `data_columns`；Polars 因子消费整个
-        lazyframe，所以是数据集的全部数据变量。
+        A KunQuant factor (``FactorConfig``) reads ``data_columns``; a
+        Polars factor consumes the whole frame, so every data variable is
+        covered.
         """
         ds = factor.config.dataset.get_xarray_dataset()
         if isinstance(factor.config, FactorConfig):
@@ -1156,21 +1439,18 @@ class BaseBacktester(ABC):
 
     @staticmethod
     def _store_fingerprint(ds: xr.Dataset) -> dict:
-        """因子库或标签库读出的面板（`get_features()` / `get_labels()`）的指纹，覆盖全部变量。"""
+        """Fingerprint a panel read from a factor or label store, all variables."""
         return dataset_fingerprint(ds, list(ds.data_vars))
 
     def _record_factor_fingerprints(self) -> None:
-        """每个因子背后数据集的指纹，键 `factor[{i}]:{类名}`（D-27）。
+        """Record one fingerprint per factor of the model.
 
-        覆盖的变量口径见 `_dataset_variables_fingerprint`。时间范围是因子数据集
-        当前持有的范围，调用时机保证它包含预热。
-
-        `factor_data_strategy == "read"` 时再记一个键 `factor_store[{i}]:{类名}`
-        （代码审查 WR-05）。read 策略的特征来自**因子库**（`factor.read`），不是
-        数据集，而以前只给数据集算指纹：因子库被重算或改动后，预测和权重都变了，
-        指纹却照样匹配、没有任何警告，这正是 D-27 要抓的情况。这个键覆盖
-        `factor.get_features()` 的全部变量，调用时机保证因子库已按「预热 + 窗口」
-        重读。
+        Keys are ``factor[{i}]:{ClassName}`` over the variables the factor
+        consumes, for the range its dataset currently holds (the caller
+        guarantees this includes the warm-up). Under the ``"read"``
+        strategy a second key ``factor_store[{i}]:{ClassName}`` covers the
+        panel returned by ``factor.get_features()``, because that store, not
+        the dataset, is what the predictions are built from.
         """
         strategy = self.config.model.config.factor_data_strategy
         for i, factor in enumerate(self.config.model.config.factors):
@@ -1184,18 +1464,17 @@ class BaseBacktester(ABC):
                 )
 
     def _record_training_fingerprints(self) -> None:
-        """train 模式训练所用数据的指纹；在 `collect()` 之后、`train()` 之前调用（代码审查 WR-05）。
+        """Record the fingerprints of the data a train-mode run trains on.
 
-        回测窗口的指纹（价格窗口、因子的「预热 + 窗口」）不含训练段。训练窗口里
-        的一次回溯重算复权会让重建时训练出另一个模型，以前不会有任何警告。所以
-        对模型的每个因子与标签各记一个键，范围是 `collect()` 刚读过的范围（模型
-        自己的 start_date..end_date，另含因子自带的日历日缓冲）：
-
-        - `cal` 策略：`train_factor[{i}]:{类名}` / `train_label[{i}]:{类名}`，
-          覆盖背后数据集真正消费的列（`_dataset_variables_fingerprint`）；
-        - `read` 策略：`train_factor_store[{i}]:{类名}` /
-          `train_label_store[{i}]:{类名}`，覆盖因子库 / 标签库读出的全部变量。
-          read 策略训练时不读数据集，只有库是训练真正用到的数据。
+        Called after ``collect()`` and before ``train()``. The window
+        fingerprints do not cover the training span, so without these a
+        rebuilt run could train a different model unnoticed. One key per
+        factor and label over the range ``collect()`` just read:
+        ``train_factor[{i}]:{ClassName}`` / ``train_label[{i}]:{ClassName}``
+        over the consumed dataset columns under the ``"cal"`` strategy, or
+        ``train_factor_store[{i}]:{ClassName}`` /
+        ``train_label_store[{i}]:{ClassName}`` over the store panels under
+        the ``"read"`` strategy, where the stores are the data actually used.
         """
         model_config = self.config.model.config
         for prefix, items, strategy, getter in (
@@ -1214,27 +1493,25 @@ class BaseBacktester(ABC):
                     )
 
     def _compare_fingerprints(self, *, partial: bool = False) -> None:
-        """与 `expected_fingerprint` 比对本次记录的指纹（D-27）；只 warning，不中断。
+        """Compare this run's fingerprints against ``expected_fingerprint``.
 
-        只在 `expected_fingerprint` 不为 None 时比对。某个键只出现在一侧，或
-        `digest` / `start` / `end` / `n_timestamps` / `n_symbols` 任一不同，都对
-        该键发一条 warning，写明键名和不同的字段。数据集会被追加，Tiingo 也会在
-        新分红后回溯重算复权价，所以重建出来的回测必须能察觉数据变了，而不是
-        悄悄得出不同的结果；但变了的数据仍然可以回测，所以继续运行。
+        Does nothing when ``expected_fingerprint`` is ``None``. A key present
+        on one side only, or a key whose ``FINGERPRINT_COMPARED_FIELDS``
+        differ, logs one warning naming the key and the fields. Datasets get
+        appended to and adjusted prices get restated, so a rebuilt run must
+        notice changed data, but changed data can still be backtested, so
+        this never raises.
 
-        `partial=True` 是失败路径上的那次比较（D-03.11-UAT-A，只由
-        `_compare_fingerprints_on_failure` 传）：本次运行在读完之前就抛了异常，
-        手上只有抛出那一刻已经记下的指纹。两点不同：
+        With ``partial=True`` (the failure path) each warning ends with
+        ``FINGERPRINT_PARTIAL_NOTE`` instead of ``"continuing"``, because
+        the original error follows and an interrupted read may explain a
+        difference, and keys expected but not yet read are skipped, since
+        "not read yet" is not "not read".
 
-        - 每条 warning 的结尾换成 `FINGERPRINT_PARTIAL_NOTE` 而不是
-          "continuing"——这次比较之后跟着的是原始异常，不是继续运行，而且范围
-          可能是被打断的读（`run_cv` 下还可能只是某一折的窗口），所以
-          `digest` / `start` / `end` / `n_timestamps` 的不同不一定意味着数据变了；
-        - 「只在 expected_fingerprint 里、本次没读」这一支整个跳过：部分比较下
-          这个条件的含义是「**还没**读到」，不是「没有读」，报出来是假警报。
-
-        其余分支（两边都有但字段不同、本次读了而 expected 里没有）行为不变，
-        `partial=False` 时的每条消息文本与以前逐字节相同。
+        Parameters
+        ----------
+        partial : bool
+            Whether this is the failure-path comparison.
         """
         expected = self.expected_fingerprint
         if expected is None:
@@ -1243,7 +1520,7 @@ class BaseBacktester(ABC):
         actual = to_jsonable(self._fingerprints)
         for key in sorted(set(expected) | set(actual)):  # type: ignore[arg-type]
             if key not in actual:
-                # 部分比较下这只说明还没读到它，报出来是假警报。
+                # On the failure path this only means "not read yet".
                 if partial:
                     continue
                 logger.warning(
@@ -1277,38 +1554,47 @@ class BaseBacktester(ABC):
                 )
 
     def _compare_fingerprints_on_failure(self) -> None:
-        """失败路径上做一次部分指纹比较（D-03.11-UAT-A）；自己坏掉也绝不改变抛出的异常。
+        """Run a partial fingerprint comparison on the failure path, never raising.
 
-        `run()` / `run_cv()` 在窗口算完之后才比对指纹，可是因子指纹在
-        `_redate_factors` 里、`predict_panel` 之前就记好了。窗口中途抛异常时，
-        指纹已经存在、而且可能已经不一样，比对却根本没跑：操作者只看到下游那个
-        错误，完全不知道数据变了——而这正是 D-27 存在的意义。所以异常路径上补这
-        一次比较，标成部分比较（`partial=True`）。
+        ``run()`` and ``run_cv()`` compare fingerprints only after a window
+        completes, but the factor fingerprints are recorded before
+        prediction. When the window fails part-way the data may already
+        have changed and the operator would only see the downstream error,
+        so the comparison is repeated here with ``partial=True``.
 
-        **这里吞掉异常是对的，别改回去。** 03.11 的 WR-02 定下的是相反的默认：
-        把模块自身的 bug 藏起来的 guard 是缺陷。这里是唯一的例外，因为它保护的
-        恰恰是「操作者仍然看得到**真正的**异常」：诊断只是额外信息，永远不能顶替
-        原始错误。它也没有藏住任何东西——诊断自己失败会另发一条 warning，随后原始
-        异常原样继续向上抛。那条 warning 里不含 "data fingerprint mismatch"，
-        所以不会被误读成一次 D-27 不匹配；连写日志本身也再包一层，免得日志 sink
-        坏掉又把问题请回来。
+        Swallowing exceptions is deliberate and must stay: this diagnostic
+        is extra information and must never replace the original error. A
+        failure of the diagnostic itself logs a warning that does not
+        contain "data fingerprint mismatch", and even that logging is
+        guarded so a broken log sink cannot become the raised error.
         """
         try:
             self._compare_fingerprints(partial=True)
-        except BaseException as error:  # noqa: BLE001 - 见上：诊断不能顶替原始异常
+        except BaseException as error:  # noqa: BLE001 - never replace the error
             try:
                 logger.warning(
                     f"{self.class_name}: the failure-path data diagnostic itself "
                     f"raised {type(error).__name__}: {error!r}; it is skipped and "
                     f"the original error follows (D-03.11-UAT-A)"
                 )
-            except BaseException:  # noqa: BLE001 - 日志 sink 坏掉不能变成抛出的异常
+            except BaseException:  # noqa: BLE001 - a broken log sink must not raise
                 pass
 
     def _assert_weights_contract(
         self, weights: xr.Dataset, prices: xr.Dataset
     ) -> None:
-        """目标权重契约（D-03）：非调仓行全 NaN，调仓行全有限且毛敞口 <= 1。"""
+        """Check the target-weight contract of ``weights`` against ``prices``.
+
+        ``weights`` must carry a ``weight`` variable on ``("timestamp",
+        "symbol")`` with exactly the price axes. Every row is either all-NaN
+        (hold) or all-finite (rebalance), and a rebalance row's gross
+        exposure, the sum of absolute weights, is at most 1.
+
+        Raises
+        ------
+        ValueError
+            On the first violated rule, naming the offending bar.
+        """
         if "weight" not in weights.data_vars:
             raise ValueError(
                 f"{self.class_name}: weights must carry a 'weight' variable, got "
@@ -1354,40 +1640,48 @@ class BaseBacktester(ABC):
     def _generate_signals(
         self, predictions: xr.Dataset, prices: xr.Dataset
     ) -> xr.Dataset:
-        """预测 + 价格 -> 满足 D-03 契约的目标权重 `xr.Dataset`。"""
+        """Turn predictions and prices into target weights satisfying the contract.
+
+        Both inputs share the price axes. The result must pass
+        ``_assert_weights_contract``: a ``weight`` variable on
+        ``(timestamp, symbol)`` whose rows are all-NaN on hold bars and
+        all-finite with gross exposure at most 1 on rebalance bars.
+        """
 
     @abstractmethod
     def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:
-        """按目标权重模拟组合；bar t 的信号在 bar t+1 成交（D-05）。"""
+        """Simulate the portfolio; a signal at bar t fills at bar t+1's fill price."""
 
     @abstractmethod
     def _simulate_benchmark(
         self, start_date: str, end_date: str
     ) -> SimulationResult | None:
-        """基准的买入持有模拟；没有基准时返回 None（D-08）。"""
+        """Simulate a buy-and-hold benchmark, or return ``None`` when there is none."""
 
     @abstractmethod
     def _engine_stats(self, simulation: SimulationResult) -> dict:
-        """引擎自己的整段统计指标，键为指标名。"""
+        """Return the engine's whole-window statistics keyed by metric name."""
 
     @abstractmethod
     def _period_returns_stats(
         self, simulation: SimulationResult, ranges: list[tuple[str, str]]
     ) -> dict:
-        """只看 `ranges` 内收益的收益类统计（D-34）。
+        """Return return-based statistics restricted to the bars inside ``ranges``.
 
-        组合对象不能按时间切片（03.7-RESEARCH.md Pitfall 5），重新模拟一段又会
-        重置资金、改变路径，所以切片统计只能取**同一次**连续模拟的收益序列，
-        截到 `ranges`（ISO 日期对，含两端）后交给引擎的收益统计。多段时把各段
-        收益按时间顺序拼起来算。
+        A portfolio object cannot be sliced in time and re-simulating a
+        sub-period would reset capital and change the path, so the
+        statistics are computed from the return series of the same
+        simulation, cut to ``ranges`` (inclusive pairs of bar labels) and
+        concatenated in time order when there are several.
         """
 
     def _label_horizon_bars(self) -> int:
-        """模型所有标签里最大的 `n_forward_periods`，单位是 bar（D-17）。
+        """Return the largest ``n_forward_periods`` of the model's labels, in bars.
 
-        `train_end` 那一 bar 的标签读的是之后 n 个 bar 的价格，所以这 n 个 bar
-        也属于样本内。标签的 `config.kwargs` 为 None 或没有这个键时，它贡献 0，
-        并且 warning 写明标签类名：不静默猜一个值。
+        The label of the ``train_end`` bar reads the next n bars of prices,
+        so those bars are in-sample too. A label with no
+        ``n_forward_periods`` in ``config.kwargs`` contributes 0 and logs a
+        warning naming its class rather than guessing a value.
         """
         horizon = 0
         for label in self.config.model.config.labels:
@@ -1405,27 +1699,20 @@ class BaseBacktester(ABC):
     def _training_window(
         self, calendar: np.ndarray, train_start, train_end
     ) -> tuple[str, str] | None:
-        """模型的有效训练窗口 `[train_start, train_end + 标签期限]`（D-17），bar 标签对。
+        """Return the effective training window as a pair of bar labels.
 
-        期限在价格日历上按 bar 数，不做日历日加法：周五的 `train_end` 加 2 个
-        bar 是下周二。
-        - 训练段：日历上与模型层 `data.sel(timestamp=slice(train_start, train_end))`
-          **同一个** pandas `slice_indexer` 选中的 bar。端点原样交过去
-          （`_slice_bound`），所以 `"2024-05-17"` 包含当天全部 bar，
-          `"2024-05-17T13:00"` 只到 13:00，纳秒精度的折日期精确匹配；
-        - 起点：训练段的第一个 bar；
-        - 终点：训练段的最后一个 bar 再往后数期限个 bar，超出日历时截到最后一个 bar。
+        The window is ``[train_start, train_end + label horizon]`` counted
+        in calendar bars, not calendar days (a Friday ``train_end`` plus two
+        bars is the next Tuesday). The trained bars are the ones the model
+        layer's ``data.sel(timestamp=slice(train_start, train_end))``
+        selects, found with the same pandas ``slice_indexer`` on the
+        unchanged endpoints; the end is then advanced by the horizon and
+        clamped to the last calendar bar. Both labels come from
+        ``_bar_label``: dates for daily bars, full timestamps intraday.
 
-        返回的两端经 `_bar_label`：日线是日期，日内保留时刻。
-
-        **代码审查 CR-01 更正。** 以前先把 `train_end` 截成当天午夜再找「最后一个
-        不晚于它的 bar」。日内数据上那一天的 bar 全都晚于午夜，于是落到**前一个
-        交易日**的最后一个 bar 再加期限，终点又被截成日期、按天比较：`train_end`
-        当天全算样本内，而真正读过训练标签的、落在下一个交易日的那期限个 bar
-        却被算成样本外，污染样本外指标。日线的 bar 就在午夜，不受影响。
-
-        任一日期为 None 时返回 None 并 warning：没有训练日期就无从判断样本内，
-        metrics 里记显式的 null，而不是猜。
+        Returns ``None``, with a warning, when either date is ``None``; the
+        metrics then record a null training window and every bar counts as
+        out-of-sample.
         """
         if train_start is None or train_end is None:
             logger.warning(
@@ -1458,17 +1745,17 @@ class BaseBacktester(ABC):
     def _split_window(
         self, window_timestamps: np.ndarray, training_window: tuple[str, str] | None
     ) -> dict:
-        """把回测窗口的 bar 切成样本内与样本外（D-17）。
+        """Split the window bars into in-sample and out-of-sample ranges.
 
-        返回三个键，原样并入 metrics 顶层：
-        - `training_window`：有效训练窗口的 bar 标签对（`_bar_label`），或 None；
-        - `in_sample_range`：回测窗口与训练窗口重叠部分的首尾 bar，或 None；
-        - `out_of_sample_ranges`：重叠之外的 bar 组成的连续段，0、1 或 2 段。
-
-        比较按**精确的 bar 时间戳**做（代码审查 CR-01）：以前按日期比较，日内
-        数据上 `train_end` 所在那一天整天算样本内，而下一天读过训练标签的 bar
-        算样本外。两个窗口都是区间，所以重叠部分一定连续。重叠非空时 warning
-        写明两个窗口，并说明样本内外分开报告；回测照常继续。
+        Returns three keys that are merged into the top level of the
+        metrics: ``training_window`` (the input pair or ``None``),
+        ``in_sample_range`` (first and last bar of the overlap between the
+        window and the training window, or ``None``) and
+        ``out_of_sample_ranges`` (the 0, 1 or 2 contiguous runs of bars
+        outside the overlap). Bars are compared as exact timestamps. Both
+        windows are intervals, so the overlap is one contiguous run; when it
+        is non-empty a warning names both windows and the backtest goes on
+        with the two parts reported separately.
         """
         timestamps = np.asarray(window_timestamps).astype("datetime64[ns]")
         split = {
@@ -1519,10 +1806,10 @@ class BaseBacktester(ABC):
 
     @classmethod
     def _in_ranges(cls, timestamps: np.ndarray, ranges: list[tuple[str, str]]) -> np.ndarray:
-        """`timestamps` 中落在任一 bar 标签对内（精确时间戳、含两端）的布尔掩码。
+        """Return a mask of the ``timestamps`` inside any of the inclusive label pairs.
 
-        标签是 `_bar_label` 写出的端点，日期即午夜。不按天比较（代码审查
-        CR-01）：日内数据上一个午夜 bar 的标签按天比较会把当天其余 bar 也算进来。
+        Labels are ``_bar_label`` endpoints and are compared as exact
+        timestamps (a date is midnight), never by day.
         """
         ts = np.asarray(timestamps).astype("datetime64[ns]")
         mask = np.zeros(ts.size, dtype=bool)
@@ -1531,13 +1818,20 @@ class BaseBacktester(ABC):
         return mask
 
     def _turnover(self, simulation: SimulationResult) -> xr.DataArray:
-        """每个有成交的 bar 的换手率，维度 `timestamp`（D-22，口径由本方法定义）。
+        """Return the turnover of every bar that had fills, on a ``timestamp`` axis.
 
-        换手率 = 该 bar 所有订单的单边成交额之和（`|size| x 成交价`）/ 上一个
-        bar 的组合净值；窗口第一个 bar 没有上一个 bar，用 `config.init_cash`。
-        单边口径：从空仓全仓买入约为 1，整个组合换成另一批标的（先卖后买）约为 2。
-        分母取成交前的净值而不是成交 bar 的净值，这样换手率不含成交当 bar 的盈亏。
-        没有订单时返回空数组。
+        Turnover is the one-sided traded notional of the bar (the sum of
+        ``|size| x price`` over its orders) divided by the portfolio value
+        of the previous bar, or ``config.init_cash`` for the first bar of
+        the window. One-sided means a full buy-in from cash is about 1 and
+        replacing the whole book (sell then buy) about 2. Using the value
+        before the fills keeps the bar's own profit or loss out of the
+        ratio. An empty array is returned when there are no orders.
+
+        Raises
+        ------
+        ValueError
+            If an order timestamp is not on the equity axis.
         """
         orders = simulation.orders
         if orders.sizes.get("order", 0) == 0:
@@ -1573,11 +1867,12 @@ class BaseBacktester(ABC):
         )
 
     def _turnover_summary(self, turnover: xr.DataArray, bar_interval) -> dict:
-        """换手率汇总：每次调仓均值、总和、年化。
+        """Summarize turnover as mean per rebalance, total and annualized.
 
-        年化 = 每次调仓均值 x 每年 bar 数 / `rebalance_periods`；每年 bar 数取
-        `MARKET.year_freq(bar_interval) / bar_interval`。没有成交 bar 时均值与年化
-        是 NaN（落盘为 null），总和是 0。
+        Annualized is the mean times bars per year (``MARKET.year_freq``
+        divided by ``bar_interval``) divided by ``rebalance_periods``. With
+        no fills the mean and the annualized value are NaN (written as
+        null) and the sum is 0.
         """
         values = np.asarray(turnover.values, dtype=np.float64)
         interval = pd.Timedelta(bar_interval)
@@ -1592,22 +1887,20 @@ class BaseBacktester(ABC):
     def _period_record_stats(
         self, simulation: SimulationResult, ranges: list[tuple[str, str]]
     ) -> dict:
-        """按时间段过滤的订单、交易与换手统计（D-34）。
+        """Return order, trade and turnover statistics restricted to ``ranges``.
 
-        - `order_count` / `fees_paid` / `traded_notional`：成交时间落在段内的订单；
-        - `closed_trade_count`：平仓时间落在段内、状态为 Closed 的交易；
-        - `open_trade_count`：段末仍未平仓的交易（入场不晚于段末，且尚未平仓
-          或平仓晚于段末）；
-        - `turnover`：段内成交 bar 的 `_turnover_summary`。
+        ``order_count``, ``fees_paid`` and ``traded_notional`` count the
+        orders filled inside the ranges; ``closed_trade_count`` the trades
+        with status ``"Closed"`` whose exit falls inside them;
+        ``open_trade_count`` the trades still open at each range's end
+        (entered on or before it, and not yet exited or exited after it);
+        ``turnover`` is the ``_turnover_summary`` of the fill bars inside
+        the ranges. Several ranges never overlap, so the counts add up
+        across them.
 
-        多段时：订单与已平仓交易按段求和（段互不重叠，等于逐段相加），段末
-        持仓数逐段相加，换手率汇总取所有段内成交 bar 的并集。
-
-        **这两个交易计数与整段的 `whole` 是同一个口径：持仓级（D-02）。** 它们数
-        的是 `simulation.trades`，而那份记录本身就是按 vectorbt 的 `positions`
-        口径建出来的（一个标的从建仓到清空算一笔）。所以段内的
-        `closed_trade_count` 逐段相加等于 `whole["Total Closed Trades"]`，段末
-        未平仓数同理——两边对得上账，这是刻意维持的性质，不是巧合。
+        The trade counts use the same position-level definition as the
+        whole-window statistics (one entry-to-flat round trip per symbol),
+        so the per-range closed trades sum to the whole window's total.
         """
         orders = simulation.orders
         if orders.sizes.get("order", 0) > 0:
@@ -1629,8 +1922,8 @@ class BaseBacktester(ABC):
             closed_trade_count = int(
                 (closed & self._in_ranges(trades["exit_timestamp"].values, ranges)).sum()
             )
-            # 精确时间戳比较，不按天（代码审查 CR-01）：日内段末是某个 bar，
-            # 段末之后同一天才入场的交易不算「段末仍未平仓」。
+            # Exact timestamps, not days: on intraday data a trade entered
+            # later on the range's last day is not "open at the range end".
             entry_ts = trades["entry_timestamp"].values.astype("datetime64[ns]")
             exit_ts = trades["exit_timestamp"].values.astype("datetime64[ns]")
             for _, end in ranges:
@@ -1657,38 +1950,33 @@ class BaseBacktester(ABC):
         benchmark: SimulationResult | None,
         split: dict,
     ) -> dict:
-        """整段、样本内、样本外三块指标，全部取自同一次连续模拟（D-17、D-22、D-34）。
+        """Compute the whole, in-sample and out-of-sample metric blocks.
 
-        - `whole`：引擎的整段统计（不含基准），加 `turnover` 汇总与 `order_count`
-          （整段的成交笔数）；
-        - `in_sample`：样本内区间的收益统计（`_period_returns_stats`）合并按区间
-          过滤的订单/交易/换手统计（`_period_record_stats`）；没有样本内区间时 None；
-        - `out_of_sample`：同上，作用于样本外各段。两段时收益统计用拼接后的
-          样本外收益，记录统计把两段相加；没有样本外区间时 None；
-        - `benchmark`：只在有基准时出现（D-08）；
-        - `split` 的每个键原样并入顶层：`run()` 是 `_split_window` 的
-          `training_window` / `in_sample_range` / `out_of_sample_ranges`；
-          `run_cv()` 的拼接曲线是 `_stitched_split` 的 `training_windows` /
-          `in_sample_ranges` / `out_of_sample_ranges`。`split` 带
-          `in_sample_ranges`（可以多段）时样本内切片用它，否则用单段的
-          `in_sample_range`。
-
-        本方法与本模块的任何路径都不会发起第二次模拟：组合不能切片，切片重算
-        会重置资金、改变路径。
+        All three come from the same continuous simulation; nothing here
+        simulates a second time. ``whole`` is the engine's whole-window
+        statistics plus the ``turnover`` summary and ``order_count``.
+        ``in_sample`` and ``out_of_sample`` merge ``_period_returns_stats``
+        and ``_period_record_stats`` over their ranges and are ``None`` when
+        there is no such range. ``benchmark`` appears only when a benchmark
+        was simulated. Every key of ``split`` is copied to the top level;
+        the in-sample ranges come from ``split["in_sample_ranges"]`` when
+        present (the stitched curve) and from the single
+        ``split["in_sample_range"]`` otherwise.
         """
         whole = self._engine_stats(simulation)
         whole["turnover"] = self._turnover_summary(
             self._turnover(simulation), simulation.bar_interval
         )
-        # 整段的成交笔数（CONTEXT item 3）：交易统计换成持仓级之后，`whole` 里
-        # 再没有任何「到底成交了多少次」的答案——`Total Fees Paid` 与 `turnover`
-        # 只回答成本，不回答次数。用 `.sizes.get("order", 0)` 而不是裸下标：没有
-        # 成交的模拟里 orders 是空 Dataset，压根没有 order 这个维度，裸下标会在
-        # 运行目录还处于暂存态时抛 KeyError，把整个 run 一起删掉。
+        # The number of fills over the window: the position-level trade
+        # statistics no longer answer "how many times did we trade".
+        # `.sizes.get` rather than a bare subscript, because a simulation
+        # with no fills has an empty orders dataset without an `order`
+        # dimension, and a KeyError here would discard the staged run.
         whole["order_count"] = int(simulation.orders.sizes.get("order", 0))
         metrics: dict = {"whole": whole}
 
         def _slice(ranges: list[tuple[str, str]]) -> dict | None:
+            """Return the merged period statistics over ``ranges``, or ``None``."""
             if not ranges:
                 return None
             return {
@@ -1711,10 +1999,10 @@ class BaseBacktester(ABC):
         return metrics
 
     def _report_notes(self) -> list[str]:
-        """报告与 metrics.json 里附带的说明（D-21）。
+        """Return the notes attached to the report and to ``metrics.json``.
 
-        默认只有一条：本阶段不模拟融券费与做空融资成本，所以空头一侧的收益偏
-        乐观。模拟了借券成本的引擎覆盖本方法，去掉或改写这条说明。
+        The default note says that no borrow or short-financing cost is
+        modelled. An engine that models borrow costs overrides this.
         """
         return [
             "No borrow or short-financing cost is modelled, so short-side "
@@ -1723,9 +2011,10 @@ class BaseBacktester(ABC):
 
     @classmethod
     def _flatten_numeric(cls, prefix: str, value, out: dict) -> None:
-        """把嵌套 dict 里有限的数值叶子摊平成 `prefix/key` 写进 `out`。
+        """Flatten the finite numeric leaves of a nested dict into ``out``.
 
-        布尔、NaN、inf、时间、字符串都跳过：wandb summary 只收可比较的数。
+        Booleans, NaN, infinities, timestamps and strings are skipped; the
+        wandb summary only takes comparable numbers.
         """
         if isinstance(value, dict):
             for key, item in value.items():
@@ -1739,13 +2028,15 @@ class BaseBacktester(ABC):
                 out[prefix] = number
 
     def _log_to_wandb(self, run_dir: Path, metrics: dict) -> None:
-        """把指标与报告记到一个单独的回测 wandb run（D-28），只在 `use_wandb` 时调用。
+        """Log the metrics and report to a separate wandb run.
 
-        - project 是 `{类名}_backtest`，run 名是运行目录名，与模型训练的 run 分开；
-        - run config 是 `to_jsonable(get_config())`（含数据指纹）；
-        - summary 收 `whole` / `in_sample` / `out_of_sample` 三块里有限的数值叶子，
-          键形如 `whole/<指标>`，嵌套的换手率是 `whole/turnover/<键>`；
-        - `report` 记 report.html 的内容，然后 finish。
+        Called only when ``use_wandb`` is set. The project is
+        ``{ClassName}_backtest`` and the run is named after the run
+        directory, apart from the model's training runs. The run config is
+        ``get_config()`` (fingerprints included), the summary holds the
+        finite numeric leaves of the ``whole``, ``in_sample`` and
+        ``out_of_sample`` blocks as ``whole/<metric>`` and so on, and
+        ``report`` carries the HTML report.
         """
         run = wandb.init(
             project=f"{self.class_name}_backtest",
@@ -1761,26 +2052,22 @@ class BaseBacktester(ABC):
         run.finish()
 
     def _run_dir_name(self) -> str:
-        """`{class}_{timestamp}`（D-24）；带微秒，同一秒内的两次运行不会撞名。"""
+        """Return ``{ClassName}_{timestamp}``, unique down to the microsecond."""
         return f"{self.class_name}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
     def _drawdown_span(self, simulation: SimulationResult) -> dict | None:
-        """最深的那一次回撤：**最低点到修复**；基类找不出来，返回 None（quick 260916-hro）。
+        """Return the deepest drawdown from its valley to recovery, or ``None``.
 
-        基类**不读** `simulation.native`——那是产出它的引擎才能读的对象。能从自己
-        的结果里认出最深回撤的引擎覆盖本方法，返回
-        `{"valley", "end", "bars", "depth", "recovered"}`：`valley` 是这一段回撤里
-        **最深的那个 bar**，`end` 是它修复的那个 bar，两个端点都是 `_bar_label`
-        写出的 bar 标签；`bars` 是两者相距的 bar 数（`end - valley`），既不是日历
-        天，也**不是** `Max Drawdown Duration`；`depth` 是负的小数，`recovered`
-        说明它有没有在最后一个 bar 之前修复。
-
-        返回 None 的引擎，报告页就是加这个功能之前的样子：不画三角，页首也不多
-        出那一行。
-
-        故意**不是** `@abstractmethod`：这是报告上的一个细节，不该逼着以后每个
-        引擎都实现一遍（`tests/test_backtest_contracts.py` 把每一层的抽象方法集合
-        钉成了精确的 frozenset，加一个抽象方法会让它转红）。
+        The base class does not read ``simulation.native``, so it returns
+        ``None`` and the report shows no drawdown markers. An engine that
+        can find the deepest drawdown in its own result overrides this and
+        returns ``{"valley", "end", "bars", "depth", "recovered"}``:
+        ``valley`` is the deepest bar and ``end`` the bar it recovered on
+        (both ``_bar_label`` strings), ``bars`` the number of bars between
+        them (not calendar days, and not the maximum drawdown duration),
+        ``depth`` a negative fraction and ``recovered`` whether the
+        recovery happened before the last bar. Deliberately not abstract: it
+        is a report detail no engine is forced to implement.
         """
         return None
 
@@ -1791,45 +2078,40 @@ class BaseBacktester(ABC):
         *,
         drawdown_span: dict | None = None,
     ) -> dict:
-        """report.html 顶部「日期与设置」那块的展示文本（quick 260915-sxx）。
+        """Return the "dates and settings" lines at the top of ``report.html``.
 
-        `drawdown_span` 非空时多出一行，把 `_drawdown_span` 找到的那一段用文字写
-        一遍（quick 260916-hro），这样页面上的图与字说的是同一件事：写出来的两个
-        bar 就是两个三角所在的 bar，也就是**最低点**与**修复**那两个 bar。长度一律
-        写成交易日（bar 数）：时间轴跨的日历天数比这个数大，读的人拿轴去量会被
-        误导（D-2）。
+        Pure presentation: it reads ``block`` and ``self.config``, computes
+        no statistics, and returns an ordered mapping of label to
+        formatted text that the report module escapes and renders.
+        ``block`` is the metric level carrying the split keys:
+        ``run()`` passes the metrics themselves, ``run_cv()`` passes
+        ``metrics["stitched"]``. Both spellings of the split are handled,
+        the singular ``training_window`` / ``in_sample_range`` of a run and
+        the plural ``training_windows`` / ``in_sample_ranges`` of the
+        stitched curve.
 
-        **纯展示。** 只读 `block` 与 `self.config`，不算任何统计量，也不调用
-        换手率那一类聚合助手；返回「标签 -> 已经排好版的字符串」的有序 dict，
-        报告模块只负责转义后渲染。（这里刻意不写那些助手的方法名：本仓库在
-        03.4 连着四次踩过同一个坑——写在 docstring 里的禁令会让以它做验收的
-        字面量扫描读出假阳性。）
-
-        `block` 是带划分键的那一层指标：`run()` 传 `metrics` 本身，`run_cv()`
-        传 `metrics["stitched"]`。两套划分键都认（D-17、D-35）：`run()` 的单数
-        `training_window` / `in_sample_range`，和拼接曲线的复数
-        `training_windows` / `in_sample_ranges`（拼接曲线**没有**单数的
-        `in_sample_range`，多段样本内塞不进一个日期对）。
-
-        窗口首尾 bar 的标签取自 `block` 里已经算好的区间端点，不重新格式化
-        时间戳：样本内外各段合起来正好铺满整个窗口，所以页面上的日期与同一个
-        运行目录的 metrics.json **逐字节**相同。一个区间都没有时才退回用
-        `_bar_label` 现算。
-
-        每个键都用 `.get()` 读，取不到渲染成一个破折号，从不写 None 这个词。
-        将来某个划分键改名或消失时，这里退化成破折号，而不是抛 KeyError 把
-        整个运行目录写坏（T-sxx-03：报告写在暂存目录里，任何异常都会连同本次
-        全部产物一起删掉）。
+        The window's first and last bar are taken from the range endpoints
+        already in ``block``, so the page shows the same strings as
+        ``metrics.json``; only when there is no range at all are they
+        formatted from the timestamps. Every key is read with ``.get()`` and
+        a missing value renders as a dash, never as ``None``, so a renamed
+        split key degrades the page instead of raising inside the staged
+        run directory. ``drawdown_span`` adds one line describing the
+        deepest drawdown in trading days (bars), matching the markers on
+        the equity chart.
         """
 
         def _pair(value) -> str | None:
+            """Format a label pair as ``a .. b``, or ``None`` when empty."""
             return f"{value[0]} .. {value[1]}" if value else None
 
         def _pairs(values) -> str | None:
+            """Format several label pairs joined by ``; ``, or ``None`` when empty."""
             rendered = [text for text in map(_pair, values or []) if text]
             return "; ".join(rendered) if rendered else None
 
         def _text(value) -> str:
+            """Render ``value`` as text, with a dash for ``None``."""
             return DASH if value is None else str(value)
 
         ranges = [block.get("in_sample_range")]
@@ -1869,8 +2151,8 @@ class BaseBacktester(ABC):
             )
         summary["Model mode"] = _text(self.config.model_mode)
         summary["Rebalance every"] = f"{self.config.rebalance_periods} bars"
-        # 选股字段只在截面配置上（D-01 预留的时序兄弟类没有），所以用 getattr：
-        # 那种回测器的报告少两行，而不是写不出来。
+        # Selection fields exist only on cross-sectional configs; a
+        # time-series backtester's report simply lacks these two lines.
         summary["Top N"] = _text(getattr(self.config, "top_n", None))
         summary["Direction"] = _text(getattr(self.config, "direction", None))
         summary["Initial cash"] = f"{float(self.config.init_cash):,.2f}"
@@ -1886,30 +2168,32 @@ class BaseBacktester(ABC):
         simulation: SimulationResult,
         metrics: dict,
     ) -> Path:
-        """建新的运行目录并写入 D-24 的全部产物；从不覆盖已有目录。
+        """Write a new run directory with every artifact of a ``run()``.
 
-        config.json、weights.zarr、equity.zarr（value、returns）、
-        liquidations.json、metrics.json、report.html、fingerprint.json。每个
-        JSON 都先经 `to_jsonable`（NaN/inf 记为 null，时间记为 ISO 字符串）再
-        原子写入。
+        The directory holds ``config.json``, ``weights.zarr``,
+        ``equity.zarr`` (``value`` and ``returns``), ``liquidations.json``,
+        ``metrics.json``, ``report.html`` and ``fingerprint.json``. Each
+        JSON file goes through ``to_jsonable`` (NaN and infinities become
+        null, timestamps become ISO strings) and is written atomically.
 
-        report.html（D-23，2026-09-15 quick 260915-sxx 扩写，260915-v6i 再补）：
-        一个自包含的页面。页首是 `_report_summary` 给出的日期与设置（窗口首尾 bar
-        与 bar 数、bar 间隔、训练窗口、样本内外各段、选股设置，以及最深回撤那一
-        段），接着是 `whole` / `in_sample` / `out_of_sample` 三列的指标表，然后是
-        共用时间轴的三栏图：净值（标出**最深**那次回撤「最低点 -> 修复」的一对
-        三角，长度按交易日 / bar 数计；强平自 260916-hro 起不再画在图上，记录仍然
-        照写 liquidations.json）、回撤、月度收益，净值栏带 log / 线性切换。
-        样本内区间仍取 metrics 里实际算出的 `in_sample_range` 涂灰（两个区间的
-        交集，必然是一段），并印出 `_report_notes()`；本阶段没有基准曲线（D-08）。
+        ``report.html`` is self-contained: the summary lines from
+        ``_report_summary``, a metric table with the ``whole``,
+        ``in_sample`` and ``out_of_sample`` columns, and equity, drawdown and
+        monthly-return charts on a shared time axis with the in-sample range
+        shaded and the deepest drawdown marked, followed by the notes. The
+        report module derives the table from whatever keys ``metrics``
+        holds; nothing is selected or computed here, so a change in the
+        metric set cannot make the report raise and discard the staged run.
 
-        指标表由报告模块**按 mapping 里当时有什么键**现推，这里只负责把
-        `metrics` 原样递过去：不挑键、不补键、不算任何统计量。报告是在暂存目录里
-        写的，写报告抛异常会连同本次全部产物一起删掉，所以它必须对指标集的变化
-        免疫（T-sxx-03）。
+        Returns
+        -------
+        Path
+            The final run directory.
         """
-        # 全部产物先写进暂存目录，写完才改名成运行目录（代码审查 WR-08）。
+        # Everything is written to a staging directory that is renamed into
+        # place only after the last artifact succeeds.
         def _write(run_dir: Path, name: str) -> None:
+            """Write every artifact of this run into ``run_dir`` titled ``name``."""
             write_json_atomically(
                 run_dir / "config.json", to_jsonable(self.get_config()), indent=2
             )
@@ -1944,23 +2228,22 @@ class BaseBacktester(ABC):
         return self._persist_run_dir(_write)
 
     def _persist_run_dir(self, write) -> Path:
-        """建 `output_dir/{class}_{timestamp}/`（D-24）并写入产物；从不覆盖，也不留下半成品。
+        """Create ``output_dir/{ClassName}_{timestamp}/`` and fill it through ``write``.
 
-        `write(directory, name)` 往 `directory` 写全部产物，`name` 是最终的运行
-        目录名（报告标题用它）。
+        ``write(directory, name)`` writes every artifact into ``directory``;
+        ``name`` is the final directory name, used as the report title. The
+        artifacts go into a hidden sibling ``.{name}.partial`` first and the
+        directory is renamed into place only when everything succeeded
+        (a rename within one filesystem is atomic). On any exception,
+        including ``KeyboardInterrupt``, the staging directory is removed
+        and the error re-raised, so ``output_dir`` only ever contains
+        complete run directories that a loader can safely rebuild from.
 
-        **先暂存，写完才改名（代码审查 WR-08）。** 以前先建运行目录、先写
-        config.json，再写 zarr、指标、报告和指纹。其中任何一步失败（zarr 写错、
-        plotly、磁盘满、Ctrl-C）都会留下一个带着合法 config.json、却没有指标或
-        指纹的目录：看起来和跑完的一样，`load_backtester_from_config` 还会照样
-        去「复现」它。现在：
-
-        1. 最终目录已存在就 RuntimeError，从不覆盖；
-        2. 在同一父目录下建隐藏的暂存目录 `.{name}.partial`，`write` 写进去；
-        3. 全部写完后再确认一次最终目录不存在，然后把暂存目录改名成最终目录
-           （同一文件系统上的 rename 是原子的）；
-        4. 任何异常（含 KeyboardInterrupt）：删掉本次自己建的暂存目录，原样
-           抛出。所以 `output_dir` 下要么是完整的运行目录，要么什么都没有。
+        Raises
+        ------
+        RuntimeError
+            If the final directory already exists; it is never
+            overwritten.
         """
         import shutil
 
@@ -1983,7 +2266,7 @@ class BaseBacktester(ABC):
     def _write_weights_and_equity(
         directory: Path, weights: xr.Dataset, simulation: SimulationResult
     ) -> None:
-        """在 `directory` 下写 weights.zarr 与 equity.zarr（value、returns）。"""
+        """Write ``weights.zarr`` and ``equity.zarr`` into ``directory``."""
         XrBackend().to_internal(weights).write(str(directory / "weights.zarr"))
         XrBackend().to_internal(
             xr.Dataset({"value": simulation.value, "returns": simulation.returns})
@@ -1992,16 +2275,17 @@ class BaseBacktester(ABC):
     def _stitched_split(
         self, timestamps: np.ndarray, records: list[dict]
     ) -> dict:
-        """拼接曲线的样本内/外划分，由各折自己的划分拼成（D-17 逐折、D-35）。
+        """Build the in-sample/out-of-sample split of the stitched curve from the folds.
 
-        拼接曲线按构造是样本外的：每折只交易自己的测试段。例外是每折开头与该折
-        有效训练窗口重叠的那几个 bar（标签期限），所以样本内是**多段**：
-        - `training_windows`：各折的有效训练窗口，按折顺序；
-        - `in_sample_ranges`：各折非空的 `in_sample_range`，按折顺序；没有任何
-          一折重叠时是空 list；
-        - `out_of_sample_ranges`：拼接窗口里不在任何样本内段内的 bar 组成的连续段。
-
-        单段的 `in_sample_range` 刻意不出现：多段样本内塞不进一个日期对。
+        The stitched curve is out-of-sample by construction, since each fold
+        trades only its own test segment, except for the first bars of each
+        fold that overlap that fold's effective training window (the label
+        horizon). The in-sample part is therefore a list: ``training_windows``
+        holds every fold's effective training window in fold order,
+        ``in_sample_ranges`` every fold's non-empty ``in_sample_range`` in
+        fold order, and ``out_of_sample_ranges`` the contiguous runs of
+        ``timestamps`` outside all of them. No singular ``in_sample_range``
+        is produced, because several ranges do not fit one pair.
         """
         in_sample_ranges = [
             record["metrics"]["in_sample_range"]
@@ -2035,22 +2319,28 @@ class BaseBacktester(ABC):
         simulation: SimulationResult,
         metrics: dict,
     ) -> Path:
-        """`run_cv()` 的运行目录（D-24 按 D-35 展开）；从不覆盖已有目录。
+        """Write a new run directory with every artifact of a ``run_cv()``.
 
-        顶层描述**拼接曲线**，与 `run()` 的运行目录同名同义：
-        config.json、weights.zarr、equity.zarr、metrics.json（`stitched`、
-        `folds`、`notes`）、liquidations.json（`stitched` 与逐折 `folds`）、
-        fingerprint.json（拼接窗口）、report.html（拼接曲线，不涂样本内：多段
-        样本内由 notes 说明，并由页首日期块逐段列出各折的训练窗口与样本内区间，
-        见 `_report_summary` 的复数划分键分支；拼接曲线同样标出最深那次回撤
-        「最低点 -> 修复」的一对三角——它是同一台引擎跑出来的一次连续模拟，不需要特殊处理）。每折的逐折模拟另存在
-        `folds/fold_{i}/` 下的 weights.zarr 与 equity.zarr，`i` 是清单里的折号。
+        The top level describes the stitched curve with the same files as a
+        ``run()`` directory: ``config.json``, ``weights.zarr``,
+        ``equity.zarr``, ``metrics.json`` (``stitched``, ``folds``,
+        ``notes``), ``liquidations.json`` (``stitched`` plus per-fold
+        ``folds``), ``fingerprint.json`` (the stitched window) and
+        ``report.html``. The report receives ``metrics["stitched"]``, shades
+        no in-sample range (the several in-sample ranges are listed in the
+        summary lines and the notes) and marks the deepest drawdown of the
+        stitched simulation. Each fold's own simulation is written under
+        ``folds/fold_{i}/`` as ``weights.zarr`` and ``equity.zarr``, where
+        ``i`` is the manifest's fold number.
 
-        报告拿到的是 `metrics["stitched"]`，也就是描述拼接曲线的那一块，而不是
-        整个 metrics（后者还套着 `folds` 与 `notes`）。
+        Returns
+        -------
+        Path
+            The final run directory.
         """
-        # 与 run() 相同：先写暂存目录，全部写完才改名（代码审查 WR-08）。
+        # As in run(): write to a staging directory, rename when complete.
         def _write(run_dir: Path, name: str) -> None:
+            """Write every artifact of this CV run into ``run_dir`` titled ``name``."""
             write_json_atomically(
                 run_dir / "config.json", to_jsonable(self.get_config()), indent=2
             )

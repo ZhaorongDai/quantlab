@@ -1,6 +1,12 @@
-"""截面选股组件：调仓日程、打分标签解析与 TopN 等权目标权重（03.7 D-09..D-12、D-18）。
+"""Cross-sectional selection building blocks for the backtest layer.
 
-这些是纯函数/小组件，不依赖任何回测引擎，回测器以组合的方式使用它们（D-01）。
+This module holds the pieces a cross-sectional backtester composes to turn a
+panel of model scores into target weights: ``rebalance_mask`` decides which
+bars rebalance, ``resolve_score_label`` picks the model label to rank by, and
+``CrossSectionTopNSelector`` builds equal-weight top-N (or top-N and bottom-N)
+target weights on those bars. Nothing here depends on a simulation engine, so
+the weights can be handed to any backtester that accepts a ``weight`` panel on
+``(timestamp, symbol)``.
 """
 
 from dataclasses import dataclass
@@ -13,11 +19,33 @@ from loguru import logger
 
 
 def rebalance_mask(n_bars: int, rebalance_periods: int) -> np.ndarray:
-    """调仓 bar 的布尔掩码。
+    """Return a boolean mask marking the bars on which the portfolio rebalances.
 
-    锚点是窗口第一个 bar，之后每 `rebalance_periods` 个 bar 调仓一次（D-18）。
-    最后一个 bar 强制不调仓：它的信号在窗口内没有 t+1 成交 bar
-    （03.7-RESEARCH.md Pitfall 13）。
+    The first bar rebalances and so does every ``rebalance_periods``-th bar
+    after it. The last bar never rebalances: a signal formed there has no
+    following bar inside the window to fill on.
+
+    Parameters
+    ----------
+    n_bars : int
+        Number of bars in the backtest window.
+    rebalance_periods : int
+        Rebalance every this many bars.
+
+    Returns
+    -------
+    np.ndarray
+        A boolean array of length ``n_bars``.
+
+    Raises
+    ------
+    ValueError
+        If ``rebalance_periods`` is smaller than 1.
+
+    Examples
+    --------
+    >>> rebalance_mask(7, 3)
+    array([ True, False, False,  True, False, False, False])
     """
     if rebalance_periods < 1:
         raise ValueError(
@@ -31,7 +59,35 @@ def rebalance_mask(n_bars: int, rebalance_periods: int) -> np.ndarray:
 
 
 def resolve_score_label(score_label: str | None, label_names: list[str]) -> str:
-    """打分用的标签名：None 取第一个标签（D-11），未知名字报错。"""
+    """Return the model label whose predictions rank the symbols.
+
+    ``None`` selects the model's first label.
+
+    Parameters
+    ----------
+    score_label : str | None
+        The requested label name, or ``None``.
+    label_names : list[str]
+        The label names the model declares, in order.
+
+    Returns
+    -------
+    str
+        The label name to score by.
+
+    Raises
+    ------
+    ValueError
+        If the model declares no labels, or ``score_label`` is not
+        one of them.
+
+    Examples
+    --------
+    >>> resolve_score_label(None, ["fwd_ret_1", "fwd_ret_5"])
+    fwd_ret_1
+    >>> resolve_score_label("fwd_ret_5", ["fwd_ret_1", "fwd_ret_5"])
+    fwd_ret_5
+    """
     if not label_names:
         raise ValueError("the model declares no labels to score by")
     if score_label is None:
@@ -46,17 +102,40 @@ def resolve_score_label(score_label: str | None, label_names: list[str]) -> str:
 
 @dataclass(frozen=True)
 class CrossSectionTopNSelector:
-    """截面 TopN 等权选股（D-09、D-10、D-12）。
+    """Equal-weight top-N selection on each rebalance bar.
 
-    - `long_only`：分数最高的 k 个标的各 1/k，合计 100%；
-    - `long_short`：最高 k 个各 +0.5/k，最低 k 个各 -0.5/k，两本书不共享标的，
-      毛敞口 100%、净敞口 0。
+    With ``direction="long_only"`` each of the ``k`` highest-scoring symbols
+    gets a weight of ``1/k``, for a gross exposure of 100%. With
+    ``direction="long_short"`` the top ``k`` symbols get ``+0.5/k`` each and
+    the bottom ``k`` get ``-0.5/k`` each; the two books never share a symbol,
+    so the gross exposure is 100% and the net exposure is zero. ``k`` is
+    ``top_n``, reduced when fewer symbols are eligible.
+
+    Attributes
+    ----------
+    direction : Literal['long_only', 'long_short']
+        ``"long_only"`` or ``"long_short"``.
+    top_n : int
+        Number of symbols selected per book on each rebalance bar.
+
+    Raises
+    ------
+    ValueError
+        If ``direction`` is not one of the two literals or
+        ``top_n`` is smaller than 1.
+
+    Examples
+    --------
+    >>> selector = CrossSectionTopNSelector(direction="long_only", top_n=2)
+    >>> selector
+    CrossSectionTopNSelector(direction='long_only', top_n=2)
     """
 
     direction: Literal["long_only", "long_short"]
     top_n: int
 
     def __post_init__(self):
+        """Validate ``direction`` and ``top_n`` at construction time."""
         if self.direction not in ("long_only", "long_short"):
             raise ValueError(
                 f"direction must be 'long_only' or 'long_short', got "
@@ -69,18 +148,19 @@ class CrossSectionTopNSelector:
     def _align_to_scores(
         scores: xr.DataArray, next_fill_price: xr.DataArray
     ) -> xr.DataArray:
-        """把下一 bar 成交价按**坐标标签**对齐到分数上（代码审查 WR-09）。
+        """Reorder ``next_fill_price`` onto the coordinate labels of ``scores``.
 
-        以前只比较形状，然后各取 `.values` 按位置配对：形状相同、但标的或时间
-        顺序不同的两块面板，会把每个分数配上**另一个**标的的成交价可得性，而
-        权重却挂在分数的坐标上。回测器内部靠 `reindex` 保证了轴一致，但直接
-        调用本组件的人（Phase 5 的优化器旁路、将来的兄弟回测器）不受保护。
+        Alignment is by label rather than by position: two panels of the same
+        shape but a different symbol or timestamp order would otherwise pair
+        each score with another symbol's fill price. A missing or extra label
+        is refused instead of being treated as "not eligible", because a
+        misaligned time axis would silently make every row unselectable.
 
-        - 任一轴有重复标签：ValueError；
-        - 两个轴的标签集合不同（缺或多）：ValueError，写明哪个轴、缺了哪些、
-          多了哪些。缺成交价不能悄悄当成「不可选」：错位的时间轴（比如移错了
-          方向的 shift）会整行变成不可选，看起来只是没选到股票；
-        - 集合相同、顺序不同：按分数的顺序重排成交价。
+        Raises
+        ------
+        ValueError
+            If either axis has duplicate labels, or the two label
+            sets differ on either axis.
         """
         for dim in ("timestamp", "symbol"):
             wanted = pd.Index(scores[dim].values)
@@ -111,22 +191,59 @@ class CrossSectionTopNSelector:
         next_fill_price: xr.DataArray,
         rebalance: np.ndarray,
     ) -> xr.Dataset:
-        """分数 + 下一 bar 成交价 + 调仓掩码 -> 满足 D-03 契约的目标权重。
+        """Build target weights from scores, next-bar fill prices and a mask.
 
-        规则（均由 tests/test_backtest_selection.py 锁定）：
+        A bar that does not rebalance gets an all-NaN row, meaning "hold the
+        current position". On a rebalance bar every symbol gets a finite
+        weight, with unselected symbols at exactly ``0.0``: a NaN there would
+        be read by the engine as "keep the position" and would silently block
+        the rest of the rebalance. A symbol is eligible when its score and its
+        next-bar fill price are both finite, so a symbol with no price on the
+        next bar (delisted) is never picked. Eligible symbols are ranked with a
+        stable sort, so ties resolve by symbol order and the same panel always
+        yields the same weights. When fewer than ``top_n`` symbols are eligible
+        the book is split among those that are and a warning names the bar;
+        with no eligible symbol at all the row is all ``0.0``, that is, flat.
 
-        - 非调仓 bar 整行 NaN（持有）。调仓 bar 先整行写 0.0：NaN 在调仓 bar 上
-          的意思是「保持原仓位」，会悄悄挡住整次调仓（03.7-RESEARCH.md Pitfall 3）。
-        - 可选 = 分数有限且下一 bar 成交价有限（D-12）。NaN 与 inf 分数都不可选；
-          t+1 没有成交价（已退市）的标的也不可选。
-        - 可选标的按分数从高到低排序。排序是稳定的，平分时按标的轴顺序决定，
-          同一面板永远得到同一组权重（D-25）。
-        - `long_only`：k = min(top_n, 可选数)，排名前 k 个各 1/k（D-09）。
-        - `long_short`：k = min(top_n, 可选数 // 2)，排名前 k 个各 +0.5/k、
-          末尾 k 个各 -0.5/k。可选数不足 2·top_n 时两本书依然不共享标的，
-          毛敞口 1、净敞口 0（D-09，03.7-RESEARCH.md A6）。
-        - k < top_n 时记一条 warning，写明该 bar 的时间戳（D-12）；k == 0 时
-          该行全 0.0，即清仓，而不是 NaN。
+        Parameters
+        ----------
+        scores : xr.DataArray
+            Model scores on ``(timestamp, symbol)``; higher is better.
+        next_fill_price : xr.DataArray
+            The price each symbol would fill at on the next
+            bar, on the same labels as ``scores`` (in any order).
+        rebalance : np.ndarray
+            Boolean mask with one entry per timestamp, ``True`` on
+            rebalance bars.
+
+        Returns
+        -------
+        xr.Dataset
+            A dataset with one ``weight`` variable on ``(timestamp, symbol)``.
+
+        Raises
+        ------
+        ValueError
+            If ``rebalance`` does not have one entry per timestamp
+            or the two panels' labels do not match.
+
+        Examples
+        --------
+        >>> ts = pd.bdate_range("2024-01-01", periods=3)
+        >>> scores = xr.DataArray(
+        ...     [[0.3, 0.1, np.nan, 0.2],
+        ...      [0.0, 0.5, 0.4, 0.1],
+        ...      [0.9, 0.8, 0.7, 0.6]],
+        ...     dims=("timestamp", "symbol"),
+        ...     coords={"timestamp": ts, "symbol": ["AAA", "BBB", "CCC", "DDD"]},
+        ... )
+        >>> next_fill = xr.full_like(scores, 100.0)
+        >>> selector = CrossSectionTopNSelector(direction="long_only", top_n=2)
+        >>> weights = selector.select(scores, next_fill, rebalance_mask(3, 2))
+        >>> weights["weight"].values
+        array([[0.5, 0. , 0. , 0.5],
+               [nan, nan, nan, nan],
+               [nan, nan, nan, nan]])
         """
         scores = scores.transpose("timestamp", "symbol")
         next_fill_price = self._align_to_scores(

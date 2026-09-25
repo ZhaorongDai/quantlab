@@ -34,13 +34,14 @@ class Alpha158SpotKline(FactorKunQuant):
     Pin ``factor_names`` to a few columns while experimenting: the full set
     is over a hundred columns and compile time grows with the graph.
 
-    Example:
-        >>> factor = Alpha158SpotKline(FactorConfig(
-        ...     window=10, dataset=dataset, mode="batch",
-        ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
-        ...     factor_names=["KMID", "STD5"], file_path="alpha158.zarr",
-        ... ))
-        >>> panel = factor.cal().get_features()
+    Examples
+    --------
+    >>> factor = Alpha158SpotKline(FactorConfig(
+    ...     window=10, dataset=dataset, mode="batch",
+    ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
+    ...     factor_names=["KMID", "STD5"], file_path="alpha158.zarr",
+    ... ))
+    >>> panel = factor.cal().get_features()
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -54,7 +55,9 @@ class Alpha158SpotKline(FactorKunQuant):
     def _get_func_names(self):
         """Build the Alpha158 op list and its names from fresh ``Input`` nodes.
 
-        Returns:
+        Returns
+        -------
+        tuple[list, list[str]]
             A ``(ops, names)`` pair in matching order.
         """
         close = Input("close")
@@ -141,14 +144,15 @@ class Alpha158Stock(FactorKunQuant):
     normalized, for the same reason as ``Alpha101Stock``: cross-sectional
     normalization is left to the consumer.
 
-    Example:
-        >>> factor = Alpha158Stock(FactorConfig(
-        ...     window=10, dataset=dataset, mode="batch",
-        ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
-        ...                   "adjVolume"],
-        ...     factor_names=["KMID", "STD5"], file_path="alpha158_stock.zarr",
-        ... ))
-        >>> panel = factor.cal().get_features()
+    Examples
+    --------
+    >>> factor = Alpha158Stock(FactorConfig(
+    ...     window=10, dataset=dataset, mode="batch",
+    ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
+    ...                   "adjVolume"],
+    ...     factor_names=["KMID", "STD5"], file_path="alpha158_stock.zarr",
+    ... ))
+    >>> panel = factor.cal().get_features()
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -162,7 +166,9 @@ class Alpha158Stock(FactorKunQuant):
     def _get_func_names(self):
         """Build the Alpha158 op list and its names from adjusted inputs.
 
-        Returns:
+        Returns
+        -------
+        tuple[list, list[str]]
             A ``(ops, names)`` pair in matching order.
         """
         close = Input("adjClose")

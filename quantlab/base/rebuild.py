@@ -36,6 +36,14 @@ class RebuildMeasurement:
     shows which tree was read; a rebuild run from a git worktree could
     otherwise report success against a ``data/`` directory that is absent
     there.
+
+    Examples
+    --------
+    >>> measurement = rebuilder.rebuild()
+    >>> measurement.dims, measurement.data_var_count
+    ({'timestamp': 3, 'symbol': 2}, 1)
+    >>> measurement.metrics
+    {'rows': 6}
     """
 
     #: The absolute filesystem root the rebuild read and wrote under.
@@ -68,20 +76,25 @@ class BaseStoreRebuilder(ABC):
     ``_required_inputs``, ``_convert``, ``_measure`` and ``_measure_dims``.
     ``rebuild()`` runs the whole sequence and returns a ``RebuildMeasurement``.
 
-    Example:
-        A subclass names its sidecars and fills in the hooks::
+    Examples
+    --------
+    A subclass names its sidecars and fills in the hooks::
 
-            class MyRebuilder(BaseStoreRebuilder):
-                SIDECAR_SUFFIXES = (".chunks.json",)
+        class MyRebuilder(BaseStoreRebuilder):
+            SIDECAR_SUFFIXES = (".chunks.json",)
 
-                def _required_inputs(self):
-                    return (self.data_root / "raw" / "prices.parquet",)
+            def _required_inputs(self):
+                return (self.data_root / "raw" / "prices.parquet",)
 
-                ...
+            ...
 
-            measurement = MyRebuilder(config, data_root=repo_root).rebuild(
-                backup_dir=repo_root / "backup"
-            )
+        measurement = MyRebuilder(config, data_root=repo_root).rebuild(
+            backup_dir=repo_root / "backup"
+        )
+
+    The method examples below use ``rebuilder = MyRebuilder(config,
+    data_root=repo_root)`` with ``SIDECAR_SUFFIXES = (".chunks.json",)``
+    and a store already on disk.
     """
 
     #: The suffixes appended to ``store_path`` to name every sidecar file that
@@ -99,12 +112,17 @@ class BaseStoreRebuilder(ABC):
         parent of ``git rev-parse --path-format=absolute --git-common-dir``,
         which is the main repository root.
 
-        Args:
-            config: The dataset config naming ``zarr_file_path``.
-            data_root: An existing directory the raw tier and store sit under.
+        Parameters
+        ----------
+        config
+            The dataset config naming ``zarr_file_path``.
+        data_root : Path | str
+            An existing directory the raw tier and store sit under.
 
-        Raises:
-            ValueError: If ``data_root`` is not an existing directory.
+        Raises
+        ------
+        ValueError
+            If ``data_root`` is not an existing directory.
         """
         self.config = config
         resolved = Path(data_root).resolve()
@@ -124,12 +142,24 @@ class BaseStoreRebuilder(ABC):
 
     @property
     def data_root(self) -> Path:
-        """The resolved absolute root every input and output path sits under."""
+        """The resolved absolute root every input and output path sits under.
+
+        Examples
+        --------
+        >>> rebuilder.data_root == Path(repo_root).resolve()
+        True
+        """
         return self._data_root
 
     @property
     def store_path(self) -> Path:
-        """The Zarr store this rebuilder replaces, taken from the config."""
+        """The Zarr store this rebuilder replaces, taken from the config.
+
+        Examples
+        --------
+        >>> rebuilder.store_path.name
+        panel.zarr
+        """
         return Path(str(self.config.zarr_file_path))
 
     def sidecar_paths(self) -> tuple[Path, ...]:
@@ -138,6 +168,11 @@ class BaseStoreRebuilder(ABC):
         Paths are returned whether or not they exist. Sidecars are siblings of
         the store directory, never files inside it, because a Zarr reader
         walking the directory would try to read them as arrays.
+
+        Examples
+        --------
+        >>> [path.name for path in rebuilder.sidecar_paths()]
+        ['panel.zarr.chunks.json']
         """
         return tuple(
             Path(str(self.store_path) + suffix)
@@ -153,9 +188,20 @@ class BaseStoreRebuilder(ABC):
         real one, and afterwards that is indistinguishable from a period in
         which nothing traded.
 
-        Raises:
-            FileNotFoundError: If any path from ``_required_inputs()`` does
-                not exist.
+        Raises
+        ------
+        FileNotFoundError
+            If any path from ``_required_inputs()`` does
+            not exist.
+
+        Examples
+        --------
+        >>> rebuilder.assert_inputs_present()  # every input exists
+        >>> Path(repo_root, "raw", "prices.parquet").unlink()
+        >>> rebuilder.assert_inputs_present()
+        Traceback (most recent call last):
+            ...
+        FileNotFoundError: MyRebuilder: refusing to rebuild ...
         """
         missing = [
             path for path in self._required_inputs() if not Path(path).exists()
@@ -182,12 +228,24 @@ class BaseStoreRebuilder(ABC):
         written by code that no longer exists, so the copy is the only record
         of what earlier numbers were measured on.
 
-        Args:
-            dest: The directory to copy into; created if needed.
+        Parameters
+        ----------
+        dest : Path
+            The directory to copy into; created if needed.
 
-        Returns:
+        Returns
+        -------
+        str | None
             ``str(dest)``, or ``None`` when there is no store to copy, since a
             first-ever conversion has nothing to preserve.
+
+        Examples
+        --------
+        >>> backup_dir = Path(repo_root, "backup")
+        >>> rebuilder.backup(backup_dir) == str(backup_dir)
+        True
+        >>> sorted(path.name for path in backup_dir.iterdir())
+        ['panel.zarr', 'panel.zarr.chunks.json']
         """
         store = self.store_path
         if not store.exists():
@@ -208,8 +266,17 @@ class BaseStoreRebuilder(ABC):
         previous panel beside the new one. Idempotent: ``rebuild()`` calls it
         unconditionally, and a first conversion has nothing to remove.
 
-        Returns:
+        Returns
+        -------
+        tuple[str, ...]
             The paths that existed and were deleted, sorted.
+
+        Examples
+        --------
+        >>> [Path(path).name for path in rebuilder.clear()]
+        ['panel.zarr', 'panel.zarr.chunks.json']
+        >>> rebuilder.clear()
+        ()
         """
         removed: list[str] = []
         store = self.store_path
@@ -231,13 +298,27 @@ class BaseStoreRebuilder(ABC):
         measurement attached rather than producing numbers for a half-written
         store.
 
-        Args:
-            backup_dir: Where to copy the existing store first. ``None`` skips
-                the copy; every caller about to destroy a real panel should
-                pass one.
+        Parameters
+        ----------
+        backup_dir : Path | None
+            Where to copy the existing store first. ``None`` skips
+            the copy; every caller about to destroy a real panel should
+            pass one.
 
-        Returns:
+        Returns
+        -------
+        RebuildMeasurement
             The ``RebuildMeasurement`` for the freshly written store.
+
+        Examples
+        --------
+        >>> measurement = rebuilder.rebuild(backup_dir=Path(repo_root, "backup"))
+        >>> measurement.dims, measurement.data_var_count
+        ({'timestamp': 3, 'symbol': 2}, 1)
+        >>> [Path(path).name for path in measurement.removed]
+        ['panel.zarr', 'panel.zarr.chunks.json']
+        >>> measurement.backup_path == str(Path(repo_root, "backup"))
+        True
         """
         self.assert_inputs_present()
         backup_path = self.backup(backup_dir) if backup_dir is not None else None

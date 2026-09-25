@@ -25,15 +25,30 @@ def file_date_filter(
     example ``BTCUSDT-1m-2024-01.csv``). Both bounds are inclusive and are
     compared as timestamps against the first day of that month.
 
-    Args:
-        path: One path or a list of paths to filter.
-        start_date: Earliest date to keep, as a parseable date string.
-        end_date: Latest date to keep, as a parseable date string.
-        period: Granularity encoded in the file name; only ``"month"`` is
-            supported.
+    Parameters
+    ----------
+    path : Path | list[Path]
+        One path or a list of paths to filter.
+    start_date : str
+        Earliest date to keep, as a parseable date string.
+    end_date : str
+        Latest date to keep, as a parseable date string.
+    period : Literal['month']
+        Granularity encoded in the file name; only ``"month"`` is
+        supported.
 
-    Returns:
+    Returns
+    -------
+    list[Path]
         The subset of ``path`` inside the range, in the original order.
+
+    Examples
+    --------
+    For a directory holding one file per month from 2023-12 to 2024-03:
+
+    >>> files = get_csv_files("/data/klines/BTCUSDT")
+    >>> [p.name for p in file_date_filter(files, "2024-01-01", "2024-02-15")]
+    ['BTCUSDT-1d-2024-01.csv', 'BTCUSDT-1d-2024-02.csv']
     """
     if not isinstance(path, list):
         path = [path]
@@ -50,12 +65,24 @@ def file_date_filter(
 
 
 def get_csv_files(dir_path: str) -> list[Path]:
-    """Return every ``*.csv`` under ``dir_path`` (recursively), sorted by path."""
+    """Return every ``*.csv`` under ``dir_path`` (recursively), sorted by path.
+
+    Examples
+    --------
+    >>> [p.name for p in get_csv_files("/data/klines")]
+    ['BTCUSDT-1d-2024-01.csv', 'ETHUSDT-1d-2024-01.csv']
+    """
     assert Path(dir_path).exists(), f"{dir_path} does not exist"
     return sorted(Path(dir_path).rglob("*.csv"))
 
 
 def get_pqt_files(dir_path: str) -> list[Path]:
-    """Return every ``*.pqt`` under ``dir_path`` (recursively), sorted by path."""
+    """Return every ``*.pqt`` under ``dir_path`` (recursively), sorted by path.
+
+    Examples
+    --------
+    >>> [p.name for p in get_pqt_files("/data/nasdaq")]
+    ['AAPL.pqt', 'MSFT.pqt']
+    """
     assert Path(dir_path).exists(), f"{dir_path} does not exist"
     return sorted(Path(dir_path).rglob("*.pqt"))

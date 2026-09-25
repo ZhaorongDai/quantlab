@@ -1,3 +1,23 @@
+"""Download daily NASDAQ price history from Tiingo into per-ticker parquet.
+
+A standalone, cell-style (``# %%``) script that predates the registry. It
+reads the ticker list from ``nasdaq_stocks.parquet`` beside the repository
+(or the file named by ``QUANTLAB_NASDAQ_STOCKS_PARQUET``), downloads each
+ticker's daily prices from 1990-08-01 to 2026-09-01 with 32 parallel workers
+and writes ``downloads/nasdaq_data/{ticker}/data.pqt`` relative to the
+current working directory. The maintained download path is
+``scripts/ingest_tiingo.py``; use this only as a one-off.
+
+Requires ``TIINGO_API_KEY`` in the environment; the script refuses to start
+without it and never prints the key.
+
+Usage:
+    export TIINGO_API_KEY=your-key-here
+    uv run python scripts/download_stock_data_from_tiingo.py
+    QUANTLAB_NASDAQ_STOCKS_PARQUET=/path/to/tickers.parquet \
+        uv run python scripts/download_stock_data_from_tiingo.py
+"""
+
 # %% Cell 1
 import os
 from ast import Break
@@ -8,8 +28,7 @@ from joblib import Parallel, delayed
 from tiingo import TiingoClient
 from tqdm import tqdm
 
-# TIINGO_API_KEY is read from the environment automatically below.
-# Export it in your shell (e.g. your .bash_profile) before running this script.
+# Export TIINGO_API_KEY in your shell before running; it is read below.
 if not os.environ.get("TIINGO_API_KEY"):
     raise RuntimeError(
         "TIINGO_API_KEY environment variable is not set. Export it before "
@@ -18,16 +37,13 @@ if not os.environ.get("TIINGO_API_KEY"):
 
 config = {}
 
-# To reuse the same HTTP Session across API calls (and have better performance), include a session key.
+# Reuse one HTTP session across API calls.
 config["session"] = True
 
-# API key comes from the environment (never hardcode it here).
+# The API key comes from the environment and is never hardcoded here.
 config["api_key"] = os.environ["TIINGO_API_KEY"]
 
-# Initialize
 client = TiingoClient(config)
-
-# tickers
 
 # %% Download stock data from Tiingo
 need_stocks = pl.scan_parquet(
@@ -59,6 +75,24 @@ end_date = "2026-09-01"
 
 
 def download_stock(stock):
+    """Download one ticker's daily prices and write them as parquet.
+
+    The frame gets a ``timestamp`` column (the vendor's ``date``) and a
+    ``symbol`` column, and lands at ``downloads/nasdaq_data/{stock}/data.pqt``
+    under the current working directory. Nothing is written when the vendor
+    returns no rows.
+
+    Parameters
+    ----------
+    stock
+        The ticker to download.
+
+    Examples
+    --------
+    Needs ``TIINGO_API_KEY`` and network access::
+
+        download_stock("AAPL")
+    """
     data = pl.DataFrame(
         client.get_ticker_price(
             stock,

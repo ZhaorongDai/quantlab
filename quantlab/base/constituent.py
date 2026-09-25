@@ -1,11 +1,12 @@
-"""Index-membership panel datasets — the interval-to-daily-grid layer (D-03).
+"""Point-in-time index-membership panels, the index-agnostic half.
 
-This module holds the shared, index-agnostic half of the constituent data
-layer. It deliberately knows nothing about any particular index: no URL, no
-index name, no fetcher import. A concrete index binds itself by implementing
-the two abstract hooks below, in `dataset/constituent.py`, which is what makes
-"adding a new index needs no change to the upper layers" (DATA-06)
-structurally true rather than merely intended.
+``IndexConstituentDataset`` turns a table of membership intervals
+(``symbol``, ``start_date``, ``end_date``) into a dense daily boolean panel
+with a single ``is_member`` variable on ``(timestamp, symbol)``, and stores
+it like any other dataset. It knows nothing about any particular index; a
+concrete index in ``quantlab/dataset/constituent.py`` supplies the interval
+table and the earliest date its source can answer. A universe mask applied
+to a price panel is the main consumer of the result.
 """
 
 from abc import abstractmethod
@@ -24,85 +25,111 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 
 
 class IndexConstituentDataset(BaseDataset):
-    """A daily, point-in-time index-membership panel.
+    """Daily point-in-time index-membership panel built from intervals.
 
-    Holds four things and nothing else:
+    A subclass implements two hooks: ``_pit_coverage_start`` (the earliest
+    date the source can answer membership for) and ``_build_intervals`` (the
+    membership intervals). Everything else is shared: the config setter
+    clamps ``start_date`` to the coverage start, ``_densify`` turns the
+    intervals into the ``is_member`` grid, and ``_clean`` validates the panel
+    instead of running the OHLCV cleaner. The class subclasses
+    ``BaseDataset`` directly, so it has no bar, KunQuant or Nautilus exits.
 
-    1. The interval-to-daily-panel densification (`_densify`), which turns a
-       `(symbol, start_date, end_date)` membership-interval table into a dense
-       `(timestamp, symbol) -> bool` `is_member` grid.
-    2. The point-in-time left-edge clamp (`_clamp_coverage_start`), applied at
-       config-assignment time so the resolved window is assertable on the
-       config object itself, not only observable in the panel.
-    3. The membership cleaning route (`_clean`), which replaces the inherited
-       OHLCV-shaped `clean_market_data()` default.
-    4. The two abstract per-index hooks, `_pit_coverage_start()` and
-       `_build_intervals()` — the complete contract a new index satisfies.
+    Two axis conventions matter to a consumer. The ``timestamp`` axis is a
+    contiguous calendar-day range, weekends and holidays included, so a join
+    against a trading-day price panel must select the panel onto the price
+    timestamps rather than assume the axes align. Membership intervals are
+    closed on both ends: a symbol removed on date ``D`` reads ``True`` on
+    ``D`` and ``False`` on ``D + 1``.
 
-    **What it deliberately excludes, and why that exclusion is load-bearing.**
-    It inherits none of `MarketDataset`'s bar/catalog/KunQuant members
-    (`to_nautilus`/`_to_nautilus`, `to_kunquant`/`_to_kunquant`,
-    `_write_catalog`). A membership panel has no bar representation, is never
-    written to a nautilus `ParquetDataCatalog`, and is not a compiled-graph
-    input. That absence is the entire reason D-03 split the dataset hierarchy
-    instead of making this a `MarketDataset` carrying two meaningless
-    `raise NotImplementedError` stubs. `hasattr` on any of those five names is
-    False here, and a test asserts it.
+    Examples
+    --------
+    A minimal index over an in-memory interval table::
 
-    **Two axis conventions a reader must know.**
+        class DemoPanel(IndexConstituentDataset):
+            def _pit_coverage_start(self) -> str:
+                return "2020-01-01"
 
-    - **CALENDAR days, not trading days.** The `timestamp` axis is a
-      contiguous `pd.date_range(..., freq="D")`, so it carries weekend and
-      holiday rows whose value is the last trading day's membership carried
-      forward. The one real consequence: a downstream join against OHLCV data,
-      which only has trading days, must reindex or `.sel()` the panel onto the
-      price panel's timestamps rather than assuming the two axes align. A
-      trading-day axis would need a session calendar this repository does not
-      have.
-    - **Membership intervals are CLOSED on both ends.** A symbol removed with
-      `effective_date` D reads True on D and False on D+1. This matches
-      `UniverseCatalog.get_symbols_as_of`'s
-      `start_date <= as_of_date` combined with
-      `end_date.is_null() | (end_date >= as_of_date)` comparison exactly. A
-      divergence here would make the panel and that query disagree by one day
-      at every removal in history, and nothing at runtime would notice.
+            def _build_intervals(self) -> pl.DataFrame:
+                return pl.DataFrame(
+                    [
+                        ("AAA", "2020-01-01", None),
+                        ("BBB", "2020-01-01", "2020-01-05"),
+                        ("CCC", "2020-01-04", None),
+                    ],
+                    schema=["symbol", "start_date", "end_date"],
+                    orient="row",
+                )
+
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/demo.zarr",
+    ...     cache_dir="data/demo_cache",
+    ...     start_date="2020-01-01",
+    ...     end_date="2020-01-08",
+    ...     as_of="2020-01-08",
+    ... )
+    >>> panel = DemoPanel(config).from_raw_data().get_xarray_dataset()
+    >>> panel["is_member"].to_pandas().astype(int)
+    symbol      AAA  BBB  CCC
+    timestamp
+    2020-01-01    1    1    0
+    2020-01-02    1    1    0
+    2020-01-03    1    1    0
+    2020-01-04    1    1    1
+    2020-01-05    1    1    1
+    2020-01-06    1    0    1
+    2020-01-07    1    0    1
+    2020-01-08    1    0    1
     """
 
-    # D-26: the config class `quantlab/utils/module.py` rebuilds this dataset with.
+    #: The config class a saved ``config.json`` is rebuilt with.
     config_cls = ConstituentDatasetConfig
 
-    # The property is redefined here (rather than left inherited) purely so
-    # the setter can run `_clamp_coverage_start()` after the shared lifecycle.
-    # Its narrowed return type also records that this hierarchy takes the
-    # membership-panel config -- no `catalog_path`, no `market`/`frequency`.
     @property
     def config(self) -> ConstituentDatasetConfig:
+        """Return the dataset config.
+
+        Redefined here so the setter can clamp the start date after the
+        shared lifecycle has run, and to narrow the return type to the
+        membership-panel config.
+
+        Examples
+        --------
+        >>> ds.config.start_date
+        '2020-01-01'
+        """
         return self._config  # type: ignore[return-value]
 
     @config.setter
     def config(self, config: ConstituentDatasetConfig):
-        # The shared lifecycle must run FIRST: it is what fills `name`, and
-        # the `start_date`/`end_date` defaults out of `enums.constant.Date`.
-        # The clamp below then reads the resolved `start_date`, so running it
-        # before the base setter would clamp a `None`.
+        """Assign the config, then raise ``start_date`` to the coverage start.
+
+        The base setter runs first because it fills ``name`` and the default
+        ``start_date``/``end_date``; the clamp reads the resolved
+        ``start_date`` and would otherwise see ``None``.
+
+        Examples
+        --------
+        A requested date before the coverage start is raised, with a
+        warning, at assignment time:
+
+        >>> config.start_date = "2019-06-01"
+        >>> ds.config = config
+        >>> ds.config.start_date
+        '2020-01-01'
+        """
         BaseDataset.config.fset(self, config)  # type: ignore[attr-defined]
         self._clamp_coverage_start()
 
     def _clamp_coverage_start(self) -> None:
-        """Raise `config.start_date` to this index's coverage start.
+        """Raise ``config.start_date`` to this index's coverage start.
 
-        Point-in-time membership before `_pit_coverage_start()` cannot be
-        answered from the source at all, so a panel must never begin earlier
-        (CONFLICT 5). Without the clamp, the inherited `Date.START_DATE`
-        default ("1900-01-01") would prepend 76 years of all-False rows that
-        read as "nobody was a member" rather than "unknown".
-
-        The clamp announces itself only when the caller ASKED for the earlier
-        date. A pre-clamp value equal to the inherited `Date.START_DATE`
-        sentinel is clamped silently, and the two cases differ for exactly one
-        reason: in the sentinel case the caller requested nothing, so warning
-        would fire on every single default construction and train readers to
-        ignore the log entirely.
+        Membership before ``_pit_coverage_start()`` cannot be answered from
+        the source, and without the clamp the inherited ``Date.START_DATE``
+        default would prepend decades of all-False rows that read as "not a
+        member" rather than "unknown". A warning is logged only when the
+        caller explicitly asked for an earlier date; the default sentinel is
+        clamped silently so that every default construction does not warn.
         """
         requested = self._config.start_date
         coverage_start = self._pit_coverage_start()
@@ -119,61 +146,52 @@ class IndexConstituentDataset(BaseDataset):
                 f"answered from the source."
             )
 
-
-
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
-        """Route the panel to membership validation, not market-data cleaning."""
+        """Validate the membership panel instead of running the OHLCV cleaner."""
         return clean_membership_panel(data)
 
     def _raw_data_to_xr(self) -> xr.Dataset:
+        """Build the interval table and densify it into the daily panel."""
         return self._densify(self._build_intervals())
 
     def _densify(self, intervals: pl.DataFrame) -> xr.Dataset:
         """Densify a membership-interval table into a daily boolean panel.
 
-        See the class docstring for the two axis conventions. The resolution
-        rules, in order:
+        The symbol axis is the sorted all-time union of the table's symbols,
+        computed before any date filtering, so a symbol whose membership
+        ended before the window still gets an all-False column and a
+        requested symbol that was never a member fails loudly on selection.
+        Labels keep the table's own dtype: tickers give a string axis in
+        lexicographic order, integer identifiers an int64 axis in numeric
+        order, with ``sort_symbol_axis`` deciding the order.
 
-        - **Symbol axis**: `sort_symbol_axis(set(...))` over the ALL-TIME
-          union, computed before any date filtering. A symbol whose entire
-          membership predates the panel window still gets a (fully False)
-          column. That is the survivorship-bias guarantee, and it is also what
-          makes `XrBackend.filter_by_symbol`'s `.sel(symbol=[...])` safe: a
-          requested symbol that was never a member raises `KeyError` loudly
-          instead of silently vanishing.
+        The left edge is ``max(config.start_date, coverage start)``. The right
+        edge is ``min(config.end_date, horizon)``, where ``horizon`` is the
+        latest date in the table, extended to ``config.as_of`` (or today when
+        ``as_of`` is unset) when any interval is still open. Pin ``as_of``
+        when the panel must be reproducible. Narrowing an explicitly
+        requested ``end_date`` logs a warning; the inherited ``Date.END_DATE``
+        sentinel is truncated silently. Each interval fills inclusively on
+        both ends, and a null ``end_date`` fills through the right edge.
 
-          **The labels keep the interval table's own dtype.** This method used
-          to `str()` them, so a PERMNO-keyed universe came back as digit
-          strings in lexicographic order and selected NOTHING against the
-          int64 price panel (03.11-05). It does not convert them now: a
-          ticker-keyed index still gets a textual axis in lexicographic order,
-          a PERMNO-keyed one gets an int64 axis in numeric order, and the
-          order contract itself lives once in
-          `quantlab/utils/symbol_axis.py:sort_symbol_axis`.
-        - **Left edge**: `max(config.start_date, _pit_coverage_start())`. The
-          config setter has already clamped it; the `max` here keeps the panel
-          correct even if a caller mutates the config afterwards.
-        - **Right edge**: `min(config.end_date, horizon)`. Let `observed` be
-          the latest date appearing anywhere in the interval table. If ANY
-          interval is still open, `horizon = max(observed, today)`, where
-          `today` is `config.as_of` when set and the wall clock otherwise;
-          otherwise `horizon = observed`. Pin `as_of` when the panel must be
-          reproducible -- with the clock, two rebuilds of one config produce
-          two differently-shaped stores. The today-branch is load-bearing: an open
-          membership is by definition current, so the last change event is only
-          a LOWER BOUND on the right edge, and a panel stopping at `observed`
-          would end weeks or months short of the present — exactly the live
-          edge where a universe mask gets used. Conversely `Date.END_DATE`
-          ("2100-01-01") is what the `min` protects against: without it, a
-          default config would materialise ~45,000 days of fabricated future
-          membership.
-        - **Fill**: inclusive on BOTH ends; an interval with a null `end_date`
-          fills through the resolved right edge rather than being dropped.
+        Parameters
+        ----------
+        intervals : pl.DataFrame
+            A frame with ``symbol``, ``start_date`` and
+            ``end_date`` columns; a null ``end_date`` means still a
+            member.
 
-        Narrowing an explicitly requested right edge emits a `logger.warning`
-        naming both dates. An `end_date` still at the inherited `Date.END_DATE`
-        sentinel is truncated silently, for the same reason the left-edge
-        sentinel is: the caller requested nothing.
+        Returns
+        -------
+        xr.Dataset
+            A dataset with one boolean ``is_member`` variable on
+            ``(timestamp, symbol)`` over a contiguous daily ``timestamp``.
+
+        Raises
+        ------
+        ValueError
+            If the table is empty, any row has a null
+            ``start_date``, or the resolved window is empty.
         """
         rows = intervals.select(
             ["symbol", "start_date", "end_date"]
@@ -184,22 +202,11 @@ class IndexConstituentDataset(BaseDataset):
                 f"there is no membership history to densify."
             )
 
-        # A null `start_date` must be rejected, not tolerated. `max()` over
-        # `pd.Timestamp(row["start_date"])` would not raise on one:
-        # `pd.Timestamp(None)` is NaT and EVERY comparison against NaT is
-        # False, so `max()` silently returns whichever value it happened to
-        # hold first rather than the true maximum -- corrupting the horizon
-        # for every symbol. The same null then reaches the fill loop below and
-        # produces a silently all-False mask row. `start_date` can legitimately
-        # be null today: it comes from `effective_date`, which is null if a
-        # change-log row lacks a date.
-        # The `str()` here is deliberate and is NOT one of the three the
-        # PERMNO migration removed (03.11-05). It renders an ERROR MESSAGE
-        # PAYLOAD, and a message is text whatever the axis is: on an
-        # integer-keyed universe, dropping it would print `{np.int64(7000)}`
-        # at the exact moment the operator most needs to read which row has no
-        # date. The three that DID go are the ones whose values reach
-        # `column_of` and `coords` below, i.e. the ones that decide the axis.
+        # A null start_date must be rejected here: pd.Timestamp(None) is NaT,
+        # every comparison against NaT is False, so max() below would return
+        # an arbitrary value and the fill loop would emit an all-False row.
+        # str() renders the label for the error message only; the axis
+        # itself keeps the table's dtype.
         undated = sorted(
             {str(row["symbol"]) for row in rows if row["start_date"] is None}
         )
@@ -212,13 +219,10 @@ class IndexConstituentDataset(BaseDataset):
                 f"indistinguishable from 'never a member'."
             )
 
-        # The labels enter the axis AS THE INTERVAL TABLE SPELLS THEM. A
-        # ticker-keyed index (Wikipedia) still yields a textual axis in
-        # lexicographic order; a PERMNO-keyed one (CRSP) yields an int64 axis
-        # in NUMERIC order, which is what lines it up with the price panel
-        # 03.11-03 produced. `sort_symbol_axis` is the single implementation of
-        # that order contract -- a bare `sorted()` here would put `"14593"`
-        # before `"7000"`, and today's five-digit PERMNOs make that invisible.
+        # Labels enter the axis as the table spells them; sort_symbol_axis
+        # orders integer identifiers numerically even when they arrive as
+        # digit strings, where a bare sorted() would put "14593" before
+        # "7000".
         symbols = sort_symbol_axis({row["symbol"] for row in rows})
         column_of = {symbol: i for i, symbol in enumerate(symbols)}
 
@@ -238,12 +242,9 @@ class IndexConstituentDataset(BaseDataset):
             observed = max(observed, max(closed_ends))
         has_open_membership = any(row["end_date"] is None for row in rows)
         if has_open_membership:
-            # `config.as_of` pins this edge; `None` means "today". The default
-            # is convenient but NON-REPRODUCIBLE -- rebuilding the same config
-            # on two days yields two differently-shaped stores, and `save()`
-            # overwrites with mode="w" -- so a pinned rebuild is available for
-            # anyone who needs the artefact to be a function of the config
-            # alone (CLAUDE.md 可复现性).
+            # An open membership is current, so the last observed change is
+            # only a lower bound on the right edge. config.as_of pins it;
+            # None falls back to the wall clock, which is not reproducible.
             today = (
                 pd.Timestamp(self.config.as_of)
                 if self.config.as_of is not None
@@ -283,9 +284,8 @@ class IndexConstituentDataset(BaseDataset):
                 if row["end_date"] is not None
                 else right
             )
-            # Inclusive on BOTH ends -- deliberately the same convention as
-            # `UniverseCatalog.get_symbols_as_of`: the removal's effective
-            # date IS a membership day.
+            # Inclusive on both ends: the removal's effective date is still a
+            # membership day.
             mask = (timestamps >= start) & (timestamps <= end)
             values[mask, column_of[row["symbol"]]] = True
 
@@ -296,11 +296,15 @@ class IndexConstituentDataset(BaseDataset):
 
     @abstractmethod
     def _pit_coverage_start(self) -> str:
-        """The ISO date before which this index's membership cannot be
-        answered. The panel never starts earlier than this, whatever the
-        config asks for."""
+        """Return the ISO date before which membership cannot be answered.
+
+        The panel never starts earlier than this, whatever the config asks.
+        """
 
     @abstractmethod
     def _build_intervals(self) -> pl.DataFrame:
-        """Return this index's membership intervals as `(symbol, start_date,
-        end_date)` rows, where a null `end_date` means "still a member"."""
+        """Return the membership intervals as a polars frame.
+
+        The frame has ``symbol``, ``start_date`` and ``end_date`` columns; a
+        null ``end_date`` means the symbol is still a member.
+        """

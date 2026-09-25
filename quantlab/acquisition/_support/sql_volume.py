@@ -1,34 +1,20 @@
-"""The SQL-shaped pre-flight volume guard for WRDS pulls (D-16, D-24).
+"""Pre-flight volume guard for SQL-backed sources such as WRDS.
 
-`UniverseCatalog.assert_acquisition_volume_fits` prices a REST fetch in vendor
-requests per minute. That model does not apply to a PostgreSQL pull: there is
-no request quota, and the real risk is disk. So this guard prices a fetch from
-REAL row counts per trading day, the output of a `count(*)` probe, and refuses
-above a byte ceiling and a row ceiling unless the caller forces it.
+The REST-oriented guard in ``quantlab.universe`` prices a fetch in vendor
+requests per minute. A PostgreSQL pull has no request quota; the real risk
+is disk. ``SqlVolumeGuard`` therefore prices a fetch from real row counts
+per bucket, as returned by a ``count(*)`` probe, and refuses above a byte
+ceiling and a row ceiling unless the caller forces it. A refusal names the
+longest date prefix that would fit, so a large backfill can be run as several
+guarded segments.
 
-**A leaf by construction.** This module imports only the standard library. It
-imports no acquisition class and no database client, so a refusal costs zero
-WRDS queries beyond the counting probe that produced its input: there is
-nothing here that could open a connection, whatever the call order. The
-counts come from `WrdsNbboVolumeProbe` (plan 04), which counts per symbol batch
-and never over a whole daily table (D-24).
-
-**One guard, two bucket units.** `rows_by_day` is really rows-per-BUCKET, and
-what a bucket is depends on what a page is. A TAQ page is a trading day
-(`WrdsNbboVolumeProbe.count_rows_by_day`), so "day" is literally true there
-and stays the default. A CRSP page is a calendar YEAR
-(`CrspVolumeProbe.count_rows_by_year`, 03.10-03), so its counts arrive keyed
-by year end and its refusal must say so -- the `unit=` keyword is that word
-and only that word, since the arithmetic and the dict keys are identical
-either way. Calling a CRSP bucket a "trading day" would put a boundary in
-the refusal (and in its `--end-date` suggestion) that no page has and no
-re-run can honour.
-
-**Segmented backfills (D-24).** At the calibrated 2024 volumes (AAPL ~1.24M
-NBBO rows/day, full market ~313M rows/day) the default 20 GiB ceiling admits
-only a few days of an S&P 500 pull. Large backfills therefore run as several
-guarded date segments, and a refusal names the longest prefix of the
-requested trading days that WOULD fit, so the next command is concrete.
+This module imports only the standard library: no acquisition class and no
+database client, so a refusal costs nothing beyond the counting probe that
+produced its input. The counts come from the WRDS probes
+(``WrdsNbboVolumeProbe.count_rows_by_day`` for TAQ, where a bucket is a
+trading day, and ``CrspVolumeProbe.count_rows_by_year`` for CRSP, where a
+bucket is a calendar year); the ``unit`` keyword only changes the word a
+refusal uses for a bucket.
 """
 
 from collections.abc import Mapping
@@ -37,43 +23,53 @@ _GIB = 1024**3
 
 
 class SqlVolumeGuard:
-    """Row and byte ceilings over per-day `count(*)` row counts.
+    """Row and byte ceilings over per-bucket ``count(*)`` row counts.
 
-    Knobs are resolved once, at construction, from a kwargs mapping (normally
-    a config's `kwargs`) over the class defaults. `force=True` on
-    `assert_acquisition_volume_fits` is the blunt override: it skips the
-    RAISE and never the arithmetic, and it is an explicit per-run parameter --
-    there is no environment variable and no config key that disables the
-    guard wholesale (T-03.9-08).
+    The three knobs (``max_raw_bytes``, ``max_raw_rows``, ``bytes_per_row``)
+    are resolved once at construction from a kwargs mapping, normally a
+    config's ``kwargs``, over the class defaults. ``force=True`` on
+    ``assert_acquisition_volume_fits`` skips the refusal but never the
+    arithmetic, and it is a per-call argument; no environment variable or
+    config key disables the guard wholesale.
+
+    Examples
+    --------
+    >>> from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
+    >>> guard = SqlVolumeGuard()
+    >>> guard.max_raw_rows, guard.bytes_per_row
+    (700000000, 30)
+    >>> SqlVolumeGuard({"max_raw_rows": 1_000_000}).max_raw_rows
+    1000000
     """
 
-    #: Raw-byte ceiling for one fetch (D-24): 20 GiB, deliberately EQUAL to
-    #: `UniverseCatalog.MAX_RAW_BYTES` so both acquisition paths share one disk
-    #: budget. The equality is pinned by a test rather than by an import,
-    #: because this module must not import the acquisition layer.
+    #: Raw-byte ceiling for one fetch: 20 GiB, kept equal to the universe
+    #: guard's ``MAX_RAW_BYTES`` so both acquisition paths share one disk
+    #: budget. The equality is checked by a test rather than an import, since
+    #: this module must not import the acquisition layer.
     MAX_RAW_BYTES = 20 * 1024**3
 
-    #: Bytes a raw NBBO row costs on disk. An ASSUMPTION, not a measurement:
-    #: synthetic NBBO parquet measured 13.1 B/row, but real shards carry 16
-    #: columns, so 30 is a conservative working value until the plan-08 live
-    #: smoke measures real shard bytes/row.
+    #: Bytes one raw NBBO row is assumed to cost on disk. An assumption, not a
+    #: measurement: synthetic NBBO parquet measured about 13 bytes per row,
+    #: but real shards carry 16 columns, so 30 is a conservative working
+    #: value.
     DEFAULT_BYTES_PER_ROW = 30
 
-    #: Row ceiling for one fetch: about 20 GiB at the assumed bytes/row, and
-    #: INDEPENDENT of the byte ceiling so lowering `bytes_per_row` alone cannot
-    #: admit a pull the row count says is too large.
+    #: Row ceiling for one fetch, about 20 GiB at the assumed bytes per row.
+    #: Independent of the byte ceiling, so lowering ``bytes_per_row`` alone
+    #: cannot admit a pull the row count says is too large.
     MAX_RAW_ROWS = 700_000_000
 
-    #: `(label, estimate key, class constant, keyword)` per ceiling, in the
-    #: order a refusal reports them -- the universe guard's table style, so the
-    #: constant a reader is told to edit and the kwargs key they are told to
-    #: pass cannot drift apart from the value being checked.
+    #: ``(label, estimate key, class constant, kwargs key)`` per ceiling, in
+    #: the order a refusal reports them, so the constant a reader is told to
+    #: edit and the kwargs key they are told to pass cannot drift from the
+    #: value being checked.
     CEILINGS: tuple[tuple[str, str, str, str], ...] = (
         ("raw-bytes", "raw_bytes", "MAX_RAW_BYTES", "max_raw_bytes"),
         ("raw-rows", "rows", "MAX_RAW_ROWS", "max_raw_rows"),
     )
 
     def __init__(self, kwargs: Mapping | None = None):
+        """Resolve the three knobs from ``kwargs`` over the class defaults."""
         kwargs = {} if kwargs is None else kwargs
         self.max_raw_bytes = self._positive(
             kwargs, "max_raw_bytes", self.MAX_RAW_BYTES
@@ -85,9 +81,12 @@ class SqlVolumeGuard:
 
     @staticmethod
     def _positive(kwargs: Mapping, key: str, default):
-        """A knob must be a positive number: zero would silently refuse
-        everything (or divide by zero), a negative one is meaningless, and a
-        bool/str is a config typo that must not be coerced into a ceiling."""
+        """Read knob ``key`` from ``kwargs``, requiring a positive number.
+
+        Zero would refuse everything (or divide by zero), a negative value is
+        meaningless, and a bool or str is a config typo that must not be
+        coerced into a ceiling.
+        """
         value = kwargs.get(key, default)
         if (
             isinstance(value, bool)
@@ -101,9 +100,11 @@ class SqlVolumeGuard:
         return value
 
     def _limits(self) -> dict[str, float]:
+        """Return the two ceilings keyed by their kwargs names."""
         return {"max_raw_bytes": self.max_raw_bytes, "max_raw_rows": self.max_raw_rows}
 
     def _crossed(self, rows: int, raw_bytes: float) -> list[str]:
+        """Return the labels of every ceiling that ``rows``/``raw_bytes`` exceed."""
         actual = {"rows": rows, "raw_bytes": raw_bytes}
         limits = self._limits()
         return [
@@ -112,8 +113,8 @@ class SqlVolumeGuard:
             if actual[key] > limits[keyword]
         ]
 
-    #: What one key of `rows_by_day` counts, as the word a message puts in
-    #: front of `(s)`. The default is TAQ's, where a page IS a trading day.
+    #: The word a message uses for one key of ``rows_by_day``, placed in front
+    #: of ``(s)``. The default is TAQ's, where a bucket is a trading day.
     DEFAULT_UNIT = "trading day"
 
     def estimate(
@@ -125,23 +126,45 @@ class SqlVolumeGuard:
         end_date: str,
         unit: str = DEFAULT_UNIT,
     ) -> dict:
-        """Price a pull from its per-bucket row counts. Pure arithmetic.
+        """Price a pull from its per-bucket row counts, without refusing.
 
-        `fitting_end_date` is the last bucket of the longest ASCENDING prefix
-        of `rows_by_day` whose cumulative rows and bytes stay within both
-        ceilings, or `None` when not even the first bucket fits. Bucket keys
-        are ISO dates, so a string sort is a date sort.
+        Pure arithmetic. ``fitting_end_date`` is the last bucket of the
+        longest ascending prefix of ``rows_by_day`` whose cumulative rows and
+        bytes stay within both ceilings, or ``None`` when not even the first
+        bucket fits. Keys are ISO dates, so a string sort is a date sort.
 
-        `unit` is the WORD a refusal uses for one key, and nothing else: the
-        arithmetic is identical either way and the returned key stays
-        `trading_days`. It exists because one guard prices two different
-        pulls. A TAQ page is a trading day (`WrdsNbboVolumeProbe`), so "day"
-        is literally true there. A CRSP page is a calendar YEAR
-        (`CrspVolumeProbe.count_rows_by_year`, 03.10-03), so a CRSP refusal
-        reading "trading day(s)" would name a boundary no page has and no
-        re-run can be given -- and its `--end-date` suggestion is a year end.
-        The default is TAQ's wording, so every pre-existing caller and every
-        pre-existing message is byte-identical.
+        Parameters
+        ----------
+        rows_by_day : Mapping[str, int]
+            ``{iso_date: row_count}``, one entry per bucket.
+        symbols : int
+            How many symbols the counts cover; echoed into the result.
+        start_date : str
+            Start of the requested window; echoed into the result.
+        end_date : str
+            End of the requested window; echoed into the result.
+        unit : str
+            The word a message uses for one bucket (``"trading day"``
+            for TAQ, ``"calendar year"`` for CRSP). It changes wording
+            only; the returned key is always ``trading_days``.
+
+        Returns
+        -------
+        dict
+            A dict with the inputs echoed, ``trading_days`` (bucket count),
+            ``rows``, ``bytes_per_row``, ``raw_bytes``, both ceilings,
+            ``crossed`` (labels of exceeded ceilings), ``fitting_end_date``
+            and ``forced`` (always ``False`` here).
+
+        Examples
+        --------
+        >>> guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
+        >>> estimate = guard.estimate(
+        ...     {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
+        ...     symbols=1, start_date="2024-01-02", end_date="2024-01-03",
+        ... )
+        >>> estimate["rows"], estimate["crossed"], estimate["fitting_end_date"]
+        (2500000, ['raw-rows'], '2024-01-02')
         """
         days = sorted(rows_by_day)
         rows = 0
@@ -180,14 +203,56 @@ class SqlVolumeGuard:
         force: bool = False,
         unit: str = DEFAULT_UNIT,
     ) -> dict:
-        """Raise if the pull is over either ceiling; otherwise return the
-        estimate.
+        """Return the estimate, or raise if the pull crosses either ceiling.
 
-        With `force=True` an over-ceiling estimate is returned with
-        `forced=True` and `crossed` still naming every crossed ceiling. A
-        refusal names every crossed ceiling (not only the first), the
-        constant AND the kwargs key that raise it, a date segment that fits,
-        and `--force-volume`. Never touches the network.
+        With ``force=True`` an over-ceiling estimate is returned with
+        ``forced=True`` and ``crossed`` still naming every crossed ceiling.
+        Never touches the network.
+
+        Parameters
+        ----------
+        rows_by_day : Mapping[str, int]
+            ``{iso_date: row_count}``, one entry per bucket.
+        symbols : int
+            How many symbols the counts cover.
+        start_date : str
+            Start of the requested window.
+        end_date : str
+            End of the requested window.
+        force : bool
+            Return the estimate instead of raising when over a ceiling.
+        unit : str
+            The word a message uses for one bucket; see ``estimate``.
+
+        Returns
+        -------
+        dict
+            The dict ``estimate`` returns, with ``forced`` set when ``force``
+            overrode a refusal.
+
+        Raises
+        ------
+        ValueError
+            If any ceiling is crossed and ``force`` is false. The
+            message names every crossed ceiling with the constant and
+            kwargs key that raise it, a date segment that would fit (or
+            that none does), and the ``--force-volume`` override.
+
+        Examples
+        --------
+        >>> guard = SqlVolumeGuard({"max_raw_rows": 2_000_000})
+        >>> guard.assert_acquisition_volume_fits(
+        ...     {"2024-01-02": 1_200_000}, symbols=1,
+        ...     start_date="2024-01-02", end_date="2024-01-02",
+        ... )["crossed"]
+        []
+        >>> guard.assert_acquisition_volume_fits(
+        ...     {"2024-01-02": 1_200_000, "2024-01-03": 1_300_000},
+        ...     symbols=1, start_date="2024-01-02", end_date="2024-01-03",
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValueError: Refusing to pull 1 symbol(s) over 2024-01-02..2024-01-03: ...
         """
         estimate = self.estimate(
             rows_by_day,

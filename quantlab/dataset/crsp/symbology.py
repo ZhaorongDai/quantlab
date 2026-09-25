@@ -1,98 +1,105 @@
-"""PERMNO -> ticker, as intervals: the CRSP symbology (D-04, D-18).
+"""PERMNO-to-ticker intervals derived from CRSP's security-info history.
 
-**One job: say which ticker a PERMNO wore over which dates.** Nothing here
-decides what a panel column is called any more. Since 03.11-03 the price
-panel's `symbol` axis IS the int64 PERMNO (D-01), so a ticker is no longer an
-identity: it cannot collide with another security's, cannot need a share-class
-suffix to be told apart, and cannot decide whether a delisting row has a column
-to live in. The four mechanisms that existed for those cases -- the interval
-collision pass, the row-level `(date, symbol)` tie-break, the class respelling
-and the delisting SYMBOL carry -- were DELETED in 03.11-07 rather than kept as
-guards, because on a PERMNO axis the failure they guarded against is not merely
-unlikely, it is unspellable: two securities never reach one cell.
+The CRSP price panel's ``symbol`` axis is the integer PERMNO, so a ticker is
+never an identity here; it is a display name. ``CrspSymbology`` turns the
+``stksecurityinfohist`` reference table into an interval table saying which
+ticker each PERMNO wore over which dates. The conversion writes that table
+into the ticker sidecar that ``quantlab.dataset.crsp.tickers`` reads back.
 
-What remains is a lookup table for HUMANS. `symbol_intervals()` is the single
-data source for the ticker sidecar (plan 09), which puts readable names beside
-a panel keyed on numbers.
+The daily table cannot spell a share class on its own (it has no
+``shareclass`` and no ``tradingsymbol`` column), which is why the names come
+from the reference tier rather than from the daily rows.
 
-`dsf_v2` cannot spell a share class on its own: it carries no `shareclass` and
-no `tradingsymbol` (live check `C3_columns`). Both come from
-`stksecurityinfohist`, which is why this is an interval table built from the
-reference tier rather than a per-row read of the daily one.
+The naming rule, applied per interval:
 
-**The rule, in order** (RESEARCH Q4, every case from a live row):
+1. ``base`` is ``ticker`` stripped and upper-cased.
+2. ``cls`` is ``shareclass``, unless it is null, empty, ``"None"`` or
+   ``"NONE"`` (the last two occur as literal text in the live tables).
+3. If ``cls`` is set and ``tradingsymbol == base + cls``, the symbol is
+   ``base.cls`` (BRK with trading symbol BRKB and class B gives ``BRK.B``).
+   Otherwise it is ``base`` (GOOGL, META, FB).
+4. An interval whose ticker is null or empty carries the previous interval's
+   symbol for that PERMNO. A delisting-day interval is typically like this,
+   and the carry is what lets the sidecar name a dead security's last day.
 
-1. `base = ticker.strip().upper()`;
-2. `cls = shareclass`, unless it is null, empty, `"None"` or `"NONE"`;
-3. if `cls` is set AND `tradingsymbol == base + cls`, the symbol is
-   `base.cls` -- BRK + BRKB + B gives `BRK.B`, with the same `.` delimiter the
-   constituent universes and `WrdsTaqNbboAcquisition.SUFFIX_DELIMITER` already
-   use. Otherwise it is `base` (GOOGL, META, FB);
-4. an interval whose ticker is null or empty CARRIES the previous interval's
-   symbol for that PERMNO. Lehman's 2008-09-18 delisting interval is exactly
-   this (live `L3_3`). On a PERMNO axis this carry no longer decides whether
-   that row is in the panel -- the row is keyed on 80599 either way -- it
-   decides only whether the sidecar can put a NAME on a dead security's last
-   day.
-
-**What this module deliberately does NOT do.** It never merges two PERMNOs and
-it never decides which rows enter a panel. It answers one question, about
-names; identity is the PERMNO and is settled before anything here runs.
+Nothing here merges two PERMNOs or decides which rows enter a panel.
 """
 
 from __future__ import annotations
 
 import polars as pl
 
-#: The delimiter between a base ticker and its share class. The same `.` the
-#: constituent universes use and the same one
-#: `quantlab/acquisition/wrds/taq.py:WrdsTaqNbboAcquisition.SUFFIX_DELIMITER`
-#: declares -- restated rather than imported, because importing a TAQ constant
-#: into the CRSP dataset layer would make a tick-acquisition module a
-#: dependency of a daily-panel conversion.
+#: The delimiter between a base ticker and its share class. The same ``.``
+#: the constituent universes and the TAQ acquisition use; restated rather
+#: than imported so that a daily-panel module does not depend on a
+#: tick-data module.
 SUFFIX_DELIMITER = "."
 
-#: Share-class values that mean "no class". `"None"` and `"NONE"` are TEXT,
-#: not nulls: the live tables carry both a real SQL NULL and, on some rows,
-#: the four-character string.
+#: Share-class values that mean "no class". ``"None"`` and ``"NONE"`` are
+#: text, not nulls: the live tables carry both a real SQL null and, on some
+#: rows, the four-character string.
 _NO_CLASS = ("", "None", "NONE")
 
 
 class CrspSymbology:
-    """`stksecurityinfohist` intervals as a PERMNO -> ticker interval table.
+    """Ticker intervals per PERMNO, computed once from ``stksecurityinfohist``.
 
-    `security_info` is the reference table as `CrspReference.table(...)`
-    returns it. There is exactly one public method, `symbol_intervals()`. This
-    is a class rather than a function because the table is computed once and
-    read more than once per conversion, and the cache has to live somewhere.
+    ``security_info`` is the reference table as ``CrspReference.table()``
+    returns it. The single public method, ``symbol_intervals()``, is cached
+    on the instance because a conversion reads it more than once.
+
+    Examples
+    --------
+    >>> from quantlab.dataset.crsp.reference import CrspReference
+    >>> from quantlab.dataset.crsp.symbology import CrspSymbology
+    >>> ref = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+    >>> symbology = CrspSymbology(ref.table("stksecurityinfohist"))
+    >>> symbology.symbol_intervals().filter(pl.col("permno") == 13407)
+    shape: (2, 4)
+    ┌────────┬────────┬────────────┬────────────┐
+    │ permno ┆ symbol ┆ start_date ┆ end_date   │
+    │ ---    ┆ ---    ┆ ---        ┆ ---        │
+    │ i64    ┆ str    ┆ date       ┆ date       │
+    ╞════════╪════════╪════════════╪════════════╡
+    │ 13407  ┆ FB     ┆ 2012-05-18 ┆ 2022-06-08 │
+    │ 13407  ┆ META   ┆ 2022-06-09 ┆ 2025-12-31 │
+    └────────┴────────┴────────────┴────────────┘
     """
 
     SUFFIX_DELIMITER = SUFFIX_DELIMITER
 
     def __init__(self, security_info: pl.DataFrame) -> None:
+        """Bind the security-info table; nothing is computed until first use."""
         self.security_info = security_info
         self._intervals: pl.DataFrame | None = None
 
     # -- intervals ----------------------------------------------------------
 
     def symbol_intervals(self) -> pl.DataFrame:
-        """`(permno, symbol, start_date, end_date)`, one row per interval.
+        """Return ``(permno, symbol, start_date, end_date)``, one row per interval.
 
-        Sorted by `(permno, start_date)`; `permno` Int64, `symbol` String,
-        both dates Date. Computed once and cached.
+        Sorted by ``(permno, start_date)``; ``permno`` is ``Int64``,
+        ``symbol`` is ``String`` and both dates are ``Date``. The result is
+        computed once and cached. These four columns are also the schema of
+        the ticker sidecar written beside a converted store.
 
-        **This schema is the ticker sidecar's schema** (plan 09), and that
-        sidecar is now this method's only consumer -- the panel axis is the
-        PERMNO and needs no name to be built. Stated here rather than only at
-        the sidecar because the four columns above are what a reader of that
-        JSON gets, and they are decided in this select.
+        ``symbol`` is null only where a PERMNO's first interval already has no
+        ticker, so there is nothing earlier to carry forward. The nulls are
+        kept so that "this PERMNO never had a ticker" remains visible; call
+        ``.drop_nulls("symbol")`` for named intervals only.
 
-        `symbol` is null only where a PERMNO's FIRST interval already has no
-        ticker -- there is then no previous interval to carry, and inventing
-        one would be a guess about identity. A caller that wants only named
-        intervals asks for `.drop_nulls("symbol")`; the nulls are kept here so
-        that "this PERMNO never had a ticker" stays a distinguishable fact
-        rather than an absent row.
+        Examples
+        --------
+        >>> symbology.symbol_intervals().filter(pl.col("permno") == 83443)
+        shape: (2, 4)
+        ┌────────┬────────┬────────────┬────────────┐
+        │ permno ┆ symbol ┆ start_date ┆ end_date   │
+        │ ---    ┆ ---    ┆ ---        ┆ ---        │
+        │ i64    ┆ str    ┆ date       ┆ date       │
+        ╞════════╪════════╪════════════╪════════════╡
+        │ 83443  ┆ BRK    ┆ 1996-05-09 ┆ 2002-01-01 │
+        │ 83443  ┆ BRK.B  ┆ 2002-01-02 ┆ 2025-12-31 │
+        └────────┴────────┴────────────┴────────────┘
         """
         if self._intervals is not None:
             return self._intervals
@@ -128,8 +135,8 @@ class CrspSymbology:
             .otherwise(pl.col("_base"))
             .alias("_symbol")
         )
-        # An empty-string ticker is the same absence a NULL one is; both must
-        # reach the carry below rather than becoming the symbol `""`.
+        # An empty-string ticker is the same absence as a null one; both must
+        # reach the carry below rather than becoming the symbol "".
         frame = frame.with_columns(
             pl.when(
                 pl.col("_base").is_null() | (pl.col("_base").str.len_chars() == 0)
@@ -138,7 +145,7 @@ class CrspSymbology:
             .otherwise(pl.col("_symbol"))
             .alias("_symbol")
         )
-        # The carry (rule 4), forward within one PERMNO and never across two.
+        # The carry (rule 4): forward within one PERMNO, never across two.
         frame = frame.with_columns(
             pl.col("_symbol").forward_fill().over("permno").alias("_symbol")
         )

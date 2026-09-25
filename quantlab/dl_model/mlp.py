@@ -1,3 +1,12 @@
+"""Feed-forward regression head for the torch model layer.
+
+``MLPRegressor`` is a ``DLModel`` that flattens every bar of the factor panel
+into one row (all symbols side by side) and maps it to every label of every
+symbol with a two-hidden-layer ``MLP``. It sits between the factor and label
+layers, which supply the ``[num_times, num_symbols, *]`` tensors, and the
+backtest layer, which consumes its predictions through ``predict_panel``.
+"""
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,7 +17,28 @@ from quantlab.base.model import DLModel
 
 
 class MLP(nn.Module):
+    """Two-hidden-layer perceptron with ReLU activations.
+
+    Parameters
+    ----------
+    input_size
+        Width of the input rows.
+    hidden_size1
+        Width of the first hidden layer.
+    hidden_size2
+        Width of the second hidden layer.
+    output_size
+        Width of the output rows.
+
+    Examples
+    --------
+    >>> net = MLP(input_size=6, hidden_size1=16, hidden_size2=8, output_size=4)
+    >>> net(torch.zeros(5, 6)).shape
+    torch.Size([5, 4])
+    """
+
     def __init__(self, input_size, hidden_size1, hidden_size2, output_size):
+        """Build the three linear layers and their activations."""
         super(MLP, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size1)
         self.relu1 = nn.ReLU()
@@ -17,6 +47,14 @@ class MLP(nn.Module):
         self.fc3 = nn.Linear(hidden_size2, output_size)
 
     def forward(self, x):
+        """Map a ``[batch, input_size]`` matrix to ``[batch, output_size]``.
+
+        Examples
+        --------
+        >>> net = MLP(6, 16, 8, 4)
+        >>> net.forward(torch.zeros(5, 6)).shape
+        torch.Size([5, 4])
+        """
         out = self.fc1(x)
         out = self.relu1(out)
         out = self.fc2(out)
@@ -26,11 +64,52 @@ class MLP(nn.Module):
 
 
 class MLPRegressor(DLModel):
+    """Regress future returns with an ``MLP`` over the flattened cross-section.
+
+    Each bar ``t`` becomes one training row: the ``[num_symbols, num_features]``
+    slice is flattened to ``num_symbols * num_features`` inputs and the target
+    is the flattened ``[num_symbols, num_labels]`` slice. The network therefore
+    encodes symbol position, so predictions must be made on the same symbol
+    axis the model was trained on; ``DLModel`` aligns the panel for
+    ``predict_panel``. The loss is mean squared error and the optimizer is
+    Adam with ``config.lr``.
+
+    Hyperparameters read from ``config.hyperparameters``: ``hidden_size1``
+    (default 512) and ``hidden_size2`` (default 256).
+
+    Note that the public ``predict`` takes the flattened
+    ``[num_times, num_symbols * num_features]`` matrix and returns the
+    flattened ``[num_times, num_symbols * num_labels]`` output, while
+    ``predict_panel`` works on the ``(timestamp, symbol)`` panel.
+
+    Examples
+    --------
+    >>> config = DLConfig(
+    ...     factors=[alpha],            # factor objects
+    ...     labels=[fwd_return],        # label objects
+    ...     model_save_dir="checkpoints",
+    ...     factor_data_strategy="read",
+    ...     label_data_strategy="read",
+    ...     train_start="2024-01-01", train_end="2024-02-09",
+    ...     test_start="2024-02-10", test_end="2024-02-29",
+    ...     epochs=2, batch_size=8, num_workers=0,
+    ...     hyperparameters={"hidden_size1": 16, "hidden_size2": 8},
+    ... )
+    >>> model = MLPRegressor(config)
+    >>> checkpoint = model.collect().train()
+    >>> checkpoint.name
+    MLPRegressor_total.pth
+    >>> model.predict(torch.zeros(5, model.num_symbols * model.num_factors)).shape
+    torch.Size([5, 4])
+    """
+
     def __init__(self, config: DLConfig):
+        """Store the config and create the MSE criterion."""
         super().__init__(config)
         self.criterion = nn.MSELoss()
 
     def _train_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
+        """Run one optimizer step on a flattened batch and log train metrics."""
         x = x.to(self.device)
         y = y.to(self.device)
 
@@ -68,13 +147,11 @@ class MLPRegressor(DLModel):
         num_labels: int,
         hyperparameters: dict,
     ) -> nn.Module:
-        """签名必须带 `hyperparameters`——`DLModel._init_model_and_optim()` 是
-        按关键字传的（`hyperparameters=self.config.hyperparameters`）。
+        """Build the ``MLP`` sized for the flattened panel and move it to the device.
 
-        以前这里少了这个形参，于是 `MLPRegressor` 连一次 `train()` 都跑不到：
-        `TypeError: _init_model() got an unexpected keyword argument
-        'hyperparameters'`。两个隐藏层的宽度沿用原来硬编码的 512 / 256 作为默认
-        值，所以补上形参不改变任何既有配置下的模型结构。
+        The input width is ``num_symbols * num_features`` and the output width
+        ``num_symbols * num_labels``. Hidden widths come from
+        ``hyperparameters`` with defaults of 512 and 256.
         """
         input_size = num_symbols * num_features
         output_size = num_symbols * num_labels
@@ -85,9 +162,11 @@ class MLPRegressor(DLModel):
         )
 
     def _init_optim(self, model):
+        """Return an Adam optimizer over ``model`` with ``config.lr``."""
         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
 
     def _test_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
+        """Evaluate one flattened test batch and log the test metrics."""
         x = x.to(self.device)
         y = y.to(self.device)
 
@@ -115,16 +194,11 @@ class MLPRegressor(DLModel):
     def _val_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
-        """必须存在，而且必须**返回**一个能 `float()` 的损失。
+        """Evaluate one flattened validation batch and return its detached loss.
 
-        它以前根本没有实现，所以 `MLPRegressor.__abstractmethods__` 里始终留着
-        `{'_val_one_batch'}`，这个类连实例化都做不到：
-        `TypeError: Can't instantiate abstract class MLPRegressor`。
-
-        返回值的契约在 2026-09-07 被收紧过：`base/model.py` 的 epoch 循环现在把
-        每个 batch 的返回值按样本数加权累加成「一个 epoch 的验证损失」再跟早停
-        阈值比较（`val_loss_sum += float(val_loss) * batch_samples`）。返回 None
-        会当场 `TypeError`，所以这里返回的是 `loss.detach()` 而不是只记 metrics。
+        The epoch loop weights the returned loss by the batch size to form
+        the per-epoch validation loss that drives early stopping, so this
+        must return a tensor, not just log metrics.
         """
         x = x.to(self.device)
         y = y.to(self.device)
@@ -150,21 +224,13 @@ class MLPRegressor(DLModel):
         return val_loss.detach()
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """`predict_panel` 的 MLP 适配器：`[T, S, F]` 进，`[T, S, L]` 出（03.7 D-29）。
+        """Adapt ``predict_panel`` to the flat contract.
 
-        MLP 模块的推理输入是**展平后的矩阵** `[T, S*F]`：`_init_model` 建的是
-        `nn.Linear(num_symbols * num_features, ...)`，`_train_one_batch` 也是先
-        `x.reshape(num_times, -1)` 再喂模块，输出同样是展平的 `[T, S*L]`
-        （`tests/test_dl_models.py::test_mlp_regressor_trains_two_epochs_and_predicts`
-        里那段注释记的就是这个契约）。`DLModel` 的通用路径把 `[T, S, F]` 直接交给
-        模块，会在第一个 Linear 层报形状错误。
-
-        D-33 原本假设 MLP 可以走通用的 `[T, S, L]` 路径，代码不是这样，所以这里
-        补一个适配器。公开的 `predict()` **刻意不改**：它仍然接受展平矩阵，既有
-        调用方与测试不受影响。
-
-        展平与还原都是 C 序、symbol 在前，与 `_train_one_batch` 里对 x、y 的
-        `reshape(num_times, -1)` 完全一致，所以输出的 reshape 恰好是训练时布局的逆。
+        Takes ``[T, S, F]`` and returns ``[T, S, L]``. The network consumes
+        ``[T, S * F]`` and emits ``[T, S * L]``, both in C order with the
+        symbol axis outermost, exactly as the training step flattens them.
+        Flattening here and reshaping the output back is the inverse of that
+        layout. The public ``predict`` keeps the flat contract.
         """
         num_times, num_symbols, num_features = x.shape
         flat = x.reshape(num_times, num_symbols * num_features)
@@ -173,14 +239,5 @@ class MLPRegressor(DLModel):
         return out.reshape(num_times, num_symbols, -1)
 
     def _preprocess(self, data: torch.Tensor) -> torch.Tensor:
-        """入参是**张量**，不是 `xr.Dataset`。
-
-        `DLModel._preprocess` 的契约是 `(torch.Tensor) -> torch.Tensor`，两个
-        调用点（`DLModel._fit` 里对四个张量批量调用、`DLModel._predict` 里对推理输入调用）
-        传进来的都是 `to_tensor()` 的产物。以前这里写的是 `data.fillna(0.0)`，
-        标注也写着 `xr.Dataset`——真跑起来是
-        `AttributeError: 'Tensor' object has no attribute 'fillna'`。
-        `torch.nan_to_num` 是同语义的张量版本，也跟 `dl_model/rnn*.py` 一致。
-        """
+        """Replace NaN with 0.0 in a tensor produced by ``to_tensor``."""
         return torch.nan_to_num(data, nan=0.0)
-

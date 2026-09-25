@@ -1,3 +1,14 @@
+"""Tiingo end-of-day acquisition for US equities.
+
+``TiingoAcquisition`` is the vendor-specific half of the acquisition layer for
+Tiingo's daily price endpoint. It fetches one symbol's whole date range per
+request and hands the rows to the shared ``Acquisition`` base, which owns
+resume, concurrency, failure isolation and the raw parquet shards. The API key
+is read from ``TIINGO_API_KEY`` in the environment and is never stored on a
+config or written to a log. ``TIINGO_SOURCE`` at the bottom of the module
+registers the vendor with ``quantlab.registry``.
+"""
+
 import functools
 import os
 
@@ -17,134 +28,109 @@ from quantlab.enums.data import TiingoColumns
 
 #: The environment variable the Tiingo API key is read from.
 #:
-#: MODULE-LEVEL on purpose, mirroring `acquisition/alpaca.py`: the shared
-#: `Acquisition._scrub` reaches this name through `CREDENTIAL_ENV_VARS`, and a
-#: security control must not be reachable through an indirection whose whole
-#: purpose is to be replaced by a test double (03.2-02 deviation #2).
+#: Defined at module level, and read from here by the credential-scrubbing
+#: routine, rather than off ``TiingoClient``. That class is a patch target
+#: that tests replace with a fake, and a redaction routine must not depend on
+#: a symbol whose whole purpose is to be replaced.
 KEY_ENV = "TIINGO_API_KEY"
 
-# Extend when intraday frequencies are added -- never hardcode "daily" inline
-# in _fetch_one.
+# Project frequency token to Tiingo's ``frequency`` parameter. Add intraday
+# entries here rather than spelling a frequency inline in ``_fetch_one``.
 _FREQUENCY_MAP = {"1d": "daily"}
 
-#: Tiingo's EOD field names, in the order `TiingoColumns.EOD` requests them.
-#: Named here so `RAW_COLUMNS` below is derived from one list rather than being
-#: a second hand-maintained copy that could drift from what is actually asked
-#: for.
+#: Tiingo's EOD field names, in the order ``TiingoColumns.EOD`` requests them.
+#: ``RAW_COLUMNS`` below is derived from this tuple so the projection cannot
+#: drift from what is actually asked for.
 _TIINGO_EOD_COLUMNS = tuple(TiingoColumns.EOD.split(","))
 
 
 class TiingoAcquisition(Acquisition):
-    """Config-driven, incrementally-refreshable Tiingo EOD data acquisition.
+    """Tiingo end-of-day acquisition behind the shared ``Acquisition`` base.
 
-    `TIINGO_API_KEY` is read directly from `os.environ` in `__init__` and
-    passed only into the in-memory `TiingoClient` constructor argument --
-    never assigned to `self.config` or any other dataclass-facing attribute.
+    Tiingo's price endpoint takes one symbol per call and returns the whole
+    requested date range in one response, so this vendor runs at
+    ``DEFAULT_BATCH_SIZE = 1`` and ``_fetch_page`` never returns a page token.
+    Both are the complete contract for this vendor, not placeholders.
 
-    Tiingo's EOD endpoint takes ONE symbol per call and returns a whole date
-    range in one response, so this class is the batched primitive's DEGENERATE
-    case: `DEFAULT_BATCH_SIZE = 1` and `_fetch_page` never returns a token.
-    Both are complete implementations of the base contract, not placeholders.
+    Error classification is the one thing this class owns beyond building the
+    request. A 429 from Tiingo means the account's hourly request allocation
+    is spent, which is a global condition: it is classified as ``"quota"`` and
+    the base class stops dispatching work for the whole run instead of letting
+    every remaining symbol fail in turn. ``AlpacaAcquisition`` reads the same
+    status as a per-minute rate limit to back off from, which is why the
+    status set lives on the vendor class rather than on the base.
 
-    **Orchestration lives on `Acquisition`, classification lives here** (D-02,
-    03.2-03). The concurrent fan-out, the resume/skip partition, the failure
-    manifest and the global abort event are the base class's; what this class
-    still owns is the reading of a Tiingo exception -- `QUOTA_STATUS_CODES`,
-    `QUOTA_MESSAGE_TOKEN` and `_is_quota_error`. That split is not stylistic:
-    Tiingo's 429 means the hourly ALLOCATION is gone and the correct response
-    is to stop the world for an hour, while Alpaca returns the same status for
-    a per-minute ceiling a healthy run is expected to hit. Hoisting the status
-    set would abort every Alpaca run within seconds while logging an
-    allocation message for a vendor that has no allocation concept
-    (03.2-RESEARCH.md Pitfall 1).
+    Run options such as ``resume``, ``max_workers``, ``progress``,
+    ``batch_size``, ``legacy_watermarks``, ``wait_for_quota``,
+    ``quota_wait_seconds`` and ``quota_max_waits`` are read from
+    ``config.kwargs``, so every run is reproducible from its config file.
 
-    Every knob the orchestration reads -- `resume`, `max_workers`, `progress`,
-    `batch_size`, `legacy_watermarks`, `wait_for_quota`, `quota_wait_seconds`,
-    `quota_max_waits` -- comes from `config.kwargs`, the escape hatch
-    `AcquisitionConfig` documents, rather than becoming constructor arguments
-    no config file could reach (CLAUDE.md 可复现性).
+    Credentials. ``TIINGO_API_KEY`` is read from the environment in
+    ``__init__`` and passed only to the in-memory ``TiingoClient``. It is
+    never assigned to the config or to any attribute a serialiser could reach,
+    and its value is redacted from every captured message.
 
-    **On the retired `ConcurrentTiingoAcquisition`.** Until 03.2-03 the
-    orchestration lived on a separate subclass whose docstring argued that "a
-    shared seam is not worth introducing for one subclass". That claim was
-    conditioned on there being ONE subclass; Alpaca made two, so the condition
-    no longer holds and the seam now lives on `Acquisition` (D-02). The name
-    was retired outright rather than kept as an alias -- two live names for one
-    class is exactly the ambiguity a later reader resolves wrongly (03.1 D-03).
+    Examples
+    --------
+    Needs ``TIINGO_API_KEY`` exported; ``download()`` reaches the network.
+
+    >>> from quantlab.base.config import AcquisitionConfig
+    >>> cfg = AcquisitionConfig(
+    ...     market="us_equity", frequency="1d", vendor="tiingo",
+    ...     raw_data_dir_path="downloads/nasdaq_data/tiingo",
+    ...     watermark_path="downloads/nasdaq_data/_watermarks/tiingo",
+    ...     symbols=("AAPL", "MSFT"), start_date="2024-01-02",
+    ...     end_date="2024-01-03",
+    ... )
+    >>> acq = TiingoAcquisition(cfg).download()
+    >>> acq.coverage_report()
+    {'requested': 2, 'pending': 0, 'skipped': 2, 'covered': 2,
+     'widened': 0, 'legacy': 0, 'no_data': 0}
+
+    Each symbol lands as one parquet shard under ``month=YYYY-MM/``
+    beneath ``raw_data_dir_path``, projected to ``RAW_COLUMNS``.
     """
 
     VENDOR = "tiingo"
 
-    #: The one credential this vendor reads, named for the shared
-    #: `Acquisition._scrub` choke point. Sourced from the module-level
-    #: constant, never from the (substitutable) client class.
+    #: The one credential ``Acquisition._scrub`` redacts before a message
+    #: reaches a log line or the failure manifest. Sourced from the
+    #: module-level constant, never from the patchable client class.
     CREDENTIAL_ENV_VARS = (KEY_ENV,)
 
     #: What the API key is replaced with in any captured message.
     REDACTION = "<TIINGO_API_KEY REDACTED>"
 
-    #: HTTP statuses that mean the account's request allocation is gone, i.e.
-    #: a GLOBAL condition (D-05). 429 ONLY, deliberately: Tiingo also returns
-    #: 403 for a plan-restricted single ticker, which is a PER-SYMBOL
-    #: condition, and treating that as global would let one restricted ticker
-    #: abort a 15,000-symbol run. A 403 whose body carries the allocation
-    #: wording is still caught by the textual signal below, so the stricter
-    #: status set costs nothing.
-    #:
-    #: Deliberately NOT a base-class attribute -- see the class docstring.
+    #: HTTP statuses that mean the account's request allocation is spent, a
+    #: global condition. Only 429: Tiingo also returns 403 for a single
+    #: plan-restricted ticker, which is a per-symbol condition, and treating
+    #: it as global would let one restricted ticker abort a full-market run.
+    #: A 403 whose body carries the allocation wording is still caught by
+    #: ``QUOTA_MESSAGE_TOKEN``.
     QUOTA_STATUS_CODES = frozenset({429})
 
-    #: The durable fragment of the observed body: "Error: You have run over
-    #: your hourly request allocation. Contact us at support@tiingo.com to
-    #: have these lifted." Matching the full sentence would break the moment
-    #: the vendor says "daily" instead of "hourly" or edits its support
-    #: address. This is still text matching and it is still brittle -- that
-    #: brittleness is a conscious choice, confined to this one constant.
+    #: The durable fragment of the vendor's allocation message ("You have run
+    #: over your hourly request allocation. Contact us at ..."). Matching the
+    #: whole sentence would break the moment the vendor edits it. This is
+    #: still text matching, and that brittleness is confined to this constant.
     QUOTA_MESSAGE_TOKEN = "request allocation"
 
-    #: One symbol per request, and that number is LOAD-BEARING rather than a
-    #: conservative default.
-    #:
-    #: Tiingo's price endpoint is single-symbol, so any other value would mean
-    #: looping inside `_fetch_page` while presenting the batch as atomic. Three
-    #: concrete consequences follow from that pretence:
-    #:
-    #: - ONE failure would fail N symbols instead of one, because the batch is
-    #:   the unit of success;
-    #: - the quota abort check runs once per batch, so an exhausted allocation
-    #:   would let N-1 further requests through before it was noticed -- the
-    #:   exact fast-failing burn 260906-26o D-05 exists to stop;
-    #: - resume granularity would coarsen from one symbol to N.
-    #:
-    #: At 1 the batched path is behaviourally identical to the per-symbol path
-    #: it replaces, which is what makes this a real implementation of
-    #: `_fetch_page` rather than a multi-symbol interface being faked.
+    #: One symbol per request, because the endpoint is single-symbol. A larger
+    #: value would loop inside ``_fetch_page`` while presenting the batch as
+    #: atomic: one failure would fail N symbols, the quota check would run
+    #: once per N requests, and resume would coarsen from one symbol to N.
     DEFAULT_BATCH_SIZE = 1
 
-    #: The pinned shard projection and order: the identity columns first, then
-    #: Tiingo's EOD fields in the order `TiingoColumns.EOD` requests them --
-    #: which is also the order `tests/conftest.py:_STOCK_PQT_COLUMNS` records.
-    #: `vendor` is new in 03.2 and is what keeps a cross-vendor merge
-    #: DETECTABLE as well as prevented (D-11).
+    #: Shard column projection and order: the identity columns first, then
+    #: Tiingo's EOD fields in the order they are requested. ``vendor`` keeps
+    #: provenance visible even after a cross-vendor merge.
     RAW_COLUMNS = ("timestamp", "symbol", "vendor", *_TIINGO_EOD_COLUMNS)
 
-    #: The pinned DTYPE of every shard column, alongside the pinned names and
-    #: order above.
-    #:
-    #: `RAW_COLUMNS`' own docstring claims the raw tier is "schema-stable BY
-    #: CONSTRUCTION". Column set and order were pinned; dtype was not, and a
-    #: schema is all three. `pl.DataFrame(json_rows)` infers per response, so
-    #: one symbol whose `divCash` is all integer `0`, or whose `volume` is null
-    #: over the requested window, yielded a shard typed `Int64`/`Null` where its
-    #: siblings were `Float64` -- and `dataset/stock.py` deliberately leaves
-    #: `extra_columns`/`missing_columns` at their raising defaults, so the whole
-    #: directory scan then failed with a `SchemaError` naming a FILE rather than
-    #: a cause. Worse, it looked intermittent: which file polars opens first is
-    #: filename-ordering dependent.
-    #:
-    #: `acquisition/alpaca.py` already casts against its `RAW_SCHEMA`; this is
-    #: the same contract implemented the same way, so the two vendors cannot
-    #: drift on what "schema-stable" means (WR-05).
+    #: Explicit dtype of every shard column. ``pl.DataFrame`` infers per
+    #: response, so a symbol whose ``divCash`` is all integer zero or whose
+    #: ``volume`` is all null would otherwise land a shard typed differently
+    #: from its siblings and make the whole directory scan fail with a
+    #: ``SchemaError`` that names a file rather than a cause.
     RAW_SCHEMA = {
         "timestamp": pl.Datetime("us"),
         "symbol": pl.String,
@@ -153,6 +139,13 @@ class TiingoAcquisition(Acquisition):
     }
 
     def __init__(self, config: AcquisitionConfig):
+        """Open the Tiingo client with the API key from the environment.
+
+        Raises
+        ------
+        RuntimeError
+            If ``TIINGO_API_KEY`` is unset or empty.
+        """
         super().__init__(config)
 
         if not os.environ.get(KEY_ENV):
@@ -166,31 +159,25 @@ class TiingoAcquisition(Acquisition):
         )
 
     def _classify_error(self, exc: BaseException) -> str:
-        """Tiingo reads 429 as a GLOBAL condition -- see `QUOTA_STATUS_CODES`.
+        """Return ``"quota"`` for a spent allocation and ``"failed"`` otherwise.
 
-        Behaviourally identical to what `_attempt_batch` did before the seam
-        existed; it is only expressed through the method both vendors now
-        override. `"rate_limited"` is unreachable here on purpose: this vendor
-        declares no `RATE_LIMIT_STATUS_CODES`, because backing off inside a
-        worker against an exhausted HOURLY allocation is exactly the
-        ~10,000-fast-failing-request burn observed on 2026-09-06.
+        This vendor declares no ``RATE_LIMIT_STATUS_CODES``, so
+        ``"rate_limited"`` is never returned: backing off inside a worker
+        against an exhausted hourly allocation would burn thousands of
+        fast-failing requests before anything noticed.
         """
         return "quota" if self._is_quota_error(exc) else "failed"
 
     def _is_quota_error(self, exc: BaseException) -> bool:
-        """Whether `exc` means the account's request allocation is exhausted
-        -- a GLOBAL, recoverable condition rather than one ticker's fault.
+        """Return whether ``exc`` means the account's request allocation is spent.
 
-        Two independent signals, either sufficient:
-
-        - **structured:** the reachable status is in `QUOTA_STATUS_CODES`;
-        - **textual:** `QUOTA_MESSAGE_TOKEN` appears case-insensitively in the
-          reachable response body or in the rendered exception.
-
-        Both are needed. The status alone would miss a vendor that stops
-        setting 429; the text alone would miss a 429 with an empty body. Any
-        vendor text read here passes through `_scrub` first, because this is
-        the text that then travels into log lines (T-26o-01).
+        Two independent signals, either sufficient: the response status is in
+        ``QUOTA_STATUS_CODES``, or ``QUOTA_MESSAGE_TOKEN`` appears
+        case-insensitively in the response body or the rendered exception.
+        The status alone would miss a vendor that stops sending 429; the text
+        alone would miss a 429 with an empty body. The text is scrubbed of
+        credentials before it is inspected, because it later travels into log
+        lines.
         """
         response = self._vendor_response(exc)
         if response is not None and response.status_code in self.QUOTA_STATUS_CODES:
@@ -208,12 +195,11 @@ class TiingoAcquisition(Acquisition):
     def _fetch_one(
         self, symbol: str, start_date: str, end_date: str
     ) -> pl.DataFrame | None:
-        """One symbol's whole range in one vendor call, or None if empty.
+        """Return one symbol's rows for the whole window, or ``None`` if empty.
 
-        The pre-03.2 `_fetch_and_write` body verbatim MINUS the write: the REST
-        call, the timestamp normalisation with its reasoning, and the literal
-        `symbol` provenance column, plus the new literal `vendor` column that
-        makes provenance survive even a merged read.
+        Timestamps are parsed as UTC and stored naive, and literal ``symbol``
+        and ``vendor`` columns are added, so the frame comes back already in
+        ``RAW_COLUMNS`` order and ``RAW_SCHEMA`` dtypes.
         """
         frequency = _FREQUENCY_MAP[self.config.frequency]
         response = self._client.get_ticker_price(
@@ -224,40 +210,21 @@ class TiingoAcquisition(Acquisition):
             frequency=frequency,
             columns=TiingoColumns.EOD,
         )
-        # `infer_schema_length=None` -- infer over the WHOLE response, never
-        # the default 100 rows. This is the same spelling `acquisition/alpaca.py`
-        # already uses at its own construction site, reached from a different
-        # direction: there the vendor OMITS an absent field, here it NULLS one.
-        #
-        # Tiingo backfills `low`/`adjLow` as `null` for the early history of
-        # some symbols -- a contiguous LEADING run, not scattered gaps. `CAB`
-        # is null for its first 409 sessions and `VNLPY` for its first 337, so
-        # the default 100-row window sees nothing but nulls, types the column
-        # `Null`, and then the first real value raises at CONSTRUCTION:
-        #
-        #     ComputeError: could not append value: 1.5 of type: f64 to the
-        #     builder; make sure that all rows have the same schema
-        #
-        # WR-05 pinned the dtypes with the `.cast()` below and argued the two
-        # vendors could then not drift on what "schema-stable" means. It ported
-        # only half: a cast repairs a frame that was BUILT with the wrong dtype,
-        # and cannot run at all when the build itself throws. Both symbols
-        # failed every full-market run this way, and the manifest recorded a
-        # polars builder error rather than anything a reader could act on.
-        #
-        # A column the vendor nulls in EVERY row still infers `Null` here; the
-        # `.cast()` below turns it into `Float64`. The two measures are
-        # complementary and neither is redundant.
+        # Infer the schema over the whole response, never the default 100
+        # rows. Tiingo backfills `low`/`adjLow` as null for a leading run of
+        # some symbols' early history (hundreds of sessions), so a 100-row
+        # window would type the column `Null` and the first real value would
+        # then fail the frame build itself, before the cast below could
+        # repair it. A column null in every row still infers `Null`, and the
+        # cast turns it into `Float64`; the two measures are complementary.
         data = pl.DataFrame(response, infer_schema_length=None)
         if data.is_empty():
             return None
 
-        # Tiingo's `date` field is an ISO-8601 string with a trailing `Z`
-        # (UTC) offset (e.g. "2024-01-02T00:00:00.000Z"). Parse it as UTC
-        # then drop the tz so the resulting dtype is a naive `pl.Datetime`,
-        # matching the naive timestamps produced elsewhere in the codebase
-        # (e.g. `StockDataset`'s naive `str.to_datetime()` filter bounds) --
-        # parsing without an explicit time zone raises on tz-aware strings.
+        # Tiingo's `date` is ISO-8601 with a trailing `Z`. Parse as UTC and
+        # drop the zone so the dtype is a naive `pl.Datetime`, matching every
+        # other timestamp in the codebase; parsing without an explicit zone
+        # raises on zone-aware strings.
         data = data.with_columns(
             pl.col("date")
             .str.to_datetime(time_zone="UTC")
@@ -268,13 +235,9 @@ class TiingoAcquisition(Acquisition):
             pl.lit(symbol).alias("symbol"),
             pl.lit(self.VENDOR).alias("vendor"),
         )
-        # CAST, not merely projected. The projection pins the column names and
-        # their order; without the cast the DTYPES still vary per response --
-        # an all-integer `divCash` or an all-null `volume` types that shard
-        # differently from its siblings and makes the whole month= directory
-        # unreadable. `timestamp` is excluded because it was just parsed to the
-        # naive `pl.Datetime` above and re-casting it would be a no-op that
-        # invites someone to "simplify" the parse away.
+        # Cast as well as project: the projection pins names and order, the
+        # cast pins dtypes so every shard has the same schema. `timestamp`
+        # was just parsed above and is excluded.
         return data.select(self.RAW_COLUMNS).cast(
             {
                 name: dtype
@@ -284,16 +247,14 @@ class TiingoAcquisition(Acquisition):
         )
 
     def _empty_frame(self) -> pl.DataFrame:
-        """An empty frame carrying the RAW_COLUMNS schema.
+        """Return an empty frame carrying ``RAW_COLUMNS`` and ``RAW_SCHEMA``.
 
-        Returned when a batch produced no rows at all. It must carry the schema
-        rather than being a bare `pl.DataFrame()`, because `_fetch_batch` reads
-        `symbol` off it and a schemaless empty frame would raise there instead
-        of reporting "no rows".
+        Returned when a batch produced no rows. It must carry the schema
+        because ``_fetch_batch`` reads ``symbol`` off it; a schemaless empty
+        frame would raise there instead of reporting "no rows".
         """
-        # Built from `RAW_SCHEMA`, never from a second inline dtype map: an
-        # empty page and a populated one must land the SAME schema, and two
-        # copies of it are two things that can drift.
+        # Built from `RAW_SCHEMA` so an empty page and a populated one land
+        # the same schema.
         return pl.DataFrame(schema=dict(self.RAW_SCHEMA)).select(self.RAW_COLUMNS)
 
     def _fetch_page(
@@ -303,16 +264,24 @@ class TiingoAcquisition(Acquisition):
         end_date: str,
         page_token: str | None = None,
     ) -> tuple[pl.DataFrame, str | None]:
-        """One page for `symbols` -- which for Tiingo is always the WHOLE range.
+        """Return ``(frame, None)``: for Tiingo one page is the whole range.
 
-        Returns `(frame, None)` unconditionally: the EOD endpoint returns the
-        full requested range in one response and publishes no pagination
-        cursor, so there is never a next page. `page_token` is accepted to
-        satisfy the base contract and is ignored, because a token this vendor
-        never issues can never be handed back.
+        The EOD endpoint returns the full requested range in one response and
+        has no pagination cursor, so there is never a next page and
+        ``page_token`` is accepted only to satisfy the base contract.
+        ``symbols`` is looped because the endpoint is single-symbol; at
+        ``DEFAULT_BATCH_SIZE = 1`` the loop has one iteration.
 
-        `symbols` is looped rather than joined because the endpoint is
-        single-symbol; at `DEFAULT_BATCH_SIZE = 1` that loop has one iteration.
+        Parameters
+        ----------
+        symbols : list[str]
+            The batch's symbols.
+        start_date : str
+            First date of the window, inclusive.
+        end_date : str
+            Last date of the window, inclusive.
+        page_token : str | None
+            Ignored; this vendor never issues one.
         """
         frames = []
         for symbol in symbols:
@@ -324,41 +293,22 @@ class TiingoAcquisition(Acquisition):
         return pl.concat(frames, how="vertical"), None
 
 
-#: The registry descriptor for this vendor -- "who I am", beside the class that
-#: is "how I download" (03.4 D-05).
-#:
-#: Defined HERE rather than in `quantlab/registry.py` so that
-#: adding a vendor is one file: the class, its capabilities and its credential
-#: names sit together, and nothing has to be remembered in a second place. The
-#: dependency runs vendor-module -> registry, never the reverse at module top;
-#: `registry.py` imports this module at its BOTTOM, after every definition, so
-#: a cold `import quantlab.registry` still enumerates this source.
-#:
-#: `required_env` is restated as a LITERAL rather than sourced from
-#: `TiingoAcquisition.CREDENTIAL_ENV_VARS`. Deriving it would make D-04's
-#: demanded pinning test the tautology `x == x`; restating it means the two
-#: declarations are genuinely independent and a rename in one place fails
-#: loudly.
+#: The registry entry for this vendor, defined beside the class so that adding
+#: a vendor touches one file. ``quantlab.registry`` imports this module at its
+#: bottom, after every definition, so a cold ``import quantlab.registry`` still
+#: enumerates this source.
 TIINGO_SOURCE = register_source(
     SourceDescriptor(
         vendor="tiingo",
         display_name="Tiingo EOD",
         acquisition_cls=TiingoAcquisition,
-        #: One factory serves both vendors, differing by this keyword. The
-        #: partial keeps the descriptor a pure frozen dataclass and passes
-        #: `subdir` / `kwargs` / the window straight through to callers that
-        #: need them.
+        #: One factory serves both vendors, differing by this keyword.
         config_factory=functools.partial(stock_acquisition_config, vendor="tiingo"),
-        #: EXACTLY one: Tiingo's EOD endpoint serves US equities at daily
-        #: frequency and nothing else (`_FREQUENCY_MAP = {"1d": "daily"}`
-        #: above). `data_type=None` records the ABSENCE of a bars/quotes/trades
-        #: distinction for this vendor, not a wildcard -- which is why
-        #: `supports("us_equity", "tick")` is False.
-        #: `dataset_cls` is what makes `registry.convert()` reachable for this
-        #: capability (03.5 D-01): the conversion target is CAPABILITY data,
-        #: so no caller has to name `StockDataset` and `convert()` carries no
-        #: vendor branch. A DIRECT class reference (03.4 D-03), so there is no
-        #: copy that can drift -- the same class answers Alpaca's bars rows.
+        #: Exactly one capability: daily US equities. ``data_type=None``
+        #: records that this vendor has no bars/quotes/trades distinction,
+        #: not a wildcard, so ``supports("us_equity", "tick")`` is false.
+        #: ``dataset_cls`` is what makes ``registry.convert()`` reachable for
+        #: this capability; the same class converts Alpaca's bar rows.
         capabilities=(
             Capability(
                 market="us_equity",
@@ -367,11 +317,12 @@ TIINGO_SOURCE = register_source(
                 dataset_cls=StockDataset,
             ),
         ),
+        #: Restated as a literal rather than derived from
+        #: ``CREDENTIAL_ENV_VARS`` so the two declarations stay independently
+        #: checkable.
         required_env=("TIINGO_API_KEY",),
-        #: ADVISORY (see `SourceDescriptor.universe_categories`): the roster
-        #: comes from `UniverseCatalog`, never from the vendor, so all four
-        #: categories are listed because all four resolve against Tiingo
-        #: tickers today. This gates nothing.
+        #: Advisory only; the roster comes from ``UniverseCatalog``, never from
+        #: the vendor.
         universe_categories=(
             "nasdaq_all",
             "us_all",

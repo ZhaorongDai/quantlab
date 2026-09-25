@@ -1,54 +1,27 @@
-"""Pull US-equities data from Alpaca Market Data and land it under the D-11
-vendor-namespaced raw path.
+"""Download US-equity bars, quotes or trades from Alpaca Market Data.
 
-The second source, not a replacement (D-10). Alpaca and Tiingo coexist as
-parallel alternatives selected BY CONFIG: this script builds every path through
-`quantlab/config/__init__.py`'s factories with the vendor pinned by the
-registered source descriptor, so the vendor segment is DERIVED in one place
-rather than assembled at the call site. Constructing an `AcquisitionConfig` or
-`DatasetConfig` inline here is how the path convention drifts back into a
-silent two-vendor merge, and a test asserts this module calls neither by name.
+Alpaca is a second source beside Tiingo, not a replacement: raw files land
+under a vendor-namespaced path built by the config factories, so the two
+vendors' shards never merge. ``--frequency 1d`` and ``--frequency 1m`` fetch
+bars; ``--frequency tick`` fetches ``--data-type quotes`` or ``trades`` at
+full resolution with no resampling. Every run lands raw parquet and stops
+there. ``--to-zarr`` converts bars into the Zarr store through
+``quantlab.registry.convert``, one ``--chunk`` window at a time; it is
+refused for tick data, which has no dense panel representation. Nothing
+checks that a window fits in memory, and a minute-bar window is far larger
+than its trading-day count suggests, so choose ``--chunk`` accordingly. No
+vendor class is named here; every vendor fact is read off the registry
+descriptor ``SOURCE``.
 
-This script names no vendor class anywhere: it resolves its source from
-`DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
-builds its acquisition config through `SOURCE.config_factory` and downloads
-through `registry.run()` (03.4 D-15 / SC-1 / SC-6).
+Requires ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` in the environment.
+Neither is accepted as an argument or ever printed, because a credential on
+the command line lands in shell history and one on a config dataclass lands
+in every serialised config.
 
-Three data types, one flag each: `--frequency 1d` and `--frequency 1m` fetch
-bars; `--frequency tick` fetches `--data-type quotes` or `--data-type trades`
-at FULL resolution, with no resampling or bucketing anywhere (D-16).
-
-Credentials
------------
-`APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` are read from the ENVIRONMENT by
-`_AlpacaMarketDataClient.__init__`. They are market-data credentials only --
-no trading API, no broker API, and no paper/live distinction, because the
-market-data API does not have one (D-15).
-
-This script accepts NEITHER value as a command-line argument and never prints
-or logs either one: a CLI credential lands in shell history and in every
-process listing, and a credential on a config dataclass lands in persisted
-configs and in the JSON saved beside model checkpoints, because
-`AcquisitionConfig.to_dict()` is `asdict(self)`. This repo has already leaked
-one real vendor key exactly that way. Only symbol lists, date ranges and paths
-are ever printed.
-
-The feed question is OPEN
-------------------------
-`feed` (SIP vs IEX) is a `config.kwargs` parameter with NO in-code default in
-either direction, and this script registers no `--feed` flag that could supply
-one by habit. Alpaca's own documentation self-conflicts about whether the free
-(Basic) tier reaches historical SIP data at all; see
-`quantlab/acquisition/alpaca.py:AlpacaAcquisition` for both readings. Until a real
-one-request probe settles it (03.2-07 human-check A), an unset feed is OMITTED
-from the request and the vendor picks the best feed the account allows.
-
-Vendor knobs with no flag
--------------------------
-`feed`, `adjustment`, `asof` and `page_limit` are read from `config.kwargs`
-rather than from argparse, so the CLI surface stays small and a knob is added
-without a code change here. To set one, call `_build_configs`'s factories
-directly, e.g.
+Vendor knobs such as ``feed``, ``adjustment``, ``asof`` and ``page_limit``
+have no flag; they travel in ``config.kwargs``. ``feed`` is left unset by
+default so the vendor picks the best feed the account allows. To set one,
+build the config directly::
 
     from quantlab.config import stock_acquisition_config
     cfg = stock_acquisition_config(
@@ -56,82 +29,34 @@ directly, e.g.
         vendor="alpaca", kwargs={"batch_size": 200, "feed": "sip"},
     )
 
-`--batch-size` is the one exception, because the pre-flight volume guard has to
-be told the batch size it is pricing.
-
-One pre-flight guard, and it does not bound memory
--------------------------------------------------
-`assert_acquisition_volume_fits` bounds raw disk bytes, request count and wall
-clock, and runs on EVERY run, BEFORE the client is constructed and before a
-single request. It is now the ONLY pre-flight guard: phase 03.6 deleted the
-dense-panel RAM guard that used to sit beside it, by decision (SC-3). An
-over-sized conversion window therefore reaches OOM rather than a legible
-refusal naming a finer `--chunk`, and a `1m` window that comfortably passes
-the volume guard can still be three orders of magnitude too large to densify
--- the timestamp axis, not the trading-day count, is what a densifier
-allocates against. Choose `--chunk` accordingly.
-
-The conversion itself is CHUNKED and it is the REGISTRY'S (03.5
-D-06/D-07/SC-6): this script hands `quantlab.registry.convert()` a
-source descriptor and a dataset config and renders the `ConversionResult` it
-gets back, naming no Dataset subclass method. One window is densified and
-appended at a time onto a symbol axis pinned once over the whole range, so
-peak RAM scales with the window rather than the range; `--chunk` selects the
-granularity, `--on-new-listing` says what to do about a symbol that first
-appears mid-range, and an interrupted run resumes at its first unwritten
-window.
-
-The dense guard is CONDITIONAL for one reason: it measures the RAM of a
-densification. Refusing a raw-only fetch because a panel this run will never
-build would not fit is a defect, not a guard. Tick skips it because its
-conversion does not exist at all (D-18); a run without `--to-zarr` skips it
-because its conversion was not asked for.
-
-No migration (D-13)
--------------------
-Existing Tiingo raw data and watermarks are NOT migrated to the vendor-
-namespaced path and are NOT read through a fallback. Re-fetching them is a
-SEPARATE, OPTIONAL `ingest_tiingo.py` / `ingest_us_equity.py` invocation that
-respects the quota-abort path and resumes from each symbol's watermark --
-nothing in this phase's verification depends on it completing. Plan it as a
-resumable run rather than fire-and-forget: the Tiingo account's allocation was
-observed to exhaust after ~4,600 requests, so a full roster needs several
-windows.
-
 Usage:
     export APCA_API_KEY_ID=your-key-id APCA_API_SECRET_KEY=your-secret
 
-    Every command below lands RAW parquet and stops there. Add --to-zarr to
-    any of the bar commands to convert afterwards; it is not a default and it
-    is refused outright under --frequency tick.
-
     # Daily bars for an explicit symbol list.
-    uv run python ingest_alpaca.py --symbols AAPL,MSFT \
+    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT \
         --start-date 2024-01-01 --end-date 2024-12-31
 
     # The same fetch, converted to the Zarr store afterwards.
-    uv run python ingest_alpaca.py --symbols AAPL,MSFT --to-zarr \
+    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --to-zarr \
         --start-date 2024-01-01 --end-date 2024-12-31
 
     # Daily bars for a point-in-time roster.
-    uv run python ingest_alpaca.py --universe sp500 --as-of-date 2024-01-02 \
-        --start-date 2024-01-01 --end-date 2024-12-31
+    uv run python scripts/ingest_alpaca.py --universe sp500 \
+        --as-of-date 2024-01-02 --start-date 2024-01-01 --end-date 2024-12-31
 
     # Minute bars.
-    uv run python ingest_alpaca.py --symbols AAPL --frequency 1m \
+    uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency 1m \
         --start-date 2024-01-02 --end-date 2024-01-31
 
-    # Quotes at full resolution. --data-type is REQUIRED here and rejected
-    # everywhere else; --rows-per-symbol-day is what the volume guard prices
-    # tick with, and it has no default because tick volume is not derivable
-    # from a calendar. Adding --to-zarr here exits 2: there is no tick
-    # conversion to opt into (D-18), and refusing beats ignoring.
-    uv run python ingest_alpaca.py --symbols AAPL --frequency tick \
+    # Quotes at full resolution. --data-type is required here and rejected
+    # elsewhere; --rows-per-symbol-day sizes the volume guard and has no
+    # default because tick volume cannot be derived from a calendar.
+    uv run python scripts/ingest_alpaca.py --symbols AAPL --frequency tick \
         --data-type quotes --rows-per-symbol-day 1000000 \
         --start-date 2024-01-02 --end-date 2024-01-02
 
     # Top up an existing backfill from each symbol's own watermark.
-    uv run python ingest_alpaca.py --symbols AAPL,MSFT --refresh
+    uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --refresh
 """
 
 import argparse
@@ -161,33 +86,19 @@ from quantlab.utils.cli import (
     volume_pricing,
 )
 
-#: The ONE place this script's vendor is named, and it is a TOKEN, not a class.
-#:
-#: SC-1's "no vendor named at the call site" means no vendor CLASS: a script
-#: called `ingest_alpaca.py` has its vendor as its whole identity, and the
-#: alternative -- a `--source` flag -- is the merged CLI D-15 explicitly
-#: forbids. Every vendor-specific fact below is read off this descriptor:
-#: `SOURCE.config_factory` builds the acquisition config with the vendor
-#: pinned, `SOURCE.acquisition_cls` supplies the argparse defaults that used to
-#: name the class (L-5), and `run(SOURCE, ...)` performs the fetch.
+#: The registered Alpaca source. The vendor is named here once, as a registry
+#: token; the config factory, the argparse defaults and the fetch itself are
+#: all read off this descriptor rather than off a vendor class.
 SOURCE = DataSourceRegistry.get("alpaca")
 
-#: The frequencies this script offers, DERIVED from the locked `Frequency`
-#: literal rather than restated, so a frequency added to `quantlab/enums/data.py`
-#: becomes selectable here without a second edit -- the same reason the
-#: `--universe` choices are derived from `UNIVERSE_CATEGORY_MAP`.
+#: The frequencies this script offers, derived from the ``Frequency`` literal
+#: so a frequency added there becomes selectable here without a second edit.
 FREQUENCIES: tuple[str, ...] = typing.get_args(Frequency)
 
-#: The Zarr store this script's `1d`/`1m` conversions write to when `--to-zarr`
-#: asks for one.
-#:
-#: DELIBERATELY not `stock_kline_config`'s `"stock.zarr"` default. D-11 puts the
-#: vendor segment on `raw_data_dir_path` and `watermark_path`, which is what
-#: keeps two vendors' RAW files apart -- but `zarr_file_path` has no vendor
-#: segment, so sharing the default store name would let an Alpaca conversion
-#: overwrite the Tiingo store in place. That is the same silent cross-vendor
-#: merge D-11 exists to prevent, one layer up, and `ingest_us_equity.py` already
-#: solved the identical problem for its second ROSTER the identical way.
+#: The Zarr store ``--to-zarr`` writes for ``1d`` and ``1m`` bars. It differs
+#: from ``stock_kline_config``'s default store name because the store path
+#: carries no vendor segment, and sharing the default would let an Alpaca
+#: conversion overwrite the Tiingo store in place.
 DEFAULT_STORE_NAME = "stock_alpaca.zarr"
 
 
@@ -195,22 +106,32 @@ def _build_configs(
     args: argparse.Namespace,
     catalog=None,
 ) -> tuple[AcquisitionConfig, DatasetConfig]:
-    """`(AcquisitionConfig, DatasetConfig)` from the `quantlab/config/` factories.
+    """Build the acquisition and dataset configs for the parsed arguments.
 
-    The factories are where the D-11 vendor segment is derived and where
-    `watermark_path` is placed as a SIBLING of the raw root rather than inside
-    it; bypassing them with an inline dataclass would put both facts at this
-    call site, where the next script would get them subtly wrong.
+    Both configs come from the ``quantlab.config`` factories, which is where
+    the vendor segment of the raw path and the placement of the watermark
+    directory are derived. The universe catalog is loaded only when a
+    ``--universe`` category has to be resolved; ``__main__`` passes the one
+    it has already loaded so the table is read once.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+    catalog
+        An already-loaded ``UniverseCatalog``, or ``None`` to load
+        one on demand when a category is requested.
+
+    Returns
+    -------
+    tuple[AcquisitionConfig, DatasetConfig]
+        An ``(acquisition_config, dataset_config)`` pair. The dataset config
+        is built for every frequency but only used for ``1d`` and ``1m``.
     """
-    # The catalog is loaded ONLY to resolve a universe category; an explicit
-    # --symbols list needs no reference table. `catalog` is accepted so
-    # `__main__` can load it once and hand the same instance to the volume
-    # guard rather than re-reading the parquet table.
     if catalog is None and args.universe:
         catalog = UniverseCatalog.load(universe_config())
-    # `mode="as_of"` stated, never defaulted: this script resolves
-    # point-in-time membership on ONE day. A full-window backfill wants
-    # interval overlap instead -- see `quantlab.utils.cli.resolve_symbols`.
+    # Membership is resolved point-in-time on one day; a full-window backfill
+    # wants interval overlap instead (see ``resolve_symbols``).
     symbols = resolve_symbols(args, catalog, mode="as_of")
 
     kwargs: dict = {}
@@ -219,11 +140,8 @@ def _build_configs(
     if args.batch_size is not None:
         kwargs["batch_size"] = args.batch_size
 
-    # `SOURCE.config_factory` is `functools.partial(stock_acquisition_config,
-    # vendor="alpaca")` -- the SAME factory this script called directly before,
-    # with the vendor pinned by the descriptor instead of restated here. That
-    # is what makes `vendor=` a fact of the registered source rather than a
-    # keyword this call site has to remember to get right.
+    # ``SOURCE.config_factory`` already has the vendor bound, so it is not
+    # restated here.
     acq_config = SOURCE.config_factory(
         symbols=symbols,
         start_date=args.start_date,
@@ -231,8 +149,6 @@ def _build_configs(
         frequency=args.frequency,
         kwargs=kwargs,
     )
-    # Built for every frequency, but PERSISTED only for `1d`/`1m`: under
-    # `tick` it merely names where 03.3 will land the conversion (D-18).
     ds_config = stock_kline_config(
         symbols=list(symbols),
         start_date=args.start_date,
@@ -245,10 +161,11 @@ def _build_configs(
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         description=(
-            "Pull US-equities bars, quotes or trades from Alpaca Market Data. "
-            "Requires APCA_API_KEY_ID and APCA_API_SECRET_KEY in the "
+            "Download US-equity bars, quotes or trades from Alpaca Market "
+            "Data. Requires APCA_API_KEY_ID and APCA_API_SECRET_KEY in the "
             "environment; neither is accepted as an argument."
         )
     )
@@ -263,10 +180,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="1d",
         help=(
             "What to fetch: '1d' and '1m' are bars; 'tick' is raw quotes or "
-            "trades, selected by --data-type. Tick rows are landed at FULL "
-            "resolution with no resampling (D-16), and the raw-to-Zarr "
-            "conversion for them is deferred to phase 03.3 (D-18) -- a tick "
-            "run stops after the raw files land."
+            "trades, selected by --data-type. Tick rows are landed at full "
+            "resolution with no resampling, and there is no raw-to-Zarr "
+            "conversion for them: a tick run stops after the raw files land."
         ),
     )
     parser.add_argument(
@@ -275,9 +191,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=list(SOURCE.acquisition_cls.TICK_DATA_TYPES),
         default=None,
         help=(
-            "REQUIRED with --frequency tick and rejected otherwise. Quotes and "
-            "trades land under the same vendor root, distinguished only by the "
-            "leading `data_type=` hive key, so there is deliberately no "
+            "Required with --frequency tick and rejected otherwise. Quotes "
+            "and trades land under the same vendor root, told apart only by "
+            "the leading data_type= hive key, so there is deliberately no "
             "default: guessing would file one as the other with the other's "
             "column projection applied."
         ),
@@ -289,10 +205,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Symbols per request. Defaults to the source's own "
             f"DEFAULT_BATCH_SIZE ({SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE}), "
-            "which is a conservative working value rather than a verified "
-            "vendor ceiling -- the real limit is undocumented. Passed through "
+            "a conservative working value rather than a verified vendor "
+            "ceiling; the real limit is undocumented. Passed through "
             "config.kwargs, and also handed to the pre-flight volume guard, "
-            "which prices requests partly by the batch floor."
+            "which prices requests partly by the batch size."
         ),
     )
     parser.add_argument(
@@ -303,25 +219,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "watermark instead of a full download() backfill."
         ),
     )
-    # This script used to convert UNCONDITIONALLY for 1d/1m, so the flag is a
-    # deliberate default change rather than a new capability: all three ingest
-    # shells now stop at raw unless asked (G-03.4-1b).
+    # The conversion flags are shared with the other ingest scripts because
+    # they all drive the same chunked conversion.
     add_to_zarr_arg(parser)
-    # Both flags belong here for the same reason `--to-zarr` does: there is
-    # ONE conversion path (D-07), so the knobs that path takes are the same
-    # knobs at every door. This is the `--chunk` / `--on-new-listing`
-    # divergence disappearing as a CONSEQUENCE of sharing one conversion,
-    # not as new surface grown on this script (SC-6).
     add_chunk_args(parser)
     return parser
 
 
 def _validate_data_type(parser: argparse.ArgumentParser, args) -> None:
-    """`--data-type` is required for tick and rejected otherwise.
+    """Reject inconsistent ``--frequency`` / ``--data-type`` / ``--to-zarr``.
 
-    Rejected rather than ignored: a `--data-type trades` silently dropped
-    because the run was `--frequency 1d` would let a user believe they had
-    fetched trades.
+    ``--data-type`` is required for tick and rejected otherwise, and
+    ``--to-zarr`` is rejected for tick. Each case exits through
+    ``parser.error`` rather than being ignored, because a silently dropped
+    flag would let the user believe a fetch or conversion happened.
     """
     if args.frequency == "tick" and args.data_type is None:
         parser.error(
@@ -336,12 +247,8 @@ def _validate_data_type(parser: argparse.ArgumentParser, args) -> None:
             f"--frequency {args.frequency}."
         )
     if args.frequency == "tick" and args.to_zarr:
-        # Refused rather than ignored, for the same reason `--data-type` is:
-        # a flag silently dropped lets a user believe a conversion happened.
-        # There is no tick conversion to opt into -- the dense
-        # [timestamp, symbol] panel cannot express an irregular event axis, so
-        # the raw-to-xarray step for quotes/trades is a second data model,
-        # deferred to phase 03.3 (D-18).
+        # There is no tick conversion: the dense (timestamp, symbol) panel
+        # cannot express an irregular event axis.
         parser.error(
             "--to-zarr is not available with --frequency tick: the "
             "quotes/trades raw-to-xarray conversion needs an irregular event "
@@ -355,10 +262,8 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before anything that can reach a `quantlab/config/` factory, and the position is
-    # load-bearing: the factories snapshot their paths as strings at
-    # construction time, so a root override applied afterwards silently does
-    # nothing (DDIR-04).
+    # Must run before any config factory is called: the factories snapshot
+    # their paths at construction time, so a later root override is ignored.
     apply_data_dir(args)
 
     validate_roster_args(parser, args)
@@ -367,11 +272,9 @@ if __name__ == "__main__":
     catalog = UniverseCatalog.load(universe_config()) if args.universe else None
     acq_config, ds_config = _build_configs(args, catalog)
 
-    # BEFORE the client is constructed and before a single request (D-09).
-    # The batch size handed over is the EFFECTIVE one -- what the base class
-    # will actually use -- because the request ceiling is priced partly by the
-    # per-batch floor, and pricing a different batch size than the run uses
-    # would make the estimate describe a fetch nobody is about to issue.
+    # Pre-flight: no client has been constructed and no request issued yet.
+    # The guard is given the batch size the run will actually use, since it
+    # prices the request count partly by it.
     pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
         args, catalog, symbols=acq_config.symbols
     )
@@ -399,11 +302,8 @@ if __name__ == "__main__":
         f"refresh={args.refresh})"
     )
     result = run(SOURCE, acq_config, refresh=args.refresh)
-    # Reported from the RESULT rather than left to the log lines: a run that
-    # failed every symbol still logs plenty. These counts describe THIS run
-    # only; `_failures.json` is the wider cross-run record and may name
-    # symbols this run never requested, so the two numbers are related by
-    # containment, not equality (D-18, REVIEW CR-01).
+    # These counts describe this run only. The ``_failures.json`` manifest is
+    # the cross-run record and may name symbols this run never requested.
     print(
         f"{len(result.succeeded)} symbol(s) succeeded, "
         f"{len(result.failures)} failed"
@@ -411,12 +311,8 @@ if __name__ == "__main__":
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.frequency == "tick":
-        # STOPS HERE, deliberately. The dense `[timestamp, symbol]` panel this
-        # project's Dataset layer is built on cannot express an irregular event
-        # axis, so the tick raw-to-xarray conversion is a genuine second data
-        # model and is deferred to phase 03.3 (D-18). Said out loud rather than
-        # left as an absence, so a user is told where the conversion lives
-        # instead of waiting for a Zarr store that this phase never writes.
+        # Tick data stops at raw: there is no conversion for it, and saying
+        # so beats leaving the user waiting for a store that is never written.
         print(
             "Stopping at raw for tick: the quotes/trades raw-to-xarray "
             "conversion needs an irregular event axis the dense "
@@ -424,24 +320,8 @@ if __name__ == "__main__":
             "03.3 (D-18). The raw shards above are the deliverable."
         )
     elif args.to_zarr:
-        # Probed on a SYMBOL-FREE config. The reason for that is NOT the one
-        # this comment used to give: it argued that a non-None symbol list
-        # makes `BaseDataset`'s config setter call `_reset_symbols()`, which
-        # reads the store, catches a not-yet-written store's
-        # `FileNotFoundError` and recovers by densifying the FULL RANGE
-        # through `from_raw_data()` at CONSTRUCTION time -- so that
-        # `StockDataset(ds_config)` on an empty raw tree raised before the
-        # guard placed after it could run. `df7bfe9` deleted `_reset_symbols`
-        # outright; the setter now assigns `name`, normalises the two dates
-        # and stops, touching no symbol axis and reading no store. NO
-        # construction densifies any more, for any config.
-        #
-        # What survives is the property the probe needs: this dataset exists
-        # only to be asked `has_raw_data()`, and `replace(..., symbols=None)`
-        # says so AT THE CALL SITE rather than leaving a reader to prove it
-        # from the constructor. It is spelled identically in all three shells
-        # -- the same `symbols=None` shape `ingest_us_equity.py` states at its
-        # own `stock_kline_config` call (G-03.4-1a).
+        # The probe dataset exists only to answer ``has_raw_data()``;
+        # ``symbols=None`` says so at the call site.
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
@@ -449,25 +329,16 @@ if __name__ == "__main__":
             f"Converting/persisting symbols={ds_config.symbols} to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        # THE conversion, and it is the registry's -- not a Dataset method
-        # called from here (03.5 SC-6). The tick branch ABOVE is unaffected:
-        # it is reached first and stops at raw, and the parser-level refusal
-        # at `_validate_data_type` fires earlier still. `convert()`'s own
-        # absent-`dataset_cls` raise is a THIRD layer, for callers that never
-        # touch argparse -- none of the three replaces another.
+        # The conversion is the registry's; this script only renders the
+        # result it returns, so what is printed is what was written.
         conversion = convert(
             SOURCE,
             ds_config,
             granularity=args.chunk,
             on_new_listing=args.on_new_listing,
         )
-        # Rendered from the RETURNED object, so what is printed is what was
-        # actually written rather than what the config asked for.
         print_conversion_result(conversion)
     else:
-        # Said out loud rather than left as an absence, exactly like the tick
-        # branch above: a conversion that silently did not happen is the same
-        # silence this flag exists to end.
         print(
             "Skipping Zarr conversion (default). The raw shards above are the "
             "deliverable; pass --to-zarr to convert them."

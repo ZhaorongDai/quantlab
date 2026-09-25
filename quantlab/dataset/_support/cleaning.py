@@ -52,12 +52,29 @@ def dedup_raw_frame(
     periodic-drop workflow a later file more often carries corrected data
     than an earlier one.
 
-    Args:
-        data: A long-format frame with ``timestamp`` and ``symbol`` columns.
-        keep: Which duplicate to retain, ``"first"`` or ``"last"``.
+    Parameters
+    ----------
+    data : pl.LazyFrame
+        A long-format frame with ``timestamp`` and ``symbol`` columns.
+    keep : Literal['first', 'last']
+        Which duplicate to retain, ``"first"`` or ``"last"``.
 
-    Returns:
+    Returns
+    -------
+    pl.LazyFrame
         The frame with at most one row per ``(timestamp, symbol)`` pair.
+
+    Examples
+    --------
+    >>> frame = pl.DataFrame({
+    ...     "timestamp": ["2024-01-02", "2024-01-02"],
+    ...     "symbol": ["AAA", "AAA"],
+    ...     "close": [10.0, 10.5],
+    ... }).lazy()
+    >>> dedup_raw_frame(frame).collect()["close"].to_list()
+    [10.5]
+    >>> dedup_raw_frame(frame, keep="first").collect()["close"].to_list()
+    [10.0]
     """
     return data.unique(subset=["timestamp", "symbol"], keep=keep)
 
@@ -71,12 +88,31 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
     changed or dropped, so an anomaly stays visible for later investigation.
     A warning with the flagged count is logged when the count is non-zero.
 
-    Args:
-        data: A panel on ``(timestamp, symbol)``.
+    Parameters
+    ----------
+    data : xr.Dataset
+        A panel on ``(timestamp, symbol)``.
 
-    Returns:
+    Returns
+    -------
+    xr.Dataset
         ``data`` with an additional ``anomaly_flag`` variable on the same
         dimensions.
+
+    Examples
+    --------
+    ``BBB`` prints a zero close and ``AAA`` jumps from 10.5 to 20.0:
+
+    >>> panel["close"].values
+    array([[10. ,  5. ],
+           [10.5,  0. ],
+           [20. ,  5.2],
+           [20.5,  5.3]])
+    >>> flag_anomalies(panel)["anomaly_flag"].values
+    array([[False, False],
+           [False,  True],
+           [ True, False],
+           [False, False]])
     """
     present_price_columns = [
         c for c in _PRICE_LIKE_COLUMNS if c in data.data_vars
@@ -144,17 +180,34 @@ def validate_schema(
     condition raises; only a missing column does, because a data-content
     problem must not abort an ingest that is running unattended.
 
-    Args:
-        data: A panel on ``(timestamp, symbol)``.
-        required_columns: The variables that must be present. Callers whose
-            columns use another spelling pass their own tuple, and the
-            structural mask is built from that argument.
+    Parameters
+    ----------
+    data : xr.Dataset
+        A panel on ``(timestamp, symbol)``.
+    required_columns : tuple[str, ...]
+        The variables that must be present. Callers whose
+        columns use another spelling pass their own tuple, and the
+        structural mask is built from that argument.
 
-    Returns:
+    Returns
+    -------
+    xr.Dataset
         ``data``, unchanged.
 
-    Raises:
-        ValueError: If any of ``required_columns`` is missing.
+    Raises
+    ------
+    ValueError
+        If any of ``required_columns`` is missing.
+
+    Examples
+    --------
+    >>> validate_schema(ohlcv) is ohlcv
+    True
+    >>> validate_schema(ohlcv.drop_vars("volume"))
+    Traceback (most recent call last):
+    ValueError: validate_schema: required column(s) missing from dataset: ['volume']
+    >>> validate_schema(quotes, required_columns=("bid", "ask")) is quotes
+    True
     """
     missing = [col for col in required_columns if col not in data.data_vars]
     if missing:
@@ -241,11 +294,23 @@ def clean_market_data(data: xr.Dataset) -> xr.Dataset:
     the tabular frame, and the NaN gaps of the dense panel come from the
     conversion itself, so nothing here fills or alters a value.
 
-    Args:
-        data: A panel on ``(timestamp, symbol)`` carrying the OHLCV columns.
+    Parameters
+    ----------
+    data : xr.Dataset
+        A panel on ``(timestamp, symbol)`` carrying the OHLCV columns.
 
-    Returns:
+    Returns
+    -------
+    xr.Dataset
         ``data`` with an ``anomaly_flag`` variable added.
+
+    Examples
+    --------
+    >>> cleaned = clean_market_data(ohlcv)
+    >>> list(cleaned.data_vars)
+    ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
+    >>> cleaned["anomaly_flag"].dtype
+    dtype('bool')
     """
     data = validate_schema(data)
     data = flag_anomalies(data)
@@ -261,19 +326,33 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
     modified, filled or re-sorted; a panel that breaks the contract is a bug
     upstream, and repairing it here would hide that.
 
-    Args:
-        data: A panel whose only variable is a boolean ``is_member`` on
-            ``(timestamp, symbol)``.
+    Parameters
+    ----------
+    data : xr.Dataset
+        A panel whose only variable is a boolean ``is_member`` on
+        ``(timestamp, symbol)``.
 
-    Returns:
+    Returns
+    -------
+    xr.Dataset
         ``data``, unchanged.
 
-    Raises:
-        ValueError: If the variables are not exactly ``{"is_member"}``, if
-            ``is_member`` is not boolean or not on ``("timestamp", "symbol")``,
-            or if the ``timestamp`` coordinate is not strictly increasing.
-            Label-based date slicing silently returns wrong results on an
-            unsorted index, which is why the last case is refused.
+    Raises
+    ------
+    ValueError
+        If the variables are not exactly ``{"is_member"}``, if
+        ``is_member`` is not boolean or not on ``("timestamp", "symbol")``,
+        or if the ``timestamp`` coordinate is not strictly increasing.
+        Label-based date slicing silently returns wrong results on an
+        unsorted index, which is why the last case is refused.
+
+    Examples
+    --------
+    >>> clean_membership_panel(membership) is membership
+    True
+    >>> clean_membership_panel(membership.astype(int))
+    Traceback (most recent call last):
+    ValueError: clean_membership_panel: 'is_member' must have dtype bool, got int64
     """
     variables = set(data.data_vars)
     if variables != {"is_member"}:
@@ -337,17 +416,31 @@ def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
     no filling of any kind is done here: carrying the prevailing quote forward
     over an empty bar is the resampler's responsibility, not a cleaning step.
 
-    Args:
-        data: A panel whose variables are exactly ``NBBO_PANEL_VARIABLES``.
+    Parameters
+    ----------
+    data : xr.Dataset
+        A panel whose variables are exactly ``NBBO_PANEL_VARIABLES``.
 
-    Returns:
+    Returns
+    -------
+    xr.Dataset
         ``data``, unchanged.
 
-    Raises:
-        ValueError: If the variable set differs from ``NBBO_PANEL_VARIABLES``,
-            if any variable is not float64 or not on ``("timestamp",
-            "symbol")``, or if the ``timestamp`` coordinate is not strictly
-            increasing.
+    Raises
+    ------
+    ValueError
+        If the variable set differs from ``NBBO_PANEL_VARIABLES``,
+        if any variable is not float64 or not on ``("timestamp",
+        "symbol")``, or if the ``timestamp`` coordinate is not strictly
+        increasing.
+
+    Examples
+    --------
+    >>> clean_nbbo_panel(quotes) is quotes
+    True
+    >>> clean_nbbo_panel(quotes.drop_vars("mid"))
+    Traceback (most recent call last):
+    ValueError: clean_nbbo_panel: expected exactly the variables ['ask', ...
     """
     variables = set(data.data_vars)
     expected = set(NBBO_PANEL_VARIABLES)

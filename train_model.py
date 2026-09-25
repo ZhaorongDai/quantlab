@@ -1,3 +1,14 @@
+"""Ad hoc example: load an RNN classifier on BTCUSDT and backtest its signals.
+
+Builds Alpha101 and Alpha158 factors plus three forward-return labels for
+BTCUSDT through the config factories, loads an ``RNNClassifier`` checkpoint
+(``QUANTLAB_CHECKPOINT_PATH`` or a hardcoded trial path), predicts a
+two-month window, turns the predicted classes into long/short signals
+resampled to 30 minutes and runs a ``vectorbt`` signal backtest, writing
+``portfolio_plot.html``. Runs at import with machine-specific paths and a
+checkpoint that must already exist. Not part of the library.
+"""
+
 import json
 import os
 
@@ -65,9 +76,9 @@ data = model.data_backend.get_xarray_dataset()
 
 data = data.sel(timestamp=slice("2024-01-01", "2024-03-01"))
 factors = model.get_factor_names()
-# 走 DLModel.to_tensor（包装 BaseModel.to_array）：最后一维严格按 `factors` 声明的顺序排，
-# 和训练时用的是同一段代码。这里以前手抄了一份 `.sortby([..., "variable"])`，
-# 把列排成了字母序——训练侧修好之后再留着它就是静默错位。
+# ``DLModel.to_tensor`` orders the last axis exactly as ``factors`` declares
+# it, with the same code training used. Sorting the columns by hand here
+# would silently misalign them.
 data = model.to_tensor(data[factors].fillna(0), factors)
 predicts, _ = model.predict(data)
 pred_probs = torch.softmax(predicts, dim=-1)
@@ -114,7 +125,7 @@ print(data)
 # short_entries = np.where(signals == 0, True, False)
 # short_exits = np.where(signals == 1, True, False)
 
-# confidence < 0.6 signals 置于-1
+# Set signals with confidence below the threshold to -1.
 # signals[confidence < 0.8] = -1
 # signals[signals == 1] = -1
 
@@ -136,14 +147,14 @@ pio.write_html(fig, "portfolio_plot.html")
 #     close=price,
 #     signals=signals,
 #     confidence=confidence,
-#     init_cash=100.0,  # 与原始一致
+#     init_cash=100.0,  # same as the original
 #     fees=0.001,
-#     confidence_threshold=0.7,    # 提高置信度阈值
-#     min_hold_periods=10,         # 最少持仓10分钟
-#     rebalance_threshold=0.15,    # 置信度变化15%才调仓
-#     max_position_pct=1.0,        # 最大100%仓位
-#     use_stops=False              # 暂不使用止损
+#     confidence_threshold=0.7,    # raise the confidence threshold
+#     min_hold_periods=10,         # hold at least 10 minutes
+#     rebalance_threshold=0.15,    # rebalance only on a 15% confidence change
+#     max_position_pct=1.0,        # at most 100% position
+#     use_stops=False              # no stop-loss for now
 # )
 
-# print("优化回测结果:")
+# print("Optimised backtest results:")
 # print(optimized_portfolio.stats())

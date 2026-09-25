@@ -44,6 +44,13 @@ class ConversionResult:
     ``BaseDataset.from_raw_data_chunked`` publishes an instance on
     ``last_chunk_result`` when it completes, so a caller can render what the
     run did without keeping the config alive.
+
+    Examples
+    --------
+    >>> ds = DemoDataset(config).from_raw_data_chunked(granularity="month")
+    >>> result = ds.last_chunk_result
+    >>> result.windows_written, result.rows_written, result.resumed
+    (1, 6, False)
     """
 
     #: The Zarr store that was written (``config.zarr_file_path``).
@@ -93,16 +100,22 @@ class BaseDataset(ABC):
     membership panel, say) subclass this directly; market data subclasses
     ``MarketDataset``.
 
-    Example:
-        A minimal subclass and the whole storage lifecycle::
+    Examples
+    --------
+    A minimal subclass and the whole storage lifecycle::
 
-            class MembershipDataset(BaseDataset):
-                def _raw_data_to_xr(self) -> xr.Dataset:
-                    return load_membership_panel(self.config.kwargs["source"])
+        class MembershipDataset(BaseDataset):
+            def _raw_data_to_xr(self) -> xr.Dataset:
+                return load_membership_panel(self.config.kwargs["source"])
 
-            ds = MembershipDataset(config)
-            ds.from_raw_data().save()
-            panel = MembershipDataset(config).read().get_xarray_dataset()
+        ds = MembershipDataset(config)
+        ds.from_raw_data().save()
+        panel = MembershipDataset(config).read().get_xarray_dataset()
+
+    The method examples below use ``DemoDataset``, a ``MarketDataset``
+    subclass whose ``_raw_data_to_xr`` returns six business days of
+    synthetic OHLCV bars for ``AAA``, ``BBB`` and ``CCC``, built with a
+    ``DatasetConfig`` covering ``2024-01-02`` to ``2024-01-05``.
     """
 
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
@@ -147,14 +160,26 @@ class BaseDataset(ABC):
 
     @property
     def num_symbols(self) -> int:
-        """Return the number of symbols in the loaded panel."""
+        """Return the number of symbols in the loaded panel.
+
+        Examples
+        --------
+        >>> ds.num_symbols
+        3
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).symbol.size
 
     @property
     def class_name(self) -> str:
-        """Return the concrete class name, used in log and error messages."""
+        """Return the concrete class name, used in log and error messages.
+
+        Examples
+        --------
+        >>> ds.class_name
+        DemoDataset
+        """
         return self.__class__.__name__
 
     @property
@@ -191,7 +216,13 @@ class BaseDataset(ABC):
 
     @property
     def symbols(self) -> list[str]:
-        """Return the symbol labels of the loaded panel, in axis order."""
+        """Return the symbol labels of the loaded panel, in axis order.
+
+        Examples
+        --------
+        >>> ds.symbols
+        ['AAA', 'BBB', 'CCC']
+        """
         return self.data_backend.get_xarray_dataset(
             ["timestamp", "symbol"]
         ).symbol.values.tolist()
@@ -202,6 +233,11 @@ class BaseDataset(ABC):
 
         The mode is used rather than the minimum so that gaps such as
         weekends do not distort the answer.
+
+        Examples
+        --------
+        >>> ds.time_interval  # daily bars read back from Zarr
+        np.timedelta64(86400000000000,'ns')
         """
         timestamps = self.data_backend.get_xarray_dataset(["timestamp"])[
             "timestamp"
@@ -215,7 +251,13 @@ class BaseDataset(ABC):
 
     @property
     def import_path(self) -> str:
-        """Return the dotted ``module.QualName`` path of the concrete class."""
+        """Return the dotted ``module.QualName`` path of the concrete class.
+
+        Examples
+        --------
+        >>> ds.import_path  # for a class defined in a script
+        __main__.DemoDataset
+        """
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     def _filter(self):
@@ -228,18 +270,36 @@ class BaseDataset(ABC):
 
     @property
     def config(self) -> BaseDatasetConfig:
-        """Return the dataset config."""
+        """Return the dataset config.
+
+        Examples
+        --------
+        >>> ds.config.start_date, ds.config.end_date
+        ('2024-01-02', '2024-01-05')
+        >>> ds.config.name
+        __main__.DemoDataset
+        """
         return self._config
 
     @config.setter
     def config(self, config: BaseDatasetConfig):
-        """Assign the config, filling in defaults and normalising its dates.
+        """Assign the config, filling in defaults and checking its dates.
 
         ``name`` is set to the class's import path, a missing ``start_date``
         or ``end_date`` falls back to ``Date.START_DATE``/``Date.END_DATE``,
-        and both dates are normalised to zero-padded ISO strings. Every date
-        comparison downstream is a plain string comparison, so a value such
-        as ``"2007-2-1"`` would compare wrong rather than fail to match.
+        and both dates must be ISO ``YYYY-MM-DD`` strings (a ``date`` object
+        is accepted and stringified). Every date comparison downstream is a
+        plain string comparison, so a value such as ``"2007-2-1"`` would
+        compare wrong rather than fail to match, and is refused here instead.
+
+        Examples
+        --------
+        >>> ds.config = dataclasses.replace(ds.config, start_date="2024-01-03")
+        >>> ds.config.start_date
+        '2024-01-03'
+        >>> ds.config = dataclasses.replace(ds.config, start_date="01/02/2024")
+        Traceback (most recent call last):
+        ValueError: DemoDataset: start_date must be an ISO YYYY-MM-DD date ...
         """
         self._config = config
         self._config.name = self.import_path
@@ -259,8 +319,10 @@ class BaseDataset(ABC):
     def _normalize_date(self, value: str, field_name: str) -> str:
         """Return ``value`` as a zero-padded ISO date string.
 
-        Raises:
-            ValueError: If ``value`` is not an ISO ``YYYY-MM-DD`` date.
+        Raises
+        ------
+        ValueError
+            If ``value`` is not an ISO ``YYYY-MM-DD`` date.
         """
         try:
             return datetime.date.fromisoformat(str(value)).isoformat()
@@ -285,8 +347,16 @@ class BaseDataset(ABC):
         ``from_raw_data``. Keyword arguments are passed to
         ``XrBackend.read``.
 
-        Returns:
+        Returns
+        -------
+        BaseDataset
             ``self``, for chaining.
+
+        Examples
+        --------
+        >>> panel = DemoDataset(config).read().get_xarray_dataset()
+        >>> dict(panel.sizes)  # narrowed to the config's four days
+        {'timestamp': 4, 'symbol': 3}
         """
         self.data_backend.read(self.config.zarr_file_path, **kwargs)
         self._filter()
@@ -297,17 +367,35 @@ class BaseDataset(ABC):
 
         The write replaces the whole store directory. Keyword arguments are
         passed to ``XrBackend.write``.
+
+        Examples
+        --------
+        >>> DemoDataset(config).from_raw_data().save()
+        >>> Path(config.zarr_file_path).is_dir()
+        True
         """
         with Timer(f"{self.__class__.__name__}: save"):
             self._filter()
             self.data_backend.write(self.config.zarr_file_path, **kwargs)
 
     def get_config(self) -> dict:
-        """Return the config as a plain dictionary."""
+        """Return the config as a plain dictionary.
+
+        Examples
+        --------
+        >>> ds.get_config()["start_date"]
+        '2024-01-02'
+        """
         return self.config.to_dict()  # type: ignore
 
     def get_lazyframe(self) -> pl.LazyFrame:
-        """Return the loaded panel as a long-format polars ``LazyFrame``."""
+        """Return the loaded panel as a long-format polars ``LazyFrame``.
+
+        Examples
+        --------
+        >>> ds.get_lazyframe().collect().shape  # 4 days x 3 symbols, 8 columns
+        (12, 8)
+        """
         return self.data_backend.get_lazyframe()
 
     def head(self, n: int) -> pl.LazyFrame:
@@ -315,11 +403,22 @@ class BaseDataset(ABC):
 
         The store is opened by path; the loaded panel and the config window
         are left untouched, which makes this safe for probing column names.
+
+        Examples
+        --------
+        >>> ds.head(2).collect().shape
+        (2, 8)
         """
         return self.data_backend.head(self.config.zarr_file_path, n)
 
     def get_xarray_dataset(self) -> xr.Dataset:
-        """Return the loaded panel indexed by ``(timestamp, symbol)``."""
+        """Return the loaded panel indexed by ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        >>> tuple(ds.get_xarray_dataset().dims)
+        ('timestamp', 'symbol')
+        """
         return self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
 
     def from_raw_data(self) -> Self:
@@ -329,8 +428,16 @@ class BaseDataset(ABC):
         backend. Nothing is written to disk until ``save`` is called. Every
         call reconverts; there is no caching.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, for chaining.
+
+        Examples
+        --------
+        >>> ds = DemoDataset(config).from_raw_data()
+        >>> list(ds.get_xarray_dataset().data_vars)  # cleaning adds the flag
+        ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
         """
         data = self._raw_data_to_xr()
         data = self._clean(data)
@@ -385,13 +492,28 @@ class BaseDataset(ABC):
         their history is recovered; a symbol that disappeared from the raw
         tier resolves to ``"refuse"``. The choice is logged before it runs.
 
-        Args:
-            granularity: Window size handed to ``TimeChunkPlanner``.
-            ledger_path: Ledger sidecar path; defaults to one beside the store.
-            append_dim: Dimension windows are appended along.
+        Parameters
+        ----------
+        granularity : str
+            Window size handed to ``TimeChunkPlanner``.
+        ledger_path : str | None
+            Ledger sidecar path; defaults to one beside the store.
+        append_dim : str
+            Dimension windows are appended along.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, with ``last_chunk_result`` populated.
+
+        Examples
+        --------
+        >>> ds = DemoDataset(config).update(granularity="month")
+        >>> ds.last_chunk_result.windows_written
+        1
+        >>> again = DemoDataset(config).update(granularity="month")
+        >>> again.last_chunk_result.windows_skipped, again.last_chunk_result.resumed
+        (1, True)
         """
         return self.from_raw_data_chunked(
             granularity=granularity,
@@ -424,27 +546,39 @@ class BaseDataset(ABC):
         ``"rebuild"`` renames the store aside and re-densifies every window;
         a failed or cancelled rebuild restores the original store.
 
-        Args:
-            granularity: Window size handed to ``TimeChunkPlanner``
-                (``"year"``, ``"quarter"``, ``"month"``, ...).
-            ledger_path: Ledger sidecar path; defaults to one beside the store.
-            append_dim: Dimension windows are appended along.
-            on_new_listing: One of ``NEW_LISTING_STRATEGIES``.
-            reporter: Optional progress sink for per-window events.
-            cancel: Optional token checked at every window boundary.
+        Parameters
+        ----------
+        granularity : str
+            Window size handed to ``TimeChunkPlanner``
+            (``"year"``, ``"quarter"``, ``"month"``, ...).
+        ledger_path : str | None
+            Ledger sidecar path; defaults to one beside the store.
+        append_dim : str
+            Dimension windows are appended along.
+        on_new_listing : str | object
+            One of ``NEW_LISTING_STRATEGIES``.
+        reporter : ProgressReporter | None
+            Optional progress sink for per-window events.
+        cancel : CancelToken | None
+            Optional token checked at every window boundary.
 
-        Returns:
+        Returns
+        -------
+        Self
             ``self``, with ``last_chunk_result`` describing the run.
 
-        Raises:
-            ValueError: If ``on_new_listing`` is unknown, or a window comes
-                back on a symbol axis other than the pinned one.
+        Raises
+        ------
+        ValueError
+            If ``on_new_listing`` is unknown, or a window comes
+            back on a symbol axis other than the pinned one.
 
-        Example:
-            >>> ds = MyMarketDataset(config)
-            >>> ds.from_raw_data_chunked(granularity="quarter")
-            >>> ds.last_chunk_result.windows_written
-            8
+        Examples
+        --------
+        >>> ds = MyMarketDataset(config)
+        >>> ds.from_raw_data_chunked(granularity="quarter")
+        >>> ds.last_chunk_result.windows_written
+        8
         """
         from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 
@@ -779,7 +913,9 @@ class BaseDataset(ABC):
         the cast the probe would find no rows for any added symbol and the
         resolver would silently choose ``widen``.
 
-        Returns:
+        Returns
+        -------
+        dict[str, int]
             ``{symbol: row count}`` for the symbols that have at least one row.
         """
         wanted = [str(symbol) for symbol in added]
@@ -1002,7 +1138,9 @@ class BaseDataset(ABC):
     ) -> bool:
         """Put the pre-rebuild store and ledger back, discarding the partial.
 
-        Returns:
+        Returns
+        -------
+        bool
             ``True`` if the originals were restored, ``False`` if the
             filesystem refused; in that case nothing is destroyed and the
             error log names both copies so an operator can recover by hand.
@@ -1086,11 +1224,12 @@ class MarketDataset(BaseDataset):
     ``_to_kunquant`` and ``_to_nautilus``; an exit it does not support may
     simply raise.
 
-    Example:
-        >>> ds = MyMarketDataset(config).read()
-        >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
-        >>> inputs["close"].shape
-        (2516, 503)
+    Examples
+    --------
+    >>> ds = MyMarketDataset(config).read()
+    >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+    >>> inputs["close"].shape
+    (2516, 503)
     """
 
     # Narrowed for readers and type checkers only
@@ -1111,14 +1250,26 @@ class MarketDataset(BaseDataset):
     ) -> tuple[list[list], list[Instrument]]:
         """Read the store and convert it to Nautilus bars and instruments.
 
-        Args:
-            venue: Venue name used in the instrument identifiers.
-            n_jobs: Number of parallel workers for the per-symbol conversion.
-            write: Whether to also write the result to the parquet catalog.
+        Parameters
+        ----------
+        venue : str
+            Venue name used in the instrument identifiers.
+        n_jobs : int
+            Number of parallel workers for the per-symbol conversion.
+        write : bool
+            Whether to also write the result to the parquet catalog.
 
-        Returns:
+        Returns
+        -------
+        tuple[list[list], list[Instrument]]
             A tuple ``(bars, instruments)`` where ``bars`` holds one list of
             ``Bar`` objects per symbol.
+
+        Examples
+        --------
+        Needs a subclass whose ``_to_nautilus`` builds the instruments:
+
+        >>> bars, instruments = ds.to_nautilus(venue="NASDAQ", write=False)
         """
         data = self.read().get_xarray_dataset()
         data, instruments = self._to_nautilus(data, venue=venue, n_jobs=n_jobs)
@@ -1134,12 +1285,24 @@ class MarketDataset(BaseDataset):
     ) -> tuple[dict, np.ndarray, np.ndarray]:
         """Read the store and convert it to KunQuant input arrays.
 
-        Args:
-            data_columns: Column names, in KunQuant's vocabulary, to export.
+        Parameters
+        ----------
+        data_columns : tuple[str, ...]
+            Column names, in KunQuant's vocabulary, to export.
 
-        Returns:
+        Returns
+        -------
+        tuple[dict, np.ndarray, np.ndarray]
             A tuple ``(inputs, symbols, timestamps)`` where ``inputs`` maps
             each column to a contiguous ``[time, symbol]`` float32 array.
+
+        Examples
+        --------
+        >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+        >>> inputs["close"].shape, inputs["close"].dtype
+        ((4, 3), dtype('float32'))
+        >>> symbols.tolist()
+        ['AAA', 'BBB', 'CCC']
         """
         data = self.read().get_xarray_dataset()
         return self._to_kunquant(data, data_columns)

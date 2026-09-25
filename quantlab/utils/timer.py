@@ -7,11 +7,12 @@ from loguru import logger
 class Timer:
     """Log the start of a task on entry and its elapsed wall-clock time on exit.
 
-    Example:
-        >>> with Timer("compute factors") as timer:
-        ...     factors.cal()
-        >>> timer.timein  # elapsed seconds
-        12.34
+    Examples
+    --------
+    >>> with Timer("compute factors") as timer:
+    ...     factors.cal()
+    >>> timer.timein  # elapsed seconds
+    12.34
     """
 
     def __init__(self, task_name: str):

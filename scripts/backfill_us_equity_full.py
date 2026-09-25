@@ -1,9 +1,23 @@
-"""
-Usage:
-    export TIINGO_API_KEY=your-key-here
-    uv run python backfill_us_equity_full.py
+"""Full-history backfill of the whole US equity market from Tiingo.
 
-Edit `PLAN` at the bottom, or import and drive it yourself:
+The script downloads daily bars for every symbol in the ``us_all`` universe
+category (NYSE, NASDAQ and AMEX common stock, delisted names included) over
+a long window and converts them into one Zarr store. It is a thin
+orchestration over ``quantlab.registry``: ``BackfillPlan`` holds every knob
+in one frozen object and ``FullHistoryBackfill`` runs the stages, each of
+which is independently callable and resumable. The point-in-time universe
+table is built from public sources if it is missing.
+
+Credentials: ``TIINGO_API_KEY`` must be set in the environment before
+``acquire()``; ``preflight()`` needs no key and issues no request. The key is
+read by the vendor client, never by this module.
+
+Usage:
+    export TIINGO_API_KEY=<your-tiingo-key>
+    uv run python scripts/backfill_us_equity_full.py
+
+Edit ``PLAN`` at the bottom of the file, or drive the stages yourself with
+``scripts/`` on ``sys.path``::
 
     from backfill_us_equity_full import BackfillPlan, FullHistoryBackfill
 
@@ -35,119 +49,135 @@ from quantlab.dataset.stock import StockDataset
 
 @dataclass(frozen=True)
 class BackfillPlan:
-    """Every knob, in one immutable object.
+    """Every knob of one backfill, in one immutable object.
 
-    Frozen because a plan that mutates mid-run is a plan that cannot be
-    reported afterwards: the stages below print what they are about to do, and
-    a reader has to be able to trust that the printed plan is the executed one.
-    Vary it with `dataclasses.replace(plan, granularity="quarter")`, which
-    gives you a NEW plan rather than a changed one.
+    The plan is frozen so that what the stages print is what they ran. Vary
+    it with ``dataclasses.replace``, which returns a new plan.
+
+    Examples
+    --------
+    >>> import dataclasses
+    >>> plan = BackfillPlan(granularity="quarter")
+    >>> plan.start_date, plan.category
+    ('2000-01-01', 'us_all')
+    >>> dataclasses.replace(plan, max_workers=4).max_workers
+    4
+    >>> plan.granularity = "year"
+    Traceback (most recent call last):
+    ...
+    dataclasses.FrozenInstanceError: cannot assign to field 'granularity'
     """
 
-    #: The request window. Both bounds are inclusive and both are stated --
-    #: `ingest_us_equity.DEFAULT_START_DATE` is 2016-01-01, so a full-history
-    #: run MUST override it or it silently fetches ten years instead of 26.
+    #: The request window, both bounds inclusive. Stated explicitly because
+    #: the ingest scripts default to a 2016 start, which a full-history run
+    #: must override.
     start_date: str = "2000-01-01"
     end_date: str = "2026-09-10"
 
-    #: Roster category, resolved by interval OVERLAP (not point-in-time
-    #: membership): every symbol that traded at any moment inside the window,
-    #: delisted included. 'us_all' is NYSE + NASDAQ + AMEX common stock,
-    #: ~15.4k tickers, survivorship-bias-free.
+    #: Roster category, resolved by interval overlap rather than point-in-time
+    #: membership: every symbol that traded at any moment inside the window,
+    #: delisted names included. ``us_all`` is NYSE, NASDAQ and AMEX common
+    #: stock, about 15,400 tickers, free of survivorship bias.
     category: str = "us_all"
 
-    #: Raw subdirectory and Zarr store name. Shared with `ingest_us_equity.py`
-    #: on purpose -- see the module docstring on watermark sharing.
+    #: Raw subdirectory and Zarr store name. Shared with
+    #: ``scripts/ingest_us_equity.py`` on purpose, so the two share watermarks.
     subdir: str = "us_all"
     store_name: str = "us_all.zarr"
 
-    #: A TOKEN, resolved through `DataSourceRegistry`. Never a class.
+    #: The vendor's registry token, resolved through ``DataSourceRegistry``.
     vendor: str = "tiingo"
 
-    #: Per-run storage root override, applied BEFORE any config factory runs.
-    #: `None` falls through to QUANTLAB_DATA_DIR, then repo-root `data/`.
+    #: Per-run storage root override, applied before any config factory runs.
+    #: ``None`` falls through to ``QUANTLAB_DATA_DIR``, then the repository's
+    #: ``data/`` directory.
     data_root: str | None = None
 
-    #: FORCE a rebuild of the point-in-time universe table even when one is
-    #: already on disk. Leave False in normal use: a MISSING table is built
-    #: automatically (see `FullHistoryBackfill.catalog`), so this flag is only
-    #: for deliberately refreshing a table you already have. The build hits
-    #: public endpoints, needs no API key, and is not window-dependent.
+    #: Rebuild the point-in-time universe table even when one is already on
+    #: disk. A missing table is built automatically (see
+    #: ``FullHistoryBackfill.catalog``), so this is only for refreshing a table
+    #: you already have. The build reads public endpoints and needs no key.
     rebuild_universe: bool = False
 
-    #: Passed to `UniverseCatalog.build()`. False -- the library's own default
-    #: -- refuses to PERSIST a table reconstructed from a fetcher's cached
-    #: snapshot, because `save()` overwrites in place and a stale table on disk
-    #: is indistinguishable from a fresh one. Set True only when you knowingly
-    #: want a frozen table (e.g. a change-log source is down and you would
-    #: rather proceed than stop).
+    #: Passed to ``UniverseCatalog.build()``. ``False`` refuses to persist a
+    #: table reconstructed from a fetcher's cached snapshot, because a stale
+    #: table on disk is indistinguishable from a fresh one. Set ``True`` only
+    #: when a frozen table is acceptable (for example when a change-log source
+    #: is down and you would rather proceed than stop).
     allow_stale_universe: bool = False
 
-    #: True walks each symbol forward from its own watermark instead of
-    #: back-filling `start_date..end_date`. Use it to top an existing store up
-    #: to today; leave False for the initial backfill (which is ALSO resumable
-    #: -- symbols already at the target watermark are skipped).
+    #: ``True`` walks each symbol forward from its own watermark instead of
+    #: backfilling ``start_date..end_date``. Use it to top an existing store up
+    #: to today; leave ``False`` for the initial backfill, which is also
+    #: resumable because symbols already at the target watermark are skipped.
     refresh: bool = False
 
-    #: Conversion window granularity. See the module docstring: there is no
-    #: RAM guard, this is the whole defence.
+    #: Conversion window granularity. There is no memory guard in the
+    #: conversion; the window size is the whole defence.
     granularity: str = "month"
 
     #: What to do when the raw roster has grown since the store was built.
-    #: 'refuse' halts and leaves the store untouched -- the right default for
-    #: a first build, and the one that tells you a new listing appeared rather
-    #: than quietly deciding for you.
+    #: ``refuse`` halts and leaves the store untouched, which is the right
+    #: default for a first build and the one that reports a new listing rather
+    #: than deciding for you.
     on_new_listing: str = "refuse"
 
-    #: Concurrent in-flight symbol fetches. `None` means "use the vendor
-    #: class's own `DEFAULT_MAX_WORKERS`" (Tiingo: 8) rather than a number
-    #: restated here, so raising the vendor default raises this too.
-    #: Tiingo's EOD endpoint is one symbol per request, so this IS the
-    #: download parallelism -- but it is also how fast you spend a rate limit
-    #: and a monthly quota. Raise it deliberately, not reflexively.
+    #: Concurrent in-flight symbol fetches. ``None`` uses the vendor class's
+    #: own ``DEFAULT_MAX_WORKERS`` (8 for Tiingo). Tiingo's EOD endpoint is one
+    #: symbol per request, so this is the download parallelism, and also how
+    #: fast a rate limit and a monthly quota are spent.
     max_workers: int | None = None
 
     #: Anything else the acquisition layer reads through
-    #: `Acquisition._knob(name, default)`. Merged into `config.kwargs` LAST,
-    #: so it can override `max_workers` too. The ones that matter for a
-    #: multi-hour full-market backfill:
-    #:
-    #:   wait_for_quota      bool   default False -- abort when the vendor
-    #:                              quota runs out. True parks and retries.
-    #:   quota_wait_seconds  int    default 3600
-    #:   quota_max_waits     int    default 3
-    #:   legacy_watermarks   str    default 'warn'
-    #:   batch_size          int    default 1 for Tiingo -- do NOT raise it;
-    #:                              the EOD endpoint has no multi-symbol batch
-    #:                              and the volume guard prices requests at 1.
-    #:   progress            bool   default True -- the tqdm reporter.
+    #: ``Acquisition._knob(name, default)``. Merged into ``config.kwargs``
+    #: last, so it can override ``max_workers`` too. The ones that matter for
+    #: a multi-hour full-market backfill are ``wait_for_quota`` (default
+    #: ``False``, abort when the vendor quota runs out; ``True`` waits and
+    #: retries), ``quota_wait_seconds`` (3600), ``quota_max_waits`` (3),
+    #: ``legacy_watermarks`` (``"warn"``) and ``progress`` (``True``, the
+    #: tqdm reporter). Leave ``batch_size`` at Tiingo's default of 1: the EOD
+    #: endpoint has no multi-symbol batch and the volume guard prices
+    #: requests at one symbol each.
     extra_knobs: dict = field(default_factory=dict)
 
-    #: Volume-guard escape hatch. False makes the FIRST run refuse with the
-    #: arithmetic in the exception, which is what you want: read the numbers,
-    #: then decide. True skips the raise and never the arithmetic.
+    #: Volume-guard escape hatch. ``False`` makes the first run refuse with
+    #: the arithmetic in the exception, so you can read the numbers and then
+    #: decide. ``True`` skips the refusal, never the arithmetic.
     force_volume: bool = False
 
-    #: Individual ceilings. `None` means "use the class constant", so you can
-    #: raise ONE deliberately without disturbing the other two -- the
-    #: considered alternative to `force_volume=True`.
+    #: Individual ceilings. ``None`` uses the class constant, so one can be
+    #: raised deliberately without disturbing the other two; the considered
+    #: alternative to ``force_volume=True``.
     max_raw_bytes: int | None = None
     max_requests: int | None = None
     max_wall_clock_hours: float | None = None
 
 
 class FullHistoryBackfill:
-    """The four stages, each independently callable and each resumable.
+    """The stages of one full-history backfill, each callable on its own.
 
-    Construction is cheap and side-effect-free apart from the data-root
-    override, which MUST happen before any `quantlab.config` factory runs: the
-    factories snapshot their paths as strings at construction time, so a root
-    applied afterwards silently does nothing (DDIR-04). That is the reason
-    `set_data_root` is here in `__init__` and not inside a stage.
+    Construction is cheap and makes no network call. Its one side effect is
+    applying ``plan.data_root`` through ``set_data_root``, which must happen
+    before any ``quantlab.config`` factory runs because the factories snapshot
+    their paths as strings when called; that is why it lives in ``__init__``
+    rather than inside a stage.
+
+    Examples
+    --------
+    Needs ``TIINGO_API_KEY`` for ``acquire()``; the other calls shown do
+    not touch the network once the universe table exists.
+
+    >>> job = FullHistoryBackfill(BackfillPlan(granularity="quarter"))
+    >>> job.source.display_name
+    Tiingo EOD
+    >>> job.preflight()["rows"]   # sizes the fetch, issues no request
+    >>> job.acquire()             # raw parquet, resumable
+    >>> job.to_zarr()             # Zarr store, resumable per window
     """
 
     def __init__(self, plan: BackfillPlan) -> None:
-        set_data_root(plan.data_root)  # BEFORE any factory (DDIR-04).
+        """Store ``plan``, resolve its vendor and apply its data root."""
+        set_data_root(plan.data_root)  # Before any config factory runs.
         self.plan = plan
         self.source: SourceDescriptor = DataSourceRegistry.get(plan.vendor)
         self._catalog: UniverseCatalog | None = None
@@ -157,31 +187,29 @@ class FullHistoryBackfill:
 
     @property
     def catalog(self) -> UniverseCatalog:
-        """The universe table, loaded once and reused, and BUILT if absent.
+        """The universe table, loaded once and built from public sources if absent.
 
-        Loaded lazily so that constructing the job on a machine that has never
-        built the table is not itself an error -- only asking for a roster is.
+        Loaded lazily, so constructing the job on a machine that has never
+        built the table is not an error; only asking for a roster is. A
+        missing table is built rather than raised on because it is not a
+        user artifact: ``build()`` needs no API key, the table does not depend
+        on the window, and every path through this module needs it. This is
+        also what happens the first time ``data_root`` points at a fresh
+        volume, since the table lives under the root.
 
-        **A missing table is built rather than raised on.** The table is not a
-        user artifact: it is reconstructed from public, unauthenticated sources
-        (`build()` needs no API key), it is not window-dependent, and every
-        path into this module needs it. Making the caller run a second script
-        first bought nothing except a `FileNotFoundError` from four frames
-        down, naming a parquet path rather than the thing to do about it --
-        which is exactly what happens the first time you point `data_root` at
-        a fresh volume, because the table lives under the root and does not
-        follow you there.
+        Existence is decided by ``config.output_path``, the same path
+        ``UniverseCatalog.load()`` reads, rather than by catching
+        ``FileNotFoundError`` from the load: a ``try/except`` would also
+        swallow a corrupt table and silently overwrite it, and a corrupt
+        table should raise. ``save()`` creates its own parent directories.
 
-        Existence is decided on `config.output_path` -- the same path
-        `UniverseCatalog.load()` reads -- rather than by catching
-        `FileNotFoundError` from the load. A `try/except` here would also
-        swallow a genuinely unreadable or truncated table and silently
-        overwrite it with a fresh build; a corrupt table should raise, because
-        the operator needs to know the difference between "never built" and
-        "broken".
+        Examples
+        --------
+        Builds the table on first use when it is missing, which reads
+        public endpoints.
 
-        `save()` creates its own parent directories, so a fresh root needs no
-        `mkdir` from this layer.
+        >>> catalog = job.catalog
+        >>> "us_all" in catalog.known_categories()
         """
         if self._catalog is None:
             config = universe_config()
@@ -203,11 +231,17 @@ class FullHistoryBackfill:
 
     @property
     def symbols(self) -> tuple[str, ...]:
-        """The roster, in the catalog's contractual ASCENDING order.
+        """The roster, in the catalog's ascending order.
 
-        The order matters and is not incidental: it is what makes "the same
-        plan resolves the same roster" true across runs, which is what lets
-        watermarks from run N be met by run N+1.
+        The order is part of the contract: it is what makes the same plan
+        resolve the same roster across runs, so that watermarks written by
+        one run are met by the next.
+
+        Examples
+        --------
+        Needs the universe table.
+
+        >>> job.symbols[:3]
         """
         if self._symbols is None:
             self._symbols = tuple(
@@ -222,36 +256,50 @@ class FullHistoryBackfill:
     # -- configs --------------------------------------------------------
 
     def acquisition_knobs(self) -> dict:
-        """The `config.kwargs` bag the acquisition layer reads tuning from.
+        """Return the ``config.kwargs`` bag the acquisition layer reads tuning from.
 
-        Every per-run tuning parameter in this project travels here rather
-        than as a constructor argument, so that nothing is reachable from code
-        but unreachable from configuration (CLAUDE.md's config-driven rule);
-        `Acquisition._knob(name, default)` is the single reader.
+        Every per-run tuning parameter travels here rather than as a
+        constructor argument, so that nothing is reachable from code but
+        unreachable from configuration; ``Acquisition._knob(name, default)``
+        is the single reader. ``extra_knobs`` is merged last and therefore
+        wins, including over ``max_workers``.
 
-        `extra_knobs` is merged LAST and therefore wins, including over
-        `max_workers`. That ordering is deliberate: the named field is the
-        common case, and the escape hatch must be able to override anything
-        without this class growing a field per vendor knob.
+        Examples
+        --------
+        >>> import dataclasses
+        >>> FullHistoryBackfill(BackfillPlan()).acquisition_knobs()
+        {'resume': True}
+        >>> plan = BackfillPlan(max_workers=4, extra_knobs={"wait_for_quota": True})
+        >>> FullHistoryBackfill(plan).acquisition_knobs()
+        {'resume': True, 'max_workers': 4, 'wait_for_quota': True}
         """
         knobs = {
             # Stated rather than left to the reader's default so that "this
             # backfill is resumable" is visible in the config, not inferred.
             "resume": True,
         }
-        # OMITTED, not set to None, when the plan does not pin it. The reader
-        # is `int(self._knob("max_workers", DEFAULT_MAX_WORKERS))`, and
-        # `_knob` is a plain `.get(name, default)` -- a present-but-None key
-        # returns None and `int(None)` raises. Absent is the only spelling of
-        # "fall through to the vendor default".
+        # Omitted, not set to None, when the plan does not pin it: the reader
+        # is `int(self._knob("max_workers", DEFAULT_MAX_WORKERS))` over a plain
+        # `.get`, so a present-but-None key would raise. Absence is the only
+        # spelling of "fall through to the vendor default".
         if self.plan.max_workers is not None:
             knobs["max_workers"] = self.plan.max_workers
         knobs.update(self.plan.extra_knobs)
         return knobs
 
     def acquisition_config(self) -> AcquisitionConfig:
-        """Built through the DESCRIPTOR's factory, so the vendor is pinned by
-        the registry rather than inherited from a factory default."""
+        """Build the acquisition config through the descriptor's factory.
+
+        Going through the descriptor pins the vendor by the registry rather
+        than by a factory default.
+
+        Examples
+        --------
+        Needs the universe table, since the config carries the roster.
+
+        >>> config = job.acquisition_config()
+        >>> config.vendor, len(config.symbols)
+        """
         return self.source.config_factory(
             symbols=self.symbols,
             start_date=self.plan.start_date,
@@ -261,6 +309,14 @@ class FullHistoryBackfill:
         )
 
     def dataset_config(self) -> DatasetConfig:
+        """Build the dataset config that maps the raw tier to the Zarr store.
+
+        Examples
+        --------
+        Needs the universe table, since the config carries the roster.
+
+        >>> job.dataset_config().zarr_file_path
+        """
         return stock_kline_config(
             symbols=list(self.symbols),
             start_date=self.plan.start_date,
@@ -273,21 +329,38 @@ class FullHistoryBackfill:
     # -- stages ---------------------------------------------------------
 
     def preflight(self) -> dict:
-        """Size the fetch and refuse if it crosses a ceiling. ZERO requests,
-        no client constructed, no credential required.
+        """Size the fetch and refuse it if it crosses a ceiling.
 
-        Deliberately positioned before anything that can spend time or money:
-        a guard that runs after the client exists has already spent the thing
-        it was meant to save.
+        Issues no request, constructs no client and needs no credential. It
+        runs before anything that can spend time or money, because a guard
+        that runs after the client exists has already spent what it was
+        meant to save.
+
+        Returns
+        -------
+        dict
+            The volume estimate from
+            ``UniverseCatalog.assert_acquisition_volume_fits``.
+
+        Raises
+        ------
+        ValueError
+            If a ceiling is crossed and ``plan.force_volume`` is
+            false; the message carries the arithmetic.
+
+        Examples
+        --------
+        >>> estimate = job.preflight()
+        >>> estimate["rows"], estimate["requests"]
         """
         return self.catalog.assert_acquisition_volume_fits(
             self.plan.category,
             self.plan.start_date,
             self.plan.end_date,
             frequency="1d",
-            # Tiingo's EOD endpoint is ONE symbol per request -- there is no
-            # multi-symbol batch to amortise over. Read off the descriptor so
-            # the guard and the fetcher cannot disagree about it.
+            # Tiingo's EOD endpoint is one symbol per request; there is no
+            # multi-symbol batch. Read off the descriptor so the guard and the
+            # fetcher cannot disagree about it.
             batch_size=self.source.acquisition_cls.DEFAULT_BATCH_SIZE,
             max_raw_bytes=self.plan.max_raw_bytes,
             max_requests=self.plan.max_requests,
@@ -296,10 +369,24 @@ class FullHistoryBackfill:
         )
 
     def assert_credentials(self) -> None:
-        """Fail before the roster resolve, not four hours into it.
+        """Fail before the roster resolves if the vendor is not configured.
 
-        Asks the registry whether every variable the source NAMES is present.
+        Asks the registry whether every variable the source names is present.
         Never reads or reports a value.
+
+        Raises
+        ------
+        RuntimeError
+            If a required environment variable is unset.
+
+        Examples
+        --------
+        With ``TIINGO_API_KEY`` unset:
+
+        >>> job.assert_credentials()
+        Traceback (most recent call last):
+        ...
+        RuntimeError: Tiingo EOD is not configured: set TIINGO_API_KEY in ...
         """
         if not is_configured(self.source):
             missing = ", ".join(self.source.required_env)
@@ -310,11 +397,24 @@ class FullHistoryBackfill:
             )
 
     def acquire(self) -> AcquisitionResult:
-        """Download to the raw parquet tier and STOP.
+        """Download the raw parquet tier and stop there.
 
-        Resumable by re-invocation: symbols already at the target watermark are
-        skipped, so a job killed at ticker 20,000 restarts near ticker 20,000
-        rather than at the top.
+        Resumable by re-invocation: symbols already at the target watermark
+        are skipped, so a job killed at ticker 20,000 restarts near ticker
+        20,000 rather than at the top.
+
+        Returns
+        -------
+        AcquisitionResult
+            The run's ``AcquisitionResult``.
+
+        Examples
+        --------
+        Needs ``TIINGO_API_KEY`` and network access; runs for hours on
+        the full market.
+
+        >>> result = job.acquire()
+        >>> len(result.succeeded), len(result.failures)
         """
         self.assert_credentials()
         config = self.acquisition_config()
@@ -337,18 +437,32 @@ class FullHistoryBackfill:
     def to_zarr(self) -> ConversionResult:
         """Convert the raw tier into the Zarr store, one window at a time.
 
-        Reached through the registry rather than through a Dataset method, so
-        this shares the ONE conversion path with the three ingest shells
-        instead of being a fourth implementation of it (03.5 D-06/SC-6).
-
+        Reached through ``quantlab.registry.convert`` rather than a dataset
+        method, so it shares the one conversion path the ingest scripts use.
         Resumable per window: a run interrupted at window 12 of 21 resumes at
         window 12.
+
+        Returns
+        -------
+        ConversionResult
+            The ``ConversionResult`` of this run.
+
+        Raises
+        ------
+        RuntimeError
+            If no raw data exists under the configured root.
+
+        Examples
+        --------
+        Needs a raw tier already written by ``acquire()``.
+
+        >>> result = job.to_zarr()
+        >>> result.windows_written, result.windows_skipped
         """
         ds_config = self.dataset_config()
 
-        # Probe on a SYMBOL-FREE config: this dataset exists only to be asked
-        # `has_raw_data()`, and saying `symbols=None` at the call site states
-        # that rather than leaving a reader to prove it from the constructor.
+        # Probe on a symbol-free config: this dataset exists only to be asked
+        # `has_raw_data()`, and `symbols=None` says so at the call site.
         if not StockDataset(replace(ds_config, symbols=None)).has_raw_data():
             raise RuntimeError(
                 f"No raw data under the configured root -- nothing to "
@@ -382,14 +496,21 @@ class FullHistoryBackfill:
         return result
 
     def run(self) -> tuple[AcquisitionResult, ConversionResult]:
-        """Both halves, in order. Normally you want them separately."""
+        """Run preflight, acquire and to_zarr in order.
+
+        Normally the stages are run separately, since each takes hours.
+
+        Examples
+        --------
+        >>> acquired, converted = job.run()
+        """
         self.preflight()
         acquired = self.acquire()
         converted = self.to_zarr()
         return acquired, converted
 
 
-#: Edit this. It is the whole interface.
+#: The plan the script runs when executed directly. Edit this.
 PLAN = BackfillPlan(
     start_date="2000-01-01",
     end_date="2026-09-10",
@@ -402,16 +523,16 @@ PLAN = BackfillPlan(
 if __name__ == "__main__":
     job = FullHistoryBackfill(PLAN)
 
-    # Stage 0 -- what am I about to commit to? Zero requests, no API key.
+    # Stage 0: what the run is about to commit to. No request, no API key.
     print(
         f"Roster: {len(job.symbols)} symbols in {PLAN.category} "
         f"overlapping {PLAN.start_date}..{PLAN.end_date}"
     )
     print(job.preflight())
 
-    # Stage 1 -- raw parquet. Hours. Resumable.
+    # Stage 1: raw parquet. Hours. Resumable.
     job.acquire()
 
-    # Stage 2 -- Zarr. Hours. Resumable per window.
+    # Stage 2: Zarr. Hours. Resumable per window.
     # Comment stage 1 out and re-run to convert an already-fetched raw tier.
     job.to_zarr()

@@ -30,13 +30,14 @@ class Alpha101SpotKline(FactorKunQuant):
     raw values because it serves cross-sectional strategies. The two are not
     meant to be aligned.
 
-    Example:
-        >>> factor = Alpha101SpotKline(FactorConfig(
-        ...     window=20, dataset=dataset, mode="batch",
-        ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
-        ...     factor_names=["alpha001", "alpha002"], file_path="alpha101.zarr",
-        ... ))
-        >>> panel = factor.cal().get_features()
+    Examples
+    --------
+    >>> factor = Alpha101SpotKline(FactorConfig(
+    ...     window=20, dataset=dataset, mode="batch",
+    ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
+    ...     factor_names=["alpha001", "alpha002"], file_path="alpha101.zarr",
+    ... ))
+    >>> panel = factor.cal().get_features()
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -94,14 +95,15 @@ class Alpha101Stock(FactorKunQuant):
     time-series z-score would change how symbols compare on the same day, so
     normalization across symbols is left to the consumer.
 
-    Example:
-        >>> factor = Alpha101Stock(FactorConfig(
-        ...     window=20, dataset=dataset, mode="batch",
-        ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
-        ...                   "adjVolume"],
-        ...     file_path="alpha101_stock.zarr",
-        ... ))
-        >>> panel = factor.cal().get_features()
+    Examples
+    --------
+    >>> factor = Alpha101Stock(FactorConfig(
+    ...     window=20, dataset=dataset, mode="batch",
+    ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
+    ...                   "adjVolume"],
+    ...     file_path="alpha101_stock.zarr",
+    ... ))
+    >>> panel = factor.cal().get_features()
     """
 
     def __init__(self, factor_config: FactorConfig):

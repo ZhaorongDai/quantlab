@@ -1,109 +1,60 @@
-"""Bulk-backfill the full US listed-equity market from Tiingo.
+"""Backfill the full US listed-equity market from Tiingo.
 
-Glue only -- exactly the shape `ingest_tiingo.py` established. Every piece of
-logic lives in the layered components this script merely wires together:
-`quantlab.universe.UniverseCatalog` resolves the roster,
-`quantlab.registry.run()` fetches it through the registered source
-descriptor, `quantlab.acquisition._support.inspector.SourceInspector` answers the
-credential-free coverage question, and `quantlab.dataset.stock.StockDataset`
-converts it. Nothing here should grow a behaviour that a component could own
-instead.
+The roster is the ``us_all`` category of the point-in-time universe table
+(NYSE, NASDAQ and AMEX common stock, delisted names included), resolved by
+interval overlap so that every symbol that traded at any point in the window
+is fetched. ``quantlab.registry.run`` performs the download through the
+registry descriptor ``SOURCE``; per-symbol failures are isolated, every
+symbol carries a watermark, and an interrupted run resumes where it stopped.
+The raw tree and Zarr store live under ``us_all`` so they never collide with
+``scripts/ingest_tiingo.py``'s NASDAQ-only defaults. No vendor class is named
+here.
 
-This script names no vendor class anywhere: it resolves its source from
-`DataSourceRegistry`, reads every vendor constant off `SOURCE.acquisition_cls`,
-builds its acquisition config through `SOURCE.config_factory` and downloads
-through `registry.run()` (03.4 D-15 / SC-1 / SC-6).
+The default run stops at raw parquet, because the conversion is the long
+pole after a multi-hour download. ``--to-zarr`` converts through
+``quantlab.registry.convert``, one ``--chunk`` window at a time (a year by
+default), resuming at the first unwritten window. Nothing checks that a
+window fits in memory; pick a finer ``--chunk`` for a tight machine. The
+pre-flight volume guard bounds disk bytes, request count and wall clock.
 
-`TIINGO_API_KEY` is read from the environment by the vendor client this script
-never names, and is NEVER printed, logged, or written to any artifact by this
-script or by anything it calls -- not the failure manifest, not an exception
-message, not the `TiingoClient` config dict. This module reads no credential
-environment variable AT ALL: the only paths that need one construct the client,
-which is the single place the check belongs. Only symbol lists, date ranges and
-paths are ever printed.
-
-Storage is rooted at whatever `quantlab/config/__init__.py:get_data_root` resolves,
-through three levels: the `--data-dir` flag for a per-run root, else the
-`QUANTLAB_DATA_DIR` environment variable, else the repo-root `data/` directory.
-Those are three ways to set ONE root -- this script hardcodes no volume and
-adds no competing root of its own.
-
-**Why the default run stops at raw parquet -- and it is no longer memory.**
-Raw acquisition parquet is an acquisition-layer implementation detail
-(CLAUDE.md); the pipeline-facing artifact is the Zarr store. The full window
-used to be REFUSED: 15,424 symbols x ~5,215 trading days densifies to a
-~7.2 GiB float64 grid, and the old whole-range `_raw_data_to_xr()` held that
-grid, the ~29.6M-row pandas frame and conversion scratch at once, which OOMs a
-16 GiB machine.
-
-That is fixed. `--to-zarr` now goes through
-`quantlab.registry.convert()`, which densifies and appends ONE
-time window at a time onto a symbol axis pinned once over the whole range, so
-peak RAM scales with the WINDOW rather than the range (D-01/D-02). `--chunk`
-selects the granularity (year by default) and a run interrupted at window 12
-of 21 resumes at window 12.
-
-The conversion is REACHED THROUGH THE REGISTRY rather than performed here
-(03.5 D-06/SC-6): this script hands `convert()` a source descriptor and a
-dataset config and renders the `ConversionResult` it gets back, so it names no
-Dataset subclass method and shares one conversion path with `ingest_tiingo.py`
-and `ingest_alpaca.py` instead of being a third implementation of it.
-
-So the reason `--to-zarr` stays opt-in is TIME, not memory: the conversion is
-still the long pole after a multi-hour download, and most runs want the raw
-parquet first. **There is no RAM sizing guard any more.** Phase 03.6 deleted
-the dense-panel estimator and its per-chunk refusal by decision (SC-3), so an
-over-sized conversion window reaches OOM rather than a legible refusal; pick a
-finer `--chunk` yourself. What survives ahead of the download is the
-acquisition-volume guard, which bounds disk bytes, request count and wall
-clock.
-
-Build/refresh the universe table first (`refresh_us_equity_universe.py`), then:
+Storage is rooted at ``--data-dir``, else ``QUANTLAB_DATA_DIR``, else the
+repository's ``data/`` directory. Requires ``TIINGO_API_KEY`` in the
+environment except under ``--dry-run``; the key is never printed or logged.
 
 Usage:
-    # 1. How big is this? Resolves the roster, sizes the panel and CLASSIFIES
-    #    the existing watermarks against the requested window, issuing ZERO
-    #    price requests. Needs no API key -- including for the coverage
-    #    report, which is nothing but local file reads (03.4 SC-3).
-    uv run python ingest_us_equity.py --dry-run
+    # Build or refresh the universe table first.
+    uv run python scripts/refresh_us_equity_universe.py
 
-    # 2. The real backfill (~15.4k symbols, several hours).
+    # 1. Size the job: resolve the roster, profile the window and classify
+    #    the existing watermarks, issuing no price request. Needs no key.
+    uv run python scripts/ingest_us_equity.py --dry-run
+
+    # 2. The real backfill (about 15k symbols, several hours).
     export TIINGO_API_KEY=your-key-here
-    uv run python ingest_us_equity.py
+    uv run python scripts/ingest_us_equity.py
 
-    # 3. Resume after an interruption. Identical to (2): symbols already at
-    #    the target watermark are skipped, so a job killed at ticker 20,000
-    #    restarts near ticker 20,000 rather than at the top.
-    uv run python ingest_us_equity.py
+    # 3. Resume after an interruption: identical to (2). Symbols already at
+    #    the target watermark are skipped.
+    uv run python scripts/ingest_us_equity.py
 
     # 4. Top up an existing backfill to today, each symbol starting from its
     #    own watermark instead of --start-date.
-    uv run python ingest_us_equity.py --refresh
+    uv run python scripts/ingest_us_equity.py --refresh
 
-    # 5. Convert to Zarr, one year at a time (resumable, memory-bounded).
-    uv run python ingest_us_equity.py --to-zarr
+    # 5. Convert to Zarr one year at a time, or in monthly windows.
+    uv run python scripts/ingest_us_equity.py --to-zarr
+    uv run python scripts/ingest_us_equity.py --to-zarr --chunk month
 
-    # 6. Same, in monthly windows -- for a machine tighter than 16 GiB, or a
-    #    roster dense enough that a single year does not fit.
-    uv run python ingest_us_equity.py --to-zarr --chunk month
-
-    # 7. One-off migration for watermarks written before coverage ranges were
-    #    recorded (260906-26o D-04). Fills the covered start YOU supply into
-    #    every sidecar that lacks one, issues ZERO price requests, and exits.
-    #    Never overwrites a start that is already recorded, and the value is
-    #    never guessed -- only you know what window those files were fetched
-    #    over. Until they are stamped, every run reports them and skips them.
+    # 6. One-off migration for watermarks that record no covered start:
+    #    stamp the start you know they were fetched from, issue no request
+    #    and exit. Recorded starts are never overwritten.
     export TIINGO_API_KEY=your-key-here
-    uv run python ingest_us_equity.py --stamp-legacy-watermarks 2016-01-01
+    uv run python scripts/ingest_us_equity.py --stamp-legacy-watermarks 2016-01-01
 
-    # 8. Quota-aware backfill (D-05/D-06). The account's allocation is
-    #    empirically ~4,600 requests per hour, so ~14.7k symbols needs roughly
-    #    three windows. On exhaustion the run STOPS dispatching -- always,
-    #    even without the flag -- instead of burning the remainder as
-    #    fast-failing requests, which is what happened on 2026-09-06 and may
-    #    itself have deepened the lockout. --wait-for-quota additionally sits
-    #    through the reset and resumes, bounded by --quota-max-waits.
-    uv run python ingest_us_equity.py --wait-for-quota
+    # 7. Quota-aware backfill. The run always stops dispatching when the
+    #    vendor reports its allocation exhausted; with this flag it also
+    #    waits through the reset and resumes, up to --quota-max-waits times.
+    uv run python scripts/ingest_us_equity.py --wait-for-quota
 """
 
 import argparse
@@ -131,50 +82,40 @@ from quantlab.utils.cli import (
     volume_pricing,
 )
 
-#: The ONE place this script's vendor is named, and it is a TOKEN, not a class.
-#:
-#: SC-1's "no vendor named at the call site" means no vendor CLASS: a script
-#: that backfills the US market from one vendor has that vendor as part of its
-#: identity, and the alternative -- a `--source` flag -- is the merged CLI D-15
-#: explicitly forbids. Every vendor-specific fact below is read off this
-#: descriptor: `SOURCE.config_factory` builds the acquisition config with the
-#: vendor pinned, `SOURCE.acquisition_cls` supplies the six argparse defaults
-#: that used to name the class (L-5) plus the watermark-stamping WRITE, and
-#: `run(SOURCE, ...)` performs the fetch.
+#: The registered Tiingo source. The vendor is named here once, as a registry
+#: token; the config factory, the argparse defaults, the watermark stamping
+#: and the fetch itself are all read off this descriptor rather than off a
+#: vendor class.
 SOURCE = DataSourceRegistry.get("tiingo")
 
-#: D-05. The backfill window's default start. Applied as an interval-OVERLAP
-#: bound, not as a listing-date cut -- see `get_symbols_in_range`.
+#: Default start of the backfill window. Applied as an interval-overlap bound
+#: on the roster, not as a listing-date cut.
 DEFAULT_START_DATE = "2016-01-01"
 
 #: Raw-data subdirectory and Zarr store name for this roster, kept separate
-#: from `stock_kline_config`'s NASDAQ-only defaults so the two backfills have
-#: independent watermarks and neither overwrites the other. Both resolve
-#: BENEATH the root `config.get_data_root()` returns (D-04, 260907-rjq D-01).
+#: from ``stock_kline_config``'s NASDAQ-only defaults so the two backfills
+#: have independent watermarks and neither overwrites the other. Both resolve
+#: beneath the storage root.
 DEFAULT_SUBDIR = "us_all"
 DEFAULT_STORE_NAME = "us_all.zarr"
 
-#: Tiingo's EOD endpoint is ONE symbol per request, so the volume guard is told
-#: a batch size of 1. Anything larger would understate the request count by
-#: exactly that factor -- and requests are the unit the request ceiling and the
-#: quota that ran out on 2026-09-06 are both denominated in.
+#: Tiingo serves one symbol per request, so the volume guard is told a batch
+#: size of 1; a larger value would understate the request count by that
+#: factor, and requests are the unit the vendor quota is denominated in.
 TIINGO_BATCH_SIZE = 1
 
-#: How many resolved symbols to echo in the dry run. The point is to prove the
-#: roster resolved, not to page 15,000 tickers through a terminal.
+#: How many resolved symbols the dry run echoes, enough to show the roster
+#: resolved without paging thousands of tickers through a terminal.
 _SYMBOL_PREVIEW = 10
 
 
 def _print_estimate(catalog: UniverseCatalog, args, symbols: tuple[str, ...]) -> None:
-    """Describe the ROSTER AND WINDOW a dry run would fetch, in cells.
+    """Print the roster and window a dry run would fetch.
 
-    Denominated in symbols, days and observations -- never in bytes. Phase
-    03.6 deleted the dense-panel RAM estimate and its guard by decision
-    (SC-3), so the three byte-denominated lines this used to print are gone
-    along with the capability that produced them. What remains is what a
-    `--dry-run` operator still legitimately gets: who resolved, over what
-    window, and how much of that grid is real observation rather than the
-    survivorship-bias-free roster's empty cells.
+    The figures are denominated in symbols, trading days and observations,
+    never in bytes: who resolved, over what window, and how much of the grid
+    is real observation rather than the survivorship-free roster's empty
+    cells.
     """
     profile = catalog._roster_window_profile(
         args.category, args.start_date, args.end_date
@@ -188,28 +129,14 @@ def _print_estimate(catalog: UniverseCatalog, args, symbols: tuple[str, ...]) ->
 
 
 def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
-    """Print how the existing watermarks classify against the requested
-    window, so a dry run answers "would widening --start-date actually
-    re-fetch anything?" before a multi-hour job commits to it.
+    """Print how the existing watermarks classify against the requested window.
 
-    **Unconditional, and needing no credential.** This computation is nothing
-    but local file reads -- `open()` and `json.load()` over the watermark
-    sidecars -- and `SourceInspector` performs them without constructing a
-    client, without importing a vendor module and therefore without issuing a
-    single vendor request. There is consequently no credential check to make
-    here at all: the version that skipped itself when `TIINGO_API_KEY` was
-    unset answered only for people who already had a key, which is the wrong
-    audience for the one command an operator runs BEFORE committing to a
-    multi-hour job (03.4 SC-3 / D-08).
-
-    The judgement is NOT re-derived here. `SourceInspector.coverage` reaches
-    the same `CoverageLedger.partition_by_coverage` object the real run
-    reaches, so this report and the fetch that follows it cannot disagree about
-    what "covered" means (D-09).
-
-    The `coverage report:` header is load-bearing rather than cosmetic: it is
-    what the SC-3 dry-run gates assert on, and before this rewrite the only
-    place those two words appeared in this file was inside the skip line above.
+    This answers, before a multi-hour job commits, whether widening
+    ``--start-date`` would actually re-fetch anything. It needs no credential:
+    ``SourceInspector`` reads the watermark sidecars from disk without
+    constructing a client, and it reaches the same coverage partition the
+    real run uses, so the report and the fetch cannot disagree about what
+    "covered" means.
     """
     report = SourceInspector().coverage(acq_config, symbols=list(symbols))
     print("  coverage report:")
@@ -226,10 +153,11 @@ def _print_coverage(acq_config, symbols: tuple[str, ...]) -> None:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         description=(
-            "Bulk-backfill the full US listed-equity market (NYSE + NASDAQ + "
-            "AMEX common stock, delisted included) from Tiingo. Resumable and "
+            "Backfill the full US listed-equity market (NYSE + NASDAQ + AMEX "
+            "common stock, delisted included) from Tiingo. Resumable and "
             "failure-isolated. Requires TIINGO_API_KEY except under --dry-run."
         )
     )
@@ -253,15 +181,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Resolve the roster and print a storage estimate, then exit "
-            "WITHOUT constructing the acquisition or issuing a single price "
+            "without constructing the acquisition or issuing a single price "
             "request. Answers 'how big will this be' before a multi-hour job."
         ),
     )
-    # Read off the DESCRIPTOR, not off a named vendor class (L-5). This is one
-    # of the six argparse defaults that used to type a vendor name at
-    # parser-definition time and would have survived a registry landing
-    # untouched. `add_concurrency_args` takes the value as a PARAMETER on
-    # purpose, so `quantlab/utils/cli.py` stays vendor-agnostic.
+    # The default is read off the descriptor so that the shared helper stays
+    # vendor-agnostic.
     add_concurrency_args(
         parser, default_max_workers=SOURCE.acquisition_cls.DEFAULT_MAX_WORKERS
     )
@@ -281,14 +206,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "One-off migration: record START_DATE as the covered start in "
-            "every watermark sidecar that has none, then exit WITHOUT issuing "
+            "every watermark sidecar that has none, then exit without issuing "
             "a single price request. Watermarks written before coverage "
             "ranges existed carry only an end date; the value is never "
             "guessed, because only you know what window they were fetched "
-            "over (D-04). Already-recorded starts are left untouched. "
-            "TIINGO_API_KEY must still be exported -- the acquisition object "
-            "demands it at construction, before it knows nothing will be "
-            "fetched."
+            "over. Already-recorded starts are left untouched. "
+            "TIINGO_API_KEY must still be exported, because the acquisition "
+            "object demands it at construction."
         ),
     )
     parser.add_argument(
@@ -312,8 +236,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "When the vendor reports the request allocation is exhausted, "
             "wait --quota-wait-seconds and resume, up to --quota-max-waits "
-            "times. OFF by default, so no run silently holds an hourly window "
-            "open. Either way the run STOPS dispatching on exhaustion rather "
+            "times. Off by default, so no run silently holds an hourly window "
+            "open. Either way the run stops dispatching on exhaustion rather "
             "than burning the remainder as fast-failing requests, and every "
             "watermark is preserved so a later re-run resumes exactly there."
         ),
@@ -325,10 +249,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Delay between resume attempts (default "
             f"{SOURCE.acquisition_cls.DEFAULT_QUOTA_WAIT_SECONDS}). "
-            "Tiingo's reset semantics -- fixed top-of-hour bucket vs. rolling "
-            "window -- are not published, so this is a configured INTERVAL, "
-            "not a computed reset time; one hour from the moment of detection "
-            "covers a rolling hour exactly and a fixed bucket strictly."
+            "Tiingo does not publish whether its quota resets at the top of "
+            "the hour or over a rolling window, so this is a configured "
+            "interval, not a computed reset time; one hour from the moment of "
+            "detection covers either case."
         ),
     )
     parser.add_argument(
@@ -340,13 +264,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"{SOURCE.acquisition_cls.DEFAULT_QUOTA_MAX_WAITS}). Bounded "
             "on purpose: an unbounded loop against a lockout is a worse "
             "version of the problem. The default comes from the observed "
-            "arithmetic -- ~4,600 requests per window against ~14.7k symbols "
-            "is roughly three windows."
+            "arithmetic: roughly 4,600 requests per window against roughly "
+            "14.7k symbols is about three windows."
         ),
     )
-    # Registered through the shared helper rather than declared here: the
-    # other two shells now carry the same flag, and three declarations of one
-    # flag is how their defaults drifted apart in the first place (G-03.4-1b).
+    # The conversion flags are shared with the other ingest scripts because
+    # they all drive the same chunked conversion.
     add_to_zarr_arg(parser)
     add_chunk_args(parser)
     add_volume_guard_args(parser)
@@ -358,30 +281,22 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before anything that can reach a `quantlab/config/` factory, and the position is
-    # load-bearing: the factories snapshot their paths as strings at
-    # construction time, so a root override applied afterwards silently does
-    # nothing (DDIR-04).
+    # Must run before any config factory is called: the factories snapshot
+    # their paths at construction time, so a later root override is ignored.
     apply_data_dir(args)
 
     if args.end_date is None:
         args.end_date = datetime.date.today().isoformat()
 
     catalog = UniverseCatalog.load(universe_config())
-    # Interval OVERLAP, deliberately NOT get_symbols_as_of(): a backfill wants
-    # every symbol that traded at ANY point in the window, including the ~6.9k
-    # that delisted inside it. Resolving membership on a single day here would
-    # reintroduce exactly the survivorship bias this roster exists to remove.
-    # `mode` is stated because `quantlab.utils.cli.resolve_symbols` refuses to have a
-    # default -- the wrong choice here would be silent.
+    # Interval overlap rather than point-in-time membership: a backfill wants
+    # every symbol that traded at any point in the window, including the
+    # ones that delisted inside it, or the roster reintroduces the
+    # survivorship bias it exists to remove.
     symbols = resolve_symbols(args, catalog, mode="in_range")
 
-    # `SOURCE.config_factory` is `functools.partial(stock_acquisition_config,
-    # vendor="tiingo")` -- the SAME factory this script called directly before,
-    # with the vendor pinned by the descriptor instead of relying on the
-    # factory's incumbent default. `subdir` still travels through it, which is
-    # what keeps this roster's raw tree and watermarks independent of
-    # `ingest_tiingo.py`'s.
+    # ``SOURCE.config_factory`` already has the vendor bound. ``subdir`` keeps
+    # this roster's raw tree and watermarks apart from ``ingest_tiingo.py``'s.
     acq_config = SOURCE.config_factory(
         symbols=symbols,
         start_date=args.start_date,
@@ -396,24 +311,10 @@ if __name__ == "__main__":
             "quota_max_waits": args.quota_max_waits,
         },
     )
-    # `symbols=None`, NOT the resolved roster, and this is load-bearing --
-    # though NOT for the reason this comment used to give. It used to argue
-    # that a non-None symbol list makes `BaseDataset`'s config setter call
-    # `_reset_symbols()`, which reads the store, catches a not-yet-written
-    # store's `FileNotFoundError` and recovers by densifying the FULL RANGE
-    # through `from_raw_data()` at CONSTRUCTION time. `df7bfe9` deleted
-    # `_reset_symbols()` outright: the setter now assigns `name` and
-    # normalises the two dates, touches no symbol axis, reads no store and
-    # raises nothing. Construction no longer densifies for ANY config, so
-    # that is no longer what `symbols=None` buys.
-    #
-    # What it still buys is a SINGLE source of truth for the symbol axis.
-    # The conversion resolves its axis from the raw data itself, through
-    # `_raw_axes_in_range()` inside the chunked loop, pinned once over the
-    # whole range before any window is materialised. A roster named here
-    # would be a second, competing answer to the same question -- and the two
-    # genuinely differ, because `mode="in_range"` resolves membership from the
-    # universe table while the raw tree holds only what actually downloaded.
+    # ``symbols=None`` keeps a single source of truth for the symbol axis: the
+    # conversion pins its axis from the raw tree, which holds only what
+    # actually downloaded, whereas the roster above comes from the universe
+    # table. Naming the roster here would be a second, competing answer.
     ds_config = stock_kline_config(
         symbols=None,
         start_date=args.start_date,
@@ -423,16 +324,12 @@ if __name__ == "__main__":
     )
 
     if args.stamp_legacy_watermarks is not None:
-        # Deliberately BEFORE the roster/estimate work and before any other
-        # mode: this is a pure local-file migration that issues zero price
-        # requests, and it must be impossible to trigger a download by
-        # mistyping it alongside another flag.
-        # Reached through the DESCRIPTOR, and it stays a WRITE: D-08 makes
-        # `SourceInspector` read-only, so this does not move onto it. It is
-        # still the only in-repo route to `stamp_watermarks()`, and it still
-        # demands a credential at construction -- deliberately unchanged, so
-        # the open blocking-human checkpoint from quick task 260906-26o is
-        # verified against exactly the behaviour it was raised against.
+        # Handled before every other mode: this is a local-file migration
+        # that issues no price request, and it must be impossible to trigger
+        # a download by combining it with another flag. It is a write, so it
+        # goes through the acquisition class rather than the read-only
+        # inspector, and the class still demands a credential at
+        # construction.
         stamped = SOURCE.acquisition_cls(acq_config).stamp_watermarks(
             args.stamp_legacy_watermarks
         )
@@ -460,18 +357,9 @@ if __name__ == "__main__":
             f"table first: uv run python refresh_us_equity_universe.py"
         )
 
-    # BEFORE `TiingoAcquisition(...)` and before a single request (D-09).
-    # Deliberately AFTER the --stamp-legacy-watermarks and --dry-run exits
-    # above: both issue zero price requests and terminate, and refusing a
-    # local sidecar migration -- or refusing the very dry run whose job is to
-    # tell you how big this is -- would be the guard firing at the one thing it
-    # has no quarrel with.
-    #
-    # Since phase 03.6 this is the ONLY pre-flight guard: the per-chunk RAM
-    # guard that used to sit below it was deleted by decision (SC-3). What
-    # this one bounds is disk bytes, request count and wall clock -- money and
-    # time, not memory -- so an over-sized conversion window now reaches OOM
-    # rather than a legible refusal.
+    # Pre-flight: no client has been constructed and no request issued yet.
+    # Placed after the stamping and dry-run exits above, which issue no
+    # request and have nothing for the guard to refuse.
     pricing, category, guard_start, guard_end, window_assumed = volume_pricing(
         args, catalog, symbols=symbols
     )
@@ -501,13 +389,9 @@ if __name__ == "__main__":
         f"{SOURCE.acquisition_cls.FAILURE_MANIFEST_NAME}."
     )
     result = run(SOURCE, acq_config, refresh=args.refresh)
-    # Reported from the RESULT rather than left to the log lines: on a roster
-    # this size the per-symbol logs scroll past. These counts describe THIS
-    # run only -- `result.failures` stays inside `requested`, so a
-    # `--symbols AAPL` smoke run reports at most one failure however many old
-    # entries `_failures.json` still carries from earlier rosters. The
-    # manifest is the wider, cross-run record and may name more; read it
-    # through `SourceInspector.failures()` (D-18, REVIEW CR-01).
+    # These counts describe this run only. The failure manifest is the
+    # cross-run record and may name more symbols; read it through
+    # ``SourceInspector.failures()``.
     print(
         f"{len(result.succeeded)} symbol(s) succeeded, "
         f"{len(result.failures)} failed"
@@ -515,20 +399,9 @@ if __name__ == "__main__":
     print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
     if args.to_zarr:
-        # This door densifies too, so it carries the same refusal as the other
-        # two: `from_raw_data_chunked()` reaches the identical absent-root
-        # ValueError when a run fetched nothing onto an empty raw tree.
-        # Scoped by REACHABILITY rather than by script name -- pinning a guard
-        # to the script whose bug report arrived is a mistake this repository
-        # has made before.
-        # The probe holds a dataset that must not densify. Since `df7bfe9`
-        # NO construction densifies -- the config setter normalises dates and
-        # a name and stops -- so the `replace(...)` is no longer what prevents
-        # it; `ds_config` is already `symbols=None` besides. It stays because
-        # it states AT THE CALL SITE that this dataset exists only to be
-        # asked `has_raw_data()`, and it keeps the three shells' probes
-        # spelled identically where the other two DO carry a roster
-        # (G-03.4-1a, second order).
+        # The probe dataset exists only to answer ``has_raw_data()``;
+        # ``symbols=None`` says so at the call site, spelled the same way as
+        # in the other ingest scripts.
         refuse_conversion_without_raw_data(
             StockDataset(replace(ds_config, symbols=None)), result
         )
@@ -536,19 +409,14 @@ if __name__ == "__main__":
             f"Converting/persisting {len(symbols)} symbols to Zarr in "
             f"{args.chunk} windows (resumable; completed windows are skipped)"
         )
-        # THE conversion, and it is the registry's -- not a Dataset method
-        # called from here (03.5 SC-6). This script is one of `convert()`'s
-        # in-repo callers, which is what keeps the programmatic entry point
-        # something that has actually been run rather than a signature.
+        # The conversion is the registry's; this script only renders the
+        # result it returns, so what is printed is what was written.
         conversion = convert(
             SOURCE,
             ds_config,
             granularity=args.chunk,
             on_new_listing=args.on_new_listing,
         )
-        # Rendered from the RETURNED object, not from `ds_config` and not by
-        # reading the store back: what is printed is what was actually
-        # written, which is half of what `ConversionResult` exists for.
         print_conversion_result(conversion)
     else:
         print(

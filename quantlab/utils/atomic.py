@@ -31,14 +31,19 @@ def write_json_atomically(path: str | Path, payload: object, **json_kwargs) -> N
     removed and the exception propagates, leaving the previous file (if any)
     untouched.
 
-    Args:
-        path: Destination file.
-        payload: Any object ``json.dump`` accepts.
-        **json_kwargs: Formatting options passed to ``json.dump``.
+    Parameters
+    ----------
+    path : str | Path
+        Destination file.
+    payload : object
+        Any object ``json.dump`` accepts.
+    **json_kwargs
+        Formatting options passed to ``json.dump``.
 
-    Example:
-        >>> write_json_atomically("run/watermark.json", {"last": "2024-01-31"})
-        >>> write_json_atomically("run/manifest.json", data, indent=2, sort_keys=True)
+    Examples
+    --------
+    >>> write_json_atomically("run/watermark.json", {"last": "2024-01-31"})
+    >>> write_json_atomically("run/manifest.json", data, indent=2, sort_keys=True)
     """
     destination = str(path)
     directory = Path(destination).parent

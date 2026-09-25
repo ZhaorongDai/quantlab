@@ -51,16 +51,17 @@ class SpotKlineDataset(MarketDataset):
     (``Open``, ``High``, ...), and ``_to_kunquant`` maps them onto KunQuant's
     lowercase vocabulary.
 
-    Example:
-        >>> config = DatasetConfig(
-        ...     raw_data_dir_path="downloads/crypto_spot/1d/klines",
-        ...     zarr_file_path="data/crypto_spot/1d/spot.zarr",
-        ...     catalog_path="data/crypto_spot/catalog",
-        ...     market="crypto_spot",
-        ...     frequency="1d",
-        ... )
-        >>> SpotKlineDataset(config).from_raw_data().save()
-        >>> panel = SpotKlineDataset(config).read().get_xarray_dataset()
+    Examples
+    --------
+    >>> config = DatasetConfig(
+    ...     raw_data_dir_path="downloads/crypto_spot/1d/klines",
+    ...     zarr_file_path="data/crypto_spot/1d/spot.zarr",
+    ...     catalog_path="data/crypto_spot/catalog",
+    ...     market="crypto_spot",
+    ...     frequency="1d",
+    ... )
+    >>> SpotKlineDataset(config).from_raw_data().save()
+    >>> panel = SpotKlineDataset(config).read().get_xarray_dataset()
     """
 
     # Binance columns are Title-Case, so the schema check cannot use the
@@ -143,8 +144,10 @@ class SpotKlineDataset(MarketDataset):
         deduplicated on ``(timestamp, symbol)`` keeping the last row before the
         pandas ``to_xarray`` densification.
 
-        Raises:
-            ValueError: If no CSV file in the raw directory matches the range.
+        Raises
+        ------
+        ValueError
+            If no CSV file in the raw directory matches the range.
         """
         with Timer(f" {self.__class__.__name__}: from csv"):
             csv_files = get_csv_files(self.config.raw_data_dir_path)
@@ -236,12 +239,18 @@ class SpotKlineDataset(MarketDataset):
         empty list is returned, so one bad symbol does not abort the parallel
         conversion.
 
-        Args:
-            data: The full ``(timestamp, symbol)`` panel.
-            symbol: Trading pair to convert, e.g. ``BTCUSDT``.
-            venue: Venue name used in the bar type.
+        Parameters
+        ----------
+        data : xr.Dataset
+            The full ``(timestamp, symbol)`` panel.
+        symbol : str
+            Trading pair to convert, e.g. ``BTCUSDT``.
+        venue : str
+            Venue name used in the bar type.
 
-        Returns:
+        Returns
+        -------
+        list
             The list of bars for ``symbol``, or ``[]`` on failure.
         """
         try:
@@ -293,7 +302,9 @@ class SpotKlineDataset(MarketDataset):
     ) -> tuple[list[list[Bar]], list[InstrumentId]]:
         """Convert every symbol to Nautilus bars in parallel.
 
-        Returns:
+        Returns
+        -------
+        tuple[list[list[Bar]], list[InstrumentId]]
             ``(bars, instruments)``: one list of bars per symbol, in the
             order of ``self.symbols``, and the matching currency pairs.
         """

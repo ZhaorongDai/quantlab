@@ -31,14 +31,15 @@ class Momentum(FactorPolars):
     kline store spells it. ``get_lazyframe()`` performs no column renaming,
     so a store that names its close price differently needs its own subclass.
 
-    Example:
-        >>> factor = Momentum(PolarsFactorConfig(
-        ...     window=20, dataset=dataset, kwargs={"n": 20},
-        ...     file_path="momentum.zarr",
-        ... ))
-        >>> factor.get_factor_names()
-        ('momentum_20',)
-        >>> panel = factor.cal().get_features()
+    Examples
+    --------
+    >>> factor = Momentum(PolarsFactorConfig(
+    ...     window=20, dataset=dataset, kwargs={"n": 20},
+    ...     file_path="momentum.zarr",
+    ... ))
+    >>> factor.get_factor_names()
+    ('momentum_20',)
+    >>> panel = factor.cal().get_features()
     """
 
     def __init__(self, factor_config: PolarsFactorConfig):
@@ -47,7 +48,13 @@ class Momentum(FactorPolars):
 
     @property
     def horizon(self) -> int:
-        """Momentum horizon in bars, from ``config.kwargs["n"]`` (default 20)."""
+        """Momentum horizon in bars, from ``config.kwargs["n"]`` (default 20).
+
+        Examples
+        --------
+        >>> factor.horizon
+        20
+        """
         kwargs = self.config.kwargs or {}
         return kwargs.get("n", _DEFAULT_HORIZON)
 

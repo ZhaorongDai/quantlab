@@ -1,75 +1,46 @@
-"""Pull the WHOLE CRSP US equity market -- and, optionally, the index
-membership panels beside it -- into the raw tier and the Zarr stores.
+"""Command-line ingest of the whole CRSP US equity market from WRDS.
 
-The sibling of `scripts/ingest_wrds_crsp.py`. That shell's roster is an INDEX
-(`--universe crsp_sp500`) or an explicit `--permnos` list; this one's roster is
-the MARKET: every security `crsp_a_stock.stksecurityinfohist` carries whose
-type matches `--security-filter`, resolved point-in-time over the window.
+The sibling of ``scripts/ingest_wrds_crsp.py``. That script's roster is an
+index or an explicit PERMNO list; this one's roster is the market: every
+security in ``crsp_a_stock.stksecurityinfohist`` whose type passes
+``--security-filter``, resolved point-in-time over the window. Resolving it
+costs no extra query, because ``stksecurityinfohist`` is already part of the
+reference tier every CRSP run pulls, so ``CrspMarketRoster`` reads parquet
+that is already on disk. On the 2025 reference tier the default
+``equity_common`` filter yields about 5,500 PERMNOs for 2024 alone and about
+16,800 over 1999 to 2025, against roughly 520 for an S&P 500 window.
 
-**The roster costs nothing extra to resolve.** `stksecurityinfohist` is already
-pulled unconditionally as part of the reference tier (symbology needs it,
-D-04), and it carries every column the security-filter presets name. So
-`CrspMarketRoster` is a read of parquet already on disk: no new query, no new
-schema entitlement, no extra round trip. Measured on this project's own
-reference tier (product end 2025-12-31):
+Scale is the whole difference from the sibling script. A year of the market
+is roughly 1.4 million daily rows, so the window is required, the default
+``--chunk`` is a year, and the volume guard still counts rows server-side per
+year bucket before the first COPY. Run a year at a time. With ``--to-zarr``
+the raw tier is converted into ``wrds_crsp_all_1d.zarr`` plus the in-listing
+mask ``wrds_crsp_all_membership.zarr``; ``--with-index-membership`` also
+pulls the S&P 500 and Nasdaq-100 reference tables and writes their
+point-in-time membership panels, and is opt-in because it widens the
+entitlement check to the Compustat and CCM schemas.
 
-    191,048 spell(s) -> 40,518 PERMNO
-    equity_common    -> 30,484 PERMNO all-time
-      2024 window          5,465 PERMNO    (the S&P 500 window is 520)
-      2015-2025            8,821 PERMNO
-      1999-2025           16,814 PERMNO
+Credentials: ``WRDS_USERNAME`` must be set in the environment; the password
+is read by libpq from ``~/.pgpass`` (mode 600) and never by this code. One
+WRDS connection is shared by every step of a run and closed in a
+``finally``, so a run costs at most one Duo push.
 
-**Scale is the whole difference from the sibling shell, so the window is not
-optional and the default granularity is a YEAR.** A 2024 pull is roughly
-5,465 x 252 ~ 1.4M daily rows against the S&P 500 window's ~139k. The volume
-guard is not bypassed for this: `count(*)` runs server-side per year bucket
-BEFORE the first COPY, so a window that does not fit is refused with the real
-number rather than discovered halfway through. Run a year at a time; that is
-what `--chunk year` (the default) and the guard are both shaped for.
+Two facts matter before a second run. ``--refresh`` resumes each PERMNO from
+its recorded watermark, and extending ``--end-date`` forward is the supported
+incremental direction; moving ``--start-date`` earlier, or backfilling
+earlier raw history, silently moves each PERMNO's adjustment anchor (its
+first usable row) and so rewrites adjusted values, and nothing checks for
+it. And on a whole-market store the roster grows between refreshes as a
+matter of course, which the default ``--on-new-listing refuse`` halts on.
+``widen`` keeps the store and adds the new columns with NaN history, which
+is correct for a genuine new listing. ``rebuild`` re-densifies every window
+onto the new symbol union, which is what a PERMNO that already had history
+needs (a raw backfill or a changed filter); ``widen`` would leave that
+history NaN. The store cannot tell the two cases apart, so the flag cannot
+choose for you. See ``docs/wrds_crsp.md``.
 
-**Incremental refresh.** `--refresh` resumes each PERMNO from its recorded
-watermark instead of re-pulling the window. On the Zarr side the conversion is
-chunked and resumable, and appending forward is bit-for-bit identical to a
-full rebuild over the same range.
-
-**Read `--on-new-listing` before the second run.** On a whole-market store the
-roster GROWS between refreshes as a matter of course -- that is what an IPO is
--- and the default `refuse` halts on exactly that. The three choices are not
-interchangeable:
-
-  refuse   (default, shared with every other shell) halts and leaves the store
-           untouched. Safe, and unusable for an unattended whole-market
-           refresh.
-  widen    keeps the store and widens its symbol axis in place. For a
-           genuinely NEW listing this is not merely fast, it is CORRECT: the
-           new column's historical block is NaN because the security did not
-           exist then.
-  rebuild  re-densifies every window from raw onto the new symbol union. What
-           you want when a PERMNO that ALREADY had history entered the roster
-           late -- a raw backfill, or a changed `--security-filter`. `widen`
-           would leave that security's real history NaN forever.
-
-  The distinction is not something the flag can decide for you, because
-  "appeared in the roster" looks identical in both cases from the store's side.
-
-**Known limitation this shell inherits (D-10).** Moving `--start-date` EARLIER
-between runs, or backfilling the raw tier with earlier history, silently
-rewrites adjusted values: the adjustment anchor is each PERMNO's first usable
-row, so giving it an earlier first row moves it. Nothing in the code checks
-this (`ChunkLedger.assert_consistent` does not look at `start_date`). On a
-whole-market roster there are ~8x more securities for it to happen to than on
-the S&P 500. Extending `--end-date` FORWARD is safe and is the supported
-incremental path.
-
-**The index membership panels.** `--with-index-membership` additionally pulls
-the S&P 500 and Nasdaq-100 reference tables and writes their point-in-time
-constituent panels, so one run produces the market data and the index
-membership a cross-sectional strategy selects within. It is opt-in because it
-widens the WRDS entitlement check to Compustat and CCM -- schemas most CRSP
-subscriptions do not carry -- and a whole-market pull must not fail on a
-question it never needed to ask.
-
-Examples:
+Usage:
+    export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
 
     # One year of the whole market, raw tier only (no conversion).
     uv run python scripts/ingest_wrds_crsp_all.py \\
@@ -121,43 +92,42 @@ from quantlab.utils.cli import (
     refuse_conversion_without_raw_data,
 )
 
-#: The one place this script's vendor is named, as a registry token.
+#: The vendor descriptor, resolved from its registry token.
 SOURCE = DataSourceRegistry.get("wrds")
 
-#: The capability this script drives -- the same one the index shell drives.
-#: One WRDS account serves several products (03.10 D-12), so BOTH the
-#: acquisition class and the config factory are read off this key.
+#: The capability this script drives, the same one the index script drives.
+#: One WRDS account serves several products, so both the acquisition class
+#: and the config factory are read off this key.
 CAPABILITY = ("us_equity", "1d", "crsp_daily")
 
-#: The CRSP daily acquisition class, resolved -- never named.
+#: The CRSP daily acquisition class, resolved rather than named.
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
 
-#: The equity panel's store name. `all` rather than `us_all`: the latter is
-#: already taken on disk by a Tiingo-era store, and two stores under one name
-#: is the collision the sibling shell's `custom` fallback exists to avoid.
+#: The market panel's store name. ``all`` rather than ``us_all``, which is
+#: already the name of a Tiingo store on disk.
 STORE = "wrds_crsp_all_1d.zarr"
 
 #: The whole-market in-listing mask's store.
 MEMBERSHIP_STORE = "wrds_crsp_all_membership.zarr"
 
-#: `{universe: (short name, constituent dataset class)}` for the OPTIONAL
-#: index membership panels. Derived from the membership layer so adding an
-#: index there makes it appear here with no edit.
+#: Map from universe id to ``(short name, constituent dataset class)`` for
+#: the optional index membership panels, taken from the membership layer so
+#: an index added there appears here without an edit.
 INDEX_PANELS: dict[str, tuple[str, type]] = {
     CrspMembership.SP500: ("sp500", CrspSP500ConstituentDataset),
     CrspMembership.NASDAQ100: ("nasdaq100", CompustatNasdaq100ConstituentDataset),
 }
 
-#: The index membership panel's store name, shared with the sibling shell so
-#: both write the SAME store for the same universe rather than two spellings
-#: of one panel.
+#: The index membership panel's store name, shared with the index script so
+#: both write the same store for the same universe.
 MEMBERSHIP_TEMPLATE = "wrds_crsp_{name}_membership.zarr"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for this script."""
     parser = argparse.ArgumentParser(
         description=(
-            "Pull the WHOLE CRSP US equity market for a window and optionally "
+            "Pull the whole CRSP US equity market for a window and optionally "
             "convert it into Zarr. Requires WRDS_USERNAME in the environment "
             "and the password in ~/.pgpass (mode 600); neither is accepted as "
             "an argument."
@@ -172,17 +142,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=sorted(SECURITY_FILTER_PRESETS),
         default="equity_common",
         help=(
-            "WHICH securities the market roster holds (default "
+            "Which securities the market roster holds (default "
             "equity_common: common stock, REITs included, ADRs/units/funds/"
-            "ETFs dropped). Unlike the index shell this filter decides the "
-            "ROSTER: with no index to bound it, 'none' means all 40,518 "
-            "PERMNOs CRSP carries. The PER-DAY verdict is carried by the "
-            "in-listing mask this run writes beside the panel, NOT by removing "
-            "rows from the panel -- naming a roster in config.permnos exempts "
-            "those PERMNOs from the conversion-time type filter (GAP-C), so "
-            "the panel holds every row of every security in the roster and the "
-            "mask says which (day, symbol) cells the universe actually "
-            "contains."
+            "ETFs dropped). Unlike the index script this filter decides the "
+            "roster: with no index to bound it, 'none' means all 40,518 "
+            "PERMNOs CRSP carries. The per-day verdict is carried by the "
+            "in-listing mask this run writes beside the panel, not by removing "
+            "rows from the panel: naming a roster in config.permnos exempts "
+            "those PERMNOs from the conversion-time type filter, so the panel "
+            "holds every row of every security in the roster and the mask "
+            "says which (day, symbol) cells the universe actually contains."
         ),
     )
     parser.add_argument(
@@ -200,8 +169,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Incrementally refresh from each PERMNO's recorded watermark "
             "instead of a full backfill of the window. The supported "
-            "incremental direction is FORWARD; see the module docstring on "
-            "D-10 for what moving --start-date earlier silently rewrites."
+            "incremental direction is forward; see the module docstring for "
+            "what moving --start-date earlier silently rewrites."
         ),
     )
     parser.add_argument(
@@ -210,7 +179,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Re-pull the _reference/ tables even when this CRSP vintage's "
             "tier is already complete. Without it a complete tier is reused "
-            "and costs zero round trips -- which is also what makes the "
+            "and costs zero round trips, which is also what makes the "
             "market roster free to resolve."
         ),
     )
@@ -221,7 +190,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Also pull the S&P 500 and Nasdaq-100 reference tables and write "
             "their point-in-time constituent panels. Opt-in because it widens "
             "the entitlement check to the Compustat and CCM schemas, which "
-            "most CRSP subscriptions do not carry -- a whole-market pull must "
+            "most CRSP subscriptions do not carry; a whole-market pull must "
             "not fail on a question it never needed to ask."
         ),
     )
@@ -231,7 +200,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Only with --with-index-membership: proceed when a Nasdaq-100 "
             "membership spell has no CCM link. A spell with no PERMNO has no "
-            "security at all, so by default it STOPS the run rather than "
+            "security at all, so by default it stops the run rather than "
             "silently shrinking that panel."
         ),
     )
@@ -241,7 +210,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate(parser: argparse.ArgumentParser, args) -> None:
-    """Every argument refusal, BEFORE any WRDS session exists."""
+    """Refuse bad arguments before any WRDS session exists."""
     if not args.start_date or not args.end_date:
         parser.error(
             "--start-date and --end-date are both required: the window is "
@@ -269,11 +238,11 @@ def _validate(parser: argparse.ArgumentParser, args) -> None:
 
 
 def _schemas_for(with_index_membership: bool) -> tuple[str, ...]:
-    """Exactly the schemas this run reads.
+    """Return exactly the WRDS schemas this run reads.
 
     A whole-market pull needs the stock schema and nothing else, so it never
-    asks whether this account can read Compustat -- a question whose answer is
-    "no" for most CRSP subscriptions and which nothing in that pull needs.
+    asks whether the account can read Compustat, which most CRSP
+    subscriptions cannot and which that pull does not need.
     """
     from quantlab.acquisition.wrds.crsp import CrspQueries
 
@@ -293,7 +262,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Before any path is derived from the data root (DDIR-04).
+    # The data root must be applied before any path is derived from it.
     apply_data_dir(args)
 
     _validate(parser, args)
@@ -301,9 +270,8 @@ if __name__ == "__main__":
     batch_size = args.batch_size or ACQ.DEFAULT_BATCH_SIZE
     kwargs = {"batch_size": batch_size, "clip_to_product_end": True}
 
-    # Imported here so the module attributes are read at RUN time: the test
-    # suite patches the session with an offline double, and a module-scope
-    # binding would capture the real class at import time (RESEARCH Pattern 1).
+    # Imported at run time rather than at module scope so the session class is
+    # looked up when the run starts, which lets an offline double replace it.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.crsp import CrspQueries, CrspVolumeProbe
     from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
@@ -315,8 +283,8 @@ if __name__ == "__main__":
         parser.exit(1, f"{exc}\n")
 
     try:
-        # 1. Entitlement FIRST: an unsubscribed schema stops the run with zero
-        #    COPY calls and zero reference files (D-03, D-21).
+        # 1. Entitlement first: an unsubscribed schema stops the run with no
+        #    COPY issued and no reference file written.
         try:
             CrspQueries.assert_entitled(
                 session, _schemas_for(args.with_index_membership)
@@ -324,7 +292,7 @@ if __name__ == "__main__":
         except (RuntimeError, ValueError) as exc:
             parser.exit(1, f"{exc}\n")
 
-        # 2. The annual product edge. Probed once; the clip is PRINTED.
+        # 2. The annual product end, probed once; a clip is always printed.
         try:
             start_date, end_date, clipped = ACQ.resolve_window(
                 session, args.start_date, args.end_date, clip=True
@@ -341,7 +309,8 @@ if __name__ == "__main__":
             "end_date": end_date.isoformat(),
         }
 
-        # 3. THE one config-factory call. The roster is filled in at step 5.
+        # 3. The acquisition config, built once with an empty roster; the
+        #    roster is filled in at step 5.
         acq_config = SOURCE.config_factory_for(*CAPABILITY)(
             symbols=(),
             start_date=window["start_date"],
@@ -350,9 +319,9 @@ if __name__ == "__main__":
         )
         reference_dir = ACQ.reference_dir_for(acq_config)
 
-        # 4. The reference tier, on the SAME session. `stksecurityinfohist` is
-        #    in the unconditional set, so the market roster is answerable after
-        #    this step whether or not the index tables were asked for.
+        # 4. The reference tier, on the same session. `stksecurityinfohist`
+        #    is always pulled, so the market roster can be answered after this
+        #    step whether or not the index tables were asked for.
         try:
             manifest = CrspReferenceTables(session, reference_dir).pull(
                 product_end=end_date,
@@ -368,9 +337,9 @@ if __name__ == "__main__":
             print(f"  {name}: {rows:,} row(s)")
 
         # 5. The roster: every security of the requested type whose listing
-        #    OVERLAPS the window. Overlap and not containment -- a security
-        #    delisted inside the window must stay, and on a whole-market
-        #    roster those are the majority of the history.
+        #    overlaps the window. Overlap rather than containment, because a
+        #    security delisted inside the window must stay, and on a
+        #    whole-market roster those are most of the history.
         roster_source = CrspMarketRoster(CrspReference(reference_dir))
         try:
             roster = roster_source.permnos_in_range(
@@ -388,9 +357,9 @@ if __name__ == "__main__":
                 f"{args.security_filter!r}.\n",
             )
         report = roster_source.report
-        # PRINTED rather than summarised: on a roster this size the operator
-        # cannot eyeball the difference between "the market" and "the market
-        # minus a type I did not mean to drop".
+        # The filter report is printed in full: on a roster this size the
+        # difference between "the market" and "the market minus a type I did
+        # not mean to drop" cannot be seen from a count alone.
         print(
             f"Roster ({len(roster):,} PERMNO(s) over the window; "
             f"{report['permnos_after_type_filter']:,} of "
@@ -401,9 +370,9 @@ if __name__ == "__main__":
         )
         acq_config = replace(acq_config, symbols=tuple(roster))
 
-        # 6. count(*) per year page, then the guard -- BOTH before the first
-        #    COPY of any daily row (D-03). This is the step that answers
-        #    "does a whole-market window fit" with a measured number.
+        # 6. count(*) per year page, then the guard, both before the first
+        #    COPY of any daily row. This is the step that answers whether a
+        #    whole-market window fits, with a measured number.
         try:
             counts = CrspVolumeProbe(
                 session, batch_size=batch_size
@@ -451,14 +420,12 @@ if __name__ == "__main__":
                 end_date=window["end_date"],
                 permnos=tuple(roster),
                 security_filter=args.security_filter,
-                # NOT `roster_universe=MARKET`. That field means "an index
-                # provider decided membership, so a member is exempt from the
-                # type filter inside its spell" (GAP-C), and it is resolved
-                # through `CrspMembership.permno_intervals`, which serves
-                # indexes only. Neither half fits a whole-market roster: this
-                # roster IS the type filter's own output, so exempting it from
-                # the type filter would be circular, and `crsp_all` is not an
-                # index `CrspMembership` can answer for.
+                # No `roster_universe`: that field means an index provider
+                # decided membership, so a member is exempt from the type
+                # filter inside its spell, and it is resolved through
+                # `CrspMembership`, which serves indexes only. This roster is
+                # the type filter's own output, so exempting it would be
+                # circular, and the market is not an index.
             )
             probe_dataset = CrspStockDataset(ds_config)
             refuse_conversion_without_raw_data(probe_dataset, result)
@@ -479,9 +446,9 @@ if __name__ == "__main__":
             )
             print(f"Security filter sidecar:   {probe_dataset.filter_report_path()}")
 
-            # The in-listing mask. Built under the SAME security filter as the
-            # panel, so the two agree about what this universe is; the filter
-            # rides in `kwargs` and therefore lands in the run's config.json.
+            # The in-listing mask, built under the same security filter as
+            # the panel so the two agree about what the universe is. The
+            # filter rides in `kwargs` and so lands in the run's config.json.
             mask = CrspMarketConstituentDataset(
                 ConstituentDatasetConfig(
                     zarr_file_path=str(data_dir / MEMBERSHIP_STORE),

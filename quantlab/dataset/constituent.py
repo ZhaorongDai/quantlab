@@ -1,33 +1,20 @@
-"""Concrete index-membership panel datasets, one class per index.
+"""Concrete point-in-time index-membership panels, one class per index.
 
-Every index binds itself to the shared densification machinery in
-`base/constituent.py` by implementing exactly two hooks. Nothing else lives
-here, and nothing index-specific lives in `base/` -- which is what makes
-adding an index a `dataset/` change only (DATA-06).
+Each class binds one membership source to the densification in
+``quantlab/base/constituent.py`` by implementing its two hooks. Two sources
+cover the same two indexes: the Wikipedia-based pair
+(``SP500ConstituentDataset``, ``Nasdaq100ConstituentDataset``) replays a
+public change log and produces a ticker-keyed ``symbol`` axis, while the
+CRSP/Compustat pair (``CrspSP500ConstituentDataset``,
+``CompustatNasdaq100ConstituentDataset``) reads the local CRSP reference
+tier and produces an int64 PERMNO axis that lines up with the CRSP price
+panel column for column. ``CrspMarketConstituentDataset`` is the
+whole-market variant: every security CRSP lists, rather than an index.
 
-**Four classes, two SOURCES of the same two indexes.** The Wikipedia-based
-pair replays a public change log; the CRSP-vendor pair reads the CRSP/
-Compustat reference tier. They are separate classes with separate stores
-rather than a source switch on one class, because their coverage starts and
-their SYMBOL AXES differ: the CRSP pair's `symbol` is the int64 PERMNO, the
-same identifier `CrspStockDataset` keys its price columns by since 03.11-03,
-so a CRSP mask lines up with a CRSP panel with no derivation in between --
-and a Wikipedia mask, whose axis is tickers, does not.
-
-**`cache_dir` means "the local directory this universe is answered from",
-and that is two different directories.** For the Wikipedia pair it is where
-the fetcher caches scraped HTML; for the CRSP pair it is the reference tier
-at `{downloads}/us_equity/1d/wrds_crsp/_reference/`. One field rather than
-two, because a second directory field would have to be null for half the
-classes.
-
-**The CRSP pair reaches no acquisition module.** `CrspMembership` and
-`CrspReference` are dataset-layer leaves over parquet, so a CRSP universe
-resolves with no WRDS credential and no database driver. That is also why
-`quantlab/universe.py` gained no category: its vocabulary is
-Tiingo/Wikipedia-shaped (tickers, exchange filters) and its "imports no
-acquisition module" rule is AST-enforced, so a CRSP category would have
-coupled two vocabularies for no gain.
+``config.cache_dir`` is the local directory a panel is answered from: the
+scraped-HTML cache for the Wikipedia pair, the CRSP reference directory for
+the CRSP classes. The CRSP classes read parquet on disk and need no WRDS
+credential.
 """
 
 import polars as pl
@@ -44,131 +31,142 @@ from quantlab.dataset.crsp.reference import CrspReference
 
 
 def _rename_permno_to_symbol(permno_intervals: pl.DataFrame) -> pl.DataFrame:
-    """A PERMNO-interval frame under `_densify`'s own column names.
+    """Rename the ``permno`` column to ``symbol`` for ``_densify``.
 
-    `IndexConstituentDataset._densify` reads `(symbol, start_date, end_date)`,
-    and the DIMENSION is still called `symbol` on both panels (RULING 3) --
-    only what it spells changed. So this is a RENAME and nothing else: no cast,
-    no re-derivation, no second identity rule to keep in step with the price
-    panel's. `CrspMembership.permno_intervals` already types the column
-    `pl.Int64`, which is the dtype the CRSP price panel's axis carries since
-    03.11-03.
+    A rename and nothing else: the column is already ``pl.Int64``, which is
+    the dtype the CRSP price panel's symbol axis carries, so no cast or
+    re-derivation is needed.
     """
     return permno_intervals.rename({"permno": "symbol"})
 
 
 class SP500ConstituentDataset(IndexConstituentDataset):
-    """Daily point-in-time S&P 500 membership panel (DATA-05, D-01, D-04).
+    """Daily point-in-time S&P 500 membership panel from a public change log.
 
-    The first of D-01's two concrete daily constituent dataset classes,
-    carrying date plus ticker as an `is_member` boolean grid over dims
-    `(timestamp, symbol)`, persisted to Zarr.
+    Membership intervals come from ``SP500MembershipFetcher``, which replays
+    Wikipedia's historical-components change log against a current
+    constituents CSV. Coverage starts on 1976-07-01, the earliest row of
+    that log, so the panel's left edge never precedes it. The ``symbol``
+    axis holds tickers. The source URLs and the coverage constant live on
+    the fetcher, not here.
 
-    Source: Wikipedia's "Historical components of the S&P 500" change log,
-    replayed forward and anchored against a current-constituents CSV. Coverage
-    starts 1976-07-01 -- the verified earliest row of that change log, not the
-    page's own prose claim of 1963. Membership before that date cannot be
-    answered from the source, so the panel's left edge never precedes it.
+    Examples
+    --------
+    Building the panel fetches the change log over the network (or reads
+    the snapshot cached under ``cache_dir``):
 
-    The two source URLs and the coverage constant all live on
-    `SP500MembershipFetcher`, deliberately not here: this class is the binding
-    between an index and the panel machinery, not a second place a maintainer
-    has to remember to update when a source moves.
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/sp500_constituent.zarr",
+    ...     cache_dir="data/reference/_cache",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     as_of="2024-12-31",
+    ... )
+    >>> SP500ConstituentDataset(config).from_raw_data().save()
+    >>> panel = SP500ConstituentDataset(config).read().get_xarray_dataset()
     """
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
+        """Create the dataset from a ``ConstituentDatasetConfig``."""
         super().__init__(dataset_config)
 
     def _pit_coverage_start(self) -> str:
+        """Return the fetcher's coverage start, ``"1976-07-01"``."""
         return SP500MembershipFetcher.PIT_COVERAGE_START
 
     def _build_intervals(self) -> pl.DataFrame:
+        """Return the ticker-keyed membership intervals from the fetcher."""
         return SP500MembershipFetcher(
             cache_dir=self.config.cache_dir
         ).build_intervals()
 
 
 class Nasdaq100ConstituentDataset(IndexConstituentDataset):
-    """Daily point-in-time Nasdaq-100 (NDX) membership panel (DATA-05, D-01,
-    D-04).
+    """Daily point-in-time Nasdaq-100 membership panel from a public change log.
 
-    The second of D-01's two concrete daily constituent dataset classes,
-    carrying date plus ticker as an `is_member` boolean grid over dims
-    `(timestamp, symbol)`, persisted to its own Zarr store.
+    Membership intervals come from ``Nasdaq100MembershipFetcher``, which
+    replays Wikipedia's historical-components change log against a scraped
+    current-constituents snapshot. Coverage starts on 2007-02-01, the
+    earliest row of that log, about thirty-one years later than the S&P 500
+    panel; the two panels keep separate stores so that neither implies
+    coverage the other lacks. The ``symbol`` axis holds tickers.
 
-    Sources: Wikipedia's "Historical components of the Nasdaq-100" change log,
-    replayed forward and anchored against a commercial current-constituent
-    snapshot (stockanalysis.com; slickcharts.com is the documented fallback).
-    Wikipedia's own `Nasdaq-100` page renders its components through a navbox
-    template with no parseable constituents table, so unlike the S&P 500 --
-    whose anchor is a GitHub-hosted CSV -- this index has no free, structured
-    anchor available.
+    The index carries several share classes of some issuers (for example
+    GOOGL and GOOG), so the member count on a given day exceeds one hundred.
 
-    Coverage starts 2007-02-01, the verified earliest row of that change log
-    (`LOGI` added / `CMVT` removed). That left edge is ~31 years LATER than
-    `SP500ConstituentDataset`'s 1976-07-01, which is why the two panels get
-    two separate stores: unioning them onto one timestamp axis would imply
-    1976 Nasdaq-100 coverage that does not exist, and all-False rows read as
-    "nobody was a member" rather than "unknown".
+    Examples
+    --------
+    Building the panel fetches the change log over the network (or reads
+    the snapshot cached under ``cache_dir``):
 
-    The index carries multiple share classes for some issuers (GOOGL/GOOG,
-    FOX/FOXA), so its member count on any given day exceeds one hundred -- an
-    `== 100` expectation is wrong against correct data.
-
-    Both source URLs, the coverage constant and the anchor shape guard live on
-    `Nasdaq100MembershipFetcher`, deliberately not here: this class is the
-    binding between an index and the panel machinery, not a second place a
-    maintainer has to remember to update when a source moves.
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/nasdaq100_constituent.zarr",
+    ...     cache_dir="data/reference/_cache",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     as_of="2024-12-31",
+    ... )
+    >>> Nasdaq100ConstituentDataset(config).from_raw_data().save()
     """
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
+        """Create the dataset from a ``ConstituentDatasetConfig``."""
         super().__init__(dataset_config)
 
     def _pit_coverage_start(self) -> str:
+        """Return the fetcher's coverage start, ``"2007-02-01"``."""
         return Nasdaq100MembershipFetcher.PIT_COVERAGE_START
 
     def _build_intervals(self) -> pl.DataFrame:
+        """Return the ticker-keyed membership intervals from the fetcher."""
         return Nasdaq100MembershipFetcher(
             cache_dir=self.config.cache_dir
         ).build_intervals()
 
 
 class CrspSP500ConstituentDataset(IndexConstituentDataset):
-    """Daily point-in-time S&P 500 membership from CRSP itself (D-05).
+    """Daily point-in-time S&P 500 membership panel from CRSP's own spells.
 
-    Source: `crsp_a_indexes.dsp500list_v2`, CRSP's OWN membership spells by
-    PERMNO, read out of the reference tier at `config.cache_dir`. Coverage
-    starts 1925-12-31, the start of index family 1100500 -- fifty years
-    earlier than `SP500ConstituentDataset`'s Wikipedia change log, which is
-    the whole reason both exist.
+    Intervals come from ``CrspMembership`` over the CRSP reference tier at
+    ``config.cache_dir`` (the ``dsp500list_v2`` table). Coverage starts on
+    1925-12-31. The ``symbol`` axis is the int64 PERMNO, the same identifier
+    the CRSP price panel keys its columns by, so a mask built here lines up
+    with that panel with no ticker rule in between; it is not interchangeable
+    with the ticker axis of ``SP500ConstituentDataset``.
 
-    **Its symbols ARE the CRSP PRICE PANEL'S symbols**, because both sides are
-    the int64 PERMNO itself rather than something derived from it. A mask built
-    here and applied to a `CrspStockDataset` panel therefore lines up column
-    for column, and a rename (FB -> META) or a share class (BRK.B) is not an
-    event either side has to handle in step with the other -- there is no
-    ticker rule left to disagree about. It is NOT interchangeable with the
-    Wikipedia panel's symbol axis, which is why this is a separate class and a
-    separate store rather than a source switch on that one.
+    Every interval carries an explicit end no later than the reference
+    tier's product end, so the panel's right edge is that product end and
+    never today.
 
-    **The right edge is the CRSP annual product end, never today.** Every
-    interval `CrspMembership` produces carries an explicit end bounded by
-    `CrspReference.product_end`, so `_densify`'s open-interval branch -- which
-    extends to wall-clock today -- is never taken. A universe that ran past
-    CRSP's price coverage would be True over a stretch with no prices at all.
+    Examples
+    --------
+    Needs a CRSP reference directory on disk; no WRDS connection is made:
+
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/crsp_sp500.zarr",
+    ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ... )
+    >>> panel = CrspSP500ConstituentDataset(config).from_raw_data()
+    >>> panel.get_xarray_dataset()["symbol"].dtype
+    dtype('int64')
     """
 
-    #: The `CrspMembership` universe this class binds to. A class attribute
-    #: rather than a literal in two method bodies, so the pair cannot drift.
+    #: The ``CrspMembership`` universe this class binds to, named once so the
+    #: two hooks cannot drift apart.
     INDEX = CrspMembership.SP500
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
+        """Create the dataset from a ``ConstituentDatasetConfig``."""
         super().__init__(dataset_config)
 
     def _pit_coverage_start(self) -> str:
+        """Return ``CrspMembership``'s coverage start for the S&P 500."""
         return CrspMembership.PIT_COVERAGE_START[self.INDEX]
 
     def _build_intervals(self) -> pl.DataFrame:
+        """Return the PERMNO-keyed intervals, scoped to the config window."""
         return _rename_permno_to_symbol(
             CrspMembership(CrspReference(self.config.cache_dir)).permno_intervals(
                 self.INDEX,
@@ -181,115 +179,107 @@ class CrspSP500ConstituentDataset(IndexConstituentDataset):
 
 
 class CompustatNasdaq100ConstituentDataset(IndexConstituentDataset):
-    """Daily point-in-time Nasdaq-100 membership from Compustat + CCM (D-14).
+    """Daily point-in-time Nasdaq-100 membership panel from Compustat via CCM.
 
-    Source: `comp.idxcst_his` at `gvkeyx = '000208'`, whose `(gvkey, iid)`
-    spells become PERMNOs through `crsp_a_ccm.ccmxpf_lnkhist`. The link join
-    is on `gvkey` AND `iid = liid`, never on `linkprim`: both Alphabet classes
-    are members under one gvkey (160329, iid 01 -> GOOGL 90319 and iid 03 ->
-    GOOG 14542), and the conventional `linkprim IN ('P','C')` filter would
-    keep the primary issue only, silently dropping a real index member.
+    Intervals come from ``CrspMembership`` over the reference tier at
+    ``config.cache_dir``: Compustat's index-constituent history, with each
+    ``(gvkey, iid)`` spell mapped to a PERMNO through the CRSP/Compustat
+    link table. The ``symbol`` axis is the int64 PERMNO. Coverage starts on
+    1995-01-01, which is where Compustat's history begins rather than where
+    those memberships did; the panel never starts earlier.
 
-    **Left-censored at 1995-01-01, twelve years earlier than
-    `Nasdaq100ConstituentDataset`'s 2007-02-01.** That date is a CENSOR rather
-    than a start: a hundred spells begin exactly there because that is where
-    Compustat's history begins, not where those memberships did. The panel
-    still never starts earlier, for the same reason every coverage clamp
-    exists -- all-False and unknown are indistinguishable in a boolean panel.
+    A membership spell with no PERMNO link is refused by default, because
+    dropping it would silently shrink the universe. Pass
+    ``kwargs={"allow_unlinked": True}`` to keep the linked days and read the
+    rest from the membership report; the option lives in the config so a run
+    that tolerated the gap says so in its own ``config.json``. Only gaps
+    inside this panel's configured window count.
 
-    **An unlinked spell REFUSES by default.** A membership day with no PERMNO
-    has no security and therefore no symbol; dropping it would remove a real
-    index member from the universe, which reads downstream as a slightly
-    smaller universe rather than as an error. Pass
-    `kwargs={"allow_unlinked": True}` to proceed with the linked days and read
-    the rest from the membership `report["unlinked"]` -- the opt-out lives in
-    the config, so a run that tolerated the gap says so in its own
-    `config.json`. The refusal is scoped to this panel's OWN configured
-    window: a link gap falling entirely outside it cannot cost this panel a
-    member, so it is recorded in the membership `report["unlinked"]` rather
-    than refusing.
+    Examples
+    --------
+    Needs a CRSP reference directory on disk; no WRDS connection is made:
+
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/compustat_nasdaq100.zarr",
+    ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2015-01-01",
+    ...     end_date="2024-12-31",
+    ...     kwargs={"allow_unlinked": True},
+    ... )
+    >>> CompustatNasdaq100ConstituentDataset(config).from_raw_data().save()
     """
 
-    #: The `CrspMembership` universe this class binds to.
+    #: The ``CrspMembership`` universe this class binds to.
     INDEX = CrspMembership.NASDAQ100
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
+        """Create the dataset from a ``ConstituentDatasetConfig``."""
         super().__init__(dataset_config)
 
     def _pit_coverage_start(self) -> str:
+        """Return ``CrspMembership``'s coverage start for the Nasdaq-100."""
         return CrspMembership.PIT_COVERAGE_START[self.INDEX]
 
     def _build_intervals(self) -> pl.DataFrame:
+        """Return the PERMNO-keyed intervals, scoped to the config window."""
         return _rename_permno_to_symbol(
             CrspMembership(CrspReference(self.config.cache_dir)).permno_intervals(
                 self.INDEX,
                 allow_unlinked=bool(
                     (self.config.kwargs or {}).get("allow_unlinked", False)
                 ),
-                # Safe to scope here because this panel's own edges are
-                # `max(config.start_date, coverage_start)`..`min(config.end_date,
-                # horizon)` (`quantlab/base/constituent.py`), a SUBSET of the
-                # window passed: an uncovered span outside it cannot touch a
-                # single cell this panel produces.
+                # The panel's own edges are a subset of this window, so a link
+                # gap outside it cannot affect any cell the panel produces.
                 window=(self.config.start_date, self.config.end_date),
             )
         )
 
 
 class CrspMarketConstituentDataset(IndexConstituentDataset):
-    """Daily point-in-time WHOLE-MARKET membership from CRSP.
+    """Daily point-in-time whole-market listing panel from CRSP.
 
-    Not an index. "Was this security listed and of the requested type on this
-    day", for every security CRSP carries -- `CrspMarketRoster` rather than
-    `CrspMembership`, and therefore `stksecurityinfohist` rather than an index
-    membership table.
+    Not an index: ``is_member`` answers "was this security listed, and of
+    the requested type, on this day" for every security in the CRSP
+    reference tier at ``config.cache_dir``, through ``CrspMarketRoster``. A
+    whole-market price panel is thousands of columns wide and mostly NaN on
+    any given day; this mask lets a consumer tell "not listed" from "listed,
+    no trade". The ``symbol`` axis is the int64 PERMNO, matching the CRSP
+    price panel.
 
-    **Why a whole-market panel needs this more than an index panel does.** An
-    S&P 500 price panel is ~500 wide and nearly dense; a whole-market one is
-    5,465 wide for 2024 alone and 16,814 wide over 1999-2025 (measured on this
-    project's own reference tier), and most of those columns are NaN on most
-    days because the security had not listed yet or had already delisted.
-    Without this mask a consumer cannot tell "not listed" from "listed, no
-    trade" -- and a cross-sectional rank over a column that does not exist yet
-    is not a rank over the market that existed.
+    Coverage starts where CRSP's daily prices begin (1925-12-31), and every
+    interval ends no later than the reference tier's product end, so the
+    right edge is never today. The security filter is part of the panel's
+    identity: it is read from ``kwargs["security_filter"]`` (default
+    ``"equity_common"``) and therefore recorded in the run's ``config.json``.
 
-    **Its symbols ARE the CRSP price panel's symbols**, for the same reason
-    `CrspSP500ConstituentDataset`'s are: both sides are the int64 PERMNO
-    itself, so the mask lines up with the panel column for column with no
-    identity rule in between.
+    Examples
+    --------
+    Needs a CRSP reference directory on disk; no WRDS connection is made:
 
-    **Coverage start is the price data's, not an index's.** There is no
-    membership table with its own start here, so the clamp is CRSP's own daily
-    coverage. `PIT_COVERAGE_START` mirrors `CrspMembership`'s S&P entry
-    (1925-12-31), which is where the CRSP daily file begins; a whole-market
-    universe cannot be answered before the prices exist.
-
-    **The right edge is the CRSP annual product end, never today**, because
-    every interval `CrspMarketRoster` produces is already clipped to
-    `CrspReference.product_end`. `_densify`'s open-interval branch -- which
-    extends to wall-clock today -- is therefore never taken here, exactly as
-    on the two CRSP index panels.
-
-    **The security filter is part of the panel's identity.** A mask built
-    under `equity_common` and one built under `none` are different universes,
-    so the filter rides in `kwargs` and lands in the run's own `config.json`
-    rather than being a default someone has to remember. It defaults to
-    `equity_common`, matching `scripts/ingest_wrds_crsp.py`'s own default, so
-    the mask and the price panel agree unless a caller deliberately parts
-    them.
+    >>> config = ConstituentDatasetConfig(
+    ...     zarr_file_path="data/reference/crsp_market.zarr",
+    ...     cache_dir="downloads/us_equity/1d/wrds_crsp/_reference",
+    ...     start_date="2020-01-01",
+    ...     end_date="2024-12-31",
+    ...     kwargs={"security_filter": "equity_common"},
+    ... )
+    >>> CrspMarketConstituentDataset(config).from_raw_data().save()
     """
 
-    #: CRSP's daily file start -- the same date `CrspMembership` records for
-    #: the S&P 500, because both are bounded by when CRSP's prices begin.
+    #: Start of CRSP's daily file; a whole-market universe cannot be answered
+    #: before the prices exist.
     PIT_COVERAGE_START = "1925-12-31"
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):
+        """Create the dataset from a ``ConstituentDatasetConfig``."""
         super().__init__(dataset_config)
 
     def _pit_coverage_start(self) -> str:
+        """Return ``PIT_COVERAGE_START``."""
         return self.PIT_COVERAGE_START
 
     def _build_intervals(self) -> pl.DataFrame:
+        """Return the PERMNO-keyed listing spans under the security filter."""
         return _rename_permno_to_symbol(
             CrspMarketRoster(CrspReference(self.config.cache_dir)).permno_intervals(
                 security_filter=(self.config.kwargs or {}).get(

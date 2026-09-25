@@ -38,11 +38,16 @@ class UniverseMask:
     objects so it can be used without a store; ``from_datasets()`` is the
     constructor used in a pipeline run.
 
-    Example:
-        >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
-        >>> mask.report()["missing_count"]
-        0
-        >>> panel = mask.apply()  # non-member cells are NaN
+    Examples
+    --------
+    >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
+    >>> mask.report()["missing_count"]
+    1
+    >>> panel = mask.apply()  # non-member cells are NaN
+
+    The method examples below use a market panel of ``AAA``, ``BBB`` and
+    ``CCC`` over four business days and a membership panel over six
+    calendar days in which ``AAA`` and ``DDD`` are members throughout.
     """
 
     def __init__(
@@ -53,16 +58,22 @@ class UniverseMask:
     ) -> None:
         """Store the two panels and an optional ticker lookup.
 
-        Args:
-            market: A market panel on ``(timestamp, symbol)``.
-            membership: A panel carrying a boolean ``is_member`` variable.
-            ticker_lookup: Used only to spell ``report()``'s warning with
-                human-readable tickers. ``None`` prints the axis labels as
-                they are.
+        Parameters
+        ----------
+        market : xr.Dataset
+            A market panel on ``(timestamp, symbol)``.
+        membership : xr.Dataset
+            A panel carrying a boolean ``is_member`` variable.
+        ticker_lookup : Optional[CrspTickerLookup]
+            Used only to spell ``report()``'s warning with
+            human-readable tickers. ``None`` prints the axis labels as
+            they are.
 
-        Raises:
-            ValueError: If ``membership`` has no ``is_member`` variable, which
-                usually means the two panels were passed in the wrong order.
+        Raises
+        ------
+        ValueError
+            If ``membership`` has no ``is_member`` variable, which
+            usually means the two panels were passed in the wrong order.
         """
         if "is_member" not in membership.data_vars:
             raise ValueError(
@@ -95,12 +106,25 @@ class UniverseMask:
         without a sidecar yields a lookup that falls back to the axis's own
         labels, so nothing here depends on the vendor.
 
-        Args:
-            market_dataset: The market-data dataset to mask.
-            constituent_dataset: The dataset providing ``is_member``.
+        Parameters
+        ----------
+        market_dataset : MarketDataset
+            The market-data dataset to mask.
+        constituent_dataset : IndexConstituentDataset
+            The dataset providing ``is_member``.
 
-        Returns:
+        Returns
+        -------
+        UniverseMask
             A ``UniverseMask`` over the two panels read from disk.
+
+        Examples
+        --------
+        >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
+        >>> mask
+        UniverseMask(timestamps=4, symbols=2)
+        >>> mask.missing_members
+        ['DDD']
         """
         return cls(
             market_dataset.read().get_xarray_dataset(),
@@ -112,7 +136,13 @@ class UniverseMask:
 
     @property
     def timestamps(self) -> pd.DatetimeIndex:
-        """The overlapping timestamp axis, a sorted inner join."""
+        """The overlapping timestamp axis, a sorted inner join.
+
+        Examples
+        --------
+        >>> len(mask.timestamps), mask.timestamps[0]
+        (4, Timestamp('2024-01-01 00:00:00'))
+        """
         market = pd.DatetimeIndex(self.market["timestamp"].values)
         membership = pd.DatetimeIndex(self.membership["timestamp"].values)
         return market.intersection(membership).sort_values()
@@ -125,6 +155,11 @@ class UniverseMask:
         type is whatever the two axes share (integers for a PERMNO-keyed
         universe, strings for a ticker-keyed one). Ordering comes from
         ``sort_symbol_axis`` so both axis kinds follow one rule.
+
+        Examples
+        --------
+        >>> mask.symbols
+        ['AAA', 'BBB']
         """
         market = pd.Index(self.market["symbol"].values)
         membership = pd.Index(self.membership["symbol"].values)
@@ -138,6 +173,11 @@ class UniverseMask:
         carries all-False columns for symbols whose membership falls entirely
         outside it, and those are not coverage gaps. Labels keep the
         membership axis's own dtype.
+
+        Examples
+        --------
+        >>> mask.in_window_members
+        ['AAA', 'DDD']
         """
         overlap = self.timestamps
         if len(overlap) == 0:
@@ -156,6 +196,11 @@ class UniverseMask:
 
         A set difference, so both sides must use the same label type; the
         properties feeding it deliberately convert nothing.
+
+        Examples
+        --------
+        >>> mask.missing_members
+        ['DDD']
         """
         market = set(self.market["symbol"].values.tolist())
         return sort_symbol_axis(set(self.in_window_members) - market)
@@ -174,6 +219,12 @@ class UniverseMask:
         Labels are looked up as of the last overlapping timestamp, the newest
         spelling in the window being aligned. With no overlap the labels are
         the raw axis values.
+
+        Examples
+        --------
+        >>> report = mask.report()  # also logs the full missing list
+        >>> report["missing_count"], report["missing_symbols"]
+        (1, ['DDD'])
         """
         members = self.in_window_members
         missing = self.missing_members
@@ -220,10 +271,21 @@ class UniverseMask:
         included: outside the universe a flag is undefined rather than False,
         so it becomes NaN (and the variable float64) like everything else.
 
-        Raises:
-            ValueError: If the two panels share no timestamp or no symbol. An
-                empty panel would flow into a backtest as "no positions"
-                instead of surfacing the misconfiguration.
+        Raises
+        ------
+        ValueError
+            If the two panels share no timestamp or no symbol. An
+            empty panel would flow into a backtest as "no positions"
+            instead of surfacing the misconfiguration.
+
+        Examples
+        --------
+        >>> masked = mask.apply()
+        >>> masked["close"].values  # BBB is never a member, so NaN throughout
+        array([[ 0., nan],
+               [ 3., nan],
+               [ 6., nan],
+               [ 9., nan]])
         """
         self.report()
 

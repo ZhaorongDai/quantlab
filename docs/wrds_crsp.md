@@ -1,0 +1,356 @@
+# CRSP daily stock data (WRDS)
+
+English | [简体中文](zh-CN/wrds_crsp.md)
+
+CRSP (the Center for Research in Security Prices) publishes daily prices, returns and corporate actions for US stocks, including companies that were later delisted. quantlab downloads that table from WRDS, keyed by a permanent security identifier (PERMNO), and converts it into the same `(timestamp, symbol)` Zarr panel that the Tiingo stock data produces, so factors, models and backtests read it unchanged.
+
+Three tiers sit on disk. The raw tier holds the rows exactly as CRSP serves them. The reference tier holds small lookup tables (security history, delistings, index membership). The store is the converted Zarr panel, and it can be rebuilt from the other two without a network connection.
+
+## Prerequisites
+
+Downloading needs a WRDS account with a CRSP subscription. Set the username in the environment and put the password in `~/.pgpass` (mode 600, one line of the form `wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>`). quantlab never reads the password itself, and no command-line flag accepts either value.
+
+```bash
+export WRDS_USERNAME=<your-wrds-username>
+```
+
+The Nasdaq-100 universe additionally needs the Compustat and CRSP/Compustat Merged (CCM) schemas. Converting, reading and rebuilding a store need no account and no network.
+
+The sessions on this page ran against a tiny synthetic raw tier laid out as described below, so the numbers are small but observed output.
+
+## The basics
+
+### PERMNO and survivorship bias
+
+The CRSP daily table (`crsp_a_stock.dsf_v2`) has one row per security per trading day. A security is identified by its PERMNO, an integer that stays with the security when the company renames itself or changes exchange. A ticker has none of those properties: Facebook and Meta are one PERMNO with two tickers, and one ticker can belong to different companies at different times.
+
+A universe built from today's index members leaves out every company that failed, was acquired or was removed, which overstates historical performance. This is survivorship bias. CRSP keeps every security's rows up to and including its delisting day, so a panel built from CRSP contains the losers as well as the winners. The rosters described below also select every PERMNO whose membership overlaps the requested window, not only those that were members at its end.
+
+The `symbol` axis of a CRSP panel is therefore the integer PERMNO. Tickers are display names and live in a separate lookup (see "Look up tickers").
+
+### Download by PERMNO
+
+Two scripts drive a download through the vendor registry. `scripts/ingest_wrds_crsp.py` takes an index universe, an explicit PERMNO list, the QQQ ETF or any combination. `scripts/ingest_wrds_crsp_all.py` takes the whole US equity market.
+
+```bash
+# CRSP's point-in-time S&P 500, converted to a panel and a membership mask.
+uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
+    --start-date 2000-01-01 --end-date 2025-12-31 --to-zarr
+
+# An explicit PERMNO roster (Apple and Meta).
+uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407 \
+    --start-date 2020-01-01 --end-date 2024-12-31 --to-zarr
+```
+
+Before the first daily row is copied the script checks the account's schema entitlements, clips the end date to the annual product end, pulls the reference tables, resolves the roster and counts the rows a pull would move (refusing above the volume ceiling unless `--force-volume` is given). Without `--to-zarr` the run stops after the raw shards. Everything is written under the data root:
+
+```text
+data/downloads/us_equity/1d/wrds_crsp/
+    wrds/month=YYYY-MM/     raw parquet shards, one row per (permno, date)
+    _reference/             parquet reference tables and manifest.json
+    _watermarks/wrds/       per-PERMNO progress, used by --refresh
+    _vintage/wrds.json      which annual CRSP release the raw tier came from
+data/data/us_equity/1d/     converted Zarr stores and their JSON sidecars
+```
+
+The acquisition classes are documented in `quantlab.acquisition.wrds.crsp` and `quantlab.acquisition.wrds.crsp_reference`.
+
+### Convert the raw tier into a panel
+
+A `CrspDatasetConfig` names the raw tier, the reference tier and the store. The default security filter is `equity_common`, and `permnos=None` means every PERMNO in the raw tier.
+
+```python
+>>> from quantlab.base.config import CrspDatasetConfig
+>>> from quantlab.dataset.crsp import CrspStockDataset
+>>> config = CrspDatasetConfig(
+...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",
+...     raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
+...     catalog_path="data/data/catalog",
+...     reference_dir="data/downloads/us_equity/1d/wrds_crsp/_reference",
+...     start_date="2020-08-03",
+...     end_date="2020-08-31",
+... )
+>>> config.security_filter
+'equity_common'
+>>> CrspStockDataset(config).from_raw_data().save()
+>>> panel = CrspStockDataset(config).read().get_xarray_dataset()
+>>> panel.symbol.values.tolist()
+[10107, 14593, 99002]
+>>> panel.sizes
+Frozen({'timestamp': 21, 'symbol': 3})
+```
+
+`raw_data_dir_path` must end at the vendor folder `wrds`, and `reference_dir` is the `_reference` folder next to it. In the script flow the same conversion runs through `quantlab.registry.convert`, which converts one window at a time and resumes an interrupted run.
+
+The panel holds the twelve variables of a Tiingo daily panel plus the CRSP extras:
+
+```python
+>>> sorted(panel.data_vars)
+['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'ask', 'bid', 'close', 'close_trade', 'cumfacpr', 'cumfacshr', 'divCash', 'facprc', 'high', 'is_delisting', 'low', 'market_cap', 'numtrd', 'open', 'permco', 'prc_is_bidask', 'ret', 'retx', 'shrout', 'splitFactor', 'volume']
+```
+
+The price and CRSP variables are float64, with NaN where a security did not trade or did not exist yet. The extras are described once in the table below, and in full in the module docstring of `quantlab.dataset.crsp`.
+
+| Variable | Meaning |
+| --- | --- |
+| `ret`, `retx` | Daily total return with and without dividends; NaN where CRSP has none |
+| `shrout`, `market_cap` | Shares outstanding and market capitalization, in shares and USD |
+| `bid`, `ask`, `prc_is_bidask` | Quotes, and 1.0 when the price is a bid/ask midpoint rather than a trade |
+| `is_delisting` | 1.0 on the row that carries the delisting return |
+| `permco`, `cumfacpr`, `cumfacshr`, `facprc`, `numtrd`, `close_trade` | CRSP company id, cumulative factors, the day's price factor, trade count, closing-trade price |
+
+### Total-return adjusted prices
+
+`close` is the absolute value of CRSP's daily price. `adjClose` starts at a PERMNO's first usable close in the window and then compounds CRSP's daily total return, so it includes dividends and is continuous across splits. `adjOpen`, `adjHigh` and `adjLow` are scaled by the same factor, and `adjVolume` by CRSP's cumulative share factor. `splitFactor` is the day's split ratio and `divCash` is the cash dividend per share on its ex-date. Apple's 4-for-1 split on 2020-08-31 shows in `close` and `splitFactor` but not in `adjClose`:
+
+```python
+>>> aapl = panel.sel(symbol=14593).to_pandas().dropna(subset=["close"])
+>>> aapl[["close", "adjClose", "ret", "splitFactor", "divCash"]]
+             close    adjClose       ret  splitFactor  divCash
+timestamp                                                     
+2020-08-06  455.61  455.610000  0.034889          1.0     0.00
+2020-08-07  444.45  445.269931 -0.022695          1.0     0.82
+2020-08-28  499.23  444.548594 -0.001620          1.0     0.00
+2020-08-31  129.04  459.624126  0.033912          4.0     0.00
+>>> (aapl["adjClose"] / aapl["adjClose"].shift() - 1).round(6).tolist()
+[nan, -0.022695, -0.00162, 0.033912]
+```
+
+The day-over-day change of `adjClose` equals `ret`. A missing return counts as zero in the chain, because a CRSP return already spans any gap back to the previous valid price. The adjusted level depends on the window, since it is anchored at the first close; compare returns or ratios, not levels, across differently dated stores.
+
+### Delisting returns
+
+CRSP writes a delisting return on the delisting day's own daily row, flagged by `dlydelflg = "Y"`. quantlab compounds that row like any other and exposes it as `is_delisting`. Nothing adds the `stkdelists` return on top, which would apply the loss twice. Lehman Brothers (PERMNO 80599) in September 2008:
+
+```python
+>>> leh = panel.sel(symbol=80599).to_pandas()
+>>> leh[["close", "adjClose", "ret", "is_delisting"]]
+            close  adjClose       ret  is_delisting
+timestamp                                          
+2008-09-12  3.650  3.650000 -0.135071           0.0
+2008-09-15  0.210  0.209999 -0.942466           0.0
+2008-09-16  0.300  0.299999  0.428571           0.0
+2008-09-17  0.130  0.129999 -0.566667           0.0
+2008-09-18  0.052  0.052000 -0.600000           1.0
+>>> (leh["adjClose"] / leh["adjClose"].shift() - 1).round(6).tolist()
+[nan, -0.942466, 0.428571, -0.566667, -0.6]
+```
+
+Some modern delisting rows carry a settlement amount instead of a price (`dlyprcflg = "DA"`, with `dlyprc = 0`). Those rows get a NaN `close`, so a price of zero is never published.
+
+## Common tasks
+
+### Choose which securities are kept
+
+`security_filter` selects by CRSP's per-day type columns, so a security that changed type keeps only the period in which it qualified. `equity_common` keeps ordinary common stock, including REITs and non-US issuers, and drops ADRs, units, funds and ETFs. `shrcd_10_11` reproduces the older `shrcd in (10, 11)` screen, which also drops non-US issuers. `none` keeps everything. A dict of `{column: allowed values}` over the filterable columns is accepted too (see Extending). The synthetic tier holds a US stock, an ADR, a non-US issuer, a fund and a second US stock:
+
+```python
+>>> from dataclasses import replace
+>>> def symbols_for(store, security_filter="equity_common", permnos=None):
+...     cfg = replace(config, zarr_file_path=store,
+...                   security_filter=security_filter, permnos=permnos)
+...     CrspStockDataset(cfg).from_raw_data().save()
+...     return CrspStockDataset(cfg).read().get_xarray_dataset().symbol.values.tolist()
+>>> symbols_for("data/a.zarr")
+[10107, 14593, 99002]
+>>> symbols_for("data/b.zarr", security_filter="shrcd_10_11")
+[10107, 14593]
+>>> symbols_for("data/c.zarr", security_filter="none")
+[10107, 14593, 86755, 99001, 99002]
+```
+
+A conversion that creates a store writes `<store>.crsp_filter_report.json` beside it, listing what the filter removed; the keys of `dropped_by_type` spell `sharetype/securitytype/securitysubtype/issuertype/usincflg`. Filtering happens at conversion, so changing the filter is a re-conversion, not a re-download.
+
+```python
+>>> import json
+>>> report = json.load(open("data/a.zarr.crsp_filter_report.json"))
+>>> report["rows_kept"], report["rows_dropped"]
+(46, 42)
+>>> report["dropped_by_type"]
+{'AD/EQTY/COM/CORP/Y': 21, 'NS/FUND/ETF/ACOR/Y': 21}
+```
+
+Listing PERMNOs in `permnos` names them explicitly, and an explicit roster overrides the filter: all of their rows are kept, and the report records the override.
+
+```python
+>>> symbols_for("data/e.zarr", permnos=("14593", "86755"))
+[14593, 86755]
+>>> report = json.load(open("data/e.zarr.crsp_filter_report.json"))
+>>> report["roster_overrides"]["rows_rescued"]
+21
+```
+
+`roster_universe` (`"crsp_sp500"` or `"comp_nasdaq100"`) works the same way: during a PERMNO's membership spell its rows are exempt from the filter, and outside the spells the filter applies.
+
+### Look up tickers
+
+A share class is a class of the same company's stock (Berkshire A and B, Alphabet GOOG and GOOGL). Each class is a separate security with its own PERMNO. This is unrelated to CRSP's `sharetype`, which says what kind of share it is (normal, ADR, unit) and is what the filters read.
+
+The conversion writes `<store>.crsp_tickers.json`, a table of `{PERMNO: [{ticker, start, end}]}` intervals derived from `stksecurityinfohist`. A class shows as `BRK.B`, and a delisting-day row, which has no ticker of its own, carries the previous name forward. `CrspTickerLookup` answers "what was this PERMNO called on this date":
+
+```python
+>>> from datetime import date
+>>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
+>>> lookup = CrspTickerLookup.beside_store(config.zarr_file_path)
+>>> lookup.as_of(13407, date(2022, 6, 8)), lookup.as_of(13407, date(2022, 6, 9))
+('FB', 'META')
+>>> lookup.as_of(83443, date(2022, 6, 9))
+'BRK.B'
+>>> lookup.label([13407, 83443, 99999], date(2022, 6, 9))
+['META', 'BRK.B', '99999']
+```
+
+`as_of` raises if the sidecar is missing or unreadable. `label` never raises and falls back to the PERMNO digits, which suits log lines and reports.
+
+### Select an index universe or the whole market
+
+Membership comes from the reference tier, so these calls need no connection. `CrspMembership` serves CRSP's S&P 500 (`crsp_sp500`, from 1925) and the Compustat Nasdaq-100 (`comp_nasdaq100`, from 1995, linked to PERMNOs through CCM). Intervals are closed, and an open membership ends at the product end.
+
+```python
+>>> from quantlab.dataset.crsp.reference import CrspReference
+>>> from quantlab.dataset.crsp.membership import CrspMembership
+>>> from quantlab.dataset.crsp.market import CrspMarketRoster
+>>> reference = CrspReference("data/downloads/us_equity/1d/wrds_crsp/_reference")
+>>> membership = CrspMembership(reference)
+>>> membership.permnos_in_range("crsp_sp500", "2020-01-01", "2020-12-31")
+['14593']
+>>> membership.permnos_in_range("comp_nasdaq100", "2010-01-01", "2020-12-31")
+['14542', '90319']
+>>> roster = CrspMarketRoster(reference)
+>>> roster.permnos_in_range("2020-01-01", "2020-12-31")
+['13407', '14593', '21186', '83443', '90319']
+>>> roster.permnos_in_range("2020-01-01", "2020-12-31", security_filter="none")
+['13407', '14593', '21186', '83443', '86755', '90319']
+```
+
+The reference tier here is the small synthetic one, so each list is short. `CrspMarketRoster` reads every security in `stksecurityinfohist` that passes the filter, so a whole-market roster costs no extra query. For a real 2025 tier the default filter yields about 5,500 PERMNOs for one year and about 16,800 across 1999 to 2025.
+
+The membership itself is a panel, `is_member(timestamp, symbol)`, built by the constituent datasets (`CrspSP500ConstituentDataset`, `CompustatNasdaq100ConstituentDataset`, `CrspMarketConstituentDataset`) with no connection, on the same PERMNO axis as the price panel. See [constituent.md](constituent.md).
+
+
+
+The whole-market script converts a window at a time and is run one year at a time:
+
+```bash
+uv run python scripts/ingest_wrds_crsp_all.py \
+    --start-date 2024-01-01 --end-date 2024-12-31 --to-zarr
+```
+
+It writes `wrds_crsp_all_1d.zarr` and the listing mask `wrds_crsp_all_membership.zarr`. Adding `--with-index-membership` also writes the S&P 500 and Nasdaq-100 panels.
+
+### Keep a store up to date
+
+`--refresh` resumes each PERMNO from its recorded watermark, and extending `--end-date` forward is the supported direction. On a whole-market store the roster grows between refreshes. `--on-new-listing` chooses what happens: `refuse` (the default) stops, `widen` adds the new columns with NaN history and suits a genuinely new listing, and `rebuild` re-densifies every window and suits a PERMNO that already had history.
+
+### Add the QQQ benchmark
+
+An ETF ranked against the stocks it holds would compete with itself, so the benchmark lives in its own store. `CrspDatasetConfig.qqq_benchmark` fixes the two settings that matter, the PERMNO and `security_filter="none"`. The script equivalent is `--qqq`.
+
+```python
+>>> etf = CrspDatasetConfig.qqq_benchmark(
+...     zarr_file_path="data/qqq.zarr",
+...     raw_data_dir_path=config.raw_data_dir_path,
+...     catalog_path=config.catalog_path,
+...     reference_dir=config.reference_dir,
+...     start_date="2020-08-03", end_date="2020-08-31")
+>>> etf.permnos, etf.security_filter
+(('86755',), 'none')
+```
+
+### Rebuild a store
+
+A store is derived from the raw and reference tiers, so changed conversion code or a changed filter is applied by rebuilding, without WRDS. `CrspStoreRebuilder` checks that the inputs exist, backs the store up, deletes it with all five sidecar files, converts again and measures the result.
+
+```python
+>>> from pathlib import Path
+>>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
+>>> rebuilder = CrspStoreRebuilder(config, data_root=".")
+>>> result = rebuilder.rebuild(backup_dir=Path("backup"))
+>>> result.dims, result.data_var_count
+({'timestamp': 21, 'symbol': 3}, 27)
+```
+
+### Use the panel where Tiingo is used
+
+`CrspStockDataset` subclasses `StockDataset` and carries all twelve Tiingo variables, so a factor that reads `adjClose` or `adjVolume` accepts either dataset. The differences are the integer `symbol` axis and the refusal of ticker-side selection fields (`symbols` on the dataset config and on factor configs), which raise `ValueError`; use `permnos` on the dataset instead. Here an Alpha101 factor runs over a CRSP store of eight synthetic securities:
+
+```python
+>>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.alpha101 import Alpha101Stock
+>>> dataset = CrspStockDataset(config).read()
+>>> factor = Alpha101Stock(FactorConfig(
+...     window=20,
+...     dataset=dataset,
+...     mode="batch",
+...     data_columns=("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"),
+...     factor_names=("alpha001",),
+...     file_path="data/data/us_equity/1d/alpha101_crsp.zarr",
+... ))
+>>> features = factor.cal().get_features()
+>>> features["alpha001"].isel(timestamp=-1).values.round(3)
+array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
+      dtype=float32)
+```
+
+The factor, model and backtest guides ([factor.md](factor.md), [model.md](model.md), [backtest.md](backtest.md)) apply unchanged. For a point-in-time universe, apply the membership mask ([constituent.md](constituent.md)); [universe.md](universe.md) covers the separate price and liquidity filter.
+
+## Extending
+
+`EXTRA_VARIABLES` on the dataset class names the CRSP columns added beyond the Tiingo twelve. A subclass that narrows it produces a slimmer panel; the other conversion logic is inherited. A subclass is used directly, since the registry resolves the dataset class from the vendor's capability.
+
+```python
+>>> class SlimCrspDataset(CrspStockDataset):
+...     EXTRA_VARIABLES = ("ret", "market_cap")
+>>> slim = replace(config, zarr_file_path="data/data/us_equity/1d/slim.zarr")
+>>> SlimCrspDataset(slim).from_raw_data().save()
+>>> sorted(SlimCrspDataset(slim).read().get_xarray_dataset().data_vars)
+['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'divCash', 'high', 'low', 'market_cap', 'open', 'ret', 'splitFactor', 'volume']
+```
+
+A new filter needs no subclass: pass a `{column: allowed values}` dict as `security_filter`. The columns it may name are listed in `FILTERABLE_COLUMNS`.
+
+## Notes
+
+Conversion logs to stderr. A warning that the security filter dropped rows is expected when the filter is doing its job, and the same figures are in the filter report.
+
+`anomaly_flag` marks a bar whose raw `close` is zero, negative or jumps sharply from the previous bar. A stock split changes the raw `close` sharply, so split days are flagged (see 2020-08-31 above). Compute returns from `adjClose` or `ret`.
+
+The adjustment anchor is each PERMNO's first usable row inside the window. Extending the end date forward keeps every historical value. Moving `start_date` later, or backfilling earlier raw rows, rescales the adjusted history of the affected PERMNOs and is not detected; rebuild the store afterwards.
+
+The raw tier records the CRSP annual release it came from, and mixing two releases in one raw root raises `CrspVintageError`. Start a fresh raw tier for a new release. Membership is answered only up to the vintage's last day.
+
+Errors a user meets, quoted as raised:
+
+```text
+RuntimeError: WRDS_USERNAME environment variable must be set to your WRDS username.
+```
+Set the variable and add the password to `~/.pgpass`.
+
+```text
+CrspProductEndError: end_date 2026-06-30 is past the CRSP product end 2025-12-31.
+```
+The annual product has no later data. Lower the end date; the scripts clip it automatically and print the clip. Programmatic callers can set `kwargs["clip_to_product_end"]`.
+
+```text
+ValueError: WrdsCrspDailyAcquisition: symbol 'AAPL' is not a PERMNO.
+```
+The raw tier is keyed by PERMNO. Resolve tickers to PERMNOs first, for example through a membership roster.
+
+```text
+FileNotFoundError: CrspReference: no stksecurityinfohist.parquet under '<dir>'.
+```
+The reference tier is pulled by the ingest script, separately from the daily rows. Run it, or point `reference_dir` at a directory that has it.
+
+```text
+ValueError: CrspStockDataset: config.symbols is not selectable on a CRSP panel; got ('AAPL',).
+```
+Use `permnos` instead. The same class refuses `security_filter="common"` because the presets are `equity_common`, `none` and `shrcd_10_11`, and refuses an empty `permnos=()`, which would be ambiguous between none and all.
+
+```text
+ValueError: CrspStockDataset: raw_data_dir_path '<dir>' has basename 'wrds_crsp' but the configured vendor is 'wrds'.
+```
+End `raw_data_dir_path` at the `wrds` folder.
+
+## See also
+
+[wrds_taq.md](wrds_taq.md) for the tick-level WRDS data that shares the same session, [constituent.md](constituent.md) for membership panels, [universe.md](universe.md) for the price and liquidity filter, [dataset.md](dataset.md) for the panel contract, [chunking.md](chunking.md) for windowed conversion, [registry.md](registry.md) and [acquisition.md](acquisition.md) for the download machinery, and [pageledger.md](pageledger.md) for resume. Class docstrings: `CrspStockDataset`, `CrspDatasetConfig`, `WrdsCrspDailyAcquisition`, `CrspReferenceTables`, `CrspMembership`, `CrspMarketRoster`, `CrspSymbology`, `CrspTickerLookup` and `CrspStoreRebuilder`.

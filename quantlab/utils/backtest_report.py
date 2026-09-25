@@ -1,74 +1,22 @@
-"""Interactive HTML report for one backtest run (03.7 D-23, D-21, D-08).
+"""HTML report writer for one backtest run.
 
-One self-contained page built around a plotly div:
+``write_backtest_report`` renders a single self-contained page for a run: a
+title, a dates-and-setup table, a plotly figure with the equity curve, the
+drawdown and the compounded monthly returns on a shared time axis, a
+year-by-month heatmap of those monthly returns, a metric table with one column
+per window slice, and the notes. The in-sample range is shaded across the
+figure and the deepest drawdown is marked by a pair of triangles on the
+equity curve.
 
-1. an escaped `<h1>` of the run name;
-2. a dates-and-setup block stating the window, the bar count and interval, the
-   training window(s), the in-sample range(s) and the out-of-sample ranges in
-   words, so the reader never has to open `metrics.json` to learn what the
-   picture covers;
-3. a metric table with one column per metrics block (whole / in-sample /
-   out-of-sample), plus an `out_of_sample - in_sample` column whenever both
-   slice blocks are present (03.8 D-01). Which rows get a number there is
-   decided by the values' types alone -- finite real non-booleans -- so it,
-   too, names no metric. The column is report-only (D-05);
-4. the figure: three rows on a shared time axis -- equity (with a pair of
-   triangles marking the deepest drawdown's valley and the bar it recovered)
-   on top, drawdown below it, per-calendar-month returns at the bottom
-   (green bars for a gain, red for a loss, matching the heatmap below) --
-   plus a log/linear toggle for the equity axis. Forced liquidations are NOT
-   drawn: quick 260916-hro removed those markers from the chart, while the
-   records themselves still persist to the run's `liquidations.json`;
-5. a year-by-month heatmap of the same compounded monthly returns (03.8
-   D-04), rendered as a SECOND plotly div rather than a fourth subplot row
-   (see `_monthly_heatmap_div`), and omitted when there are no returns. It is
-   red for a loss, green for a gain and grey at zero (G-03.8-1);
-6. the notes.
-
-When the backtest window overlaps the model's effective training window, the
-in-sample range is shaded grey across the panels. The in-sample range is the
-intersection of two intervals, so it is always one contiguous band (the
-out-of-sample part may be two pieces, but it is the unshaded remainder).
-
-**The metric table names no metric.** Its rows are derived by walking whatever
-mapping the caller passes, at render time, flattening nested dicts to dotted
-paths. This is load-bearing rather than stylistic: the project is moving its
-metrics to vectorbt's own set, so the keys this table renders are going to be
-replaced wholesale. A report that listed metric names in code would raise the
-day that lands -- and because the report is written inside the staging
-directory of a run, that exception would delete the ENTIRE run directory, not
-just the report. Deriving the rows from the data, reading split values with
-`.get`, and rendering an unknown value as a dash is what keeps a future metric
-change a cosmetic event instead of a data-loss event.
-
-The module composes its own HTML document rather than calling
-`fig.write_html`, so every value interpolated into the page passes through
-`html.escape` first: a run directory name, a note or a metric name carrying
-angle brackets renders as text, never as live markup. The page title is
-rendered ONLY in the escaped `<h1>`; it is deliberately not handed to plotly's
-layout title, so no unescaped copy of it reaches the embedded JSON payload.
-
-The equity trace keeps the RAW persisted portfolio value on `y`, identical to
-`equity.zarr`'s `value`; the multiple of initial capital rides along as
-`customdata` and is surfaced by the hover template. Normalising `y` itself was
-rejected: it would break the page's correspondence with the persisted equity
-and would silently mislabel the axis whenever `init_cash` is unknown.
-
-The row-1 axis title is therefore just `value`. It used to carry a
-parenthetical announcing the hover text, but that merely described the
-`customdata` the trace already shows, so no information was lost when quick
-260916-hro dropped it -- and the rotated title got back the vertical room it
-needs.
-
-The page loads plotly.js from the CDN (`include_plotlyjs="cdn"`). That keeps
-each run directory at a few kilobytes instead of several megabytes per report;
-the cost is that viewing the page needs network access. The page contains only
-local backtest numbers, so the browser's CDN fetch reveals nothing about them.
-
-No benchmark trace is drawn: benchmark comparison is excluded this phase (D-08).
-
-A LEAF module: stdlib, pandas, xarray and plotly only, zero project-internal
-imports.
+The module knows no metric name: the table's rows are derived from whatever
+mapping it is given, and any value it cannot render becomes a dash. That is
+deliberate, because the report is written inside a run's staging directory,
+where an exception would discard the whole run rather than just the page. For
+the same reason every string that comes from the run passes through
+``html.escape`` before it reaches the page, and plotly.js is loaded from its
+CDN so a run directory stays a few kilobytes (viewing the page needs network
+access). This module imports only the standard library, pandas, xarray and
+plotly.
 """
 
 import html
@@ -83,20 +31,18 @@ from plotly.subplots import make_subplots
 
 __all__ = ["write_backtest_report"]
 
-#: Rendered in place of a value the run does not have. An em dash rather than a
-#: hyphen so it cannot be misread as the minus sign of a negative number.
+#: Shown in place of a value the run does not have. An em dash rather than a
+#: hyphen so it cannot be read as the minus sign of a negative number.
 DASH = "—"
 
-#: The metrics blocks the table shows, in column order. These are SPLIT keys
-#: (which slice of the window), never metric names: the rows inside each block
-#: are whatever that block turns out to carry.
+#: The window slices the metric table shows, in column order. These are slice
+#: keys, not metric names: the rows inside each column are whatever that slice
+#: turns out to carry.
 _BLOCKS = ("whole", "in_sample", "out_of_sample")
 
-#: Header of the fourth metric-table column (03.8 D-01). It states the
-#: ARITHMETIC rather than passing judgement: the table cannot know whether a
-#: larger number is better for a metric it has never seen, so it states the
-#: operation and lets the reader judge. That is what makes differencing ratio
-#: metrics defensible.
+#: Header of the difference column. It names the arithmetic rather than a
+#: judgement: the table cannot know whether larger is better for a metric it
+#: has never seen, so it states the operation and lets the reader decide.
 DELTA_HEADER = "out_of_sample - in_sample"
 
 _STYLE = """
@@ -132,47 +78,76 @@ def write_backtest_report(
     init_cash: float | None = None,
     drawdown_span: dict | None = None,
 ) -> None:
-    """Write the report for `value` to `path`.
+    """Write the HTML report for one backtest run to ``path``.
 
-    - `value`: portfolio value on the `timestamp` dimension. Drawn raw, so the
-      page and `equity.zarr` carry the same numbers;
-    - `path`: the `report.html` to write;
-    - `in_sample_range`: bar-label pair (first, last in-sample bar), shaded
-      when given, or None for a fully out-of-sample window. A midnight bar is
-      labelled by its ISO date and any other bar by its full ISO timestamp;
-      plotly reads both;
-    - `notes`: lines printed below the plot (e.g. what the simulation does not
-      model);
-    - `title`: page title, typically the run directory name;
-    - `summary`: ordered mapping of display label to already-formatted display
-      string, rendered as the dates-and-setup block. This module formats
-      nothing there and computes nothing: the caller decides both the labels
-      and the text, so the page can state the same strings the run's
-      `metrics.json` carries;
-    - `metrics`: the metrics mapping for ONE curve -- for a CV run that is the
-      stitched block, not the whole file. Its `whole` / `in_sample` /
-      `out_of_sample` entries become the table's columns and may be None or
-      absent; their contents are walked, never assumed. `trained_checkpoint`
-      is shown when present;
-    - `returns`: per-bar portfolio returns on `timestamp`, compounded per
-      calendar month for the bottom panel;
-    - `init_cash`: starting capital, used only to express equity as a multiple
-      in the hover text;
-    - `drawdown_span`: a mapping describing the DEEPEST drawdown, with keys
-      `valley` and `end` (bar labels), `bars` (the number of bars from the
-      valley to the end), `depth` (a negative float) and `recovered` (bool).
-      It is drawn as an up triangle at the VALLEY -- the deepest bar of that
-      drawdown -- and a down triangle at the bar it recovered, so the pair
-      spans bottom-back-to-even rather than the whole episode. The caller
-      selects the episode and measures it; this module draws the one it is
-      given and never picks one. An endpoint the equity axis does not carry,
-      or a key that is absent, drops that marker rather than raising.
+    Drawdown is ``value / running max - 1``: zero at a new high and negative
+    below it. Everything after ``title`` is optional; a section whose input
+    is missing is simply left off the page.
 
-    Every argument after `title` defaults to None, so the original
-    five-argument call form stays legal.
+    Parameters
+    ----------
+    value : xr.DataArray
+        Portfolio value on the ``timestamp`` dimension. It is drawn as
+        is, so the page and the persisted equity carry the same numbers.
+    path : str | Path
+        The ``report.html`` to write.
+    in_sample_range : tuple[str, str] | None
+        ``(first, last)`` bar labels of the in-sample part of
+        the window, shaded grey, or ``None`` for a fully out-of-sample
+        window. A midnight bar is labelled by its ISO date and any other
+        bar by its full ISO timestamp; plotly reads both.
+    notes : list[str]
+        Lines printed below the plot, such as what the simulation does
+        not model.
+    title : str
+        Page title, typically the run directory name.
+    summary : dict[str, str] | None
+        Ordered mapping of display label to already-formatted text,
+        rendered as the dates-and-setup table. Nothing is computed or
+        formatted here, so the page can state the same strings the run's
+        ``metrics.json`` carries.
+    metrics : dict | None
+        The metrics mapping of one curve, whose ``whole``,
+        ``in_sample`` and ``out_of_sample`` entries become the table's
+        columns. An entry may be absent or ``None``; the rows are derived
+        from the keys present, with nested dicts flattened to dotted
+        paths. When both slice columns exist a fourth column shows
+        ``out_of_sample - in_sample`` wherever both values are finite
+        numbers.
+    returns : xr.DataArray | None
+        Per-bar portfolio returns on ``timestamp``, compounded per
+        calendar month for the bar panel and the heatmap.
+    init_cash : float | None
+        Starting capital, used only to show equity as a multiple of
+        it in the hover text.
+    drawdown_span : dict | None
+        The deepest drawdown as a dict with ``valley`` and
+        ``end`` (bar labels), ``bars`` (bars from the valley to the end),
+        ``depth`` (a negative float) and ``recovered`` (bool). It is drawn
+        as an up triangle at the valley and a down triangle at the
+        recovery bar, so the pair spans bottom-back-to-even rather than
+        the whole episode. The caller chooses the episode; an endpoint the
+        equity axis does not carry drops that marker rather than raising.
 
-    Drawdown is `value / running max - 1`, so it is 0 at a new high and
-    negative below it.
+    Examples
+    --------
+    >>> import pandas as pd, xarray as xr
+    >>> ts = pd.bdate_range("2024-01-01", periods=5)
+    >>> value = xr.DataArray([100.0, 104.0, 98.0, 103.0, 110.0],
+    ...                      dims=("timestamp",), coords={"timestamp": ts})
+    >>> write_backtest_report(
+    ...     value,
+    ...     "report.html",
+    ...     in_sample_range=("2024-01-01", "2024-01-02"),
+    ...     notes=["No borrow cost is modelled."],
+    ...     title="demo_run",
+    ...     metrics={"whole": {"Total Return [%]": 10.0},
+    ...              "in_sample": {"Total Return [%]": 4.0},
+    ...              "out_of_sample": {"Total Return [%]": 6.0}},
+    ...     init_cash=100.0,
+    ... )
+    >>> "<h1>demo_run</h1>" in open("report.html").read()
+    True
     """
     equity = value.to_pandas()
     drawdown = equity / equity.cummax() - 1.0
@@ -218,16 +193,11 @@ def write_backtest_report(
     fig.update_yaxes(title_text="value", row=1, col=1)
     fig.update_yaxes(title_text="drawdown", tickformat=".1%", row=2, col=1)
     fig.update_yaxes(title_text="monthly return", tickformat=".1%", row=3, col=1)
-    # `height` is load-bearing, not decoration (quick 260916-hro): a y-axis
-    # title is rotated 90 degrees, so its rendered length is measured against
-    # the axis HEIGHT, not the width. With no explicit height the div falls
-    # back to plotly's 450px default; the top and bottom margins take 240 of
-    # that, and `row_heights` then leaves rows 2 and 3 at roughly 44px each --
-    # shorter than `drawdown` and `monthly return` render, which is what made
-    # the three titles collide. At 900 the plotting area is
-    # 900 - 100 - 140 = 660px, so the rows are about 328 / 140 / 140px and
-    # every title fits. A left margin would not have helped: the collision is
-    # between vertically stacked titles, not between a title and its ticks.
+    # The explicit height matters: a y-axis title is rotated, so its length is
+    # measured against the row height. At plotly's 450px default the margins
+    # leave rows 2 and 3 about 44px each, shorter than the titles "drawdown"
+    # and "monthly return", and the three titles collide. At 900px the rows
+    # are roughly 328, 140 and 140px and every title fits.
     fig.update_layout(
         height=900,
         margin={"b": 140},
@@ -248,12 +218,11 @@ def write_backtest_report(
 
 
 def _add_equity(fig, equity: pd.Series, init_cash: float | None) -> None:
-    """The equity trace: raw value on `y`, the multiple as `customdata`.
+    """Add the equity trace, with the multiple of ``init_cash`` in the hover text.
 
-    `y` stays the persisted portfolio value so the page cannot disagree with
-    `equity.zarr`. The multiple of initial capital is what makes a run that
-    compounded by orders of magnitude legible, so it rides along in
-    `customdata` and is shown on hover instead of replacing `y`.
+    ``y`` stays the persisted portfolio value so the page cannot disagree with
+    the stored equity; the multiple of initial capital, which makes a run that
+    compounded by orders of magnitude legible, rides along as ``customdata``.
     """
     if init_cash:
         multiple = equity.values / float(init_cash)
@@ -275,45 +244,25 @@ def _add_equity(fig, equity: pd.Series, init_cash: float | None) -> None:
     )
 
 
-#: The deepest drawdown's two triangles. Both ends SHARE one colour because
-#: they are the two ends of a single measurement -- the valley and the
-#: recovery of one episode -- and are told apart by shape, up versus down.
-#:
-#: The value is unchanged from when it was picked to differ from the
-#: forced-liquidation red: those markers were removed from the chart in quick
-#: 260916-hro (the records still persist to the run's `liquidations.json`), so
-#: that contrast no longer exists on the page. Kept as it was rather than
-#: re-picked, to avoid visual churn nobody asked for.
+#: Colour of both drawdown triangles. They are the two ends of one measurement
+#: (the valley and the recovery of a single episode) and are told apart by
+#: shape, up versus down, not by colour.
 SPAN_COLOUR = "#8e44ad"
 
 
 def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
-    """Triangles on the equity row at the deepest drawdown's valley and end.
+    """Add the two triangles marking the deepest drawdown to the equity row.
 
-    The caller has already chosen the episode and measured it; this draws the
-    one it is given and states its numbers in the hover text.
-
-    The pair spans VALLEY to recovery, not start to recovery: the up triangle
-    sits on the deepest bar of that drawdown and the down triangle on the bar
-    it recovered, so the distance between them is how long it took to get from
-    the bottom back to even.
-
-    `bars` is a BAR COUNT -- trading days on a daily panel. The text therefore
-    says trading days, and no calendar duration is rendered here: the time
-    axis spans more calendar days than the span lasts bars, so a reader who
-    measured the axis against a timedelta would be misled. That count is NOT
-    the metric named Max Drawdown Duration, which measures the LONGEST
-    drawdown and counts from where that drawdown began.
-
-    Every key is read with `.get`, and an endpoint the equity axis does not
-    carry drops only its own marker rather than raising: the report is the
-    last step of a run that already succeeded and is written inside that run's
-    staging directory, so an exception here would delete the ENTIRE run rather
-    than merely losing the markers.
-
-    Two traces rather than one, each with its own `name`: the ends say
-    different things -- only the end marker can report that the drawdown never
-    recovered -- and the persisted-report locks parse traces by name.
+    The caller has chosen and measured the episode; this only draws it. The
+    up triangle sits on the valley and the down triangle on the recovery bar,
+    so the distance between them is the time from the bottom back to even.
+    ``bars`` is a bar count (trading days on a daily panel) and the hover text
+    says so; no calendar duration is shown, since the time axis spans more
+    calendar days than the span lasts bars. Every key is read with ``.get``
+    and an endpoint missing from the equity axis drops only its own marker,
+    because an exception here would discard the whole run directory. The two
+    markers are separate named traces: only the end marker can say that the
+    drawdown never recovered.
     """
     if not span:
         return
@@ -366,24 +315,14 @@ def _add_drawdown_span(fig, equity: pd.Series, span) -> None:
 
 
 def _monthly_series(returns: xr.DataArray | None) -> pd.Series | None:
-    """Per-calendar-month compounded return of `returns`, indexed by period.
+    """Return the compounded return of each calendar month, indexed by period.
 
-    The single place the monthly compounding rule lives: the bar row and the
-    year-by-month heatmap both consume it, so the two panels of the same
-    numbers cannot drift apart.
-
-    Grouped by converting the index to monthly periods (`to_period` with the
-    month frequency) rather than with a resample alias: the monthly alias was
-    renamed (`M` -> `ME`) across pandas versions while `to_period` reads the
-    same in both.
-
-    The NaN drop is load-bearing: `prod()` over `1 + NaN` skips the NaN, so a
-    month holding only NaN bars would compound to a flat `0.0` -- a fabricated
-    month indistinguishable at read time from a real one. Dropping first keeps
-    such a month absent instead.
-
-    Returns None when there is nothing to compute (no returns, or none left
-    after the drop).
+    Both the monthly bar panel and the heatmap read this one series, so they
+    cannot drift apart. Months are formed with ``to_period("M")`` rather than
+    a resample alias, whose spelling changed across pandas versions. NaN bars
+    are dropped first: ``prod`` skips NaN, so a month of only NaN bars would
+    otherwise compound to a fabricated ``0.0`` instead of being absent.
+    Returns ``None`` when there is nothing to compute.
     """
     if returns is None:
         return None
@@ -395,15 +334,12 @@ def _monthly_series(returns: xr.DataArray | None) -> pd.Series | None:
 
 
 def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
-    """Per-calendar-month compounded return of `returns`, as bars.
+    """Add the per-calendar-month compounded returns as a bar row.
 
-    The numbers come from `_monthly_series`. A short window legitimately
-    produces one or two bars -- that is the point, since it shows at a glance
-    that a run's whole P&L landed in a single month.
-
-    Each bar is coloured by its sign through `_sign_colour`, from the same
-    constants the heatmap's colorscale is built from (G-03.8-1), so a month
-    reads the same colour in both panels.
+    A short window legitimately yields one or two bars; that shows at a glance
+    that a run's whole profit landed in a single month. Each bar is coloured
+    by its sign with the same constants as the heatmap, so a month reads the
+    same colour in both panels.
     """
     monthly = _monthly_series(returns)
     if monthly is None or monthly.empty:
@@ -422,30 +358,18 @@ def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
 
 
 #: The colours of a monthly return's sign, shared by the monthly bars and the
-#: year-by-month heatmap (G-03.8-1).
-#:
-#: Green means up and red means down. The user chose this Western convention
-#: on 2026-09-19; it is deliberately NOT the East-Asian red-up convention.
-#:
-#: Both panels read these constants, so the two views of the same numbers
-#: cannot disagree about colour.
-#:
-#: The midpoint is a neutral grey, not a hue: a diverging scale's centre must
-#: read as "nothing happened", and the heatmap's `zmid=0.0` pins zero to it.
-#:
-#: The two poles have matched luminance (about 0.19 each), so neither sign
-#: looks heavier. The pair passes the dataviz palette validator, including
-#: red-green colour-vision separation (deutan dE 9.4, above the 8 target).
-#: That matters because red/green is the classic colour-blind confusion pair.
-#: Sign is also carried without colour: bars point up or down, and every
-#: heatmap cell states its percentage on hover.
+#: heatmap so the two views of the same numbers cannot disagree. Green is a
+#: gain and red a loss (the Western convention). The midpoint is a neutral
+#: grey, which the heatmap pins to zero with ``zmid=0.0``. The two poles have
+#: matched luminance and stay separable under red-green colour-vision
+#: deficiency; sign is also carried without colour, by bar direction and by
+#: the hover percentage.
 GAIN_COLOUR = "#1b8a5a"
 LOSS_COLOUR = "#e03b30"
 NEUTRAL_COLOUR = "#f0efec"
 
-#: The heatmap's diverging colorscale, built from the three constants above:
-#: the most negative value is red, zero (via `zmid=0.0`) is grey, the most
-#: positive value is green.
+#: The heatmap's diverging colorscale: the most negative value is red, zero
+#: (through ``zmid=0.0``) is grey, the most positive value is green.
 RETURN_COLOURSCALE = (
     (0.0, LOSS_COLOUR),
     (0.5, NEUTRAL_COLOUR),
@@ -454,19 +378,11 @@ RETURN_COLOURSCALE = (
 
 
 def _sign_colour(value: float) -> str:
-    """The colour of one monthly return's sign: gain, loss, or neutral.
+    """Return the colour for one monthly return: gain, loss or neutral at zero.
 
-    Above 0 is `GAIN_COLOUR`, below 0 is `LOSS_COLOUR`, and exactly 0 is
-    `NEUTRAL_COLOUR`. The zero rule follows the heatmap: a month that
-    compounds to exactly 0.0 (one spent wholly in cash, say) lands on the
-    heatmap's grey midpoint under `zmid=0`, so its bar takes the same grey.
-    The bar has zero height, so the grey is invisible there, but pinning the
-    rule keeps the two panels identical by construction.
-
-    A NaN fails both comparisons and falls through to neutral rather than
-    raising. `_monthly_series` already drops NaN, so none should arrive, but
-    this module must never raise: the report is written inside the run's
-    staging directory, where an exception deletes the ENTIRE run.
+    Exactly zero takes the neutral grey so that a month spent wholly in cash
+    matches the heatmap's zero cell. A NaN fails both comparisons and falls
+    through to neutral rather than raising.
     """
     if value > 0:
         return GAIN_COLOUR
@@ -475,29 +391,21 @@ def _sign_colour(value: float) -> str:
     return NEUTRAL_COLOUR
 
 
-#: The heatmap's month columns, in calendar order. Two-digit strings so they
-#: sort and read the same way, and so plotly treats them as categories.
+#: The heatmap's month columns, as two-digit strings so they sort and read the
+#: same way and plotly treats them as categories.
 MONTH_LABELS = [f"{month:02d}" for month in range(1, 13)]
 
-#: Caption above the heatmap div. A plain string, yet still escaped on the way
-#: onto the page like every other non-plotly string (T-03.8-03-04).
+#: Caption above the heatmap. Escaped on the way onto the page like every
+#: other non-plotly string.
 HEATMAP_CAPTION = "Monthly returns by year"
 
 
 def _monthly_grid(monthly: pd.Series) -> tuple[list[int], list[list[float | None]]]:
-    """`monthly` (indexed by month periods) -> `(years, z)`, one row per year.
+    """Return ``(years, z)``: one row of twelve cells per year in ``monthly``.
 
-    `years` is the sorted set of years the series covers; `z` holds one row of
-    12 cells per year, initialised to None, so a month the run did not cover
-    stays None -- it serializes to JSON null and renders as an empty cell,
-    never as a fabricated 0.0.
-
-    `period.month` is 1-BASED, so the column index is `period.month - 1`. That
-    `- 1` is the whole correctness question here, and it needs a value-level
-    lock: an off-by-one still renders every cell, still looks like a heatmap
-    and raises nothing (except on December) -- the numbers are simply in the
-    wrong month. Rows are allocated from the series' own years, so no write
-    can land outside the grid.
+    A month the run did not cover stays ``None``, which serialises to JSON
+    null and renders as an empty cell rather than a fabricated ``0.0``.
+    ``period.month`` is 1-based, hence the ``- 1`` on the column index.
     """
     years = sorted({period.year for period in monthly.index})
     row_of = {year: row for row, year in enumerate(years)}
@@ -508,32 +416,14 @@ def _monthly_grid(monthly: pd.Series) -> tuple[list[int], list[list[float | None
 
 
 def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
-    """A year-by-month heatmap of compounded monthly returns, as its own div.
+    """Return the year-by-month returns heatmap as its own HTML fragment.
 
-    Returns an HTML fragment, or the empty string when there is nothing to
-    draw. Nothing-to-draw is an early return, never an exception, mirroring
-    the bar row: the report is written inside the run's staging directory,
-    where an exception deletes the ENTIRE run.
-
-    The numbers come from `_monthly_series`, the same helper the bar row
-    uses, so the two panels cannot disagree. The bars answer "when did the
-    P&L land" on the shared time axis; the grid answers "which months of
-    which years were good" (03.8 D-04 keeps both).
-
-    The palette is `RETURN_COLOURSCALE`: red for a loss month, green for a
-    gain month, and a neutral grey at zero, which `zmid=0.0` pins to the
-    scale's midpoint whatever the run's range.
-
-    **It is a SEPARATE figure, never a fourth subplot row.** The main figure
-    is three subplot rows with `shared_xaxes=True`; a fourth row makes plotly
-    set `matches='x4'` on the three datetime x axes, binding the equity,
-    drawdown and monthly-bar axes to this chart's CATEGORICAL month axis --
-    `shared_xaxes` is figure-wide with no per-row opt-out. It would also force
-    re-deriving the main figure's height and per-row pixel budget. Keep it
-    here.
-
-    `include_plotlyjs=False`: the main div already loads plotly.js from the
-    CDN, so this adds a few kilobytes rather than a second library copy.
+    Returns the empty string when there is nothing to draw. The numbers come
+    from ``_monthly_series``, the same helper the bar row uses. It is a
+    separate figure rather than a fourth subplot row because ``shared_xaxes``
+    is figure-wide: a fourth row would bind the three datetime axes to this
+    chart's categorical month axis. ``include_plotlyjs=False`` reuses the
+    library the main div already loads.
     """
     monthly = _monthly_series(returns)
     if monthly is None or monthly.empty:
@@ -564,12 +454,12 @@ def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
 
 
 def _axis_toggle() -> dict:
-    """Linear/log buttons for the equity axis.
+    """Return the linear/log button group for the equity axis.
 
-    Linear is the default: log is one click away, while a run that lost
-    everything has a non-positive value that renders an empty log panel. The
-    log button is what turns a curve that compounded by orders of magnitude
-    from a flat line with a final spike into a readable slope.
+    Linear is the default because a run that lost everything has a
+    non-positive value that renders an empty log panel. Log is one click away
+    and turns a curve that compounded by orders of magnitude from a flat line
+    with a final spike into a readable slope.
     """
     return {
         "type": "buttons",
@@ -592,16 +482,15 @@ def _axis_toggle() -> dict:
 
 
 def _escape(value: object) -> str:
-    """`str(value)` with every HTML-significant character escaped (T-sxx-01)."""
+    """Return ``str(value)`` with every HTML-significant character escaped."""
     return html.escape(str(value))
 
 
 def _flatten(value: dict, prefix: str = "") -> dict:
-    """A block flattened to `dotted.path -> leaf`, walking nested dicts.
+    """Flatten nested dicts into ``{"dotted.path": leaf}``.
 
-    Generic by construction: a sub-dict the code has never seen becomes rows
-    under its own name, and a block that loses one keeps rendering. Nothing
-    here knows any metric name.
+    A sub-dict becomes rows under its own name, so the table needs no
+    knowledge of any metric name.
     """
     flat: dict = {}
     for key, item in value.items():
@@ -614,12 +503,12 @@ def _flatten(value: dict, prefix: str = "") -> dict:
 
 
 def _cell(value: object) -> str:
-    """One metric value as display text; anything unrenderable becomes a dash.
+    """Render one metric value as text; anything unrenderable becomes a dash.
 
-    NaN and infinity become a dash rather than the tokens `nan` / `inf`, which
-    a reader would take for a real number. Floats are rendered with `g` so a
-    ratio and a figure in the hundreds of millions are both legible without a
-    per-metric rule.
+    NaN and infinity become a dash rather than the tokens ``nan`` / ``inf``,
+    which read like numbers. Floats use the ``g`` format so a ratio and a
+    figure in the hundreds of millions are both legible without a per-metric
+    rule.
     """
     if value is None:
         return DASH
@@ -634,25 +523,15 @@ def _cell(value: object) -> str:
 
 
 def _delta(later: object, earlier: object) -> object:
-    """`later - earlier` when both are finite real non-booleans, else None.
+    """Return ``later - earlier`` when both are finite real numbers, else ``None``.
 
-    Dispatches on TYPE and never on metric name: a rule keyed to a name would
-    be dead the day the metric set is replaced, and this table renders
-    whatever mapping arrives. The operands are the RAW objects the report
-    receives (live pandas / numpy scalars), not the JSON shape metrics.json
-    is later written in.
-
-    `bool` is tested first because it is an int subclass: `True - False == 1`
-    would render as a plausible number. `numbers.Real` rather than
-    `(int, float)` admits numpy scalars (`np.int64` is not an int) without
-    this leaf importing numpy, while still refusing `pd.Timedelta`,
-    `pd.Timestamp`, `pd.NaT`, strings and None -- every one of which either
-    raises on subtraction or yields something that is not a difference of two
-    metric values. `np.bool_` is not a `numbers.Real`, so it needs no case.
-
-    It must never raise: it runs inside the run's staging directory, where an
-    exception deletes the entire run. Returning None lets `_cell` render the
-    dash; this function never formats one itself.
+    The check is on type alone, never on a metric name. ``bool`` is rejected
+    first because it is an ``int`` subclass and ``True - False`` would render
+    as a plausible number. ``numbers.Real`` admits numpy scalars without
+    importing numpy while refusing timestamps, timedeltas, strings and
+    ``None``, each of which either raises on subtraction or yields something
+    that is not a difference of two metric values. Returning ``None`` lets
+    ``_cell`` render the dash.
     """
     for value in (later, earlier):
         if isinstance(value, bool):
@@ -665,13 +544,13 @@ def _delta(later: object, earlier: object) -> object:
 
 
 def _metrics_section(metrics: dict | None) -> str:
-    """The metric table: one column per block, rows derived from the data.
+    """Render the metric table: one column per slice, rows derived from the data.
 
-    A key missing from one block is a dash in that column; a key present in no
-    block produces no row; a block that is None becomes a full column of
-    dashes rather than being dropped, so the reader can see it exists and is
-    empty. It is an HTML table, not a plotly `go.Table`, because every trace on
-    the page must carry a `name` for the persisted-report locks to parse it.
+    A key missing from one slice is a dash in that column; a key present in no
+    slice makes no row; a slice that is ``None`` is a full column of dashes so
+    the reader sees it exists and is empty. Returns the empty string when there
+    is nothing to show. It is an HTML table rather than a plotly table so that
+    every trace on the page keeps a ``name``.
     """
     if not metrics:
         return ""
@@ -689,8 +568,8 @@ def _metrics_section(metrics: dict | None) -> str:
         for key in column:
             if key not in seen:
                 seen.append(key)
-    # Gate on membership, not truthiness: a None block is still present (as an
-    # empty column), and must give dashed deltas rather than drop the column.
+    # Gate on membership, not truthiness: a None slice is still present (as an
+    # empty column) and must give dashed deltas rather than drop the column.
     show_delta = "in_sample" in present and "out_of_sample" in present
     for key in seen:
         cells = "".join(
@@ -721,7 +600,7 @@ def _metrics_section(metrics: dict | None) -> str:
 
 
 def _summary_section(summary: dict[str, str] | None) -> str:
-    """The dates-and-setup block; empty string when the caller passed nothing."""
+    """Render the dates-and-setup table, or the empty string when there is none."""
     if not summary:
         return ""
     rows = "\n".join(
@@ -737,7 +616,7 @@ def _summary_section(summary: dict[str, str] | None) -> str:
 
 
 def _notes_section(notes: list[str] | None) -> str:
-    """The notes list; empty string when there are none."""
+    """Render the notes list, or the empty string when there are none."""
     if not notes:
         return ""
     items = "\n".join(f"    <li>{_escape(note)}</li>" for note in notes)
@@ -757,13 +636,12 @@ def _document(
     notes: list[str] | None,
     heatmap: str = "",
 ) -> str:
-    """One self-contained HTML document around the plotly `div`.
+    """Assemble the full HTML document around the plotly fragments.
 
-    `div` and `heatmap` are plotly's own fragments and are inserted verbatim
-    -- plotly owns their escaping. Everything else on the page comes from the
-    run and is escaped. The heatmap goes between the main figure and the
-    metric table (picture, picture, numbers, notes); an empty `heatmap`
-    inserts nothing, not even its caption.
+    ``div`` and ``heatmap`` are plotly's own fragments and are inserted
+    verbatim; everything else comes from the run and is escaped. The heatmap
+    sits between the main figure and the metric table, and an empty
+    ``heatmap`` inserts nothing, not even its caption.
     """
     heatmap_section = (
         f"  <h2>{_escape(HEATMAP_CAPTION)}</h2>\n{heatmap}\n" if heatmap else ""

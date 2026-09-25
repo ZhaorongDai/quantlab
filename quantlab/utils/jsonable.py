@@ -56,19 +56,27 @@ def to_jsonable(value: object) -> object:
       ``None``; ``Path`` and ``Decimal`` become ``str``; an ``Enum`` is replaced
       by its converted value; ``str``, ``int`` and ``None`` pass through.
 
-    Args:
-        value: The object to convert.
+    Parameters
+    ----------
+    value : object
+        The object to convert.
 
-    Returns:
+    Returns
+    -------
+    object
         A structure made only of dict, list, str, int, float, bool and None.
 
-    Raises:
-        ValueError: If two dict keys collide after ``str()`` coercion.
-        TypeError: If ``value`` (or any nested value) has an unsupported type.
+    Raises
+    ------
+    ValueError
+        If two dict keys collide after ``str()`` coercion.
+    TypeError
+        If ``value`` (or any nested value) has an unsupported type.
 
-    Example:
-        >>> to_jsonable({"sharpe": np.float64("nan"), "start": pd.Timestamp("2024")})
-        {'sharpe': None, 'start': '2024-01-01T00:00:00'}
+    Examples
+    --------
+    >>> to_jsonable({"sharpe": np.float64("nan"), "start": pd.Timestamp("2024")})
+    {'sharpe': None, 'start': '2024-01-01T00:00:00'}
     """
     if value is None:
         return None

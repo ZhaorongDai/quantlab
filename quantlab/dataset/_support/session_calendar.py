@@ -24,9 +24,11 @@ _TIME_PATTERN = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
 def _parse_time(value: str, name: str) -> time:
     """Parse an ``HH:MM`` or ``HH:MM:SS`` string into a ``time``.
 
-    Raises:
-        ValueError: If ``value`` is not a string of that shape or is not a
-            valid time of day; ``name`` is used in the message.
+    Raises
+    ------
+    ValueError
+        If ``value`` is not a string of that shape or is not a
+        valid time of day; ``name`` is used in the message.
     """
     if not isinstance(value, str) or not _TIME_PATTERN.match(value):
         raise ValueError(f"{name} must be 'HH:MM' or 'HH:MM:SS', got {value!r}")
@@ -64,13 +66,14 @@ class XnysSessionCalendar:
     on its own date in ``America/New_York`` before conversion, so the same ET
     window maps to different UTC instants in winter and summer.
 
-    Example:
-        >>> cal = XnysSessionCalendar("09:30", "16:00")
-        >>> cal.is_session(date(2024, 11, 29))
-        True
-        >>> bounds = cal.session_bounds([date(2024, 11, 29)])
-        >>> bounds["close"][0]  # the 13:00 ET early close, as naive UTC
-        datetime.datetime(2024, 11, 29, 18, 0)
+    Examples
+    --------
+    >>> cal = XnysSessionCalendar("09:30", "16:00")
+    >>> cal.is_session(date(2024, 11, 29))
+    True
+    >>> bounds = cal.session_bounds([date(2024, 11, 29)])
+    >>> bounds["close"][0]  # the 13:00 ET early close, as naive UTC
+    datetime.datetime(2024, 11, 29, 18, 0)
     """
 
     EXCHANGE = "XNYS"
@@ -86,13 +89,18 @@ class XnysSessionCalendar:
     def __init__(self, session_start: str = "09:30", session_end: str = "16:00"):
         """Validate and store the two ET window edges.
 
-        Args:
-            session_start: Window start as ``"HH:MM"`` or ``"HH:MM:SS"`` ET.
-            session_end: Window end in the same format.
+        Parameters
+        ----------
+        session_start : str
+            Window start as ``"HH:MM"`` or ``"HH:MM:SS"`` ET.
+        session_end : str
+            Window end in the same format.
 
-        Raises:
-            ValueError: If an edge is malformed, lies outside 04:00 to 20:00
-                ET, or ``session_start`` is not before ``session_end``.
+        Raises
+        ------
+        ValueError
+            If an edge is malformed, lies outside 04:00 to 20:00
+            ET, or ``session_start`` is not before ``session_end``.
         """
         start = _parse_time(session_start, "session_start")
         end = _parse_time(session_end, "session_end")
@@ -115,7 +123,13 @@ class XnysSessionCalendar:
 
     @property
     def calendar(self) -> xcals.ExchangeCalendar:
-        """The ``exchange_calendars`` XNYS calendar, built on first use."""
+        """The ``exchange_calendars`` XNYS calendar, built on first use.
+
+        Examples
+        --------
+        >>> cal.calendar.name, cal.calendar.first_session
+        ('XNYS', Timestamp('2003-01-02 00:00:00'))
+        """
         if self._calendar is None:
             self._calendar = xcals.get_calendar(
                 self.EXCHANGE, start=self.CALENDAR_START
@@ -125,8 +139,10 @@ class XnysSessionCalendar:
     def _label(self, day: date) -> pd.Timestamp:
         """Return ``day`` as the calendar's session label.
 
-        Raises:
-            ValueError: If ``day`` lies outside the calendar's date range.
+        Raises
+        ------
+        ValueError
+            If ``day`` lies outside the calendar's date range.
         """
         cal = self.calendar
         label = pd.Timestamp(day)
@@ -138,7 +154,15 @@ class XnysSessionCalendar:
         return label
 
     def is_session(self, day: date) -> bool:
-        """Return whether ``day`` is an XNYS trading session."""
+        """Return whether ``day`` is an XNYS trading session.
+
+        Examples
+        --------
+        >>> cal.is_session(date(2024, 11, 28))  # Thanksgiving
+        False
+        >>> cal.is_session(date(2024, 11, 29))  # the half day after it
+        True
+        """
         return bool(self.calendar.is_session(self._label(day)))
 
     def _is_regular(self, edge: time) -> bool:
@@ -162,18 +186,34 @@ class XnysSessionCalendar:
     def session_bounds(self, dates: Iterable[date]) -> pl.DataFrame:
         """Return the UTC open and close of the window for each session date.
 
-        Args:
-            dates: Session dates; duplicates are collapsed and the result is
-                sorted by date.
+        Parameters
+        ----------
+        dates : Iterable[date]
+            Session dates; duplicates are collapsed and the result is
+            sorted by date.
 
-        Returns:
+        Returns
+        -------
+        pl.DataFrame
             A frame with columns ``date`` (Date), ``open`` and ``close``
             (naive-UTC ``Datetime("ns")``). A session whose clipped window is
             empty is omitted.
 
-        Raises:
-            ValueError: If a date is not an XNYS session or lies outside the
-                calendar's range.
+        Raises
+        ------
+        ValueError
+            If a date is not an XNYS session or lies outside the
+            calendar's range.
+
+        Examples
+        --------
+        >>> bounds = cal.session_bounds([date(2024, 11, 27), date(2024, 11, 29)])
+        >>> bounds["close"].dt.hour().to_list()  # 16:00 ET, then the 13:00 close
+        [21, 18]
+        >>> XnysSessionCalendar("13:30", "16:00").session_bounds(
+        ...     [date(2024, 11, 29)]
+        ... ).height  # the window is empty after clipping, so no row
+        0
         """
         cal = self.calendar
         rows = []

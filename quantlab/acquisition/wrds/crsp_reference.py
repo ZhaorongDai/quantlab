@@ -1,43 +1,22 @@
-"""The CRSP reference PULL: six whole tables into `_reference/` (phase 03.10).
+"""Pull of the CRSP, Compustat and CCM reference tables into ``_reference/``.
 
-`quantlab/dataset/crsp/reference.py` DECLARES the six tables -- their schemas,
-their server column order, their types -- and reads them back without a
-credential. This module is the other half: it puts them on disk.
+``quantlab.dataset.crsp.reference`` declares the six reference tables (their
+schemas, server column order and types) and reads them back without a
+credential. ``CrspReferenceTables`` in this module is the other half: it
+copies each table whole through the shared WRDS session and writes one
+parquet file per table plus a ``manifest.json`` recording the CRSP vintage.
 
-**Why this is not an `Acquisition`** (RESEARCH Pattern 3). An `Acquisition`
-downloads a per-symbol time series: batches of symbols, pages inside a window,
-a watermark per symbol, a resumable page ledger. These tables have no symbol
-axis and no window -- `crsp_a_stock.stkdelists` is 29,833 rows TOTAL and is
-either present or not. Wrapping one `COPY` per table in that machinery would
-be ceremony with nothing to resume, so the pull is a plain class with one
-public method.
+This is deliberately not an ``Acquisition``. That base class downloads a
+per-symbol time series with batches, pages, watermarks and a resumable
+ledger; these tables have no symbol axis and no window, and each one is
+either present or not. The destination is ``.../wrds_crsp/_reference``, a
+sibling of the raw root, never inside it, because the dataset's raw scan
+walks every file below the raw root and a stray parquet or manifest there
+would break every conversion.
 
-**Where the files live, and why it matters.** `reference_dir` comes from
-`WrdsCrspDailyAcquisition.reference_dir_for(config)`, which is
-`.../wrds_crsp/_reference`, a SIBLING of the raw root `.../wrds_crsp/wrds`.
-Never inside it: `StockDataset._scan_raw` globs every file below the raw root
-and polars refuses a tree whose file extensions disagree, so one `.parquet` --
-or the `manifest.json` -- dropped in there breaks every conversion, including
-the ones that never asked for the reference tier. Nothing in this module
-writes anywhere but `reference_dir`.
-
-**`stkdelists` is EVENT DATA ONLY** (D-10/D-19). It is pulled and stored raw,
-and nothing here derives, merges or nets anything out of it. CRSP's CIZ daily
-table already puts the delisting return on its own daily row
-(`dlydelflg='Y'`), so chaining `delret` on top of `dlyret` would apply the
-delisting loss twice -- a survivorship error in the flattering direction,
-which is the kind that does not look wrong in a backtest.
-
-**Safety, in the order the code performs it.** Every table is COUNTED before
-it is copied and refused above `MAX_REFERENCE_ROWS` (T-03.10-14: the pull is
-whole-table, so the count is the only thing between a renamed table and an
-unbounded download); its COPY must return exactly that many rows; each file
-is written to a temp file in the destination directory and `os.replace`d into
-place; and the manifest is written LAST, so an interrupted pull never
-publishes a manifest naming a table it did not finish (T-03.10-12). Every
-value reaching SQL travels as `sql.Literal` and every identifier as
-`sql.Identifier` (T-03.10-13), which is also what quotes `comp.idxcst_his`'s
-reserved `from` column for free (Pitfall 8).
+``stkdelists`` is stored as event data only: the CIZ daily table already puts
+the delisting return on its own daily row, so nothing here chains ``delret``
+onto ``dlyret``, which would apply the delisting loss twice.
 """
 
 from __future__ import annotations
@@ -62,55 +41,95 @@ from quantlab.utils.atomic import write_json_atomically
 
 
 class CrspReferenceTables:
-    """Pull the CRSP / Compustat / CCM reference tables into one directory.
+    """Pull the CRSP, Compustat and CCM reference tables into one directory.
 
-    Holds the ONE shared `WrdsSession` it was handed (D-20: a second
-    connection can push a second Duo prompt) and the destination directory.
-    Nothing else: the vintage, the universes and the refresh policy are
-    arguments to `pull`, so one instance can answer for several vintages and a
-    caller never has to rebuild it to change its mind.
+    An instance holds only the shared ``WrdsSession`` and the destination
+    directory; the vintage, the universes and the refresh policy are
+    arguments to ``pull``, so one instance can serve several vintages.
+
+    Safety, in the order the code performs it: every table is counted before
+    it is copied and refused above ``MAX_REFERENCE_ROWS`` (the pull is
+    whole-table, so the count is the only thing between a renamed table and
+    an unbounded download); the COPY must return exactly that many rows;
+    each file is written to a temporary file in the destination directory
+    and renamed into place; and the manifest is written last, so an
+    interrupted pull never publishes a manifest naming a table it did not
+    finish. Every value reaching SQL travels as ``sql.Literal`` and every
+    identifier as ``sql.Identifier``.
+
+    Examples
+    --------
+    Needs a live ``WrdsSession``; the reference directory comes from
+    ``WrdsCrspDailyAcquisition.reference_dir_for(cfg)``.
+
+    >>> tables = CrspReferenceTables(WrdsSession.shared(), reference_dir)
+    >>> manifest = tables.pull(product_end="2025-12-31", include_sp500=True)
+    >>> sorted(manifest)
+    ['product_end', 'pulled_at', 'tables']
+    >>> sorted(manifest["tables"])
+    ['dsp500list_v2', 'stkdelists', 'stkdistributions', 'stksecurityinfohist']
     """
 
     #: Refuse any single reference table larger than this. Generous against
-    #: the live sizes (the biggest, `stkdistributions`, is ~1.1M rows) and
-    #: still small enough that a table which became something else -- a view
-    #: over the daily panel, say -- stops the run instead of streaming.
+    #: the live sizes (the biggest, ``stkdistributions``, is about 1.1M rows)
+    #: and still small enough that a table which became something else, such
+    #: as a view over the daily panel, stops the run instead of streaming.
     MAX_REFERENCE_ROWS = 5_000_000
 
     #: Always pulled: the symbology source and the two event tables.
     STOCK_TABLES = ("stksecurityinfohist", "stkdelists", "stkdistributions")
 
-    #: CRSP's own S&P 500 membership, by PERMNO (D-05).
+    #: CRSP's own S&P 500 membership, by PERMNO.
     SP500_TABLES = ("dsp500list_v2",)
 
-    #: Compustat index membership and the CRSP/Compustat link (D-14), in this
-    #: ORDER: the CCM pull asks only for the gvkeys `idxcst_his` returned, so
-    #: it cannot run first.
+    #: Compustat index membership and the CRSP/Compustat link, in this order:
+    #: the CCM pull asks only for the gvkeys ``idxcst_his`` returned, so it
+    #: cannot run first.
     NASDAQ100_TABLES = ("idxcst_his", "ccmxpf_lnkhist")
 
-    #: `comp.idx_index`'s gvkeyx for "Nasdaq 100" (live check L8/NDX-QQQ).
+    #: ``comp.idx_index``'s gvkeyx for the Nasdaq 100.
     NDX_GVKEYX = "000208"
 
     def __init__(self, session, reference_dir) -> None:
+        """Bind the shared session and the destination directory."""
         self.session = session
         self.reference_dir = Path(reference_dir)
 
     # -- paths and the manifest ---------------------------------------------
 
     def path_for(self, name: str) -> Path:
+        """Return the parquet path for the reference table ``name``.
+
+        Examples
+        --------
+        >>> tables.path_for("stkdelists").name
+        stkdelists.parquet
+        """
         return self.reference_dir / f"{name}.parquet"
 
     @property
     def manifest_path(self) -> Path:
+        """Return the ``manifest.json`` path inside the reference directory.
+
+        Examples
+        --------
+        >>> tables.manifest_path.name
+        manifest.json
+        """
         return self.reference_dir / MANIFEST_NAME
 
     def read_manifest(self) -> dict | None:
-        """The manifest on disk, or `None` if there is none.
+        """Return the manifest on disk, or ``None`` if there is none.
 
         A manifest that cannot be parsed is treated as absent rather than
         raised on: the only thing it can make the caller do is pull again,
         which is the safe direction, and refusing to pull because a sidecar
         is corrupt would leave the tier unrepairable except by hand.
+
+        Examples
+        --------
+        >>> tables.read_manifest() is None
+        True
         """
         import json
 
@@ -130,7 +149,13 @@ class CrspReferenceTables:
     def requested_tables(
         self, *, include_sp500: bool, include_nasdaq100: bool
     ) -> tuple[str, ...]:
-        """The table names this pull covers, in pull order."""
+        """Return the table names a pull covers, in pull order.
+
+        Examples
+        --------
+        >>> tables.requested_tables(include_sp500=True, include_nasdaq100=False)
+        ('stksecurityinfohist', 'stkdelists', 'stkdistributions', 'dsp500list_v2')
+        """
         names = list(self.STOCK_TABLES)
         if include_sp500:
             names.extend(self.SP500_TABLES)
@@ -150,15 +175,45 @@ class CrspReferenceTables:
     ) -> dict:
         """Pull the requested reference tables for one CRSP vintage.
 
-        Returns the manifest (the dict written to `manifest.json`).
+        The vintage check comes first, before entitlement and before any
+        count: if the manifest on disk already covers every requested table
+        for this ``product_end``, nothing is queried and the existing
+        manifest is returned. A different ``product_end`` is a different
+        tier, because CRSP revises history at the annual refresh, so every
+        requested table is pulled again rather than mixed with files from the
+        previous vintage. Entitlement is checked over exactly the requested
+        tables' schemas, so an S&P-only pull never asks whether the account
+        can read ``comp``.
 
-        The vintage SKIP comes first, before entitlement and before any
-        count: a complete tier for this `product_end` is already the answer,
-        and every probe is a round trip on the single shared session. A
-        different `product_end` is a different tier -- CRSP revises history at
-        the annual refresh -- so the table map starts empty and every
-        requested table is pulled again rather than being mixed with files
-        from the previous vintage.
+        Parameters
+        ----------
+        product_end
+            The CRSP product's last day (ISO string or date),
+            as probed by ``CrspQueries.product_end``.
+        include_sp500 : bool
+            Also pull ``dsp500list_v2``.
+        include_nasdaq100 : bool
+            Also pull ``idxcst_his`` and
+            ``ccmxpf_lnkhist``, which need the Compustat and CCM
+            subscriptions.
+        refresh : bool
+            Re-pull tables that are already on disk for this
+            vintage.
+
+        Returns
+        -------
+        dict
+            The manifest written to ``manifest.json``: ``product_end``,
+            ``pulled_at`` and a ``tables`` map of ``{schema, table, rows,
+            where}`` entries.
+
+        Examples
+        --------
+        >>> manifest = tables.pull(product_end="2025-12-31")
+        >>> manifest["tables"]["stkdelists"]["schema"]
+        crsp_a_stock
+        >>> tables.pull(product_end="2025-12-31") == manifest
+        True
         """
         product_end = _as_date(product_end)
         requested = self.requested_tables(
@@ -191,10 +246,8 @@ class CrspReferenceTables:
             )
             return existing  # type: ignore[return-value]
 
-        # Entitlement over exactly the REQUESTED tables' schemas, so an
-        # S&P-only pull never asks whether this account can read `comp` --
-        # a question whose answer would be "no" for most CRSP subscriptions
-        # and which nothing in that pull needs (D-03/D-14).
+        # Entitlement over exactly the requested tables' schemas, so an
+        # S&P-only pull never asks whether this account can read `comp`.
         CrspQueries.assert_entitled(self.session, _schemas_of(specs))
 
         gvkeys: list[str] | None = None
@@ -218,16 +271,15 @@ class CrspReferenceTables:
             "pulled_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "tables": entries,
         }
-        # LAST, and atomically: a manifest published before the final COPY
-        # would name a table that is not on disk, and every reader trusts it
-        # for exactly that.
+        # Last, and atomically: a manifest published before the final COPY
+        # would name a table that is not on disk.
         write_json_atomically(self.manifest_path, manifest, indent=2, sort_keys=True)
         return manifest
 
     # -- one table ----------------------------------------------------------
 
     def _pull_table(self, spec: ReferenceTableSpec, where) -> pl.DataFrame:
-        """Count, refuse-or-copy, check the shape, cast. No file I/O."""
+        """Count, refuse or copy, check the shape, and cast; no file I/O."""
         rows = CrspQueries.count(self.session, spec.schema, spec.table, where)
         if rows > self.MAX_REFERENCE_ROWS:
             raise ValueError(
@@ -259,19 +311,16 @@ class CrspReferenceTables:
         return spec.cast(frame)
 
     def _where_for(self, spec: ReferenceTableSpec, gvkeys):
-        """`(sql WHERE or None, human-readable description or None)`.
+        """Return ``(sql WHERE or None, description or None)`` for one table.
 
-        Four of the six tables are pulled WHOLE and have no WHERE at all. The
-        two Compustat-side ones are predicated, and both predicates are built
-        with `psycopg2.sql` only: the index id is a `sql.Literal`, the gvkeys
-        are a `sql.Literal` LIST (server-returned values going back into a
-        query, T-03.10-13), and every column name is a `sql.Identifier` --
-        which is also what quotes `idxcst_his`'s reserved `from` (Pitfall 8).
-
-        The description is what the manifest records. Deliberately NOT the
-        rendered statement: rendering `sql.Composed` needs a live connection's
-        quoting context, and the manifest is read by `CrspReference` on
-        machines with no driver at all.
+        Four of the six tables are pulled whole and have no WHERE. The two
+        Compustat-side tables are predicated, with the index id as a
+        ``sql.Literal``, the gvkeys as a ``sql.Literal`` list and every
+        column name as a ``sql.Identifier``, which also quotes
+        ``idxcst_his``'s reserved ``from`` column. The description is what
+        the manifest records; it is deliberately not the rendered statement,
+        because rendering a composable needs a live connection and the
+        manifest is read on machines with no driver at all.
         """
         if spec.name == "idxcst_his":
             where = sql.SQL("{column} = {value}").format(
@@ -291,13 +340,13 @@ class CrspReferenceTables:
         return None, None
 
     def _write_parquet_atomically(self, frame: pl.DataFrame, path: Path) -> None:
-        """Write `frame` to `path` via a temp file in the SAME directory.
+        """Write ``frame`` to ``path`` through a temp file in the same directory.
 
-        Same idiom, and the same reason, as `utils/atomic.py`: the temp file
-        must share a filesystem with the destination for `os.replace` to be an
-        atomic rename rather than an interruptible copy. On any failure the
-        temp file is removed, so a crashed pull leaves neither a half-written
-        table nor a `.tmp` beside the good ones.
+        The temp file must share a filesystem with the destination for
+        ``os.replace`` to be an atomic rename rather than an interruptible
+        copy. On any failure the temp file is removed, so a crashed pull
+        leaves neither a half-written table nor a ``.tmp`` beside the good
+        ones.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = tempfile.NamedTemporaryFile(
@@ -314,16 +363,16 @@ class CrspReferenceTables:
             Path(handle.name).unlink(missing_ok=True)
             raise
 
-    # -- Nasdaq-100 (plan 03.10-04 Task 2) ----------------------------------
+    # -- Nasdaq-100 ---------------------------------------------------------
 
     def _gvkeys_of(self, frame: pl.DataFrame) -> list[str]:
-        """The membership's distinct gvkeys, sorted; empty is a FAILURE.
+        """Return the membership's distinct gvkeys, sorted; empty is an error.
 
-        An empty set would make the CCM predicate `= ANY(ARRAY[])`, which
+        An empty set would make the CCM predicate ``= ANY(ARRAY[])``, which
         matches nothing, and the pull would quietly write two empty tables.
-        That surfaces much later as a Nasdaq-100 universe with no members --
-        indistinguishable from a roster that legitimately selected nothing,
-        and by then the vintage manifest says the tier is complete.
+        That would surface much later as a Nasdaq-100 universe with no
+        members, indistinguishable from a roster that legitimately selected
+        nothing, with the manifest saying the tier is complete.
         """
         gvkeys = sorted(
             {
@@ -343,13 +392,13 @@ class CrspReferenceTables:
         return gvkeys
 
     def _gvkeys_on_disk(self) -> list[str]:
-        """The gvkeys of an `idxcst_his` already pulled in a previous run.
+        """Return the gvkeys of an ``idxcst_his`` pulled in a previous run.
 
-        Reached only in the incremental case -- a vintage whose membership
-        table is on disk but whose CCM table is not, e.g. a pull that was
-        interrupted between the two, or one that gained `include_nasdaq100`
-        after the fact. Re-reading the parquet is cheaper and more honest than
-        re-COPYing a table this vintage already has.
+        Reached only in the incremental case: a vintage whose membership
+        table is on disk but whose CCM table is not, for example a pull that
+        was interrupted between the two or one that gained
+        ``include_nasdaq100`` after the fact. Re-reading the parquet is
+        cheaper than re-copying a table this vintage already has.
         """
         path = self.path_for("idxcst_his")
         if not path.exists():
@@ -363,7 +412,7 @@ class CrspReferenceTables:
 
 
 def _schemas_of(specs) -> tuple[str, ...]:
-    """The specs' schemas, de-duplicated, in first-seen order."""
+    """Return the specs' schemas, de-duplicated, in first-seen order."""
     seen: list[str] = []
     for spec in specs:
         if spec.schema not in seen:
@@ -372,6 +421,7 @@ def _schemas_of(specs) -> tuple[str, ...]:
 
 
 def _as_date(value) -> date:
+    """Coerce a ``datetime``, ``date`` or ISO string to a ``date``."""
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
