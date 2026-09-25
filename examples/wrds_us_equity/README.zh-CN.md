@@ -8,7 +8,7 @@
 2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，存为 Zarr。
 3. **标签**：`Return`，即 t+1 开盘到 t+1+`horizon` 开盘的收益，只在成分股行上计算。
 4. **模型训练**：`xgb`（`XGBoostRegressor`）、`xgb_td`（`XGBTDRegressor`）或 `realmlp`（`RealMLPRegressor`），单次训练或 walk-forward 交叉验证。
-5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合。
+5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 ETF 基准对比（S&P 500 用 SPY，Nasdaq-100 用 QQQ）。
 
 不使用命令行参数，所有设置都在 `pipeline.py` 顶部的 `Settings` dataclass 里。
 
@@ -25,6 +25,13 @@ uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
 # 需要 Compustat 和 CCM 权限）
 uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 \
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
+
+# 基准。QQQ 会直接转换成自己的仓库；SPY（PERMNO 84398）只需下载，
+# pipeline 首次使用时会把它转换到单独的仓库。
+uv run python scripts/ingest_wrds_crsp.py --qqq \
+    --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
+uv run python scripts/ingest_wrds_crsp.py --permnos 84398 \
+    --start-date 2010-01-01 --end-date 2024-12-31
 ```
 
 每条命令在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<universe>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<universe>_membership.zarr`（每日的 `is_member`），其中 `<universe>` 为 `sp500` 或 `nasdaq100`。pipeline 从同一个数据根目录读取两者（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或 `Settings.data_root`）。
@@ -55,6 +62,7 @@ p.main(s)
 | --- | --- | --- |
 | `universe` | `"sp500"` | `"sp500"` 或 `"nasdaq100"`；决定读取哪组输入仓库、成分股面板和输出目录 |
 | `wandb_mode` | `"online"` | `"online"`、`"offline"` 或 `"disabled"` |
+| `benchmark` | `"auto"` | 买入持有基准：`"auto"`（sp500 用 SPY，nasdaq100 用 QQQ）、`"spy"`、`"qqq"` 或 `None` |
 | `model` | `"xgb"` | `"xgb"`、`"xgb_td"` 或 `"realmlp"` |
 | `hyperparameters` | `{}` | 覆盖 `DEFAULT_HYPERPARAMETERS[model]`；键名是各模型自己的（`xgb.train` 参数，或 pytabkit 构造参数） |
 | `early_stopping`、`early_stopping_patience`、`val_size` | `True`、`50`、`0.2` | 在训练窗口末尾 `val_size` 比例上早停；patience 对 xgb/xgb_td 是 boosting 轮数，对 realmlp 是 epoch |
@@ -81,7 +89,16 @@ backtests/<model>/...         权重、净值、metrics.json、report.html
 ## Weights & Biases 记录的内容
 
 - **训练**：每次 `train()` 一个 run；CV 时每折一个 run，外加一个记录各折均值的 `<Model>_cv_summary` run，项目名取自 trial 目录。内容包括完整配置和最终生效的超参数，train/val/test 指标（MSE、RMSE、MAE、R²、IC、RankIC），以及各模型特有的内容：`xgb` 的逐轮 `train-`/`val-` 曲线和特征重要性，`xgb_td` 的最优轮数，`realmlp` 的停止 epoch。
-- **回测**：在 `USEquityCrossectionSelectStockVectorBt_backtest` 项目下一个 run，以运行目录命名：带数据指纹的回测配置、全区间/样本内/样本外指标（写入 summary），以及 HTML 报告。
+- **回测**：在 `USEquityCrossectionSelectStockVectorBt_backtest` 项目下一个 run，以运行目录命名：带数据指纹的回测配置、全区间/样本内/样本外指标（写入 summary；有基准时还有 `benchmark/...` 和 `relative/...`），以及 HTML 报告。
+
+## 基准对比
+
+启用基准时（默认启用），回测会用同样的 `init_cash`、手续费、滑点和"下一根 bar 开盘成交"的规则买入并持有 ETF，所以两条净值曲线可以逐 bar 对比。每个 ETF 放在自己的单标的仓库里（`wrds_crsp_spy_1d.zarr`、`wrds_crsp_qqq_1d.zarr`），不会进入股票面板，否则它会和自己的成分股一起参与排序。`metrics.json` 会多出两个指标块，各自按全区间/样本内/样本外拆分：
+
+- `benchmark`：ETF 自身的收益统计。
+- `relative`：组合相对 ETF 的表现：`excess_return`（相对净值 − 1）、`excess_return_annualized`、`excess_max_drawdown`、`tracking_error`、`information_ratio`、`beta`、`correlation`、`capm_alpha`、`win_rate_vs_benchmark`。
+
+`report.html` 会在组合净值旁画出基准净值，并增加超额收益和超额回撤两行；`use_cv=True` 时，拼接曲线和每一折都会与基准对比。pipeline 的日志行会打印核心数字。设置 `benchmark=None` 可跳过对比。
 
 回测的运行目录可以用 `quantlab.utils.module.load_backtester_from_config` 重建并重跑，见 [docs/zh-CN/backtest.md](../../docs/zh-CN/backtest.md)。
 
