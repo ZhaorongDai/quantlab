@@ -163,6 +163,9 @@ class NbboDatasetConfig(DatasetConfig):
 #: passes to ``permnos`` when they want the ETF in some other window.
 QQQ_PERMNO: str = "86755"
 
+#: PERMNO of the SPY ETF (SPDR S&P 500 ETF Trust), the S&P 500 benchmark.
+SPY_PERMNO: str = "84398"
+
 
 @dataclass(kw_only=True)
 class CrspDatasetConfig(DatasetConfig):
@@ -236,6 +239,60 @@ class CrspDatasetConfig(DatasetConfig):
     roster_universe: str | None = None
 
     @classmethod
+    def etf_benchmark(
+        cls,
+        *,
+        permno: str,
+        zarr_file_path: str,
+        raw_data_dir_path: str,
+        reference_dir: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> "CrspDatasetConfig":
+        """Return the config of a store holding only one benchmark ETF.
+
+        The general form of ``qqq_benchmark``: ``permnos=(permno,)`` selects
+        the ETF alone and ``security_filter="none"`` keeps it, because an ETF
+        is a fund, which the default filter drops. Use ``SPY_PERMNO`` for the
+        S&P 500 and ``QQQ_PERMNO`` for the Nasdaq-100.
+
+        Parameters
+        ----------
+        permno : str
+            The ETF's CRSP PERMNO.
+        zarr_file_path : str
+            Path of the benchmark's own Zarr store.
+        raw_data_dir_path : str
+            Root of the CRSP raw download tree.
+        reference_dir : str
+            Directory of the CRSP reference tables.
+        start_date : str | None
+            First date to keep, inclusive.
+        end_date : str | None
+            Last date to keep, inclusive.
+
+        Examples
+        --------
+        >>> cfg = CrspDatasetConfig.etf_benchmark(
+        ...     permno=SPY_PERMNO,
+        ...     zarr_file_path="/data/us_equity/1d/spy.zarr",
+        ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
+        ...     reference_dir="/data/reference/crsp",
+        ... )
+        >>> cfg.permnos, cfg.security_filter
+        (('84398',), 'none')
+        """
+        return cls(
+            zarr_file_path=zarr_file_path,
+            raw_data_dir_path=raw_data_dir_path,
+            reference_dir=reference_dir,
+            start_date=start_date,
+            end_date=end_date,
+            permnos=(str(permno),),
+            security_filter="none",
+        )
+
+    @classmethod
     def qqq_benchmark(
         cls,
         *,
@@ -282,14 +339,13 @@ class CrspDatasetConfig(DatasetConfig):
         >>> cfg.permnos, cfg.security_filter
         (('86755',), 'none')
         """
-        return cls(
+        return cls.etf_benchmark(
+            permno=QQQ_PERMNO,
             zarr_file_path=zarr_file_path,
             raw_data_dir_path=raw_data_dir_path,
             reference_dir=reference_dir,
             start_date=start_date,
             end_date=end_date,
-            permnos=(QQQ_PERMNO,),
-            security_filter="none",
         )
 
 

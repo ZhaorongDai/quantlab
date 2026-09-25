@@ -25,9 +25,11 @@ stores (a chunked on-disk array format that ``xarray`` reads):
 - the equity panel ``wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr``, with JSON
   sidecar files describing the price adjustment, the security filter and
   the ticker mapping;
-- the QQQ benchmark ``wrds_crsp_qqq_1d.zarr`` when ``--qqq`` is given, kept
-  in its own store because an ETF ranked against its own holdings would be
-  the index competing with itself;
+- a benchmark ETF store ``wrds_crsp_{spy|qqq}_1d.zarr`` when ``--qqq`` or
+  ``--benchmark`` is given (``--benchmark`` picks the ETF tracking
+  ``--universe``: SPY for ``crsp_sp500``, QQQ for ``comp_nasdaq100``), kept in
+  its own store because an ETF ranked against its own holdings would be the
+  index competing with itself;
 - the membership panel ``wrds_crsp_{sp500|nasdaq100}_membership.zarr`` when
   ``--universe`` is given, which marks the days each security was a member.
 
@@ -67,6 +69,11 @@ Usage::
     # The QQQ benchmark, in its own store.
     uv run python scripts/ingest_wrds_crsp.py --qqq \\
         --start-date 1999-01-01 --end-date 2025-12-31 --to-zarr
+
+    # An index roster plus its own benchmark ETF (SPY for crsp_sp500, QQQ
+    # for comp_nasdaq100), each in its own store.
+    uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \\
+        --benchmark --start-date 2000-01-01 --end-date 2025-12-31 --to-zarr
 """
 
 import argparse
@@ -76,6 +83,7 @@ from dataclasses import replace
 from quantlab.registry import DataSourceRegistry, convert, run
 from quantlab.base.config import (
     QQQ_PERMNO,
+    SPY_PERMNO,
     ConstituentDatasetConfig,
     CrspDatasetConfig,
 )
@@ -132,8 +140,14 @@ CONSTITUENT_CLASSES: dict[str, type] = {
 #: as ``custom``: it is not an index, whatever its members happen to be.
 STORE_TEMPLATE = "wrds_crsp_{name}_1d.zarr"
 
-#: The QQQ benchmark's own store.
-QQQ_STORE = "wrds_crsp_qqq_1d.zarr"
+#: A benchmark ETF's own store, named after the ETF.
+BENCHMARK_STORE_TEMPLATE = "wrds_crsp_{name}_1d.zarr"
+
+#: The ETF ``--benchmark`` pulls for each universe, as ``(name, PERMNO)``.
+UNIVERSE_BENCHMARKS: dict[str, tuple[str, str]] = {
+    CrspMembership.SP500: ("spy", SPY_PERMNO),
+    CrspMembership.NASDAQ100: ("qqq", QQQ_PERMNO),
+}
 
 #: The universe membership mask's store.
 MEMBERSHIP_TEMPLATE = "wrds_crsp_{name}_membership.zarr"
@@ -182,6 +196,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"write it to its own benchmark store. It is never a column of "
             f"the equity panel, because an ETF ranked against its own "
             f"holdings would be the index competing with itself."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help=(
+            f"Also pull the ETF that tracks --universe (SPY, PERMNO "
+            f"{SPY_PERMNO}, for crsp_sp500; QQQ, PERMNO {QQQ_PERMNO}, for "
+            f"comp_nasdaq100) and, with --to-zarr, write it to its own "
+            f"benchmark store wrds_crsp_{{spy|qqq}}_1d.zarr. Requires "
+            f"--universe."
         ),
     )
     add_window_args(parser)
@@ -256,6 +281,11 @@ def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
     tuple[str, ...]
         The explicit ``--permnos`` roster, possibly empty.
     """
+    if args.benchmark and not args.universe:
+        parser.error(
+            "--benchmark pulls the ETF that tracks --universe, so it needs "
+            "--universe; use --qqq or --permnos for an ETF on its own."
+        )
     if not (args.universe or args.permnos or args.qqq):
         parser.error(
             "Nothing to pull: pass at least one of --universe, --permnos or "
@@ -407,8 +437,15 @@ if __name__ == "__main__":
             except (RuntimeError, ValueError) as exc:
                 parser.exit(1, f"{exc}\n")
         roster.extend(explicit_permnos)
+        # Benchmark ETFs, by store name. Each gets its own store and never
+        # becomes a column of the equity panel.
+        benchmarks: dict[str, str] = {}
         if args.qqq:
-            roster.append(QQQ_PERMNO)
+            benchmarks["qqq"] = QQQ_PERMNO
+        if args.benchmark:
+            name, permno = UNIVERSE_BENCHMARKS[args.universe]
+            benchmarks[name] = permno
+        roster.extend(benchmarks.values())
         # Sort numerically, not as text ("14593" < "7000" as strings), so the
         # batch boundaries stay the same across runs of the same command.
         roster = [str(value) for value in sorted({int(p) for p in roster})]
@@ -457,15 +494,14 @@ if __name__ == "__main__":
             data_dir = get_data_root() / "data" / "us_equity" / "1d"
             short_name = UNIVERSE_SHORT_NAMES.get(args.universe, "custom")
 
-            # Exclude QQQ by roster, not only by the security filter, because
-            # `--security-filter none` would otherwise let it into the panel.
+            # Exclude the benchmark ETFs by roster, not only by the security
+            # filter, because `--security-filter none` would otherwise let them
+            # into the panel.
             equity_permnos = tuple(
-                permno
-                for permno in roster
-                if not (args.qqq and permno == QQQ_PERMNO)
+                permno for permno in roster if permno not in benchmarks.values()
             )
             # With `--qqq` alone there is no equity to convert. Skip it, and
-            # say so, rather than write a `custom` store holding only QQQ.
+            # say so, rather than write a `custom` store holding only the ETF.
             if equity_permnos:
                 ds_config = CrspDatasetConfig(
                     zarr_file_path=str(
@@ -504,27 +540,34 @@ if __name__ == "__main__":
             else:
                 print(
                     f"Skipping the equity conversion: the roster holds no "
-                    f"equity PERMNO -- all {len(roster)} of it is the QQQ "
-                    f"benchmark (PERMNO {QQQ_PERMNO}), which gets its own "
-                    f"store and is never an equity column. No "
+                    f"equity PERMNO -- all {len(roster)} of it is benchmark "
+                    f"ETFs (PERMNO {', '.join(benchmarks.values())}), which "
+                    f"get their own stores and are never equity columns. No "
                     f"'{STORE_TEMPLATE.format(name=short_name)}' is read or "
-                    f"written. The QQQ store and the universe membership panel "
-                    f"still run below; they are independent outputs."
+                    f"written. The benchmark stores and the universe "
+                    f"membership panel still run below; they are independent "
+                    f"outputs."
                 )
 
-            if args.qqq:
-                qqq_config = CrspDatasetConfig.qqq_benchmark(
-                    zarr_file_path=str(data_dir / QQQ_STORE),
+            for name, permno in benchmarks.items():
+                benchmark_config = CrspDatasetConfig.etf_benchmark(
+                    permno=permno,
+                    zarr_file_path=str(
+                        data_dir / BENCHMARK_STORE_TEMPLATE.format(name=name)
+                    ),
                     raw_data_dir_path=acq_config.raw_data_dir_path,
                     reference_dir=str(reference_dir),
                     start_date=window["start_date"],
                     end_date=window["end_date"],
                 )
-                print("Converting the QQQ benchmark into its own store")
+                print(
+                    f"Converting the {name.upper()} benchmark (PERMNO "
+                    f"{permno}) into its own store"
+                )
                 print_conversion_result(
                     convert(
                         SOURCE,
-                        qqq_config,
+                        benchmark_config,
                         data_type="crsp_daily",
                         granularity=args.chunk,
                         on_new_listing=args.on_new_listing,
