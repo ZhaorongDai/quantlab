@@ -158,10 +158,9 @@ threads (the default is 128). Pinning `factor_names` keeps the compiled graph
 small, and the full Alpha158 set compiles noticeably more slowly. Without the
 pin, `factor_names` resolves to all 169 names as soon as the object is built.
 
-`Alpha101Stock` currently fails in `cal()`, because it does not supply the
-`amount` (dollar volume) input the Alpha101 library requires and the US-equity
-stores carry no such column. Use `Alpha158Stock` for US equities until this is
-fixed.
+The US-equity stores carry no dollar-volume (`amount`) column, so
+`Alpha101Stock` and `Alpha158Stock` both use the adjusted typical price
+`(adjHigh + adjLow + adjClose) / 3` as VWAP.
 
 `ResidualMomentumFF3` expects a monthly panel that already carries each
 stock's return and the Fama-French market, size and value factors
