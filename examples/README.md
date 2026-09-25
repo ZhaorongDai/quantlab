@@ -20,12 +20,12 @@ uv run python examples/quickstart.py
 
 | Script | What it shows | Guide |
 |--------|---------------|-------|
-| [`wrds_us_equity/pipeline.py`](wrds_us_equity/pipeline.py) | The full pipeline on CRSP daily data for the point-in-time S&P 500: Alpha101 + Alpha158 factors, a forward-return label, an `xgb`, `xgb_td` or `realmlp` model (single split or walk-forward), and a TopN backtest. Needs a WRDS account and a converted CRSP store; settings are a dataclass at the top of the script | [README](wrds_us_equity/README.md), [WRDS](../docs/wrds_crsp.md) |
+| [`wrds_us_equity/pipeline.py`](wrds_us_equity/pipeline.py) | The full pipeline on CRSP daily data for the point-in-time S&P 500 or Nasdaq-100: Alpha101 + Alpha158 factors, a forward-return label, an `xgb`, `xgb_td` or `realmlp` model (single split or walk-forward), a TopN backtest, and Weights & Biases logging. Needs a WRDS account and a converted CRSP store; settings are a dataclass at the top of the script | [README](wrds_us_equity/README.md), [WRDS](../docs/wrds_crsp.md) |
 
 The prices are random walks, sometimes with a small planted effect so the model has something
 to find. The numbers the scripts print show what the output looks like; they say nothing about
 real markets.
 
-The examples switch Weights & Biases off by setting `WANDB_MODE=disabled` before anything is
-imported. On macOS they also set `OMP_NUM_THREADS=1`, because PyTorch and XGBoost ship
+The offline examples switch Weights & Biases off by setting `WANDB_MODE=disabled` before anything is
+imported; the WRDS pipeline logs to it by default (`wandb_mode` in its settings). On macOS they also set `OMP_NUM_THREADS=1`, because PyTorch and XGBoost ship
 conflicting OpenMP runtimes.
