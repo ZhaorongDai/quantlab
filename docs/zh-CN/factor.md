@@ -167,7 +167,9 @@ array([nan, nan, nan], dtype=float32)
 
 ### 沿时间或跨标的做标准化
 
-`quantlab.my_ops.preprocess` 提供两个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`；`Alpha101Stock` 和 `Alpha158Stock` 输出原始值，把截面标准化留给使用方。“扩展”一节中的 KunQuant 因子同时用了两个算子。
+`quantlab.my_ops.preprocess` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`；`Alpha101Stock` 和 `Alpha158Stock` 输出原始值，把截面标准化留给使用方。“扩展”一节中的 KunQuant 因子同时用了两个算子。
+
+该模块还有两个截面去极值算子。`CrossSectionalWinsorize(v, lower=0.01, upper=0.99)`（缩尾）在每个时间点把取值截到该时点所有标的的 `lower` 和 `upper` 分位数之间；`CrossSectionalTrim(v, lower=0.01, upper=0.99)`（截尾）把严格落在这两个分位数之外的值设为 NaN。分位数忽略 NaN，并按线性插值计算，与 `np.nanquantile` 一致。常见用法是 `CrossSectionalZScore(CrossSectionalWinsorize(v))`，避免少数极端标的主导均值和标准差。KunQuant 0.1.11 没有内置这两个算子：它的 `Clip` 按固定常数截断，`WindowedQuantile` 是沿时间方向的。
 
 ### 已有的因子
 
@@ -300,7 +302,7 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 
 `FactorKunQuant.cal()` 每次调用都会重新编译计算图。把 `factor_names` 固定为需要的列可以让计算图保持较小。
 
-`CrossSectionalZScore` 在某个时间点有效值少于两个或没有离散度时输出 NaN。批量运行必须从第 0 根 bar 开始，`cal()` 总是这样做。
+`CrossSectionalZScore` 在某个时间点有效值少于两个或没有离散度时输出 NaN。批量运行必须从第 0 根 bar 开始，`cal()` 总是这样做。`CrossSectionalWinsorize` 和 `CrossSectionalTrim` 同样要求从第 0 根 bar 开始。每组不同的 `(lower, upper)` 会编译出各自的 C++ 函数，所以构造得到的对象属于一个生成的子类，例如 `CrossSectionalWinsorize_0p01_0p99`；`isinstance(op, CrossSectionalWinsorize)` 仍然成立。
 
 ## 另请参阅
 
