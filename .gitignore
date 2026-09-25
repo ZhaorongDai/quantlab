@@ -245,3 +245,7 @@ test_nt.ipynb
 cal.py
 backtests
 output
+.planning/
+Untitled*.ipynb
+factor_test.py
+output.txt
