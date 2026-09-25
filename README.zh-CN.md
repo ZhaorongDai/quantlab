@@ -2,35 +2,44 @@
 
 [English](README.md) | 简体中文
 
-quantlab 是一个由配置驱动的量化股票研究后端，覆盖从原始行情数据到因子、收益预测、目标持仓权重和回测的完整流程。
+quantlab 是一个用于量化股票研究的 Python 后端。它用五个步骤把原始行情数据变成一个经过回测的交易策略：
+下载价格数据，整理成干净的面板，计算因子和标签，训练预测未来收益的模型，再对这些预测所对应的投资组合做回测。
+每一步都由一个小的配置对象驱动，所以任何一次运行都可以保存、重建并完全复现。
 
-- **文档：** [docs/zh-CN/README.md](docs/zh-CN/README.md)
+- **文档（英文）：** [docs/README.md](docs/README.md)
+- **示例：** [examples/](examples/README.md)
 - **源代码：** https://github.com/ZhaorongDai/quantlab2
-- **参与贡献：** 见[欢迎贡献](#欢迎贡献)
 - **问题反馈：** https://github.com/ZhaorongDai/quantlab2/issues
-
-它提供：
-
-- 全流程统一的数据格式：以 `(timestamp, symbol)` 为索引的 `xarray.Dataset`，以 Zarr 落盘，因子和模型不会经过
-  DataFrame
-- 支持断点续传的 Tiingo、Alpaca 和 WRDS（CRSP 日频股票、TAQ 报价）下载器，并带有体量护栏，过大的请求会在发出之前被拒绝
-- 没有幸存者偏差的股票池：时点指数成分和全市场名册
-- 两个因子后端：KunQuant（批量与流式）和 Polars（批量）
-- 深度学习与树模型共用一套接口，支持滚动交叉验证
-- 基于 vectorbt 的向量化回测，样本内外分开报告，每次运行的目录都可以重建并重新运行
-
-quantlab 是研究后端，没有网页前端，也没有下单路由引擎。
+- **参与贡献：** [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ```text
- 数据源   ->  数据集   ->  因子 / 标签  ->  模型     ->  回测
- (Tiingo,    (原始文件    (KunQuant 或     (torch 或    (目标权重,
-  Alpaca,     转成面板)     Polars)         xgboost)     vectorbt, 报告)
-  WRDS)
+ 数据源     ->  数据集      ->  因子与标签    ->  模型       ->  回测
+ Tiingo,        原始文件         KunQuant 或       XGBoost,       目标权重,
+ Alpaca,        转成面板         Polars            PyTorch,       vectorbt,
+ WRDS                                              pytabkit       HTML 报告
 ```
+
+## 它能做什么
+
+各个步骤之间只用一种数据格式交换数据：一个 `xarray.Dataset`，其中每个变量都排列在 `timestamp`（时间）
+和 `symbol`（标的）两个维度上。我们把这样的数据集称为*面板*。面板以 Zarr 格式存盘，模型直接在面板上训练，
+步骤之间不需要来回转换成 DataFrame。
+
+数据来自 Tiingo、Alpaca 和 WRDS（CRSP 日频股票数据和 TAQ 报价数据）。下载可以中断后继续，
+而且在请求发出之前会先检查数据量，过大的请求会被直接拒绝。为了避免*幸存者偏差*（只用今天仍然存在的公司做测试所导致的偏差），
+quantlab 可以根据历史上的指数成分、以及包含已退市股票的全市场名单来构建股票池。
+
+因子可以用 [KunQuant](https://github.com/Menooker/KunQuant) 计算，它把因子公式编译成本地代码，
+既能对整段历史批量计算，也能逐根 K 线流式计算；也可以用 Polars 做快速的批量实验。树模型和神经网络共用同一套接口，
+并内置滚动（walk-forward）交叉验证。回测基于 [vectorbt](https://vectorbt.dev/)，样本内和样本外的结果分开报告，
+每次回测都会写出一个运行目录，之后可以据此重建并重新运行。
+
+quantlab 是一个研究后端，没有网页前端，也不会向券商发送订单。
 
 ## 安装
 
-quantlab 需要 Python 3.13 或更高版本，并使用 [uv](https://docs.astral.sh/uv/) 管理环境。
+quantlab 需要 Python 3.13 或更高版本、[uv](https://docs.astral.sh/uv/) 以及一个 C++ 编译器
+（KunQuant 在运行时编译因子代码）。
 
 ```bash
 git clone https://github.com/ZhaorongDai/quantlab2.git
@@ -38,108 +47,62 @@ cd quantlab2
 uv sync
 ```
 
-深度学习模型在有 CUDA GPU 时使用 GPU，否则回退到 CPU。在 macOS 上，如果同一进程同时导入
-PyTorch 和 XGBoost，需要设置 `OMP_NUM_THREADS=1`，因为两个库自带的 OpenMP 运行时会冲突。
+神经网络模型在有 CUDA GPU 时使用 GPU，否则使用 CPU。GPU 和 macOS 的注意事项见
+[安装指南](docs/getting-started/installation.md)。
 
-## 快速开始
+## 快速上手
 
-下面的例子可以离线运行。它先列出 quantlab 已知的数据源，再构造一个很小的价格面板，并通过数据集对象读回。
+了解完整流程最快的方法是运行端到端示例。它会生成一个合成的价格面板，计算因子，训练一个 XGBoost 模型，
+做回测，并根据保存的配置重建这次运行。它不需要联网，也不需要任何凭证，在笔记本电脑上大约半分钟跑完。
 
-```python
-import tempfile
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
-import xarray as xr
-
-from quantlab.base.config import DatasetConfig
-from quantlab.dataset.stock import StockDataset
-from quantlab.registry import DataSourceRegistry, credential_status
-
-for source in DataSourceRegistry.all():
-    print(source.vendor, credential_status(source))
-
-root = Path(tempfile.mkdtemp())
-timestamps = pd.date_range("2024-01-01", periods=5, freq="B")
-symbols = ["AAPL", "MSFT", "NVDA"]
-close = 100 + np.random.default_rng(0).normal(size=(5, 3)).cumsum(axis=0)
-xr.Dataset(
-    {"adjClose": (("timestamp", "symbol"), close)},
-    coords={"timestamp": timestamps, "symbol": symbols},
-).to_zarr(root / "prices.zarr", mode="w")
-
-dataset = StockDataset(
-    DatasetConfig(
-        zarr_file_path=str(root / "prices.zarr"),
-        raw_data_dir_path=str(root / "raw"),
-        catalog_path=str(root / "catalog"),
-        market="us_equity",
-        frequency="1d",
-        start_date="2024-01-01",
-        end_date="2024-01-31",
-    )
-)
-print(dataset.read().get_xarray_dataset())
+```bash
+uv run python examples/quickstart.py
 ```
 
-输出：
+[快速上手指南](docs/getting-started/quickstart.md)（英文）会一步一步讲解这个示例。
+英文版 [README](README.md) 中还有一段更短的代码，演示数据源登记表和面板格式这两个基础概念。
 
-```text
-alpaca {'APCA_API_KEY_ID': False, 'APCA_API_SECRET_KEY': False}
-tiingo {'TIINGO_API_KEY': False}
-wrds {'WRDS_USERNAME': False}
-<xarray.Dataset> Size: 208B
-Dimensions:    (timestamp: 5, symbol: 3)
-Coordinates:
-  * timestamp  (timestamp) datetime64[ns] 40B 2024-01-01 ... 2024-01-05
-  * symbol     (symbol) <U4 48B 'AAPL' 'MSFT' 'NVDA'
-Data variables:
-    adjClose   (timestamp, symbol) float64 120B ...
-```
+## 凭证
 
-`False` 表示该数据源所需的凭证没有在当前环境中设置。[用户指南](docs/zh-CN/README.md)
-从这里接着讲下载数据、构建因子、训练模型和运行回测。
-
-## 数据源与凭证
-
-quantlab 的所有凭证都只从环境变量读取。不接受命令行传入，也不会写进配置文件或日志。
+quantlab 只从环境变量中读取凭证。凭证从不通过命令行传入，也从不写进配置文件或日志。
 
 | 变量 | 用途 |
 |------|------|
-| `TIINGO_API_KEY` | Tiingo 美股日线数据 |
-| `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | Alpaca 行情数据（K 线、报价、逐笔成交） |
-| `WRDS_USERNAME` | WRDS（CRSP、TAQ）。密码来自 `~/.pgpass` 文件。 |
-| `WANDB_API_KEY` | 模型训练时的 Weights & Biases 日志（可选） |
-| `QUANTLAB_DATA_DIR` | 下载数据与转换结果的根目录（可选） |
+| `TIINGO_API_KEY` | Tiingo 美股日终价格 |
+| `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | Alpaca 的 K 线、报价和成交数据 |
+| `WRDS_USERNAME` | WRDS（CRSP 和 TAQ）；密码从 `~/.pgpass` 读取 |
+| `WANDB_API_KEY` | 可选，训练时的 Weights & Biases 日志 |
+| `QUANTLAB_DATA_DIR` | 可选，下载数据和转换后数据的根目录 |
 
-数据根目录按以下顺序确定：下载脚本的 `--data-dir` 参数，其次是 `QUANTLAB_DATA_DIR`，最后是仓库根目录下的
-`data/`。在根目录之下，转换后的 Zarr 存储位于 `data/<market>/<frequency>/`，原始下载位于
-`downloads/<market>/<frequency>/`。
+下载脚本位于 `scripts/`，每个脚本都可以用 `--help` 查看选项，例如
+`uv run python scripts/ingest_tiingo.py --help`。文件写到哪里、下载中断后如何继续，见
+[数据源指南](docs/user-guide/data-sources.md)。
 
-`scripts/` 中的脚本负责下载与转换数据。每个脚本都可以用 `--help` 查看参数。
+## 文档
 
-```bash
-uv run python scripts/ingest_tiingo.py --help
-```
+[文档](docs/README.md)目前只有英文版，分为三部分：*入门*介绍安装和快速上手；*用户指南*为流水线的每个步骤各写一页，
+包括数据源、WRDS、数据集、股票池、因子、模型和回测；*开发者指南*说明如何添加自己的数据源、数据集、存储后端、因子、
+模型或回测规则，并解释让长时间任务可以安全中断的内部机制。
+
+每个公开的类和函数都有 [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) 格式的文档字符串，
+可以在 Python 中用 `help()` 查看。
 
 ## 测试
 
-测试套件不需要网络，也不需要凭证。
+测试套件完全离线运行，不需要任何凭证：
 
 ```bash
 uv run pytest
 ```
 
-`tests/test_crsp_rebuild_measurements.py` 会重建真实的 CRSP 存储，因此在 `QUANTLAB_DATA_ROOT` 没有指向
-真实存储时会报错并给出说明。可以加 `--ignore=tests/test_crsp_rebuild_measurements.py` 跳过它。KunQuant
-因子测试需要编译 C++，耗时几分钟。
+KunQuant 因子测试需要编译 C++，要花几分钟。`tests/test_crsp_rebuild_measurements.py` 需要一个真实的 CRSP 数据目录，
+除非 `QUANTLAB_DATA_ROOT` 指向这样的目录，否则会失败并给出说明；加上
+`--ignore=tests/test_crsp_rebuild_measurements.py` 可以跳过它。
 
-## 状态
+## 项目状态
 
-quantlab 仍在积极开发中，接口可能变化。基于 NautilusTrader 的事件驱动回测、服务层和网页前端尚未实现。
+quantlab 仍在积极开发中，接口可能还会变化。基于 NautilusTrader 的事件驱动回测、服务层和网页前端已在计划中，但尚未实现。
 
-## 欢迎贡献
+## 参与贡献
 
-欢迎提交 issue 和 pull request。提交前请先运行 `uv run pytest`，并让 docstring 保持代码库统一的 numpydoc 格式：
-一行摘要，必要时补充 `Parameters`、`Returns`、`Raises`，再加一个简短的 `Examples` 小节。
+欢迎提交问题报告、提问和拉取请求。提交拉取请求之前，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
