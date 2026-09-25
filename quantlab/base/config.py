@@ -255,8 +255,8 @@ class CrspDatasetConfig(DatasetConfig):
         ETF alone, and ``security_filter="none"`` is required because QQQ is a
         fund, which the default filter drops.
 
-        This store is data only; ``BacktestConfig.benchmark_dataset`` does not
-        yet consume it.
+        Pass a dataset over this store as ``BacktestConfig.benchmark_dataset``
+        to compare a backtest against QQQ.
 
         Parameters
         ----------
@@ -757,8 +757,13 @@ class BacktestConfig:
     #: Starting cash of the simulated portfolio.
     init_cash: float = 1_000_000.0
 
-    #: Reserved for a benchmark price series; supplying one currently raises
-    #: ``NotImplementedError`` in the backtester's config setter.
+    #: A market dataset holding exactly one symbol, for example the QQQ store
+    #: built by ``CrspDatasetConfig.qqq_benchmark``. It is a
+    #: ``(timestamp, symbol)`` panel like ``price_dataset`` and needs the same
+    #: fill and valuation columns. When set, every run also simulates buying
+    #: and holding it on the strategy's bars and reports the portfolio
+    #: against it (``benchmark`` and ``relative`` metric blocks, the
+    #: benchmark NAV and the excess-return and excess-drawdown charts).
     benchmark_dataset: "MarketDataset | None" = None
 
     #: Log the run to Weights & Biases.

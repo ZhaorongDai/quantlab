@@ -14,7 +14,7 @@ What this file locks:
   weights is refused before vectorbt runs (Pitfall 3), and a symbol that lists
   late trades normally;
 - the market spec (D-04), construction-time score-label validation (D-11),
-  the deferred benchmark hook (D-08), and that a sibling engine subclass needs
+  the buy-and-hold benchmark hook, and that a sibling engine subclass needs
   no change to ``BaseBacktester`` (D-01);
 - the single position-level trade vocabulary (phase 03.8, D-02): the trade
   metrics of the ``whole`` block are proved to be vectorbt's positions view by
@@ -598,8 +598,8 @@ def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Task 3: market spec (D-04), construction check (D-11), benchmark deferral
-# (D-08) and sibling extensibility (D-01)
+# Task 3: market spec (D-04), construction check (D-11), the benchmark slot
+# and sibling extensibility (D-01)
 # --------------------------------------------------------------------------
 
 
@@ -666,12 +666,15 @@ def test_unknown_score_label_fails_at_construction_before_training(tmp_path):
     assert not list(Path(config.model.config.model_save_dir).rglob("*.joblib"))
 
 
-def test_benchmark_dataset_is_refused_naming_d08(tmp_path):
-    """D-08: benchmark comparison is deferred; a non-None slot is refused by name."""
-    benchmark = make_stock_dataset(write_price_store(tmp_path / "benchmark", n_bars=40))
+def test_benchmark_dataset_must_be_a_market_dataset(tmp_path):
+    """The benchmark slot takes a MarketDataset; anything else is refused by type."""
+    with pytest.raises(TypeError, match="benchmark_dataset must be a MarketDataset"):
+        _backtester(tmp_path, benchmark_dataset="QQQ")
 
-    with pytest.raises(NotImplementedError, match="benchmark comparison is not supported"):
-        _backtester(tmp_path, benchmark_dataset=benchmark)
+    benchmark = make_stock_dataset(
+        write_price_store(tmp_path / "benchmark", symbols=["QQQ"], n_bars=40)
+    )
+    assert _backtester(tmp_path, benchmark_dataset=benchmark).config.benchmark_dataset is benchmark
 
 
 def test_engine_stats_carry_no_benchmark_metric_and_warn_nothing(tmp_path, recwarn):
@@ -694,16 +697,22 @@ def test_engine_stats_carry_no_benchmark_metric_and_warn_nothing(tmp_path, recwa
     assert benchmark_warnings == []
 
 
-def test_simulate_benchmark_returns_none(tmp_path):
-    """D-08: the engine's benchmark hook stays in place and returns None this phase."""
-    backtester = _backtester(tmp_path)
+def test_simulate_benchmark_buys_at_the_second_bar_open_and_holds(tmp_path):
+    """The benchmark follows the strategy's fill delay: all-in at bar 1's open, held."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    timestamps = _timestamps(6)
+    fill = np.array([[10.0], [11.0], [12.0], [9.0], [13.0], [14.0]])
+    valuation = np.array([[10.5], [11.5], [12.5], [9.5], [13.5], [14.5]])
 
-    assert (
-        backtester._simulate_benchmark(
-            backtester.config.start_date, backtester.config.end_date
-        )
-        is None
+    result = backtester._simulate_benchmark(
+        _panel(fill, valuation, timestamps, ["QQQ"])
     )
+
+    init_cash = backtester.config.init_cash
+    expected = np.concatenate(([init_cash], init_cash / 11.0 * valuation[1:, 0]))
+    np.testing.assert_allclose(result.value.values, expected, rtol=1e-12)
+    assert result.orders.sizes["order"] == 1
+    assert pd.Timestamp(result.orders["timestamp"].values[0]) == timestamps[1]
 
 
 class EqualWeightEveryone(VectorBtBacktester):
