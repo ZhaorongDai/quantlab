@@ -71,7 +71,6 @@ A `TimeChunkPlanner` splits the timestamps that actually occur in the raw data i
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
 ...     zarr_file_path=str(root / "data/us_all.zarr"),
-...     catalog_path=str(root / "catalog"),
 ...     market="us_equity",
 ...     frequency="1d",
 ...     vendor="tiingo",

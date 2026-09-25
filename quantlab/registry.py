@@ -746,7 +746,6 @@ def convert(
         dataset_config = DatasetConfig(
             raw_data_dir_path="data/us_equity/1d/nasdaq_data/tiingo",
             zarr_file_path="data/us_equity/1d/tiingo_1d.zarr",
-            catalog_path="data/catalog",
             market="us_equity", frequency="1d", vendor="tiingo",
             start_date="2024-01-01", end_date="2024-05-31",
         )
@@ -758,7 +757,7 @@ def convert(
 
     >>> tick_config = DatasetConfig(
     ...     raw_data_dir_path="data/alpaca", zarr_file_path="data/out.zarr",
-    ...     catalog_path="data/catalog", market="us_equity",
+    ...     market="us_equity",
     ...     frequency="tick", vendor="alpaca",
     ...     start_date="2024-01-01", end_date="2024-01-31",
     ... )

@@ -84,7 +84,6 @@ from quantlab.dataset.stock import StockDataset
 dataset_config = DatasetConfig(
     zarr_file_path=str(root / "data" / "stock.zarr"),
     raw_data_dir_path=str(root / "downloads" / "tiingo"),
-    catalog_path=str(root / "catalog"),
     market="us_equity",
     frequency="1d",
     vendor="tiingo",
@@ -98,9 +97,8 @@ print("Price panel:", dict(panel.sizes), "variables:", list(panel.data_vars))
 Price panel: {'timestamp': 400, 'symbol': 16} variables: ['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'close', 'high', 'low', 'open', 'volume']
 ```
 
-`raw_data_dir_path` and `catalog_path` point at directories that do not exist: they are only
-used when converting raw downloads and exporting to NautilusTrader, and the Zarr store already
-exists. `dataclasses.replace` hands the dataset a copy of the config. That matters because
+`raw_data_dir_path` points at a directory that does not exist: it is only used when
+converting raw downloads, and the Zarr store already exists. `dataclasses.replace` hands the dataset a copy of the config. That matters because
 objects in quantlab take ownership of their config and adjust it in place; the next step
 relies on each factor having its own dataset.
 

@@ -2,11 +2,8 @@
 
 ``get_instrument_info`` turns Binance's ``exchangeInfo`` response into the flat
 per-symbol dictionary stored under ``instruments`` in the packaged
-``instruments.yaml``. The Nautilus Trader helpers read that dictionary when
-building a ``CurrencyPair`` (Nautilus's description of a tradable pair with
-its tick size, lot size and limits). It is used both by the instrument
-refresh CLI and as a fallback when a symbol is missing from the packaged
-file.
+``instruments.yaml``: each pair's tick size, lot size and limits. It is used
+by the instrument refresh CLI.
 """
 
 from typing import Any, Dict

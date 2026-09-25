@@ -2,43 +2,21 @@
 
 ``SpotKlineDataset`` reads the monthly, header-less CSV files that Binance
 publishes for spot markets, stacks them into one panel per configured date
-range, and exposes the KunQuant and Nautilus exits of ``MarketDataset``. It is
+range, and exposes the KunQuant exit of ``MarketDataset``. It is
 the crypto counterpart of ``quantlab/dataset/stock.py``.
 """
 
-from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 import xarray as xr
-from joblib import Parallel, delayed
-from nautilus_trader.model.currencies import (
-    BTC,
-    USDT,
-)
-from nautilus_trader.model.data import Bar, BarType
-from nautilus_trader.model.identifiers import (
-    InstrumentId,
-    Symbol,
-    Venue,
-)
-from nautilus_trader.model.instruments import CurrencyPair
-from nautilus_trader.model.objects import Money, Price, Quantity
-from nautilus_trader.persistence.wranglers import BarDataWrangler
-from tqdm import tqdm
 
 from quantlab.base.config import DatasetConfig
 from quantlab.base.data import MarketDataset
 from quantlab.dataset._support.cleaning import dedup_raw_frame, flag_anomalies, validate_schema
 from quantlab.enums.data import BinanceCSVHeaders
 from quantlab.utils.file import file_date_filter, get_csv_files
-from quantlab.utils.nautilus import (
-    generate_bar_type_str,
-    get_crypto_currency,
-    get_crypto_currency_pair,
-    parse_symbol_currencies,
-)
 from quantlab.utils.timer import Timer
 
 
@@ -56,7 +34,6 @@ class SpotKlineDataset(MarketDataset):
     >>> config = DatasetConfig(
     ...     raw_data_dir_path="downloads/crypto_spot/1d/klines",
     ...     zarr_file_path="data/crypto_spot/1d/spot.zarr",
-    ...     catalog_path="data/crypto_spot/catalog",
     ...     market="crypto_spot",
     ...     frequency="1d",
     ... )
@@ -214,107 +191,3 @@ class SpotKlineDataset(MarketDataset):
                     data[col].to_numpy().astype(np.float32)
                 )  # [time, symbol]
             return input_dict, symbols, timestamp
-
-    @staticmethod
-    def _get_instrument(symbol: str, venue: str):
-        """Build the Nautilus ``CurrencyPair`` for a symbol such as ``BTCUSDT``."""
-        base_symbol, quote_symbol = parse_symbol_currencies(symbol)
-        base_currency = get_crypto_currency(symbol=base_symbol)
-        quote_currency = get_crypto_currency(symbol=quote_symbol)
-
-        currency_pair = get_crypto_currency_pair(
-            symbol=symbol,
-            base=base_currency,
-            quote=quote_currency,
-            venue=venue,
-        )
-        return currency_pair
-
-    def _xr_to_bars(
-        self, data: xr.Dataset, symbol: str, venue: str = "BINANCE"
-    ):
-        """Convert one symbol's column of the panel to Nautilus ``Bar`` objects.
-
-        Rows with any NaN are dropped first. Any failure is printed and an
-        empty list is returned, so one bad symbol does not abort the parallel
-        conversion.
-
-        Parameters
-        ----------
-        data : xr.Dataset
-            The full ``(timestamp, symbol)`` panel.
-        symbol : str
-            Trading pair to convert, e.g. ``BTCUSDT``.
-        venue : str
-            Venue name used in the bar type.
-
-        Returns
-        -------
-        list
-            The list of bars for ``symbol``, or ``[]`` on failure.
-        """
-        try:
-            d = data.sel(symbol=symbol)
-
-            currency_pair = self._get_instrument(symbol=symbol, venue=venue)
-            bar_type_str = generate_bar_type_str(
-                time_interval=self.time_interval, symbol=symbol, venue=venue
-            )
-            bar_type = BarType.from_str(bar_type_str)
-
-            wrangler = BarDataWrangler(
-                instrument=currency_pair, bar_type=bar_type
-            )
-
-            df = d.to_dataframe().dropna().reset_index()
-            df = df.rename(
-                {
-                    "Close": "close",
-                    "Open": "open",
-                    "High": "high",
-                    "Low": "low",
-                    "Volume": "volume",
-                },
-                axis=1,
-            )
-
-            required_columns = [
-                "timestamp",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-            ]
-            df = df[required_columns].set_index("timestamp")
-
-            if df.empty:
-                raise ValueError(f"No data found for symbol {symbol}")
-
-            return wrangler.process(df)
-
-        except Exception as e:
-            print(f"Error processing symbol {symbol}: {e}")
-            return []
-
-    def _to_nautilus(
-        self, data: xr.Dataset, venue: str = "BINANCE", n_jobs: int = 16
-    ) -> tuple[list[list[Bar]], list[InstrumentId]]:
-        """Convert every symbol to Nautilus bars in parallel.
-
-        Returns
-        -------
-        tuple[list[list[Bar]], list[InstrumentId]]
-            ``(bars, instruments)``: one list of bars per symbol, in the
-            order of ``self.symbols``, and the matching currency pairs.
-        """
-        symbols = self.symbols
-        instruments = [
-            self._get_instrument(symbol=symbol, venue=venue)
-            for symbol in symbols
-        ]
-        res: list = Parallel(n_jobs=n_jobs)(  # type: ignore
-            delayed(self._xr_to_bars)(data, symbol, venue)
-            for symbol in tqdm(symbols, desc="To nautilus bar")
-        )
-        return res, instruments

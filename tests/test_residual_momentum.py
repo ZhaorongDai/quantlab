@@ -41,7 +41,6 @@ def _monthly_dataset(tmp_path: Path, *, periods: int = 60, symbols: int = 7):
     config = DatasetConfig(
         zarr_file_path=str(store),
         raw_data_dir_path=str(tmp_path / "raw"),
-        catalog_path=str(tmp_path / "catalog"),
         market="us_equity",
         frequency="1d",
         start_date=str(timestamps[0].date()),

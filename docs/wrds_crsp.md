@@ -65,7 +65,6 @@ A `CrspDatasetConfig` names the raw tier, the reference tier and the store. The 
 >>> config = CrspDatasetConfig(
 ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",
 ...     raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
-...     catalog_path="data/data/catalog",
 ...     reference_dir="data/downloads/us_equity/1d/wrds_crsp/_reference",
 ...     start_date="2020-08-03",
 ...     end_date="2020-08-31",
@@ -250,7 +249,6 @@ An ETF ranked against the stocks it holds would compete with itself, so the benc
 >>> etf = CrspDatasetConfig.qqq_benchmark(
 ...     zarr_file_path="data/qqq.zarr",
 ...     raw_data_dir_path=config.raw_data_dir_path,
-...     catalog_path=config.catalog_path,
 ...     reference_dir=config.reference_dir,
 ...     start_date="2020-08-03", end_date="2020-08-31")
 >>> etf.permnos, etf.security_filter

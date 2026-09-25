@@ -430,12 +430,10 @@ if __name__ == "__main__":
 
         if args.to_zarr:
             data_dir = get_data_root() / "data" / "us_equity" / "1d"
-            catalog_path = str(get_data_root() / "data" / "catalog")
 
             ds_config = CrspDatasetConfig(
                 zarr_file_path=str(data_dir / STORE),
                 raw_data_dir_path=acq_config.raw_data_dir_path,
-                catalog_path=catalog_path,
                 reference_dir=str(reference_dir),
                 start_date=window["start_date"],
                 end_date=window["end_date"],

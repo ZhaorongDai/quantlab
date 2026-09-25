@@ -465,7 +465,6 @@ def test_binance_data_dir_alone_roots_every_path(monkeypatch, tmp_path) -> None:
 
     assert cfg.raw_data_dir_path.startswith(str(tmp_path))
     assert cfg.zarr_file_path.startswith(str(tmp_path))
-    assert cfg.catalog_path.startswith(str(tmp_path))
 
 
 def test_binance_raw_data_dir_composes_with_data_dir(monkeypatch, tmp_path) -> None:

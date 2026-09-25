@@ -287,7 +287,6 @@ def make_configs(root: Path, symbols=("AAPL", "MSFT", "NVDA")):
     dataset = DatasetConfig(
         raw_data_dir_path=acquisition.raw_data_dir_path,
         zarr_file_path=str(root / "demo_1d.zarr"),
-        catalog_path=str(root / "catalog"),
         market="us_equity", frequency="1d", vendor="demo",
         start_date="2024-01-02", end_date="2024-01-05",
     )
@@ -332,7 +331,7 @@ For WRDS the same call raises `RuntimeError: WRDS_USERNAME environment variable 
 ```python
 >>> from quantlab.base.config import DatasetConfig
 >>> tick_cfg = DatasetConfig(raw_data_dir_path="data/alpaca", zarr_file_path="data/out.zarr",
-...     catalog_path="data/catalog", market="us_equity", frequency="tick", vendor="alpaca",
+...     market="us_equity", frequency="tick", vendor="alpaca",
 ...     start_date="2024-01-01", end_date="2024-01-31")
 >>> convert(alpaca, tick_cfg, data_type="quotes")
 Traceback (most recent call last):

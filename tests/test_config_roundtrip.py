@@ -136,6 +136,19 @@ def test_market_dataset_round_trips(
     assert _normalized(rebuilt.get_config()) == saved
 
 
+def test_market_dataset_loads_a_config_saved_with_catalog_path(
+    stock_zarr: Callable[..., DatasetConfig],
+) -> None:
+    """A `config.json` written before `catalog_path` was removed still loads."""
+    saved = _normalized(StockDataset(stock_zarr()).get_config())
+    old = {**saved, "catalog_path": "/data/catalog"}
+
+    rebuilt = module_utils.load_dataset_from_config(old)
+
+    assert _normalized(rebuilt.get_config()) == saved
+    assert "catalog_path" in old
+
+
 def test_constituent_dataset_round_trips(tmp_path: Path) -> None:
     """Offline: constructing the panel dataset performs no fetch; only
     `from_raw_data()` would reach the network, and nothing here calls it."""

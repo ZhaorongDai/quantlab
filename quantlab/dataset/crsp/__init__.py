@@ -283,7 +283,6 @@ class CrspStockDataset(StockDataset):
     >>> config = CrspDatasetConfig(
     ...     zarr_file_path="/data/crsp.zarr",
     ...     raw_data_dir_path="/data/downloads/us_equity/1d/wrds_crsp/wrds",
-    ...     catalog_path="/data/catalog",
     ...     reference_dir="/data/downloads/us_equity/1d/wrds_crsp/_reference",
     ...     start_date="2008-01-01",
     ...     end_date="2020-12-31",

@@ -40,7 +40,6 @@ ds_cfg = DatasetConfig(
     # start_date='2016-01-01',
     # end_date='2024-01-01',
     raw_data_dir_path='',
-    catalog_path='',
     market='us_equity',
     frequency='1d',
 )

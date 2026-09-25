@@ -57,7 +57,7 @@
 ...     panel.to_zarr(store, mode="w")
 ...     return DatasetConfig(
 ...         raw_data_dir_path=os.path.join(root, "raw"), zarr_file_path=store,
-...         catalog_path=os.path.join(root, "catalog"), market="us_equity", frequency="1d",
+...         market="us_equity", frequency="1d",
 ...     )
 >>> class RankClose(FactorKunQuant):
 ...     def _get_factor_names(self):

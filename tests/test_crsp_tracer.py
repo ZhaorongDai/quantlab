@@ -144,7 +144,6 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     dataset_config = CrspDatasetConfig(
         zarr_file_path=str(tmp_path / "crsp.zarr"),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(reference_dir),
         start_date="2020-08-01",
         end_date="2020-08-31",
@@ -418,7 +417,6 @@ def _convert_to_panel(
     dataset_config = CrspDatasetConfig(
         zarr_file_path=str(tmp_path / store),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(reference_dir),
         start_date=start,
         end_date=end,

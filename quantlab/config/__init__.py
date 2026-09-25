@@ -178,7 +178,6 @@ def spot_kline_config(
         zarr_file_path=str(
             _market_data_root(market, frequency) / "klines.zarr"
         ),
-        catalog_path=str(get_data_root() / "data" / "catalog"),
         market=market,
         frequency=frequency,
         start_date=start_date,
@@ -251,7 +250,6 @@ def stock_kline_config(
             _market_downloads_root(market, frequency) / subdir / vendor
         ),
         zarr_file_path=str(_market_data_root(market, frequency) / store_name),
-        catalog_path=str(get_data_root() / "data" / "catalog"),
         market=market,
         frequency=frequency,
         vendor=vendor,
