@@ -1,11 +1,18 @@
-"""Point-in-time universe masking of a market panel.
+"""Restrict a market panel to an index's point-in-time membership.
 
-Holds ``UniverseMask``, which aligns a boolean ``is_member`` panel from a
-constituent dataset against a market-data panel, reports which index members
-the market data does not cover, and returns the market panel with every
-non-member cell set to NaN. It is a concrete composition of two dataset kinds
-rather than an abstract contract, which is why it lives beside the datasets
-instead of under ``quantlab/base``.
+A *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``.
+*Point-in-time* membership records which symbols belonged to an index on
+each past day, as known on that day. Testing a strategy only on today's
+members instead causes *survivorship bias*: companies that were later
+delisted or dropped from the index silently disappear from history, which
+makes results look better than they were.
+
+``UniverseMask`` lines up a boolean ``is_member`` panel from a constituent
+dataset with a market-data panel. It reports which index members the market
+data does not cover, and returns the market panel with every non-member cell
+set to NaN. It combines two concrete datasets rather than defining an
+abstract interface, so it lives beside the datasets instead of in
+``quantlab.base``.
 """
 
 from typing import TYPE_CHECKING, Optional
@@ -25,18 +32,45 @@ if TYPE_CHECKING:  # type hints only, so no import cycle at runtime
 class UniverseMask:
     """Restrict a market panel to an index's point-in-time membership.
 
-    The two panels are intersected on both axes. Symbols are handled
-    asymmetrically on purpose: an index member the market panel lacks is a
-    coverage gap that would quietly reintroduce survivorship bias (delisted
-    names are the hardest to obtain), so ``report()`` names every one of
-    them, whereas a market symbol outside the index is simply out of universe
-    and is dropped silently. Timestamps are a plain inner join and are not
-    reported, because the membership panel is on a calendar-day axis while
-    market data is on trading days, so dropped rows are expected.
+    Both panels are cut down to the timestamps and symbols they share.
+    Missing symbols are treated differently on each side, on purpose. An
+    index member that the market panel lacks is a coverage gap that would
+    quietly bring back survivorship bias (delisted names are the hardest to
+    obtain), so ``report()`` names every one of them. A market symbol
+    outside the index is simply not in the universe and is dropped without
+    comment. Timestamps are intersected without a report, because the
+    membership panel has a row for every calendar day while market data only
+    has trading days, so dropped rows are expected.
 
-    Nothing here fetches data. The class is built from two ``xarray.Dataset``
-    objects so it can be used without a store; ``from_datasets()`` is the
-    constructor used in a pipeline run.
+    Nothing here fetches data. The constructor takes two in-memory
+    ``xarray.Dataset`` objects, so the class works without a store;
+    ``from_datasets`` is the constructor used in a pipeline run.
+
+    Parameters
+    ----------
+    market : xr.Dataset
+        A market panel on ``(timestamp, symbol)``.
+    membership : xr.Dataset
+        A panel with a boolean ``is_member`` variable.
+    ticker_lookup : CrspTickerLookup, optional
+        Only used to print readable tickers in ``report()``'s warning when
+        the symbol axis holds CRSP PERMNOs (CRSP's permanent integer
+        security ids). ``None`` prints the axis labels as they are.
+
+    Attributes
+    ----------
+    market : xr.Dataset
+        The market panel as given.
+    membership : xr.Dataset
+        The membership panel as given.
+    ticker_lookup : CrspTickerLookup or None
+        The lookup used for readable labels.
+
+    Raises
+    ------
+    ValueError
+        If ``membership`` has no ``is_member`` variable, which usually
+        means the two panels were passed in the wrong order.
 
     Examples
     --------
@@ -56,25 +90,7 @@ class UniverseMask:
         membership: xr.Dataset,
         ticker_lookup: Optional[CrspTickerLookup] = None,
     ) -> None:
-        """Store the two panels and an optional ticker lookup.
-
-        Parameters
-        ----------
-        market : xr.Dataset
-            A market panel on ``(timestamp, symbol)``.
-        membership : xr.Dataset
-            A panel carrying a boolean ``is_member`` variable.
-        ticker_lookup : Optional[CrspTickerLookup]
-            Used only to spell ``report()``'s warning with
-            human-readable tickers. ``None`` prints the axis labels as
-            they are.
-
-        Raises
-        ------
-        ValueError
-            If ``membership`` has no ``is_member`` variable, which
-            usually means the two panels were passed in the wrong order.
-        """
+        """Initialize the mask; see the class docstring for parameters."""
         if "is_member" not in membership.data_vars:
             raise ValueError(
                 f"UniverseMask: the membership panel must carry an "
@@ -87,7 +103,7 @@ class UniverseMask:
         self.ticker_lookup = ticker_lookup
 
     def __repr__(self) -> str:
-        """Return a short summary with the overlapping axis lengths."""
+        """Return a short summary with the lengths of the shared axes."""
         return (
             f"UniverseMask(timestamps={len(self.timestamps)}, "
             f"symbols={len(self.symbols)})"
@@ -101,10 +117,11 @@ class UniverseMask:
     ) -> "UniverseMask":
         """Build a mask from two persisted datasets, reading each from its store.
 
-        This is the only constructor that knows where the market store lives,
-        so it is where a ticker sidecar beside that store is attached. A store
-        without a sidecar yields a lookup that falls back to the axis's own
-        labels, so nothing here depends on the vendor.
+        This is the only constructor that knows where the market store
+        lives, so it attaches the ticker *sidecar* (a small file stored next
+        to the Zarr store that maps PERMNOs to tickers) if there is one.
+        Without a sidecar the lookup falls back to the axis labels
+        themselves, so this works for any vendor.
 
         Parameters
         ----------
@@ -116,7 +133,7 @@ class UniverseMask:
         Returns
         -------
         UniverseMask
-            A ``UniverseMask`` over the two panels read from disk.
+            A mask over the two panels read from disk.
 
         Examples
         --------
@@ -136,7 +153,7 @@ class UniverseMask:
 
     @property
     def timestamps(self) -> pd.DatetimeIndex:
-        """The overlapping timestamp axis, a sorted inner join.
+        """Return the timestamps present in both panels, sorted.
 
         Examples
         --------
@@ -149,12 +166,12 @@ class UniverseMask:
 
     @property
     def symbols(self) -> list:
-        """The intersected symbol axis, sorted.
+        """Return the symbols present in both panels, sorted.
 
-        Labels are compared as they are, without conversion, and the element
-        type is whatever the two axes share (integers for a PERMNO-keyed
-        universe, strings for a ticker-keyed one). Ordering comes from
-        ``sort_symbol_axis`` so both axis kinds follow one rule.
+        Labels are compared as they are, without conversion, so the element
+        type is whatever the two axes share: integers for a PERMNO axis,
+        strings for a ticker axis. Order comes from ``sort_symbol_axis`` so
+        both kinds follow the same rule.
 
         Examples
         --------
@@ -167,12 +184,12 @@ class UniverseMask:
 
     @property
     def in_window_members(self) -> list:
-        """Symbols that are members at one or more overlapping timestamps.
+        """Return the symbols that are members on at least one shared timestamp.
 
-        Membership is tested only inside the overlapping window: the panel
-        carries all-False columns for symbols whose membership falls entirely
-        outside it, and those are not coverage gaps. Labels keep the
-        membership axis's own dtype.
+        Membership is only checked inside the shared time window. The
+        membership panel has all-False columns for symbols whose membership
+        lies entirely outside it, and those are not coverage gaps. Labels
+        keep the membership axis's dtype.
 
         Examples
         --------
@@ -192,10 +209,10 @@ class UniverseMask:
 
     @property
     def missing_members(self) -> list:
-        """In-window members the market panel does not carry at all.
+        """Return the in-window members that are absent from the market panel.
 
-        A set difference, so both sides must use the same label type; the
-        properties feeding it deliberately convert nothing.
+        This is a set difference, so both sides must use the same label
+        type; the properties it uses deliberately convert nothing.
 
         Examples
         --------
@@ -208,17 +225,25 @@ class UniverseMask:
     def report(self) -> dict:
         """Return and log the coverage report.
 
-        The report is a dict with ``in_window_members`` (a count),
-        ``missing_count``, ``missing_symbols`` (the axis's own labels, usable
-        with ``.sel()``) and ``missing_labels`` (the same entries spelled for
-        a human, same length and order). A non-empty list is logged as a
-        warning in full; it is never truncated or sampled, because a
-        shortened list looks like a complete answer. An empty list is logged
-        at info level.
+        A non-empty missing list is logged as a warning in full. It is never
+        shortened or sampled, because a shortened list looks like a complete
+        answer. An empty list is logged at info level.
 
-        Labels are looked up as of the last overlapping timestamp, the newest
-        spelling in the window being aligned. With no overlap the labels are
-        the raw axis values.
+        Readable labels are looked up as of the last shared timestamp, so
+        they use the newest ticker in the window. With no shared timestamp
+        the labels are the raw axis values.
+
+        Returns
+        -------
+        dict
+            A dict with these keys:
+
+            - ``in_window_members``: number of in-window members.
+            - ``missing_count``: number of missing members.
+            - ``missing_symbols``: the missing members as axis labels,
+              usable with ``.sel()``.
+            - ``missing_labels``: the same members as readable strings, in
+              the same order.
 
         Examples
         --------
@@ -240,21 +265,21 @@ class UniverseMask:
                 f"UniverseMask: {len(missing)} of {len(members)} in-window "
                 f"index member(s) are absent from the market panel entirely "
                 f"and are dropped by the alignment. Every dropped name is a "
-                f"survivorship-bias hole, so the COMPLETE list follows: "
+                f"survivorship-bias gap, so the complete list follows: "
                 f"{report['missing_labels']}"
             )
         else:
             logger.info(
-                f"UniverseMask: 0 missing members -- the market panel covers "
+                f"UniverseMask: 0 missing members; the market panel covers "
                 f"all {len(members)} in-window index member(s)."
             )
         return report
 
     def _label(self, symbols: list) -> list[str]:
-        """Spell ``symbols`` for a human, one label per input, never fewer.
+        """Return a readable label for each of ``symbols``, one per input.
 
-        Never raises. Without a lookup, without any overlap, or with an
-        unreadable sidecar, every entry falls back to ``str(symbol)``.
+        Never raises. Without a lookup, without shared timestamps, or with an
+        unreadable sidecar, each label falls back to ``str(symbol)``.
         """
         if not symbols:
             return []
@@ -264,19 +289,24 @@ class UniverseMask:
         return self.ticker_lookup.label(symbols, overlap[-1].date())
 
     def apply(self) -> xr.Dataset:
-        """Return the market panel on the intersected axes, non-members NaN.
+        """Return the market panel on the shared axes, with non-member cells NaN.
 
-        ``report()`` runs first, so masking can never skip the coverage
-        report. Every data variable is masked uniformly, boolean flags
-        included: outside the universe a flag is undefined rather than False,
-        so it becomes NaN (and the variable float64) like everything else.
+        ``report()`` runs first, so masking never skips the coverage report.
+        Every data variable is masked the same way, boolean flags included:
+        outside the universe a flag is undefined rather than False, so it
+        becomes NaN (and the variable becomes float64) like everything else.
+
+        Returns
+        -------
+        xr.Dataset
+            The masked market panel.
 
         Raises
         ------
         ValueError
-            If the two panels share no timestamp or no symbol. An
-            empty panel would flow into a backtest as "no positions"
-            instead of surfacing the misconfiguration.
+            If the two panels share no timestamp or no symbol. An empty
+            panel would reach a backtest as "no positions" instead of
+            exposing the configuration mistake.
 
         Examples
         --------
@@ -296,9 +326,9 @@ class UniverseMask:
                 f"UniverseMask: the two panels do not overlap "
                 f"({len(overlap)} shared timestamp(s), {len(symbols)} shared "
                 f"symbol(s)), so there is nothing to mask. An empty panel is "
-                f"never a useful answer -- it would flow silently into a "
-                f"backtest as 'no positions' rather than as the "
-                f"misconfiguration it is."
+                f"never a useful answer: it would reach a backtest silently "
+                f"as 'no positions' instead of as the configuration mistake "
+                f"it is."
             )
 
         market = self.market.sel(timestamp=overlap, symbol=symbols)
