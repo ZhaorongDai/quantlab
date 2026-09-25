@@ -359,13 +359,10 @@ data.
 
 ## Things to watch
 
-- The model asks each factor class for every name it can produce
-  (`_get_factor_names()`), not for the pinned `config.factor_names`. A built-in
-  set with pinned names, such as `Alpha158Stock` limited to three features,
-  therefore fails in `train()` with a `KeyError` on the first feature that
-  was not computed. Pass built-in sets unpinned, or write a small factor
-  class whose `_get_factor_names` returns exactly its outputs, as the example
-  does.
+- The model's feature list follows each factor's pinned
+  `config.factor_names`, in the order given. `Alpha158Stock` pinned to three
+  features trains on those three. A factor left unpinned contributes every
+  name its class can produce (`_get_factor_names()`).
 - On macOS, the xgboost and torch wheels ship different OpenMP runtimes that
   clash in one process. Because `quantlab.base.model` imports torch, any
   script that trains an `MLModel` head is affected. Set `OMP_NUM_THREADS=1`
