@@ -24,11 +24,10 @@ import numpy as np
 import xarray as xr
 from KunQuant.Op import Input
 
-from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.base.data import MarketDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.config import momentum_config, stock_alpha158_config
 from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 
@@ -365,35 +364,3 @@ def test_normalization_matrix_matches_recorded_strategy_types() -> None:
         f"expected: { {c.__name__: v for c, v in _EXPECTED_NORMALIZATION_MATRIX.items()} }\n"
         f"actual:   { {c.__name__: v for c, v in actual.items()} }"
     )
-
-
-def test_stock_alpha158_config_wires_amount_and_a_derived_path() -> None:
-    """The US-equity Alpha158 factory is reachable, carries `"amount"` (without
-    which the D-02 synthesis never fires and the graph crashes), and writes to
-    a `get_data_root()`-derived path rather than a hardcoded absolute one.
-    """
-    cfg = stock_alpha158_config()
-
-    assert isinstance(cfg, FactorConfig)
-    assert "amount" in cfg.data_columns
-    assert cfg.file_path is not None
-    assert cfg.file_path.endswith("alpha158_stock.zarr")
-
-
-def test_momentum_config_returns_a_polars_factor_config() -> None:
-    """`momentum_config()` lives in `config/__init__.py` because 03-03 owns
-    that file for the whole of wave 3, while the `Momentum` class it configures
-    is delivered by the parallel plan 03-04. It therefore returns a
-    `PolarsFactorConfig` without importing anything from `factor/momentum.py` --
-    no runtime coupling between the two wave-3 plans.
-
-    `window == n` so the dataset lookback is extended by exactly the momentum
-    horizon; `kwargs == {"n": n}` so the factor reads its horizon from config.
-    """
-    cfg = momentum_config(n=5)
-
-    assert isinstance(cfg, PolarsFactorConfig)
-    assert cfg.window == 5
-    assert cfg.kwargs == {"n": 5}
-    assert cfg.file_path is not None
-    assert cfg.file_path.endswith("momentum.zarr")

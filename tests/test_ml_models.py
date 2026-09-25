@@ -20,12 +20,15 @@ import warnings
 
 import joblib
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 import xarray as xr
 
-from quantlab.base.config import MLConfig
+from quantlab.base.config import FactorConfig, MLConfig
 from quantlab.base.model import BaseModel, MLModel
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.factor.alpha158 import Alpha158SpotKline
 
 N_TIMES = 130
 N_SYMBOLS = 4
@@ -413,3 +416,113 @@ def test_default_loss_is_nan_without_valid_rows_and_does_not_warn(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
         assert np.isnan(model._loss(y, np.zeros_like(y)))
+
+
+# --------------------------------------------------------------------------
+# pinned factor_names
+# --------------------------------------------------------------------------
+# A factor pinned to a subset of its outputs computes only that subset, so the
+# model asks for config.factor_names, not every name the class can produce.
+# Before the fix, Alpha158SpotKline pinned to three features failed in train()
+# with a KeyError on the first feature that was never computed.
+
+PINNED = ["KMID", "VOLUME0", "STD5"]
+
+
+class PinnedPanel(FakePanel):
+    """Produces only its pinned names, though its class could produce more."""
+
+    def __init__(self, names, pinned, seed=0):
+        super().__init__(pinned, seed=seed)
+        self.all_names = list(names)
+        self.config.factor_names = tuple(pinned)
+
+    def _get_factor_names(self):
+        return list(self.all_names)
+
+    def get_factor_names(self):
+        return self.config.factor_names
+
+
+class _Label:
+    """A forward-return label over an arbitrary coordinate grid."""
+
+    def __init__(self, coords, seed=0):
+        rng = np.random.default_rng(seed)
+        shape = (len(coords["timestamp"]), len(coords["symbol"]))
+        self._ds = xr.Dataset(
+            {"ret": (("timestamp", "symbol"), rng.standard_normal(shape))},
+            coords=coords,
+        )
+        self.config = SimpleNamespace(start_date=None, end_date=None)
+
+    def _reset_dataset_config(self):
+        pass
+
+    def _get_factor_names(self):
+        return ["ret"]
+
+    def cal(self):
+        return self
+
+    def read(self):
+        return self
+
+    def get_labels(self):
+        return self._ds
+
+    def get_config(self):
+        return {"name": "Label", "factor_names": ["ret"]}
+
+
+def _pinned_config(tmp_path, factors, labels, times):
+    day = lambda i: pd.Timestamp(times[i]).strftime("%Y-%m-%d")
+    return MLConfig(
+        factors=factors,
+        labels=labels,
+        model_save_dir=str(tmp_path / "ckpt"),
+        factor_data_strategy="cal",
+        label_data_strategy="cal",
+        start_date=day(0),
+        end_date=day(-1),
+        train_start=day(0),
+        train_end=day(99),
+        test_start=day(100),
+        test_end=day(-1),
+    )
+
+
+def test_pinned_factor_names_win_over_every_producible_name(tmp_path, recorders):
+    factor = PinnedPanel(["f_a", "f_b", "f_c"], pinned=["f_c", "f_a"], seed=1)
+    label = FakePanel(["ret_a"], seed=2)
+
+    model = StubMLHead(_pinned_config(tmp_path, [factor], [label], TIMES)).collect()
+
+    assert model.get_factor_names() == ["f_c", "f_a"]
+    model.train()
+    assert model.fit_calls[0]["train_x"][-1] == 2
+
+
+def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, recorders):
+    dataset_config = spot_kline_zarr(periods=N_TIMES, seed=0)
+    factor = Alpha158SpotKline(
+        FactorConfig(
+            window=10,
+            dataset=SpotKlineDataset(dataset_config),
+            mode="batch",
+            data_columns=["open", "close", "volume"],
+            factor_names=PINNED,
+            file_path=str(tmp_path / "factors" / "alpha158.zarr"),
+            njobs=4,
+        )
+    )
+    assert len(factor._get_factor_names()) > len(PINNED)
+    times = pd.date_range("2024-01-01", periods=N_TIMES, freq="D")
+    label = _Label(
+        {"timestamp": times, "symbol": [f"S{i}USDT" for i in range(8)]}, seed=3
+    )
+
+    model = StubMLHead(_pinned_config(tmp_path, [factor], [label], times)).collect()
+    assert model.get_factor_names() == PINNED
+    model.train()
+    assert model.fit_calls[0]["train_x"][-1] == len(PINNED)
