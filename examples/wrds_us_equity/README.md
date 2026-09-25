@@ -8,7 +8,7 @@ English | [简体中文](README.zh-CN.md)
 2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, saved as Zarr.
 3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`horizon`, computed on member rows only.
 4. **Model**: `xgb` (`XGBoostRegressor`), `xgb_td` (`XGBTDRegressor`) or `realmlp` (`RealMLPRegressor`), trained once or walk-forward.
-5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window.
+5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against a buy-and-hold ETF benchmark (SPY for the S&P 500, QQQ for the Nasdaq-100).
 
 There is no command-line interface. Every setting is a field of the `Settings` dataclass at the top of `pipeline.py`.
 
@@ -19,13 +19,15 @@ Download and convert the roster of the index you want once (this needs a WRDS ac
 ```bash
 export WRDS_USERNAME=<your-wrds-username>   # password in ~/.pgpass
 # S&P 500 (CRSP's own membership, from 1925)
-uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
+uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 --benchmark \
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
 # Nasdaq-100 (Compustat membership linked through CCM, from 1995;
 # needs the Compustat and CCM schemas)
-uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 \
+uv run python scripts/ingest_wrds_crsp.py --universe comp_nasdaq100 --benchmark \
     --start-date 2010-01-01 --end-date 2024-12-31 --to-zarr
 ```
+
+`--benchmark` also downloads the ETF that tracks the index, by its CRSP PERMNO (SPY `84398` for `crsp_sp500`, QQQ `86755` for `comp_nasdaq100`), and writes it to its own store `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`.
 
 Each writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<universe>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<universe>_membership.zarr` (`is_member` per day), with `<universe>` = `sp500` or `nasdaq100`. The pipeline reads both from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `Settings.data_root`).
 
@@ -55,6 +57,7 @@ p.main(s)
 | --- | --- | --- |
 | `universe` | `"sp500"` | `"sp500"` or `"nasdaq100"`; picks the input stores, the membership panel and the output directory |
 | `wandb_mode` | `"online"` | `"online"`, `"offline"` or `"disabled"` |
+| `benchmark` | `"auto"` | buy-and-hold benchmark: `"auto"` (SPY for sp500, QQQ for nasdaq100), `"spy"`, `"qqq"` or `None` |
 | `model` | `"xgb"` | `"xgb"`, `"xgb_td"` or `"realmlp"` |
 | `hyperparameters` | `{}` | merged over `DEFAULT_HYPERPARAMETERS[model]`; the keys are the head's own (`xgb.train` parameters, or the pytabkit constructor arguments) |
 | `early_stopping`, `early_stopping_patience`, `val_size` | `True`, `50`, `0.2` | early stopping on the trailing `val_size` of the training window; patience is in boosting rounds (xgb, xgb_td) or epochs (realmlp) |
@@ -81,7 +84,18 @@ backtests/<model>/...         weights, equity, metrics.json, report.html
 ## What is logged to Weights & Biases
 
 - **Training**: one run per `train()`, or one per CV fold plus a `<Model>_cv_summary` run with the fold means, in a project named after the trial directory. The runs hold the full config and resolved hyperparameters, the train/val/test metrics (MSE, RMSE, MAE, R², IC, RankIC) and, per head, the per-round `train-`/`val-` curves and feature importance (`xgb`), the best round (`xgb_td`) or the stopping epoch (`realmlp`).
-- **Backtest**: one run in the `USEquityCrossectionSelectStockVectorBt_backtest` project, named after the run directory: the backtest config with data fingerprints, the whole / in-sample / out-of-sample metrics as summary values, and the HTML report.
+- **Backtest**: one run in the `USEquityCrossectionSelectStockVectorBt_backtest` project, named after the run directory: the backtest config with data fingerprints, the whole / in-sample / out-of-sample metrics as summary values (plus `benchmark/...` and `relative/...` when a benchmark ran), and the HTML report.
+
+## Benchmark comparison
+
+The benchmark is the ETF's own daily rows from CRSP (`crsp_a_stock.dsf_v2`, selected by PERMNO), converted like any CRSP panel: `adjOpen`/`adjClose` are total-return adjusted, so the buy-and-hold includes the ETF's dividends (net of its expense ratio, like a real holding). It is the tradable ETF, not the index level.
+
+With a benchmark (the default), the backtest also buys and holds the ETF from the same `init_cash`, with the same fees, slippage and next-bar-open fills, so the two curves compare bar for bar. Each ETF lives in its own single-symbol store (`wrds_crsp_spy_1d.zarr`, `wrds_crsp_qqq_1d.zarr`), never in the equity panel, where it would be ranked against its own constituents. `metrics.json` gains two blocks, each split whole / in-sample / out-of-sample:
+
+- `benchmark`: the ETF's own return statistics.
+- `relative`: the portfolio against the ETF: `excess_return` (relative NAV − 1), `excess_return_annualized`, `excess_max_drawdown`, `tracking_error`, `information_ratio`, `beta`, `correlation`, `capm_alpha`, `win_rate_vs_benchmark`.
+
+`report.html` draws the benchmark NAV beside the portfolio's and adds excess-return and excess-drawdown rows; with `use_cv=True` the stitched curve and every fold are compared. The pipeline log line prints the headline numbers. Set `benchmark=None` to skip the comparison.
 
 A backtest run directory can be rebuilt and re-run with `quantlab.utils.module.load_backtester_from_config`; see [docs/backtest.md](../../docs/backtest.md).
 

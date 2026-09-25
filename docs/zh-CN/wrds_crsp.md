@@ -239,9 +239,9 @@ uv run python scripts/ingest_wrds_crsp_all.py \
 
 `--refresh` 从每个 PERMNO 已记录的水位继续，向前延长 `--end-date` 是受支持的方向。整市场 store 的名单在两次刷新之间会增长，`--on-new-listing` 决定此时怎么办：`refuse`（默认）直接停止；`widen` 加入新的列，历史部分为 NaN，适合真正的新上市；`rebuild` 会对每个窗口重新稠密化，适合本来就有历史的 PERMNO。
 
-### 加入 QQQ 基准
+### 加入基准 ETF
 
-让 ETF 与它持有的股票一起排名，等于让它和自己竞争，所以基准放在单独的 store 里。`CrspDatasetConfig.qqq_benchmark` 固定了两个关键设置：PERMNO 和 `security_filter="none"`。对应的脚本参数是 `--qqq`。
+让 ETF 与它持有的股票一起排名，等于让它和自己竞争，所以基准放在单独的 store 里。`CrspDatasetConfig.etf_benchmark(permno=...)` 固定了两个关键设置：PERMNO 和 `security_filter="none"`；`qqq_benchmark` 是 QQQ（`QQQ_PERMNO`，86755）的同一配置，`SPY_PERMNO`（84398）是 S&P 500 的 ETF。脚本中，`--benchmark` 会下载跟踪 `--universe` 的 ETF（`crsp_sp500` 对应 SPY，`comp_nasdaq100` 对应 QQQ），写入 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`；`--qqq` 单独下载 QQQ。
 
 ```python
 >>> etf = CrspDatasetConfig.qqq_benchmark(
