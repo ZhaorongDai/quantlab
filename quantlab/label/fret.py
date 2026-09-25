@@ -1,13 +1,21 @@
 """Forward-return labels computed with the KunQuant backend.
 
-``Return`` is the regression target (the return over the next ``n`` bars)
-and ``BinaryReturn`` the classification target (1.0 when that return is
-positive, else 0.0). Both read ``adjClose`` and take the horizon from
-``config.kwargs["n_forward_periods"]``. The op graph computes a trailing
-return, since KunQuant can only look backwards; ``get_labels()`` shifts it
-forward so the value at bar ``t`` is the return from ``t`` to ``t + n``.
-``get_features()`` returns the unshifted trailing return and must not be
-used as a label.
+A *label* is the value a model learns to predict. Here it is the return a
+position opened after bar ``t`` would earn over the next ``n`` bars.
+``Return`` is the regression target (that return itself) and
+``BinaryReturn`` the classification target (1.0 when the return is
+positive, else 0.0). Both read ``adjOpen``, the split- and dividend-adjusted
+open price, and take the horizon ``n`` from
+``config.kwargs["n_forward_periods"]``.
+
+KunQuant, the library that computes the graph, compiles formulas to native
+code and can only look backwards in time. The graph therefore computes the
+trailing return ``adjOpen[t] / adjOpen[t - n] - 1``, and ``get_labels()``
+shifts it ``n + 1`` bars earlier. The label at ``t`` is then
+``adjOpen[t + n + 1] / adjOpen[t + 1] - 1``: a position entered at the next
+bar's open, because a signal formed at the close of bar ``t`` cannot trade
+before then. ``get_features()`` returns the unshifted trailing return, which
+is not a label and must not be used as one.
 """
 
 import KunQuant.ops as op
@@ -22,17 +30,19 @@ from quantlab.base.factor import FactorKunQuant
 class Return(FactorKunQuant):
     """Forward n-bar open-to-open return label.
 
-    At signal timestamp t:
+    At signal timestamp ``t`` the label is
+    ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1``: the position is entered at
+    the next bar's adjusted open and exited ``n`` bars later at the adjusted
+    open. The last ``n + 1`` timestamps have no future prices, so their
+    labels are NaN.
 
-        ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1``
+    The output column is ``ret_{n}``.
 
-    The position is entered at the next bar's adjusted open and exited n bars
-    later at the adjusted open. The final n + 1 observations have no available
-    label and are NaN.
-
-    The output column is ``ret_{n}``, where ``n`` is
-    ``config.kwargs["n_forward_periods"]``. Set ``data_columns`` to
-    ``["adjOpen"]``.
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. Set ``data_columns`` to ``["adjOpen"]``
+        and ``kwargs["n_forward_periods"]`` to the horizon ``n``.
 
     Examples
     --------
@@ -41,15 +51,15 @@ class Return(FactorKunQuant):
     ...     data_columns=["adjOpen"], kwargs={"n_forward_periods": 5},
     ...     file_path="ret.zarr",
     ... ))
-    >>> label.cal().get_labels()   # forward 5-bar return at each t
+    >>> labels = label.cal().get_labels()  # forward 5-bar return at each t
     """
 
     def __init__(self, factor_config: FactorConfig):
-        """Create the label from a KunQuant factor config."""
+        """Initialize the label; see the class docstring for parameters."""
         super().__init__(factor_config)
 
     def _get_factor_func(self) -> Function:
-        """Build the graph for the trailing ``n``-bar return of ``adjClose``."""
+        """Build the KunQuant graph for the trailing ``n``-bar return of ``adjOpen``."""
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
@@ -69,9 +79,9 @@ class Return(FactorKunQuant):
         return (f"ret_{self.config.kwargs['n_forward_periods']}",)
 
     def _get_labels(self, data: xr.Dataset):
-        """Shift the trailing return ``n`` bars earlier so it is forward-looking.
+        """Shift the trailing return ``n + 1`` bars earlier so it looks forward.
 
-        The last ``n`` bars become NaN.
+        The last ``n + 1`` timestamps become NaN.
         """
         data = data.shift(
             timestamp=-(self.config.kwargs["n_forward_periods"] + 1)
@@ -79,24 +89,26 @@ class Return(FactorKunQuant):
         return data
 
     def _get_features(self, data: xr.Dataset):
-        """Return the unshifted trailing return; not a label."""
+        """Return the unshifted trailing return, which is not a valid label."""
         return data
 
 
 class BinaryReturn(FactorKunQuant):
-    """Forward n-bar next-open direction label.
+    """Forward n-bar open-to-open direction label.
 
-    At signal timestamp t, the label is:
+    At signal timestamp ``t`` the label is 1.0 when
+    ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1 > 0`` and 0.0 otherwise: the
+    position is entered at the next bar's adjusted open and judged ``n`` bars
+    later at the adjusted open. The last ``n + 1`` timestamps have no future
+    prices, so their labels are NaN.
 
-        ``1.0 if adjOpen[t + n + 1] / adjOpen[t + 1] - 1 > 0 otherwise 0.0``
+    The output column is ``ret_binary_{n}``.
 
-    The position is entered at the next bar's adjusted open and evaluated n bars
-    later at the adjusted open. The final n + 1 observations have no available
-    label and are NaN.
-
-    The output column is ``ret_binary_open_{n}``, where ``n`` is
-    ``config.kwargs["n_forward_periods"]``. Set ``data_columns`` to
-    ``["adjOpen"]``.
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. Set ``data_columns`` to ``["adjOpen"]``
+        and ``kwargs["n_forward_periods"]`` to the horizon ``n``.
 
     Examples
     --------
@@ -108,15 +120,15 @@ class BinaryReturn(FactorKunQuant):
     ...     kwargs={"n_forward_periods": 5},
     ...     file_path="ret_binary_open.zarr",
     ... ))
-    >>> labels = label.cal().get_labels() # 1.0 when the next-open-to-open five-bar return is positive
+    >>> labels = label.cal().get_labels()  # 1.0 where the 5-bar return > 0
     """
 
     def __init__(self, factor_config: FactorConfig):
-        """Create the label from a KunQuant factor config."""
+        """Initialize the label; see the class docstring for parameters."""
         super().__init__(factor_config)
 
     def _get_factor_func(self) -> Function:
-        """Build the graph: trailing ``n``-bar return, thresholded at zero."""
+        """Build the KunQuant graph: 1.0 where the trailing return is positive."""
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
@@ -139,9 +151,9 @@ class BinaryReturn(FactorKunQuant):
         return (f"ret_binary_{self.config.kwargs['n_forward_periods']}",)
 
     def _get_labels(self, data: xr.Dataset):
-        """Shift the trailing indicator ``n`` bars earlier so it is forward-looking.
+        """Shift the trailing indicator ``n + 1`` bars earlier so it looks forward.
 
-        The last ``n`` bars become NaN.
+        The last ``n + 1`` timestamps become NaN.
         """
         data = data.shift(
             timestamp=-(self.config.kwargs["n_forward_periods"] + 1)
@@ -149,5 +161,5 @@ class BinaryReturn(FactorKunQuant):
         return data
 
     def _get_features(self, data: xr.Dataset):
-        """Return the unshifted trailing indicator; not a label."""
+        """Return the unshifted trailing indicator, which is not a valid label."""
         return data

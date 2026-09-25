@@ -1,25 +1,37 @@
-"""Point-in-time price and liquidity universe filter, built as a factor wrapper.
+"""Point-in-time price and liquidity filter for a factor's universe.
 
-``UniverseFilteredFactor`` wraps any KunQuant factor or label and is itself a
-``FactorKunQuant``, so it drops into ``MLConfig.factors`` / ``labels`` and
-into a backtest config without changes to the model or backtest layers. A
-symbol is in the universe at bar ``t`` when its raw close is at least
-``min_price`` and the trailing ``window``-bar mean of raw ``close * volume``
-is at least ``min_dollar_volume``; nothing after ``t`` affects the mask at
-``t``. The wrapper feeds that mask into every cross-sectional operator of the
-inner graph, so out-of-universe symbols never take part in a rank or a
-cross-sectional z-score, and it blanks the outputs of both factors and labels
-where the mask is NaN. Time-series operators still see full history.
+A *universe* is the set of symbols a strategy may trade on a given bar. A
+*point-in-time* universe is decided using only data available at that bar,
+so a backtest never benefits from knowing the future. Here a symbol is in
+the universe at bar ``t`` when its raw close is at least ``min_price`` and
+the mean of its raw dollar volume (``close * volume``) over the last
+``window`` bars is at least ``min_dollar_volume``. Nothing after ``t``
+affects the decision at ``t``.
 
-Two KunQuant limits apply to every caller: batch runs always start at bar 0
-(in KunQuant 0.1.11 a non-zero ``start`` gives wrong results for every
-``GenericCrossSectionalOp``), and the number of symbols must be a multiple of
-the SIMD block width on the host.
+Most factors in this project are KunQuant factors: formulas written as a
+graph of operators that KunQuant compiles to native code. Some operators in
+such a graph are *cross-sectional*: they compare symbols with each other on
+the same bar, such as a rank or a cross-sectional z-score. Others are
+*time-series* operators that look at one symbol's own history.
+``UniverseFilteredFactor`` wraps a KunQuant factor or label and rewrites its
+graph so that out-of-universe symbols are hidden from every cross-sectional
+operator, while time-series operators still see the full history. It then
+blanks the outputs wherever the symbol is out of the universe. Because the
+wrapper is itself a ``FactorKunQuant``, it can be used in
+``MLConfig.factors`` and ``labels`` and in a backtest config with no change
+to the model or backtest code.
 
-This filter answers "is the symbol expensive and liquid enough to trade",
-which is orthogonal to the index-membership masking in
-``quantlab.dataset._support.masking``; the two can be stacked. See
-``docs/universe.md``.
+Two KunQuant limits apply to every caller. Batch runs always start at bar 0,
+because in KunQuant 0.1.11 a non-zero start index gives wrong results for
+every ``GenericCrossSectionalOp`` (a cross-sectional operator with a
+hand-written C++ body, such as ``CrossSectionalZScore``). And the number of
+symbols must be a multiple of the host's SIMD block width, the number of
+values the CPU's vector instructions process at once.
+
+This filter answers "is the symbol expensive and liquid enough to trade".
+That is a separate question from index membership ("was it in the S&P 500
+on that day"), which ``quantlab.dataset._support.masking`` handles; the two
+can be combined.
 """
 
 import collections
@@ -38,22 +50,24 @@ from quantlab.backend import XrBackend
 from quantlab.utils.module import load_factor_from_config
 from quantlab.utils.timer import Timer
 
-#: Name of the mask ``Input`` in the rewritten graph. Module-level because
-#: ``_mask_cross_sectional_inputs`` needs it before the class is defined.
+#: Name of the mask input in the rewritten graph. Defined at module level
+#: because ``_mask_cross_sectional_inputs`` needs it before the class exists.
 _MASK_INPUT_NAME = "universe_mask"
 
 
 def _mask_cross_sectional_inputs(
     ops: list[OpBase],
 ) -> tuple[list[OpBase], bool]:
-    """Insert ``Div(v, universe_mask)`` before every cross-sectional input.
+    """Insert ``Div(v, universe_mask)`` in front of every cross-sectional input.
 
-    Dividing by 1.0 leaves a value unchanged and dividing by NaN yields NaN,
-    so out-of-universe symbols vanish from every cross-sectional operator
-    while time-series operators still see full history. Each distinct input
-    node is wrapped once and shared. ``op.inputs`` is rewritten in place, so
-    callers must pass a freshly built graph; rewriting a graph twice masks it
-    twice.
+    The mask is 1.0 for an in-universe symbol and NaN otherwise. Dividing by
+    1.0 leaves a value unchanged and dividing by NaN gives NaN, which
+    KunQuant's cross-sectional operators skip. So out-of-universe symbols
+    drop out of every cross-sectional operator, while time-series operators
+    upstream still see the full history. Each distinct input node is wrapped
+    once and the wrapper is shared. ``op.inputs`` is changed in place, so
+    callers must pass a freshly built graph; a graph rewritten twice is
+    masked twice.
 
     Parameters
     ----------
@@ -89,34 +103,44 @@ def _mask_cross_sectional_inputs(
 class UniverseFilteredFactor(FactorKunQuant):
     """Wrap a KunQuant factor or label with a point-in-time universe filter.
 
-    Wrap both the factors and the labels of a model: filtering only the
-    factors leaves label rows for out-of-universe symbols, and filtering only
-    the labels leaves cross-sectional operators polluted by them. The
-    wrapper's ``config`` is the inner factor's own config object, not a copy,
-    so dates written by the model or backtester, ``config.window``,
-    ``config.kwargs`` and ``config.data_columns`` all resolve on the inner
-    factor.
+    See the module docstring for what the universe is and how the graph is
+    rewritten. Wrap both the factors and the labels of a model: filtering
+    only the factors leaves label rows for out-of-universe symbols, and
+    filtering only the labels leaves those symbols inside the factors'
+    ranks. The wrapper's ``config`` is the inner factor's own config object,
+    not a copy, so dates written by the model or backtester,
+    ``config.window``, ``config.kwargs`` and ``config.data_columns`` all
+    apply to the inner factor.
 
-    Being out of the universe only blanks cells: the symbol axis of every
-    output is identical to the input's, and a symbol that is out for the
-    whole window stays as an all-NaN column. Stores written through
-    ``save()`` hold the outputs of the rewritten graph before the output
-    mask; ``read()`` recomputes the mask from the dataset and applies it, so
-    a store read through the wrapper must have been written by the wrapper.
+    Being out of the universe only blanks cells. The symbol axis of every
+    output equals the input's, and a symbol that is out for the whole window
+    stays as an all-NaN column. A store written through ``save()`` holds the
+    rewritten graph's outputs before the output mask is applied; ``read()``
+    recomputes the mask from the dataset and applies it. A store read
+    through the wrapper must therefore have been written by the wrapper.
 
     Parameters
     ----------
     factor : FactorKunQuant
-        The KunQuant factor or label to wrap. Polars factors are
-        refused because their cross-sectional logic is not a KunQuant
-        graph and cannot be rewritten; already-wrapped factors are
-        refused because the two masks would silently compose.
-    min_price : float
+        The KunQuant factor or label to wrap. Polars factors are refused
+        because their cross-sectional logic is not a KunQuant graph and
+        cannot be rewritten. Already-wrapped factors are refused because
+        the two masks would combine without any warning.
+    min_price : float, default 5.0
         Minimum raw close for a symbol to be in the universe.
-    min_dollar_volume : float
+    min_dollar_volume : float, default 1_000_000.0
         Minimum trailing mean of raw ``close * volume``.
-    window : int
+    window : int, default 20
         Number of bars the dollar-volume mean is taken over.
+
+    Attributes
+    ----------
+    factor : FactorKunQuant
+        The wrapped factor.
+    min_price, min_dollar_volume : float
+        The two thresholds.
+    window : int
+        The dollar-volume window in bars.
 
     Raises
     ------
@@ -133,20 +157,20 @@ class UniverseFilteredFactor(FactorKunQuant):
     >>> model = XGBoostRegressor(MLConfig(factors=factors, labels=labels, ...))
     """
 
-    #: Raw columns the mask reads, never the adjusted ones: adjusted history
-    #: is depressed by later splits and dividends, so it cannot say whether a
-    #: stock was cheap at the time.
+    #: Raw columns the mask reads. Adjusted prices are rescaled by later
+    #: splits and dividends, so they cannot say whether a stock was cheap at
+    #: the time.
     PRICE_COLUMN = "close"
     VOLUME_COLUMN = "volume"
 
-    #: Name of the mask ``Input`` in the rewritten graph.
+    #: Name of the mask input in the rewritten graph.
     MASK_INPUT = _MASK_INPUT_NAME
 
-    #: Extra calendar days ``_reset_dataset_config`` pulls before the factor's
-    #: start date: days per bar times ``window``, plus a fixed pad. The
-    #: backtester's warm-up counts only ``config.window`` bars; without this
-    #: the first ``window - 1`` bars of a window would have no dollar-volume
-    #: history and drop out of the universe.
+    #: Extra calendar days ``_reset_dataset_config`` loads before the factor's
+    #: start date: ``LOOKBACK_DAYS_PER_BAR * window + LOOKBACK_PAD_DAYS``. The
+    #: backtester's warm-up only covers ``config.window`` bars; without this
+    #: the first ``window - 1`` bars would have no dollar-volume history and
+    #: fall out of the universe.
     LOOKBACK_DAYS_PER_BAR = 2
     LOOKBACK_PAD_DAYS = 10
 
@@ -157,24 +181,23 @@ class UniverseFilteredFactor(FactorKunQuant):
         min_dollar_volume: float = 1_000_000.0,
         window: int = 20,
     ):
-        """Wrap ``factor`` and widen its dataset dates for the mask's warm-up."""
+        """Initialize the wrapper; see the class docstring for parameters."""
         if not isinstance(factor, FactorKunQuant):
             raise TypeError(
                 f"UniverseFilteredFactor wraps a FactorKunQuant, got "
                 f"{type(factor).__name__}. A Polars factor's cross-sectional "
-                f"expressions are polars expressions, not a KunQuant op graph, "
-                f"so they cannot be rewritten -- and masking only the OUTPUTS "
-                f"would leave every out-of-universe symbol sitting inside each "
-                f"rank/zscore, which is exactly what this class exists to "
-                f"prevent."
+                f"expressions are Polars expressions, not a KunQuant op graph, "
+                f"so they cannot be rewritten. Masking only the outputs would "
+                f"leave every out-of-universe symbol inside each rank and "
+                f"z-score, which is what this class exists to prevent."
             )
         if isinstance(factor, UniverseFilteredFactor):
             raise TypeError(
                 f"UniverseFilteredFactor cannot wrap another "
                 f"{type(factor).__name__}: the inner wrapper would mask the "
-                f"cross-sections a second time, and the two masks' parameters "
-                f"would silently compose. Wrap the innermost factor once, with "
-                f"the parameters you want."
+                f"cross-sections a second time, and the two masks' thresholds "
+                f"would combine without any warning. Wrap the innermost factor "
+                f"once, with the thresholds you want."
             )
         if window < 1:
             raise ValueError(
@@ -182,10 +205,9 @@ class UniverseFilteredFactor(FactorKunQuant):
                 f"bars the trailing dollar-volume mean is taken over."
             )
 
-        # Deliberately not calling super().__init__(): Factor's config setter
+        # super().__init__() is skipped on purpose: the base config setter
         # would overwrite the inner config's `name` with this wrapper's import
-        # path, and the inner factor could no longer be rebuilt as its own
-        # class.
+        # path, and the inner factor could no longer be rebuilt from it.
         self.factor = factor
         self.min_price = float(min_price)
         self.min_dollar_volume = float(min_dollar_volume)
@@ -196,8 +218,8 @@ class UniverseFilteredFactor(FactorKunQuant):
         self._lib = None
         self._buffer_name_to_id: dict = {}
 
-        # Set when `_get_factor_func` compiles: does the graph have any
-        # cross-sectional operator?
+        # Whether the compiled graph has a cross-sectional operator; set by
+        # `_get_factor_func`.
         self._uses_mask = False
         # The mask from the latest `cal()` / `read()` / `cal_stream()`.
         self._universe_mask: xr.DataArray | None = None
@@ -206,7 +228,7 @@ class UniverseFilteredFactor(FactorKunQuant):
         self._reset_dataset_config()
 
     def __repr__(self) -> str:
-        """Return the wrapper, its inner factor and the three thresholds."""
+        """Return a string naming the inner factor and the three parameters."""
         return (
             f"UniverseFilteredFactor({self.factor!r}, "
             f"min_price={self.min_price}, "
@@ -215,8 +237,8 @@ class UniverseFilteredFactor(FactorKunQuant):
         )
 
     # ------------------------------------------------------------------
-    # Config delegation: everything the model and backtest layers write
-    # lands on the inner config.
+    # Config delegation: whatever the model and backtest layers write goes
+    # to the inner factor's config.
     # ------------------------------------------------------------------
 
     @property
@@ -225,8 +247,8 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         Dates the model or backtester write, ``config.window`` used for
         warm-up, ``config.kwargs["n_forward_periods"]`` and
-        ``config.data_columns`` all resolve on the inner factor, which is what
-        makes the wrapper a drop-in replacement.
+        ``config.data_columns`` all apply to the inner factor. This is what
+        lets the wrapper stand in for the factor it wraps.
 
         Examples
         --------
@@ -238,7 +260,7 @@ class UniverseFilteredFactor(FactorKunQuant):
 
     @config.setter
     def config(self, value):
-        """Assign the config to the inner factor, then re-widen its dates.
+        """Assign the config to the inner factor, then widen its dataset dates.
 
         Examples
         --------
@@ -252,17 +274,16 @@ class UniverseFilteredFactor(FactorKunQuant):
         self._reset_dataset_config()
 
     def _get_factor_names(self) -> tuple[str, ...]:
-        """Return the inner factor's names; wrapping changes values, not columns."""
+        """Return the inner factor's names; the wrapper changes values, not columns."""
         return self.factor._get_factor_names()
 
     def _reset_dataset_config(self) -> None:
-        """Let the inner factor reset its dates, then pull the start date earlier.
+        """Let the inner factor reset its dates, then move the start date earlier.
 
-        The backtester's warm-up counts ``config.window`` bars and does not
-        know the mask needs ``window`` bars of dollar-volume history before
-        its first value. The start date is only ever moved earlier, never
-        later, so an inner factor that already reaches further back keeps
-        its date.
+        The backtester's warm-up covers ``config.window`` bars and does not
+        know that the mask needs ``window`` bars of dollar-volume history
+        before its first value. The start date only ever moves earlier, so
+        an inner factor that already reaches further back keeps its date.
         """
         self.factor._reset_dataset_config()
 
@@ -285,8 +306,8 @@ class UniverseFilteredFactor(FactorKunQuant):
     def _get_factor_func(self) -> Function:
         """Return the inner graph with every cross-sectional input masked.
 
-        A fresh graph is requested from the inner factor on every call because
-        the rewrite mutates ``op.inputs`` in place.
+        A fresh graph is requested from the inner factor on every call,
+        because the rewrite changes ``op.inputs`` in place.
         """
         ops = self.factor._get_factor_func().ops
         rewritten, uses_mask = _mask_cross_sectional_inputs(ops)
@@ -316,9 +337,9 @@ class UniverseFilteredFactor(FactorKunQuant):
         Raises
         ------
         ValueError
-            If either raw column is missing. Failing loudly is
-            preferred to returning an all-out (or all-in) mask that would
-            let the pipeline quietly produce empty results.
+            If either raw column is missing. An error is better than an
+            all-out (or all-in) mask that would let the pipeline quietly
+            produce empty or unfiltered results.
 
         Examples
         --------
@@ -338,13 +359,13 @@ class UniverseFilteredFactor(FactorKunQuant):
         for column in (self.PRICE_COLUMN, self.VOLUME_COLUMN):
             if column not in panel.data_vars:
                 raise ValueError(
-                    f"UniverseFilteredFactor needs the RAW column {column!r} "
+                    f"UniverseFilteredFactor needs the raw column {column!r} "
                     f"to decide universe membership, and the dataset panel "
                     f"does not carry it (present: "
-                    f"{sorted(map(str, panel.data_vars))}). The mask reads RAW "
-                    f"close/volume, never the adjusted columns: adjusted "
-                    f"history is depressed by splits and dividends, so a "
-                    f"penny stock today can look like a $50 stock in 2015."
+                    f"{sorted(map(str, panel.data_vars))}). The mask reads raw "
+                    f"close and volume, never the adjusted columns: adjusted "
+                    f"prices are rescaled by later splits and dividends, so "
+                    f"they do not show what a stock cost at the time."
                 )
 
         panel = panel.sortby("timestamp")
@@ -364,7 +385,7 @@ class UniverseFilteredFactor(FactorKunQuant):
             timestamp=self.window, min_periods=self.window
         ).mean()
 
-        # NaN compares False, which means out of the universe, as intended.
+        # A NaN comparison is False, so a missing value means "out".
         in_universe = (close >= self.min_price) & (
             average >= self.min_dollar_volume
         )
@@ -376,9 +397,10 @@ class UniverseFilteredFactor(FactorKunQuant):
     # ------------------------------------------------------------------
 
     def cal(self) -> Self:
-        """Mirror ``FactorKunQuant.cal`` with the mask supplied as an extra input.
+        """Compute the wrapped factor in batch mode, feeding the mask as an input.
 
-        The graph always runs from bar 0; see the module docstring.
+        Works like ``FactorKunQuant.cal``, plus the mask. The graph always
+        runs from bar 0; see the module docstring for why.
 
         Returns
         -------
@@ -399,12 +421,11 @@ class UniverseFilteredFactor(FactorKunQuant):
         )
         num_time = next(iter(input_dict.values())).shape[0]
 
-        # `_make()` calls `_get_factor_func()`, which is where `_uses_mask`
-        # is decided.
+        # `_make()` calls `_get_factor_func()`, which sets `_uses_mask`.
         self._lib = self._make()
         modu = self._lib.getModule(f"{self.__class__.__name__}")  # type: ignore
 
-        # `to_kunquant` just read the dataset; this is the same cached panel.
+        # The same panel `to_kunquant` just loaded, served from cache.
         self._universe_mask = self.compute_universe_mask(
             self.config.dataset.get_xarray_dataset()
         )
@@ -434,16 +455,16 @@ class UniverseFilteredFactor(FactorKunQuant):
 
         The mask comes from the dataset's raw close and volume, not from the
         factor store, so the dataset is read first. Stored values are the
-        outputs of the rewritten graph before the output mask; the mask is
-        applied to what ``get_features()`` and ``get_labels()`` return. A
-        store written by the unwrapped inner factor cannot be repaired here,
+        rewritten graph's outputs before the output mask; the mask is applied
+        to what ``get_features()`` and ``get_labels()`` return. A store
+        written by the unwrapped inner factor cannot be repaired here,
         because its cross-sectional values already include out-of-universe
         symbols.
 
         Parameters
         ----------
-        overwrite : bool
-            Re-open the stores even if cached data is held.
+        overwrite : bool, default False
+            Re-open the stores even if data is already held in memory.
 
         Returns
         -------
@@ -498,17 +519,18 @@ class UniverseFilteredFactor(FactorKunQuant):
     ) -> Self:
         """Advance one bar: push this bar's mask, then run the inner graph.
 
-        The dollar-volume mean uses ``np.mean`` over a full window, so an
-        unfilled window or a NaN inside it gives NaN, matching the batch
-        path's ``min_periods=window`` semantics exactly; the two paths must
-        agree or streaming and batch factor values would diverge.
+        The dollar-volume mean is ``np.mean`` over a full window, so a window
+        that is not yet full, or holds a NaN, gives NaN. This matches the
+        batch path, which uses ``min_periods=window``; if the two differed,
+        streaming and batch factor values would disagree.
 
         Parameters
         ----------
         data : dict[str, np.ndarray]
-            Column name to array. Besides ``config.data_columns`` it
-            must carry the raw ``close`` and ``volume`` keys, which the
-            mask reads; the inherited push sends only ``data_columns``.
+            Column name to array of per-symbol values. Besides
+            ``config.data_columns`` it must carry the raw ``close`` and
+            ``volume`` keys, which the mask reads; the inherited code only
+            pushes ``data_columns`` into the graph.
         timestamp : int
             The bar's timestamp.
         symbols : list[str]
@@ -538,8 +560,8 @@ class UniverseFilteredFactor(FactorKunQuant):
         if missing:
             raise ValueError(
                 f"{type(self).__name__}.cal_stream: the bar dict is missing "
-                f"the RAW column(s) {missing}, which decide universe "
-                f"membership. They are EXTRA keys beyond config.data_columns "
+                f"the raw column(s) {missing}, which decide universe "
+                f"membership. They are extra keys beyond config.data_columns "
                 f"({tuple(self.config.data_columns)}): the inherited push only "
                 f"sends data_columns, so they must be supplied explicitly."
             )
@@ -563,8 +585,8 @@ class UniverseFilteredFactor(FactorKunQuant):
         if self._stream_context is None:
             self.init_stream()
 
-        # The mask must be pushed before `run()`; `super().cal_stream` runs
-        # as soon as it has pushed the data columns.
+        # Push the mask first: `super().cal_stream` runs the graph as soon as
+        # it has pushed the data columns.
         if self._uses_mask:
             self._stream_context.pushData(
                 self._buffer_name_to_id[self.MASK_INPUT],
@@ -605,8 +627,8 @@ class UniverseFilteredFactor(FactorKunQuant):
         """Return the held panel after checking that a mask exists.
 
         Without the check, calling ``get_features()`` before ``cal()`` fails
-        inside the storage backend with an error that names neither the cause
-        nor the remedy.
+        inside the storage backend with an error that names neither the
+        cause nor the fix.
         """
         self._assert_computed()
         return super()._get_xarray_dataset()
@@ -614,11 +636,11 @@ class UniverseFilteredFactor(FactorKunQuant):
     def _mask_panel(self, data: xr.Dataset) -> xr.Dataset:
         """Blank ``data`` where the mask is NaN, keeping the symbol axis intact.
 
-        The mask is reindexed onto ``data``'s coordinates. No column is ever
-        dropped: a symbol out of the universe for the whole window remains as
-        an all-NaN column, so the symbol axis never depends on the date
-        window and a model never meets a panel missing a symbol it trained
-        on.
+        The mask is aligned to ``data``'s coordinates. No column is dropped:
+        a symbol out of the universe for the whole window remains as an
+        all-NaN column. The symbol axis therefore does not depend on the
+        date window, and a model never meets a panel missing a symbol it was
+        trained on.
         """
         self._assert_computed()
 
@@ -634,10 +656,11 @@ class UniverseFilteredFactor(FactorKunQuant):
     def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
         """Return the inner factor's labels with the output mask applied.
 
-        The inner transform runs first: ``Return._get_labels`` shifts by
-        ``-n`` bars, and masking afterwards applies the mask at the label's
-        own timestamp ``t``. Masking before the shift would decide bar ``t``
-        with the universe at ``t + n``, a look-ahead error.
+        The inner transform runs first. ``Return._get_labels`` shifts values
+        earlier in time, and masking afterwards applies the mask at the
+        label's own timestamp ``t``. Masking before the shift would decide
+        bar ``t`` using the universe of a later bar, which leaks future
+        information into the label.
         """
         return self._mask_panel(self.factor._get_labels(data))
 
@@ -648,9 +671,9 @@ class UniverseFilteredFactor(FactorKunQuant):
     def get_config(self) -> dict:
         """Return the wrapper's config with the inner factor's under ``"factor"``.
 
-        There is deliberately no top-level ``"dataset"`` key: the dataset
-        belongs to the inner factor, and a copy would rebuild as a second
-        dataset object reading the same store.
+        There is no top-level ``"dataset"`` key on purpose. The dataset
+        belongs to the inner factor, and a second copy would be rebuilt as a
+        second dataset object reading the same store.
 
         Examples
         --------
@@ -675,10 +698,11 @@ class UniverseFilteredFactor(FactorKunQuant):
     def from_config(cls, config: dict) -> "UniverseFilteredFactor":
         """Rebuild from a ``get_config()`` dict, inner factor included.
 
-        The inner factor goes back through ``load_factor_from_config``.
-        Missing and unknown keys both raise, and a missing parameter is never
-        filled from the current default: a default that changes later would
-        silently rebuild a stored run with a different universe.
+        The inner factor is rebuilt through ``load_factor_from_config``.
+        Missing and unknown keys both raise. A missing parameter is never
+        filled from the current default, because a default that changes
+        later would rebuild a stored run with a different universe without
+        any warning.
 
         Parameters
         ----------
@@ -722,8 +746,9 @@ class UniverseFilteredFactor(FactorKunQuant):
             raise ValueError(
                 f"{cls.__name__}.from_config: refusing to rebuild -- "
                 f"missing key(s) {missing}, unknown key(s) {unknown}. Missing "
-                f"parameters are NOT filled from the current defaults, which "
-                f"may differ from what the stored run used (D-25/WR-06)."
+                f"parameters are not filled from the current defaults, which "
+                f"may differ from what the stored run used, and unknown keys "
+                f"are not ignored, because they may change what the run meant."
             )
 
         return cls(load_factor_from_config(inner), **config)

@@ -1,9 +1,17 @@
 """Alpha101 factor sets computed with the KunQuant backend.
 
-The formulaic alphas of KunQuant's ``Alpha101`` library are exposed as two
-``FactorKunQuant`` subclasses that differ in which input columns they read
-and whether the outputs are normalized: ``Alpha101SpotKline`` for crypto spot
-klines and ``Alpha101Stock`` for adjusted US-equity bars.
+"101 Formulaic Alphas" (Kakushadze, 2016) is a public list of 101 short
+trading-signal formulas built from open, high, low, close, volume and VWAP.
+KunQuant, the library this project uses for most factor computation, ships
+them as its ``Alpha101`` library. KunQuant compiles a factor formula, written
+as a graph of operators, to native code and runs it over a whole
+``(timestamp, symbol)`` panel at once.
+
+Two ``FactorKunQuant`` subclasses expose the library. They differ in which
+input columns they read and in whether the outputs are normalized:
+``Alpha101SpotKline`` works on crypto spot klines (candlestick bars) and
+z-scores every output along time, while ``Alpha101Stock`` works on adjusted
+US-equity bars and returns raw values.
 """
 
 from typing import NoReturn
@@ -21,14 +29,23 @@ from quantlab.my_ops.preprocess import WindowedZScore
 class Alpha101SpotKline(FactorKunQuant):
     """Alpha101 factors over crypto spot klines, z-scored along time.
 
-    Reads the lowercase ``open``/``high``/``low``/``close``/``volume``/
-    ``amount`` columns the spot kline dataset exposes to KunQuant. Every
-    output is wrapped in ``WindowedZScore`` over ``config.window`` bars, a
-    time-series normalization that standardizes each symbol against its own
-    trailing window. That suits the time-series strategies spot data is
-    traded with; the US-equity sibling ``Alpha101Stock`` deliberately emits
-    raw values because it serves cross-sectional strategies. The two are not
-    meant to be aligned.
+    Reads the lowercase ``open``, ``high``, ``low``, ``close``, ``volume``
+    and ``amount`` (traded value in quote currency) columns of the spot kline
+    dataset. Every output is wrapped in ``WindowedZScore`` over
+    ``config.window`` bars, which standardizes each symbol against its own
+    trailing window. That time-series normalization suits the strategies
+    spot data is traded with here, which follow one asset over time. The
+    US-equity sibling ``Alpha101Stock`` returns raw values instead, because
+    it serves cross-sectional strategies that compare symbols on the same
+    bar. The two classes are intentionally different.
+
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. ``window`` sets the z-score window,
+        ``data_columns`` lists the six input columns above, and
+        ``factor_names`` selects which alphas to compute (all 101 when
+        unset).
 
     Examples
     --------
@@ -41,11 +58,11 @@ class Alpha101SpotKline(FactorKunQuant):
     """
 
     def __init__(self, factor_config: FactorConfig):
-        """Create the factor from a KunQuant factor config."""
+        """Initialize the factor; see the class docstring for parameters."""
         super().__init__(factor_config)
 
     def _get_factor_func(self) -> Function:
-        """Build the graph: one rolling z-scored ``Output`` per requested alpha."""
+        """Build the KunQuant graph with one z-scored output per requested alpha."""
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
@@ -77,23 +94,37 @@ class Alpha101SpotKline(FactorKunQuant):
         return tuple(factors)
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise; this factor set produces features only."""
+        """Raise ``RuntimeError``: this factor set produces features, not labels."""
         raise RuntimeError(f"{__class__.__name__} does not support get_label()")
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged."""
+        """Return the computed panel unchanged; no post-processing is needed."""
         return data
 
 
 class Alpha101Stock(FactorKunQuant):
-    """Alpha101 factors over adjusted US-equity bars, emitted raw.
+    """Alpha101 factors over adjusted US-equity bars, returned raw.
 
-    Reads ``adjOpen``/``adjHigh``/``adjLow``/``adjClose``/``adjVolume``; the
-    stock stores carry no dollar-volume column, so KunQuant derives
-    ``amount`` as ``close * volume``. Outputs are not normalized: US equities
-    are traded with cross-sectional strategies here, and a rolling
-    time-series z-score would change how symbols compare on the same day, so
-    normalization across symbols is left to the consumer.
+    Reads ``adjOpen``, ``adjHigh``, ``adjLow``, ``adjClose`` and
+    ``adjVolume``, the split- and dividend-adjusted series. Outputs are not
+    normalized. US equities are traded here with cross-sectional strategies,
+    and a per-symbol rolling z-score would change how symbols compare on the
+    same day, so normalizing across symbols is left to the consumer.
+
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. ``data_columns`` lists the five
+        adjusted columns above and ``factor_names`` selects which alphas to
+        compute (all 101 when unset).
+
+    Notes
+    -----
+    The graph passes no ``amount`` input, because the stock stores carry no
+    dollar-volume column. KunQuant's ``Alpha101.AllData`` computes VWAP as
+    ``amount / volume`` and, in KunQuant 0.1.11, raises ``RuntimeError``
+    ("Bad inputs") when ``amount`` is missing, so building this graph fails
+    until an ``amount`` or ``vwap`` input is supplied.
 
     Examples
     --------
@@ -107,11 +138,11 @@ class Alpha101Stock(FactorKunQuant):
     """
 
     def __init__(self, factor_config: FactorConfig):
-        """Create the factor from a KunQuant factor config."""
+        """Initialize the factor; see the class docstring for parameters."""
         super().__init__(factor_config)
 
     def _get_factor_func(self) -> Function:
-        """Build the graph: one raw ``Output`` per requested alpha."""
+        """Build the KunQuant graph with one raw output per requested alpha."""
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
@@ -141,9 +172,9 @@ class Alpha101Stock(FactorKunQuant):
         return tuple(factors)
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise; this factor set produces features only."""
+        """Raise ``RuntimeError``: this factor set produces features, not labels."""
         raise RuntimeError(f"{__class__.__name__} does not support get_label()")
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged."""
+        """Return the computed panel unchanged; no post-processing is needed."""
         return data
