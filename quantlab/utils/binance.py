@@ -2,9 +2,11 @@
 
 ``get_instrument_info`` turns Binance's ``exchangeInfo`` response into the flat
 per-symbol dictionary stored under ``instruments`` in the packaged
-``instruments.yaml``, which the Nautilus helpers read when building a
-``CurrencyPair``. It is used both by the instrument refresh CLI and as a
-fallback when a symbol is missing from the packaged file.
+``instruments.yaml``. The Nautilus Trader helpers read that dictionary when
+building a ``CurrencyPair`` (Nautilus's description of a tradable pair with
+its tick size, lot size and limits). It is used both by the instrument
+refresh CLI and as a fallback when a symbol is missing from the packaged
+file.
 """
 
 from typing import Any, Dict
@@ -78,10 +80,11 @@ def _get_binance_exchange_info() -> Dict[str, Any]:
 def _parse_symbol_info(symbol_data: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten one ``exchangeInfo`` symbol entry into the instrument config shape.
 
-    Precisions come from the symbol record; increments and quantity or price
-    bounds come from the ``PRICE_FILTER`` and ``LOT_SIZE`` filters; the minimum
-    notional is read from ``MIN_NOTIONAL`` when present and ``NOTIONAL``
-    otherwise. Missing filters fall back to conservative defaults.
+    Precisions come from the symbol record. Increments and quantity or price
+    bounds come from the ``PRICE_FILTER`` and ``LOT_SIZE`` filters. The
+    minimum notional (the smallest order value allowed, price times quantity)
+    is read from ``MIN_NOTIONAL`` when present and ``NOTIONAL`` otherwise.
+    Missing filters fall back to conservative defaults.
     """
     filters = {f["filterType"]: f for f in symbol_data["filters"]}
 

@@ -1,12 +1,19 @@
 """Shared argparse helpers for the ingest entry points.
 
-The scripts under ``scripts/`` (``ingest_tiingo.py``, ``ingest_us_equity.py``,
-``ingest_alpaca.py`` and the WRDS shells) share most of their command line:
-``--symbols`` / ``--universe`` / ``--as-of-date``, the date window, ``--chunk``,
-``--to-zarr``, ``--data-dir`` and the pre-flight volume guard flags. This module
-defines each of those groups once, resolves the symbol roster the flags select,
-and renders the value objects (volume estimates, conversion results) the scripts
-print. Each script adds only the flags that are its own.
+An *ingest* script downloads raw market data from a vendor and, optionally,
+converts it into a Zarr store. The scripts under ``scripts/``
+(``ingest_tiingo.py``, ``ingest_us_equity.py``, ``ingest_alpaca.py`` and the
+WRDS shells) share most of their command line: ``--symbols`` / ``--universe``
+/ ``--as-of-date``, the date window, ``--chunk``, ``--to-zarr``,
+``--data-dir`` and the pre-flight volume guard flags. This module defines each
+of those groups once, resolves the symbol *roster* (the list of symbols to
+fetch) the flags select, and renders the value objects (volume estimates,
+conversion results) the scripts print. Each script adds only the flags that
+are its own.
+
+The *volume guard* is a pre-flight check that estimates how many rows,
+bytes, requests and hours a download would cost, and refuses to start one
+that crosses a configured ceiling.
 
 The module is deliberately light at import time. Its only module-scope project
 imports are ``quantlab.base.chunking`` and ``quantlab.base.data``, and both are
@@ -19,9 +26,11 @@ pull in the dataset layer. Nothing here constructs an acquisition client or
 issues a request.
 
 One thing is intentionally not unified: ``resolve_symbols`` takes a keyword-only
-``mode`` with no default, because point-in-time membership on one day
-(``"as_of"``) and interval overlap across a window (``"in_range"``) are
-different rosters, and a silent default would quietly pick one of them.
+``mode`` with no default. Point-in-time membership on one day (``"as_of"``,
+the symbols that belonged to the universe on that date) and interval overlap
+across a window (``"in_range"``, every symbol that traded at any point in the
+window) are different rosters, and a silent default would quietly pick one
+of them.
 """
 
 import argparse
@@ -80,10 +89,9 @@ def add_window_args(
     ----------
     parser : argparse.ArgumentParser
         The parser to extend.
-    default_start_date : str | None
-        Default for ``--start-date``; ``None`` leaves it
-        unset.
-    semantics : WindowSemantics
+    default_start_date : str | None, default None
+        Default for ``--start-date``; ``None`` leaves it unset.
+    semantics : WindowSemantics, default "request-range"
         Which help text the two flags carry. ``"request-range"``
         describes a per-symbol request range; ``"interval-overlap"``
         describes a window that also filters the roster, which is the
@@ -127,6 +135,11 @@ def add_universe_args(
     The ``--universe`` choices are derived from ``UNIVERSE_CATEGORY_MAP``. The
     help text spells out the domain distinctions users trip over, such as the
     Nasdaq-100 index versus the full NASDAQ roster.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
 
     Returns
     -------
@@ -195,6 +208,11 @@ def add_to_zarr_arg(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     stops at the raw shards and says so. The conversion it enables is the
     chunked, resumable one that ``--chunk`` governs.
 
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
+
     Returns
     -------
     argparse.ArgumentParser
@@ -228,10 +246,11 @@ def refuse_conversion_without_raw_data(dataset, result) -> None:
     A run whose every symbol failed (an expired key, an exhausted quota, a
     roster of typos) would otherwise walk into the conversion and fail deep
     inside the dataset layer with an error that reads like a conversion bug.
-    Both halves of the condition matter: a run in which every symbol was
+    Both halves of the condition matter. A *watermark* records how far each
+    symbol has already been downloaded, and a run in which every symbol was
     skipped because its watermark already covered the window also reports
     zero successes, yet it has raw data on disk that must still be converted.
-    The disk probe is ``dataset.has_raw_data()``, the same predicate the
+    The disk check is ``dataset.has_raw_data()``, the same predicate the
     dataset's own raw scan uses, so the two cannot disagree.
 
     The message names paths and counts only; it never includes a credential
@@ -239,18 +258,17 @@ def refuse_conversion_without_raw_data(dataset, result) -> None:
 
     Parameters
     ----------
-    dataset
-        A constructed dataset whose ``config.raw_data_dir_path`` is
-        the raw tree the conversion would read.
-    result
+    dataset : BaseDataset
+        A constructed dataset whose ``config.raw_data_dir_path`` is the raw
+        tree the conversion would read.
+    result : object
         An acquisition result with ``succeeded`` and ``failures``
         collections.
 
     Raises
     ------
     SystemExit
-        With an explanatory message when there is nothing to
-        convert.
+        With an explanatory message when there is nothing to convert.
 
     Examples
     --------
@@ -270,9 +288,9 @@ def refuse_conversion_without_raw_data(dataset, result) -> None:
         f"symbol(s) successfully and {len(result.failures)} failed, and "
         f"there is no raw data under "
         f"{str(dataset.config.raw_data_dir_path)!r} to convert. No Zarr "
-        f"store was written and none was modified. This is NOT a fault in "
-        f"the conversion layer -- the acquisition step returned nothing to "
-        f"convert. Read the per-symbol reasons through "
+        f"store was written and none was modified. The conversion layer is "
+        f"not at fault: the acquisition step returned nothing to convert. "
+        f"Read the per-symbol reasons through "
         f"SourceInspector.failures() (the _failures.json manifest beside the "
         f"watermarks); the usual causes are an unset or rejected credential, "
         f"an exhausted quota, and a roster whose symbols the vendor does not "
@@ -298,7 +316,7 @@ def add_chunk_args(
     ----------
     parser : argparse.ArgumentParser
         The parser to extend.
-    default : str
+    default : str, default "year"
         Default granularity for ``--chunk``.
 
     Returns
@@ -358,9 +376,9 @@ def add_concurrency_args(
     parser : argparse.ArgumentParser
         The parser to extend.
     default_max_workers : int
-        Default for ``--max-workers``. It is a parameter
-        rather than an import so this module does not depend on any one
-        vendor's acquisition class.
+        Default for ``--max-workers``. It is a parameter rather than an
+        import so this module does not depend on any one vendor's
+        acquisition class.
 
     Returns
     -------
@@ -410,6 +428,13 @@ def validate_roster_args(
     through ``parser.error``, so it exits with status 2 and the usage block
     like every other argparse error.
 
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser that produced ``args``, used to report errors.
+    args : argparse.Namespace
+        The parsed arguments to check.
+
     Examples
     --------
     >>> parser = add_universe_args(argparse.ArgumentParser(prog="ingest"))
@@ -435,12 +460,17 @@ def roster_category(args: argparse.Namespace) -> str | None:
     ``--symbols`` list, so a caller can size it differently instead of
     treating it as a roster.
 
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed arguments; ``universe`` and ``category`` are both optional.
+
     Examples
     --------
     >>> roster_category(argparse.Namespace(universe="nasdaq100"))
-    nasdaq100_constituent
+    'nasdaq100_constituent'
     >>> roster_category(argparse.Namespace(category="us_all"))
-    us_all
+    'us_all'
     >>> print(roster_category(argparse.Namespace(symbols="AAPL", universe=None)))
     None
     """
@@ -468,17 +498,19 @@ def resolve_symbols(
         Parsed arguments carrying ``symbols``, ``as_of_date``,
         ``start_date``, ``end_date`` and optionally ``limit``,
         ``universe`` or ``category``.
-    catalog
-        A ``UniverseCatalog`` (or compatible object) used to resolve
-        a category; ignored for an explicit list.
+    catalog : UniverseCatalog or None
+        The catalog of the persisted universe table (or a compatible
+        object), used to resolve a category; ignored for an explicit list.
     mode : RosterMode
         ``"as_of"`` resolves point-in-time membership on
         ``args.as_of_date``. ``"in_range"`` resolves interval overlap
-        across ``args.start_date .. args.end_date``, keeping every symbol
-        that traded at any point in the window, delisted names included.
-        Keyword-only with no default, because the two rosters differ and
-        a silent default would hide a survivorship bias that nothing
-        notices unless it looks for delisted tickers.
+        across ``args.start_date`` to ``args.end_date``, keeping every
+        symbol that traded at any point in the window, delisted names
+        included. Keyword-only with no default, because the two rosters
+        differ. A wrong silent default could introduce survivorship bias
+        (testing only on symbols that survived to the end, which inflates
+        results), and nothing would notice unless it looked for delisted
+        tickers.
 
     Returns
     -------
@@ -536,8 +568,13 @@ def add_data_dir_arg(
 ) -> argparse.ArgumentParser:
     """Add ``--data-dir``, the per-run storage root override, to ``parser``.
 
-    Defined once here so the flag name, help text and precedence story are
+    Defined once here so the flag name, help text and precedence rules are
     identical on every entry point that offers it. See ``apply_data_dir``.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
 
     Returns
     -------
@@ -621,6 +658,11 @@ def add_volume_guard_args(
     derived from a calendar; the guard refuses to size a tick fetch without a
     measured figure rather than inventing one.
 
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
+
     Returns
     -------
     argparse.ArgumentParser
@@ -661,11 +703,10 @@ def add_volume_guard_args(
 # ---------------------------------------------------------------------------
 # Call-site helpers for the pre-flight volume guard.
 #
-# The guard itself is `UniverseCatalog.assert_acquisition_volume_fits`, which
-# lives in a module that binds no acquisition class. That is what makes
-# "refuses before the client is constructed" a structural property, and the
-# helpers below preserve it: they are imported by the ingest scripts, never
-# the reverse, and they construct no client.
+# The guard itself is `UniverseCatalog.assert_acquisition_volume_fits`, in a
+# module that imports no acquisition class, so it can refuse before any
+# vendor client exists. These helpers keep that property: they construct no
+# client either.
 # ---------------------------------------------------------------------------
 
 #: Category name a refusal reports when the roster came from an explicit
@@ -694,11 +735,11 @@ def _explicit_symbol_catalog(symbol_count: int):
     An explicit 15,000-symbol list costs exactly what the same roster
     resolved from a category costs, so the guard must price it rather than
     skip it. The catalog derives symbol counts and listing spans from its
-    interval table, which an explicit list does not have, so this returns an
-    instance of a ``UniverseCatalog`` subclass that replaces the roster
-    profile step with one driven by ``symbol_count``. Every ceiling, report
-    and refusal message stays the catalog's own, so the explicit path cannot
-    drift from the category path.
+    table of listing intervals, which an explicit list does not have. This
+    function therefore returns an instance of a ``UniverseCatalog`` subclass
+    that replaces the roster profile step with one driven by
+    ``symbol_count``. Every ceiling, report and refusal message stays the
+    catalog's own, so the explicit path cannot drift from the category path.
 
     The subclass is built on first use and cached, and ``quantlab.universe``
     is imported here rather than at module scope to keep this module light
@@ -708,6 +749,11 @@ def _explicit_symbol_catalog(symbol_count: int):
     ----------
     symbol_count : int
         Number of symbols in the explicit list.
+
+    Returns
+    -------
+    UniverseCatalog
+        A catalog view that prices ``symbol_count`` symbols.
     """
     global _EXPLICIT_CATALOG_CLASS
     if _EXPLICIT_CATALOG_CLASS is None:
@@ -716,7 +762,13 @@ def _explicit_symbol_catalog(symbol_count: int):
         from quantlab.universe import UniverseCatalog
 
         class _ExplicitSymbolCatalog(UniverseCatalog):
-            """Catalog view whose roster is a bare symbol count."""
+            """Catalog view whose roster is a bare symbol count.
+
+            Parameters
+            ----------
+            symbols : int
+                Number of symbols to price.
+            """
 
             def __init__(self, symbols: int):  # noqa: D107
                 """Store the symbol count without touching the reference table.
@@ -734,10 +786,10 @@ def _explicit_symbol_catalog(symbol_count: int):
                 the explicit sentinel has nothing to be validated against.
                 The base validator still applies to every other token, so a
                 ``--limit``-truncated real category keeps its typo check.
-                Nothing on the pricing path currently calls this override,
+                Nothing on the pricing path calls this override today,
                 because ``_roster_window_profile`` below is replaced
-                wholesale; it is kept so the sentinel stays safe if that
-                override ever delegates to ``super()``.
+                entirely; it keeps the sentinel safe if that method ever
+                delegates to ``super()``.
                 """
                 if category != EXPLICIT_SYMBOLS_CATEGORY:
                     super()._validate_category(category)
@@ -754,10 +806,13 @@ def _explicit_symbol_catalog(symbol_count: int):
                 Mirrors the base signature, ``bars_per_day`` included, since
                 this is what the volume guard calls on the explicit path.
                 Dates are normalised exactly as the base method does before
-                any arithmetic. Density is 1.0 rather than the catalog's
-                survivorship-adjusted figure: a hand-named list carries no
-                delisting structure, and assuming it did would understate
-                the fetch by roughly 2.7x, the wrong direction for a guard.
+                any arithmetic. *Density* is the share of symbol-day cells
+                that actually hold data. It is 1.0 here rather than the
+                catalog's figure, which is lowered because many symbols list
+                or delist inside the window. A hand-named list carries no such
+                listing information, and assuming it did would understate
+                the fetch by roughly 2.7 times, the wrong direction for a
+                guard.
                 """
                 start_date = self._normalize_iso_date(start_date, "start_date")
                 end_date = self._normalize_iso_date(end_date, "end_date")
@@ -797,7 +852,8 @@ def _explicit_symbol_catalog(symbol_count: int):
 def _sizing_window(args: argparse.Namespace) -> tuple[str, str, bool]:
     """Return ``(start, end, assumed)`` for the volume estimate.
 
-    A missing ``--start-date`` falls back to ``UNBOUNDED_WINDOW_START`` and a
+    ``args`` is the parsed namespace; ``start_date`` and ``end_date`` are
+    read if present. A missing ``--start-date`` falls back to ``UNBOUNDED_WINDOW_START`` and a
     missing ``--end-date`` to today; ``assumed`` reports whether either
     fallback applied. Nothing is written back onto ``args``: an assumption
     made to size a fetch must not become the window the fetch requests.
@@ -834,10 +890,10 @@ def volume_pricing(
     ----------
     args : argparse.Namespace
         Parsed arguments.
-    catalog
-        The ``UniverseCatalog`` that resolved ``symbols``; may be
-        ``None`` for an explicit list.
-    symbols
+    catalog : UniverseCatalog or None
+        The catalog that resolved ``symbols``; may be ``None`` for an
+        explicit list.
+    symbols : tuple[str, ...]
         The resolved roster, as returned by ``resolve_symbols``.
 
     Returns
@@ -904,12 +960,12 @@ def print_volume_estimate(
         Window start used for sizing.
     end_date : str
         Window end used for sizing.
-    window_assumed : bool
-        Whether the window came from the sizing fallbacks;
-        if so, a line saying so is printed first.
-    forced : bool
+    window_assumed : bool, default False
+        Whether the window came from the sizing fallbacks; if so, a line
+        saying so is printed first.
+    forced : bool, default False
         Whether ``--force-volume`` was set.
-    print_fn
+    print_fn : callable, default print
         Output function, injectable for tests.
 
     Returns
@@ -940,7 +996,7 @@ def print_volume_estimate(
     if window_assumed:
         print_fn(
             f"No complete --start-date/--end-date given; this fetch was sized "
-            f"against the ASSUMED window {start_date}..{end_date} "
+            f"against the assumed window {start_date}..{end_date} "
             f"(utils.cli.UNBOUNDED_WINDOW_START). The assumption is used for "
             f"the estimate only and is never sent to the vendor."
         )
@@ -977,8 +1033,10 @@ def print_sql_volume_estimate(
 ) -> dict:
     """Print an admitted ``SqlVolumeGuard`` estimate and return it.
 
-    The WRDS counterpart of ``print_volume_estimate``, under the same rule: it
-    is reached only when the guard admitted the pull, since a refusal carries
+    WRDS (Wharton Research Data Services) hosts the CRSP daily stock
+    database and the TAQ tick database behind a SQL interface. This is the
+    WRDS counterpart of ``print_volume_estimate``, under the same rule: it is
+    reached only when the guard admitted the pull, since a refusal carries
     its own numbers in its exception. The bucket line is labelled from
     ``estimate["unit"]``: ``trading days:`` for a TAQ pull, whose pages are
     days, and ``year buckets:`` for a CRSP pull, whose pages are calendar
@@ -989,9 +1047,9 @@ def print_sql_volume_estimate(
     ----------
     estimate : dict
         The dict returned by the SQL volume guard.
-    forced : bool
+    forced : bool, default False
         Whether ``--force-volume`` was set.
-    print_fn
+    print_fn : callable, default print
         Output function, injectable for tests.
 
     Returns
@@ -1052,15 +1110,16 @@ def print_conversion_result(result, *, print_fn=print):
     Every line comes off the returned object, not the config and not a
     read-back of the store, so the printed path is the one actually written
     and ``windows_skipped`` / ``resumed`` describe this run rather than
-    whatever the ledger holds. Only paths, integer counts and booleans are
+    whatever the chunk ledger (the resume record of written windows) holds.
+    Only paths, integer counts and booleans are
     printed. The argument is left unannotated so this module does not import
     the result class.
 
     Parameters
     ----------
-    result
+    result : ConversionResult
         The conversion result to render.
-    print_fn
+    print_fn : callable, default print
         Output function, injectable for tests.
 
     Returns
@@ -1090,14 +1149,14 @@ def print_conversion_result(result, *, print_fn=print):
     print_fn(f"  symbols pinned:    {result.pinned_symbols}")
     print_fn(f"  rows appended:     {result.rows_written:,}")
     if result.resumed:
-        # Said explicitly: "0 windows written" and "nothing left to do" read
-        # identically in a log otherwise, and one of them is a bug report.
+        # Without this line, "0 windows written" could mean either "nothing
+        # left to do" or a bug.
         print_fn(
             "  resumed:           yes -- windows the chunk ledger already "
             "recorded were skipped, not rewritten"
         )
     if result.peak_window_bytes is not None:
-        # A fully resumed run materialises no window and has no observed peak;
+        # A fully resumed run loads no window, so it has no measured peak;
         # printing 0.00 GiB would claim a measurement nobody took.
         predicted = (
             ""

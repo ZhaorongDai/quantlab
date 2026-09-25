@@ -1,9 +1,12 @@
 """Helpers for converting quantlab market data into Nautilus Trader objects.
 
-The spot kline dataset uses these to build ``Currency`` and ``CurrencyPair``
-instruments for its Nautilus data catalog and to name bar types. Instrument
-limits are read from the packaged ``instruments.yaml``; a symbol missing from
-that file is fetched live from the venue (currently only Binance).
+Nautilus Trader is an event-driven trading framework; quantlab currently uses
+only its data model and its parquet data catalog. The spot kline dataset uses
+these helpers to build ``Currency`` and ``CurrencyPair`` instruments for its
+catalog and to name bar types. A *venue* is the exchange an instrument trades
+on, such as ``"BINANCE"``. Instrument limits are read from the packaged
+``instruments.yaml``; a symbol missing from that file is fetched live from
+the venue (currently only Binance).
 """
 
 import os
@@ -30,6 +33,16 @@ def get_crypto_currency(symbol: str) -> Currency:
     Codes Nautilus does not know are registered on the fly as crypto
     currencies with the default precision of 8.
 
+    Parameters
+    ----------
+    symbol : str
+        A currency code such as ``"BTC"`` or ``"USDT"``.
+
+    Returns
+    -------
+    Currency
+        The matching Nautilus currency.
+
     Examples
     --------
     >>> btc = get_crypto_currency("BTC")
@@ -54,7 +67,7 @@ def get_crypto_currency_pair(
     """Build a Nautilus ``CurrencyPair`` instrument for ``symbol`` on ``venue``.
 
     Precision, increment, quantity, price and notional limits come from the
-    packaged instrument file; fees and margins come from the venue-level
+    packaged instrument file. Fees and margins come from the venue-level
     ``fees`` and ``margin`` sections. A symbol absent from the file is fetched
     from the exchange for this call only, without updating the file.
 
@@ -77,7 +90,7 @@ def get_crypto_currency_pair(
     Raises
     ------
     ValueError
-        If the symbol is missing and the venue has no live
+        If the symbol is missing from the file and the venue has no live
         fetcher.
 
     Examples
@@ -160,7 +173,22 @@ def generate_bar_type_str(
 
     The interval is expressed in the largest unit that divides it exactly:
     whole days as ``DAY``, whole hours as ``HOUR``, anything else in minutes.
-    Bars are always ``LAST`` priced and ``EXTERNAL`` aggregated.
+    Bars are always ``LAST`` priced (built from trade prices) and
+    ``EXTERNAL`` aggregated (built by the data vendor, not by Nautilus).
+
+    Parameters
+    ----------
+    time_interval : np.timedelta64
+        Length of one bar.
+    symbol : str
+        The venue's symbol, such as ``"BTCUSDT"``.
+    venue : str, default "BINANCE"
+        The venue name.
+
+    Returns
+    -------
+    str
+        A string Nautilus's ``BarType.from_str`` accepts.
 
     Examples
     --------
@@ -192,6 +220,16 @@ def parse_symbol_currencies(symbol: str) -> tuple[str, str]:
     """Split a ``...USDT`` spot symbol into its ``(base, quote)`` codes.
 
     Only USDT-quoted symbols are recognised.
+
+    Parameters
+    ----------
+    symbol : str
+        A spot symbol such as ``"ETHUSDT"``.
+
+    Returns
+    -------
+    tuple[str, str]
+        The base and quote currency codes.
 
     Raises
     ------

@@ -1,12 +1,14 @@
 """Shared base for model heads backed by pytabkit estimators.
 
+pytabkit is a library of tabular-data models with tuned default settings.
 ``TabkitRegressor`` holds what every pytabkit head needs and pytabkit does
-not do itself: the ``[T, S, *]`` panel to row conversion, NaN handling
-(pytabkit refuses NaN in numerical columns at fit and at predict), the
-validation-row logic with the pipeline's warnings, hyperparameter merging
-and the ``resolved_hyperparameters`` record. Concrete heads
-(``realmlp.py``, ``xgb_td.py``) build the estimator(s), fit them and
-predict.
+not do itself. It converts ``[T, S, *]`` arrays (bars by symbols by
+features or labels, cut from a panel indexed by ``timestamp`` and
+``symbol``) to flat rows. It handles NaN, which pytabkit refuses in
+numerical columns at fit and at predict. It decides which validation rows to
+use and warns when there are none. It merges hyperparameters and records the
+result as ``resolved_hyperparameters``. Concrete heads (``realmlp.py``,
+``xgb_td.py``) build the estimator or estimators, fit them and predict.
 
 The module is named ``tabkit.py`` rather than ``pytabkit.py`` so it does
 not shadow the ``pytabkit`` package inside this package.
@@ -42,25 +44,32 @@ class TabkitRegressor(MLModel):
     ``resolved_hyperparameters`` in the checkpoint's ``config.json`` and in
     the run config.
 
-    Every head pins ``val_fraction=0.0`` in its ``DEFAULT_PARAMS``: pytabkit
-    would otherwise carve a second validation set out of the training rows,
-    and the pipeline's trailing ``val_size`` split is meant to be the only
-    one. When that split has finite-label rows it is passed to ``fit`` as
-    ``X_val``/``y_val`` and pytabkit selects the best iteration on it;
-    whether training also halts early is the head's early-stopping mapping.
+    Every head pins ``val_fraction=0.0`` in its ``DEFAULT_PARAMS``.
+    Otherwise pytabkit would carve a second validation set out of the
+    training rows, and the pipeline's trailing ``val_size`` split is meant to
+    be the only one. When that split has finite-label rows it is passed to
+    ``fit`` as ``X_val``/``y_val`` and pytabkit selects the best iteration on
+    it. Whether training also halts early depends on the head's
+    ``_early_stopping_params``.
 
-    Subclasses implement ``_init_model``, ``_fit_model`` and ``_forward``;
+    Subclasses implement ``_init_model``, ``_fit_model`` and ``_forward``.
     ``_early_stopping_params`` is an optional hook.
+
+    Parameters
+    ----------
+    config : MLConfig
+        Factors, labels, date ranges, early-stopping settings and
+        hyperparameters. See ``MLConfig``.
 
     Examples
     --------
     A head is used like any other ``MLModel``; see ``RealMLPRegressor``
-    and ``XGBTDRegressor`` for the estimator-specific parts::
+    and ``XGBTDRegressor`` for the estimator-specific parts.
 
-        >>> issubclass(RealMLPRegressor, TabkitRegressor)
-        True
-        >>> RealMLPRegressor.DEFAULT_PARAMS["val_fraction"]
-        0.0
+    >>> issubclass(RealMLPRegressor, TabkitRegressor)
+    True
+    >>> RealMLPRegressor.DEFAULT_PARAMS["val_fraction"]
+    0.0
     """
 
     #: Estimator constructor arguments applied before the config seed, the
@@ -68,7 +77,10 @@ class TabkitRegressor(MLModel):
     DEFAULT_PARAMS: dict = {}
 
     def __init__(self, config: MLConfig):
-        """Store the config; parameters are resolved later by ``_init_model``."""
+        """Initialize the head; see the class docstring for parameters.
+
+        Estimator parameters are resolved later, by ``_init_model``.
+        """
         super().__init__(config)
         self._params: dict | None = None
 
@@ -95,20 +107,30 @@ class TabkitRegressor(MLModel):
         return dict(self._params)
 
     def _resolved_hyperparameters(self) -> dict | None:
-        """Return the constructor arguments handed to the estimator."""
+        """Return the constructor arguments handed to the estimator.
+
+        Returns None before ``_init_model`` has run.
+        """
         if self._params is None:
             return None
         return dict(self._params)
 
     def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """Return a float32 copy with infinities replaced by NaN."""
+        """Return a float32 copy with infinities replaced by NaN.
+
+        NaN is kept here, not imputed, so that rows with a missing label can
+        still be recognised and dropped later.
+        """
         out = np.array(data, dtype=np.float32, copy=True)
         out[np.isinf(out)] = np.nan
         return out
 
     @staticmethod
     def _impute_features(x: np.ndarray) -> np.ndarray:
-        """Return ``x`` with every non-finite value replaced by ``0.0``."""
+        """Return ``x`` with every non-finite value replaced by ``0.0``.
+
+        Factors are normally z-scored, so ``0.0`` is the column mean.
+        """
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
     @classmethod
@@ -127,7 +149,7 @@ class TabkitRegressor(MLModel):
     def _training_rows(
         self, train_x: np.ndarray, train_y: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Return the training rows.
+        """Return the training rows as ``(features, labels)``.
 
         Raises
         ------
