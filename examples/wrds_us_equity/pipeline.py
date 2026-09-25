@@ -3,8 +3,9 @@
 Data -> Alpha101 + Alpha158 factors -> forward-return label -> model
 (``xgb`` / ``xgb_td`` / ``realmlp``) -> cross-sectional TopN backtest, on the
 point-in-time S&P 500 (``universe="sp500"``) or Nasdaq-100
-(``universe="nasdaq100"``). Training and the backtest are logged to Weights
-& Biases unless ``wandb_mode="disabled"``.
+(``universe="nasdaq100"``). The backtest is compared against a buy-and-hold
+ETF benchmark (SPY or QQQ), and training and the backtest are logged to
+Weights & Biases unless ``wandb_mode="disabled"``.
 
 Every setting lives in the ``Settings`` block below: edit it and run the file
 (``uv run python examples/wrds_us_equity/pipeline.py``) or step through the
@@ -13,7 +14,9 @@ Every setting lives in the ``Settings`` block below: edit it and run the file
 Prerequisite: a converted CRSP store and its membership panel for the chosen
 index, as written by ``scripts/ingest_wrds_crsp.py --universe crsp_sp500
 --to-zarr`` or ``--universe comp_nasdaq100 --to-zarr`` (see
-``docs/wrds_crsp.md`` and this directory's README).
+``docs/wrds_crsp.md`` and this directory's README). The benchmark needs its
+ETF in the raw tier: ``--qqq --to-zarr`` writes the QQQ store directly, and
+SPY is downloaded with ``--permnos 84398`` and converted here on first use.
 
 Why two derived stores are written in step 1:
 
@@ -52,6 +55,7 @@ from loguru import logger
 
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
+    QQQ_PERMNO,
     ConstituentDatasetConfig,
     CrossSectionBacktestConfig,
     CrspDatasetConfig,
@@ -89,6 +93,17 @@ UNIVERSES = {
     "nasdaq100": (CompustatNasdaq100ConstituentDataset, "comp_nasdaq100", 10),
 }
 
+#: Buy-and-hold benchmarks selectable through ``Settings.benchmark``: the
+#: ETF's CRSP PERMNO and the store it lives in. Each gets a store of its own,
+#: never a column of the equity panel, where it would be ranked against its
+#: own constituents.
+BENCHMARKS = {
+    "spy": ("84398", "wrds_crsp_spy_1d.zarr"),  # SPDR S&P 500 ETF
+    "qqq": (QQQ_PERMNO, "wrds_crsp_qqq_1d.zarr"),  # Invesco QQQ (Nasdaq-100)
+}
+#: The benchmark ``benchmark="auto"`` picks for each universe.
+DEFAULT_BENCHMARK = {"sp500": "spy", "nasdaq100": "qqq"}
+
 #: Default hyperparameters per head; ``Settings.hyperparameters`` overrides.
 DEFAULT_HYPERPARAMETERS = {
     # xgb.train parameters; trained on the pooled CCC loss, early-stopped on RMSE.
@@ -119,6 +134,12 @@ class Settings:
     #: and HTML report to the ``USEquityCrossectionSelectStockVectorBt_backtest``
     #: project.
     wandb_mode: str = "online"
+
+    #: Buy-and-hold benchmark for the backtest: ``"auto"`` (SPY for sp500,
+    #: QQQ for nasdaq100), ``"spy"``, ``"qqq"`` or ``None`` for no benchmark.
+    #: Adds the ``benchmark`` and ``relative`` metric blocks (excess return,
+    #: information ratio, beta, ...) and the benchmark curve to the report.
+    benchmark: str | None = "auto"
 
     #: Model head: ``"xgb"``, ``"xgb_td"`` or ``"realmlp"``.
     model: str = "xgb"
@@ -183,6 +204,13 @@ PANEL_COLUMNS = (
 ALPHA_COLUMNS = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
 
 
+def benchmark_name(s: Settings) -> str | None:
+    """The benchmark key ``Settings.benchmark`` resolves to, or ``None``."""
+    if s.benchmark == "auto":
+        return DEFAULT_BENCHMARK[s.universe]
+    return s.benchmark
+
+
 def paths(s: Settings) -> dict[str, Path]:
     """Every file location the pipeline reads or writes, from the data root."""
     if s.data_root is not None:
@@ -204,6 +232,8 @@ def paths(s: Settings) -> dict[str, Path]:
         "alpha101": work / "factor" / "alpha101.zarr",
         "alpha158": work / "factor" / "alpha158.zarr",
         "label": work / "label" / f"ret_{s.horizon}.zarr",
+        "benchmark": stores / BENCHMARKS[benchmark_name(s)][1]
+        if benchmark_name(s) else None,
         "models": work / "models" / s.model,
         "backtests": work / "backtests" / s.model,
     }
@@ -381,6 +411,42 @@ def train(s: Settings) -> Path:
 
 
 # %% 5. Backtest
+def benchmark_dataset(s: Settings) -> CrspStockDataset | None:
+    """The benchmark ETF's single-symbol dataset, converted on first use."""
+    name = benchmark_name(s)
+    if name is None:
+        return None
+    permno, _ = BENCHMARKS[name]
+    config = CrspDatasetConfig(
+        zarr_file_path=str(P["benchmark"]),
+        raw_data_dir_path=str(P["raw_dir"]),
+        reference_dir=str(P["reference_dir"]),
+        permnos=(permno,),
+        # ETFs are funds, which the default equity filter drops.
+        security_filter="none",
+    )
+    if not P["benchmark"].exists():
+        logger.info(f"converting the {name.upper()} benchmark into {P['benchmark']}")
+        try:
+            converted = CrspStockDataset(config).from_raw_data()
+            panel = converted.get_xarray_dataset()
+            if panel.sizes.get("symbol", 0) == 0 or not bool(
+                panel["adjClose"].notnull().any()
+            ):
+                raise ValueError(f"the raw tier holds no rows for PERMNO {permno}")
+            converted.save()
+        except Exception as exc:
+            ingest = "--qqq --to-zarr" if name == "qqq" else f"--permnos {permno}"
+            raise FileNotFoundError(
+                f"No {name.upper()} benchmark store at {P['benchmark']} and it "
+                f"could not be converted from the raw tier ({exc}). Download "
+                f"it first: uv run python scripts/ingest_wrds_crsp.py {ingest} "
+                f"--start-date <start> --end-date <end>, or set "
+                f"Settings.benchmark=None."
+            ) from exc
+    return CrspStockDataset(config)
+
+
 def backtest(s: Settings, trained: Path):
     """Backtest the test window, or the stitched CV folds."""
     config = CrossSectionBacktestConfig(
@@ -399,6 +465,7 @@ def backtest(s: Settings, trained: Path):
         slippage=s.slippage,
         init_cash=s.init_cash,
         use_wandb=s.wandb_mode != "disabled",
+        benchmark_dataset=benchmark_dataset(s),
     )
     backtester = USEquityCrossectionSelectStockVectorBt(config)
     result = backtester.run_cv() if s.use_cv else backtester.run()
@@ -407,6 +474,15 @@ def backtest(s: Settings, trained: Path):
         key: metrics["whole"].get(key)
         for key in ("Total Return [%]", "Sharpe Ratio", "Max Drawdown [%]")
     }
+    relative = (metrics.get("relative") or {}).get("whole") or {}
+    summary.update({
+        key: relative[key]
+        for key in (
+            "benchmark_total_return", "excess_return", "excess_max_drawdown",
+            "information_ratio", "beta",
+        )
+        if key in relative
+    })
     logger.info(f"backtest {json.dumps(summary, default=str)}; run: {result.run_dir}")
     return result
 
@@ -418,6 +494,11 @@ def main(s: Settings = SETTINGS):
     if s.universe not in UNIVERSES:
         raise ValueError(
             f"universe must be one of {sorted(UNIVERSES)}, got {s.universe!r}"
+        )
+    if s.benchmark not in (None, "auto", *BENCHMARKS):
+        raise ValueError(
+            f"benchmark must be None, 'auto' or one of {sorted(BENCHMARKS)}, "
+            f"got {s.benchmark!r}"
         )
     # wandb reads WANDB_MODE at every wandb.init(), so this covers every run.
     os.environ["WANDB_MODE"] = s.wandb_mode
