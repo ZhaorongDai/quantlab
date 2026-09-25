@@ -1,0 +1,198 @@
+"""Download one or more ETFs from WRDS CRSP by PERMNO, one Zarr store each.
+
+An ETF (exchange-traded fund) is downloaded from CRSP like any security, by
+its PERMNO, and written as its own single-symbol store
+``data/us_equity/1d/wrds_crsp_{name}_1d.zarr``. It is never a column of an
+index or market panel: a backtest picks it by name as a benchmark, and an
+ETF ranked against its own holdings would be the index competing with
+itself.
+
+``--etf`` takes a comma-separated list of ``spy``, ``qqq`` (built-in PERMNOs)
+or ``name=PERMNO`` for any other fund. The raw rows go to
+``downloads/us_equity/1d/wrds_crsp/wrds/`` and the CRSP reference tables to
+the sibling ``_reference/``, both shared with ``index.py`` and ``market.py``,
+so reference tables already on disk for the same CRSP release are reused.
+
+``WRDS_USERNAME`` must be set in the environment. The password is never read
+by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
+run shares one WRDS connection, closed at the end whether the run succeeded
+or failed.
+
+Usage::
+
+    export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
+    uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
+    uv run python scripts/wrds/etf.py --etf iwm=89990 --start 2005-01-01 \\
+        --end 2024-12-31 --refresh
+
+``--end`` defaults to today and is clipped to the last day of the annual CRSP
+release. ``--refresh`` continues each ETF from its recorded watermark
+instead of downloading the whole window again.
+"""
+
+import argparse
+import sys
+from datetime import date
+
+from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
+from quantlab.config import get_data_root
+from quantlab.dataset.crsp import CrspStockDataset
+from quantlab.utils.cli import (
+    add_data_dir_arg,
+    apply_data_dir,
+    print_conversion_result,
+)
+
+SOURCE = DataSourceRegistry.get("wrds")
+CAPABILITY = ("us_equity", "1d", "crsp_daily")
+ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
+
+#: Built-in ETF names and their CRSP PERMNOs.
+KNOWN_ETFS: dict[str, str] = {"spy": SPY_PERMNO, "qqq": QQQ_PERMNO}
+
+
+def _parse_etfs(parser: argparse.ArgumentParser, value: str) -> dict[str, str]:
+    """Return ``{name: PERMNO}`` for ``--etf`` (``spy``, ``qqq`` or ``name=PERMNO``)."""
+    etfs: dict[str, str] = {}
+    for token in filter(None, (part.strip() for part in value.split(","))):
+        name, _, permno = token.partition("=")
+        name = name.strip().lower()
+        permno = permno.strip() or KNOWN_ETFS.get(name, "")
+        if not name or not permno.isdigit():
+            parser.error(
+                f"--etf {token!r}: give a built-in ETF ({', '.join(KNOWN_ETFS)}) "
+                f"or name=PERMNO, where PERMNO is CRSP's integer security id."
+            )
+        etfs[name] = permno
+    if not etfs:
+        parser.error("--etf names no ETF.")
+    return etfs
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Download ETFs from WRDS CRSP by PERMNO, one Zarr store each. "
+            "Requires WRDS_USERNAME in the environment and the password in "
+            "~/.pgpass."
+        )
+    )
+    parser.add_argument(
+        "--etf",
+        required=True,
+        help=(
+            f"Comma-separated ETFs: {', '.join(KNOWN_ETFS)} (built-in) or "
+            f"name=PERMNO, e.g. spy,qqq,iwm=89990."
+        ),
+    )
+    parser.add_argument(
+        "--start", required=True, help="First day of the window, YYYY-MM-DD."
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        help=(
+            "Last day of the window, YYYY-MM-DD. Defaults to today and is "
+            "clipped to the last day of the CRSP release."
+        ),
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Continue each ETF from its watermark instead of re-downloading.",
+    )
+    add_data_dir_arg(parser)
+    return parser
+
+
+if __name__ == "__main__":
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+    apply_data_dir(args)  # before any path is derived from the data root
+    etfs = _parse_etfs(parser, args.etf)
+    requested_end = args.end or date.today().isoformat()
+
+    # Imported here so the session class is resolved at run time.
+    from quantlab.acquisition.wrds.crsp import CrspQueries
+    from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
+    from quantlab.acquisition.wrds.taq import WrdsSession
+
+    try:
+        session = WrdsSession.shared()
+    except RuntimeError as exc:
+        parser.exit(1, f"{exc}\n")
+
+    try:
+        try:
+            # 1. Entitlement first. An ETF pull needs the stock schema only.
+            CrspQueries.assert_entitled(session, (CrspQueries.STOCK_SCHEMA,))
+
+            # 2. Clip the window to the end of the annual CRSP release.
+            product_end = CrspQueries.product_end(session)
+            start_date, end_date, clipped = ACQ.window_for_product_end(
+                product_end, args.start, requested_end, clip=True
+            )
+            if clipped is not None:
+                print(f"clipped end {requested_end} -> {clipped.isoformat()} (CRSP release end)")
+            start, end = start_date.isoformat(), end_date.isoformat()
+
+            # 3. Reference tables (tickers, delistings, distributions), reused
+            #    when this release's are on disk.
+            acq_config = SOURCE.config_factory_for(*CAPABILITY)(
+                symbols=tuple(sorted(set(etfs.values()), key=int)),
+                start_date=start,
+                end_date=end,
+                kwargs={"clip_to_product_end": True},
+            )
+            reference_dir = ACQ.reference_dir_for(acq_config)
+            CrspReferenceTables(session, reference_dir).pull(
+                product_end=product_end, include_sp500=False
+            )
+            print(f"Reference tables at: {reference_dir}")
+        except (RuntimeError, ValueError) as exc:
+            parser.exit(1, f"{exc}\n")
+
+        # 4. Download.
+        print(f"Acquiring {len(etfs)} ETF(s) from {SOURCE.display_name} (refresh={args.refresh})")
+        result = run(SOURCE, acq_config, refresh=args.refresh)
+        print(f"{len(result.succeeded)} ETF(s) succeeded, {len(result.failures)} failed")
+        print(f"Raw data written under: {acq_config.raw_data_dir_path}")
+
+        # 5. Convert each ETF into its own store.
+        data_dir = get_data_root() / "data" / "us_equity" / "1d"
+        if not CrspStockDataset(
+            CrspDatasetConfig.etf_benchmark(
+                permno=next(iter(etfs.values())),
+                zarr_file_path=str(data_dir / "unused.zarr"),
+                raw_data_dir_path=acq_config.raw_data_dir_path,
+                reference_dir=str(reference_dir),
+            )
+        ).has_raw_data():
+            parser.exit(
+                1,
+                f"Refusing to convert: no raw data under "
+                f"{acq_config.raw_data_dir_path} ({len(result.failures)} ETF(s) "
+                f"failed this run). No store was written.\n",
+            )
+        not_converted: list[str] = []
+        for name, permno in etfs.items():
+            ds_config = CrspDatasetConfig.etf_benchmark(
+                permno=permno,
+                zarr_file_path=str(data_dir / f"wrds_crsp_{name}_1d.zarr"),
+                raw_data_dir_path=acq_config.raw_data_dir_path,
+                reference_dir=str(reference_dir),
+                start_date=start,
+                end_date=end,
+            )
+            print(f"Converting {name.upper()} (PERMNO {permno}) into its own store")
+            try:
+                print_conversion_result(convert(SOURCE, ds_config, data_type="crsp_daily"))
+            except ValueError as exc:
+                # One ETF with no rows in the window must not stop the others.
+                print(f"{name.upper()} (PERMNO {permno}) not converted: {exc}", file=sys.stderr)
+                not_converted.append(name)
+        if not_converted:
+            parser.exit(1, f"{len(not_converted)} ETF(s) not converted: {', '.join(not_converted)}.\n")
+    finally:
+        WrdsSession.close_shared()
