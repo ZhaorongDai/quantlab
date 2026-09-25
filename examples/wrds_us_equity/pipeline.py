@@ -1,15 +1,19 @@
 """End-to-end US-equity pipeline on WRDS CRSP daily data.
 
 Data -> Alpha101 + Alpha158 factors -> forward-return label -> model
-(``xgb`` / ``xgb_td`` / ``realmlp``) -> cross-sectional TopN backtest.
+(``xgb`` / ``xgb_td`` / ``realmlp``) -> cross-sectional TopN backtest, on the
+point-in-time S&P 500 (``universe="sp500"``) or Nasdaq-100
+(``universe="nasdaq100"``). Training and the backtest are logged to Weights
+& Biases unless ``wandb_mode="disabled"``.
 
 Every setting lives in the ``Settings`` block below: edit it and run the file
 (``uv run python examples/wrds_us_equity/pipeline.py``) or step through the
 ``# %%`` cells in VS Code / Jupyter. There is no command-line interface.
 
-Prerequisite: a converted CRSP S&P 500 store and its membership panel, as
-written by ``scripts/ingest_wrds_crsp.py --universe crsp_sp500 --to-zarr``
-(see ``docs/wrds_crsp.md`` and this directory's README).
+Prerequisite: a converted CRSP store and its membership panel for the chosen
+index, as written by ``scripts/ingest_wrds_crsp.py --universe crsp_sp500
+--to-zarr`` or ``--universe comp_nasdaq100 --to-zarr`` (see
+``docs/wrds_crsp.md`` and this directory's README).
 
 Why two derived stores are written in step 1:
 
@@ -17,7 +21,7 @@ Why two derived stores are written in step 1:
   window, all history kept. Factors read it, so rolling windows never see a
   gap caused by index membership.
 - ``members``: the same panel with every cell NaN where the PERMNO was not an
-  S&P 500 member on that day. The label and the backtest read it, so the
+  index member on that day. The label and the backtest read it, so the
   model trains only on member rows and the backtest can only buy members (a
   holding that leaves the index is sold on the next bar). Without it the
   roster would include stocks before they joined the index, which is
@@ -32,10 +36,7 @@ host's SIMD block width (8 with AVX2, 16 with AVX-512).
 import os
 import sys
 
-# Set before torch or xgboost is imported. W&B: every training run calls
-# wandb.init(); set WANDB_MODE=online (after `wandb login`) to track runs.
-os.environ.setdefault("WANDB_MODE", "disabled")
-# macOS only: xgboost and torch ship different OpenMP runtimes that clash in
+# Set before torch or xgboost is imported. macOS only: xgboost and torch ship different OpenMP runtimes that clash in
 # one process unless OpenMP runs single-threaded.
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -60,7 +61,10 @@ from quantlab.base.config import (
 )
 from quantlab.config import get_data_root, set_data_root
 from quantlab.dataset._support.masking import UniverseMask
-from quantlab.dataset.constituent import CrspSP500ConstituentDataset
+from quantlab.dataset.constituent import (
+    CompustatNasdaq100ConstituentDataset,
+    CrspSP500ConstituentDataset,
+)
 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX, CrspStockDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.alpha101 import Alpha101Stock
@@ -75,6 +79,14 @@ MODELS = {
     "xgb": XGBoostRegressor,
     "xgb_td": XGBTDRegressor,
     "realmlp": RealMLPRegressor,
+}
+
+#: Index universes selectable through ``Settings.universe``: the membership
+#: panel class, the ``--universe`` value of ``scripts/ingest_wrds_crsp.py``
+#: and the default ``top_n`` (the index has ~500 or ~100 members).
+UNIVERSES = {
+    "sp500": (CrspSP500ConstituentDataset, "crsp_sp500", 50),
+    "nasdaq100": (CompustatNasdaq100ConstituentDataset, "comp_nasdaq100", 10),
 }
 
 #: Default hyperparameters per head; ``Settings.hyperparameters`` overrides.
@@ -96,6 +108,17 @@ class Settings:
     #: or ``data/`` beside the repository), which is where the ingest script
     #: wrote the CRSP stores.
     data_root: str | None = None
+
+    #: Index universe: ``"sp500"`` or ``"nasdaq100"``.
+    universe: str = "sp500"
+
+    #: Weights & Biases mode: ``"online"`` (needs ``wandb login``),
+    #: ``"offline"`` (writes ``wandb/`` locally; ``wandb sync`` later) or
+    #: ``"disabled"``. Each training run (and each CV fold) logs its per-round
+    #: curves, metrics and feature importance; the backtest logs its metrics
+    #: and HTML report to the ``USEquityCrossectionSelectStockVectorBt_backtest``
+    #: project.
+    wandb_mode: str = "online"
 
     #: Model head: ``"xgb"``, ``"xgb_td"`` or ``"realmlp"``.
     model: str = "xgb"
@@ -138,7 +161,8 @@ class Settings:
     #: Backtest: rebalance every ``rebalance_periods`` bars into the top
     #: ``top_n`` scores (``long_short`` adds the bottom ``top_n`` short).
     rebalance_periods: int = 5
-    top_n: int = 50
+    #: ``None`` takes the universe default (50 for sp500, 10 for nasdaq100).
+    top_n: int | None = None
     direction: str = "long_only"
     fees: float = 0.0005
     slippage: float = 0.0005
@@ -166,11 +190,12 @@ def paths(s: Settings) -> dict[str, Path]:
     root = get_data_root()
     stores = root / "data" / "us_equity" / "1d"
     crsp_downloads = root / "downloads" / "us_equity" / "1d" / "wrds_crsp"
-    work = root / "data" / "pipeline" / "wrds_sp500"
+    u = s.universe
+    work = root / "data" / "pipeline" / f"wrds_{u}"
     return {
-        # Written by scripts/ingest_wrds_crsp.py --universe crsp_sp500 --to-zarr.
-        "crsp_store": stores / "wrds_crsp_sp500_1d.zarr",
-        "membership_store": stores / "wrds_crsp_sp500_membership.zarr",
+        # Written by scripts/ingest_wrds_crsp.py --universe <index> --to-zarr.
+        "crsp_store": stores / f"wrds_crsp_{u}_1d.zarr",
+        "membership_store": stores / f"wrds_crsp_{u}_membership.zarr",
         "raw_dir": crsp_downloads / "wrds",
         "reference_dir": crsp_downloads / "_reference",
         # Written by this pipeline.
@@ -199,21 +224,23 @@ def stock_dataset(store: Path) -> StockDataset:
 
 # %% 1. Read the CRSP data and write the prices / members stores
 def read_crsp(s: Settings) -> tuple[xr.Dataset, xr.Dataset]:
-    """Read the CRSP S&P 500 price panel and its point-in-time membership."""
+    """Read the CRSP price panel and the index's point-in-time membership."""
+    membership_cls, ingest_universe, _ = UNIVERSES[s.universe]
     for key in ("crsp_store", "membership_store"):
         if not P[key].exists():
             raise FileNotFoundError(
-                f"{P[key]} not found. Download and convert the CRSP S&P 500 "
-                f"roster first: uv run python scripts/ingest_wrds_crsp.py "
-                f"--universe crsp_sp500 --start-date <start> --end-date <end> "
-                f"--to-zarr (see examples/wrds_us_equity/README.md)."
+                f"{P[key]} not found. Download and convert the CRSP roster "
+                f"first: uv run python scripts/ingest_wrds_crsp.py "
+                f"--universe {ingest_universe} --start-date <start> "
+                f"--end-date <end> --to-zarr (see "
+                f"examples/wrds_us_equity/README.md)."
             )
     crsp = CrspStockDataset(CrspDatasetConfig(
         zarr_file_path=str(P["crsp_store"]),
         raw_data_dir_path=str(P["raw_dir"]),
         reference_dir=str(P["reference_dir"]),
     ))
-    membership = CrspSP500ConstituentDataset(ConstituentDatasetConfig(
+    membership = membership_cls(ConstituentDatasetConfig(
         zarr_file_path=str(P["membership_store"]),
         cache_dir=str(P["reference_dir"]),
     ))
@@ -367,10 +394,11 @@ def backtest(s: Settings, trained: Path):
         output_dir=str(P["backtests"]),
         rebalance_periods=s.rebalance_periods,
         direction=s.direction,
-        top_n=s.top_n,
+        top_n=s.top_n if s.top_n is not None else UNIVERSES[s.universe][2],
         fees=s.fees,
         slippage=s.slippage,
         init_cash=s.init_cash,
+        use_wandb=s.wandb_mode != "disabled",
     )
     backtester = USEquityCrossectionSelectStockVectorBt(config)
     result = backtester.run_cv() if s.use_cv else backtester.run()
@@ -387,6 +415,12 @@ def backtest(s: Settings, trained: Path):
 def main(s: Settings = SETTINGS):
     """Run the five steps; the stages can also be run cell by cell."""
     global P
+    if s.universe not in UNIVERSES:
+        raise ValueError(
+            f"universe must be one of {sorted(UNIVERSES)}, got {s.universe!r}"
+        )
+    # wandb reads WANDB_MODE at every wandb.init(), so this covers every run.
+    os.environ["WANDB_MODE"] = s.wandb_mode
     P = paths(s)
     prepare_stores(s)
     compute_factors(s)
