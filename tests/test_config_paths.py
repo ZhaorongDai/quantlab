@@ -9,12 +9,8 @@ from pathlib import Path
 
 import quantlab.config as config
 from quantlab.config import (
-    alpha101_config,
     get_data_root,
-    nasdaq100_constituent_config,
     set_data_root,
-    sp500_constituent_config,
-    spot_kline_config,
     stock_acquisition_config,
     stock_kline_config,
     universe_config,
@@ -29,14 +25,6 @@ _CONFIG_SOURCE = Path(config.__file__).resolve()
 #: level below the repository root, the same independent witness
 #: `test_data_dir_cli.py` uses.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def test_spot_kline_config_uses_market_frequency_path_convention() -> None:
-    cfg = spot_kline_config()
-
-    assert "data/crypto_spot/1d/" in cfg.zarr_file_path.replace("\\", "/")
-    assert cfg.market == "crypto_spot"
-    assert cfg.frequency == "1d"
 
 
 def test_stock_kline_config_uses_market_frequency_path_convention() -> None:
@@ -104,40 +92,6 @@ def test_stock_config_factories_carry_the_alpaca_vendor_through_both_paths() -> 
         == Path(acq.raw_data_dir_path).parent
     )
     assert tiingo.raw_data_dir_path != acq.raw_data_dir_path
-
-
-def test_alpha101_config_still_constructs_successfully() -> None:
-    # Regression: alpha101_config()/alpha158_config()/spot_label_config() call
-    # spot_kline_config(symbols=symbols) with no market/frequency override —
-    # this must keep resolving via the new defaults, not raise a TypeError.
-    fc = alpha101_config()
-
-    assert fc is not None
-
-
-def test_sp500_constituent_config_uses_market_frequency_path_convention() -> None:
-    cfg = sp500_constituent_config()
-
-    assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
-    # CONFLICT 4's user-visible consequence: a membership panel is never handed
-    # a nautilus catalog destination, because it has no bar representation.
-    assert "catalog_path" not in cfg.to_dict()
-
-
-def test_nasdaq100_constituent_config_uses_market_frequency_path_convention() -> None:
-    cfg = nasdaq100_constituent_config()
-
-    assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
-    assert cfg.zarr_file_path.replace("\\", "/").endswith(
-        "nasdaq100_constituent.zarr"
-    )
-    # RESEARCH Finding 6 bullet 4: two indices, two stores. Their coverage
-    # starts differ by ~31 years, so a shared store would imply 1976
-    # Nasdaq-100 coverage that does not exist.
-    assert (
-        nasdaq100_constituent_config().zarr_file_path
-        != sp500_constituent_config().zarr_file_path
-    )
 
 
 def test_stock_config_defaults_are_byte_identical_without_the_new_arguments() -> None:
@@ -228,8 +182,8 @@ def test_the_override_reaches_every_path_field_the_flag_promises(
 ) -> None:
     """DDIR-01: `--data-dir /X` must move the four path fields a run actually
     writes -- `raw_data_dir_path`, `watermark_path`, `zarr_file_path` and the
-    universe table's `output_path` -- across both markets and the constituent
-    panels, not just the one factory the flag was first wired to.
+    universe table's `output_path` -- across every factory, not just the one
+    factory the flag was first wired to.
     """
     monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
     set_data_root(tmp_path)
@@ -241,10 +195,6 @@ def test_the_override_reaches_every_path_field_the_flag_promises(
     assert stock_kline_config().zarr_file_path.startswith(root)
     assert universe_config().output_path.startswith(root)
     assert universe_config().cache_dir.startswith(root)
-    assert spot_kline_config().raw_data_dir_path.startswith(root)
-    assert sp500_constituent_config().zarr_file_path.startswith(root)
-    assert nasdaq100_constituent_config().zarr_file_path.startswith(root)
-    assert alpha101_config().file_path.startswith(root)
 
 
 #: Names that root a path expression: the resolver itself and the two roots
@@ -337,7 +287,7 @@ def test_the_by_construction_root_check_actually_inspects_something() -> None:
         if kw.arg and (kw.arg.endswith("_path") or kw.arg.endswith("_dir"))
     ]
 
-    assert len(considered) >= 14, (
+    assert len(considered) >= 7, (
         f"only {len(considered)} path-shaped keyword arguments found in "
         "quantlab/config/__init__.py's factories; the by-construction root check "
         "above "

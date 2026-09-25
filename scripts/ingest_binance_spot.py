@@ -32,7 +32,7 @@ Usage::
 import argparse
 
 from quantlab.base.config import DatasetConfig
-from quantlab.config import spot_kline_config
+from quantlab.config import get_data_root
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 
@@ -40,9 +40,11 @@ from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 def _build_dataset_config(args: argparse.Namespace) -> DatasetConfig:
     """Build the ``DatasetConfig`` for the parsed arguments.
 
-    The config comes from ``spot_kline_config``. ``--raw-data-dir`` is
-    applied on top of it afterwards, which is what lets it combine with a
-    root already moved by ``--data-dir``.
+    Raw CSVs are read from
+    ``downloads/crypto_spot/1d/spot/monthly/klines`` and the panel is stored
+    at ``data/crypto_spot/1d/klines.zarr``, both under the storage root.
+    ``--raw-data-dir`` replaces the CSV directory afterwards, which is what
+    lets it combine with a root already moved by ``--data-dir``.
 
     Parameters
     ----------
@@ -55,10 +57,18 @@ def _build_dataset_config(args: argparse.Namespace) -> DatasetConfig:
         The config for ``SpotKlineDataset``.
     """
     symbols = args.symbols.split(",") if args.symbols else None
-    config = spot_kline_config(
-        symbols=symbols,
+    root = get_data_root()
+    config = DatasetConfig(
+        raw_data_dir_path=str(
+            root / "downloads" / "crypto_spot" / "1d" / "spot" / "monthly" / "klines"
+        ),
+        zarr_file_path=str(root / "data" / "crypto_spot" / "1d" / "klines.zarr"),
+        catalog_path=str(root / "data" / "catalog"),
+        market="crypto_spot",
+        frequency="1d",
         start_date=args.start_date,
         end_date=args.end_date,
+        symbols=symbols,
     )
     if args.raw_data_dir is not None:
         config.raw_data_dir_path = args.raw_data_dir
@@ -115,9 +125,8 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Must run before ``spot_kline_config()`` is called: the factory copies
-    # the data root into its paths when called, so a later override is
-    # ignored. ``--raw-data-dir`` is applied after the config is built.
+    # Must run before the config is built: ``_build_dataset_config`` copies
+    # the data root into its paths, so a later override is ignored. ``--raw-data-dir`` is applied after the config is built.
     apply_data_dir(args)
 
     config = _build_dataset_config(args)
