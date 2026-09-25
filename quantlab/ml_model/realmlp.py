@@ -1,6 +1,6 @@
 """RealMLP regression head backed by pytabkit.
 
-``RealMLPRegressor`` is an ``MLModel`` that wraps
+``RealMLPRegressor`` is a ``TabkitRegressor`` that wraps
 ``pytabkit.RealMLP_TD_Regressor``, the RealMLP network with the tuned
 defaults from Holzmüller et al., "Better by Default" (NeurIPS 2024). It
 trains on the flattened ``(num_times * num_symbols, num_features)`` rows of
@@ -15,42 +15,22 @@ applies to torch and xgboost in one process applies here (see
 """
 
 import numpy as np
-from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 
-from quantlab.base.config import MLConfig
-from quantlab.base.model import MLModel
+from quantlab.ml_model.tabkit import TabkitRegressor
 
 
-class RealMLPRegressor(MLModel):
+class RealMLPRegressor(TabkitRegressor):
     """Predict future returns with a pytabkit RealMLP (tuned defaults).
 
-    Training flattens the ``[T, S, F]`` features and ``[T, S, L]`` labels to
-    rows, drops every row with a non-finite label, and fits one
-    ``RealMLP_TD_Regressor`` on the rest. Each label is one output of a
-    multi-output regression; headline metrics are computed on the primary
-    label, index 0.
+    One ``RealMLP_TD_Regressor`` is fitted on the flattened rows; each label
+    is one output of a multi-output regression, and headline metrics are
+    computed on the primary label, index 0. Row conversion, NaN handling and
+    the hyperparameter record are inherited from ``TabkitRegressor``.
 
-    pytabkit refuses NaN in numerical columns, at fit and at predict, so
-    non-finite feature values are imputed with ``0.0`` in ``_to_rows`` and
-    ``_forward``. Factors are normally z-scored before they reach a model,
-    which makes ``0.0`` the column mean; a head that needs another imputation
-    overrides ``_impute_features``. Label NaN is kept by ``_preprocess`` so
-    the row drop and ``MLModel._loss`` still see it.
-
-    Hyperparameters come from ``config.hyperparameters`` and are the
-    constructor arguments of ``RealMLP_TD_Regressor`` (``n_epochs``,
-    ``hidden_sizes``, ``lr``, ``device``, ``n_threads``, ...). Every key
-    overrides the matching entry of ``DEFAULT_PARAMS``; ``random_state``
-    defaults to ``config.random_seed``. An unknown key raises ``TypeError``
-    from pytabkit at ``_init_model``. The user's dict is never modified, and
-    the parameters actually used are recorded under
-    ``resolved_hyperparameters`` in the checkpoint's ``config.json`` and in
-    the run config.
-
-    ``DEFAULT_PARAMS`` pins ``val_fraction=0.0``: pytabkit would otherwise
-    carve a second validation set out of the training rows, and the
-    pipeline's trailing ``val_size`` split is meant to be the only one.
+    Hyperparameters are the constructor arguments of
+    ``RealMLP_TD_Regressor`` (``n_epochs``, ``hidden_sizes``, ``lr``,
+    ``device``, ``n_threads``, ...).
 
     With ``config.early_stopping`` set and a validation segment that has at
     least one finite-label row, pytabkit's early stopping watches the
@@ -96,11 +76,6 @@ class RealMLPRegressor(MLModel):
         "verbosity": 0,
     }
 
-    def __init__(self, config: MLConfig):
-        """Store the config; parameters are resolved later by ``_init_model``."""
-        super().__init__(config)
-        self._params: dict | None = None
-
     def _early_stopping_params(self) -> dict:
         """Return the pytabkit early-stopping keys implied by the config."""
         if not self.config.early_stopping:
@@ -118,51 +93,11 @@ class RealMLPRegressor(MLModel):
     ) -> RealMLP_TD_Regressor:
         """Resolve the parameters and return an unfitted estimator.
 
-        The merge order is ``DEFAULT_PARAMS``, then ``random_state`` from the
-        config seed, then the early-stopping keys implied by
-        ``config.early_stopping``, then the user's hyperparameters, which win.
-
         Raises:
             TypeError: From pytabkit, if a hyperparameter key is not a
                 ``RealMLP_TD_Regressor`` constructor argument.
         """
-        self._params = {
-            **self.DEFAULT_PARAMS,
-            "random_state": self.config.random_seed,
-            **self._early_stopping_params(),
-            **dict(hyperparameters),
-        }
-        return RealMLP_TD_Regressor(**self._params)
-
-    def _resolved_hyperparameters(self) -> dict | None:
-        """Return the constructor arguments handed to ``RealMLP_TD_Regressor``."""
-        if self._params is None:
-            return None
-        return dict(self._params)
-
-    def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """Return a float32 copy with infinities replaced by NaN."""
-        out = np.array(data, dtype=np.float32, copy=True)
-        out[np.isinf(out)] = np.nan
-        return out
-
-    @staticmethod
-    def _impute_features(x: np.ndarray) -> np.ndarray:
-        """Return ``x`` with every non-finite value replaced by ``0.0``."""
-        return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-
-    @classmethod
-    def _to_rows(cls, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Flatten ``[T, S, F]`` and ``[T, S, L]`` to rows with finite labels.
-
-        Rows whose label has any non-finite value are dropped; the surviving
-        feature rows are then imputed, because pytabkit refuses NaN.
-        """
-        n_times, n_symbols, n_features = x.shape
-        x_rows = x.reshape(n_times * n_symbols, n_features)
-        y_rows = y.reshape(n_times * n_symbols, y.shape[-1])
-        keep = np.isfinite(y_rows).all(axis=1)
-        return cls._impute_features(x_rows[keep]), y_rows[keep]
+        return RealMLP_TD_Regressor(**self._resolve_params(hyperparameters))
 
     def _fit_model(
         self,
@@ -176,29 +111,8 @@ class RealMLPRegressor(MLModel):
         Raises:
             ValueError: If the training segment has no row with finite labels.
         """
-        x_rows, y_rows = self._to_rows(train_x, train_y)
-        if x_rows.shape[0] == 0:
-            raise ValueError(
-                "The training segment has no rows with finite labels."
-            )
-
-        val_rows = None
-        if val_x is not None:
-            val_x_rows, val_y_rows = self._to_rows(val_x, val_y)
-            if val_x_rows.shape[0] > 0:
-                val_rows = (val_x_rows, val_y_rows)
-            else:
-                logger.warning(
-                    f"{self.class_name}: the validation segment has no rows "
-                    "with finite labels; training without a validation set."
-                )
-
-        if val_rows is None and self.config.early_stopping:
-            logger.warning(
-                f"{self.class_name}: early_stopping=True but there is no usable "
-                f"validation segment; early stopping skipped, training all "
-                f"epochs."
-            )
+        x_rows, y_rows = self._training_rows(train_x, train_y)
+        val_rows = self._validation_rows(val_x, val_y)
 
         if val_rows is None:
             self.model.fit(x_rows, y_rows)
