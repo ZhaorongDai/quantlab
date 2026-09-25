@@ -1,18 +1,23 @@
 """Cleaning and validation rules shared by every dataset class.
 
-The raw-market-data path calls two of the functions here at two different
-stages. ``dedup_raw_frame`` runs on the tabular (polars) frame before it is
-converted to xarray, because a duplicated ``(timestamp, symbol)`` pair makes
-that conversion fail. ``clean_market_data`` runs once on the resulting
-``xarray.Dataset`` and only validates the schema and flags anomalies; the NaN
-gaps of a dense panel are produced by the conversion itself and pass through
-untouched. ``clean_membership_panel`` and ``clean_nbbo_panel`` are the
-equivalent validators for an index-membership panel and an NBBO quote panel,
-neither of which carries OHLCV columns.
+A *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``.
+It is *dense*: it has a cell for every timestamp and symbol pair, and a
+symbol that did not trade at a timestamp is NaN there. OHLCV means the open,
+high, low, close and volume columns of a price bar.
 
-Nothing in this module fills, interpolates or corrects a value: a gap or an
-outlier is reported, never repaired, so the pipeline never contains data that
-was not observed. The module imports only third-party libraries.
+Raw market data passes through this module at two stages.
+``dedup_raw_frame`` runs on the long-format polars frame before it is
+converted to xarray, because a duplicated ``(timestamp, symbol)`` pair makes
+that conversion fail. ``clean_market_data`` runs once on the resulting panel;
+it only checks the schema and flags anomalies, and leaves the NaN gaps of the
+dense panel alone. ``clean_membership_panel`` and ``clean_nbbo_panel`` are the
+matching validators for an index-membership panel and for an NBBO quote
+panel (NBBO, the National Best Bid and Offer, is the best bid and ask across
+all US exchanges). Neither of those has OHLCV columns.
+
+Nothing here fills, interpolates or corrects a value. A gap or an outlier is
+reported, never repaired, so the pipeline only ever holds observed data.
+The module imports only third-party libraries.
 """
 
 from typing import Literal
@@ -24,8 +29,8 @@ from loguru import logger
 
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
-# Price-like variables checked for zero/negative values and extreme jumps,
-# including the adjusted-price variants some vendors supply.
+# Price variables checked for zero or negative values and extreme jumps,
+# including the split- and dividend-adjusted versions some vendors supply.
 _PRICE_LIKE_COLUMNS = (
     "open",
     "high",
@@ -45,19 +50,19 @@ _EXTREME_JUMP_THRESHOLD = 0.5
 def dedup_raw_frame(
     data: pl.LazyFrame, keep: Literal["first", "last"] = "last"
 ) -> pl.LazyFrame:
-    """Drop duplicate ``(timestamp, symbol)`` rows deterministically.
+    """Drop duplicate ``(timestamp, symbol)`` rows, keeping a fixed one.
 
-    Must run before the frame is converted to xarray, which rejects a
-    non-unique index. ``keep="last"`` is the default because in a vendor's
-    periodic-drop workflow a later file more often carries corrected data
-    than an earlier one.
+    This must run before the frame is converted to xarray, which rejects a
+    non-unique index. The default ``keep="last"`` is chosen because when a
+    vendor delivers files periodically, a later file is more likely to hold
+    corrected data than an earlier one.
 
     Parameters
     ----------
     data : pl.LazyFrame
         A long-format frame with ``timestamp`` and ``symbol`` columns.
-    keep : Literal['first', 'last']
-        Which duplicate to retain, ``"first"`` or ``"last"``.
+    keep : {"first", "last"}, default "last"
+        Which duplicate to keep.
 
     Returns
     -------
@@ -82,11 +87,11 @@ def dedup_raw_frame(
 def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
     """Add a boolean ``anomaly_flag`` variable marking suspicious prices.
 
-    A cell is flagged when any present price-like variable is zero or
-    negative, or when ``close`` moves by more than ``_EXTREME_JUMP_THRESHOLD``
-    from a strictly positive prior close. The underlying values are never
+    A cell is flagged when any price variable present is zero or negative,
+    or when ``close`` changes by more than ``_EXTREME_JUMP_THRESHOLD`` (50%)
+    from a strictly positive previous close. The values themselves are never
     changed or dropped, so an anomaly stays visible for later investigation.
-    A warning with the flagged count is logged when the count is non-zero.
+    If any cell is flagged, a warning with the count is logged.
 
     Parameters
     ----------
@@ -137,13 +142,12 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
         close = data["close"]
         shifted = close.shift(timestamp=1)
         pct_change = close.diff(dim="timestamp") / shifted
-        # A prior close that is zero, negative or NaN makes the percentage
-        # change meaningless, so only compare against a strictly positive
-        # prior. Comparisons against NaN are False elementwise.
+        # A percentage change from a zero, negative or NaN close is
+        # meaningless, so only a strictly positive previous close counts.
+        # Comparisons with NaN are False.
         valid_prior = shifted > 0
         jump = (np.abs(pct_change) > _EXTREME_JUMP_THRESHOLD) & valid_prior
-        # ``diff`` drops the first timestamp; reindex onto the full axis and
-        # treat that first row as not-a-jump.
+        # ``diff`` drops the first timestamp; put it back as "no jump".
         jump = jump.reindex(timestamp=data["timestamp"], fill_value=False)
         anomaly = anomaly | jump
 
@@ -155,7 +159,7 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
         logger.warning(
             f"flag_anomalies: flagged {flagged_count} anomalous "
             f"(timestamp, symbol) data point(s) (zero/negative price or "
-            f"extreme jump) — values left unmodified, see `anomaly_flag`."
+            f"extreme jump); values left unmodified, see `anomaly_flag`."
         )
 
     return data.assign(anomaly_flag=anomaly)
@@ -164,30 +168,29 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
 def validate_schema(
     data: xr.Dataset, required_columns: tuple[str, ...] = REQUIRED_COLUMNS
 ) -> xr.Dataset:
-    """Check that required columns exist and report unexpected nulls.
+    """Check that the required columns exist and report unexpected nulls.
 
-    A dense panel is the cartesian product of its axes, so a symbol that did
-    not trade in a period is null in every variable at that cell. Those cells
-    are structural, not anomalous, and are excluded from the null counts: a
-    cell counts as "no bar" when every column in ``required_columns`` is null
-    there, and only nulls on cells where a bar does exist are warned about. A
-    column laid out on other dimensions than the required columns is counted
-    whole instead.
+    A dense panel has a cell for every timestamp and symbol, so a symbol that
+    did not trade at a timestamp is null in every variable there. Such cells
+    are expected and are left out of the null counts. A cell counts as "no
+    bar" when every column in ``required_columns`` is null there, and only
+    nulls on cells that do have a bar are warned about. A column laid out on
+    other dimensions than the required columns is counted in full instead.
 
-    If every required column is null on every cell, the panel is treated as
-    an empty ingest: that is reported at error level, the structural mask is
-    disabled and each column's raw null count is reported instead. No null
-    condition raises; only a missing column does, because a data-content
-    problem must not abort an ingest that is running unattended.
+    If every required column is null in every cell, the panel is treated as
+    an empty ingest (for example an empty vendor response). That is logged
+    as an error, the "no bar" exclusion is switched off, and each column's
+    full null count is reported. Nulls never raise; only a missing column
+    does, because a data problem must not abort an ingest running unattended.
 
     Parameters
     ----------
     data : xr.Dataset
         A panel on ``(timestamp, symbol)``.
-    required_columns : tuple[str, ...]
-        The variables that must be present. Callers whose
-        columns use another spelling pass their own tuple, and the
-        structural mask is built from that argument.
+    required_columns : tuple of str, default ``REQUIRED_COLUMNS``
+        The variables that must be present. Callers whose columns are
+        spelled differently pass their own tuple; the "no bar" test uses
+        these columns too.
 
     Returns
     -------
@@ -230,36 +233,36 @@ def validate_schema(
         if total_cells > 0 and structural_cells == total_cells:
             empty_ingest = True
             logger.error(
-                f"validate_schema: EVERY required column is null on EVERY one "
-                f"of the {total_cells} (timestamp, symbol) cell(s) — no bar "
-                f"exists anywhere in this panel. That is NOT the dense "
-                f"panel's cartesian product (D-06); it is an empty ingest: an "
-                f"empty vendor response, a mis-parsed file, or a fully-failed "
-                f"backfill. Required columns: {list(required_columns)}. The "
-                f"structural mask is disabled for this panel, so the "
-                f"per-column counts below are raw whole-column null counts. "
-                f"Not raising, per flag-don't-delete philosophy (D-07)."
+                f"validate_schema: EVERY required column is null on every one "
+                f"of the {total_cells} (timestamp, symbol) cell(s); no bar "
+                f"exists anywhere in this panel. That is not the normal gaps "
+                f"of a dense panel; it is an empty ingest: an empty vendor "
+                f"response, a mis-parsed file, or a fully failed backfill. "
+                f"Required columns: {list(required_columns)}. Empty cells are "
+                f"not excluded for this panel, so the per-column counts below "
+                f"are whole-column null counts. Not raising: data problems "
+                f"are flagged, never deleted or fatal."
             )
         elif structural_cells > 0 and total_cells > 0:
             logger.info(
                 f"validate_schema: {structural_cells}/{total_cells} "
                 f"({structural_cells / total_cells:.1%}) "
-                f"(timestamp, symbol) cell(s) hold no bar at all — null in "
-                f"every required column. That is the dense panel's cartesian "
-                f"product (D-06), not an anomaly; nulls on those cells are "
-                f"excluded from the counts below."
+                f"(timestamp, symbol) cell(s) hold no bar at all (null in "
+                f"every required column). Those are the normal gaps of a dense "
+                f"panel, not anomalies; nulls on those cells are excluded "
+                f"from the counts below."
             )
 
     for col in data.data_vars:
         column = data[col]
         if empty_ingest:
-            # With the mask True everywhere, the discriminating branch below
-            # would report zero for every column; fall back to raw counts.
+            # With every cell masked, the next branch would report zero for
+            # every column, so fall back to whole-column counts.
             null_count = int(column.isnull().sum().item())
             scope = (
-                "raw null value(s) — whole-column count, because the "
-                "structural mask is disabled on an empty-ingest panel (see "
-                "the ERROR above)"
+                "raw null value(s), whole-column count, because empty cells "
+                "are not excluded on an empty-ingest panel (see the ERROR "
+                "above)"
             )
         elif structural_mask is not None and tuple(column.dims) == tuple(
             structural_mask.dims
@@ -268,19 +271,19 @@ def validate_schema(
                 (column.isnull() & ~structural_mask).sum().item()
             )
             scope = (
-                "null value(s) on (timestamp, symbol) cells where a bar DOES "
+                "null value(s) on (timestamp, symbol) cells where a bar does "
                 "exist"
             )
         else:
             null_count = int(column.isnull().sum().item())
             scope = (
-                f"null value(s) — its dims {tuple(column.dims)} differ from "
+                f"null value(s); its dims {tuple(column.dims)} differ from "
                 f"the required-column grid, so the whole column is counted"
             )
         if null_count > 0:
             logger.warning(
                 f"validate_schema: column '{col}' has {null_count} {scope} "
-                f"— not raising, per flag-don't-delete philosophy (D-07)."
+                f"(not raising: data problems are flagged, never deleted or fatal)."
             )
 
     return data
@@ -289,10 +292,10 @@ def validate_schema(
 def clean_market_data(data: xr.Dataset) -> xr.Dataset:
     """Validate the schema of a market panel and flag its anomalies.
 
-    This is the single cleaning step applied to every market-data panel after
-    it has been converted to xarray. Deduplication has already happened on
-    the tabular frame, and the NaN gaps of the dense panel come from the
-    conversion itself, so nothing here fills or alters a value.
+    This is the one cleaning step applied to every market-data panel after
+    it has been converted to xarray. Duplicates were already removed from
+    the polars frame, and the NaN gaps of the dense panel are expected, so
+    nothing here fills or changes a value.
 
     Parameters
     ----------
@@ -320,11 +323,12 @@ def clean_market_data(data: xr.Dataset) -> xr.Dataset:
 def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
     """Validate an index-membership panel and return it unchanged.
 
-    The OHLCV cleaning path cannot be reused here: ``validate_schema`` would
-    raise on the missing price columns, and ``flag_anomalies`` would add a
-    meaningless all-False flag beside the panel's only variable. Nothing is
-    modified, filled or re-sorted; a panel that breaks the contract is a bug
-    upstream, and repairing it here would hide that.
+    An index-membership panel says, for each day and symbol, whether the
+    symbol belonged to the index. The OHLCV checks do not apply:
+    ``validate_schema`` would raise on the missing price columns, and
+    ``flag_anomalies`` would add a meaningless all-False flag. Nothing is
+    modified, filled or re-sorted. A panel that breaks these rules points to
+    a bug in the code that built it, and repairing it here would hide that.
 
     Parameters
     ----------
@@ -343,8 +347,8 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
         If the variables are not exactly ``{"is_member"}``, if
         ``is_member`` is not boolean or not on ``("timestamp", "symbol")``,
         or if the ``timestamp`` coordinate is not strictly increasing.
-        Label-based date slicing silently returns wrong results on an
-        unsorted index, which is why the last case is refused.
+        The last case is refused because slicing by date label silently
+        returns wrong results on an unsorted index.
 
     Examples
     --------
@@ -374,23 +378,24 @@ def clean_membership_panel(data: xr.Dataset) -> xr.Dataset:
         )
 
     timestamps = data["timestamp"].values
-    # Compared elementwise rather than via ``np.diff(...) > 0`` so the check
-    # stays dtype-agnostic (a bare ``0`` against a timedelta64 is deprecated).
+    # Compare neighbours directly instead of ``np.diff(...) > 0``, which works
+    # for any dtype (comparing a timedelta64 with a bare ``0`` is deprecated).
     if timestamps.size > 1 and not np.all(timestamps[:-1] < timestamps[1:]):
         raise ValueError(
             "clean_membership_panel: the 'timestamp' coordinate must be "
-            "strictly increasing (no duplicates, no out-of-order rows) -- "
-            "XrBackend.filter_by_date slices it with .sel(slice(...)), which "
-            "returns wrong results silently on an unsorted index."
+            "strictly increasing (no duplicates, no out-of-order rows), "
+            "because XrBackend.filter_by_date slices it with "
+            ".sel(slice(...)), which silently returns wrong results on an "
+            "unsorted index."
         )
 
     return data
 
 
-#: The exact variable set of an NBBO bar panel, every one float64. The two
-#: count variables, ``n_updates`` and ``n_ambiguous_ties``, are float64 as
-#: well: integer variables are promoted on append anyway, and a count that is
-#: NaN for a symbol added later cannot be an integer.
+#: The exact variables of an NBBO bar panel, all float64. The two counts,
+#: ``n_updates`` and ``n_ambiguous_ties``, are float64 too: integers are
+#: promoted to float when data is appended anyway, and a count must be able
+#: to hold NaN for a symbol that joins the panel later.
 NBBO_PANEL_VARIABLES = (
     "bid",
     "ask",
@@ -411,10 +416,12 @@ NBBO_PANEL_VARIABLES = (
 def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
     """Validate an NBBO quote-bar panel and return it unchanged.
 
-    Like ``clean_membership_panel``, this never modifies, fills or re-sorts.
-    The OHLCV path does not apply because the panel has no price columns, and
-    no filling of any kind is done here: carrying the prevailing quote forward
-    over an empty bar is the resampler's responsibility, not a cleaning step.
+    An NBBO quote-bar panel holds, per bar and symbol, the best bid and ask
+    across US exchanges and statistics derived from them. Like
+    ``clean_membership_panel``, this never modifies, fills or re-sorts. The
+    OHLCV checks do not apply because the panel has no price columns.
+    Carrying the last quote forward over a bar with no updates is done by
+    the resampler that builds the panel, not here.
 
     Parameters
     ----------
@@ -466,13 +473,13 @@ def clean_nbbo_panel(data: xr.Dataset) -> xr.Dataset:
             )
 
     timestamps = data["timestamp"].values
-    # Elementwise, as in ``clean_membership_panel``, to stay dtype-agnostic.
+    # Compare neighbours directly, as in ``clean_membership_panel``.
     if timestamps.size > 1 and not np.all(timestamps[:-1] < timestamps[1:]):
         raise ValueError(
             "clean_nbbo_panel: the 'timestamp' coordinate must be strictly "
-            "increasing (no duplicates, no out-of-order rows) -- "
+            "increasing (no duplicates, no out-of-order rows), because "
             "XrBackend.filter_by_date slices it with .sel(slice(...)), which "
-            "returns wrong results silently on an unsorted index."
+            "silently returns wrong results on an unsorted index."
         )
 
     return data
