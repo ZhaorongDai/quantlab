@@ -71,7 +71,6 @@ write_raw(raw, "2023-01-02", "2023-12-29", {"AAA": "2023-01-01", "BBB": "2023-07
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
 ...     zarr_file_path=str(root / "data/us_all.zarr"),
-...     catalog_path=str(root / "catalog"),
 ...     market="us_equity",
 ...     frequency="1d",
 ...     vendor="tiingo",

@@ -2,15 +2,15 @@
 
 Created by 03.1-01 Task 2, which splits `base/data.py:Dataset` into a shared
 `BaseDataset(ABC)` and a `MarketDataset(BaseDataset)` carrying every
-nautilus/KunQuant-specific member -- the dataset-layer twin of the
+KunQuant-specific member -- the dataset-layer twin of the
 `Factor`/`FactorKunQuant` split that `tests/test_factor_hierarchy.py` locks.
 
 Like that file, several tests here are **source-introspection rather than
 behavioural**, because nothing at runtime fails today if the invariants break.
 The breakage only surfaces later, in the index-constituent backend that does
-not exist yet: a `catalog_path` leaking onto the shared config would only bite
-the first dataset constructed without one, and a reversed `__init__` would only
-bite through `_reset_symbols()`. These tests move both failures to test time.
+not exist yet: a market-only field such as `raw_data_dir_path` leaking onto the
+shared config would only bite the first dataset constructed without one, and a
+reversed `__init__` would only bite through `_reset_symbols()`. These tests move both failures to test time.
 
 The two genuinely behavioural tests are the last two. `PanelDataset` below is
 the non-market dataset DATA-06 is about: no OHLCV, no bar representation, no
@@ -34,22 +34,17 @@ from quantlab.base.config import (
 )
 from quantlab.base.data import BaseDataset, MarketDataset
 
-# The nautilus/KunQuant-specific members. A membership panel has no bar and no
-# compiled-graph representation, so none of these may live on the shared base
+# The KunQuant-specific members. A membership panel has no compiled-graph
+# representation, so none of these may live on the shared base
 # -- especially not as an `@abstractmethod`, which would force every future
 # dataset kind to carry a meaningless `raise NotImplementedError` stub (D-03).
 MARKET_ONLY_MEMBERS = (
     "to_kunquant",
     "_to_kunquant",
-    "to_nautilus",
-    "_to_nautilus",
-    "_write_catalog",
 )
 
 # The market-only `DatasetConfig` fields that must NOT be on the shared
-# `BaseDatasetConfig` (CONFLICT 4). `catalog_path` is the load-bearing one:
-# it is the nautilus write destination, and a non-market dataset must not be
-# able to be handed one at all.
+# `BaseDatasetConfig` (CONFLICT 4).
 #
 # `vendor` (03.2 D-11) belongs here for the same reason `raw_data_dir_path`
 # does: it names WHOSE raw market files that directory holds, and a dataset
@@ -58,7 +53,6 @@ MARKET_ONLY_MEMBERS = (
 # non-market dataset a provenance field none of them can honestly fill.
 MARKET_ONLY_CONFIG_FIELDS = {
     "raw_data_dir_path",
-    "catalog_path",
     "market",
     "frequency",
     "vendor",
@@ -131,12 +125,12 @@ def test_base_dataset_is_abstract_and_market_dataset_subclasses_it() -> None:
     is one implementation of it, not the root of the hierarchy.
 
     `_raw_data_to_xr` is the ONE abstract method on the shared base -- the
-    single obligation every dataset kind genuinely has. THREE abstract methods
+    single obligation every dataset kind genuinely has. TWO abstract methods
     are added by `MarketDataset` and by it alone, which is the mechanism that
-    keeps them off a membership panel: the two KunQuant/nautilus ones, and
+    keeps them off a membership panel: the KunQuant one, and
     `_raw_data_to_xr_window` (D-08).
 
-    The third is the odd one out and deliberately so. `BaseDataset` keeps a
+    The second is the odd one out and deliberately so. `BaseDataset` keeps a
     working concrete default for it -- a membership panel that cannot push a
     date filter down still needs one -- so this is a RE-declaration, not a
     relocation. For a market dataset the seam is the single entrance ticket to
@@ -153,11 +147,11 @@ def test_base_dataset_is_abstract_and_market_dataset_subclasses_it() -> None:
     assert BaseDataset.__abstractmethods__ == frozenset({"_raw_data_to_xr"})
     assert set(MarketDataset.__abstractmethods__) - set(
         BaseDataset.__abstractmethods__
-    ) == {"_to_kunquant", "_to_nautilus", "_raw_data_to_xr_window"}
+    ) == {"_to_kunquant", "_raw_data_to_xr_window"}
 
 
 def test_market_only_members_stay_on_market_dataset() -> None:
-    """D-03: every nautilus/KunQuant member stays on `MarketDataset` and is
+    """D-03: every KunQuant member stays on `MarketDataset` and is
     absent from `BaseDataset`.
 
     If any of these leaked onto the shared base, a dataset with no bar and no
@@ -176,7 +170,7 @@ def test_market_only_members_stay_on_market_dataset() -> None:
 
 
 def test_market_only_config_fields_stay_off_the_shared_base() -> None:
-    """CONFLICT 4: the nautilus-only config fields are exactly the delta on
+    """CONFLICT 4: the market-only config fields are exactly the delta on
     `DatasetConfig`, and `ConstituentDatasetConfig` adds only `cache_dir`.
 
     Stated positively rather than as a bare absence check, so moving a field

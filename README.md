@@ -102,7 +102,6 @@ dataset = StockDataset(
     DatasetConfig(
         zarr_file_path=str(root / "prices.zarr"),
         raw_data_dir_path=str(root / "raw"),
-        catalog_path=str(root / "catalog"),
         market="us_equity",
         frequency="1d",
         start_date="2024-01-01",

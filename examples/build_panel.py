@@ -135,7 +135,6 @@ def main() -> None:
         fields = dict(
             raw_data_dir_path=str(vendor_root),
             zarr_file_path=str(root / "data" / "us_equity" / "1d" / "demo.zarr"),
-            catalog_path=str(root / "data" / "catalog"),
             market="us_equity",
             frequency="1d",
             vendor="tiingo",

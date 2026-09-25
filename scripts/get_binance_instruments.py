@@ -6,8 +6,7 @@ every symbol's trading rules (tick size, lot size, minimum order value and so
 on). It flattens the rules of the requested symbols with
 ``quantlab.utils.binance`` and writes them into the packaged
 ``config/instruments.yaml``, or into the file given with ``--config``. The
-Nautilus helpers read that file when they build instrument definitions. The script
-can also rank the USDT pairs by 24-hour quote volume and either list the top
+script can also rank the USDT pairs by 24-hour quote volume and either list the top
 N or refresh the file with them. No credentials are needed, because both
 Binance endpoints are public.
 

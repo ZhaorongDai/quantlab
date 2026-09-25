@@ -148,7 +148,6 @@ def _dataset_config(tmp_path, cfg, reference_dir, *, start, end, store="crsp.zar
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / store),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(reference_dir),
         start_date=start,
         end_date=end,
@@ -1461,7 +1460,6 @@ def _crsp_config(tmp_path, cfg, reference_dir, *, permnos, store="crsp.zarr"):
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / store),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(reference_dir),
         start_date=ANCHOR_START,
         end_date=ANCHOR_END,

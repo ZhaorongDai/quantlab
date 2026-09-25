@@ -519,7 +519,6 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
     dataset_config = CrspDatasetConfig(
         zarr_file_path=str(tmp_path / "crsp.zarr"),
         raw_data_dir_path=cfg.raw_data_dir_path,
-        catalog_path=str(tmp_path / "catalog"),
         reference_dir=str(reference_dir),
         start_date="2020-01-01",
         end_date="2022-06-30",

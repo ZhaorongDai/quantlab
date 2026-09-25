@@ -70,7 +70,6 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
     >>> config = CrspDatasetConfig(
     ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",
     ...     raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
-    ...     catalog_path="data/data/catalog",
     ...     reference_dir="data/downloads/us_equity/1d/wrds_crsp/_reference",
     ...     start_date="2024-01-01",
     ...     end_date="2024-12-31",

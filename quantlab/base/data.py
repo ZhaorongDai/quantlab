@@ -12,9 +12,9 @@ conversion.
 normalised ISO dates, a Zarr storage backend, ``from_raw_data``, ``save`` and
 ``read`` for converting the whole date range at once, and
 ``from_raw_data_chunked`` and ``update`` for converting one time window at a
-time so that an interrupted run can resume. ``MarketDataset`` adds two
-exports for market data: ``to_kunquant`` (arrays for the KunQuant factor
-engine) and ``to_nautilus`` (objects for the Nautilus Trader data catalog).
+time so that an interrupted run can resume. ``MarketDataset`` adds the
+``to_kunquant`` export for market data (arrays for the KunQuant factor
+engine).
 
 A concrete dataset lives under ``quantlab/dataset/`` and implements
 ``_raw_data_to_xr``. The factor layer reads the panel through
@@ -34,9 +34,6 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 from loguru import logger
-from nautilus_trader.model.instruments import Instrument
-from nautilus_trader.persistence.catalog import ParquetDataCatalog
-from tqdm import tqdm
 
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
@@ -1307,22 +1304,18 @@ class BaseDataset(ABC):
 
 
 class MarketDataset(BaseDataset):
-    """Dataset of market price bars, with KunQuant and Nautilus exports.
+    """Dataset of market price bars, with a KunQuant export.
 
     A *bar* is one period's open, high, low, close and volume for a symbol.
     On top of ``BaseDataset`` this class adds ``to_kunquant``, which returns
     contiguous ``[time, symbol]`` float32 arrays for KunQuant (the compiled
-    factor engine), and ``to_nautilus``, which builds Nautilus Trader bars
-    and instruments and can write them to a ``ParquetDataCatalog``. A
-    subclass implements ``_raw_data_to_xr``, ``_raw_data_to_xr_window``,
-    ``_to_kunquant`` and ``_to_nautilus``; an export it does not support may
-    simply raise.
+    factor engine). A subclass implements ``_raw_data_to_xr``,
+    ``_raw_data_to_xr_window`` and ``_to_kunquant``.
 
     Parameters
     ----------
     config : DatasetConfig
-        The dataset config, including ``catalog_path`` for the Nautilus
-        catalog.
+        The dataset config.
 
     Examples
     --------
@@ -1340,49 +1333,6 @@ class MarketDataset(BaseDataset):
 
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = DatasetConfig
-
-    def _write_catalog(self, data: list):
-        """Write a list of Nautilus objects to the configured catalog."""
-        catalog = ParquetDataCatalog(
-            self.config.catalog_path, fs_protocol="file"
-        )
-        catalog.write_data(data)
-
-    def to_nautilus(
-        self, venue: str = "BINANCE", n_jobs: int = 16, write: bool = True
-    ) -> tuple[list[list], list[Instrument]]:
-        """Read the store and convert it to Nautilus bars and instruments.
-
-        Parameters
-        ----------
-        venue : str, default "BINANCE"
-            Venue (exchange) name used in the instrument identifiers.
-        n_jobs : int, default 16
-            Number of parallel workers for the per-symbol conversion.
-        write : bool, default True
-            Whether to also write the result to the parquet catalog at
-            ``config.catalog_path``.
-
-        Returns
-        -------
-        tuple[list[list], list[Instrument]]
-            A tuple ``(bars, instruments)`` where ``bars`` holds one list of
-            ``Bar`` objects per symbol.
-
-        Examples
-        --------
-        Needs a subclass whose ``_to_nautilus`` builds the instruments:
-
-        >>> bars, instruments = ds.to_nautilus(venue="NASDAQ", write=False)
-        """
-        data = self.read().get_xarray_dataset()
-        data, instruments = self._to_nautilus(data, venue=venue, n_jobs=n_jobs)
-        if write:
-            for d in tqdm(data, desc="Writing data"):
-                self._write_catalog(d)
-            for instrument in tqdm(instruments, desc="Writing instruments"):
-                self._write_catalog([instrument])
-        return data, instruments
 
     def to_kunquant(
         self, data_columns: tuple[str, ...]
@@ -1421,12 +1371,6 @@ class MarketDataset(BaseDataset):
         This is where vendor column names are mapped onto KunQuant's names
         (``open``, ``high``, ``low``, ``close``, ``volume``, ``amount``).
         """
-
-    @abstractmethod
-    def _to_nautilus(
-        self, data: xr.Dataset, venue: str, n_jobs: int
-    ) -> tuple[list[list], list[Instrument]]:
-        """Convert a panel to per-symbol Nautilus bars and their instruments."""
 
     @abstractmethod
     def _raw_data_to_xr_window(

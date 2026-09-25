@@ -68,7 +68,6 @@ def tiingo_raw_tier(
         return DatasetConfig(
             raw_data_dir_path=str(raw_dir / "tiingo"),
             zarr_file_path=str(tmp_path / store_name),
-            catalog_path=str(tmp_path / "catalog"),
             market="us_equity",
             frequency="1d",
             vendor="tiingo",
@@ -223,7 +222,6 @@ def alpaca_raw_tier(
         return DatasetConfig(
             raw_data_dir_path=str(raw_dir / "alpaca"),
             zarr_file_path=str(tmp_path / store_name),
-            catalog_path=str(tmp_path / "catalog"),
             market="us_equity",
             frequency=frequency,  # type: ignore[arg-type]
             vendor="alpaca",
@@ -493,7 +491,6 @@ def four_window_raw_tier(
         return DatasetConfig(
             raw_data_dir_path=str(raw_dir / "tiingo"),
             zarr_file_path=str(tmp_path / store_name),
-            catalog_path=str(tmp_path / "catalog4"),
             market="us_equity",
             frequency="1d",
             vendor="tiingo",

@@ -36,7 +36,7 @@
 - **PyTorch** (`torch`) — deep-learning models (`dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py`), trained through the `base/model.py:DLModel` epoch loop (`DataLoader`/`TensorDataset`).
 - **scikit-learn** (`sklearn.metrics`) — evaluation metrics (accuracy, F1, ROC-AUC, R², RMSE, etc.) used inside DL training loops, not for model fitting itself.
 - **KunQuant** — JIT-compiled factor computation graph library. Used throughout `base/factor.py`, `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` to build and compile (`cfake.compileit`) high-performance alpha factor pipelines (`KunRunner`, `Function`, `Builder`, `Op`, `Stage`).
-- **Nautilus Trader** (`nautilus_trader`) — currently used ONLY as a data model / `ParquetDataCatalog` for storing bar/instrument data (`base/data.py`, `dataset/spot.py`). Its live/backtest trading engine is not used by any code in the repo: the only `Strategy` subclass, `backtest/test_strategy.py`, was deleted 2026-09-07.
+- **Nautilus Trader** (`nautilus_trader`) — declared as a dependency but imported by no code: the `to_nautilus` export, `DatasetConfig.catalog_path` and `utils/nautilus.py` were removed 2026-09-25. Its live/backtest trading engine is not used by any code in the repo either: the only `Strategy` subclass, `backtest/test_strategy.py`, was deleted 2026-09-07.
 - **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used by `quantlab/backtest/engine_vectorbt.py` (`VectorBtBacktester`: `Portfolio.from_orders` with target-percent weights) and by the ad hoc `test.py` (`vbt.Portfolio.from_signals`). The former `vecbt/bt.py` signal helper was retired in phase 03.7 (D-31).
 - None detected. No `pytest`/`unittest` configuration, no test runner dependency, no `tests/` directory. Files named `test.py` and `test_nt.ipynb` at the repo root are ad hoc exploratory scripts/notebooks, not an automated test suite.
 - No linter/formatter config detected (no `.eslintrc`, `ruff.toml`, `.flake8`, `pyproject.toml` `[tool.ruff]`/`[tool.black]` sections).
@@ -47,11 +47,11 @@
 - `xgboost` — tree-model future-return regression (`ml_model/xgb.py:XGBoostRegressor`), trained with `xgb.train` and XGBoost's native `EarlyStopping(save_best=True)`.
 - `scipy` — `scipy.stats.rankdata` for the cross-sectional RankIC in `utils/metrics.py`; declared directly in `pyproject.toml`.
 - `KunQuant` — compiled factor computation (`factor/*`, `base/factor.py`, `label/spot.py`, `my_ops/preprocess.py`). Appears to be a specialized/possibly local or pinned package, not a mainstream PyPI package with a standard lockfile entry.
-- `nautilus_trader` — data catalog, instrument/currency model (`dataset/spot.py`, `utils/nautilus.py`). The trading engine itself is unused.
+- `nautilus_trader` — declared but currently unused (the Nautilus export was removed 2026-09-25); kept for the reserved event-driven backtest.
 - `vectorbt` — cross-sectional backtest engine (`quantlab/backtest/engine_vectorbt.py`, the only quantlab module importing it; `Portfolio.from_orders` with target-percent weights) and `test.py`. The former `vecbt/bt.py` helper was retired in phase 03.7 (D-31).
 - `wandb` — experiment tracking, initialized in every training run (`base/model.py:_init_wandb`).
-- `loguru` — logging throughout (`base/data.py`, `base/factor.py`, `utils/timer.py`, `utils/nautilus.py`, `utils/binance.py`).
-- `joblib` — parallelism (`Parallel`/`delayed` for CV folds and nautilus bar conversion) and non-torch model persistence through `ml_model/backend.py:MlBackend` (the `.joblib` checkpoint backend of `base/model.py:MLModel`).
+- `loguru` — logging throughout (`base/data.py`, `base/factor.py`, `utils/timer.py`, `utils/binance.py`).
+- `joblib` — parallelism (`Parallel`/`delayed` for CV folds) and non-torch model persistence through `ml_model/backend.py:MlBackend` (the `.joblib` checkpoint backend of `base/model.py:MLModel`).
 - `tqdm` — progress bars across data/factor/CV loops.
 - `bottleneck` — the one dependency actually declared/locked (`pyproject.toml`/`uv.lock` under the old `crypto-quant` name); likely used for fast rolling/window numpy ops (not directly observed via `import` grep, may be an `xarray`/`pandas` accelerator dependency).
 - `requests` — Binance REST calls (`utils/binance.py`, `get_binance_instruments.py`).
@@ -59,7 +59,6 @@
 - `tiingo` — Tiingo market-data API client (`scripts/download_stock_data_from_tiingo.py`).
 - `psutil` — memory-usage diagnostics (`read_mock_data_sink.py`).
 - `plotly` (`plotly.io`) — backtest result visualization (`test.py`).
-- `decimal` (stdlib) — precise price/fee representation in instrument config (`dataset/spot.py`, `utils/nautilus.py`).
 ## Configuration
 - No `.env` file present at the repo root.
 - `scripts/download_stock_data_from_tiingo.py` reads a Tiingo API key — the script comment says to set `TIINGO_API_KEY` as an environment variable, but the script as written **hardcodes an API key literal** in the `config["api_key"]` assignment instead of reading from the environment. Treat this file as containing a leaked credential.
@@ -91,8 +90,8 @@ Conventions not yet established. Will populate as patterns emerge during develop
 | `DataBackend` (abstract) | Defines read/write/filter contract for any storage medium | `base/backend.py` |
 | `XrBackend` | Zarr-backed storage for `xarray.Dataset` (canonical `[timestamp, symbol]` shape) | `quantlab/backend.py` |
 | `PlBackend` | Parquet-backed storage via `polars.LazyFrame` | `quantlab/backend.py` |
-| `Dataset` (abstract) | Loads raw market data into the internal xarray representation; converts to KunQuant/Nautilus formats | `base/data.py` |
-| `SpotKlineDataset` | Binance spot kline CSV ingestion, conversion to Nautilus `Bar` objects | `dataset/spot.py` |
+| `Dataset` (abstract) | Loads raw market data into the internal xarray representation; converts to KunQuant input arrays | `base/data.py` |
+| `SpotKlineDataset` | Binance spot kline CSV ingestion | `dataset/spot.py` |
 | `StockDataset` | NASDAQ/Tiingo parquet ingestion | `dataset/stock.py` |
 | `FactorKunQuant` (abstract) | Compiles and executes KunQuant factor graphs (batch and streaming modes) | `base/factor.py` |
 | `Alpha101SpotKline` / `Alpha158SpotKline` | Concrete factor sets (Alpha101 formulaic factors, Alpha158 factor library) | `factor/alpha101.py`, `factor/alpha158.py` |
@@ -123,9 +122,9 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Contains: `read`/`write`/`to_internal`/`filter_by_date`/`filter_by_symbol`/`get_xarray_dataset`/`get_lazyframe`.
 - Depends on: `xarray`, `polars`, `pandas`.
 - Used by: `Dataset` and `FactorKunQuant`, each of which owns a `self.data_backend` instance.
-- Purpose: Converts raw external data (Binance CSV klines, Tiingo/NASDAQ parquet) into the canonical `xarray.Dataset` and persists it via a `DataBackend`. Also converts to KunQuant input arrays (`to_kunquant`) and Nautilus Trader bar/catalog objects (`to_nautilus`).
-- Location: `base/data.py` (ABC `Dataset`), `dataset/spot.py` (`SpotKlineDataset`), `dataset/stock.py` (`StockDataset`, several methods unimplemented — raise `ValueError("Not finished")`).
-- Depends on: Storage Backend layer, `nautilus_trader` model/persistence types, `utils/file.py`, `utils/nautilus.py`, `utils/timer.py`.
+- Purpose: Converts raw external data (Binance CSV klines, Tiingo/NASDAQ parquet) into the canonical `xarray.Dataset` and persists it via a `DataBackend`. Also converts to KunQuant input arrays (`to_kunquant`).
+- Location: `base/data.py` (ABC `Dataset`), `dataset/spot.py` (`SpotKlineDataset`), `dataset/stock.py` (`StockDataset`).
+- Depends on: Storage Backend layer, `utils/file.py`, `utils/timer.py`.
 - Used by: Factor/Label layer (each `FactorConfig` embeds a `Dataset` instance) and directly by scripts (`test.py`, `cal.py`).
 - Purpose: Computes engineered features (factors) and prediction targets (labels) from dataset data using compiled KunQuant graphs, in either batch mode (`cal()`, operates on a full historical window) or streaming mode (`cal_stream()`, incremental per-bar updates for live trading).
 - Location: `base/factor.py` (ABC `FactorKunQuant`), `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` (custom `WindowedCompositiveOp` subclasses).
@@ -207,7 +206,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 **Resolved:** the helper (`vecbt/bt.py:backtest_from_signals`) was retired in phase 03.7 (D-31), and `quantlab/backtest/` replaced it. The heading is kept as history.
 ## Error Handling
 - Config setters validate/derive values eagerly (e.g. `FactorKunQuant.config` setter auto-fills `start_date`/`end_date`/`factor_names` if unset) rather than deferring to call time.
-- Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs consistently — `dataset/stock.py` uses `raise ValueError("Not finished")` for `_get_instrument`/`_xr_to_bars`/`_to_nautilus`, while `quantlab/base/backtest.py:BaseBacktester`'s config setter raises `NotImplementedError` when a `benchmark_dataset` is supplied, because benchmark comparison waits for directly-downloaded index price data (D-08). (The former model-layer guard `DLModel._fit(backtest=True)` was deleted in phase 03.7, D-37.)
+- Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs — `quantlab/base/backtest.py:BaseBacktester`'s config setter raises `NotImplementedError` when a `benchmark_dataset` is supplied, because benchmark comparison waits for directly-downloaded index price data (D-08). (The former model-layer guard `DLModel._fit(backtest=True)` was deleted in phase 03.7, D-37.)
 - A model given the wrong config class raises `TypeError` as the first statement of the `BaseModel.config` setter, before any factor/label is touched; `load()` rejects a checkpoint whose suffix differs from the variant's `checkpoint_suffix` before building a model.
 ## Cross-Cutting Concerns
 <!-- GSD:architecture-end -->

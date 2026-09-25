@@ -864,7 +864,6 @@ def test_the_conversion_window_reaches_the_refusal_through_member_intervals(
             CrspDatasetConfig(
                 zarr_file_path=str(tmp_path / "crsp.zarr"),
                 raw_data_dir_path=str(tmp_path / "raw"),
-                catalog_path=str(tmp_path / "catalog"),
                 reference_dir=reference_dir,
                 start_date=start_date,
                 end_date=end_date,

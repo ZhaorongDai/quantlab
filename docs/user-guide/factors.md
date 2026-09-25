@@ -94,7 +94,7 @@ xr.Dataset({k: (("timestamp", "symbol"), v) for k, v in fields.items()},
            coords={"timestamp": dates, "symbol": symbols}).to_zarr("prices.zarr", mode="w")
 
 price_config = DatasetConfig(zarr_file_path="prices.zarr", raw_data_dir_path="raw",
-                             catalog_path="catalog", market="us_equity", frequency="1d")
+                             market="us_equity", frequency="1d")
 ```
 
 Give every factor its own dataset object, for example

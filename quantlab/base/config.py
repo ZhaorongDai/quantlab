@@ -91,7 +91,6 @@ class DatasetConfig(BaseDatasetConfig):
     >>> cfg = DatasetConfig(
     ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
     ...     raw_data_dir_path="/data/downloads/us_equity/1d/tiingo",
-    ...     catalog_path="/data/catalog",
     ...     market="us_equity",
     ...     frequency="1d",
     ...     vendor="tiingo",
@@ -104,8 +103,6 @@ class DatasetConfig(BaseDatasetConfig):
 
     #: Root of the raw download tree the panel is converted from.
     raw_data_dir_path: str
-    #: Directory of the Nautilus Trader data catalog the dataset can export to.
-    catalog_path: str
     #: The market this panel belongs to.
     market: Market
     #: The acquisition frequency of the raw data.
@@ -130,7 +127,6 @@ class NbboDatasetConfig(DatasetConfig):
     >>> cfg = NbboDatasetConfig(
     ...     zarr_file_path="/data/us_equity/tick/nbbo_5m.zarr",
     ...     raw_data_dir_path="/data/downloads/us_equity/tick/wrds",
-    ...     catalog_path="/data/catalog",
     ...     bar_interval="5m",
     ...     start_date="2024-01-02",
     ...     end_date="2024-01-31",
@@ -186,7 +182,6 @@ class CrspDatasetConfig(DatasetConfig):
     >>> cfg = CrspDatasetConfig(
     ...     zarr_file_path="/data/us_equity/1d/crsp.zarr",
     ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
-    ...     catalog_path="/data/catalog",
     ...     reference_dir="/data/reference/crsp",
     ...     start_date="2015-01-01",
     ...     end_date="2024-12-31",
@@ -246,7 +241,6 @@ class CrspDatasetConfig(DatasetConfig):
         *,
         zarr_file_path: str,
         raw_data_dir_path: str,
-        catalog_path: str,
         reference_dir: str,
         start_date: str | None = None,
         end_date: str | None = None,
@@ -270,9 +264,6 @@ class CrspDatasetConfig(DatasetConfig):
             Path of the benchmark's own Zarr store.
         raw_data_dir_path : str
             Root of the CRSP raw download tree.
-        catalog_path : str
-            Nautilus catalog directory (unused by CRSP but
-            required by ``DatasetConfig``).
         reference_dir : str
             Directory of the CRSP reference tables.
         start_date : str | None
@@ -285,7 +276,6 @@ class CrspDatasetConfig(DatasetConfig):
         >>> cfg = CrspDatasetConfig.qqq_benchmark(
         ...     zarr_file_path="/data/us_equity/1d/qqq.zarr",
         ...     raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
-        ...     catalog_path="/data/catalog",
         ...     reference_dir="/data/reference/crsp",
         ...     start_date="2015-01-01",
         ... )
@@ -295,7 +285,6 @@ class CrspDatasetConfig(DatasetConfig):
         return cls(
             zarr_file_path=zarr_file_path,
             raw_data_dir_path=raw_data_dir_path,
-            catalog_path=catalog_path,
             reference_dir=reference_dir,
             start_date=start_date,
             end_date=end_date,

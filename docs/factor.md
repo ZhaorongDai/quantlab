@@ -62,7 +62,7 @@ XrBackend()
 >>> def make_dataset():
 ...     return SpotKlineDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/klines.zarr",
-...         catalog_path="data/catalog", market="crypto_spot", frequency="1d",
+...         market="crypto_spot", frequency="1d",
 ...     ))
 ...
 ```
@@ -146,7 +146,7 @@ XrBackend()
 ...     window=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 2},
 ...     dataset=StockDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/stock.zarr",
-...         catalog_path="data/catalog", market="us_equity", frequency="1d",
+...         market="us_equity", frequency="1d",
 ...     )),
 ...     file_path="data/labels/ret.zarr", njobs=2,
 ... ))
@@ -271,7 +271,7 @@ The cross-sectional output has mean 0 and standard deviation 1 at every timestam
 ...     window=10, mode="stream", data_columns=("close",), njobs=2,
 ...     dataset=SpotKlineDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/klines.zarr",
-...         catalog_path="data/catalog", market="crypto_spot", frequency="1d",
+...         market="crypto_spot", frequency="1d",
 ...         symbols=tuple(symbols),
 ...     )),
 ... ))

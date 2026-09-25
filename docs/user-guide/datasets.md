@@ -65,7 +65,6 @@ from quantlab.dataset.stock import StockDataset
 config = DatasetConfig(
     raw_data_dir_path="/data/downloads/us_equity/1d/demo/tiingo",
     zarr_file_path="/data/data/us_equity/1d/demo.zarr",
-    catalog_path="/data/data/catalog",
     market="us_equity",       # or "crypto_spot"
     frequency="1d",           # "1d", "1m" or "tick"
     vendor="tiingo",          # "tiingo", "alpaca" or "wrds"
@@ -76,9 +75,8 @@ config = DatasetConfig(
 dataset = StockDataset(config)
 ```
 
-`raw_data_dir_path` is the raw tier, `zarr_file_path` is the store and
-`catalog_path` is where the Nautilus Trader export writes (unused unless you
-call `to_nautilus`). `kwargs` holds dataset-specific options, such as
+`raw_data_dir_path` is the raw tier and `zarr_file_path` is the store.
+`kwargs` holds dataset-specific options, such as
 `{"data_type": "quotes"}` for tick data.
 
 Assigning the config normalises it. `name` is set to the dataset class's
@@ -417,14 +415,12 @@ NaN. Panels that are not OHLCV bars use their own validators:
 `clean_membership_panel` for index membership and `clean_nbbo_panel` for
 NBBO bars.
 
-## Export to KunQuant and Nautilus Trader
+## Export to KunQuant
 
-Market datasets have two exits besides the panel itself.
+Besides the panel itself, market datasets have one exit.
 `to_kunquant(data_columns)` returns contiguous float32 `[time, symbol]`
 arrays, the input format of the KunQuant factor engine; the factor layer
-calls it for you (see [Factors](factors.md)). `to_nautilus()` converts bars
-to Nautilus Trader objects and writes them to `catalog_path`; it is
-implemented for Binance spot klines only.
+calls it for you (see [Factors](factors.md)).
 
 ## See also
 

@@ -316,7 +316,6 @@ if __name__ == "__main__":
                     get_data_root() / "data" / "us_equity" / "tick" / store_name
                 ),
                 raw_data_dir_path=acq_config.raw_data_dir_path,
-                catalog_path=str(get_data_root() / "data" / "catalog"),
                 start_date=args.start_date,
                 end_date=args.end_date,
                 symbols=tuple(symbols),

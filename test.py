@@ -71,7 +71,6 @@ def us_equity() -> StockDataset:
             market="us_equity",
             frequency="1d",
             vendor="tiingo",
-            catalog_path="",
         )
     )
 
