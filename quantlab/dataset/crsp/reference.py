@@ -391,7 +391,7 @@ class CrspReference:
                 f"{type(self).__name__}: no {name}.parquet under "
                 f"{str(self.reference_dir)!r}. The CRSP reference tables are "
                 f"downloaded separately from the daily data; run "
-                f"`scripts/ingest_wrds_crsp.py` with the reference step before "
+                f"`scripts/wrds/index.py` (which pulls them first) before "
                 f"converting, or point `reference_dir` at a directory that "
                 f"already holds it."
             )

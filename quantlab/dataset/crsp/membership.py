@@ -746,9 +746,8 @@ class CrspMembership:
             + scope
             + f"\nDropping them would remove real index members from the "
             f"universe: survivorship bias that later looks like a data gap "
-            f"rather than an error. Pass allow_unlinked=True (the CLI's "
-            f"--allow-unlinked-ndx) to proceed with the linked days and read "
-            f"the rest from report['unlinked']."
+            f"rather than an error. Pass allow_unlinked=True to proceed with "
+            f"the linked days and read the rest from report['unlinked']."
         )
 
     # -- shared --------------------------------------------------------------

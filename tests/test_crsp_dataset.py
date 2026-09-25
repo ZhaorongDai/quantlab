@@ -1500,7 +1500,7 @@ def test_from_raw_data_leaves_a_complete_sidecar_set(mock_crsp_session, tmp_path
     """WR-02: the NON-chunked entry point records its provenance too.
 
     `from_raw_data().save()` is the idiom every other dataset in this repo
-    supports, and `scripts/ingest_wrds_crsp.py` uses it four lines from the CRSP
+    supports, and `scripts/wrds/index.py` uses it for the membership panel after the CRSP
     call. The identity reports were once written only from
     `_raw_axes_in_range`, which ONLY the chunked path calls -- so that idiom
     produced a store with no provenance at all, and which conversion entry
