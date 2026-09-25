@@ -94,7 +94,9 @@ class VectorBtBacktester(BaseBacktester):
     """
 
     #: The ``Portfolio.stats`` metric names reported for the whole window.
-    #: ``benchmark_return`` is left out because no benchmark is simulated.
+    #: ``benchmark_return`` is left out: vectorbt would compare against the
+    #: equal-weighted traded universe, not the configured benchmark, which the
+    #: ``benchmark`` and ``relative`` metric blocks report instead.
     STATS_METRICS = (
         "start",
         "end",
@@ -372,11 +374,27 @@ class VectorBtBacktester(BaseBacktester):
                 records.append(record)
         return records
 
-    def _simulate_benchmark(
-        self, start_date: str, end_date: str
-    ) -> SimulationResult | None:
-        """Return ``None``: no benchmark is simulated; the config setter rejects one."""
-        return None
+    def _simulate_benchmark(self, benchmark_prices: xr.Dataset) -> SimulationResult:
+        """Buy the single benchmark symbol with all capital and hold it.
+
+        The benchmark goes through ``_simulate`` like the strategy: one
+        target weight of 1 on the first bar and hold rows after it, so it
+        fills at the second bar's fill price (the same one-bar delay as the
+        strategy's first rebalance) and pays the same fees and slippage from
+        the same initial cash. Its value is therefore comparable bar for bar
+        with the strategy's.
+        """
+        timestamps = benchmark_prices.timestamp.values
+        rows = np.full((timestamps.size, benchmark_prices.sizes["symbol"]), np.nan)
+        rows[0, :] = 1.0
+        weights = xr.Dataset(
+            {"weight": (("timestamp", "symbol"), rows)},
+            coords={
+                "timestamp": timestamps,
+                "symbol": benchmark_prices.symbol.values,
+            },
+        )
+        return self._simulate(weights, benchmark_prices)
 
     def _engine_stats(self, simulation: SimulationResult) -> dict:
         """Return vectorbt's whole-window statistics as a plain dict.

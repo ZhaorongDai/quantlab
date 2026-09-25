@@ -334,7 +334,8 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
     A round trip that uses a field's default cannot detect that the field was
     dropped: the loader would fill in the same default. So every defaulted
     field gets a value different from its default, verified at the top of
-    the test, except `benchmark_dataset` (D-08 refuses anything but None) and
+    the test, except `benchmark_dataset` (a live object, round-tripped in
+    `test_backtest_benchmark.py`) and
     `name` (rebuilt from the class). Every scalar field must then come back
     equal. This is a lock rather than a red-first test: it passes before the
     fix too, and goes red if `to_dict`/`get_config` ever drops a field or the

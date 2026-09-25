@@ -486,8 +486,8 @@ surprise.
 
 ## Limitations
 
-Benchmark comparison is not implemented yet: `BacktestConfig` has a
-`benchmark_dataset` field, but setting it raises `NotImplementedError`. Borrow
+Benchmark comparison is a single-symbol buy and hold (`benchmark_dataset`,
+see `docs/backtest.md`); there is no weighted or multi-asset benchmark. Borrow
 costs for short positions are not modelled. The rebalance schedule is anchored
 to the first bar of the window, so the whole book turns over on the same day
 and results can depend on which day the backtest starts. Portfolio
