@@ -1,11 +1,17 @@
 """XGBoost regression head for the tree-model layer.
 
-``XGBoostRegressor`` is an ``MLModel`` that trains a Booster with ``xgb.train``
+``XGBoostRegressor`` is an ``MLModel`` (the numpy-based model base class in
+``quantlab.base.model``). It trains an XGBoost ``Booster`` with ``xgb.train``
 on the flattened ``(num_times * num_symbols, num_features)`` rows of the
-factor panel and predicts future returns as ``[num_times, num_symbols,
-num_labels]``. Early stopping uses xgboost's native callback on a pooled
-concordance-correlation loss (``pooled_ccc_loss``), and per-factor feature
-importance is recorded to Weights and Biases after training.
+factor panel, where a *panel* is an ``xarray.Dataset`` indexed by
+``timestamp`` and ``symbol``. It predicts future returns as
+``[num_times, num_symbols, num_labels]``.
+
+Early stopping uses xgboost's native callback on a loss derived from the
+*concordance correlation coefficient* (CCC), which measures how closely
+predictions match the labels in both correlation and scale
+(``pooled_ccc_loss``). Per-factor feature importance is recorded to Weights
+and Biases (W&B, the experiment tracker) after training.
 
 The module is named ``xgb.py`` rather than ``xgboost.py`` so it does not
 shadow the ``xgboost`` package inside this package.
@@ -56,17 +62,25 @@ def pooled_ccc_loss(y_true, y_pred) -> float:
     predicting the market-wide move of each day and penalises a correctly
     shrunk prediction whose variance is below the label's.
 
-    Only positions where both inputs are finite are used. When fewer than one
-    such position remains, or the denominator is exactly zero, the worst
-    loss ``1.0`` is returned rather than NaN, so that early stopping keeps
-    comparing.
+    A CCC of 1 means perfect agreement, 0 no agreement and -1 perfect
+    inverse agreement, so the loss ranges from 0 (best) to 2 (worst).
+
+    Only positions where both inputs are finite are used. When no such
+    position remains, or the denominator is exactly zero, the loss ``1.0``
+    (no agreement) is returned rather than NaN, so that early stopping can
+    still compare rounds.
 
     Parameters
     ----------
-    y_true
+    y_true : array_like
         Observed values, any shape.
-    y_pred
+    y_pred : array_like
         Predicted values, the same number of elements as ``y_true``.
+
+    Returns
+    -------
+    float
+        ``1 - ccc``.
 
     Raises
     ------
@@ -111,6 +125,7 @@ def pooled_ccc_loss(y_true, y_pred) -> float:
 def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]:
     """Score a Booster's predictions for ``xgb.train(custom_metric=...)``.
 
+    The score is ``pooled_ccc_loss`` of the predictions against the labels.
     Only the primary label (column 0) is scored. With multiple labels
     ``dtrain.get_label()`` returns a ``(n_rows, n_labels)`` array and the
     prediction has the same layout; both are reshaped to ``(n_rows, -1)``
@@ -153,16 +168,23 @@ def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]
 
 
 class _WandbEvalCallback(xgb.callback.TrainingCallback):
-    """Log every boosting round's eval results to the head's current run.
+    """Log every boosting round's eval results to the head's current W&B run.
 
     The callback holds a reference to the head and reads
     ``head._wandb_recorder`` on each round, so a deep-copied cross-validation
-    fold logs to its own run. Keys use xgboost's hyphenated form
+    fold logs to its own run.
+
+    Keys use xgboost's hyphenated form
     (``train-rmse``, ``val-ccc_loss``) with ``step`` equal to the round
     index, which distinguishes these curves from the underscored final
     values ``MLModel._evaluate`` writes to the summary. The last logged round
     is stored on the head as ``_last_log_step`` so the feature-importance
     charts can be logged on the same step.
+
+    Parameters
+    ----------
+    head : XGBoostRegressor
+        The model whose recorder receives the per-round values.
     """
 
     def __init__(self, head: "XGBoostRegressor"):
@@ -174,6 +196,20 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
         """Log the latest value of every metric and return ``False`` to continue.
 
         Called by xgboost after each boosting round.
+
+        Parameters
+        ----------
+        model : xgb.Booster
+            The Booster being trained (unused).
+        epoch : int
+            Index of the round just finished, used as the W&B step.
+        evals_log : dict
+            xgboost's history, ``{data_name: {metric: [value per round]}}``.
+
+        Returns
+        -------
+        bool
+            Always ``False``; returning ``True`` would stop training.
 
         Examples
         --------
@@ -230,11 +266,18 @@ class XGBoostRegressor(MLModel):
     importance type only logs a warning, and the checkpoint is never lost
     because of it.
 
-    ``train_cv`` is inherited: each fold does its own native early stopping
-    and writes its own ``.joblib``. With ``parallel=True`` the folds run on
-    threads while xgboost itself uses every core, so set ``nthread`` in the
-    hyperparameters to roughly ``os.cpu_count() // njobs``; the value is
-    passed through unchanged.
+    ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
+    fold does its own native early stopping and writes its own ``.joblib``.
+    With ``parallel=True`` the folds run on threads while xgboost itself uses
+    every core, so set ``nthread`` in the hyperparameters to roughly
+    ``os.cpu_count() // njobs`` to avoid oversubscribing the CPU. The value
+    is passed through unchanged.
+
+    Parameters
+    ----------
+    config : MLConfig
+        Factors, labels, date ranges, early-stopping settings and
+        hyperparameters. See ``MLConfig``.
 
     Examples
     --------
@@ -252,7 +295,7 @@ class XGBoostRegressor(MLModel):
     >>> model = XGBoostRegressor(config)
     >>> checkpoint = model.collect().train()
     >>> checkpoint.name
-    XGBoostRegressor_total.joblib
+    'XGBoostRegressor_total.joblib'
     >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
     (5, 2, 1)
     >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
@@ -271,12 +314,15 @@ class XGBoostRegressor(MLModel):
     DEFAULT_NUM_BOOST_ROUND = 1000
 
     def __init__(self, config: MLConfig):
-        """Store the config; parameters are resolved later by ``_init_model``."""
+        """Initialize the head; see the class docstring for parameters.
+
+        Training parameters are resolved later, by ``_init_model``.
+        """
         super().__init__(config)
         self._params: dict | None = None
         self._num_boost_round: int | None = None
-        #: Round index of the last per-round log, reused as the step of the
-        #: feature-importance charts.
+        # Round index of the last per-round log, reused as the step of the
+        # feature-importance charts.
         self._last_log_step: int | None = None
 
     @staticmethod
@@ -331,20 +377,30 @@ class XGBoostRegressor(MLModel):
         return None
 
     def _resolved_hyperparameters(self) -> dict | None:
-        """Return the parameters handed to ``xgb.train`` plus ``num_boost_round``."""
+        """Return the parameters handed to ``xgb.train`` plus ``num_boost_round``.
+
+        Returns None before ``_init_model`` has run.
+        """
         if self._params is None:
             return None
         return {**self._params, "num_boost_round": self._num_boost_round}
 
     def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """Return a float32 copy with infinities replaced by NaN."""
+        """Return a float32 copy with infinities replaced by NaN.
+
+        xgboost treats NaN as a missing value, so no imputation is needed.
+        """
         out = np.array(data, dtype=np.float32, copy=True)
         out[np.isinf(out)] = np.nan
         return out
 
     @staticmethod
     def _to_rows(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Flatten ``[T, S, F]`` and ``[T, S, L]`` to rows with finite labels."""
+        """Flatten ``[T, S, F]`` and ``[T, S, L]`` to rows with finite labels.
+
+        ``T`` is bars, ``S`` symbols, ``F`` features and ``L`` labels. Rows
+        whose label has any non-finite value are dropped; NaN features stay.
+        """
         n_times, n_symbols, n_features = x.shape
         x_rows = x.reshape(n_times * n_symbols, n_features)
         y_rows = y.reshape(n_times * n_symbols, y.shape[-1])
@@ -360,13 +416,18 @@ class XGBoostRegressor(MLModel):
     ) -> None:
         """Train the Booster with ``xgb.train`` and record the run's summary.
 
+        The validation rows are used only when the segment has at least one
+        row with finite labels. With early stopping, the best iteration and
+        its score are written to the W&B summary, followed by the feature
+        importance.
+
         Raises
         ------
         ValueError
             If the training segment has no row with finite labels.
         """
-        # Reset per training run: a deep-copied cross-validation fold would
-        # otherwise inherit the last step of a previously trained head.
+        # A deep-copied cross-validation fold would otherwise inherit the
+        # last step of a previously trained head.
         self._last_log_step = None
         x_rows, y_rows = self._to_rows(train_x, train_y)
         if x_rows.shape[0] == 0:
@@ -442,18 +503,17 @@ class XGBoostRegressor(MLModel):
         ``_last_log_step`` carries a full table sorted by importance plus a
         bar chart of the top ``_IMPORTANCE_CHART_TOP_N`` factors.
 
-        Everything here is telemetry and must not cost the checkpoint:
-        ``booster="gblinear"`` (no split importance) is skipped with an info
-        message; a type that raises ``XGBoostError`` or returns non-scalar
-        scores is skipped with a warning; a failure while building or logging
-        the charts is also only a warning.
+        This is reporting only, so a failure here must never lose the
+        checkpoint. ``booster="gblinear"`` has no split importance and is
+        skipped with an info message. A type that raises ``XGBoostError`` or
+        returns non-scalar scores is skipped with a warning, and a failure
+        while building or logging the charts is also only a warning.
 
         Raises
         ------
         ValueError
-            If a score key is not ``f<index>`` for one of the
-            factors, which means the Booster was not trained on these
-            columns.
+            If a score key is not ``f<index>`` for one of the factors, which
+            means the Booster was not trained on these columns.
         """
         booster_type = str((self._params or {}).get("booster", "gbtree"))
         if booster_type == "gblinear":
@@ -554,7 +614,8 @@ class XGBoostRegressor(MLModel):
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.
 
-        ``inplace_predict`` is tried first; boosters that do not support it
+        ``inplace_predict``, which skips building a ``DMatrix``, is tried
+        first. Boosters that do not support it
         (``gblinear``) fall back to ``predict`` on a ``DMatrix``. NaN is
         treated as missing on both paths.
         """

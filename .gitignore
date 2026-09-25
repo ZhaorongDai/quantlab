@@ -240,6 +240,6 @@ model_ckpt
 # personal scratch scripts
 jerry_query_data.py
 test.py
-train_model.py
+/train_model.py
 test_nt.ipynb
 cal.py

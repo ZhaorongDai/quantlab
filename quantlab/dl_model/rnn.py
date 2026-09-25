@@ -1,15 +1,21 @@
 """Recurrent regression head with auxiliary targets for the torch model layer.
 
-``RNNRegressor`` is a ``DLModel`` built on ``ModelRCrypto``: one GRU or LSTM
-tower per label, where the first label is the primary target and the others
-are auxiliary targets whose direct predictions are also combined linearly
-into a second estimate of the primary target. The head sits between the
-factor and label layers, which supply ``[num_times, num_symbols, *]``
-tensors, and the backtest layer, which consumes ``predict_panel``.
+``RNNRegressor`` is a ``DLModel`` (the torch training loop defined in
+``quantlab.base.model``) built on ``ModelRCrypto``. ``ModelRCrypto`` holds one
+*tower*, an independent stack of GRU or LSTM layers with a small linear head,
+per label. The first label is the primary target, for example the 30-minute
+forward return. The other labels are auxiliary targets, such as returns over
+other horizons; their predictions are also combined linearly into a second
+estimate of the primary target.
+
+The factor and label layers supply ``[num_times, num_symbols, *]`` tensors
+cut from a *panel*, an ``xarray.Dataset`` indexed by ``timestamp`` and
+``symbol``. The backtest layer consumes the predictions through
+``predict_panel``.
 
 The recurrent layers run with ``batch_first=True`` over the tensors exactly
-as the data loader yields them, so the batch axis is time and the sequence
-axis is the symbol axis of each bar.
+as the data loader yields them. The batch axis is therefore time, and the
+sequence the recurrent layers walk along is the symbol axis of each bar.
 """
 
 import numpy as np
@@ -119,6 +125,7 @@ class ModelRBaseCrypto(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map ``[D, T, input_size]`` to ``[D, T, 1]``.
 
+        ``D`` is the batch axis (bars) and ``T`` the sequence axis (symbols).
         The linear head is applied to every sequence element, so the output
         keeps the batch and sequence axes of the input.
 
@@ -223,6 +230,14 @@ class ModelRCrypto(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(combined_primary, all_direct)`` for a ``[D, T, F]`` input.
 
+        ``D`` is the batch axis (bars), ``T`` the sequence axis (symbols) and
+        ``F`` the number of features.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input of shape ``[D, T, F]``.
+
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor]
@@ -273,8 +288,13 @@ class RNNRegressor(DLModel):
     ``dropout_rates_linear`` (``[0.1]``) and ``model_type`` (``"gru"``).
 
     ``predict`` returns the raw ``(combined_primary, all_direct)`` pair of the
-    module; ``predict_panel`` exposes one variable per label taken from the
+    module. ``predict_panel`` returns one variable per label, taken from the
     direct channels.
+
+    Parameters
+    ----------
+    config : DLConfig
+        Factors, labels, date ranges and training settings. See ``DLConfig``.
 
     Examples
     --------
@@ -295,7 +315,7 @@ class RNNRegressor(DLModel):
     ... )
     >>> model = RNNRegressor(config)
     >>> model.collect().train().name
-    RNNRegressor_total.pth
+    'RNNRegressor_total.pth'
     >>> combined, direct = model.predict(torch.zeros(5, 2, 3))
     >>> combined.shape, direct.shape
     (torch.Size([5, 2, 1]), torch.Size([5, 2, 2]))
@@ -307,7 +327,10 @@ class RNNRegressor(DLModel):
         self.criterion = nn.MSELoss()
 
     def _train_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
-        """Run one optimizer step on a batch and log the training metrics."""
+        """Run one optimizer step on a batch and log the training metrics.
+
+        Metrics are computed on the combined primary estimate only.
+        """
         self.optim.zero_grad()
 
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
@@ -325,7 +348,6 @@ class RNNRegressor(DLModel):
         self.optim.step()
 
         with torch.no_grad():
-            # Metrics are reported on the combined primary estimate.
             primary_pred_np = np.nan_to_num(primary_pred.cpu().numpy())
             primary_y_np = primary_y.cpu().numpy()
 
@@ -386,7 +408,11 @@ class RNNRegressor(DLModel):
         return torch.optim.AdamW(model.parameters(), lr=self.config.lr)
 
     def _test_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
-        """Evaluate one test batch with the training loss and log the metrics."""
+        """Evaluate one test batch with the training loss and log the metrics.
+
+        The test loss uses the same two-term sum as training, so the two
+        numbers are comparable.
+        """
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
 
         loss_direct = self.criterion(all_direct_preds, y)
@@ -426,7 +452,7 @@ class RNNRegressor(DLModel):
 
         The epoch loop weights the returned loss by the batch size to form
         the per-epoch validation loss that drives early stopping, so this
-        must return a tensor.
+        must return a tensor, not only log metrics.
         """
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
 
@@ -467,27 +493,28 @@ class RNNRegressor(DLModel):
         return data
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """Adapt ``predict_panel``: label ``i`` is direct channel ``i``.
+        """Return the direct predictions as a ``[T, S, L]`` array for ``predict_panel``.
 
         The module returns a pair, which the generic ``DLModel`` path cannot
-        consume. Only ``all_direct`` is used, shape ``[T, S, L]``, so label 0
-        is the primary tower's direct prediction rather than the combined
-        estimate.
+        consume. Only ``all_direct`` is used, so label ``i`` of the panel is
+        direct channel ``i`` and label 0 is the primary tower's direct
+        prediction rather than the combined estimate.
         """
         _, direct = self.predict(x)
         return direct.detach().cpu().numpy()
 
     def _preprocess_stream(self, data: torch.Tensor) -> torch.Tensor:
-        """Replace NaN with 0.0 in a streaming input tensor."""
+        """Replace NaN with 0.0 in a tensor fed in streaming (bar-by-bar) mode."""
         data = torch.nan_to_num(data, nan=0.0)
         return data
 
     def update(self, x: torch.Tensor, y: torch.Tensor):
         """Take one online fine-tuning step on a new batch.
 
-        Uses a dedicated AdamW optimizer with learning rate
-        ``config.lr_refit``, cached on the instance so that its moment
-        estimates persist across calls. Returns immediately when
+        Online fine-tuning nudges a trained model with each new batch of
+        live data. The step uses a dedicated AdamW optimizer with learning
+        rate ``config.lr_refit``, cached on the instance so that its moment
+        estimates persist across calls. The method returns immediately when
         ``config.lr_refit`` is ``0.0`` (the default), which disables online
         updating.
 
@@ -520,8 +547,7 @@ class RNNRegressor(DLModel):
         x = x.to(self.device)
         y = y.to(self.device)
 
-        # The refit optimizer is cached on the instance; a fresh optimizer per
-        # call would reset Adam's moment estimates every step.
+        # A fresh optimizer per call would reset Adam's moment estimates.
         optimizer = self._get_refit_optim()
         optimizer.zero_grad()
 

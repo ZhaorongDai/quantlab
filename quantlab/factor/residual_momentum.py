@@ -1,9 +1,21 @@
-"""Fama--French three-factor residual momentum for KunQuant.
+"""Residual momentum from a rolling Fama-French three-factor regression.
 
-The input panel is expected to contain one row per month.  ``mkt_rf``,
-``smb``, ``hml`` and ``risk_free`` are common time series, but KunQuant needs
-them broadcast over the panel's ``symbol`` dimension before they reach this
-factor.  Returns are arithmetic decimal returns, not percentages.
+Plain momentum ranks stocks by their past return. Residual momentum first
+removes the part of each stock's return that common risk factors explain,
+and ranks stocks by what is left (the *residual*). The factors used are the
+three Fama-French factors: the market's excess return over the risk-free
+rate (``mkt_rf``), small-minus-big size (``smb``) and high-minus-low value
+(``hml``). For each stock and month the factor regresses the stock's excess
+return on these three series over a rolling window, then sums the
+residuals over a recent formation period and divides by their volatility.
+
+The computation runs in KunQuant, a library that compiles a formula,
+written as a graph of operators, to native code over a whole
+``(timestamp, symbol)`` panel. The input panel must have one row per month.
+``mkt_rf``, ``smb``, ``hml`` and ``risk_free`` are the same for every stock,
+but KunQuant only reads panel variables, so they must be broadcast across
+the ``symbol`` dimension before they reach this factor. Returns are
+arithmetic decimal returns (0.01 means 1%), not percentages.
 """
 
 from __future__ import annotations
@@ -38,7 +50,41 @@ from quantlab.utils.timer import Timer
 
 @dataclass(frozen=True)
 class ResidualMomentumParameters:
-    """Formula parameters read from ``FactorConfig.kwargs``.
+    """Formula parameters for ``ResidualMomentumFF3``, read from ``config.kwargs``.
+
+    Every field can be set through ``FactorConfig.kwargs``; unknown keys are
+    refused by ``from_config``.
+
+    Parameters
+    ----------
+    regression_window : int, default 36
+        Months in the rolling factor regression.
+    formation_lookback : int, default 12
+        Months back from the signal month where the formation period starts.
+    skip_recent : int, default 1
+        Most recent months left out of the formation period. Skipping the
+        last month avoids the short-term reversal effect.
+    ridge : float, default 1e-8
+        Small value added to each factor variance to keep the regression
+        solvable when factors are nearly collinear.
+    determinant_floor : float, default 1e-18
+        Smallest absolute value the factor covariance determinant may take
+        before it is replaced, to avoid dividing by zero.
+    variance_floor : float, default 1e-12
+        Smallest residual variance used when computing volatility.
+    emit_diagnostics : bool, default True
+        Whether the factor also exposes the regression intermediates
+        (alpha, betas, residual sum and volatility, determinant).
+    return_column : str, default "stock_return"
+        Panel variable holding each stock's monthly return.
+    risk_free_column : str, default "risk_free"
+        Panel variable holding the risk-free rate.
+    market_column : str, default "mkt_rf"
+        Panel variable holding the market excess return.
+    smb_column : str, default "smb"
+        Panel variable holding the size factor.
+    hml_column : str, default "hml"
+        Panel variable holding the value factor.
 
     Examples
     --------
@@ -62,7 +108,17 @@ class ResidualMomentumParameters:
 
     @classmethod
     def from_config(cls, config: FactorConfig) -> "ResidualMomentumParameters":
-        """Build parameters from the recognized entries in ``config.kwargs``.
+        """Build and validate parameters from ``config.kwargs``.
+
+        Parameters
+        ----------
+        config : FactorConfig
+            The factor config whose ``kwargs`` holds the overrides.
+
+        Returns
+        -------
+        ResidualMomentumParameters
+            The validated parameters.
 
         Raises
         ------
@@ -90,7 +146,7 @@ class ResidualMomentumParameters:
 
     @property
     def formation_window(self) -> int:
-        """Number of observations left after skipping the latest months.
+        """Months in the formation period, ``formation_lookback - skip_recent``.
 
         Examples
         --------
@@ -101,7 +157,7 @@ class ResidualMomentumParameters:
 
     @property
     def input_columns(self) -> tuple[str, ...]:
-        """Dataset variables consumed by the operator graph.
+        """Panel variables the graph reads, in the order KunQuant receives them.
 
         Examples
         --------
@@ -117,7 +173,7 @@ class ResidualMomentumParameters:
         )
 
     def validate(self) -> None:
-        """Reject windows, safeguards and input mappings that cannot work.
+        """Raise if a window, a numerical floor or a column name cannot work.
 
         Raises
         ------
@@ -153,12 +209,19 @@ class ResidualMomentumParameters:
 
 
 def _cov(x: OpBase, y: OpBase, window: int) -> OpBase:
-    """Call KunQuant covariance using its ``(x, window, y)`` signature."""
+    """Return the rolling covariance of ``x`` and ``y`` over ``window`` bars.
+
+    KunQuant's ``WindowedCovariance`` takes its arguments in the unusual order
+    ``(x, window, y)``; this wrapper hides that.
+    """
     return WindowedCovariance(x, window, y)
 
 
 def _signed_floor(value: OpBase, floor: float) -> OpBase:
-    """Keep a divisor away from zero without changing a non-zero sign."""
+    """Return ``value``, or ``+-floor`` with the same sign when it is too close to 0.
+
+    Used on divisors so a near-zero value cannot blow up the division.
+    """
     fallback = Select(
         value >= 0.0,
         ConstantOp(float(floor)),
@@ -174,7 +237,28 @@ def _ff3_coefficients(
     hml: OpBase,
     params: ResidualMomentumParameters,
 ) -> tuple[OpBase, OpBase, OpBase, OpBase, OpBase]:
-    """Return rolling alpha, three slopes and the factor covariance determinant."""
+    """Return rolling alpha, the three factor betas and the covariance determinant.
+
+    Solves the three-factor least-squares regression in closed form. With
+    ``a`` to ``f`` the entries of the 3x3 factor covariance matrix, the betas
+    are the matrix inverse (written with cofactors) applied to the
+    covariances between each factor and the excess return. The intercept
+    ``alpha`` then follows from the window means.
+
+    Parameters
+    ----------
+    excess_return : OpBase
+        Stock return minus the risk-free rate.
+    mkt_rf, smb, hml : OpBase
+        The three factor series.
+    params : ResidualMomentumParameters
+        Supplies the window, the ridge and the determinant floor.
+
+    Returns
+    -------
+    tuple[OpBase, OpBase, OpBase, OpBase, OpBase]
+        ``(alpha, beta_mkt, beta_smb, beta_hml, determinant)``.
+    """
     window = params.regression_window
     a = WindowedVar(mkt_rf, window) + params.ridge
     b = _cov(mkt_rf, smb, window)
@@ -219,7 +303,31 @@ def _formation_statistics(
     beta_hml: OpBase,
     params: ResidualMomentumParameters,
 ) -> tuple[OpBase, OpBase, OpBase]:
-    """Return formation-period residual sum, volatility and standardized score."""
+    """Return the formation-period residual sum, its volatility, and their ratio.
+
+    The formation period is the ``formation_window`` months ending
+    ``skip_recent`` months before the signal month. Residuals use the alpha
+    and betas estimated at the signal month. The residual variance is
+    expanded algebraically into factor variances and covariances, so no
+    per-month residual series is ever materialized.
+
+    Parameters
+    ----------
+    excess_return : OpBase
+        Stock return minus the risk-free rate.
+    mkt_rf, smb, hml : OpBase
+        The three factor series.
+    alpha, beta_mkt, beta_smb, beta_hml : OpBase
+        Regression coefficients from ``_ff3_coefficients``.
+    params : ResidualMomentumParameters
+        Supplies the formation window, the skip and the variance floor.
+
+    Returns
+    -------
+    tuple[OpBase, OpBase, OpBase]
+        ``(residual_sum, residual_volatility, score)``, where ``score`` is
+        ``residual_sum / residual_volatility``.
+    """
     skip = params.skip_recent
     window = params.formation_window
     y = BackRef(excess_return, skip) if skip else excess_return
@@ -256,15 +364,38 @@ def _formation_statistics(
 
 
 class ResidualMomentumFF3(FactorKunQuant):
-    """Residual momentum estimated from monthly Fama--French three-factor data.
+    """Residual momentum estimated from monthly Fama-French three-factor data.
 
-    Formula settings and optional column aliases live in ``config.kwargs``.
-    For a CRSP-derived monthly panel, use ``{"return_column": "ret"}``.
-    The four Fama--French series must already be variables on that same panel,
-    broadcast across symbols; this class does not download or resample data.
+    Formula settings and optional column renames live in ``config.kwargs``
+    (see ``ResidualMomentumParameters``). For a monthly panel built from
+    CRSP (the University of Chicago's US stock database), whose return
+    variable is ``ret``, pass ``{"return_column": "ret"}``. The four
+    Fama-French series must already be variables on the same panel,
+    broadcast across symbols; this class does not download or resample
+    data.
 
-    The signal at month ``d`` estimates FF3 on ``d-35:d`` by default and uses
-    residuals from ``d-11:d-1``.  It is therefore tradable from month ``d+1``.
+    With the defaults, the signal at month ``d`` fits the regression on
+    months ``d-35`` to ``d`` and sums residuals over months ``d-11`` to
+    ``d-1``. It uses data up to month ``d`` only, so it can be traded from
+    month ``d+1``.
+
+    Outputs are ``resmom_raw`` (the score) and ``resmom_rank`` (its
+    cross-sectional rank in ``[0, 1]`` per month), plus the diagnostics
+    listed in ``_DIAGNOSTIC_FACTOR_NAMES`` when ``emit_diagnostics`` is on.
+
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. ``data_columns`` must name exactly the
+        five input variables, and ``factor_names`` may pick any subset of
+        the outputs.
+
+    Raises
+    ------
+    ValueError
+        If ``data_columns`` does not match the five input variables, if
+        ``factor_names`` names an unknown output, or if ``kwargs`` holds an
+        unknown or invalid parameter.
 
     Examples
     --------
@@ -300,7 +431,7 @@ class ResidualMomentumFF3(FactorKunQuant):
     )
 
     def __init__(self, factor_config: FactorConfig):
-        """Validate the formula contract, then initialize ``FactorKunQuant``."""
+        """Initialize the factor and validate its config; see the class docstring."""
         super().__init__(factor_config)
         params = self._parameters()
         configured_columns = tuple(self.config.data_columns)
@@ -321,11 +452,17 @@ class ResidualMomentumFF3(FactorKunQuant):
             )
 
     def _parameters(self) -> ResidualMomentumParameters:
-        """Return validated parameters represented by the current config."""
+        """Return the validated parameters for the current config."""
         return ResidualMomentumParameters.from_config(self.config)
 
     def _reset_dataset_config(self) -> None:
-        """Warm up by formula months as well as ``config.window`` calendar days."""
+        """Move the dataset start early enough for the regression and formation windows.
+
+        The base class moves the dataset start ``config.window`` calendar
+        days before the factor's start date. This method also computes a
+        start that many months back, the larger of ``regression_window`` and
+        ``formation_lookback``, and keeps whichever start is earlier.
+        """
         super()._reset_dataset_config()
         params = self._parameters()
         requested_start = pd.to_datetime(self.config.start_date)
@@ -338,14 +475,14 @@ class ResidualMomentumFF3(FactorKunQuant):
         ).strftime("%Y-%m-%d")
 
     def _get_factor_names(self) -> tuple[str, ...]:
-        """Return signal outputs and, when enabled, regression diagnostics."""
+        """Return the signal outputs and, when enabled, the regression diagnostics."""
         names = self._CORE_FACTOR_NAMES
         if self._parameters().emit_diagnostics:
             names += self._DIAGNOSTIC_FACTOR_NAMES
         return names
 
     def _get_factor_func(self) -> Function:
-        """Build the KunQuant graph, pruning outputs not requested in config."""
+        """Build the KunQuant graph, emitting only the outputs in ``factor_names``."""
         params = self._parameters()
         wanted = set(self.get_factor_names())
         builder = Builder()
@@ -387,7 +524,14 @@ class ResidualMomentumFF3(FactorKunQuant):
         return Function(builder.ops, name="residual_momentum_ff3")
 
     def _make(self):
-        """Compile batch mode with stable rolling statistics and ragged symbols."""
+        """Compile the graph for batch runs.
+
+        ``no_fast_stat`` makes KunQuant recompute rolling statistics
+        exactly rather than update them incrementally, which keeps the
+        many variance and covariance terms numerically stable.
+        ``allow_unaligned`` lets the symbol count be any number on x86; it is
+        not supported on ARM, where ``cal`` pads the symbol axis instead.
+        """
         module_name = self.__class__.__name__
         allow_unaligned = platform.machine().lower() not in {"arm64", "aarch64"}
         compiler = KunCompilerConfig(
@@ -404,13 +548,19 @@ class ResidualMomentumFF3(FactorKunQuant):
         )
 
     def cal(self) -> Self:
-        """Calculate in batch, padding the symbol axis when ARM SIMD requires it.
+        """Compute the factor in batch mode and store it on the data backend.
 
-        KunQuant cannot compile ``allow_unaligned=True`` on ARM.  Its float
-        kernels use four-symbol blocks there, so a temporary all-NaN tail is
-        added for panels whose width is not divisible by four.  NaN dummy
-        symbols do not enter the cross-sectional rank, and outputs are sliced
-        back to the real symbol axis before they reach the factor backend.
+        KunQuant's compiled loops process symbols in fixed-size blocks
+        using the CPU's vector (SIMD) instructions. On ARM they use blocks
+        of four and cannot handle a remainder, so a panel whose symbol count
+        is not a multiple of four gets temporary all-NaN dummy symbols
+        appended. NaN symbols do not enter the cross-sectional rank, and the
+        outputs are cut back to the real symbols before they are stored.
+
+        Returns
+        -------
+        Self
+            ``self``, for chaining.
 
         Examples
         --------
@@ -456,7 +606,7 @@ class ResidualMomentumFF3(FactorKunQuant):
         return self
 
     def _make_stream(self):
-        """Compile stream mode with the same stable-statistics requirement."""
+        """Compile the graph for bar-by-bar stream runs, with exact rolling stats."""
         module_name = f"{self.__class__.__name__}_stream"
         compiler = KunCompilerConfig(
             dtype="float",
@@ -476,11 +626,11 @@ class ResidualMomentumFF3(FactorKunQuant):
         )
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed factor panel unchanged."""
+        """Return the computed panel unchanged; no post-processing is needed."""
         return data
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise because residual momentum is a feature, not a label."""
+        """Raise ``RuntimeError``: residual momentum is a feature, not a label."""
         raise RuntimeError(f"{self.__class__.__name__} does not support get_labels()")
 
 

@@ -1,43 +1,59 @@
-"""Command-line ingest of CRSP daily stock data from WRDS for an index roster.
+"""Download CRSP daily stock data from WRDS for an index roster.
 
-The script pulls ``crsp_a_stock.dsf_v2`` rows for a PERMNO roster (an index
-universe, an explicit ``--permnos`` list, the QQQ ETF, or any combination)
-and writes them as raw parquet shards under
+CRSP (the Center for Research in Security Prices) is the standard academic
+database of US stock prices, served through WRDS (Wharton Research Data
+Services). CRSP identifies each security by its PERMNO, a permanent integer
+id that, unlike a ticker, never changes or gets reused. This script pulls
+``crsp_a_stock.dsf_v2`` daily rows for a PERMNO roster: a point-in-time
+index universe, an explicit ``--permnos`` list, the QQQ ETF, or any
+combination. Point-in-time means the index members as they were on each
+date, including the ones that later left, which avoids survivorship bias
+(the error of studying only the companies that survived to the present).
+
+The rows are written as raw parquet files under
 ``<data root>/downloads/us_equity/1d/wrds_crsp/wrds/``, one row per
-``(permno, dlycaldt)`` exactly as CRSP serves them. Beside that raw root it
-fills ``_reference/`` with the small CRSP, Compustat and CCM tables that map a
-PERMNO to its period-correct ticker and answer index membership; they are
-pulled before the roster is resolved because the roster is read from them.
+``(permno, dlycaldt)`` exactly as CRSP serves them. Beside that directory
+the script fills ``_reference/`` with the small CRSP, Compustat and CCM
+tables that map a PERMNO to its ticker at each date and answer index
+membership. Compustat is the S&P accounting database and CCM is the
+CRSP/Compustat link table. These tables are pulled first, because the
+roster is read from them.
 
-With ``--to-zarr`` the raw tier is also converted into up to three Zarr
-stores: the equity panel ``wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr`` with
-its JSON sidecars (adjustment anchor, security-filter report, symbology
-report); the QQQ benchmark ``wrds_crsp_qqq_1d.zarr`` when ``--qqq`` is given,
-kept in its own store because an ETF ranked against the constituents it holds
-would be the index competing with itself; and the membership panel
-``wrds_crsp_{sp500|nasdaq100}_membership.zarr`` when ``--universe`` is given.
+With ``--to-zarr`` the raw files are also converted into up to three Zarr
+stores (a chunked on-disk array format that ``xarray`` reads):
+
+- the equity panel ``wrds_crsp_{sp500|nasdaq100|custom}_1d.zarr``, with JSON
+  sidecar files describing the price adjustment, the security filter and
+  the ticker mapping;
+- the QQQ benchmark ``wrds_crsp_qqq_1d.zarr`` when ``--qqq`` is given, kept
+  in its own store because an ETF ranked against its own holdings would be
+  the index competing with itself;
+- the membership panel ``wrds_crsp_{sp500|nasdaq100}_membership.zarr`` when
+  ``--universe`` is given, which marks the days each security was a member.
 
 The vendor is resolved through ``DataSourceRegistry.get("wrds")`` and its
-``("us_equity", "1d", "crsp_daily")`` capability, so no vendor class is named
-here, and every config is constructed directly.
+``("us_equity", "1d", "crsp_daily")`` capability, so no vendor class is
+named here.
 
-Credentials: ``WRDS_USERNAME`` must be set in the environment. The password
-is never read by this code; libpq takes it from ``~/.pgpass`` (mode 600), one
-line of the form
+``WRDS_USERNAME`` must be set in the environment. The password is never read
+by this code; the PostgreSQL client library (libpq) takes it from
+``~/.pgpass`` (mode 600), one line of the form
 ``wrds-pgdata.wharton.upenn.edu:9737:wrds:<username>:<password>``. No
 argument accepts either value and nothing printed contains one. Every step
-of a run shares one WRDS connection, opened through ``WrdsSession.shared()``
-and closed in a ``finally``, so a run costs at most one Duo push.
+of a run shares one WRDS connection, so a run triggers at most one Duo
+two-factor prompt.
 
-Before any daily row is copied the run checks, in this order: the arguments;
-the account's entitlement to every schema the run reads; the CRSP annual
-product end (an ``--end-date`` past it is clipped and the clip printed, a
-``--start-date`` past it is refused); the reference tables and the roster
-resolved from them; and the row volume, counted with ``count(*)`` per
-calendar year and PERMNO batch and refused above the ``SqlVolumeGuard``
-ceilings unless ``--force-volume`` is given. See ``docs/wrds_crsp.md``.
+Before any daily row is copied the run checks, in order: the arguments; that
+the account may read every schema the run needs; the end date of the
+annual CRSP release (an ``--end-date`` past it is clipped and the clip
+printed, a ``--start-date`` past it is refused); the reference tables and
+the roster resolved from them; and the row count, counted server-side per
+calendar year and PERMNO batch and refused above the volume-guard ceilings
+unless ``--force-volume`` is given. See ``docs/wrds_crsp.md``.
 
-Usage:
+Usage::
+
+    uv run python scripts/ingest_wrds_crsp.py --help
     export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
 
     # CRSP's own point-in-time S&P 500, converted to a panel and a mask.
@@ -91,9 +107,8 @@ SOURCE = DataSourceRegistry.get("wrds")
 #: off this key rather than off the descriptor's defaults.
 CAPABILITY = ("us_equity", "1d", "crsp_daily")
 
-#: The CRSP daily acquisition class, resolved rather than named. Used for its
-#: class-level defaults and its window and path helpers; ``run()`` constructs
-#: it.
+#: The CRSP daily download class, looked up rather than imported. The script
+#: uses its defaults and its window and path helpers; ``run()`` builds it.
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
 
 #: The point-in-time universes this vendor serves, taken from the membership
@@ -140,13 +155,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=list(UNIVERSES),
         default=None,
         help=(
-            "A CRSP-vendor point-in-time universe, resolved by interval "
-            "overlap over [--start-date, --end-date]: every PERMNO that was a "
-            "member at any point in the window, which keeps the securities "
-            "that left the index and removes survivorship bias. "
+            "A point-in-time index universe. Every PERMNO that was a member "
+            "at any time in [--start-date, --end-date] is pulled, including "
+            "the ones that left the index, which avoids survivorship bias. "
             "'crsp_sp500' is CRSP's own dsp500list_v2 membership (from 1925); "
-            "'comp_nasdaq100' is Compustat's gvkeyx 000208 linked through CCM "
-            "(left-censored at 1995)."
+            "'comp_nasdaq100' is Compustat's index gvkeyx 000208 linked to "
+            "PERMNOs through CCM (no data before 1995)."
         ),
     )
     parser.add_argument(
@@ -154,10 +168,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Comma-separated PERMNOs, e.g. 14593,13407. CRSP's raw tier is "
-            "keyed by PERMNO (the stable security id), never by ticker: a "
-            "ticker is derived at conversion time, so a rename never touches "
-            "a watermark. Combines with --universe and --qqq."
+            "Comma-separated PERMNOs, e.g. 14593,13407. CRSP raw files are "
+            "keyed by PERMNO (the permanent security id), never by ticker. "
+            "Tickers are looked up at conversion time, so a rename never "
+            "affects a watermark. Combines with --universe and --qqq."
         ),
     )
     parser.add_argument(
@@ -166,8 +180,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             f"Also pull the QQQ ETF (PERMNO {QQQ_PERMNO}) and, with --to-zarr, "
             f"write it to its own benchmark store. It is never a column of "
-            f"the equity panel: an ETF ranked against the constituents it "
-            f"holds is the index competing with itself in one cross section."
+            f"the equity panel, because an ETF ranked against its own "
+            f"holdings would be the index competing with itself."
         ),
     )
     add_window_args(parser)
@@ -178,7 +192,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            f"PERMNOs per COPY and per count(*) (default "
+            f"PERMNOs per download query and per row-count query (default "
             f"{ACQ.DEFAULT_BATCH_SIZE})."
         ),
     )
@@ -186,26 +200,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--refresh",
         action="store_true",
         help=(
-            "Incrementally refresh from each PERMNO's recorded watermark "
-            "instead of a full backfill of the window."
+            "Continue each PERMNO from its recorded watermark instead of "
+            "downloading the whole window again."
         ),
     )
     parser.add_argument(
         "--refresh-reference",
         action="store_true",
         help=(
-            "Re-pull the _reference/ tables even when this CRSP vintage's "
-            "tier is already complete. Without it a complete tier is reused "
-            "and costs zero round trips."
+            "Download the _reference/ tables again even when the tables for "
+            "this CRSP release are already complete. Without it, complete "
+            "tables are reused and cost no query."
         ),
     )
     parser.add_argument(
         "--allow-unlinked-ndx",
         action="store_true",
         help=(
-            "Proceed when a Nasdaq-100 membership spell has no CCM link. A "
-            "spell with no PERMNO has no security at all, so by default it "
-            "stops the run rather than silently shrinking the universe."
+            "Continue when a Nasdaq-100 membership period has no CCM link to "
+            "a PERMNO. Such a period has no security to pull, so by default "
+            "it stops the run rather than silently shrinking the universe."
         ),
     )
     parser.add_argument(
@@ -215,9 +229,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="equity_common",
         help=(
             "Which securities the equity panel holds (default equity_common: "
-            "common stock, REITs included, ADRs/units/funds/ETFs dropped). "
-            "'shrcd_10_11' is the narrower US-corporate-common reading; "
-            "'none' keeps every security type. Evaluated per date against "
+            "common stock including REITs, without ADRs, units, funds or "
+            "ETFs). 'shrcd_10_11' keeps only US corporate common stock; "
+            "'none' keeps every security type. Applied per date using "
             "dsf_v2's own type columns, and reported in the "
             ".crsp_filter_report.json sidecar."
         ),
@@ -228,24 +242,31 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
-    """Refuse bad arguments before any WRDS session exists.
+    """Refuse bad arguments before any WRDS connection is opened.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser, used to report an error and exit with status 2.
+    args : argparse.Namespace
+        Parsed command-line arguments.
 
     Returns
     -------
     tuple[str, ...]
-        The explicit ``--permnos`` roster as a tuple, possibly empty.
+        The explicit ``--permnos`` roster, possibly empty.
     """
     if not (args.universe or args.permnos or args.qqq):
         parser.error(
             "Nothing to pull: pass at least one of --universe, --permnos or "
-            "--qqq. A CRSP pull with no roster would be a query over the "
-            "whole 110-million-row daily table."
+            "--qqq. A CRSP pull with no roster would query the whole "
+            "110-million-row daily table."
         )
     if not args.start_date or not args.end_date:
         parser.error(
             "--start-date and --end-date are both required: the window is "
-            "counted and priced before any data is pulled, and it is checked "
-            "against the CRSP annual product end."
+            "sized before any data is pulled, and it is checked against the "
+            "end date of the annual CRSP release."
         )
     if args.rows_per_symbol_day is not None:
         parser.error(
@@ -259,7 +280,7 @@ def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
         bad = [token for token in tokens if not token.isdigit()]
         if bad:
             parser.error(
-                f"--permnos {bad} are not PERMNOs. CRSP's raw tier is keyed by "
+                f"--permnos {bad} are not PERMNOs. CRSP raw files are keyed by "
                 f"PERMNO (a digit string, e.g. 14593 for AAPL), not by ticker; "
                 f"resolve a ticker roster to PERMNOs first, or use --universe."
             )
@@ -272,8 +293,19 @@ def _validate(parser: argparse.ArgumentParser, args) -> tuple[str, ...]:
 def _schemas_for(universe: str | None) -> tuple[str, ...]:
     """Return exactly the WRDS schemas a run for ``universe`` reads.
 
-    An S&P-only pull never asks whether the account can read Compustat,
-    which most CRSP subscriptions cannot and which that pull does not need.
+    Only these schemas are checked for access, so an S&P 500 pull never
+    fails on Compustat, which most CRSP subscriptions cannot read and which
+    that pull does not need.
+
+    Parameters
+    ----------
+    universe : str or None
+        The ``--universe`` value, or ``None`` for a PERMNO-only roster.
+
+    Returns
+    -------
+    tuple of str
+        The schema names.
     """
     from quantlab.acquisition.wrds.crsp import CrspQueries
 
@@ -289,7 +321,7 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # The data root must be applied before any path is derived from it.
+    # Must run before any path is derived from the data root.
     apply_data_dir(args)
 
     explicit_permnos = _validate(parser, args)
@@ -297,8 +329,8 @@ if __name__ == "__main__":
     batch_size = args.batch_size or ACQ.DEFAULT_BATCH_SIZE
     kwargs = {"batch_size": batch_size, "clip_to_product_end": True}
 
-    # Imported at run time rather than at module scope so the session class is
-    # looked up when the run starts, which lets an offline double replace it.
+    # Imported here rather than at the top so that tests can replace the
+    # session class with an offline stand-in before the run starts.
     from quantlab.acquisition._support.sql_volume import SqlVolumeGuard
     from quantlab.acquisition.wrds.crsp import CrspQueries, CrspVolumeProbe
     from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
@@ -310,14 +342,14 @@ if __name__ == "__main__":
         parser.exit(1, f"{exc}\n")
 
     try:
-        # 1. Entitlement first: an unsubscribed schema stops the run with no
-        #    COPY issued and no reference file written.
+        # 1. Check access first, so a missing subscription stops the run
+        #    before any data is copied or reference file written.
         try:
             CrspQueries.assert_entitled(session, _schemas_for(args.universe))
         except (RuntimeError, ValueError) as exc:
             parser.exit(1, f"{exc}\n")
 
-        # 2. The annual product end, probed once; a clip is always printed.
+        # 2. Clip the window to the end of the annual CRSP release, and say so.
         try:
             start_date, end_date, clipped = ACQ.resolve_window(
                 session, args.start_date, args.end_date, clip=True
@@ -334,9 +366,8 @@ if __name__ == "__main__":
             "end_date": end_date.isoformat(),
         }
 
-        # 3. The acquisition config, built once with an empty roster; the
-        #    roster is filled in at step 5, after the reference tables can
-        #    answer who is in the universe.
+        # 3. Build the config with an empty roster; step 5 fills it in once
+        #    the reference tables can say who is in the universe.
         acq_config = SOURCE.config_factory_for(*CAPABILITY)(
             symbols=(),
             start_date=window["start_date"],
@@ -345,8 +376,8 @@ if __name__ == "__main__":
         )
         reference_dir = ACQ.reference_dir_for(acq_config)
 
-        # 4. The reference tier, on the same session, scoped to what this run
-        #    needs and skipped entirely when this vintage's tier is complete.
+        # 4. Pull only the reference tables this run needs, skipping them when
+        #    this release's tables are already complete.
         try:
             manifest = CrspReferenceTables(session, reference_dir).pull(
                 product_end=end_date,
@@ -361,8 +392,7 @@ if __name__ == "__main__":
             rows = entry.get("rows") if isinstance(entry, dict) else entry
             print(f"  {name}: {rows:,} row(s)")
 
-        # 5. The roster, resolved to PERMNOs before it reaches the config: the
-        #    acquisition refuses a ticker roster outright.
+        # 5. Resolve the roster to PERMNOs; the download refuses tickers.
         roster: list[str] = []
         if args.universe:
             try:
@@ -379,17 +409,16 @@ if __name__ == "__main__":
         roster.extend(explicit_permnos)
         if args.qqq:
             roster.append(QQQ_PERMNO)
-        # Numerically sorted and de-duplicated: PERMNOs are integers rendered
-        # as strings, so a text sort would put "14593" before "7000" and the
-        # batch boundaries would move between two runs of the same command.
+        # Sort numerically, not as text ("14593" < "7000" as strings), so the
+        # batch boundaries stay the same across runs of the same command.
         roster = [str(value) for value in sorted({int(p) for p in roster})]
         if not roster:
             parser.exit(1, "the roster resolved to no PERMNOs.\n")
         print(f"Roster ({len(roster)} PERMNO(s)): {', '.join(roster)}")
         acq_config = replace(acq_config, symbols=tuple(roster))
 
-        # 6. count(*) per year page, then the guard, both before the first
-        #    COPY of any daily row.
+        # 6. Count rows per year and check the volume ceilings before any
+        #    daily row is copied.
         try:
             counts = CrspVolumeProbe(
                 session, batch_size=batch_size
@@ -407,11 +436,11 @@ if __name__ == "__main__":
         print_sql_volume_estimate(estimate, forced=args.force_volume)
         print(
             f"  note:              bytes/row {ACQ.DEFAULT_BYTES_PER_ROW} is an "
-            f"ASSUMPTION for CRSP's 50 mostly-short columns, not a measured "
-            f"shard size; a live smoke run should replace it."
+            f"assumed size for CRSP's 50 mostly short columns, not a measured "
+            f"file size; measure it on a real run to replace it."
         )
 
-        # 7. The pull.
+        # 7. Download.
         print(
             f"Acquiring {len(roster)} PERMNO(s) from {SOURCE.display_name} "
             f"over {window['start_date']}..{window['end_date']} "
@@ -429,18 +458,15 @@ if __name__ == "__main__":
             catalog_path = str(get_data_root() / "data" / "catalog")
             short_name = UNIVERSE_SHORT_NAMES.get(args.universe, "custom")
 
-            # QQQ is excluded from the equity panel by roster, not only by the
-            # security filter: `--security-filter none` is a legitimate choice
-            # and must not silently pull the benchmark into the panel.
+            # Exclude QQQ by roster, not only by the security filter, because
+            # `--security-filter none` would otherwise let it into the panel.
             equity_permnos = tuple(
                 permno
                 for permno in roster
                 if not (args.qqq and permno == QQQ_PERMNO)
             )
-            # An empty equity roster (`--qqq` alone) skips the equity
-            # conversion rather than writing a `custom` store that would hold
-            # nothing but the benchmark. The skip is printed so that it cannot
-            # be mistaken for a conversion that quietly wrote nothing.
+            # With `--qqq` alone there is no equity to convert. Skip it, and
+            # say so, rather than write a `custom` store holding only QQQ.
             if equity_permnos:
                 ds_config = CrspDatasetConfig(
                     zarr_file_path=str(
@@ -455,9 +481,8 @@ if __name__ == "__main__":
                     security_filter=args.security_filter,
                     roster_universe=args.universe,
                 )
-                # One dataset serves both the raw-data probe and the sidecar
-                # path; constructing it re-resolves the security filter, so it
-                # is built once.
+                # Built once and reused for the raw-data check and the sidecar
+                # path, because construction re-resolves the security filter.
                 probe_dataset = CrspStockDataset(ds_config)
                 refuse_conversion_without_raw_data(probe_dataset, result)
                 print(
@@ -483,7 +508,7 @@ if __name__ == "__main__":
                     f"Skipping the equity conversion: the roster holds no "
                     f"equity PERMNO -- all {len(roster)} of it is the QQQ "
                     f"benchmark (PERMNO {QQQ_PERMNO}), which gets its own "
-                    f"store and is never an equity column (D-15). No "
+                    f"store and is never an equity column. No "
                     f"'{STORE_TEMPLATE.format(name=short_name)}' is read or "
                     f"written. The QQQ store and the universe membership panel "
                     f"still run below; they are independent outputs."
@@ -498,7 +523,7 @@ if __name__ == "__main__":
                     start_date=window["start_date"],
                     end_date=window["end_date"],
                 )
-                print("Converting the QQQ benchmark into its own store (D-15)")
+                print("Converting the QQQ benchmark into its own store")
                 print_conversion_result(
                     convert(
                         SOURCE,
@@ -528,8 +553,8 @@ if __name__ == "__main__":
                 )
         else:
             print(
-                "Skipping Zarr conversion (default). The raw shards above are "
-                "the deliverable; pass --to-zarr to convert them."
+                "Skipping Zarr conversion (default). The raw files above are "
+                "the run's output; pass --to-zarr to convert them."
             )
     finally:
         WrdsSession.close_shared()

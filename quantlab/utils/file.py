@@ -29,11 +29,11 @@ def file_date_filter(
     ----------
     path : Path | list[Path]
         One path or a list of paths to filter.
-    start_date : str
+    start_date : str, default Date.START_DATE
         Earliest date to keep, as a parseable date string.
-    end_date : str
+    end_date : str, default Date.END_DATE
         Latest date to keep, as a parseable date string.
-    period : Literal['month']
+    period : Literal['month'], default "month"
         Granularity encoded in the file name; only ``"month"`` is
         supported.
 
@@ -67,6 +67,21 @@ def file_date_filter(
 def get_csv_files(dir_path: str) -> list[Path]:
     """Return every ``*.csv`` under ``dir_path`` (recursively), sorted by path.
 
+    Parameters
+    ----------
+    dir_path : str
+        Directory to search.
+
+    Returns
+    -------
+    list[Path]
+        The matching files, sorted.
+
+    Raises
+    ------
+    AssertionError
+        If ``dir_path`` does not exist.
+
     Examples
     --------
     >>> [p.name for p in get_csv_files("/data/klines")]
@@ -77,7 +92,22 @@ def get_csv_files(dir_path: str) -> list[Path]:
 
 
 def get_pqt_files(dir_path: str) -> list[Path]:
-    """Return every ``*.pqt`` under ``dir_path`` (recursively), sorted by path.
+    """Return every ``*.pqt`` (parquet) under ``dir_path`` (recursively), sorted by path.
+
+    Parameters
+    ----------
+    dir_path : str
+        Directory to search.
+
+    Returns
+    -------
+    list[Path]
+        The matching files, sorted.
+
+    Raises
+    ------
+    AssertionError
+        If ``dir_path`` does not exist.
 
     Examples
     --------

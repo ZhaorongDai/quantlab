@@ -8,6 +8,14 @@ owning class's dotted import path so the object can be rebuilt from the
 serialised dict (see ``quantlab.utils.module``). ``to_dict()`` on each config
 produces that dict.
 
+Throughout, a *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and
+``symbol``. Several configs describe US-equity data from WRDS (Wharton
+Research Data Services, a university data platform). CRSP (the Center for
+Research in Security Prices) supplies daily stock data keyed by PERMNO, a
+permanent integer id that stays with a security when its ticker changes. TAQ
+(Trade and Quote) supplies intraday quotes, and the NBBO (National Best Bid
+and Offer) is the best bid and ask across all US exchanges at each moment.
+
 Fields are documented with ``#:`` comments so the meaning of each one sits
 beside its definition.
 """
@@ -109,7 +117,7 @@ class DatasetConfig(BaseDatasetConfig):
 
 @dataclass(kw_only=True)
 class NbboDatasetConfig(DatasetConfig):
-    """Config of the WRDS TAQ NBBO bar panel.
+    """Config of the intraday bar panel built from WRDS TAQ NBBO quotes.
 
     ``frequency`` stays ``"tick"`` (the raw tier holds one row per NBBO
     record); the size of the bars the panel is resampled to is the separate
@@ -164,7 +172,7 @@ QQQ_PERMNO: str = "86755"
 class CrspDatasetConfig(DatasetConfig):
     """Config of the CRSP Stock v2 daily panel.
 
-    The three market fields default rather than being asked for: CRSP Stock v2
+    The three market fields have defaults rather than being required: CRSP Stock v2
     is US equity, daily, and reached through the ``wrds`` account. They remain
     fields (not constants on the dataset) because the vendor registry resolves
     the converter from ``(market, frequency, data_type)`` read off this object.
@@ -187,7 +195,7 @@ class CrspDatasetConfig(DatasetConfig):
     >>> cfg.market, cfg.frequency, cfg.vendor
     ('us_equity', '1d', 'wrds')
     >>> cfg.security_filter
-    equity_common
+    'equity_common'
     """
 
     #: Always US equity for this vendor.
@@ -198,10 +206,10 @@ class CrspDatasetConfig(DatasetConfig):
     vendor: Vendor | None = "wrds"
 
     #: Directory of the CRSP reference tables (``stksecurityinfohist`` and
-    #: friends) the conversion reads its symbology from. Required and not
-    #: derived from ``raw_data_dir_path``: the reference tier is a sibling of
-    #: the raw root pulled by a separate step, and a conversion pointed at a
-    #: raw tree whose sibling was never filled must fail saying so.
+    #: friends) the conversion reads its symbology (the mapping from PERMNO to
+    #: ticker over time) from. It is required rather than derived from
+    #: ``raw_data_dir_path`` because the reference tables are downloaded by a
+    #: separate step, and a missing download must fail with a clear error.
     reference_dir: str
 
     #: Restrict the conversion to these PERMNOs, as digit strings. ``None``
@@ -225,7 +233,8 @@ class CrspDatasetConfig(DatasetConfig):
     security_filter: str | dict = "equity_common"
 
     #: Name of an index (one of ``CrspMembership.INDEXES``) whose point-in-time
-    #: membership acts as an explicit roster for this conversion. During a
+    #: membership (who was in the index on each date, as known on that date)
+    #: acts as an explicit roster for this conversion. During a
     #: PERMNO's membership spell it is exempt from ``security_filter``; outside
     #: its spells the filter applies normally. Overrides are recorded under
     #: ``roster_overrides`` in the filter report. ``None`` means no index roster.
@@ -298,6 +307,8 @@ class CrspDatasetConfig(DatasetConfig):
 @dataclass(kw_only=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
+
+    A cell is True when the symbol was a member of the index on that date.
 
     Examples
     --------
@@ -379,6 +390,11 @@ class AcquisitionConfig:
 class UniverseConfig:
     """Config of the point-in-time universe catalog builder.
 
+    The catalog records which symbols belonged to the investable universe on
+    each date, using only information available on that date. Building on it
+    avoids survivorship bias, the error of testing only on companies that
+    still exist today.
+
     Examples
     --------
     >>> cfg = UniverseConfig(
@@ -413,10 +429,12 @@ class UniverseConfig:
 class BaseFactorConfig:
     """Fields every factor (and label) shares, whichever backend computes it.
 
-    Dates and symbols left ``None`` are inherited from ``dataset`` by the
-    factor's config setter. The factor reads a window of ``window`` days before
-    ``start_date`` so rolling computations are warm at the first requested
-    bar.
+    The factor's config setter fills in missing dates with the open-ended
+    bounds of ``quantlab.enums.constant.Date`` and then moves the dataset's
+    dates to match the factor's. It also starts the dataset ``window``
+    calendar days before ``start_date``, so rolling computations have enough
+    history (are "warm") at the first requested bar. Leaving ``symbols`` as
+    ``None`` keeps every symbol of the dataset.
 
     Examples
     --------
@@ -444,11 +462,12 @@ class BaseFactorConfig:
     #: Names of the factor variables this factor produces; filled from the
     #: factor definition when left ``None``.
     factor_names: tuple[str, ...] | None = None
-    #: First date to compute, inclusive. ``None`` inherits the dataset's.
+    #: First date to compute, inclusive. ``None`` means no lower bound.
     start_date: str | None = None
-    #: Last date to compute, inclusive. ``None`` inherits the dataset's.
+    #: Last date to compute, inclusive. ``None`` means no upper bound.
     end_date: str | None = None
-    #: Restrict computation to these symbols. ``None`` inherits the dataset's.
+    #: Restrict the output to these symbols. ``None`` keeps every symbol of
+    #: the dataset.
     symbols: tuple[str, ...] | None = None
     #: Free-form options a specific factor class may read.
     kwargs: dict | None = None
@@ -522,7 +541,8 @@ class DLConfig:
 
     ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
     training and test windows; rolling cross-validation overwrites them fold
-    by fold. See ``docs/model.md``.
+    by fold. ``start_date`` and ``end_date`` bound all the data the model
+    collects and are pushed down to every factor and label.
 
     Examples
     --------
@@ -557,9 +577,10 @@ class DLConfig:
     #: ``"read"`` loads label values from their stores; ``"cal"`` computes
     #: them first.
     label_data_strategy: Literal["read", "cal"]
-    #: First date of data to collect, inclusive.
+    #: First date of data to collect, inclusive. ``None`` means no lower
+    #: bound.
     start_date: str | None = None
-    #: Last date of data to collect, inclusive.
+    #: Last date of data to collect, inclusive. ``None`` means no upper bound.
     end_date: str | None = None
     #: Worker processes for the torch ``DataLoader``.
     num_workers: int = 4
@@ -649,9 +670,10 @@ class MLConfig:
     #: ``"read"`` loads label values from their stores; ``"cal"`` computes
     #: them first.
     label_data_strategy: Literal["read", "cal"]
-    #: First date of data to collect, inclusive.
+    #: First date of data to collect, inclusive. ``None`` means no lower
+    #: bound.
     start_date: str | None = None
-    #: Last date of data to collect, inclusive.
+    #: Last date of data to collect, inclusive. ``None`` means no upper bound.
     end_date: str | None = None
 
     #: Library hyperparameters passed to the model head.

@@ -1,18 +1,22 @@
 """Per-batch page ledger for resumable, paginated vendor downloads.
 
-Some vendors answer a multi-symbol request as a chain of pages linked by an
-opaque ``next_page_token``, sorted by symbol and then by bar timestamp. A
-full-market backfill issues thousands of such batches, each of which may run
-to dozens of pages, so an interrupted run must be able to continue from the
-middle of a batch: restarting at page 0 re-spends every page already paid
-for, and guessing a later page silently drops the symbols in between.
-``PageLedger`` is the small JSON sidecar that records, for one batch, which
-pages have landed, which token the next request should carry and which
-parquet shards hold each page's rows.
+Some vendors (Alpaca, for example) answer a request for several symbols as a
+chain of pages. Each page carries an opaque ``next_page_token`` that the next
+request must send back, and rows are sorted by symbol and then by bar
+timestamp. A *batch* is one such multi-symbol request. Downloading the whole
+market takes thousands of batches, some of them dozens of pages long, so an
+interrupted run must be able to continue from the middle of a batch.
+Restarting at page 0 pays again for every page already fetched, and guessing
+a later page silently skips the symbols in between.
+
+``PageLedger`` is a small JSON *sidecar* file (a bookkeeping file stored next
+to the data it describes) that records, for one batch, which pages have been
+fetched, which token the next request must carry, and which parquet *shards*
+(the individual files the rows were written to) hold each page's rows.
 
 The acquisition engine in ``quantlab/base/acquisition.py`` is the only
-caller. This module imports nothing from the project except the atomic JSON
-writer in ``quantlab.utils.atomic``. See ``docs/pageledger.md``.
+caller. The only project import is the atomic JSON writer in
+``quantlab.utils.atomic``.
 """
 
 import hashlib
@@ -26,24 +30,32 @@ from quantlab.utils.atomic import write_json_atomically
 class PageLedger:
     """JSON sidecar recording which pages of one batch have been fetched.
 
-    Ledgers live under ``{watermark_path}/_pages/``, next to the raw data tree
-    rather than inside it, because a polars directory scan of the raw tree
-    would choke on a ``.json`` file. There is one file per batch and therefore
-    one writer per file: batches are fetched from several worker threads at
-    once, and the in-memory append that precedes each flush is not atomic, so
-    a shared manifest would need a lock. If these files are ever merged into
-    one, a ``threading.Lock`` around append-plus-flush becomes mandatory. A
-    missing file is simply an empty ledger, which is the normal state of a
-    first run.
+    Ledgers live under ``{watermark_path}/_pages/``. ``watermark_path`` is
+    the directory of per-symbol progress files, kept outside the raw data
+    tree because a polars scan of that tree would fail on a ``.json`` file.
+
+    There is one file per batch, and therefore one writer per file. Batches
+    are fetched from several worker threads at once, and updating the
+    in-memory record before each write is not atomic, so one shared file
+    would need a lock. If these files are ever merged into one, a
+    ``threading.Lock`` around the update and the write becomes necessary. A
+    missing file is an empty ledger, which is the normal state on a first run.
 
     Parameters
     ----------
     path : str
-        Location of the sidecar; see ``default_path``.
-    symbols : Optional[Sequence[str]]
-        The batch's current roster. When given, a stored ledger
-        whose ``symbol_fingerprint`` differs from this roster's reads
-        back empty instead of being resumed onto.
+        Location of the sidecar file; see ``default_path``.
+    symbols : Sequence[str] or None, default None
+        The batch's current *roster* (its list of symbols). When given, a
+        stored ledger whose ``symbol_fingerprint`` does not match this roster
+        reads back empty instead of being resumed.
+
+    Attributes
+    ----------
+    path : str
+        The sidecar path.
+    symbols : tuple[str, ...] or None
+        The roster the ledger is bound to, if any.
 
     Examples
     --------
@@ -68,11 +80,7 @@ class PageLedger:
     DIRNAME = "_pages"
 
     def __init__(self, path: str, symbols: Optional[Sequence[str]] = None) -> None:
-        """Open the ledger at ``path``, reading it from disk if it exists.
-
-        When ``symbols`` is supplied, a stored ledger written for a different
-        roster reads back empty; see ``_load``.
-        """
+        """Initialize the ledger; see the class docstring for parameters."""
         self.path = str(path)
         self.symbols = None if symbols is None else tuple(str(s) for s in symbols)
         self._payload = self._load()
@@ -96,13 +104,23 @@ class PageLedger:
     ) -> str:
         """Return a stable 16-hex-character key identifying one batch.
 
-        The key is the SHA-256 of ``vendor|frequency|start|end|symbols`` with
-        the symbols sorted and comma-joined, truncated to 16 characters: long
-        enough that collisions across a full-market backfill are not a
-        concern, short enough to keep shard filenames readable. Symbols are
-        sorted because a batch is a set: requesting ``["B", "A"]`` and
-        ``["A", "B"]`` issues the same vendor request and returns the same
-        rows, so the two must share a ledger.
+        The key is the SHA-256 hash of ``vendor|frequency|start|end|symbols``
+        (symbols sorted and comma-joined), cut to 16 characters. That is long
+        enough to make collisions across a full-market download negligible
+        and short enough to keep shard filenames readable. Symbols are sorted
+        because a batch is a set: requesting ``["B", "A"]`` and ``["A", "B"]``
+        returns the same rows, so the two must share a ledger.
+
+        Parameters
+        ----------
+        vendor : str
+            Vendor name.
+        frequency : str
+            Bar frequency, for example ``"1m"``.
+        start_date, end_date : str
+            The requested date range.
+        symbols : Iterable[str]
+            The batch's symbols, in any order.
 
         Examples
         --------
@@ -126,9 +144,15 @@ class PageLedger:
 
     @staticmethod
     def fingerprint(symbols: Sequence[str]) -> str:
-        """Return the SHA-256 of the sorted, newline-joined roster.
+        """Return the SHA-256 hash of the sorted, newline-joined roster.
 
-        Order-insensitive for the same reason ``batch_key`` is.
+        The order of ``symbols`` does not matter, for the same reason as in
+        ``batch_key``.
+
+        Parameters
+        ----------
+        symbols : Sequence[str]
+            The roster to fingerprint.
 
         Examples
         --------
@@ -143,6 +167,13 @@ class PageLedger:
     @classmethod
     def default_path(cls, watermark_path: str, batch_key: str) -> str:
         """Return ``{watermark_path}/_pages/{batch_key}.pages.json``.
+
+        Parameters
+        ----------
+        watermark_path : str
+            The acquisition config's watermark directory.
+        batch_key : str
+            The key from ``batch_key``.
 
         Examples
         --------
@@ -172,21 +203,21 @@ class PageLedger:
     def _load(self) -> dict:
         """Read the sidecar from disk, or return an empty payload.
 
-        A missing, unparseable or non-object file reads back empty: a corrupt
-        sidecar costs this one batch a re-fetch and nothing more. Every key
-        is filled in with ``setdefault`` rather than by trusting the file's
-        shape, so a file written by an older build gains the new keys at
-        their defaults and a file written by a newer build keeps its extra
-        keys through a read/write cycle.
+        A missing or unparseable file, or one that does not hold a JSON
+        object, reads back empty: a corrupt sidecar costs this one batch a
+        re-fetch and nothing more. Missing keys are filled in with
+        ``setdefault``, so a file from an older version of the code gains the
+        new keys at their defaults, and a file from a newer version keeps its
+        extra keys when it is rewritten.
 
         When the ledger was opened with a roster, a stored
-        ``symbol_fingerprint`` that differs from the roster's reads back
-        empty: resuming onto pages fetched for a different symbol set would
-        skip pages never fetched for the new symbols. A ledger that has pages
-        but no fingerprint is treated the same way, since nobody can say
-        which roster those pages belong to. A ledger with neither fingerprint
-        nor pages is kept as is, so any extra keys a newer writer stored are
-        not thrown away.
+        ``symbol_fingerprint`` that differs from that roster's reads back
+        empty. Resuming pages fetched for a different set of symbols would
+        skip pages that were never fetched for the new ones. A ledger with
+        pages but no fingerprint is treated the same way, because nobody can
+        say which roster those pages belong to. A ledger with neither
+        fingerprint nor pages is kept as it is, so extra keys written by a
+        newer version are not lost.
         """
         path = Path(self.path)
         if not path.exists():
@@ -207,10 +238,9 @@ class PageLedger:
         if self.symbols is not None:
             fingerprint = payload["symbol_fingerprint"]
             if fingerprint is None:
-                # Pages with no fingerprint belong to a roster nobody can
-                # identify, so they must not be resumed onto. An identity-less
-                # ledger with no pages is harmless and is about to be stamped
-                # by `describe()`, so it is kept rather than emptied.
+                # Pages without a fingerprint belong to an unknown roster, so
+                # never resume them. A ledger with no pages is harmless and
+                # is about to be stamped by `describe()`, so keep it.
                 if payload["pages"]:
                     return self._empty()
             elif fingerprint != self.fingerprint(self.symbols):
@@ -233,7 +263,7 @@ class PageLedger:
 
     @property
     def symbol_fingerprint(self) -> Optional[str]:
-        """Return the stored roster fingerprint, or None before ``describe``.
+        """Return the stored roster fingerprint, or None before ``describe`` runs.
 
         Examples
         --------
@@ -244,7 +274,7 @@ class PageLedger:
 
     @property
     def symbol_count(self) -> Optional[int]:
-        """Return the stored roster size, or None before ``describe``.
+        """Return the stored roster size, or None before ``describe`` runs.
 
         Examples
         --------
@@ -256,10 +286,10 @@ class PageLedger:
     def resume_point(self) -> tuple[int, Optional[str]]:
         """Return ``(next_page_index, page_token)`` for the next request.
 
-        The token is the ``next_token`` carried by the last recorded page, so
-        a resumed run's first request is the one that was interrupted rather
-        than one that already succeeded. ``(0, None)`` means nothing has been
-        recorded yet.
+        The token is the ``next_token`` stored with the last recorded page, so
+        a resumed run starts with the request that was interrupted, not one
+        that already succeeded. ``(0, None)`` means nothing has been recorded
+        yet.
 
         Examples
         --------
@@ -275,11 +305,11 @@ class PageLedger:
     def symbols_seen(self) -> set[str]:
         """Return every symbol that carried a row on any recorded page.
 
-        The set accumulates over the whole batch and is only meaningful once
+        The set grows over the whole batch and only means something once
         ``is_complete()`` is true. Vendors sort pages by symbol first, so page
-        0 of a 100-symbol batch may legitimately hold a single symbol;
-        judging "queried but no data" per page would wrongly stamp the other
-        99 as empty and skip them on every later run.
+        0 of a 100-symbol batch may hold a single symbol. Concluding "asked
+        for but no data" from one page would wrongly mark the other 99 as
+        empty and skip them on every later run.
 
         Examples
         --------
@@ -289,7 +319,7 @@ class PageLedger:
         return {str(symbol) for symbol in self._payload["symbols_with_data"]}
 
     def is_complete(self) -> bool:
-        """Return whether the page chain has been recorded as terminated.
+        """Return whether the last page of the batch has been recorded.
 
         Examples
         --------
@@ -309,12 +339,22 @@ class PageLedger:
         end_date: str,
         symbols: Sequence[str],
     ) -> None:
-        """Record the batch identity and flush it, without recording a page.
+        """Record which batch this ledger belongs to and write it to disk.
 
-        Called before the first request so the identity reaches disk even for
-        a batch that fails on page 0. Without it, a ledger with pages but no
-        fingerprint could be resumed onto by a different roster; ``_load``
-        refuses such a ledger, and this method keeps one from being written.
+        Call this before the first request, so the batch's identity (including
+        the roster fingerprint) is on disk even if page 0 fails. That way no
+        ledger with pages but no fingerprint is ever written; ``_load``
+        refuses to resume such a ledger.
+
+        Parameters
+        ----------
+        batch_key : str
+            The key from ``batch_key``.
+        vendor, frequency, start_date, end_date : str
+            The batch's request parameters.
+        symbols : Sequence[str]
+            The batch's roster. It is fingerprinted and also bound to this
+            ledger.
 
         Examples
         --------
@@ -345,31 +385,31 @@ class PageLedger:
     ) -> None:
         """Append one fetched page and rewrite the sidecar atomically.
 
-        ``next_token`` is stored verbatim and never re-derived from a
-        ``symbol|timeframe|timestamp`` tuple of our own, because the vendor's
-        encoding is undocumented and may change. ``last_symbol`` and
-        ``last_timestamp`` are stored alongside it as raw material for a
-        token-free fallback: if a stored token is rejected, the batch can be
-        re-issued with ``start`` narrowed to the last timestamp and the
-        roster trimmed to the last symbol onwards. No accessor implements
-        that fallback today; read ``pages[-1]`` directly if you need it.
+        ``next_token`` is stored exactly as the vendor sent it and never
+        rebuilt from our own fields, because the vendor's token format is
+        undocumented and may change. ``last_symbol`` and ``last_timestamp``
+        are stored as material for a fallback that needs no token: if a
+        stored token is rejected, the batch could be re-sent starting at the
+        last timestamp with the roster trimmed to the last symbol onwards.
+        No method implements that fallback yet; read ``pages[-1]`` directly
+        if you need it.
 
         Parameters
         ----------
         index : int
             Zero-based page number.
-        next_token : Optional[str]
-            The vendor's token for the following page, or None
-            on the last page.
+        next_token : str or None
+            The vendor's token for the following page, or None on the last
+            page.
         rows : int
             Number of rows the page carried.
         seen : Iterable[str]
             Symbols that had at least one row on this page.
         shard_paths : Sequence[str]
             Parquet files the page's rows were written to.
-        last_symbol : Optional[str]
+        last_symbol : str or None, default None
             Symbol of the page's final row, if known.
-        last_timestamp : Optional[str]
+        last_timestamp : str or None, default None
             Timestamp of the page's final row, if known.
 
         Examples
@@ -397,17 +437,17 @@ class PageLedger:
         self._flush()
 
     def reset(self) -> None:
-        """Discard every recorded page in memory, keeping the batch identity.
+        """Forget every recorded page in memory, keeping the batch identity.
 
-        For callers that have already decided to re-fetch the batch, for
-        example under ``resume=False``. The ledger answers "where within this
-        batch do I resume", never "should this batch be fetched at all"; that
-        second question belongs to the per-symbol watermark layer, so a
-        completed ledger never vetoes a re-fetch. Re-fetching is safe because
-        shard filenames are deterministic: page N of the same batch
-        overwrites the same path, so a redo costs requests and never
-        duplicates a row. Nothing is written to disk until the next
-        ``record_page`` or ``mark_complete``.
+        Use this when the caller has already decided to re-fetch the batch,
+        for example with ``resume=False``. The ledger only answers "where in
+        this batch should I resume", never "should this batch be fetched at
+        all"; the per-symbol progress files answer that, so a completed
+        ledger never blocks a re-fetch. Re-fetching is safe because shard
+        filenames are deterministic: page N of the same batch overwrites the
+        same file, so redoing a page costs requests but never duplicates a
+        row. Nothing is written until the next ``record_page`` or
+        ``mark_complete``.
 
         Examples
         --------
@@ -433,10 +473,10 @@ class PageLedger:
         self._payload.update(identity)
 
     def mark_complete(self) -> None:
-        """Record that the page chain terminated and flush.
+        """Record that the last page has been fetched and write to disk.
 
-        Only after this is ``symbols_seen()`` a statement about the whole
-        batch rather than about how far it happened to get.
+        Only after this call does ``symbols_seen()`` describe the whole batch
+        rather than however far the download got.
 
         Examples
         --------
@@ -452,25 +492,24 @@ class PageLedger:
     def assert_consistent(self, raw_root: str) -> None:
         """Raise if the ledger records a page whose shard is missing on disk.
 
-        The ledger and the shard tree are two records of the same download,
-        written at different instants. A shard is always written before its
-        ledger record, so a crash between the two costs only a re-fetch that
-        overwrites the same deterministic path. The opposite gap, a recorded
-        page with no shard on disk, means a shard was deleted or the raw root
-        moved, and resuming would leave a hole in the batch that no later
+        The ledger and the shard files are two records of the same download,
+        written at different moments. A shard is always written before its
+        ledger entry, so a crash between the two only costs a re-fetch that
+        overwrites the same file. The opposite case, a recorded page whose
+        shard is missing, means a shard was deleted or the raw directory was
+        moved. Resuming would then leave a gap in the batch that no later
         read could detect.
 
         Parameters
         ----------
         raw_root : str
-            Directory that relative shard paths are resolved
-            against.
+            Directory that relative shard paths are resolved against.
 
         Raises
         ------
         ValueError
-            If a recorded page names no shard, or names a shard
-            that does not exist. The message says how to recover.
+            If a recorded page names no shard, or names a shard that does not
+            exist. The message says how to recover.
 
         Examples
         --------
@@ -490,10 +529,10 @@ class PageLedger:
                     f"2: page {page['index']} is recorded but names no shard "
                     f"file, so there is no record of where its rows landed. "
                     f"Resuming would skip that page's data with nothing "
-                    f"failing at the time. CURE: delete {self.path} to re-fetch "
-                    f"this batch from page 0; the deterministic shard names "
-                    f"mean the pages that DID land are overwritten, not "
-                    f"duplicated."
+                    f"failing at the time. To recover: delete {self.path} to "
+                    f"re-fetch this batch from page 0; shard names are "
+                    f"deterministic, so the pages that were written are "
+                    f"overwritten, not duplicated."
                 )
             for shard in shards:
                 path = Path(shard)
@@ -507,9 +546,9 @@ class PageLedger:
                         f"disagree, which means a shard was deleted or the "
                         f"raw root was moved after the ledger was written; "
                         f"resuming would leave a hole in the batch that no "
-                        f"later read could detect. CURE: delete {self.path} to "
-                        f"re-fetch this batch from page 0, or restore the "
-                        f"missing shard under {root}."
+                        f"later read could detect. To recover: delete "
+                        f"{self.path} to re-fetch this batch from page 0, or "
+                        f"restore the missing shard under {root}."
                     )
 
     # -- atomic flush -------------------------------------------------------
@@ -518,8 +557,8 @@ class PageLedger:
         """Rewrite the sidecar atomically.
 
         The payload is written to a temporary file in the same directory and
-        renamed over the destination, so a crash mid-write leaves either the
-        previous ledger or the new one, never a half-written file the next
-        run could not parse. ``indent=2`` keeps the on-disk format stable.
+        then renamed over the destination, so a crash during the write leaves
+        either the old ledger or the new one, never a half-written file.
+        ``indent=2`` keeps the file readable and its format stable.
         """
         write_json_atomically(self.path, self._payload, indent=2)

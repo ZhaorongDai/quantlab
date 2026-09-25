@@ -369,7 +369,7 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
     assert victim.name in message or str(victim) in message
     # Numbered and cure-naming, the ChunkLedger.assert_consistent shape.
     assert "error 2 of 2" in message
-    assert "CURE:" in message
+    assert "To recover:" in message
 
     # The refusal happens BEFORE any request, so nothing was fetched past the
     # hole, and no watermark was written to mark the short batch complete.

@@ -1,21 +1,32 @@
-"""WRDS vendor package: the registry descriptor for one WRDS account.
+"""WRDS vendor package and the registry entry for a WRDS account.
 
-A WRDS subscription is one login that reaches several products. This package
-holds two of them, each as its own submodule and acquisition class:
-``quantlab.acquisition.wrds.taq`` (NYSE TAQ millisecond NBBO quotes,
-``WrdsTaqNbboAcquisition``) and ``quantlab.acquisition.wrds.crsp`` (CRSP
-Stock v2 daily bars, ``WrdsCrspDailyAcquisition``). Both authenticate the same
-way and share one PostgreSQL connection, ``taq.WrdsSession``, which reads the
-username from ``WRDS_USERNAME`` and leaves the password to libpq's
-``~/.pgpass``; every new connection can trigger a Duo prompt, so the session
-is opened once per process.
+WRDS (Wharton Research Data Services) is a university-run data service. One
+WRDS login reaches several licensed data products through a PostgreSQL
+server. This package downloads two of them, each with its own submodule and
+acquisition class.
 
-``WRDS_SOURCE`` below registers the vendor with ``quantlab.registry`` as a
-single descriptor whose ``Capability`` rows name the product-specific class
-and config factory. The descriptor lives here, rather than beside one of the
-provider classes, because either provider would otherwise have to import its
-sibling to declare the other capability. The providers import nothing from the
-registry or from this module.
+``quantlab.acquisition.wrds.taq`` downloads NYSE TAQ ("Trade and Quote")
+millisecond data, specifically the NBBO (National Best Bid and Offer: the
+highest bid and lowest ask across all US exchanges at each instant), through
+``WrdsTaqNbboAcquisition``. ``quantlab.acquisition.wrds.crsp`` downloads CRSP
+(Center for Research in Security Prices) Stock v2 daily bars through
+``WrdsCrspDailyAcquisition``.
+
+Both products log in the same way and share one database connection,
+``taq.WrdsSession``. The session reads the username from the
+``WRDS_USERNAME`` environment variable and leaves the password to the
+PostgreSQL client library, which reads it from ``~/.pgpass``. WRDS protects
+logins with Duo two-factor authentication, and each new connection can send
+a Duo prompt to the account holder's phone, so the session is opened once
+per process.
+
+``WRDS_SOURCE`` registers this vendor with ``quantlab.registry``. It is a
+single descriptor for the whole account, and each of its ``Capability`` rows
+names the acquisition class and config factory of one product. The
+descriptor lives here, not beside one of the two classes, because otherwise
+one provider module would have to import the other to declare its
+capability. The provider modules import nothing from the registry or from
+this module.
 
 Examples
 --------
@@ -38,7 +49,7 @@ from quantlab.dataset.nbbo import NbboPanelDataset
 
 #: The registered descriptor for the WRDS account.
 #:
-#: The descriptor-level ``acquisition_cls`` / ``config_factory`` pair is the
+#: The descriptor's own ``acquisition_cls`` and ``config_factory`` are the
 #: vendor default (the TAQ product); ingest scripts read
 #: ``SOURCE.acquisition_cls.DEFAULT_BATCH_SIZE`` from it. Each capability row
 #: also names its own pair, so a request for ``crsp_daily`` resolves to the
@@ -61,10 +72,10 @@ WRDS_SOURCE = register_source(
                 acquisition_cls=taq.WrdsTaqNbboAcquisition,
                 config_factory=taq.WrdsTaqNbboAcquisition.build_config,
             ),
-            #: CRSP Stock v2 daily: a second acquisition class and config
-            #: factory under the same vendor. ``earliest_available`` is the
-            #: first day of ``crsp_a_stock.dsf_v2``; it is advisory and
-            #: nothing gates on it.
+            # CRSP Stock v2 daily: a second acquisition class and config
+            # factory under the same vendor. ``earliest_available`` is the
+            # first day of the ``crsp_a_stock.dsf_v2`` table; it is
+            # informational and nothing checks against it.
             Capability(
                 market="us_equity",
                 frequency="1d",
@@ -78,9 +89,9 @@ WRDS_SOURCE = register_source(
                 config_factory=crsp.WrdsCrspDailyAcquisition.build_config,
             ),
         ),
-        #: Written as a literal rather than derived from the classes'
-        #: ``CREDENTIAL_ENV_VARS`` so the two can be checked against each
-        #: other. One variable serves the whole account.
+        # A literal rather than a copy of the classes' ``CREDENTIAL_ENV_VARS``,
+        # so a test can check the two against each other. One variable serves
+        # the whole account.
         required_env=("WRDS_USERNAME",),
         universe_categories=("sp500_constituent", "nasdaq100_constituent"),
     )

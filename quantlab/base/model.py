@@ -1,15 +1,23 @@
-"""Framework-agnostic model layer: the shared training lifecycle of every model head.
+"""Model layer: the training lifecycle shared by every model head.
 
-This module defines the three-level model hierarchy. ``BaseModel`` owns everything
-that does not depend on the training framework: config validation and date
-injection, collecting the factor and label panels into one ``xarray.Dataset``,
-the public ``train`` / ``train_cv`` / ``load`` / ``predict`` / ``predict_panel``
-entry points, the checkpoint directory layout with its ``config.json`` sidecar,
-and the rolling cross-validation fold geometry. ``DLModel`` is the torch variant
-(an epoch loop over ``DataLoader`` batches, early stopping, ``.pth`` checkpoints)
-and ``MLModel`` is the numpy variant for tree models and other libraries that do
-their own early stopping (``.joblib`` checkpoints). Concrete heads live in
-``quantlab/dl_model`` and ``quantlab/ml_model``; see ``docs/model.md``.
+A *head* is one concrete predictive model, for example an MLP or an XGBoost
+regressor. It reads *features* (factor values) and learns *labels* (the
+targets to predict, typically forward returns). Both arrive as *panels*: an
+``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``, with one data
+variable per feature or label.
+
+The module defines a three-level class hierarchy. ``BaseModel`` holds
+everything that does not depend on the training framework: config
+validation, pushing the model's dates down to its factors and labels,
+collecting their panels into one dataset, the public ``train`` /
+``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, the
+checkpoint directory layout with its ``config.json`` sidecar file, and the
+fold boundaries of rolling cross-validation. ``DLModel`` is the PyTorch
+variant: an epoch loop over ``DataLoader`` batches with early stopping and
+``.pth`` checkpoints. ``MLModel`` is the numpy variant for tree models and
+other libraries that do their own early stopping, with ``.joblib``
+checkpoints. Concrete heads live in ``quantlab/dl_model`` and
+``quantlab/ml_model``.
 """
 
 import copy
@@ -45,9 +53,9 @@ from .config import DLConfig, MLConfig
 
 
 class BaseModel(ABC):
-    """Framework-agnostic base of every model head.
+    """Framework-agnostic base class of every model head.
 
-    A model head is configured with a list of factor objects (its features) and
+    A head is configured with a list of factor objects (its features) and
     a list of label objects (its targets). ``collect()`` pulls both into one
     panel indexed by ``(timestamp, symbol)``; ``train()`` fits the head on the
     ``train_*`` dates of its config and writes a checkpoint; ``load()`` restores
@@ -58,16 +66,39 @@ class BaseModel(ABC):
     torch variant and ``MLModel`` the numpy variant; each declares two plain
     class attributes that satisfy the abstract properties below:
 
-    - ``config_cls``: the config class the variant accepts. The ``config``
-      setter checks it first, and the config loader reads it from the class
-      before instantiating, so it must be a class attribute.
-    - ``checkpoint_suffix``: the checkpoint file suffix. ``train`` and
-      ``train_cv`` use it to name files; ``load()`` uses it to reject a file
-      of the wrong kind before building any model.
+    ``config_cls`` is the config class the variant accepts. The ``config``
+    setter checks it first, and the config loader reads it from the class
+    before creating an instance, so it must be a class attribute.
+    ``checkpoint_suffix`` is the checkpoint file suffix. ``train`` and
+    ``train_cv`` use it to name files, and ``load()`` uses it to reject a
+    file of the wrong kind before building any model.
 
     Checkpoints are written under ``config.model_save_dir`` as
-    ``{class}_trial_{timestamp}/{experiment}/{experiment}{suffix}`` with a
-    ``config.json`` sidecar next to the file.
+    ``{class}_trial_{timestamp}/{experiment}/{experiment}{suffix}``, with a
+    ``config.json`` sidecar file next to the checkpoint. The sidecar holds
+    the full config and a record of what the head was trained on.
+
+    Parameters
+    ----------
+    config : DLConfig or MLConfig
+        The model configuration. It must be an instance of the variant's
+        ``config_cls``.
+
+    Attributes
+    ----------
+    model : object or None
+        The fitted model (an ``nn.Module`` or a library model object), or
+        None before ``train()`` or ``load()``.
+    data_backend : XrBackend
+        Holds the panel built by ``collect()``.
+    symbol_labeller : callable or None
+        Optional ``(symbols, day) -> list[str]`` function that turns symbol
+        labels into readable text for log messages. The backtester sets it.
+
+    Raises
+    ------
+    TypeError
+        If ``config`` is not an instance of ``config_cls``.
 
     Examples
     --------
@@ -84,40 +115,23 @@ class BaseModel(ABC):
         ... ))
         >>> checkpoint = model.collect().train()
         >>> checkpoint.name
-        MyHead_total.joblib
+        'MyHead_total.joblib'
     """
 
     def __init__(self, config: DLConfig | MLConfig):
-        """Validate ``config``, seed the random generators and prepare empty state.
-
-        Parameters
-        ----------
-        config : DLConfig | MLConfig
-            A ``DLConfig`` or ``MLConfig`` matching the variant's
-            ``config_cls``.
-
-        Raises
-        ------
-        TypeError
-            If ``config`` is not an instance of ``config_cls``.
-        """
+        """Initialize the model; see the class docstring for parameters."""
         self.config = config
         self._set_random_seed(self.config.random_seed)
 
         self.model = None
-        # Symbols of the training panel. `_save_model` records them when a
-        # checkpoint is written and `load` reads them back from the sidecar
-        # `config.json`; None when no record exists. The element type follows
-        # the panel's symbol axis (`int` for an integer axis, `str` for tickers).
+        # Symbols of the training panel, recorded in the checkpoint sidecar.
+        # None when no record exists. Elements keep the axis type (int or str).
         self._trained_symbols: list | None = None
-        # Checkpoint-record warnings already emitted by this instance. The
-        # backtester checks the variables before computing features and
-        # `load()` checks them again, so each distinct warning is logged once.
+        # The backtester checks the checkpoint before collecting data and
+        # `load()` checks it again; remembering warnings logs each only once.
         self._emitted_load_warnings: set[str] = set()
-        # Optional callable `(symbols, day) -> list[str]` that renders symbol
-        # labels as human-readable text for log messages only. It never takes
-        # part in selection or alignment. The model layer knows nothing about
-        # price stores or vendors, so the caller (the backtester) injects it.
+        # Used only to make log messages readable. The model layer knows no
+        # data vendors, so the caller (the backtester) supplies it.
         self.symbol_labeller = None
 
         self.data_backend = XrBackend()
@@ -681,7 +695,7 @@ class BaseModel(ABC):
                     f"{recorded}, which differ only in order from this model's "
                     f"declared {current}; that config field cannot certify the "
                     f"training order, so the {kind} order is unchecked and the "
-                    f"checkpoint is loaded as given (REVIEW WR-01, G-03.7-9)"
+                    f"checkpoint is loaded as given"
                 )
                 continue
             consequence = (
@@ -692,8 +706,7 @@ class BaseModel(ABC):
             raise ValueError(
                 f"{self.class_name}: checkpoint {p} was trained on {kind} "
                 f"variables {recorded} ({source} in its config.json), but this "
-                f"model declares {current}; loading it would {consequence} "
-                f"(G-03.7-9)"
+                f"model declares {current}; loading it would {consequence}"
             )
 
         if legacy:
@@ -701,10 +714,10 @@ class BaseModel(ABC):
             names = "; ".join(f"{kind} {names}" for kind, names in legacy)
             self._warn_load_record_once(
                 f"{self.class_name}: checkpoint {p} has no trained_on record for "
-                f"its {kinds} variables, so they were checked against the legacy "
-                f"factors[]/labels[] factor_names config field ({names}), a weaker "
-                f"record than trained_on: the checkpoint was trained before that "
-                f"record existed (G-03.7-9)"
+                f"its {kinds} variables, so this model's declared variables were "
+                f"checked against the legacy factors[]/labels[] factor_names "
+                f"config field ({names}), a weaker record than trained_on: the "
+                f"checkpoint was trained before that record existed"
             )
         if unrecorded:
             kinds = " and ".join(unrecorded)
@@ -717,7 +730,7 @@ class BaseModel(ABC):
             self._warn_load_record_once(
                 f"{self.class_name}: checkpoint {p}: the {kinds} variables it was "
                 f"trained on cannot be checked against this model's declared "
-                f"variables because {where}; loading it as given (G-03.7-9)"
+                f"variables because {where}; loading it as given"
             )
 
     @staticmethod
@@ -1089,7 +1102,9 @@ class BaseModel(ABC):
     ) -> list[dict]:
         """Run a rolling walk-forward cross-validation and return per-fold results.
 
-        Folds are laid out by ``_cv_folds`` over the timestamps between
+        Walk-forward cross-validation trains on a window of past data and
+        tests on the period right after it, then slides both forward, so a
+        test period never precedes its training data. Folds are laid out by ``_cv_folds`` over the timestamps between
         ``config.start_date`` and ``config.end_date``. Every fold trains on
         its own dates, gets its own wandb run and its own checkpoint directory
         ``{class}_cv_fold_{i}/`` inside one trial directory. The mean of the
@@ -1104,17 +1119,18 @@ class BaseModel(ABC):
         Parameters
         ----------
         train_periods : int
-            Number of timestamps in each training segment; the
-            test segment is one fifth of it.
-        gap_periods : int
-            Timestamps left out between a training segment and
-            its test segment.
-        parallel : bool
-            Train the folds concurrently on deep copies of this
-            model using a threading pool.
-        njobs : int
-            Number of jobs for the parallel branch (``-1`` for all
-            cores).
+            Number of timestamps in each training segment. The test
+            segment is one fifth of it.
+        gap_periods : int, default 0
+            Number of timestamps left out between a training segment and
+            its test segment, so labels that look ahead cannot leak into
+            the test.
+        parallel : bool, default False
+            Train the folds concurrently, each on a deep copy of this
+            model, using a thread pool.
+        njobs : int, default -1
+            Number of threads for the parallel branch; ``-1`` uses all
+            cores.
 
         Returns
         -------
@@ -1621,7 +1637,7 @@ class DLModel(BaseModel):
                 f"{len(missing)} of the {len(trained)} symbols this model was "
                 f"trained on: {shown}{' ...' if len(missing) > 20 else ''}. "
                 f"A DL head encodes symbol position, so it cannot predict "
-                f"without them (WR-02)"
+                f"without them"
             )
         trained_set = set(trained)
         extra = sort_symbol_axis(
@@ -1632,7 +1648,7 @@ class DLModel(BaseModel):
             logger.warning(
                 f"{self.class_name}.predict_panel: dropping {len(extra)} symbol(s) "
                 f"the model was not trained on, which get no prediction: "
-                f"{shown}{' ...' if len(extra) > 20 else ''} (WR-02)"
+                f"{shown}{' ...' if len(extra) > 20 else ''}"
             )
         return feats.sel(symbol=sort_symbol_axis(trained))
 
@@ -1697,21 +1713,15 @@ class DLModel(BaseModel):
             return
         raise ValueError(
             f"{self.class_name}._align_prediction_symbols: refusing to align "
-            f"the feature panel onto this checkpoint's training record -- the "
-            f"two disagree on the TYPE of a symbol label. The checkpoint "
-            f"records {sorted(trained_kinds)} (e.g. {trained[0]!r}), the "
-            f"panel's 'symbol' coordinate is dtype "
-            f"{feats.symbol.dtype!r} carrying {sorted(present_kinds)} "
-            f"(e.g. {present[0]!r}). This is checked HERE, before the "
-            f"membership check below, because the membership check cannot "
-            f"see it: str() both sides and every label is 'found', so the "
-            f"failure surfaces only on the closing .sel() as "
-            f"KeyError: \"not all values found in index 'symbol'\" -- an "
-            f"error about a missing index entry for a panel that is missing "
-            f"nothing (measured, 03.11-RESEARCH B). Coercing one side to the "
-            f"other is deliberately NOT done: a ticker-era record coerced "
-            f"onto a PERMNO axis would match the WRONG columns silently. "
-            f"Either retrain on the current panel, or rewrite the "
+            f"the feature panel onto this checkpoint's training record, "
+            f"because the two disagree on the type of a symbol label. The "
+            f"checkpoint records {sorted(trained_kinds)} (e.g. "
+            f"{trained[0]!r}); the panel's 'symbol' coordinate has dtype "
+            f"{feats.symbol.dtype!r} and holds {sorted(present_kinds)} "
+            f"(e.g. {present[0]!r}). Neither side is converted to the other: "
+            f"a record of tickers converted onto an axis of PERMNOs (CRSP's "
+            f"permanent integer security ids) could silently match the wrong "
+            f"columns. Either retrain on the current panel, or rewrite the "
             f"checkpoint's '{self.TRAINED_ON_KEY}.symbols' in the panel's own "
             f"spelling."
         )

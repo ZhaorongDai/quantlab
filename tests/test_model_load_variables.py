@@ -72,7 +72,7 @@ ARRAYS["ret_a"] = 0.1 * ARRAYS["f_signal"] + 0.05 * _rng.standard_normal(_SHAPE)
 ARRAYS["ret_b"] = -0.1 * ARRAYS["f_second"] + 0.05 * _rng.standard_normal(_SHAPE)
 
 ML_HYPER = {"num_boost_round": 5, "nthread": 1}
-MODEL_WARNING_TAG = "G-03.7-9"
+MODEL_WARNING_TAG = "this model's declared"
 
 
 @pytest.fixture(autouse=True)

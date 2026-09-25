@@ -111,7 +111,8 @@ def get_data_root() -> Path:
     env_value = os.environ.get("QUANTLAB_DATA_DIR")
     if env_value:
         return Path(env_value)
-    # Three hops: config/__init__.py -> config -> quantlab -> repository root.
+    # This file is quantlab/config/__init__.py, so the repository root is
+    # three parents up.
     return Path(__file__).resolve().parent.parent.parent / "data"
 
 
@@ -141,18 +142,18 @@ def spot_kline_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date to load, ISO format; ``None`` means unbounded.
-    end_date : str | None
+    end_date : str | None, default None
         Last date to load, inclusive; ``None`` means unbounded.
-    symbols : list | None
+    symbols : list | None, default None
         Symbols to keep; ``None`` leaves the selection to the
         dataset.
-    kwargs : dict
+    kwargs : dict | None, default None
         Extra dataset options.
-    market : Market
+    market : Market, default "crypto_spot"
         Market label used in the storage paths.
-    frequency : Frequency
+    frequency : Frequency, default "1d"
         Bar frequency used in the storage paths.
 
     Examples
@@ -211,24 +212,24 @@ def stock_kline_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date to load, ISO format; ``None`` means unbounded.
-    end_date : str | None
+    end_date : str | None, default None
         Last date to load, inclusive; ``None`` means unbounded.
-    symbols : tuple[str, ...] | None
+    symbols : tuple[str, ...] | None, default None
         Symbols to keep; ``None`` leaves the selection to the
         dataset.
-    kwargs : dict
+    kwargs : dict | None, default None
         Extra dataset options.
-    market : Market
+    market : Market, default "us_equity"
         Market label used in the storage paths.
-    frequency : Frequency
+    frequency : Frequency, default "1d"
         Bar frequency used in the storage paths.
-    subdir : str
+    subdir : str, default "nasdaq_data"
         Raw-data subdirectory beneath the market/frequency root.
-    store_name : str
+    store_name : str, default "stock.zarr"
         Zarr store filename.
-    vendor : Vendor
+    vendor : Vendor, default "tiingo"
         Vendor whose shards the raw directory holds, also recorded on
         the config. Defaults to ``"tiingo"``, which is what existing
         callers have on disk.
@@ -285,21 +286,21 @@ def stock_acquisition_config(
     ----------
     symbols : tuple[str, ...]
         Symbols to download.
-    start_date : str | None
+    start_date : str | None, default None
         First date to request; ``None`` leaves it to the vendor
         client.
-    end_date : str | None
+    end_date : str | None, default None
         Last date to request; ``None`` leaves it to the vendor
         client.
-    kwargs : dict
+    kwargs : dict | None, default None
         Extra acquisition options (for example ``max_workers``).
-    market : Market
+    market : Market, default "us_equity"
         Market label used in the storage paths.
-    frequency : Frequency
+    frequency : Frequency, default "1d"
         Bar frequency used in the storage paths.
-    subdir : str
+    subdir : str, default "nasdaq_data"
         Raw-data subdirectory beneath the market/frequency root.
-    vendor : Vendor
+    vendor : Vendor, default "tiingo"
         Vendor to fetch from. Defaults to ``"tiingo"``, which is what
         existing callers have on disk.
 
@@ -373,15 +374,15 @@ def sp500_constituent_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the panel; ``None`` means unbounded.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the panel, inclusive; ``None`` means unbounded.
-    symbols : list[str] | tuple[str, ...] | None
+    symbols : list[str] | tuple[str, ...] | None, default None
         Symbols to keep, converted to a tuple; ``None`` keeps all.
-    as_of : str | None
+    as_of : str | None, default None
         Optional date to resolve membership as of.
-    kwargs : dict
+    kwargs : dict | None, default None
         Extra dataset options.
 
     Examples
@@ -429,15 +430,15 @@ def nasdaq100_constituent_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the panel; ``None`` means unbounded.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the panel, inclusive; ``None`` means unbounded.
-    symbols : list[str] | tuple[str, ...] | None
+    symbols : list[str] | tuple[str, ...] | None, default None
         Symbols to keep, converted to a tuple; ``None`` keeps all.
-    as_of : str | None
+    as_of : str | None, default None
         Optional date to resolve membership as of.
-    kwargs : dict
+    kwargs : dict | None, default None
         Extra dataset options.
 
     Examples
@@ -474,22 +475,24 @@ def alpha101_config(
 ):
     """Build the ``FactorConfig`` for Alpha101 factors on Binance spot klines.
 
-    Factor values are stored at ``data/factor/alpha101.zarr``; the dataset is
-    a ``SpotKlineDataset`` built from ``spot_kline_config``.
+    Alpha101 is the set of 101 formulaic price-volume factors published by
+    Kakushadze (2016). Factor values are stored at
+    ``data/factor/alpha101.zarr``; the dataset is a ``SpotKlineDataset``
+    built from ``spot_kline_config``.
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the factor window.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the factor window.
-    window : int
+    window : int, default 128
         Lookback, in bars, that the dataset window is extended by.
-    factor_names : list | None
+    factor_names : list | None, default None
         Factors to compute; ``None`` means all.
-    symbols : list | None
+    symbols : list | None, default None
         Symbols to compute; ``None`` means all.
-    mode : Literal['batch', 'stream']
+    mode : Literal['batch', 'stream'], default "batch"
         ``"batch"`` for a full historical run, ``"stream"`` for
         incremental per-bar updates.
 
@@ -549,22 +552,22 @@ def stock_alpha101_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the factor window.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the factor window.
-    window : int
+    window : int, default 128
         Lookback, in bars, that the dataset window is extended by.
-    factor_names : list | None
+    factor_names : list | None, default None
         Factors to compute; ``None`` means all.
-    symbols : list | None
+    symbols : list | None, default None
         Symbols to compute; ``None`` means all.
-    mode : Literal['batch', 'stream']
+    mode : Literal['batch', 'stream'], default "batch"
         ``"batch"`` for a full historical run, ``"stream"`` for
         incremental per-bar updates.
-    market : Market
+    market : Market, default "us_equity"
         Market label used in the storage paths.
-    frequency : Frequency
+    frequency : Frequency, default "1d"
         Bar frequency used in the storage paths.
 
     Examples
@@ -614,21 +617,23 @@ def alpha158_config(
 ):
     """Build the ``FactorConfig`` for Alpha158 factors on Binance spot klines.
 
-    Factor values are stored at ``data/factor/alpha158.zarr``; the dataset is
-    a ``SpotKlineDataset`` built from ``spot_kline_config``. The lookback
-    window is fixed at 128 bars.
+    Alpha158 is the library of 158 price-volume factors popularised by
+    Microsoft's Qlib. Factor values are stored at
+    ``data/factor/alpha158.zarr``; the dataset is a ``SpotKlineDataset``
+    built from ``spot_kline_config``. The lookback window is fixed at 128
+    bars.
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the factor window.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the factor window.
-    factor_names : list | None
+    factor_names : list | None, default None
         Factors to compute; ``None`` means all.
-    symbols : list | None
+    symbols : list | None, default None
         Symbols to compute; ``None`` means all.
-    mode : Literal['batch', 'stream']
+    mode : Literal['batch', 'stream'], default "batch"
         ``"batch"`` for a full historical run, ``"stream"`` for
         incremental per-bar updates.
 
@@ -684,20 +689,20 @@ def stock_alpha158_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the factor window.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the factor window.
-    factor_names : list | None
+    factor_names : list | None, default None
         Factors to compute; ``None`` means all.
-    symbols : list | None
+    symbols : list | None, default None
         Symbols to compute; ``None`` means all.
-    mode : Literal['batch', 'stream']
+    mode : Literal['batch', 'stream'], default "batch"
         ``"batch"`` for a full historical run, ``"stream"`` for
         incremental per-bar updates.
-    market : Market
+    market : Market, default "us_equity"
         Market label used in the storage paths.
-    frequency : Frequency
+    frequency : Frequency, default "1d"
         Bar frequency used in the storage paths.
 
     Examples
@@ -708,7 +713,7 @@ def stock_alpha158_config(
     >>> cfg.file_path
     '/mnt/quant/data/factor/alpha158_stock.zarr'
     >>> type(cfg.dataset).__name__
-    StockDataset
+    'StockDataset'
     """
     return FactorConfig(
         file_path=str(
@@ -754,17 +759,17 @@ def momentum_config(
 
     Parameters
     ----------
-    start_date : str | None
+    start_date : str | None, default None
         First date of the factor window.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the factor window.
-    symbols : list | None
+    symbols : list | None, default None
         Symbols to compute; ``None`` means all.
-    n : int
+    n : int, default 20
         Momentum horizon, in bars.
-    market : Market
+    market : Market, default "crypto_spot"
         Market label used in the storage paths.
-    frequency : Frequency
+    frequency : Frequency, default "1d"
         Bar frequency used in the storage paths.
 
     Examples
@@ -802,24 +807,27 @@ def spot_label_config(
 ):
     """Build the ``FactorConfig`` for a forward-return label on spot klines.
 
+    A *label* is the prediction target a model trains on, here the return
+    from one bar's close to the close ``n_forward_periods`` bars later.
     Labels are stored at ``data/label/spot_label_{label_name}.zarr`` and are
-    computed from ``close`` only. ``symbols`` defaults to ``["_all_"]`` and
-    ``factor_names`` is always ``["_all_"]``.
+    computed from ``close`` only. ``"_all_"`` is the placeholder meaning
+    "every symbol" or "every output"; ``symbols`` falls back to it and
+    ``factor_names`` is always set to it.
 
     Parameters
     ----------
     label_name : str
         Name of the label, used in the store filename.
-    start_date : str | None
+    start_date : str | None, default None
         First date of the label window.
-    end_date : str | None
+    end_date : str | None, default None
         Last date of the label window.
-    symbols : list | None
-        Symbols to compute; ``None`` means all.
-    mode : Literal['batch', 'stream']
+    symbols : list | None, default None
+        Symbols to compute; ``None`` becomes ``["_all_"]``.
+    mode : Literal['batch', 'stream'], default "batch"
         ``"batch"`` for a full historical run, ``"stream"`` for
         incremental per-bar updates.
-    n_forward_periods : int
+    n_forward_periods : int, default 1
         Horizon of the forward return, in bars.
 
     Examples

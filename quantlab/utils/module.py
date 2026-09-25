@@ -6,7 +6,8 @@ and that config is written as JSON next to model checkpoints and backtest
 runs. The loaders here read such a dict back, import the named class, rebuild
 any nested objects (a factor's dataset, a model's factors and labels, a
 backtester's price dataset and model) and construct the object with the config
-class the class itself declares through ``config_cls``.
+class the class itself declares through ``config_cls``. This is what makes a
+stored run reproducible from its ``config.json`` alone.
 
 Examples
 --------
@@ -37,8 +38,8 @@ def get_cls_from_path(path: str):
     Raises
     ------
     ModuleNotFoundError
-        If the module part cannot be imported. Configs
-        written under a previous package layout are not remapped.
+        If the module part cannot be imported. Configs written before a
+        module was moved or renamed are not remapped to the new path.
     AttributeError
         If the module has no such attribute.
 
@@ -55,16 +56,15 @@ def get_cls_from_path(path: str):
 def _config_cls_of(cls) -> type:
     """Return the config class ``cls`` declares in ``config_cls``.
 
-    Guessing a config class is how a config dict of one factor backend used to
-    be rebuilt as another's, and it would also let any importable callable be
-    instantiated with a config dict, so a class without ``config_cls`` is
-    refused.
+    The config class is never guessed. A guess could rebuild one factor
+    backend's config dict as another backend's config, and it would let any
+    importable callable be instantiated with a config dict. A class without
+    ``config_cls`` is therefore refused.
 
     Raises
     ------
     TypeError
-        If ``cls`` has no ``config_cls`` attribute, or it is not a
-        type.
+        If ``cls`` has no ``config_cls`` attribute, or it is not a type.
     """
     config_cls = getattr(cls, "config_cls", None)
     if not isinstance(config_cls, type):
@@ -156,8 +156,8 @@ def load_model_from_config(config: dict):
     (``DLConfig`` for torch heads, ``MLConfig`` for tree heads). Two keys a
     checkpoint's ``config.json`` carries as training records rather than
     config fields, ``resolved_hyperparameters`` and ``trained_on``, are dropped
-    before construction; any other unknown key still fails loudly. The caller's
-    dict is never modified.
+    before construction; any other unknown key still raises ``TypeError``
+    from the config class. The caller's dict is never modified.
 
     Parameters
     ----------
@@ -202,12 +202,12 @@ def load_backtester_from_config(config: dict):
     backtest.
 
     Two keys are records rather than config fields. ``data_fingerprint``
-    describes the data the original run read; it is removed and assigned to
-    the rebuilt backtester's ``expected_fingerprint`` so the re-run can warn
-    when its data differs. ``trained_checkpoint`` names the checkpoint a
-    train-mode run produced; rebuilding such a config retrains, so to replay
-    that exact model set ``model_mode="load"`` and ``checkpoint`` to the
-    recorded path.
+    describes the data the original run read (time range, axis sizes and a
+    sha256 digest of the values); it is removed and assigned to the rebuilt backtester's
+    ``expected_fingerprint`` so the re-run can warn when its data differs.
+    ``trained_checkpoint`` names the checkpoint a train-mode run produced.
+    Rebuilding such a config retrains the model, so to replay that exact
+    model, set ``model_mode="load"`` and ``checkpoint`` to the recorded path.
 
     Every field of the config class must be present in the dict. Missing keys
     are not filled from the current dataclass defaults, because a default that
@@ -226,8 +226,8 @@ def load_backtester_from_config(config: dict):
     Raises
     ------
     TypeError
-        If ``config["name"]`` is not a ``BaseBacktester`` subclass.
-        This is checked before any nested dataset or model is built.
+        If ``config["name"]`` is not a ``BaseBacktester`` subclass. This is
+        checked before any nested dataset or model is built.
     ValueError
         If any config field other than ``name`` is missing.
 
@@ -267,7 +267,7 @@ def load_backtester_from_config(config: dict):
         raise ValueError(
             f"{config['name']} config is missing field(s) {missing}; refusing to "
             f"fill them from the current dataclass defaults, which may differ "
-            f"from the values the stored backtest ran with (D-25)"
+            f"from the values the stored backtest ran with"
         )
 
     config["price_dataset"] = load_dataset_from_config(config["price_dataset"])

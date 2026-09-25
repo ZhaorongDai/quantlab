@@ -100,7 +100,7 @@ def test_second_date_range_under_mode_a_names_mode_w_as_the_fix(
     message = str(excinfo.value)
     assert 'save(mode="w")' in message, message
     assert str(tmp_path / "alpha.zarr") in message, message
-    assert "NOT" in message and "append along time" in message, message
+    assert "not" in message and "append along time" in message, message
     assert "XrBackend.append()" in message, message
 
 

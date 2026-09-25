@@ -1,10 +1,22 @@
 """Ad hoc example: Alpha101 factors, a forward-return label, XGBoost, backtest.
 
-A cell-style (``# %%``) walkthrough of the whole pipeline on daily US-equity
-data: compute Alpha101 factors, build a 5-day forward-return label, train an
-``XGBoostRegressor`` and run a cross-sectional long/short top-N backtest.
-Runs at import with hardcoded, machine-specific store paths; edit them before
-running. Not part of the library.
+A cell-style walkthrough of the whole pipeline on daily US-equity data. The
+``# %%`` markers split it into cells that VS Code or Jupyter can run one at a
+time. It computes Alpha101 factors, builds a 5-day forward-return label,
+trains an ``XGBoostRegressor`` on them and runs a cross-sectional long/short
+top-N backtest. A cross-sectional backtest ranks all symbols against each
+other on each rebalance day, buys the top N and sells short the bottom N.
+It is not part of the library and has no command-line options.
+
+The store paths are hardcoded and machine-specific. Edit them in
+``us_equity()`` before running. The backtest logs to Weights & Biases
+(``use_wandb=True``), so run ``wandb login`` first or set
+``WANDB_API_KEY``. Checkpoints go to ``./model_ckpt`` and backtest results
+to ``./backtests``, relative to the current directory.
+
+Usage::
+
+    uv run python test.py
 """
 
 # %%
@@ -36,14 +48,21 @@ data_columns = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
 def us_equity() -> StockDataset:
     """Return a fresh ``StockDataset`` for the daily US-equity store.
 
-    Each consumer gets its own instance so that none of them rewrites another
-    one's date window.
+    Each consumer gets its own instance, because a factor or model narrows
+    its dataset's date window in place and a shared instance would leak one
+    consumer's window into another.
+
+    Returns
+    -------
+    StockDataset
+        A dataset over the hardcoded Tiingo daily store.
 
     Examples
     --------
-    >>> ds = us_equity()
-    >>> ds.config.market
-    us_equity
+    ::
+
+        ds = us_equity()
+        ds.read()
     """
     return StockDataset(
         DatasetConfig(
@@ -66,11 +85,17 @@ def alpha101(**kwargs) -> Alpha101Stock:
         Extra ``FactorConfig`` fields, typically ``start_date`` and
         ``end_date``.
 
+    Returns
+    -------
+    Alpha101Stock
+        The factor, configured with a 252-bar window and 64 worker threads.
+
     Examples
     --------
-    >>> factor = alpha101(start_date="2020-01-01", end_date="2026-01-01")
-    >>> factor.config.window
-    252
+    ::
+
+        factor = alpha101(start_date="2020-01-01", end_date="2026-01-01")
+        factor.cal()
     """
     return Alpha101Stock(
         FactorConfig(
@@ -95,10 +120,9 @@ factor.cal()
 factor.get_features()
 
 # %%
-# Pipeline: Alpha101 factors, 5-day forward-return label, XGBoost, then a
-# cross-sectional top-N backtest.
-# W&B: training opens one run, and use_wandb=True opens a second one for the
-# backtest (run `wandb login` first or set WANDB_API_KEY).
+# Train XGBoost on Alpha101 factors against a 5-day forward return, then
+# backtest the predictions. Training opens one W&B run and the backtest,
+# with use_wandb=True, opens a second one.
 
 label = Return(
     FactorConfig(

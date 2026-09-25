@@ -1,8 +1,17 @@
 """Ad hoc example: read three symbols from a US-equity Zarr store.
 
-Runs at import with a hardcoded, machine-specific ``zarr_file_path``; edit
-the path before running. It opens the store through ``StockDataset`` and
-prints NVDA's rows as a pandas frame. Not part of the library.
+The script opens a daily US-equity Zarr store (a chunked on-disk array
+format that ``xarray`` reads and writes) through ``StockDataset``, restricted
+to NVDA, AMZN and AMD, and prints NVDA's rows as a pandas frame. It is a
+quick way to check that a store is readable. It is not part of the library
+and has no command-line options.
+
+The store path is hardcoded and machine-specific. Edit ``zarr_file_path``
+to point at your own store before running. No credentials are needed.
+
+Usage::
+
+    uv run python main.py
 """
 
 from quantlab.dataset.stock import StockDataset

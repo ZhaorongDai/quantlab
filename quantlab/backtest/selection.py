@@ -1,6 +1,8 @@
 """Cross-sectional selection building blocks for the backtest layer.
 
-This module holds the pieces a cross-sectional backtester composes to turn a
+A *panel* is an ``xarray.Dataset`` or ``xarray.DataArray`` indexed by
+``timestamp`` and ``symbol``; *cross-sectional* means comparing all symbols
+with each other on one timestamp. This module holds the pieces a cross-sectional backtester composes to turn a
 panel of model scores into target weights: ``rebalance_mask`` decides which
 bars rebalance, ``resolve_score_label`` picks the model label to rank by, and
 ``CrossSectionTopNSelector`` builds equal-weight top-N (or top-N and bottom-N)
@@ -179,7 +181,7 @@ class CrossSectionTopNSelector:
                     f"next_fill_price {dim} labels differ from the scores': "
                     f"missing {[str(v) for v in missing[:10]]}, extra "
                     f"{[str(v) for v in extra[:10]]}; fill prices must be given "
-                    f"on exactly the scores' labels (WR-09)"
+                    f"on exactly the scores' labels"
                 )
         return next_fill_price.sel(
             timestamp=scores.timestamp.values, symbol=scores.symbol.values

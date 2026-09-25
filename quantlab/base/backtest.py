@@ -1,15 +1,26 @@
 """Backtester base class and the result types every backtest run produces.
 
 This module sits at the end of the pipeline: a trained return model and a
-price dataset go in, a run directory holding target weights, an equity
+price dataset go in, and a run directory holding target weights, an equity
 curve, metrics and an HTML report comes out. ``BaseBacktester`` owns the two
 public entry points, ``run()`` (backtest one model) and ``run_cv()`` (replay
-every fold of a ``train_cv`` run as one stitched curve), and every
-engine-independent step between them: warm-up, date alignment, the
-in-sample/out-of-sample split, metrics, persistence and data fingerprints.
-Engine layers such as ``VectorBtBacktester`` implement the simulation hooks;
-concrete classes add a ``MarketSpec`` and a signal generator. See
-``docs/backtest.md``.
+every fold of a cross-validation run as one continuous curve), and every
+step between them that does not depend on the simulation engine. Engine
+layers such as ``VectorBtBacktester`` implement the simulation hooks, and
+concrete classes add a ``MarketSpec`` and a signal generator.
+
+A few terms are used throughout. A *panel* is an ``xarray.Dataset`` indexed
+by ``timestamp`` and ``symbol``, and a *bar* is one timestamp of it. *Target
+weights* are the fraction of portfolio value each symbol should hold after
+a rebalance. The *warm-up* is the stretch of bars before the backtest window
+that factors need to fill their rolling windows. *In-sample* bars are bars
+the model was trained on (including the bars its labels looked ahead into),
+and *out-of-sample* bars are bars it never saw; results are reported for
+both separately. A *fold* is one train/test split of a walk-forward
+cross-validation run (``train_cv``), and the *stitched* curve simulates the
+test segments of all folds back to back. A *fingerprint* is a hash of the
+data a run read, stored so that a later rebuild of the run can tell whether
+the data has changed.
 """
 
 import json
@@ -26,10 +37,8 @@ from loguru import logger
 
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.backend import XrBackend
-# `tickers` is a submodule of the `crsp` package, so this import also runs
-# that package's `__init__` (the CRSP converter and polars). The extra import
-# time is accepted; this line is the answer if a slow backtest import is
-# ever bisected.
+# Importing this submodule also runs the `crsp` package `__init__` (the CRSP
+# converter and polars), which adds about a second of import time.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
@@ -44,9 +53,9 @@ from .config import BacktestConfig, FactorConfig
 #: any difference logs a warning.
 FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
 
-#: Tail of every fingerprint warning emitted on the failure path, replacing
-#: the usual "continuing". Diagnostics identify a partial comparison by the
-#: substring ``"comparison is PARTIAL"``, so any rewording must keep it.
+#: Tail of every fingerprint warning emitted after a failed run, in place of
+#: the usual "continuing". Log readers and tests find partial comparisons by
+#: the substring ``"comparison is PARTIAL"``, so keep it when rewording.
 FINGERPRINT_PARTIAL_NOTE = (
     "this comparison is PARTIAL: the run failed before it finished reading, so "
     "a differing digest/start/end/n_timestamps may reflect the interrupted read "
@@ -64,9 +73,22 @@ CALENDAR_DAYS_PER_YEAR = 365.25
 class MarketSpec:
     """Backtest conventions of one market: price columns and annualization.
 
-    Column names live only on a market's spec instance; backtester method
-    bodies read them from ``self.MARKET`` and never spell them out, so a new
-    market is a new spec rather than a change to the base class.
+    Column names live only on a market's spec instance; backtester methods
+    read them from ``self.MARKET`` and never spell them out, so supporting a
+    new market means writing a new spec rather than changing the base class.
+
+    Parameters
+    ----------
+    fill_price_column : str
+        Price variable that orders execute at, for example the open.
+    valuation_price_column : str
+        Price variable the portfolio is marked to at the end of each bar,
+        for example the close.
+    trading_days_per_year : int
+        Trading days in a year, used to annualize daily statistics.
+    session_minutes_per_day : int
+        Length of one trading session in minutes, used to annualize
+        intraday statistics.
 
     Examples
     --------
@@ -241,7 +263,7 @@ class CVBacktestResult:
     metrics: dict = field(default_factory=dict)
 
 class BaseBacktester(ABC):
-    """Abstract base of every backtester: the template methods and shared steps.
+    """Abstract base of every backtester: the public entry points and shared steps.
 
     The engine varies by inheritance and the market and selection logic by
     composition. The hierarchy is ``BaseBacktester`` (this class), then an
@@ -252,10 +274,28 @@ class BaseBacktester(ABC):
     (``_generate_signals``) onto that engine. Concrete classes also set
     ``config_cls``, the config class the ``config`` setter accepts.
 
-    The public entry points ``run()`` and ``run_cv()`` are template methods
-    defined here and never overridden: prepare the model, align the factor
-    dates and predict, generate signals, simulate, compute metrics, then
-    write the run directory.
+    The public entry points ``run()`` and ``run_cv()`` are defined here and
+    never overridden. Both run the same fixed sequence of steps and call the
+    hooks above along the way: prepare the model, re-date the factors and
+    predict, generate signals, simulate, compute metrics, then write the run
+    directory.
+
+    Parameters
+    ----------
+    config : BacktestConfig
+        The backtest configuration, an instance of ``config_cls``. It is
+        validated and normalized on assignment; see the ``config`` setter.
+
+    Attributes
+    ----------
+    MARKET : MarketSpec or None
+        The market conventions. ``None`` on abstract classes; a concrete
+        class must set it.
+    expected_fingerprint : dict or None
+        Fingerprints of a previous run of the same config. When set, each
+        run compares the data it reads against them and warns on a
+        difference. It is filled in when a run is rebuilt from its saved
+        ``config.json``.
 
     Examples
     --------
@@ -275,32 +315,32 @@ class BaseBacktester(ABC):
     MARKET: MarketSpec | None = None
 
     def __init__(self, config: BacktestConfig):
-        """Validate and store ``config`` after resetting the per-run state."""
-        # Fingerprint state is created before the config is assigned so the
-        # setter and the validation hook can read it. `expected_fingerprint`
-        # is set when a run is rebuilt from a saved fingerprint.json (or the
-        # `data_fingerprint` of a config.json); run() compares against it.
+        """Initialize the backtester; see the class docstring for parameters."""
+        # Created before the config is assigned, because the setter and the
+        # validation hook may read them.
         self.expected_fingerprint: dict | None = None
         self._fingerprints: dict = {}
-        # Absolute path of the checkpoint this run() trained in train mode;
-        # None in load mode and before any run. Recorded by get_config and
-        # in the metrics.
+        # Absolute path of the checkpoint a train-mode run() produced; None in
+        # load mode and before any run.
         self._trained_checkpoint: str | None = None
-        # Lazily built reader of the ticker sidecar beside the price store.
+        # Built on first use by the ticker_lookup property.
         self._ticker_lookup: "CrspTickerLookup | None" = None
         self.config = config
 
     @property
     def ticker_lookup(self) -> CrspTickerLookup:
-        """Reader of the ``.crsp_tickers.json`` sidecar beside the price store.
+        """Lookup that turns symbol ids into readable ticker names.
 
-        The backtester is the only layer that knows where the price store
-        is, so symbol labelling starts here: the engine uses it for
-        liquidation records and the model for its missing/extra symbol
-        lists. The lookup is built on first access and reset whenever a new
-        config is assigned. It is not a CRSP-only branch: when no sidecar
-        exists beside the store, ``label()`` falls back to each symbol's own
-        spelling, so panels from other vendors are unaffected.
+        It reads the ``.crsp_tickers.json`` file stored next to the price
+        store. For CRSP data (the Center for Research in Security Prices),
+        symbols are PERMNOs, permanent numeric security ids, and this file
+        records which ticker each PERMNO traded under on each date. The
+        backtester is the only layer that knows where the price store is, so
+        it owns the lookup: the engine uses it for liquidation records and
+        the model for its lists of missing or extra symbols. The lookup is
+        built on first access and reset whenever a new config is assigned.
+        When no such file exists, ``label()`` returns each symbol unchanged,
+        so panels from other vendors are unaffected.
 
         Examples
         --------
@@ -376,7 +416,7 @@ class BaseBacktester(ABC):
         Traceback (most recent call last):
         TypeError: MyBacktester requires a BacktestConfig, got object
         """
-        # The type check must stay the first statement, as in BaseModel.
+        # Keep the type check first, so a wrong config class gets a clear error.
         if not isinstance(config, self.config_cls):
             raise TypeError(
                 f"{self.class_name} requires a {self.config_cls.__name__}, "
@@ -398,9 +438,8 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: model_mode must be 'train' or 'load', got "
                 f"{config.model_mode!r}"
             )
-        # Load mode needs at least one of the two; run() reads the checkpoint
-        # and run_cv() reads cv_project_dir, and each rejects its own missing
-        # field at call time.
+        # run() needs the checkpoint and run_cv() needs cv_project_dir; each
+        # entry point rejects its own missing field when called.
         if (
             config.model_mode == "load"
             and config.checkpoint is None
@@ -431,13 +470,14 @@ class BaseBacktester(ABC):
             )
         if config.benchmark_dataset is not None:
             raise NotImplementedError(
-                f"{self.class_name}: benchmark comparison is excluded from phase "
-                f"03.7 by D-08 until directly-downloaded index price data "
-                f"exists; the benchmark_dataset config slot is kept, leave it None"
+                f"{self.class_name}: benchmark comparison is not supported yet, "
+                f"because it needs index price data that the project does not "
+                f"download; the benchmark_dataset config field is reserved, "
+                f"leave it None"
             )
 
-        # Path fields are stored absolute: config.json is used to rebuild the
-        # run in another process and working directory.
+        # Store paths as absolute, because config.json may rebuild the run
+        # from another working directory.
         for name in ("checkpoint", "cv_project_dir", "output_dir"):
             value = getattr(config, name)
             if value is not None:
@@ -557,7 +597,7 @@ class BaseBacktester(ABC):
     def run(self) -> BacktestResult:
         """Backtest one model over the configured window and write a run directory.
 
-        A template method that subclasses do not override. In train mode the
+        Subclasses do not override this method. In train mode the
         model is trained on its own dates first; in load mode the checkpoint
         is restored and the training dates recorded beside it define the
         in-sample split (a warning is logged if they select different bars
@@ -657,16 +697,18 @@ class BaseBacktester(ABC):
     def run_cv(self) -> CVBacktestResult:
         """Replay a ``train_cv`` run fold by fold and simulate the stitched weights.
 
-        A template method that subclasses do not override. It reads the
+        Subclasses do not override this method. It reads the
         ``cv_folds.json`` manifest under ``config.cv_project_dir``, keeps the
         folds whose test segment lies inside the backtest window, and checks
         on the price calendar that those test segments are contiguous and
         non-overlapping before any model is loaded (a stitched curve with a
         gap or an overlap corresponds to no real trading path). Each fold is
         then backtested on its own test segment with its own checkpoint, and
-        its in-sample split uses that fold's training dates, so with no gap
-        between folds the first label-horizon bars of every fold are
-        in-sample.
+        its in-sample split uses that fold's training dates. A label looks a
+        few bars ahead (its *label horizon*), so the training labels of a fold
+        already saw the first few bars after ``train_end``. With no gap
+        between a fold's training and test segments, those first bars of
+        every test segment therefore count as in-sample.
 
         The per-fold weights are concatenated and simulated once over the
         prices from the first ``test_start`` to the last ``test_end``, with
@@ -751,12 +793,10 @@ class BaseBacktester(ABC):
                     f"{fold['checkpoint']} records training dates "
                     f"{recorded[0]}..{recorded[1]}, but the manifest says "
                     f"{manifest_bounds[0]}..{manifest_bounds[1]}; using the "
-                    f"manifest's dates (D-16, WR-01)"
+                    f"manifest's dates"
                 )
-            # A partial fingerprint comparison on failure of the fold window.
-            # Earlier failures in the loop body (resolving or loading the
-            # checkpoint) hold no fingerprints, or the previous fold's, so
-            # they are deliberately outside the try.
+            # Only the fold window records fingerprints, so only its failure
+            # triggers the partial comparison; checkpoint errors above do not.
             try:
                 window = self._backtest_window(
                     fold["test_start"],
@@ -896,13 +936,13 @@ class BaseBacktester(ABC):
             raise ValueError(
                 f"{self.class_name}: {path} has no format_version (supported: "
                 f"{supported}); it is not a cv_folds manifest this reader "
-                f"understands (D-36)"
+                f"understands"
             )
         version = payload["format_version"]
         if isinstance(version, bool) or version != supported:
             raise ValueError(
                 f"{self.class_name}: {path} format_version {version!r} is not "
-                f"supported (supported: {supported}) (D-36)"
+                f"supported (supported: {supported})"
             )
         raw_folds = payload.get("folds")
         if not isinstance(raw_folds, list):
@@ -972,7 +1012,7 @@ class BaseBacktester(ABC):
             f"{self.class_name}: fold checkpoint {recorded!r} was found neither "
             f"inside cv_project_dir as {in_project} nor as an existing absolute "
             f"path; relative manifest entries are never resolved against the "
-            f"working directory (WR-03)"
+            f"working directory"
         )
 
     def _select_folds(self, folds: list[dict]) -> list[dict]:
@@ -1055,7 +1095,7 @@ class BaseBacktester(ABC):
                     f"{previous['test_end']} and fold {fold['fold']} starting "
                     f"{fold['test_start']}; {first - expected} price bar(s) in "
                     f"between belong to no fold, so a stitched out-of-sample "
-                    f"curve would silently skip them (D-35)"
+                    f"curve would silently skip them"
                 )
             if first < expected:
                 raise ValueError(
@@ -1063,7 +1103,7 @@ class BaseBacktester(ABC):
                     f"{fold['fold']} starts {fold['test_start']}, on or before "
                     f"fold {previous['fold']} ends {previous['test_end']}; "
                     f"{expected - first} price bar(s) would be traded by two "
-                    f"models (D-35)"
+                    f"models"
                 )
             previous, previous_last = fold, last
 
@@ -1171,7 +1211,7 @@ class BaseBacktester(ABC):
             f"{train_bounds[0]}..{train_bounds[1]} (its config.json), but config.model "
             f"says train_start={configured[0]!r}, train_end={configured[1]!r}; "
             f"using the checkpoint's dates for the effective training window "
-            f"(D-17, WR-01)"
+            f"(the split between in-sample and out-of-sample bars)"
         )
 
     @staticmethod
@@ -1284,7 +1324,7 @@ class BaseBacktester(ABC):
             logger.warning(
                 f"{self.class_name}: checkpoint {path} has no config.json beside "
                 f"it, so its training dates cannot be checked against "
-                f"config.model (WR-01); continuing with config.model as given"
+                f"config.model; continuing with config.model as given"
             )
             return None
         saved = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -1525,15 +1565,15 @@ class BaseBacktester(ABC):
                     continue
                 logger.warning(
                     f"{self.class_name}: data fingerprint mismatch for {key!r}: "
-                    f"present in expected_fingerprint but not read by this run "
-                    f"(D-27); {tail}"
+                    f"present in expected_fingerprint but not read by this run; "
+                    f"{tail}"
                 )
                 continue
             if key not in expected:
                 logger.warning(
                     f"{self.class_name}: data fingerprint mismatch for {key!r}: "
-                    f"read by this run but absent from expected_fingerprint "
-                    f"(D-27); {tail}"
+                    f"read by this run but absent from expected_fingerprint; "
+                    f"{tail}"
                 )
                 continue
             wanted, got = expected[key], actual[key]
@@ -1550,7 +1590,7 @@ class BaseBacktester(ABC):
                 logger.warning(
                     f"{self.class_name}: data fingerprint mismatch for {key!r} "
                     f"(differing fields: {', '.join(differing)}): {details}. The "
-                    f"data changed since the expected run (D-27); {tail}"
+                    f"data changed since the expected run; {tail}"
                 )
 
     def _compare_fingerprints_on_failure(self) -> None:
@@ -1575,7 +1615,7 @@ class BaseBacktester(ABC):
                 logger.warning(
                     f"{self.class_name}: the failure-path data diagnostic itself "
                     f"raised {type(error).__name__}: {error!r}; it is skipped and "
-                    f"the original error follows (D-03.11-UAT-A)"
+                    f"the original error follows"
                 )
             except BaseException:  # noqa: BLE001 - a broken log sink must not raise
                 pass
@@ -1690,7 +1730,7 @@ class BaseBacktester(ABC):
                 logger.warning(
                     f"{self.class_name}: label {type(label).__name__} has no "
                     f"n_forward_periods in config.kwargs; it contributes a "
-                    f"0-bar horizon to the effective training window (D-17)"
+                    f"0-bar horizon to the effective training window"
                 )
                 continue
             horizon = max(horizon, int(kwargs["n_forward_periods"]))
@@ -1700,6 +1740,9 @@ class BaseBacktester(ABC):
         self, calendar: np.ndarray, train_start, train_end
     ) -> tuple[str, str] | None:
         """Return the effective training window as a pair of bar labels.
+
+        The *effective training window* is every bar the trained model has
+        seen: its training bars plus the label horizon after ``train_end``.
 
         The window is ``[train_start, train_end + label horizon]`` counted
         in calendar bars, not calendar days (a Friday ``train_end`` plus two
@@ -1719,7 +1762,7 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: model config has train_start={train_start!r}, "
                 f"train_end={train_end!r}; the effective training window is "
                 f"unknown, so metrics record training_window as null and every "
-                f"backtest bar as out-of-sample (D-17)"
+                f"backtest bar as out-of-sample"
             )
             return None
 
@@ -1790,7 +1833,7 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: backtest window {window[0]}..{window[1]} "
                 f"overlaps the model's effective training window "
                 f"{training_window[0]}..{training_window[1]} (train_start.."  # type: ignore[index]
-                f"train_end + label horizon, D-17); bars "
+                f"train_end + label horizon); bars "
                 f"{split['in_sample_range'][0]}..{split['in_sample_range'][1]} "
                 f"are in-sample. Continuing: in-sample and out-of-sample results "
                 f"are reported separately"
@@ -1967,11 +2010,9 @@ class BaseBacktester(ABC):
         whole["turnover"] = self._turnover_summary(
             self._turnover(simulation), simulation.bar_interval
         )
-        # The number of fills over the window: the position-level trade
-        # statistics no longer answer "how many times did we trade".
-        # `.sizes.get` rather than a bare subscript, because a simulation
-        # with no fills has an empty orders dataset without an `order`
-        # dimension, and a KeyError here would discard the staged run.
+        # The number of fills: position-level trade counts do not say how
+        # often we traded. A run with no fills has no `order` dimension, so
+        # use `.sizes.get` rather than a subscript that would raise.
         whole["order_count"] = int(simulation.orders.sizes.get("order", 0))
         metrics: dict = {"whole": whole}
 

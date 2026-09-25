@@ -1,19 +1,23 @@
-"""Coverage bookkeeping over the per-symbol watermark sidecars.
+"""Coverage bookkeeping: which symbols are already downloaded for a date range.
 
-Every acquisition run leaves a small JSON sidecar per symbol under the
-config's ``watermark_path`` recording the date range already on disk, plus a
-``_failures.json`` manifest of the symbols that did not land.
+Every acquisition run (a download from a data vendor) leaves one small JSON
+*watermark sidecar* per symbol under the config's ``watermark_path``. A
+sidecar records the date range of that symbol's data already on disk; its
+``last_date`` is the *watermark*, the point up to which the symbol is known
+to be downloaded. The run also writes a ``_failures.json`` manifest listing
+the symbols whose download failed.
+
 ``CoverageLedger`` reads those files and answers the one question a refresh
 needs: which of the requested symbols still have to be fetched for the
-requested window. It is the single implementation of that rule. The
-acquisition engine in ``quantlab/base/acquisition.py`` composes a ledger and
-delegates to it, and the credential-free source inspector builds one directly
-through ``CoverageLedger.for_config``, so both report the same answer by
-construction.
+requested date range. It is the only implementation of that rule. The
+acquisition engine in ``quantlab/base/acquisition.py`` creates a ledger and
+delegates to it, and the source inspector (a read-only tool that reports
+what is on disk) builds one through ``CoverageLedger.for_config``, so the
+two always give the same answer.
 
-This module reads local files only, issues no vendor requests and needs no
-credentials. It imports nothing from the acquisition side, which is what lets
-a machine with no API key browse what it already has on disk.
+This module reads local files only, sends no vendor requests and needs no
+credentials. It imports nothing from the acquisition code, so a machine with
+no API key can still inspect what it has on disk.
 """
 
 import json
@@ -23,31 +27,29 @@ from typing import Iterator, Sequence
 from quantlab.base.config import AcquisitionConfig
 from quantlab.enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN
 
-#: Filename of the per-run failure manifest, written under ``watermark_root``
-#: next to the per-symbol sidecars. Declared here and bound onto the
-#: acquisition engine as a class constant, so the writer and the
-#: credential-free reader name the same file.
+#: Filename of the failure manifest, written under ``watermark_root`` next to
+#: the per-symbol sidecars. Defined here and reused by the acquisition engine,
+#: so the code that writes the file and the code that reads it agree.
 FAILURE_MANIFEST_NAME = "_failures.json"
 
-#: Subdirectory under ``watermark_root`` that holds the per-batch page
-#: ledgers. Named here so ``iter_watermark_symbols`` can skip it explicitly
-#: instead of reporting it as a symbol.
+#: Subdirectory under ``watermark_root`` that holds the per-batch page ledgers
+#: (see ``quantlab.base.pageledger``). Named here so that
+#: ``iter_watermark_symbols`` skips it instead of reporting it as a symbol.
 PAGE_LEDGER_DIR_NAME = "_pages"
 
-#: Accepted values of ``config.kwargs["legacy_watermarks"]``. ``"warn"`` skips
-#: a sidecar with no recorded covered start but reports it on every run;
-#: ``"refetch"`` treats unknown coverage as uncovered. See
-#: ``CoverageLedger.coverage_status`` for why ``"warn"`` is the default.
-#: Declared here rather than on the acquisition engine so that
-#: ``CoverageLedger.for_config`` can use the same policy set without
-#: importing it; the engine re-exposes both as class constants.
+#: Accepted values of ``config.kwargs["legacy_watermarks"]``, the policy for a
+#: *legacy* sidecar (one written by older code that records no start date).
+#: ``"warn"`` skips such a symbol but reports it on every run; ``"refetch"``
+#: downloads it again. See ``CoverageLedger.classify_coverage`` for why
+#: ``"warn"`` is the default. Defined here, not on the acquisition engine, so
+#: ``CoverageLedger.for_config`` can use them without importing that engine.
 LEGACY_WATERMARK_POLICIES = ("warn", "refetch")
 DEFAULT_LEGACY_WATERMARK_POLICY = "warn"
 
-#: The well-formedness rule a symbol must satisfy before it becomes a
-#: filesystem path segment or a query-string value. This is the same compiled
-#: pattern the roster builder filters on, bound rather than re-declared so the
-#: two cannot drift.
+#: The pattern a symbol must match before it is used in a file path or a
+#: request URL. It is the same compiled pattern the roster builder (the code
+#: that assembles the list of symbols to download) filters on, reused rather
+#: than copied so the two cannot diverge.
 _TICKER_PATTERN = TRADEABLE_TICKER_PATTERN
 
 
@@ -56,30 +58,30 @@ class CoverageLedger:
 
     The ledger reads the per-symbol watermark sidecars and the failure
     manifest under ``watermark_root`` and classifies each requested symbol
-    against the config's ``[start_date, end_date]`` window. It is the one
-    place that comparison is made; every other component asks the ledger
-    rather than re-implementing the rule, because the four-way classification
+    against the config's ``[start_date, end_date]`` range. This is the only
+    place that comparison is made. Other components ask the ledger instead
+    of repeating the rule, because the four-way classification
     (``uncovered``, ``covered``, ``widened``, ``legacy``) is easy to get
     subtly wrong.
 
-    ``data_type`` is passed in rather than resolved from a vendor class, so a
-    ledger can be built without constructing a vendor client and therefore
-    without credentials; ``for_config`` does exactly that.
+    ``data_type`` is passed in rather than looked up on a vendor class, so a
+    ledger can be built without creating a vendor client, and therefore
+    without credentials. ``for_config`` does exactly that.
 
     Parameters
     ----------
     config : AcquisitionConfig
-        The acquisition config whose watermark tree to read.
-    data_type : str | None
-        Raw-tier data type (for example ``"quotes"`` or
-        ``"trades"``) for frequencies whose hive layout partitions on
-        one; ``None`` otherwise.
-    legacy_policies : Sequence[str]
-        Accepted values of the ``legacy_watermarks`` knob.
-    default_legacy_policy : str
-        Policy used when the knob is unset.
-    owner_label : str
-        Name reported in ``validate_symbols`` error messages.
+        The acquisition config whose watermark directory to read.
+    data_type : str or None, default None
+        Kind of raw data, for example ``"quotes"`` or ``"trades"``. Needed
+        only for tick-data frequencies, whose raw files are partitioned into
+        directories by data type; ``None`` otherwise.
+    legacy_policies : Sequence[str], default ``LEGACY_WATERMARK_POLICIES``
+        Accepted values of the ``legacy_watermarks`` setting.
+    default_legacy_policy : str, default ``"warn"``
+        Policy used when ``legacy_watermarks`` is not set.
+    owner_label : str, default "CoverageLedger"
+        Name shown at the start of ``validate_symbols`` error messages.
 
     Examples
     --------
@@ -108,7 +110,10 @@ class CoverageLedger:
         default_legacy_policy: str = DEFAULT_LEGACY_WATERMARK_POLICY,
         owner_label: str = "CoverageLedger",
     ) -> None:
-        """Store the config and policy values; nothing is read from disk yet."""
+        """Initialize the ledger; see the class docstring for parameters.
+
+        Nothing is read from disk until a method asks for it.
+        """
         self.config = config
         self.data_type = data_type
         self.legacy_policies = tuple(legacy_policies)
@@ -123,7 +128,7 @@ class CoverageLedger:
             f"data_type={self.data_type!r})"
         )
 
-    # -- construction from a bare config (the inspector's entry point) ------
+    # -- construction from a config alone (used by the source inspector) ----
 
     @classmethod
     def for_config(
@@ -135,26 +140,31 @@ class CoverageLedger:
         """Build a ledger from a config alone, without any vendor class.
 
         ``data_type`` is read from ``config.kwargs`` only when the frequency's
-        hive layout partitions on it (tick data), mirroring the condition in
-        ``watermark_root``, so bar-frequency ledgers built this way carry
-        ``data_type=None`` and their sidecar paths match those of a ledger
-        the acquisition engine composes. The value is not validated against a
-        vendor's supported data types, because the ledger has no vendor; an
-        invalid value simply names a directory that does not exist, so every
-        symbol reads back as uncovered.
+        raw files are partitioned by data type (tick data), the same condition
+        ``watermark_root`` uses. So bar-frequency ledgers built this way have
+        ``data_type=None``, and their sidecar paths match those of the ledger
+        the acquisition engine creates. The value is not checked against the
+        vendor's supported data types, because there is no vendor here; an
+        invalid value names a directory that does not exist, so every symbol
+        reads back as uncovered.
 
         Parameters
         ----------
         config : AcquisitionConfig
-            The acquisition config whose watermark tree to read.
-        owner_label : str
-            Name reported in ``validate_symbols`` error messages.
+            The acquisition config whose watermark directory to read.
+        owner_label : str, default "SourceInspector"
+            Name shown at the start of ``validate_symbols`` error messages.
+
+        Returns
+        -------
+        CoverageLedger
+            The new ledger.
 
         Raises
         ------
         ValueError
-            If the frequency partitions on ``data_type`` and the
-            config does not set it.
+            If the frequency needs ``data_type`` and the config does not set
+            it.
 
         Examples
         --------
@@ -169,13 +179,13 @@ class CoverageLedger:
 
     @staticmethod
     def _resolve_data_type(config: AcquisitionConfig) -> str | None:
-        """Return ``config.kwargs["data_type"]`` where the layout uses it.
+        """Return ``config.kwargs["data_type"]`` for frequencies that need it.
 
-        Returns None for frequencies whose hive layout has no ``data_type``
-        key. There is deliberately no default when the key is required: the
-        data types share one vendor root and their sidecars are namespaced by
-        data type, so guessing would let a completed backfill of one type
-        tell a run for another that every symbol is already covered.
+        Returns None for frequencies whose raw layout has no ``data_type``
+        level. When the value is required there is no default on purpose:
+        the data types share one vendor directory and their sidecars are
+        separated by data type, so a guess could let a finished download of
+        one type tell a run for another that every symbol is already covered.
 
         Raises
         ------
@@ -190,43 +200,48 @@ class CoverageLedger:
                 f"CoverageLedger: frequency {config.frequency!r} partitions on "
                 f"`data_type`, so kwargs['data_type'] must be set (e.g. "
                 f"'quotes' or 'trades'); got {data_type!r}. There is "
-                f"deliberately NO default -- the two land under one vendor "
-                f"root and their watermark sidecars are namespaced by it, so "
-                f"guessing here would let a completed quotes backfill tell a "
-                f"trades run that every symbol is already covered."
+                f"deliberately no default: both types are stored under one "
+                f"vendor directory and their watermark sidecars are separated "
+                f"by data type, so a guess here could let a finished quotes "
+                f"download tell a trades run that every symbol is already "
+                f"covered."
             )
         return str(data_type)
 
-    # -- knobs --------------------------------------------------------------
+    # -- per-run settings ---------------------------------------------------
 
     def _knob(self, name: str, default=None):
-        """Read a per-run tuning parameter from ``config.kwargs``."""
+        """Return the per-run setting ``name`` from ``config.kwargs``, or ``default``."""
         return (self.config.kwargs or {}).get(name, default)
 
     # -- sidecar paths ------------------------------------------------------
 
     @property
     def _hive_keys(self) -> tuple[str, ...]:
-        """Return the hive partition keys for this config's frequency."""
+        """Return the directory partition keys of the raw layout for this frequency.
+
+        The raw tier uses a *hive* layout, where each directory level is
+        named ``key=value`` (for example ``symbol=AAPL``).
+        """
         return RAW_HIVE_KEYS[self.config.frequency]
 
     @property
     def watermark_root(self) -> Path:
-        """Return ``config.watermark_path``, namespaced by data type if needed.
+        """Return ``config.watermark_path``, with a data-type subdirectory if needed.
 
-        Tick-frequency quotes and trades share one vendor raw root and are
-        separated only by the leading ``data_type=`` hive key, but their
-        sidecars carry no such key. Without this namespacing a completed
-        quotes backfill would tell a later trades run that every symbol is
-        covered, and that run would skip the whole roster. Frequencies whose
-        layout has no ``data_type`` key are unaffected.
+        Tick-data quotes and trades share one vendor raw directory and are
+        separated only by a leading ``data_type=`` directory, but their
+        sidecar filenames do not include the data type. Without the extra
+        subdirectory, a finished quotes download would tell a later trades
+        run that every symbol is covered, and that run would skip every
+        symbol. Frequencies without a ``data_type`` level are unaffected.
 
         Examples
         --------
         >>> ledger.watermark_root == Path(config.watermark_path)
         True
         >>> CoverageLedger.for_config(tick_config).watermark_root.name
-        quotes
+        'quotes'
         """
         root = Path(self.config.watermark_path)
         if "data_type" in self._hive_keys:
@@ -236,10 +251,15 @@ class CoverageLedger:
     def watermark_path(self, symbol: str) -> Path:
         """Return the watermark sidecar path for ``symbol``.
 
+        Parameters
+        ----------
+        symbol : str
+            The symbol.
+
         Examples
         --------
         >>> ledger.watermark_path("AAPL").name
-        AAPL.json
+        'AAPL.json'
         """
         return self.watermark_root / f"{symbol}.json"
 
@@ -247,13 +267,13 @@ class CoverageLedger:
     def failure_manifest_path(self) -> Path:
         """Return the path of ``_failures.json`` for this config.
 
-        Defined on the ledger so the reader and the writer share one path
-        expression, including the data-type namespacing.
+        Defined on the ledger so the reader and the writer build the path the
+        same way, including the data-type subdirectory.
 
         Examples
         --------
         >>> ledger.failure_manifest_path.name
-        _failures.json
+        '_failures.json'
         """
         return self.watermark_root / FAILURE_MANIFEST_NAME
 
@@ -261,12 +281,11 @@ class CoverageLedger:
         """Return every symbol the failure manifest records as failing.
 
         The manifest accumulates across runs: before overwriting it, the
-        writer folds forward the entries of symbols the run never attempted,
-        so it can name symbols no recent run requested. A missing or
-        unreadable file reads back as ``{}``, the same tolerance
-        ``read_sidecar`` applies. The reasons were scrubbed of credentials
-        when they were written, so this method adds no new path for raw
-        vendor exception text.
+        writer carries over the entries of symbols the current run did not
+        try, so it can name symbols no recent run requested. A missing or
+        unreadable file reads back as ``{}``, as in ``read_sidecar``. The
+        reasons had credentials removed when they were written, so raw vendor
+        error text cannot leak through this method.
 
         Returns
         -------
@@ -293,9 +312,14 @@ class CoverageLedger:
     def iter_watermark_symbols(self) -> Iterator[str]:
         """Yield, in sorted order, every symbol with a watermark sidecar.
 
-        Only the top level of ``watermark_root`` is scanned, and the failure
-        manifest and the page-ledger directory are skipped explicitly so that
-        neither is reported as a symbol.
+        Only the top level of ``watermark_root`` is scanned. The failure
+        manifest and the page-ledger directory are skipped so that neither is
+        reported as a symbol.
+
+        Yields
+        ------
+        str
+            A symbol name (the sidecar's filename without ``.json``).
 
         Examples
         --------
@@ -318,9 +342,13 @@ class CoverageLedger:
     def read_sidecar(self, symbol: str) -> dict | None:
         """Return a sidecar's raw JSON, or None if it is absent or unreadable.
 
-        This is the single tolerant read that ``read_watermark`` and
-        ``read_coverage`` share, so there is exactly one failure policy for a
-        corrupt sidecar.
+        ``read_watermark`` and ``read_coverage`` both read through this
+        method, so there is exactly one way a corrupt sidecar is handled.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol whose sidecar to read.
 
         Examples
         --------
@@ -337,17 +365,21 @@ class CoverageLedger:
                 payload = json.load(f)
         except (json.JSONDecodeError, OSError):
             # A corrupt or half-written sidecar must never crash a refresh;
-            # treating it as absent costs at most a wider re-fetch. Files
-            # written before sidecar writes became atomic may still be on
-            # disk, so do not turn this into a raise.
+            # treating it as absent costs at most a wider re-fetch. Old
+            # non-atomic writes may have left such files, so do not raise.
             return None
         return payload if isinstance(payload, dict) else None
 
     def read_watermark(self, symbol: str) -> str | None:
         """Return the last covered date for ``symbol``, or None.
 
-        This is what an incremental refresh uses to compute its start date;
-        the covered start is not needed there.
+        An incremental refresh uses this to decide where to start; it does
+        not need the covered start date.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol whose sidecar to read.
 
         Examples
         --------
@@ -362,16 +394,21 @@ class CoverageLedger:
     def read_coverage(self, symbol: str) -> dict | None:
         """Return the covered range for ``symbol``, or None without a sidecar.
 
-        The result is ``{"start_date", "last_date", "no_data"}``. Either date
-        may be None. A sidecar written by an older layout records only
-        ``last_date`` and reads back with ``start_date=None``; nothing fills
-        that in from ``config.start_date``, because only the user knows what
-        window those files were fetched over and an invented start would
-        silently hide a per-symbol history gap. Stamping the covered start is
-        an explicit user step on the acquisition engine. ``no_data`` defaults
-        to False when the key is absent, which is correct for sidecars written
-        before the marker existed, since those were only written after a
-        successful fetch.
+        The result has the keys ``start_date``, ``last_date`` and ``no_data``.
+        Either date may be None. A sidecar in the older format records only
+        ``last_date`` and reads back with ``start_date=None``. That gap is not
+        filled from ``config.start_date``: only the user knows what range
+        those files were downloaded for, and an invented start would hide a
+        missing stretch of history. Recording the start date is an explicit
+        user step on the acquisition engine. ``no_data`` (the vendor returned
+        nothing for the requested range) defaults to False when absent, which
+        is correct for older sidecars because those were only written after a
+        successful download.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol whose sidecar to read.
 
         Examples
         --------
@@ -389,7 +426,7 @@ class CoverageLedger:
             "no_data": bool(payload.get("no_data", False)),
         }
 
-    # -- the coverage rule (exactly one implementation) ---------------------
+    # -- the coverage rule (its only implementation) ------------------------
 
     def legacy_policy(self) -> str:
         """Return the ``legacy_watermarks`` policy in force.
@@ -397,13 +434,12 @@ class CoverageLedger:
         Raises
         ------
         ValueError
-            If the knob is set to a value outside
-            ``legacy_policies``.
+            If the setting is not one of ``legacy_policies``.
 
         Examples
         --------
         >>> ledger.legacy_policy()
-        warn
+        'warn'
         """
         policy = self._knob("legacy_watermarks", self.default_legacy_policy)
         if policy not in self.legacy_policies:
@@ -414,72 +450,82 @@ class CoverageLedger:
         return policy
 
     def coverage_status(self, symbol: str, from_watermark: bool = False) -> str:
-        """Classify ``symbol`` against the requested window.
+        """Classify ``symbol`` against the requested date range.
 
-        Returns one of ``"uncovered"``, ``"covered"``, ``"widened"`` or
-        ``"legacy"``; see ``classify_coverage`` for the rule. Dates are ISO
-        ``YYYY-MM-DD`` strings compared lexically, so no parsing or time zone
-        is involved.
+        Dates are ISO ``YYYY-MM-DD`` strings compared as text, so no parsing
+        or time zone is involved. See ``classify_coverage`` for the rule.
 
         Parameters
         ----------
         symbol : str
             The symbol whose sidecar to read.
-        from_watermark : bool
+        from_watermark : bool, default False
             True for an incremental refresh, which requests
-            ``[watermark, end_date]`` per symbol rather than
-            ``config.start_date``. Only the end date is then checked:
-            judging a refresh against a widened start would mark every
-            symbol pending on every run while the refresh could never
-            close the gap. Widening the covered range is the job of a
-            full download.
+            ``[watermark, end_date]`` for each symbol instead of starting at
+            ``config.start_date``. Only the end date is then checked. Judging
+            a refresh against an earlier requested start would mark every
+            symbol pending on every run, and the refresh could never close
+            that gap; extending history backwards is the job of a full
+            download.
+
+        Returns
+        -------
+        str
+            One of ``"uncovered"``, ``"covered"``, ``"widened"`` or
+            ``"legacy"``.
 
         Examples
         --------
         >>> ledger.coverage_status("AAPL")
-        covered
+        'covered'
         >>> ledger.coverage_status("NVDA")
-        widened
+        'widened'
         >>> ledger.coverage_status("MSFT")
-        legacy
+        'legacy'
         >>> ledger.coverage_status("MSFT", from_watermark=True)
-        covered
+        'covered'
         """
         return self.classify_coverage(self.read_coverage(symbol), from_watermark)
 
     def classify_coverage(
         self, coverage: dict | None, from_watermark: bool = False
     ) -> str:
-        """Apply the coverage rule to an already-read coverage dict.
+        """Apply the coverage rule to a coverage dict that was already read.
 
         This is the only place ``last_date`` and ``start_date`` are compared
-        against the config's window. A symbol is ``"covered"`` when its
-        recorded ``last_date`` equals ``config.end_date`` and its recorded
-        start is known and no later than ``config.start_date``;
-        ``"uncovered"`` when there is no sidecar or the end date differs;
-        ``"widened"`` when the end date matches but the recorded start is
-        later than requested, so the symbol's history is shallower than asked
-        for and must be re-fetched; and ``"legacy"`` when the end date
-        matches but the covered start is unknown.
+        with the config's range. The four outcomes are:
 
-        Legacy sidecars are neither assumed to cover the request nor
-        re-fetched outright by default: an assumed start would hide a real
-        gap, and re-fetching every already-downloaded symbol burns a whole
-        quota window. Instead they count as covered for skipping purposes and
-        are reported on every run until stamped; ``legacy_watermarks="refetch"``
-        opts into the re-fetch.
+        - ``"covered"``: the recorded ``last_date`` equals ``config.end_date``
+          and the recorded start is known and no later than
+          ``config.start_date``.
+        - ``"uncovered"``: there is no sidecar, or the end date differs.
+        - ``"widened"``: the end date matches but the recorded start is later
+          than requested, so the stored history is shorter than asked for and
+          must be downloaded again.
+        - ``"legacy"``: the end date matches but the start is unknown.
 
-        The rule ignores ``coverage["no_data"]`` on purpose. The marker
-        records what the vendor said about one window, not a verdict about
-        the symbol, so a later request for a deeper window can still reach
-        the vendor.
+        By default a legacy sidecar is neither assumed to cover the request
+        nor downloaded again. Assuming a start would hide a real gap, and
+        downloading every existing symbol again would use up a whole vendor
+        quota. Instead such symbols are skipped and reported on every run
+        until their start is recorded; ``legacy_watermarks="refetch"``
+        downloads them instead.
+
+        ``coverage["no_data"]`` is ignored on purpose. It records what the
+        vendor said about one date range, not a verdict about the symbol, so
+        a later request for a longer range can still reach the vendor.
 
         Parameters
         ----------
-        coverage : dict | None
+        coverage : dict or None
             A dict from ``read_coverage``, or None.
-        from_watermark : bool
+        from_watermark : bool, default False
             See ``coverage_status``.
+
+        Returns
+        -------
+        str
+            The classification.
 
         Examples
         --------
@@ -487,9 +533,9 @@ class CoverageLedger:
         ...     {"start_date": "2024-01-15", "last_date": "2024-01-31",
         ...      "no_data": False}
         ... )
-        widened
+        'widened'
         >>> ledger.classify_coverage(None)
-        uncovered
+        'uncovered'
         """
         if coverage is None or coverage["last_date"] != self.config.end_date:
             return "uncovered"
@@ -502,9 +548,16 @@ class CoverageLedger:
         return "widened"
 
     def covers(self, symbol: str, from_watermark: bool = False) -> bool:
-        """Return whether ``symbol`` may be skipped for the requested window.
+        """Return whether ``symbol`` can be skipped for the requested range.
 
         A ``"legacy"`` symbol is skipped only under the ``"warn"`` policy.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol to check.
+        from_watermark : bool, default False
+            See ``coverage_status``.
 
         Examples
         --------
@@ -523,9 +576,9 @@ class CoverageLedger:
     ) -> tuple[list[str], dict[str, int]]:
         """Split ``requested`` into the symbols still to fetch, plus counts.
 
-        Each sidecar is read exactly once. ``no_data`` is counted alongside
-        the status rather than as a status of its own, so a run can report
-        how many symbols the vendor had nothing for separately from how many
+        Each sidecar is read exactly once. ``no_data`` is counted in addition
+        to the status, not as a status of its own, so a run can report how
+        many symbols the vendor had nothing for separately from how many
         failed.
 
         Parameters
@@ -560,8 +613,8 @@ class CoverageLedger:
         for symbol in requested:
             coverage = self.read_coverage(symbol)
             status = self.classify_coverage(coverage, from_watermark)
-            # Counted alongside the status, not as a status: the marker
-            # describes one window, not the symbol.
+            # Counted in addition to the status: the marker describes one date
+            # range, not the symbol.
             if coverage is not None and coverage["no_data"]:
                 counts["no_data"] += 1
             if status == "covered":
@@ -583,8 +636,13 @@ class CoverageLedger:
         """Reject any symbol that is not a well-formed ticker.
 
         A thin wrapper over the module-level ``validate_symbols`` for callers
-        that already hold a ledger; the free function exists for readers that
-        hold only a dataset config.
+        that already hold a ledger. The module-level function serves callers
+        that only have a dataset config.
+
+        Parameters
+        ----------
+        symbols : Sequence[str]
+            The symbols to check.
 
         Returns
         -------
@@ -617,15 +675,15 @@ def validate_symbols(
 ) -> list[str]:
     """Reject any symbol that is not a well-formed ticker.
 
-    Called before any filesystem path or vendor query is built from a
-    caller-supplied symbol, because a symbol crosses two trust boundaries at
-    once: it becomes a path component under the raw root, where ``/`` or
-    ``..`` would escape the root, and it becomes one element of a
-    comma-joined ``symbols=`` query parameter, where an embedded comma would
-    silently change which symbols were requested. The pattern is the same
-    compiled object the roster builder filters on, so any symbol the builder
-    persists is admitted here. It allows digits and up to two hyphenated
-    suffix segments, both of which real tickers use.
+    Call this before building a file path or a vendor request from a
+    symbol supplied by a caller. A symbol is used in two risky places. It
+    becomes a directory name under the raw data root, where ``/`` or ``..``
+    would escape the root. It also becomes one item of a comma-separated
+    ``symbols=`` request parameter, where an embedded comma would silently
+    change which symbols are requested. The pattern is the same one the
+    roster builder filters on, so every symbol the builder saves is accepted
+    here. It allows digits and up to two hyphenated suffixes (as in
+    ``BRK-B``), both of which real tickers use.
 
     Parameters
     ----------
@@ -668,12 +726,12 @@ def validate_symbols(
                 f"and a comma-joined query-string value, so a separator, a "
                 f"parent reference or an embedded comma would escape the "
                 f"raw root or silently change which symbols were requested. "
-                f"Fix the roster rather than relaxing this pattern -- a "
-                f"malformed symbol should have been dropped by the "
-                f"build-time well-formedness filter in "
-                f"quantlab/universe.py:TiingoRosterFetcher.fetch(), so "
-                f"reaching here means the reference table predates that "
-                f"filter and needs rebuilding."
+                f"Fix the roster rather than relaxing this pattern: a "
+                f"malformed symbol should have been dropped by the ticker "
+                f"filter in quantlab/universe.py:TiingoRosterFetcher.fetch() "
+                f"when the roster was built, so reaching here means the "
+                f"reference table is older than that filter and needs "
+                f"rebuilding."
             )
         validated.append(text)
     return validated
