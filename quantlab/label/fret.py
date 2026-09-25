@@ -44,11 +44,11 @@ class Return(FactorKunQuant):
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
-            close = Input("adjClose")
+            open_ = Input("adjOpen")
             return_ = op.SubConst(
                 op.Div(
-                    close,
-                    op.BackRef(close, self.config.kwargs["n_forward_periods"]),
+                    open_,
+                    op.BackRef(open_, self.config.kwargs["n_forward_periods"]),
                 ),
                 1.0,
             )
@@ -64,7 +64,9 @@ class Return(FactorKunQuant):
 
         The last ``n`` bars become NaN.
         """
-        data = data.shift(timestamp=-self.config.kwargs["n_forward_periods"])
+        data = data.shift(
+            timestamp=-(self.config.kwargs["n_forward_periods"] + 1)
+        )
         return data
 
     def _get_features(self, data: xr.Dataset):
@@ -97,11 +99,11 @@ class BinaryReturn(FactorKunQuant):
         builder = Builder()
         factor_name = self._get_factor_names()[0]
         with builder:
-            close = Input("adjClose")
+            open_ = Input("adjOpen")
             return_ = op.SubConst(
                 op.Div(
-                    close,
-                    op.BackRef(close, self.config.kwargs["n_forward_periods"]),
+                    open_,
+                    op.BackRef(open_, self.config.kwargs["n_forward_periods"]),
                 ),
                 1.0,
             )
@@ -120,7 +122,7 @@ class BinaryReturn(FactorKunQuant):
 
         The last ``n`` bars become NaN.
         """
-        data = data.shift(timestamp=-self.config.kwargs["n_forward_periods"])
+        data = data.shift(timestamp=-(self.config.kwargs["n_forward_periods"] + 1))
         return data
 
     def _get_features(self, data: xr.Dataset):
