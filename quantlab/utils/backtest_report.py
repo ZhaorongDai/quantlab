@@ -9,6 +9,13 @@ figure and the deepest drawdown is marked by a pair of triangles on the
 equity curve. *In-sample* means the bars the model was trained on;
 *out-of-sample* means the bars it never saw, which are the honest test.
 
+With a benchmark the figure grows two rows. The benchmark's NAV is drawn on
+the equity row beside the portfolio's, its drawdown and monthly returns beside
+the portfolio's on theirs, and two new rows show the *excess return* (the
+relative NAV, portfolio value divided by benchmark value, minus 1) and the
+*excess drawdown* (that relative NAV's fall from its running peak). Two more
+tables list the excess statistics and the benchmark's own statistics.
+
 The module knows no metric name: the table's rows are derived from whatever
 mapping it is given, and any value it cannot render becomes a dash. That is
 deliberate, because the report is written inside a run's staging directory,
@@ -46,6 +53,10 @@ _BLOCKS = ("whole", "in_sample", "out_of_sample")
 #: has never seen, so it states the operation and lets the reader decide.
 DELTA_HEADER = "out_of_sample - in_sample"
 
+#: Headings of the two benchmark tables, shown only when a benchmark ran.
+EXCESS_HEADING = "Excess over benchmark"
+BENCHMARK_HEADING = "Benchmark (buy and hold)"
+
 _STYLE = """
   body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
          margin: 24px; color: #1a1a1a; }
@@ -78,6 +89,9 @@ def write_backtest_report(
     returns: xr.DataArray | None = None,
     init_cash: float | None = None,
     drawdown_span: dict | None = None,
+    benchmark_value: xr.DataArray | None = None,
+    benchmark_returns: xr.DataArray | None = None,
+    benchmark_name: str = "benchmark",
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -129,6 +143,17 @@ def write_backtest_report(
         recovery bar, so the pair spans bottom-back-to-even rather than
         the whole episode. The caller chooses the episode; an endpoint the
         equity axis does not carry drops that marker rather than raising.
+    benchmark_value : xr.DataArray | None
+        The benchmark's portfolio value on the same ``timestamp`` axis,
+        started from the same capital. When given, the page draws it with
+        the portfolio's NAV and adds the excess-return and excess-drawdown
+        rows; ``metrics["relative"]`` and ``metrics["benchmark"]`` become
+        their own tables.
+    benchmark_returns : xr.DataArray | None
+        The benchmark's per-bar returns, drawn beside the portfolio's
+        monthly returns.
+    benchmark_name : str
+        Display name of the benchmark in the legend and hover text.
 
     Examples
     --------
@@ -152,22 +177,46 @@ def write_backtest_report(
     """
     equity = value.to_pandas()
     drawdown = equity / equity.cummax() - 1.0
+    reference = _aligned_benchmark(benchmark_value, equity)
+
+    if reference is None:
+        rows = {"equity": 1, "drawdown": 2, "monthly": 3}
+        row_heights = [0.54, 0.23, 0.23]
+        height = 900
+    else:
+        rows = {"equity": 1, "excess": 2, "excess_drawdown": 3, "drawdown": 4, "monthly": 5}
+        row_heights = [0.34, 0.17, 0.15, 0.15, 0.19]
+        height = 1400
 
     fig = make_subplots(
-        rows=3,
+        rows=len(rows),
         cols=1,
         shared_xaxes=True,
-        row_heights=[0.54, 0.23, 0.23],
-        vertical_spacing=0.04,
+        row_heights=row_heights,
+        vertical_spacing=0.035 if reference is not None else 0.04,
     )
     _add_equity(fig, equity, init_cash)
     _add_drawdown_span(fig, equity, drawdown_span)
     fig.add_trace(
-        go.Scatter(x=drawdown.index, y=drawdown.values, name="drawdown", mode="lines"),
-        row=2,
+        go.Scatter(
+            x=drawdown.index,
+            y=drawdown.values,
+            name="drawdown",
+            mode="lines",
+            line={"color": PORTFOLIO_COLOUR},
+        ),
+        row=rows["drawdown"],
         col=1,
     )
-    _add_monthly_returns(fig, returns)
+    if reference is not None:
+        _add_benchmark(fig, equity, reference, benchmark_name, init_cash, rows)
+    _add_monthly_returns(
+        fig,
+        returns,
+        row=rows["monthly"],
+        benchmark_returns=benchmark_returns if reference is not None else None,
+        benchmark_name=benchmark_name,
+    )
 
     if in_sample_range is not None:
         fig.add_vrect(
@@ -191,29 +240,180 @@ def write_backtest_report(
             showarrow=False,
             align="left",
         )
-    fig.update_yaxes(title_text="value", row=1, col=1)
-    fig.update_yaxes(title_text="drawdown", tickformat=".1%", row=2, col=1)
-    fig.update_yaxes(title_text="monthly return", tickformat=".1%", row=3, col=1)
+    fig.update_yaxes(title_text="value", row=rows["equity"], col=1)
+    fig.update_yaxes(
+        title_text="drawdown", tickformat=".1%", row=rows["drawdown"], col=1
+    )
+    fig.update_yaxes(
+        title_text="monthly return", tickformat=".1%", row=rows["monthly"], col=1
+    )
+    if reference is not None:
+        fig.update_yaxes(
+            title_text="excess return", tickformat=".1%", row=rows["excess"], col=1
+        )
+        fig.update_yaxes(
+            title_text="excess drawdown",
+            tickformat=".1%",
+            row=rows["excess_drawdown"],
+            col=1,
+        )
+        # Only the curves that need telling apart carry a legend entry.
+        for trace in fig.data:
+            trace.showlegend = trace.name in _LEGEND_TRACES
     # Rotated y-axis titles must fit in their row. At plotly's default 450px
     # rows 2 and 3 are about 44px tall and the titles collide; at 900px they
-    # are about 140px and every title fits.
+    # are about 140px and every title fits (1400px for the five benchmark rows).
     fig.update_layout(
-        height=900,
+        height=height,
         margin={"b": 140},
-        showlegend=False,
+        showlegend=reference is not None,
+        legend={"orientation": "h", "x": 1.0, "xanchor": "right", "y": 1.02, "yanchor": "bottom"},
+        barmode="group",
         updatemenus=[_axis_toggle()],
     )
 
     div = fig.to_html(full_html=False, include_plotlyjs="cdn")
     heatmap = _monthly_heatmap_div(returns)
     Path(path).write_text(
-        _document(title, summary, metrics, div, notes, heatmap), encoding="utf-8"
+        _document(
+            title,
+            summary,
+            metrics,
+            div,
+            notes,
+            heatmap,
+            benchmark=reference is not None,
+        ),
+        encoding="utf-8",
     )
 
 
 # ---------------------------------------------------------------------------
 # figure
 # ---------------------------------------------------------------------------
+
+
+#: Line colours of the two curves compared on every row: the portfolio in a
+#: saturated blue, the benchmark in a neutral grey so the eye lands on the
+#: portfolio first. The excess rows use their own accent.
+PORTFOLIO_COLOUR = "#1f77b4"
+BENCHMARK_COLOUR = "#8a8f98"
+EXCESS_COLOUR = "#d9822b"
+
+#: Trace names shown in the legend when a benchmark is drawn; everything
+#: else (markers, the drawdown rows) is identified by its row title.
+_LEGEND_TRACES = ("equity", "benchmark_equity", "monthly_return", "benchmark_monthly_return")
+
+
+def _aligned_benchmark(
+    benchmark_value: xr.DataArray | None, equity: pd.Series
+) -> pd.Series | None:
+    """Return the benchmark value on the equity index, or ``None`` to draw none.
+
+    The backtester values both on the same bars; a benchmark that does not
+    cover the equity index is left off the page rather than raising, because
+    an exception here would discard the whole staged run directory.
+    """
+    if benchmark_value is None:
+        return None
+    series = benchmark_value.to_pandas()
+    if not isinstance(series, pd.Series) or series.empty:
+        return None
+    series = series.reindex(equity.index)
+    if not series.notna().all():
+        return None
+    return series
+
+
+def _excess_curves(equity: pd.Series, reference: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Return ``(excess return, excess drawdown)`` of the portfolio over the benchmark.
+
+    The relative NAV is portfolio value over benchmark value. Both start from
+    the same capital, so it is 1 before the first bar and its final value
+    minus 1 is the ``relative.whole.excess_return`` metric; its drawdown is
+    measured from a running peak that starts at 1, like
+    ``relative.whole.excess_max_drawdown``.
+    """
+    relative = equity / reference
+    excess = relative - 1.0
+    peak = relative.cummax().clip(lower=1.0)
+    return excess, relative / peak - 1.0
+
+
+def _add_benchmark(
+    fig,
+    equity: pd.Series,
+    reference: pd.Series,
+    name: str,
+    init_cash: float | None,
+    rows: dict,
+) -> None:
+    """Add the benchmark NAV, its drawdown and the two excess rows."""
+    label = html.escape(str(name))
+    if init_cash:
+        multiple = reference.values / float(init_cash)
+        hover = (
+            f"%{{x}}<br>{label} value %{{y:,.2f}}"
+            "<br>%{customdata:,.4f}x initial<extra></extra>"
+        )
+    else:
+        multiple = [None] * len(reference)
+        hover = f"%{{x}}<br>{label} value %{{y:,.2f}}<extra></extra>"
+    fig.add_trace(
+        go.Scatter(
+            x=reference.index,
+            y=reference.values,
+            name="benchmark_equity",
+            mode="lines",
+            line={"color": BENCHMARK_COLOUR, "dash": "dash"},
+            customdata=multiple,
+            hovertemplate=hover,
+        ),
+        row=rows["equity"],
+        col=1,
+    )
+
+    benchmark_drawdown = reference / reference.cummax() - 1.0
+    fig.add_trace(
+        go.Scatter(
+            x=benchmark_drawdown.index,
+            y=benchmark_drawdown.values,
+            name="benchmark_drawdown",
+            mode="lines",
+            line={"color": BENCHMARK_COLOUR, "dash": "dash"},
+            hovertemplate=f"%{{x}}<br>{label} drawdown %{{y:.2%}}<extra></extra>",
+        ),
+        row=rows["drawdown"],
+        col=1,
+    )
+
+    excess, excess_drawdown = _excess_curves(equity, reference)
+    fig.add_trace(
+        go.Scatter(
+            x=excess.index,
+            y=excess.values,
+            name="excess_return",
+            mode="lines",
+            fill="tozeroy",
+            line={"color": EXCESS_COLOUR},
+            hovertemplate=f"%{{x}}<br>excess return vs {label} %{{y:.2%}}<extra></extra>",
+        ),
+        row=rows["excess"],
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=excess_drawdown.index,
+            y=excess_drawdown.values,
+            name="excess_drawdown",
+            mode="lines",
+            fill="tozeroy",
+            line={"color": LOSS_COLOUR},
+            hovertemplate=f"%{{x}}<br>excess drawdown vs {label} %{{y:.2%}}<extra></extra>",
+        ),
+        row=rows["excess_drawdown"],
+        col=1,
+    )
 
 
 def _add_equity(fig, equity: pd.Series, init_cash: float | None) -> None:
@@ -235,6 +435,7 @@ def _add_equity(fig, equity: pd.Series, init_cash: float | None) -> None:
             y=equity.values,
             name="equity",
             mode="lines",
+            line={"color": PORTFOLIO_COLOUR},
             customdata=multiple,
             hovertemplate=hover,
         ),
@@ -332,13 +533,21 @@ def _monthly_series(returns: xr.DataArray | None) -> pd.Series | None:
     return (1.0 + series).groupby(index.to_period("M")).prod() - 1.0
 
 
-def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
+def _add_monthly_returns(
+    fig,
+    returns: xr.DataArray | None,
+    *,
+    row: int = 3,
+    benchmark_returns: xr.DataArray | None = None,
+    benchmark_name: str = "benchmark",
+) -> None:
     """Add the per-calendar-month compounded returns as a bar row.
 
     A short window legitimately yields one or two bars; that shows at a glance
     that a run's whole profit landed in a single month. Each bar is coloured
     by its sign with the same constants as the heatmap, so a month reads the
-    same colour in both panels.
+    same colour in both panels. With ``benchmark_returns`` the benchmark's
+    months stand beside the portfolio's in grey.
     """
     monthly = _monthly_series(returns)
     if monthly is None or monthly.empty:
@@ -351,7 +560,22 @@ def _add_monthly_returns(fig, returns: xr.DataArray | None) -> None:
             name="monthly_return",
             hovertemplate="%{x|%Y-%m}<br>%{y:.2%}<extra></extra>",
         ),
-        row=3,
+        row=row,
+        col=1,
+    )
+    reference = _monthly_series(benchmark_returns)
+    if reference is None or reference.empty:
+        return
+    label = html.escape(str(benchmark_name))
+    fig.add_trace(
+        go.Bar(
+            x=[period.to_timestamp() for period in reference.index],
+            y=reference.values,
+            marker={"color": BENCHMARK_COLOUR},
+            name="benchmark_monthly_return",
+            hovertemplate=f"%{{x|%Y-%m}}<br>{label} %{{y:.2%}}<extra></extra>",
+        ),
+        row=row,
         col=1,
     )
 
@@ -542,7 +766,7 @@ def _delta(later: object, earlier: object) -> object:
     return later - earlier
 
 
-def _metrics_section(metrics: dict | None) -> str:
+def _metrics_section(metrics: dict | None, heading: str = "Metrics") -> str:
     """Render the metric table: one column per slice, rows derived from the data.
 
     A key missing from one slice is a dash in that column; a key present in no
@@ -588,7 +812,7 @@ def _metrics_section(metrics: dict | None) -> str:
     if show_delta:
         headers += f"<th>{_escape(DELTA_HEADER)}</th>"
     return (
-        "  <h2>Metrics</h2>\n"
+        f"  <h2>{_escape(heading)}</h2>\n"
         '  <table class="metrics">\n'
         f"    <thead><tr><th>metric</th>{headers}</tr></thead>\n"
         "    <tbody>\n"
@@ -634,17 +858,29 @@ def _document(
     div: str,
     notes: list[str] | None,
     heatmap: str = "",
+    *,
+    benchmark: bool = False,
 ) -> str:
     """Assemble the full HTML document around the plotly fragments.
 
     ``div`` and ``heatmap`` are plotly's own fragments and are inserted
     verbatim; everything else comes from the run and is escaped. The heatmap
     sits between the main figure and the metric table, and an empty
-    ``heatmap`` inserts nothing, not even its caption.
+    ``heatmap`` inserts nothing, not even its caption. With ``benchmark``
+    the ``relative`` and ``benchmark`` entries of ``metrics`` follow the
+    portfolio's table as tables of their own, in the same three columns.
     """
     heatmap_section = (
         f"  <h2>{_escape(HEATMAP_CAPTION)}</h2>\n{heatmap}\n" if heatmap else ""
     )
+    comparison = ""
+    if benchmark and isinstance(metrics, dict):
+        for key, heading in (
+            ("relative", EXCESS_HEADING),
+            ("benchmark", BENCHMARK_HEADING),
+        ):
+            if isinstance(metrics.get(key), dict):
+                comparison += _metrics_section(metrics[key], heading)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
@@ -659,6 +895,7 @@ def _document(
         f"{div}\n"
         f"{heatmap_section}"
         f"{_metrics_section(metrics)}"
+        f"{comparison}"
         f"{_notes_section(notes)}"
         "</body>\n"
         "</html>\n"

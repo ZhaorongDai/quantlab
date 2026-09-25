@@ -319,6 +319,32 @@ Name: 2024-02-12 00:00:00, dtype: float64
 (-3.11, -1.62)
 ```
 
+### 与基准对比
+
+把 `benchmark_dataset` 设为只含一个标的的市场数据集，例如 `scripts/ingest_wrds_crsp.py --qqq` 写出的 QQQ store（`CrspDatasetConfig.qqq_benchmark`）。它和价格数据集一样是 `(timestamp, symbol)` 面板，放在单独的 store 里，带有相同的 `adjOpen` / `adjClose` 列。直接传入数据集对象：
+
+```python
+>>> from quantlab.dataset.crsp import CrspStockDataset
+>>> qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
+...     zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",
+...     raw_data_dir_path="data/downloads/us_equity/1d/crsp/wrds",
+...     reference_dir="data/reference/crsp",
+... ))
+>>> config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
+>>> result = USEquityCrossectionSelectStockVectorBt(config).run()
+>>> sorted(result.metrics["relative"]["whole"])[:4]
+['bars', 'benchmark_total_return', 'beta', 'capm_alpha']
+```
+
+基准按回测窗口读取，并对齐到策略自己的 bar 上；基准缺失的 bar 沿用前一个价格（记录一条警告）。基准晚于窗口开始、或面板中不止一个标的时会报错。基准按策略的同一套执行约定买入并持有：在第二根 bar 的开盘价全仓买入，初始资金 `init_cash`、手续费和滑点都与策略相同，因此两条净值曲线可以逐 bar 比较。`result.benchmark` 是它的 `SimulationResult`。
+
+运行结果多出两个指标块，每块都有 `whole`、`in_sample`、`out_of_sample` 三个切片：
+
+- `benchmark`：基准的 `symbol` 及其自身的收益统计（总收益、年化收益、波动率、Sharpe、最大回撤等）；
+- `relative`：组合相对基准的表现，均为小数。*相对净值* = 组合净值 / 基准净值。`excess_return` 是期末相对净值减 1（即通常所说的超额收益 alpha），`excess_return_annualized` 为其年化值，`excess_max_drawdown` 是相对净值从其历史高点的最大回落（*超额回撤*），另有 `strategy_total_return`、`benchmark_total_return`、`total_return_difference`、`tracking_error`、`information_ratio`、`beta`、`correlation`、`capm_alpha`（年化回归截距）和 `win_rate_vs_benchmark`。
+
+`report.html` 在组合净值的同一面板上画出基准净值（灰色虚线），其下新增超额收益和超额回撤两行，回撤和月度收益面板中也并列显示基准，并新增“Excess over benchmark”和“Benchmark (buy and hold)”两张表。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
+
 ### 从配置重建一次运行
 
 `config.json` 用点分导入路径记录每个类，所以 `load_backtester_from_config` 能重建出相同的回测器，包括它的价格数据集和模型，`run()` 会把这次回测重做一遍，写入新目录。如果自原始运行以来数据发生了变化，重建的运行会对每个变化的数据集记录一条警告并继续。
@@ -401,7 +427,7 @@ timestamp
 
 回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`order_count` 是成交笔数。
 
-`benchmark_dataset` 是保留字段，传入会抛出 `NotImplementedError`。具体的回测器必须设置 `MARKET`。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
+`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
 
 配置类用错时：
 

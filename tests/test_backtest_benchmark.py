@@ -1,0 +1,399 @@
+"""Benchmark comparison in the backtester.
+
+`BacktestConfig.benchmark_dataset` takes a market dataset holding exactly one
+symbol, a `(timestamp, symbol)` panel like the price dataset (an index ETF
+such as QQQ, in a store of its own). When it is set, every run also buys and
+holds that symbol on the strategy's own bars and reports the portfolio
+against it. What is locked here:
+
+- **Loading.** The benchmark is read over the window, reindexed onto the
+  strategy's price bars, and a strategy bar it lacks carries its previous
+  price forward with one warning. A panel with more than one symbol, a missing
+  price column, or a benchmark that starts after the window are refused.
+- **Simulation.** The benchmark follows the strategy's execution: all-in at
+  the second bar's fill price, from the same initial cash, so the two value
+  curves are comparable bar for bar.
+- **Metrics.** `metrics["benchmark"]` carries the benchmark's own return
+  statistics per slice, and `metrics["relative"]` the excess statistics. The
+  whole-window `excess_return` is exactly `value / benchmark_value - 1` at the
+  last bar, and `excess_max_drawdown` is the deepest fall of that ratio.
+- **Persistence and report.** `equity.zarr` carries both curves,
+  `fingerprint.json` the benchmark's data, `config.json` rebuilds the
+  benchmark, and `report.html` draws the benchmark NAV with the portfolio's
+  and adds the excess-return and excess-drawdown rows and tables.
+- **run_cv.** The stitched curve and every fold are compared with the
+  benchmark over their own bars.
+
+Everything is synthetic, CPU-only and offline.
+"""
+
+import json
+import re
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+from loguru import logger
+
+import quantlab.utils.module as module_utils
+from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.utils.backtest_report import write_backtest_report
+from tests.backtest_fixtures import (
+    make_model,
+    make_stock_dataset,
+    train_checkpoint,
+    write_price_store,
+)
+
+N_BARS = 60
+WINDOW_START = 30
+WINDOW_END = 55
+
+
+@pytest.fixture(autouse=True)
+def _offline_wandb(monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+
+@pytest.fixture
+def warning_messages():
+    messages: list[str] = []
+    handler_id = logger.add(messages.append, level="WARNING", format="{message}")
+    yield messages
+    logger.remove(handler_id)
+
+
+def _day(ts) -> str:
+    return pd.Timestamp(str(ts)).strftime("%Y-%m-%d")
+
+
+def _bars(n: int = N_BARS) -> pd.DatetimeIndex:
+    return pd.bdate_range("2024-01-01", periods=n)
+
+
+def _benchmark_store(tmp_path, **kwargs):
+    kwargs.setdefault("n_bars", N_BARS)
+    return write_price_store(tmp_path / "benchmark", symbols=["QQQ"], seed=7, **kwargs)
+
+
+def _config(tmp_path, benchmark_config=None, **overrides) -> CrossSectionBacktestConfig:
+    """Load-mode config over a checkpoint trained on bars 0-24, window bars 30-55."""
+    bars = _bars()
+    dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
+    model_dates = dict(
+        start_date=_day(bars[0]),
+        end_date=_day(bars[29]),
+        train_start=_day(bars[0]),
+        train_end=_day(bars[24]),
+        test_start=_day(bars[25]),
+        test_end=_day(bars[29]),
+    )
+    checkpoint = train_checkpoint(
+        make_model(tmp_path / "train", dataset_config, **model_dates)
+    )
+    if benchmark_config is None:
+        benchmark_config = _benchmark_store(tmp_path)
+    kwargs = dict(
+        price_dataset=make_stock_dataset(dataset_config),
+        model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
+        model_mode="load",
+        checkpoint=str(checkpoint),
+        start_date=_day(bars[WINDOW_START]),
+        end_date=_day(bars[WINDOW_END]),
+        output_dir=str(tmp_path / "runs"),
+        rebalance_periods=5,
+        direction="long_only",
+        top_n=2,
+        fees=0.0,
+        slippage=0.0,
+        benchmark_dataset=make_stock_dataset(benchmark_config),
+    )
+    kwargs.update(overrides)
+    return CrossSectionBacktestConfig(**kwargs)
+
+
+@pytest.fixture
+def benchmark_run(tmp_path):
+    backtester = USEquityCrossectionSelectStockVectorBt(_config(tmp_path))
+    return backtester, backtester.run()
+
+
+# --------------------------------------------------------------------------
+# Loading and simulation
+# --------------------------------------------------------------------------
+
+
+def test_benchmark_is_simulated_on_the_strategy_bars_as_buy_and_hold(benchmark_run):
+    backtester, result = benchmark_run
+    benchmark = result.benchmark
+    assert benchmark is not None
+    np.testing.assert_array_equal(
+        benchmark.value.timestamp.values, result.simulation.value.timestamp.values
+    )
+
+    store = xr.open_zarr(backtester.config.benchmark_dataset.config.zarr_file_path)
+    window = store.sel(timestamp=benchmark.value.timestamp.values).sel(symbol="QQQ")
+    init_cash = backtester.config.init_cash
+    shares = init_cash / float(window["adjOpen"].values[1])
+    expected = np.concatenate(([init_cash], shares * window["adjClose"].values[1:]))
+    np.testing.assert_allclose(benchmark.value.values, expected, rtol=1e-10)
+
+
+def test_a_multi_symbol_benchmark_is_refused(tmp_path):
+    config = _config(
+        tmp_path,
+        benchmark_config=write_price_store(
+            tmp_path / "two", symbols=["QQQ", "SPY"], n_bars=N_BARS
+        ),
+    )
+    with pytest.raises(ValueError, match="exactly one symbol"):
+        USEquityCrossectionSelectStockVectorBt(config).run()
+
+
+def test_a_benchmark_that_starts_after_the_window_is_refused(tmp_path):
+    config = _config(tmp_path, benchmark_config=_benchmark_store(tmp_path, list_at={"QQQ": 40}))
+    with pytest.raises(ValueError, match="must cover the whole backtest window"):
+        USEquityCrossectionSelectStockVectorBt(config).run()
+
+
+def test_missing_benchmark_bars_carry_the_previous_price_with_one_warning(
+    tmp_path, warning_messages
+):
+    benchmark_config = _benchmark_store(tmp_path)
+    # Knock out two strategy bars inside the window.
+    store = xr.open_zarr(benchmark_config.zarr_file_path).load()
+    holes = store.timestamp.values[[WINDOW_START + 5, WINDOW_START + 6]]
+    store.drop_sel(timestamp=holes).to_zarr(benchmark_config.zarr_file_path, mode="w")
+
+    result = USEquityCrossectionSelectStockVectorBt(
+        _config(tmp_path, benchmark_config=benchmark_config)
+    ).run()
+
+    value = result.benchmark.value.to_pandas()
+    assert value.loc[holes[0]] == value.loc[holes[1]]
+    gap_warnings = [m for m in warning_messages if "carried forward" in m]
+    assert len(gap_warnings) == 1 and "2 of the" in gap_warnings[0]
+
+
+# --------------------------------------------------------------------------
+# Metrics
+# --------------------------------------------------------------------------
+
+
+def test_metrics_carry_benchmark_and_relative_blocks(benchmark_run):
+    _, result = benchmark_run
+    metrics = result.metrics
+    assert metrics["benchmark"]["symbol"] == "QQQ"
+    assert metrics["benchmark"]["axis_symbol"] == "QQQ"
+    for block in ("benchmark", "relative"):
+        assert set(metrics[block]) >= {"whole", "in_sample", "out_of_sample"}
+    # The window starts after training ends: nothing is in-sample.
+    assert metrics["benchmark"]["in_sample"] is None
+    assert metrics["relative"]["in_sample"] is None
+    assert "Total Return [%]" in metrics["benchmark"]["whole"]
+
+
+def test_whole_excess_return_and_drawdown_match_the_value_ratio(benchmark_run):
+    _, result = benchmark_run
+    value = result.simulation.value.values
+    reference = result.benchmark.value.values
+    relative = value / reference
+    whole = result.metrics["relative"]["whole"]
+
+    assert whole["excess_return"] == pytest.approx(relative[-1] - 1.0, rel=1e-9)
+    peak = np.maximum.accumulate(np.maximum(relative, 1.0))
+    assert whole["excess_max_drawdown"] == pytest.approx(
+        float((relative / peak - 1.0).min()), abs=1e-12
+    )
+    assert whole["strategy_total_return"] == pytest.approx(
+        value[-1] / value[0] - 1.0, rel=1e-9
+    )
+    assert whole["benchmark_total_return"] == pytest.approx(
+        reference[-1] / reference[0] - 1.0, rel=1e-9
+    )
+    assert whole["total_return_difference"] == pytest.approx(
+        whole["strategy_total_return"] - whole["benchmark_total_return"], rel=1e-9
+    )
+    assert whole["bars"] == value.size
+
+
+def test_relative_stats_by_hand(benchmark_run):
+    backtester, result = benchmark_run
+    r = result.simulation.returns.values
+    b = result.benchmark.returns.values
+    bars_per_year = 252.0
+    active = r - b
+    whole = result.metrics["relative"]["whole"]
+
+    tracking = np.std(active, ddof=1) * np.sqrt(bars_per_year)
+    beta = np.cov(r, b, ddof=1)[0, 1] / np.var(b, ddof=1)
+    assert whole["tracking_error"] == pytest.approx(tracking, rel=1e-9)
+    assert whole["information_ratio"] == pytest.approx(
+        np.mean(active) * bars_per_year / tracking, rel=1e-9
+    )
+    assert whole["beta"] == pytest.approx(beta, rel=1e-9)
+    assert whole["capm_alpha"] == pytest.approx(
+        (np.mean(r) - beta * np.mean(b)) * bars_per_year, rel=1e-9
+    )
+    assert whole["correlation"] == pytest.approx(np.corrcoef(r, b)[0, 1], rel=1e-9)
+    assert whole["win_rate_vs_benchmark"] == pytest.approx(np.mean(r > b))
+
+
+def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
+    config = _config(tmp_path, benchmark_dataset=None)
+    result = USEquityCrossectionSelectStockVectorBt(config).run()
+    assert result.benchmark is None
+    assert "benchmark" not in result.metrics and "relative" not in result.metrics
+    assert set(xr.open_zarr(result.run_dir / "equity.zarr").data_vars) == {"value", "returns"}
+
+
+# --------------------------------------------------------------------------
+# Persistence, rebuild and report
+# --------------------------------------------------------------------------
+
+
+def test_run_directory_carries_the_benchmark(benchmark_run):
+    _, result = benchmark_run
+    run_dir = result.run_dir
+    equity = xr.open_zarr(run_dir / "equity.zarr").load()
+    assert set(equity.data_vars) == {
+        "value",
+        "returns",
+        "benchmark_value",
+        "benchmark_returns",
+    }
+    np.testing.assert_allclose(
+        equity["benchmark_value"].values, result.benchmark.value.values
+    )
+    assert "benchmark_dataset" in json.loads((run_dir / "fingerprint.json").read_text())
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["relative"]["whole"]["excess_return"] == pytest.approx(
+        result.metrics["relative"]["whole"]["excess_return"]
+    )
+
+
+def test_config_json_rebuilds_the_benchmark(benchmark_run):
+    backtester, result = benchmark_run
+    saved = json.loads((result.run_dir / "config.json").read_text())
+    rebuilt = module_utils.load_backtester_from_config(saved)
+    assert (
+        rebuilt.config.benchmark_dataset.config.zarr_file_path
+        == backtester.config.benchmark_dataset.config.zarr_file_path
+    )
+    again = rebuilt.run()
+    np.testing.assert_allclose(again.benchmark.value.values, result.benchmark.value.values)
+
+
+def test_report_draws_benchmark_nav_excess_return_and_excess_drawdown(benchmark_run):
+    _, result = benchmark_run
+    page = (result.run_dir / "report.html").read_text(encoding="utf-8")
+    for name in (
+        "equity",
+        "benchmark_equity",
+        "excess_return",
+        "excess_drawdown",
+        "benchmark_drawdown",
+        "benchmark_monthly_return",
+    ):
+        assert f'"name":"{name}"' in page, name
+    assert "Excess over benchmark" in page
+    assert "Benchmark (buy and hold)" in page
+    assert "Excess return vs benchmark" in page
+    assert "Excess max drawdown vs benchmark" in page
+
+
+def test_report_excess_curves_are_the_value_ratio(tmp_path):
+    ts = pd.bdate_range("2024-01-01", periods=5)
+    value = xr.DataArray([100.0, 110.0, 99.0, 120.0, 118.0], dims=("timestamp",), coords={"timestamp": ts})
+    bench = xr.DataArray([100.0, 100.0, 100.0, 100.0, 110.0], dims=("timestamp",), coords={"timestamp": ts})
+    path = tmp_path / "report.html"
+    write_backtest_report(
+        value,
+        path,
+        in_sample_range=None,
+        notes=[],
+        title="t",
+        benchmark_value=bench,
+        benchmark_name="QQQ",
+    )
+    page = path.read_text(encoding="utf-8")
+    import plotly.io as pio
+
+    match = re.search(r"Plotly\.newPlot\(\s*\"[^\"]+\",\s*(\[.*?\]),\s*\{", page, re.S)
+    assert match, page[:500]
+    traces = {trace["name"]: trace for trace in json.loads(match.group(1))}
+    excess = pio.from_json(json.dumps({"data": [traces["excess_return"]]})).data[0].y
+    excess_dd = pio.from_json(json.dumps({"data": [traces["excess_drawdown"]]})).data[0].y
+    np.testing.assert_allclose(excess, [0.0, 0.1, -0.01, 0.2, 118 / 110 - 1])
+    np.testing.assert_allclose(
+        excess_dd, [0.0, 0.0, 0.99 / 1.1 - 1, 0.0, (118 / 110) / 1.2 - 1]
+    )
+
+
+def test_report_without_benchmark_keeps_three_rows(tmp_path):
+    ts = pd.bdate_range("2024-01-01", periods=5)
+    value = xr.DataArray([100.0, 110.0, 99.0, 120.0, 118.0], dims=("timestamp",), coords={"timestamp": ts})
+    path = tmp_path / "report.html"
+    write_backtest_report(value, path, in_sample_range=None, notes=[], title="t")
+    page = path.read_text(encoding="utf-8")
+    assert '"yaxis3"' in page and '"yaxis4"' not in page
+    assert "excess_return" not in page
+
+
+# --------------------------------------------------------------------------
+# run_cv
+# --------------------------------------------------------------------------
+
+
+def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
+    n_bars, train_periods = 80, 30
+    dataset_config = write_price_store(tmp_path / "store", n_bars=n_bars)
+    bars = _bars(n_bars)
+    dates = dict(
+        start_date=_day(bars[0]),
+        end_date=_day(bars[-1]),
+        train_start=_day(bars[0]),
+        train_end=_day(bars[train_periods - 1]),
+        test_start=_day(bars[train_periods]),
+        test_end=_day(bars[-1]),
+    )
+    model = make_model(tmp_path / "train", dataset_config, **dates)
+    model.collect()
+    model.train_cv(train_periods=train_periods, gap_periods=0)
+    (manifest,) = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
+
+    config = CrossSectionBacktestConfig(
+        price_dataset=make_stock_dataset(dataset_config),
+        model=make_model(tmp_path / "backtest", dataset_config, **dates),
+        model_mode="load",
+        cv_project_dir=str(manifest.parent),
+        start_date=_day(bars[train_periods]),
+        end_date=_day(bars[-1]),
+        output_dir=str(tmp_path / "runs"),
+        rebalance_periods=2,
+        direction="long_only",
+        top_n=2,
+        benchmark_dataset=make_stock_dataset(_benchmark_store(tmp_path, n_bars=n_bars)),
+    )
+    cv = USEquityCrossectionSelectStockVectorBt(config).run_cv()
+
+    assert cv.benchmark is not None
+    stitched = cv.metrics["stitched"]
+    relative = cv.simulation.value.values / cv.benchmark.value.values
+    assert stitched["relative"]["whole"]["excess_return"] == pytest.approx(
+        relative[-1] - 1.0, rel=1e-9
+    )
+    for record in cv.folds:
+        assert record["benchmark"] is not None
+        assert "relative" in record["metrics"]
+        fold_equity = xr.open_zarr(
+            cv.run_dir / "folds" / f"fold_{record['fold']}" / "equity.zarr"
+        )
+        assert "benchmark_value" in fold_equity.data_vars
+    assert "benchmark_dataset" in json.loads((cv.run_dir / "fingerprint.json").read_text())
+    page = (Path(cv.run_dir) / "report.html").read_text(encoding="utf-8")
+    assert '"name":"excess_drawdown"' in page

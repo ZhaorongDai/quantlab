@@ -35,6 +35,7 @@ import wandb
 import xarray as xr
 from loguru import logger
 
+from quantlab.base.data import MarketDataset
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
@@ -202,7 +203,9 @@ class BacktestResult:
     ``run_dir`` is the directory this run wrote its artifacts to.
     ``predictions`` and ``weights`` are panels on ``(timestamp, symbol)``
     covering exactly the backtest window; ``metrics`` is the same mapping
-    written to ``metrics.json``.
+    written to ``metrics.json``. ``benchmark`` is the buy-and-hold simulation
+    of ``config.benchmark_dataset`` on the same bars, or ``None`` when no
+    benchmark is configured.
 
     Examples
     --------
@@ -220,6 +223,7 @@ class BacktestResult:
     weights: xr.Dataset
     simulation: SimulationResult
     metrics: dict = field(default_factory=dict)
+    benchmark: SimulationResult | None = None
 
 
 @dataclass
@@ -232,6 +236,7 @@ class _BacktestWindow:
     simulation: SimulationResult
     split: dict
     metrics: dict
+    benchmark: SimulationResult | None = None
 
 
 @dataclass
@@ -244,7 +249,9 @@ class CVBacktestResult:
     independent per-fold simulation. ``weights`` and ``simulation`` are the
     concatenated fold weights and the single continuous simulation over
     them. ``metrics`` mirrors ``metrics.json`` with the keys ``stitched``,
-    ``folds`` and ``notes``.
+    ``folds`` and ``notes``. ``benchmark`` is the buy-and-hold benchmark
+    simulated over the stitched span, or ``None`` without a benchmark; each
+    fold record also carries its own ``benchmark``.
 
     Examples
     --------
@@ -261,6 +268,7 @@ class CVBacktestResult:
     weights: xr.Dataset
     simulation: SimulationResult
     metrics: dict = field(default_factory=dict)
+    benchmark: SimulationResult | None = None
 
 class BaseBacktester(ABC):
     """Abstract base of every backtester: the public entry points and shared steps.
@@ -325,6 +333,8 @@ class BaseBacktester(ABC):
         self._trained_checkpoint: str | None = None
         # Built on first use by the ticker_lookup property.
         self._ticker_lookup: "CrspTickerLookup | None" = None
+        # The benchmark's symbol-axis label, set by `_load_benchmark_prices`.
+        self._benchmark_axis_symbol: str | None = None
         self.config = config
 
     @property
@@ -399,13 +409,13 @@ class BaseBacktester(ABC):
         ------
         TypeError
             If ``config`` is not a ``config_cls``, ``MARKET`` is
-            unset, or ``config.model`` is not a ``BaseModel``.
+            unset, ``config.model`` is not a ``BaseModel``, or
+            ``config.benchmark_dataset`` is neither ``None`` nor a
+            ``MarketDataset``.
         ValueError
             If ``model_mode``, the load-mode paths,
             ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``
             or the date order are invalid.
-        NotImplementedError
-            If ``benchmark_dataset`` is supplied.
 
         Examples
         --------
@@ -468,12 +478,16 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: start_date {config.start_date} is after "
                 f"end_date {config.end_date}"
             )
-        if config.benchmark_dataset is not None:
-            raise NotImplementedError(
-                f"{self.class_name}: benchmark comparison is not supported yet, "
-                f"because it needs index price data that the project does not "
-                f"download; the benchmark_dataset config field is reserved, "
-                f"leave it None"
+        # Only the type is checked here: reading the store to count its
+        # symbols would make construction do I/O. `_load_benchmark_prices`
+        # refuses a panel that is not exactly one symbol when a run reads it.
+        if config.benchmark_dataset is not None and not isinstance(
+            config.benchmark_dataset, MarketDataset
+        ):
+            raise TypeError(
+                f"{self.class_name}: config.benchmark_dataset must be a "
+                f"MarketDataset holding a single symbol, got "
+                f"{type(config.benchmark_dataset).__name__}"
             )
 
         # Store paths as absolute, because config.json may rebuild the run
@@ -680,7 +694,11 @@ class BaseBacktester(ABC):
             metrics["trained_checkpoint"] = self._trained_checkpoint
         metrics["notes"] = self._report_notes()
         run_dir = self._report_and_persist(
-            window.predictions, window.weights, window.simulation, metrics
+            window.predictions,
+            window.weights,
+            window.simulation,
+            metrics,
+            benchmark=window.benchmark,
         )
         # wandb is off by default; nothing leaves the machine unless enabled.
         if self.config.use_wandb:
@@ -692,6 +710,7 @@ class BaseBacktester(ABC):
             weights=window.weights,
             simulation=window.simulation,
             metrics=metrics,
+            benchmark=window.benchmark,
         )
 
     def run_cv(self) -> CVBacktestResult:
@@ -813,6 +832,7 @@ class BaseBacktester(ABC):
                     "predictions": window.predictions,
                     "weights": window.weights,
                     "simulation": window.simulation,
+                    "benchmark": window.benchmark,
                     "metrics": window.metrics,
                 }
             )
@@ -833,6 +853,9 @@ class BaseBacktester(ABC):
         try:
             self._redate_factors(first_start, last_end, calendar)
             stitched_prices = self._load_prices(first_start, last_end)
+            stitched_benchmark_prices = self._load_benchmark_prices(
+                first_start, last_end, stitched_prices.timestamp.values
+            )
         except Exception:
             self._compare_fingerprints_on_failure()
             raise
@@ -848,9 +871,14 @@ class BaseBacktester(ABC):
             )
         self._assert_weights_contract(stitched_weights, stitched_prices)
         stitched_simulation = self._simulate(stitched_weights, stitched_prices)
+        stitched_benchmark = (
+            None
+            if stitched_benchmark_prices is None
+            else self._simulate_benchmark(stitched_benchmark_prices)
+        )
         stitched_metrics = self._compute_metrics(
             stitched_simulation,
-            self._simulate_benchmark(first_start, last_end),
+            stitched_benchmark,
             self._stitched_split(stitched_prices.timestamp.values, records),
         )
 
@@ -874,7 +902,11 @@ class BaseBacktester(ABC):
             "notes": notes,
         }
         run_dir = self._persist_cv(
-            records, stitched_weights, stitched_simulation, metrics
+            records,
+            stitched_weights,
+            stitched_simulation,
+            metrics,
+            benchmark=stitched_benchmark,
         )
         # wandb is off by default; when enabled it logs the stitched metrics.
         if self.config.use_wandb:
@@ -886,6 +918,7 @@ class BaseBacktester(ABC):
             weights=stitched_weights,
             simulation=stitched_simulation,
             metrics=metrics,
+            benchmark=stitched_benchmark,
         )
 
     #: Manifest fields shared by each fold record and the per-fold entries of
@@ -1122,8 +1155,8 @@ class BaseBacktester(ABC):
         price axes (symbols without a prediction become NaN and are never
         selected), split the window against ``[train_start, train_end +
         label horizon]``, generate and check the weights, simulate, simulate
-        the benchmark and compute the metrics. The model must already be
-        prepared.
+        the benchmark (when one is configured, on the same bars) and compute
+        the metrics. The model must already be prepared.
 
         Raises
         ------
@@ -1138,6 +1171,9 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: no price bars between {start_date} and "
                 f"{end_date}"
             )
+        benchmark_prices = self._load_benchmark_prices(
+            start_date, end_date, prices.timestamp.values
+        )
 
         # Spread the predictions over every price symbol; a missing symbol is
         # NaN and therefore never selectable.
@@ -1155,7 +1191,11 @@ class BaseBacktester(ABC):
 
         with Timer(f"{self.class_name}: simulate"):
             simulation = self._simulate(weights, prices)
-        benchmark = self._simulate_benchmark(start_date, end_date)
+        benchmark = (
+            None
+            if benchmark_prices is None
+            else self._simulate_benchmark(benchmark_prices)
+        )
         metrics = self._compute_metrics(simulation, benchmark, split)
         return _BacktestWindow(
             predictions=predictions,
@@ -1164,6 +1204,7 @@ class BaseBacktester(ABC):
             simulation=simulation,
             split=split,
             metrics=metrics,
+            benchmark=benchmark,
         )
 
     def _prepare_model(self) -> tuple:
@@ -1462,6 +1503,92 @@ class BaseBacktester(ABC):
         ]
         self._fingerprints["price_dataset"] = dataset_fingerprint(prices, columns)
 
+    def _load_benchmark_prices(
+        self, start_date: str, end_date: str, timestamps: np.ndarray
+    ) -> xr.Dataset | None:
+        """Return the benchmark's price columns on the strategy's bars, or ``None``.
+
+        ``config.benchmark_dataset`` is a market dataset like the price
+        dataset, a ``(timestamp, symbol)`` panel, but it must hold exactly
+        one symbol (an index ETF such as QQQ, in a store of its own). Its
+        fill and valuation columns (the ``MARKET`` names, the same the
+        strategy trades on) are read over the window and reindexed onto
+        ``timestamps``, the strategy's price bars, so both curves are
+        valued on the same bars. A benchmark bar the strategy calendar does
+        not have is dropped; a strategy bar the benchmark lacks carries the
+        benchmark's previous price forward and is counted in one warning.
+        The fingerprint is recorded under ``benchmark_dataset``, over the
+        data as read rather than as aligned.
+
+        Raises
+        ------
+        ValueError
+            If a price column is missing, the panel does not hold exactly
+            one symbol, or the benchmark has no price on some bar of the
+            window even after carrying prices forward (it starts after the
+            window starts).
+        """
+        dataset = self.config.benchmark_dataset
+        if dataset is None:
+            return None
+        dataset.config.start_date = start_date
+        dataset.config.end_date = end_date
+        ds = dataset.read(overwrite=True).get_xarray_dataset()
+
+        fill = self.MARKET.fill_price_column  # type: ignore[union-attr]
+        valuation = self.MARKET.valuation_price_column  # type: ignore[union-attr]
+        for column in (fill, valuation):
+            if column not in ds.data_vars:
+                raise ValueError(
+                    f"{self.class_name}: benchmark price column {column!r} not "
+                    f"found in {dataset.config.zarr_file_path}"
+                )
+        symbols = [str(symbol) for symbol in ds.symbol.values]
+        if len(symbols) != 1:
+            raise ValueError(
+                f"{self.class_name}: the benchmark dataset must hold exactly one "
+                f"symbol, got {len(symbols)} in "
+                f"{dataset.config.zarr_file_path}: {symbols[:10]}"
+            )
+        self._benchmark_axis_symbol = symbols[0]
+        read = ds[[fill, valuation]].load().copy(deep=True)
+        self._fingerprints["benchmark_dataset"] = dataset_fingerprint(
+            read, [fill, valuation]
+        )
+
+        bars = np.asarray(timestamps).astype("datetime64[ns]")
+        read = read.assign_coords(
+            timestamp=read.timestamp.values.astype("datetime64[ns]")
+        )
+        aligned = read.reindex(timestamp=bars)
+        gaps = int(
+            (
+                ~np.isfinite(aligned[fill].values)
+                | ~np.isfinite(aligned[valuation].values)
+            )
+            .any(axis=1)
+            .sum()
+        )
+        aligned = aligned.ffill("timestamp")
+        unpriced = (
+            ~np.isfinite(aligned[fill].values) | ~np.isfinite(aligned[valuation].values)
+        ).any(axis=1)
+        if unpriced.any():
+            first = pd.Timestamp(bars[int(np.argmax(unpriced))])
+            raise ValueError(
+                f"{self.class_name}: benchmark {symbols[0]} has no price on or "
+                f"before bar {first} of the window {start_date}..{end_date}; the "
+                f"benchmark must cover the whole backtest window"
+            )
+        if gaps:
+            logger.warning(
+                f"{self.class_name}: benchmark {symbols[0]} has no price on "
+                f"{gaps} of the {bars.size} strategy bars in "
+                f"{start_date}..{end_date}; its previous price is carried "
+                f"forward on those bars"
+            )
+        return aligned
+
     @staticmethod
     def _dataset_variables_fingerprint(factor) -> dict:
         """Fingerprint the data a factor (or label) consumes from its dataset.
@@ -1693,10 +1820,16 @@ class BaseBacktester(ABC):
         """Simulate the portfolio; a signal at bar t fills at bar t+1's fill price."""
 
     @abstractmethod
-    def _simulate_benchmark(
-        self, start_date: str, end_date: str
-    ) -> SimulationResult | None:
-        """Simulate a buy-and-hold benchmark, or return ``None`` when there is none."""
+    def _simulate_benchmark(self, benchmark_prices: xr.Dataset) -> SimulationResult:
+        """Simulate buying and holding the single benchmark symbol.
+
+        ``benchmark_prices`` is ``_load_benchmark_prices``'s output: the fill
+        and valuation columns of one symbol on the strategy's own bars, all
+        finite. The benchmark must follow the strategy's execution
+        conventions (fill delay, fees, slippage, initial cash), so its curve
+        is comparable bar for bar with the strategy's. Called only when a
+        benchmark is configured.
+        """
 
     @abstractmethod
     def _engine_stats(self, simulation: SimulationResult) -> dict:
@@ -2000,8 +2133,13 @@ class BaseBacktester(ABC):
         statistics plus the ``turnover`` summary and ``order_count``.
         ``in_sample`` and ``out_of_sample`` merge ``_period_returns_stats``
         and ``_period_record_stats`` over their ranges and are ``None`` when
-        there is no such range. ``benchmark`` appears only when a benchmark
-        was simulated. Every key of ``split`` is copied to the top level;
+        there is no such range. ``benchmark`` and ``relative`` appear only
+        when a benchmark was simulated: ``benchmark`` holds the benchmark's
+        ``symbol`` (display name) and ``axis_symbol`` plus the same three
+        slices of return statistics (``_period_returns_stats`` over the whole
+        window and over each slice's ranges), and ``relative`` holds the
+        three slices of ``_relative_stats``, the strategy measured against
+        the benchmark. Every key of ``split`` is copied to the top level;
         the in-sample ranges come from ``split["in_sample_ranges"]`` when
         present (the stitched curve) and from the single
         ``split["in_sample_range"]`` otherwise.
@@ -2034,10 +2172,178 @@ class BaseBacktester(ABC):
         metrics["out_of_sample"] = _slice(list(split["out_of_sample_ranges"]))
 
         if benchmark is not None:
-            metrics["benchmark"] = self._engine_stats(benchmark)
+            timestamps = simulation.value.timestamp.values
+            whole_range = [
+                (self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))
+            ]
+            axis_symbol = self._benchmark_axis_symbol or ""
+            metrics["benchmark"] = {
+                "symbol": self._benchmark_display_name(axis_symbol, timestamps[-1]),
+                "axis_symbol": axis_symbol,
+                "whole": self._period_returns_stats(benchmark, whole_range),
+                "in_sample": (
+                    self._period_returns_stats(benchmark, in_sample_ranges)
+                    if in_sample_ranges
+                    else None
+                ),
+                "out_of_sample": (
+                    self._period_returns_stats(
+                        benchmark, list(split["out_of_sample_ranges"])
+                    )
+                    if split["out_of_sample_ranges"]
+                    else None
+                ),
+            }
+            metrics["relative"] = {
+                "whole": self._relative_stats(simulation, benchmark, whole_range),
+                "in_sample": (
+                    self._relative_stats(simulation, benchmark, in_sample_ranges)
+                    if in_sample_ranges
+                    else None
+                ),
+                "out_of_sample": (
+                    self._relative_stats(
+                        simulation, benchmark, list(split["out_of_sample_ranges"])
+                    )
+                    if split["out_of_sample_ranges"]
+                    else None
+                ),
+            }
         for key, value in split.items():
             metrics[key] = value
         return metrics
+
+    def _benchmark_display_name(self, axis_symbol: str, as_of) -> str:
+        """Return the benchmark's readable name, its ticker when the store has one.
+
+        A CRSP benchmark store is keyed by PERMNO, a bare number, so the
+        ticker sidecar beside the benchmark's own store (not the price
+        store) names it as of the window's last bar. Without a sidecar the
+        axis label is returned unchanged.
+        """
+        dataset = self.config.benchmark_dataset
+        if dataset is None or not axis_symbol:
+            return axis_symbol
+        lookup = CrspTickerLookup.beside_store(dataset.config.zarr_file_path)
+        return str(lookup.label([axis_symbol], pd.Timestamp(as_of).date())[0])
+
+    def _relative_stats(
+        self,
+        simulation: SimulationResult,
+        benchmark: SimulationResult,
+        ranges: list[tuple[str, str]],
+    ) -> dict:
+        """Return the strategy's statistics relative to the benchmark over ``ranges``.
+
+        Engine-independent: it reads only the two per-bar return series,
+        which share the strategy's bars, cut to ``ranges`` (inclusive bar
+        labels) and concatenated in time order. The *relative NAV* compounds
+        ``(1 + r) / (1 + b)`` bar by bar (``r`` the strategy's return, ``b``
+        the benchmark's); over the whole window it equals the strategy's
+        value divided by the benchmark's, which is the excess-return curve
+        the report draws. Returned keys, fractions rather than percents:
+
+        - ``strategy_total_return`` / ``benchmark_total_return``: compounded
+          returns of each series;
+        - ``excess_return``: relative NAV at the end minus 1, the geometric
+          excess (alpha in the everyday sense);
+        - ``excess_return_annualized``: the same compounded to one year;
+        - ``total_return_difference``: the arithmetic difference of the two
+          total returns;
+        - ``excess_max_drawdown``: the deepest fall of the relative NAV from
+          its running peak (starting at 1), a negative fraction or 0;
+        - ``tracking_error``: annualized standard deviation of ``r - b``;
+        - ``information_ratio``: annualized mean of ``r - b`` over the
+          tracking error;
+        - ``beta`` and ``correlation`` of ``r`` on ``b``, and ``capm_alpha``,
+          the annualized regression intercept ``mean(r) - beta * mean(b)``;
+        - ``win_rate_vs_benchmark``: share of bars with ``r > b``;
+        - ``bars``: number of bars used.
+
+        A statistic that is undefined (fewer than two bars, a flat
+        benchmark, zero tracking error) is NaN, which persists as null.
+
+        Raises
+        ------
+        ValueError
+            If the two return series are not on the same bars.
+        """
+        strategy = simulation.returns
+        reference = benchmark.returns
+        ts = strategy.timestamp.values.astype("datetime64[ns]")
+        if not np.array_equal(ts, reference.timestamp.values.astype("datetime64[ns]")):
+            raise ValueError(
+                f"{self.class_name}: the benchmark returns are not on the "
+                f"strategy's bars"
+            )
+        mask = self._in_ranges(ts, ranges)
+        r = np.asarray(strategy.values, dtype=np.float64)[mask]
+        b = np.asarray(reference.values, dtype=np.float64)[mask]
+        finite = np.isfinite(r) & np.isfinite(b)
+        r, b = r[finite], b[finite]
+        n = int(r.size)
+        interval = pd.Timedelta(simulation.bar_interval)
+        bars_per_year = float(self.MARKET.year_freq(interval) / interval)  # type: ignore[union-attr]
+        nan = float("nan")
+
+        stats = {
+            "strategy_total_return": nan,
+            "benchmark_total_return": nan,
+            "excess_return": nan,
+            "excess_return_annualized": nan,
+            "total_return_difference": nan,
+            "excess_max_drawdown": nan,
+            "tracking_error": nan,
+            "information_ratio": nan,
+            "beta": nan,
+            "correlation": nan,
+            "capm_alpha": nan,
+            "win_rate_vs_benchmark": nan,
+            "bars": n,
+        }
+        if n == 0:
+            return stats
+
+        strategy_total = float(np.prod(1.0 + r) - 1.0)
+        benchmark_total = float(np.prod(1.0 + b) - 1.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            relative = np.cumprod((1.0 + r) / (1.0 + b))
+            peak = np.maximum.accumulate(np.concatenate(([1.0], relative)))[1:]
+            relative_drawdown = relative / peak - 1.0
+        final = float(relative[-1])
+        stats.update(
+            strategy_total_return=strategy_total,
+            benchmark_total_return=benchmark_total,
+            excess_return=final - 1.0,
+            excess_return_annualized=(
+                float(final ** (bars_per_year / n) - 1.0) if final > 0 else nan
+            ),
+            total_return_difference=strategy_total - benchmark_total,
+            excess_max_drawdown=float(min(np.nanmin(relative_drawdown), 0.0))
+            if np.isfinite(relative_drawdown).any()
+            else nan,
+            win_rate_vs_benchmark=float(np.mean(r > b)),
+        )
+        if n < 2:
+            return stats
+
+        active = r - b
+        tracking = float(np.std(active, ddof=1) * np.sqrt(bars_per_year))
+        variance = float(np.var(b, ddof=1))
+        stats["tracking_error"] = tracking
+        if tracking > 0:
+            stats["information_ratio"] = float(
+                np.mean(active) * bars_per_year / tracking
+            )
+        if variance > 0:
+            beta = float(np.cov(r, b, ddof=1)[0, 1] / variance)
+            stats["beta"] = beta
+            stats["capm_alpha"] = float(
+                (np.mean(r) - beta * np.mean(b)) * bars_per_year
+            )
+            if np.std(r) > 0:
+                stats["correlation"] = float(np.corrcoef(r, b)[0, 1])
+        return stats
 
     def _report_notes(self) -> list[str]:
         """Return the notes attached to the report and to ``metrics.json``.
@@ -2076,7 +2382,8 @@ class BaseBacktester(ABC):
         directory, apart from the model's training runs. The run config is
         ``get_config()`` (fingerprints included), the summary holds the
         finite numeric leaves of the ``whole``, ``in_sample`` and
-        ``out_of_sample`` blocks as ``whole/<metric>`` and so on, and
+        ``out_of_sample`` blocks as ``whole/<metric>`` and so on (plus the
+        ``benchmark`` and ``relative`` blocks when a benchmark ran), and
         ``report`` carries the HTML report.
         """
         run = wandb.init(
@@ -2085,7 +2392,7 @@ class BaseBacktester(ABC):
             config=to_jsonable(self.get_config()),
         )
         summary: dict = {}
-        for block in ("whole", "in_sample", "out_of_sample"):
+        for block in ("whole", "in_sample", "out_of_sample", "benchmark", "relative"):
             if metrics.get(block) is not None:
                 self._flatten_numeric(block, metrics[block], summary)
         run.summary.update(summary)
@@ -2180,6 +2487,22 @@ class BaseBacktester(ABC):
         summary["Out-of-sample ranges"] = _text(
             _pairs(block.get("out_of_sample_ranges"))
         )
+        benchmark = block.get("benchmark")
+        if isinstance(benchmark, dict):
+            dataset = self.config.benchmark_dataset
+            where = "" if dataset is None else f" ({dataset.config.zarr_file_path})"
+            summary["Benchmark"] = f"{_text(benchmark.get('symbol'))}{where}, buy and hold"
+            whole = (block.get("relative") or {}).get("whole") or {}
+            for label, key in (
+                ("Excess return vs benchmark", "excess_return"),
+                ("Excess max drawdown vs benchmark", "excess_max_drawdown"),
+            ):
+                value = whole.get(key)
+                summary[label] = (
+                    format(float(value), ".2%")
+                    if isinstance(value, (int, float)) and np.isfinite(value)
+                    else DASH
+                )
         if drawdown_span:
             bars = drawdown_span.get("bars")
             depth = drawdown_span.get("depth")
@@ -2208,11 +2531,14 @@ class BaseBacktester(ABC):
         weights: xr.Dataset,
         simulation: SimulationResult,
         metrics: dict,
+        *,
+        benchmark: SimulationResult | None = None,
     ) -> Path:
         """Write a new run directory with every artifact of a ``run()``.
 
         The directory holds ``config.json``, ``weights.zarr``,
-        ``equity.zarr`` (``value`` and ``returns``), ``liquidations.json``,
+        ``equity.zarr`` (``value`` and ``returns``, plus ``benchmark_value``
+        and ``benchmark_returns`` when a benchmark ran), ``liquidations.json``,
         ``metrics.json``, ``report.html`` and ``fingerprint.json``. Each
         JSON file goes through ``to_jsonable`` (NaN and infinities become
         null, timestamps become ISO strings) and is written atomically.
@@ -2221,7 +2547,9 @@ class BaseBacktester(ABC):
         ``_report_summary``, a metric table with the ``whole``,
         ``in_sample`` and ``out_of_sample`` columns, and equity, drawdown and
         monthly-return charts on a shared time axis with the in-sample range
-        shaded and the deepest drawdown marked, followed by the notes. The
+        shaded and the deepest drawdown marked (with a benchmark, its NAV is
+        drawn beside the portfolio's and the excess-return and
+        excess-drawdown rows are added), followed by the notes. The
         report module derives the table from whatever keys ``metrics``
         holds; nothing is selected or computed here, so a change in the
         metric set cannot make the report raise and discard the staged run.
@@ -2238,7 +2566,7 @@ class BaseBacktester(ABC):
             write_json_atomically(
                 run_dir / "config.json", to_jsonable(self.get_config()), indent=2
             )
-            self._write_weights_and_equity(run_dir, weights, simulation)
+            self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
             write_json_atomically(
                 run_dir / "liquidations.json",
                 to_jsonable(simulation.liquidations),
@@ -2261,6 +2589,7 @@ class BaseBacktester(ABC):
                 returns=simulation.returns,
                 init_cash=self.config.init_cash,
                 drawdown_span=drawdown_span,
+                **self._benchmark_report_inputs(benchmark, metrics),
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
@@ -2304,14 +2633,42 @@ class BaseBacktester(ABC):
         return final
 
     @staticmethod
+    def _benchmark_report_inputs(
+        benchmark: SimulationResult | None, block: dict
+    ) -> dict:
+        """Return the benchmark keyword arguments of ``write_backtest_report``.
+
+        Empty without a benchmark, so the report is drawn exactly as before.
+        """
+        if benchmark is None:
+            return {}
+        info = block.get("benchmark") or {}
+        return {
+            "benchmark_value": benchmark.value,
+            "benchmark_returns": benchmark.returns,
+            "benchmark_name": info.get("symbol") or "benchmark",
+        }
+
+    @staticmethod
     def _write_weights_and_equity(
-        directory: Path, weights: xr.Dataset, simulation: SimulationResult
+        directory: Path,
+        weights: xr.Dataset,
+        simulation: SimulationResult,
+        benchmark: SimulationResult | None = None,
     ) -> None:
-        """Write ``weights.zarr`` and ``equity.zarr`` into ``directory``."""
+        """Write ``weights.zarr`` and ``equity.zarr`` into ``directory``.
+
+        With a benchmark, ``equity.zarr`` also carries ``benchmark_value`` and
+        ``benchmark_returns`` on the same ``timestamp`` axis.
+        """
         XrBackend().to_internal(weights).write(str(directory / "weights.zarr"))
-        XrBackend().to_internal(
-            xr.Dataset({"value": simulation.value, "returns": simulation.returns})
-        ).write(str(directory / "equity.zarr"))
+        equity = {"value": simulation.value, "returns": simulation.returns}
+        if benchmark is not None:
+            equity["benchmark_value"] = benchmark.value
+            equity["benchmark_returns"] = benchmark.returns
+        XrBackend().to_internal(xr.Dataset(equity)).write(
+            str(directory / "equity.zarr")
+        )
 
     def _stitched_split(
         self, timestamps: np.ndarray, records: list[dict]
@@ -2359,6 +2716,8 @@ class BaseBacktester(ABC):
         weights: xr.Dataset,
         simulation: SimulationResult,
         metrics: dict,
+        *,
+        benchmark: SimulationResult | None = None,
     ) -> Path:
         """Write a new run directory with every artifact of a ``run_cv()``.
 
@@ -2385,12 +2744,15 @@ class BaseBacktester(ABC):
             write_json_atomically(
                 run_dir / "config.json", to_jsonable(self.get_config()), indent=2
             )
-            self._write_weights_and_equity(run_dir, weights, simulation)
+            self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
             for record in records:
                 fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
                 fold_dir.mkdir(parents=True)
                 self._write_weights_and_equity(
-                    fold_dir, record["weights"], record["simulation"]
+                    fold_dir,
+                    record["weights"],
+                    record["simulation"],
+                    record.get("benchmark"),
                 )
             write_json_atomically(
                 run_dir / "liquidations.json",
@@ -2425,6 +2787,7 @@ class BaseBacktester(ABC):
                 returns=simulation.returns,
                 init_cash=self.config.init_cash,
                 drawdown_span=drawdown_span,
+                **self._benchmark_report_inputs(benchmark, metrics["stitched"]),
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
