@@ -1,10 +1,12 @@
 """Feed-forward regression head for the torch model layer.
 
-``MLPRegressor`` is a ``DLModel`` that flattens every bar of the factor panel
-into one row (all symbols side by side) and maps it to every label of every
-symbol with a two-hidden-layer ``MLP``. It sits between the factor and label
-layers, which supply the ``[num_times, num_symbols, *]`` tensors, and the
-backtest layer, which consumes its predictions through ``predict_panel``.
+``MLPRegressor`` is a ``DLModel`` (the torch training loop defined in
+``quantlab.base.model``). It flattens every bar of the factor panel into one
+row, with all symbols side by side, and maps that row to every label of every
+symbol with a two-hidden-layer ``MLP``. A *panel* is an ``xarray.Dataset``
+indexed by ``timestamp`` and ``symbol``. The factor and label layers supply
+the ``[num_times, num_symbols, *]`` tensors cut from their panels, and the
+backtest layer consumes the predictions through ``predict_panel``.
 """
 
 import numpy as np
@@ -21,13 +23,13 @@ class MLP(nn.Module):
 
     Parameters
     ----------
-    input_size
+    input_size : int
         Width of the input rows.
-    hidden_size1
+    hidden_size1 : int
         Width of the first hidden layer.
-    hidden_size2
+    hidden_size2 : int
         Width of the second hidden layer.
-    output_size
+    output_size : int
         Width of the output rows.
 
     Examples
@@ -77,10 +79,15 @@ class MLPRegressor(DLModel):
     Hyperparameters read from ``config.hyperparameters``: ``hidden_size1``
     (default 512) and ``hidden_size2`` (default 256).
 
-    Note that the public ``predict`` takes the flattened
+    The public ``predict`` takes the flattened
     ``[num_times, num_symbols * num_features]`` matrix and returns the
     flattened ``[num_times, num_symbols * num_labels]`` output, while
     ``predict_panel`` works on the ``(timestamp, symbol)`` panel.
+
+    Parameters
+    ----------
+    config : DLConfig
+        Factors, labels, date ranges and training settings. See ``DLConfig``.
 
     Examples
     --------
@@ -98,9 +105,9 @@ class MLPRegressor(DLModel):
     >>> model = MLPRegressor(config)
     >>> checkpoint = model.collect().train()
     >>> checkpoint.name
-    MLPRegressor_total.pth
-    >>> model.predict(torch.zeros(5, model.num_symbols * model.num_factors)).shape
-    torch.Size([5, 4])
+    'MLPRegressor_total.pth'
+    >>> flat = torch.zeros(5, model.num_symbols * model.num_factors)
+    >>> out = model.predict(flat)  # shape [5, num_symbols * num_labels]
     """
 
     def __init__(self, config: DLConfig):
@@ -109,7 +116,11 @@ class MLPRegressor(DLModel):
         self.criterion = nn.MSELoss()
 
     def _train_one_batch(self, epoch: int, x: torch.Tensor, y: torch.Tensor):
-        """Run one optimizer step on a flattened batch and log train metrics."""
+        """Run one optimizer step on a flattened batch and log train metrics.
+
+        The batch arrives as ``[batch, num_symbols, num_*]`` and is flattened
+        to one row per bar before the forward pass.
+        """
         x = x.to(self.device)
         y = y.to(self.device)
 
@@ -224,13 +235,13 @@ class MLPRegressor(DLModel):
         return val_loss.detach()
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """Adapt ``predict_panel`` to the flat contract.
+        """Predict a ``[T, S, F]`` array as ``[T, S, L]`` for ``predict_panel``.
 
-        Takes ``[T, S, F]`` and returns ``[T, S, L]``. The network consumes
-        ``[T, S * F]`` and emits ``[T, S * L]``, both in C order with the
-        symbol axis outermost, exactly as the training step flattens them.
-        Flattening here and reshaping the output back is the inverse of that
-        layout. The public ``predict`` keeps the flat contract.
+        ``T`` is bars, ``S`` symbols, ``F`` features and ``L`` labels. The
+        network consumes ``[T, S * F]`` and emits ``[T, S * L]``, both in C
+        order with the symbol axis outermost, exactly as the training step
+        flattens them. Reshaping the output back therefore restores the
+        per-symbol layout. The public ``predict`` keeps the flat shapes.
         """
         num_times, num_symbols, num_features = x.shape
         flat = x.reshape(num_times, num_symbols * num_features)

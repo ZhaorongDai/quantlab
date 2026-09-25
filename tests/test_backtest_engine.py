@@ -670,7 +670,7 @@ def test_benchmark_dataset_is_refused_naming_d08(tmp_path):
     """D-08: benchmark comparison is deferred; a non-None slot is refused by name."""
     benchmark = make_stock_dataset(write_price_store(tmp_path / "benchmark", n_bars=40))
 
-    with pytest.raises(NotImplementedError, match="D-08"):
+    with pytest.raises(NotImplementedError, match="benchmark comparison is not supported"):
         _backtester(tmp_path, benchmark_dataset=benchmark)
 
 

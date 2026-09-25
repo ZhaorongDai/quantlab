@@ -1,26 +1,33 @@
-"""Point-in-time, survivorship-bias-free US equity symbol universe.
+"""Point-in-time US equity symbol universe, free of survivorship bias.
 
-This module builds and queries the reference table that tells the rest of
-the pipeline which symbols existed, and which index they belonged to, on any
-given date. Two kinds of fetcher produce its rows. ``TiingoRosterFetcher``
-subclasses (``NasdaqUniverseFetcher``, ``USEquityUniverseFetcher``) download
-exchange-wide common-stock rosters, delisted names included, from Tiingo's
-ticker directory. ``IndexMembershipFetcher`` subclasses
-(``SP500MembershipFetcher``, ``Nasdaq100MembershipFetcher``) rebuild index
-membership intervals from a current-constituent snapshot plus Wikipedia's
-historical change log. ``UniverseCatalog`` merges them into one
-``(symbol, category, start_date, end_date, end_date_is_inferred)`` parquet
-table and answers point-in-time queries against it.
+A *universe* is the list of symbols a strategy may consider. It is
+*point-in-time* when it answers "which symbols existed, or belonged to an
+index, on this date" rather than "which symbols exist today". Using today's
+list for a past date causes *survivorship bias*: companies that later went
+bankrupt or were delisted are missing, so the backtest only ever sees the
+survivors and looks better than it should.
 
-``UniverseCatalog`` also hosts the acquisition volume guard, which prices a
-download and refuses one that would exceed the disk, request or wall-clock
-ceiling. This module must therefore never import an acquisition client, by
-any spelling, and the package ``__init__`` on its import path stays empty:
-the guard has to refuse an over-budget download before any client can exist,
-and keeping every client out of this module's import graph makes that true
-whatever order callers use.
+This module builds and queries a reference table that answers the
+point-in-time question for US stocks. Two kinds of fetcher produce its rows.
+``TiingoRosterFetcher`` subclasses (``NasdaqUniverseFetcher``,
+``USEquityUniverseFetcher``) download exchange-wide rosters of common stock,
+delisted names included, from the ticker directory of the market-data vendor
+Tiingo. ``IndexMembershipFetcher`` subclasses (``SP500MembershipFetcher``,
+``Nasdaq100MembershipFetcher``) rebuild the dates each stock joined and left
+an index from a snapshot of today's members plus Wikipedia's historical
+change log. ``UniverseCatalog`` merges both into one parquet table with the
+columns ``symbol``, ``category``, ``start_date``, ``end_date`` and
+``end_date_is_inferred``, and answers point-in-time queries against it.
 
-See ``docs/constituent.md`` for the guide.
+``UniverseCatalog`` also hosts the acquisition volume guard. Before a
+download starts, the guard estimates its disk size, request count and run
+time, and refuses one that would exceed a ceiling. The guard has to refuse
+before any download client exists, so this module must never import an
+acquisition client, in any spelling, and the package ``__init__`` files on
+its import path stay empty. Keeping every client out of this module's
+imports makes the guarantee hold whatever order callers use.
+
+See ``docs/constituent.md`` for a guide.
 """
 
 import datetime
@@ -67,13 +74,15 @@ _BABY_BOND_PATTERN = r"\s\d"
 
 
 class TiingoRosterFetcher:
-    """Base class for exchange-scoped common-stock rosters built from Tiingo.
+    """Base class for exchange-wide common-stock rosters built from Tiingo.
 
-    Downloads Tiingo's ``supported_tickers.csv`` directory, which lists every
-    ticker the vendor has ever carried together with its listing and delisting
-    dates, and filters it down to one roster. Using the full directory rather
-    than a currently-listed feed is what keeps delisted names in the roster and
-    the resulting universe free of survivorship bias.
+    A *roster* here is the list of every stock ever listed on a set of
+    exchanges, each with its listing and delisting dates. This class
+    downloads Tiingo's ``supported_tickers.csv`` directory, which lists every
+    ticker the vendor has ever carried with those dates, and filters it down
+    to one roster. Using the full directory rather than a feed of currently
+    listed names keeps delisted names in the roster, which is what keeps the
+    universe free of survivorship bias.
 
     A subclass is data, not code: it sets ``EXCHANGE_FILTER``,
     ``MIN_ROSTER_ROWS`` and ``CATEGORY`` (and optionally
@@ -164,15 +173,13 @@ class TiingoRosterFetcher:
             )
             logger.info(
                 f"{self.CATEGORY}: excluded {before - len(data)} preferred / "
-                f"baby-bond rows ({before} -> {len(data)})."
+                f"baby-bond rows ({before} rows down to {len(data)})."
             )
 
-        # Malformed tickers are dropped for every roster, not only those that
-        # opt into the exclusion above: the acquisition layer refuses such a
-        # symbol before issuing a request, so persisting one would abort a
-        # whole-roster download. This also runs before the row-count floor.
-        # `str.contains` is a search, so the pattern's own anchors are what
-        # make it a whole-string match.
+        # Malformed tickers are dropped for every roster: the download code
+        # refuses such a symbol, so keeping one would abort a whole-roster
+        # download. The pattern's own ^...$ anchors make this search a
+        # whole-string match.
         before = len(data)
         data = data.filter(
             pl.col("ticker").str.contains(
@@ -181,7 +188,7 @@ class TiingoRosterFetcher:
         )
         logger.info(
             f"{self.CATEGORY}: dropped {before - len(data)} malformed / "
-            f"unfetchable ticker rows ({before} -> {len(data)})."
+            f"unfetchable ticker rows ({before} rows down to {len(data)})."
         )
 
         data = data.rename(
@@ -227,9 +234,9 @@ class NasdaqUniverseFetcher(TiingoRosterFetcher):
 class USEquityUniverseFetcher(TiingoRosterFetcher):
     """Roster of US common stock listed on NYSE, NASDAQ and AMEX, priced in USD.
 
-    Delisted names are included. The AMEX appears in Tiingo's directory under
+    Delisted names are included. AMEX appears in Tiingo's directory under
     both ``AMEX`` and ``NYSE MKT``, because historical rows were never
-    relabelled across the exchange's renames, so both tokens are kept;
+    relabelled when the exchange was renamed, so both tokens are kept;
     ``NYSE ARCA``, ``NYSE NAT`` and ``BATS`` are different exchanges and are
     excluded. Several hundred tickers carry more than one exchange row, which
     is why the catalog's interval queries de-duplicate on symbol.
@@ -268,41 +275,57 @@ _BLANK_TICKER_CELLS = frozenset({"", "-", "–", "—"})
 #: ``IndexMembershipFetcher._normalize_ticker_cell``: up to seven upper-case
 #: letters or digits, optionally followed by one ``.`` or ``-`` delimited
 #: class suffix (``BRK.B``, ``BRK-B``). Deliberately narrower than
-#: ``TRADEABLE_TICKER_PATTERN``, which admits two suffix segments for the
-#: warrants in Tiingo's directory: here an interior delimiter means two
-#: HTML cells were merged by a parser regression, which is exactly what
-#: this validator exists to catch.
+#: ``TRADEABLE_TICKER_PATTERN``, which allows two suffix segments for the
+#: warrants in Tiingo's directory. In a change log, an interior delimiter
+#: means the HTML parser merged two cells, which is what this check catches.
 _WELL_FORMED_TICKER = re.compile(r"^[A-Z0-9]{1,7}(?:[.-][A-Z0-9]{1,2})?$")
 
 
 class IndexMembershipFetcher(ABC):
-    """Base class for reconstructing point-in-time index membership intervals.
+    """Base class for rebuilding the dates each stock was in an index.
 
-    An index is described by data: a subclass sets the class constants below
-    and implements ``fetch_anchor``, and inherits the change-log parse, the
-    reconstruction algorithm and the caching behaviour of ``fetch_changes``.
+    The result is a set of *membership intervals*: one row per stay in the
+    index, with the date the stock joined and the date it left (null while
+    it is still a member). An index is described by data: a subclass sets
+    the class constants below and implements ``fetch_anchor``, and inherits
+    the change-log parse, the rebuild algorithm and the caching of
+    ``fetch_changes``.
 
-    Two sources are combined. The anchor is a snapshot of the current
-    constituents and is authoritative for who is a member today. The change
-    log is Wikipedia's dated table of additions and removals and is
-    authoritative for when membership changed. ``reconstruct_intervals``
-    replays the log forward and reconciles it against the anchor.
+    Two sources are combined. The *anchor* is a snapshot of today's members
+    and is trusted for who is a member now. The *change log* is Wikipedia's
+    dated table of additions and removals and is trusted for when
+    membership changed. ``reconstruct_intervals`` replays the log forward
+    and reconciles it with the anchor.
 
     A subclass sets ``ANCHOR_URL``, ``CHANGES_URL``, ``PIT_COVERAGE_START``
-    (the earliest date the change log covers; queries before it are refused),
-    ``CACHE_FILENAME`` (the per-index change-log snapshot under ``cache_dir``),
-    ``INDEX_LABEL``, ``CATEGORY``, ``EXPECTED_SOURCE_HEADER`` (the flattened
-    header that identifies the change-log table) and ``DATE_HEADER``;
-    ``CHANGES_TABLE_ATTRS`` is optional.
+    (the earliest date the change log covers; point-in-time queries before
+    it are refused), ``CACHE_FILENAME`` (the per-index change-log snapshot
+    under ``cache_dir``), ``INDEX_LABEL``, ``CATEGORY``,
+    ``EXPECTED_SOURCE_HEADER`` (the flattened header that identifies the
+    change-log table) and ``DATE_HEADER``. ``CHANGES_TABLE_ATTRS`` is
+    optional.
 
-    Three safety properties live on this base so every index gets them. The
-    change-log table is selected by matching its header against
-    ``EXPECTED_SOURCE_HEADER`` and its columns are read by name, so a reordered
-    header raises instead of silently swapping additions and removals. A live
-    table with fewer rows than the cached snapshot is treated as a parse
-    failure, because memberships only close and never vanish. On any fetch or
-    parse failure the cached snapshot is returned and the cache file is left
-    untouched.
+    Three safety checks live on this base so every index gets them. The
+    change-log table is picked by matching its header against
+    ``EXPECTED_SOURCE_HEADER`` and its columns are read by name, so a
+    reordered header raises instead of quietly swapping additions and
+    removals. A live table with fewer rows than the cached snapshot is
+    treated as a parse failure, because the log only grows. On any fetch or
+    parse failure the cached snapshot is returned and the cache file is
+    left as it was.
+
+    Parameters
+    ----------
+    cache_dir : str
+        Directory holding the cached change-log snapshot.
+
+    Attributes
+    ----------
+    changes_are_stale : bool
+        Whether the last ``fetch_changes`` result came from the cache
+        instead of a live fetch.
+    changes_source_asof : str or None
+        The date or time the last ``fetch_changes`` result is current to.
 
     Examples
     --------
@@ -337,22 +360,20 @@ class IndexMembershipFetcher(ABC):
     CHANGES_TABLE_ATTRS: dict[str, str] | None = None
 
     def __init__(self, cache_dir: str):
-        """Set the cache path under ``cache_dir`` and clear the staleness flags."""
+        """Initialize the fetcher; see the class docstring for parameters."""
         self._cache_path = Path(cache_dir) / self.CACHE_FILENAME
-        #: Whether the frame ``fetch_changes`` last returned came from the
-        #: cached snapshot rather than a live fetch, and the date that frame
-        #: is current to. ``UniverseCatalog.build`` reads both so a stale
-        #: reconstruction is never persisted silently.
+        # Read by `UniverseCatalog.build`, so a result rebuilt from a stale
+        # cache is never saved without the caller knowing.
         self.changes_are_stale = False
         self.changes_source_asof: str | None = None
 
     @abstractmethod
     def fetch_anchor(self) -> pl.DataFrame:
-        """Return the current constituents as a ``[symbol, date_added]`` frame.
+        """Return today's index members as a ``[symbol, date_added]`` frame.
 
-        ``date_added`` may be entirely null when the source has no such column;
-        ``reconstruct_intervals`` then falls back to ``PIT_COVERAGE_START`` for
-        those symbols.
+        ``date_added`` may be entirely null when the source has no such
+        column; ``reconstruct_intervals`` then uses ``PIT_COVERAGE_START``
+        for those symbols.
 
         Examples
         --------
@@ -369,13 +390,14 @@ class IndexMembershipFetcher(ABC):
 
     @staticmethod
     def _normalize_ticker_cell(value: str) -> str:
-        """Strip leading and trailing whitespace and ``|`` residue from one cell.
+        """Strip leading and trailing whitespace and ``|`` characters from a cell.
 
-        The observed upstream typo is a trailing ``|`` left by a wikitable editor
-        (``"ALLE |"``). Only leading and trailing delimiters are removed; an
-        interior one most likely means two cells were merged and is left in place
-        so that ``_WELL_FORMED_TICKER`` rejects it. A cell that is nothing but
-        residue becomes the empty string, which reads as "no ticker".
+        The typo seen on Wikipedia is a trailing ``|`` left by an editor
+        (``"ALLE |"``). Only leading and trailing delimiters are removed. An
+        interior one most likely means two cells were merged, so it is left
+        in place for ``_WELL_FORMED_TICKER`` to reject. A cell that is
+        nothing but delimiters becomes the empty string, which reads as "no
+        ticker".
         """
         return value.strip().strip("|").strip()
 
@@ -403,9 +425,10 @@ class IndexMembershipFetcher(ABC):
         """Parse the change-log HTML into a three-column pandas frame.
 
         The table whose flattened header equals ``EXPECTED_SOURCE_HEADER`` is
-        selected and its date and ticker columns are read by name. Ticker cells are
-        normalized, blank cells become ``None``, and anything left that is not a
-        well-formed ticker raises. Dates are parsed and re-rendered as ISO strings.
+        selected, and its date and ticker columns are read by name. Ticker
+        cells are cleaned, blank cells become ``None``, and anything left
+        that is not a well-formed ticker raises. Dates are parsed and
+        written back as ISO ``YYYY-MM-DD`` strings.
 
         Parameters
         ----------
@@ -487,13 +510,12 @@ class IndexMembershipFetcher(ABC):
         for column in ("added_ticker", "removed_ticker"):
             stripped = parsed[column].astype(str).str.strip().tolist()
 
-            # Normalize before anything else: Wikipedia's change logs carry
-            # delimiter typos such as `ALLE |`, and passing them through would
-            # create phantom symbols matching no market data.
+            # Clean first: typos such as `ALLE |` would otherwise become
+            # symbols that match no market data.
             normalized = [self._normalize_ticker_cell(v) for v in stripped]
 
-            # Every corrected cell is logged, one line per column, so a parser
-            # regression shows up as one long list instead of being absorbed.
+            # One log line per column, listing every corrected cell, so a
+            # parser bug shows up as one long line rather than going unseen.
             corrections = [
                 (raw, clean)
                 for raw, clean in zip(stripped, normalized)
@@ -504,13 +526,12 @@ class IndexMembershipFetcher(ABC):
                     f"{self.INDEX_LABEL}: normalized {len(corrections)} "
                     f"{column} cell(s) carrying delimiter residue from "
                     f"{self.CHANGES_URL}: "
-                    + ", ".join(f"{raw!r} -> {clean!r}" for raw, clean in corrections)
+                    + ", ".join(f"{raw!r} to {clean!r}" for raw, clean in corrections)
                 )
 
-            # The blank test runs on the normalized value: a cell that was only
-            # residue must become `None`, not reach the validator below.
-            # `dtype=object` (further down) keeps the sentinel a real `None`;
-            # a plain list assignment would let pandas turn it back into `nan`.
+            # Test blanks after cleaning, so a cell of only delimiters becomes
+            # `None`. `dtype=object` below keeps it `None`; pandas would
+            # otherwise turn it into `nan`.
             cleaned = [
                 None if value in _BLANK_TICKER_CELLS else value
                 for value in normalized
@@ -534,9 +555,9 @@ class IndexMembershipFetcher(ABC):
                 f"{self.CHANGES_URL} are still malformed after delimiter "
                 f"normalization: {malformed}. Refusing to reconstruct "
                 f"membership from cells that would enter the panel as "
-                f"phantom symbols matching no market data. An INTERIOR "
-                f"delimiter is not the observed upstream typo -- it means two "
-                f"cells were merged, i.e. a parser regression."
+                f"symbols matching no market data. An interior delimiter is "
+                f"not the typo seen upstream; it means two cells were merged, "
+                f"which points to a parser bug."
             )
 
         # `format="mixed"` avoids the format-inference warning both pages
@@ -559,11 +580,13 @@ class IndexMembershipFetcher(ABC):
     def fetch_changes(self) -> pl.DataFrame:
         """Fetch the change log, validate it and update the cached snapshot.
 
-        On success the parsed table is written atomically to ``CACHE_FILENAME``
-        under the cache directory. On any fetch or parse failure, or when the live
-        table has fewer rows than the cached one, the cached snapshot is returned
-        instead, the cache file is left untouched, and ``changes_are_stale`` is set
-        so the catalog can refuse to persist the result.
+        On success the parsed table is written to ``CACHE_FILENAME`` under
+        the cache directory, atomically so an interrupted write cannot leave
+        a half-written file. On any fetch or parse failure, or when the live
+        table has fewer rows than the cached one, the cached snapshot is
+        returned instead, the cache file is left as it was, and
+        ``changes_are_stale`` is set so the catalog can refuse to save the
+        result.
 
         Returns
         -------
@@ -590,15 +613,14 @@ class IndexMembershipFetcher(ABC):
             try:
                 cached_row_count = len(pl.read_parquet(self._cache_path))
             except Exception as exc:
-                # A corrupt cache must not block a fresh fetch, but falling back
-                # to 0 disables the row-count guard below for this run, so say
-                # so loudly.
+                # A corrupt cache must not block a fresh fetch, but a count of 0
+                # turns off the row-count check below, so log it as an error.
                 logger.error(
                     f"{self.INDEX_LABEL}: could not read the cached changes "
-                    f"snapshot at {self._cache_path}: {exc}. The row-count "
-                    f"monotonicity guard is DISABLED for this run -- a "
+                    f"snapshot at {self._cache_path}: {exc}. The check that the "
+                    f"live table has not shrunk is off for this run, so a "
                     f"shrunken live table will not be rejected. Delete the "
-                    f"file to re-seed it from a good fetch."
+                    f"file to re-create it from a good fetch."
                 )
                 cached_row_count = 0
 
@@ -612,9 +634,8 @@ class IndexMembershipFetcher(ABC):
 
             changes = self._parse_changes_table(response.text)
 
-            # Backstop for a subclass that overrides the base parse and returns
-            # the wrong shape; the source header itself is validated inside
-            # `_parse_changes_table`.
+            # Catches a subclass whose own parse returns the wrong columns; the
+            # source header itself is checked inside `_parse_changes_table`.
             required_columns = {"effective_date", "added_ticker", "removed_ticker"}
             if not required_columns.issubset(set(changes.columns)):
                 raise ValueError(
@@ -626,17 +647,17 @@ class IndexMembershipFetcher(ABC):
                 raise ValueError(
                     f"Parsed Wikipedia changes table has fewer rows "
                     f"({len(changes)}) than the cached snapshot "
-                    f"({cached_row_count}) -- memberships only close, they "
-                    f"don't retroactively vanish; treating this as a parse "
-                    f"failure/schema-drift."
+                    f"({cached_row_count}). Past changes are never removed "
+                    f"from the log, so this is treated as a parse failure or "
+                    f"a change in the page layout."
                 )
 
             parsed = pl.from_pandas(changes)
         except Exception as exc:
             logger.error(
                 f"Failed to fetch/parse {self.INDEX_LABEL} changes from Wikipedia "
-                f"({self.CHANGES_URL}): {exc}. Falling back to cached "
-                f"snapshot; NOT overwriting the cache file."
+                f"({self.CHANGES_URL}): {exc}. Falling back to the cached "
+                f"snapshot and leaving the cache file unchanged."
             )
             cached = self._load_cache()
             self.changes_are_stale = True
@@ -645,9 +666,9 @@ class IndexMembershipFetcher(ABC):
             ).isoformat(timespec="seconds")
             return cached
 
-        # Write atomically: an in-place write interrupted midway would leave a
-        # truncated parquet, the corrupt-cache state that disables the
-        # row-count guard above.
+        # Write to a temporary file and rename it: an interrupted in-place
+        # write would leave a corrupt cache, which turns off the row-count
+        # check above.
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._cache_path.with_suffix(".parquet.tmp")
         parsed.write_parquet(tmp_path)
@@ -668,23 +689,24 @@ class IndexMembershipFetcher(ABC):
     def reconstruct_intervals(
         self, anchor: pl.DataFrame, changes: pl.DataFrame
     ) -> pl.DataFrame:
-        """Replay the change log forward and reconcile it against the anchor.
+        """Replay the change log forward and reconcile it with the anchor.
 
-        The anchor is authoritative for who is a member today; the change log is
-        authoritative for when membership changed. Three disagreements between
-        them are reconciled, each with a warning:
+        The anchor is trusted for who is a member today; the change log is
+        trusted for when membership changed. Three disagreements between
+        them are resolved, each with a warning:
 
-        1. An interval still open at the end of the log whose symbol is absent
-           from the anchor is closed at the last date the log covers and flagged
+        1. A stay still open at the end of the log whose symbol is not in
+           the anchor is closed at the last date the log covers and marked
            ``end_date_is_inferred=True``, because the log never says when it
            ended.
-        2. A symbol whose last event is a removal but which the anchor still lists
-           is re-opened from that removal date; the log is missing a re-addition.
+        2. A symbol whose last event is a removal but which the anchor still
+           lists is re-opened from that removal date, because the log is
+           missing a re-addition.
         3. An anchor member with no event in the log is opened at its
            ``date_added``, or at ``PIT_COVERAGE_START`` when that is null.
 
-        A removal with no prior addition opens at ``PIT_COVERAGE_START``, and a
-        duplicate addition keeps the earlier open date.
+        A removal with no earlier addition opens at ``PIT_COVERAGE_START``,
+        and a duplicate addition keeps the earlier start date.
 
         Parameters
         ----------
@@ -732,7 +754,7 @@ class IndexMembershipFetcher(ABC):
 
         changes_sorted = changes.sort("effective_date")
         open_intervals: dict[str, str] = {}
-        # 4-tuples: (symbol, start_date, end_date, end_date_is_inferred).
+        # Rows of (symbol, start_date, end_date, end_date_is_inferred).
         closed: list[tuple[str, str, str | None, bool]] = []
 
         last_eff = self.PIT_COVERAGE_START
@@ -775,9 +797,9 @@ class IndexMembershipFetcher(ABC):
             else:
                 closed.append((sym, start, None, False))
 
-        # Case 2: the log's last event for an anchor member is a removal, so
-        # the log is missing a re-addition. Re-open from that removal date;
-        # otherwise the symbol would be persisted as a former member.
+        # Case 2: an anchor member whose last logged event is a removal. The
+        # log is missing a re-addition, so re-open from that removal date
+        # instead of recording a current member as a former one.
         symbols_still_open = set(open_intervals)
         closed_by_symbol: dict[str, list[int]] = {}
         for position, (sym, _start, _end, _inferred) in enumerate(closed):
@@ -786,7 +808,7 @@ class IndexMembershipFetcher(ABC):
         for sym in sorted(anchor_symbols - symbols_still_open):
             positions = closed_by_symbol.get(sym)
             if not positions:
-                continue  # never seen in the log -- handled by the loop below
+                continue  # not in the log; handled by case 3 below
             latest = max(positions, key=lambda i: closed[i][2] or "")
             last_removal = closed[latest][2]
             if last_removal is None:
@@ -800,8 +822,8 @@ class IndexMembershipFetcher(ABC):
             )
             closed.append((sym, last_removal, None, False))
 
-        # Case 3: anchor members with no event in the log are original
-        # constituents or were added before PIT_COVERAGE_START.
+        # Case 3: anchor members with no event in the log were members from
+        # the start or joined before PIT_COVERAGE_START.
         seen_symbols = {c[0] for c in closed}
         for sym in anchor_symbols - seen_symbols:
             start = anchor_date_added.get(sym) or self.PIT_COVERAGE_START
@@ -819,7 +841,12 @@ class IndexMembershipFetcher(ABC):
         )
 
     def build_intervals(self) -> pl.DataFrame:
-        """Fetch the anchor and change log and return the reconstructed intervals.
+        """Fetch the anchor and change log and return the rebuilt intervals.
+
+        Returns
+        -------
+        pl.DataFrame
+            The frame from ``reconstruct_intervals``.
 
         Examples
         --------
@@ -1020,22 +1047,32 @@ class Nasdaq100MembershipFetcher(IndexMembershipFetcher):
 
 
 class UniverseCatalog:
-    """Point-in-time US equity universe reference table.
+    """Point-in-time reference table of US equity universes.
 
-    Builds one ``(symbol, category, start_date, end_date, end_date_is_inferred)``
-    table from every roster fetcher in ``ROSTER_FETCHERS`` and every index
-    membership fetcher in ``MEMBERSHIP_FETCHERS``, persists it as parquet
-    through ``PlBackend``, and answers point-in-time queries against it. Dates
-    are ISO ``YYYY-MM-DD`` strings throughout and are compared
-    lexicographically.
+    Builds one table with the columns ``symbol``, ``category``,
+    ``start_date``, ``end_date`` and ``end_date_is_inferred`` from every
+    roster fetcher in ``ROSTER_FETCHERS`` and every index membership fetcher
+    in ``MEMBERSHIP_FETCHERS``. A *category* names one universe, such as
+    ``"us_all"`` or ``"sp500_constituent"``. The table is saved as parquet
+    through ``PlBackend`` and answers point-in-time queries. Dates are ISO
+    ``YYYY-MM-DD`` strings throughout and are compared as text, which gives
+    the right order for that format.
 
-    A walk-forward backtest must call ``get_symbols_as_of`` on each rebalance
-    date rather than once at setup, otherwise the roster carries look-ahead
-    bias.
+    A walk-forward backtest, which steps through time and rebalances as it
+    goes, must call ``get_symbols_as_of`` on each rebalance date rather than
+    once at setup. Otherwise the symbol list reflects later dates, and the
+    backtest uses information it could not have had (look-ahead bias).
 
-    The catalog also prices downloads: ``estimate_acquisition_volume`` and
-    ``assert_acquisition_volume_fits`` work purely from the listing intervals,
-    issue no vendor request and construct no client.
+    The catalog also estimates the cost of downloads.
+    ``estimate_acquisition_volume`` and ``assert_acquisition_volume_fits``
+    work purely from the listing intervals; they send no request to a vendor
+    and create no download client.
+
+    Parameters
+    ----------
+    config : UniverseConfig
+        Where the table is saved (``output_path``) and where fetchers cache
+        change logs (``cache_dir``).
 
     Examples
     --------
@@ -1062,46 +1099,48 @@ class UniverseCatalog:
     ['AAPL', 'MSFT']
     """
 
-    #: The index membership fetchers this catalog carries. Registration here
-    #: is what gives a category its point-in-time coverage boundary:
-    #: ``build`` takes the category token from ``cls.CATEGORY`` and the
-    #: queries take the boundary from ``cls.PIT_COVERAGE_START``. Roster
-    #: fetchers do not belong here; they have listing dates but no boundary.
+    #: The index membership fetchers this catalog uses. Listing a fetcher here
+    #: gives its category a coverage start date: ``build`` takes the category
+    #: from ``cls.CATEGORY`` and the queries take the start date from
+    #: ``cls.PIT_COVERAGE_START``. Roster fetchers do not belong here; they
+    #: have listing dates but no coverage start.
     MEMBERSHIP_FETCHERS: tuple[type[IndexMembershipFetcher], ...] = (
         SP500MembershipFetcher,
         Nasdaq100MembershipFetcher,
     )
 
-    #: The exchange roster fetchers this catalog carries, looped in ``build``
-    #: the same way as ``MEMBERSHIP_FETCHERS``. Kept as a separate registry
-    #: because a roster has no coverage boundary, so a pre-listing query
-    #: answers from the roster's own dates instead of raising. Each fetcher
-    #: downloads the ticker directory independently; that costs a couple of
-    #: seconds per build.
+    #: The exchange roster fetchers this catalog uses, looped over in ``build``
+    #: like ``MEMBERSHIP_FETCHERS``. Kept separate because a roster has no
+    #: coverage start, so a query before a stock listed is answered from the
+    #: roster's own dates instead of raising. Each fetcher downloads the
+    #: ticker directory itself, which costs a couple of seconds per build.
     ROSTER_FETCHERS: tuple[type[TiingoRosterFetcher], ...] = (
         NasdaqUniverseFetcher,
         USEquityUniverseFetcher,
     )
 
     def __init__(self, config: UniverseConfig):
-        """Bind ``config`` and an empty ``PlBackend``; nothing is read or fetched."""
+        """Initialize an empty catalog; see the class docstring for parameters.
+
+        Nothing is read or fetched until ``build`` or ``load``.
+        """
         self.config = config
         self._backend = PlBackend()
 
     def build(self, allow_stale: bool = False) -> Self:
-        """Fetch every category and stage the combined table in memory.
+        """Fetch every category and hold the combined table in memory.
 
-        Rosters come first, then index memberships; each frame is projected onto
-        ``CATALOG_COLUMNS`` before concatenation. Nothing is written to disk until
-        ``save``.
+        Rosters come first, then index memberships. Each frame is reduced to
+        ``CATALOG_COLUMNS``, in that order, before the frames are joined.
+        Nothing is written to disk until ``save``.
 
         Parameters
         ----------
-        allow_stale : bool
-            Whether to accept a membership fetcher that fell back to
-            its cached change-log snapshot. Off by default, because a stale
-            reconstruction persisted by ``save`` is indistinguishable from a
-            fresh one and would silently freeze the universe at the cache date.
+        allow_stale : bool, default False
+            Whether to accept a membership fetcher that fell back to its
+            cached change-log snapshot. Off by default, because a stale table
+            saved by ``save`` looks exactly like a fresh one and would freeze
+            the universe at the cache date without anyone noticing.
 
         Returns
         -------
@@ -1124,13 +1163,12 @@ class UniverseCatalog:
             .fetch()
             .with_columns(
                 pl.lit(roster_cls.CATEGORY).alias("category"),
-                # Tiingo reports real listing and delisting dates, so no roster
-                # end is inferred; stated explicitly so the column means the
-                # same thing in every category.
+                # Tiingo reports real delisting dates, so no roster end date
+                # is inferred.
                 pl.lit(False).alias("end_date_is_inferred"),
             )
-            # `vertical_relaxed` concat matches on column order, not name, so
-            # every frame is projected onto the canonical order first.
+            # `vertical_relaxed` concat matches columns by position, not name,
+            # so every frame is put in the same column order first.
             .select(self.CATALOG_COLUMNS)
             for roster_cls in self.ROSTER_FETCHERS
         ]
@@ -1159,7 +1197,7 @@ class UniverseCatalog:
             )
         if stale:
             logger.warning(
-                f"Building the universe table from STALE cached snapshots "
+                f"Building the universe table from stale cached snapshots "
                 f"(allow_stale=True): {stale}."
             )
 
@@ -1168,11 +1206,11 @@ class UniverseCatalog:
         return self
 
     def _assert_every_category_is_populated(self) -> None:
-        """Refuse to persist a table in which any known category has no rows.
+        """Raise if any known category has no rows in the table held in memory.
 
-        ``save`` overwrites the reference table in place, so a category that came
-        back empty would destroy the previous good roster and the only symptom
-        would be downstream ingestion quietly doing nothing.
+        ``save`` overwrites the reference table in place. A category that
+        came back empty would destroy the previous good roster, and the only
+        symptom would be downstream downloads quietly doing nothing.
         """
         counts = (
             self._backend.get_lazyframe()
@@ -1198,7 +1236,7 @@ class UniverseCatalog:
             )
 
     def save(self) -> Self:
-        """Write the staged table to ``config.output_path``.
+        """Write the table built by ``build`` to ``config.output_path``.
 
         Parent directories are created as needed.
 
@@ -1210,7 +1248,7 @@ class UniverseCatalog:
         Raises
         ------
         ValueError
-            If any known category has no rows in the staged table.
+            If any known category has no rows in the table.
 
         Examples
         --------
@@ -1241,9 +1279,9 @@ class UniverseCatalog:
         catalog._backend.read(config.output_path)
         return catalog
 
-    #: Canonical column order of the persisted table. ``end_date_is_inferred``
-    #: marks an interval end that ``reconstruct_intervals`` inferred rather
-    #: than observed in a source.
+    #: Column order of the saved table. ``end_date_is_inferred`` marks an end
+    #: date that ``reconstruct_intervals`` inferred rather than read from a
+    #: source.
     CATALOG_COLUMNS = (
         "symbol",
         "category",
@@ -1253,10 +1291,10 @@ class UniverseCatalog:
     )
 
     def known_categories(self) -> set[str]:
-        """Return every category token this catalog can answer for.
+        """Return every category this catalog can answer for.
 
-        The union of both registries, so a category cannot exist without a fetcher
-        and a registered fetcher is automatically a known category.
+        This is the union of both fetcher lists, so a category cannot exist
+        without a fetcher, and every listed fetcher's category is known.
 
         Examples
         --------
@@ -1268,10 +1306,10 @@ class UniverseCatalog:
         }
 
     def _validate_category(self, category: str) -> None:
-        """Raise ``ValueError`` for a category token that is not registered.
+        """Raise ``ValueError`` for a category no fetcher provides.
 
-        An empty list is a legitimate query result, so a misspelt category must
-        raise rather than silently select nothing.
+        An empty list is a valid query result, so a misspelt category must
+        raise rather than quietly select nothing.
         """
         known = self.known_categories()
         if category not in known:
@@ -1284,11 +1322,11 @@ class UniverseCatalog:
     def _normalize_iso_date(value: str, field: str) -> str:
         """Validate an ISO date string and return it as ``YYYY-MM-DD``.
 
-        The table stores ISO date strings and compares them lexicographically, so
-        a value in any other shape compares wrong rather than failing to match.
-        ``date.fromisoformat`` also accepts the basic form (``"20070115"``) and
-        week dates, which would compare wrong in the same way; callers must
-        therefore use the returned string, not the argument they passed.
+        The table stores ISO date strings and compares them as text, so a
+        value in any other shape compares wrong instead of failing to match.
+        ``date.fromisoformat`` also accepts the compact form (``"20070115"``)
+        and week dates, which would compare wrong in the same way, so callers
+        must use the returned string, not the argument they passed.
 
         Parameters
         ----------
@@ -1296,6 +1334,11 @@ class UniverseCatalog:
             The date string to check.
         field : str
             The argument name used in the error message.
+
+        Returns
+        -------
+        str
+            The date in ``YYYY-MM-DD`` form.
 
         Raises
         ------
@@ -1307,18 +1350,17 @@ class UniverseCatalog:
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"{field} must be an ISO YYYY-MM-DD string, got {value!r}. "
-                f"The table stores ISO date strings and compares them "
-                f"LEXICOGRAPHICALLY, so a non-ISO value does not merely fail "
-                f"to match -- it compares wrong and returns a plausible, "
-                f"silently incorrect roster."
+                f"The table stores ISO date strings and compares them as "
+                f"text, so a non-ISO value does not just fail to match: it "
+                f"compares wrong and returns a plausible but incorrect roster."
             ) from exc
 
     def _coverage_start(self, category: str) -> str | None:
-        """Return ``category``'s point-in-time coverage start, or ``None``.
+        """Return the first date ``category`` can answer for, or ``None``.
 
-        Derived from ``MEMBERSHIP_FETCHERS``, so a registered index carries a
-        boundary without any per-category code. Roster categories are not
-        registered there and have no boundary: a pre-listing query on one answers
+        Taken from ``MEMBERSHIP_FETCHERS``, so each index gets its start date
+        without per-category code. Roster categories are not listed there
+        and have no start date: a query before a stock listed is answered
         from the roster's own dates.
         """
         return {
@@ -1329,21 +1371,20 @@ class UniverseCatalog:
     def _assert_within_coverage(
         self, category: str, date: str, field: str
     ) -> None:
-        """Raise if ``date`` precedes ``category``'s coverage start.
+        """Raise if ``date`` is before ``category``'s coverage start.
 
-        Shared by both membership queries so they agree on the boundary. The
-        comparison is a strict ``<``: a date equal to the coverage start is
-        answerable and accepted. ``field`` names the rejected argument in the
-        message.
+        Shared by both membership queries so they agree on the limit. A date
+        equal to the coverage start is accepted. ``field`` names the rejected
+        argument in the message.
         """
         coverage_start = self._coverage_start(category)
         if coverage_start is not None and date < coverage_start:
             raise ValueError(
                 f"Cannot answer {category} membership before "
                 f"{coverage_start} -- {field}={date!r} precedes it. The "
-                f"Wikipedia-sourced change log is left-censored at that "
-                f"date and this query cannot be answered correctly, rather "
-                f"than silently defaulting to an incomplete/wrong answer."
+                f"Wikipedia change log starts at that date, so earlier "
+                f"membership is unknown; the query is refused rather than "
+                f"answered with an incomplete list."
             )
 
     def get_symbols_in_range(
@@ -1351,32 +1392,34 @@ class UniverseCatalog:
     ) -> list[str]:
         """Return every symbol whose interval overlaps ``[start_date, end_date]``.
 
-        The overlap predicate is ``start_date <= end AND (end_date IS NULL OR
-        end_date >= start)``, so a symbol that delisted inside the window is kept;
-        excluding such symbols is the survivorship bias this table exists to
-        remove. This is the query a full-window backfill wants;
-        ``get_symbols_as_of`` is the one a walk-forward backtest wants at each
-        rebalance.
+        A row overlaps when ``start_date <= end`` and ``end_date`` is null or
+        ``>= start``. A symbol that delisted inside the window is therefore
+        kept; dropping it would be exactly the survivorship bias this table
+        exists to remove. Use this query to download a whole window of
+        history; use ``get_symbols_as_of`` at each rebalance of a
+        walk-forward backtest.
 
-        The result is de-duplicated and sorted ascending, and the order is part of
-        the contract: callers slice it for ``--limit``, so it must depend only on
-        the membership set and not on the parquet layout.
+        The result has no duplicates and is sorted ascending. Callers rely on
+        the order, for example to take the first N symbols with ``--limit``,
+        so it must depend only on which symbols match and not on the row
+        order of the parquet file.
 
         Parameters
         ----------
         category : str
             A token from ``known_categories``.
         start_date : str
-            ISO date, inclusive. For an index category it must not
-            precede that index's coverage start; it is refused, not clamped,
-            because clamping would return the same truncated roster silently.
+            ISO date, inclusive. For an index category it must not be before
+            that index's coverage start. An earlier date is refused, not
+            moved forward, because moving it would return a shorter roster
+            without saying so.
         end_date : str
             ISO date, inclusive.
 
         Returns
         -------
         list[str]
-            Sorted, de-duplicated symbols.
+            Sorted symbols without duplicates.
 
         Raises
         ------
@@ -1397,13 +1440,12 @@ class UniverseCatalog:
         matched = self._backend.get_lazyframe().filter(
             (pl.col("category") == category)
             & (pl.col("start_date") <= end_date)
-            # Null-tolerant: membership categories carry real nulls for open
-            # intervals.
+            # A null end date means the symbol is still listed or a member.
             & (pl.col("end_date").is_null() | (pl.col("end_date") >= start_date))
         )
-        # `.sort()` after `.unique()`: the order is part of the contract (see
-        # the docstring). `unique(maintain_order=True)` would pin it to this
-        # file's row order instead, which a refresh rewrites.
+        # Sort after `unique()` so the order depends only on the symbols;
+        # `unique(maintain_order=True)` would follow the file's row order,
+        # which a refresh rewrites.
         return (
             matched.select("symbol")
             .unique()
@@ -1412,9 +1454,10 @@ class UniverseCatalog:
             .to_list()
         )
 
-    #: Trading days per calendar year and the calendar year they are scaled
-    #: against. An approximation for sizing only; an exchange calendar would
-    #: sharpen a row count by a couple of percent and change no decision.
+    #: Trading days per calendar year, and calendar days per year, used to turn
+    #: a date range into a trading-day count. An approximation for sizing
+    #: only; an exchange calendar would change a row count by a couple of
+    #: percent and no decision.
     TRADING_DAYS_PER_YEAR = 252
     CALENDAR_DAYS_PER_YEAR = 365.25
 
@@ -1425,14 +1468,14 @@ class UniverseCatalog:
         end_date: str,
         bars_per_day: int = 1,
     ) -> dict:
-        """Return roster arithmetic for a window: symbols, timestamps and density.
+        """Return size figures for a window: symbols, timestamps and density.
 
-        Everything is derived from this catalog's own intervals clipped to the
-        window and reduced to one span per symbol, so a dual-listed ticker is
-        counted once. ``density`` is the share of the dense ``symbols x
-        timestamps`` grid that is a real observation; it is well below 1 for a
-        full-market roster because most symbols are listed for only part of any
-        long window.
+        Everything comes from this catalog's own intervals, cut to the window
+        and merged into one span per symbol so a ticker listed on two
+        exchanges is counted once. ``density`` is the share of the full
+        ``symbols x timestamps`` grid that holds a real observation. It is
+        well below 1 for a full-market roster, because most symbols are
+        listed for only part of any long window.
 
         Parameters
         ----------
@@ -1442,9 +1485,9 @@ class UniverseCatalog:
             ISO date, inclusive.
         end_date : str
             ISO date, inclusive.
-        bars_per_day : int
-            Rows one symbol produces per trading day; 1 for daily
-            bars, 390 for minute bars.
+        bars_per_day : int, default 1
+            Rows one symbol produces per trading day; 1 for daily bars, 390
+            for minute bars.
 
         Returns
         -------
@@ -1476,8 +1519,8 @@ class UniverseCatalog:
             1,
         )
 
-        # Clip each interval to the window, then reduce to one span per
-        # symbol so a dual-listed ticker is counted once.
+        # Cut each interval to the window, then merge to one span per symbol
+        # so a ticker listed on two exchanges is counted once.
         overlapping = self._backend.get_lazyframe().filter(
             (pl.col("category") == category)
             & (pl.col("start_date") <= end_date)
@@ -1513,8 +1556,8 @@ class UniverseCatalog:
             raise ValueError(f"bars_per_day must be >= 1, got {bars_per_day!r}.")
 
         symbols = spans.height
-        # The timestamp axis is what a dense panel is allocated on; it equals
-        # the trading-day count only for daily bars.
+        # A full panel is allocated on the timestamp axis, which equals the
+        # trading-day count only for daily bars.
         timestamps = trading_days * bars_per_day
         dense_cells = symbols * timestamps
         observed_cells = min(
@@ -1538,24 +1581,24 @@ class UniverseCatalog:
             "density": density,
         }
 
-    #: Rows one symbol-day yields at each ``Frequency`` token. ``1d`` is one
-    #: bar per trading day. ``1m`` is 390, the regular 09:30-16:00 ET session;
-    #: this assumes regular hours only, and including extended hours
-    #: (04:00-20:00 ET) would raise it to about 960. ``tick`` is deliberately
-    #: absent: tick volume is not derivable from a calendar, so
-    #: ``estimate_acquisition_volume`` requires ``rows_per_symbol_day`` for
-    #: it instead of guessing.
+    #: Rows one symbol produces per trading day at each frequency. ``1d`` is one
+    #: bar per day. ``1m`` is 390, the regular 09:30-16:00 ET session; this
+    #: assumes regular hours only, and including extended hours (04:00-20:00
+    #: ET) would raise it to about 960. ``tick`` is left out on purpose: the
+    #: number of trades cannot be derived from a calendar, so
+    #: ``estimate_acquisition_volume`` requires ``rows_per_symbol_day`` for it
+    #: instead of guessing.
     BARS_PER_DAY_BY_FREQUENCY: dict[str, int] = {"1d": 1, "1m": 390}
 
-    #: Bytes one raw row occupies on disk before any densification: roughly
-    #: what a timestamp plus a handful of float OHLCV columns compress to in
-    #: parquet. A sizing figure, like ``TRADING_DAYS_PER_YEAR``.
+    #: Bytes one downloaded row takes on disk, before it is spread onto a full
+    #: panel grid: roughly what a timestamp plus a few float price and volume
+    #: columns compress to in parquet. A sizing figure, like
+    #: ``TRADING_DAYS_PER_YEAR``.
     BYTES_PER_RAW_ROW = 60
 
-    #: Requests per minute assumed when the caller names none: the vendor's
-    #: free-tier ceiling for the historical API. The rate limit dominates a
-    #: backfill's wall clock, which is why wall clock is a ceiling of its
-    #: own.
+    #: Requests per minute assumed when the caller gives none: the vendor's
+    #: free-tier limit for the historical API. The rate limit dominates how
+    #: long a large download takes, which is why run time has its own ceiling.
     DEFAULT_RATE_LIMIT_PER_MIN = 200
 
     def _resolve_volume_knobs(
@@ -1565,15 +1608,33 @@ class UniverseCatalog:
         page_limit: int,
         rate_limit_per_min: int | None,
     ) -> int:
-        """Validate the sizing knobs and return the resolved rate limit.
+        """Check the sizing settings and return the rate limit to use.
 
-        Each knob arrives from a CLI flag or ``config.kwargs``, so it is checked
-        here rather than surfacing later as a ``ZeroDivisionError``.
+        Each setting comes from a command-line flag or ``config.kwargs``, so
+        it is checked here rather than failing later as a
+        ``ZeroDivisionError``.
+
+        Parameters
+        ----------
+        frequency : str
+            ``"1d"``, ``"1m"`` or ``"tick"``.
+        batch_size : int
+            Symbols per request.
+        page_limit : int
+            Maximum rows one response can carry.
+        rate_limit_per_min : int or None
+            Requests per minute; ``None`` means
+            ``DEFAULT_RATE_LIMIT_PER_MIN``.
+
+        Returns
+        -------
+        int
+            The rate limit in requests per minute.
 
         Raises
         ------
         ValueError
-            For a frequency this estimator cannot size, or a knob
+            For a frequency this estimator cannot size, or a setting
             below 1.
         """
         if frequency not in self.BARS_PER_DAY_BY_FREQUENCY and frequency != "tick":
@@ -1581,8 +1642,7 @@ class UniverseCatalog:
                 f"Unknown frequency {frequency!r}; this estimator prices "
                 f"{sorted(self.BARS_PER_DAY_BY_FREQUENCY) + ['tick']}. A "
                 f"frequency with no bars-per-day figure cannot be sized, and "
-                f"defaulting one would invent the number the guard exists to "
-                f"defend."
+                f"a default would invent the very number the guard relies on."
             )
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size!r}.")
@@ -1611,18 +1671,20 @@ class UniverseCatalog:
         rate_limit_per_min: int | None = None,
         rows_per_symbol_day: int | None = None,
     ) -> dict:
-        """Price a download before it starts: rows, raw bytes, requests and hours.
+        """Estimate a download before it starts: rows, bytes, requests and hours.
 
-        Pure arithmetic over this catalog's listing intervals; it issues no vendor
-        request and constructs no client. It bounds disk, request count and wall
-        clock, not memory, and is a sizing figure in the same spirit as the 252-day
-        year: precise enough to separate an eight-minute fetch from a fifty-hour
-        one.
+        Pure arithmetic over this catalog's listing intervals; it sends no
+        request to a vendor and creates no client. It estimates disk use,
+        request count and run time, not memory. Like the 252-day year, it is
+        a rough figure, precise enough to tell an eight-minute download from
+        a fifty-hour one.
 
-        For bar frequencies the row count uses observed cells, not the dense grid,
-        because a full-market roster is listed only part of the time. For
-        ``frequency="tick"`` the dense count is used and ``rows_per_symbol_day`` is
-        required, since tick volume cannot be derived from a calendar.
+        For bar frequencies the row count uses only the days each symbol was
+        listed, not the full grid, because most symbols of a full-market
+        roster are listed for only part of the window. For
+        ``frequency="tick"`` the full grid is used and
+        ``rows_per_symbol_day`` is required, because the number of ticks
+        cannot be derived from a calendar.
 
         Parameters
         ----------
@@ -1635,30 +1697,30 @@ class UniverseCatalog:
         frequency : str
             ``"1d"``, ``"1m"`` or ``"tick"``.
         batch_size : int
-            Symbols per request; a fetch issues at least one request
-            per batch.
-        page_limit : int
+            Symbols per request; a download sends at least one request per
+            batch.
+        page_limit : int, default 10_000
             Maximum rows one response can carry.
-        rate_limit_per_min : int | None
+        rate_limit_per_min : int or None, default None
             Requests per minute; ``None`` uses
             ``DEFAULT_RATE_LIMIT_PER_MIN``.
-        rows_per_symbol_day : int | None
-            Measured rows per symbol-day, required for
-            ``"tick"`` and ignored otherwise.
+        rows_per_symbol_day : int or None, default None
+            Measured rows per symbol per day. Required for ``"tick"`` and
+            ignored otherwise.
 
         Returns
         -------
         dict
             A dict with ``symbols``, ``trading_days``, ``density``,
             ``bars_per_day``, ``rows``, ``raw_bytes``, ``requests`` and
-            ``wall_clock_hours``, plus the inputs and resolved knobs so a caller
-            can print a refusal without recomputing.
+            ``wall_clock_hours``, plus the inputs and resolved settings so a
+            caller can print a refusal without recomputing.
 
         Raises
         ------
         ValueError
-            For an unsizable frequency, a knob below 1, or a tick
-            estimate without ``rows_per_symbol_day``.
+            For a frequency that cannot be sized, a setting below 1, or a
+            tick estimate without ``rows_per_symbol_day``.
 
         Examples
         --------
@@ -1672,8 +1734,8 @@ class UniverseCatalog:
             frequency, batch_size, page_limit, rate_limit_per_min
         )
 
-        # Delegated so the roster, the trading-day count and the density come
-        # from the one method that derives them.
+        # One method derives the roster, trading days and density for all
+        # callers.
         panel = self._roster_window_profile(category, start_date, end_date)
         symbols = panel["symbols"]
         trading_days = panel["trading_days"]
@@ -1681,16 +1743,16 @@ class UniverseCatalog:
         if frequency == "tick":
             if rows_per_symbol_day is None:
                 raise ValueError(
-                    f"rows_per_symbol_day is REQUIRED for frequency='tick' "
-                    f"and has no default. Tick volume is not derivable from a "
-                    f"calendar the way a bar count is -- it depends on the "
-                    f"symbol's liquidity and the day's activity, and the "
-                    f"order-of-magnitude figures available (~100k trades and "
-                    f"10-20x that in quotes per liquid symbol-day) are "
-                    f"unmeasured against this vendor. Guessing here would make "
-                    f"this guard confidently wrong in exactly the regime it "
-                    f"exists for, so it refuses instead. Pass a measured "
-                    f"rows_per_symbol_day (sample one symbol-day and count)."
+                    f"rows_per_symbol_day is required for frequency='tick' "
+                    f"and has no default. Unlike a bar count, the number of "
+                    f"ticks cannot be derived from a calendar: it depends on "
+                    f"the symbol's liquidity and the day's activity, and the "
+                    f"rough figures available (~100k trades and 10-20x that in "
+                    f"quotes per liquid symbol-day) have not been measured "
+                    f"for this vendor. Guessing would make this guard wrong in "
+                    f"exactly the case it exists for, so it refuses instead. "
+                    f"Pass a measured rows_per_symbol_day (download one "
+                    f"symbol-day and count its rows)."
                 )
             if rows_per_symbol_day < 1:
                 raise ValueError(
@@ -1698,20 +1760,20 @@ class UniverseCatalog:
                     f"{rows_per_symbol_day!r}."
                 )
             bars_per_day = rows_per_symbol_day
-            # Dense, not density-adjusted: a tick estimate covers a narrow
-            # window over liquid names that are listed throughout.
+            # Full grid: tick downloads cover short windows of liquid names
+            # that are listed throughout.
             rows = symbols * trading_days * rows_per_symbol_day
         else:
             bars_per_day = self.BARS_PER_DAY_BY_FREQUENCY[frequency]
-            # Observed cells, never dense: a full-market roster over a decade
-            # is listed only about a third of the time, and a guard that
-            # overstates gets ignored.
+            # Listed days only: a full-market roster over a decade is listed
+            # about a third of the time, and a guard that overstates gets
+            # ignored.
             rows = panel["observed_cells"] * bars_per_day
 
         raw_bytes = rows * self.BYTES_PER_RAW_ROW
-        # Two independent floors: pages, because a response carries at most
-        # `page_limit` rows; batches, because a fetch issues at least one
-        # request per batch even when every row would fit on one page.
+        # Two lower bounds: pages, because a response carries at most
+        # `page_limit` rows, and batches, because each batch needs at least
+        # one request even when all its rows fit on one page.
         requests_needed = max(
             math.ceil(rows / page_limit), math.ceil(symbols / batch_size)
         )
@@ -1733,24 +1795,23 @@ class UniverseCatalog:
             "rate_limit_per_min": rate_limit_per_min,
         }
 
-    #: Ceiling on the raw bytes one fetch may write to disk. A disk
-    #: constraint, sized to admit a full-market daily backfill or a year of
-    #: index-constituent minute bars while refusing full-market minute
-    #: history or a day of full-market quotes. Denominated in bytes because
-    #: a tick fetch can pass a request-count ceiling and still fill the
-    #: volume.
+    #: Ceiling on the bytes one download may write to disk. Sized to allow a
+    #: full-market daily history or a year of index-member minute bars, and to
+    #: refuse full-market minute history or a day of full-market quotes. It
+    #: is in bytes because a tick download can pass the request ceiling and
+    #: still fill the disk.
     MAX_RAW_BYTES = 20 * 1024**3
 
-    #: Ceiling on the vendor requests one fetch may issue. Independent of the
-    #: byte ceiling: a fetch can be small on disk and still pathological in
-    #: request count (a low ``page_limit``, or a wide roster at
-    #: ``batch_size=1``), and quota is spent per request.
+    #: Ceiling on the vendor requests one download may send. Separate from the
+    #: byte ceiling: a download can be small on disk and still need a huge
+    #: number of requests (a low ``page_limit``, or a wide roster at
+    #: ``batch_size=1``), and vendor quota is spent per request.
     MAX_ACQUISITION_REQUESTS = 50_000
 
-    #: Ceiling on the wall-clock hours one fetch may take: the request
-    #: ceiling at the default rate limit. Kept as its own constant because
-    #: it is the number a user feels, and because a paid tier changes the
-    #: hours without changing the request count.
+    #: Ceiling on the hours one download may take: the request ceiling at the
+    #: default rate limit. A separate constant because it is the number a user
+    #: feels, and because a paid tier changes the hours but not the request
+    #: count.
     MAX_ACQUISITION_WALL_CLOCK_HOURS = 4.0
 
     def _narrowing_that_fits(
@@ -1762,11 +1823,23 @@ class UniverseCatalog:
     ) -> tuple[str, dict | None, int]:
         """Return a shorter window that would pass the ceilings, with its estimate.
 
-        The window is scaled down by ``overshoot`` and re-estimated rather than
-        divided through, because the request count has a ceiling and a batch floor
-        in it. If the candidate still does not fit it is halved a bounded number
-        of times; when nothing fits, the per-batch floor alone is over a ceiling
-        and only a smaller roster can help.
+        The window is shortened by the factor ``overshoot`` and estimated
+        again, rather than dividing the old figures, because the request
+        count includes rounding and a one-request-per-batch minimum. If the
+        shorter window still does not fit, it is halved again, for at most
+        eight tries in all. When nothing fits, the per-batch minimum alone is
+        over a ceiling and only a smaller roster can help.
+
+        Parameters
+        ----------
+        estimate : dict
+            The estimate that crossed a ceiling.
+        overshoot : float
+            How many times over its ceiling the worst figure is.
+        ceilings : tuple[int, int, float]
+            The byte, request and hour ceilings in force.
+        rows_per_symbol_day : int or None
+            Passed through to ``estimate_acquisition_volume``.
 
         Returns
         -------
@@ -1804,9 +1877,8 @@ class UniverseCatalog:
         return narrowed_end, None, max_symbols
 
     #: ``(label, estimate key, class constant, keyword)`` for each ceiling, in
-    #: the order a refusal reports them. One declaration, so the constant a
-    #: reader is told to edit and the keyword they are told to pass cannot
-    #: drift from the value being checked.
+    #: the order a refusal lists them. Declared once, so the constant and the
+    #: keyword a refusal names always match the value that was checked.
     ACQUISITION_CEILINGS: tuple[tuple[str, str, str, str], ...] = (
         ("raw-bytes", "raw_bytes", "MAX_RAW_BYTES", "max_raw_bytes"),
         ("request", "requests", "MAX_ACQUISITION_REQUESTS", "max_requests"),
@@ -1824,8 +1896,9 @@ class UniverseCatalog:
     ) -> list[tuple[str, str, float, float, str, str]]:
         """Return every ceiling ``estimate`` exceeds, as report tuples.
 
-        All three are checked independently so a refusal names every reason at
-        once. Each tuple is ``(label, key, actual, ceiling, constant, keyword)``.
+        All three are checked separately so a refusal names every reason at
+        once. Each tuple is ``(label, key, actual, ceiling, constant,
+        keyword)``.
         """
         return [
             (label, key, estimate[key], ceiling, constant, keyword)
@@ -1853,15 +1926,15 @@ class UniverseCatalog:
     ) -> dict:
         """Return the estimate, or raise if it crosses a disk, request or hour ceiling.
 
-        Call this before the acquisition client is constructed and before any
-        request is issued, so a fetch that cannot complete is refused immediately
-        instead of hours in. The three ceilings are independent because any one
-        alone lets a real case through: a request-count check passes a tick fetch
-        that fills the disk, and a byte check passes a small, slow fetch that runs
-        overnight.
+        Call this before the download client is created and before any
+        request is sent, so a download that cannot finish is refused at once
+        instead of hours in. The three ceilings are separate because any one
+        alone lets a real case through: a request check passes a tick
+        download that fills the disk, and a byte check passes a small, slow
+        download that runs overnight.
 
-        The refusal names every crossed ceiling, the class constant behind it, the
-        keyword that raises it, and a concrete narrowing (fewer symbols or a
+        The error names every crossed ceiling, the class constant behind it,
+        the keyword that raises it, and a smaller request (fewer symbols or a
         shorter window) that would fit.
 
         Parameters
@@ -1876,22 +1949,22 @@ class UniverseCatalog:
             ``"1d"``, ``"1m"`` or ``"tick"``.
         batch_size : int
             Symbols per request.
-        page_limit : int
+        page_limit : int, default 10_000
             Maximum rows one response can carry.
-        rate_limit_per_min : int | None
-            Requests per minute; ``None`` uses the default.
-        rows_per_symbol_day : int | None
+        rate_limit_per_min : int or None, default None
+            Requests per minute; ``None`` uses
+            ``DEFAULT_RATE_LIMIT_PER_MIN``.
+        rows_per_symbol_day : int or None, default None
             Required for ``"tick"``, ignored otherwise.
-        max_raw_bytes : int | None
+        max_raw_bytes : int or None, default None
             Overrides ``MAX_RAW_BYTES`` when given.
-        max_requests : int | None
+        max_requests : int or None, default None
             Overrides ``MAX_ACQUISITION_REQUESTS`` when given.
-        max_wall_clock_hours : float | None
-            Overrides ``MAX_ACQUISITION_WALL_CLOCK_HOURS``
-            when given.
-        force : bool
-            Skip the raise but still compute the estimate. There is no
-            environment variable or config key that disables the guard.
+        max_wall_clock_hours : float or None, default None
+            Overrides ``MAX_ACQUISITION_WALL_CLOCK_HOURS`` when given.
+        force : bool, default False
+            Skip the error but still compute the estimate. No environment
+            variable or config key turns the guard off.
 
         Returns
         -------
@@ -1955,26 +2028,26 @@ class UniverseCatalog:
                 return f"{actual:,.0f} > {ceiling:,.0f}"
             return f"{actual:.1f} h > {ceiling:.1f} h"
 
-        # Not `.capitalize()`: it would lowercase `GiB` and the constant names
-        # a reader is meant to go and edit.
+        # Not `.capitalize()`: it would lowercase `GiB` and the constant names.
         reasons = "Over the " + "; over the ".join(
             f"{label} ceiling ({_render(label, actual, ceiling)}, {constant})"
             for label, _key, actual, ceiling, constant, _kw in crossed
         )
-        # Only the crossed ceilings' keywords are offered, so a refusal never
-        # tells the user to raise a ceiling they are nowhere near.
+        # Offer only the crossed ceilings' keywords, never one the download is
+        # nowhere near.
         keywords = " / ".join(keyword for *_rest, keyword in crossed)
         narrowed_end, narrowed, max_symbols = self._narrowing_that_fits(
             estimate, overshoot, ceilings, rows_per_symbol_day
         )
         if narrowed is None:
-            # No window is short enough: the per-batch floor alone is over a
+            # No window is short enough: the per-batch minimum alone is over a
             # ceiling, so only a smaller roster or a bigger batch can help.
             cure = (
                 f"No shorter window fits -- at batch_size="
-                f"{estimate['batch_size']} the per-batch floor alone is over "
-                f"the ceiling, so narrow the ROSTER to <= {max_symbols:,} "
-                f"symbol(s) (a smaller --universe), or raise --batch-size."
+                f"{estimate['batch_size']} the one-request-per-batch minimum "
+                f"alone is over the ceiling, so narrow the roster to "
+                f"<= {max_symbols:,} symbol(s) (a smaller --universe), or "
+                f"raise --batch-size."
             )
         else:
             cure = (
@@ -1992,7 +2065,7 @@ class UniverseCatalog:
             f"{start_date}..{end_date}: {estimate['symbols']:,} symbol(s) x "
             f"{estimate['trading_days']:,} trading day(s) x "
             f"{estimate['bars_per_day']:,} row(s)/symbol-day = "
-            f"{estimate['rows']:,} row(s) -> {estimate['requests']:,} "
+            f"{estimate['rows']:,} row(s), needing {estimate['requests']:,} "
             f"request(s), {estimate['raw_bytes'] / gib:.2f} GiB, "
             f"{estimate['wall_clock_hours']:.1f} h at "
             f"{estimate['rate_limit_per_min']:,} req/min "
@@ -2007,24 +2080,23 @@ class UniverseCatalog:
     def get_symbols_as_of(self, category: str, as_of_date: str) -> list[str]:
         """Return every symbol whose interval contains ``as_of_date``.
 
-        This is point-in-time membership on one day, the query a walk-forward
-        backtest wants at each rebalance; ``get_symbols_in_range`` is the one a
-        full-window backfill wants. The result is de-duplicated and sorted
-        ascending, and the order is part of the contract for the same reason as
-        there.
+        This is point-in-time membership on one day, the query a
+        walk-forward backtest should make at each rebalance. To download a
+        whole window of history, use ``get_symbols_in_range``. The result has
+        no duplicates and is sorted ascending, for the same reason as there.
 
         Parameters
         ----------
         category : str
             A token from ``known_categories``.
         as_of_date : str
-            ISO date. For an index category it must not precede that
+            ISO date. For an index category it must not be before that
             index's coverage start.
 
         Returns
         -------
         list[str]
-            Sorted, de-duplicated symbols.
+            Sorted symbols without duplicates.
 
         Raises
         ------
@@ -2041,15 +2113,12 @@ class UniverseCatalog:
         ...
         ValueError: Cannot answer sp500_constituent membership before 1976-07-01 ...
         """
-        # Both arguments arrive unvalidated from CLI flags. An empty list is a
-        # legitimate answer, so a typo must raise rather than silently select
-        # nothing.
+        # Both arguments may come straight from command-line flags. An empty
+        # list is a valid answer, so a typo must raise instead.
         self._validate_category(category)
         as_of_date = self._normalize_iso_date(as_of_date, "as_of_date")
 
-        # Roster categories have no coverage boundary; index categories take
-        # theirs from the registry through the helper shared with
-        # `get_symbols_in_range`.
+        # Only index categories have a coverage start; roster categories pass.
         self._assert_within_coverage(category, as_of_date, "as_of_date")
 
         matched = self._backend.get_lazyframe().filter(
@@ -2057,8 +2126,7 @@ class UniverseCatalog:
             & (pl.col("start_date") <= as_of_date)
             & (pl.col("end_date").is_null() | (pl.col("end_date") >= as_of_date))
         )
-        # Sorted for the same reason as in `get_symbols_in_range`: the order
-        # is a contract callers slice against.
+        # Sorted for the same reason as in `get_symbols_in_range`.
         return (
             matched.select("symbol")
             .unique()

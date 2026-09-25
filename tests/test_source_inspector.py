@@ -1055,7 +1055,7 @@ def test_browse_requires_symbols_and_window(
             method(config, ["AAPL"], "2024-01-01")
 
         # And the empty-sequence hole the required arguments do not close.
-        with pytest.raises(ValueError, match="NON-EMPTY"):
+        with pytest.raises(ValueError, match="non-empty"):
             method(config, [], "2024-01-01", "2024-05-31")
 
     # The full call is what actually works, on both tiers -- so the TypeErrors

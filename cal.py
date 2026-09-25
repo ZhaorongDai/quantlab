@@ -1,9 +1,18 @@
 """Ad hoc example: open a US-equity Zarr store and print its symbols.
 
-Runs at import with a hardcoded, machine-specific ``zarr_file_path``; edit
-the path before running. The commented-out block below shows how factor and
-label objects were computed and saved with the config factories. Not part of
-the library.
+The script opens a daily US-equity Zarr store (a chunked on-disk array
+format that ``xarray`` reads and writes) through ``StockDataset`` and prints
+the symbols it holds. The commented-out block at the bottom shows how to
+compute and save Alpha101/Alpha158 factors and forward-return labels with
+the ``quantlab.config`` factories. It is not part of the library and has no
+command-line options.
+
+The store path is hardcoded and machine-specific. Edit ``zarr_file_path``
+before running. No credentials are needed.
+
+Usage::
+
+    uv run python cal.py
 """
 
 from quantlab.factor.alpha101 import Alpha101SpotKline

@@ -1,24 +1,36 @@
-"""WRDS CRSP Stock v2 daily acquisition, keyed by PERMNO.
+"""Download of CRSP daily stock data from WRDS, keyed by PERMNO.
 
-``WrdsCrspDailyAcquisition`` pulls ``crsp_a_stock.dsf_v2``, the CRSP daily
-stock table, through the shared WRDS session in ``quantlab.acquisition.wrds
-.taq``. One page is one calendar year of one PERMNO batch, fetched with a bare
-``COPY (SELECT ... WHERE permno = ANY(...) AND dlycaldt BETWEEN ...)`` and
-stored exactly as CRSP serves it: no ordering, no de-duplication, no derived
-or adjusted series. Rows are keyed by PERMNO rather than ticker because
-``dsf_v2`` cannot spell share classes and a ticker can change; the ticker is
-derived later, at conversion time, in ``quantlab.dataset.crsp``.
+CRSP (the Center for Research in Security Prices) publishes the standard
+academic database of US stock prices and returns, including companies that
+were later delisted, which avoids survivorship bias (the error of studying
+only the companies that still exist today). WRDS (Wharton Research Data
+Services) serves CRSP to subscribers through a PostgreSQL server. CRSP
+identifies each security by its PERMNO, a permanent integer that never
+changes and is never reused for another security, unlike a ticker symbol.
 
-``CrspQueries`` holds the SQL builders (pure, testable without a server) and
-the thin network calls that hand them to the session. ``year_pages`` defines
-the page boundaries shared by the acquisition and ``CrspVolumeProbe``, which
-counts the rows a pull would move so the volume guard can price it first.
+``WrdsCrspDailyAcquisition`` downloads ``crsp_a_stock.dsf_v2``, the CRSP
+Stock v2 daily table, through the shared WRDS connection defined in
+``quantlab.acquisition.wrds.taq``. The work is split into pages. One page is
+one calendar year for one batch of PERMNOs, fetched with a plain
+``COPY (SELECT ... WHERE permno = ANY(...) AND dlycaldt BETWEEN ...)``. The
+rows are stored exactly as CRSP serves them, with no sorting, no
+de-duplication and no derived or adjusted series. The raw data is keyed by
+PERMNO rather than by ticker, because ``dsf_v2`` cannot tell share classes
+apart by ticker and a company's ticker can change. The ticker is attached
+later, when ``quantlab.dataset.crsp`` converts the raw data into a panel.
 
-``crsp_a_stock`` is CRSP's annual-update product, so its last day is a hard
-edge: a window past it is refused unless ``kwargs["clip_to_product_end"]`` is
-set, and a raw tier records the vintage it was built from so two annual
-releases are never mixed. The session is reached through the ``taq`` module
-attribute at call time, never bound by name, so a test can replace it.
+``CrspQueries`` builds the SQL statements (pure functions that can be tested
+without a server) and hands them to the session. ``year_pages`` defines the
+page boundaries. ``CrspVolumeProbe`` uses the same pages to count the rows a
+download would move, so that the volume guard (a check that estimates the
+size of a download before it runs) can refuse one that is too large.
+
+``crsp_a_stock`` is CRSP's annual-update product: WRDS replaces it once a
+year with a new release, called a vintage, that ends on a fixed last day. A
+window that runs past that day is refused unless
+``kwargs["clip_to_product_end"]`` is set. Each raw tier (the downloaded
+parquet files) also records the vintage it was built from, so data from two
+releases is never mixed.
 """
 
 from __future__ import annotations
@@ -42,12 +54,13 @@ from quantlab.utils.atomic import write_json_atomically
 
 
 class CrspProductEndError(ValueError):
-    """The requested window lies past the CRSP product's last day.
+    """The requested window lies past the last day of the CRSP release.
 
-    A ``ValueError`` rather than a session error: nothing is wrong with the
-    connection or the subscription, the data simply does not exist yet,
-    because ``crsp_a_stock`` is updated once a year. It is raised before any
-    COPY, so the message can promise that nothing was downloaded.
+    This is a ``ValueError`` rather than a session error: nothing is wrong
+    with the connection or the subscription. The data simply does not exist
+    yet, because ``crsp_a_stock`` is updated once a year. It is raised before
+    any data is copied, so the message can promise that nothing was
+    downloaded.
 
     Examples
     --------
@@ -62,32 +75,49 @@ class CrspProductEndError(ValueError):
 
 
 class CrspVintageError(ValueError):
-    """The raw tier was built from a different CRSP annual release.
+    """The raw tier on disk was built from a different CRSP annual release.
 
-    CRSP revises history between releases (restated delisting returns,
-    corrected prices, re-used PERMNOs), so two vintages sharing one raw root
-    would produce a panel that is neither, with nothing on disk recording the
-    seam. Raised before any COPY.
+    CRSP revises past data between releases, for example by restating
+    delisting returns or correcting prices. Two releases mixed in one raw
+    directory would produce a panel that matches neither, and nothing on disk
+    would show where one ends and the other begins. Raised before any data is
+    copied.
 
     Examples
     --------
-    >>> try:
-    ...     acq.download()
-    ... except CrspVintageError as exc:
-    ...     print("start a fresh raw tier:", exc)
+    Needs a live WRDS connection::
+
+        try:
+            acq.download()
+        except CrspVintageError as exc:
+            print("start a fresh raw tier:", exc)
     """
 
 
 class CrspQueries:
-    """SQL statements for the CRSP tables, built with ``psycopg2.sql`` only.
+    """SQL statements for the CRSP tables on WRDS, and the calls that run them.
 
-    The builders are pure classmethods that return a composable and touch no
-    connection, so their exact text can be checked without a server. The
-    network calls take a session and only hand a built statement to the
-    session's ``schema_usable`` / ``fetch_rows`` / ``copy_csv``. Every value
-    is a ``sql.Literal`` and every identifier a ``sql.Identifier``; no
-    statement text is assembled by string formatting, which also quotes
-    reserved column names such as ``comp.idxcst_his``'s ``from`` and ``thru``.
+    The builder methods are pure: they return a ``psycopg2.sql`` composable
+    (an object that renders to safely quoted SQL) and open no connection, so
+    their exact text can be tested without a server. The network methods
+    take a session and only hand a built statement to the session's
+    ``schema_usable``, ``fetch_rows`` or ``copy_csv``. Every value is a
+    ``sql.Literal`` and every table or column name a ``sql.Identifier``. No
+    SQL is assembled by string formatting, which also makes reserved column
+    names such as ``from`` and ``thru`` in ``comp.idxcst_his`` safe to use.
+
+    Attributes
+    ----------
+    STOCK_SCHEMA : str
+        The CRSP annual-update stock schema.
+    INDEX_SCHEMA : str
+        The CRSP annual-update index schema.
+    COMPUSTAT_SCHEMA : str
+        The Compustat schema (company fundamentals and index membership).
+    CCM_SCHEMA : str
+        The CRSP/Compustat Merged schema, which links the two databases.
+    DAILY_TABLE : str
+        The daily stock table inside ``STOCK_SCHEMA``.
 
     Examples
     --------
@@ -95,9 +125,12 @@ class CrspQueries:
     >>> query = CrspQueries.copy_query(
     ...     "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt", "dlyprc"), where
     ... )
-    >>> raw = CrspQueries.copy(
-    ...     session, "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt"), where
-    ... )
+
+    Running it needs a live ``WrdsSession``::
+
+        raw = CrspQueries.copy(
+            session, "crsp_a_stock", "dsf_v2", ("permno", "dlycaldt"), where
+        )
     """
 
     STOCK_SCHEMA = "crsp_a_stock"
@@ -105,25 +138,37 @@ class CrspQueries:
     COMPUSTAT_SCHEMA = "comp"
     CCM_SCHEMA = "crsp_a_ccm"
 
-    #: The daily table. ``dsf_v2`` is unique on ``(permno, dlycaldt)``; if
-    #: that ever stopped holding, ``stkdlysecuritydata`` is the fallback and
-    #: this constant is the only edit.
+    #: The daily table, unique on ``(permno, dlycaldt)``. If that ever stops
+    #: holding, ``stkdlysecuritydata`` is the fallback, and this constant is
+    #: the only thing to change.
     DAILY_TABLE = "dsf_v2"
 
-    # -- pure builders ------------------------------------------------------
+    # -- pure builders (no connection) ---------------------------------------
 
     @classmethod
     def daily_where(cls, permnos, start, end) -> sql.Composed:
-        """Build the PERMNO-and-date predicate for the daily table.
+        """Build the WHERE condition selecting PERMNOs and a date range.
 
-        PERMNOs are coerced to ``int`` so a value that is not a PERMNO cannot
-        reach the statement even as a literal.
+        PERMNOs are converted to ``int``, so a value that is not a PERMNO
+        cannot reach the statement, even as a quoted literal.
+
+        Parameters
+        ----------
+        permnos : iterable of int or str
+            The PERMNOs to select.
+        start, end : str, date or datetime
+            First and last calendar day, inclusive.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            The condition, without the ``WHERE`` keyword.
 
         Raises
         ------
         ValueError
-            If ``permnos`` is empty. Without the PERMNO predicate
-            this would be a query over the whole 110-million-row table.
+            If ``permnos`` is empty. Without the PERMNO condition the query
+            would read the whole 110-million-row table.
 
         Examples
         --------
@@ -156,18 +201,26 @@ class CrspQueries:
     def copy_query(cls, schema, table, columns, where=None) -> sql.Composed:
         """Build a ``COPY (SELECT ...) TO STDOUT`` statement in CSV format.
 
-        The statement carries no ORDER BY, GROUP BY or DISTINCT.
+        ``COPY ... TO STDOUT`` streams the query result to the client as
+        CSV, which is much faster than fetching rows one by one. The
+        statement has no ORDER BY, GROUP BY or DISTINCT, so rows arrive
+        exactly as the server stores them.
 
         Parameters
         ----------
-        schema
+        schema : str
             Schema name, quoted as an identifier.
-        table
+        table : str
             Table name, quoted as an identifier.
-        columns
+        columns : iterable of str
             Column names to select, in this order.
-        where
-            An optional ``psycopg2.sql`` predicate.
+        where : psycopg2.sql.Composable or None, default None
+            An optional condition, such as the result of ``daily_where``.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            The complete statement. The CSV output includes a header line.
 
         Examples
         --------
@@ -200,8 +253,22 @@ class CrspQueries:
     def count_query(cls, schema, table, where=None) -> sql.Composed:
         """Build ``SELECT count(*)`` over the same ``where`` a COPY uses.
 
-        Sharing the predicate object means a count and the pull it checks
-        cannot select different rows.
+        Passing the same condition object to both statements guarantees that
+        a count and the download it checks select the same rows.
+
+        Parameters
+        ----------
+        schema : str
+            Schema name.
+        table : str
+            Table name.
+        where : psycopg2.sql.Composable or None, default None
+            An optional condition.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            The count statement.
 
         Examples
         --------
@@ -222,11 +289,25 @@ class CrspQueries:
 
     @classmethod
     def columns_query(cls, schema, table) -> sql.Composed:
-        """Build the ``information_schema.columns`` read for one table.
+        """Build the query that lists one table's columns and their positions.
 
-        Schema and table are values in this statement, so they travel as
-        literals. Ordering by ``ordinal_position`` is done locally rather
-        than with ORDER BY, keeping the module free of ordering clauses.
+        It reads the standard ``information_schema.columns`` catalogue. Here
+        the schema and table names are compared as values, so they are
+        passed as literals. The result is sorted by ``ordinal_position`` in
+        Python rather than with ORDER BY, which keeps this module free of
+        ordering clauses.
+
+        Parameters
+        ----------
+        schema : str
+            Schema name.
+        table : str
+            Table name.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            A query returning ``(column_name, ordinal_position)`` rows.
 
         Examples
         --------
@@ -253,9 +334,15 @@ class CrspQueries:
 
     @classmethod
     def product_end_query(cls) -> sql.Composed:
-        """Build the query for the daily table's last day.
+        """Build the query for the last date in the daily table.
 
-        The answer says which annual vintage the account currently holds.
+        The answer identifies which annual release (vintage) the account
+        currently reads.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            A query returning one row with one date.
 
         Examples
         --------
@@ -270,18 +357,33 @@ class CrspQueries:
             table=sql.Identifier(cls.STOCK_SCHEMA, cls.DAILY_TABLE),
         )
 
-    # -- network calls ------------------------------------------------------
+    # -- network calls (need a session) --------------------------------------
 
     @classmethod
     def assert_entitled(cls, session, schemas) -> None:
-        """Raise ``WrdsEntitlementError`` naming every schema the role cannot read.
+        """Check that the account may read every schema in ``schemas``.
 
-        Run before the first data query of a pull, so an unsubscribed product
-        stops the run with zero COPY calls rather than failing every batch.
+        Called before the first data query of a download, so a product the
+        account has not subscribed to stops the run before any data is
+        copied, instead of failing every batch.
+
+        Parameters
+        ----------
+        session : WrdsSession
+            The shared WRDS session.
+        schemas : iterable of str
+            Schema names to check.
+
+        Raises
+        ------
+        WrdsEntitlementError
+            Naming every schema the account cannot read.
 
         Examples
         --------
-        >>> CrspQueries.assert_entitled(session, (CrspQueries.STOCK_SCHEMA,))
+        Needs a live ``WrdsSession``::
+
+            CrspQueries.assert_entitled(session, (CrspQueries.STOCK_SCHEMA,))
         """
         missing = [
             schema for schema in schemas if not session.schema_usable(schema)
@@ -298,7 +400,20 @@ class CrspQueries:
 
     @classmethod
     def product_end(cls, session) -> date:
-        """Return the daily table's last day, the current annual vintage.
+        """Return the last date in the daily table.
+
+        This date identifies the annual release (vintage) the account
+        currently reads.
+
+        Parameters
+        ----------
+        session : WrdsSession
+            The shared WRDS session.
+
+        Returns
+        -------
+        datetime.date
+            The last ``dlycaldt`` in ``dsf_v2``.
 
         Raises
         ------
@@ -307,7 +422,9 @@ class CrspQueries:
 
         Examples
         --------
-        >>> product_end = CrspQueries.product_end(session)
+        Needs a live ``WrdsSession``::
+
+            product_end = CrspQueries.product_end(session)
         """
         rows = session.fetch_rows(cls.product_end_query())
         if not rows or rows[0][0] is None:
@@ -320,11 +437,27 @@ class CrspQueries:
 
     @classmethod
     def table_columns(cls, session, schema, table) -> tuple[str, ...]:
-        """Return the table's column names in server order.
+        """Return the table's column names in the server's column order.
+
+        Parameters
+        ----------
+        session : WrdsSession
+            The shared WRDS session.
+        schema : str
+            Schema name.
+        table : str
+            Table name.
+
+        Returns
+        -------
+        tuple of str
+            Column names, sorted by their position in the table.
 
         Examples
         --------
-        >>> columns = CrspQueries.table_columns(session, "crsp_a_stock", "dsf_v2")
+        Needs a live ``WrdsSession``::
+
+            columns = CrspQueries.table_columns(session, "crsp_a_stock", "dsf_v2")
         """
         rows = session.fetch_rows(cls.columns_query(schema, table))
         return tuple(
@@ -333,24 +466,62 @@ class CrspQueries:
 
     @classmethod
     def count(cls, session, schema, table, where) -> int:
-        """Return ``count(*)`` for the table under ``where``.
+        """Return the number of rows in the table that match ``where``.
+
+        Parameters
+        ----------
+        session : WrdsSession
+            The shared WRDS session.
+        schema : str
+            Schema name.
+        table : str
+            Table name.
+        where : psycopg2.sql.Composable or None
+            The condition, or ``None`` to count the whole table.
+
+        Returns
+        -------
+        int
+            The row count.
 
         Examples
         --------
-        >>> rows = CrspQueries.count(session, "crsp_a_stock", "stkdelists", None)
+        Needs a live ``WrdsSession``::
+
+            rows = CrspQueries.count(session, "crsp_a_stock", "stkdelists", None)
         """
         rows = session.fetch_rows(cls.count_query(schema, table, where))
         return int(rows[0][0])
 
     @classmethod
     def copy(cls, session, schema, table, columns, where) -> bytes:
-        """Run ``copy_query`` through the session and return the CSV bytes.
+        """Run the statement from ``copy_query`` and return the CSV bytes.
+
+        Parameters
+        ----------
+        session : WrdsSession
+            The shared WRDS session.
+        schema : str
+            Schema name.
+        table : str
+            Table name.
+        columns : iterable of str
+            Column names to select, in this order.
+        where : psycopg2.sql.Composable or None
+            The condition, or ``None`` for the whole table.
+
+        Returns
+        -------
+        bytes
+            The CSV output, starting with a header line.
 
         Examples
         --------
-        >>> raw = CrspQueries.copy(
-        ...     session, "crsp_a_stock", "stkdelists", spec.columns, None
-        ... )
+        Needs a live ``WrdsSession``::
+
+            raw = CrspQueries.copy(
+                session, "crsp_a_stock", "stkdelists", ("permno", "delret"), None
+            )
         """
         return session.copy_csv(cls.copy_query(schema, table, columns, where))
 
@@ -369,21 +540,26 @@ class CrspQueries:
 def year_pages(start, end) -> list[tuple[date, date]]:
     """Split ``[start, end]`` into calendar-year pages, clipped to the window.
 
-    The acquisition pulls one page per year and ``CrspVolumeProbe`` prices
-    the same pages, so both use this one definition. A year is the unit of
-    resume (a failed page re-runs whole); it bounds a retry at roughly 250
-    trading days per PERMNO while keeping a long backfill to a few dozen
-    pages per batch.
+    The acquisition downloads one page per year, and ``CrspVolumeProbe``
+    counts the same pages, so both use this one definition. A page is also
+    the unit of resume: a failed page is downloaded again in full. A year
+    keeps a retry to about 250 trading days per PERMNO while keeping a long
+    history to a few dozen pages per batch.
+
+    Parameters
+    ----------
+    start, end : str, date or datetime
+        First and last day of the window, inclusive.
 
     Returns
     -------
-    list[tuple[date, date]]
-        ``[(page_start, page_end), ...]`` ascending, or ``[]`` for an
-        inverted window.
+    list of tuple of (date, date)
+        ``[(page_start, page_end), ...]`` in ascending order, or ``[]`` when
+        ``start`` is after ``end``.
 
     Examples
     --------
-    >>> year_pages("2018-06-01", "2020-03-31")
+    >>> year_pages("2018-06-01", "2020-03-31")  # doctest: +NORMALIZE_WHITESPACE
     [(datetime.date(2018, 6, 1), datetime.date(2018, 12, 31)),
      (datetime.date(2019, 1, 1), datetime.date(2019, 12, 31)),
      (datetime.date(2020, 1, 1), datetime.date(2020, 3, 31))]
@@ -401,39 +577,48 @@ def year_pages(start, end) -> list[tuple[date, date]]:
 
 
 class WrdsCrspDailyAcquisition(Acquisition):
-    """Acquisition of CRSP Stock v2 daily bars from ``crsp_a_stock.dsf_v2``.
+    """Download CRSP Stock v2 daily bars from ``crsp_a_stock.dsf_v2``.
 
-    One page is one calendar year of one PERMNO batch: ``_fetch_page`` reads
+    The symbols of this acquisition are PERMNOs written as digit strings,
+    for example ``"14593"`` (Apple). The work is split into pages, and one
+    page is one calendar year for one batch of PERMNOs. ``_fetch_page`` reads
     the year named by the page token (the window's first year when there is
-    none) and returns the next year as the next token. The shared
-    ``Acquisition`` base owns the batch loop, shard writes, the page ledger
-    and resume.
+    no token) and returns the following year as the next token. The shared
+    ``Acquisition`` base class runs the batch loop, writes the parquet files
+    (shards), records finished pages and resumes interrupted runs.
 
-    The raw tier lands under ``.../wrds_crsp/wrds/month=YYYY-MM/`` with one
-    row per ``(permno, dlycaldt)`` exactly as CRSP serves it: no derived
-    price, no adjusted series, no filter. Raw ``symbol`` is the PERMNO as a
-    string and a typed ``permno`` Int64 column rides along; a digit string
-    satisfies the base class's ticker check unchanged. A page is refused, not
-    repaired, when it repeats a key, contains an unrequested PERMNO, or holds
-    a row outside its bounds.
+    The raw tier is written under ``.../wrds_crsp/wrds/month=YYYY-MM/``, with
+    one row per ``(permno, dlycaldt)`` exactly as CRSP serves it: no derived
+    price, no adjusted series and no filtering. The ``symbol`` column holds
+    the PERMNO as a string, and an ``Int64`` ``permno`` column is stored
+    beside it. A page is refused, not repaired, when it repeats a key,
+    contains a PERMNO that was not requested, or holds a row dated outside
+    the page.
 
-    Before any batch is dispatched the run checks that every symbol is a
+    Before any batch runs, the acquisition checks that every symbol is a
     PERMNO, that the account can read ``crsp_a_stock``, that the window does
-    not extend past the product end (or clips it when
-    ``kwargs["clip_to_product_end"]`` is set), and that the raw tier's
-    recorded vintage matches the one the account now serves. ``max_workers``
-    other than 1 is refused because every connection can push a Duo prompt.
+    not extend past the last day of the current CRSP release (or clips it
+    when ``kwargs["clip_to_product_end"]`` is set), and that the raw tier on
+    disk was built from the same release. ``max_workers`` other than 1 is
+    refused, because every WRDS connection can send a Duo two-factor prompt
+    to the account holder's phone.
+
+    Parameters
+    ----------
+    config : AcquisitionConfig
+        Built by ``build_config``. It must have ``frequency="1d"`` and
+        ``kwargs["data_type"] == "crsp_daily"``.
 
     Examples
     --------
     Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
-    opens the connection and may push a Duo prompt.
+    opens the connection and may send a Duo prompt::
 
-    >>> cfg = WrdsCrspDailyAcquisition.build_config(
-    ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
-    ... )
-    >>> acq = WrdsCrspDailyAcquisition(cfg).download()
-    >>> report = acq.coverage_report()
+        cfg = WrdsCrspDailyAcquisition.build_config(
+            ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
+        )
+        acq = WrdsCrspDailyAcquisition(cfg).download()
+        report = acq.coverage_report()
 
     Shards land under ``.../wrds_crsp/wrds/month=2020-08/``, watermarks
     under ``.../wrds_crsp/_watermarks/wrds/`` and the vintage stamp at
@@ -442,25 +627,24 @@ class WrdsCrspDailyAcquisition(Acquisition):
 
     VENDOR = "wrds"
 
-    #: The one data type this class serves. A single value rather than a
-    #: tuple: ``1d`` has no second CRSP shape to choose between.
+    #: The only data type this class serves.
     DATA_TYPE = "crsp_daily"
 
-    #: PERMNOs per COPY. A working value: an S&P-scale roster is about 1,100
-    #: distinct PERMNOs, so 200 gives about six batches of yearly pages.
+    #: PERMNOs per query. An S&P 500 history covers about 1,100 PERMNOs, so
+    #: 200 gives about six batches.
     DEFAULT_BATCH_SIZE = 200
 
     #: One shared connection, so one worker. Any other value is refused in
     #: ``__init__``.
     DEFAULT_MAX_WORKERS = 1
 
-    #: Count each page with the COPY's own WHERE before pulling it, and fail
-    #: the page on a mismatch. Overridable through
+    #: Count each page with the same WHERE before copying it, and fail the
+    #: page if the copied row count differs. Overridable through
     #: ``kwargs["verify_page_counts"]``.
     DEFAULT_VERIFY_PAGE_COUNTS = True
 
-    #: Rough bytes per raw row for the caller-side volume arithmetic: 50
-    #: columns of mostly short numerics.
+    #: Rough size of one raw row in bytes, used to estimate download volume:
+    #: 50 columns of mostly short numbers.
     DEFAULT_BYTES_PER_ROW = 150
 
     CREDENTIAL_ENV_VARS = (_wrds.USERNAME_ENV,)
@@ -475,15 +659,15 @@ class WrdsCrspDailyAcquisition(Acquisition):
     #: The vintage stamp's directory name, a sibling of both roots.
     VINTAGE_DIR_NAME = "_vintage"
 
-    #: How many offending values a page refusal names. Bounded because a
-    #: malformed page can be malformed in every row, and the message ends up
-    #: in a JSON failure manifest an operator has to read.
+    #: How many offending values a page refusal lists. Bounded because a bad
+    #: page can be bad in every row, and the message is stored in a JSON
+    #: failure file that a person has to read.
     SAMPLE_LIMIT = 10
 
-    #: The 50 ``dsf_v2`` columns this class reads, in server order. Pinned so
-    #: the SELECT, and therefore every shard, is identical for every page. A
-    #: column the server stops reporting fails the page; nothing is
-    #: null-filled.
+    #: The 50 ``dsf_v2`` columns this class reads, in server order. Fixed so
+    #: the SELECT, and therefore every shard, is identical for every page. If
+    #: the server stops reporting a column the page fails; nothing is filled
+    #: with nulls.
     CRSP_COLUMNS = (
         "permno", "hdrcusip", "permco", "siccd", "nasdissuno", "yyyymmdd",
         "sharetype", "securitytype", "securitysubtype", "usincflg",
@@ -501,9 +685,8 @@ class WrdsCrspDailyAcquisition(Acquisition):
     #: The shard column projection and order.
     RAW_COLUMNS = ("timestamp", "symbol", "vendor", *CRSP_COLUMNS)
 
-    #: ``timestamp`` is ``Datetime("us")`` at midnight, the same time type as
-    #: the Tiingo daily tier, so a panel built from either vendor's shards
-    #: indexes identically.
+    #: ``timestamp`` is ``Datetime("us")`` at midnight, the same type as the
+    #: Tiingo daily data, so panels built from either vendor line up.
     RAW_SCHEMA = {
         "timestamp": pl.Datetime("us"),
         "symbol": pl.String,
@@ -561,32 +744,31 @@ class WrdsCrspDailyAcquisition(Acquisition):
     }
 
     def __init__(self, config: AcquisitionConfig):
-        """Validate the config and bind the shared session."""
+        """Initialize the acquisition; see the class docstring for parameters."""
         super().__init__(config)
-        # Validated eagerly, before any session exists, so a bad config raises
-        # at construction rather than inside a worker.
-        self._data_type  # resolves and validates, or raises
+        # Check the config now, before any session exists, so a bad config
+        # fails at construction rather than in the middle of a run.
+        self._data_type  # validates, or raises
         max_workers = self._knob("max_workers", self.DEFAULT_MAX_WORKERS)
         if max_workers != 1:
             raise ValueError(
                 f"{self.class_name}: kwargs['max_workers']={max_workers!r} is "
-                f"refused; WRDS acquisition runs on ONE shared connection "
-                f"(D-20), because every extra connection can push a Duo prompt "
-                f"to your phone and the WRDS role allows only 7."
+                f"refused; WRDS acquisition runs on one shared connection, "
+                f"because every extra connection can send a Duo prompt to "
+                f"your phone and the WRDS account allows only 7."
             )
-        # Through the module attribute at call time, so a test's patch of
-        # `wrds.taq.WrdsSession` takes effect.
+        # Looked up through the `taq` module at call time, so a test that
+        # replaces `taq.WrdsSession` takes effect.
         self._session = _wrds.WrdsSession.shared()
         self._server_columns_cache: dict[tuple[str, str], tuple[str, ...]] = {}
 
     @property
     def _data_type(self) -> str:
-        """Return ``"crsp_daily"`` or raise on a config that does not say so.
+        """Return ``"crsp_daily"``, or raise if the config does not say so.
 
-        There is deliberately no default: the value names the watermark
-        namespace and is the capability key the registry resolves this class
-        through, so a config without it could have meant another daily
-        vendor.
+        There is deliberately no default. The value names the watermark
+        directory and is the key the registry uses to find this class, so a
+        config without it could have been meant for another daily source.
         """
         frequency = self.config.frequency
         data_type = self._knob("data_type", None)
@@ -595,15 +777,15 @@ class WrdsCrspDailyAcquisition(Acquisition):
                 f"{self.class_name}: needs frequency '1d' with "
                 f"kwargs['data_type'] set to {self.DATA_TYPE!r}; got frequency "
                 f"{frequency!r} and data_type {data_type!r}. There is "
-                f"deliberately NO default -- the data type names the watermark "
-                f"namespace and is the capability key the registry resolves "
-                f"this class through."
+                f"deliberately no default: the data type names the watermark "
+                f"directory and is the key the registry uses to find this "
+                f"class."
             )
         return data_type
 
     # -- failure policy -----------------------------------------------------
 
-    #: Exceptions that mean the one session, or the account, is unusable.
+    #: Exceptions meaning the shared session or the account is unusable.
     GLOBAL_STOP_ERRORS = (
         _wrds.WrdsSessionError,
         _wrds.WrdsEntitlementError,
@@ -612,35 +794,54 @@ class WrdsCrspDailyAcquisition(Acquisition):
     )
 
     def _classify_error(self, exc: BaseException) -> str:
-        """Map session and entitlement errors to a run-wide stop.
+        """Classify session and subscription errors as a whole-run stop.
 
-        The same policy as the TAQ provider: ``"quota"`` here means "stop the
-        whole run". A dead session or a missing entitlement is never one
-        PERMNO's fault, so it stays out of the failure manifest, and a
-        batch-by-batch retry would reconnect and push Duo each time.
+        The base class treats ``"quota"`` as "stop the whole run", and that is
+        the meaning used here. A dead session or a missing subscription is
+        never one PERMNO's fault, so it is kept out of the per-symbol failure
+        file, and retrying batch by batch would reconnect and send a Duo
+        prompt each time. Other errors use the base class's rules.
         """
         if isinstance(exc, self.GLOBAL_STOP_ERRORS):
             return "quota"
         return super()._classify_error(exc)
 
-    # -- the annual vintage edge --------------------------------------------
+    # -- the last day of the annual release ----------------------------------
 
     @classmethod
     def resolve_window(
         cls, session, start, end, *, clip: bool
     ) -> tuple[date, date, date | None]:
-        """Probe the product end and resolve the window against it.
+        """Query the release's last day and fit the window to it.
 
-        Returns ``(start, effective_end, clipped_product_end_or_None)``; see
-        ``window_for_product_end`` for the rules. ``_run`` does not call this:
-        it probes once and reuses the answer for both the window and the
-        vintage stamp.
+        See ``window_for_product_end`` for the rules. ``_run`` does not call
+        this method: it queries the last day once and uses the answer both for
+        the window and for the vintage check.
+
+        Parameters
+        ----------
+        session : WrdsSession
+            The shared WRDS session.
+        start, end : str or date
+            The requested window, inclusive.
+        clip : bool
+            Whether to shorten a window that ends past the release's last
+            day instead of refusing it.
+
+        Returns
+        -------
+        tuple of (date, date, date or None)
+            ``(start, effective_end, clipped_to)``, where ``clipped_to`` is
+            the release's last day if the window was shortened and ``None``
+            otherwise.
 
         Examples
         --------
-        >>> WrdsCrspDailyAcquisition.resolve_window(
-        ...     session, "2020-01-01", "2026-06-30", clip=True
-        ... )
+        Needs a live ``WrdsSession``::
+
+            WrdsCrspDailyAcquisition.resolve_window(
+                session, "2020-01-01", "2026-06-30", clip=True
+            )
         """
         return cls.window_for_product_end(
             CrspQueries.product_end(session), start, end, clip=clip
@@ -650,31 +851,45 @@ class WrdsCrspDailyAcquisition(Acquisition):
     def window_for_product_end(
         cls, product_end, start, end, *, clip: bool
     ) -> tuple[date, date, date | None]:
-        """Resolve a window against an already known product end.
+        """Fit a window to an already known last day of the CRSP release.
 
-        ``crsp_a_stock`` is the annual-update product, so its last day is a
-        hard edge. A ``start`` past it is always refused. An ``end`` past it
-        is refused unless ``clip`` is set, in which case the window ends at
-        the product end and the third element reports that date. Refusing is
-        preferred to returning an empty result, which would look exactly like
-        a roster with no members. Pure: it touches no session.
+        ``crsp_a_stock`` is updated once a year, so no data exists after its
+        last day (the product end). A ``start`` after it is always refused.
+        An ``end`` after it is refused unless ``clip`` is set; then the
+        window ends at the product end and the third element reports that
+        date. Refusing is preferred to returning an empty result, which would
+        look exactly like a symbol list with no data. This method opens no
+        connection.
+
+        Parameters
+        ----------
+        product_end : str or date
+            The release's last day, as returned by
+            ``CrspQueries.product_end``.
+        start, end : str or date
+            The requested window, inclusive.
+        clip : bool
+            Whether to shorten a window that ends past ``product_end``
+            instead of refusing it.
 
         Returns
         -------
-        tuple[date, date, date | None]
-            ``(start, effective_end, clipped_product_end_or_None)``.
+        tuple of (date, date, date or None)
+            ``(start, effective_end, clipped_to)``, where ``clipped_to`` is
+            ``product_end`` if the window was shortened and ``None``
+            otherwise.
 
         Raises
         ------
         CrspProductEndError
-            If ``start`` is past the product end, or
-            ``end`` is and ``clip`` is false.
+            If ``start`` is after ``product_end``, or if ``end`` is and
+            ``clip`` is false.
 
         Examples
         --------
         >>> WrdsCrspDailyAcquisition.window_for_product_end(
         ...     "2025-12-31", "2020-01-01", "2026-06-30", clip=True
-        ... )
+        ... )  # doctest: +NORMALIZE_WHITESPACE
         (datetime.date(2020, 1, 1), datetime.date(2025, 12, 31),
          datetime.date(2025, 12, 31))
         >>> WrdsCrspDailyAcquisition.window_for_product_end(
@@ -690,19 +905,18 @@ class WrdsCrspDailyAcquisition(Acquisition):
             raise CrspProductEndError(
                 f"start_date {start.isoformat()} is past the CRSP product end "
                 f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is the "
-                f"ANNUAL UPDATE product, so its last day moves once a year at "
-                f"the WRDS refresh, not daily. Clipping cannot help: the whole "
-                f"window is past the edge, so there is nothing to clip it to. "
-                f"Choose a start inside the covered range; nothing was "
-                f"downloaded."
+                f"annual update product, so its last day moves once a year "
+                f"when WRDS loads the new release, not daily. Clipping cannot "
+                f"help, because the whole window lies after that day. Choose "
+                f"a start inside the covered range; nothing was downloaded."
             )
         if end > product_end:
             if not clip:
                 raise CrspProductEndError(
                     f"end_date {end.isoformat()} is past the CRSP product end "
                     f"{product_end.isoformat()}. {CrspQueries.STOCK_SCHEMA} is "
-                    f"the ANNUAL UPDATE product and gains a year at the WRDS "
-                    f"refresh. Lower --end-date to "
+                    f"the annual update product and gains a year only when "
+                    f"WRDS loads the new release. Lower --end-date to "
                     f"{product_end.isoformat()}, or pass "
                     f"kwargs['clip_to_product_end']=True to have the window "
                     f"clipped for you; nothing was downloaded."
@@ -714,16 +928,29 @@ class WrdsCrspDailyAcquisition(Acquisition):
     def vintage_path_for(cls, config: AcquisitionConfig) -> Path:
         """Return the vintage stamp path, ``.../{subdir}/_vintage/wrds.json``.
 
-        The stamp sits beside both the raw root and the watermark root, never
-        inside either: the coverage ledger reads every ``*.json`` under the
-        watermark root as a symbol, so a stamp there would become a phantom
-        PERMNO, and the dataset's raw scan walks every file below the raw
-        root.
+        The vintage stamp is a small JSON file that records which CRSP
+        release the raw tier was built from. It sits beside the raw directory
+        and the watermark directory, never inside either. Every ``*.json``
+        file under the watermark directory is read as one symbol's progress,
+        so a stamp there would look like an extra PERMNO, and the dataset's
+        conversion reads every file below the raw directory.
+
+        Parameters
+        ----------
+        config : AcquisitionConfig
+            The acquisition's config.
+
+        Returns
+        -------
+        pathlib.Path
+            The stamp's path.
 
         Examples
         --------
-        >>> WrdsCrspDailyAcquisition.vintage_path_for(cfg)
-        PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_vintage/wrds.json')
+        With ``cfg`` from ``build_config``::
+
+            WrdsCrspDailyAcquisition.vintage_path_for(cfg)
+            # PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_vintage/wrds.json')
         """
         return (
             Path(config.raw_data_dir_path).parent
@@ -732,11 +959,17 @@ class WrdsCrspDailyAcquisition(Acquisition):
         )
 
     def _assert_one_vintage(self, product_end: date) -> None:
-        """Stamp the probed vintage, or refuse a raw tier built from another.
+        """Write the vintage stamp, or refuse a raw tier from another release.
 
-        Read-then-write rather than write-always: the stamp is the raw tier's
-        provenance, and overwriting it with whatever this run probed would
-        destroy the only record that the shards came from an earlier release.
+        The stamp is written only when none exists. It is the only record of
+        which release the shards came from, so overwriting it with this run's
+        release would erase the evidence that older shards came from an
+        earlier one.
+
+        Raises
+        ------
+        CrspVintageError
+            If the stamp cannot be read or names a different release.
         """
         path = self.vintage_path_for(self.config)
         if path.exists():
@@ -756,11 +989,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
                     f"{self.class_name}: this raw tier was built from the CRSP "
                     f"vintage ending {CrspQueries._as_date(stamped).isoformat()}"
                     f", but the account now reads the vintage ending "
-                    f"{product_end.isoformat()}. CRSP REVISES history between "
-                    f"annual releases -- restated delisting returns, corrected "
-                    f"prices -- so two vintages must never share one raw tier: "
-                    f"the panel built from it would be neither, with nothing on "
-                    f"disk recording the seam. Start a FRESH raw tier by "
+                    f"{product_end.isoformat()}. CRSP revises past data between "
+                    f"annual releases (restated delisting returns, corrected "
+                    f"prices), so two releases must never share one raw tier: "
+                    f"a panel built from it would match neither, and nothing "
+                    f"on disk would show where they meet. Start a fresh raw "
+                    f"tier by "
                     f"passing a new subdir to build_config (e.g. "
                     f"subdir='wrds_crsp_{product_end:%Y}'), or delete the raw "
                     f"root {self.config.raw_data_dir_path} together with its "
@@ -773,15 +1007,16 @@ class WrdsCrspDailyAcquisition(Acquisition):
         )
 
     def _run(self, symbols: list[str] | None, from_watermark: bool):
-        """Check roster, entitlement, product end and vintage, then run.
+        """Check symbols, subscription, release end and vintage, then run.
 
-        All four checks happen before the base runner dispatches a single
-        batch, so a ticker-shaped roster, an unsubscribed account, a window
-        past the vintage or a second vintage over one raw tier raises out of
-        ``download()`` or ``refresh()`` with zero COPY calls. The order
-        matters: the PERMNO check costs nothing; entitlement comes before the
-        product-end probe because that probe queries the very schema the
-        account may not read; the vintage check needs the probed end.
+        All four checks happen before the base class runs a single batch. A
+        symbol list of tickers, an unsubscribed account, a window past the
+        release, or a raw tier from another release therefore raises out of
+        ``download()`` or ``refresh()`` before any data is copied. The order
+        matters. The PERMNO check is free. The subscription check comes
+        before the release-end query, because that query reads the very
+        schema the account may not be allowed to read. The vintage check
+        needs the release end.
         """
         self._assert_permnos(
             self._validate_symbols(list(symbols or self.config.symbols))
@@ -811,21 +1046,22 @@ class WrdsCrspDailyAcquisition(Acquisition):
         return super()._run(symbols, from_watermark)
 
     def _assert_permnos(self, symbols) -> None:
-        """Refuse the run unless every symbol is a PERMNO (a digit string).
+        """Raise ``ValueError`` unless every symbol is a PERMNO (a digit string).
 
-        Checked at the top of ``_run`` as well as inside ``_fetch_page``: a
-        ticker roster is an operator mistake about the whole run, and
-        recorded per batch it would land in the failure manifest as if WRDS
-        had rejected those securities.
+        Checked at the start of ``_run`` as well as inside ``_fetch_page``.
+        A list of tickers is a mistake about the whole run. Caught per batch,
+        it would be recorded in the failure file as if WRDS had rejected
+        those securities.
         """
         for symbol in symbols:
             if not str(symbol).isdigit():
                 raise ValueError(
                     f"{self.class_name}: symbol {symbol!r} is not a PERMNO. "
                     f"The CRSP raw tier is keyed by PERMNO (a digit string), "
-                    f"not by ticker -- a ticker is derived at conversion time, "
-                    f"so that a rename never invalidates a watermark. Resolve "
-                    f"the roster to PERMNOs first; nothing was downloaded."
+                    f"not by ticker; the ticker is attached at conversion "
+                    f"time, so a ticker change never invalidates downloaded "
+                    f"data. Convert the symbols to PERMNOs first; nothing was "
+                    f"downloaded."
                 )
 
     # -- one page = one calendar year ---------------------------------------
@@ -835,7 +1071,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
         return pl.DataFrame(schema=self.RAW_SCHEMA).select(self.RAW_COLUMNS)
 
     def _server_columns(self, schema: str, table: str) -> tuple[str, ...]:
-        """Return the table's server columns, cached per table."""
+        """Return the table's columns as the server reports them, cached."""
         key = (schema, table)
         cached = self._server_columns_cache.get(key)
         if cached is None:
@@ -852,22 +1088,35 @@ class WrdsCrspDailyAcquisition(Acquisition):
     ) -> tuple[pl.DataFrame, str | None]:
         """Fetch one calendar year of ``dsf_v2`` rows for one PERMNO batch.
 
-        Returns ``(frame, next_token)``, where ``next_token`` is the next year
-        as a string or ``None`` after the window's last year. No row is
-        sorted, de-duplicated or filtered: the page is counted with the same
-        WHERE before the COPY and refused on a mismatch, and refused again on
-        a duplicate ``(permno, dlycaldt)``, a PERMNO outside the batch, or a
-        row dated outside the page bounds. Filtering instead would hide a
-        WHERE clause that stopped doing what it says.
+        No row is sorted, de-duplicated or filtered. Instead, the page is
+        counted with the same WHERE before the copy and refused if the
+        counts differ, and refused again if it holds a duplicate
+        ``(permno, dlycaldt)``, a PERMNO outside the batch, or a row dated
+        outside the page. Filtering such rows away would hide a WHERE clause
+        that no longer does what it says.
+
+        Parameters
+        ----------
+        symbols : list of str
+            The batch's PERMNOs as digit strings.
+        start_date, end_date : str
+            The window, inclusive.
+        page_token : str or None, default None
+            The year to read, or ``None`` for the window's first year.
+
+        Returns
+        -------
+        tuple of (polars.DataFrame, str or None)
+            The page in ``RAW_SCHEMA``, and the next year as a string, or
+            ``None`` after the window's last year.
         """
         symbols = self._validate_symbols(symbols)
-        # Before any query: raw symbols are PERMNOs, and a non-digit value
-        # would become a SQL literal and a shard path segment. `_run` checks
-        # the whole roster; this guards a direct `_fetch_page` call.
+        # Before any query: a non-digit symbol would end up in the SQL and in
+        # a file path. `_run` checks the whole list; this covers direct calls.
         self._assert_permnos(symbols)
 
-        # The shared page definition, never a second inline copy:
-        # `CrspVolumeProbe` prices exactly these bounds.
+        # The shared page definition, so `CrspVolumeProbe` counts exactly
+        # these pages.
         pages = year_pages(start_date, end_date)
         if not pages:
             return self._empty_page(), None
@@ -893,13 +1142,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
             name for name in self.CRSP_COLUMNS if name not in server_columns
         ]
         if missing:
-            # A layout drift fails loudly; it is never null-filled, because a
-            # silently absent `dlycumfacshr` would make every adjusted volume
-            # wrong without any error.
+            # Fail loudly rather than fill with nulls: a silently missing
+            # `dlycumfacshr` would make every adjusted volume wrong.
             raise ValueError(
                 f"{self.class_name}: {schema}.{table} reports no {missing} "
                 f"column(s); the table layout no longer matches the one this "
-                f"class was verified against (D-02). Columns seen: "
+                f"class was written for. Columns seen: "
                 f"{sorted(server_columns)}."
             )
 
@@ -931,10 +1179,9 @@ class WrdsCrspDailyAcquisition(Acquisition):
         if frame.height == 0:
             return self._empty_page(), next_token
 
-        # Date columns are parsed with `str.to_date`, not cast: a String to
-        # Date cast is deprecated in polars 1.44 and removed in 2.0, and the
-        # explicit parse makes a malformed field a null rather than a
-        # whole-page failure.
+        # Parse dates with `str.to_date` rather than a cast: polars deprecates
+        # the String-to-Date cast, and a malformed field becomes a null
+        # instead of failing the whole page.
         frame = frame.with_columns(
             pl.col(name).str.to_date(strict=False).alias(name)
             for name, dtype in self.RAW_SCHEMA.items()
@@ -960,12 +1207,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
     def _assert_unique_keys(
         self, frame: pl.DataFrame, schema: str, table: str
     ) -> None:
-        """Refuse the page unless ``(permno, dlycaldt)`` is unique on it.
+        """Raise ``ValueError`` if ``(permno, dlycaldt)`` repeats on the page.
 
-        The table is unique on that pair, but the consequence of a duplicate
-        slipping through is invisible: a downstream ``keep="last"`` dedup
-        would collapse it arbitrarily, keeping one of two prices with nothing
-        recording that a choice was made.
+        The table should be unique on that pair, but a duplicate that slipped
+        through would do silent harm: a later de-duplication would keep one
+        of two prices at random, and nothing would record that a choice was
+        made.
         """
         duplicates = (
             frame.group_by(["permno", "dlycaldt"])
@@ -982,10 +1229,10 @@ class WrdsCrspDailyAcquisition(Acquisition):
                 f"{self.class_name}: {schema}.{table} returned "
                 f"{duplicates.height} duplicated (permno, dlycaldt) key(s) "
                 f"across {frame.height} row(s), first "
-                f"{len(sample)} of them {sample}. The table is unique on that "
-                f"pair (D-19), so this page is refused rather than "
-                f"de-duplicated -- a silent dedup would drop one of two prices "
-                f"with no record."
+                f"{len(sample)} of them {sample}. The table should be unique "
+                f"on that pair, so this page is refused rather than "
+                f"de-duplicated; a silent de-duplication would drop one of two "
+                f"prices with no record."
             )
 
     def _assert_page_belongs(
@@ -995,12 +1242,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
         page_start: date,
         page_end: date,
     ) -> None:
-        """Refuse the page unless every row is a requested PERMNO in bounds.
+        """Raise ``ValueError`` unless every row is requested and inside the page.
 
-        This checks and never filters: an unrequested PERMNO means the WHERE
-        stopped doing what it says, and a row dated outside the page would
-        land under a ``month=`` partition this page does not own, where the
-        next run's deterministic overwrite would not reach it.
+        This checks and never filters. An unrequested PERMNO means the WHERE
+        no longer does what it says. A row dated outside the page would be
+        written into a ``month=`` directory that belongs to another page,
+        where re-downloading this page would never replace it.
         """
         wanted = {int(symbol) for symbol in symbols}
         seen = {
@@ -1047,14 +1294,32 @@ class WrdsCrspDailyAcquisition(Acquisition):
         kwargs: dict | None = None,
         subdir: str = DEFAULT_SUBDIR,
     ) -> AcquisitionConfig:
-        """Build the ``AcquisitionConfig`` for a CRSP daily pull.
+        """Build the ``AcquisitionConfig`` for a CRSP daily download.
 
-        This is the ``crsp_daily`` capability's ``config_factory``. The raw
-        root ends at the vendor segment (``.../{subdir}/wrds``) and the
-        watermarks live in the sibling ``.../{subdir}/_watermarks/wrds``,
-        both under ``get_data_root() / "downloads" / "us_equity" / "1d"``.
-        Symbols are stored as strings; ``bytes_per_row`` defaults to
-        ``DEFAULT_BYTES_PER_ROW``. No credential goes into the config.
+        This is the ``config_factory`` of the registry's ``crsp_daily``
+        capability. The raw directory is ``.../{subdir}/wrds`` and the
+        watermarks go to the sibling ``.../{subdir}/_watermarks/wrds``, both
+        under ``get_data_root() / "downloads" / "us_equity" / "1d"``. No
+        credential goes into the config.
+
+        Parameters
+        ----------
+        symbols : iterable
+            PERMNOs; stored as strings.
+        start_date, end_date : str or None, default None
+            The window, inclusive, as ISO dates.
+        kwargs : dict or None, default None
+            Extra options, such as ``clip_to_product_end`` or
+            ``verify_page_counts``. ``data_type`` is set to ``"crsp_daily"``
+            and ``bytes_per_row`` defaults to ``DEFAULT_BYTES_PER_ROW``.
+        subdir : str, default "wrds_crsp"
+            Directory under ``downloads/us_equity/1d`` that holds this raw
+            tier. Use a new one to start a fresh tier for a new CRSP release.
+
+        Returns
+        -------
+        AcquisitionConfig
+            The config for ``WrdsCrspDailyAcquisition``.
 
         Raises
         ------
@@ -1067,10 +1332,11 @@ class WrdsCrspDailyAcquisition(Acquisition):
         >>> cfg = WrdsCrspDailyAcquisition.build_config(
         ...     ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
         ... )
-        >>> cfg.raw_data_dir_path
-        '<data root>/downloads/us_equity/1d/wrds_crsp/wrds'
         >>> cfg.kwargs
         {'data_type': 'crsp_daily', 'bytes_per_row': 150}
+
+        ``cfg.raw_data_dir_path`` is
+        ``'<data root>/downloads/us_equity/1d/wrds_crsp/wrds'``.
         """
         merged = dict(kwargs or {})
         data_type = merged.get("data_type", cls.DATA_TYPE)
@@ -1099,46 +1365,67 @@ class WrdsCrspDailyAcquisition(Acquisition):
     def reference_dir_for(cls, config: AcquisitionConfig) -> Path:
         """Return the reference tier directory, ``.../{subdir}/_reference``.
 
-        A sibling of the raw root, never inside it: the dataset's raw scan
-        globs every parquet file below the raw root, and a reference table or
-        its manifest in that tree would be picked up by the same scan. Derived
-        from the config rather than from ``get_data_root()`` so a config
-        pointed at a custom root keeps its reference tier beside its raw tier.
+        The reference tier holds CRSP's lookup tables (security names,
+        delistings, distributions, index membership); see
+        ``quantlab.acquisition.wrds.crsp_reference``. It sits beside the raw
+        directory, never inside it, because the dataset's conversion reads
+        every parquet file below the raw directory. The path is derived from
+        the config rather than from ``get_data_root()``, so a config that
+        points at a custom directory keeps both tiers together.
+
+        Parameters
+        ----------
+        config : AcquisitionConfig
+            The acquisition's config.
+
+        Returns
+        -------
+        pathlib.Path
+            The reference directory.
 
         Examples
         --------
-        >>> WrdsCrspDailyAcquisition.reference_dir_for(cfg)
-        PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_reference')
+        With ``cfg`` from ``build_config``::
+
+            WrdsCrspDailyAcquisition.reference_dir_for(cfg)
+            # PosixPath('<data root>/downloads/us_equity/1d/wrds_crsp/_reference')
         """
         return Path(config.raw_data_dir_path).parent / cls.REFERENCE_DIR_NAME
 
 
 class CrspVolumeProbe:
-    """Count the ``dsf_v2`` rows a pull would fetch, per calendar-year page.
+    """Count the ``dsf_v2`` rows a download would fetch, per calendar-year page.
 
-    The counts feed the SQL volume guard, which prices a pull before it runs.
-    The TAQ probe counts per trading day because a TAQ page is a day table; a
-    CRSP page is a calendar year, so this counts per year, and a refusal from
-    the guard therefore names a boundary a re-run can actually be given. One
-    ``count(*)`` is issued per (year page, PERMNO batch), with pages from
-    ``year_pages`` and the WHERE from ``CrspQueries.daily_where``, the same
-    two the acquisition uses, so the rows priced are the rows that will move.
-    ``daily_where`` refuses an empty batch, so a whole-table count is never
-    issued.
+    The counts feed the volume guard, which estimates the size of a download
+    before it runs and refuses one that is too large. A CRSP page is a
+    calendar year, so this probe counts per year, and a refusal names a
+    boundary that a smaller re-run can actually use. One ``count(*)`` is
+    issued per (year, PERMNO batch), with the pages from ``year_pages`` and
+    the WHERE from ``CrspQueries.daily_where``. The acquisition uses the same
+    two, so the rows counted are the rows that will be downloaded.
+    ``daily_where`` refuses an empty batch, so the whole table is never
+    counted.
 
-    The guard's ``rows_by_day`` and ``trading_days`` fields are reused
-    unchanged; against this dict they mean per-year buckets and a year count.
-    Counts are not cached on disk: the pull re-counts each page anyway when
-    ``verify_page_counts`` is on.
+    The guard's result fields are named ``rows_by_day`` and
+    ``trading_days``; for this probe they mean rows per year and the number
+    of years. Counts are not saved to disk, because the download counts each
+    page again anyway when ``verify_page_counts`` is on.
+
+    Parameters
+    ----------
+    session : WrdsSession
+        The shared WRDS session.
+    batch_size : int, default 200
+        PERMNOs per count query; the acquisition's ``DEFAULT_BATCH_SIZE``.
 
     Examples
     --------
-    Needs a live ``WrdsSession``.
+    Needs a live ``WrdsSession``::
 
-    >>> probe = CrspVolumeProbe(WrdsSession.shared(), batch_size=200)
-    >>> rows_by_year = probe.count_rows_by_year(
-    ...     ["14593", "10107"], "2018-06-01", "2020-03-31"
-    ... )
+        probe = CrspVolumeProbe(WrdsSession.shared(), batch_size=200)
+        rows_by_year = probe.count_rows_by_year(
+            ["14593", "10107"], "2018-06-01", "2020-03-31"
+        )
 
     The keys are the page ends from ``year_pages``: ``2018-12-31``,
     ``2019-12-31`` and ``2020-03-31``.
@@ -1152,16 +1439,16 @@ class CrspVolumeProbe:
         session,
         batch_size: int = WrdsCrspDailyAcquisition.DEFAULT_BATCH_SIZE,
     ) -> None:
-        """Bind the session and the PERMNOs-per-count batch size."""
+        """Initialize the probe; see the class docstring for parameters."""
         self.session = session
         self.batch_size = max(1, int(batch_size))
 
     def _batches(self, permnos: list[str]) -> list[list[str]]:
-        """Chunk ``permnos`` into batches of ``batch_size`` in input order.
+        """Split ``permnos`` into batches of ``batch_size``, keeping their order.
 
-        The same chunking as ``Acquisition._batches``, restated because that
-        is an instance method reading ``config.kwargs`` and this probe has no
-        config: it is asked its question before any pull exists.
+        The same split as ``Acquisition._batches``, repeated here because
+        that method reads an acquisition config and this probe runs before
+        any acquisition exists.
         """
         return [
             permnos[index : index + self.batch_size]
@@ -1173,10 +1460,23 @@ class CrspVolumeProbe:
     ) -> dict[str, int]:
         """Return ``{ISO page end: rows}`` over ``[start_date, end_date]``.
 
-        Keys are year buckets (``2019-12-31``, ``2020-12-31``, and the
-        window's own end for the last, partial year), each summed over the
-        PERMNO batches. Entitlement is checked first, so an unsubscribed
-        account raises ``WrdsEntitlementError`` before any count is issued.
+        Keys are the last day of each year page (``2019-12-31``,
+        ``2020-12-31``, and the window's own end for a final partial year).
+        Each value is summed over the PERMNO batches. The subscription is
+        checked first, so an unsubscribed account raises
+        ``WrdsEntitlementError`` before any count is issued.
+
+        Parameters
+        ----------
+        permnos : iterable
+            PERMNOs as digit strings or integers.
+        start_date, end_date : str
+            The window, inclusive, as ISO dates.
+
+        Returns
+        -------
+        dict of str to int
+            Row counts keyed by page end.
 
         Raises
         ------
@@ -1186,7 +1486,9 @@ class CrspVolumeProbe:
 
         Examples
         --------
-        >>> counts = probe.count_rows_by_year(["14593"], "2020-01-01", "2020-12-31")
+        Needs a live ``WrdsSession``::
+
+            counts = probe.count_rows_by_year(["14593"], "2020-01-01", "2020-12-31")
         """
         permnos = [str(permno) for permno in permnos]
         if not permnos:

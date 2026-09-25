@@ -1,10 +1,18 @@
 """Alpha158 factor sets computed with the KunQuant backend.
 
-KunQuant's ``Alpha158`` feature library (k-bar shape features, lagged price
-and volume ratios, and rolling statistics) is exposed as two
-``FactorKunQuant`` subclasses: ``Alpha158SpotKline`` for crypto spot klines,
-with rolling z-score normalization, and ``Alpha158Stock`` for adjusted
-US-equity bars, emitted raw.
+Alpha158 is the standard feature set of Microsoft's Qlib research platform:
+about 158 features describing the shape of each bar (the "k-bar", or
+candlestick), recent prices and volumes relative to today's close, and
+rolling statistics over several window lengths. KunQuant, the library this
+project uses for most factor computation, ships it as its ``Alpha158``
+library. KunQuant compiles a factor formula, written as a graph of
+operators, to native code and runs it over a whole ``(timestamp, symbol)``
+panel at once.
+
+Two ``FactorKunQuant`` subclasses expose the library:
+``Alpha158SpotKline`` works on crypto spot klines and z-scores every output
+along time, while ``Alpha158Stock`` works on adjusted US-equity bars and
+returns raw values.
 """
 
 from typing import NoReturn
@@ -22,17 +30,26 @@ from quantlab.my_ops.preprocess import WindowedZScore
 class Alpha158SpotKline(FactorKunQuant):
     """Alpha158 factors over crypto spot klines, z-scored along time.
 
-    Builds the Alpha158 feature set from the lowercase ``open``/``high``/
-    ``low``/``close``/``volume``/``amount`` columns: k-bar shape features,
-    price and volume ratios lagged 0 to 4 bars, and rolling features over
-    5/10/20/30/60 bars (``BETA``, ``RSQR`` and ``RESI`` excluded). Every
-    output is wrapped in ``WindowedZScore`` over ``config.window`` bars, a
-    time-series normalization chosen because spot data is traded with
-    time-series strategies; ``Alpha158Stock`` deliberately emits raw values
-    for cross-sectional strategies.
+    Builds the Alpha158 feature set from the lowercase ``open``, ``high``,
+    ``low``, ``close``, ``volume`` and ``amount`` (traded value) columns:
+    k-bar shape features, price and volume ratios lagged 0 to 4 bars, and
+    rolling features over 5, 10, 20, 30 and 60 bars. The rolling regression
+    features ``BETA``, ``RSQR`` and ``RESI`` are left out. Every output is
+    wrapped in ``WindowedZScore`` over ``config.window`` bars, which
+    standardizes each symbol against its own recent past. That suits the
+    time-series strategies spot data is traded with here; ``Alpha158Stock``
+    returns raw values for cross-sectional strategies instead.
 
-    Pin ``factor_names`` to a few columns while experimenting: the full set
-    is over a hundred columns and compile time grows with the graph.
+    Set ``factor_names`` to a few columns while experimenting: the full set
+    has over a hundred columns, and compile time grows with the graph.
+
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. ``window`` sets the z-score window,
+        ``data_columns`` lists the six input columns above, and
+        ``factor_names`` selects which features to compute (all when
+        unset).
 
     Examples
     --------
@@ -45,15 +62,18 @@ class Alpha158SpotKline(FactorKunQuant):
     """
 
     def __init__(self, factor_config: FactorConfig):
-        """Create the factor from a KunQuant factor config."""
+        """Initialize the factor; see the class docstring for parameters."""
         super().__init__(factor_config)
 
     def _get_factor_names(self) -> tuple[str, ...]:
-        """Return the names of every feature the Alpha158 build produces."""
+        """Return the names of every feature the Alpha158 build produces, in order."""
         return tuple(self._factor_names_stream())
 
     def _get_func_names(self):
-        """Build the Alpha158 op list and its names from fresh ``Input`` nodes.
+        """Build the Alpha158 operators and their names from fresh inputs.
+
+        Must be called inside an active KunQuant ``Builder`` when the
+        operators are meant to become part of a graph.
 
         Returns
         -------
@@ -76,7 +96,7 @@ class Alpha158SpotKline(FactorKunQuant):
         )
         alpha158, names = all_data.build(
             {
-                "kbar": {},  # k-bar shape features
+                "kbar": {},  # candlestick shape features
                 "price": {
                     "windows": [0, 1, 2, 3, 4],
                     "feature": [
@@ -90,8 +110,9 @@ class Alpha158SpotKline(FactorKunQuant):
                 "volume": {
                     "windows": [0, 1, 2, 3, 4],
                 },
-                "rolling": {  # rolling-window features
+                "rolling": {
                     "windows": [5, 10, 20, 30, 60],  # window lengths in bars
+                    # Rolling-regression features, left out of this set.
                     "exclude": ["BETA", "RSQR", "RESI"],
                 },
             }
@@ -99,11 +120,11 @@ class Alpha158SpotKline(FactorKunQuant):
         return alpha158, names
 
     def _factor_names_stream(self):
-        """Return the feature names from a fresh Alpha158 build."""
+        """Return the feature names from a throwaway Alpha158 build."""
         return self._get_func_names()[-1]
 
     def _get_func_stream(self) -> Function:
-        """Build the graph: one rolling z-scored ``Output`` per requested feature."""
+        """Build the KunQuant graph with one z-scored output per requested feature."""
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
@@ -120,29 +141,37 @@ class Alpha158SpotKline(FactorKunQuant):
         return Function(builder.ops)
 
     def _get_factor_func(self):
-        """Return the graph built by ``_get_func_stream``."""
+        """Return the KunQuant graph built by ``_get_func_stream``."""
         return self._get_func_stream()
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise; this factor set produces features only."""
+        """Raise ``RuntimeError``: this factor set produces features, not labels."""
         raise RuntimeError(f"{__class__.__name__} does not support get_label()")
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged."""
+        """Return the computed panel unchanged; no post-processing is needed."""
         return data
 
 
 class Alpha158Stock(FactorKunQuant):
-    """Alpha158 factors over adjusted US-equity bars, emitted raw.
+    """Alpha158 factors over adjusted US-equity bars, returned raw.
 
-    Reads only the adjusted series ``adjOpen``/``adjHigh``/``adjLow``/
-    ``adjClose``/``adjVolume``; list exactly these in ``data_columns``. The
-    ``VWAP`` features use the adjusted typical price
-    ``(adjHigh + adjLow + adjClose) / 3`` rather than ``amount / volume``:
-    the stock stores carry no dollar volume, and dividing a raw amount by a
-    split-adjusted volume would jump at every split. Outputs are not
-    normalized, for the same reason as ``Alpha101Stock``: cross-sectional
-    normalization is left to the consumer.
+    Reads only the split- and dividend-adjusted series ``adjOpen``,
+    ``adjHigh``, ``adjLow``, ``adjClose`` and ``adjVolume``; list exactly
+    these in ``data_columns``. The ``VWAP`` features use the adjusted typical
+    price ``(adjHigh + adjLow + adjClose) / 3`` instead of the usual
+    ``amount / volume``. The stock stores carry no dollar-volume column, and
+    dividing a raw amount by a split-adjusted volume would jump at every
+    split. Outputs are not normalized, for the same reason as
+    ``Alpha101Stock``: these features feed cross-sectional strategies, and
+    normalizing across symbols is left to the consumer.
+
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config. ``data_columns`` lists the five
+        adjusted columns above and ``factor_names`` selects which features
+        to compute (all when unset).
 
     Examples
     --------
@@ -156,15 +185,18 @@ class Alpha158Stock(FactorKunQuant):
     """
 
     def __init__(self, factor_config: FactorConfig):
-        """Create the factor from a KunQuant factor config."""
+        """Initialize the factor; see the class docstring for parameters."""
         super().__init__(factor_config)
 
     def _get_factor_names(self) -> tuple[str, ...]:
-        """Return the names of every feature the Alpha158 build produces."""
+        """Return the names of every feature the Alpha158 build produces, in order."""
         return tuple(self._factor_names_stream())
 
     def _get_func_names(self):
-        """Build the Alpha158 op list and its names from adjusted inputs.
+        """Build the Alpha158 operators and their names from adjusted inputs.
+
+        Must be called inside an active KunQuant ``Builder`` when the
+        operators are meant to become part of a graph.
 
         Returns
         -------
@@ -176,9 +208,9 @@ class Alpha158Stock(FactorKunQuant):
         high = Input("adjHigh")
         vopen = Input("adjOpen")
         vol = Input("adjVolume")
-        # No stock store carries a dollar-volume column, and a raw amount
-        # divided by the split-adjusted volume would jump at every split. The
-        # adjusted typical price keeps VWAP features on the adjusted scale.
+        # The adjusted typical price stands in for VWAP: no stock store has a
+        # dollar-volume column, and raw amount over adjusted volume would jump
+        # at every split.
         vwap = (high + low + close) / 3.0
         all_data = Alpha158.AllData(
             low=low,
@@ -188,12 +220,12 @@ class Alpha158Stock(FactorKunQuant):
             volume=vol,
             vwap=vwap,
         )
-        # Assigned explicitly as a guard: KunQuant's `AllData.__init__` has
-        # not always kept a `vwap=` passed alongside a missing `amount`.
+        # KunQuant's `Alpha158.AllData.__init__` stores `vwap` only when it
+        # computes it itself, and ignores a `vwap=` argument, so set it here.
         all_data.vwap = vwap
         alpha158, names = all_data.build(
             {
-                "kbar": {},  # k-bar shape features
+                "kbar": {},  # candlestick shape features
                 "price": {
                     "windows": [0, 1, 2, 3, 4],
                     "feature": [
@@ -207,8 +239,9 @@ class Alpha158Stock(FactorKunQuant):
                 "volume": {
                     "windows": [0, 1, 2, 3, 4],
                 },
-                "rolling": {  # rolling-window features
+                "rolling": {
                     "windows": [5, 10, 20, 30, 60],  # window lengths in bars
+                    # Rolling-regression features, left out of this set.
                     "exclude": ["BETA", "RSQR", "RESI"],
                 },
             }
@@ -216,11 +249,11 @@ class Alpha158Stock(FactorKunQuant):
         return alpha158, names
 
     def _factor_names_stream(self):
-        """Return the feature names from a fresh Alpha158 build."""
+        """Return the feature names from a throwaway Alpha158 build."""
         return self._get_func_names()[-1]
 
     def _get_func_stream(self) -> Function:
-        """Build the graph: one raw ``Output`` per requested feature."""
+        """Build the KunQuant graph with one raw output per requested feature."""
         factor_names = self.get_factor_names()
         builder = Builder()
         with builder:
@@ -231,13 +264,13 @@ class Alpha158Stock(FactorKunQuant):
         return Function(builder.ops)
 
     def _get_factor_func(self):
-        """Return the graph built by ``_get_func_stream``."""
+        """Return the KunQuant graph built by ``_get_func_stream``."""
         return self._get_func_stream()
 
     def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise; this factor set produces features only."""
+        """Raise ``RuntimeError``: this factor set produces features, not labels."""
         raise RuntimeError(f"{__class__.__name__} does not support get_label()")
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged."""
+        """Return the computed panel unchanged; no post-processing is needed."""
         return data
