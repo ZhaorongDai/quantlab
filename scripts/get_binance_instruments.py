@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Refresh the Binance spot instrument metadata file from the live exchange.
 
-The script downloads Binance's public ``exchangeInfo`` payload, flattens the
-trading rules of the requested symbols with ``quantlab.utils.binance`` and
-writes them into the packaged ``config/instruments.yaml`` (or a file named
-with ``--config``). It can also rank the USDT pairs by 24-hour quote volume
-and either list the top N or refresh the file with them. No credentials are
-needed; both endpoints are public.
+The script downloads Binance's public ``exchangeInfo`` payload, which lists
+every symbol's trading rules (tick size, lot size, minimum order value and so
+on). It flattens the rules of the requested symbols with
+``quantlab.utils.binance`` and writes them into the packaged
+``config/instruments.yaml``, or into the file given with ``--config``. The
+Nautilus helpers read that file when they build instrument definitions. The script
+can also rank the USDT pairs by 24-hour quote volume and either list the top
+N or refresh the file with them. No credentials are needed, because both
+Binance endpoints are public.
 
-Usage:
+Usage::
+
+    uv run python scripts/get_binance_instruments.py --help
+
     # Refresh every symbol already present in the file.
     uv run python scripts/get_binance_instruments.py
 
@@ -48,11 +54,11 @@ def update_instruments_config(
 
     Parameters
     ----------
-    symbols : list
-        Symbols to refresh. ``None`` refreshes every symbol already
-        present in the file.
-    config_path : str
-        The YAML file to update; created if missing.
+    symbols : list of str, optional
+        Symbols to refresh. ``None`` (the default) refreshes every symbol
+        already present in the file.
+    config_path : str, default ``INSTRUMENTS_CONFIG_PATH``
+        The YAML file to update. It is created if missing.
 
     Examples
     --------
@@ -125,7 +131,7 @@ def get_all_usdt_pairs(limit: int = 50):
 
     Parameters
     ----------
-    limit : int
+    limit : int, default 50
         How many pairs to return.
 
     Returns

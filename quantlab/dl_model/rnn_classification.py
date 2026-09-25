@@ -1,15 +1,21 @@
 """Recurrent up/down classification head for the torch model layer.
 
-``RNNClassifier`` is a ``DLModel`` that turns each future-return label into a
-binary class (1 when the return is positive, else 0) and predicts it with a
-two-logit ``ModelRCrypto``: one GRU or LSTM tower per label, plus a linear
-layer that recombines the auxiliary towers into a second estimate of the
-primary label. ``predict_panel`` exposes the probability of an up move per
-label, which the backtest layer uses as a ranking score.
+``RNNClassifier`` is a ``DLModel`` (the torch training loop defined in
+``quantlab.base.model``). It turns each future-return label into a binary
+class, 1 when the return is positive and 0 otherwise, and predicts it with
+``ModelRCrypto``. That module holds one *tower*, an independent stack of GRU
+or LSTM layers with a small linear head, per label. Each tower emits two
+*logits* (unnormalised scores for "down" and "up") per symbol. A final linear
+layer recombines the auxiliary towers into a second estimate of the primary
+label, which is label 0.
+
+``predict_panel`` returns the probability of an up move per label as a
+*panel*, an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``. The
+backtest layer uses that probability as a ranking score.
 
 The recurrent layers run with ``batch_first=True`` over the tensors exactly
-as the data loader yields them, so the batch axis is time and the sequence
-axis is the symbol axis of each bar.
+as the data loader yields them. The batch axis is therefore time, and the
+sequence the recurrent layers walk along is the symbol axis of each bar.
 """
 
 import numpy as np
@@ -122,6 +128,9 @@ class ModelRBaseCrypto(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map ``[D, T, input_size]`` to ``[D, T, 2]`` logits.
 
+        ``D`` is the batch axis (bars) and ``T`` the sequence axis (symbols).
+        Channel 0 is the "down" logit and channel 1 the "up" logit.
+
         Examples
         --------
         >>> block = ModelRBaseCrypto(3, [8], [0.0], [], [], "lstm")
@@ -223,6 +232,14 @@ class ModelRCrypto(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(combined_primary, all_direct)`` for a ``[D, T, F]`` input.
 
+        ``D`` is the batch axis (bars), ``T`` the sequence axis (symbols) and
+        ``F`` the number of features.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input of shape ``[D, T, F]``.
+
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor]
@@ -275,7 +292,12 @@ class RNNClassifier(DLModel):
 
     ``predict`` returns the raw ``(combined_primary, all_direct)`` logits of
     the module. ``predict_panel`` returns, per label, the softmax probability
-    of class 1; these are probabilities in ``[0, 1]``, not return magnitudes.
+    of class 1. These are probabilities in ``[0, 1]``, not return magnitudes.
+
+    Parameters
+    ----------
+    config : DLConfig
+        Factors, labels, date ranges and training settings. See ``DLConfig``.
 
     Examples
     --------
@@ -296,7 +318,7 @@ class RNNClassifier(DLModel):
     ... )
     >>> model = RNNClassifier(config)
     >>> model.collect().train().name
-    RNNClassifier_total.pth
+    'RNNClassifier_total.pth'
     >>> combined, direct = model.predict(torch.zeros(5, 2, 3))
     >>> combined.shape, direct.shape
     (torch.Size([5, 2, 2]), torch.Size([5, 2, 4]))
@@ -314,7 +336,10 @@ class RNNClassifier(DLModel):
     def _train_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
-        """Run one optimizer step on a batch, log train metrics, return the loss."""
+        """Run one optimizer step on a batch, log train metrics, return the loss.
+
+        Metrics are computed on the combined primary estimate only.
+        """
         self.optim.zero_grad()
 
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
@@ -322,6 +347,7 @@ class RNNClassifier(DLModel):
         y_labels = self._convert_returns_to_labels(y)
 
         # Cross-entropy of each label's direct logit pair against its class.
+        # ``num_labels`` here is the channel count, two per label.
         D, T, num_labels = all_direct_preds.shape
         all_direct_preds_reshaped = all_direct_preds.reshape(D * T, num_labels)
         y_labels_reshaped = y_labels.reshape(D * T, -1)
@@ -347,7 +373,6 @@ class RNNClassifier(DLModel):
         self.optim.step()
 
         with torch.no_grad():
-            # Metrics are reported on the combined primary estimate.
             primary_pred_probs = torch.softmax(primary_pred, dim=-1)
             primary_pred_classes = torch.argmax(primary_pred_probs, dim=-1)
             primary_pred_np = primary_pred_classes.cpu().numpy()
@@ -428,7 +453,10 @@ class RNNClassifier(DLModel):
     def _test_one_batch(
         self, epoch: int, x: torch.Tensor, y: torch.Tensor
     ) -> torch.Tensor:
-        """Evaluate one test batch, log the test metrics and return the loss."""
+        """Evaluate one test batch, log the test metrics and return the loss.
+
+        The test loss uses the same two-term sum as training.
+        """
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
 
         y_labels = self._convert_returns_to_labels(y)
@@ -507,7 +535,8 @@ class RNNClassifier(DLModel):
         """Evaluate one validation batch, log its metrics and return the loss.
 
         The epoch loop weights the returned loss by the batch size to form
-        the per-epoch validation loss that drives early stopping.
+        the per-epoch validation loss that drives early stopping, so this
+        must return a tensor, not only log metrics.
         """
         primary_pred, all_direct_preds = self.model(x)  # type: ignore
 
@@ -587,16 +616,17 @@ class RNNClassifier(DLModel):
         return data
 
     def _preprocess_stream(self, data: torch.Tensor) -> torch.Tensor:
-        """Replace NaN with 0.0 in a streaming input tensor."""
+        """Replace NaN with 0.0 in a tensor fed in streaming (bar-by-bar) mode."""
         data = torch.nan_to_num(data, nan=0.0)
         return data
 
     def update(self, x: torch.Tensor, y: torch.Tensor):
         """Take one online fine-tuning step on a new batch.
 
-        Uses a dedicated AdamW optimizer with learning rate
-        ``config.lr_refit``, cached on the instance so that its moment
-        estimates persist across calls. Returns immediately when
+        Online fine-tuning nudges a trained model with each new batch of
+        live data. The step uses a dedicated AdamW optimizer with learning
+        rate ``config.lr_refit``, cached on the instance so that its moment
+        estimates persist across calls. The method returns immediately when
         ``config.lr_refit`` is ``0.0`` (the default), which disables online
         updating. ``y`` holds future returns and is converted to classes
         the same way as in training.
@@ -630,8 +660,7 @@ class RNNClassifier(DLModel):
         x = x.to(self.device)
         y = y.to(self.device)
 
-        # The refit optimizer is cached on the instance; a fresh optimizer per
-        # call would reset Adam's moment estimates every step.
+        # A fresh optimizer per call would reset Adam's moment estimates.
         optimizer = self._get_refit_optim()
         optimizer.zero_grad()
 
@@ -662,21 +691,19 @@ class RNNClassifier(DLModel):
         optimizer.step()
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """Adapt ``predict_panel``: label ``i`` is the up probability of its logit pair.
+        """Return the up probability of every label as ``[T, S, L]`` for ``predict_panel``.
 
-        Only ``all_direct`` of the module's output pair is used, shape
-        ``[T, S, 2 * L]``, with channels ``[2i, 2i + 1]`` belonging to label
-        ``i``. Each label's two logits are passed through a
-        softmax and the probability of class 1 (up) is returned, giving a
-        ``[T, S, L]`` array. Label 0 is the primary tower's direct prediction,
-        not the combined estimate.
+        Only ``all_direct`` of the module's output pair is used. It has shape
+        ``[T, S, 2 * L]``, and channels ``[2i, 2i + 1]`` belong to label
+        ``i``. Each label's two logits go through a softmax and the
+        probability of class 1 (up) is kept. Label 0 is therefore the primary
+        tower's direct prediction, not the combined estimate.
 
         Raises
         ------
         ValueError
-            If the channel count is not twice the number of
-            labels, which means the module does not match the label
-            configuration.
+            If the channel count is not twice the number of labels, which
+            means the module does not match the label configuration.
         """
         _, direct = self.predict(x)
         num_times, num_symbols, num_channels = direct.shape

@@ -1,27 +1,31 @@
 """Rebuild the Binance spot-kline Zarr store from monthly CSVs already on disk.
 
-Nothing is downloaded. The script reads the monthly Binance kline CSV files
-under ``raw_data_dir_path``, converts them through ``SpotKlineDataset`` and
-writes the resulting ``xarray.Dataset`` to the configured Zarr path. By
-default the CSVs are expected under
+A kline is Binance's name for an OHLCV bar (open, high, low, close, volume).
+Nothing is downloaded: the script reads the monthly kline CSV files that
+Binance publishes for bulk download, converts them through
+``SpotKlineDataset`` into an ``xarray.Dataset`` indexed by ``timestamp`` and
+``symbol``, and writes it to the configured Zarr store (a chunked on-disk
+array format that ``xarray`` reads). By default the CSVs are expected under
 ``{root}/downloads/crypto_spot/1d/spot/monthly/klines/``, where ``{root}``
 is ``--data-dir``, else ``QUANTLAB_DATA_DIR``, else the repository's
-``data/`` directory.
+``data/`` directory. No credentials are needed.
 
-The two directory flags work at different levels and compose. ``--data-dir``
-relocates the whole storage root, so the Zarr store, the nautilus catalog and
-the default raw CSV directory all move with it. ``--raw-data-dir`` redirects
-only the raw CSV directory, to wherever the CSVs already live, with no need
-to copy or symlink them into the project layout. Given both, CSVs are read
-from ``--raw-data-dir`` and the Zarr is written under ``--data-dir``. No
-credentials are needed.
+The two directory flags work at different levels and can be combined.
+``--data-dir`` moves the whole storage root, so the Zarr store, the Nautilus
+catalog and the default raw CSV directory all move with it.
+``--raw-data-dir`` redirects only the raw CSV directory, to wherever the
+CSVs already live, so they need not be copied or linked into the project
+layout. With both, CSVs are read from ``--raw-data-dir`` and the Zarr store
+is written under ``--data-dir``.
 
-Usage:
+Usage::
+
+    uv run python scripts/ingest_binance_spot.py --help
     uv run python scripts/ingest_binance_spot.py
     uv run python scripts/ingest_binance_spot.py --symbols BTCUSDT,ETHUSDT
-    uv run python scripts/ingest_binance_spot.py \
+    uv run python scripts/ingest_binance_spot.py \\
         --raw-data-dir ~/Downloads/spot/monthly/klines
-    uv run python scripts/ingest_binance_spot.py --data-dir /Volumes/BigDisk \
+    uv run python scripts/ingest_binance_spot.py --data-dir /Volumes/BigDisk \\
         --raw-data-dir ~/Downloads/spot/monthly/klines
 """
 
@@ -36,9 +40,19 @@ from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
 def _build_dataset_config(args: argparse.Namespace) -> DatasetConfig:
     """Build the ``DatasetConfig`` for the parsed arguments.
 
-    The config comes from ``spot_kline_config``; ``--raw-data-dir`` is applied
-    on top of it afterwards, which is what lets it compose with a root already
-    relocated by ``--data-dir``.
+    The config comes from ``spot_kline_config``. ``--raw-data-dir`` is
+    applied on top of it afterwards, which is what lets it combine with a
+    root already moved by ``--data-dir``.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+
+    Returns
+    -------
+    DatasetConfig
+        The config for ``SpotKlineDataset``.
     """
     symbols = args.symbols.split(",") if args.symbols else None
     config = spot_kline_config(
@@ -85,13 +99,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Override the default data/{market}/{frequency}/... raw CSV "
-            "directory; point this at wherever your Binance CSVs already "
-            "live, with no need to move, copy or symlink them into the "
-            "project's layout. Narrower than --data-dir and composes with "
-            "it: --data-dir moves the whole storage root, this redirects the "
-            "raw CSV directory alone, so passing both reads CSVs from here "
-            "and writes the Zarr under the relocated root."
+            "Directory holding the Binance kline CSVs, replacing the default "
+            "raw CSV directory under the storage root. Point it at wherever "
+            "the CSVs already live; they need not be moved, copied or linked. "
+            "Unlike --data-dir it moves only the raw CSV directory, so with "
+            "both flags CSVs are read from here and the Zarr store is written "
+            "under the --data-dir root."
         ),
     )
     add_data_dir_arg(parser)
@@ -102,10 +115,9 @@ if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    # Must run before ``spot_kline_config()`` is called: the factory snapshots
-    # its paths at construction time, so a later root override is ignored.
-    # The ``--raw-data-dir`` override is applied after construction, which is
-    # what makes the two flags compose.
+    # Must run before ``spot_kline_config()`` is called: the factory copies
+    # the data root into its paths when called, so a later override is
+    # ignored. ``--raw-data-dir`` is applied after the config is built.
     apply_data_dir(args)
 
     config = _build_dataset_config(args)

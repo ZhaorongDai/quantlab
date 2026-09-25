@@ -1,22 +1,36 @@
-"""WRDS NYSE TAQ millisecond NBBO acquisition and the shared WRDS session.
+"""Download of NYSE TAQ quote data from WRDS, and the shared WRDS connection.
 
-This module holds two things. ``WrdsSession`` is the one read-only PostgreSQL
-connection every WRDS product in this package goes through: it reads the
-username from ``WRDS_USERNAME``, leaves the password to libpq's ``~/.pgpass``,
-connects to the pinned WRDS host once per process, and offers product-neutral
-``schema_usable`` / ``fetch_rows`` / ``copy_csv`` helpers beside the TAQ-shaped
-ones. ``WrdsTaqNbboAcquisition`` is the acquisition class for the
-``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}`` day tables: one page is one trading
-day for one symbol batch, pulled with a bare ``COPY (SELECT ... WHERE ...)``
-and stored one row per NBBO record, unfiltered and unsorted, with the server's
-arrival order recorded as ``wrds_row_ord``. ``WrdsNbboVolumeProbe`` counts the
-rows such a pull would move so the volume guard can price it first.
+WRDS (Wharton Research Data Services) is a university-run service that
+serves licensed financial databases through a PostgreSQL server. One of them
+is NYSE TAQ ("Trade and Quote"), which records every trade and quote on US
+exchanges with millisecond timestamps or finer. This module downloads TAQ's
+NBBO records. The NBBO (National Best Bid and Offer) is the highest bid and
+the lowest ask across all US exchanges; TAQ stores one record each time
+either side changes. WRDS stores one table per trading day, named
+``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}``.
 
-Sorting, de-duplication and resampling of the raw records happen in
-``quantlab.dataset.nbbo``, not here. The ``wrds`` PyPI package is not used:
-its connection object prompts interactively, and every extra connection can
-push a Duo prompt to the account holder's phone. The vendor descriptor is
-registered by the package entry module, not by this file.
+The module holds three things. ``WrdsSession`` is the single read-only
+database connection that every WRDS product in this package uses. It reads
+the username from the ``WRDS_USERNAME`` environment variable and leaves the
+password to libpq (the PostgreSQL client library), which reads it from the
+``~/.pgpass`` file. It connects to a fixed WRDS host once per process,
+because WRDS protects logins with Duo two-factor authentication and each new
+connection can send a Duo prompt to the account holder's phone.
+
+``WrdsTaqNbboAcquisition`` downloads the day tables. The work is split into
+pages, and one page is one trading day for one batch of symbols, fetched
+with a plain ``COPY (SELECT ... WHERE ...)``. Each NBBO record becomes one
+row of the raw tier (the parquet files on disk), unfiltered and unsorted,
+and the order in which the server sent the rows is kept in the
+``wrds_row_ord`` column. ``WrdsNbboVolumeProbe`` counts the rows a download
+would move, so that the volume guard (a check that estimates the size of a
+download before it runs) can refuse one that is too large.
+
+Sorting, de-duplicating and resampling the raw records happen later, in
+``quantlab.dataset.nbbo``. The ``wrds`` package from PyPI is not used: its
+connection asks for input interactively and it may open extra connections,
+each of which can send a Duo prompt. The vendor's registry entry is defined
+in ``quantlab.acquisition.wrds``, not in this file.
 """
 
 from __future__ import annotations
@@ -40,10 +54,10 @@ from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: The environment variable the WRDS username is read from.
 #:
-#: Defined at module level rather than on ``WrdsSession`` because the session
-#: class is replaced wholesale by a fake in tests; the credential-redaction
-#: list ``CREDENTIAL_ENV_VARS`` is built from this constant so a stub that does
-#: not define the name cannot disable redaction.
+#: Defined at module level rather than on ``WrdsSession`` because tests replace
+#: the whole session class with a fake. ``CREDENTIAL_ENV_VARS``, the list of
+#: values hidden from logs, is built from this constant, so a fake that does
+#: not define the name cannot switch that hiding off.
 USERNAME_ENV = "WRDS_USERNAME"
 
 
@@ -51,42 +65,49 @@ class WrdsSessionError(RuntimeError):
     """The shared WRDS session cannot be used.
 
     Raised when the session could not be opened safely (a missing or unsafe
-    password file, a routing environment variable), when the driver reported
-    an error on it, or when it broke earlier in the same run. It is treated as
-    a run-wide stop: ``WrdsTaqNbboAcquisition`` maps it to the ``"quota"``
-    outcome, which halts dispatch and keeps every symbol out of the failure
-    manifest, because a batch-by-batch retry would reconnect and each
-    connection can push a Duo prompt.
+    password file, or an environment variable that would redirect the
+    connection), when the database driver reported an error, or when the
+    session already broke earlier in the same run. It stops the whole run:
+    the acquisitions classify it as ``"quota"``, which ends the run and keeps
+    every symbol out of the per-symbol failure file, because retrying batch
+    by batch would reconnect and each connection can send a Duo prompt.
 
     Examples
     --------
-    >>> try:
-    ...     WrdsSession.shared().trading_days(2024)
-    ... except WrdsSessionError as exc:
-    ...     print("session unusable:", exc)
+    Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry::
+
+        try:
+            WrdsSession.shared().trading_days(2024)
+        except WrdsSessionError as exc:
+            print("session unusable:", exc)
     """
 
 
 class WrdsEntitlementError(RuntimeError):
     """The account's subscription does not cover a requested schema.
 
-    For TAQ this means a ``taqm_YYYY`` schema without ``USAGE``. Like
-    ``WrdsSessionError`` it stops the whole run rather than one batch.
+    WRDS groups tables into schemas (for TAQ, one ``taqm_YYYY`` schema per
+    year) and grants read access (the ``USAGE`` privilege) per schema,
+    according to the subscription. Like ``WrdsSessionError``, this stops the
+    whole run rather than one batch.
 
     Examples
     --------
-    >>> try:
-    ...     WrdsSession.shared().assert_entitled([2012, 2024])
-    ... except WrdsEntitlementError as exc:
-    ...     print(exc)
+    Needs a live ``WrdsSession``::
+
+        try:
+            WrdsSession.shared().assert_entitled([2012, 2024])
+        except WrdsEntitlementError as exc:
+            print(exc)
     """
 
 
 def _pgpass_fields(line: str) -> list[str]:
-    """Return the first four colon-separated fields of one pgpass line.
+    """Return the first four colon-separated fields of one ``.pgpass`` line.
 
-    Backslash escapes are resolved. Parsing stops at the fourth unescaped
-    colon, so the fifth field, the password, is never read into any name.
+    A ``.pgpass`` line is ``host:port:database:user:password``. Backslash
+    escapes are resolved. Parsing stops at the fourth unescaped colon, so the
+    fifth field, the password, is never read into a variable.
     """
     fields: list[str] = []
     current: list[str] = []
@@ -108,33 +129,41 @@ def _pgpass_fields(line: str) -> list[str]:
 
 
 class WrdsSession:
-    """One lazily opened, read-only PostgreSQL connection to WRDS.
+    """A read-only PostgreSQL connection to WRDS, opened on first use.
 
-    Constructing a session makes no network call. The connection opens on the
-    first query and is reused for the rest of the process; obtain it through
-    ``shared()`` rather than constructing one per batch, since each connection
-    can push a Duo prompt and the WRDS role allows only a handful at once. The
-    host, port and database are class constants passed explicitly to
-    ``psycopg2.connect`` and are never read from a config or the environment,
-    so no config file can redirect the credentials elsewhere. The password is
-    never handled by this code: libpq reads it from ``~/.pgpass`` (or
-    ``$PGPASSFILE``), and the session checks that file for a matching entry
-    before it ever tries to connect.
+    Constructing a session makes no network call. The connection opens on
+    the first query and is reused for the rest of the process. Get the
+    session through ``shared()`` rather than constructing one per batch,
+    because each connection can send a Duo prompt and a WRDS account may hold
+    only a few connections at once.
+
+    The host, port and database are class constants passed directly to
+    ``psycopg2.connect``, never read from a config or the environment, so no
+    config file can send the credentials to another server. This code never
+    handles the password: libpq reads it from ``~/.pgpass`` (or the file
+    named by ``$PGPASSFILE``), and the session checks that the file has a
+    matching entry before it tries to connect.
 
     The methods fall into three groups: pure SQL builders that need no
     connection (``table_identifier``, ``where_clause``, ``copy_query``,
-    ``count_query``), product-neutral query helpers used by every WRDS
-    provider (``schema_usable``, ``fetch_rows``, ``copy_csv``), and TAQ-shaped
-    network methods built on those helpers.
+    ``count_query``), general query helpers used by every WRDS product
+    (``schema_usable``, ``fetch_rows``, ``copy_csv``), and TAQ-specific
+    methods built on those helpers.
+
+    Parameters
+    ----------
+    username : str
+        The WRDS username, normally read from ``WRDS_USERNAME`` by
+        ``shared()``.
 
     Examples
     --------
     Needs ``WRDS_USERNAME`` and a matching ``~/.pgpass`` line; the first
-    query opens the connection and may push a Duo prompt.
+    query opens the connection and may send a Duo prompt::
 
-    >>> session = WrdsSession.shared()
-    >>> days = session.trading_days(2024)
-    >>> WrdsSession.close_shared()
+        session = WrdsSession.shared()
+        days = session.trading_days(2024)
+        WrdsSession.close_shared()
     """
 
     HOST = "wrds-pgdata.wharton.upenn.edu"
@@ -144,32 +173,32 @@ class WrdsSession:
     APPLICATION_NAME = "quantlab-wrds-taq"
     CONNECT_TIMEOUT_SECONDS = 30
 
-    #: Up to this many bytes of one COPY stay in memory before spilling to a
-    #: temporary file.
+    #: Up to this many bytes of one COPY result stay in memory before the
+    #: buffer moves to a temporary file.
     COPY_SPOOL_BYTES = 256 * 2**20
 
-    #: libpq variables that could route the connection or its parameters
-    #: around the pinned host: ``PGHOSTADDR`` overrides the address ``host``
+    #: libpq environment variables that could redirect the connection away
+    #: from ``HOST``: ``PGHOSTADDR`` overrides the address the host name
     #: resolves to, and a service file can supply host, port and user. If any
-    #: is set the session refuses to connect. ``PGHOST`` is harmless because
-    #: ``host`` is always passed explicitly.
+    #: is set, the session refuses to connect. ``PGHOST`` is harmless because
+    #: the host is always passed explicitly.
     REFUSED_ENV = ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE")
 
-    #: The pgpass line shape quoted in error messages. ``<password>`` is a
-    #: placeholder; the real password is never read by this code.
+    #: The ``.pgpass`` line quoted in error messages. ``<password>`` is a
+    #: placeholder; this code never reads the real password.
     PGPASS_LINE_HINT = (
         "wrds-pgdata.wharton.upenn.edu:9737:wrds:$WRDS_USERNAME:<password>"
     )
 
-    #: Process-level cache, username to session.
+    #: Sessions for this process, keyed by username.
     _shared: dict[str, "WrdsSession"] = {}
 
     def __init__(self, username: str) -> None:
-        """Record the username; no connection is opened here."""
+        """Initialize the session without connecting; see the class docstring."""
         self.username = username
         self._conn = None
-        # Set before `psycopg2.connect` is called, so a failed connect is
-        # never retried by this object (each attempt can push Duo).
+        # Set before `psycopg2.connect` is called, so this object never
+        # retries a failed connect (each attempt can send a Duo prompt).
         self._connect_attempted = False
         self._broken = False
 
@@ -178,7 +207,12 @@ class WrdsSession:
         """Return the process-wide session for the current ``WRDS_USERNAME``.
 
         The variable is read on every call, so a changed username gets its
-        own session rather than a stale one.
+        own session rather than the old one.
+
+        Returns
+        -------
+        WrdsSession
+            The same object on every call with the same username.
 
         Raises
         ------
@@ -187,9 +221,11 @@ class WrdsSession:
 
         Examples
         --------
-        >>> session = WrdsSession.shared()
-        >>> session is WrdsSession.shared()
-        True
+        With ``WRDS_USERNAME`` set (no connection is opened)::
+
+            session = WrdsSession.shared()
+            session is WrdsSession.shared()
+            # True
         """
         username = os.environ.get(USERNAME_ENV)
         if not username:
@@ -223,13 +259,13 @@ class WrdsSession:
 
         Examples
         --------
-        >>> session.close()
+        >>> WrdsSession("someone").close()
         """
         conn, self._conn = self._conn, None
         if conn is not None:
             conn.close()
 
-    # -- credential pre-checks -------------------------------------------------
+    # -- credential checks before connecting ----------------------------------
 
     @staticmethod
     def _pgpass_path() -> Path:
@@ -249,16 +285,16 @@ class WrdsSession:
                 )
 
     def _assert_pgpass_entry(self) -> None:
-        """Fail before any connection attempt if libpq would find no password.
+        """Raise ``WrdsSessionError`` if libpq would find no password to use.
 
-        Without this check libpq would connect without a password, the server
-        would refuse it, and the operator would see a bare authentication
-        error after a Duo push. The file must exist, be a regular file, not be
-        group- or world-accessible (libpq ignores such a file), and contain a
-        line whose host, port, database and user fields match, allowing ``*``
-        wildcards and backslash escapes. Only the first four fields are
-        parsed; no message quotes a line, and the username is written as
-        ``$WRDS_USERNAME`` rather than its value.
+        Without this check libpq would connect without a password, the
+        server would refuse it, and the user would see a bare authentication
+        error after a Duo prompt. The file must exist, be a regular file, be
+        readable by its owner only (libpq ignores a file that others can
+        read), and contain a line whose host, port, database and user fields
+        match, allowing ``*`` wildcards and backslash escapes. Only the first
+        four fields of each line are parsed. No message quotes a line, and
+        the username appears as ``$WRDS_USERNAME`` rather than its value.
         """
         path = self._pgpass_path()
         fix = (
@@ -296,20 +332,25 @@ class WrdsSession:
     def _connection(self):
         """Open the read-only connection once and return it.
 
-        The refused-environment and pgpass checks run first, and the attempt
-        flag is set before ``psycopg2.connect`` is called, so neither a failed
-        connect nor a broken session is ever followed by a second attempt
-        from this object. No password argument is passed; libpq resolves it
-        from the pgpass file. The call goes through the module attribute
-        ``psycopg2.connect`` so a test can intercept every attempt.
+        The environment and ``.pgpass`` checks run first. The attempt flag is
+        set before ``psycopg2.connect`` is called, so after a failed connect
+        or a broken session this object never tries again. No password is
+        passed; libpq reads it from the ``.pgpass`` file. The call goes
+        through ``psycopg2.connect`` looked up at call time, so a test can
+        intercept every attempt.
+
+        Raises
+        ------
+        WrdsSessionError
+            If a check fails, or if the session already failed in this run.
         """
         if self._conn is not None and not self._broken:
             return self._conn
         if self._broken or self._connect_attempted:
             raise WrdsSessionError(
                 "the WRDS session broke earlier in this run and is not reopened "
-                "(every new connection can push Duo); re-run to resume from "
-                "the recorded pages."
+                "(every new connection can send a Duo prompt); re-run to resume "
+                "from the recorded pages."
             )
         self._assert_refused_env_unset()
         self._assert_pgpass_entry()
@@ -328,12 +369,12 @@ class WrdsSession:
         return conn
 
     def _query(self, work):
-        """Run ``work(connection)``, converting driver errors.
+        """Run ``work(connection)`` and convert database driver errors.
 
-        Any ``psycopg2.Error`` marks the session broken and is re-raised as a
-        ``WrdsSessionError`` whose message carries the driver's text with the
-        username replaced by ``$WRDS_USERNAME``. libpq errors never carry the
-        password.
+        Any ``psycopg2.Error`` marks the session broken and is raised again
+        as a ``WrdsSessionError``. Its message keeps the driver's text but
+        replaces the username with ``$WRDS_USERNAME``. libpq errors never
+        contain the password.
         """
         try:
             return work(self._connection())
@@ -351,7 +392,17 @@ class WrdsSession:
 
     @staticmethod
     def table_identifier(day: date) -> sql.Identifier:
-        """Return the ``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}`` identifier.
+        """Return the ``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}`` table name for a day.
+
+        Parameters
+        ----------
+        day : datetime.date
+            The trading day.
+
+        Returns
+        -------
+        psycopg2.sql.Identifier
+            The schema-qualified table name, safely quoted.
 
         Examples
         --------
@@ -363,24 +414,31 @@ class WrdsSession:
 
     @staticmethod
     def where_clause(pairs) -> sql.Composed:
-        """Build the WHERE clause selecting exact ``(sym_root, sym_suffix)`` pairs.
+        """Build the WHERE condition selecting exact ``(sym_root, sym_suffix)`` pairs.
 
-        The first conjunct, ``sym_root = ANY(roots)``, is what the server's
-        chunk-group filters prune on; the second picks the exact share
-        classes. Every value is a ``sql.Literal``, never interpolated text.
+        TAQ splits a symbol into a root and a share-class suffix, so
+        ``BRK.B`` is root ``BRK`` with suffix ``B``. The first part of the
+        condition, ``sym_root = ANY(roots)``, lets the server skip storage
+        blocks that hold none of the roots; the second part picks the exact
+        share classes. Every value is a ``sql.Literal``, never text pasted
+        into the SQL.
 
         Parameters
         ----------
-        pairs
-            ``(root, suffix)`` tuples; a ``None`` or empty suffix means
-            the plain root.
+        pairs : iterable of tuple of (str, str or None)
+            ``(root, suffix)`` pairs; a ``None`` or empty suffix means the
+            plain root.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            The condition, without the ``WHERE`` keyword.
 
         Raises
         ------
         ValueError
-            If ``pairs`` is empty. Without a ``sym_root``
-            predicate the query would scan a whole day table, which this
-            class never issues.
+            If ``pairs`` is empty. Without a ``sym_root`` condition the
+            query would scan a whole day table, which this class never does.
 
         Examples
         --------
@@ -393,8 +451,8 @@ class WrdsSession:
         """
         pairs = [(str(root), str(suffix or "")) for root, suffix in pairs]
         if not pairs:
-            # Without pairs there is no `sym_root` predicate, and a query over
-            # a whole day table is a full scan of a multi-GB table.
+            # A query without a `sym_root` condition would scan a whole
+            # multi-GB day table.
             raise ValueError(
                 "WrdsSession.where_clause: no (sym_root, sym_suffix) pairs; "
                 "refusing to build a query over a whole complete_nbbo table."
@@ -413,10 +471,25 @@ class WrdsSession:
     def copy_query(cls, day: date, pairs, columns) -> sql.Composed:
         """Build the COPY statement for one day table and one symbol batch.
 
-        The statement has no ORDER BY, GROUP BY or DISTINCT and no time
-        predicate: the whole day is collected, and before 2018 the server's
-        physical row order is the only tie-breaker between records that share
-        a microsecond.
+        ``COPY ... TO STDOUT`` streams the result as CSV, which is much
+        faster than fetching rows one by one. The statement has no ORDER BY,
+        GROUP BY or DISTINCT and no time condition. The whole day is
+        collected, and before 2018 the order in which the server stores the
+        rows is the only way to order records that share a timestamp.
+
+        Parameters
+        ----------
+        day : datetime.date
+            The trading day.
+        pairs : iterable of tuple of (str, str or None)
+            ``(root, suffix)`` pairs, as for ``where_clause``.
+        columns : iterable of str
+            Column names to select, in this order.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            The complete statement. The CSV output includes a header line.
 
         Examples
         --------
@@ -445,8 +518,20 @@ class WrdsSession:
     def count_query(cls, day: date, pairs) -> sql.Composed:
         """Build ``SELECT count(*)`` over the same WHERE as ``copy_query``.
 
-        Sharing the WHERE means a count and the pull it checks cannot select
-        different rows.
+        Using the same condition guarantees that a count and the download it
+        checks select the same rows.
+
+        Parameters
+        ----------
+        day : datetime.date
+            The trading day.
+        pairs : iterable of tuple of (str, str or None)
+            ``(root, suffix)`` pairs, as for ``where_clause``.
+
+        Returns
+        -------
+        psycopg2.sql.Composed
+            The count statement.
 
         Examples
         --------
@@ -463,37 +548,41 @@ class WrdsSession:
             where=cls.where_clause(pairs),
         )
 
-    # -- generic query helpers -----------------------------------------------
+    # -- general query helpers -----------------------------------------------
     #
-    # Product-neutral by design: one WRDS account serves several products,
-    # and they all reach the server through this one session. A second
-    # provider asks for a schema by name, hands over a `psycopg2.sql`
-    # composable, and gets rows or CSV bytes back. All three go through
-    # `self._query`, which applies the username scrub and the broken-session
-    # rule; a helper reaching `self._connection()` directly would leave a
-    # driver-errored session reusable and reconnect (and push Duo) next call.
+    # Used by every WRDS product, not only TAQ. All three go through
+    # `self._query`, which hides the username in errors and marks the session
+    # broken on a driver error; calling `self._connection()` directly would
+    # skip that and let the next call reconnect (and send a Duo prompt).
 
     def schema_usable(self, schema: str) -> bool:
-        """Return whether this role has ``USAGE`` on ``schema``.
+        """Return whether this account may read ``schema``.
 
-        Asked through ``pg_namespace`` rather than by name, because the
-        by-name form of ``has_schema_privilege`` raises for a schema that does
-        not exist and a driver error would break the session. A missing
-        schema returns no row and reads as ``False``, the same answer as "not
-        subscribed". The schema travels as a query parameter.
+        Reading a schema requires the ``USAGE`` privilege. The question is
+        asked through the ``pg_namespace`` catalogue rather than by schema
+        name, because asking by name raises for a schema that does not exist,
+        and a driver error would break the session. A missing schema returns
+        no row and reads as ``False``, the same answer as "not subscribed".
+
+        Parameters
+        ----------
+        schema : str
+            The schema name, passed as a query parameter.
+
+        Returns
+        -------
+        bool
+            True if the account has ``USAGE`` on the schema.
 
         Examples
         --------
-        >>> usable = session.schema_usable("crsp_a_stock")
+        Needs a live session::
+
+            usable = session.schema_usable("crsp_a_stock")
         """
 
         def work(conn):
-            """Fetch the privilege row for the schema.
-
-            Examples
-            --------
-            >>> row = self._query(work)
-            """
+            """Fetch the privilege row for the schema."""
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT has_schema_privilege(oid, 'USAGE') "
@@ -508,28 +597,30 @@ class WrdsSession:
     def fetch_rows(self, query) -> list[tuple]:
         """Execute ``query`` and return every row.
 
-        Meant for catalogue and metadata reads that fit in memory. A data pull
-        uses ``copy_csv`` instead, which streams a full day of records
-        without materialising Python tuples.
+        Meant for small catalogue and metadata reads. A data download uses
+        ``copy_csv`` instead, which streams a full day of records without
+        building a Python tuple per row.
 
         Parameters
         ----------
-        query
-            A ``psycopg2.sql`` composable or plain SQL text.
+        query : psycopg2.sql.Composable or str
+            The statement to run.
+
+        Returns
+        -------
+        list of tuple
+            All result rows.
 
         Examples
         --------
-        >>> from psycopg2 import sql
-        >>> rows = session.fetch_rows(sql.SQL("SELECT 1"))
+        Needs a live session::
+
+            from psycopg2 import sql
+            rows = session.fetch_rows(sql.SQL("SELECT 1"))
         """
 
         def work(conn):
-            """Execute the query and fetch all rows.
-
-            Examples
-            --------
-            >>> rows = self._query(work)
-            """
+            """Execute the query and fetch all rows."""
             with conn.cursor() as cursor:
                 cursor.execute(query)
                 return cursor.fetchall()
@@ -539,24 +630,31 @@ class WrdsSession:
     def copy_csv(self, query) -> bytes:
         """Run a ``COPY ... TO STDOUT`` statement and return the CSV bytes.
 
-        The composed statement goes to ``copy_expert`` as-is, so no SQL text
-        is assembled outside ``psycopg2.sql``. Up to ``COPY_SPOOL_BYTES`` stay
-        in memory before the buffer spills to a temporary file.
+        The statement is passed to ``copy_expert`` unchanged, so no SQL text
+        is assembled outside ``psycopg2.sql``. Up to ``COPY_SPOOL_BYTES``
+        stay in memory before the buffer moves to a temporary file.
+
+        Parameters
+        ----------
+        query : psycopg2.sql.Composable
+            A ``COPY (...) TO STDOUT`` statement.
+
+        Returns
+        -------
+        bytes
+            The CSV output.
 
         Examples
         --------
-        >>> raw = session.copy_csv(
-        ...     WrdsSession.copy_query(day, [("AAPL", None)], columns)
-        ... )
+        Needs a live session::
+
+            raw = session.copy_csv(
+                WrdsSession.copy_query(day, [("AAPL", None)], columns)
+            )
         """
 
         def work(conn):
-            """Stream the COPY output through a spooled buffer.
-
-            Examples
-            --------
-            >>> raw = self._query(work)
-            """
+            """Stream the COPY output into a buffer and return its bytes."""
             with tempfile.SpooledTemporaryFile(
                 max_size=self.COPY_SPOOL_BYTES
             ) as buffer, conn.cursor() as cursor:
@@ -566,30 +664,51 @@ class WrdsSession:
 
         return self._query(work)
 
-    # -- network methods -------------------------------------------------------
+    # -- TAQ-specific network methods -----------------------------------------
 
     def has_schema_usage(self, year: int) -> bool:
-        """Return whether this role may read ``taqm_{year}``.
+        """Return whether this account may read the TAQ schema ``taqm_{year}``.
 
-        A TAQ-shaped name over ``schema_usable``; only the schema naming
-        differs.
+        Parameters
+        ----------
+        year : int
+            The calendar year.
+
+        Returns
+        -------
+        bool
+            The answer of ``schema_usable`` for that schema.
 
         Examples
         --------
-        >>> entitled = session.has_schema_usage(2024)
+        Needs a live session::
+
+            entitled = session.has_schema_usage(2024)
         """
         return self.schema_usable(f"taqm_{int(year)}")
 
     def assert_entitled(self, years) -> None:
-        """Raise ``WrdsEntitlementError`` naming every unreadable ``taqm_YYYY``.
+        """Check that the account may read the TAQ schema of every year given.
 
-        Run before the first data query of a pull or a probe, so an
-        unentitled year stops the run with zero COPY calls instead of failing
-        every batch of every day.
+        Called before the first data query of a download or a probe, so a
+        year outside the subscription stops the run before any data is
+        copied, instead of failing every batch of every day.
+
+        Parameters
+        ----------
+        years : iterable of int
+            Calendar years.
+
+        Raises
+        ------
+        WrdsEntitlementError
+            Naming every ``taqm_YYYY`` schema the account cannot read.
 
         Examples
         --------
-        >>> session.assert_entitled(range(2020, 2025))
+        Needs a live session::
+
+            session.assert_entitled(range(2020, 2025))
         """
         missing = [
             f"taqm_{int(year)}"
@@ -608,19 +727,28 @@ class WrdsSession:
     def count_rows(self, day: date, pairs) -> int:
         """Return how many rows ``copy_query(day, pairs, ...)`` would return.
 
+        Parameters
+        ----------
+        day : datetime.date
+            The trading day.
+        pairs : iterable of tuple of (str, str or None)
+            ``(root, suffix)`` pairs, as for ``where_clause``.
+
+        Returns
+        -------
+        int
+            The row count.
+
         Examples
         --------
-        >>> session.count_rows(date(2024, 1, 24), [("AAPL", None)])
+        Needs a live session::
+
+            session.count_rows(date(2024, 1, 24), [("AAPL", None)])
         """
         query = self.count_query(day, pairs)
 
         def work(conn):
-            """Execute the count and fetch its single row.
-
-            Examples
-            --------
-            >>> row = self._query(work)
-            """
+            """Execute the count and fetch its single row."""
             with conn.cursor() as cursor:
                 cursor.execute(query)
                 return cursor.fetchone()
@@ -629,23 +757,31 @@ class WrdsSession:
         return int(row[0])
 
     def trading_days(self, year: int) -> list[date]:
-        """Return every day with a ``complete_nbbo`` table in ``taqm_{year}``.
+        """Return every day that has a ``complete_nbbo`` table in ``taqm_{year}``.
 
-        Listed ascending from ``information_schema`` rather than probed per
-        calendar day, so a missing table cannot be mistaken for a holiday.
+        The days are read from the database catalogue
+        (``information_schema``) rather than tested one calendar day at a
+        time, so a missing table cannot be mistaken for a holiday.
+
+        Parameters
+        ----------
+        year : int
+            The calendar year.
+
+        Returns
+        -------
+        list of datetime.date
+            The trading days, ascending.
 
         Examples
         --------
-        >>> days = session.trading_days(2024)
+        Needs a live session::
+
+            days = session.trading_days(2024)
         """
 
         def work(conn):
-            """List the day-table names in the year's schema.
-
-            Examples
-            --------
-            >>> names = self._query(work)
-            """
+            """List the day-table names in the year's schema."""
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT table_name FROM information_schema.tables "
@@ -663,20 +799,27 @@ class WrdsSession:
         return sorted(days)
 
     def table_columns(self, day: date) -> tuple[str, ...]:
-        """Return the day table's column names in server order.
+        """Return the day table's column names in the server's column order.
+
+        Parameters
+        ----------
+        day : datetime.date
+            The trading day.
+
+        Returns
+        -------
+        tuple of str
+            Column names, sorted by their position in the table.
 
         Examples
         --------
-        >>> columns = session.table_columns(date(2024, 1, 24))
+        Needs a live session::
+
+            columns = session.table_columns(date(2024, 1, 24))
         """
 
         def work(conn):
-            """Read the column names and positions from the catalogue.
-
-            Examples
-            --------
-            >>> rows = self._query(work)
-            """
+            """Read the column names and positions from the catalogue."""
             with conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT column_name, ordinal_position "
@@ -692,14 +835,31 @@ class WrdsSession:
     def copy_nbbo_csv(self, day: date, pairs, columns) -> bytes:
         """Run ``copy_query`` for one day and batch and return the CSV bytes.
 
-        The header line is included. The statement is exactly the one
-        ``copy_query`` builds, with no ordering or time predicate added.
+        The statement is exactly the one ``copy_query`` builds, with no
+        ordering or time condition added.
+
+        Parameters
+        ----------
+        day : datetime.date
+            The trading day.
+        pairs : iterable of tuple of (str, str or None)
+            ``(root, suffix)`` pairs, as for ``where_clause``.
+        columns : iterable of str
+            Column names to select, in this order.
+
+        Returns
+        -------
+        bytes
+            The CSV output, starting with a header line.
 
         Examples
         --------
-        >>> raw = session.copy_nbbo_csv(
-        ...     date(2024, 1, 24), [("AAPL", None)], session.table_columns(day)
-        ... )
+        Needs a live session::
+
+            day = date(2024, 1, 24)
+            raw = session.copy_nbbo_csv(
+                day, [("AAPL", None)], session.table_columns(day)
+            )
         """
         return self.copy_csv(self.copy_query(day, pairs, columns))
 
@@ -707,16 +867,28 @@ class WrdsSession:
 def trading_days_between(session, start: date, end: date) -> list[date]:
     """Return the trading days in ``[start, end]``, ascending.
 
-    A trading day is a day with a ``complete_nbbo`` table, listed per year
-    through ``session.trading_days``. The acquisition and the volume probe
-    both use this function so they walk exactly the same days.
+    A trading day is a day that has a ``complete_nbbo`` table, listed per
+    year through ``session.trading_days``. The acquisition and the volume
+    probe both use this function, so they cover exactly the same days.
+
+    Parameters
+    ----------
+    session : WrdsSession
+        The shared WRDS session.
+    start, end : datetime.date
+        First and last day of the window, inclusive.
+
+    Returns
+    -------
+    list of datetime.date
+        The trading days in the window.
 
     Examples
     --------
-    Needs a live ``WrdsSession``.
+    Needs a live ``WrdsSession``::
 
-    >>> from datetime import date
-    >>> days = trading_days_between(session, date(2024, 1, 1), date(2024, 3, 31))
+        from datetime import date
+        days = trading_days_between(session, date(2024, 1, 1), date(2024, 3, 31))
     """
     days: set[date] = set()
     for year in range(start.year, end.year + 1):
@@ -725,38 +897,46 @@ def trading_days_between(session, start: date, end: date) -> list[date]:
 
 
 class WrdsTaqNbboAcquisition(Acquisition):
-    """Acquisition of WRDS TAQ ``complete_nbbo`` day tables.
+    """Download WRDS TAQ ``complete_nbbo`` day tables.
 
-    One page is one trading day's table for one symbol batch: ``_fetch_page``
-    reads the day named by the page token (the window's first trading day
-    when there is none) and returns the next trading day's ISO date as the
-    next token. The shared ``Acquisition`` base owns the batch loop, shard
-    writes, the page ledger and resume.
+    The work is split into pages, and one page is one trading day's table
+    for one batch of symbols. ``_fetch_page`` reads the day named by the page
+    token (the window's first trading day when there is no token) and
+    returns the next trading day's ISO date as the next token. The shared
+    ``Acquisition`` base class runs the batch loop, writes the parquet files
+    (shards), records finished pages and resumes interrupted runs.
 
-    The raw tier lands under ``.../wrds/data_type=nbbo/date=/symbol=/`` with
-    one row per NBBO record for the full session day, unfiltered. Each row's
-    arrival position within its query is stored as ``wrds_row_ord`` before
-    anything else touches the frame, because before 2018 the tables carry no
-    sequence number and the server's order is the only tie-breaker. TAQ's
-    ``time_m`` is US/Eastern wall clock; ``timestamp`` is the same instant as
-    naive UTC nanoseconds, and the ``date=`` hive key is the Eastern session
-    date.
+    The raw tier is written under ``.../wrds/data_type=nbbo/date=/symbol=/``
+    (directories named ``key=value``, a layout called hive partitioning),
+    with one row per NBBO record for the full trading day, unfiltered. The
+    position at which each row arrived is stored as ``wrds_row_ord`` before
+    anything else touches the frame, because before 2018 the tables have no
+    sequence number and the server's order is the only way to order records
+    with equal timestamps. TAQ's ``time_m`` is New York local clock time.
+    ``timestamp`` is the same instant in UTC, stored without a time zone at
+    nanosecond resolution, and the ``date=`` directory is the New York
+    trading date.
 
-    The config must say ``frequency="tick"`` and ``kwargs["data_type"] =
-    "nbbo"``; ``max_workers`` other than 1 is refused because every
-    connection can push a Duo prompt. Symbols use dot notation for share
-    classes (``BRK.B``); a hyphenated form is refused.
+    Symbols use a dot for share classes (``BRK.B``); the hyphenated form
+    (``BRK-B``) is refused. ``max_workers`` other than 1 is refused, because
+    every connection can send a Duo prompt.
+
+    Parameters
+    ----------
+    config : AcquisitionConfig
+        Built by ``build_config``. It must have ``frequency="tick"`` and
+        ``kwargs["data_type"] == "nbbo"``.
 
     Examples
     --------
     Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
-    opens the connection and may push a Duo prompt.
+    opens the connection and may send a Duo prompt::
 
-    >>> cfg = WrdsTaqNbboAcquisition.build_config(
-    ...     ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
-    ... )
-    >>> acq = WrdsTaqNbboAcquisition(cfg).download()
-    >>> report = acq.coverage_report()
+        cfg = WrdsTaqNbboAcquisition.build_config(
+            ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
+        )
+        acq = WrdsTaqNbboAcquisition(cfg).download()
+        report = acq.coverage_report()
 
     Shards land under ``.../wrds_taq/wrds/data_type=nbbo/date=2024-01-24/
     symbol=AAPL/`` and the watermarks under ``.../wrds_taq/_watermarks/wrds/``.
@@ -764,14 +944,14 @@ class WrdsTaqNbboAcquisition(Acquisition):
 
     VENDOR = "wrds"
 
-    #: TAQ ``time_m`` is US/Eastern wall clock; the ``date=`` hive key is the
-    #: Eastern session date.
+    #: TAQ's ``time_m`` is New York clock time, and the ``date=`` directory is
+    #: the New York trading date.
     SESSION_TIME_ZONE = "America/New_York"
 
     #: The only data type this vendor serves under ``frequency="tick"``.
     TICK_DATA_TYPES = ("nbbo",)
 
-    #: Symbols per day-table query. A working value, overridable through
+    #: Symbols per day-table query. Overridable through
     #: ``kwargs["batch_size"]``.
     DEFAULT_BATCH_SIZE = 25
 
@@ -779,10 +959,10 @@ class WrdsTaqNbboAcquisition(Acquisition):
     #: ``__init__``.
     DEFAULT_MAX_WORKERS = 1
 
-    #: Count every page with the COPY's own WHERE before pulling it, and fail
-    #: the page on a mismatch. Overridable through
-    #: ``kwargs["verify_page_counts"]``; the count is well under a second per
-    #: (day, batch) on the server's columnar chunk filters.
+    #: Count every page with the same WHERE before copying it, and fail the
+    #: page if the copied row count differs. Overridable through
+    #: ``kwargs["verify_page_counts"]``. On the server the count takes well
+    #: under a second per (day, batch).
     DEFAULT_VERIFY_PAGE_COUNTS = True
 
     CREDENTIAL_ENV_VARS = (USERNAME_ENV,)
@@ -791,8 +971,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
     SCHEMA_PATTERN = "taqm_{year}"
     TABLE_PATTERN = "complete_nbbo_{ymd}"
 
-    #: ``BRK.B`` is root ``BRK`` with suffix ``B``: the constituent universes'
-    #: notation.
+    #: ``BRK.B`` is root ``BRK`` with suffix ``B``, the notation used by the
+    #: index-constituent symbol lists.
     SUFFIX_DELIMITER = "."
 
     #: The raw tier lives under ``downloads/us_equity/tick/{DEFAULT_SUBDIR}/wrds``.
@@ -817,9 +997,9 @@ class WrdsTaqNbboAcquisition(Acquisition):
     )
     OPTIONAL_TAQ_COLUMNS = ("time_m_nano",)
 
-    #: The shard column projection and order. TAQ's ``date`` is stored as
-    #: ``taq_date`` because the shard writer derives its own ``date`` hive
-    #: key and would otherwise overwrite and drop the raw column.
+    #: The shard columns and their order. TAQ's ``date`` is stored as
+    #: ``taq_date``, because the shard writer adds its own ``date`` column for
+    #: the ``date=`` directory and would otherwise overwrite the raw one.
     RAW_COLUMNS = (
         "timestamp",
         "symbol",
@@ -861,30 +1041,30 @@ class WrdsTaqNbboAcquisition(Acquisition):
     }
 
     def __init__(self, config: AcquisitionConfig):
-        """Validate the config and bind the shared session."""
+        """Initialize the acquisition; see the class docstring for parameters."""
         super().__init__(config)
-        # Validated eagerly, before any session exists, so a bad config raises
-        # at construction rather than inside a worker.
-        self._data_type  # resolves and validates, or raises
+        # Check the config now, before any session exists, so a bad config
+        # fails at construction rather than in the middle of a run.
+        self._data_type  # validates, or raises
         max_workers = self._knob("max_workers", self.DEFAULT_MAX_WORKERS)
         if max_workers != 1:
             raise ValueError(
                 f"{self.class_name}: kwargs['max_workers']={max_workers!r} is "
-                f"refused; WRDS acquisition runs on ONE shared connection "
-                f"(D-20), because every extra connection can push a Duo prompt "
-                f"to your phone and the WRDS role allows only 7."
+                f"refused; WRDS acquisition runs on one shared connection, "
+                f"because every extra connection can send a Duo prompt to "
+                f"your phone and the WRDS account allows only 7."
             )
-        # Resolved through the module global at call time, so a test's patch
-        # of `WrdsSession` takes effect.
+        # Looked up as a module global at call time, so a test that replaces
+        # `WrdsSession` takes effect.
         self._session = WrdsSession.shared()
         self._trading_days_cache: dict[tuple[str, str], list[date]] = {}
 
     @property
     def _data_type(self) -> str:
-        """Return ``"nbbo"``, the only data type, or raise on a bad config.
+        """Return ``"nbbo"``, or raise if the config does not say so.
 
-        There is deliberately no default: the value names the ``data_type=``
-        hive key and the watermark namespace.
+        There is deliberately no default, because the value names the
+        ``data_type=`` directory and the watermark directory.
         """
         frequency = self.config.frequency
         data_type = self._knob("data_type", None)
@@ -893,15 +1073,15 @@ class WrdsTaqNbboAcquisition(Acquisition):
                 f"{self.class_name}: needs frequency 'tick' with "
                 f"kwargs['data_type'] set to one of "
                 f"{sorted(self.TICK_DATA_TYPES)}; got frequency {frequency!r} "
-                f"and data_type {data_type!r}. There is deliberately NO "
-                f"default -- the data type names the raw tier's `data_type=` "
-                f"hive key and the watermark namespace."
+                f"and data_type {data_type!r}. There is deliberately no "
+                f"default: the data type names the raw tier's `data_type=` "
+                f"directory and the watermark directory."
             )
         return data_type
 
     # -- failure policy ----------------------------------------------------------
 
-    #: Exceptions that mean the one session, or the account, is unusable.
+    #: Exceptions meaning the shared session or the account is unusable.
     GLOBAL_STOP_ERRORS = (
         WrdsSessionError,
         WrdsEntitlementError,
@@ -910,14 +1090,15 @@ class WrdsTaqNbboAcquisition(Acquisition):
     )
 
     def _classify_error(self, exc: BaseException) -> str:
-        """Map session and entitlement errors to a run-wide stop.
+        """Classify session and subscription errors as a whole-run stop.
 
-        For this vendor ``"quota"`` means "stop the whole run", not an
-        allocation: a dead session or a missing entitlement is never one
-        symbol's fault, so it stays out of the failure manifest, and a
-        batch-by-batch retry would reconnect and push Duo each time.
-        Everything else (a malformed page, an unrequested symbol, a count
-        mismatch) is a per-batch failure retried on the next run.
+        The base class treats ``"quota"`` as "stop the whole run"; here it
+        has nothing to do with a usage allowance. A dead session or a missing
+        subscription is never one symbol's fault, so it is kept out of the
+        per-symbol failure file, and retrying batch by batch would reconnect
+        and send a Duo prompt each time. Every other error (a malformed page,
+        an unrequested symbol, a count mismatch) fails only its batch, which
+        the next run retries.
         """
         if isinstance(exc, self.GLOBAL_STOP_ERRORS):
             return "quota"
@@ -930,9 +1111,25 @@ class WrdsTaqNbboAcquisition(Acquisition):
         """Split a dotted symbol into its TAQ ``(sym_root, sym_suffix)`` pair.
 
         A hyphenated symbol such as ``BRK-B`` is refused rather than guessed
-        at: ``TRADEABLE_TICKER_PATTERN`` admits both delimiters, and querying
-        ``sym_root = 'BRK-B'`` would silently return nothing. More than one
-        dot, or an empty root or suffix, is refused too.
+        at: the project's ticker pattern accepts both separators, and a query
+        for ``sym_root = 'BRK-B'`` would silently return nothing. More than
+        one dot, or an empty root or suffix, is refused too.
+
+        Parameters
+        ----------
+        symbol : str
+            ``ROOT`` or ``ROOT.SUFFIX``.
+
+        Returns
+        -------
+        tuple of (str, str or None)
+            The root and the suffix, or ``None`` when there is no suffix.
+
+        Raises
+        ------
+        ValueError
+            If the symbol contains a hyphen or is not ``ROOT`` or
+            ``ROOT.SUFFIX``.
 
         Examples
         --------
@@ -960,12 +1157,24 @@ class WrdsTaqNbboAcquisition(Acquisition):
     def pair_to_symbol(cls, root: str, suffix: str | None) -> str:
         """Join a TAQ ``(sym_root, sym_suffix)`` pair back into a dotted symbol.
 
+        Parameters
+        ----------
+        root : str
+            The symbol root.
+        suffix : str or None
+            The share-class suffix; ``None`` or ``""`` means none.
+
+        Returns
+        -------
+        str
+            ``ROOT`` or ``ROOT.SUFFIX``.
+
         Examples
         --------
         >>> WrdsTaqNbboAcquisition.pair_to_symbol("BRK", "B")
-        BRK.B
+        'BRK.B'
         >>> WrdsTaqNbboAcquisition.pair_to_symbol("AAPL", None)
-        AAPL
+        'AAPL'
         """
         return str(root) if not suffix else f"{root}{cls.SUFFIX_DELIMITER}{suffix}"
 
@@ -988,23 +1197,23 @@ class WrdsTaqNbboAcquisition(Acquisition):
         self._trading_days_cache[key] = result
         return result
 
-    # -- entitlement preflight -------------------------------------------------
+    # -- subscription check before running -----------------------------------
 
     def _run(self, symbols: list[str] | None, from_watermark: bool):
-        """Check the TAQ entitlement for every year of the window, then run.
+        """Check the TAQ subscription for every year of the window, then run.
 
-        The check happens before the base runner dispatches a single batch, so
-        an unentitled year raises ``WrdsEntitlementError`` out of
-        ``download()`` or ``refresh()`` with zero COPY calls and no failure
-        manifest write. The window checked is the config's; a refresh's
-        per-symbol start is never earlier than it.
+        The check happens before the base class runs a single batch, so a
+        year outside the subscription raises ``WrdsEntitlementError`` out of
+        ``download()`` or ``refresh()`` before any data is copied and without
+        writing the failure file. The config's window is checked; a refresh
+        never starts a symbol earlier than that window.
         """
         start = self._as_date(self.config.start_date)
         end = self._as_date(self.config.end_date)
         self._session.assert_entitled(range(start.year, end.year + 1))
         return super()._run(symbols, from_watermark)
 
-    # -- one page = one day-table query --------------------------------------
+    # -- one page is one day-table query --------------------------------------
 
     def _empty_page(self) -> pl.DataFrame:
         """Return an empty frame with the raw schema and column order."""
@@ -1019,13 +1228,27 @@ class WrdsTaqNbboAcquisition(Acquisition):
     ) -> tuple[pl.DataFrame, str | None]:
         """Fetch one trading day's ``complete_nbbo`` rows for one symbol batch.
 
-        Returns ``(frame, next_token)``, where ``next_token`` is the next
-        trading day's ISO date or ``None`` after the window's last day. No
-        record is sorted, de-duplicated or filtered; ``wrds_row_ord`` is
-        assigned from arrival order before any other operation. The page is
-        counted with the same WHERE before the COPY and refused on a
-        mismatch, and refused again if it contains an unrequested share class
-        or a row dated off the table's day.
+        No record is sorted, de-duplicated or filtered, and ``wrds_row_ord``
+        is assigned from arrival order before anything else. The page is
+        counted with the same WHERE before the copy and refused if the
+        counts differ, and refused again if it contains a share class that
+        was not requested or a row dated on another day.
+
+        Parameters
+        ----------
+        symbols : list of str
+            The batch's symbols, in dot notation.
+        start_date, end_date : str
+            The window, inclusive.
+        page_token : str or None, default None
+            The ISO date of the day to read, or ``None`` for the window's
+            first trading day.
+
+        Returns
+        -------
+        tuple of (polars.DataFrame, str or None)
+            The page in ``RAW_SCHEMA``, and the next trading day's ISO date,
+            or ``None`` after the window's last trading day.
         """
         symbols = self._validate_symbols(symbols)
         # Before any query: a hyphenated or malformed symbol is refused here.
@@ -1050,7 +1273,7 @@ class WrdsTaqNbboAcquisition(Acquisition):
         server_columns = set(self._session.table_columns(day))
         table = f"taqm_{day:%Y}.{self.TABLE_PATTERN.format(ymd=f'{day:%Y%m%d}')}"
         # TAQ_COLUMNS order, not server order, so the SELECT and the frame are
-        # identical for every day of every era.
+        # the same for every day, whatever the table layout of that year.
         columns = tuple(name for name in self.TAQ_COLUMNS if name in server_columns)
         missing = [
             name
@@ -1058,17 +1281,18 @@ class WrdsTaqNbboAcquisition(Acquisition):
             if name not in server_columns and name not in self.OPTIONAL_TAQ_COLUMNS
         ]
         if missing:
-            # A layout drift fails loudly; it is never null-filled.
+            # A changed layout fails loudly; missing columns are never filled
+            # with nulls.
             raise ValueError(
                 f"{self.class_name}: {table} reports no {missing} column(s); "
                 f"the table layout no longer matches the one this class was "
-                f"verified against (D-18). Columns seen: "
+                f"written for. Columns seen: "
                 f"{sorted(server_columns)}."
             )
 
-        # Completeness check: the same WHERE, counted before the COPY. A page
-        # that parses to a different number of rows fails as a per-batch
-        # failure and is re-fetched by the next run.
+        # Completeness check: count with the same WHERE before the copy. A
+        # page with a different number of rows fails its batch and is fetched
+        # again by the next run.
         expected_rows = (
             self._session.count_rows(day, pairs)
             if self._knob("verify_page_counts", self.DEFAULT_VERIFY_PAGE_COUNTS)
@@ -1078,7 +1302,7 @@ class WrdsTaqNbboAcquisition(Acquisition):
         raw = self._session.copy_nbbo_csv(day, pairs, columns)
 
         frame = pl.read_csv(io.BytesIO(raw), infer_schema=False)
-        # First, before anything can reorder the rows.
+        # First, before any operation can reorder the rows.
         frame = frame.with_columns(
             pl.int_range(pl.len(), dtype=pl.Int64).alias("wrds_row_ord")
         )
@@ -1144,14 +1368,14 @@ class WrdsTaqNbboAcquisition(Acquisition):
     def _assert_page_belongs(
         self, frame: pl.DataFrame, day: date, pairs, table: str
     ) -> None:
-        """Refuse the page unless every row is for the day and a requested pair.
+        """Raise ``ValueError`` unless every row is for the day and a requested pair.
 
-        This checks and never filters: dropping an unrequested row would hide
-        a WHERE clause that stopped doing what it says, and a row dated off
-        the table's day would land under the wrong ``date=`` partition. The
-        Eastern session date of the reconstructed ``timestamp`` is checked as
-        well as the raw ``date`` field, so the hive key derived by the shard
-        writer cannot disagree with the table the row came from.
+        This checks and never filters. Dropping an unrequested row would hide
+        a WHERE clause that no longer does what it says, and a row dated on
+        another day would be written into the wrong ``date=`` directory. Both
+        the raw ``date`` field and the New York date of the computed
+        ``timestamp`` are checked, so the ``date=`` directory chosen by the
+        shard writer always matches the table the row came from.
         """
         wanted = {(root, suffix or "") for root, suffix in pairs}
         seen = frame.select(
@@ -1167,7 +1391,7 @@ class WrdsTaqNbboAcquisition(Acquisition):
                 f"{self.class_name}: {table} returned rows for {strangers}, "
                 f"which were not requested (requested pairs: "
                 f"{sorted(wanted)}). Refusing the page rather than filing "
-                f"another share class under a requested symbol (D-15)."
+                f"another share class under a requested symbol."
             )
         off_day = frame.filter(
             (pl.col("taq_date") != day)
@@ -1192,13 +1416,31 @@ class WrdsTaqNbboAcquisition(Acquisition):
         kwargs: dict | None = None,
         subdir: str = DEFAULT_SUBDIR,
     ) -> AcquisitionConfig:
-        """Build the ``AcquisitionConfig`` for a WRDS NBBO pull.
+        """Build the ``AcquisitionConfig`` for a WRDS NBBO download.
 
-        This is the capability's ``config_factory``. The raw root ends at the
-        vendor segment (``.../{subdir}/wrds``) and the watermarks live in the
-        sibling ``.../{subdir}/_watermarks/wrds``, both under
-        ``get_data_root() / "downloads" / "us_equity" / "tick"``. No
+        This is the ``config_factory`` of the registry's ``nbbo``
+        capability. The raw directory is ``.../{subdir}/wrds`` and the
+        watermarks go to the sibling ``.../{subdir}/_watermarks/wrds``, both
+        under ``get_data_root() / "downloads" / "us_equity" / "tick"``. No
         credential goes into the config.
+
+        Parameters
+        ----------
+        symbols : iterable of str
+            Tickers in dot notation, for example ``"BRK.B"``.
+        start_date, end_date : str or None, default None
+            The window, inclusive, as ISO dates.
+        kwargs : dict or None, default None
+            Extra options, such as ``batch_size`` or ``verify_page_counts``.
+            ``data_type`` is set to ``"nbbo"``.
+        subdir : str, default "wrds_taq"
+            Directory under ``downloads/us_equity/tick`` that holds this raw
+            tier.
+
+        Returns
+        -------
+        AcquisitionConfig
+            The config for ``WrdsTaqNbboAcquisition``.
 
         Raises
         ------
@@ -1211,10 +1453,11 @@ class WrdsTaqNbboAcquisition(Acquisition):
         >>> cfg = WrdsTaqNbboAcquisition.build_config(
         ...     ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
         ... )
-        >>> cfg.raw_data_dir_path
-        '<data root>/downloads/us_equity/tick/wrds_taq/wrds'
         >>> cfg.kwargs
         {'data_type': 'nbbo'}
+
+        ``cfg.raw_data_dir_path`` is
+        ``'<data root>/downloads/us_equity/tick/wrds_taq/wrds'``.
         """
         merged = dict(kwargs or {})
         data_type = merged.get("data_type", "nbbo")
@@ -1240,25 +1483,33 @@ class WrdsTaqNbboAcquisition(Acquisition):
 
 
 class WrdsNbboVolumeProbe:
-    """Count the ``complete_nbbo`` rows a pull would fetch, per trading day.
+    """Count the ``complete_nbbo`` rows a download would fetch, per trading day.
 
-    The counts feed the SQL volume guard, which prices a pull before it runs.
-    One ``count(*)`` is issued per (trading day, symbol batch), with batches
-    chunked exactly like ``Acquisition._batches`` and the WHERE built by the
-    same ``WrdsSession.where_clause`` the COPY uses, so the rows priced are
-    the rows the pull will move. Each count is fast on the server's columnar
-    chunk filters; a whole-table count is never issued because
-    ``where_clause`` refuses an empty batch. Counts are not cached on disk:
-    the pull re-counts each page anyway when ``verify_page_counts`` is on.
+    The counts feed the volume guard, which estimates the size of a download
+    before it runs and refuses one that is too large. One ``count(*)`` is
+    issued per (trading day, symbol batch). The batches are split exactly
+    like ``Acquisition._batches`` and the WHERE is built by the same
+    ``WrdsSession.where_clause`` the copy uses, so the rows counted are the
+    rows the download will move. Each count is fast on the server, and a
+    whole table is never counted because ``where_clause`` refuses an empty
+    batch. Counts are not saved to disk, because the download counts each
+    page again anyway when ``verify_page_counts`` is on.
+
+    Parameters
+    ----------
+    session : WrdsSession
+        The shared WRDS session.
+    batch_size : int, default 25
+        Symbols per count query; the acquisition's ``DEFAULT_BATCH_SIZE``.
 
     Examples
     --------
-    Needs a live ``WrdsSession``.
+    Needs a live ``WrdsSession``::
 
-    >>> probe = WrdsNbboVolumeProbe(WrdsSession.shared(), batch_size=25)
-    >>> rows_by_day = probe.count_rows_by_day(
-    ...     ["AAPL", "MSFT"], "2024-01-24", "2024-01-25"
-    ... )
+        probe = WrdsNbboVolumeProbe(WrdsSession.shared(), batch_size=25)
+        rows_by_day = probe.count_rows_by_day(
+            ["AAPL", "MSFT"], "2024-01-24", "2024-01-25"
+        )
     """
 
     #: Log progress every this many trading days.
@@ -1269,12 +1520,12 @@ class WrdsNbboVolumeProbe:
         session,
         batch_size: int = WrdsTaqNbboAcquisition.DEFAULT_BATCH_SIZE,
     ) -> None:
-        """Bind the session and the symbols-per-query batch size."""
+        """Initialize the probe; see the class docstring for parameters."""
         self.session = session
         self.batch_size = max(1, int(batch_size))
 
     def _batches(self, symbols: list[str]) -> list[list[str]]:
-        """Chunk ``symbols`` into batches of ``batch_size`` in input order."""
+        """Split ``symbols`` into batches of ``batch_size``, keeping their order."""
         return [
             symbols[index : index + self.batch_size]
             for index in range(0, len(symbols), self.batch_size)
@@ -1285,9 +1536,21 @@ class WrdsNbboVolumeProbe:
     ) -> dict[str, int]:
         """Return ``{ISO trading day: rows}`` over ``[start_date, end_date]``.
 
-        Rows are summed over the symbol batches. Entitlement is checked
-        first, so an unentitled year raises ``WrdsEntitlementError`` before
+        Rows are summed over the symbol batches. The subscription is checked
+        first, so a year outside it raises ``WrdsEntitlementError`` before
         any count is issued.
+
+        Parameters
+        ----------
+        symbols : iterable of str
+            Tickers in dot notation.
+        start_date, end_date : str
+            The window, inclusive, as ISO dates.
+
+        Returns
+        -------
+        dict of str to int
+            Row counts keyed by trading day.
 
         Raises
         ------
@@ -1297,7 +1560,9 @@ class WrdsNbboVolumeProbe:
 
         Examples
         --------
-        >>> counts = probe.count_rows_by_day(["AAPL"], "2024-01-24", "2024-01-24")
+        Needs a live ``WrdsSession``::
+
+            counts = probe.count_rows_by_day(["AAPL"], "2024-01-24", "2024-01-24")
         """
         symbols = [str(symbol) for symbol in symbols]
         if not symbols:

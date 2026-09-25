@@ -1,12 +1,24 @@
-"""Alpaca Market Data acquisition: daily and minute bars, quotes and trades.
+"""Download US stock bars, quotes and trades from Alpaca Market Data.
 
-``AlpacaAcquisition`` is the vendor-specific half of the acquisition layer. It
-builds one request per page against Alpaca's historical stock endpoints and
-hands each page to the shared ``Acquisition`` base, which owns pagination,
-resume, concurrency, failure isolation and the raw parquet shards. Credentials
-are read from ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` in the environment
-and are never stored on a config or written to a log. ``ALPACA_SOURCE`` at the
-bottom of the module registers the vendor with ``quantlab.registry``.
+``AlpacaAcquisition`` is the Alpaca-specific part of the acquisition layer.
+It builds one HTTP request per page against Alpaca's historical stock
+endpoints and hands each page to the shared ``Acquisition`` base class, which
+handles pagination, resuming, concurrency, per-batch failures and writing the
+raw parquet files (*shards*). Besides daily and minute *bars* (open, high,
+low, close and volume per interval), Alpaca serves *tick* data: every
+individual *quote* (best bid and ask) and *trade*.
+
+Two data-quality terms matter here. *Survivorship bias* is the distortion
+that comes from studying only companies that still exist today; a
+*point-in-time* symbol list avoids it by naming each ticker as it was on each
+date, including tickers later delisted. The module takes care never to let
+Alpaca silently swap a delisted ticker for whatever company holds that
+ticker today.
+
+Credentials are read from ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` in
+the environment and are never stored on a config or written to a log.
+``ALPACA_SOURCE`` at the bottom of the module registers the vendor with
+``quantlab.registry``.
 """
 
 import functools
@@ -27,55 +39,59 @@ from quantlab.dataset.stock import StockDataset
 
 #: The two environment variables Alpaca credentials are read from.
 #:
-#: Defined at module level, and read from here by the credential-scrubbing
-#: routine, rather than off ``_AlpacaMarketDataClient``. That class is a patch
-#: target that tests replace with a fake, and a redaction routine must not
-#: depend on a symbol whose whole purpose is to be replaced. The client
-#: re-exposes both names as class attributes for its own callers.
+#: They are defined here, not on ``_AlpacaMarketDataClient``, because tests
+#: replace that class with a fake, and the code that hides credentials in
+#: messages must not depend on something a test can swap out. The client
+#: repeats both names as class attributes for its own use.
 KEY_ENV = "APCA_API_KEY_ID"
 SECRET_ENV = "APCA_API_SECRET_KEY"
 
 #: The ``asof`` value that tells Alpaca not to map a symbol onto whatever
-#: entity holds the ticker today.
+#: company holds the ticker today.
 #:
-#: A ``None`` value cannot serve this purpose: ``requests`` drops any parameter
-#: whose value is ``None`` before building the query string, so ``"asof": None``
-#: reaches the wire as nothing and the vendor's current-day default applies.
-#: That default maps a delisted ticker onto its current occupant, which is the
-#: survivorship bias the point-in-time roster exists to remove, so a real,
-#: encodable value has to be sent. ``"-"`` is the vendor's documented
-#: no-mapping value; it has not been verified against a live request. If it is
-#: wrong the failure is loud (a 4xx on every request, recorded in the failure
-#: manifest), whereas the failure of ``None`` was silent, biased data.
+#: ``None`` cannot do this: ``requests`` drops parameters whose value is
+#: ``None``, so the vendor would apply its default of mapping by today's
+#: ticker owner. That turns a delisted ticker into its current holder, which
+#: is exactly the survivorship bias a point-in-time symbol list removes.
+#: ``"-"`` is the vendor's documented "no mapping" value, not yet verified
+#: against a live request. If it is wrong, every request fails with a 4xx
+#: and lands in the failure manifest, which is loud rather than silently
+#: biased.
 ASOF_NO_MAPPING = "-"
 
-#: Sentinel distinguishing "``asof`` was never set" from "``asof`` was set to
-#: ``None``". Unset sends ``ASOF_NO_MAPPING``; an explicit ``None`` is the one
-#: way a caller asks for the vendor's current-day mapping, and the only path on
-#: which the parameter is omitted.
+#: Marker that tells "``asof`` was never set" apart from "``asof`` was set to
+#: ``None``". Unset sends ``ASOF_NO_MAPPING``. An explicit ``None`` is the one
+#: way to ask for the vendor's current-day mapping, and the only case in which
+#: the parameter is left out.
 _ASOF_UNSET = object()
 
 
 class _AlpacaMarketDataClient:
-    """Minimal single-page HTTP transport for Alpaca Market Data.
+    """Minimal HTTP client that fetches one page of Alpaca Market Data.
 
     The official ``alpaca-py`` client loops over every page internally and
-    discards ``next_page_token`` before returning, which makes page-level
-    resume impossible and holds a whole batch in memory. This class issues
-    exactly one request per call and returns the raw envelope, token included.
+    throws away ``next_page_token`` before returning. That makes resuming
+    from a given page impossible and holds a whole batch in memory. This
+    class sends exactly one request per call and returns the raw JSON
+    response (the *envelope*), page token included.
 
-    Credentials are read from ``os.environ`` here and live only on the
-    ``requests.Session`` headers. They are never copied onto a config or onto
-    any attribute a serialiser could reach.
+    Credentials are read from ``os.environ`` in the constructor and live only
+    in the ``requests.Session`` headers. They are never copied onto a config
+    or onto any attribute that could be serialised.
+
+    Raises
+    ------
+    RuntimeError
+        If either credential environment variable is unset or empty.
     """
 
     #: Fixed, never read from config. The session sends both credential
-    #: headers to whatever host it targets, so a configurable base URL would
-    #: turn a config file into a way to exfiltrate the key.
+    #: headers to whatever host it targets, so a configurable URL would let a
+    #: config file send the key to another server.
     BASE_URL = "https://data.alpaca.markets/v2"
 
-    #: Re-exposed from the module-level constants; see their comment for why
-    #: the definition does not live on this class.
+    #: Copies of the module-level constants; see their comment for why they
+    #: are not defined here.
     KEY_ENV = KEY_ENV
     SECRET_ENV = SECRET_ENV
 
@@ -84,7 +100,7 @@ class _AlpacaMarketDataClient:
     TIMEOUT_SECONDS = 60
 
     def __init__(self) -> None:
-        """Open a session that carries the credentials from the environment.
+        """Open an HTTP session carrying the credentials from the environment.
 
         Raises
         ------
@@ -98,9 +114,10 @@ class _AlpacaMarketDataClient:
             raise RuntimeError(
                 f"{self.KEY_ENV} and {self.SECRET_ENV} environment variables "
                 f"must both be set. Alpaca market-data credentials are read "
-                f"from the environment and are never stored on the config "
-                f"(D-15) -- export them before running acquisition (see your "
-                f"Alpaca dashboard for the key pair)."
+                f"from the environment and are never stored on the config, "
+                f"so that they never end up on disk. Export them before "
+                f"running acquisition (see your Alpaca dashboard for the key "
+                f"pair)."
             )
         self._session = requests.Session()
         self._session.headers.update(
@@ -113,9 +130,9 @@ class _AlpacaMarketDataClient:
     def get_page(self, path: str, params: dict) -> dict:
         """Issue exactly one request and return the raw JSON envelope.
 
-        The envelope is returned with its ``next_page_token`` intact, which is
-        the reason this class exists instead of the SDK's page-looping client.
-        TLS verification is left at the ``requests`` default.
+        The response keeps its ``next_page_token``, which is why this class
+        is used instead of the SDK's client. TLS verification is left at the
+        ``requests`` default.
 
         Parameters
         ----------
@@ -138,15 +155,15 @@ class _AlpacaMarketDataClient:
         Examples
         --------
         Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported;
-        this call reaches the network.
+        this call goes to the network::
 
-        >>> client = _AlpacaMarketDataClient()
-        >>> page = client.get_page(
-        ...     "/stocks/bars",
-        ...     {"symbols": "AAPL", "timeframe": "1Day",
-        ...      "start": "2024-01-02", "end": "2024-01-03"},
-        ... )
-        >>> page["bars"]["AAPL"], page["next_page_token"]
+            client = _AlpacaMarketDataClient()
+            page = client.get_page(
+                "/stocks/bars",
+                {"symbols": "AAPL", "timeframe": "1Day",
+                 "start": "2024-01-02", "end": "2024-01-03"},
+            )
+            bars, token = page["bars"]["AAPL"], page["next_page_token"]
         """
         response = self._session.get(
             f"{self.BASE_URL}{path}",
@@ -158,77 +175,95 @@ class _AlpacaMarketDataClient:
 
 
 class AlpacaAcquisition(Acquisition):
-    """Alpaca Market Data acquisition behind the shared ``Acquisition`` base.
+    """Download Alpaca Market Data through the shared ``Acquisition`` base.
 
-    Alpaca serves many symbols per request and paginates, so ``_fetch_page``
-    issues one request and returns ``(rows, next_page_token)``; the base class
-    loops over the pages, writes the shards and keeps the page ledger.
+    Alpaca serves many symbols per request and splits large answers into
+    pages, so ``_fetch_page`` sends one request and returns
+    ``(rows, next_page_token)``. The base class loops over the pages, writes
+    the shards and keeps the page ledger.
 
-    Data types. One token, resolved by ``_data_type``, selects the endpoint,
-    the field map and the shard projection. ``frequency="1d"`` and ``"1m"``
-    fetch bars; ``frequency="tick"`` fetches ``quotes`` or ``trades`` and
+    Data types. One value, returned by ``_data_type``, selects the endpoint,
+    the field names and the shard columns. ``frequency="1d"`` and ``"1m"``
+    fetch bars. ``frequency="tick"`` fetches ``quotes`` or ``trades`` and
     requires ``kwargs["data_type"]`` to say which, with no default. Tick rows
-    are written at full resolution: nothing between the request and the shard
-    resamples, buckets or deduplicates them.
+    are written exactly as received: nothing between the request and the
+    shard resamples, groups or deduplicates them.
 
     Subscription tiers. Alpaca's free (Basic) plan and its paid Algo Trader
-    Plus plan both serve history since 2016 with the same fields. The free plan
-    withholds the latest 15 minutes, which a historical backfill never asks
-    for. The difference that matters is the historical request rate: 200
-    requests per minute on the free plan against 10,000 on the paid one, a
-    factor of 50. At 200 per minute a full-market daily backfill takes about
-    8 minutes and a full-market minute backfill about 50 hours and 358 GB, so
-    the tier question is really "how much data am I asking for", which the
-    pre-flight volume guard in ``quantlab.universe`` makes the user answer
-    before a run starts.
+    Plus plan both serve history since 2016 with the same fields. The free
+    plan withholds the latest 15 minutes, which a historical backfill never
+    asks for. The difference that matters is the historical request rate:
+    200 requests per minute on the free plan against 10,000 on the paid one,
+    a factor of 50. At 200 per minute a full-market daily backfill takes
+    about 8 minutes and a full-market minute backfill about 50 hours and
+    358 GB. The practical question is therefore how much data a run asks
+    for, and the volume check in ``quantlab.universe`` makes the user answer
+    it before a run starts.
 
-    The SIP question is UNRESOLVED. Whether the free plan can request
-    historical SIP (consolidated) data at all is not settled by the vendor's
-    own documentation, and this class takes no position. One reading is yes,
-    for data older than 15 minutes: the FAQ says ``end`` must be at least 15
-    minutes old to query SIP data without a subscription, and the plan table
-    reads the same way. The other reading is no, IEX only: the data-sources
-    table states that IEX is the only feed available without a subscription.
-    Three vendor pages support the first reading and one the second; that is
-    a vote count, not evidence. The difference is material, because IEX
-    carries roughly 2.5% of consolidated volume, and free-tier tick data
-    restricted to IEX would be unusable for research. Consequently ``feed``
-    is a ``config.kwargs`` option with NO in-code default: when it is unset
-    the parameter is omitted from the request and the vendor picks the best
-    feed the account allows. Only one request against a real credential can
-    settle the question.
+    Whether the free plan may use SIP data is unresolved. SIP (Securities
+    Information Processor) is the consolidated feed covering every US
+    exchange; IEX is a single exchange's feed. Alpaca's own documentation
+    does not settle whether the free plan can request historical SIP data,
+    and this class takes no position. One reading is yes, for data older
+    than 15 minutes: the FAQ says ``end`` must be at least 15 minutes old to
+    query SIP data without a subscription, and the plan table reads the same
+    way. The other reading is IEX only: the data-sources table says IEX is
+    the only feed available without a subscription. Three vendor pages
+    support the first reading and one the second; that is a vote count, not
+    evidence. The difference is material, because IEX carries roughly 2.5% of
+    consolidated volume, and tick data limited to IEX would be unusable for
+    research. So ``feed`` is a ``config.kwargs`` option with no in-code
+    default: when it is unset the parameter is left out of the request and
+    the vendor picks the best feed the account allows. Only a request made
+    with a real key can settle the question.
 
     Corporate actions. This class has no corporate-actions method, endpoint
-    or constant. If one is ever added it must not be treated as a substitute
-    for the Tiingo ``supported_tickers.csv`` delisting signal: Alpaca's
-    Corporate Actions API excludes delistings and reorganisations, and
-    conflating the two would reintroduce the survivorship bias the
-    point-in-time roster removes.
+    or constant. If one is ever added it must not replace the delisting
+    information in Tiingo's ``supported_tickers.csv``: Alpaca's Corporate
+    Actions API leaves out delistings and reorganisations, and relying on it
+    would bring back survivorship bias.
 
-    Credentials. Only the market-data endpoints are used; there is no trading
-    or broker API and no paper/live switch, because the market-data API does
-    not distinguish the two. ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY``
-    are read from the environment inside ``_AlpacaMarketDataClient`` and are
-    never assigned to a config dataclass, because ``AcquisitionConfig``
-    serialises to JSON beside model checkpoints and a key stored there would
-    end up on disk. Their values are redacted from every captured message.
+    Credentials. Only the market-data endpoints are used; there is no
+    trading or broker API and no paper/live switch, because the market-data
+    API does not distinguish the two. ``APCA_API_KEY_ID`` and
+    ``APCA_API_SECRET_KEY`` are read from the environment inside
+    ``_AlpacaMarketDataClient`` and are never put on a config, because
+    ``AcquisitionConfig`` is saved as JSON beside model checkpoints and a
+    key stored there would end up on disk. Their values are removed from
+    every captured message.
+
+    Parameters
+    ----------
+    config : AcquisitionConfig
+        The acquisition config. Alpaca-specific options go in
+        ``config.kwargs``: ``data_type`` (required for ``frequency="tick"``),
+        ``feed``, ``adjustment`` (default ``"raw"``), ``asof`` and
+        ``page_limit`` (default 10,000), plus the base class's tuning
+        parameters.
+
+    Raises
+    ------
+    ValueError
+        If ``data_type``, ``feed`` or ``adjustment`` is not an accepted
+        value.
+    RuntimeError
+        If the credentials are missing from the environment.
 
     Examples
     --------
-    Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported.
+    Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported::
 
-    >>> from quantlab.base.config import AcquisitionConfig
-    >>> cfg = AcquisitionConfig(
-    ...     market="us_equity", frequency="1d", vendor="alpaca",
-    ...     raw_data_dir_path="downloads/nasdaq_data/alpaca",
-    ...     watermark_path="downloads/nasdaq_data/_watermarks/alpaca",
-    ...     symbols=("AAPL",), start_date="2024-01-02",
-    ...     end_date="2024-01-03",
-    ... )
-    >>> acq = AlpacaAcquisition(cfg).download()
-    >>> acq.coverage_report()
-    {'requested': 1, 'pending': 0, 'skipped': 1, 'covered': 1,
-     'widened': 0, 'legacy': 0, 'no_data': 0}
+        from quantlab.base.config import AcquisitionConfig
+
+        cfg = AcquisitionConfig(
+            market="us_equity", frequency="1d", vendor="alpaca",
+            raw_data_dir_path="downloads/nasdaq_data/alpaca",
+            watermark_path="downloads/nasdaq_data/_watermarks/alpaca",
+            symbols=("AAPL",), start_date="2024-01-02",
+            end_date="2024-01-03",
+        )
+        acq = AlpacaAcquisition(cfg).download()
+        print(acq.coverage_report())
 
     Trades at full resolution use ``frequency="tick"`` together with
     ``kwargs={"data_type": "trades"}``.
@@ -236,28 +271,28 @@ class AlpacaAcquisition(Acquisition):
 
     VENDOR = "alpaca"
 
-    #: Symbols per request. Alpaca does not document the ceiling, so this is a
-    #: conservative working value rather than a verified limit; override it
+    #: Symbols per request. Alpaca does not document a maximum, so this is a
+    #: cautious practical value rather than a verified limit; override it
     #: through ``config.kwargs["batch_size"]``.
     DEFAULT_BATCH_SIZE = 100
 
-    #: Project frequency token to the Alpaca ``timeframe`` parameter. Both
-    #: values come from the vendor's documented grammar. Adding a bar size is
-    #: a one-line change here rather than an edit to request building.
+    #: Maps the project's frequency value to Alpaca's ``timeframe``
+    #: parameter, using the vendor's documented spelling. Adding a bar size
+    #: is a one-line change here.
     TIMEFRAME_MAP = {"1d": "1Day", "1m": "1Min"}
 
-    #: The time zone the intraday ``date=`` hive key is derived in.
+    #: The time zone whose calendar date names the intraday ``date=``
+    #: directories.
     #:
-    #: Minute bars carry true UTC instants, and the timestamp values stay
-    #: naive UTC like every other timestamp in the codebase. Only the derived
-    #: partition key converts: the US regular session runs 14:30 to 21:00 UTC
-    #: and extended hours cross UTC midnight, so a key taken from the UTC date
-    #: would file the last hours of every session under the following day and
-    #: make a one-day query wrong at both edges.
+    #: Timestamps are stored as UTC without a time zone attached, like every
+    #: other timestamp in the project; only the directory key is converted.
+    #: The US regular session runs 14:30 to 21:00 UTC and extended hours cross
+    #: UTC midnight, so a UTC date would file the last hours of each session
+    #: under the next day and make a one-day query wrong at both edges.
     SESSION_TIME_ZONE = "America/New_York"
 
-    #: Data type to endpoint path. The envelope keys its rows by the same
-    #: token, so one value indexes both the request and the response.
+    #: Data type to endpoint path. The response keys its rows by the same
+    #: name, so one value selects both the request and the response field.
     ENDPOINT_MAP = {
         "bars": "/stocks/bars",
         "quotes": "/stocks/quotes",
@@ -265,14 +300,14 @@ class AlpacaAcquisition(Acquisition):
     }
 
     #: The values ``kwargs["data_type"]`` accepts under ``frequency="tick"``.
-    #: There is no default: quotes and trades share one vendor root and differ
-    #: only by the leading ``data_type=`` hive key, so a guess would file one
-    #: as the other with the wrong column projection.
+    #: There is no default: quotes and trades share one vendor directory and
+    #: differ only by the ``data_type=`` directory level, so a guess would
+    #: file one as the other with the wrong columns.
     TICK_DATA_TYPES = ("quotes", "trades")
 
-    #: Alpaca's single-letter bar fields to this project's column names. This
-    #: is the most likely place for a quiet error: a swapped ``o``/``c`` would
-    #: produce plausible-looking data forever.
+    #: Alpaca's single-letter bar fields to this project's column names. A
+    #: mistake here is easy to miss: swapping ``o`` and ``c`` would produce
+    #: plausible-looking data forever.
     FIELD_MAP = {
         "t": "timestamp",
         "o": "open",
@@ -310,18 +345,17 @@ class AlpacaAcquisition(Acquisition):
         "z": "tape",
     }
 
-    #: Data type to its field map. ``FIELD_MAP`` stays the bars entry under
-    #: its original name.
+    #: Data type to its field map. ``FIELD_MAP`` is the bars entry.
     FIELD_MAP_BY_DATA_TYPE = {
         "bars": FIELD_MAP,
         "quotes": QUOTE_FIELD_MAP,
         "trades": TRADE_FIELD_MAP,
     }
 
-    #: Shard column projection and order, per data type. Each begins with
-    #: ``("timestamp", "symbol", "vendor")`` and then carries only that
-    #: endpoint's own fields, so a directory scan of the vendor root always
-    #: sees one schema and a trade never carries null bid/ask columns.
+    #: Shard columns, in order, per data type. Each begins with
+    #: ``("timestamp", "symbol", "vendor")`` followed by only that endpoint's
+    #: own fields, so a directory scan always sees one schema and a trade
+    #: never carries empty bid/ask columns.
     RAW_COLUMNS_BY_DATA_TYPE = {
         "bars": (
             "timestamp",
@@ -361,16 +395,16 @@ class AlpacaAcquisition(Acquisition):
         ),
     }
 
-    #: Explicit dtypes per data type. They build an empty page (so a no-rows
-    #: response still has a readable ``symbol`` column), type the columns a
-    #: sparse response omits, and cast a populated page so every shard has the
-    #: same schema.
+    #: Explicit column dtypes per data type. They build an empty page (so a
+    #: response with no rows still has a readable ``symbol`` column), type
+    #: columns a sparse response leaves out, and cast a full page so every
+    #: shard has the same schema.
     #:
-    #: The ``timestamp`` unit is part of the schema. Bars are microseconds;
-    #: quotes and trades are nanoseconds because that is the resolution Alpaca
-    #: sends. Parsing them at microseconds would truncate sub-microsecond
-    #: ordering and manufacture ``(timestamp, symbol)`` ties in the one tier
-    #: that never deduplicates.
+    #: The ``timestamp`` unit matters. Bars use microseconds; quotes and
+    #: trades use nanoseconds because that is what Alpaca sends. Parsing them
+    #: at microseconds would lose their ordering below one microsecond and
+    #: create false ``(timestamp, symbol)`` ties in tick data, which is never
+    #: deduplicated.
     RAW_SCHEMA_BY_DATA_TYPE = {
         "bars": {
             "timestamp": pl.Datetime("us"),
@@ -410,22 +444,22 @@ class AlpacaAcquisition(Acquisition):
         },
     }
 
-    #: Per data type, the columns the vendor may legitimately omit from every
-    #: row of a page; ``conditions`` is optional on the wire. Any other
-    #: missing column means the field map no longer matches the envelope, and
-    #: ``_fetch_page`` raises rather than null-filling it: an all-null
-    #: ``price`` column would read as untraded symbols forever.
+    #: Per data type, the columns the vendor may leave out of every row of a
+    #: page; ``conditions`` is optional in the response. Any other missing
+    #: column means the field map no longer matches the response, and
+    #: ``_fetch_page`` raises rather than filling it with nulls: an all-null
+    #: ``price`` column would look like symbols that never traded.
     OPTIONAL_COLUMNS_BY_DATA_TYPE = {
         "bars": (),
         "quotes": ("conditions",),
         "trades": ("conditions",),
     }
 
-    #: Accepted values for the request options a caller may set. An
-    #: unrecognised value raises instead of being forwarded, because the
-    #: vendor rejects some and silently ignores others, and "silently ignored"
-    #: means a run that asks for split-adjusted bars and stores raw ones.
-    #: Taken from ``alpaca-py`` 0.44.0.
+    #: Accepted values for the request options a caller may set. An unknown
+    #: value raises instead of being sent, because the vendor rejects some
+    #: and silently ignores others, and an ignored value means a run that
+    #: asks for split-adjusted bars and stores raw ones. The lists come from
+    #: ``alpaca-py`` 0.44.0.
     FEED_VALUES = frozenset(
         {"iex", "sip", "delayed_sip", "otc", "boats", "overnight"}
     )
@@ -435,44 +469,43 @@ class AlpacaAcquisition(Acquisition):
     #: Always ``asc``, never read from an option; see ``_fetch_page``.
     SORT = "asc"
 
-    #: How an intraday window's edges are sent; see ``_window_bounds``.
+    #: Suffixes that turn an intraday window's dates into full timestamps;
+    #: see ``_window_bounds``.
     #:
-    #: Alpaca documents ``start``/``end`` as RFC 3339 instants. A bare
-    #: ``YYYY-MM-DD`` is unambiguous for daily bars but not for minute or tick
-    #: data, where the most plausible reading of a bare ``end`` is
-    #: ``00:00:00Z``, which would exclude the whole final session while the
-    #: watermark still recorded that date as covered. Sending explicit bounds
-    #: is what makes "queried up to ``end_date``" a true statement. Nine
-    #: fractional digits match the nanosecond tick timestamps.
+    #: Alpaca documents ``start`` and ``end`` as RFC 3339 timestamps. A bare
+    #: ``YYYY-MM-DD`` is clear for daily bars but not for minute or tick data,
+    #: where a bare ``end`` most likely means ``00:00:00Z``. That would leave
+    #: out the whole final session while the watermark still recorded the
+    #: date as covered. Nine fractional digits match the nanosecond tick
+    #: timestamps.
     INTRADAY_START_SUFFIX = "T00:00:00Z"
     INTRADAY_END_SUFFIX = "T23:59:59.999999999Z"
 
-    #: Re-exposed from the module-level constant; see its comment.
+    #: Copy of the module-level constant; see its comment.
     ASOF_NO_MAPPING = ASOF_NO_MAPPING
 
     #: What a credential value is replaced with in any captured message.
     REDACTION = "<APCA CREDENTIAL REDACTED>"
 
-    #: The two credentials ``Acquisition._scrub`` redacts before a message
+    #: The two credentials ``Acquisition._scrub`` hides before a message
     #: reaches a log line or the failure manifest. Built from the module-level
-    #: constants, never from the patchable client class. Alpaca sends
+    #: constants, not from the client class that tests replace. Alpaca sends
     #: credentials in headers rather than in the URL, but a ``requests``
-    #: exception chain can still expose ``exc.request.headers``.
+    #: exception can still expose ``exc.request.headers``.
     CREDENTIAL_ENV_VARS = (KEY_ENV, SECRET_ENV)
 
-    #: HTTP statuses that mean "slow down", not "out of allocation".
+    #: HTTP statuses that mean "slow down", not "quota used up".
     #:
-    #: Alpaca's 429 is a per-minute ceiling (200 requests per minute on the
-    #: free plan) that a healthy full-market run hits repeatedly and that
-    #: clears within a minute, so it is retried inside the worker. Alpaca has
-    #: no request-allocation concept, so this class declares no
-    #: ``QUOTA_STATUS_CODES``: reading this 429 as global would abort every
-    #: run within seconds of starting.
+    #: Alpaca's 429 is a per-minute limit (200 requests per minute on the free
+    #: plan) that a normal full-market run hits often and that clears within
+    #: a minute, so the worker waits and retries. Alpaca has no hourly or
+    #: daily quota, so this class declares no ``QUOTA_STATUS_CODES``: treating
+    #: this 429 as run-wide would stop every run within seconds.
     RATE_LIMIT_STATUS_CODES = frozenset({429})
 
-    #: Headers Alpaca may send alongside a 429, read for logging only. A
-    #: missing header is no information, never a default, and the backoff
-    #: interval stays a configured constant rather than a computed reset time.
+    #: Headers Alpaca may send with a 429, read for logging only. A missing
+    #: header is recorded as missing, never as a default, and the wait time
+    #: stays a configured constant.
     RATE_LIMIT_HEADERS = (
         "X-RateLimit-Limit",
         "X-RateLimit-Remaining",
@@ -480,34 +513,26 @@ class AlpacaAcquisition(Acquisition):
     )
 
     def __init__(self, config: AcquisitionConfig):
-        """Validate the request options, then open the transport.
+        """Initialize the acquisition; see the class docstring for parameters.
 
-        The options are checked before the client exists so that a bad
-        ``data_type``, ``feed`` or ``adjustment`` raises at construction
-        rather than inside a worker thread, where it would be filed in the
+        The request options are checked before the HTTP client is opened, so
+        a bad ``data_type``, ``feed`` or ``adjustment`` raises here rather
+        than inside a worker thread, where it would be recorded in the
         failure manifest as if the vendor had rejected the batch.
-
-        Raises
-        ------
-        ValueError
-            If an option is outside its accepted set.
-        RuntimeError
-            If the credentials are missing from the environment.
         """
         super().__init__(config)
         self._assert_knobs_are_in_range()
         self._client = _AlpacaMarketDataClient()
 
-    # -- data type: one token drives the endpoint and the projection --------
+    # -- data type: one value selects the endpoint and the columns ----------
 
     @property
     def _data_type(self) -> str:
         """Return ``"bars"``, ``"quotes"`` or ``"trades"`` for this run.
 
-        Bar frequencies resolve from ``config.frequency``; ``"tick"`` resolves
-        from ``config.kwargs["data_type"]``, which has no default. The same
-        token selects the endpoint and the shard projection, so the two
-        cannot disagree.
+        Bar frequencies give ``"bars"``. ``"tick"`` reads
+        ``config.kwargs["data_type"]``, which has no default. The same value
+        selects the endpoint and the shard columns, so the two always agree.
 
         Raises
         ------
@@ -525,47 +550,46 @@ class AlpacaAcquisition(Acquisition):
                 f"{self.class_name}: frequency {frequency!r} needs "
                 f"kwargs['data_type'] set to one of "
                 f"{sorted(self.TICK_DATA_TYPES)}; got {data_type!r}. There is "
-                f"deliberately NO default -- quotes and trades land under the "
-                f"same vendor root, distinguished only by the leading "
-                f"`data_type=` hive key, so guessing here would file one as "
-                f"the other with the other's column projection applied."
+                f"deliberately no default: quotes and trades land under the "
+                f"same vendor directory, distinguished only by the "
+                f"`data_type=` directory level, so guessing here would file "
+                f"one as the other with the other's columns."
             )
         return data_type
 
     @property
     def RAW_COLUMNS(self) -> tuple[str, ...]:  # noqa: N802 - base attr name
-        """Return the shard column projection for this run's data type.
+        """Return the shard columns, in order, for this run's data type.
 
-        A property rather than a class attribute because the projection
-        depends on which endpoint the run reads. ``RAW_COLUMNS_BY_DATA_TYPE``
-        remains the class-level source of truth.
-
-        Examples
-        --------
-        >>> acq.RAW_COLUMNS
-        ('timestamp', 'symbol', 'vendor', 'open', 'high', 'low', 'close',
-         'volume', 'trade_count', 'vwap')
+        A property rather than a class attribute because the columns depend
+        on which endpoint the run reads. The values come from
+        ``RAW_COLUMNS_BY_DATA_TYPE``; for bars they are ``timestamp``,
+        ``symbol``, ``vendor``, ``open``, ``high``, ``low``, ``close``,
+        ``volume``, ``trade_count`` and ``vwap``.
         """
         return self.RAW_COLUMNS_BY_DATA_TYPE[self._data_type]
 
     @property
     def RAW_SCHEMA(self) -> dict:  # noqa: N802 - matches RAW_COLUMNS
-        """Return the explicit column dtypes for this run's data type.
+        """Return the column dtypes for this run's data type.
 
-        Examples
-        --------
-        >>> acq.RAW_SCHEMA["timestamp"]
-        Datetime(time_unit='us', time_zone=None)
+        For bars ``timestamp`` is ``pl.Datetime("us")``; for quotes and
+        trades it is ``pl.Datetime("ns")``.
         """
         return self.RAW_SCHEMA_BY_DATA_TYPE[self._data_type]
 
     def _assert_knobs_are_in_range(self) -> None:
         """Reject out-of-range request options before any request is built.
 
-        ``feed`` is checked only when set. An unset feed is omitted from the
-        request rather than defaulted, so there is nothing to validate.
+        ``feed`` is checked only when set. An unset feed is left out of the
+        request rather than given a default, so there is nothing to check.
+
+        Raises
+        ------
+        ValueError
+            If ``data_type``, ``feed`` or ``adjustment`` is not accepted.
         """
-        self._data_type  # resolves and validates, or raises
+        self._data_type  # validates the data type, or raises
 
         for name, allowed, default in (
             ("feed", self.FEED_VALUES, None),
@@ -587,14 +611,26 @@ class AlpacaAcquisition(Acquisition):
             raise ValueError(f"{self.class_name}: SORT={self.SORT!r} is invalid")
 
     def _window_bounds(self, start_date: str, end_date: str) -> tuple[str, str]:
-        """Return ``(start, end)`` as this data type needs them on the wire.
+        """Return ``(start, end)`` in the form this data type must send.
 
-        Daily bars keep bare dates. Minute and tick windows are widened to
-        explicit RFC 3339 instants spanning the whole calendar day, because a
-        bare ``YYYY-MM-DD`` end most plausibly resolves to ``00:00:00Z`` and
-        would drop the entire final US session while the watermark still
-        marked the date as covered. A bound that already carries a time
-        (a ``T`` is present) is passed through untouched.
+        Daily bars keep bare dates. Minute and tick windows become explicit
+        RFC 3339 timestamps covering the whole calendar day, because a bare
+        ``YYYY-MM-DD`` end most likely means ``00:00:00Z`` and would drop the
+        entire final US session while the watermark still marked the date as
+        covered. A bound that already contains a time (a ``T``) is passed
+        through unchanged.
+
+        Parameters
+        ----------
+        start_date : str
+            First date of the window, inclusive.
+        end_date : str
+            Last date of the window, inclusive.
+
+        Returns
+        -------
+        tuple[str, str]
+            The ``start`` and ``end`` request values.
         """
         if self._data_type == "bars" and self.config.frequency == "1d":
             return start_date, end_date
@@ -613,11 +649,15 @@ class AlpacaAcquisition(Acquisition):
     def _rate_limit_headers(self, exc: BaseException) -> dict[str, str]:
         """Return whichever ``X-RateLimit-*`` headers the vendor sent, or ``{}``.
 
-        The base class calls this on the first backoff of a rate-limited batch
-        and logs the result. An absent header contributes no entry, so "the
-        vendor said nothing" stays distinct from "the vendor said zero".
-        Nothing branches on the result; the backoff interval is a configured
-        constant.
+        The base class calls this on a rate-limited batch's first wait and
+        logs the result. A missing header adds no entry, so "the vendor said
+        nothing" stays distinct from "the vendor said zero". The result is
+        only logged; the wait time is a configured constant.
+
+        Parameters
+        ----------
+        exc : BaseException
+            The exception raised by the failed request.
         """
         response = self._vendor_response(exc)
         headers = getattr(response, "headers", None) or {}
@@ -630,9 +670,14 @@ class AlpacaAcquisition(Acquisition):
     def _classify_error(self, exc: BaseException) -> str:
         """Return ``"rate_limited"`` for a 429 and ``"failed"`` for anything else.
 
-        Alpaca has no global allocation condition, so this never returns
-        ``"quota"``. ``TiingoAcquisition`` reads the same status the opposite
-        way; see ``RATE_LIMIT_STATUS_CODES``.
+        Alpaca has no run-wide quota, so this never returns ``"quota"``.
+        ``TiingoAcquisition`` treats the same status the opposite way; see
+        ``RATE_LIMIT_STATUS_CODES``.
+
+        Parameters
+        ----------
+        exc : BaseException
+            The exception raised by the failed request.
         """
         if self._status_of(exc) in self.RATE_LIMIT_STATUS_CODES:
             return "rate_limited"
@@ -647,12 +692,11 @@ class AlpacaAcquisition(Acquisition):
     ) -> tuple[pl.DataFrame, str | None]:
         """Issue one request and return its rows as ``(frame, next_page_token)``.
 
-        The frame is projected and ordered to ``RAW_COLUMNS`` for this run's
-        data type, and a ``None`` token means this was the batch's last page.
-        Every row in the envelope becomes exactly one row in the frame: there
-        is no resampling, bucketing or deduplication on this path, and a
-        "resample ticks to save space" edit would destroy the resolution the
-        tick tier exists to capture.
+        The frame has exactly ``RAW_COLUMNS`` for this run's data type, and a
+        ``None`` token means this was the batch's last page. Every row in the
+        response becomes exactly one row in the frame. There is no
+        resampling, grouping or deduplication here; resampling ticks to save
+        space would destroy the detail tick data exists to capture.
 
         Parameters
         ----------
@@ -662,42 +706,41 @@ class AlpacaAcquisition(Acquisition):
             First date of the window, inclusive.
         end_date : str
             Last date of the window, inclusive.
-        page_token : str | None
+        page_token : str | None, default None
             The token from the previous page, or ``None`` for the
             first page.
+
+        Returns
+        -------
+        tuple[polars.DataFrame, str or None]
+            The page's rows and the next page token.
 
         Raises
         ------
         ValueError
-            If a required column is missing from the envelope,
-            which means the field map no longer matches the vendor.
+            If a required column is missing from the response, which means
+            the field map no longer matches what the vendor sends.
         """
         symbols = self._validate_symbols(symbols)
         data_type = self._data_type
 
-        # Bare dates for daily bars; explicit instants covering the whole
-        # session for minute and tick data. See `_window_bounds`.
+        # Bare dates for daily bars; full-day timestamps otherwise.
         window_start, window_end = self._window_bounds(start_date, end_date)
 
         params = {
             "symbols": ",".join(symbols),
             "start": window_start,
             "end": window_end,
-            # The vendor maximum. Fewer rows per page means more requests for
-            # the same data, which is pure rate-limit pressure.
+            # The vendor maximum: fewer rows per page only means more
+            # requests against the rate limit.
             "limit": self._knob("page_limit", 10_000),
-            # Always ascending. Alpaca orders symbol-major then by timestamp,
-            # so the ledger's "furthest position reached" is a well-defined
-            # resume point; a descending request would make it meaningless.
+            # Always ascending (by symbol, then time), so the ledger's
+            # "furthest position reached" is a meaningful resume point.
             "sort": self.SORT,
         }
 
-        # `asof` is sent as a real value, never `None`: `requests` drops
-        # None-valued params, and an omitted `asof` makes the vendor map each
-        # symbol onto whatever entity holds the ticker today, so a delisted
-        # ticker would silently return the current occupant's history. An
-        # explicit `kwargs={"asof": None}` is the one way to ask for that
-        # current-day mapping, and the only path that omits the key.
+        # Omitting `asof` would map a delisted ticker onto today's holder; see
+        # ASOF_NO_MAPPING. Only an explicit `kwargs={"asof": None}` omits it.
         asof = self._knob("asof", _ASOF_UNSET)
         if asof is _ASOF_UNSET:
             params["asof"] = self.ASOF_NO_MAPPING
@@ -705,14 +748,13 @@ class AlpacaAcquisition(Acquisition):
             params["asof"] = asof
 
         if data_type == "bars":
-            # Bar-only parameters: the quotes and trades endpoints have no bar
-            # size or price adjustment, and sending either is at best ignored.
+            # Bar-only parameters; the quotes and trades endpoints have no
+            # bar size or price adjustment.
             params["timeframe"] = self.TIMEFRAME_MAP[self.config.frequency]
             params["adjustment"] = self._knob("adjustment", "raw")
 
-        # Omitted entirely when unset: there is no in-code feed default, and
-        # leaving the key out lets the vendor pick what the subscription
-        # allows. See the class docstring.
+        # Left out when unset, so the vendor picks the best feed the
+        # subscription allows; see the class docstring.
         feed = self._knob("feed", None)
         if feed:
             params["feed"] = feed
@@ -722,8 +764,7 @@ class AlpacaAcquisition(Acquisition):
 
         payload = self._client.get_page(self.ENDPOINT_MAP[data_type], params)
 
-        # The envelope keys its rows by the data type itself, so the resolved
-        # token indexes the endpoint, the response and the projection alike.
+        # The response keys its rows by the data type name.
         field_map = self.FIELD_MAP_BY_DATA_TYPE[data_type]
         rows = [
             {
@@ -744,24 +785,19 @@ class AlpacaAcquisition(Acquisition):
             frame = pl.DataFrame(schema=schema)
             return frame.select(self.RAW_COLUMNS), payload.get("next_page_token")
 
-        # Infer the schema over the whole page, never the default 100 rows.
-        # The vendor omits an absent field from a row rather than nulling it,
-        # so a field first seen at row 101 would otherwise be dropped from the
-        # frame with no error: an optional column would lose the data later
-        # rows carried, and a required one would raise on every run.
+        # Infer the schema from every row, not the default first 100: the
+        # vendor leaves absent fields out, and a field first seen at row 101
+        # would otherwise be dropped silently.
         frame = pl.DataFrame(rows, infer_schema_length=None)
 
-        # A column absent from every row of the page is filled as a typed
-        # null column, so the shard schema is identical either way, but only
-        # when it is declared optional. Anything else absent means the field
-        # map no longer matches the envelope and must raise: filling it would
-        # write an all-null `price` (or `close`) column that reads as data.
+        # An optional column missing from the whole page becomes a typed null
+        # column, keeping the schema fixed. A missing required column raises.
         missing = [name for name in self.RAW_COLUMNS if name not in frame.columns]
         optional = self.OPTIONAL_COLUMNS_BY_DATA_TYPE[data_type]
         unexpected = [name for name in missing if name not in optional]
         if unexpected:
             raise ValueError(
-                f"{self.class_name}: the {data_type} envelope produced no "
+                f"{self.class_name}: the {data_type} response produced no "
                 f"{unexpected} column(s). Only {list(optional)} may be absent "
                 f"from a {data_type} page; anything else means "
                 f"FIELD_MAP_BY_DATA_TYPE[{data_type!r}] no longer matches what "
@@ -774,13 +810,9 @@ class AlpacaAcquisition(Acquisition):
                 pl.lit(None, dtype=schema[name]).alias(name) for name in missing
             )
 
-        # Alpaca returns RFC 3339 with a trailing `Z`. Parse as UTC and drop
-        # the zone so the dtype is a naive `pl.Datetime`, matching every other
-        # timestamp in the codebase; the intraday `date=` hive key is derived
-        # from these naive-UTC values in `SESSION_TIME_ZONE` by the base class.
-        # The time unit comes from the schema: quotes and trades are
-        # nanoseconds, and parsing at polars' microsecond default would
-        # silently truncate them.
+        # Parse the RFC 3339 `...Z` strings as UTC, then drop the time zone to
+        # match every other timestamp in the project. The unit comes from the
+        # schema so nanosecond tick timestamps are not truncated.
         frame = frame.with_columns(
             pl.col("timestamp")
             .str.to_datetime(time_zone="UTC", time_unit=schema["timestamp"].time_unit)
@@ -798,24 +830,17 @@ class AlpacaAcquisition(Acquisition):
 
 #: The registry entry for this vendor, defined beside the class so that adding
 #: a vendor touches one file. ``quantlab.registry`` imports this module at its
-#: bottom, after every definition, so a cold ``import quantlab.registry`` still
-#: enumerates this source. Binance spot data has no descriptor: that path
-#: reads locally dropped CSV files and downloads nothing.
+#: end, so a fresh ``import quantlab.registry`` still lists this source.
 ALPACA_SOURCE = register_source(
     SourceDescriptor(
         vendor="alpaca",
         display_name="Alpaca Market Data",
         acquisition_cls=AlpacaAcquisition,
         config_factory=functools.partial(stock_acquisition_config, vendor="alpaca"),
-        #: Four capabilities, which a cross-product of markets and frequencies
-        #: could not express: ``tick`` carries a data type the bar
-        #: frequencies do not, and it splits into two endpoints. The two bar
-        #: rows convert through ``StockDataset``, shared with Tiingo's row by
-        #: direct class reference. The two tick rows carry no ``dataset_cls``,
-        #: so ``registry.convert()`` refuses them because no conversion target
-        #: exists, not because it recognises the token: a quotes or trades
-        #: stream flattened onto a dense ``[timestamp, symbol]`` grid would be
-        #: a plausible-looking panel that is wrong.
+        # The two bar entries convert through ``StockDataset``, as Tiingo's
+        # does. The tick entries have no ``dataset_cls``, so
+        # ``registry.convert()`` refuses them: quotes or trades forced onto a
+        # dense ``(timestamp, symbol)`` grid would look plausible but be wrong.
         capabilities=(
             Capability(
                 market="us_equity",
@@ -832,11 +857,11 @@ ALPACA_SOURCE = register_source(
             Capability(market="us_equity", frequency="tick", data_type="quotes"),
             Capability(market="us_equity", frequency="tick", data_type="trades"),
         ),
-        #: Restated as literals rather than derived from ``CREDENTIAL_ENV_VARS``
-        #: so the two declarations stay independently checkable.
+        # Written out rather than taken from ``CREDENTIAL_ENV_VARS``, so each
+        # declaration can be checked against the other.
         required_env=("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"),
-        #: Advisory only; the roster comes from ``UniverseCatalog``, never from
-        #: the vendor.
+        # For information only; the symbol list comes from
+        # ``UniverseCatalog``, never from the vendor.
         universe_categories=(
             "nasdaq_all",
             "us_all",
