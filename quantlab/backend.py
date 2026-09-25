@@ -66,7 +66,7 @@ class XrBackend(DataBackend):
         ----------
         path : str
             Directory of the Zarr store.
-        overwrite : bool
+        overwrite : bool, default False
             Reload even if ``data`` is already populated.
         **kwargs
             Passed through to ``xarray.open_dataset``.
@@ -172,9 +172,9 @@ class XrBackend(DataBackend):
         ----------
         path : str
             Directory of the Zarr store.
-        append_dim : str
+        append_dim : str, default "timestamp"
             The dimension the store grows along.
-        append_dim_size : Optional[int]
+        append_dim_size : int, optional
             The store's eventual total length along
             ``append_dim``, if the caller knows it. Only the creating
             write reads it; it pins the chunk grid to the value a single
@@ -281,17 +281,17 @@ class XrBackend(DataBackend):
         symbols : Sequence[str]
             The labels the rewritten ``dim`` axis must contain. Must
             be a superset of the stored axis.
-        dim : str
+        dim : str, default "symbol"
             The axis being widened.
-        append_dim : str
+        append_dim : str, default "timestamp"
             The store's append dimension, used to size blocks and
             to pin the rewritten chunk grid.
-        fill_values : Optional[Mapping[str, object]]
+        fill_values : Mapping[str, object], optional
             Per-variable fill for variables carrying ``dim``
             that are not floating-point. Without an entry such a
             variable is refused, because an unfilled reindex would
             silently upcast it to float64.
-        append_dim_size : Optional[int]
+        append_dim_size : int, optional
             The store's eventual length along
             ``append_dim``. This rewrite re-pins the chunk grid, so a
             caller widening a store that has not yet reached its final
@@ -326,28 +326,27 @@ class XrBackend(DataBackend):
                 f"XrBackend.widen_symbol_axis: refusing to widen {path} -- "
                 f"there is no store there, but a superseded sidecar exists at "
                 f"{superseded}. A previous widen crashed between its two "
-                f"renames, so that sidecar holds the ONLY copy of the store. "
-                f"Recover it by hand -- `mv {superseded} {path}` -- and re-run. "
-                f"Auto-recovering is deliberately not done here: which "
-                f"directory is authoritative is not this method's call to make."
+                f"renames, so that sidecar holds the only copy of the store. "
+                f"Recover it by hand (`mv {superseded} {path}`) and re-run. "
+                f"This method does not recover automatically, because it "
+                f"cannot know which directory is authoritative."
             )
         if superseded.exists() and any(superseded.iterdir()):
             raise ValueError(
                 f"XrBackend.widen_symbol_axis: refusing to widen {path} -- "
-                f"a NON-EMPTY superseded residue sits beside the store at "
-                f"{superseded}, and it holds real data. Two different runs "
-                f"write that suffix at that path: a widen that crashed between "
-                f"its two renames, and an `on_new_listing=\"rebuild\"` killed "
-                f"outright (SIGKILL), whose aside uses the same string and is "
-                f"never reclaimed because the rollback runs only on an "
-                f"exception or a cancel. Refusing HERE rather than proceeding "
-                f"is the whole point: the closing rename would fail with "
-                f"'Directory not empty' only AFTER this call had rewritten the "
-                f"entire store into a sidecar, throwing that work away and "
-                f"leaving the sidecar behind. Decide by hand which of {path} "
-                f"and {superseded} is authoritative, remove the other, and "
-                f"re-run. Auto-recovering is deliberately not done here: the "
-                f"residue may be the ONLY complete copy of the store."
+                f"a non-empty superseded directory sits beside the store at "
+                f"{superseded}, and it holds real data. Two kinds of run leave "
+                f"a directory with that name: a widen that crashed between its "
+                f"two renames, and an `on_new_listing=\"rebuild\"` run that "
+                f"was killed outright (SIGKILL), whose set-aside copy uses the "
+                f"same name and is only cleaned up after an exception or a "
+                f"cancel. Refusing now avoids wasted work: otherwise the final "
+                f"rename would fail with 'Directory not empty' only after the "
+                f"whole store had been rewritten into a sidecar. Decide by "
+                f"hand which of {path} and {superseded} is authoritative, "
+                f"remove the other, and re-run. This method does not recover "
+                f"automatically, because the leftover directory may be the "
+                f"only complete copy of the store."
             )
         if superseded.exists():
             # Empty, so it holds nothing; removing it keeps the retry clean.
@@ -362,23 +361,22 @@ class XrBackend(DataBackend):
 
         stored = xr.open_zarr(path)
         try:
-            # The request can only be normalised once the store is open,
-            # because the target dtype is the stored axis's own.
+            # The request is converted to the stored axis's dtype, which is
+            # only known once the store is open.
             stored_index = stored[dim].to_index()
             requested = normalize_to_axis_dtype(symbols, stored_index)
 
-            # Compared on the normalised values, which is what `reindex`
-            # will actually match against.
+            # Compare the converted values, which is what `reindex` matches.
             dropped = stored_index.difference(pd.Index(requested)).tolist()
             if dropped:
                 raise ValueError(
                     f"XrBackend.widen_symbol_axis: refusing to widen {path} -- "
                     f"the target '{dim}' axis is not a superset of the stored "
-                    f"one; it would DROP {dropped}. Reindexing silently "
+                    f"one; it would drop {dropped}. Reindexing silently "
                     f"deletes the history of every label it is not asked for, "
-                    f"and afterwards the store is indistinguishable from one "
-                    f"that never held it. Pass the union of the stored and "
-                    f"incoming labels, the way widen_and_append() does."
+                    f"and afterwards the store looks as if it never held "
+                    f"them. Pass the union of the stored and incoming labels, "
+                    f"as widen_and_append() does."
                 )
 
             offenders = [
@@ -398,26 +396,26 @@ class XrBackend(DataBackend):
                     if np.issubdtype(dtype, np.integer)
                 ]
                 remedy = (
-                    f"Pass fill_values={{...}} naming a value for each -- e.g. "
-                    f"fill_values={{'anomaly_flag': False}} -- which is "
-                    f"measured to preserve the stored dtype exactly."
+                    f"Pass fill_values={{...}} with a value for each, for "
+                    f"example fill_values={{'anomaly_flag': False}}; that "
+                    f"keeps the stored dtype exactly."
                 )
                 if integer:
                     remedy += (
                         f" For the integer variable(s) {integer}, the promotion "
-                        f"normally belongs in BaseDataset._pin_append_dtypes, "
-                        f"which already floats integer variables before an "
-                        f"append; a store predating that is the usual cause."
+                        f"normally happens in BaseDataset._pin_append_dtypes, "
+                        f"which converts integer variables to float before an "
+                        f"append; a store written before that step existed is "
+                        f"the usual cause."
                     )
                 raise ValueError(
                     f"XrBackend.widen_symbol_axis: refusing to widen {path} -- "
                     f"variable(s) {described} carry '{dim}' but are not "
                     f"floating-point and no fill value was given. An unfilled "
-                    f"reindex UPCASTS them to float64 and writes NaN into the "
-                    f"new columns, silently changing an existing store's "
-                    f"schema behind the caller -- the same family of invisible "
-                    f"corruption _assert_append_compatible refuses on the "
-                    f"append path. {remedy}"
+                    f"reindex converts them to float64 and writes NaN into the "
+                    f"new columns, silently changing the existing store's "
+                    f"schema. The append path refuses the same kind of silent "
+                    f"corruption in _assert_append_compatible. {remedy}"
                 )
 
             estimate = self._estimate_widen_bytes(
@@ -429,10 +427,9 @@ class XrBackend(DataBackend):
                 path, dim, append_dim, estimate, block_rows, chunked
             )
 
-            # The strategy reads `path` through `stored` for its whole
-            # duration, so it runs inside this handle's lifetime, and the
-            # cleanup covers the whole strategy call: a crash mid-way leaves
-            # no orphan sidecar and leaves `path` authoritative.
+            # The strategy reads through `stored`, so it must run while the
+            # handle is open. On any failure the sidecar is removed and
+            # `path` stays the authoritative store.
             strategy = self._widen_chunked if chunked else self._widen_whole_store
             try:
                 strategy(
@@ -578,11 +575,10 @@ class XrBackend(DataBackend):
             f"MAX_WIDEN_BYTES budget. Rewriting the store block by block along "
             f"'{append_dim}' instead: {blocks} block(s) of {block_rows} row(s), "
             f"~{estimate['row_bytes'] * block_rows / mib:.1f} MiB per block, so "
-            f"peak memory is ONE block rather than the whole store. Measured "
-            f"2026-09-08: the chunked rewrite runs ~3.6-4.0x the whole-store "
-            f"wall clock, so a slow run here is the STRATEGY and not the "
-            f"machine. Raise XrBackend.MAX_WIDEN_BYTES deliberately to take the "
-            f"whole-store path anyway."
+            f"peak memory is one block rather than the whole store. The "
+            f"block-by-block rewrite takes roughly 3.6-4.0x as long as the "
+            f"whole-store rewrite, so a slow run here is expected. Raise "
+            f"XrBackend.MAX_WIDEN_BYTES to take the whole-store path anyway."
         )
 
     def _widen_whole_store(
@@ -606,9 +602,8 @@ class XrBackend(DataBackend):
         chunk grid from being sized by whatever the store happens to hold
         right now.
         """
-        # `.load()` is required: without dask, `open_zarr` returns lazily
-        # indexed arrays that read from the store directory on access, and
-        # the swap renames that directory out from under them.
+        # `.load()` is required: without it the arrays are read lazily from
+        # the store directory, which the swap later renames away.
         widened = stored.reindex({dim: requested}, fill_value=fills).load()
         encoding = self._append_encoding(
             append_dim, data=widened, append_dim_size=append_dim_size
@@ -698,15 +693,15 @@ class XrBackend(DataBackend):
         variables : Mapping[str, object]
             Maps each variable name to its dtype. The dtype is
             all the filler needs, so the caller's panel is never held.
-        append_dim : str
+        append_dim : str, default "timestamp"
             The store's append dimension, used to pin the
             filler's chunk grid to the store's.
-        fill_values : Optional[Mapping[str, object]]
+        fill_values : Mapping[str, object], optional
             Per-variable fill for new variables that are not
             floating-point. Without an entry such a variable is refused,
             because ``np.full`` with NaN yields ``0`` for integers and
             ``True`` for booleans, fabricating history.
-        append_dim_size : Optional[int]
+        append_dim_size : int, optional
             The store's eventual length along
             ``append_dim``, so a filler added to a store that has not
             reached its final extent joins on the same grid as the
@@ -761,17 +756,16 @@ class XrBackend(DataBackend):
                 raise ValueError(
                     f"XrBackend.widen_data_vars: refusing to widen {path} -- "
                     f"new variable(s) {described} are not floating-point and "
-                    f"no fill value was given. The filler spans the store's "
-                    f"ENTIRE existing extent, and an unfilled backfill does "
-                    f"not mark that history absent, it FABRICATES it: "
-                    f"measured 2026-09-07, np.full(shape, np.nan) yields 0 "
-                    f"for int64 and True for bool, so a boolean flag would "
-                    f"read as set on every historical row. That is the same "
-                    f"family of invisible corruption "
-                    f"_assert_append_compatible refuses on the append path. "
-                    f"Pass fill_values={{...}} naming a value for each -- "
-                    f"e.g. fill_values={{'anomaly_flag': False}} -- which is "
-                    f"measured to preserve the dtype exactly."
+                    f"no fill value was given. The new variable spans the "
+                    f"store's entire existing history, and without a fill "
+                    f"value that history would be invented rather than marked "
+                    f"missing: np.full(shape, np.nan) yields 0 for int64 and "
+                    f"True for bool, so a boolean flag would read as set on "
+                    f"every historical row. The append path refuses the same "
+                    f"kind of silent corruption in _assert_append_compatible. "
+                    f"Pass fill_values={{...}} with a value for each, for "
+                    f"example fill_values={{'anomaly_flag': False}}; that "
+                    f"keeps the dtype exactly."
                 )
 
             # Take the layout from a variable that already spans `append_dim`
@@ -787,12 +781,10 @@ class XrBackend(DataBackend):
             dims = tuple(layout) if layout is not None else tuple(stored.sizes)
             shape = tuple(int(stored.sizes[name]) for name in dims)
 
-            # No coords on the filler. The store already holds them, and
-            # `stored[name].values` is the decoded array: re-encoding it on
-            # the way in can land on a different dtype than Zarr recorded
-            # (a string coordinate decodes to numpy's StringDType and is then
-            # rejected as a dtype mismatch). A filler carrying only its dims
-            # is aligned positionally against the arrays on disk.
+            # No coords on the filler: the store already holds them, and
+            # writing a decoded coordinate back can change its dtype (a string
+            # coordinate decodes to numpy's StringDType and is then rejected).
+            # A filler with only dims aligns by position with the store.
             filler = xr.Dataset(
                 {
                     name: (
@@ -847,11 +839,11 @@ class XrBackend(DataBackend):
         ----------
         path : str
             Directory of the Zarr store.
-        append_dim : str
+        append_dim : str, default "timestamp"
             The dimension the store grows along.
-        dim : str
+        dim : str, default "symbol"
             The symbol axis to reconcile.
-        fill_values : Optional[Mapping[str, object]]
+        fill_values : Mapping[str, object], optional
             Per-variable fill for non-floating variables, passed
             to both widens and used to reindex ``data``.
         **kwargs
@@ -869,18 +861,15 @@ class XrBackend(DataBackend):
         >>> stored["symbol"].values.tolist(), sorted(stored.data_vars)
         (['AAA', 'BBB', 'CCC', 'DDD'], ['amount', 'close', 'flag', 'volume'])
         """
-        # Read with `get`, never `pop`: every `append(...)` exit below
-        # forwards `**kwargs` verbatim, and consuming the key here would
-        # starve the closing append on a store-creating write.
+        # `get`, not `pop`: the closing `append` also needs the key in
+        # `kwargs` when it creates the store.
         append_dim_size = kwargs.get("append_dim_size")
 
         if not Path(path).exists():
             return self.append(path, append_dim, **kwargs)
 
-        # Both sides keep their own spelling and the union is ordered
-        # numerically where that is meaningful, so an integer axis is never
-        # rewritten in lexicographic order or reindexed against digit
-        # strings that match nothing.
+        # Labels keep their own type and `sort_symbol_axis` orders integers
+        # numerically, so an integer axis is never sorted as strings.
         stored = xr.open_zarr(path)
         try:
             stored_labels = (
@@ -897,8 +886,8 @@ class XrBackend(DataBackend):
             if dim in self.data.coords
             else []
         )
-        # Name to dtype is all `widen_data_vars` needs: the filler must take
-        # the incoming dtype or the closing `append` refuses the window.
+        # The filler must use the incoming dtype, or the closing `append`
+        # refuses the window on a dtype mismatch.
         incoming_names = {
             str(name): variable.dtype
             for name, variable in self.data.data_vars.items()
@@ -954,11 +943,11 @@ class XrBackend(DataBackend):
         ----------
         append_dim : str
             The store's append dimension.
-        data : Optional[xr.Dataset]
+        data : xr.Dataset, optional
             The panel whose shape to encode; defaults to ``data``.
             The widen paths pass the widened panel so non-append
             dimensions are pinned at their widened length.
-        append_dim_size : Optional[int]
+        append_dim_size : int, optional
             A lower bound on the store's total extent along
             ``append_dim``. The effective extent is
             ``max(panel length, append_dim_size)``, so a caller holding
@@ -980,9 +969,8 @@ class XrBackend(DataBackend):
             chunks = []
             for dim in variable.dims:
                 if dim == append_dim and append_dim_size is not None:
-                    # A lower bound only: the stated extent may raise the
-                    # grid, never re-pin it downward, because a `mode="w"`
-                    # rewrite would make that shrink irreversible.
+                    # A lower bound only: shrinking the grid would be
+                    # irreversible once a `mode="w"` rewrite pins it.
                     size = max(int(panel.sizes[dim]), int(append_dim_size))
                 else:
                     size = int(panel.sizes[dim])
@@ -1034,15 +1022,15 @@ class XrBackend(DataBackend):
                         f"XrBackend.append: refusing to append to {path} -- "
                         f"the '{dim}' coordinate does not match the store "
                         f"({len(incoming)} incoming label(s) vs "
-                        f"{len(stored)} stored). Zarr would OVERWRITE the "
-                        f"stored labels without complaint, silently "
-                        f"re-attributing every previously written row. Pin "
-                        f"the '{dim}' axis over the whole range before the "
-                        f"first window, the way "
+                        f"{len(stored)} stored). Zarr would overwrite the "
+                        f"stored labels without complaint, silently assigning "
+                        f"every previously written row to a different label. "
+                        f"Fix the '{dim}' axis over the whole range before the "
+                        f"first window, as "
                         f"BaseDataset.from_raw_data_chunked() does."
                     )
-            # The append dimension itself. Skipped when either side has no
-            # coordinate on it (such a store appends fine today) or is empty.
+            # The append dimension itself; skipped when either side has no
+            # coordinate on it or is empty, since then there is no order.
             if (
                 append_dim in self.data.coords
                 and append_dim in existing.coords
@@ -1063,12 +1051,12 @@ class XrBackend(DataBackend):
                         f"store already ends at "
                         f"{self._format_append_label(stored_end)}. Zarr would "
                         f"extend the axis without complaint and leave "
-                        f"'{append_dim}' no longer STRICTLY increasing -- "
+                        f"'{append_dim}' no longer strictly increasing -- "
                         f"duplicate labels, out-of-order labels, or both -- "
                         f"which breaks every downstream reader that assumes a "
-                        f"unique, ordered index. append() EXTENDS a store; to "
-                        f"recompute a range it already holds, replace the "
-                        f"store with save(mode=\"w\") instead."
+                        f"unique, ordered index. append() only extends a "
+                        f"store; to recompute a range it already holds, "
+                        f"replace the store with save(mode=\"w\") instead."
                     )
             for name, variable in self.data.data_vars.items():
                 if name not in existing.data_vars:
@@ -1082,10 +1070,9 @@ class XrBackend(DataBackend):
                         f"integer store becomes 0: a fabricated observation "
                         f"where the data was missing."
                     )
-            # The variable set, checked after the dtype loop so a panel with
-            # both a dtype mismatch and a changed set still reports the
-            # dtype first. The missing direction goes first: it destroys
-            # data that was valid before the call and has no widen remedy.
+            # The variable set is checked after dtypes, so a dtype mismatch is
+            # reported first. A missing variable is reported before an added
+            # one because it has no widen remedy.
             incoming_names = set(self.data.data_vars)
             stored_names = set(existing.data_vars)
             absent = sorted(stored_names - incoming_names)
@@ -1094,18 +1081,15 @@ class XrBackend(DataBackend):
                     f"XrBackend.append: refusing to append to {path} -- the "
                     f"store holds data variable(s) {absent} that the incoming "
                     f"panel does not. Zarr extends exactly the variables it "
-                    f"is handed, so the absent one(s) would stay STUCK at "
-                    f"their stored length while every other variable grows, "
-                    f"and the store afterwards cannot be OPENED at all "
-                    f"(measured 2026-09-07: conflicting sizes for dimension "
-                    f"'{append_dim}'). What it loses was valid before this "
-                    f"call. This direction has no opt-in and is not given "
-                    f"one: backfilling the absent variable across the "
-                    f"incoming window would write NaN into recent dates of a "
-                    f"variable that was COMPLETE, and afterwards the store is "
-                    f"indistinguishable from one where those values were "
-                    f"genuinely missing. Recompute this window over the "
-                    f"store's FULL variable set, or replace the store with "
+                    f"is handed, so the absent one(s) would stay at their "
+                    f"stored length while every other variable grows, and "
+                    f"the store could no longer be opened (xarray reports "
+                    f"conflicting sizes for dimension '{append_dim}'). There "
+                    f"is no option to allow this: filling the absent variable "
+                    f"with NaN over the incoming window would make a complete "
+                    f"variable look as if recent values were genuinely "
+                    f"missing. Recompute this window over the store's full "
+                    f"variable set, or replace the store with "
                     f"save(mode=\"w\")."
                 )
             unstored = sorted(incoming_names - stored_names)
@@ -1114,22 +1098,25 @@ class XrBackend(DataBackend):
                     f"XrBackend.append: refusing to append to {path} -- the "
                     f"incoming panel carries data variable(s) {unstored} that "
                     f"the store does not hold. Zarr would write them over the "
-                    f"incoming window ONLY, leaving them shorter along "
+                    f"incoming window only, leaving them shorter along "
                     f"'{append_dim}' than every stored variable, and the "
-                    f"store afterwards cannot be OPENED at all (measured "
-                    f"2026-09-07: conflicting sizes for dimension "
-                    f"'{append_dim}'). A panel that legitimately grew a "
-                    f"column says so explicitly: materialise the new "
-                    f"variable(s) over the store's EXISTING extent first with "
-                    f"widen_data_vars(), which backfills history rather than "
-                    f"truncating it, or call widen_and_append(), which does "
-                    f"that as part of reconciling every axis."
+                    f"store could no longer be opened (xarray reports "
+                    f"conflicting sizes for dimension '{append_dim}'). If the "
+                    f"panel really gained a column, first add the new "
+                    f"variable(s) over the store's existing history with "
+                    f"widen_data_vars(), or call widen_and_append(), which "
+                    f"does that while reconciling every axis."
                 )
         finally:
             existing.close()
 
     def to_internal(self, data: xr.Dataset) -> Self:
         """Adopt an in-memory ``xarray.Dataset`` as ``data``.
+
+        Parameters
+        ----------
+        data : xr.Dataset
+            The panel to hold.
 
         Examples
         --------
@@ -1143,6 +1130,15 @@ class XrBackend(DataBackend):
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
         """Narrow ``data`` in place to the label slice ``start_date..end_date``.
 
+        Parameters
+        ----------
+        col : str
+            The date dimension to slice.
+        start_date : str
+            First label to keep, inclusive.
+        end_date : str
+            Last label to keep, inclusive.
+
         Examples
         --------
         >>> backend.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
@@ -1155,6 +1151,13 @@ class XrBackend(DataBackend):
 
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
         """Narrow ``data`` in place to the given labels on ``col``.
+
+        Parameters
+        ----------
+        col : str
+            The dimension to select on.
+        symbols : tuple[str, ...]
+            The labels to keep.
 
         Examples
         --------
@@ -1182,7 +1185,7 @@ class XrBackend(DataBackend):
 
         Parameters
         ----------
-        indexes : Optional[list[str]]
+        indexes : list[str], optional
             The dimensions to index by, or ``None`` for no shape
             request.
 
@@ -1240,6 +1243,13 @@ class XrBackend(DataBackend):
     def head(self, path: str, n: int) -> pl.LazyFrame:
         """Return at most ``n`` rows of the store at ``path`` as a lazy frame.
 
+        Parameters
+        ----------
+        path : str
+            Directory of the Zarr store.
+        n : int
+            Maximum number of rows (and of labels per dimension) to read.
+
         The store is opened by path with the same opener ``read`` uses, and
         every dimension is sliced to ``n`` before conversion, so the whole
         store is never materialised. ``data`` is neither read nor written:
@@ -1286,6 +1296,13 @@ class PlBackend(DataBackend):
     def read(self, path: str, **kwargs) -> Self:
         """Lazily scan the Parquet file at ``path`` into ``data``.
 
+        Parameters
+        ----------
+        path : str
+            Path of the Parquet file.
+        **kwargs
+            Accepted for interface compatibility and ignored.
+
         Raises
         ------
         FileNotFoundError
@@ -1305,6 +1322,13 @@ class PlBackend(DataBackend):
     def write(self, path: str, **kwargs) -> Self:
         """Collect ``data`` and write it to ``path`` as Parquet.
 
+        Parameters
+        ----------
+        path : str
+            Path of the Parquet file to write.
+        **kwargs
+            Passed through to ``polars.DataFrame.write_parquet``.
+
         Examples
         --------
         >>> PlBackend().to_internal(frame.lazy()).write("universe.parquet")
@@ -1316,6 +1340,11 @@ class PlBackend(DataBackend):
     def to_internal(self, data: pl.LazyFrame) -> Self:
         """Adopt an in-memory ``polars.LazyFrame`` as ``data``.
 
+        Parameters
+        ----------
+        data : pl.LazyFrame
+            The table to hold.
+
         Examples
         --------
         >>> PlBackend().to_internal(frame.lazy())
@@ -1326,6 +1355,15 @@ class PlBackend(DataBackend):
 
     def filter_by_date(self, col: str, start_date: str, end_date: str) -> Self:
         """Narrow ``data`` in place to rows whose ``col`` lies in the range.
+
+        Parameters
+        ----------
+        col : str
+            The date column to filter on.
+        start_date : str
+            First date to keep, inclusive.
+        end_date : str
+            Last date to keep, inclusive.
 
         Examples
         --------
@@ -1344,6 +1382,13 @@ class PlBackend(DataBackend):
 
     def filter_by_symbol(self, col: str, symbols: tuple[str, ...]) -> Self:
         """Narrow ``data`` in place to rows whose ``col`` is in ``symbols``.
+
+        Parameters
+        ----------
+        col : str
+            The column to filter on.
+        symbols : tuple[str, ...]
+            The values to keep.
 
         Examples
         --------
@@ -1368,6 +1413,13 @@ class PlBackend(DataBackend):
 
     def head(self, path: str, n: int) -> pl.LazyFrame:
         """Return at most ``n`` rows scanned lazily from ``path``.
+
+        Parameters
+        ----------
+        path : str
+            Path of the Parquet file.
+        n : int
+            Maximum number of rows to return.
 
         The limit is pushed down into the Parquet reader, and a fresh frame
         is returned without touching ``data``. The existence check is done
@@ -1398,7 +1450,7 @@ class PlBackend(DataBackend):
 
         Parameters
         ----------
-        indexes : Optional[list[str]]
+        indexes : list[str]
             The columns to index by. Required: a lazy frame has no
             dimensions to fall back on.
 
@@ -1416,7 +1468,7 @@ class PlBackend(DataBackend):
         if indexes is None:
             raise ValueError(
                 "PlBackend.get_xarray_dataset: `indexes` is required. A "
-                "LazyFrame has no dimensions to fall back on -- name the "
+                "LazyFrame has no dimensions to fall back on; name the "
                 "columns that should become the dataset's index, e.g. "
                 '["timestamp", "symbol"].'
             )

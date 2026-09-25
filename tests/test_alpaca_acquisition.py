@@ -1691,14 +1691,14 @@ def test_the_class_docstring_carries_the_tier_numbers_and_the_open_question():
     for fact in ("200", "10,000", "2016", "15 minutes", "2.5%", "feed", "corporate"):
         assert fact.lower() in doc.lower(), f"missing from the class docstring: {fact}"
 
-    assert "UNRESOLVED" in doc, "the SIP question must read as open"
+    assert "unresolved" in doc, "the SIP question must read as open"
     assert "IEX only" in doc and "older than 15 minutes" in doc, (
         "both readings must be named; the docstring may not assert either"
     )
     assert "vote count, not evidence" in doc, (
         "the three-to-one source count must not be presented as evidence"
     )
-    assert "NO in-code default" in doc
+    assert "no in-code default" in doc
 
 
 def test_the_class_exposes_no_corporate_actions_surface():

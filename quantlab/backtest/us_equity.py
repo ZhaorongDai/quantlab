@@ -40,8 +40,14 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     equal-weight targets are held until the next rebalance bar. The class only
     wires the pieces together: the market conventions are ``MARKET``, the
     selection rule is a ``CrossSectionTopNSelector`` built from the config, and
-    every engine behaviour comes from ``VectorBtBacktester``. It is configured
-    with a ``CrossSectionBacktestConfig``.
+    every engine behaviour comes from ``VectorBtBacktester``.
+
+    Parameters
+    ----------
+    config : CrossSectionBacktestConfig
+        The backtest configuration: price dataset, model, date window and
+        output directory, plus the selection settings ``rebalance_periods``,
+        ``direction``, ``top_n`` and ``score_label``.
 
     Examples
     --------

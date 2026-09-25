@@ -1,12 +1,18 @@
-"""The two contracts of a panel's ``symbol`` axis: its order and its dtype.
+"""The two rules for a panel's ``symbol`` axis: its order and its dtype.
 
-A ``symbol`` axis is sorted numerically when every label is an integer (or a
-digit string) and lexicographically otherwise; ``sort_symbol_axis`` is the one
-place that rule is spelled out. Separately, labels a caller holds must be
-re-spelled in the dtype the stored axis carries before they are used to index
+A *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``.
+Its ``symbol`` axis holds either tickers (text) or numeric security
+identifiers such as CRSP PERMNOs (permanent integer ids that, unlike
+tickers, never change or get reused).
+
+The axis is sorted numerically when every label is an integer (or a digit
+string) and lexicographically otherwise; ``sort_symbol_axis`` is the one
+place that rule is written down. Separately, labels a caller holds must be
+converted to the dtype the stored axis carries before they are used to index
 it, which ``normalize_to_axis_dtype`` does. Indexing an int64 axis with digit
 strings does not raise: ``reindex`` matches nothing and silently returns an
-all-NaN panel of the right shape, which is the failure this module prevents.
+all-NaN panel of the right shape. Preventing that silent failure is the
+purpose of this module.
 """
 
 from __future__ import annotations
@@ -73,15 +79,16 @@ def sort_symbol_axis(values: Iterable) -> list:
 
 
 def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
-    """Re-spell ``labels`` in the dtype ``stored_index`` carries.
+    """Convert ``labels`` to the dtype ``stored_index`` carries.
 
     The stored axis decides. A textual axis (see ``_TEXTUAL_KINDS``) receives
     ``str(label)`` for each label; any other axis receives
     ``pd.Index(labels).astype(dtype)``. The two directions are not symmetric:
-    ``astype(object)`` boxes an integer instead of rendering it, which is why
-    textual targets use ``str`` explicitly. Textual is decided by dtype kind,
-    never by width, because a fixed-width store's width depends on the labels
-    it happens to hold.
+    ``astype(object)`` would keep an integer as an integer object instead of
+    turning it into text, which is why textual targets use ``str``
+    explicitly. Whether an axis is textual is decided by dtype kind, never by
+    width, because a fixed-width store's width depends on the labels it
+    happens to hold.
 
     Parameters
     ----------
@@ -98,10 +105,10 @@ def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
     Raises
     ------
     ValueError
-        If any label has no spelling in the stored dtype. The
-        message names the offending labels. Labels are never coerced to a
-        guess or dropped, since either would hand ``reindex`` a request
-        that misses silently.
+        If any label cannot be represented in the stored dtype. The message
+        names the offending labels. Labels are never coerced to a guess or
+        dropped, since either would hand ``reindex`` a request that misses
+        silently.
 
     Examples
     --------
@@ -132,15 +139,11 @@ def normalize_to_axis_dtype(labels: Iterable, stored_index: pd.Index) -> list:
         )
         raise ValueError(
             f"normalize_to_axis_dtype: refusing to coerce {shown!r}{elided} "
-            f"onto the stored axis dtype {dtype!r}. Guessing a value here is "
-            f"worse than failing: a wrong label does not raise downstream, it "
-            f"MISSES -- `reindex` drops every label it cannot match and fills "
-            f"NaN, so the panel comes back the right shape, the right dtype "
-            f"and entirely empty (measured 2026-09-20 on this very path: 0 of "
-            f"12 cells survived, no exception, no log line). Align the label "
-            f"type to the axis at the CALLING layer, where it is known what "
-            f"those labels are, rather than having this function guess. "
-            f"Underlying error: {error}"
+            f"onto the stored axis dtype {dtype!r}. A guessed label would not "
+            f"raise later; `reindex` would silently fail to match it and "
+            f"return an all-NaN panel of the right shape. Convert the labels "
+            f"to the axis type in the calling code, which knows what they "
+            f"are. Underlying error: {error}"
         ) from error
 
 

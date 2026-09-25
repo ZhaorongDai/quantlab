@@ -1295,7 +1295,7 @@ def test_a_repeated_page_token_refuses_instead_of_looping_forever(
         acq._fetch_batch(["AAPL"], cfg.start_date, cfg.end_date)
 
     message = str(excinfo.value)
-    assert "SAME page token" in message
+    assert "same page token" in message
     assert "stuck" in message, "the offending token is named"
     # Two requests: the one that issued the token, and the one that got it
     # back. Anything more means the loop ran on.
