@@ -454,7 +454,7 @@ def test_vendor_isolation_an_unset_vendor_raises_rather_than_scanning(
 
     message = str(excinfo.value)
     assert "vendor" in message
-    assert "D-11" in message
+    assert "one vendor" in message
 
 
 # ---------------------------------------------------------------------------

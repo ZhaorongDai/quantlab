@@ -1,12 +1,18 @@
 """Exchange session calendar for intraday panels.
 
-Raw NBBO quotes are collected from 04:00 to 20:00 ET, and NYSE closes early
-(13:00 ET) on a few days a year. A panel built on a fixed 09:30 to 16:00
-window would, on such a day, treat three hours of after-hours quotes as
-regular-session state. ``XnysSessionCalendar`` uses ``exchange_calendars`` to
-obtain every session's actual open and close, half days included, and maps a
-configurable ET window onto UTC bounds per session. The module depends on the
-calendar library only.
+A *session* is one trading day of an exchange, with its open and close time.
+The NBBO (National Best Bid and Offer, the best bid and ask across all US
+exchanges) is published by the SIP (the securities information processor)
+from 04:00 to 20:00 ET (US Eastern time), and the raw quotes cover that whole
+range. The New York Stock Exchange (exchange code XNYS) also closes early,
+at 13:00 ET, on a few days a year. A panel built on a fixed 09:30 to 16:00
+window would, on such a day, treat three hours of after-close quotes as
+regular trading.
+
+``XnysSessionCalendar`` uses the ``exchange_calendars`` library to get every
+session's actual open and close, half days included, and turns a
+configurable ET window into UTC bounds for each session. The module depends
+only on that library.
 """
 
 import re
@@ -24,6 +30,18 @@ _TIME_PATTERN = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
 def _parse_time(value: str, name: str) -> time:
     """Parse an ``HH:MM`` or ``HH:MM:SS`` string into a ``time``.
 
+    Parameters
+    ----------
+    value : str
+        The text to parse.
+    name : str
+        Parameter name used in error messages.
+
+    Returns
+    -------
+    time
+        The parsed time of day.
+
     Raises
     ------
     ValueError
@@ -39,19 +57,18 @@ def _parse_time(value: str, name: str) -> time:
 
 
 class XnysSessionCalendar:
-    """Per-session open and close bounds of a configurable XNYS window.
+    """Per-session open and close bounds of a configurable NYSE (XNYS) window.
 
-    The window (``session_start``/``session_end``, ET wall clock) defaults to
-    regular trading hours, 09:30 to 16:00, and may be set anywhere inside the
-    SIP publication window 04:00 to 20:00 ET. An edge outside that range, a
-    malformed edge, or ``session_start >= session_end`` is refused at
-    construction with ``ValueError``.
+    The window, given by ``session_start`` and ``session_end`` as ET clock
+    times, defaults to regular trading hours, 09:30 to 16:00. It may be set
+    anywhere inside the SIP publication window of 04:00 to 20:00 ET.
 
-    Each edge is treated independently. An edge inside regular hours (09:30
-    to 16:00 inclusive) is clipped to the session's actual exchange open or
-    close, which is how a half day caps a regular-hours window. An edge in
-    extended hours is a plain wall-clock time and is left unchanged even on a
-    half day. On 2024-11-29 (13:00 ET early close) this gives:
+    Each edge is handled on its own. An edge inside regular hours (09:30 to
+    16:00 inclusive) is clipped to the session's actual exchange open or
+    close; this is how a half day shortens a regular-hours window. An edge
+    in extended hours (before 09:30 or after 16:00) is a plain clock time
+    and stays unchanged even on a half day. On 2024-11-29 (13:00 ET early
+    close) this gives:
 
     - 09:30 to 16:00 becomes 09:30 to 13:00 ET;
     - 13:30 to 16:00 becomes empty, so the date yields no row (logged at info);
@@ -60,11 +77,29 @@ class XnysSessionCalendar:
     - 07:00 to 16:00 becomes 07:00 to 13:00 ET, since only 16:00 is a
       regular-hours edge.
 
-    A window spanning the early close is continuous, so bars after 13:00 on
-    such a day carry post-close quote state; choose a regular-hours end edge
-    if that is not wanted. Timestamps are naive UTC. Each edge is localized
-    on its own date in ``America/New_York`` before conversion, so the same ET
-    window maps to different UTC instants in winter and summer.
+    A window that spans the early close has no gap, so bars after 13:00 on
+    such a day hold after-close quotes; use a regular-hours end edge if that
+    is not wanted. Returned timestamps are naive UTC. Each edge is converted
+    from ``America/New_York`` on its own date, so the same ET window maps to
+    different UTC times in winter and summer (daylight saving time).
+
+    Parameters
+    ----------
+    session_start : str, default "09:30"
+        Window start as ``"HH:MM"`` or ``"HH:MM:SS"`` ET.
+    session_end : str, default "16:00"
+        Window end in the same format.
+
+    Attributes
+    ----------
+    session_start, session_end : datetime.time
+        The parsed window edges.
+
+    Raises
+    ------
+    ValueError
+        If an edge is malformed, lies outside 04:00 to 20:00 ET, or
+        ``session_start`` is not before ``session_end``.
 
     Examples
     --------
@@ -82,26 +117,12 @@ class XnysSessionCalendar:
     REGULAR_CLOSE = "16:00"
     EXTENDED_OPEN = "04:00"
     EXTENDED_CLOSE = "20:00"
-    # TAQ millisecond history begins in 2003, and the calendar library's
-    # default lookback does not reach that far, so the start is explicit.
+    # TAQ (NYSE's Trade and Quote database) has millisecond data from 2003.
+    # The calendar library's default history does not go back that far.
     CALENDAR_START = "2003-01-01"
 
     def __init__(self, session_start: str = "09:30", session_end: str = "16:00"):
-        """Validate and store the two ET window edges.
-
-        Parameters
-        ----------
-        session_start : str
-            Window start as ``"HH:MM"`` or ``"HH:MM:SS"`` ET.
-        session_end : str
-            Window end in the same format.
-
-        Raises
-        ------
-        ValueError
-            If an edge is malformed, lies outside 04:00 to 20:00
-            ET, or ``session_start`` is not before ``session_end``.
-        """
+        """Initialize the calendar; see the class docstring for parameters."""
         start = _parse_time(session_start, "session_start")
         end = _parse_time(session_end, "session_end")
         lo = time.fromisoformat(self.EXTENDED_OPEN)
@@ -123,7 +144,7 @@ class XnysSessionCalendar:
 
     @property
     def calendar(self) -> xcals.ExchangeCalendar:
-        """The ``exchange_calendars`` XNYS calendar, built on first use.
+        """Return the ``exchange_calendars`` XNYS calendar, building it on first use.
 
         Examples
         --------
@@ -137,7 +158,7 @@ class XnysSessionCalendar:
         return self._calendar
 
     def _label(self, day: date) -> pd.Timestamp:
-        """Return ``day`` as the calendar's session label.
+        """Return ``day`` as the calendar's session label (a ``pd.Timestamp``).
 
         Raises
         ------
@@ -156,6 +177,16 @@ class XnysSessionCalendar:
     def is_session(self, day: date) -> bool:
         """Return whether ``day`` is an XNYS trading session.
 
+        Parameters
+        ----------
+        day : date
+            Calendar date to check.
+
+        Returns
+        -------
+        bool
+            True if the exchange trades on ``day``.
+
         Examples
         --------
         >>> cal.is_session(date(2024, 11, 28))  # Thanksgiving
@@ -166,7 +197,7 @@ class XnysSessionCalendar:
         return bool(self.calendar.is_session(self._label(day)))
 
     def _is_regular(self, edge: time) -> bool:
-        """Return whether ``edge`` lies within regular trading hours."""
+        """Return whether ``edge`` lies within regular trading hours, 09:30 to 16:00."""
         return (
             time.fromisoformat(self.REGULAR_OPEN)
             <= edge
@@ -174,7 +205,7 @@ class XnysSessionCalendar:
         )
 
     def _wall_clock_utc(self, day: date, edge: time) -> datetime:
-        """Convert an ET wall-clock ``edge`` on ``day`` to a naive UTC datetime."""
+        """Convert the ET clock time ``edge`` on ``day`` to a naive UTC datetime."""
         return (
             pd.Timestamp(datetime.combine(day, edge))
             .tz_localize(self.TIME_ZONE)
@@ -196,8 +227,8 @@ class XnysSessionCalendar:
         -------
         pl.DataFrame
             A frame with columns ``date`` (Date), ``open`` and ``close``
-            (naive-UTC ``Datetime("ns")``). A session whose clipped window is
-            empty is omitted.
+            (naive UTC ``Datetime("ns")``). A session whose window is empty
+            after clipping is left out and logged at info level.
 
         Raises
         ------

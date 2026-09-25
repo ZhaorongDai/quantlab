@@ -91,6 +91,7 @@ class SyntheticDailyBars(Acquisition):
     RAW_COLUMNS = TiingoAcquisition.RAW_COLUMNS
 
     def _fetch_page(self, symbols, start_date, end_date, page_token=None):
+        """Generate one page of random daily bars instead of calling a vendor API."""
         start = datetime.date.fromisoformat(start_date[:10])
         end = datetime.date.fromisoformat(end_date[:10])
         days = pl.date_range(start, end, eager=True)

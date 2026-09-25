@@ -1,34 +1,45 @@
-"""CRSP Stock v2 daily panel on a PERMNO axis.
+"""CRSP Stock v2 daily price panel with PERMNOs as the symbol axis.
 
-The acquisition tier stores CRSP's ``dsf_v2`` rows verbatim, one shard per
-PERMNO. ``CrspStockDataset`` turns that raw tier into the same dense
-``(timestamp, symbol)`` Zarr panel ``StockDataset`` produces for Tiingo: the
-twelve Tiingo variables plus the CRSP extras in ``CRSP_EXTRA_VARIABLES``, so a
-factor, label or backtester reads a CRSP store without knowing the vendor.
-The ``symbol`` coordinate is the integer PERMNO; period-correct tickers are
-written to a sidecar file next to the store and read back by
+CRSP (the Center for Research in Security Prices) is a US stock database
+sold through WRDS (Wharton Research Data Services); ``dsf_v2`` is its daily
+stock file. A PERMNO is CRSP's permanent integer id for one security; unlike
+a ticker it never changes and is never reused, so a renamed or delisted
+company keeps one column for its whole history. A *panel* is an
+``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``, the format every
+quantlab layer exchanges.
+
+The acquisition step stores the ``dsf_v2`` rows unchanged as the *raw tier*,
+one parquet file (shard) per PERMNO. ``CrspStockDataset`` converts it into
+the same dense ``(timestamp, symbol)`` Zarr panel that ``StockDataset``
+produces for Tiingo: the twelve Tiingo variables plus the CRSP extras in
+``CRSP_EXTRA_VARIABLES``. A factor, label or backtester can therefore read a
+CRSP store without knowing the vendor. The ``symbol`` coordinate is the
+integer PERMNO. The ticker each PERMNO had on each date is written to a
+*sidecar* JSON file next to the store and read back by
 ``quantlab.dataset.crsp.tickers``.
 
-Per PERMNO, sorted by date, the conversion derives:
+For each PERMNO, sorted by date, the conversion derives:
 
 - ``close = abs(dlyprc)``, except that a delisting-amount row (``dlyprcflg``
   in ``_NO_PRICE_FLAGS``, or ``dlyprc == 0``) carries no price and is NaN.
-- ``adjClose``: the PERMNO's first usable close inside the window, compounded
-  by ``prod(1 + dlyret)`` relative to that anchor row. A null return
-  contributes a factor of 1, because a CRSP return already spans any gap back
-  to the previous valid price. ``adjOpen``/``adjHigh``/``adjLow`` are scaled
-  by ``adjClose / close``, and ``adjVolume`` by ``dlycumfacshr`` relative to
-  the anchor row.
+- ``adjClose`` (the split- and dividend-adjusted close): the PERMNO's first
+  usable close inside the window (the *anchor* row), grown by
+  ``prod(1 + dlyret)`` since that row. A null return counts as a factor of
+  1, because a CRSP return already spans any gap back to the previous valid
+  price. ``adjOpen``/``adjHigh``/``adjLow`` are scaled by
+  ``adjClose / close``, and ``adjVolume`` by ``dlycumfacshr`` (CRSP's
+  cumulative share-adjustment factor) relative to the anchor row.
 - ``splitFactor = dlycumfacpr[t-1] / dlycumfacpr[t]`` (1.0 on the first row)
   and ``divCash = dlyorddivamt + dlynonorddivamt`` on the ex-date.
 
 The adjustment is computed once over the whole configured window before any
-date slicing, so a chunked and an unchunked conversion produce the same store.
-``ret`` keeps a missing CRSP return as NaN rather than 0. The delisting return
-is compounded exactly once: CRSP already puts it on its own daily row, so
-nothing adds ``stkdelists.delret`` on top. A security filter keeps only the
-security types asked for and writes a report of what it dropped beside the
-store. See ``docs/wrds_crsp.md``.
+date slicing, so converting in chunks and converting in one go produce the
+same store. ``ret`` keeps a missing CRSP return as NaN rather than 0. The
+delisting return is applied exactly once: CRSP already puts it on the
+delisting day's row, so nothing adds ``stkdelists.delret`` on top. A
+*security filter* keeps only the security types asked for (for example
+common stock) and writes a report of what it dropped next to the store.
+See ``docs/wrds_crsp.md``.
 """
 
 from __future__ import annotations
@@ -48,25 +59,25 @@ from quantlab.enums.data import TiingoColumns
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
-#: Variables the panel carries beyond the twelve Tiingo ones, with their CRSP
-#: source. Every one is float64, because a dense panel needs NaN to say that a
-#: symbol did not exist yet. There is no ``permno`` variable: the ``symbol``
+#: Variables the panel has beyond the twelve Tiingo ones, with their CRSP
+#: source. All are float64, because a dense panel needs NaN to say a symbol
+#: did not exist yet. There is no ``permno`` variable: the ``symbol``
 #: coordinate already is the PERMNO.
 #:
 #: ``permco`` is CRSP's company id (one company can have several securities).
-#: ``ret`` and ``retx`` are ``dlyret``/``dlyretx``, the daily total return
-#: with and without dividends, NaN where CRSP has none. ``shrout`` and
-#: ``market_cap`` are ``shrout``/``dlycap`` times 1000, so the panel states
-#: shares and USD rather than thousands. ``bid``/``ask`` are
-#: ``dlybid``/``dlyask``. ``prc_is_bidask`` is 1.0 when ``dlyprcflg == "BA"``
-#: (the price is a bid/ask midpoint, so there was no trade), 0.0 otherwise
-#: and NaN when the flag is null; ``is_delisting`` encodes ``dlydelflg == "Y"``
-#: the same way. ``numtrd`` is ``dlynumtrd``; ``cumfacpr``/``cumfacshr`` are
-#: CRSP's cumulative price and share factors; ``facprc`` is ``dlyfacprc``, the
-#: day's own price factor (1.0 on an ordinary day, 4.0 on a 4:1 split);
-#: ``close_trade`` is ``dlyclose``, the closing-trade price, which is null on
-#: bid/ask days and on delisting rows and is therefore not the panel's
-#: ``close``.
+#: ``ret`` and ``retx`` are ``dlyret``/``dlyretx``, the daily return with and
+#: without dividends, NaN where CRSP has none. ``shrout`` and ``market_cap``
+#: are ``shrout``/``dlycap`` times 1000, so the panel holds shares and USD
+#: rather than thousands. ``bid``/``ask`` are ``dlybid``/``dlyask``.
+#: ``prc_is_bidask`` is 1.0 when ``dlyprcflg == "BA"`` (the price is a
+#: bid/ask midpoint because there was no trade), 0.0 otherwise and NaN when
+#: the flag is null; ``is_delisting`` encodes ``dlydelflg == "Y"`` the same
+#: way. ``numtrd`` is ``dlynumtrd`` (number of trades); ``cumfacpr`` and
+#: ``cumfacshr`` are CRSP's cumulative price and share adjustment factors;
+#: ``facprc`` is ``dlyfacprc``, the day's own price factor (1.0 on an
+#: ordinary day, 4.0 on a 4:1 split). ``close_trade`` is ``dlyclose``, the
+#: price of the last trade, which is null on bid/ask days and on delisting
+#: rows and is therefore not used as the panel's ``close``.
 CRSP_EXTRA_VARIABLES: tuple[str, ...] = (
     "permco",
     "ret",
@@ -84,14 +95,14 @@ CRSP_EXTRA_VARIABLES: tuple[str, ...] = (
     "close_trade",
 )
 
-#: The ``dsf_v2`` columns a security filter may name. Each is a per-day type
-#: column, which is what makes a per-date verdict possible. The list is
-#: closed: ``ticker``, ``permno`` and the price columns are not filters, and
-#: restricting the roster is ``config.permnos``'s job. The last four
-#: (``primaryexch``, ``conditionaltype``, ``tradingstatusflg``,
-#: ``exchangetier``) appear in no preset because they change over a
-#: security's life, so filtering on them punches holes in a series and can
-#: drop the delisting row.
+#: The ``dsf_v2`` columns a security filter may use. Each describes the
+#: security's type on that day, so the filter can decide day by day. No
+#: other columns are allowed: ``ticker``, ``permno`` and the price columns
+#: are not filters, and choosing specific securities is done with
+#: ``config.permnos``. The last four (``primaryexch``, ``conditionaltype``,
+#: ``tradingstatusflg``, ``exchangetier``) are in no preset because they
+#: change during a security's life, so filtering on them cuts holes in a
+#: series and can drop the delisting row.
 FILTERABLE_COLUMNS: tuple[str, ...] = (
     "sharetype",
     "securitytype",
@@ -107,13 +118,13 @@ FILTERABLE_COLUMNS: tuple[str, ...] = (
 #: The named security filters. Each value is ``{column: allowed values}``;
 #: every listed column must match, and a null value never matches.
 #:
-#: ``equity_common`` keeps common stock, including REITs and non-US
-#: incorporated issuers, and drops ADRs, units, funds and ETFs. Its
-#: ``sharetype`` allow-list is what excludes ADRs (``AD``) and units (``UG``),
-#: which otherwise satisfy ``securitytype='EQTY'`` and
-#: ``securitysubtype='COM'``. ``shrcd_10_11`` replicates the legacy
+#: ``equity_common`` keeps common stock, including REITs and companies
+#: incorporated outside the US, and drops ADRs (foreign shares traded in the
+#: US), units, funds and ETFs. Its ``sharetype`` list is what excludes ADRs
+#: (``AD``) and units (``UG``), which otherwise pass ``securitytype='EQTY'``
+#: and ``securitysubtype='COM'``. ``shrcd_10_11`` reproduces the classic CRSP
 #: ``shrcd in (10, 11)`` screen; it is not the default because it drops REITs
-#: and non-US issuers that are legitimate index members. ``none`` keeps every
+#: and non-US issuers that are real index members. ``none`` keeps every
 #: security.
 SECURITY_FILTER_PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
     "equity_common": {
@@ -131,30 +142,30 @@ SECURITY_FILTER_PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
     "none": {},
 }
 
-#: Suffix of the filter report written beside the store: what the security
+#: Suffix of the filter report written next to the store: what the security
 #: filter removed, by type combination and by PERMNO.
 FILTER_REPORT_SUFFIX: str = ".crsp_filter_report.json"
 
-#: Suffix of the ticker sidecar written beside the store: a table of
-#: ``{PERMNO: [{ticker, start, end}, ...]}`` intervals, so a display layer can
-#: spell the integer axis for a human as of a date. Intervals rather than one
-#: name per PERMNO, because a renamed company (FB, then META) keeps its
-#: PERMNO. Read by ``quantlab.dataset.crsp.tickers.CrspTickerLookup``.
+#: Suffix of the ticker sidecar written next to the store: a table of
+#: ``{PERMNO: [{ticker, start, end}, ...]}`` intervals, so display code can
+#: show the ticker a PERMNO had on a given date. It stores intervals rather
+#: than one name per PERMNO because a renamed company (FB, then META) keeps
+#: its PERMNO. Read by ``quantlab.dataset.crsp.tickers.CrspTickerLookup``.
 TICKER_SIDECAR_SUFFIX: str = ".crsp_tickers.json"
 
 #: The ``dlydelflg`` value marking the row that carries the delisting return.
 _DELISTING_FLAG = "Y"
 
-#: ``dlyprcflg`` values whose row carries no market price. CRSP writes two
-#: delisting shapes: ``DP`` (delisting price) is a real price and stays one,
-#: while ``DA`` (delisting amount) is a settlement amount, written with
-#: ``dlyprc = 0.0`` as a sentinel and null ``dlyclose``, ``dlyvol``,
+#: ``dlyprcflg`` values whose row has no market price. CRSP writes delisting
+#: rows in two ways. ``DP`` (delisting price) is a real price and is kept.
+#: ``DA`` (delisting amount) is a settlement amount, written with
+#: ``dlyprc = 0.0`` as a placeholder and null ``dlyclose``, ``dlyvol``,
 #: ``dlycumfacpr`` and ``dlycumfacshr``. Reading that 0.0 as a close would
-#: publish a trade at $0.00 and, because 0.0 is not null, let the row become
+#: report a trade at $0.00 and, because 0.0 is not null, could make the row
 #: the adjustment anchor and zero the security's whole adjusted history.
 _NO_PRICE_FLAGS: tuple[str, ...] = ("DA",)
 
-#: The order in which the filter report spells a type combination.
+#: The column order used to write a type combination in the filter report.
 _TYPE_COLUMNS: tuple[str, ...] = (
     "sharetype",
     "securitytype",
@@ -169,30 +180,30 @@ def resolve_security_filter(
 ) -> dict[str, tuple[str, ...]]:
     """Resolve a ``security_filter`` value to ``{column: allowed values}``.
 
-    A preset name resolves to its entry in ``SECURITY_FILTER_PRESETS``; a
-    mapping is validated against ``FILTERABLE_COLUMNS`` and returned with its
-    allow-lists frozen into tuples of strings. An unknown preset raises rather
-    than falling back to the default or to "keep everything", because a
-    silently different panel is indistinguishable from a correct one.
+    A preset name is replaced by its entry in ``SECURITY_FILTER_PRESETS``. A
+    mapping is checked against ``FILTERABLE_COLUMNS`` and returned with each
+    list of allowed values turned into a tuple of strings. An unknown preset
+    raises instead of falling back to the default or to "keep everything",
+    because a silently different panel looks exactly like a correct one.
 
     Parameters
     ----------
-    value : str | dict
+    value : str or dict
         A preset name or a ``{column: allowed values}`` mapping.
-    owner : str
+    owner : str, default "CrspStockDataset"
         Class name used as the prefix of every error message.
 
     Returns
     -------
-    dict[str, tuple[str, ...]]
+    dict of str to tuple of str
         The resolved mapping; empty for the ``"none"`` preset.
 
     Raises
     ------
     ValueError
-        If the preset name is unknown, ``value`` is neither a
-        string nor a dict, a column is not filterable, an allow-list is a
-        bare string, or an allow-list is empty.
+        If the preset name is unknown, ``value`` is neither a string nor a
+        dict, a column is not filterable, or a list of allowed values is a
+        bare string or empty.
 
     Examples
     --------
@@ -233,10 +244,11 @@ def resolve_security_filter(
             raise ValueError(
                 f"{owner}: security_filter names the column {column!r}, which "
                 f"is not filterable. The filterable columns are "
-                f"{list(FILTERABLE_COLUMNS)} -- all per-day TYPE columns, so "
-                f"the verdict can be a per-date one. To restrict the ROSTER "
-                f"use config.permnos -- the PERMNO is this panel's identity "
-                f"(D-01), and there is no ticker-side roster on this vendor."
+                f"{list(FILTERABLE_COLUMNS)}, all per-day security-type "
+                f"columns, so the filter can decide day by day. To choose "
+                f"which securities to convert, use config.permnos: the PERMNO "
+                f"is this panel's identifier, and this vendor has no "
+                f"ticker-based list of securities."
             )
         if isinstance(allowed, (str, bytes)) or not isinstance(
             allowed, (list, tuple, set, frozenset)
@@ -244,7 +256,7 @@ def resolve_security_filter(
             raise ValueError(
                 f"{owner}: security_filter[{column!r}] must be a list of "
                 f"allowed values, got {allowed!r}. A bare string would be "
-                f"iterated CHARACTER by character and match nothing."
+                f"read character by character and match nothing."
             )
         values = tuple(str(item) for item in allowed)
         if not values:
@@ -259,26 +271,35 @@ def resolve_security_filter(
 
 
 class CrspStockDataset(StockDataset):
-    """Dense daily panel built from the CRSP raw tier, keyed by PERMNO.
+    """Dense daily panel built from the CRSP raw files, keyed by PERMNO.
 
-    The class reuses ``StockDataset``'s raw-tree scan (vendor root, ``month=``
-    hive layout, single-vendor provenance check, window predicates and
-    ``has_raw_data``) and overrides the axes and the window densifier, because
-    both must run against the adjusted derivation rather than the raw frame:
-    the raw tier's ``symbol`` column is the PERMNO as a string, and every
-    derived variable is computed here.
+    The class reuses ``StockDataset``'s scan of the raw tree (vendor root,
+    ``month=`` hive partitions, the single-vendor check, date-window filters
+    and ``has_raw_data``). It overrides how the axes and each window's dense
+    panel are built, because both must use the adjusted *derivation* (the
+    frame of computed panel variables) rather than the raw rows: the raw
+    ``symbol`` column is the PERMNO as a string, and every derived variable
+    is computed here.
 
-    The config must be a ``CrspDatasetConfig`` with ``frequency="1d"`` and
-    ``vendor="wrds"``. The inherited ticker-side ``symbols`` field is refused;
-    ``permnos`` restricts the conversion instead. Each conversion also writes
-    two sidecars beside the store, the filter report and the ticker table (see
-    ``filter_report_path`` and ``ticker_sidecar_path``).
+    Each conversion also writes two sidecars next to the store, the filter
+    report and the ticker table (see ``filter_report_path`` and
+    ``ticker_sidecar_path``).
+
+    Parameters
+    ----------
+    dataset_config : CrspDatasetConfig
+        Must have ``frequency="1d"`` and ``vendor="wrds"``. The inherited
+        ticker-based ``symbols`` field must be unset; use ``permnos`` to
+        convert only some securities. ``reference_dir`` points to the
+        downloaded CRSP reference tables, ``security_filter`` chooses which
+        security types to keep, and ``roster_universe`` optionally names an
+        index whose members are kept regardless of the filter.
 
     Examples
     --------
-    Build the store from a raw tier already pulled through WRDS (the paths
-    follow the layout the pull writes under the data root), then read it
-    back as a panel whose ``symbol`` axis is the integer PERMNO:
+    Build the store from raw files already downloaded from WRDS (the paths
+    follow the layout the download writes under the data root), then read
+    it back as a panel whose ``symbol`` axis is the integer PERMNO:
 
     >>> config = CrspDatasetConfig(
     ...     zarr_file_path="/data/crsp.zarr",
@@ -302,55 +323,62 @@ class CrspStockDataset(StockDataset):
     #: The config class the module loader rebuilds this dataset with.
     config_cls = CrspDatasetConfig
 
-    #: Factor-config fields refused over this panel, read by the factor base
-    #: class. ``BaseFactorConfig.symbols`` is a different field from the
-    #: dataset's ``symbols``, but it too selects on a ticker and would raise a
-    #: ``KeyError`` from ``.sel`` against the integer PERMNO axis mid-run.
-    #: Declared here so the factor layer never learns this class's name.
+    #: Factor-config fields that are refused for this panel, read by the
+    #: factor base class. ``BaseFactorConfig.symbols`` is a different field
+    #: from the dataset's ``symbols``, but it also selects by ticker and would
+    #: fail with a ``KeyError`` from ``.sel`` on the integer PERMNO axis in
+    #: the middle of a run. It is declared here so the factor layer never
+    #: needs to know this class by name.
     REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {
         "symbols": (
-            "This panel's symbol axis is the int64 PERMNO (D-01), while that "
-            "field is the base-class TICKER-side roster. Restrict the "
-            "CONVERSION with config.permnos on the dataset instead -- it is "
-            "the raw-side PERMNO roster, and it doubles as the explicit "
-            "roster that overrides config.security_filter. A period-correct "
-            "ticker for a PERMNO is READ from the ticker sidecar; it is not "
-            "something this panel selects on."
+            "This panel's symbol axis is the int64 PERMNO, while that field "
+            "is the base class's list of tickers. Restrict the conversion "
+            "with config.permnos on the dataset instead: it lists PERMNOs, "
+            "and it also acts as an explicit roster that overrides "
+            "config.security_filter. The ticker a PERMNO had on a date is "
+            "read from the ticker sidecar; this panel does not select by "
+            "ticker."
         )
     }
 
-    #: The twelve variables a Tiingo daily panel carries, in
-    #: ``TiingoColumns.EOD`` order, derived from that constant so the drop-in
-    #: promise is checked against its source.
+    #: The twelve variables of a Tiingo daily panel, in ``TiingoColumns.EOD``
+    #: order. Taken from that constant, so this panel always matches Tiingo's
+    #: variables exactly.
     TIINGO_VARIABLES: tuple[str, ...] = tuple(TiingoColumns.EOD.split(","))
 
-    #: Variables added beyond the Tiingo twelve. Bound here so a subclass can
-    #: narrow or extend the set without touching the module constant.
+    #: Variables added beyond the Tiingo twelve. Defined on the class so a
+    #: subclass can narrow or extend the set without changing the module
+    #: constant.
     EXTRA_VARIABLES: tuple[str, ...] = CRSP_EXTRA_VARIABLES
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):
-        """Assign the config, validating the CRSP-specific fields.
+        """Assign the config after checking the CRSP-specific fields.
 
-        On top of the base-class date normalisation this refuses anything
-        that is not a ``CrspDatasetConfig``, a ``frequency`` other than
-        ``"1d"``, a ``vendor`` other than ``"wrds"``, any value of the
-        ticker-side ``symbols`` field, a ``permnos`` entry that is not a digit
-        string, an empty ``permnos`` tuple, an unknown ``security_filter`` and
-        an unknown ``roster_universe``. ``permnos`` is normalised to a tuple of
-        strings and a dict ``security_filter`` to tuples of strings, so a
-        config round-trips through JSON unchanged. Every cache derived from
-        the previous config is cleared.
+        After the base class normalizes the dates, this refuses anything that
+        is not a ``CrspDatasetConfig``, a ``frequency`` other than ``"1d"``,
+        a ``vendor`` other than ``"wrds"``, any value of the ticker-based
+        ``symbols`` field, a ``permnos`` entry that is not a digit string, an
+        empty ``permnos`` tuple, an unknown ``security_filter`` and an
+        unknown ``roster_universe``. ``permnos`` is stored as a tuple of
+        strings and a dict ``security_filter`` as tuples of strings, so the
+        config survives a round trip through JSON unchanged. Every cache
+        built from the previous config is cleared.
 
-        Validation happens here rather than at first use so that a wrong
-        field is reported by name before any raw data has been scanned.
+        Checking here rather than at first use means a wrong field is
+        reported by name before any raw data is scanned.
+
+        Parameters
+        ----------
+        config : CrspDatasetConfig
+            The new configuration.
 
         Raises
         ------
         TypeError
             If ``config`` is not a ``CrspDatasetConfig``.
         ValueError
-            For any of the field refusals listed above.
+            For any of the other invalid fields listed above.
 
         Examples
         --------
@@ -376,25 +404,24 @@ class CrspStockDataset(StockDataset):
         if config.vendor != "wrds":
             raise ValueError(
                 f"{self.class_name}: vendor must be 'wrds' (CRSP is reached "
-                f"through the WRDS account); got {config.vendor!r}."
+                f"through a WRDS account); got {config.vendor!r}."
             )
-        # `symbols` is the base-class ticker-side roster and this panel has no
-        # ticker axis for it to select on. It is refused at assignment,
-        # whatever it holds (an empty tuple too), so the error names the wrong
-        # field instead of surfacing later as a `KeyError` from a `.sel`
-        # against an integer index.
+        # `symbols` is the base class's ticker list, and this panel has no
+        # ticker axis. Refuse any value (an empty tuple too) now, so the error
+        # names the wrong field instead of appearing later as a `KeyError`
+        # from `.sel` on an integer index.
         if config.symbols is not None:
             rejected = config.symbols
             raise ValueError(
                 f"{self.class_name}: config.symbols is not selectable on a "
                 f"CRSP panel; got {rejected!r}. This panel's symbol axis is "
-                f"the int64 PERMNO (D-01), while that field is the base-class "
-                f"TICKER-side roster -- two names for one axis, which disagree "
-                f"the moment a ticker is reused or renamed. Use config.permnos "
-                f"instead: it is the raw-side PERMNO roster, and it doubles as "
-                f"the explicit roster that overrides config.security_filter. A "
-                f"period-correct ticker for a PERMNO is READ from the ticker "
-                f"sidecar; it is not something this panel selects on."
+                f"the int64 PERMNO, while that field is the base class's list "
+                f"of tickers; the two disagree as soon as a ticker is reused "
+                f"or renamed. Use config.permnos instead: it lists PERMNOs, "
+                f"and it also acts as an explicit roster that overrides "
+                f"config.security_filter. The ticker a PERMNO had on a date "
+                f"is read from the ticker sidecar; this panel does not select "
+                f"by ticker."
             )
         if config.permnos is not None:
             permnos = tuple(str(permno) for permno in config.permnos)
@@ -402,17 +429,17 @@ class CrspStockDataset(StockDataset):
             if bad:
                 raise ValueError(
                     f"{self.class_name}: config.permnos must hold PERMNO digit "
-                    f"strings; {bad} are not. permnos selects the RAW tier, "
-                    f"which keys on the PERMNO -- there is no ticker-side "
-                    f"roster on this vendor to put a ticker in instead."
+                    f"strings; {bad} are not. permnos selects raw files, which "
+                    f"are keyed by PERMNO; this vendor has no ticker-based "
+                    f"list to put a ticker in instead."
                 )
-            # An empty tuple could mean "no security" or, to the roster gate
-            # that reads it, "every PERMNO in the raw tier". Refuse it by name
-            # rather than pick one.
+            # An empty tuple could mean "no security" or, to code that reads
+            # it as a roster, "every PERMNO in the raw tier". Refuse it rather
+            # than guess.
             if not permnos:
                 raise ValueError(
-                    f"{self.class_name}: config.permnos is an EMPTY tuple, "
-                    f"which selects no security -- and which would otherwise "
+                    f"{self.class_name}: config.permnos is an empty tuple, "
+                    f"which selects no security, and which would otherwise "
                     f"be read as 'every PERMNO in the raw tier', silently "
                     f"widening the panel to every security on disk under a "
                     f"store name chosen for none of them. The two meanings are "
@@ -422,11 +449,11 @@ class CrspStockDataset(StockDataset):
                 )
             config.permnos = permnos
 
-        # Validated at assignment: a malformed filter is a config error and
-        # should not surface only after the raw tier has been scanned.
-        # `_security_filter` holds the resolved mapping; `config.security_filter`
-        # keeps what the user wrote (a preset name stays a name) so the config
-        # round-trips, with a dict normalised to tuples in place.
+        # Check the filter now: a malformed filter is a config error and
+        # should not appear only after the raw files are scanned.
+        # `_security_filter` holds the resolved mapping, while
+        # `config.security_filter` keeps what the user wrote (a preset stays a
+        # name) so the config round-trips; a dict is normalized to tuples.
         self._security_filter = resolve_security_filter(
             config.security_filter, owner=self.class_name
         )
@@ -442,10 +469,8 @@ class CrspStockDataset(StockDataset):
                     f"this vendor serves {CrspMembership.INDEXES}."
                 )
 
-        # Every cache below is derived from the configured window and roster,
-        # so a reassigned config must not reuse any of it: the derivation and
-        # its anchors, the symbology, the filter report, the ticker sidecar
-        # payload and the membership spells of `roster_universe`.
+        # Every cache below depends on the configured window and roster, so
+        # a new config must not reuse any of them.
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
@@ -455,38 +480,37 @@ class CrspStockDataset(StockDataset):
     # -- the global derivation ---------------------------------------------
 
     def _derivation(self) -> pl.DataFrame:
-        """Return the labelled, adjusted frame for the whole configured window.
+        """Return the adjusted frame of panel variables for the whole configured window.
 
-        The raw tier is scanned across ``[start_date, end_date]`` with no date
-        argument, the ``config.permnos`` roster is applied, the ``symbol``
-        column is cast to the int64 PERMNO, and the adjustment anchor is
-        chosen per PERMNO over that whole frame before
-        ``_raw_data_to_xr_window`` slices any dates. That ordering is what
-        makes every chunk granularity produce the same store: a window never
-        sees an anchor of its own. The result is cached on the instance and
-        cleared whenever the config is reassigned. Both conversion entry
-        points pass through here, so anything that must happen exactly once
-        per conversion belongs here.
+        The raw files are scanned over the whole configured
+        ``[start_date, end_date]``, the ``config.permnos`` roster is applied,
+        the ``symbol`` column is cast to the int64 PERMNO, and the adjustment
+        anchor is chosen per PERMNO over that whole frame. Only then does
+        ``_raw_data_to_xr_window`` cut out date windows. Because of this
+        order, every chunk size produces the same store: a window never picks
+        an anchor of its own. The result is cached on the instance and
+        cleared when the config changes. Both conversion entry points go
+        through here, so anything that must happen exactly once per
+        conversion belongs here.
 
         The anchor is each PERMNO's first row inside the window with a
         strictly positive ``close`` and a non-null ``dlycumfacshr``. A store
-        that only grows forward therefore keeps every historical value, but
-        two movements silently rescale a security's whole adjusted history:
-        moving ``start_date`` later, and back-filling the raw tier with rows
-        earlier than the previous anchor. Neither is detected; the remedy is
-        a rebuild.
+        that only grows forward in time therefore keeps every past value.
+        Two changes, however, silently rescale a security's whole adjusted
+        history: moving ``start_date`` later, and adding raw rows earlier
+        than the previous anchor. Neither is detected; the fix is a rebuild.
 
         Returns
         -------
         pl.DataFrame
-            One row per raw ``(permno, timestamp)`` that survives the security
-            filter, projected onto the panel's variables by ``_finalise``.
+            One row per raw ``(permno, timestamp)`` kept by the security
+            filter, with the panel's variables as built by ``_finalise``.
 
         Raises
         ------
         ValueError
-            If a PERMNO has no usable anchor or its return chain
-            is zero or non-finite at the anchor.
+            If a PERMNO has no usable anchor, or its cumulative return is
+            zero or not finite at the anchor.
         """
         cached = getattr(self, "_derivation_cache", None)
         if cached is not None:
@@ -494,8 +518,8 @@ class CrspStockDataset(StockDataset):
 
         frame = self._scan_raw()
         # `is not None` rather than truthiness: the setter refuses an empty
-        # tuple, but a config assigned by another route must not convert the
-        # entire raw tier while claiming an empty roster.
+        # tuple, but a config set some other way must not convert every raw
+        # file while claiming an empty roster.
         if self.config.permnos is not None:
             frame = frame.filter(
                 pl.col("symbol").is_in(list(self.config.permnos))
@@ -506,17 +530,17 @@ class CrspStockDataset(StockDataset):
         self._symbology = CrspSymbology(
             reference.table("stksecurityinfohist")
         )
-        # The raw tier's `symbol` column already holds the PERMNO as a string;
-        # the panel's axis is that same value cast to int64.
+        # The raw `symbol` column holds the PERMNO as a string; the panel's
+        # axis is the same value as int64.
         frame = frame.with_columns(pl.col("symbol").cast(pl.Int64))
 
         frame = frame.sort(["permno", "timestamp"])
         derived = frame.with_columns(
-            # Exclude the no-price sentinel before `abs()`: `abs(0.0)` is still
-            # 0.0, so a delisting-amount row would otherwise publish a $0.00
-            # close. The flag test is case-insensitive and whitespace-stripped,
-            # as in `_apply_security_filter`; the bare `== 0.0` arm catches a
-            # sentinel written under a flag `_NO_PRICE_FLAGS` does not list.
+            # Remove the no-price placeholder before `abs()`: `abs(0.0)` is
+            # still 0.0, so a delisting-amount row would otherwise report a
+            # $0.00 close. The flag test ignores case and surrounding spaces;
+            # the plain `== 0.0` test catches a placeholder whose flag is not
+            # in `_NO_PRICE_FLAGS`.
             pl.when(
                 pl.col("dlyprcflg")
                 .str.strip_chars()
@@ -533,10 +557,10 @@ class CrspStockDataset(StockDataset):
             .over("permno")
             .alias("_G"),
         )
-        # The anchor row must carry both a positive close and a share factor,
-        # so every quantity read off it comes from one row. A merely non-null
-        # close would let the 0.0 sentinel anchor the series and zero it, and
-        # a null `dlycumfacshr` on the anchor would make every `adjVolume` NaN.
+        # The anchor row must have both a positive close and a share factor,
+        # so every value taken from it comes from one row. Accepting any
+        # non-null close would let the 0.0 placeholder anchor and zero the
+        # series, and a null `dlycumfacshr` would make every `adjVolume` NaN.
         anchor = (
             derived.filter(
                 pl.col("close").is_not_null()
@@ -554,10 +578,9 @@ class CrspStockDataset(StockDataset):
         self._assert_anchor_usable(derived)
 
         derived = derived.with_columns(
-            # NaN wherever there is no close: the chain is defined on a
-            # priceless day (a null return contributes 1), so without the mask
-            # the anchor's level would be published as a price on a day that
-            # had none.
+            # NaN wherever there is no close. The cumulative return exists on
+            # a day without a price (a null return counts as 1), so without
+            # this a price would be reported for a day that had none.
             pl.when(pl.col("close").is_null())
             .then(None)
             .otherwise(
@@ -577,26 +600,31 @@ class CrspStockDataset(StockDataset):
             .alias("_prev_cumfacpr")
         )
         # Filter after the cumulative product, never before: dropping a row
-        # first would make the next kept day's adjusted move span a return the
-        # panel no longer shows.
+        # first would make the next kept day's adjusted change include a
+        # return the panel no longer shows.
         derived = self._apply_security_filter(derived)
-        # Built from the kept rows, so the sidecar names exactly the PERMNOs
-        # the panel carries.
+        # Built from the kept rows, so the sidecar names exactly the panel's
+        # PERMNOs.
         self._ticker_intervals = self._build_ticker_intervals(derived)
         return self._finalise(derived)
 
     def _assert_anchor_usable(self, derived: pl.DataFrame) -> None:
-        """Refuse, by PERMNO, rather than publish an unusable adjusted column.
+        """Raise, naming the PERMNOs, instead of producing an unusable adjusted column.
 
-        Two causes get two messages because they need different remedies. A
-        PERMNO with no row in the window carrying both a positive ``dlyprc``
-        and a non-null ``dlycumfacshr`` has no anchor, so every ``adj*`` value
-        would be NaN; the remedy is a different window or roster. A PERMNO
-        whose cumulative return chain is 0.0 or non-finite at the anchor (a
-        ``dlyret`` of exactly -1.0) would get an infinite series; the remedy
-        is to inspect its returns. Nothing downstream raises on a zeroed,
+        The two causes get separate messages because they have different
+        fixes. A PERMNO with no row in the window that has both a positive
+        ``dlyprc`` and a non-null ``dlycumfacshr`` has no anchor, so every
+        ``adj*`` value would be NaN; the fix is a different window or roster.
+        A PERMNO whose cumulative return is 0.0 or not finite at the anchor
+        (after a ``dlyret`` of exactly -1.0) would get an infinite series;
+        the fix is to inspect its returns. Nothing later raises on a zeroed,
         all-NaN or infinite column, and both cases hit exactly the delisted
-        securities the panel exists to keep.
+        securities the panel is meant to keep.
+
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            The derivation with the anchor columns joined on.
 
         Raises
         ------
@@ -612,15 +640,15 @@ class CrspStockDataset(StockDataset):
         )
         if missing:
             raise ValueError(
-                f"{self.class_name}: {len(missing)} PERMNO(s) have NO usable "
+                f"{self.class_name}: {len(missing)} PERMNO(s) have no usable "
                 f"adjustment anchor in [{self.config.start_date}, "
                 f"{self.config.end_date}]: {missing[:10]}. The anchor is a "
-                f"PERMNO's first row inside that window carrying BOTH a strictly "
-                f"positive dlyprc AND a non-null dlycumfacshr. CRSP writes "
-                f"dlyprc = 0.000000 on a delisting-AMOUNT row "
-                f"(dlyprcflg in {list(_NO_PRICE_FLAGS)}) as a NO-PRICE "
-                f"sentinel, and leaves dlycumfacshr NULL there, so such a row "
-                f"is not a level and cannot anchor a series. Refusing rather "
+                f"PERMNO's first row inside that window with both a strictly "
+                f"positive dlyprc and a non-null dlycumfacshr. CRSP writes "
+                f"dlyprc = 0.000000 on a delisting-amount row "
+                f"(dlyprcflg in {list(_NO_PRICE_FLAGS)}) as a no-price "
+                f"placeholder, and leaves dlycumfacshr null there, so such a "
+                f"row is not a price and cannot anchor a series. Refusing rather "
                 f"than publishing an all-zero adjClose or an all-NaN adjVolume "
                 f"for these securities. Widen [start_date, end_date] to include "
                 f"a day on which they traded, or drop them from config.permnos."
@@ -646,7 +674,7 @@ class CrspStockDataset(StockDataset):
                 f"non-finite in [{self.config.start_date}, "
                 f"{self.config.end_date}]: {degenerate[:10]}. adjClose is "
                 f"close_anchor * G_t / G_anchor with G = cum_prod(1 + dlyret), "
-                f"so a dlyret of exactly -1.0 -- a legal CRSP total loss -- "
+                f"so a dlyret of exactly -1.0 (a valid CRSP total loss) "
                 f"makes G_anchor 0.0, every earlier day inf and every later day "
                 f"NaN, without raising anywhere downstream. Refusing rather "
                 f"than publishing an infinite adjusted series. Inspect dlyret "
@@ -656,14 +684,20 @@ class CrspStockDataset(StockDataset):
     # -- the security filter ------------------------------------------------
 
     def _member_intervals(self) -> pl.DataFrame | None:
-        """Return the membership spells of ``roster_universe``, read once.
+        """Return the membership intervals of ``roster_universe``, read once.
 
-        ``None`` when no universe is configured. The reference tier is read
-        from disk, so the frame is memoised on the instance and cleared with
-        the derivation cache when the config is reassigned. The window passed
-        is the conversion's own, so a CRSP/Compustat link gap outside it
-        cannot affect the result; a gap inside it refuses the conversion,
-        since ``CrspDatasetConfig`` carries no ``allow_unlinked`` flag.
+        Returns ``None`` when no index is configured. The reference tables are
+        read from disk, so the frame is cached on the instance and cleared
+        with the derivation cache when the config changes. The conversion's
+        own window is passed on, so a gap in the CRSP/Compustat link table
+        outside it cannot affect the result. A gap inside it makes the
+        conversion fail, because ``CrspDatasetConfig`` has no
+        ``allow_unlinked`` option.
+
+        Returns
+        -------
+        pl.DataFrame or None
+            ``(permno, start_date, end_date)`` membership intervals.
         """
         if self.config.roster_universe is None:
             return None
@@ -681,15 +715,22 @@ class CrspStockDataset(StockDataset):
         return cached
 
     def _roster_sources(self) -> list[str]:
-        """Describe the explicit rosters in play, for the filter report.
+        """Describe the configured explicit rosters, for the filter report.
 
-        Computed separately from the exemption expression so that the
-        ``"none"`` preset, which rejects nothing, still records that a roster
-        was configured without paying for the per-row membership join.
+        An *explicit roster* is a list of securities the user named, either
+        ``config.permnos`` or the members of ``config.roster_universe``. This
+        is computed apart from the exemption expression so that the ``"none"``
+        preset, which rejects nothing, still records the roster without
+        paying for the per-row membership join.
+
+        Returns
+        -------
+        list of str
+            One description per configured roster.
         """
         sources: list[str] = []
-        # `is not None`: an empty tuple that bypassed the setter reports a
-        # roster of zero PERMNOs, which is what it is, rather than no roster.
+        # `is not None`: an empty tuple that bypassed the setter is reported
+        # as a roster of zero PERMNOs, not as no roster.
         if self.config.permnos is not None:
             sources.append(
                 f"config.permnos: {len(self.config.permnos)} PERMNO(s) named "
@@ -713,29 +754,34 @@ class CrspStockDataset(StockDataset):
     def _roster_exemption(
         self, derived: pl.DataFrame
     ) -> tuple[pl.Expr, list[str]]:
-        """Return the rows an explicit roster exempts from the type filter.
+        """Return which rows an explicit roster exempts from the type filter.
 
-        The security filter screens an unspecified population and must not
-        overrule a roster the caller named. Every date of a PERMNO in
-        ``config.permnos`` is exempt; a member of ``config.roster_universe``
-        is exempt on the dates inside its membership spell and on no others,
-        which keeps the exemption from widening into a blanket one. With
-        neither configured the expression is a literal false.
+        The security filter screens securities nobody named, and must not
+        overrule a roster the caller chose. Every date of a PERMNO in
+        ``config.permnos`` is exempt. A member of ``config.roster_universe``
+        is exempt only on the dates inside its membership interval, so the
+        exemption does not grow into a blanket one. With neither configured
+        the expression is a literal false.
 
         The exemption matters because ``equity_common`` rejects
-        ``sharetype='UG'``, the publicly traded partnership era of securities
-        that were real index members, and that loss lands mid-history where
-        it is indistinguishable from a late listing.
+        ``sharetype='UG'``, which covers the periods when some real index
+        members were publicly traded partnerships. Losing those rows leaves
+        a hole in the middle of a history that looks like a late listing.
 
-        The universe arm is evaluated here as a join and returned as
-        ``pl.lit(series)`` aligned to the row order of ``derived``, so the
-        caller must apply the expression to that same frame. One predicate
-        per spell, or a materialised ``(permno, date)`` set, would both cost
-        far more on a real index history.
+        The index part is computed here with a join and returned as
+        ``pl.lit(series)`` in the row order of ``derived``, so the caller
+        must apply the expression to that same frame. One condition per
+        membership interval, or a full ``(permno, date)`` set, would both
+        cost far more on a real index history.
+
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            The derivation the expression will be applied to.
 
         Returns
         -------
-        tuple[pl.Expr, list[str]]
+        tuple of (pl.Expr, list of str)
             ``(expression, sources)``, with ``sources`` from
             ``_roster_sources``.
         """
@@ -743,10 +789,10 @@ class CrspStockDataset(StockDataset):
         terms: list[pl.Expr] = []
 
         # `is not None`, as everywhere this field is read. An empty roster
-        # contributes a term that matches nothing, never a blanket exemption.
+        # adds a term that matches nothing, never a blanket exemption.
         if self.config.permnos is not None:
-            # `permno` is Int64; the config holds the digit strings the CLI
-            # and the raw tier use, so the cast is the whole comparison.
+            # `permno` is Int64 while the config holds digit strings (as the
+            # CLI and the raw files do), so compare as strings.
             terms.append(
                 pl.col("permno")
                 .cast(pl.String)
@@ -770,11 +816,23 @@ class CrspStockDataset(StockDataset):
     def _member_days(
         derived: pl.DataFrame, intervals: pl.DataFrame
     ) -> pl.Series:
-        """Return, per row of ``derived``, whether it falls inside a spell.
+        """Return, for each row of ``derived``, whether it falls inside a membership interval.
 
-        Both ends are inclusive, matching ``permno_intervals``. A PERMNO with
-        no spell at all reads False rather than null: "not a member" and "no
-        membership data" are the same answer to the filter's question.
+        Both ends are inclusive, as in ``permno_intervals``. A PERMNO with no
+        interval at all gives False rather than null: for the filter, "not a
+        member" and "no membership data" mean the same thing.
+
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            Rows with ``permno`` and ``timestamp`` columns.
+        intervals : pl.DataFrame
+            ``(permno, start_date, end_date)`` membership intervals.
+
+        Returns
+        -------
+        pl.Series
+            Boolean, one value per row of ``derived``, in row order.
         """
         rows = derived.select(
             pl.col("permno").cast(pl.Int64),
@@ -802,26 +860,31 @@ class CrspStockDataset(StockDataset):
         )
 
     def _apply_security_filter(self, derived: pl.DataFrame) -> pl.DataFrame:
-        """Drop the rows the configured filter rejects and build the report.
+        """Drop the rows the configured filter rejects and build the filter report.
 
-        The verdict is per row, read off ``dsf_v2``'s own per-day type
+        The decision is made per row, from ``dsf_v2``'s own per-day type
         columns, so a security that stopped being common stock keeps exactly
-        the era in which it was. Every listed column must match and a null
-        never matches. Two adjustments follow. A delisting row inherits its
-        PERMNO's previous verdict, because that row is where CRSP's type
-        columns go blank and it carries the delisting return; judging it on
-        blank types would drop the largest-magnitude day of every delisted
-        security. Then the explicit-roster exemption is OR-ed in, after the
-        carry, so a rescued ordinary row does not become the carried verdict
-        of the next day.
+        the period when it was. Every listed column must match and a null
+        never matches. Two adjustments follow. First, a delisting row takes
+        its PERMNO's decision from the previous row: on that row CRSP's type
+        columns are blank, yet it carries the delisting return, so judging it
+        on blank types would drop the biggest move of every delisted
+        security. Second, the explicit-roster exemption is added with a
+        logical OR, after that carry, so a rescued row does not pass its
+        decision on to the next day.
 
         The report is built here and written once per conversion by
         ``_write_identity_reports``.
 
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            The derivation before filtering.
+
         Returns
         -------
         pl.DataFrame
-            ``derived`` without the rejected rows and the working columns.
+            ``derived`` without the rejected rows and the helper columns.
         """
         rows_total = derived.height
         if not self._security_filter:
@@ -877,17 +940,17 @@ class CrspStockDataset(StockDataset):
                 f"{self.class_name}: the security filter dropped "
                 f"{dropped.height} of {rows_total} row(s) across "
                 f"{dropped['permno'].n_unique()} PERMNO(s); see "
-                f"{FILTER_REPORT_SUFFIX} beside the store for the per-type and "
+                f"{FILTER_REPORT_SUFFIX} next to the store for the per-type and "
                 f"per-PERMNO breakdown."
             )
         if rescued.height:
             logger.warning(
-                f"{self.class_name}: an explicit roster KEPT {rescued.height} "
+                f"{self.class_name}: an explicit roster kept {rescued.height} "
                 f"row(s) across {rescued['permno'].n_unique()} PERMNO(s) that "
                 f"the security filter would have dropped; see "
-                f"{FILTER_REPORT_SUFFIX} beside the store, key "
+                f"{FILTER_REPORT_SUFFIX} next to the store, key "
                 f"'roster_overrides', for the per-PERMNO date ranges. The "
-                f"filter screens an unspecified population and does not "
+                f"filter screens securities nobody named and does not "
                 f"overrule a named roster."
             )
         return derived.filter(pl.col("_keep")).drop(
@@ -896,11 +959,11 @@ class CrspStockDataset(StockDataset):
 
     @staticmethod
     def _type_combination() -> pl.Expr:
-        """Return the ``"sharetype/securitytype/.../usincflg"`` key expression.
+        """Return an expression building the ``"sharetype/securitytype/.../usincflg"`` key.
 
-        A null component renders as ``"None"`` rather than nulling the whole
-        key, because which combination was dropped is exactly what a row with
-        missing types needs answered.
+        A null part is written as ``"None"`` instead of making the whole key
+        null, because a row with missing types is exactly the one whose
+        combination the report must show.
         """
         parts = [
             pl.col(name).fill_null(pl.lit("None")) for name in _TYPE_COLUMNS
@@ -922,11 +985,12 @@ class CrspStockDataset(StockDataset):
 
         ``roster_overrides`` and ``admitted_without_ticker`` are always
         present, with zero counts when nothing happened, so a reader can tell
-        "no override" from "this store predates the key". A rescued row counts
-        in ``rows_kept`` and appears in neither ``dropped_by_type`` nor
-        ``dropped_permnos``, so ``rows_kept + rows_dropped == rows_total``.
-        The no-ticker warning is logged here because both branches of
-        ``_apply_security_filter`` reach this method exactly once.
+        "no override" apart from "this store was written before the key
+        existed". A rescued row counts in ``rows_kept`` and appears in neither
+        ``dropped_by_type`` nor ``dropped_permnos``, so
+        ``rows_kept + rows_dropped == rows_total``. The no-ticker warning is
+        logged here because both branches of ``_apply_security_filter`` call
+        this method exactly once.
 
         Parameters
         ----------
@@ -934,13 +998,18 @@ class CrspStockDataset(StockDataset):
             Row count of the derivation before filtering.
         dropped : pl.DataFrame
             The rows the filter removed.
-        rescued : pl.DataFrame | None
-            The rows an explicit roster kept that the filter would
-            have removed.
-        sources : list[str] | tuple[str, ...]
+        rescued : pl.DataFrame, optional
+            The rows an explicit roster kept that the filter would have
+            removed.
+        sources : list or tuple of str, default ()
             The roster descriptions from ``_roster_sources``.
-        kept : pl.DataFrame | None
-            The surviving rows, used for the no-ticker count.
+        kept : pl.DataFrame, optional
+            The rows kept, used for the no-ticker count.
+
+        Returns
+        -------
+        dict
+            The JSON-ready report.
         """
         report: dict = {
             "filter": {
@@ -985,14 +1054,24 @@ class CrspStockDataset(StockDataset):
         return report
 
     def _admitted_without_ticker(self, kept: pl.DataFrame | None) -> dict:
-        """Count the admitted PERMNOs that have no ticker on any panel day.
+        """Count the kept PERMNOs that have no ticker on any of their panel days.
 
-        Returns ``{"permnos": [...], "rows": N}`` with the PERMNOs in numeric
-        order. A PERMNO is listed only when none of its panel days falls
-        inside a ``stksecurityinfohist`` interval that carries a ticker;
-        partial coverage is not counted. This is a count, not a filter:
-        nothing is excluded, because most never-ticker securities read as
-        ordinary common stock and no type predicate separates them.
+        A PERMNO is listed only when none of its panel days falls inside a
+        ``stksecurityinfohist`` interval that has a ticker; partial coverage
+        does not count. This only counts; nothing is excluded, because most
+        securities without a ticker look like ordinary common stock and no
+        type condition separates them.
+
+        Parameters
+        ----------
+        kept : pl.DataFrame or None
+            The rows kept by the security filter.
+
+        Returns
+        -------
+        dict
+            ``{"permnos": [...], "rows": N}``, with the PERMNOs in numeric
+            order.
         """
         empty: dict = {"permnos": [], "rows": 0}
         if kept is None or kept.is_empty() or self._symbology is None:
@@ -1005,7 +1084,7 @@ class CrspStockDataset(StockDataset):
             .sort(["permno", "_as_of"])
         )
         if intervals.is_empty():
-            # No named interval anywhere: every admitted PERMNO counts.
+            # No named interval anywhere: every kept PERMNO counts.
             per_permno = rows.group_by("permno").agg(pl.len().alias("rows"))
             return self._render_admitted_without_ticker(per_permno)
 
@@ -1018,8 +1097,8 @@ class CrspStockDataset(StockDataset):
             by="permno",
             strategy="backward",
         )
-        # A backward as-of join alone attaches the last interval to every
-        # later row; checking the end is what says the row is inside it.
+        # A backward as-of join attaches the last interval to every later
+        # row; checking the end date confirms the row is inside it.
         labelled = labelled.with_columns(
             pl.when(
                 pl.col("end_date").is_not_null()
@@ -1039,7 +1118,7 @@ class CrspStockDataset(StockDataset):
 
     @staticmethod
     def _render_admitted_without_ticker(per_permno: pl.DataFrame) -> dict:
-        """Render a ``(permno, rows)`` frame as ``{"permnos": [...], "rows": N}``."""
+        """Convert a ``(permno, rows)`` frame to ``{"permnos": [...], "rows": N}``."""
         if per_permno.is_empty():
             return {"permnos": [], "rows": 0}
         permnos = sort_symbol_axis(
@@ -1051,31 +1130,41 @@ class CrspStockDataset(StockDataset):
         }
 
     def _warn_admitted_without_ticker(self, admitted: dict) -> None:
-        """Log a warning when securities with no ticker entered the panel."""
+        """Log a warning if securities with no ticker were kept in the panel."""
         if not admitted["permnos"]:
             return
         logger.warning(
             f"{self.class_name}: {len(admitted['permnos'])} PERMNO(s) "
-            f"({admitted['rows']} row(s)) were ADMITTED to the panel with no "
-            f"ticker on any of their days. On the old ticker axis these "
-            f"securities could never enter a panel at all -- a row with no "
-            f"symbol had no column to live in -- so this is a widening of the "
-            f"ADMISSION RULE (D-14), not a filter that stopped working. The "
-            f"security filter's verdict is unchanged for every one of them. "
-            f"See {FILTER_REPORT_SUFFIX} beside the store, key "
+            f"({admitted['rows']} row(s)) were admitted to the panel with no "
+            f"ticker on any of their days. A ticker-keyed panel could not "
+            f"hold these securities at all (a row with no ticker has no "
+            f"column), so this reflects the PERMNO axis admitting more "
+            f"securities, not a filter that stopped working. The security "
+            f"filter's decision is unchanged for every one of them. "
+            f"See {FILTER_REPORT_SUFFIX} next to the store, key "
             f"'admitted_without_ticker', for the PERMNO list."
         )
 
     def _permno_breakdown(self, frame: pl.DataFrame) -> dict:
         """Return ``{PERMNO: {types, rows, first, last}}`` for a set of rows.
 
-        One rendering serves both the dropped rows and the roster-rescued
-        rows, since "which PERMNO, over which dates, on which type
-        combination" is the same question in both directions. There is no
-        ticker field: the key answers who and ``types`` answers why. A
-        human-readable name, if ever wanted here, would come from
-        ``self._symbology``, not from the ticker sidecar, which carries only
-        the panel's own PERMNOs and so knows nothing about a dropped one.
+        The same format serves the dropped rows and the rows a roster rescued,
+        since both answer "which PERMNO, over which dates, with which type
+        combination". There is no ticker field: the key says which security
+        and ``types`` says why. A readable name, if ever wanted here, would
+        have to come from ``self._symbology``, not from the ticker sidecar,
+        which only lists the panel's own PERMNOs and knows nothing about a
+        dropped one.
+
+        Parameters
+        ----------
+        frame : pl.DataFrame
+            The rows to summarize.
+
+        Returns
+        -------
+        dict
+            Per-PERMNO type combinations, row count and first and last date.
         """
         typed = frame.with_columns(self._type_combination())
         per_permno = (
@@ -1101,7 +1190,7 @@ class CrspStockDataset(StockDataset):
 
     @staticmethod
     def _jsonable_filter(value):
-        """Return the configured filter as JSON data: a preset name, or lists."""
+        """Return the configured filter in JSON form: a preset name, or a dict of lists."""
         if isinstance(value, dict):
             return {
                 str(column): [str(item) for item in allowed]
@@ -1110,7 +1199,7 @@ class CrspStockDataset(StockDataset):
         return value
 
     def filter_report_path(self) -> Path:
-        """Return the path of the filter report written beside the store.
+        """Return the path of the filter report written next to the store.
 
         Examples
         --------
@@ -1120,7 +1209,7 @@ class CrspStockDataset(StockDataset):
         return Path(str(self.config.zarr_file_path) + FILTER_REPORT_SUFFIX)
 
     def ticker_sidecar_path(self) -> Path:
-        """Return the path of the ticker sidecar written beside the store.
+        """Return the path of the ticker sidecar written next to the store.
 
         Examples
         --------
@@ -1130,20 +1219,30 @@ class CrspStockDataset(StockDataset):
         return Path(str(self.config.zarr_file_path) + TICKER_SIDECAR_SUFFIX)
 
     def _build_ticker_intervals(self, derived: pl.DataFrame) -> dict:
-        """Build the ticker sidecar payload for the PERMNOs ``derived`` keeps.
+        """Build the ticker sidecar payload for the PERMNOs in ``derived``.
 
         The payload is ``{"generated_from", "vintage_product_end",
-        "intervals"}``, where ``intervals`` maps ``str(permno)`` to that
-        PERMNO's named spells in ascending ``start`` order, each
-        ``{"ticker", "start", "end"}`` with both ends inclusive. Intervals
-        rather than one name per PERMNO, because a renamed company keeps its
-        PERMNO and a last-name-wins map would file its early years under the
-        later name. Only the panel's own PERMNOs are written, not the whole
-        reference table. ``vintage_product_end`` rides along because a newer
-        CRSP vintage can carry a later interval for the same PERMNO.
-        Intervals with no ticker are dropped: this sidecar answers "what is
-        it called", and no name is the same answer whether the interval is
-        absent or nameless.
+        "intervals"}``. ``intervals`` maps ``str(permno)`` to that PERMNO's
+        named intervals in ascending ``start`` order, each
+        ``{"ticker", "start", "end"}`` with both ends inclusive. It stores
+        intervals rather than one name per PERMNO because a renamed company
+        keeps its PERMNO, and a single latest name would label its early
+        years with the later name. Only the panel's own PERMNOs are written,
+        not the whole reference table. ``vintage_product_end`` (the last date
+        of the CRSP data version) is included because a newer CRSP version
+        can add a later interval for the same PERMNO. Intervals with no
+        ticker are dropped: the sidecar answers "what is it called", and a
+        missing interval and a nameless one give the same answer.
+
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            The filtered derivation.
+
+        Returns
+        -------
+        dict
+            The JSON-ready sidecar payload.
         """
         empty: dict = {
             "generated_from": "stksecurityinfohist",
@@ -1178,12 +1277,22 @@ class CrspStockDataset(StockDataset):
         return empty
 
     def _finalise(self, derived: pl.DataFrame) -> pl.DataFrame:
-        """Project the derivation onto the panel's variables and cache it.
+        """Build the panel's variables from the derivation and cache the result.
 
-        Renames the raw OHLCV columns, applies the adjustment factors, derives
-        ``divCash`` and ``splitFactor``, renames or rescales the CRSP extras,
-        casts every variable to float64 and stores the result in
+        Renames the raw OHLCV columns, applies the adjustment factors,
+        computes ``divCash`` and ``splitFactor``, renames or rescales the CRSP
+        extras, casts every variable to float64 and stores the result in
         ``_derivation_cache``.
+
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            The filtered derivation with its helper columns.
+
+        Returns
+        -------
+        pl.DataFrame
+            Columns ``timestamp``, ``symbol`` and every panel variable.
         """
         frame = derived.with_columns(
             pl.col("dlyopen").alias("open"),
@@ -1194,48 +1303,44 @@ class CrspStockDataset(StockDataset):
             (pl.col("dlyhigh") * pl.col("_factor")).alias("adjHigh"),
             (pl.col("dlylow") * pl.col("_factor")).alias("adjLow"),
             (pl.col("dlyvol") * pl.col("_volume_factor")).alias("adjVolume"),
-            # Unadjusted cash per share on the ex-date, the Tiingo convention.
-            # CRSP splits the day's cash into an ordinary and a non-ordinary
-            # component, so they are summed. Both null is 0.0, not NaN: a day
-            # with no distribution paid a known amount of nothing. Finer
-            # detail (record and pay dates, distribution codes) stays raw in
-            # `stkdistributions` under the reference tier.
+            # Unadjusted cash per share on the ex-date, as Tiingo reports it.
+            # CRSP splits it into ordinary and non-ordinary parts, so sum them.
+            # Both null gives 0.0, not NaN: a day with no distribution paid a
+            # known amount of nothing. Finer detail stays in the reference
+            # table `stkdistributions`.
             (
                 pl.col("dlyorddivamt").fill_null(0.0)
                 + pl.col("dlynonorddivamt").fill_null(0.0)
             ).alias("divCash"),
-            # 1.0 on the PERMNO's first row inside the window, where there is
-            # no previous `dlycumfacpr` to divide by. A split on the window's
-            # opening day therefore reads 1.0; `facprc`, CRSP's own per-day
-            # factor, sits beside it for that case.
+            # 1.0 on the PERMNO's first row in the window, where there is no
+            # previous `dlycumfacpr` to divide by, so a split on the window's
+            # first day reads 1.0. `facprc`, CRSP's own daily factor, covers
+            # that case.
             pl.coalesce(
                 pl.col("_prev_cumfacpr") / pl.col("dlycumfacpr"),
                 pl.lit(1.0),
             ).alias("splitFactor"),
-            # The CRSP extras, in `CRSP_EXTRA_VARIABLES` order. `permco` is
-            # already named and `close` came from the derivation.
-            #
-            # `ret` keeps CRSP's null as NaN. The only `fill_null(0.0)` on a
-            # return is inside `_derivation`'s cumulative product, because a
-            # gap-spanning return already covers the missing day.
+            # The CRSP extras, in `CRSP_EXTRA_VARIABLES` order. `permco`
+            # already has its name and `close` came from the derivation.
+            # `ret` keeps CRSP's null as NaN; the only `fill_null(0.0)` on a
+            # return is in `_derivation`'s cumulative product.
             pl.col("dlyret").alias("ret"),
             pl.col("dlyretx").alias("retx"),
-            # CRSP states both in thousands; the panel states shares and USD.
+            # CRSP reports both in thousands; the panel uses shares and USD.
             (pl.col("shrout") * 1000).alias("shrout"),
             (pl.col("dlycap") * 1000.0).alias("market_cap"),
             pl.col("dlybid").alias("bid"),
             pl.col("dlyask").alias("ask"),
-            # The no-trade indicator is read off the flag, not off the sign of
-            # the price: CRSP Stock v2 carries no negative prices, so a sign
-            # test would flag nothing. A null flag stays null.
+            # Read the no-trade indicator from the flag, not from the price's
+            # sign: CRSP Stock v2 has no negative prices, so a sign test would
+            # flag nothing. A null flag stays null.
             pl.when(pl.col("dlyprcflg").is_null())
             .then(None)
             .when(pl.col("dlyprcflg") == pl.lit("BA"))
             .then(pl.lit(1.0))
             .otherwise(pl.lit(0.0))
             .alias("prc_is_bidask"),
-            # A marker, not a multiplier: the delisting return is already in
-            # `ret`.
+            # A marker only: the delisting return is already in `ret`.
             pl.when(pl.col("dlydelflg").is_null())
             .then(None)
             .when(pl.col("dlydelflg") == pl.lit("Y"))
@@ -1246,7 +1351,7 @@ class CrspStockDataset(StockDataset):
             pl.col("dlycumfacpr").alias("cumfacpr"),
             pl.col("dlycumfacshr").alias("cumfacshr"),
             pl.col("dlyfacprc").alias("facprc"),
-            # The closing-trade price, kept beside `close` so a caller can see
+            # The last-trade price, kept next to `close` so a caller can see
             # whether a trade happened and at what price.
             pl.col("dlyclose").alias("close_trade"),
         )
@@ -1267,25 +1372,26 @@ class CrspStockDataset(StockDataset):
     def _raw_axes_in_range(self):
         """Return the symbol and timestamp axes of the converted panel.
 
-        Overrides ``StockDataset``'s version because this panel's axis is the
-        int64 PERMNO, read off the cached derivation so that the ``permnos``
-        roster and the security filter have already been applied. Both axes
-        come from that one frame: a timestamp axis taken from a wider frame
-        would make the chunked path plan windows over days the requested
-        securities never traded, pin the chunk grid against an extent the
-        store never reaches, and record completed windows for them. The
-        symbol order is numeric, via ``sort_symbol_axis``, so a five-digit
-        PERMNO does not sort before a four-digit one as strings would.
+        This overrides ``StockDataset``'s version because this panel's axis is
+        the int64 PERMNO. Both axes are read from the cached derivation, where
+        the ``permnos`` roster and the security filter are already applied. A
+        timestamp axis from a wider frame would make the chunked conversion
+        plan windows over days the chosen securities never traded, fix the
+        chunk grid to dates the store never reaches, and record those windows
+        as done. Symbols are sorted numerically with ``sort_symbol_axis``, so
+        a five-digit PERMNO does not sort before a four-digit one as strings
+        would.
 
-        This is also where the chunked path writes its sidecars:
+        This is also where the chunked conversion writes its sidecars:
         ``from_raw_data_chunked`` calls it once, after the derivation has
         succeeded and before the first append.
 
         Returns
         -------
-        tuple[list[int], pandas.DatetimeIndex]
-            ``(symbols, timestamps)``: a sorted list of ints and a
-            ``pandas.DatetimeIndex``.
+        symbols : list of int
+            The PERMNOs, sorted numerically.
+        timestamps : pandas.DatetimeIndex
+            The distinct timestamps, sorted.
         """
         import pandas as pd
 
@@ -1296,25 +1402,24 @@ class CrspStockDataset(StockDataset):
         )
         timestamps = derivation.get_column("timestamp").unique().to_list()
 
-        # Written last, after the derivation has succeeded: a run that fails
-        # in the derivation must not leave sidecars for a store that was never
-        # created, and a store can never exist without them because the first
-        # append happens after this returns.
+        # Written only after the derivation succeeded, so a failed run leaves
+        # no sidecars for a store that was never created. The first append
+        # happens after this returns, so a store never exists without them.
         self._write_identity_reports()
         return symbols, pd.DatetimeIndex(sorted(timestamps))
 
     def _write_identity_reports(self) -> None:
-        """Write the filter report and ticker sidecar, once, for a new store.
+        """Write the filter report and ticker sidecar once, for a new store only.
 
         Nothing is written when the store already exists. The reports are
-        written before the chunk ledger and new-listing checks, any of which
-        may still abort the run, and without the guard a refused
-        re-conversion would replace the surviving store's report with numbers
-        for a panel that was never written. The cost is that an append does
-        not refresh the sidecars, so they describe the panel as first
-        written; a rebuild (``quantlab.dataset.crsp.rebuild``) deletes them
-        first. Both writes pass ``indent=2, sort_keys=True`` explicitly so the
-        on-disk shape does not depend on the JSON writer's defaults.
+        written before the chunk-ledger and new-listing checks, which may
+        still abort the run; without this check, a refused re-conversion
+        would overwrite the existing store's report with numbers for a panel
+        that was never written. The cost is that an append does not refresh
+        the sidecars, so they describe the panel as first written; a rebuild
+        (``quantlab.dataset.crsp.rebuild``) deletes them first. Both writes
+        pass ``indent=2, sort_keys=True`` so the file layout does not depend
+        on the JSON writer's defaults.
         """
         if Path(str(self.config.zarr_file_path)).exists():
             return
@@ -1336,18 +1441,18 @@ class CrspStockDataset(StockDataset):
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: list[int] | None = None
     ) -> xr.Dataset:
-        """Densify one window of the cached derivation.
+        """Return one window of the cached derivation as a dense panel.
 
         Parameters
         ----------
-        start_date
+        start_date : date-like
             First timestamp of the window, inclusive.
-        end_date
+        end_date : date-like
             Last timestamp of the window, inclusive.
-        symbols : list[int] | None
-            Integer PERMNOs to keep and reindex onto, or ``None`` for
-            every PERMNO in the derivation. The base signature says
-            ``list[str]`` because most vendors key on a ticker.
+        symbols : list of int, optional
+            Integer PERMNOs to keep and reindex onto, or ``None`` for every
+            PERMNO in the derivation. The base signature says ``list[str]``
+            because most vendors use tickers.
 
         Returns
         -------
@@ -1361,9 +1466,8 @@ class CrspStockDataset(StockDataset):
             & (pl.col("timestamp") <= pl.lit(end))
         )
         # Cast to int: the derivation's `symbol` column is Int64, and `is_in`
-        # on strings would silently match nothing. The `permnos` roster is
-        # already applied inside `_derivation()`, so this is the only
-        # restriction here.
+        # with strings would silently match nothing. The `permnos` roster was
+        # already applied in `_derivation`.
         if symbols is not None:
             window = window.filter(
                 pl.col("symbol").is_in([int(symbol) for symbol in symbols])
@@ -1380,14 +1484,19 @@ class CrspStockDataset(StockDataset):
         return data
 
     def _raw_data_to_xr(self) -> xr.Dataset:
-        """Densify the whole window in one go and write the sidecars.
+        """Build the dense panel for the whole window at once and write the sidecars.
 
-        ``BaseDataset.from_raw_data`` calls only this, so it is the
-        non-chunked path's one chance to leave the same sidecars
-        ``_raw_axes_in_range`` leaves on the chunked path. The write happens
-        after the derivation has succeeded and before ``save`` creates the
-        store; the writer skips an existing store, so this is a first write
-        only.
+        ``BaseDataset.from_raw_data`` calls only this method, so it is the
+        one-shot conversion's only chance to write the same sidecars that
+        ``_raw_axes_in_range`` writes for the chunked conversion. They are
+        written after the derivation succeeds and before ``save`` creates the
+        store; the writer skips an existing store, so this only ever writes
+        for a new store.
+
+        Returns
+        -------
+        xr.Dataset
+            The panel for the configured window.
         """
         window = self._raw_data_to_xr_window(
             self.config.start_date, self.config.end_date, symbols=None
@@ -1396,14 +1505,20 @@ class CrspStockDataset(StockDataset):
         return window
 
     def _assert_unique_panel_keys(self, window: pl.DataFrame) -> None:
-        """Refuse a window in which ``(timestamp, symbol)`` is not unique.
+        """Raise if ``(timestamp, symbol)`` is not unique within the window.
 
-        ``symbol`` is the PERMNO, so this pair is ``(permno, dlycaldt)``, which
-        the acquisition already asserts unique on every raw page. A duplicate
-        here means something between the raw tier and this point multiplied
-        rows (a join that fanned out, a window read twice), not that two
-        securities were confused. The inherited deduplication would collapse
-        the duplicates into one series silently, which is why this raises.
+        ``symbol`` is the PERMNO, so the pair is ``(permno, dlycaldt)``, which
+        the download already checks is unique on every page it fetches. A
+        duplicate here means something between the raw files and this point
+        multiplied rows (a join that produced extra rows, a window read
+        twice), not that two securities were mixed up. The inherited
+        deduplication would silently collapse the duplicates into one
+        series, which is why this raises.
+
+        Parameters
+        ----------
+        window : pl.DataFrame
+            One window of the derivation.
 
         Raises
         ------
@@ -1424,13 +1539,12 @@ class CrspStockDataset(StockDataset):
             ]
             raise ValueError(
                 f"{self.class_name}: {duplicates.height} (timestamp, symbol) "
-                f"collision(s) in the window, first {sample}. `symbol` IS the "
-                f"PERMNO (D-01), so this is a duplicated "
-                f"(permno, dlycaldt) key -- the raw tier asserts that pair is "
-                f"unique on every page it fetches "
-                f"(WrdsCrspAcquisition._assert_unique_keys, "
-                f"wrds/crsp.py:818-840), so these rows were multiplied AFTER "
-                f"acquisition, not confused between two securities. Refusing "
+                f"collision(s) in the window, first {sample}. `symbol` is the "
+                f"PERMNO, so this is a duplicated (permno, dlycaldt) key. The "
+                f"download checks that pair is unique on every page it "
+                f"fetches (WrdsCrspAcquisition._assert_unique_keys), so these "
+                f"rows were multiplied after download, not mixed up between "
+                f"two securities. Refusing "
                 f"rather than collapsing them into one series. Inspect the raw "
                 f"parquet for these (permno, date) pairs; if the raw tier is "
                 f"clean, the fault is in the derivation between them."

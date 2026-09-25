@@ -100,6 +100,7 @@ def write_raw_tier(vendor_root: Path, rows: list[dict], batch: str) -> None:
 
 
 def main() -> None:
+    """Run the panel-building walkthrough in a temporary directory."""
     root = Path(tempfile.mkdtemp(prefix="quantlab_build_panel_"))
     rng = np.random.default_rng(0)
 
@@ -130,6 +131,7 @@ def main() -> None:
     # 2. Convert the raw tier into a dense panel and save it as Zarr.
     # ------------------------------------------------------------------
     def stock_config(**overrides) -> DatasetConfig:
+        """Return a dataset config for the synthetic store, with fields overridden by keyword."""
         fields = dict(
             raw_data_dir_path=str(vendor_root),
             zarr_file_path=str(root / "data" / "us_equity" / "1d" / "demo.zarr"),
@@ -230,9 +232,11 @@ def main() -> None:
         """
 
         def _pit_coverage_start(self) -> str:
+            """Return the first date for which the toy membership data is complete."""
             return "2024-01-01"
 
         def _build_intervals(self) -> pl.DataFrame:
+            """Return the toy membership intervals as ``(symbol, start, end)`` rows."""
             return pl.DataFrame(
                 [
                     ("AAA", "2024-01-01", None),

@@ -23,7 +23,7 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
-from quantlab.my_ops.preprocess import WindowedZScore
+from quantlab.my_ops.preprocess import WindowedZScore, CrossSectionalZScore
 
 
 class Alpha101SpotKline(FactorKunQuant):
@@ -120,11 +120,12 @@ class Alpha101Stock(FactorKunQuant):
 
     Notes
     -----
-    The graph passes no ``amount`` input, because the stock stores carry no
-    dollar-volume column. KunQuant's ``Alpha101.AllData`` computes VWAP as
-    ``amount / volume`` and, in KunQuant 0.1.11, raises ``RuntimeError``
-    ("Bad inputs") when ``amount`` is missing, so building this graph fails
-    until an ``amount`` or ``vwap`` input is supplied.
+    The stock stores carry no dollar-volume column, so the graph passes no
+    ``amount`` input. KunQuant's ``Alpha101.AllData`` would otherwise compute
+    VWAP as ``amount / volume`` (and raise "Bad inputs" without it), so the
+    graph passes the adjusted typical price
+    ``(adjHigh + adjLow + adjClose) / 3`` as ``vwap``, as ``Alpha158Stock``
+    does.
 
     Examples
     --------
@@ -151,17 +152,22 @@ class Alpha101Stock(FactorKunQuant):
             high = Input("adjHigh")
             vopen = Input("adjOpen")
             vol = Input("adjVolume")
+            # KunQuant derives vwap from `amount` unless one is given, and the
+            # stock stores carry no dollar volume; the adjusted typical price
+            # keeps vwap on the adjusted scale, as in `Alpha158Stock`.
+            vwap = (high + low + close) / 3.0
             all_data = Alpha101.AllData(
                 low=low,
                 high=high,
                 close=close,
                 open=vopen,
                 volume=vol,
+                vwap=vwap,
             )
             for alpha in Alpha101.all_alpha:
                 if alpha.__name__ in factor_names:
                     Output(
-                        alpha(all_data),
+                        CrossSectionalZScore(alpha(all_data)),
                         alpha.__name__,
                     )
         return Function(builder.ops)

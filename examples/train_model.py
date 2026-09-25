@@ -122,9 +122,11 @@ class ReversalFeatures(FactorKunQuant):
     """
 
     def _get_factor_names(self):
+        """Return the names of the two factors this class computes."""
         return ("past_ret_1", "ma_dev_5")
 
     def _get_factor_func(self):
+        """Build the KunQuant graph for the one-day return and the moving-average distance."""
         builder = Builder()
         with builder:
             close = Input("adjClose")
@@ -133,6 +135,7 @@ class ReversalFeatures(FactorKunQuant):
         return Function(builder.ops)
 
     def _get_features(self, data):
+        """Return the factor values unchanged; no post-processing is needed."""
         return data
 
 
@@ -186,6 +189,7 @@ def show(title: str, metrics: dict) -> None:
 
 
 def main() -> None:
+    """Run the training walkthrough in a temporary directory."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         dataset_config = write_synthetic_prices(root)

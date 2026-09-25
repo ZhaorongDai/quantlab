@@ -56,9 +56,8 @@ def _momentum_config(
 ) -> PolarsFactorConfig:
     """Build a `PolarsFactorConfig` for `Momentum` over a synthetic Zarr store.
 
-    Deliberately does NOT use `config.momentum_config()`: that factory points
-    at production data paths, whereas every test here runs against the
-    `tmp_path`-scoped `spot_kline_zarr` fixture.
+    Every test here runs against the `tmp_path`-scoped `spot_kline_zarr`
+    fixture rather than production data paths.
 
     `factor_names` defaults to `None` -- the normal case, in which the names
     are derived from the computation graph at config-assignment time. Passing
