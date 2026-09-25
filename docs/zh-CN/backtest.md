@@ -321,7 +321,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### 与基准对比
 
-把 `benchmark_dataset` 设为只含一个标的的市场数据集，例如 `scripts/ingest_wrds_crsp.py --qqq` 写出的 QQQ store（`CrspDatasetConfig.qqq_benchmark`）。它和价格数据集一样是 `(timestamp, symbol)` 面板，放在单独的 store 里，带有相同的 `adjOpen` / `adjClose` 列。直接传入数据集对象：
+把 `benchmark_dataset` 设为只含一个标的的市场数据集，例如 `scripts/wrds/etf.py --etf qqq` 写出的 QQQ store（`CrspDatasetConfig.qqq_benchmark`）。它和价格数据集一样是 `(timestamp, symbol)` 面板，放在单独的 store 里，带有相同的 `adjOpen` / `adjClose` 列。直接传入数据集对象：
 
 ```python
 >>> from quantlab.dataset.crsp import CrspStockDataset

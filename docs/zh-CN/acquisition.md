@@ -266,28 +266,10 @@ tiingo/month=2024-01/part-b57bb3d00d22bced-00000.pqt
 
 之后再运行同样的调用，会从 CCC 继续。设置 `kwargs["wait_for_quota"] = True` 后，运行会睡眠 `quota_wait_seconds`（默认 3600 秒）并自动续跑，最多 `quota_max_waits` 次（默认 3）。
 
-### 下载前检查规模
+### 下载规模
 
-`UniverseCatalog`（见 [universe](universe.md) 指南）根据标的的上市日期为一次下载估算规模，不需要客户端，也不需要凭证。当估算值超过原始字节数（20 GiB）、请求数（50,000）或耗时（4 小时）任一上限时，`assert_acquisition_volume_fits` 会抛出异常。三个上限都可以用关键字参数调高，`force=True` 则跳过检查。命令行脚本在构造客户端之前会先做这项检查。
-
-```python
->>> from quantlab.base.config import UniverseConfig
->>> from quantlab.universe import UniverseCatalog
->>> uconfig = UniverseConfig(output_path=str(root / "universe.parquet"), cache_dir=str(root / "_cache"))
->>> pl.DataFrame({
-...     "symbol": ["AAPL", "MSFT", "GOOG"], "category": ["us_all"] * 3,
-...     "start_date": ["1980-12-12", "1986-03-13", "2004-08-19"],
-...     "end_date": [None] * 3, "end_date_is_inferred": [False] * 3,
-... }).write_parquet(uconfig.output_path)
->>> catalog = UniverseCatalog.load(uconfig)
->>> estimate = catalog.estimate_acquisition_volume("us_all", "2023-01-01", "2023-12-31", frequency="1m", batch_size=100)
->>> estimate["rows"], estimate["raw_bytes"], estimate["requests"]
-(294450, 17667000, 30)
->>> catalog.assert_acquisition_volume_fits("us_all", "2023-01-01", "2023-12-31", frequency="1m", batch_size=100, max_raw_bytes=10_000_000)
-Traceback (most recent call last):
-    ...
-ValueError: Refusing to fetch us_all 1m over 2023-01-01..2023-12-31: 3 symbol(s) x 252 trading day(s) x 390 row(s)/symbol-day = 294,450 row(s) -> 30 request(s), 0.02 GiB, 0.0 h at 200 req/min (batch_size=100, page_limit=10,000). Over the raw-bytes ceiling (0.02 GiB > 0.01 GiB, MAX_RAW_BYTES) -- 1.8x the tightest ceiling. A narrowing that fits: the same window at <= 1 symbol(s) (a smaller --universe, e.g. an index-constituent category), or this roster over <= 206 calendar day(s) (2023-01-01..2023-07-25), which is ~17 request(s), ~0.01 GiB, ~0.0 h. Or raise that ceiling deliberately via the max_raw_bytes keyword (readable from config.kwargs), or pass force=True (--force-volume) to proceed anyway.
-```
+下载前不做规模估算，也不会因为请求过大而拒绝（[ADR 0001](../adr/0001-no-download-volume-guard.md)）。
+用标的列表和日期窗口来限定一次请求的范围。
 
 ### 补全缺失的覆盖起点
 
@@ -306,18 +288,19 @@ ValueError: Refusing to fetch us_all 1m over 2023-01-01..2023-12-31: 3 symbol(s)
 
 ### 对接真实厂商
 
-`scripts/` 里的脚本封装了各个厂商。它们从环境变量读取凭证，输出中不会包含凭证。下面的命令会访问网络，因此只给出命令，不给输出。
+`scripts/wrds/` 下的脚本封装了 WRDS 的各类数据，每种数据一个脚本。它们从环境变量读取 `WRDS_USERNAME`
+（密码来自 `~/.pgpass`），输出中不会包含它。每个脚本都会下载、转换成 Zarr 并关闭会话；`--end` 默认为今天，
+并截到该产品的最后一天；`--refresh` 从每个标的的水位继续。下面的命令会访问网络，因此只给出命令，不给输出。
 
 ```bash
-export TIINGO_API_KEY=your-key
-uv run python scripts/ingest_us_equity.py --dry-run     # 估算规模，不发请求，不需要 key
-uv run python scripts/ingest_us_equity.py               # 回填；再运行一次即续跑
-uv run python scripts/ingest_us_equity.py --refresh     # 从每个标的自己的水位补到最新
-uv run python scripts/ingest_us_equity.py --wait-for-quota
-
-export APCA_API_KEY_ID=your-id APCA_API_SECRET_KEY=your-secret
-uv run python scripts/ingest_alpaca.py --symbols AAPL,MSFT --start-date 2024-01-01 --end-date 2024-12-31
+export WRDS_USERNAME=your-username
+uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01
+uv run python scripts/wrds/market.py --start 2015-01-01 --security-filter equity_common
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT --start 2024-01-02 --end 2024-01-31
 ```
+
+Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的方式通过 `quantlab.registry.run` 和 `convert` 驱动。
 
 存储根目录取 `--data-dir`，其次是环境变量 `QUANTLAB_DATA_DIR`，最后是仓库下的 `data/` 目录。
 
@@ -375,4 +358,4 @@ RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must
 
 ## 另请参阅
 
-[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universe](universe.md) 指南介绍标的名单和体量护栏；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.base.coverage.CoverageLedger` 和 `quantlab.base.progress` 的类文档字符串列出了全部选项。
+[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universe](universe.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.base.coverage.CoverageLedger` 和 `quantlab.base.progress` 的类文档字符串列出了全部选项。

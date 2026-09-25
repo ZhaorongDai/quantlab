@@ -25,8 +25,8 @@ quantlab 是一个用于量化股票研究的 Python 后端。它用五个步骤
 和 `symbol`（标的）两个维度上。我们把这样的数据集称为*面板*。面板以 Zarr 格式存盘，模型直接在面板上训练，
 步骤之间不需要来回转换成 DataFrame。
 
-数据来自 Tiingo、Alpaca 和 WRDS（CRSP 日频股票数据和 TAQ 报价数据）。下载可以中断后继续，
-而且在请求发出之前会先检查数据量，过大的请求会被直接拒绝。为了避免*幸存者偏差*（只用今天仍然存在的公司做测试所导致的偏差），
+数据来自 Tiingo、Alpaca 和 WRDS（CRSP 日频股票数据和 TAQ 报价数据）。下载可以中断后继续。
+为了避免*幸存者偏差*（只用今天仍然存在的公司做测试所导致的偏差），
 quantlab 可以根据历史上的指数成分、以及包含已退市股票的全市场名单来构建股票池。
 
 因子可以用 [KunQuant](https://github.com/Menooker/KunQuant) 计算，它把因子公式编译成本地代码，
@@ -74,9 +74,9 @@ quantlab 只从环境变量中读取凭证。凭证从不通过命令行传入�
 | `WANDB_API_KEY` | 可选，训练时的 Weights & Biases 日志 |
 | `QUANTLAB_DATA_DIR` | 可选，下载数据和转换后数据的根目录 |
 
-下载脚本位于 `scripts/`，每个脚本都可以用 `--help` 查看选项，例如
-`uv run python scripts/ingest_tiingo.py --help`。文件写到哪里、下载中断后如何继续，见
-[数据源指南](docs/user-guide/data-sources.md)。
+下载脚本位于 `scripts/wrds/`（`index.py`、`market.py`、`etf.py`、`nbbo.py`），每个脚本都可以用
+`--help` 查看选项，例如 `uv run python scripts/wrds/index.py --help`。Tiingo、Alpaca 和 Binance
+只有库接口。文件写到哪里、下载中断后如何继续，见[数据源指南](docs/user-guide/data-sources.md)。
 
 ## 文档
 

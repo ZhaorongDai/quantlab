@@ -321,7 +321,7 @@ The top-level files of the run directory describe the stitched curve, and `folds
 
 ### Compare against a benchmark
 
-Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for example the QQQ store written by `scripts/ingest_wrds_crsp.py --qqq` (`CrspDatasetConfig.qqq_benchmark`). It is a `(timestamp, symbol)` panel like the price dataset, in a store of its own, with the same `adjOpen` / `adjClose` columns. Pass the dataset object itself:
+Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for example the QQQ store written by `scripts/wrds/etf.py --etf qqq` (`CrspDatasetConfig.qqq_benchmark`). It is a `(timestamp, symbol)` panel like the price dataset, in a store of its own, with the same `adjOpen` / `adjClose` columns. Pass the dataset object itself:
 
 ```python
 >>> from quantlab.dataset.crsp import CrspStockDataset

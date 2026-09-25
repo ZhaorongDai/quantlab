@@ -1,10 +1,9 @@
 # WRDS TAQ NBBO：从逐笔最优报价到 bar 面板
 
-> 代码位置：采集 `quantlab/acquisition/wrds/taq.py`（`WrdsSession`、`WrdsTaqNbboAcquisition`、
-> `WrdsNbboVolumeProbe`），体量护栏 `quantlab/acquisition/_support/sql_volume.py:SqlVolumeGuard`，
+> 代码位置：采集 `quantlab/acquisition/wrds/taq.py`（`WrdsSession`、`WrdsTaqNbboAcquisition`），
 > 面板 `quantlab/dataset/nbbo/__init__.py:NbboPanelDataset`，重采样 `quantlab/dataset/nbbo/resample.py`，
 > 交易日历 `quantlab/dataset/_support/session_calendar.py:XnysSessionCalendar`，
-> 命令行入口 `scripts/ingest_wrds_taq.py`。
+> 命令行入口 `scripts/wrds/nbbo.py`。
 > 相关文档：采集引擎通用契约见 [acquisition.md](acquisition.md)，数据源登记表见 [registry.md](registry.md)，
 > 分块转换见 [chunking.md](chunking.md)，时点成分见 [constituent.md](constituent.md)。
 
@@ -21,9 +20,11 @@
 
 ```bash
 export WRDS_USERNAME=<你的 WRDS 用户名>     # 密码只放在 ~/.pgpass
-uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
-    --start-date 2024-01-24 --end-date 2024-01-25 --to-zarr --bar-interval 1m
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+    --start 2024-01-24 --end 2024-01-25 --interval 1m
 ```
+
+`--end` 默认为今天，并截到 TAQ 已发布的最后一个交易日；转换总是执行。
 
 ---
 
@@ -60,7 +61,7 @@ WRDS 那份 PROC SQL 说明讲的是 SAS：普通 `SELECT` 会保持物理顺序
 
 每开一条新的 WRDS 连接，账号持有人的手机就可能收到一次 Duo 推送，而且 WRDS 角色最多允许 7 条连接。
 按批次开连接、并发 worker、失败后自动重连，每一种都会变成几十次推送。所以：一次运行只有**一个**
-`WrdsSession`，体量探测、拉取和转换共用它；`max_workers` 固定为 1（设成别的值会被拒绝）；
+`WrdsSession`，拉取和转换共用它；`max_workers` 固定为 1（设成别的值会被拒绝）；
 会话一旦断开就不再重连，这次运行停下，下次重跑从已记录的页续上。
 
 ### 5. `wrds.Connection` 会弹交互式密码提示，而且在 pandas 3 下坏掉
@@ -74,7 +75,7 @@ WRDS 那份 PROC SQL 说明讲的是 SAS：普通 `SELECT` 会保持物理顺序
 
 如果账号没有某一年的 TAQ 订阅（实测这个账号没有 2012），不提前检查的话，
 那一年的每一天、每一批都会失败一次，失败清单会把几百个完全正常的股票记成「失败」。
-现在在任何 `count(*)` 和 COPY 之前，先对窗口里每一年查一次 `taqm_YYYY` 的 USAGE 权限；
+现在在任何 COPY 之前，先对窗口里每一年查一次 `taqm_YYYY` 的 USAGE 权限；
 没有权限就整次运行立即停下，错误信息里点名 `taqm_YYYY`（D-21）。
 
 ---
@@ -133,7 +134,7 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
 ### 会话窗口（D-09、D-29）
 
 - 默认是常规交易时段 **09:30–16:00 ET**。
-- 可以用 `--session-start` / `--session-end` 设在 **04:00–20:00 ET** 内的任意位置；
+- 可以用 `--session HH:MM-HH:MM` 设在 **04:00–20:00 ET** 内的任意位置；
   超出这个范围，或开始不早于结束，都会在建任何连接之前被拒绝。
 - 半日市规则，两个边分别判断：落在常规时段 [09:30, 16:00] 内的边会被截到当天交易所实际的开/收盘；
   落在盘前盘后的边按挂钟时间保持不变。2024-11-29（13:00 早收）的例子：
@@ -180,7 +181,7 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
 
 ### `BarInterval`：为什么只有这几个
 
-`--bar-interval` 可选 `1s, 5s, 10s, 15s, 30s, 1m, 5m, 10m, 15m, 30m`（`quantlab/enums/data.py:BarInterval`）。
+`--interval` 可选 `1s, 5s, 10s, 15s, 30s, 1m, 5m, 10m, 15m, 30m`（`quantlab/enums/data.py:BarInterval`）。
 每一个都能同时整除常规交易日的 390 分钟和半日市的 210 分钟，所以任何一天都不会有一根 bar 跨过收盘。
 `1h` 不在里面：390 不是 60 的整数倍。注意它是**面板**的 bar 大小，和采集频率 `frequency="tick"` 是两回事（D-26），
 共享的 `Frequency` 字面量没有扩展。
@@ -197,27 +198,23 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
 ## 它是怎么工作的
 
 ```
-scripts/ingest_wrds_taq.py
-  │  参数校验：--symbols/--universe 二选一、两个日期都必填、点号记法、
+scripts/wrds/nbbo.py
+  │  参数校验：--symbols/--index 二选一、--start 必填、点号记法、
   │  会话窗口（XnysSessionCalendar 构造时检查）——全部在建连接之前
   ▼
-UniverseCatalog.get_symbols_in_range      （仅 --universe；区间重叠、点号记法）
-  ▼
-SOURCE.config_factory(...)                （= WrdsTaqNbboAcquisition.build_config，D-27）
-  ▼
 WrdsSession.shared()  ── 一次运行一个会话 = 最多一次 Duo 推送 ──────────────┐
+  │  --end 默认今天，截到 TAQ 已发布的最后一个交易日；                          │
+  │  assert_entitled：窗口内每一年的 taqm_YYYY 都要有 USAGE 权限                │
   ▼                                                                       │
-WrdsNbboVolumeProbe.count_rows_by_day                                     │
-  │  1. assert_entitled：窗口内每一年的 taqm_YYYY 都要有 USAGE 权限           │
-  │  2. 每个 (交易日, symbol 批次) 一次 count(*)，WHERE 与 COPY 完全相同         │
+CrspMembership + CrspSymbology            （仅 --index；CRSP 参考表 → ticker）│
   ▼                                                                       │
-SqlVolumeGuard.assert_acquisition_volume_fits   （超限拒绝，零 COPY）        │
+SOURCE.config_factory_for("us_equity", "tick", "nbbo")(...)               │
   ▼                                                                       │
 registry.run(SOURCE, ...)                                                 │
-  │  每个 (交易日, 批次) 一次 COPY；COPY 前再 count(*) 一次核对行数             │
+  │  每个 (交易日, 批次) 一次 COPY；COPY 前 count(*) 一次核对行数               │
   ▼                                                                       │
 原始分片 downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/...          │
-  ▼   （仅 --to-zarr）                                                     │
+  ▼                                                                       │
 registry.convert(SOURCE, NbboDatasetConfig, data_type="nbbo")             │
   ▼                                                                       │
 NbboPanelDataset → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar）             │
@@ -229,8 +226,7 @@ data/us_equity/tick/wrds_nbbo_{bar}_{开始}-{结束}.zarr                      
 
 几个要点：
 
-- **拒绝都发生在拉数据之前。** 参数错误和会话窗口错误在连接之前；没订阅的年份在任何 `count(*)` 之前；
-  体量超限在任何 COPY 之前。
+- **拒绝都发生在拉数据之前。** 参数错误和会话窗口错误在连接之前；没订阅的年份在任何 COPY 之前。
 - **一次运行只有一个会话。** 脚本里只调一次 `WrdsSession.shared()`，采集类构造时拿到的也是同一个实例；
   `finally` 里 `close_shared()` 关掉它。
 - **续跑粒度是「一天一页」。** 某天某批失败，下次重跑从那一天接着拉；会话中途断掉算全局停止，不写失败清单。
@@ -274,15 +270,9 @@ data/us_equity/tick/wrds_nbbo_{bar}_{开始}-{结束}.zarr                      
 | BRK | 152,801 |
 | **全市场** | **313,568,856 行，9,703 个 root** |
 
-- 护栏按 `count(*)` 计出的真实行数定价，默认上限 **20 GiB 原始字节**（和 `UniverseCatalog.MAX_RAW_BYTES` 相同）
-  和 **7 亿行**。
-- 每行字节数 `bytes_per_row = 30` 是**假设值**，不是量出来的；在实测分片大小之前，打印的估算会标明 `ASSUMPTION`。
-- 按这个量级，20 GiB 只够 S&P 500 的**几天**。长区间要分成多个日期段，每段单独过护栏。
-  被拒绝时，报错会给出从 `--start-date` 起能放得下的最长一段，例如 `--start-date 2024-01-24 --end-date 2024-01-26`，
-  照着跑完再跑下一段即可。
-- `--force-volume` 跳过拒绝，但估算照算照打印，并多打一行说明哪条上限被越过了。
-  没有环境变量、也没有配置项能整体关掉护栏。
-- 按单个 symbol 过滤的 `count(*)` 在服务器上不到 1 秒；整张表的 `count(*)` 要约 76 秒，所以只按批次计数，
+- 下载前不再估算体量（见 [ADR 0001](adr/0001-no-download-volume-guard.md)）。按这个量级，全市场一天约 10 GiB 原始行；
+  用 `--symbols` 名单和日期窗口来限定一次拉取的规模。
+- 按单个 symbol 过滤的 `count(*)` 在服务器上不到 1 秒；整张表的 `count(*)` 要约 76 秒，所以 COPY 前的核对只按批次计数，
   从不数整张表。
 
 ---
@@ -294,45 +284,37 @@ data/us_equity/tick/wrds_nbbo_{bar}_{开始}-{结束}.zarr                      
 这几条在建任何连接之前就被拒绝，以下是实际输出：
 
 ```bash
-$ uv run python scripts/ingest_wrds_taq.py --symbols AAPL,BRK-B \
-      --start-date 2024-01-24 --end-date 2024-01-25
-ingest_wrds_taq.py: error: --symbols ['BRK-B'] use a hyphen; WRDS TAQ uses dot notation (e.g. BRK.B for root BRK, suffix B).
+$ uv run python scripts/wrds/nbbo.py --symbols AAPL,BRK-B --start 2024-01-24 --end 2024-01-25
+nbbo.py: error: --symbols ['BRK-B'] use a hyphen; WRDS TAQ uses dot notation (BRK.B, not BRK-B).
 
-$ uv run python scripts/ingest_wrds_taq.py --symbols AAPL \
-      --start-date 2024-01-24 --end-date 2024-01-25 --to-zarr --session-start 03:59
-ingest_wrds_taq.py: error: --session-start/--session-end: session_start 03:59:00 lies outside the extended window 04:00-20:00 ET
+$ uv run python scripts/wrds/nbbo.py --symbols AAPL --start 2024-01-24 --end 2024-01-25 --session 03:59-16:00
+nbbo.py: error: --session: session_start 03:59:00 lies outside the extended window 04:00-20:00 ET
 
-$ env -u WRDS_USERNAME uv run python scripts/ingest_wrds_taq.py --symbols AAPL \
-      --start-date 2024-01-24 --end-date 2024-01-25
+$ env -u WRDS_USERNAME uv run python scripts/wrds/nbbo.py --symbols AAPL --start 2024-01-24 --end 2024-01-25
 WRDS_USERNAME environment variable must be set to your WRDS username. The password is never read from config or from this code: libpq reads it from ~/.pgpass (chmod 600), so store it there before running a WRDS acquisition.
 ```
-
-整条链路（探测、护栏、拉取、转换、单连接）在 `tests/test_ingest_wrds_taq.py` 里用离线的 `FakeWrdsSession` 端到端跑过。
 
 ### 例 2：真实拉取（此例未实际运行，需要 WRDS 凭证，每次运行可能触发一次 Duo 推送）
 
 ```bash
 export WRDS_USERNAME=<你的 WRDS 用户名>
 
-# 只拉原始记录，停在 raw
-uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
-    --start-date 2024-01-24 --end-date 2024-01-25
-
-# 拉完重采样成 1 分钟 bar（默认常规时段、按天分块）
-uv run python scripts/ingest_wrds_taq.py --symbols AAPL,MSFT,BRK.B \
-    --start-date 2024-01-24 --end-date 2024-01-25 --to-zarr --bar-interval 1m
+# 拉取并重采样成 1 分钟 bar（默认常规时段、按天分块）
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+    --start 2024-01-24 --end 2024-01-25 --interval 1m
 
 # 盘前盘后全时段、30 分钟 bar（每天 32 根）
-uv run python scripts/ingest_wrds_taq.py --symbols AAPL \
-    --start-date 2024-01-24 --end-date 2024-01-24 --to-zarr \
-    --session-start 04:00 --session-end 20:00 --bar-interval 30m
+uv run python scripts/wrds/nbbo.py --symbols AAPL \
+    --start 2024-01-24 --end 2024-01-24 --session 04:00-20:00 --interval 30m
 
-# 时点 S&P 500 成分（窗口内任意时刻是成分的都算），分段跑
-uv run python scripts/ingest_wrds_taq.py --universe sp500 \
-    --start-date 2024-01-24 --end-date 2024-01-24 --to-zarr
+# 时点 S&P 500 成分（窗口内任意时刻是成分的都算；ticker 来自 CRSP 参考表，需要 CRSP 订阅）
+uv run python scripts/wrds/nbbo.py --index sp500 --start 2024-01-24 --end 2024-01-24
+
+# 从上次的水位继续拉到今天
+uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B --start 2024-01-24 --refresh
 ```
 
-命令行每次都会先探测、再拉取。原始数据已经在盘上、只想换 bar 大小或会话窗口重新转换时，
+原始数据已经在盘上、只想换 bar 大小或会话窗口重新转换时，
 不需要连 WRDS：在 Python 里直接构造 `NbboDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录）
 并调用 `quantlab.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
 
@@ -342,16 +324,14 @@ uv run python scripts/ingest_wrds_taq.py --universe sp500 \
 
 - **用连字符写 symbol。** `BRK-B` 是 Tiingo 花名册的写法，WRDS 要写 `BRK.B`（root `BRK`、suffix `B`；`BF.B` 同理）。
   脚本会直接拒绝，不会猜。
-- **`--universe` 只有 `sp500` 和 `nasdaq100`。** `nasdaq_all` / `us_all` 是交易所全量名单，用连字符记法，
-  而且对逐笔报价来说大得离谱。
-- **两个日期都必填。** 窗口要先数行数、过护栏，没有默认窗口。
-- **`--rows-per-symbol-day` 在这里没有意义。** 它是 Alpaca tick 护栏用的；WRDS 的行数在服务器上用 `count(*)` 数出来，传了会报错。
+- **`--index` 只有 `sp500` 和 `nasdaq100`。** 成分股先按 CRSP 参考表解析成 PERMNO，再映射到窗口内用过的 ticker；
+  全市场的逐笔报价大得离谱，没有对应的名单。
+- **`--start` 必填，`--end` 默认今天。** 结束日期会截到 TAQ 已发布的最后一个交易日。
 - **2018 年以前的数据看 `n_ambiguous_ties`。** 非零的 bar，快照取决于 WRDS 的物理返回顺序。
 - **盘后收盘落在下一个 UTC 日。** 04:00–20:00 窗口的最后一根 bar 标签是次日 01:00Z（冬令时），这是对的。
-- **想要不含早收后状态的数据，用常规时段内的结束边。** 例如 `--session-end 16:00` 在半日市会自动截到 13:00，
-  而 `--session-end 17:00` 不会。
+- **想要不含早收后状态的数据，用常规时段内的结束边。** 例如 `--session 09:30-16:00` 在半日市会自动截到 13:00，
+  而 `--session 09:30-17:00` 不会。
 - **没订阅的年份整次停下。** 报错点名 `taqm_YYYY`；把窗口改到有订阅的年份再跑。
 - **会话断了不会自动重连。** 这是有意的（每次重连都可能推送 Duo）；重跑即可从断点续上。
   `wait_for_quota` 对 WRDS 没有意义，命令行也没有提供。
-- **30 B/行是假设。** 实测分片大小之前，护栏的字节估算可能偏大或偏小；行数上限（7 亿）是独立的第二道线。
-- **亚分钟 bar 用 `--chunk day`（默认值）。** 1 秒 bar 的一整天 S&P 500 约 1170 万个 bar 行。
+- **亚分钟 bar 按天分块转换（脚本的固定设置）。** 1 秒 bar 的一整天 S&P 500 约 1170 万个 bar 行。

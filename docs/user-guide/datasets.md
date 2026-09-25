@@ -101,8 +101,8 @@ config.raw_data_dir_path   # '/mnt/quant/downloads/us_equity/1d/us_all/tiingo'
 config.zarr_file_path      # '/mnt/quant/data/us_equity/1d/us_all.zarr'
 ```
 
-Binance spot klines have no factory; `scripts/ingest_binance_spot.py` builds
-their `DatasetConfig` under the same root. See the module docstring of
+Binance spot klines have no factory and no download script; build their
+`DatasetConfig` by hand under the same root. See the module docstring of
 `quantlab.config` for the full layout.
 
 ## Available datasets
@@ -125,8 +125,9 @@ header-less monthly CSV files Binance publishes for bulk download into one
 panel; the symbol is taken from each file name. The columns keep Binance's
 Title-Case names (`Open`, `Close`, `Quote asset volume`, ...), and
 `to_kunquant` maps them to the lowercase names the factor engine expects. The
-CSVs are not downloaded by quantlab; `scripts/ingest_binance_spot.py` converts
-CSVs you already have into the store. Use this dataset for crypto research.
+CSVs are not downloaded by quantlab; `SpotKlineDataset.from_raw_data().save()`
+converts CSVs you already have into the store. Use this dataset for crypto
+research.
 
 ### US stocks from Tiingo or Alpaca
 
@@ -374,9 +375,9 @@ listings, so it widens (as it did for `EEE` above); some means it rebuilds. A
 symbol that disappeared from the raw tier resolves to `"refuse"`, since both
 other strategies would lose data. The decision is logged before it runs.
 
-The ingest scripts expose the same path: `--to-zarr` converts after
-downloading, `--chunk` sets the granularity, and `--on-new-listing` picks the
-strategy. See [Data sources](data-sources.md).
+The WRDS scripts convert after downloading with the default granularity and
+strategy; `quantlab.registry.convert` exposes `granularity` and
+`on_new_listing`. See [Data sources](data-sources.md).
 
 `SpotKlineDataset` supports the chunked path but reconverts the whole range
 for every window, so it bounds the size of each write, not the memory used.

@@ -30,19 +30,17 @@ CRSP 日频表（`crsp_a_stock.dsf_v2`）里，每只证券每个交易日一行
 
 ### 按 PERMNO 下载
 
-两个脚本通过厂商登记表驱动下载。`scripts/ingest_wrds_crsp.py` 接受指数股票池、显式的 PERMNO 列表、QQQ ETF，或它们的任意组合；`scripts/ingest_wrds_crsp_all.py` 拉取整个美股市场。
+`scripts/wrds/` 下的三个脚本通过厂商登记表驱动下载，每种数据一个：`index.py` 拉取一个指数的时点成分股，`market.py` 拉取整个美股市场，`etf.py` 按 PERMNO 拉取一只或多只 ETF。每个脚本都接受 `--start`、可选的 `--end`（默认今天，并截到 CRSP 年度版本的最后一天）、`--refresh` 和 `--data-dir`，并且总是转换成 Zarr。这些命令需要 WRDS 账号，因此不展示输出。
 
 ```bash
-# CRSP 自己的时点 S&P 500，转换成面板和成分掩码。
-uv run python scripts/ingest_wrds_crsp.py --universe crsp_sp500 \
-    --start-date 2000-01-01 --end-date 2025-12-31 --to-zarr
+# CRSP 自己的时点 S&P 500：成分股的日线和成分面板。
+uv run python scripts/wrds/index.py --index sp500 --start 2000-01-01
 
-# 显式的 PERMNO 名单（Apple 和 Meta）。
-uv run python scripts/ingest_wrds_crsp.py --permnos 14593,13407 \
-    --start-date 2020-01-01 --end-date 2024-12-31 --to-zarr
+# Compustat 的 Nasdaq-100，通过 CCM 链接到 PERMNO，固定窗口。
+uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
 ```
 
-在复制第一行日频数据之前，脚本会检查账号的 schema 权限，把结束日期截到年度产品的最后一天，拉取参考表，解析名单，并统计本次下载将搬运多少行（超过体量上限就拒绝，除非加 `--force-volume`）。不加 `--to-zarr` 时，运行在原始分片写完后就停止。所有内容都写在 data root 下：
+在复制第一行日频数据之前，脚本会检查账号的 schema 权限，把结束日期截到年度产品的最后一天，拉取参考表并解析名单。所有内容都写在 data root 下：
 
 ```text
 data/downloads/us_equity/1d/wrds_crsp/
@@ -226,22 +224,21 @@ timestamp
 
 成分关系本身是一个面板 `is_member(timestamp, symbol)`，由成分数据集（`CrspSP500ConstituentDataset`、`CompustatNasdaq100ConstituentDataset`、`CrspMarketConstituentDataset`）在不需要连接的情况下构造，与价格面板使用同一条 PERMNO 轴。见 [constituent.md](constituent.md)。
 
-整市场脚本按窗口逐段转换，建议一次跑一年：
+市场脚本接受同样的窗口参数，外加 `--security-filter`（默认 `equity_common`，也可以是 `shrcd_10_11` 或 `none`）：
 
 ```bash
-uv run python scripts/ingest_wrds_crsp_all.py \
-    --start-date 2024-01-01 --end-date 2024-12-31 --to-zarr
+uv run python scripts/wrds/market.py --start 2024-01-01 --end 2024-12-31
 ```
 
-它会写出 `wrds_crsp_all_1d.zarr` 和上市状态掩码 `wrds_crsp_all_membership.zarr`。加上 `--with-index-membership` 还会写出 S&P 500 和 Nasdaq-100 的成分面板。
+它会写出 `wrds_crsp_market_1d.zarr` 和上市状态掩码 `wrds_crsp_market_membership.zarr`；边车文件里记录的名单 id 是 `crsp_market`。指数成分面板由 `index.py` 写出。这两个 store 在 2026-09-25 之前叫 `wrds_crsp_all_*`：已有的 store 手动改名，或者重新运行 `market.py`，从未改动的原始层重新转换。
 
 ### 增量更新 store
 
-`--refresh` 从每个 PERMNO 已记录的水位继续，向前延长 `--end-date` 是受支持的方向。整市场 store 的名单在两次刷新之间会增长，`--on-new-listing` 决定此时怎么办：`refuse`（默认）直接停止；`widen` 加入新的列，历史部分为 NaN，适合真正的新上市；`rebuild` 会对每个窗口重新稠密化，适合本来就有历史的 PERMNO。
+`--refresh` 从每个 PERMNO 已记录的水位继续，向前延长 `--end` 是受支持的方向。市场 store 的名单在两次刷新之间会增长。脚本使用库的默认转换选项；`quantlab.registry.convert(..., on_new_listing=...)` 决定新 PERMNO 怎么办：`refuse`（默认）直接停止；`widen` 加入新的列，历史部分为 NaN，适合真正的新上市；`rebuild` 会对每个窗口重新稠密化，适合本来就有历史的 PERMNO。
 
 ### 加入基准 ETF
 
-让 ETF 与它持有的股票一起排名，等于让它和自己竞争，所以基准放在单独的 store 里。`CrspDatasetConfig.etf_benchmark(permno=...)` 固定了两个关键设置：PERMNO 和 `security_filter="none"`；`qqq_benchmark` 是 QQQ（`QQQ_PERMNO`，86755）的同一配置，`SPY_PERMNO`（84398）是 S&P 500 的 ETF。脚本中，`--benchmark` 会下载跟踪 `--universe` 的 ETF（`crsp_sp500` 对应 SPY，`comp_nasdaq100` 对应 QQQ），写入 `wrds_crsp_spy_1d.zarr` / `wrds_crsp_qqq_1d.zarr`；`--qqq` 单独下载 QQQ。只下载 ETF、每只一个仓库时，用 `scripts/ingest_wrds_crsp_etf.py --etf spy,qqq`（其他 ETF 写成 `name=PERMNO`）。
+让 ETF 与它持有的股票一起排名，等于让它和自己竞争，所以基准放在单独的 store 里。`CrspDatasetConfig.etf_benchmark(permno=...)` 固定了两个关键设置：PERMNO 和 `security_filter="none"`；`qqq_benchmark` 是 QQQ（`QQQ_PERMNO`，86755）的同一配置，`SPY_PERMNO`（84398）是 S&P 500 的 ETF。`scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01` 按 PERMNO 下载 ETF，每只一个 store（`wrds_crsp_spy_1d.zarr`、`wrds_crsp_qqq_1d.zarr`）；其他 ETF 写成 `name=PERMNO`。ETF 从不作为指数或市场面板的一列。
 
 ```python
 >>> etf = CrspDatasetConfig.qqq_benchmark(

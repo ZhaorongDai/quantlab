@@ -282,11 +282,9 @@ rebuild 会替换整个 store。运行期间原来的 store 和台账被移到�
 
 ### 命令行
 
-ingest 脚本为转换步骤提供了同样的选项。`--to-zarr` 转换之前下载得到的原始数据树，`--chunk` 设置粒度，`--on-new-listing` 设置策略。下载本身需要 vendor 凭证，见 acquisition 指南。
-
-```bash
-uv run python scripts/ingest_us_equity.py --to-zarr --chunk month --on-new-listing widen
-```
+`scripts/wrds/` 下的 WRDS 脚本在下载后按库默认的粒度和新上市策略进行转换。其它设置在 notebook 里
+传给 `quantlab.registry.convert` 或 `from_raw_data_chunked`，如上文所示。下载本身需要 vendor 凭证，见
+acquisition 指南。
 
 ## 扩展
 

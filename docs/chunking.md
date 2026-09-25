@@ -282,11 +282,10 @@ A rebuild replaces the whole store. The original store and ledger are moved asid
 
 ### From the command line
 
-The ingest scripts expose the same options for the conversion step. `--to-zarr` converts the raw tree that a previous download produced, `--chunk` sets the granularity and `--on-new-listing` sets the strategy. The download itself needs a vendor credential; see the acquisition guide.
-
-```bash
-uv run python scripts/ingest_us_equity.py --to-zarr --chunk month --on-new-listing widen
-```
+The WRDS scripts under `scripts/wrds/` convert after downloading with the library defaults
+for the granularity and the new-listing strategy. Other settings are passed to
+`quantlab.registry.convert` or `from_raw_data_chunked` from a notebook, as above. The download
+itself needs a vendor credential; see the acquisition guide.
 
 ## Extending
 

@@ -22,7 +22,7 @@
 ## Languages
 - Python — `requires-python = ">=3.13"` per `pyproject.toml`. The system `python3` currently resolves to 3.9.6 (`python3 --version`), so a 3.13 interpreter must be provisioned via `uv` before the project will run (`uv` 0.8.14 is installed at `~/.local/bin/uv`).
 - YAML — instrument/venue metadata (`config/instruments.yaml`).
-- Jupyter (`.ipynb`) — exploratory/scratch work, e.g. `test_nt.ipynb`.
+- Jupyter — no notebook is checked in; runnable walkthroughs live under `examples/`.
 ## Runtime
 - CPython >=3.13 (declared, not currently installed as default `python3` on this machine).
 - GPU/CUDA expected for deep-learning model code: `base/model.py` calls `torch.cuda.manual_seed_all` and `DLModel.device` selects `"cuda"` when available, falling back to `"cpu"`.
@@ -35,7 +35,7 @@
 - **KunQuant** — JIT-compiled factor computation graph library. Used throughout `base/factor.py`, `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` to build and compile (`cfake.compileit`) high-performance alpha factor pipelines (`KunRunner`, `Function`, `Builder`, `Op`, `Stage`).
 - **Nautilus Trader** (`nautilus_trader`) — declared as a dependency but imported by no code: the `to_nautilus` export, `DatasetConfig.catalog_path` and `utils/nautilus.py` were removed 2026-09-25. Its live/backtest trading engine is not used by any code in the repo either: the only `Strategy` subclass, `backtest/test_strategy.py`, was deleted 2026-09-07.
 - **vectorbt** (`vectorbt`) — vector-based backtesting/portfolio simulation, used by `quantlab/backtest/engine_vectorbt.py` (`VectorBtBacktester`: `Portfolio.from_orders` with target-percent weights) and by the ad hoc `test.py` (`vbt.Portfolio.from_signals`). The former `vecbt/bt.py` signal helper was retired in phase 03.7 (D-31).
-- None detected. No `pytest`/`unittest` configuration, no test runner dependency, no `tests/` directory. Files named `test.py` and `test_nt.ipynb` at the repo root are ad hoc exploratory scripts/notebooks, not an automated test suite.
+- None detected. No `pytest`/`unittest` configuration, no test runner dependency, no `tests/` directory. `test.py` at the repo root is an untracked ad hoc script, not part of a test suite.
 - No linter/formatter config detected (no `.eslintrc`, `ruff.toml`, `.flake8`, `pyproject.toml` `[tool.ruff]`/`[tool.black]` sections).
 - No CI configuration (no `.github/workflows`, no other CI YAML).
 ## Key Dependencies
@@ -51,14 +51,13 @@
 - `joblib` — parallelism (`Parallel`/`delayed` for CV folds) and non-torch model persistence through `ml_model/backend.py:MlBackend` (the `.joblib` checkpoint backend of `base/model.py:MLModel`).
 - `tqdm` — progress bars across data/factor/CV loops.
 - `bottleneck` — the one dependency actually declared/locked (`pyproject.toml`/`uv.lock` under the old `crypto-quant` name); likely used for fast rolling/window numpy ops (not directly observed via `import` grep, may be an `xarray`/`pandas` accelerator dependency).
-- `requests` — Binance REST calls (`utils/binance.py`, `get_binance_instruments.py`).
+- `requests` — Binance REST calls (`quantlab/utils/binance.py`), the Tiingo/Alpaca clients and the Wikipedia fetchers in `quantlab/universe.py`.
 - `PyYAML` (`yaml`) — reading/writing `config/instruments.yaml`.
-- `tiingo` — Tiingo market-data API client (`scripts/download_stock_data_from_tiingo.py`).
-- `psutil` — memory-usage diagnostics (`read_mock_data_sink.py`).
-- `plotly` (`plotly.io`) — backtest result visualization (`test.py`).
+- `tiingo` — Tiingo market-data API client (`quantlab/acquisition/tiingo.py`).
+- `plotly` — backtest report rendering (`quantlab/utils/backtest_report.py`).
 ## Configuration
 - No `.env` file present at the repo root.
-- `scripts/download_stock_data_from_tiingo.py` reads a Tiingo API key — the script comment says to set `TIINGO_API_KEY` as an environment variable, but the script as written **hardcodes an API key literal** in the `config["api_key"]` assignment instead of reading from the environment. Treat this file as containing a leaked credential.
+- Credentials come from environment variables only (`WRDS_USERNAME`, with the password read by libpq from `~/.pgpass`; `TIINGO_API_KEY`, `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY` for the library-only vendors). No file in the repo holds a key; the script that once hardcoded one was deleted 2026-09-25.
 - No other secret/credential files detected (no `credentials.json`, `.npmrc`, private keys).
 - `pyproject.toml` — project metadata only (`name`, `version`, `readme`, `requires-python`, empty `dependencies = []`). No `[tool.*]` sections, no build-system customization, no optional dependency groups.
 - `uv.lock` — present but stale (see Runtime/Package Manager above); does not currently reflect a resolvable, working dependency set for this codebase.
@@ -118,7 +117,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Purpose: Converts raw external data (Binance CSV klines, Tiingo/NASDAQ parquet) into the canonical `xarray.Dataset` and persists it via a `DataBackend`. Also converts to KunQuant input arrays (`to_kunquant`).
 - Location: `base/data.py` (ABC `Dataset`), `dataset/spot.py` (`SpotKlineDataset`), `dataset/stock.py` (`StockDataset`).
 - Depends on: Storage Backend layer, `utils/file.py`, `utils/timer.py`.
-- Used by: Factor/Label layer (each `FactorConfig` embeds a `Dataset` instance) and directly by scripts (`test.py`, `cal.py`).
+- Used by: Factor/Label layer (each `FactorConfig` embeds a `Dataset` instance) and directly by the WRDS download scripts (`scripts/wrds/*.py`).
 - Purpose: Computes engineered features (factors) and prediction targets (labels) from dataset data using compiled KunQuant graphs, in either batch mode (`cal()`, operates on a full historical window) or streaming mode (`cal_stream()`, incremental per-bar updates for live trading).
 - Location: `base/factor.py` (ABC `FactorKunQuant`), `factor/alpha101.py`, `factor/alpha158.py`, `label/spot.py`, `my_ops/preprocess.py` (custom `WindowedCompositiveOp` subclasses).
 - Depends on: Dataset layer (each factor config embeds a `Dataset`), `KunQuant`.
@@ -126,7 +125,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Purpose: Orchestrates the full training lifecycle — pulling factor/label data into a combined `xarray.Dataset` (`collect()`), splitting into train/val/test or rolling walk-forward CV windows (one `_cv_folds` generator for both variants and both sequential/parallel branches), training (DL: epoch loop with per-epoch early stopping; ML: one native-early-stopping fit), checkpointing (`.pth` via `torch.save` in `DLModel`, `.joblib` via `MlBackend` in `MLModel`), and W&B logging.
 - Location: `base/model.py` (`BaseModel` / `DLModel` / `MLModel`), `base/config.py` (`DLConfig`/`MLConfig`), `dl_model/mlp.py`, `dl_model/rnn.py`, `dl_model/rnn_classification.py` (all `DLModel`), `ml_model/xgb.py` (`XGBoostRegressor`, an `MLModel`), `ml_model/backend.py` (`MlBackend`), `utils/metrics.py` (panel metrics).
 - Depends on: Factor/Label layer, `torch`, `xgboost`, `wandb`, `sklearn.metrics`, `scipy`, `joblib`.
-- Used by: Top-level scripts (`test.py`) and `examples/train_model.py`.
+- Used by: `examples/train_model.py` and the ad hoc `test.py`.
 - Purpose: Evaluates a model's trading performance on a cross-sectional universe. `BaseBacktester.run()` is the model backtest: train mode trains the model on its own dates, load mode loads a checkpoint, and the model then predicts the window through `predict_panel`. `run_cv()` is the model-CV backtest: it reads a `train_cv` run's `cv_folds.json`, backtests each fold with its own checkpoint on its own test segment, then simulates the concatenated fold weights once as a stitched curve. Signals are D-03 target weights (a `weight` variable on `(timestamp, symbol)`), and a signal formed at bar t fills at bar t+1's open (D-05). Metrics are reported for the whole window and split in-sample/out-of-sample against the model's training window (D-17). Every run writes its own run directory (`config.json`, `weights.zarr`, `equity.zarr`, `metrics.json`, `liquidations.json`, `fingerprint.json`, `report.html`), which `quantlab/utils/module.py:load_backtester_from_config` can rebuild and re-run. The event-driven (Nautilus) path is still reserved for Phase 6, with no current implementation.
 - Location: `quantlab/base/backtest.py` (`BaseBacktester`, `MarketSpec`, result dataclasses), `quantlab/backtest/engine_vectorbt.py` (`VectorBtBacktester`), `quantlab/backtest/selection.py` (`CrossSectionTopNSelector`), `quantlab/backtest/us_equity.py` (`USEquityCrossectionSelectStockVectorBt`), `quantlab/base/config.py` (`BacktestConfig`/`CrossSectionBacktestConfig`). The former `vecbt/bt.py` helper was retired in phase 03.7 (D-31). See `example/backtest.md`.
 - Depends on: Model layer (`predict_panel`, checkpoints, `cv_folds.json`), Factor/Label layer (re-dated to cover warm-up), Dataset layer (prices), `vectorbt`, `plotly`, optionally `wandb`.
@@ -152,39 +151,40 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Location: `main.py` (repo root).
 - Triggers: Manual `python main.py` (or `uv run main.py`).
 - Responsibilities: None currently — 7-line `uv init` stub (`def main(): print("Hello from quantlab!")`). Not wired into any other module in the codebase.
-- `cal.py` — computes and saves Alpha101 factors for a fixed config (repo root).
-- `test.py` — smoke-tests `StockDataset`/`Alpha101Stock` against local NASDAQ parquet data (`# %%` cell markers indicate this is meant to be run interactively, e.g. in VS Code/Jupyter).
-- `get_binance_instruments.py` — standalone CLI (`argparse`) to refresh `config/instruments.yaml` from the live Binance API.
-- `read_mock_data_sink.py` — memory-profiling scratch script for reading a `mock_data_sink` parquet hive dataset.
-- `scripts/download_stock_data_from_tiingo.py` — parallel Tiingo downloader for NASDAQ tickers (Jupyter-cell-style `# %%` script).
-- `test_nt.ipynb` — Nautilus Trader exploration notebook.
+- `scripts/wrds/index.py` — one index's point-in-time CRSP daily bars plus its membership panel (`--index sp500|nasdaq100 --start [--end] [--refresh] [--data-dir]`).
+- `scripts/wrds/market.py` — the whole CRSP daily market plus its listing panel (`--start [--end] [--security-filter] [--refresh] [--data-dir]`); stores are `wrds_crsp_market_*`.
+- `scripts/wrds/etf.py` — one store per ETF by PERMNO (`--etf spy,qqq,name=PERMNO --start [--end] [--refresh] [--data-dir]`).
+- `scripts/wrds/nbbo.py` — TAQ NBBO quotes resampled into a bar panel (`--symbols|--index, --start [--end] [--interval] [--session HH:MM-HH:MM] [--refresh] [--data-dir]`).
+- Every script always converts to Zarr, clips `--end` (default today) to the product's last date, checks entitlement before downloading and closes the shared WRDS session in a `finally`. `scripts/` is not on the pytest `pythonpath`: `scripts/wrds/` must never be importable, because it would shadow the `wrds` PyPI package. Tiingo, Alpaca and Binance have library interfaces only.
+- `examples/` — runnable walkthroughs (`quickstart.py`, `build_panel.py`, `train_model.py`, `backtest.py`, `inspect_data_sources.py`, `wrds_us_equity/`).
+- `test.py` — untracked ad hoc scratch script at the repo root.
 - **There is no single unified CLI/entry point** — each script independently constructs its own configs and imports the layers it needs.
 ## Architectural Constraints
 - **Threading:** Single-process, but KunQuant factor computation explicitly uses a configurable multi-thread executor (`kr.createMultiThreadExecutor(self.config.njobs)`, default `njobs=128` in `FactorConfig`), and cross-validation folds can run in parallel threads via `joblib.Parallel(backend="threading")` (`base/model.py:train_cv`).
 - **Global state:** None at module level observed (no module-level singletons/mutable globals); state is instance-scoped on `Dataset`/`FactorKunQuant`/`BaseModel` objects.
-- **Hardcoded paths:** `config/__init__.py` now holds only `stock_kline_config`, `stock_acquisition_config` and `universe_config`, all rooted in `get_data_root()` (the Binance spot, Alpha101/Alpha158, momentum, constituent and spot-label factories were deleted 2026-09-25). `cal.py`/`test.py` hardcode absolute macOS paths (`/Users/daizhaorong/projects/quantlab/...` and `/home/zhrdai/projects/crypto_quant/...` again for checkpoint loading). Any new environment (including this one) requires manually editing these paths before the pipeline will run.
+- **Hardcoded paths:** `config/__init__.py` now holds only `stock_kline_config`, `stock_acquisition_config` and `universe_config`, all rooted in `get_data_root()` (the Binance spot, Alpha101/Alpha158, momentum, constituent and spot-label factories were deleted 2026-09-25). The untracked `test.py` hardcodes absolute macOS paths (`/Users/daizhaorong/projects/quantlab/...` and `/home/zhrdai/projects/crypto_quant/...` for checkpoint loading); the WRDS scripts take the root from `--data-dir` / `QUANTLAB_DATA_DIR` / the repo `data/` directory.
 - **Circular imports:** None observed; the layering (`base` → `dataset`/`factor`/`label` → `dl_model`/`ml_model` → `backtest` (`quantlab/backtest/`)) is consistently one-directional based on import statements read.
 - **No `__init__.py` re-exports, and three `__init__.py` files that ARE the module:** The LAYER packages — `base/`, `factor/`, `label/`, `dl_model/`, `ml_model/`, `my_ops/`, `utils/`, `enums/`, and `acquisition/` and `dataset/` themselves — still have empty `__init__.py` files, and every import of them spells the full dotted path to the implementation module (e.g. `from factor.alpha101 import Alpha101SpotKline`, never `from factor import Alpha101SpotKline`). Three packages are different: `quantlab/acquisition/wrds/`, `quantlab/dataset/crsp/` and `quantlab/dataset/nbbo/`, where `__init__.py` IS the entry module — the file that was `wrds.py` / `crsp.py` / `nbbo.py`, moved by `git mv`, not a re-export shim written over it. What that buys: `from quantlab.dataset.crsp import CrspStockDataset` is ONE name for one subsystem (the spelling is byte-identical before and after the move), and the subsystem's parts group by directory (`crsp/membership.py`, `crsp/tickers.py`) instead of by a shared filename prefix, so a fourth CRSP module is a file rather than a naming convention. What it costs: importing any SUBMODULE runs the entry module first — measured at **+0.99s / +196 modules** on `quantlab/base/backtest.py`, which imports `quantlab.dataset.crsp.tickers`, and it is why importing a WRDS provider now loads the registry when it used to not. The distinction being adopted is "the `__init__` IS the module", never "the `__init__` re-exports other modules"; do not add a re-export list to any `__init__.py`.
 
   Since 260922-lu2 there are **three** kinds of package here, not two. The third is `_support/` — `quantlab/dataset/_support/` and `quantlab/acquisition/_support/`. These are neither layer packages nor entry-module packages: they are PRIVATE, their `__init__.py` files are empty, and they exist so the layer directory above them reads as a menu (see the layout rule below). Import their contents by full dotted path like a layer package (`from quantlab.dataset._support.masking import UniverseMask`); the leading underscore is the whole signal that nothing outside that layer should be reaching in.
 
-- **Five `__init__.py` files are 0 bytes, and three of them are load-bearing:** the invariant is no longer held by prose. A non-empty package `__init__` runs on EVERY import beneath it, and the structural guards that keep acquisition clients out of the read surfaces are `ast` scans of each guarded module's OWN source plus a `vars()` sweep — neither of which can see a transitive import dragged in by an `__init__`. So:
+- **Five `__init__.py` files are 0 bytes, and one guarantee rides on three of them:** a non-empty package `__init__` runs on EVERY import beneath it, and the structural guard that keeps acquisition clients out of the credential-free read surface is an `ast` scan of the guarded module's OWN source plus a `vars()` sweep — neither of which can see a transitive import dragged in by an `__init__`. So:
 
   | file | carries |
   |---|---|
-  | `quantlab/__init__.py` | `quantlab.universe` (the volume guard: no acquisition client is constructible there, whatever the call order), and `quantlab.registry` / `quantlab.backend` |
+  | `quantlab/__init__.py` | `quantlab.universe`, `quantlab.registry` and `quantlab.backend`, which are imported directly by the read surface |
   | `quantlab/acquisition/__init__.py` | `alpaca` / `tiingo` / `wrds`, and everything under `_support/` |
   | `quantlab/acquisition/_support/__init__.py` | the read surface — `inspector.py` now sits one package deeper, so THREE `__init__`s run ahead of it |
   | `quantlab/dataset/__init__.py` | consistency only; no guarantee rides on it |
   | `quantlab/dataset/_support/__init__.py` | consistency only; no guarantee rides on it |
 
-  Enforced by `tests/test_volume_guard.py` (`test_the_guard_constructs_no_acquisition_client_and_needs_no_credentials`, a fourth arm resolving the path from the module object) and `tests/test_source_inspector.py` (`test_inspector_binds_no_client`, asserting all three acquisition-chain files). Each was proved to redden independently. The prose explaining WHY lives on the modules that HAVE the guarantee — `quantlab/universe.py`'s module docstring and `quantlab/registry.py`'s bottom comment — not here and not in a comment that can drift away from its subject. Moving `universe.py` up to `quantlab/` **strengthened** this: `import quantlab.universe` used to run two package `__init__`s (`quantlab/` and `quantlab/acquisition/`) and now runs one.
+  Enforced by `tests/test_source_inspector.py` (`test_inspector_binds_no_client`, asserting all three acquisition-chain files). The volume guard that used to give `quantlab.universe` its own import-order rule, and `tests/test_volume_guard.py` that locked it, were removed 2026-09-25 (`docs/adr/0001-no-download-volume-guard.md`); the rationale for the empty files is in `docs/developer-guide/internals.md`.
 
 - **Every top-level entry of `quantlab/dataset/` is a dataset; every top-level entry of `quantlab/acquisition/` is an acquisition** (260922-lu2). Browsing either directory is a menu of complete, usable things — `dataset/` shows `spot.py`, `stock.py`, `constituent.py`, `crsp/`, `nbbo/`; `acquisition/` shows `alpaca.py`, `tiingo.py`, `wrds/`. Support code goes in `_support/`, or — if it is really its own LAYER — becomes a `quantlab/` sibling. Three modules became siblings, each for a measured reason:
 
   - `quantlab/backend.py` (`XrBackend`/`PlBackend`) — imported by seven modules across four layers (`config/__init__.py`, `universe.py`, `factor/universe_filter.py`, and `base/data.py`/`factor.py`/`model.py`/`backtest.py`). No single layer owns it.
   - `quantlab/registry.py` — the vendor registry is the thing an operator surface asks "what can this project download"; it is not itself an acquisition, and it imports all three vendors at its bottom.
-  - `quantlab/universe.py` — the point-in-time symbol universe plus the volume guard. Deliberately a flat module rather than a `universe/` package (D-1): a package would put a second `__init__` back on its import path and re-create, one directory lower, the exact hazard the row above guards.
+  - `quantlab/universe.py` — the point-in-time symbol universe. Deliberately a flat module rather than a `universe/` package (D-1): a package would put a second `__init__` on its import path.
 
 - **The `base/X.py` ↔ `<layer>/X.py` pairing: the mirrored filename was never the rule** (260922-lu2 D-2). **The ABC lives in `quantlab/base/`. The concrete implementation lives with its CONSUMERS** — not in a directory that mirrors the ABC's filename. The mirror was a coincidence of the first two cases. All three cases today:
 
