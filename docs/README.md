@@ -1,75 +1,63 @@
-# quantlab 模块说明文档
+# quantlab documentation
 
-这里是给**要读懂、要扩展这套代码的人**写的中文说明。每篇都包含可以直接复制运行的例子，
-绝大多数例子在写文档时真跑过、贴的是真实输出；跑不了的（需要凭证、需要 GPU、需要别的
-机器上的数据）都明确标注了「此例未实际运行」，没有伪造过输出。
+quantlab is a configuration-driven backend for quantitative equity research: it downloads
+market data, turns it into panels, computes factors, trains return models and backtests the
+resulting portfolios. This documentation is organised in three parts. If you are new, read
+*Getting started* first, then the *Concepts* page, then whichever user-guide page matches what
+you want to do.
 
-## 怎么读
+## Getting started
 
-按下面的顺序读，是从「会用」到「能改」的最短路径。
+[Installation](getting-started/installation.md) covers requirements, installing with `uv`,
+running the tests, GPU and macOS notes, and the environment variables that hold vendor
+credentials.
 
-### 第一步：先看数据是怎么进来的
+[Quickstart](getting-started/quickstart.md) is a ten-minute tour of the whole pipeline on
+synthetic data, from a price panel to a backtest report.
 
-| 文档 | 讲什么 | 什么时候读 |
-|---|---|---|
-| [acquisition.md](acquisition.md) | 采集引擎：从厂商 API 到磁盘上的原始分片。并发、失败隔离、配额、断点在哪 | 想下载数据、或下载出问题时 |
-| [registry.md](registry.md) | 数据源登记表：一个厂商一个描述符（能力、凭证变量名、采集类），程序化 `run()`、进度事件、取消令牌，以及无凭证的只读检视器 | 想知道能下载哪些源、想在程序里发起采集、或没凭证只想看盘上有什么时 |
-| [pageledger.md](pageledger.md) | 分页台账：一次多页抓取中途崩了，凭什么能接着跑而不重复不遗漏 | 想搞懂断点续跑，或看到 `_pages/` 里的文件时 |
-| [wrds_taq.md](wrds_taq.md) | WRDS TAQ NBBO：逐笔最优报价原样落盘、本地重采样成右闭 bar 面板；凭证（`WRDS_USERNAME` + `~/.pgpass`）、一次运行一次 Duo、`count(*)` 体量护栏与分段、2018 年前的并列记录、会话窗口与半日市、过滤旁车文件 | 要拉盘口/价差数据、或 WRDS 拉取被拒时 |
-| [wrds_crsp.md](wrds_crsp.md) | WRDS CRSP Stock v2 日频：按 PERMNO 落盘、转换时才派生时点 ticker，可直接替换 Tiingo 的面板；总收益复权与锚点保护、退市收益只算一次、股份类别与同日撞车、证券过滤预设、年度产品边界与版本戳、CRSP S&P 500 与 Compustat Nasdaq-100 两个时点股票池、QQQ 单独 store、三个旁车文件 | 要拉美股日频研究级数据、要避免幸存者偏差、或 CRSP 拉取被拒时 |
-| [constituent.md](constituent.md) | 时点成分与标的池：怎么避免幸存者偏差，四个 category 分别是什么 | 要选标的池、要做回测时 |
+## User guide
 
-### 第二步：数据是怎么变成面板的
+[Concepts](user-guide/concepts.md) explains the pipeline stages and what each consumes and
+produces, the panel format, configuration objects, and the directories that models and
+backtests write.
 
-| 文档 | 讲什么 | 什么时候读 |
-|---|---|---|
-| [dataset.md](dataset.md) | 数据集层：原始文件 → 规范的 `[timestamp, symbol]` xarray 面板 | 想理解全流水线的数据形态时 |
-| [chunking.md](chunking.md) | 时间分块：为什么不能一次性densify 全区间，以及分块和追加怎么衔接 | 数据量大到内存放不下时 |
-| [backend.md](backend.md) | 存储后端：把「存在哪里」和「数据是什么」分开 | 想换存储介质、或看到 append 报错时 |
+[Data sources](user-guide/data-sources.md) explains how to download from Tiingo, Alpaca and
+WRDS, where the files go, how to resume an interrupted download, and how to check what is
+already on disk.
 
-### 第三步：算因子、训模型
+[WRDS: CRSP and TAQ](user-guide/wrds.md) covers the research-grade US stock data available
+through a WRDS account: CRSP daily stock files and TAQ best-quote data.
 
-| 文档 | 讲什么 | 什么时候读 |
-|---|---|---|
-| [factor.md](factor.md) | 因子层：KunQuant 与 Polars 两个后端，各自适合什么 | 要写新因子时 |
-| [universe.md](universe.md) | 股票池过滤：点时点的价格/流动性阈值过滤，包成一个因子包装类；截面算子改写、标的轴永不删列、掉出池的持仓何时卖出、证券类型那一半为什么删给了 CRSP | 回测收益高得离谱、或结果里混进了仙股/不活跃标的时 |
-| [model.md](model.md) | 模型层：基类替你做了什么，子类要实现哪五个方法 | 要接新模型时 |
+[Datasets and storage](user-guide/datasets.md) explains how raw files become a panel, how to
+filter and store it, and how to convert histories too large to fit in memory.
 
-### 第四步：回测
+[Universes](user-guide/universes.md) explains survivorship bias, point-in-time index
+membership, and how to restrict factors and backtests to the stocks that were actually
+tradable on each day.
 
-| 文档 | 讲什么 | 什么时候读 |
-|---|---|---|
-| [backtest.md](backtest.md) | 回测层：`run()` / `run_cv()` 的模板步骤、目标权重契约、t+1 开盘成交、退市强平、截面 TopN 选股、样本内外分开报告、运行目录与数据指纹、从 `config.json` 重建重跑；附一个离线真跑过的最小例子 | 训完模型想看它能不能交易、要回放一次 `train_cv`、或要写新的回测引擎/市场/选股规则时 |
+[Factors and labels](user-guide/factors.md) shows how to compute the built-in factor sets and
+how to write your own factors with KunQuant or Polars, plus the forward-return labels models
+learn to predict.
 
-## 想直接上手扩展
+[Models](user-guide/models.md) covers the available model heads, training, prediction,
+evaluation, walk-forward cross-validation and checkpoints.
 
-这五篇各自带一个**从零写到跑通的最小扩展**（新数据源是注册一个描述符，其余四篇是一个最小子类），是最快的入门方式：
+[Backtesting](user-guide/backtesting.md) explains how predictions become target weights, when
+trades are filled, how delisted holdings are handled, and how to read and reproduce a
+backtest run.
 
-- 新增一个数据源 → [registry.md](registry.md) 的「扩展」一节（注册一个描述符）
-- 新增一个市场 → [dataset.md](dataset.md) 的「扩展」一节（`MiniCsvDataset`）
-- 新增一种存储介质 → [backend.md](backend.md) 的「扩展」一节（`CsvBackend`）
-- 写一个新因子 → [factor.md](factor.md) 的「扩展一 / 扩展二」（`RelativeVolume` 走 Polars、`MaDeviation` 走 KunQuant）
-- 接一个新模型 → [model.md](model.md) 的「扩展」一节（`TinyRegressor`）
+## Developer guide
 
-## 写文档时发现的缺陷
+[Extending quantlab](developer-guide/extending.md) walks through adding a data source, a
+dataset, a storage backend, a factor, a model head and a backtest rule, each with a minimal
+working example.
 
-这些是核实文档内容时撞见的真实问题，不是推测。按严重程度排：
+[Internals](developer-guide/internals.md) describes the machinery that makes long jobs safe to
+interrupt: resumable downloads and conversions, rebuilds, the volume check, atomic writes and
+data fingerprints.
 
-| 位置 | 问题 | 详见 |
-|---|---|---|
-| ~~`quantlab/base/model.py`~~ | ~~`early_stopping=False` 会 `UnboundLocalError` 直接崩；早停计数器按**验证 batch** 递增而非 epoch；张量列序是**字母序**不是你传入的顺序，主目标可能不是你以为的那个~~ **已于 2026-09-07 修复**（`tests/test_model_layer.py`） | [model.md](model.md) 「常见坑」 |
-| ~~`quantlab/dl_model/`~~ | ~~`MLPRegressor` 三处坏掉无法实例化；`rnn.py` 里的 `RNNClassifier` 是过期坏副本（活的那个在 `rnn_classification.py`）；`update()` 读了 `DLConfig` 没有的字段~~ **已于 2026-09-07 修复/删除**（`tests/test_dl_models.py`） | [model.md](model.md) |
-| ~~`quantlab/base/model.py:num_null`~~ | ~~结尾 `.values[0]` 索引一个 0 维数组，**每次读取都 `IndexError`**~~ **已于 2026-09-07 修复**。一条被文档推荐、注解写着 `-> int`、却从来没跑通过的属性（`tests/test_model_layer.py`） | [model.md](model.md) |
-| ~~回测骨架~~ | ~~`_do_vecbt` / `_vecbt` / `RNNClassifier._vecbt` / `DLModel._fit(backtest=...)`（2026-09-14 前叫 `_train_dl`）四块半成品互不相连，全部**安静地什么都不做**。**保留**（端到端回测归 Phase 6，钩子位置是对的），但 2026-09-07 起改为显式 `NotImplementedError` 点名 Phase 6——空实现要么报错，要么就不该存在~~ **已删除**，连同锁它们的测试：`_do_vecbt` / `_vecbt` 于 2026-09-14（`d07f06e`），`RNNClassifier._vecbt`、`DLModel._fit(backtest=...)` 与 `backtest_data` 于阶段 03.7（D-37，`tests/test_model_hierarchy.py::test_stale_backtest_hooks_are_deleted` 锁住不再回来）。回测现在只在 `quantlab/backtest/` | [model.md](model.md)、[backtest.md](backtest.md) |
-| 骗人的命名 | ~~`_train_one_epoch` / `_val_one_epoch` / `_test_one_epoch` 其实是 per-**batch**；`_get_features_batch` / `_get_labels_batch` 里的 `batch` 又是相反的意思（收齐全部）~~ **已于 2026-09-07 改名**为 `_*_one_batch` / `_collect_all_*`。前者的名字实际造成过一个早停缺陷 | [model.md](model.md) |
-| ~~`quantlab/utils/nautilus.py`~~ | ~~`get_crypot_currency` 拼错了（"crypot"），且有一个被接收又完全忽略的 `name` 参数~~ **已于 2026-09-07 更正并删参**（`tests/test_spot_dataset.py`） | — |
-| ~~`quantlab/backend.py`~~ | ~~`XrBackend.get_xarray_dataset()` **完全忽略** `indexes` 参数，连带 `BaseDataset.time_interval` 在该后端下不可用~~ **已于 2026-09-07 修复**（`tests/test_backend_indexes.py`） | [backend.md](backend.md)、[dataset.md](dataset.md) |
-| 成分 vs 价格 | 跨改名的代码词表对不上：876 个 sp500 成分符号里 89 个在价格 roster 查无此符号 | [constituent.md](constituent.md) 「已知的坑」 |
-| `quantlab/base/factor.py` | `save()` 默认 `mode="a"`，但它**不是时间追加**，第二段日期会直接报错。默认值有意保留；2026-09-07 起报错信息会直接点名 `mode="w"`（`tests/test_factor_save_mode.py`） | [factor.md](factor.md) |
-| 死代码 | ~~`WindowedRobustStandardization`、`PageLedger.last_position()`~~ **已于 2026-09-07 删除**（均零调用点，从未被执行过）。`MlBackend` 当时保留，现在是 `MLModel` 的 checkpoint 持久化后端（2026-09-14 起 `XGBoostRegressor` 经它读写 `.joblib`） | 各篇 |
+## Examples and API reference
 
-## 关于例子
-
-例子里用到的临时目录一律在 `/tmp` 下，不会污染仓库。需要真实行情的例子会说明数据从哪来。
-凭证一律只出现变量名（`TIINGO_API_KEY`、`APCA_API_KEY_ID`、`APCA_API_SECRET_KEY`），
-文档里不会有任何真实密钥。
+The [examples](../examples/README.md) directory has runnable scripts that go with these pages.
+Every public class and function has a numpydoc docstring; read it with `help()` in Python or
+in your editor.
