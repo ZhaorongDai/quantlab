@@ -1,4 +1,3 @@
-<!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
 **quantlab**
@@ -17,9 +16,7 @@
 - **架构契约**: 数据模块输出数据、因子模块输出因子、收益模型输出未来收益/收益排名预测、组合优化模型输出每个标的目标持仓百分比——各模块通过清晰的输入输出契约组合 — 便于未来插拔式扩展与平台化
 - **包管理**: 使用 `uv` — 用户明确要求，延续现有项目的包管理方式
 - **范围**: 当前阶段只实现后台，不做网页前端 — 用户明确排除
-<!-- GSD:project-end -->
 
-<!-- GSD:stack-start source:codebase/STACK.md -->
 ## Technology Stack
 
 ## Languages
@@ -70,15 +67,11 @@
 - macOS dev host OpenMP clash: xgboost's wheel links Homebrew libomp while torch bundles its own, so a process mixing both segfaults or deadlocks. `tests/conftest.py` sets `OMP_NUM_THREADS=1` on darwin before any import (locked by `tests/test_macos_openmp_guard.py`); user scripts/notebooks on macOS that mix torch and xgboost must set it too. Linux is untouched. See `example/model.md`.
 - A working `uv`-managed Python 3.13 environment must be created and `pyproject.toml` dependencies must be reconciled with actual imports before the code can run; currently `uv sync` alone is insufficient.
 - No deployment target detected (no Dockerfile, no cloud config, no server entry point). This is a local research/trading pipeline intended to run on a workstation/server with GPU access for model training and disk access to large local datasets (CSV/Parquet klines, zarr stores).
-<!-- GSD:stack-end -->
 
-<!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
 Conventions not yet established. Will populate as patterns emerge during development.
-<!-- GSD:conventions-end -->
 
-<!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
 ## System Overview
@@ -209,32 +202,21 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Unimplemented/partial functionality is signaled by raising inside the method body rather than via `NotImplementedError`-only stubs. (The former backtest guard that refused `benchmark_dataset` (D-08) was removed when benchmark comparison landed on 2026-09-25: the slot now takes a single-symbol `MarketDataset`, bought and held on the strategy's bars and reported in the `benchmark`/`relative` metric blocks and the report's NAV, excess-return and excess-drawdown rows. The former model-layer guard `DLModel._fit(backtest=True)` was deleted in phase 03.7, D-37.)
 - A model given the wrong config class raises `TypeError` as the first statement of the `BaseModel.config` setter, before any factor/label is touched; `load()` rejects a checkpoint whose suffix differs from the variant's `checkpoint_suffix` before building a model.
 ## Cross-Cutting Concerns
-<!-- GSD:architecture-end -->
 
-<!-- GSD:skills-start source:skills/ -->
 ## Project Skills
 
 No project skills found. Add skills to any of: `.claude/skills/`, `.agents/skills/`, `.cursor/skills/`, `.github/skills/`, or `.codex/skills/` with a `SKILL.md` index file.
-<!-- GSD:skills-end -->
 
-<!-- GSD:workflow-start source:GSD defaults -->
-## GSD Workflow Enforcement
+## Agent skills
 
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
+### Issue tracker
 
-Use these entry points:
-- `/gsd-quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd-debug` for investigation and bug fixing
-- `/gsd-execute-phase` for planned phase work
+Issues live in this repo's GitHub Issues (`ZhaorongDai/quantlab2`), operated through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
+### Triage labels
 
+The five canonical triage roles map one-to-one to labels of the same name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
+### Domain docs
 
-<!-- GSD:profile-start -->
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd-profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-<!-- GSD:profile-end -->
+Single-context: one `CONTEXT.md` at the repo root plus `docs/adr/`, both created lazily by `/domain-modeling`. See `docs/agents/domain.md`.
