@@ -1,22 +1,29 @@
-"""Readers for the CRSP reference tier: six whole tables stored beside the raw tier.
+"""Readers for the CRSP reference tables, six whole tables stored next to the raw daily data.
+
+CRSP (the Center for Research in Security Prices) is a US stock database
+sold through WRDS (Wharton Research Data Services). A PERMNO is CRSP's
+permanent integer id for one security. Compustat is S&P's fundamentals
+database, also on WRDS, which identifies a company by ``gvkey``.
 
 CRSP's daily table says what happened to a security on a given day. It does
 not say what the security was called at the time, when it was delisted,
-whether it was in the S&P 500, or which Compustat issue it corresponds to.
-Those facts live in small, whole tables that are pulled once and read many
-times. This module declares which tables make up that tier, with which
-columns and types (``ReferenceTableSpec``), and provides ``CrspReference``,
-the read-only accessor over one reference directory.
+whether it was in the S&P 500, or which Compustat security it matches.
+Those facts live in small tables that are downloaded whole, once, and read
+many times; together they are the *reference tier* (a tier is one layer of
+files on disk, next to the *raw tier* of daily price files). This module
+declares which tables make up the reference tier, with their columns and
+types (``ReferenceTableSpec``), and provides ``CrspReference``, a read-only
+accessor for one reference directory.
 
-The tier lives in ``.../wrds_crsp/_reference/``, a sibling of the raw root
-``.../wrds_crsp/wrds/`` rather than a child of it, so that the raw-tier
-scan (which walks every parquet file below the raw root) never picks up a
-reference table or the manifest.
+The reference tier lives in ``.../wrds_crsp/_reference/``, next to the raw
+root ``.../wrds_crsp/wrds/`` rather than inside it. The raw scan reads every
+parquet file below the raw root, so it never picks up a reference table or
+the manifest.
 
 The module imports only polars and the standard library. Anything that reads
-the reference tier (the dataset, the constituent datasets, the roster
-helpers) therefore works on a machine with no WRDS credential and no
-database driver. Writing the tier is a separate acquisition step.
+the reference tables (the CRSP dataset, the constituent datasets, the roster
+helpers) therefore works on a machine with no WRDS login and no database
+driver. Downloading the tables is a separate acquisition step.
 """
 
 from __future__ import annotations
@@ -28,12 +35,13 @@ from pathlib import Path
 
 import polars as pl
 
-#: The manifest written beside the tables: product end, pull time, row counts.
+#: The manifest written next to the tables: CRSP product end date (last date
+#: of the data version), download time and row counts.
 MANIFEST_NAME = "manifest.json"
 
-#: The three type families a server-side column type collapses to. A CRSP
-#: ``numeric`` is read as ``Float64`` rather than ``Decimal`` because the
-#: panel is float64 end to end; decimals would be lost at the first multiply.
+#: The polars types every server column type maps to. A CRSP ``numeric`` is
+#: read as ``Float64`` rather than ``Decimal`` because the panel is float64
+#: throughout; decimal precision would be lost at the first multiplication.
 _DATE = pl.Date
 _INT = pl.Int64
 _NUM = pl.Float64
@@ -42,11 +50,21 @@ _STR = pl.String
 
 @dataclass(frozen=True)
 class ReferenceTableSpec:
-    """One reference table: where it lives on the server and its schema.
+    """One reference table: where it lives on the WRDS server and its schema.
 
-    ``columns`` is in server order, so a ``SELECT`` built from it can be
-    compared element by element against ``information_schema``. ``dtypes``
-    maps every one of those columns to the polars type it is read as.
+    Attributes
+    ----------
+    name : str
+        Local name of the table; also the parquet file stem.
+    schema : str
+        Server schema (database namespace), e.g. ``"crsp_a_stock"``.
+    table : str
+        Table name on the server.
+    columns : tuple of str
+        Column names in server order, so a ``SELECT`` built from them can be
+        compared one by one with the server's ``information_schema``.
+    dtypes : dict of str to pl.DataType
+        The polars type each column is read as.
 
     Examples
     --------
@@ -65,13 +83,13 @@ class ReferenceTableSpec:
     dtypes: dict[str, pl.DataType]
 
     def cast(self, frame: pl.DataFrame) -> pl.DataFrame:
-        """Cast an all-string frame, as a ``COPY`` produces, onto this spec's types.
+        """Cast an all-string frame, as a database ``COPY`` produces, to this spec's types.
 
-        Dates parse with ``strict=False``, so a malformed or empty field
-        becomes null instead of failing the whole table; the live tables carry
-        genuine nulls in every date column. Columns missing from ``frame`` are
-        added as all-null, so a table pulled before a column was added still
-        reads with the current schema.
+        Dates are parsed with ``strict=False``, so a malformed or empty field
+        becomes null instead of failing the whole table; the live tables
+        have real nulls in every date column. Columns missing from ``frame``
+        are added as all-null, so a table downloaded before a column existed
+        still reads with the current schema.
 
         Parameters
         ----------
@@ -109,18 +127,18 @@ class ReferenceTableSpec:
             elif dtype == pl.String:
                 expressions.append(column.alias(name))
             else:
-                # Integers go through Float64 first: the server renders
-                # `lpermno` as `90319.0`, and a direct String -> Int64 cast of
-                # that text fails. Float64 reads both `90319` and `90319.0`.
+                # Integers go through Float64 first: the server writes
+                # `lpermno` as `90319.0`, which a direct string-to-Int64 cast
+                # rejects. Float64 reads both `90319` and `90319.0`.
                 expressions.append(
                     column.cast(pl.Float64, strict=False).cast(dtype).alias(name)
                 )
         return frame.select(expressions)
 
 
-#: ``crsp_a_stock.stksecurityinfohist``: the security's own history (names,
-#: tickers, share class, exchange, delisting codes). This is the ticker
-#: source, because the daily table carries neither ``shareclass`` nor
+#: ``crsp_a_stock.stksecurityinfohist``: each security's descriptive history
+#: (names, tickers, share class, exchange, delisting codes). Tickers come
+#: from here because the daily table has neither ``shareclass`` nor
 #: ``tradingsymbol``.
 _SECINFO = ReferenceTableSpec(
     name="stksecurityinfohist",
@@ -155,9 +173,9 @@ _SECINFO = ReferenceTableSpec(
 )
 
 #: ``crsp_a_stock.stkdelists``: delisting events, kept as raw event data. The
-#: delisting return is not read from here, because the daily table already
-#: carries it on the delisting row (``dlydelflg='Y'``) and applying ``delret``
-#: on top would count the loss twice.
+#: delisting return is not taken from here: the daily table already includes
+#: it on the delisting row (``dlydelflg='Y'``), and applying ``delret`` as
+#: well would count the loss twice.
 _DELISTS = ReferenceTableSpec(
     name="stkdelists",
     schema="crsp_a_stock",
@@ -181,8 +199,8 @@ _DELISTS = ReferenceTableSpec(
 
 #: ``crsp_a_stock.stkdistributions``: dividends, splits and other
 #: distributions, one row per event. The panel's ``divCash`` and
-#: ``splitFactor`` come from the daily table's own fields; this table is the
-#: audit trail behind them.
+#: ``splitFactor`` come from fields of the daily table; this table is kept
+#: to audit them.
 _DISTRIBUTIONS = ReferenceTableSpec(
     name="stkdistributions",
     schema="crsp_a_stock",
@@ -205,9 +223,9 @@ _DISTRIBUTIONS = ReferenceTableSpec(
     },
 )
 
-#: ``crsp_a_indexes.dsp500list_v2``: S&P 500 membership spells by PERMNO. It
-#: sits in a different schema from the stock tables, which is why a spec
-#: carries ``schema`` instead of assuming one.
+#: ``crsp_a_indexes.dsp500list_v2``: S&P 500 membership intervals by PERMNO.
+#: It is in a different schema from the stock tables, which is why each spec
+#: names its ``schema``.
 _DSP500 = ReferenceTableSpec(
     name="dsp500list_v2",
     schema="crsp_a_indexes",
@@ -219,9 +237,9 @@ _DSP500 = ReferenceTableSpec(
     },
 )
 
-#: ``comp.idxcst_his``: Compustat index membership, the Nasdaq-100 source.
-#: ``from`` and ``thru`` are reserved SQL words, so every statement naming
-#: them must quote the identifiers.
+#: ``comp.idxcst_his``: Compustat index membership history, the source for
+#: the Nasdaq-100. ``from`` and ``thru`` are reserved SQL words, so every
+#: query that names them must quote them.
 _IDXCST = ReferenceTableSpec(
     name="idxcst_his",
     schema="comp",
@@ -233,10 +251,10 @@ _IDXCST = ReferenceTableSpec(
     },
 )
 
-#: ``crsp_a_ccm.ccmxpf_lnkhist``: the CRSP/Compustat link table, which maps a
-#: Compustat ``gvkey`` to a PERMNO. ``lpermno`` and ``lpermco`` are double
-#: precision on the server and are typed as floats here; an integer cast at
-#: read time would turn the null on a ``linktype='NR'`` row into a spurious 0.
+#: ``crsp_a_ccm.ccmxpf_lnkhist``: the CRSP/Compustat Merged (CCM) link table,
+#: which maps a Compustat ``gvkey`` to a PERMNO over date ranges. ``lpermno``
+#: and ``lpermco`` are floats on the server and stay floats here; an integer
+#: cast on read would turn the null on a ``linktype='NR'`` row into a false 0.
 _CCM = ReferenceTableSpec(
     name="ccmxpf_lnkhist",
     schema="crsp_a_ccm",
@@ -252,8 +270,8 @@ _CCM = ReferenceTableSpec(
     },
 )
 
-#: Every reference table, in pull order. Both the writer and the reader walk
-#: this tuple, so neither can know about a table the other does not.
+#: Every reference table, in download order. The downloader and the reader
+#: both use this tuple, so they always agree on the set of tables.
 REFERENCE_TABLES: tuple[ReferenceTableSpec, ...] = (
     _SECINFO,
     _DELISTS,
@@ -263,7 +281,7 @@ REFERENCE_TABLES: tuple[ReferenceTableSpec, ...] = (
     _CCM,
 )
 
-#: ``name -> spec``, for lookup by table name.
+#: Every spec keyed by its ``name``.
 REFERENCE_TABLES_BY_NAME: dict[str, ReferenceTableSpec] = {
     spec.name: spec for spec in REFERENCE_TABLES
 }
@@ -272,10 +290,20 @@ REFERENCE_TABLES_BY_NAME: dict[str, ReferenceTableSpec] = {
 class CrspReference:
     """Read-only access to one CRSP reference directory.
 
-    Holds no connection and needs no credential: the tier is parquet on
-    disk. Tables are read lazily and cached per instance, so a conversion that
-    asks for ``stksecurityinfohist`` and a universe build that asks for two
-    more tables each pay for one read.
+    It holds no database connection and needs no login: the tables are
+    parquet files on disk. Each table is read on first request and cached on
+    the instance, so repeated requests cost one file read.
+
+    Parameters
+    ----------
+    reference_dir : str or Path
+        The directory holding the reference parquet files and
+        ``manifest.json``.
+
+    Attributes
+    ----------
+    reference_dir : Path
+        The reference directory.
 
     Examples
     --------
@@ -288,38 +316,52 @@ class CrspReference:
     """
 
     def __init__(self, reference_dir) -> None:
-        """Bind a reference directory without reading anything from it."""
+        """Initialize without reading anything; see the class docstring."""
         self.reference_dir = Path(reference_dir)
         self._cache: dict[str, pl.DataFrame] = {}
         self._manifest: dict | None = None
 
     def path_for(self, name: str) -> Path:
-        """Return the parquet path a table of this name is stored at.
+        """Return the parquet path where the table ``name`` is stored.
+
+        Parameters
+        ----------
+        name : str
+            Table name, e.g. ``"stkdelists"``.
+
+        Returns
+        -------
+        Path
+            ``<reference_dir>/<name>.parquet``.
 
         Examples
         --------
         >>> ref.path_for("stkdelists").name
-        stkdelists.parquet
+        'stkdelists.parquet'
         """
         return self.reference_dir / f"{name}.parquet"
 
     def table(self, name: str) -> pl.DataFrame:
-        """Return one reference table, typed by its spec and cached.
+        """Return one reference table, read from parquet and cached.
 
         Parameters
         ----------
         name : str
             A key of ``REFERENCE_TABLES_BY_NAME``.
 
+        Returns
+        -------
+        pl.DataFrame
+            The table as stored (already typed by its spec when written).
+
         Raises
         ------
         KeyError
             If ``name`` is not a CRSP reference table.
         FileNotFoundError
-            If the parquet file is absent. The message
-            names the directory and the command that fills it, because
-            this is the error a user meets when they convert before
-            pulling the reference tier.
+            If the parquet file is missing. The message names the directory
+            and the command that fills it, because this is the error a user
+            sees after converting before downloading the reference tables.
 
         Examples
         --------
@@ -347,8 +389,8 @@ class CrspReference:
         if not path.exists():
             raise FileNotFoundError(
                 f"{type(self).__name__}: no {name}.parquet under "
-                f"{str(self.reference_dir)!r}. The CRSP reference tier is "
-                f"pulled separately from the daily tier -- run "
+                f"{str(self.reference_dir)!r}. The CRSP reference tables are "
+                f"downloaded separately from the daily data; run "
                 f"`scripts/ingest_wrds_crsp.py` with the reference step before "
                 f"converting, or point `reference_dir` at a directory that "
                 f"already holds it."
@@ -364,10 +406,9 @@ class CrspReference:
         Raises
         ------
         FileNotFoundError
-            If the directory has no manifest. A tier
-            without one has no recorded CRSP vintage, and a panel built
-            against an unknown vintage cannot be checked against a later
-            pull.
+            If the directory has no manifest. Without one, the CRSP data
+            version is unknown, and a panel built from an unknown version
+            cannot be checked against a later download.
 
         Examples
         --------
@@ -379,15 +420,16 @@ class CrspReference:
             if not path.exists():
                 raise FileNotFoundError(
                     f"{type(self).__name__}: no {MANIFEST_NAME} under "
-                    f"{str(self.reference_dir)!r}; the reference tier records "
-                    f"its CRSP vintage there. Re-run the reference pull."
+                    f"{str(self.reference_dir)!r}; the reference download records "
+                    f"its CRSP data version there. Re-run the reference "
+                    f"download."
                 )
             self._manifest = json.loads(path.read_text(encoding="utf-8"))
         return self._manifest
 
     @property
     def product_end(self) -> date:
-        """Return the CRSP product end date this tier was pulled against.
+        """Return the CRSP product end date, the last date of the downloaded data version.
 
         Examples
         --------
