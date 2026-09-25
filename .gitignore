@@ -230,12 +230,6 @@ model_ckpt
 # agent
 .claude
 .codex
-# GSD run-scoped sentinel (session-local, never shared state)
-.gsd/
-# GSD machine-readable mirror of .planning/STATE.md (regenerated on demand)
-.planning/state.json
-# GSD orchestration lock (session/pid scoped, never shared state)
-.planning/milestone.lock
 
 # personal scratch scripts
 jerry_query_data.py
@@ -245,7 +239,6 @@ test_nt.ipynb
 cal.py
 backtests
 output
-.planning/
 Untitled*.ipynb
 factor_test.py
 output.txt
