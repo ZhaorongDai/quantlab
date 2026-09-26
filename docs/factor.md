@@ -281,9 +281,66 @@ The module also has two cross-sectional outlier operators. `CrossSectionalWinsor
 | `Alpha101SpotKline`, `Alpha101Stock` | KunQuant | KunQuant's Alpha101 library |
 | `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features; pin `factor_names` while experimenting |
 | `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum; the factor series come from a Fama-French CSV or from the panel |
+| `LiteratureAlpha` | KunQuant | Eight raw/ranked equity characteristics spanning price, risk, liquidity, fundamentals and earnings events |
 | `Return`, `BinaryReturn` | KunQuant | forward-return labels |
 
 Each class docstring shows its config.
+
+### Literature-backed equity alpha bundle
+
+Author: [Jerry](https://github.com/j38903016-lgtm)
+
+`LiteratureAlpha` is one universe-agnostic KunQuant factor class. It computes
+eight characteristics and emits a raw value plus a cross-sectional rank for
+each one. Apply a point-in-time universe to the market panel separately; a
+symbol masked to NaN is ignored by `Rank` automatically.
+
+| Output stem | Definition and direction | Reference |
+|---|---|---|
+| `high_52week_proximity` | `split_adjusted_close / rolling_max(split_adjusted_close, 252)`; high is positive | [George and Hwang (2004)](https://doi.org/10.1111/j.1540-6261.2004.00695.x) |
+| `short_reversal` | negative compounded return over 21 bars; high means a worse prior month | [Jegadeesh (1990)](https://doi.org/10.1111/j.1540-6261.1990.tb05110.x) |
+| `low_max` | negative maximum daily return over 21 bars; high avoids lottery-like stocks | [Bali, Cakici and Whitelaw (2011)](https://www.nber.org/papers/w14804) |
+| `low_idiosyncratic_volatility` | negative standard deviation of residuals from a 21-bar FF3 regression | [Ang, Hodrick, Xing and Zhang (2006)](https://doi.org/10.1111/j.1540-6261.2006.00836.x) |
+| `amihud_illiquidity` | log average of `abs(return) / (raw_close * volume)`; larger means less liquid | [Amihud (2002)](https://doi.org/10.1016/S1386-4181(01)00024-6) |
+| `gross_profitability` | latest public gross profit divided by total assets; high is positive | [Novy-Marx (2013)](https://www.nber.org/papers/w15940) |
+| `conservative_asset_growth` | negative annual total-asset growth; high means more conservative investment | [Cooper, Gulen and Schill (2008)](https://doi.org/10.1111/j.1540-6261.2008.01370.x) |
+| `standardized_unexpected_earnings` | `(actual EPS - pre-announcement consensus EPS) / scale price`; high is positive | [Livnat and Mendenhall (2006)](https://doi.org/10.1111/j.1475-679X.2006.00196.x) |
+
+Every stem has `<stem>_raw` and `<stem>_rank`. `factor_names` may select any
+subset; the class then prunes unrelated formulas and requires only the panel
+columns reachable from that subset. Column names and lookbacks can be changed
+in `kwargs`. By default the complete graph reads `ret`, `adjClose`, `close`,
+`volume`, the four FF3 inputs, three accounting fields and three earnings-event
+fields. The FF3 series can instead come from the same CSV accepted by
+`ResidualMomentumFF3` through `kwargs={"fama_french_csv": "..."}`.
+
+The data layer owns point-in-time correctness. `gross_profit`, `total_assets`
+and `prior_year_total_assets` must become visible only after their filing is
+public. The three earnings columns must freeze actual EPS, the consensus that
+existed before the announcement and the scale price at that event; do not join
+a revised current consensus to a historical actual. The 52-week price should
+be split-adjusted, while Amihud dollar volume needs an as-traded close and raw
+share volume.
+
+```python
+from quantlab.base.config import FactorConfig
+from quantlab.factor.literature_alpha import LiteratureAlpha
+
+factor = LiteratureAlpha(FactorConfig(
+    window=400,
+    dataset=dataset,
+    mode="batch",
+    data_columns=(
+        "adjClose", "ret", "risk_free", "mkt_rf", "smb", "hml",
+        "close", "volume", "gross_profit", "total_assets",
+        "prior_year_total_assets", "eps_actual_event",
+        "eps_consensus_event", "eps_scale_price_event",
+    ),
+    factor_names=None,  # all 16 raw/rank outputs
+    file_path="data/factors/literature_alpha.zarr",
+))
+features = factor.cal().get_features()
+```
 
 ## Extending
 
