@@ -5,16 +5,22 @@ removes the part of each stock's return that common risk factors explain,
 and ranks stocks by what is left (the *residual*). The factors used are the
 three Fama-French factors: the market's excess return over the risk-free
 rate (``mkt_rf``), small-minus-big size (``smb``) and high-minus-low value
-(``hml``). For each stock and month the factor regresses the stock's excess
+(``hml``). For each stock and bar the factor regresses the stock's excess
 return on these three series over a rolling window, then sums the
 residuals over a recent formation period and divides by their volatility.
 
 The computation runs in KunQuant, a library that compiles a formula,
 written as a graph of operators, to native code over a whole
-``(timestamp, symbol)`` panel. The input panel must have one row per month.
-``mkt_rf``, ``smb``, ``hml`` and ``risk_free`` are the same for every stock,
-but KunQuant only reads panel variables, so they must be broadcast across
-the ``symbol`` dimension before they reach this factor. Returns are
+``(timestamp, symbol)`` panel. Every window is counted in bars of that
+panel: on daily bars the defaults (756 / 252 / 21) are the three-year
+regression and twelve-minus-one-month formation of Blitz, Huij and Martens
+(2011); on a monthly panel the same design is ``36 / 12 / 1``.
+
+``mkt_rf``, ``smb``, ``hml`` and ``risk_free`` are the same for every stock.
+They come either from a CSV of daily Fama-French returns, named through
+``fama_french_csv`` and compounded onto the panel's bars by
+:func:`compound_onto_bars` (``scripts/fama_french.py`` downloads one), or
+from panel variables already broadcast across symbols. Returns are
 arithmetic decimal returns (0.01 means 1%), not percentages.
 """
 
@@ -22,6 +28,7 @@ from __future__ import annotations
 
 import platform
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import NoReturn, Self
 
 import KunQuant.runner.KunRunner as kr
@@ -42,10 +49,16 @@ from KunQuant.ops import (
     WindowedVar,
 )
 from KunQuant.Stage import Function
+from loguru import logger
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
 from quantlab.utils.timer import Timer
+
+#: Columns of a Fama-French CSV besides ``date``, as ``scripts/fama_french.py``
+#: writes them: the market excess return, the size and value factors and the
+#: risk-free rate, all decimal returns per row.
+FAMA_FRENCH_COLUMNS = ("mkt_rf", "smb", "hml", "risk_free")
 
 
 @dataclass(frozen=True)
@@ -53,17 +66,20 @@ class ResidualMomentumParameters:
     """Formula parameters for ``ResidualMomentumFF3``, read from ``config.kwargs``.
 
     Every field can be set through ``FactorConfig.kwargs``; unknown keys are
-    refused by ``from_config``.
+    refused by ``from_config``. Windows are counted in bars of the panel the
+    factor runs on.
 
     Parameters
     ----------
-    regression_window : int, default 36
-        Months in the rolling factor regression.
-    formation_lookback : int, default 12
-        Months back from the signal month where the formation period starts.
-    skip_recent : int, default 1
-        Most recent months left out of the formation period. Skipping the
-        last month avoids the short-term reversal effect.
+    regression_window : int, default 756
+        Bars in the rolling factor regression (three years of daily bars).
+    formation_lookback : int, default 252
+        Bars back from the signal bar where the formation period starts
+        (one year of daily bars).
+    skip_recent : int, default 21
+        Most recent bars left out of the formation period (one month of
+        daily bars). Skipping the last month avoids the short-term
+        reversal effect.
     ridge : float, default 1e-8
         Small value added to each factor variance to keep the regression
         solvable when factors are nearly collinear.
@@ -75,32 +91,42 @@ class ResidualMomentumParameters:
     emit_diagnostics : bool, default True
         Whether the factor also exposes the regression intermediates
         (alpha, betas, residual sum and volatility, determinant).
-    return_column : str, default "stock_return"
-        Panel variable holding each stock's monthly return.
+    fama_french_csv : str or None, default None
+        Path of a CSV with a ``date`` column and the four
+        ``FAMA_FRENCH_COLUMNS`` as decimal daily returns. When set, the
+        panel supplies only the stock return and the four series are
+        compounded onto its bars; when ``None``, the panel must carry all
+        five input variables.
+    return_column : str, default "ret"
+        Panel variable holding each stock's return per bar (``ret`` on a
+        CRSP panel).
     risk_free_column : str, default "risk_free"
-        Panel variable holding the risk-free rate.
+        Name of the risk-free rate input: a panel variable, or the name
+        the CSV's ``risk_free`` column takes inside the graph.
     market_column : str, default "mkt_rf"
-        Panel variable holding the market excess return.
+        Name of the market excess return input, as above.
     smb_column : str, default "smb"
-        Panel variable holding the size factor.
+        Name of the size factor input, as above.
     hml_column : str, default "hml"
-        Panel variable holding the value factor.
+        Name of the value factor input, as above.
 
     Examples
     --------
-    >>> params = ResidualMomentumParameters(regression_window=24)
-    >>> params.regression_window, params.formation_lookback
-    (24, 12)
+    >>> params = ResidualMomentumParameters(regression_window=36,
+    ...                                     formation_lookback=12, skip_recent=1)
+    >>> params.regression_window, params.formation_window
+    (36, 11)
     """
 
-    regression_window: int = 36
-    formation_lookback: int = 12
-    skip_recent: int = 1
+    regression_window: int = 756
+    formation_lookback: int = 252
+    skip_recent: int = 21
     ridge: float = 1.0e-8
     determinant_floor: float = 1.0e-18
     variance_floor: float = 1.0e-12
     emit_diagnostics: bool = True
-    return_column: str = "stock_return"
+    fama_french_csv: str | None = None
+    return_column: str = "ret"
     risk_free_column: str = "risk_free"
     market_column: str = "mkt_rf"
     smb_column: str = "smb"
@@ -128,9 +154,9 @@ class ResidualMomentumParameters:
 
         Examples
         --------
-        >>> config.kwargs = {"regression_window": 24}
+        >>> config.kwargs = {"regression_window": 504}
         >>> ResidualMomentumParameters.from_config(config).regression_window
-        24
+        504
         """
         kwargs = config.kwargs or {}
         known = {field.name for field in fields(cls)}
@@ -146,23 +172,23 @@ class ResidualMomentumParameters:
 
     @property
     def formation_window(self) -> int:
-        """Months in the formation period, ``formation_lookback - skip_recent``.
+        """Bars in the formation period, ``formation_lookback - skip_recent``.
 
         Examples
         --------
         >>> ResidualMomentumParameters().formation_window
-        11
+        231
         """
         return self.formation_lookback - self.skip_recent
 
     @property
     def input_columns(self) -> tuple[str, ...]:
-        """Panel variables the graph reads, in the order KunQuant receives them.
+        """Names of the five graph inputs, in the order KunQuant receives them.
 
         Examples
         --------
         >>> ResidualMomentumParameters().input_columns
-        ('stock_return', 'risk_free', 'mkt_rf', 'smb', 'hml')
+        ('ret', 'risk_free', 'mkt_rf', 'smb', 'hml')
         """
         return (
             self.return_column,
@@ -171,6 +197,25 @@ class ResidualMomentumParameters:
             self.smb_column,
             self.hml_column,
         )
+
+    @property
+    def panel_columns(self) -> tuple[str, ...]:
+        """Panel variables the factor reads, what ``config.data_columns`` must name.
+
+        With ``fama_french_csv`` set this is the return column alone; the
+        other four inputs come from the CSV. Without it, all five inputs
+        are panel variables.
+
+        Examples
+        --------
+        >>> ResidualMomentumParameters(fama_french_csv="ff3.csv").panel_columns
+        ('ret',)
+        >>> ResidualMomentumParameters().panel_columns
+        ('ret', 'risk_free', 'mkt_rf', 'smb', 'hml')
+        """
+        if self.fama_french_csv is not None:
+            return (self.return_column,)
+        return self.input_columns
 
     def validate(self) -> None:
         """Raise if a window, a numerical floor or a column name cannot work.
@@ -206,6 +251,104 @@ class ResidualMomentumParameters:
             raise ValueError("residual-momentum input column names cannot be empty")
         if len(set(self.input_columns)) != len(self.input_columns):
             raise ValueError("residual-momentum input column names must be unique")
+        if self.fama_french_csv is not None and not str(self.fama_french_csv).strip():
+            raise ValueError("fama_french_csv cannot be an empty path")
+
+
+def read_fama_french(path: str | Path) -> pd.DataFrame:
+    """Read a Fama-French CSV into a frame of decimal returns indexed by date.
+
+    The file is the one ``scripts/fama_french.py`` writes: a ``date``
+    column plus ``mkt_rf``, ``smb``, ``hml`` and ``risk_free``. Extra
+    columns are ignored.
+
+    Parameters
+    ----------
+    path : str or Path
+        The CSV file.
+
+    Returns
+    -------
+    pd.DataFrame
+        The four ``FAMA_FRENCH_COLUMNS`` as floats on a sorted, unique
+        ``DatetimeIndex`` named ``date``.
+
+    Raises
+    ------
+    ValueError
+        If a required column is missing or a date is repeated.
+
+    Examples
+    --------
+    >>> read_fama_french("ff3_daily.csv").tail(2)   # doctest: +SKIP
+                mkt_rf     smb     hml  risk_free
+    date
+    2026-08-28 -0.0034 -0.0051  0.0028     0.0001
+    2026-08-31 -0.0033 -0.0002 -0.0039     0.0001
+    """
+    table = pd.read_csv(path)
+    missing = [c for c in ("date", *FAMA_FRENCH_COLUMNS) if c not in table.columns]
+    if missing:
+        raise ValueError(
+            f"{path}: a Fama-French CSV needs the columns "
+            f"{('date', *FAMA_FRENCH_COLUMNS)}; missing {missing}"
+        )
+    table["date"] = pd.to_datetime(table["date"])
+    table = table.set_index("date").sort_index()
+    if table.index.has_duplicates:
+        raise ValueError(f"{path}: the date column has repeated dates")
+    return table[list(FAMA_FRENCH_COLUMNS)].astype(np.float64)
+
+
+def compound_onto_bars(table: pd.DataFrame, timestamps: np.ndarray) -> pd.DataFrame:
+    """Compound per-row returns onto a panel's bars.
+
+    Bar ``i`` receives ``prod(1 + r) - 1`` over the rows dated after bar
+    ``i - 1`` and up to bar ``i`` inclusive; the first bar receives the last
+    row dated at or before it. On daily bars stamped at midnight that is the
+    same-day row; on weekly or coarser bars it is the compounded week or
+    month. A bar with no row in its span is NaN.
+
+    Parameters
+    ----------
+    table : pd.DataFrame
+        Decimal returns, one column per series, on a sorted
+        ``DatetimeIndex`` (what :func:`read_fama_french` returns).
+    timestamps : np.ndarray
+        The panel's bar timestamps, ascending.
+
+    Returns
+    -------
+    pd.DataFrame
+        The same columns on ``timestamps``.
+
+    Raises
+    ------
+    ValueError
+        If ``timestamps`` is not ascending.
+
+    Examples
+    --------
+    >>> daily = pd.DataFrame({"x": [0.01, 0.02, -0.01]},
+    ...                      index=pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]))
+    >>> compound_onto_bars(daily, pd.to_datetime(["2024-01-02", "2024-01-04"]).values).round(6)
+                       x
+    2024-01-02  0.010000
+    2024-01-04  0.009800
+    """
+    bars = np.asarray(timestamps).astype("datetime64[ns]")
+    if bars.size > 1 and np.any(np.diff(bars) <= np.timedelta64(0, "ns")):
+        raise ValueError("compound_onto_bars: timestamps must be strictly ascending")
+    dates = table.index.values.astype("datetime64[ns]")
+    growth = np.vstack(
+        [np.zeros((1, table.shape[1])), np.cumsum(np.log1p(table.to_numpy()), axis=0)]
+    )
+    # Rows dated at or before each bar; the previous bar's count opens the span.
+    upto = np.searchsorted(dates, bars, side="right")
+    before = np.concatenate([[max(int(upto[0]) - 1, 0)], upto[:-1]]) if bars.size else upto
+    values = np.expm1(growth[upto] - growth[before])
+    values[upto == before] = np.nan
+    return pd.DataFrame(values, index=pd.DatetimeIndex(bars), columns=table.columns)
 
 
 def _cov(x: OpBase, y: OpBase, window: int) -> OpBase:
@@ -305,11 +448,11 @@ def _formation_statistics(
 ) -> tuple[OpBase, OpBase, OpBase]:
     """Return the formation-period residual sum, its volatility, and their ratio.
 
-    The formation period is the ``formation_window`` months ending
-    ``skip_recent`` months before the signal month. Residuals use the alpha
-    and betas estimated at the signal month. The residual variance is
+    The formation period is the ``formation_window`` bars ending
+    ``skip_recent`` bars before the signal bar. Residuals use the alpha
+    and betas estimated at the signal bar. The residual variance is
     expanded algebraically into factor variances and covariances, so no
-    per-month residual series is ever materialized.
+    per-bar residual series is ever materialized.
 
     Parameters
     ----------
@@ -364,55 +507,57 @@ def _formation_statistics(
 
 
 class ResidualMomentumFF3(FactorKunQuant):
-    """Residual momentum estimated from monthly Fama-French three-factor data.
+    """Residual momentum estimated from a Fama-French three-factor regression.
 
-    Formula settings and optional column renames live in ``config.kwargs``
-    (see ``ResidualMomentumParameters``). For a monthly panel built from
-    CRSP (the University of Chicago's US stock database), whose return
-    variable is ``ret``, pass ``{"return_column": "ret"}``. The four
-    Fama-French series must already be variables on the same panel,
-    broadcast across symbols; this class does not download or resample
-    data.
+    Formula settings, the Fama-French CSV and optional column renames live
+    in ``config.kwargs`` (see ``ResidualMomentumParameters``). The usual
+    setup on a CRSP daily panel names the CSV in ``fama_french_csv`` and
+    reads only the panel's ``ret``; the four factor series are then
+    compounded onto the panel's bars by :func:`compound_onto_bars` and
+    broadcast across symbols before they reach KunQuant. Without a CSV the
+    panel must already carry all five inputs, broadcast across symbols.
 
-    With the defaults, the signal at month ``d`` fits the regression on
-    months ``d-35`` to ``d`` and sums residuals over months ``d-11`` to
-    ``d-1``. It uses data up to month ``d`` only, so it can be traded from
-    month ``d+1``.
+    With the defaults on daily bars, the signal at bar ``d`` fits the
+    regression on bars ``d-755`` to ``d`` and sums residuals over bars
+    ``d-251`` to ``d-21``. It uses data up to bar ``d`` only, so it can be
+    traded from bar ``d+1``. ``config.window`` is the warm-up in calendar
+    days read before ``start_date``, like every KunQuant factor: 1200
+    covers 756 daily bars.
 
     Outputs are ``resmom_raw`` (the score) and ``resmom_rank`` (its
-    cross-sectional rank in ``[0, 1]`` per month), plus the diagnostics
+    cross-sectional rank in ``[0, 1]`` per bar), plus the diagnostics
     listed in ``_DIAGNOSTIC_FACTOR_NAMES`` when ``emit_diagnostics`` is on.
+    Stream mode needs the five inputs on the panel and refuses a CSV.
 
     Parameters
     ----------
     factor_config : FactorConfig
-        The KunQuant factor config. ``data_columns`` must name exactly the
-        five input variables, and ``factor_names`` may pick any subset of
-        the outputs.
+        The KunQuant factor config. ``data_columns`` must name exactly
+        ``ResidualMomentumParameters.panel_columns``, and ``factor_names``
+        may pick any subset of the outputs.
 
     Raises
     ------
     ValueError
-        If ``data_columns`` does not match the five input variables, if
+        If ``data_columns`` does not match the panel columns, if
         ``factor_names`` names an unknown output, or if ``kwargs`` holds an
         unknown or invalid parameter.
 
     Examples
     --------
-    ``dataset`` is a monthly panel that already carries the five input
-    variables (``stock_return``, ``risk_free``, ``mkt_rf``, ``smb``,
-    ``hml``) on ``(timestamp, symbol)``.
+    ``dataset`` is a ``CrspStockDataset`` over a daily market store and
+    ``ff3_daily.csv`` the file ``scripts/fama_french.py`` writes.
 
     >>> config = FactorConfig(
-    ...     window=0,
+    ...     window=1200,
     ...     dataset=dataset,
-    ...     start_date=dataset.config.start_date,
-    ...     end_date=dataset.config.end_date,
+    ...     start_date="2012-01-01",
+    ...     end_date="2024-12-31",
     ...     mode="batch",
-    ...     data_columns=("stock_return", "risk_free", "mkt_rf", "smb", "hml"),
+    ...     data_columns=("ret",),
     ...     factor_names=("resmom_raw", "resmom_rank"),
     ...     file_path="resmom.zarr",
-    ...     kwargs={"regression_window": 24},
+    ...     kwargs={"fama_french_csv": "downloads/fama_french/ff3_daily.csv"},
     ... )
     >>> factor = ResidualMomentumFF3(config)
     >>> factor.get_factor_names()
@@ -437,10 +582,10 @@ class ResidualMomentumFF3(FactorKunQuant):
         configured_columns = tuple(self.config.data_columns)
         if len(configured_columns) != len(set(configured_columns)) or set(
             configured_columns
-        ) != set(params.input_columns):
+        ) != set(params.panel_columns):
             raise ValueError(
                 "ResidualMomentumFF3 config.data_columns must exactly match "
-                f"{params.input_columns}; got {configured_columns}"
+                f"{params.panel_columns}; got {configured_columns}"
             )
         unknown_outputs = sorted(
             set(self.get_factor_names()) - set(self._get_factor_names())
@@ -454,25 +599,6 @@ class ResidualMomentumFF3(FactorKunQuant):
     def _parameters(self) -> ResidualMomentumParameters:
         """Return the validated parameters for the current config."""
         return ResidualMomentumParameters.from_config(self.config)
-
-    def _reset_dataset_config(self) -> None:
-        """Move the dataset start early enough for the regression and formation windows.
-
-        The base class moves the dataset start ``config.window`` calendar
-        days before the factor's start date. This method also computes a
-        start that many months back, the larger of ``regression_window`` and
-        ``formation_lookback``, and keeps whichever start is earlier.
-        """
-        super()._reset_dataset_config()
-        params = self._parameters()
-        requested_start = pd.to_datetime(self.config.start_date)
-        monthly_start = requested_start - pd.DateOffset(
-            months=max(params.regression_window, params.formation_lookback)
-        )
-        current_start = pd.to_datetime(self.config.dataset.config.start_date)
-        self.config.dataset.config.start_date = min(
-            monthly_start, current_start
-        ).strftime("%Y-%m-%d")
 
     def _get_factor_names(self) -> tuple[str, ...]:
         """Return the signal outputs and, when enabled, the regression diagnostics."""
@@ -548,11 +674,61 @@ class ResidualMomentumFF3(FactorKunQuant):
             cfake.CppCompilerConfig(),
         )
 
+    def _fama_french_inputs(
+        self, timestamps: np.ndarray, num_symbols: int
+    ) -> dict[str, np.ndarray]:
+        """Return the four Fama-French inputs from the CSV as ``[time, symbol]`` arrays.
+
+        The CSV rows are compounded onto ``timestamps`` with
+        :func:`compound_onto_bars`, then each series is broadcast across the
+        symbol axis as float32, the layout KunQuant reads. A bar the CSV
+        does not cover is NaN, and its count is logged as a warning.
+
+        Parameters
+        ----------
+        timestamps : np.ndarray
+            The panel's bars, ascending.
+        num_symbols : int
+            Width of the symbol axis.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Keyed by the graph input names (``market_column`` and so on).
+        """
+        params = self._parameters()
+        path = params.fama_french_csv
+        assert path is not None
+        table = read_fama_french(path)
+        bars = compound_onto_bars(table, timestamps)
+        uncovered = int(bars.isna().any(axis=1).sum())
+        if uncovered:
+            logger.warning(
+                f"{self.__class__.__name__}: {uncovered} of {len(bars)} bars have no "
+                f"row in {path} ({table.index[0].date()} .. {table.index[-1].date()}); "
+                f"their Fama-French inputs are NaN"
+            )
+        names = {
+            "mkt_rf": params.market_column,
+            "smb": params.smb_column,
+            "hml": params.hml_column,
+            "risk_free": params.risk_free_column,
+        }
+        shape = (len(timestamps), num_symbols)
+        return {
+            names[column]: np.ascontiguousarray(
+                np.broadcast_to(bars[column].to_numpy(np.float32)[:, None], shape)
+            )
+            for column in FAMA_FRENCH_COLUMNS
+        }
+
     def cal(self) -> Self:
         """Compute the factor in batch mode and store it on the data backend.
 
-        On macOS the symbol axis is padded with all-NaN dummy symbols to a
-        multiple of the SIMD block width and cut back afterwards, as every
+        The panel columns come from the dataset; with ``fama_french_csv``
+        set, the four factor series are added from the CSV. On macOS the
+        symbol axis is padded with all-NaN dummy symbols to a multiple of
+        the SIMD block width and cut back afterwards, as every
         ``FactorKunQuant`` batch run does (see ``_pad_symbols``).
 
         Returns
@@ -562,7 +738,7 @@ class ResidualMomentumFF3(FactorKunQuant):
 
         Examples
         --------
-        On a 60-month panel of 7 symbols, the last row of ``resmom_rank``
+        On a 60-bar panel of 7 symbols, the last row of ``resmom_rank``
         is the cross-sectional rank of each symbol in ``[0, 1]``.
 
         >>> factor.cal()  # doctest: +SKIP
@@ -577,6 +753,8 @@ class ResidualMomentumFF3(FactorKunQuant):
         )
         num_time = next(iter(input_dict.values())).shape[0]
         num_symbols = len(symbols)
+        if self._parameters().fama_french_csv is not None:
+            input_dict.update(self._fama_french_inputs(timestamps, num_symbols))
         input_dict = self._pad_symbols(input_dict, num_symbols)
 
         if self._lib is None:
@@ -590,6 +768,27 @@ class ResidualMomentumFF3(FactorKunQuant):
             self._cut_symbols(outputs, num_symbols), timestamps, symbols
         )
         return self
+
+    def cal_stream(
+        self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]
+    ) -> Self:
+        """Advance the streaming graph by one bar; refused with ``fama_french_csv``.
+
+        A stream pushes ``config.data_columns`` bar by bar, so the five
+        inputs must all be panel variables.
+
+        Raises
+        ------
+        ValueError
+            If ``fama_french_csv`` is set.
+        """
+        if self._parameters().fama_french_csv is not None:
+            raise ValueError(
+                f"{self.__class__.__name__}.cal_stream(): stream mode reads every "
+                f"input from the panel; put the Fama-French series on the panel "
+                f"and unset fama_french_csv"
+            )
+        return super().cal_stream(data, timestamp, symbols)
 
     def _make_stream(self):
         """Compile the graph for bar-by-bar stream runs, with exact rolling stats."""
@@ -620,4 +819,10 @@ class ResidualMomentumFF3(FactorKunQuant):
         raise RuntimeError(f"{self.__class__.__name__} does not support get_labels()")
 
 
-__all__ = ["ResidualMomentumFF3", "ResidualMomentumParameters"]
+__all__ = [
+    "FAMA_FRENCH_COLUMNS",
+    "ResidualMomentumFF3",
+    "ResidualMomentumParameters",
+    "compound_onto_bars",
+    "read_fama_french",
+]
