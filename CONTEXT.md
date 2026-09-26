@@ -31,3 +31,11 @@ market data, not the raw membership)
 **Market**:
 Every stock a vendor covers for an exchange group, with no membership restriction.
 _Avoid_: all, full, full market, whole market, all-stocks
+
+### Panels
+
+**Resample**:
+Aggregating a panel onto a coarser regular time grid, one aggregation method per variable
+(last, sum, max, ...). Building bars from tick records is the same operation with an
+irregular source; turning minute bars or minute-bar factors into daily ones is the other.
+_Avoid_: downsample, aggregate, roll up, compress

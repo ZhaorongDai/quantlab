@@ -1169,6 +1169,87 @@ class XrBackend(DataBackend):
         self.data = self.data.sel({col: list(symbols)})
         return self
 
+    def resample(self, labels: pd.Series, how: dict[str, str]) -> Self:
+        """Aggregate ``data`` onto the bars ``labels`` assigns, in place.
+
+        Every variable with a ``timestamp`` dimension is grouped by its
+        label and reduced with its method from ``how``; the other dimensions
+        are kept as they are. A variable without a ``timestamp`` dimension
+        is carried over unchanged. ``count`` yields integers; the other
+        methods keep pandas' skip-NaN semantics, so an all-NaN bar is NaN
+        under ``first``, ``last``, ``max``, ``min`` and ``mean`` and 0
+        under ``sum``.
+
+        Parameters
+        ----------
+        labels : pd.Series
+            Source timestamp to target timestamp; see ``DataBackend``.
+        how : dict[str, str]
+            Variable name to aggregation method, one entry per variable.
+
+        Raises
+        ------
+        ValueError
+            If a held timestamp has no label, or a variable has no method.
+
+        Examples
+        --------
+        >>> labels = pd.Series(minutes.floor("D"), index=minutes)
+        >>> backend.resample(labels, {"close": "last", "volume": "sum"})
+        >>> backend.data["timestamp"].values.astype("datetime64[D]").tolist()
+        [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)]
+        """
+        data = self.data
+        source = pd.DatetimeIndex(data["timestamp"].values)
+        target = labels.reindex(source)
+        if target.isna().any():
+            first = source[target.isna().values][0]
+            raise ValueError(
+                f"XrBackend.resample: timestamp {first} has no label."
+            )
+        missing = [name for name in data.data_vars if name not in how]
+        if missing:
+            raise ValueError(
+                f"XrBackend.resample: no method for {missing}."
+            )
+        groups = pd.DatetimeIndex(target.values)
+        new_timestamps = pd.DatetimeIndex(groups.unique()).sort_values()
+
+        variables = {}
+        for name, variable in data.data_vars.items():
+            if "timestamp" not in variable.dims:
+                variables[name] = variable
+                continue
+            ordered = variable.transpose("timestamp", ...)
+            other_dims = ordered.dims[1:]
+            other_shape = ordered.shape[1:]
+            frame = pd.DataFrame(
+                ordered.values.reshape(len(source), -1), index=source
+            )
+            reduced = frame.groupby(groups, sort=True).agg(how[name])
+            reduced = reduced.reindex(new_timestamps)
+            values = reduced.to_numpy().reshape(
+                (len(new_timestamps),) + other_shape
+            )
+            coords = {
+                dim: data[dim] for dim in other_dims if dim in data.coords
+            }
+            variables[name] = xr.DataArray(
+                values,
+                dims=("timestamp",) + other_dims,
+                coords=coords,
+                attrs=variable.attrs,
+            )
+
+        coords = {
+            name: coord
+            for name, coord in data.coords.items()
+            if "timestamp" not in coord.dims
+        }
+        coords["timestamp"] = new_timestamps.values.astype("datetime64[ns]")
+        self.data = xr.Dataset(variables, coords=coords, attrs=data.attrs)
+        return self
+
     def get_xarray_dataset(
         self, indexes: Optional[list[str]] = None
     ) -> xr.Dataset:
@@ -1410,6 +1491,70 @@ class PlBackend(DataBackend):
         (8, 3)
         """
         return self.data
+
+    def resample(self, labels: pd.Series, how: dict[str, str]) -> Self:
+        """Aggregate the long-format frame onto the bars ``labels`` assigns.
+
+        Rows are grouped by their label and by every non-``timestamp``
+        index column the frame has (``symbol``, in a panel). ``how`` names
+        a method for every other column. The result replaces ``data``
+        lazily; nothing is collected here.
+
+        Parameters
+        ----------
+        labels : pd.Series
+            Source timestamp to target timestamp; see ``DataBackend``.
+        how : dict[str, str]
+            Column name to aggregation method, one entry per value column.
+
+        Examples
+        --------
+        >>> table.resample(labels, {"close": "last"})
+        >>> table.get_lazyframe().collect().shape
+        (2, 3)
+        """
+        schema = self.data.collect_schema().names()
+        keys = [name for name in schema if name == "symbol"]
+        missing = [name for name in schema if name not in how
+                   and name not in ("timestamp", *keys)]
+        if missing:
+            raise ValueError(f"PlBackend.resample: no method for {missing}.")
+
+        mapping = pl.LazyFrame(
+            {
+                "timestamp": pd.DatetimeIndex(labels.index).values,
+                "_resample_label": pd.DatetimeIndex(labels.values).values,
+            }
+        ).with_columns(
+            pl.col("timestamp").cast(pl.Datetime("ns")),
+            pl.col("_resample_label").cast(pl.Datetime("ns")),
+        )
+        aggregations = []
+        for name, method in how.items():
+            if name in ("timestamp", *keys):
+                continue
+            column = pl.col(name)
+            aggregations.append(
+                {
+                    "first": column.drop_nulls().first(),
+                    "last": column.drop_nulls().last(),
+                    "max": column.max(),
+                    "min": column.min(),
+                    "sum": column.sum(),
+                    "mean": column.mean(),
+                    "count": column.count(),
+                }[method].alias(name)
+            )
+        self.data = (
+            self.data.with_columns(pl.col("timestamp").cast(pl.Datetime("ns")))
+            .join(mapping, on="timestamp", how="left")
+            .sort("timestamp")
+            .group_by(["_resample_label", *keys], maintain_order=True)
+            .agg(aggregations)
+            .rename({"_resample_label": "timestamp"})
+            .sort(["timestamp", *keys])
+        )
+        return self
 
     def head(self, path: str, n: int) -> pl.LazyFrame:
         """Return at most ``n`` rows scanned lazily from ``path``.

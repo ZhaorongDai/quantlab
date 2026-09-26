@@ -23,7 +23,13 @@ beside its definition.
 from dataclasses import asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Literal
 
-from quantlab.enums.data import BarInterval, Frequency, Market, Vendor
+from quantlab.enums.data import (
+    BarInterval,
+    Frequency,
+    Market,
+    ResampleFrequency,
+    Vendor,
+)
 
 if TYPE_CHECKING:
     from .data import MarketDataset
@@ -61,6 +67,13 @@ class BaseDatasetConfig:
     #: Free-form options a specific dataset class may read (for example
     #: ``data_type`` for tick data). ``None`` is treated as empty.
     kwargs: dict | None = None
+    #: Bar size the panel is resampled onto when it is read or built;
+    #: ``None`` keeps the store's own bars. Set by ``resample()``.
+    resample_freq: ResampleFrequency | None = None
+    #: How each variable is aggregated into a resampled bar: one
+    #: ``ResampleMethod`` for every variable, or a ``{variable: method}``
+    #: dict naming every variable. Required when ``resample_freq`` is set.
+    resample_how: dict[str, str] | str | None = None
 
     #: Dotted import path of the dataset class; filled by the config setter
     #: and used to rebuild the dataset from its serialised config.
@@ -72,7 +85,7 @@ class BaseDatasetConfig:
         Examples
         --------
         >>> sorted(cfg.to_dict())
-        ['end_date', 'kwargs', 'name', 'start_date', 'symbols', 'zarr_file_path']
+        ['end_date', 'kwargs', 'name', 'resample_freq', 'resample_how', 'start_date', 'symbols', 'zarr_file_path']
         """
         return asdict(self)
 
@@ -516,6 +529,14 @@ class BaseFactorConfig:
     symbols: tuple[str, ...] | None = None
     #: Free-form options a specific factor class may read.
     kwargs: dict | None = None
+    #: Bar size the computed factor panel is resampled onto; ``None`` keeps
+    #: the dataset's bars. The factor is computed on the dataset's own bars
+    #: first and aggregated afterwards. Set by ``resample()``.
+    resample_freq: ResampleFrequency | None = None
+    #: How each factor variable is aggregated into a resampled bar: one
+    #: ``ResampleMethod`` for every variable, or a ``{variable: method}``
+    #: dict naming every variable. Required when ``resample_freq`` is set.
+    resample_how: dict[str, str] | str | None = None
 
     #: Dotted import path of the factor class; filled by the config setter.
     name: str | None = None

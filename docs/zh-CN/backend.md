@@ -6,7 +6,7 @@
 
 ## 基础
 
-所有数据后端都实现 `quantlab.base.backend` 中的 `DataBackend`。后端把一个对象放在 `data` 属性里，并提供 `read`、`write`、`to_internal`（接管一个已在内存中的对象）、`filter_by_date`、`filter_by_symbol`、`get_xarray_dataset`、`get_lazyframe` 和 `head`。会修改后端状态的方法都返回 `self`，因此可以链式调用。
+所有数据后端都实现 `quantlab.base.backend` 中的 `DataBackend`。后端把一个对象放在 `data` 属性里，并提供 `read`、`write`、`to_internal`（接管一个已在内存中的对象）、`filter_by_date`、`filter_by_symbol`、`resample`、`get_xarray_dataset`、`get_lazyframe` 和 `head`。会修改后端状态的方法都返回 `self`，因此可以链式调用。
 
 两个后端持有的对象和适用场景不同。
 
@@ -187,6 +187,29 @@ timestamp
 ```
 
 已有标的保留原有历史。新标的在它第一行之前是 NaN，而新窗口中缺席的标的在新日期上是 NaN。`widen_symbol_axis(path, symbols)` 和 `widen_data_vars(path, variables)` 可以分别完成这两半工作，且不需要在内存中持有面板。加宽会重写存储：不超过 `XrBackend.MAX_WIDEN_BYTES`（4 GiB）时一次性在内存中完成，超过则分块重写并记录一条警告，两种方式得到的存储相同。
+
+### 把面板聚合到更粗的 bar
+
+`resample(labels, how)` 按每个源时间戳对应的目标时间戳对持有的数据分组，并用各自的方法就地归约每个变量。`labels` 是一个从源时间戳到目标时间戳的 `pandas.Series`，由调用方算好；后端不知道任何时钟或交易时段的事。`how` 为每个变量指定 `first`、`last`、`max`、`min`、`sum`、`mean`、`count` 之一；NaN 单元格会被跳过。dataset 和因子通过各自的 `resample()` 调用它，那才是通常的入口。
+
+```python
+>>> minutes = pd.date_range("2024-01-02 00:00", periods=4, freq="min").append(
+...     pd.date_range("2024-01-03 00:00", periods=4, freq="min"))
+>>> close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
+>>> backend = XrBackend().to_internal(xr.Dataset(
+...     {"close": (["timestamp", "symbol"], close),
+...      "volume": (["timestamp", "symbol"], np.ones((8, 2)))},
+...     coords={"timestamp": minutes, "symbol": ["AAAUSDT", "BBBUSDT"]},
+... ))
+>>> labels = pd.Series(minutes.floor("D"), index=minutes)
+>>> backend.resample(labels, {"close": "last", "volume": "sum"}).data["close"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0     40.0
+2024-01-03      8.0     80.0
+```
+
+`PlBackend.resample` 对长表做同样的事，按标签和 `symbol` 分组，并保持惰性。
 
 ### 重新加载已变化的存储
 

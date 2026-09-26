@@ -6,7 +6,7 @@ A storage backend separates where data is kept from what the data means. Dataset
 
 ## The basics
 
-Every data backend implements `DataBackend` from `quantlab.base.backend`. It holds one object in its `data` attribute and offers `read`, `write`, `to_internal` (adopt an object that is already in memory), `filter_by_date`, `filter_by_symbol`, `get_xarray_dataset`, `get_lazyframe` and `head`. Methods that change the backend return `self`, so calls can be chained.
+Every data backend implements `DataBackend` from `quantlab.base.backend`. It holds one object in its `data` attribute and offers `read`, `write`, `to_internal` (adopt an object that is already in memory), `filter_by_date`, `filter_by_symbol`, `resample`, `get_xarray_dataset`, `get_lazyframe` and `head`. Methods that change the backend return `self`, so calls can be chained.
 
 The two backends differ in what they hold and what they are used for.
 
@@ -187,6 +187,29 @@ timestamp
 ```
 
 Existing symbols keep their history. The new symbol is NaN before its first row, and a symbol missing from the new window is NaN on the new date. `widen_symbol_axis(path, symbols)` and `widen_data_vars(path, variables)` perform the two halves separately and do not need a panel in memory. A widen rewrites the store: up to `XrBackend.MAX_WIDEN_BYTES` (4 GiB) in one pass, above that block by block with a logged warning. The stored result is the same.
+
+### Aggregate a panel onto coarser bars
+
+`resample(labels, how)` groups the held data by the target timestamp each source timestamp maps to and reduces every variable with its own method, in place. `labels` is a `pandas.Series` from source timestamp to target timestamp, worked out by the caller; the backend knows nothing about clocks or trading sessions. `how` names one of `first`, `last`, `max`, `min`, `sum`, `mean` and `count` for every variable; NaN cells are skipped. Datasets and factors call this through their own `resample()`, which is the usual way in.
+
+```python
+>>> minutes = pd.date_range("2024-01-02 00:00", periods=4, freq="min").append(
+...     pd.date_range("2024-01-03 00:00", periods=4, freq="min"))
+>>> close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
+>>> backend = XrBackend().to_internal(xr.Dataset(
+...     {"close": (["timestamp", "symbol"], close),
+...      "volume": (["timestamp", "symbol"], np.ones((8, 2)))},
+...     coords={"timestamp": minutes, "symbol": ["AAAUSDT", "BBBUSDT"]},
+... ))
+>>> labels = pd.Series(minutes.floor("D"), index=minutes)
+>>> backend.resample(labels, {"close": "last", "volume": "sum"}).data["close"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0     40.0
+2024-01-03      8.0     80.0
+```
+
+`PlBackend.resample` does the same on a long-format frame, grouping by the label and by `symbol`, and stays lazy.
 
 ### Reload a store that changed
 

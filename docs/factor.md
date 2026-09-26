@@ -128,6 +128,55 @@ True
 ('Momentum', ('momentum_5',))
 ```
 
+### Resample a factor onto coarser bars
+
+`resample(freq, how)` returns a copy of the factor whose computed panel is aggregated onto coarser bars. The factor is still computed on its dataset's own bars; only the output is aggregated, so a minute-bar momentum becomes a daily series of the last minute's value without changing what it measures. `freq` and `how` take the same values as `BaseDataset.resample` (see the dataset guide), and `how` may be one method as a string for every factor variable. Bars are cut the way the factor's dataset cuts them.
+
+The session below runs `Momentum` over the two-day minute store built in the dataset guide (`config` is that store's `DatasetConfig`).
+
+```python
+>>> factor = Momentum(PolarsFactorConfig(
+...     window=1, dataset=SpotKlineDataset(config),
+...     file_path="data/factors/momentum.zarr", kwargs={"n": 1},
+... ))
+>>> minute = factor.cal()
+>>> minute.get_features()["momentum_1"].to_pandas().round(3)
+symbol               AAAUSDT  BBBUSDT
+timestamp                            
+2024-01-02 00:00:00      NaN      NaN
+2024-01-02 00:01:00    1.000    1.000
+2024-01-02 00:02:00    0.500    0.500
+2024-01-02 00:03:00    0.333    0.333
+2024-01-03 00:00:00    0.250    0.250
+2024-01-03 00:01:00    0.200    0.200
+2024-01-03 00:02:00    0.167    0.167
+2024-01-03 00:03:00    0.143    0.143
+>>> daily = minute.resample("1d", "last")
+>>> daily.get_features()["momentum_1"].to_pandas().round(3)
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02    0.333    0.333
+2024-01-03    0.143    0.143
+>>> daily.config.dataset.config.resample_freq, daily.config.resample_freq
+(None, '1d')
+```
+
+The copy has its own dataset object and an empty compiled state, so `cal()` on it computes the minute panel again and resamples it. `save()` writes to `store_path`, beside the source store, and `read()` on a copy opens that store when it exists and otherwise resamples the source store. The request round-trips through `get_config()` and `load_factor_from_config`.
+
+```python
+>>> daily.store_path
+'data/factors/momentum_resample_1d.zarr'
+>>> daily.cal().get_features().sizes
+Frozen({'symbol': 2, 'timestamp': 2})
+>>> cfg = daily.get_config()
+>>> cfg["resample_freq"], cfg["resample_how"], cfg["dataset"]["resample_freq"]
+('1d', 'last', None)
+>>> load_factor_from_config(cfg).cal().get_features().sizes
+Frozen({'symbol': 2, 'timestamp': 2})
+```
+
+To compute a factor on already-resampled bars instead, resample the dataset and give the factor the resampled dataset.
+
 ### Compute a label
 
 A label is a KunQuant factor whose `get_labels()` returns a forward-looking value. `Return` in `quantlab.label.fret` is the return from the next bar's adjusted open to the adjusted open `n` bars after that, and `BinaryReturn` is 1.0 when that return is positive. The graph computes a trailing return, since KunQuant can only look backwards, and `get_labels()` shifts it forward by `n_forward_periods + 1` bars. The last `n_forward_periods + 1` bars are NaN. The labels read `adjOpen`, so the dataset must carry adjusted prices; a US equity dataset does, the crypto spot dataset does not.
@@ -299,6 +348,8 @@ A Polars factor that names a column its store does not have fails when the objec
 `save()` defaults to `mode="a"`, which in Zarr means overwrite variables of an existing store and is not an append along time. Saving a panel of a different length raises `ValueError: Momentum.save(mode="a"): cannot write this date range into the existing store at data/f/m.zarr. zarr's "a" means "overwrite variables in an existing store", NOT "append along time", ...`. Use `save(mode="w")` to replace the store or `update()` to extend it.
 
 `window` is a number of calendar days for the dataset lookback, not a number of bars. Where the market is closed on some days the same number gives fewer bars, and a rolling window nested inside another needs the sum of both lengths.
+
+A resampled factor is a view of its source panel: `update()`, `init_stream()` and `cal_stream()` refuse with `Momentum.update(): a resampled factor (resample_freq='1d') is a view of its source panel and does not support update. Compute or update the source factor, then resample it.` The saved resampled store is a cache: recomputing the source factor does not refresh it.
 
 `FactorKunQuant.cal()` compiles the graph each time it is called. Pin `factor_names` to the columns needed to keep the graph small.
 
