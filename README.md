@@ -181,3 +181,7 @@ implemented.
 
 Bug reports, questions and pull requests are welcome. Please read
 [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
+## License
+
+quantlab is released under the [MIT License](LICENSE).
