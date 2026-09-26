@@ -1098,25 +1098,52 @@ class FactorReportFigure:
         ax.fill_between(series.index, series.to_numpy(), 0.0, color=_BLUE, alpha=0.12)
         self._percent(ax)
 
+    def _band(self, ax, series: pd.Series, color: str, label: str,
+              band_label: str | None = None) -> None:
+        """Draw a series as its rolling range and rolling mean.
+
+        The translucent band spans the rolling minimum to maximum over
+        ``rolling_window`` periods; the line is the rolling mean. The raw
+        series is not drawn, so a noisy per-period statistic reads as a
+        level and a spread rather than as spikes. The band enters the
+        legend only when ``band_label`` is given.
+        """
+        window = max(1, min(self.rolling_window, len(series)))
+        rolling = series.rolling(window, min_periods=max(1, window // 2))
+        low, high, mean = rolling.min(), rolling.max(), rolling.mean()
+        ax.fill_between(series.index, low.to_numpy(), high.to_numpy(), color=color,
+                        alpha=0.18, linewidth=0,
+                        label=band_label if band_label is not None else "_nolegend_")
+        ax.plot(mean.index, mean.to_numpy(), color=color, linewidth=2, label=label)
+
+    @staticmethod
+    def _inset_legend(ax) -> None:
+        """A small legend inside the axes, on a translucent panel."""
+        ax.legend(loc="upper right", fontsize=8, frameon=True, framealpha=0.85,
+                  facecolor=_SURFACE, edgecolor=_GRID, ncols=3)
+
+    def _window_of(self, series) -> int:
+        """The rolling window actually used for ``series``."""
+        return max(1, min(self.rolling_window, len(series)))
+
     def _turnover(self, ax, pair: PairAnalysis) -> None:
-        """Turnover of the top and bottom buckets."""
-        self._style(ax, "Quantile turnover", "", "turnover")
-        top, bottom = pair.turnover[pair.quantiles], pair.turnover[1]
-        ax.plot(top.index, top.to_numpy(), color=_BLUE, linewidth=1.5,
-                label=f"Q{pair.quantiles} (top)")
-        ax.plot(bottom.index, bottom.to_numpy(), color=_RED, linewidth=1.5,
-                label="Q1 (bottom)")
-        ax.set_ylim(-0.02, 1.02)
-        ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.0), frameon=False, ncols=2)
+        """Rolling range and mean of the top and bottom buckets' turnover."""
+        window = self._window_of(pair.turnover)
+        self._style(ax, f"Quantile turnover, {window}-period", "", "turnover")
+        self._band(ax, pair.turnover[pair.quantiles], _BLUE,
+                   f"Q{pair.quantiles} (top) mean", band_label="range")
+        self._band(ax, pair.turnover[1], _RED, "Q1 (bottom) mean")
+        ax.set_ylim(bottom=max(-0.02, ax.get_ylim()[0]))
+        self._inset_legend(ax)
         self._percent(ax)
 
     def _rank_autocorrelation(self, ax, pair: PairAnalysis) -> None:
-        """Lag-1 factor rank autocorrelation."""
-        self._style(ax, "Factor rank autocorrelation (lag 1)", "", "autocorrelation")
-        series = pair.rank_autocorrelation
+        """Rolling range and mean of the lag-1 factor rank autocorrelation."""
+        window = self._window_of(pair.rank_autocorrelation)
+        self._style(ax, f"Rank autocorrelation (lag 1), {window}-period", "", "autocorrelation")
         ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
-        ax.plot(series.index, series.to_numpy(), color=_BLUE_DARK, linewidth=1.5)
-        ax.set_ylim(-1.05, 1.05)
+        self._band(ax, pair.rank_autocorrelation, _BLUE_DARK, "mean", band_label="range")
+        self._inset_legend(ax)
 
     def _summary_table(self, ax, pair: PairAnalysis) -> None:
         """The scalar metrics as a two-block text table."""
