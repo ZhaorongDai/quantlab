@@ -234,6 +234,7 @@ model_ckpt
 CLAUDE.md
 CONTEXT.md
 docs/agents/
+docs/adr/
 .codex
 
 # personal scratch scripts

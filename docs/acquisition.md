@@ -268,9 +268,8 @@ Running the same call again later continues from CCC. Setting `kwargs["wait_for_
 
 ### Download size
 
-No size estimate runs before a download and nothing refuses a request for being large
-([ADR 0001](adr/0001-no-download-volume-guard.md)). Scope a request with the symbol list and
-the date window.
+No size estimate runs before a download and nothing refuses a request for being large.
+Scope a request with the symbol list and the date window.
 
 ### Fill in missing covered starts
 
