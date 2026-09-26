@@ -47,12 +47,15 @@ symbols and 100 days, and a one-bar forward return it partly predicts.
 
 import json
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import xarray as xr
 from scipy import stats
 
@@ -97,37 +100,28 @@ def most_common_spacing(timestamps: xr.DataArray | pd.Index | np.ndarray) -> np.
     return diffs.mode().to_numpy()[0]
 
 
-def _rowwise_rank(values: np.ndarray, method: str = "average") -> np.ndarray:
-    """Rank every row of ``values`` over its finite cells; NaN stays NaN."""
-    return pd.DataFrame(values).rank(axis=1, method=method).to_numpy()
-
-
-def _rowwise_spearman(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Per-row Spearman correlation over the cells finite in both rows.
-
-    Rows with fewer than two such cells, or where either side is constant,
-    give NaN.
-    """
-    mask = np.isfinite(a) & np.isfinite(b)
-    ra = _rowwise_rank(np.where(mask, a, np.nan))
-    rb = _rowwise_rank(np.where(mask, b, np.nan))
-    n = mask.sum(axis=1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        safe_n = np.where(n > 0, n, 1)
-        da = np.where(mask, ra - np.nansum(ra, axis=1, keepdims=True) / safe_n[:, None], 0.0)
-        db = np.where(mask, rb - np.nansum(rb, axis=1, keepdims=True) / safe_n[:, None], 0.0)
-        cov = (da * db).sum(axis=1)
-        denom = np.sqrt((da * da).sum(axis=1) * (db * db).sum(axis=1))
-        corr = cov / denom
-    corr[(n < 2) | ~(denom > 0)] = np.nan
-    return corr
-
-
 def _per_bar_rate(returns: pd.DataFrame | pd.Series, horizon: int):
     """Convert ``horizon``-bar returns to the equivalent one-bar rate."""
     if horizon == 1:
         return returns
     return (1.0 + returns) ** (1.0 / horizon) - 1.0
+
+
+#: Name of the forward-return column in the long frame of ``_collect``.
+FRET_COLUMN = "__fret"
+#: Resolution of the saved PNG figures.
+FIGURE_DPI = 110
+
+
+def pair_cumulative_ic(ic: pd.Series) -> pd.Series:
+    """Return the running sum of ``ic`` with missing periods counted as 0."""
+    return ic.fillna(0.0).cumsum().rename("cumulative_ic")
+
+
+def _render_and_save(pair: "PairAnalysis", path: str) -> str:
+    """Draw ``pair`` and save it to ``path``; the process-pool worker of ``save``."""
+    FactorReportFigure().render(pair).savefig(path, dpi=FIGURE_DPI)
+    return path
 
 
 @dataclass
@@ -166,6 +160,8 @@ class PairAnalysis:
     rank_autocorrelation : pandas.Series
         Spearman correlation of the factor with its value one period
         earlier.
+    cumulative_ic : pandas.Series
+        Running sum of ``ic`` (a property).
     summary : dict
         The scalar metrics; one row of ``FactorAnalysis.summary_table()``.
     """
@@ -184,6 +180,17 @@ class PairAnalysis:
     turnover: pd.DataFrame
     rank_autocorrelation: pd.Series
     summary: dict = field(default_factory=dict)
+
+    @property
+    def cumulative_ic(self) -> pd.Series:
+        """Running sum of the per-period IC, periods without an IC adding 0.
+
+        Examples
+        --------
+        >>> pair.cumulative_ic.iloc[-1] == pair.ic.fillna(0).sum()
+        True
+        """
+        return pair_cumulative_ic(self.ic)
 
     @property
     def key(self) -> str:
@@ -314,7 +321,7 @@ class FactorAnalysis:
         table = self._tidy(lambda p: p.monthly_ic.rename("ic").to_frame())
         return table.rename(columns={"timestamp": "month"})
 
-    def save(self, output_dir: str | Path) -> Path:
+    def save(self, output_dir: str | Path, workers: int | None = None) -> Path:
         """Write the analysis to ``output_dir``, creating it if needed.
 
         Files written: ``summary.json`` (every scalar metric, per pair),
@@ -322,12 +329,16 @@ class FactorAnalysis:
         ``quantile_returns.csv``, ``turnover.csv``, one
         ``<factor>__<fret>.png`` per pair and ``config.json`` (see
         ``config``). Floats that are NaN or infinite are written to JSON as
-        ``null``.
+        ``null``. Figures held in ``figures`` are saved as they are; when
+        none is held, every pair is drawn from its metrics and saved, on
+        ``workers`` processes, without being kept.
 
         Parameters
         ----------
         output_dir : str or pathlib.Path
             Directory to write into.
+        workers : int, optional
+            Processes that draw the figures; ``None`` uses every CPU.
 
         Returns
         -------
@@ -352,9 +363,28 @@ class FactorAnalysis:
         self.monthly_ic_table().to_csv(out / "monthly_ic.csv", index=False)
         self.quantile_returns_table().to_csv(out / "quantile_returns.csv", index=False)
         self.turnover_table().to_csv(out / "turnover.csv", index=False)
-        for key, figure in self.figures.items():
-            figure.savefig(out / f"{key}.png", dpi=110)
+        if self.figures:
+            for key, figure in self.figures.items():
+                figure.savefig(out / f"{key}.png", dpi=FIGURE_DPI)
+        elif self.pairs:
+            self._render_to(out, workers)
         return out
+
+    def _render_to(self, out: Path, workers: int | None) -> None:
+        """Draw and save one PNG per pair, on ``workers`` processes.
+
+        A single pair, or ``workers=1``, renders in this process; otherwise
+        the pairs are spread over a process pool, since matplotlib draws on
+        one thread and the figures dominate the cost of a large report.
+        """
+        jobs = [(pair, str(out / f"{key}.png")) for key, pair in self.pairs.items()]
+        count = workers if workers is not None else (os.cpu_count() or 1)
+        if len(jobs) == 1 or count <= 1:
+            for pair, path in jobs:
+                _render_and_save(pair, path)
+            return
+        with ProcessPoolExecutor(max_workers=min(count, len(jobs))) as pool:
+            list(pool.map(_render_and_save, *zip(*jobs)))
 
     def _tidy(self, frame_of) -> pd.DataFrame:
         """Stack ``frame_of(pair)`` of every pair with factor/fret columns."""
@@ -386,6 +416,12 @@ class FactorAnalysis:
 class FactorAnalyzer:
     """Compute alphalens-style metrics of factor variables against frets.
 
+    The metrics are computed with polars: the aligned panels become one
+    long ``(timestamp, symbol)`` frame per chunk of factor variables, every
+    per-period statistic of every variable in the chunk is one lazy plan,
+    and the plan is collected once. Only the small per-period series are
+    then finished in pandas.
+
     Parameters
     ----------
     quantiles : int, default 5
@@ -394,7 +430,15 @@ class FactorAnalyzer:
     rolling_window : int, default 22
         Window, in periods, of the rolling mean IC drawn in the figure.
     plot : bool, default True
-        Draw one figure per pair.
+        Draw figures. With an ``output_dir`` they are drawn on
+        ``workers`` processes straight to PNG files and not kept; without
+        one they are held in ``FactorAnalysis.figures``.
+    workers : int, optional
+        Processes that draw the figures of a saved report; ``None`` uses
+        every CPU.
+    chunk_size : int, default 32
+        Factor variables per lazy plan. Each plan holds ``chunk_size + 3``
+        float columns of ``timestamps * symbols`` rows in memory.
 
     Examples
     --------
@@ -404,13 +448,22 @@ class FactorAnalyzer:
     (0.2384, [-0.0037, -0.0013, -0.0005, 0.0018, 0.0032])
     """
 
-    def __init__(self, quantiles: int = 5, rolling_window: int = 22, plot: bool = True):
+    def __init__(
+        self,
+        quantiles: int = 5,
+        rolling_window: int = 22,
+        plot: bool = True,
+        workers: int | None = None,
+        chunk_size: int = 32,
+    ):
         """Initialize the analyzer; see the class docstring for parameters."""
         if quantiles < 2:
             raise ValueError(f"quantiles must be at least 2, got {quantiles}")
         self.quantiles = int(quantiles)
         self.rolling_window = int(rolling_window)
         self.plot = plot
+        self.workers = workers
+        self.chunk_size = max(int(chunk_size), 1)
 
     def run(
         self,
@@ -433,7 +486,8 @@ class FactorAnalyzer:
             Factor variables to analyze; all of ``get_factor_names()`` when
             None.
         output_dir : str or pathlib.Path, optional
-            When given, ``FactorAnalysis.save`` writes the results there.
+            When given, ``FactorAnalysis.save`` writes the results there and
+            the figures are not kept in memory.
 
         Returns
         -------
@@ -481,34 +535,26 @@ class FactorAnalyzer:
                     f"{factor.class_name} and {type(fret).__name__} share no "
                     f"(timestamp, symbol) cells"
                 )
-            horizon = self._horizon_of(fret)
-            for name in names:
-                for fret_name in aligned_labels.data_vars:
-                    pair = self.analyze_pair(
-                        aligned_features[name],
-                        aligned_labels[fret_name],
-                        name,
-                        str(fret_name),
-                        horizon=horizon,
+            for pair in self.analyze_many(
+                aligned_features, aligned_labels, horizon=self._horizon_of(fret)
+            ):
+                if pair.key in pairs:
+                    raise ValueError(
+                        f"two factor/fret pairs are both named {pair.key!r}; "
+                        f"give the frets distinct variable names"
                     )
-                    if pair.key in pairs:
-                        raise ValueError(
-                            f"two factor/fret pairs are both named {pair.key!r}; "
-                            f"give the frets distinct variable names"
-                        )
-                    pairs[pair.key] = pair
+                pairs[pair.key] = pair
 
         config = {
             "factor": factor.get_config(),
             "frets": [fret.get_config() for fret in frets],
         }
-        figures = {}
-        if self.plot:
-            renderer = FactorReportFigure(rolling_window=self.rolling_window)
-            figures = {key: renderer.render(pair) for key, pair in pairs.items()}
-        analysis = FactorAnalysis(pairs=pairs, figures=figures, config=config)
+        analysis = FactorAnalysis(pairs=pairs, figures={}, config=config)
         if output_dir is not None:
-            analysis.save(output_dir)
+            analysis.save(output_dir, workers=self.workers if self.plot else 0)
+        elif self.plot:
+            renderer = FactorReportFigure(rolling_window=self.rolling_window)
+            analysis.figures = {key: renderer.render(pair) for key, pair in pairs.items()}
         return analysis
 
     @staticmethod
@@ -554,6 +600,175 @@ class FactorAnalyzer:
             )
         return factor_step
 
+    def analyze_many(
+        self, features: xr.Dataset, labels: xr.Dataset, horizon: int = 1
+    ) -> list[PairAnalysis]:
+        """Compute every metric of every factor variable against every fret.
+
+        Parameters
+        ----------
+        features, labels : xarray.Dataset
+            Aligned ``(timestamp, symbol)`` panels: the factor variables and
+            the forward-return variables. Only cells finite in both a factor
+            and a fret are used for that pair.
+        horizon : int, default 1
+            Bars the forward returns span.
+
+        Returns
+        -------
+        list of PairAnalysis
+            One per ``(factor variable, fret variable)``, frets outermost.
+
+        Examples
+        --------
+        >>> pairs = FactorAnalyzer().analyze_many(signals, rets, horizon=1)
+        >>> [pair.key for pair in pairs]
+        ['signal__ret_1', 'noise__ret_1']
+        """
+        features = features.transpose("timestamp", "symbol")
+        labels = labels.transpose("timestamp", "symbol")
+        timestamps = pd.DatetimeIndex(features["timestamp"].values, name="timestamp")
+        n_symbols = features.sizes["symbol"]
+        names = list(features.data_vars)
+        base = {
+            "timestamp": np.repeat(timestamps.values.astype("datetime64[ns]"), n_symbols),
+            "symbol": np.tile(np.arange(n_symbols, dtype=np.int32), len(timestamps)),
+        }
+        pairs = []
+        for fret_name in labels.data_vars:
+            r = labels[fret_name].values.astype(np.float64)
+            for start in range(0, len(names), self.chunk_size):
+                chunk = names[start : start + self.chunk_size]
+                data = dict(base)
+                data[FRET_COLUMN] = r.ravel()
+                counts = {}
+                for i, name in enumerate(chunk):
+                    f = features[name].values.astype(np.float64)
+                    data[f"f{i}"] = f.ravel()
+                    counts[name] = int((np.isfinite(f) & np.isfinite(r)).any(axis=0).sum())
+                table = self._collect(pl.DataFrame(data).lazy(), len(chunk))
+                for i, name in enumerate(chunk):
+                    pairs.append(
+                        self._finish_pair(
+                            table, i, name, str(fret_name), horizon, counts[name], timestamps
+                        )
+                    )
+        return pairs
+
+    def _collect(self, lf: pl.LazyFrame, n_factors: int) -> pd.DataFrame:
+        """Run the per-period plan of ``n_factors`` factor columns and collect it.
+
+        The frame is timestamp-major, so a shift within a symbol is the
+        previous period. NaN cells are nulls, buckets are assigned per
+        period by ordinal rank, and every aggregation of every factor is one
+        ``group_by("timestamp")`` plan collected once.
+        """
+        q_count = self.quantiles
+        fret = pl.col(FRET_COLUMN)
+
+        row_exprs = []
+        for i in range(n_factors):
+            f = pl.col(f"f{i}")
+            both = f.is_not_null() & fret.is_not_null()
+            fv = pl.when(both).then(f)
+            n_valid = fv.count().over("timestamp")
+            bucket = (
+                (fv.rank(method="ordinal").over("timestamp").cast(pl.Int64) - 1) * q_count
+            ) // n_valid + 1
+            row_exprs += [
+                fv.alias(f"fv{i}"),
+                pl.when(both).then(fret).alias(f"rv{i}"),
+                pl.when(n_valid >= q_count).then(bucket).alias(f"b{i}"),
+                f.shift(1).over("symbol").alias(f"lag{i}"),
+            ]
+        lf = lf.with_columns(pl.all().exclude("timestamp", "symbol").fill_nan(None))
+        lf = lf.with_columns(row_exprs)
+        lf = lf.with_columns(
+            [pl.col(f"b{i}").shift(1).over("symbol").alias(f"pb{i}") for i in range(n_factors)]
+        )
+
+        aggs = []
+        for i in range(n_factors):
+            fv, rv, bucket, prev = (pl.col(f"{c}{i}") for c in ("fv", "rv", "b", "pb"))
+            f, lag = pl.col(f"f{i}"), pl.col(f"lag{i}")
+            both = f.is_not_null() & lag.is_not_null()
+            had_previous = prev.is_not_null().any()
+            aggs.append(pl.corr(fv.rank(), rv.rank()).alias(f"ic{i}"))
+            aggs.append(
+                pl.corr(pl.when(both).then(f).rank(), pl.when(both).then(lag).rank())
+                .alias(f"rac{i}")
+            )
+            for q in range(1, q_count + 1):
+                in_q = bucket == q
+                count = in_q.sum()
+                new = (in_q & prev.ne_missing(q)).sum()
+                aggs.append(rv.filter(in_q).mean().alias(f"q{i}_{q}"))
+                aggs.append(
+                    pl.when((count > 0) & had_previous)
+                    .then(new / count)
+                    .alias(f"t{i}_{q}")
+                )
+        return (
+            lf.group_by("timestamp", maintain_order=True)
+            .agg(aggs)
+            .sort("timestamp")
+            .collect()
+            .to_pandas()
+            .set_index("timestamp")
+        )
+
+    def _finish_pair(
+        self,
+        table: pd.DataFrame,
+        i: int,
+        factor_name: str,
+        fret_name: str,
+        horizon: int,
+        n_symbols: int,
+        index: pd.DatetimeIndex,
+    ) -> PairAnalysis:
+        """Build the ``PairAnalysis`` of factor column ``i`` from the collected table."""
+        columns = pd.Index(range(1, self.quantiles + 1), name="quantile")
+        ic = table[f"ic{i}"].astype(np.float64).reindex(index).rename("ic")
+        monthly_ic = ic.groupby(pd.Grouper(freq="ME")).mean()
+        monthly_ic.index.name = "timestamp"
+        quantile_returns = pd.DataFrame(
+            {q: table[f"q{i}_{q}"].to_numpy(dtype=np.float64) for q in columns},
+            index=index, columns=columns,
+        )
+        turnover = pd.DataFrame(
+            {q: table[f"t{i}_{q}"].to_numpy(dtype=np.float64) for q in columns},
+            index=index, columns=columns,
+        )
+        rank_autocorr = (
+            table[f"rac{i}"].astype(np.float64).reindex(index).rename("rank_autocorrelation")
+        )
+
+        spread = (quantile_returns[self.quantiles] - quantile_returns[1]).rename("spread")
+        per_bar = _per_bar_rate(quantile_returns, horizon)
+        cumulative_quantile = (1.0 + per_bar.fillna(0.0)).cumprod() - 1.0
+        long_short_rate = (per_bar[self.quantiles] - per_bar[1]).fillna(0.0)
+        cumulative_long_short = ((1.0 + long_short_rate).cumprod() - 1.0).rename(
+            "cumulative_long_short"
+        )
+        pair = PairAnalysis(
+            factor_name=factor_name,
+            fret_name=fret_name,
+            horizon=int(horizon),
+            quantiles=self.quantiles,
+            ic=ic,
+            monthly_ic=monthly_ic,
+            quantile_returns=quantile_returns,
+            mean_quantile_returns=quantile_returns.mean().rename("mean_return"),
+            spread=spread,
+            cumulative_quantile_returns=cumulative_quantile,
+            cumulative_long_short=cumulative_long_short,
+            turnover=turnover,
+            rank_autocorrelation=rank_autocorr,
+        )
+        pair.summary = self._summary(pair, n_symbols=n_symbols)
+        return pair
+
     def analyze_pair(
         self,
         factor: xr.DataArray,
@@ -585,82 +800,11 @@ class FactorAnalyzer:
         >>> pair.key, pair.quantile_returns.shape
         ('signal__ret_1', (100, 5))
         """
-        factor = factor.transpose("timestamp", "symbol")
-        fret = fret.transpose("timestamp", "symbol")
-        index = pd.DatetimeIndex(factor["timestamp"].values, name="timestamp")
-        f = factor.values.astype(np.float64)
-        r = fret.values.astype(np.float64)
-        valid = np.isfinite(f) & np.isfinite(r)
-        f_valid = np.where(valid, f, np.nan)
-        r_valid = np.where(valid, r, np.nan)
-
-        ic = pd.Series(_rowwise_spearman(f_valid, r_valid), index=index, name="ic")
-        monthly_ic = ic.groupby(pd.Grouper(freq="ME")).mean()
-        monthly_ic.index.name = "timestamp"
-
-        buckets = self._buckets(f_valid)
-        columns = pd.Index(range(1, self.quantiles + 1), name="quantile")
-        quantile_returns = pd.DataFrame(np.nan, index=index, columns=columns)
-        turnover = pd.DataFrame(np.nan, index=index, columns=columns)
-        for q in columns:
-            in_q = buckets == q
-            count = in_q.sum(axis=1)
-            with np.errstate(invalid="ignore", divide="ignore"):
-                quantile_returns[q] = np.where(
-                    count > 0, np.where(in_q, r_valid, 0.0).sum(axis=1) / count, np.nan
-                )
-                previous = np.zeros_like(in_q)
-                previous[1:] = in_q[:-1]
-                had_previous = np.zeros(len(index), dtype=bool)
-                had_previous[1:] = np.isfinite(buckets[:-1]).any(axis=1)
-                new = (in_q & ~previous).sum(axis=1)
-                turnover[q] = np.where((count > 0) & had_previous, new / count, np.nan)
-
-        spread = (quantile_returns[self.quantiles] - quantile_returns[1]).rename("spread")
-        per_bar = _per_bar_rate(quantile_returns, horizon)
-        cumulative_quantile = (1.0 + per_bar.fillna(0.0)).cumprod() - 1.0
-        long_short_rate = (per_bar[self.quantiles] - per_bar[1]).fillna(0.0)
-        cumulative_long_short = ((1.0 + long_short_rate).cumprod() - 1.0).rename(
-            "cumulative_long_short"
-        )
-
-        f_finite = np.where(np.isfinite(f), f, np.nan)
-        lagged = np.full_like(f_finite, np.nan)
-        lagged[1:] = f_finite[:-1]
-        rank_autocorr = pd.Series(
-            _rowwise_spearman(f_finite, lagged), index=index, name="rank_autocorrelation"
-        )
-
-        pair = PairAnalysis(
-            factor_name=factor_name,
-            fret_name=fret_name,
-            horizon=int(horizon),
-            quantiles=self.quantiles,
-            ic=ic,
-            monthly_ic=monthly_ic,
-            quantile_returns=quantile_returns,
-            mean_quantile_returns=quantile_returns.mean().rename("mean_return"),
-            spread=spread,
-            cumulative_quantile_returns=cumulative_quantile,
-            cumulative_long_short=cumulative_long_short,
-            turnover=turnover,
-            rank_autocorrelation=rank_autocorr,
-        )
-        pair.summary = self._summary(pair, n_symbols=int(valid.any(axis=0).sum()))
-        return pair
-
-    def _buckets(self, values: np.ndarray) -> np.ndarray:
-        """Assign each finite cell to bucket ``1..quantiles`` within its row.
-
-        Ranks break ties by order of appearance so buckets hold equal counts.
-        Rows with fewer finite cells than buckets are left unassigned (NaN).
-        """
-        ranks = _rowwise_rank(values, method="first")
-        count = np.isfinite(values).sum(axis=1, keepdims=True)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            buckets = np.floor((ranks - 1.0) / count * self.quantiles) + 1.0
-        buckets[np.broadcast_to(count < self.quantiles, buckets.shape)] = np.nan
-        return buckets
+        return self.analyze_many(
+            factor.to_dataset(name=factor_name),
+            fret.to_dataset(name=fret_name),
+            horizon=horizon,
+        )[0]
 
     @staticmethod
     def _horizon_of(fret) -> int:
@@ -834,18 +978,29 @@ class FactorReportFigure:
         target.set_major_formatter(PercentFormatter(1.0))
 
     def _ic_series(self, ax, pair: PairAnalysis) -> None:
-        """IC per period with its rolling mean."""
+        """IC per period with its rolling mean, and the cumulative IC on a right axis."""
         self._style(ax, "Information coefficient (Spearman)", "", "IC")
         ic = pair.ic
         ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
-        ax.plot(ic.index, ic.to_numpy(), color=_BLUE_LIGHT, linewidth=1, label="IC")
+        lines = ax.plot(ic.index, ic.to_numpy(), color=_BLUE_LIGHT, linewidth=1, label="IC")
         window = max(1, min(self.rolling_window, len(ic)))
         rolling = ic.rolling(window, min_periods=max(1, window // 2)).mean()
-        ax.plot(rolling.index, rolling.to_numpy(), color=_BLUE_DARK, linewidth=2,
-                label=f"{window}-period mean")
-        ax.axhline(pair.summary["ic_mean"], color=_ORANGE, linewidth=1.5,
-                   linestyle="--", label=f"mean {pair.summary['ic_mean']:.3f}")
-        ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.0), frameon=False, ncols=3)
+        lines += ax.plot(rolling.index, rolling.to_numpy(), color=_BLUE_DARK, linewidth=2,
+                         label=f"{window}-period mean")
+        lines.append(ax.axhline(pair.summary["ic_mean"], color=_ORANGE, linewidth=1.5,
+                                linestyle="--", label=f"mean {pair.summary['ic_mean']:.3f}"))
+        right = ax.twinx()
+        cumulative = pair.cumulative_ic
+        lines += right.plot(cumulative.index, cumulative.to_numpy(), color=_RED,
+                            linewidth=1.8, label="cumulative IC")
+        right.set_ylabel("cumulative IC", color=_RED)
+        right.tick_params(colors=_RED, labelsize=9)
+        right.grid(False)
+        for side in ("top", "left", "bottom"):
+            right.spines[side].set_visible(False)
+        right.spines["right"].set_color(_RED)
+        ax.legend(lines, [line.get_label() for line in lines], loc="lower right",
+                  bbox_to_anchor=(1.0, 1.0), frameon=False, ncols=4)
 
     def _ic_histogram(self, ax, pair: PairAnalysis) -> None:
         """IC histogram with the normal density of the same mean and std."""
