@@ -48,7 +48,6 @@ symbols and 100 days, and a one-bar forward return it partly predicts.
 import json
 import math
 import os
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
@@ -57,6 +56,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
+from joblib import Parallel, delayed
 from scipy import stats
 
 from quantlab.utils.jsonable import to_jsonable
@@ -374,8 +374,11 @@ class FactorAnalysis:
         """Draw and save one PNG per pair, on ``workers`` processes.
 
         A single pair, or ``workers=1``, renders in this process; otherwise
-        the pairs are spread over a process pool, since matplotlib draws on
-        one thread and the figures dominate the cost of a large report.
+        the pairs are spread over ``joblib.Parallel`` worker processes (the
+        ``loky`` backend), since matplotlib draws on one thread and the
+        figures dominate the cost of a large report. joblib is the one
+        fan-out this repository uses (see ``tests/test_acquisition_progress
+        .py::test_no_task_isolation_was_added``).
         """
         jobs = [(pair, str(out / f"{key}.png")) for key, pair in self.pairs.items()]
         count = workers if workers is not None else (os.cpu_count() or 1)
@@ -383,8 +386,9 @@ class FactorAnalysis:
             for pair, path in jobs:
                 _render_and_save(pair, path)
             return
-        with ProcessPoolExecutor(max_workers=min(count, len(jobs))) as pool:
-            list(pool.map(_render_and_save, *zip(*jobs)))
+        Parallel(n_jobs=min(count, len(jobs)), backend="loky")(
+            delayed(_render_and_save)(pair, path) for pair, path in jobs
+        )
 
     def _tidy(self, frame_of) -> pd.DataFrame:
         """Stack ``frame_of(pair)`` of every pair with factor/fret columns."""
