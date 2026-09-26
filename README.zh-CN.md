@@ -106,3 +106,7 @@ quantlab 仍在积极开发中，接口可能还会变化。基于 NautilusTrade
 ## 参与贡献
 
 欢迎提交问题报告、提问和拉取请求。提交拉取请求之前，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 许可证
+
+quantlab 以 [MIT 许可证](LICENSE) 发布。
