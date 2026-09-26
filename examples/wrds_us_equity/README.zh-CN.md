@@ -2,12 +2,13 @@
 
 [English](README.md) | 简体中文
 
-每个"股票池 × 模型"一个自成一体的脚本，外加每个股票池一个因子分析脚本，都跑在 CRSP 日线数据上、针对 point-in-time 的指数成分股。每个文件只 import quantlab，可以单独拷走修改。
+每个"股票池 × 模型"一个自成一体的脚本，外加每个股票池一个因子分析脚本，都跑在 CRSP 日线数据上：point-in-time 的 S&P 500 或 Nasdaq-100 成分股，或 CRSP 全市场（所有上市普通股，以其上市面板作为成分）。每个文件只 import quantlab，可以单独拷走修改。
 
 | 股票池 | 模型 pipeline | 因子分析 |
 | --- | --- | --- |
 | S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
+| CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py` | `market_factor_analysis.py` |
 
 三个模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）和 `RealMLPRegressor`（pytabkit 调优默认参数的 MLP）。每个模型 pipeline 都跑同样的五步：
 
@@ -15,7 +16,7 @@
 2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，存为 Zarr。
 3. **标签**：`Return`，即 t+1 开盘到 t+1+`HORIZON` 开盘的收益，只在成分股行上计算。
 4. **模型训练**：在训练窗口上训练一次。
-5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
+5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500 和全市场）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
 
 因子分析 pipeline 跑第 1 到 3 步，然后对两个因子库的每一列调用 `Factor.analyze()`，不训练模型。不使用命令行参数，也没有设置对象：每个文件顶部只有几个常量（`DATA_ROOT`、日期、`HORIZON`、`WANDB_MODE`），quantlab 的各个 config 都在用到的地方直接构造（`DatasetConfig`、`FactorConfig`、`MLConfig`、`CrossSectionBacktestConfig`），每一步做什么就是它拿到的 config。
 
@@ -32,6 +33,9 @@ uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-
 # 需要 Compustat 和 CCM 权限）
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31 \
     --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
+# CRSP 全市场（所有上市普通股；`--security-filter` 选证券类型）
+uv run python scripts/wrds/market.py --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 # 基准 ETF，按 CRSP PERMNO 下载（SPY 84398、QQQ 86755），每个 ETF 一个仓库
 uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31 \
     --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
@@ -39,7 +43,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 
 `--end` 默认为今天，并截到 CRSP 年度发布的最后一天；每个脚本都会转换成 Zarr；`--refresh` 让每个 PERMNO 从各自的水位继续。`--download-dir` 和 `--zarr-dir` 默认为当前目录；上面这组相对仓库根目录的取值会把 store 放到 pipeline 读取的位置。
 
-每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
+每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr` 和 `wrds_crsp_market_membership.zarr`（上市面板）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
 
 KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。
 
@@ -69,7 +73,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`window=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
 | `build_model()` | `MLConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |
-| `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10）、`direction`、成本，以及 ETF `benchmark_dataset` |
+| `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10，全市场为 100）、`direction`、成本，以及 ETF `benchmark_dataset` |
 | `analyze()` | `Factor.analyze()` 的 `quantiles` 和 `factor_names`（因子分析 pipeline） |
 
 ## 输出
@@ -115,4 +119,4 @@ analysis/alpha101/, analysis/alpha158/
 
 - Alpha101/Alpha158 输出是原始值（未标准化）。树模型不需要标准化，RealMLP 会自己做 robust scaling；但 pytabkit 的两个模型（`xgb_td`、`realmlp`）会把缺失特征填成 0，而原生 `xgb` 会把 NaN 当作缺失值处理。
 - 实验时可以只用因子子集来减小模型规模。设置 `alpha101_names`/`alpha158_names` 需要 `BaseModel.get_factor_names` 使用配置里的 `factor_names`。
-- 内存随 symbol 数 × 天数 × 特征数增长：1,000 个 PERMNO、13 年、全部 251 个特征，float32 大约 3 GB。
+- 全市场脚本要读几千个 PERMNO；第一次跑先缩小 `START`/`END` 或固定 `factor_names`。内存随 symbol 数 × 天数 × 特征数增长：1,000 个 PERMNO、13 年、全部 251 个特征，float32 大约 3 GB。

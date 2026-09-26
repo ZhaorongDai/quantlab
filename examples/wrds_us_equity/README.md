@@ -2,12 +2,13 @@
 
 English | [简体中文](README.zh-CN.md)
 
-One self-contained script per universe and model, plus one factor analysis per universe, all on CRSP daily data for a point-in-time index. Each file imports only quantlab, so it can be copied out and edited on its own.
+One self-contained script per universe and model, plus one factor analysis per universe, all on CRSP daily data: the point-in-time S&P 500 or Nasdaq-100, or the whole CRSP market (every listed common stock, with its listing panel as the membership). Each file imports only quantlab, so it can be copied out and edited on its own.
 
 | Universe | Model pipelines | Factor analysis |
 | --- | --- | --- |
 | S&P 500 | `sp500_xgb.py`, `sp500_xgb_td.py`, `sp500_realmlp.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`, `nasdaq100_xgb_td.py`, `nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
+| CRSP market | `market_xgb.py`, `market_xgb_td.py`, `market_realmlp.py` | `market_factor_analysis.py` |
 
 The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost) and `RealMLPRegressor` (pytabkit tuned-default MLP). Every model pipeline runs the same five steps:
 
@@ -15,7 +16,7 @@ The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDReg
 2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, saved as Zarr.
 3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on member rows only.
 4. **Model**: trained once on the training window.
-5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500) or QQQ (Nasdaq-100), logged to Weights & Biases.
+5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500 and market) or QQQ (Nasdaq-100), logged to Weights & Biases.
 
 A factor-analysis pipeline runs steps 1 to 3 and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, `WANDB_MODE`) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `MLConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
 
@@ -32,6 +33,9 @@ uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-
 # needs the Compustat and CCM schemas)
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31 \
     --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
+# The whole CRSP market (every listed common stock; `--security-filter` picks the type)
+uv run python scripts/wrds/market.py --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 # The benchmark ETFs, by CRSP PERMNO (SPY 84398, QQQ 86755), one store each
 uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31 \
     --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
@@ -39,7 +43,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 
 `--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--zarr-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
 
-Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
+Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `market.py` writes `wrds_crsp_market_1d.zarr` and `wrds_crsp_market_membership.zarr`, the listing panel. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
 
 KunQuant compiles the factor graphs, so a C++ compiler is required. The model scripts set `OMP_NUM_THREADS=1` on macOS themselves (xgboost and torch in one process).
 
@@ -69,7 +73,7 @@ Everything lives at the top of each script, in this order:
 | `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
 | `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`window=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
 | `build_model()` | the `MLConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, or the pytabkit constructor arguments) |
-| `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, `top_n` (50 for the S&P 500, 10 for the Nasdaq-100), `direction`, costs, and the ETF `benchmark_dataset` |
+| `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, `top_n` (50 for the S&P 500, 10 for the Nasdaq-100, 100 for the market), `direction`, costs, and the ETF `benchmark_dataset` |
 | `analyze()` | `quantiles` and `factor_names` of `Factor.analyze()` (factor-analysis pipelines) |
 
 ## Outputs
@@ -115,4 +119,4 @@ A backtest run directory can be rebuilt and re-run with `quantlab.utils.module.l
 
 - Alpha101/Alpha158 outputs are raw (not normalized). Tree models do not need normalization and RealMLP robust-scales its inputs itself, but missing features are filled with 0 by the pytabkit heads (`xgb_td`, `realmlp`); the plain `xgb` head keeps NaN as missing.
 - A factor subset keeps the models small while experimenting. Pinning `alpha101_names`/`alpha158_names` needs `BaseModel.get_factor_names` to honor the configured `factor_names`.
-- Memory grows with symbols × days × features: 1,000 PERMNOs over 13 years with all 251 features is roughly 3 GB in float32.
+- The market scripts read thousands of PERMNOs; narrow `START`/`END` or pin `factor_names` for a first run. Memory grows with symbols × days × features: 1,000 PERMNOs over 13 years with all 251 features is roughly 3 GB in float32.
