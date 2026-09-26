@@ -129,9 +129,10 @@ Batch size, chunk granularity and concurrency come from the library defaults.
 
 They share `--start` (required), `--end` (default today, clipped to the
 vendor product's last date), `--refresh` (fetch forward from each symbol's
-last downloaded date instead of backfilling the window), `--download-dir`
-(where the raw files go) and `--zarr-dir` (where the Zarr stores go); the
-last two default to the current directory. The rosters are *point-in-time*: an index roster
+last downloaded date instead of backfilling the window), `--max-workers`
+(parallel download threads, default 4), `--download-dir` (where the raw
+files go) and `--zarr-dir` (where the Zarr stores go); the last two default
+to the current directory. The rosters are *point-in-time*: an index roster
 holds every security that belonged to the index at any time in the window,
 including those since delisted, which keeps *survivorship bias* (a history
 made only of companies that survived) out of the data.
@@ -352,9 +353,9 @@ requests per minute and the paid plan about 10,000; at 200 per minute a
 market-wide daily backfill takes about 8 minutes but a market-wide minute-bar
 backfill takes about 50 hours.
 
-WRDS has no request quota. Its limits are disk space and Duo two-factor
-prompts, which is why a WRDS run uses one connection and stops instead of
-reconnecting (see [WRDS](wrds.md)). Nothing estimates a download's size before
+WRDS has no request quota. Its limits are disk space and the handful of
+connections an account may hold, which is why a WRDS run pools at most six
+connections and stops instead of reconnecting (see [WRDS](wrds.md)). Nothing estimates a download's size before
 it runs (see the ADR
 [Downloads run without a volume guard](../adr/0001-no-download-volume-guard.md)),
 so scope a request by roster and window.

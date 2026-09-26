@@ -596,9 +596,9 @@ class WrdsCrspDailyAcquisition(Acquisition):
     PERMNO, that the account can read ``crsp_a_stock``, that the window does
     not extend past the last day of the current CRSP release (or clips it
     when ``kwargs["clip_to_product_end"]`` is set), and that the raw tier on
-    disk was built from the same release. ``max_workers`` other than 1 is
-    refused, because every WRDS connection can send a Duo two-factor prompt
-    to the account holder's phone.
+    disk was built from the same release. Batches are fetched by
+    ``max_workers`` threads, each on its own pooled connection; a value
+    above ``MAX_WORKERS`` (the session's connection cap) is refused.
 
     Parameters
     ----------
@@ -609,7 +609,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
     Examples
     --------
     Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
-    opens the connection and may send a Duo prompt::
+    opens the connection::
 
         cfg = WrdsCrspDailyAcquisition.build_config(
             ("14593", "10107"), start_date="2020-08-01", end_date="2020-08-31"
@@ -631,9 +631,12 @@ class WrdsCrspDailyAcquisition(Acquisition):
     #: 200 gives about six batches.
     DEFAULT_BATCH_SIZE = 200
 
-    #: One shared connection, so one worker. Any other value is refused in
-    #: ``__init__``.
-    DEFAULT_MAX_WORKERS = 1
+    #: Concurrent batch fetches, each on its own pooled connection.
+    #: Overridable through ``kwargs["max_workers"]``, up to ``MAX_WORKERS``.
+    DEFAULT_MAX_WORKERS = 4
+
+    #: The most workers a run may use: the session's connection cap.
+    MAX_WORKERS = _wrds.WrdsSession.MAX_CONNECTIONS
 
     #: Count each page with the same WHERE before copying it, and fail the
     #: page if the copied row count differs. Overridable through
@@ -743,12 +746,11 @@ class WrdsCrspDailyAcquisition(Acquisition):
         # fails at construction rather than in the middle of a run.
         self._data_type  # validates, or raises
         max_workers = self._knob("max_workers", self.DEFAULT_MAX_WORKERS)
-        if max_workers != 1:
+        if not 1 <= int(max_workers) <= self.MAX_WORKERS:
             raise ValueError(
                 f"{self.class_name}: kwargs['max_workers']={max_workers!r} is "
-                f"refused; WRDS acquisition runs on one shared connection, "
-                f"because every extra connection can send a Duo prompt to "
-                f"your phone and the WRDS account allows only 7."
+                f"refused; use 1 to {self.MAX_WORKERS}. Each worker queries "
+                f"on its own connection and a WRDS account holds only a few."
             )
         # Looked up through the `taq` module at call time, so a test that
         # replaces `taq.WrdsSession` takes effect.
@@ -792,8 +794,8 @@ class WrdsCrspDailyAcquisition(Acquisition):
         The base class treats ``"quota"`` as "stop the whole run", and that is
         the meaning used here. A dead session or a missing subscription is
         never one PERMNO's fault, so it is kept out of the per-symbol failure
-        file, and retrying batch by batch would reconnect and send a Duo
-        prompt each time. Other errors use the base class's rules.
+        file; the next run resumes from the pages on disk. Other errors use
+        the base class's rules.
         """
         if isinstance(exc, self.GLOBAL_STOP_ERRORS):
             return "quota"

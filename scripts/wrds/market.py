@@ -25,8 +25,9 @@ it by hand or reconvert from the unchanged raw tier by running this script.
 
 ``WRDS_USERNAME`` must be set in the environment. The password is never read
 by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
-run shares one WRDS connection, closed at the end whether the run succeeded
-or failed.
+run shares one WRDS session: ``--max-workers`` threads download in parallel,
+each on its own connection, and every connection is closed at the end
+whether the run succeeded or failed.
 
 Usage::
 
@@ -55,6 +56,7 @@ from quantlab.dataset.crsp import SECURITY_FILTER_PRESETS, CrspStockDataset
 from quantlab.dataset.crsp.market import CrspMarketRoster
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.cli import (
+    add_max_workers_arg,
     add_output_dir_args,
     place_downloads,
     print_conversion_result,
@@ -106,6 +108,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue each PERMNO from its watermark instead of re-downloading.",
     )
+    add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
     add_output_dir_args(parser)
     return parser
 
@@ -143,7 +146,7 @@ if __name__ == "__main__":
             # 3. Reference tables, reused when this release's are on disk.
             acq_config = SOURCE.config_factory_for(*CAPABILITY)(
                 symbols=(), start_date=start, end_date=end,
-                kwargs={"clip_to_product_end": True},
+                kwargs={"clip_to_product_end": True, "max_workers": args.max_workers},
             )
             acq_config = place_downloads(acq_config, download_dir)
             reference_dir = ACQ.reference_dir_for(acq_config)

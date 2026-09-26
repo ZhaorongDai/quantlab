@@ -722,9 +722,74 @@ def test_resume_session_error_is_a_global_stop_with_no_manifest_entry(
     assert [c["day"] for c in mock_wrds_session.copy_calls[before:]] == [D25, D26]
 
 
-def test_resume_more_than_one_worker_is_refused(mock_wrds_session, acquisition_config):
+def test_more_workers_than_the_connection_cap_is_refused(mock_wrds_session, acquisition_config):
     with pytest.raises(ValueError, match="max_workers"):
-        _acq(acquisition_config, kwargs={"max_workers": 4})
+        _acq(acquisition_config, kwargs={"max_workers": 7})
+    _acq(acquisition_config, kwargs={"max_workers": 4})
+
+
+# -- the session is a connection pool -----------------------------------------------
+
+
+def test_sequential_queries_reuse_one_pooled_connection(live_session, pgpass):
+    session, connections = live_session
+    pgpass()
+
+    session.trading_days(2024)
+    session.trading_days(2024)
+
+    assert len(connections) == 1
+    assert session._open == 1 and len(session._idle) == 1
+
+
+def test_concurrent_queries_open_up_to_the_cap_and_then_wait(
+    live_session, pgpass, monkeypatch
+):
+    """Three connections are held at once; a fourth `_acquire` blocks until
+    one is released, then reuses it rather than opening a new one."""
+    import threading
+
+    from quantlab.acquisition.wrds.taq import WrdsSession
+
+    session, connections = live_session
+    pgpass()
+    monkeypatch.setattr(WrdsSession, "MAX_CONNECTIONS", 3)
+
+    held = [session._acquire() for _ in range(3)]
+    assert len(connections) == 3
+
+    got: list = []
+    waiter = threading.Thread(target=lambda: got.append(session._acquire()))
+    waiter.start()
+    waiter.join(timeout=0.2)
+    assert waiter.is_alive(), "the fourth acquire should wait for a release"
+
+    session._release(held[0])
+    waiter.join(timeout=5)
+    assert not waiter.is_alive()
+    assert got == [held[0]]
+    assert len(connections) == 3
+
+    for conn in (got[0], held[1], held[2]):
+        session._release(conn)
+    assert session._open == 3 and len(session._idle) == 3
+
+
+def test_close_closes_idle_connections_and_refuses_further_queries(
+    live_session, pgpass
+):
+    from quantlab.acquisition.wrds.taq import WrdsSessionError
+
+    session, connections = live_session
+    pgpass()
+    session.trading_days(2024)
+
+    session.close()
+
+    assert connections[0].closed
+    assert session._open == 0 and session._idle == []
+    with pytest.raises(WrdsSessionError, match="closed"):
+        session.trading_days(2024)
 
 
 def test_entitlement_unentitled_year_fails_before_any_copy(

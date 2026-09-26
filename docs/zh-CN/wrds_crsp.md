@@ -30,7 +30,7 @@ CRSP 日频表（`crsp_a_stock.dsf_v2`）里，每只证券每个交易日一行
 
 ### 按 PERMNO 下载
 
-`scripts/wrds/` 下的三个脚本通过厂商登记表驱动下载，每种数据一个：`index.py` 拉取一个指数的时点成分股，`market.py` 拉取整个美股市场，`etf.py` 按 PERMNO 拉取一只或多只 ETF。每个脚本都接受 `--start`、可选的 `--end`（默认今天，并截到 CRSP 年度版本的最后一天）、`--refresh`、`--download-dir` 和 `--zarr-dir`（两者都默认为当前目录），并且总是转换成 Zarr。这些命令需要 WRDS 账号，因此不展示输出。
+`scripts/wrds/` 下的三个脚本通过厂商登记表驱动下载，每种数据一个：`index.py` 拉取一个指数的时点成分股，`market.py` 拉取整个美股市场，`etf.py` 按 PERMNO 拉取一只或多只 ETF。每个脚本都接受 `--start`、可选的 `--end`（默认今天，并截到 CRSP 年度版本的最后一天）、`--refresh`、`--max-workers`（并行下载线程数，默认 4，最多 6）、`--download-dir` 和 `--zarr-dir`（两者都默认为当前目录），并且总是转换成 Zarr。这些命令需要 WRDS 账号，因此不展示输出。
 
 ```bash
 # CRSP 自己的时点 S&P 500：成分股的日线和成分面板。

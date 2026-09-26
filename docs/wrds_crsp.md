@@ -30,7 +30,7 @@ The `symbol` axis of a CRSP panel is therefore the integer PERMNO. Tickers are d
 
 ### Download by PERMNO
 
-Three scripts under `scripts/wrds/` drive a download through the vendor registry, one per kind of data: `index.py` takes the point-in-time members of an index, `market.py` takes the whole US equity market, and `etf.py` takes one or more ETFs by PERMNO. Each takes `--start`, an optional `--end` (default today, clipped to the last day of the annual CRSP release), `--refresh`, `--download-dir` and `--zarr-dir` (both default to the current directory), and always converts into Zarr. These commands need a WRDS account, so no output is shown.
+Three scripts under `scripts/wrds/` drive a download through the vendor registry, one per kind of data: `index.py` takes the point-in-time members of an index, `market.py` takes the whole US equity market, and `etf.py` takes one or more ETFs by PERMNO. Each takes `--start`, an optional `--end` (default today, clipped to the last day of the annual CRSP release), `--refresh`, `--max-workers` (parallel download threads, default 4, at most 6), `--download-dir` and `--zarr-dir` (both default to the current directory), and always converts into Zarr. These commands need a WRDS account, so no output is shown.
 
 ```bash
 # CRSP's point-in-time S&P 500: the members' daily bars and the membership panel.

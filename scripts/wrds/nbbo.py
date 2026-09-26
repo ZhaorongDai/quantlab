@@ -21,8 +21,9 @@ The roster is exactly one of:
 
 ``WRDS_USERNAME`` must be set in the environment. The password is never read
 by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
-run shares one WRDS connection, closed at the end whether the run succeeded
-or failed.
+run shares one WRDS session: ``--max-workers`` threads download in parallel,
+each on its own connection, and every connection is closed at the end
+whether the run succeeded or failed.
 
 Usage::
 
@@ -57,6 +58,7 @@ from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
 from quantlab.enums.data import BarInterval
 from quantlab.utils.cli import (
+    add_max_workers_arg,
     add_output_dir_args,
     place_downloads,
     print_conversion_result,
@@ -66,6 +68,7 @@ from quantlab.utils.cli import (
 SOURCE = DataSourceRegistry.get("wrds")
 NBBO_CAPABILITY = ("us_equity", "tick", "nbbo")
 CRSP_CAPABILITY = ("us_equity", "1d", "crsp_daily")
+ACQ = SOURCE.acquisition_cls_for(*NBBO_CAPABILITY)
 
 #: ``--index`` name -> CRSP membership universe id.
 INDEXES: dict[str, str] = {
@@ -142,6 +145,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue each symbol from its watermark instead of re-downloading.",
     )
+    add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
     add_output_dir_args(parser)
     return parser
 
@@ -261,7 +265,10 @@ if __name__ == "__main__":
         # 3. Download.
         acq_config = place_downloads(
             SOURCE.config_factory_for(*NBBO_CAPABILITY)(
-                symbols=symbols, start_date=start, end_date=end
+                symbols=symbols,
+                start_date=start,
+                end_date=end,
+                kwargs={"max_workers": args.max_workers},
             ),
             download_dir,
         )

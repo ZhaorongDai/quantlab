@@ -289,18 +289,29 @@ def test_a_second_vintage_over_one_raw_tier_is_refused_before_any_copy(
     assert FakeCrspSession.crsp_copy_calls == [], FakeCrspSession.crsp_copy_calls
 
 
-# -- D-20/D-03: one connection, one worker -----------------------------------------
+# -- D-20/D-03: one session, at most MAX_WORKERS connections ---------------------------
 
 
-def test_max_workers_other_than_one_is_refused_before_a_session_exists(
-    mock_crsp_session, tmp_path
+@pytest.mark.parametrize("max_workers", [0, 7])
+def test_max_workers_outside_the_connection_cap_is_refused_before_a_session_exists(
+    mock_crsp_session, tmp_path, max_workers
 ):
     with pytest.raises(ValueError, match="max_workers"):
         _acquisition(
-            tmp_path, [AAPL], "2020-08-01", "2020-08-31", {"max_workers": 2}
+            tmp_path, [AAPL], "2020-08-01", "2020-08-31", {"max_workers": max_workers}
         )
 
     assert FakeWrdsSession.connections == 0, FakeWrdsSession.connections
+
+
+def test_max_workers_within_the_cap_is_accepted(mock_crsp_session, tmp_path):
+    from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
+
+    acq = _acquisition(tmp_path, [AAPL], "2020-08-01", "2020-08-31", {"max_workers": 6})
+
+    assert WrdsCrspDailyAcquisition.MAX_WORKERS == 6
+    assert WrdsCrspDailyAcquisition.DEFAULT_MAX_WORKERS == 4
+    assert acq._knob("max_workers", None) == 6
 
 
 def test_a_session_error_aborts_the_run_and_the_next_run_repeats_that_page(
