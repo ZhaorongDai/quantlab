@@ -593,7 +593,7 @@ def test_legacy_watermarks_are_skipped_by_default_and_reported_loudly(
 
     text = "\n".join(messages)
     assert str(len(_FIVE)) in text
-    assert "--stamp-legacy-watermarks" in text
+    assert "stamp_watermarks" in text
 
 
 def test_legacy_watermarks_are_re_fetched_under_the_refetch_policy(
