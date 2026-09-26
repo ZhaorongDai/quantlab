@@ -8,7 +8,7 @@ One self-contained script per universe and model, plus one factor analysis per u
 | --- | --- | --- |
 | S&P 500 | `sp500_xgb.py`, `sp500_xgb_td.py`, `sp500_realmlp.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`, `nasdaq100_xgb_td.py`, `nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
-| CRSP market | `market_xgb.py`, `market_xgb_td.py`, `market_realmlp.py` | `market_factor_analysis.py` |
+| CRSP market | `market_xgb.py`, `market_xgb_td.py`, `market_realmlp.py` | `market_factor_analysis.py`, `market_residual_momentum.py` |
 
 The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost) and `RealMLPRegressor` (pytabkit tuned-default MLP). Every model pipeline runs the same five steps:
 
@@ -42,6 +42,14 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 ```
 
 `--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--zarr-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
+
+`market_residual_momentum.py` also needs the daily Fama-French factors, which need no account:
+
+```bash
+uv run python scripts/fama_french.py --download-dir data/downloads
+```
+
+writes `data/downloads/fama_french/ff3_daily.csv`, where `FAMA_FRENCH_CSV` at the top of the script points.
 
 Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `market.py` writes `wrds_crsp_market_1d.zarr`, which the market scripts read directly, and `wrds_crsp_market_membership.zarr`, the listing panel, which they do not need. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
 
@@ -85,10 +93,11 @@ prices.zarr, members.zarr     derived price stores (step 1; index scripts only)
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 models/<model>/...            checkpoints, config.json
 backtests/<model>/...         weights, equity, metrics.json, report.html
-analysis/alpha101/, analysis/alpha158/
+analysis/alpha101/, analysis/alpha158/, analysis/residual_momentum/
                               summary.json and .csv, ic.csv, monthly_ic.csv,
                               quantile_returns.csv, turnover.csv, one PNG
                               per column, config.json (factor and label configs)
+factor/residual_momentum.zarr the residual-momentum score and rank (market_residual_momentum.py)
 ```
 
 ## What is logged to Weights & Biases

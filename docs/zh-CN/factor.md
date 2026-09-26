@@ -280,7 +280,7 @@ True
 | `Momentum` | Polars | Polars 参考因子，读取 `Close` |
 | `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库 |
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征；试验时建议固定 `factor_names` |
-| `ResidualMomentumFF3` | KunQuant | 月频数据上的 Fama-French 三因子残差动量 |
+| `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
 | `Return`、`BinaryReturn` | KunQuant | 前瞻收益标签 |
 
 每个类的 docstring 里都有配置示例。

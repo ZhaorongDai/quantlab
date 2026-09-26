@@ -280,7 +280,7 @@ The module also has two cross-sectional outlier operators. `CrossSectionalWinsor
 | `Momentum` | Polars | reference Polars factor, reads `Close` |
 | `Alpha101SpotKline`, `Alpha101Stock` | KunQuant | KunQuant's Alpha101 library |
 | `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features; pin `factor_names` while experimenting |
-| `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum on monthly data |
+| `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum; the factor series come from a Fama-French CSV or from the panel |
 | `Return`, `BinaryReturn` | KunQuant | forward-return labels |
 
 Each class docstring shows its config.
