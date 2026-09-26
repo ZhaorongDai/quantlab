@@ -536,3 +536,26 @@ def test_train_cv_sequential(tmp_path, recorders):
     assert summary_run.summary["cv_n_folds"] == 8
     assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r["test_ic"] for r in results])))
     assert summary_run.summary["cv_mean_test_ic"] > 0.3
+
+
+# --------------------------------------------------------------------------
+# Per-round W&B curves and feature importance
+# --------------------------------------------------------------------------
+
+
+def test_logs_every_round_and_the_feature_importance(tmp_path, recorders):
+    factors, labels = _panels(seed=21)
+    model = _train(tmp_path, factors, labels)
+    rec = recorders[0]
+
+    rounds = [(row, step) for row, step in rec.logs if "val-rmse" in row]
+    assert rounds, "no per-round validation values were logged"
+    steps = [step for _, step in rounds]
+    assert steps == list(range(len(steps)))
+    assert steps[-1] + 1 == rec.summary["num_boosted_rounds"]
+    assert all(np.isfinite(row["val-rmse"]) for row, _ in rounds)
+
+    gain = {k: v for k, v in rec.summary.items() if k.startswith("importance_gain/")}
+    assert set(gain) == {f"importance_gain/{name}" for name in model.get_factor_names()}
+    charts = [row for row, _ in rec.logs if any(k.startswith("feature_importance") for k in row)]
+    assert charts and charts[-1] is not None

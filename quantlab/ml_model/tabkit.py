@@ -14,7 +14,9 @@ The module is named ``tabkit.py`` rather than ``pytabkit.py`` so it does
 not shadow the ``pytabkit`` package inside this package.
 """
 
+import threading
 from abc import abstractmethod
+from contextlib import contextmanager
 
 import numpy as np
 from loguru import logger
@@ -210,3 +212,92 @@ class TabkitRegressor(MLModel):
     @abstractmethod
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """Return ``[T, S, L]`` predictions for a preprocessed ``[T, S, F]`` input."""
+
+
+# -- Per-step logging hooks ------------------------------------------------------
+#
+# pytabkit offers no callback argument on its estimators: ``XGB_TD_Regressor``
+# calls ``xgboost.train`` inside its split interface, and ``RealMLP_TD_Regressor``
+# builds a Lightning ``Trainer`` with the callbacks its ``TabNNModule`` creates.
+# Both heads therefore register their per-round or per-epoch W&B callback in a
+# thread-local slot for the duration of ``fit``, and two one-time patches read
+# that slot: one wraps ``xgboost.train`` to append the active xgboost callbacks,
+# the other wraps ``TabNNModule.create_callbacks`` to append the active
+# Lightning callbacks. Outside an active fit both patches are pass-throughs,
+# so the plain ``XGBoostRegressor`` is unaffected, and the slot being
+# thread-local keeps parallel ``train_cv`` folds (joblib threads) apart.
+
+_active = threading.local()
+_installed: set[str] = set()
+
+
+def _active_list(name: str) -> list:
+    """Return the thread's active callbacks under ``name`` (empty when none)."""
+    return list(getattr(_active, name, None) or [])
+
+
+def _install_xgboost_train_hook() -> None:
+    """Wrap ``xgboost.train`` once so active xgboost callbacks are appended."""
+    if "xgboost" in _installed:
+        return
+    import xgboost
+
+    original = xgboost.train
+
+    def train_with_active_callbacks(*args, **kwargs):
+        extra = _active_list("xgb_callbacks")
+        if extra:
+            kwargs["callbacks"] = [*(kwargs.get("callbacks") or []), *extra]
+        return original(*args, **kwargs)
+
+    train_with_active_callbacks.__wrapped__ = original  # type: ignore[attr-defined]
+    xgboost.train = train_with_active_callbacks
+    _installed.add("xgboost")
+
+
+def _install_lightning_callbacks_hook() -> None:
+    """Wrap ``TabNNModule.create_callbacks`` once so active Lightning callbacks join."""
+    if "lightning" in _installed:
+        return
+    from pytabkit.models.training.lightning_modules import TabNNModule
+
+    original = TabNNModule.create_callbacks
+
+    def create_callbacks_with_active(self):
+        callbacks = original(self)
+        extra = _active_list("lightning_callbacks")
+        if extra:
+            callbacks = [*callbacks, *extra]
+            self.callbacks = callbacks
+        return callbacks
+
+    create_callbacks_with_active.__wrapped__ = original  # type: ignore[attr-defined]
+    TabNNModule.create_callbacks = create_callbacks_with_active
+    _installed.add("lightning")
+
+
+@contextmanager
+def active_callbacks(xgb_callbacks=None, lightning_callbacks=None):
+    """Make ``xgb_callbacks`` and ``lightning_callbacks`` active on this thread.
+
+    While the block runs, every ``xgboost.train`` call on this thread gets
+    the xgboost callbacks appended and every pytabkit ``TabNNModule`` gets
+    the Lightning callbacks appended. The slot is cleared on exit, also on
+    error.
+
+    Examples
+    --------
+    >>> with active_callbacks(xgb_callbacks=[callback]):
+    ...     estimator.fit(x, y, X_val=val_x, y_val=val_y)
+    """
+    if xgb_callbacks:
+        _install_xgboost_train_hook()
+    if lightning_callbacks:
+        _install_lightning_callbacks_hook()
+    _active.xgb_callbacks = list(xgb_callbacks or [])
+    _active.lightning_callbacks = list(lightning_callbacks or [])
+    try:
+        yield
+    finally:
+        _active.xgb_callbacks = []
+        _active.lightning_callbacks = []

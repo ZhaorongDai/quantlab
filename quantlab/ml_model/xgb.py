@@ -15,6 +15,8 @@ shadow the ``xgboost`` package inside this package.
 """
 
 import numpy as np
+import re
+
 import wandb
 import xgboost as xgb
 from loguru import logger
@@ -257,10 +259,15 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
         The model whose recorder receives the per-round values.
     """
 
-    def __init__(self, head: "XGBoostRegressor"):
-        """Keep a reference to the head whose recorder receives the rows."""
+    def __init__(self, head, suffix: str = ""):
+        """Keep a reference to the head whose recorder receives the rows.
+
+        ``suffix`` is appended to every key, so a head that fits one
+        Booster per label can keep their curves apart (``val-rmse/ret_5``).
+        """
         super().__init__()
         self._head = head
+        self._suffix = suffix
 
     def after_iteration(self, model, epoch: int, evals_log) -> bool:
         """Log the latest value of every metric and return ``False`` to continue.
@@ -291,13 +298,173 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
         recorder = self._head._wandb_recorder
         if recorder is not None:
             row = {
-                f"{data_name}-{metric}": float(values[-1])
+                f"{data_name}-{metric}{self._suffix}": float(values[-1])
                 for data_name, metrics in evals_log.items()
                 for metric, values in metrics.items()
             }
             recorder.log(row, step=epoch)
             self._head._last_log_step = epoch
         return False
+
+
+_FEATURE_KEY = re.compile(r"(?:f|x_cont_)(\d+)")
+
+
+def _feature_index(key: str) -> int:
+    """Return the column index a Booster feature key names, or -1.
+
+    Examples
+    --------
+    >>> _feature_index("f12"), _feature_index("x_cont_3"), _feature_index("close")
+    (12, 3, -1)
+    """
+    match = _FEATURE_KEY.fullmatch(key)
+    return int(match.group(1)) if match else -1
+
+
+def record_feature_importance(
+    booster: xgb.Booster,
+    factor_names: list[str],
+    recorder,
+    step: int | None,
+    owner: str,
+    booster_type: str = "gbtree",
+    suffix: str = "",
+) -> None:
+    """Write a Booster's per-factor importance to a W&B run.
+
+    ``Booster.get_score`` keys features as ``f{i}`` by column index when
+    the Booster was trained on an array, and as the column name, which is
+    ``x_cont_{i}`` for a pytabkit head, when it was trained on a frame; the
+    columns follow ``factor_names``, so either maps to the ``i``-th factor.
+    Factors that were never split on get ``0.0``. For every type in
+    ``_IMPORTANCE_TYPES`` the scalars go to the summary as
+    ``importance_{type}{suffix}/{factor}``, and one ``log`` call at ``step``
+    carries a full table sorted by importance plus a bar chart of the top
+    ``_IMPORTANCE_CHART_TOP_N`` factors.
+
+    This is reporting only, so a failure here must never lose a checkpoint.
+    ``booster_type="gblinear"`` has no split importance and is skipped with
+    an info message. A type that raises ``XGBoostError`` or returns
+    non-scalar scores is skipped with a warning, and a failure while
+    building or logging the charts is also only a warning.
+
+    Parameters
+    ----------
+    booster : xgb.Booster
+        The fitted Booster.
+    factor_names : list[str]
+        The feature columns the Booster was trained on, in order.
+    recorder : wandb run
+        The run whose summary and log receive the importance.
+    step : int or None
+        The W&B step the charts are logged at.
+    owner : str
+        Class name quoted in messages.
+    booster_type : str, default "gbtree"
+        The ``booster`` parameter the Booster was trained with.
+    suffix : str, default ""
+        Appended to the summary and chart keys, e.g. ``"/ret_5"``.
+
+    Raises
+    ------
+    ValueError
+        If a score key is not ``f<index>`` for one of the factors, which
+        means the Booster was not trained on these columns.
+
+    Examples
+    --------
+    >>> record_feature_importance(booster, ["mom_5", "mom_20"], run, 99, "Head")
+    >>> sorted(k for k in run.summary if k.startswith("importance_gain/"))
+    ['importance_gain/mom_20', 'importance_gain/mom_5']
+    """
+    if booster_type == "gblinear":
+        logger.info(
+            f"{owner}: booster='gblinear' has no split feature importance; "
+            f"importance recording skipped."
+        )
+        return
+
+    names = [str(name) for name in factor_names]
+    charts: dict = {}
+    for importance_type in _IMPORTANCE_TYPES:
+        try:
+            scores = booster.get_score(importance_type=importance_type)
+        except xgb.core.XGBoostError as exc:
+            logger.warning(
+                f"{owner}: feature importance {importance_type!r} is "
+                f"unavailable for this Booster and was skipped: {exc}"
+            )
+            continue
+        values = {name: 0.0 for name in names}
+        non_scalar_key = None
+        for key, score in scores.items():
+            index = _feature_index(key)
+            if not 0 <= index < len(names):
+                raise ValueError(
+                    f"{owner}: Booster.get_score returned feature key "
+                    f"{key!r}, which is not f<index> or x_cont_<index> for "
+                    f"one of the {len(names)} factors {names}."
+                )
+            if not np.isscalar(score):
+                non_scalar_key = key
+                break
+            values[names[index]] = float(score)
+        if non_scalar_key is not None:
+            logger.warning(
+                f"{owner}: feature importance {importance_type!r} returned a "
+                f"non-scalar score for {non_scalar_key!r} (one value per "
+                f"output); skipped."
+            )
+            continue
+        recorder.summary.update(
+            {
+                f"importance_{importance_type}{suffix}/{name}": value
+                for name, value in values.items()
+            }
+        )
+
+        try:
+            # Stable sort: ties keep factor order, so never-split factors
+            # at 0.0 end up last in factor order.
+            ordered = sorted(values.items(), key=lambda item: item[1], reverse=True)
+            full_table = wandb.Table(
+                columns=["factor", "importance"],
+                data=[[name, value] for name, value in ordered],
+            )
+            top = ordered[:_IMPORTANCE_CHART_TOP_N]
+            top_chart = wandb.plot.bar(
+                wandb.Table(
+                    columns=["factor", "importance"],
+                    data=[[name, value] for name, value in top],
+                ),
+                "factor",
+                "importance",
+                title=(
+                    f"feature importance ({importance_type}{suffix}, "
+                    f"top {len(top)} of {len(ordered)})"
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                f"{owner}: building the feature importance charts for "
+                f"{importance_type!r} failed; they were skipped (the summary "
+                f"entries are unaffected): {exc}"
+            )
+            continue
+        # Chart and table enter the payload together or not at all.
+        charts[f"{_IMPORTANCE_CHART_PREFIX}{suffix}/{importance_type}"] = top_chart
+        charts[f"{_IMPORTANCE_CHART_PREFIX}_table{suffix}/{importance_type}"] = full_table
+
+    if charts:
+        try:
+            recorder.log(charts, step=step)
+        except Exception as exc:
+            logger.warning(
+                f"{owner}: logging the feature importance charts failed; they "
+                f"were skipped (the summary entries and the checkpoint are "
+                f"unaffected): {exc}"
+            )
 
 
 class XGBoostRegressor(MLModel):
@@ -603,121 +770,17 @@ class XGBoostRegressor(MLModel):
     def _record_feature_importance(self) -> None:
         """Write per-factor importance to the run summary and log the charts.
 
-        ``Booster.get_score`` keys features as ``f{i}`` by column index, and
-        columns follow ``get_factor_names()``, so ``f{i}`` maps to the
-        ``i``-th factor. Factors that were never split on get ``0.0``. For
-        every type in ``_IMPORTANCE_TYPES`` the scalars go to the summary as
-        ``importance_{type}/{factor}``, and one ``log`` call at
-        ``_last_log_step`` carries a full table sorted by importance plus a
-        bar chart of the top ``_IMPORTANCE_CHART_TOP_N`` factors.
-
-        This is reporting only, so a failure here must never lose the
-        checkpoint. ``booster="gblinear"`` has no split importance and is
-        skipped with an info message. A type that raises ``XGBoostError`` or
-        returns non-scalar scores is skipped with a warning, and a failure
-        while building or logging the charts is also only a warning.
-
-        Raises
-        ------
-        ValueError
-            If a score key is not ``f<index>`` for one of the factors, which
-            means the Booster was not trained on these columns.
+        See ``record_feature_importance``; the charts are logged at
+        ``_last_log_step`` so they sit on the last training round.
         """
-        booster_type = str((self._params or {}).get("booster", "gbtree"))
-        if booster_type == "gblinear":
-            logger.info(
-                f"{self.class_name}: booster='gblinear' has no split feature "
-                f"importance; importance recording skipped."
-            )
-            return
-
-        names = [str(name) for name in self.get_factor_names()]
-        charts: dict = {}
-        for importance_type in _IMPORTANCE_TYPES:
-            try:
-                scores = self.model.get_score(  # type: ignore[union-attr]
-                    importance_type=importance_type
-                )
-            except xgb.core.XGBoostError as exc:
-                logger.warning(
-                    f"{self.class_name}: feature importance {importance_type!r} "
-                    f"is unavailable for this Booster and was skipped: {exc}"
-                )
-                continue
-            values = {name: 0.0 for name in names}
-            non_scalar_key = None
-            for key, score in scores.items():
-                digits = key[1:] if key.startswith("f") else ""
-                index = int(digits) if digits.isdigit() else -1
-                if not 0 <= index < len(names):
-                    raise ValueError(
-                        f"{self.class_name}: Booster.get_score returned feature "
-                        f"key {key!r}, which is not f<index> for one of the "
-                        f"{len(names)} factors {names}."
-                    )
-                if not np.isscalar(score):
-                    non_scalar_key = key
-                    break
-                values[names[index]] = float(score)
-            if non_scalar_key is not None:
-                logger.warning(
-                    f"{self.class_name}: feature importance {importance_type!r} "
-                    f"returned a non-scalar score for {non_scalar_key!r} "
-                    f"(one value per output); skipped."
-                )
-                continue
-            self._wandb_recorder.summary.update(
-                {
-                    f"importance_{importance_type}/{name}": value
-                    for name, value in values.items()
-                }
-            )
-
-            try:
-                # Stable sort: ties keep factor order, so never-split factors
-                # at 0.0 end up last in factor order.
-                ordered = sorted(
-                    values.items(), key=lambda item: item[1], reverse=True
-                )
-                full_table = wandb.Table(
-                    columns=["factor", "importance"],
-                    data=[[name, value] for name, value in ordered],
-                )
-                top = ordered[:_IMPORTANCE_CHART_TOP_N]
-                top_chart = wandb.plot.bar(
-                    wandb.Table(
-                        columns=["factor", "importance"],
-                        data=[[name, value] for name, value in top],
-                    ),
-                    "factor",
-                    "importance",
-                    title=(
-                        f"feature importance ({importance_type}, "
-                        f"top {len(top)} of {len(ordered)})"
-                    ),
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"{self.class_name}: building the feature importance charts "
-                    f"for {importance_type!r} failed; they were skipped "
-                    f"(the summary entries are unaffected): {exc}"
-                )
-                continue
-            # Chart and table enter the payload together or not at all.
-            charts[f"{_IMPORTANCE_CHART_PREFIX}/{importance_type}"] = top_chart
-            charts[f"{_IMPORTANCE_CHART_PREFIX}_table/{importance_type}"] = (
-                full_table
-            )
-
-        if charts:
-            try:
-                self._wandb_recorder.log(charts, step=self._last_log_step)
-            except Exception as exc:
-                logger.warning(
-                    f"{self.class_name}: logging the feature importance charts "
-                    f"failed; they were skipped (the summary entries and the "
-                    f"checkpoint are unaffected): {exc}"
-                )
+        record_feature_importance(
+            self.model,  # type: ignore[arg-type]
+            [str(name) for name in self.get_factor_names()],
+            self._wandb_recorder,
+            self._last_log_step,
+            self.class_name,
+            booster_type=str((self._params or {}).get("booster", "gbtree")),
+        )
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.

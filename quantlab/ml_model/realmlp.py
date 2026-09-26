@@ -15,10 +15,125 @@ clashing OpenMP runtimes, so a process that mixes them must set
 ``OMP_NUM_THREADS=1`` before importing either; the same applies here.
 """
 
-import numpy as np
-from pytabkit import RealMLP_TD_Regressor
+import math
 
-from quantlab.ml_model.tabkit import TabkitRegressor
+import numpy as np
+from loguru import logger
+from pytabkit import RealMLP_TD_Regressor
+from pytabkit.models.training.lightning_callbacks import Callback
+
+from quantlab.ml_model.tabkit import TabkitRegressor, active_callbacks
+
+
+class _WandbEpochCallback(Callback):
+    """Log every epoch's training loss and validation error to a W&B run.
+
+    A Lightning callback that pytabkit's ``TabNNModule`` receives through
+    ``quantlab.ml_model.tabkit.active_callbacks``. The training loss is the
+    mean of the per-batch losses ``training_step`` returns. The validation
+    error is recomputed from the module's own validation predictions the
+    way its ``on_validation_epoch_end`` computes it, for every name in
+    ``val_metric_names``. Keys are ``train-loss`` and ``val-<metric>``
+    with ``step`` equal to the epoch (1-based), so they never collide with
+    the underscored final ``train_*``/``val_*`` values the base class writes
+    to the summary. At the end of the fit the best validation error and the
+    number of epochs trained go to the summary as ``best_val_<metric>`` and
+    ``epochs_trained``.
+
+    The callback reads ``head._wandb_recorder`` on each call, so a
+    deep-copied cross-validation fold logs to its own run. Any failure in
+    it is reported once as a warning and never interrupts training.
+
+    Parameters
+    ----------
+    head : RealMLPRegressor
+        The model whose recorder receives the rows.
+    """
+
+    def __init__(self, head: "RealMLPRegressor"):
+        """Keep a reference to the head and reset the running totals."""
+        super().__init__()
+        self._head = head
+        self._loss_sum = 0.0
+        self._loss_count = 0
+        self._best: dict[str, float] = {}
+        self._epochs = 0
+        self._failed = False
+
+    def on_train_epoch_start(self, trainer, pl_module) -> None:
+        """Reset the running training loss."""
+        self._loss_sum = 0.0
+        self._loss_count = 0
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx) -> None:
+        """Accumulate the batch loss ``training_step`` returned."""
+        try:
+            value = outputs["loss"] if isinstance(outputs, dict) else outputs
+            self._loss_sum += float(value)
+            self._loss_count += 1
+        except Exception as exc:  # reporting only
+            self._warn_once(exc)
+
+    def on_validation_end(self, trainer, pl_module) -> None:
+        """Log the epoch's mean training loss and validation errors."""
+        recorder = self._head._wandb_recorder
+        if recorder is None or trainer.sanity_checking:
+            return
+        try:
+            epoch = int(pl_module.progress.epoch)  # already advanced past this epoch
+            row = {"epoch": epoch}
+            if self._loss_count:
+                row["train-loss"] = self._loss_sum / self._loss_count
+            for name, error in self._validation_errors(pl_module).items():
+                row[f"val-{name}"] = error
+                best = self._best.get(name, math.inf)
+                if error < best:
+                    self._best[name] = error
+            self._epochs = epoch
+            recorder.log(row, step=epoch)
+        except Exception as exc:  # reporting only
+            self._warn_once(exc)
+
+    def on_fit_end(self, trainer, pl_module) -> None:
+        """Write the best validation errors and the epochs trained to the summary."""
+        recorder = self._head._wandb_recorder
+        if recorder is None:
+            return
+        summary = {f"best_val_{name}": value for name, value in self._best.items()}
+        if self._epochs:
+            summary["epochs_trained"] = self._epochs
+        if summary:
+            recorder.summary.update(summary)
+
+    @staticmethod
+    def _validation_errors(pl_module) -> dict[str, float]:
+        """Return ``{metric: mean validation error}`` from the module's last predictions."""
+        import torch
+        from pytabkit.models.training.lightning_modules import postprocess_multiquantile
+        from pytabkit.models.training.metrics import Metrics
+
+        preds = getattr(pl_module, "val_preds", None)
+        if not preds:
+            return {}
+        y_pred = pl_module._postprocess_ens_pred(torch.cat(preds, dim=-2))
+        y_pred = postprocess_multiquantile(y_pred, **pl_module.config)
+        y = pl_module.val_dl.val_y[:: pl_module.config.get("n_ens", 1)]
+        errors = {}
+        for name in pl_module.val_metric_names:
+            values = [
+                float(Metrics.apply(y_pred[i, :, :], y[i, :, :], name))
+                for i in range(y_pred.shape[0])
+            ]
+            errors[name] = float(np.mean(values))
+        return errors
+
+    def _warn_once(self, exc: Exception) -> None:
+        if not self._failed:
+            self._failed = True
+            logger.warning(
+                f"{self._head.class_name}: per-epoch W&B logging failed and is "
+                f"off for the rest of this fit (training continues): {exc}"
+            )
 
 
 class RealMLPRegressor(TabkitRegressor):
@@ -41,8 +156,12 @@ class RealMLPRegressor(TabkitRegressor):
     is already rolled back to the best epoch, so the ``.joblib`` checkpoint
     is the best model. The stopping epoch is written to the run summary as
     ``stop_epoch``. Without a usable validation segment a warning is logged
-    and all ``n_epochs`` are trained. pytabkit exposes no per-epoch callback,
-    so no per-epoch curve is logged.
+    and all ``n_epochs`` are trained. Every W&B run also gets a per-epoch
+    curve: the mean training loss (``train-loss``) and the validation
+    error pytabkit stops on (``val-rmse``), at ``step=epoch``, plus
+    ``best_val_rmse`` and ``epochs_trained`` in the summary, through a
+    Lightning callback injected into pytabkit's trainer (see
+    ``quantlab.ml_model.tabkit.active_callbacks``).
 
     ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
     fold does its own early stopping and writes its own ``.joblib``. With
@@ -132,10 +251,12 @@ class RealMLPRegressor(TabkitRegressor):
         x_rows, y_rows = self._training_rows(train_x, train_y)
         val_rows = self._validation_rows(val_x, val_y)
 
-        if val_rows is None:
-            self.model.fit(x_rows, y_rows)
-        else:
-            self.model.fit(x_rows, y_rows, X_val=val_rows[0], y_val=val_rows[1])
+        callbacks = [] if self._wandb_recorder is None else [_WandbEpochCallback(self)]
+        with active_callbacks(lightning_callbacks=callbacks):
+            if val_rows is None:
+                self.model.fit(x_rows, y_rows)
+            else:
+                self.model.fit(x_rows, y_rows, X_val=val_rows[0], y_val=val_rows[1])
 
         if self._wandb_recorder is not None and val_rows is not None:
             stop_epoch = self._stop_epoch()

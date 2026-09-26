@@ -203,7 +203,7 @@ True
 
 ### 记录到 Weights & Biases
 
-每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要；`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，把各 `test_*` 指标的均值记为 `cv_mean_test_*`。torch 模型头每个 epoch 记录指标。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
+每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.ml_model.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，把各 `test_*` 指标的均值记为 `cv_mean_test_*`。torch 模型头每个 epoch 记录指标。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
 
 ## 扩展
 
