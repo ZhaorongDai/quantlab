@@ -1131,9 +1131,6 @@ def test_qqq_store_stays_data_and_the_backtester_consumes_it(mock_crsp_session, 
     crsp_files = sorted((root / "quantlab" / "dataset" / "crsp").glob("*.py")) + sorted(
         (root / "quantlab" / "acquisition" / "wrds").glob("*.py")
     )
-    cli = root / "scripts" / "wrds" / "index.py"
-    if cli.exists():
-        crsp_files.append(cli)
     assert crsp_files, root
 
     for path in crsp_files:

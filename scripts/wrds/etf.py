@@ -71,6 +71,7 @@ def _parse_etfs(parser: argparse.ArgumentParser, value: str) -> dict[str, str]:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build this script's argument parser."""
     parser = argparse.ArgumentParser(
         description=(
             "Download ETFs from WRDS CRSP by PERMNO, one Zarr store each. "
@@ -150,7 +151,7 @@ if __name__ == "__main__":
                 product_end=product_end, include_sp500=False
             )
             print(f"Reference tables at: {reference_dir}")
-        except (RuntimeError, ValueError) as exc:
+        except (RuntimeError, ValueError, FileNotFoundError) as exc:
             parser.exit(1, f"{exc}\n")
 
         # 4. Download.
@@ -161,23 +162,8 @@ if __name__ == "__main__":
 
         # 5. Convert each ETF into its own store.
         data_dir = get_data_root() / "data" / "us_equity" / "1d"
-        if not CrspStockDataset(
-            CrspDatasetConfig.etf_benchmark(
-                permno=next(iter(etfs.values())),
-                zarr_file_path=str(data_dir / "unused.zarr"),
-                raw_data_dir_path=acq_config.raw_data_dir_path,
-                reference_dir=str(reference_dir),
-            )
-        ).has_raw_data():
-            parser.exit(
-                1,
-                f"Refusing to convert: no raw data under "
-                f"{acq_config.raw_data_dir_path} ({len(result.failures)} ETF(s) "
-                f"failed this run). No store was written.\n",
-            )
-        not_converted: list[str] = []
-        for name, permno in etfs.items():
-            ds_config = CrspDatasetConfig.etf_benchmark(
+        ds_configs = {
+            name: CrspDatasetConfig.etf_benchmark(
                 permno=permno,
                 zarr_file_path=str(data_dir / f"wrds_crsp_{name}_1d.zarr"),
                 raw_data_dir_path=acq_config.raw_data_dir_path,
@@ -185,6 +171,19 @@ if __name__ == "__main__":
                 start_date=start,
                 end_date=end,
             )
+            for name, permno in etfs.items()
+        }
+        # The raw tier is shared by every ETF, so one dataset answers for all.
+        if not CrspStockDataset(next(iter(ds_configs.values()))).has_raw_data():
+            parser.exit(
+                1,
+                f"Refusing to convert: no raw data under "
+                f"{acq_config.raw_data_dir_path} ({len(result.failures)} ETF(s) "
+                f"failed this run). No store was written.\n",
+            )
+        not_converted: list[str] = []
+        for name, ds_config in ds_configs.items():
+            permno = etfs[name]
             print(f"Converting {name.upper()} (PERMNO {permno}) into its own store")
             try:
                 print_conversion_result(convert(SOURCE, ds_config, data_type="crsp_daily"))

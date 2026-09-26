@@ -60,7 +60,7 @@ def _reference(tmp_path, rows=None) -> Path:
 def _panel_config(tmp_path, reference_dir, **overrides):
     """Module-local config constructor (03.1-PATTERNS.md section 6)."""
     params = dict(
-        zarr_file_path=str(Path(tmp_path) / "us_equity" / "crsp_all_membership.zarr"),
+        zarr_file_path=str(Path(tmp_path) / "us_equity" / "crsp_market_membership.zarr"),
         cache_dir=str(reference_dir),
     )
     params.update(overrides)

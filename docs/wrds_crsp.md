@@ -199,7 +199,7 @@ The conversion writes `<store>.crsp_tickers.json`, a table of `{PERMNO: [{ticker
 
 `as_of` raises if the sidecar is missing or unreadable. `label` never raises and falls back to the PERMNO digits, which suits log lines and reports.
 
-### Select an index universe or the whole market
+### Select an index universe or the market
 
 Membership comes from the reference tier, so these calls need no connection. `CrspMembership` serves CRSP's S&P 500 (`crsp_sp500`, from 1925) and the Compustat Nasdaq-100 (`comp_nasdaq100`, from 1995, linked to PERMNOs through CCM). Intervals are closed, and an open membership ends at the product end.
 
@@ -220,7 +220,7 @@ Membership comes from the reference tier, so these calls need no connection. `Cr
 ['13407', '14593', '21186', '83443', '86755', '90319']
 ```
 
-The reference tier here is the small synthetic one, so each list is short. `CrspMarketRoster` reads every security in `stksecurityinfohist` that passes the filter, so a whole-market roster costs no extra query. For a real 2025 tier the default filter yields about 5,500 PERMNOs for one year and about 16,800 across 1999 to 2025.
+The reference tier here is the small synthetic one, so each list is short. `CrspMarketRoster` reads every security in `stksecurityinfohist` that passes the filter, so a market roster costs no extra query. For a real 2025 tier the default filter yields about 5,500 PERMNOs for one year and about 16,800 across 1999 to 2025.
 
 The membership itself is a panel, `is_member(timestamp, symbol)`, built by the constituent datasets (`CrspSP500ConstituentDataset`, `CompustatNasdaq100ConstituentDataset`, `CrspMarketConstituentDataset`) with no connection, on the same PERMNO axis as the price panel. See [constituent.md](constituent.md).
 
@@ -232,7 +232,7 @@ The market script takes the same window flags plus `--security-filter` (`equity_
 uv run python scripts/wrds/market.py --start 2024-01-01 --end 2024-12-31
 ```
 
-It writes `wrds_crsp_market_1d.zarr` and the listing mask `wrds_crsp_market_membership.zarr`; the roster id recorded in the sidecars is `crsp_market`. Index membership panels come from `index.py`. Both stores were named `wrds_crsp_all_*` before 2026-09-25: rename an existing store by hand, or reconvert it from the unchanged raw tier by running `market.py` again.
+It writes `wrds_crsp_market_1d.zarr` and the listing mask `wrds_crsp_market_membership.zarr`. Index membership panels come from `index.py`. Both stores were named `wrds_crsp_all_*` before 2026-09-25: rename an existing store by hand, or reconvert it from the unchanged raw tier by running `market.py` again.
 
 ### Keep a store up to date
 

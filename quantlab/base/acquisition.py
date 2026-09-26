@@ -517,11 +517,9 @@ class Acquisition(ABC):
     LEGACY_WATERMARK_POLICIES = _LEGACY_WATERMARK_POLICIES
     DEFAULT_LEGACY_WATERMARK_POLICY = _DEFAULT_LEGACY_WATERMARK_POLICY
 
-    #: The command that fixes a legacy watermark (one with no recorded
-    #: start), quoted in the warning so the problem comes with its fix.
-    STAMP_COMMAND_HINT = (
-        "uv run python ingest_us_equity.py --stamp-legacy-watermarks <START_DATE>"
-    )
+    #: The call that fixes a legacy watermark (one with no recorded start),
+    #: quoted in the warning so the problem comes with its fix.
+    STAMP_COMMAND_HINT = "Acquisition(config).stamp_watermarks('<START_DATE>')"
 
     #: Whether a run that used up the vendor's request quota (its
     #: "allocation") waits for it to reset and then resumes. Off by default,

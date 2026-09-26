@@ -1,4 +1,4 @@
-"""The whole-market CRSP roster: every listed security, not an index's members.
+"""The CRSP market roster: every listed security, not an index's members.
 
 CRSP (the Center for Research in Security Prices) is a US stock database
 sold through WRDS (Wharton Research Data Services). A PERMNO is CRSP's
@@ -15,7 +15,7 @@ different tables, so a caller can use either one the same way.
 The roster is read from ``crsp_a_stock.stksecurityinfohist``, which the
 downloaded reference tables already include for ticker lookups. Each row is
 one spell of a security's history and carries the type columns a security
-filter checks, so a whole-market roster needs no extra download.
+filter checks, so a market roster needs no extra download.
 
 The type filter is applied to each spell, and a PERMNO joins the roster if
 any of its spells qualifies. Which of a security's daily rows are kept is
@@ -26,7 +26,7 @@ the roster only decides which securities are downloaded.
 the window, not only those that cover it fully, so a security delisted
 inside the window stays in the roster. Dropping it would cause
 *survivorship bias* (history made to look better by forgetting the
-companies that failed), and a whole-market roster has far more such
+companies that failed), and a market roster has far more such
 securities than any index.
 """
 
@@ -48,13 +48,8 @@ from quantlab.dataset.crsp.membership import _as_date, _merge_intervals
 
 #: How many PERMNOs ``stksecurityinfohist`` holds in the version this
 #: project downloads, before any type filter. It is the upper bound for a
-#: whole-market roster; a roster the size of an index is clearly wrong.
+#: market roster; a roster the size of an index is clearly wrong.
 SECINFO_PERMNO_COUNT_HINT: int = 40_518
-
-#: The name of this roster on the command line, next to the index names in
-#: ``CrspMembership.INDEXES``. It is not in that tuple because a whole-market
-#: roster has no index-membership panel behind it.
-MARKET = "crsp_market"
 
 
 class CrspMarketRoster:

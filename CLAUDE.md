@@ -11,7 +11,7 @@
 - **数据格式**: 模块间统一使用 xarray（Zarr 落盘），不使用 DataFrame 作为流水线层间传输格式；模型训练直接消费 xarray — 用户明确要求，是贯穿整个流水线的硬约束
 - **因子计算后端**: 双后端支持——KunQuant（批量 + 流式，保留未来实时数据接入能力）为主，Polars 为新因子的补充计算路径（仅批量，不需要流式）；能用 xarray/KunQuant 完成的处理，优先不用 Polars — 用户明确的技术选型优先级
 - **回测技术栈**: 向量化回测优先用 vectorbt 打通；事件驱动回测（NautilusTrader）作为预留扩展能力，非 v1 交付重点。原型 `backtest/test_strategy.py` 已于 2026-09-07 删除（早于当前 Dataset/Factor 契约），重启时按当前契约重建，不复活旧原型
-- **凭证安全**: API Key 等敏感信息一律通过环境变量读取，不硬编码 — 现有代码已经因硬编码 Tiingo Key 造成一次真实泄露
+- **凭证安全**: API Key 等敏感信息一律通过环境变量读取，不硬编码 — 一个早已删除的脚本曾硬编码 Tiingo Key 并造成一次真实泄露
 - **可复现性**: 全流程参数尽量通过配置文件驱动 — 用户明确要求，服务于实验可复现
 - **架构契约**: 数据模块输出数据、因子模块输出因子、收益模型输出未来收益/收益排名预测、组合优化模型输出每个标的目标持仓百分比——各模块通过清晰的输入输出契约组合 — 便于未来插拔式扩展与平台化
 - **包管理**: 使用 `uv` — 用户明确要求，延续现有项目的包管理方式
@@ -152,7 +152,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 - Triggers: Manual `python main.py` (or `uv run main.py`).
 - Responsibilities: None currently — 7-line `uv init` stub (`def main(): print("Hello from quantlab!")`). Not wired into any other module in the codebase.
 - `scripts/wrds/index.py` — one index's point-in-time CRSP daily bars plus its membership panel (`--index sp500|nasdaq100 --start [--end] [--refresh] [--data-dir]`).
-- `scripts/wrds/market.py` — the whole CRSP daily market plus its listing panel (`--start [--end] [--security-filter] [--refresh] [--data-dir]`); stores are `wrds_crsp_market_*`.
+- `scripts/wrds/market.py` — the CRSP daily market plus its listing panel (`--start [--end] [--security-filter] [--refresh] [--data-dir]`); stores are `wrds_crsp_market_*`.
 - `scripts/wrds/etf.py` — one store per ETF by PERMNO (`--etf spy,qqq,name=PERMNO --start [--end] [--refresh] [--data-dir]`).
 - `scripts/wrds/nbbo.py` — TAQ NBBO quotes resampled into a bar panel (`--symbols|--index, --start [--end] [--interval] [--session HH:MM-HH:MM] [--refresh] [--data-dir]`).
 - Every script always converts to Zarr, clips `--end` (default today) to the product's last date, checks entitlement before downloading and closes the shared WRDS session in a `finally`. `scripts/` is not on the pytest `pythonpath`: `scripts/wrds/` must never be importable, because it would shadow the `wrds` PyPI package. Tiingo, Alpaca and Binance have library interfaces only.

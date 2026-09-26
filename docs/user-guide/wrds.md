@@ -96,7 +96,7 @@ uv run python scripts/wrds/index.py --index sp500 --start 2000-01-01
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2000-01-01 \
     --end 2024-12-31
 
-# The whole market, filtered to common stock by default
+# The market, filtered to common stock by default
 uv run python scripts/wrds/market.py --start 2024-01-01 \
     --security-filter equity_common
 
@@ -341,7 +341,7 @@ uv run python scripts/wrds/nbbo.py --index sp500 \
 ```
 
 Quote data is large. On 2024-01-24, Apple alone had about 1.2 million NBBO
-records and the whole market about 314 million. Nothing estimates or refuses a
+records and the market about 314 million. Nothing estimates or refuses a
 download by size (see the ADR
 [Downloads run without a volume guard](../adr/0001-no-download-volume-guard.md)),
 so scope a pull by symbol list and date range.

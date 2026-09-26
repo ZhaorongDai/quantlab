@@ -273,7 +273,7 @@ def test_get_symbols_as_of_rejects_an_unknown_category(mock_universe_fetchers, t
 
 def test_get_symbols_as_of_rejects_a_non_iso_date(mock_universe_fetchers, tmp_path):
     """CR-04. `as_of_date` reaches this function straight off
-    `ingest_tiingo.py`'s `--as-of-date` CLI argument. Dates are compared
+    the old `--as-of-date` CLI argument. Dates are compared
     LEXICOGRAPHICALLY against ISO strings, so `"01/01/2024"` does not merely
     fail to match -- `"1980-12-12" <= "01/01/2024"` is False -- and a mistyped
     date silently ingested nothing instead of the requested index.
@@ -753,8 +753,8 @@ def test_catalog_build_emits_all_three_categories(mock_universe_fetchers, tmp_pa
 def test_catalog_round_trips_through_parquet(mock_universe_fetchers, tmp_path):
     """WR-10. Every other catalog test calls .build() and then reads
     catalog._backend directly, so save() -> load() -> get_symbols_as_of() --
-    exactly the sequence refresh_us_equity_universe.py writes and
-    ingest_tiingo.py reads -- was entirely untested.
+    exactly the sequence a universe refresh writes and
+    a roster read consumes -- was entirely untested.
 
     start_date/end_date are compared as STRINGS, so a dtype change across the
     parquet round trip would silently break point-in-time correctness in
@@ -1334,11 +1334,8 @@ def test_iso_basic_form_inside_coverage_answers_as_its_dashed_equivalent(
 # decision 2026-09-11, re-affirmed 2026-09-12; precedent for the failure mode
 # is 260906-13w's own ~7.2 GiB grid on a 16 GiB box.
 #
-# The replacement coverage is two-directional and lives in
-# `tests/test_chunked_panel_estimate.py`: one test goes red if any of the five
-# deleted members returns, one goes red if the acquisition-volume guard beside
-# them is collaterally cut. What survives HERE is the roster-window profile
-# test above, which is the arithmetic the surviving guard actually depends on.
+# The replacement coverage that once lived in `tests/test_chunked_panel_estimate.py`
+# went with the acquisition volume guard (ADR 0001, 2026-09-25).
 # ---------------------------------------------------------------------------
 
 
@@ -1997,5 +1994,5 @@ def test_both_roster_queries_return_the_same_order_every_call(
             f"this parquet layout, and `--limit` truncates to an arbitrary "
             f"batch. `unique(maintain_order=True)` is not a substitute -- it "
             f"pins the order to the table's ROW order, which "
-            f"refresh_us_equity_universe.py rewrites."
+            f"a universe refresh rewrites."
         )

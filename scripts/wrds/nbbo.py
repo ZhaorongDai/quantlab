@@ -72,8 +72,12 @@ BAR_INTERVALS: tuple[str, ...] = typing.get_args(BarInterval)
 
 STORE_TEMPLATE = "wrds_nbbo_{interval}_{session_start}-{session_end}.zarr"
 
+#: The first year with TAQ millisecond tables on WRDS.
+TAQ_FIRST_YEAR = 2003
+
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build this script's argument parser."""
     parser = argparse.ArgumentParser(
         description=(
             "Download TAQ NBBO quotes from WRDS and resample them into a bar "
@@ -138,6 +142,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _parse_symbols(parser: argparse.ArgumentParser, value: str) -> list[str]:
+    """Return the sorted, upper-cased ``--symbols`` roster; refuse hyphenated forms."""
     symbols = sorted({token.strip().upper() for token in value.split(",") if token.strip()})
     hyphenated = [symbol for symbol in symbols if "-" in symbol]
     if hyphenated:
@@ -151,6 +156,7 @@ def _parse_symbols(parser: argparse.ArgumentParser, value: str) -> list[str]:
 
 
 def _parse_session(parser: argparse.ArgumentParser, value: str) -> XnysSessionCalendar:
+    """Build the session calendar from ``--session HH:MM-HH:MM``."""
     start, sep, end = value.partition("-")
     if not sep:
         parser.error(f"--session {value!r}: expected HH:MM-HH:MM.")
@@ -162,7 +168,7 @@ def _parse_session(parser: argparse.ArgumentParser, value: str) -> XnysSessionCa
 
 def _last_published_day(session, end: date) -> date | None:
     """The last trading day TAQ has a table for, at or before ``end``'s year."""
-    for year in (end.year, end.year - 1):
+    for year in range(end.year, TAQ_FIRST_YEAR - 1, -1):
         days = session.trading_days(year)
         if days:
             return days[-1]

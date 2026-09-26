@@ -143,7 +143,7 @@ configured with `ConstituentDatasetConfig`:
 | `Nasdaq100ConstituentDataset` | Nasdaq-100 | ticker | Wikipedia change log | 2007-02-01 |
 | `CrspSP500ConstituentDataset` | S&P 500 | PERMNO | CRSP reference tables | 1925-12-31 |
 | `CompustatNasdaq100ConstituentDataset` | Nasdaq-100 | PERMNO | Compustat, linked to CRSP | 1995-01-01 |
-| `CrspMarketConstituentDataset` | whole market (listed securities) | PERMNO | CRSP reference tables | 1925-12-31 |
+| `CrspMarketConstituentDataset` | market (listed securities) | PERMNO | CRSP reference tables | 1925-12-31 |
 
 Pick the class whose `symbol` axis matches your price panel. The
 Wikipedia-based classes are keyed by ticker and pair with a Tiingo or Alpaca

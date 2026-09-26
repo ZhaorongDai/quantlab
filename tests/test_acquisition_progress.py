@@ -901,7 +901,7 @@ def test_result_and_manifest_agree(
     # contract, not a defect: asserting equality here (as this test did before
     # REVIEW CR-01) would be asserting that a run which touched nothing
     # nevertheless failed a symbol, and it is exactly that reading which made
-    # `ingest_us_equity.py` print another roster's 404s as this run's.
+    # a download script print another roster's 404s as this run's.
     assert second.last_result.failures == {}, (
         f"a run cancelled before it reached any symbol has no failures of its "
         f"own; it reports {second.last_result.failures}, which is the "
@@ -1044,7 +1044,7 @@ def test_a_disjoint_rerun_does_not_inherit_earlier_failures(
     and it stays). But manifest and result were assembled from ONE dict, so
     the same merge also poured a previous run's entries into
     `AcquisitionResult.failures` -- on a run that completed normally with zero
-    failures of its own. `ingest_us_equity.py:535` prints
+    failures of its own. the old market download script printed
     `len(result.failures)`, so a `--symbols AAPL` smoke run over a store
     holding 400 earlier 404s reported "1 symbol(s) succeeded, 400 failed".
 
@@ -1125,7 +1125,7 @@ def test_a_disjoint_rerun_does_not_inherit_earlier_failures(
         f"{result.failures}. Those entries are a PREVIOUS run's, carried "
         f"forward by the pre-write merge; `AcquisitionResult` documents "
         f"itself as what ONE programmatic run did, and "
-        f"ingest_us_equity.py prints len(result.failures) as this run's "
+        f"a download script prints len(result.failures) as this run's "
         f"failure count"
     )
     assert set(result.failures) <= set(result.requested), (
