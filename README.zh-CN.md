@@ -1,6 +1,18 @@
-# quantlab
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo.svg" alt="quantlab" width="480">
+  </picture>
+</p>
 
-[English](README.md) | 简体中文
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="https://github.com/Menooker/KunQuant"><img alt="Factors: KunQuant" src="https://img.shields.io/badge/factors-KunQuant-0ea5e9"></a>
+  <a href="https://vectorbt.dev/"><img alt="Backtest: vectorbt" src="https://img.shields.io/badge/backtest-vectorbt-0ea5e9"></a>
+</p>
+
+<p align="center"><a href="README.md">English</a> | 简体中文</p>
 
 quantlab 是一个用于量化股票研究的 Python 后端。它用五个步骤把原始行情数据变成一个经过回测的交易策略：
 下载价格数据，整理成干净的面板，计算因子和标签，训练预测未来收益的模型，再对这些预测所对应的投资组合做回测。
@@ -61,6 +73,34 @@ uv run python examples/quickstart.py
 
 [快速上手指南](docs/getting-started/quickstart.md)（英文）会一步一步讲解这个示例。
 英文版 [README](README.md) 中还有一段更短的代码，演示数据源登记表和面板格式这两个基础概念。
+
+## 输出长什么样
+
+下面两张图来自 [examples/wrds_us_equity/](examples/wrds_us_equity/README.zh-CN.md) 里的 S&P 500 示例，
+数据是 WRDS 的 CRSP 日频行情，股票池按历史成分（point-in-time）构建。
+
+### 因子报告
+
+`Factor.analyze()` 把每个因子和每个未来收益标签两两配对，为每一对画一张 alphalens 风格的图：
+信息系数（IC）的时间序列、分布、逐月均值，分位数收益、多空累计曲线、换手率和秩自相关，
+外加一张汇总表和整洁的 CSV。下图是 Alpha101 里的 `alpha019` 对 5 日开盘到开盘未来收益的报告，
+区间 2012 到 2024 年，由 `sp500_factor_analysis.py` 生成。
+
+<p align="center">
+  <img src="docs/assets/factor_report.png" alt="alpha019 对 S&P 500 五日未来收益的因子报告" width="820">
+</p>
+
+### 回测报告
+
+每次回测都会写出一个运行目录，里面有目标权重、净值曲线、指标文件和一份 HTML 报告。
+报告依次展示策略与基准的净值、超额收益、超额回撤、回撤、月度收益和月度收益热力图，
+最后是分成样本内、样本外两列的指标表。下图来自 `sp500_xgb_td.py`：用 2012 到 2019 年训练的 XGBoost 模型
+每 5 根 K 线选出前 50 只股票做纯多头组合，在 2020 到 2024 年做样本外回测，基准是买入并持有 SPY。
+这段区间里策略跑输了 SPY；放这张图是为了展示报告本身，不是可以照搬的结果。
+
+<p align="center">
+  <img src="docs/assets/backtest_report.png" alt="S&P 500 前 50 只股票策略对比买入持有 SPY 的回测报告，2020 到 2024 年" width="820">
+</p>
 
 ## 凭证
 

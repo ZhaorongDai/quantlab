@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="quantlab">
+  <defs>
+    <linearGradient id="curve" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#0b1f3a"/>
+  <!-- the panel: timestamp x symbol -->
+  <g fill="#ffffff" fill-opacity="0.16">
+    <circle cx="24" cy="24" r="2.6"/><circle cx="44" cy="24" r="2.6"/><circle cx="64" cy="24" r="2.6"/><circle cx="84" cy="24" r="2.6"/><circle cx="104" cy="24" r="2.6"/>
+    <circle cx="24" cy="44" r="2.6"/><circle cx="44" cy="44" r="2.6"/><circle cx="64" cy="44" r="2.6"/><circle cx="84" cy="44" r="2.6"/><circle cx="104" cy="44" r="2.6"/>
+    <circle cx="24" cy="64" r="2.6"/><circle cx="44" cy="64" r="2.6"/><circle cx="64" cy="64" r="2.6"/><circle cx="84" cy="64" r="2.6"/><circle cx="104" cy="64" r="2.6"/>
+    <circle cx="24" cy="84" r="2.6"/><circle cx="44" cy="84" r="2.6"/><circle cx="64" cy="84" r="2.6"/><circle cx="84" cy="84" r="2.6"/><circle cx="104" cy="84" r="2.6"/>
+    <circle cx="24" cy="104" r="2.6"/><circle cx="44" cy="104" r="2.6"/><circle cx="64" cy="104" r="2.6"/><circle cx="84" cy="104" r="2.6"/><circle cx="104" cy="104" r="2.6"/>
+  </g>
+  <!-- the equity curve -->
+  <polyline points="24,100 42,80 58,88 76,60 92,66 106,36" fill="none" stroke="url(#curve)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="106" cy="36" r="7" fill="#34d399" stroke="#0b1f3a" stroke-width="3"/>
+</svg>

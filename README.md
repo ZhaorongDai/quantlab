@@ -1,6 +1,18 @@
-# quantlab
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo.svg" alt="quantlab" width="480">
+  </picture>
+</p>
 
-English | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="https://github.com/Menooker/KunQuant"><img alt="Factors: KunQuant" src="https://img.shields.io/badge/factors-KunQuant-0ea5e9"></a>
+  <a href="https://vectorbt.dev/"><img alt="Backtest: vectorbt" src="https://img.shields.io/badge/backtest-vectorbt-0ea5e9"></a>
+</p>
+
+<p align="center">English | <a href="README.zh-CN.md">简体中文</a></p>
 
 quantlab is a Python backend for quantitative equity research. It takes you from raw market
 data to a backtested trading strategy in five stages: download prices, turn them into a
@@ -126,6 +138,38 @@ Data variables:
 `False` means that source's credentials are not set in your environment. The
 [quickstart guide](docs/getting-started/quickstart.md) walks through the full example step by
 step.
+
+## What the output looks like
+
+The two figures below come from the S&P 500 examples in
+[examples/wrds_us_equity/](examples/wrds_us_equity/README.md), run on point-in-time CRSP daily
+bars from WRDS.
+
+### Factor report
+
+`Factor.analyze()` pairs every factor with every forward-return label and writes one
+alphalens-style figure per pair: the information coefficient (IC) over time, its distribution,
+monthly mean IC, returns by quantile, the long-short curve, turnover and rank autocorrelation,
+plus a summary table and tidy CSVs. This is `alpha019` from the Alpha101 set against the 5-day
+open-to-open forward return, 2012 to 2024, from `sp500_factor_analysis.py`.
+
+<p align="center">
+  <img src="docs/assets/factor_report.png" alt="Factor report for alpha019 against the 5-day forward return on the S&P 500" width="820">
+</p>
+
+### Backtest report
+
+Every backtest writes a run directory with the target weights, the equity curve, a metrics
+file and an HTML report. The report shows the equity curve against the benchmark, the excess
+return and excess drawdown, the drawdown, monthly returns and a monthly-return heatmap, followed
+by the metrics split into in-sample and out-of-sample columns. This is `sp500_xgb_td.py`: a
+long-only top-50 portfolio rebalanced every 5 bars from an XGBoost model trained on 2012 to
+2019, backtested out of sample on 2020 to 2024 against buy-and-hold SPY. Over this window the
+strategy trails SPY; the figure is here to show the report, not a result to copy.
+
+<p align="center">
+  <img src="docs/assets/backtest_report.png" alt="Backtest report of a top-50 S&P 500 strategy against buy-and-hold SPY, 2020 to 2024" width="820">
+</p>
 
 ## Credentials
 
