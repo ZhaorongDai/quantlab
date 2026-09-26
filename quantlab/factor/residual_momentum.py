@@ -530,7 +530,8 @@ class ResidualMomentumFF3(FactorKunQuant):
         exactly rather than update them incrementally, which keeps the
         many variance and covariance terms numerically stable.
         ``allow_unaligned`` lets the symbol count be any number on x86; it is
-        not supported on ARM, where ``cal`` pads the symbol axis instead.
+        not supported on ARM, where ``cal`` pads the symbol axis instead on
+        macOS (see ``FactorKunQuant._pad_symbols``).
         """
         module_name = self.__class__.__name__
         allow_unaligned = platform.machine().lower() not in {"arm64", "aarch64"}
@@ -550,12 +551,9 @@ class ResidualMomentumFF3(FactorKunQuant):
     def cal(self) -> Self:
         """Compute the factor in batch mode and store it on the data backend.
 
-        KunQuant's compiled loops process symbols in fixed-size blocks
-        using the CPU's vector (SIMD) instructions. On ARM they use blocks
-        of four and cannot handle a remainder, so a panel whose symbol count
-        is not a multiple of four gets temporary all-NaN dummy symbols
-        appended. NaN symbols do not enter the cross-sectional rank, and the
-        outputs are cut back to the real symbols before they are stored.
+        On macOS the symbol axis is padded with all-NaN dummy symbols to a
+        multiple of the SIMD block width and cut back afterwards, as every
+        ``FactorKunQuant`` batch run does (see ``_pad_symbols``).
 
         Returns
         -------
@@ -579,18 +577,7 @@ class ResidualMomentumFF3(FactorKunQuant):
         )
         num_time = next(iter(input_dict.values())).shape[0]
         num_symbols = len(symbols)
-        if platform.machine().lower() in {"arm64", "aarch64"}:
-            padding = (-num_symbols) % 4
-            if padding:
-                input_dict = {
-                    name: np.pad(
-                        values,
-                        ((0, 0), (0, padding)),
-                        mode="constant",
-                        constant_values=np.nan,
-                    )
-                    for name, values in input_dict.items()
-                }
+        input_dict = self._pad_symbols(input_dict, num_symbols)
 
         if self._lib is None:
             self._lib = self._make()
@@ -599,10 +586,9 @@ class ResidualMomentumFF3(FactorKunQuant):
         with Timer(f" {self.__class__.__name__}: cal"):
             outputs = kr.runGraph(executor, module, input_dict, 0, num_time)
         self._lib = None
-        outputs = {
-            name: values[:, :num_symbols] for name, values in outputs.items()
-        }
-        self._to_xarray_dataset(outputs, timestamps, symbols)
+        self._to_xarray_dataset(
+            self._cut_symbols(outputs, num_symbols), timestamps, symbols
+        )
         return self
 
     def _make_stream(self):
