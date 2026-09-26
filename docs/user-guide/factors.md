@@ -112,7 +112,7 @@ The built-in sets are thin wrappers around KunQuant's predefined libraries:
 | `Alpha101Stock` | `quantlab.factor.alpha101` | US equities: `adjOpen` to `adjVolume` | Alpha101 formulas, z-scored across symbols |
 | `Alpha158SpotKline` | `quantlab.factor.alpha158` | crypto klines, as above | 169 Alpha158 features, z-scored along time |
 | `Alpha158Stock` | `quantlab.factor.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, z-scored across symbols |
-| `ResidualMomentumFF3` | `quantlab.factor.residual_momentum` | monthly returns plus Fama-French factors | residual momentum and regression diagnostics |
+| `ResidualMomentumFF3` | `quantlab.factor.residual_momentum` | US equities: `ret`, plus a Fama-French CSV | residual momentum and regression diagnostics |
 
 Alpha101 is the public list of 101 formulaic trading signals from
 Kakushadze (2016). Alpha158 is the feature library of Microsoft's Qlib
@@ -162,12 +162,19 @@ The US-equity stores carry no dollar-volume (`amount`) column, so
 `Alpha101Stock` and `Alpha158Stock` both use the adjusted typical price
 `(adjHigh + adjLow + adjClose) / 3` as VWAP.
 
-`ResidualMomentumFF3` expects a monthly panel that already carries each
-stock's return and the Fama-French market, size and value factors
-(`mkt_rf`, `smb`, `hml`, `risk_free`), broadcast over symbols. It estimates
-the three-factor regression over a rolling window and ranks stocks on their
-residual return. See its class docstring for the parameters it reads from
-`kwargs`.
+`ResidualMomentumFF3` reads each stock's return from the panel (`ret` on a
+CRSP panel) and the Fama-French market, size and value factors and the
+risk-free rate from a CSV named in `kwargs["fama_french_csv"]`, the file
+`scripts/fama_french.py` downloads from Kenneth French's library. The four
+series are compounded onto the panel's bars and broadcast over symbols
+before they reach KunQuant; a panel that already carries them as variables
+works without the CSV. It estimates the three-factor regression over a
+rolling window, sums the residuals over a formation period and divides by
+their volatility. Windows are counted in bars: the defaults are three years,
+twelve months and one skipped month of daily bars (756, 252, 21). See its
+class docstring for the parameters it reads from `kwargs`, and
+`examples/wrds_us_equity/market_residual_momentum.py` for the factor on the
+whole CRSP market.
 
 ## Save and read factor values
 

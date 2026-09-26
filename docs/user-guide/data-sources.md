@@ -119,6 +119,9 @@ The download scripts live under `scripts/wrds/`, one per kind of data the WRDS
 account serves. Each is a thin shell: it parses the few arguments that change
 between runs, downloads the raw tier and converts it to Zarr in the same run.
 Batch size, chunk granularity and concurrency come from the library defaults.
+One script sits outside WRDS: `scripts/fama_french.py` downloads the
+Fama-French three factors from Kenneth French's data library, which needs no
+account, as the CSV `ResidualMomentumFF3` reads.
 
 | Script | Downloads | Roster argument |
 |---|---|---|
@@ -281,6 +284,7 @@ locations are:
 | `scripts/wrds/market.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
 | `scripts/wrds/etf.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_{name}_1d.zarr` |
 | `scripts/wrds/nbbo.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
+| `scripts/fama_french.py` | `<download-dir>/fama_french/ff3_{daily,monthly}.csv` | none: the CSV is read by `ResidualMomentumFF3` |
 | Tiingo (library) | `downloads/us_equity/1d/nasdaq_data/tiingo` | `data/us_equity/1d/stock.zarr` |
 | Alpaca (library) | `downloads/us_equity/{1d,1m,tick}/nasdaq_data/alpaca` | `data/us_equity/{1d,1m}/stock_alpaca.zarr` |
 

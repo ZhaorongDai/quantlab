@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
-| CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py` | `market_factor_analysis.py` |
+| CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py` | `market_factor_analysis.py`、`market_residual_momentum.py` |
 
 三个模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）和 `RealMLPRegressor`（pytabkit 调优默认参数的 MLP）。每个模型 pipeline 都跑同样的五步：
 
@@ -42,6 +42,14 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 ```
 
 `--end` 默认为今天，并截到 CRSP 年度发布的最后一天；每个脚本都会转换成 Zarr；`--refresh` 让每个 PERMNO 从各自的水位继续。`--download-dir` 和 `--zarr-dir` 默认为当前目录；上面这组相对仓库根目录的取值会把 store 放到 pipeline 读取的位置。
+
+`market_residual_momentum.py` 还需要 Fama-French 日频三因子数据，不需要账号：
+
+```bash
+uv run python scripts/fama_french.py --download-dir data/downloads
+```
+
+会写出 `data/downloads/fama_french/ff3_daily.csv`，也就是脚本顶部 `FAMA_FRENCH_CSV` 指向的位置。
 
 每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr`（全市场脚本直接读它）和 `wrds_crsp_market_membership.zarr`（上市面板，全市场脚本用不到）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
 
@@ -85,10 +93,11 @@ prices.zarr, members.zarr     派生价格仓库（第 1 步；仅指数脚本�
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 models/<model>/...            checkpoint、config.json
 backtests/<model>/...         权重、净值、metrics.json、report.html
-analysis/alpha101/, analysis/alpha158/
+analysis/alpha101/, analysis/alpha158/, analysis/residual_momentum/
                               summary.json 和 .csv、ic.csv、monthly_ic.csv、
                               quantile_returns.csv、turnover.csv、每列一张 PNG、
                               config.json（因子和标签的配置）
+factor/residual_momentum.zarr 残差动量得分及其排名（market_residual_momentum.py）
 ```
 
 ## Weights & Biases 记录的内容

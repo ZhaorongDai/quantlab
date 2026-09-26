@@ -57,6 +57,7 @@ quantlab/
   config/       配置工厂与随包发布的标的元数据
   utils/        命令行辅助、指标、序列化、报告生成
 scripts/wrds/   WRDS 下载脚本：index.py、market.py、etf.py、nbbo.py
+scripts/fama_french.py  下载 Fama-French 三因子 CSV
 tests/          测试套件
 ```
 
