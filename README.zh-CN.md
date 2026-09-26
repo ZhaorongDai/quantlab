@@ -76,18 +76,18 @@ uv run python examples/quickstart.py
 
 ## 输出长什么样
 
-下面两张图来自 [examples/wrds_us_equity/](examples/wrds_us_equity/README.zh-CN.md) 里的 S&P 500 示例，
-数据是 WRDS 的 CRSP 日频行情，股票池按历史成分（point-in-time）构建。
+下面两张图来自 [examples/wrds_us_equity/](examples/wrds_us_equity/README.zh-CN.md) 里的示例，
+数据是 WRDS 的 CRSP 日频行情：因子报告用的是美股全市场，回测用的是按历史成分（point-in-time）构建的 S&P 500。
 
 ### 因子报告
 
 `Factor.analyze()` 把每个因子和每个未来收益标签两两配对，为每一对画一张 alphalens 风格的图：
 信息系数（IC）的时间序列、分布、逐月均值，分位数收益、多空累计曲线、换手率和秩自相关，
-外加一张汇总表和整洁的 CSV。下图是 Alpha101 里的 `alpha019` 对 5 日开盘到开盘未来收益的报告，
-区间 2012 到 2024 年，由 `sp500_factor_analysis.py` 生成。
+外加一张汇总表和整洁的 CSV。下图是 Alpha158 里的 `MIN5`（5 日最低价相对收盘价）对 5 日开盘到开盘未来收益的报告，
+股票池是 CRSP 里的全部普通股，约 7200 只，含已退市的，区间 2012 到 2024 年，由 `market_factor_analysis.py` 生成。
 
 <p align="center">
-  <img src="docs/assets/factor_report.png" alt="alpha019 对 S&P 500 五日未来收益的因子报告" width="820">
+  <img src="docs/assets/factor_report.png" alt="MIN5 对美股全市场五日未来收益的因子报告" width="820">
 </p>
 
 ### 回测报告

@@ -141,20 +141,22 @@ step.
 
 ## What the output looks like
 
-The two figures below come from the S&P 500 examples in
-[examples/wrds_us_equity/](examples/wrds_us_equity/README.md), run on point-in-time CRSP daily
-bars from WRDS.
+The two figures below come from the examples in
+[examples/wrds_us_equity/](examples/wrds_us_equity/README.md), run on CRSP daily bars from
+WRDS: the factor report on the full US market, the backtest on the point-in-time S&P 500.
 
 ### Factor report
 
 `Factor.analyze()` pairs every factor with every forward-return label and writes one
 alphalens-style figure per pair: the information coefficient (IC) over time, its distribution,
 monthly mean IC, returns by quantile, the long-short curve, turnover and rank autocorrelation,
-plus a summary table and tidy CSVs. This is `alpha019` from the Alpha101 set against the 5-day
-open-to-open forward return, 2012 to 2024, from `sp500_factor_analysis.py`.
+plus a summary table and tidy CSVs. This is `MIN5` from the Alpha158 set, the 5-day low
+relative to the close, against the 5-day open-to-open forward return on every common stock
+in CRSP, about 7,200 symbols including the delisted ones, 2012 to 2024, from
+`market_factor_analysis.py`.
 
 <p align="center">
-  <img src="docs/assets/factor_report.png" alt="Factor report for alpha019 against the 5-day forward return on the S&P 500" width="820">
+  <img src="docs/assets/factor_report.png" alt="Factor report for MIN5 against the 5-day forward return on the full US market" width="820">
 </p>
 
 ### Backtest report
