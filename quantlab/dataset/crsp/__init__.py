@@ -1221,18 +1221,10 @@ class CrspStockDataset(StockDataset):
     def _build_ticker_intervals(self, derived: pl.DataFrame) -> dict:
         """Build the ticker sidecar payload for the PERMNOs in ``derived``.
 
-        The payload is ``{"generated_from", "vintage_product_end",
-        "intervals"}``. ``intervals`` maps ``str(permno)`` to that PERMNO's
-        named intervals in ascending ``start`` order, each
-        ``{"ticker", "start", "end"}`` with both ends inclusive. It stores
-        intervals rather than one name per PERMNO because a renamed company
-        keeps its PERMNO, and a single latest name would label its early
-        years with the later name. Only the panel's own PERMNOs are written,
-        not the whole reference table. ``vintage_product_end`` (the last date
-        of the CRSP data version) is included because a newer CRSP version
-        can add a later interval for the same PERMNO. Intervals with no
-        ticker are dropped: the sidecar answers "what is it called", and a
-        missing interval and a nameless one give the same answer.
+        The payload shape is ``CrspSymbology.sidecar_payload``'s: only the
+        panel's own PERMNOs are written, with the CRSP product end of the
+        reference tables as ``vintage_product_end``. Before the symbology is
+        loaded, or for an empty derivation, the payload has no intervals.
 
         Parameters
         ----------
@@ -1244,37 +1236,12 @@ class CrspStockDataset(StockDataset):
         dict
             The JSON-ready sidecar payload.
         """
-        empty: dict = {
-            "generated_from": "stksecurityinfohist",
-            "vintage_product_end": str(CrspReference(
-                self.config.reference_dir
-            ).product_end),
-            "intervals": {},
-        }
+        product_end = CrspReference(self.config.reference_dir).product_end
         if self._symbology is None or derived.is_empty():
-            return empty
-
-        panel_permnos = set(
-            int(value) for value in derived.get_column("permno").unique().to_list()
+            return CrspSymbology.empty_sidecar_payload(product_end)
+        return self._symbology.sidecar_payload(
+            derived.get_column("permno").unique().to_list(), product_end
         )
-        intervals = (
-            self._symbology.symbol_intervals()
-            .drop_nulls("symbol")
-            .filter(pl.col("permno").is_in(sorted(panel_permnos)))
-            .sort(["permno", "start_date"])
-        )
-
-        payload: dict[str, list[dict]] = {}
-        for record in intervals.to_dicts():
-            payload.setdefault(str(int(record["permno"])), []).append(
-                {
-                    "ticker": str(record["symbol"]),
-                    "start": str(record["start_date"])[:10],
-                    "end": str(record["end_date"])[:10],
-                }
-            )
-        empty["intervals"] = payload
-        return empty
 
     def _finalise(self, derived: pl.DataFrame) -> pl.DataFrame:
         """Build the panel's variables from the derivation and cache the result.

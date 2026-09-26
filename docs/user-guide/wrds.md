@@ -200,7 +200,8 @@ without dividends), `market_cap`, `shrout` (shares outstanding), `bid`, `ask`,
 The panel's `symbol` axis is the integer PERMNO, not a ticker. A renamed
 company stays one column for its whole history, which is what a backtest
 needs. To show a PERMNO to a human, use the ticker sidecar written next to the
-store, `<store>.crsp_tickers.json`. With a converted store on disk:
+store, `<store>.crsp_tickers.json`. The NBBO conversion writes the same file
+next to its store. With a converted store on disk:
 
 ```python
 from datetime import date
@@ -317,37 +318,46 @@ that date, which `UniverseMask` applies to a price panel. See
 
 `scripts/wrds/nbbo.py --index sp500|nasdaq100` resolves the same membership
 and maps each PERMNO to the tickers it traded under over the window, so the
-intraday roster comes from the same reference tables as the daily one.
+intraday roster comes from the same reference tables as the daily one, and
+the intraday panel is keyed by the same PERMNOs.
 
 ## Downloading TAQ quotes
 
 `scripts/wrds/nbbo.py` downloads each trading day's NBBO records for a
-roster, one query per trading day and batch of symbols, and resamples them
-into a bar panel. The roster is exactly one of `--symbols` or `--index`.
-Symbols use dot notation for share classes (`BRK.B` is root `BRK`, suffix
-`B`); the hyphenated form `BRK-B` is refused. `--end` defaults to today and
-is clipped to the last trading day TAQ has published. These commands need a
-WRDS account:
+roster, one query per trading day and batch of tickers, and resamples them
+into a bar panel whose `symbol` axis is the PERMNO, like the CRSP stores.
+The roster is exactly one of `--permnos` or `--index`. TAQ is keyed by
+ticker, so the script resolves each PERMNO to the tickers it traded under
+inside the window through the CRSP reference tables, downloads those, and
+the conversion maps each day's ticker back to its PERMNO (FB and META land
+in one column). Both roster forms therefore need the CRSP subscription.
+`--end` defaults to today and is clipped to the last trading day TAQ has
+published. These commands need a WRDS account:
 
 ```bash
-# Three symbols, resampled to 1-minute bars over regular hours
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+# Apple, Microsoft and Berkshire B by PERMNO, 1-minute bars over regular hours
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \
     --start 2024-01-24 --end 2024-01-25
 
 # The same, as 5-minute bars over a narrower session
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \
     --start 2024-01-24 --end 2024-01-25 --interval 5m --session 10:00-15:00
 
-# Point-in-time S&P 500 members, one day (needs the CRSP subscription too)
+# Point-in-time S&P 500 members, one day
 uv run python scripts/wrds/nbbo.py --index sp500 \
     --start 2024-01-24 --end 2024-01-24
 ```
+
+A raw ticker that no PERMNO used on its date (a security CRSP does not
+cover) is left out of the panel and listed under `unmapped` in the
+filter-statistics sidecar. The conversion also writes the ticker sidecar
+described above, so `CrspTickerLookup.beside_store` works on an NBBO store.
 
 Quote data is large. On 2024-01-24, Apple alone had about 1.2 million NBBO
 records and the market about 314 million. Nothing estimates or refuses a
 download by size, so scope a pull by symbol list and date range.
 
-Every record is kept in the raw tier, unfiltered, under
+Every record is kept in the raw tier, unfiltered and keyed by ticker, under
 `<download-dir>/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=AAPL/`.
 The `date=` directory is the US/Eastern session date; timestamps are stored as
 naive UTC. Each record also keeps the order in which the server returned it
@@ -485,8 +495,9 @@ download again.
 CRSP downloads are keyed by PERMNO. Pass PERMNOs (`etf.py --etf name=PERMNO`),
 or let `index.py` or `market.py` resolve the roster.
 
-`--symbols ['BRK-B'] use a hyphen; WRDS TAQ uses dot notation`
-Write share classes as `BRK.B`.
+`--permnos ['AAPL'] are not PERMNOs.`
+The NBBO panel is keyed by PERMNO too. Look the PERMNO up in a CRSP store's
+ticker sidecar (`CrspTickerLookup`) or in `stksecurityinfohist`; AAPL is 14593.
 
 `kwargs['max_workers']=8 is refused; use 1 to 6`
 A WRDS account holds only a few connections at once, so at most six workers

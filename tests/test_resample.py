@@ -417,6 +417,7 @@ def test_nbbo_dataset_labels_bars_by_xnys_session(tmp_path: Path):
     config = NbboDatasetConfig(
         raw_data_dir_path=str(tmp_path / "downloads/us_equity/tick/wrds_taq/wrds"),
         zarr_file_path=str(tmp_path / "nbbo_1m.zarr"),
+        reference_dir=str(tmp_path / "_reference"),
         session_start="04:00",
         session_end="20:00",
     )

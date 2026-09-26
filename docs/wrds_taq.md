@@ -12,7 +12,8 @@
 ## 一句话
 
 从 WRDS 的 NYSE TAQ 毫秒库把**每一条全国最优买卖报价（NBBO）记录原样**拉到本地 parquet，
-再在本地按你选的 bar 大小（`1s` 到 `30m`）重采样成标准的 `[timestamp, symbol]` Zarr 面板。
+再在本地按你选的 bar 大小（`1s` 到 `30m`）重采样成标准的 `[timestamp, symbol]` Zarr 面板，
+`symbol` 轴是 CRSP 的 PERMNO，和 `index.py`、`market.py`、`etf.py` 写出的 CRSP store 同键。
 服务器端只做 `SELECT ... WHERE`，不做任何聚合：原始记录留在本地，以后换 bar 大小、换过滤规则
 都不用再去 WRDS 拉一次。
 
@@ -20,11 +21,13 @@
 
 ```bash
 export WRDS_USERNAME=<你的 WRDS 用户名>     # 密码只放在 ~/.pgpass
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \
     --start 2024-01-24 --end 2024-01-25 --interval 1m
 ```
 
 `--end` 默认为今天，并截到 TAQ 已发布的最后一个交易日；转换总是执行。
+名单是 `--permnos` 或 `--index` 之一，两种都要 CRSP 订阅：TAQ 只认 ticker，
+PERMNO 到 ticker 的映射来自 CRSP 参考表。
 
 ---
 
@@ -108,6 +111,29 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
 - 目录布局：`<download-dir>/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=XXX/*.pqt`（脚本；库默认为 `<数据根>/downloads/us_equity/tick/wrds_taq/wrds/`），
   `date=` 是美东交易日。水位线在同级的 `_watermarks/wrds/`。
 
+### `symbol` 轴是 PERMNO，原始目录是 ticker
+
+TAQ 的表里没有 PERMNO，也没有 CUSIP，行的标识只有 `sym_root`/`sym_suffix`，所以**下载按 ticker**：
+原始目录 `symbol=FB/`、`symbol=META/` 各存各的。**面板按 PERMNO**：转换时用 CRSP 参考表
+`stksecurityinfohist` 推出的区间表（`CrspSymbology.symbol_intervals()`，同一张表也给 CRSP 面板写 ticker 旁车）
+把每个原始 `(交易日, ticker)` 解析成当天用这个 ticker 的 PERMNO（`CrspSymbology.resolve`），
+再把记录的 `symbol` 换成 PERMNO 后送进重采样器。于是：
+
+- 改名不断链：FB（到 2022-06-08）和 META（2022-06-09 起）都是 PERMNO 13407，面板里是一列。
+- ticker 复用不串号：某个 ticker 先后属于两家公司，按日期各归各的 PERMNO；
+  日期落在名单之外那家公司的记录会被丢掉。
+- CRSP 不覆盖的 ticker（当天没有任何 PERMNO 用它）**不进面板**：会打一条 warning，
+  并按交易日列在 filter-stats 旁车文件的 `unmapped` 下。
+- `NbboDatasetConfig.symbols`（ticker 名单）被拒绝，选标的用 `permnos`；
+  `reference_dir` 必填，指向 CRSP 参考表目录（脚本里就是 `<download-dir>/_reference/`）。
+- 转换写出的 `<store>.crsp_tickers.json` 和 CRSP 面板的旁车格式相同，
+  `CrspTickerLookup.beside_store(store)` 能直接把 PERMNO 显示成当天的 ticker。
+
+CRSP 自己不是 WRDS 上唯一的 TAQ–CRSP 链接来源：`wrdsapps_link_crsp_taqm.taqmclink` 也按日给出
+`(sym_root, sym_suffix) → permno`。2026-09-26 实测它不能用作主映射：2024-01-24 当天 S&P 500 的 503 只里
+66 只没有对应行（META、GOOGL、CMCSA 和几乎所有 REIT、海外注册公司），META 改名后一行都没有，
+GOOGL 2014 年拆股后消失，且只到 2024-12-31。
+
 ### `wrds_row_ord` 与全序键（D-19）
 
 `wrds_row_ord` 是一条记录在它那次 (交易日, symbol 批次) COPY 查询里的到达序号。
@@ -175,8 +201,9 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
 | `drop_locked` | `False` | `bid == ask`；实测占 4.4%，是合法状态，默认保留 |
 
 每条被丢的记录只按第一个命中的原因计一次（nonpositive_price > condition > crossed > locked）。
-计数按 (交易日, symbol) 写进 Zarr 旁边的 `<store>.nbbo_filter_stats.json`（和 store 同级，不在 store 里面，
-也不在原始数据目录下），里面有 `config`（bar 大小、会话窗口、过滤策略）、`by_session[date][symbol]` 和 `totals`。
+计数按 (交易日, PERMNO) 写进 Zarr 旁边的 `<store>.nbbo_filter_stats.json`（和 store 同级，不在 store 里面，
+也不在原始数据目录下），里面有 `config`（bar 大小、会话窗口、过滤策略）、`by_session[date][permno]`、
+`unmapped[date]`（当天解析不到 PERMNO、被丢掉的 ticker）和 `totals`。
 重新转换某一天会**替换**那一天的条目并重算合计，不会重复计数。命令行跑完会打印这个文件的路径。
 
 ### `BarInterval`：为什么只有这几个
@@ -199,16 +226,17 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
 
 ```
 scripts/wrds/nbbo.py
-  │  参数校验：--symbols/--index 二选一、--start 必填、点号记法、
+  │  参数校验：--permnos/--index 二选一、--start 必填、PERMNO 必须是数字、
   │  会话窗口（XnysSessionCalendar 构造时检查）——全部在建连接之前
   ▼
 WrdsSession.shared()  ── 一次运行一个会话 = 一个连接池（最多 6 条连接） ─────┐
   │  --end 默认今天，截到 TAQ 已发布的最后一个交易日；                          │
   │  assert_entitled：窗口内每一年的 taqm_YYYY 都要有 USAGE 权限                │
   ▼                                                                       │
-CrspMembership + CrspSymbology            （仅 --index；CRSP 参考表 → ticker）│
+CrspReferenceTables.pull → CrspMembership（仅 --index）+ CrspSymbology    │
+  │  PERMNO 名单 → 窗口内用过的所有 ticker（下载键）                          │
   ▼                                                                       │
-SOURCE.config_factory_for("us_equity", "tick", "nbbo")(...)               │
+SOURCE.config_factory_for("us_equity", "tick", "nbbo")(tickers...)        │
   ▼                                                                       │
 registry.run(SOURCE, ...)                                                 │
   │  每个 (交易日, 批次) 一次 COPY；COPY 前 count(*) 一次核对行数               │
@@ -217,10 +245,11 @@ registry.run(SOURCE, ...)                                                 │
   ▼                                                                       │
 registry.convert(SOURCE, NbboDatasetConfig, data_type="nbbo")             │
   ▼                                                                       │
-NbboPanelDataset → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar）             │
+NbboPanelDataset：(交易日, ticker) → PERMNO（CrspSymbology.resolve）          │
+  → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar）                            │
   ▼                                                                       │
-<zarr-dir>/wrds_nbbo_{bar}_{开始}-{结束}.zarr                                │
-  + .nbbo_filter_stats.json 旁车文件                                        │
+<zarr-dir>/wrds_nbbo_{bar}_{开始}-{结束}.zarr   （symbol 轴 = PERMNO）        │
+  + .nbbo_filter_stats.json、.crsp_tickers.json 旁车文件                     │
                                                         finally: close_shared()
 ```
 
@@ -271,7 +300,7 @@ NbboPanelDataset → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar
 | **全市场** | **313,568,856 行，9,703 个 root** |
 
 - 下载前不再估算体量。按这个量级，全市场一天约 10 GiB 原始行；
-  用 `--symbols` 名单和日期窗口来限定一次拉取的规模。
+  用 `--permnos` 名单和日期窗口来限定一次拉取的规模。
 - 按单个 symbol 过滤的 `count(*)` 在服务器上不到 1 秒；整张表的 `count(*)` 要约 76 秒，所以 COPY 前的核对只按批次计数，
   从不数整张表。
 
@@ -284,13 +313,13 @@ NbboPanelDataset → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar
 这几条在建任何连接之前就被拒绝，以下是实际输出：
 
 ```bash
-$ uv run python scripts/wrds/nbbo.py --symbols AAPL,BRK-B --start 2024-01-24 --end 2024-01-25
-nbbo.py: error: --symbols ['BRK-B'] use a hyphen; WRDS TAQ uses dot notation (BRK.B, not BRK-B).
+$ uv run python scripts/wrds/nbbo.py --permnos AAPL --start 2024-01-24 --end 2024-01-25
+nbbo.py: error: --permnos ['AAPL'] are not PERMNOs. A PERMNO is CRSP's integer security id (AAPL is 14593); a ticker cannot go here, because the panel is keyed by PERMNO and a ticker names different securities over time.
 
-$ uv run python scripts/wrds/nbbo.py --symbols AAPL --start 2024-01-24 --end 2024-01-25 --session 03:59-16:00
+$ uv run python scripts/wrds/nbbo.py --permnos 14593 --start 2024-01-24 --end 2024-01-25 --session 03:59-16:00
 nbbo.py: error: --session: session_start 03:59:00 lies outside the extended window 04:00-20:00 ET
 
-$ env -u WRDS_USERNAME uv run python scripts/wrds/nbbo.py --symbols AAPL --start 2024-01-24 --end 2024-01-25
+$ env -u WRDS_USERNAME uv run python scripts/wrds/nbbo.py --permnos 14593 --start 2024-01-24 --end 2024-01-25
 WRDS_USERNAME environment variable must be set to your WRDS username. The password is never read from config or from this code: libpq reads it from ~/.pgpass (chmod 600), so store it there before running a WRDS acquisition.
 ```
 
@@ -299,33 +328,36 @@ WRDS_USERNAME environment variable must be set to your WRDS username. The passwo
 ```bash
 export WRDS_USERNAME=<你的 WRDS 用户名>
 
-# 拉取并重采样成 1 分钟 bar（默认常规时段、按天分块）
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+# AAPL、MSFT、BRK.B 按 PERMNO，重采样成 1 分钟 bar（默认常规时段、按天分块）
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \
     --start 2024-01-24 --end 2024-01-25 --interval 1m
 
 # 盘前盘后全时段、30 分钟 bar（每天 32 根）
-uv run python scripts/wrds/nbbo.py --symbols AAPL \
+uv run python scripts/wrds/nbbo.py --permnos 14593 \
     --start 2024-01-24 --end 2024-01-24 --session 04:00-20:00 --interval 30m
 
-# 时点 S&P 500 成分（窗口内任意时刻是成分的都算；ticker 来自 CRSP 参考表，需要 CRSP 订阅）
+# 时点 S&P 500 成分（窗口内任意时刻是成分的都算）
 uv run python scripts/wrds/nbbo.py --index sp500 --start 2024-01-24 --end 2024-01-24
 
 # 从上次的水位继续拉到今天
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B --start 2024-01-24 --refresh
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 --start 2024-01-24 --refresh
 ```
 
 原始数据已经在盘上、只想换 bar 大小或会话窗口重新转换时，
-不需要连 WRDS：在 Python 里直接构造 `NbboDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录）
+不需要连 WRDS：在 Python 里直接构造 `NbboDatasetConfig`（`raw_data_dir_path` 指向上面的原始目录，
+`reference_dir` 指向 `<download-dir>/_reference`，`permnos` 给 PERMNO 名单或留 `None` 取原始目录里能解析到的全部）
 并调用 `quantlab.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
 
 ---
 
 ## 常见坑
 
-- **用连字符写 symbol。** `BRK-B` 是 Tiingo 花名册的写法，WRDS 要写 `BRK.B`（root `BRK`、suffix `B`；`BF.B` 同理）。
-  脚本会直接拒绝，不会猜。
-- **`--index` 只有 `sp500` 和 `nasdaq100`。** 成分股先按 CRSP 参考表解析成 PERMNO，再映射到窗口内用过的 ticker；
+- **用 ticker 写名单。** `--permnos AAPL` 会被拒绝：面板按 PERMNO 键，一个 ticker 在不同年份可能指不同公司。
+  ticker 对应的 PERMNO 从 CRSP store 旁的 `.crsp_tickers.json` 或 `stksecurityinfohist` 查（AAPL 是 14593）。
+- **`--index` 只有 `sp500` 和 `nasdaq100`。** 成分股先按 CRSP 参考表解析成 PERMNO，再映射到窗口内用过的 ticker 去下载；
   全市场的逐笔报价大得离谱，没有对应的名单。
+- **CRSP 不覆盖的 ticker 不进面板。** 原始目录里有、但当天没有任何 PERMNO 用的 ticker 会被丢掉并列在
+  `unmapped` 下；想保留它，只能先在 CRSP 里找到对应证券。
 - **`--start` 必填，`--end` 默认今天。** 结束日期会截到 TAQ 已发布的最后一个交易日。
 - **2018 年以前的数据看 `n_ambiguous_ties`。** 非零的 bar，快照取决于 WRDS 的物理返回顺序。
 - **盘后收盘落在下一个 UTC 日。** 04:00–20:00 窗口的最后一根 bar 标签是次日 01:00Z（冬令时），这是对的。

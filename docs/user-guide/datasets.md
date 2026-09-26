@@ -112,7 +112,7 @@ Binance spot klines have no factory and no download script; build their
 | `quantlab.dataset.spot.SpotKlineDataset` | crypto spot, daily | trading pair (`BTCUSDT`) | Binance monthly kline CSVs | `DatasetConfig` |
 | `quantlab.dataset.stock.StockDataset` | US equity, daily or minute | ticker (`AAPL`) | Tiingo or Alpaca Parquet shards | `DatasetConfig` |
 | `quantlab.dataset.crsp.CrspStockDataset` | US equity, daily | integer PERMNO | CRSP daily stock file via WRDS | `CrspDatasetConfig` |
-| `quantlab.dataset.nbbo.NbboPanelDataset` | US equity, bars from ticks | ticker | TAQ NBBO quotes via WRDS | `NbboDatasetConfig` |
+| `quantlab.dataset.nbbo.NbboPanelDataset` | US equity, bars from ticks | integer PERMNO (raw files are keyed by ticker) | TAQ NBBO quotes via WRDS | `NbboDatasetConfig` |
 
 The index-membership panels described in [Universes](universes.md) are
 datasets too, built from `ConstituentDatasetConfig`.

@@ -183,7 +183,7 @@ timestamp
 
 股份类别（share class）指同一家公司的不同类股票，例如 Berkshire 的 A 和 B、Alphabet 的 GOOG 和 GOOGL。每个类别是独立的证券，有自己的 PERMNO。这与 CRSP 的 `sharetype` 无关，后者说明的是股份的种类（普通股、ADR、unit），过滤器读取的是它。
 
-转换会写出 `<store>.crsp_tickers.json`，这是从 `stksecurityinfohist` 推导出的 `{PERMNO: [{ticker, start, end}]}` 区间表。类别会显示为 `BRK.B`，而退市当天那一行没有自己的 ticker，会沿用前一个名字。`CrspTickerLookup` 回答“这个 PERMNO 在这一天叫什么”：
+转换会写出 `<store>.crsp_tickers.json`，这是从 `stksecurityinfohist` 推导出的 `{PERMNO: [{ticker, start, end}]}` 区间表。类别会显示为 `BRK.B`，而退市当天那一行没有自己的 ticker，会沿用前一个名字。NBBO 转换（`docs/wrds_taq.md`）会在它的 store 旁写同样的旁车文件。`CrspTickerLookup` 回答“这个 PERMNO 在这一天叫什么”：
 
 ```python
 >>> from datetime import date

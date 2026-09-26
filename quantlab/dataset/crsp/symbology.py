@@ -10,7 +10,10 @@ axis, so a ticker is only a display name here, never an identity.
 history of each security's descriptive fields) into a table of intervals
 saying which ticker each PERMNO used over which dates. The conversion writes
 that table into the ticker *sidecar*, a JSON file next to the Zarr store,
-which ``quantlab.dataset.crsp.tickers`` reads back.
+which ``quantlab.dataset.crsp.tickers`` reads back. The same table answers
+the reverse question, which PERMNO a ticker named on a given day
+(``resolve``), for a panel whose raw files are keyed by ticker, such as the
+TAQ NBBO tier.
 
 The daily price table cannot spell a share class on its own (it has no
 ``shareclass`` and no ``tradingsymbol`` column), so the names come from the
@@ -180,3 +183,155 @@ class CrspSymbology:
             pl.col("end_date"),
         ).sort(["permno", "start_date"])
         return self._intervals
+
+    def resolve(self, pairs: pl.DataFrame) -> pl.DataFrame:
+        """Return the PERMNO each ``(date, symbol)`` pair named on that date.
+
+        A pair whose symbol no PERMNO used on that date is left out of the
+        result rather than raising: a ticker that trades on TAQ but is not in
+        CRSP (a security CRSP does not cover) is a fact about the data, and
+        the caller decides whether to warn about it. A pair that two PERMNOs
+        claim on the same date is an error in the reference table, so it
+        raises.
+
+        Parameters
+        ----------
+        pairs : pl.DataFrame
+            Columns ``date`` (``Date``) and ``symbol`` (``String``), in the
+            dot notation ``symbol_intervals`` produces (``BRK.B``).
+
+        Returns
+        -------
+        pl.DataFrame
+            Columns ``date``, ``symbol`` and ``permno`` (``Int64``), one row
+            per resolved input pair, sorted by ``(date, symbol)``.
+
+        Raises
+        ------
+        ValueError
+            If a ``(date, symbol)`` pair resolves to more than one PERMNO.
+
+        Examples
+        --------
+        >>> from datetime import date
+        >>> pairs = pl.DataFrame(
+        ...     {"date": [date(2022, 6, 8), date(2022, 6, 9)], "symbol": ["FB", "META"]}
+        ... )
+        >>> symbology.resolve(pairs)
+        shape: (2, 3)
+        ┌────────────┬────────┬────────┐
+        │ date       ┆ symbol ┆ permno │
+        │ ---        ┆ ---    ┆ ---    │
+        │ date       ┆ str    ┆ i64    │
+        ╞════════════╪════════╪════════╡
+        │ 2022-06-08 ┆ FB     ┆ 13407  │
+        │ 2022-06-09 ┆ META   ┆ 13407  │
+        └────────────┴────────┴────────┘
+        """
+        pairs = pairs.select(
+            pl.col("date").cast(pl.Date), pl.col("symbol").cast(pl.String)
+        ).unique()
+        intervals = self.symbol_intervals().drop_nulls("symbol")
+        resolved = (
+            pairs.join(intervals, on="symbol", how="inner")
+            .filter(
+                (pl.col("date") >= pl.col("start_date"))
+                & (pl.col("date") <= pl.col("end_date"))
+            )
+            .select("date", "symbol", "permno")
+            .unique()
+            .sort(["date", "symbol"])
+        )
+        ambiguous = (
+            resolved.group_by(["date", "symbol"])
+            .agg(pl.col("permno").sort().alias("permnos"))
+            .filter(pl.col("permnos").list.len() > 1)
+            .sort(["date", "symbol"])
+        )
+        if ambiguous.height:
+            sample = [
+                f"{record['date']}/{record['symbol']} -> {record['permnos']}"
+                for record in ambiguous.head(5).to_dicts()
+            ]
+            raise ValueError(
+                f"CrspSymbology.resolve: {ambiguous.height} (date, symbol) "
+                f"pair(s) are claimed by more than one PERMNO, first {sample}. "
+                f"stksecurityinfohist gives every PERMNO non-overlapping "
+                f"intervals, so two PERMNOs naming one ticker on one day is a "
+                f"reference-table fault; refusing to pick one."
+            )
+        return resolved
+
+    @staticmethod
+    def empty_sidecar_payload(product_end) -> dict:
+        """Return a sidecar payload with no intervals for the given product end.
+
+        Examples
+        --------
+        >>> CrspSymbology.empty_sidecar_payload(date(2025, 12, 31))
+        {'generated_from': 'stksecurityinfohist', 'vintage_product_end': '2025-12-31', 'intervals': {}}
+        """
+        return {
+            "generated_from": "stksecurityinfohist",
+            "vintage_product_end": str(product_end)[:10],
+            "intervals": {},
+        }
+
+    def sidecar_payload(self, permnos, product_end) -> dict:
+        """Build the ticker sidecar payload for ``permnos``.
+
+        The payload is ``{"generated_from", "vintage_product_end",
+        "intervals"}``. ``intervals`` maps ``str(permno)`` to that PERMNO's
+        named intervals in ascending ``start`` order, each
+        ``{"ticker", "start", "end"}`` with both ends inclusive. It stores
+        intervals rather than one name per PERMNO because a renamed company
+        keeps its PERMNO, and a single latest name would label its early
+        years with the later name. Only ``permnos`` are written, not the
+        whole reference table. ``vintage_product_end`` (the last date of the
+        CRSP data version) is included because a newer CRSP version can add
+        a later interval for the same PERMNO. Intervals with no ticker are
+        dropped: the sidecar answers "what is it called", and a missing
+        interval and a nameless one give the same answer.
+
+        ``quantlab.dataset.crsp.tickers.CrspTickerLookup`` reads the file
+        this payload is written to.
+
+        Parameters
+        ----------
+        permnos : iterable of int
+            The panel's PERMNOs.
+        product_end : date or str
+            The CRSP product end of the reference tables.
+
+        Returns
+        -------
+        dict
+            The JSON-ready sidecar payload.
+
+        Examples
+        --------
+        >>> symbology.sidecar_payload([83443], date(2025, 12, 31))["intervals"]
+        {'83443': [{'ticker': 'BRK', 'start': '1996-05-09', 'end': '2002-01-01'},
+                   {'ticker': 'BRK.B', 'start': '2002-01-02', 'end': '2025-12-31'}]}
+        """
+        payload = self.empty_sidecar_payload(product_end)
+        wanted = sorted({int(value) for value in permnos})
+        if not wanted:
+            return payload
+        intervals = (
+            self.symbol_intervals()
+            .drop_nulls("symbol")
+            .filter(pl.col("permno").is_in(wanted))
+            .sort(["permno", "start_date"])
+        )
+        table: dict[str, list[dict]] = {}
+        for record in intervals.to_dicts():
+            table.setdefault(str(int(record["permno"])), []).append(
+                {
+                    "ticker": str(record["symbol"]),
+                    "start": str(record["start_date"])[:10],
+                    "end": str(record["end_date"])[:10],
+                }
+            )
+        payload["intervals"] = table
+        return payload
