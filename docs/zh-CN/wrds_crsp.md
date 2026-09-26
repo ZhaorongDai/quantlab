@@ -285,7 +285,7 @@ array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
       dtype=float32)
 ```
 
-因子、模型和回测各指南（[factor.md](factor.md)、[model.md](model.md)、[backtest.md](backtest.md)）无需改动即可适用。需要时点股票池时，套用成分掩码（[constituent.md](constituent.md)）；[universe.md](universe.md) 讲的是另外一种价格与流动性过滤。
+因子、模型和回测各指南（[factor.md](factor.md)、[model.md](model.md)、[backtest.md](backtest.md)）无需改动即可适用。需要时点股票池时，套用成分掩码（[constituent.md](constituent.md)）。
 
 ## 扩展
 
@@ -346,4 +346,4 @@ ValueError: CrspStockDataset: raw_data_dir_path '<dir>' has basename 'wrds_crsp'
 
 ## 另请参阅
 
-[wrds_taq.md](wrds_taq.md)（共用同一个会话的 WRDS 逐笔数据）、[constituent.md](constituent.md)（成分面板）、[universe.md](universe.md)（价格与流动性过滤）、[dataset.md](dataset.md)（面板契约）、[chunking.md](chunking.md)（分窗口转换）、[registry.md](registry.md) 与 [acquisition.md](acquisition.md)（下载机制）、[pageledger.md](pageledger.md)（断点续传）。类的 docstring：`CrspStockDataset`、`CrspDatasetConfig`、`WrdsCrspDailyAcquisition`、`CrspReferenceTables`、`CrspMembership`、`CrspMarketRoster`、`CrspSymbology`、`CrspTickerLookup`、`CrspStoreRebuilder`。
+[wrds_taq.md](wrds_taq.md)（共用同一个会话的 WRDS 逐笔数据）、[constituent.md](constituent.md)（成分面板）、[dataset.md](dataset.md)（面板契约）、[chunking.md](chunking.md)（分窗口转换）、[registry.md](registry.md) 与 [acquisition.md](acquisition.md)（下载机制）、[pageledger.md](pageledger.md)（断点续传）。类的 docstring：`CrspStockDataset`、`CrspDatasetConfig`、`WrdsCrspDailyAcquisition`、`CrspReferenceTables`、`CrspMembership`、`CrspMarketRoster`、`CrspSymbology`、`CrspTickerLookup`、`CrspStoreRebuilder`。

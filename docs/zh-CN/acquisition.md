@@ -358,4 +358,4 @@ RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must
 
 ## 另请参阅
 
-[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universe](universe.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.base.coverage.CoverageLedger` 和 `quantlab.base.progress` 的类文档字符串列出了全部选项。
+[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universes](../user-guide/universes.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.base.coverage.CoverageLedger` 和 `quantlab.base.progress` 的类文档字符串列出了全部选项。

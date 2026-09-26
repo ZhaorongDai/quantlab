@@ -182,14 +182,14 @@ Conventions not yet established. Will populate as patterns emerge during develop
 
 - **Every top-level entry of `quantlab/dataset/` is a dataset; every top-level entry of `quantlab/acquisition/` is an acquisition** (260922-lu2). Browsing either directory is a menu of complete, usable things — `dataset/` shows `spot.py`, `stock.py`, `constituent.py`, `crsp/`, `nbbo/`; `acquisition/` shows `alpaca.py`, `tiingo.py`, `wrds/`. Support code goes in `_support/`, or — if it is really its own LAYER — becomes a `quantlab/` sibling. Three modules became siblings, each for a measured reason:
 
-  - `quantlab/backend.py` (`XrBackend`/`PlBackend`) — imported by seven modules across four layers (`config/__init__.py`, `universe.py`, `factor/universe_filter.py`, and `base/data.py`/`factor.py`/`model.py`/`backtest.py`). No single layer owns it.
+  - `quantlab/backend.py` (`XrBackend`/`PlBackend`) — imported by six modules across four layers (`config/__init__.py`, `universe.py`, and `base/data.py`/`factor.py`/`model.py`/`backtest.py`). No single layer owns it.
   - `quantlab/registry.py` — the vendor registry is the thing an operator surface asks "what can this project download"; it is not itself an acquisition, and it imports all three vendors at its bottom.
   - `quantlab/universe.py` — the point-in-time symbol universe. Deliberately a flat module rather than a `universe/` package (D-1): a package would put a second `__init__` on its import path.
 
 - **The `base/X.py` ↔ `<layer>/X.py` pairing: the mirrored filename was never the rule** (260922-lu2 D-2). **The ABC lives in `quantlab/base/`. The concrete implementation lives with its CONSUMERS** — not in a directory that mirrors the ABC's filename. The mirror was a coincidence of the first two cases. All three cases today:
 
   - `base/backend.py:ModelBackend` ↔ `ml_model/backend.py:MlBackend` — only the model layer consumes it, so it lives in the model layer. The filename still matches; that is incidental.
-  - `base/backend.py:DataBackend` ↔ `quantlab/backend.py` — seven importers across four layers (measured above), so it is a top-level sibling and the filename no longer mirrors a directory.
+  - `base/backend.py:DataBackend` ↔ `quantlab/backend.py` — six importers across four layers (measured above), so it is a top-level sibling and the filename no longer mirrors a directory.
   - `base/constituent.py` ↔ `dataset/constituent.py` — untouched, because a constituent dataset genuinely IS a dataset.
 
   Considered and NOT done: by the same "every file is one complete thing" logic, `quantlab/ml_model/backend.py` is support rather than a model. 260922-lu2 was scoped to `dataset/` and `acquisition/`; expanding it would have been scope creep. Recorded so the next reader sees it was weighed, not missed.

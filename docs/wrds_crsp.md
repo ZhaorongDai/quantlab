@@ -287,7 +287,7 @@ array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
       dtype=float32)
 ```
 
-The factor, model and backtest guides ([factor.md](factor.md), [model.md](model.md), [backtest.md](backtest.md)) apply unchanged. For a point-in-time universe, apply the membership mask ([constituent.md](constituent.md)); [universe.md](universe.md) covers the separate price and liquidity filter.
+The factor, model and backtest guides ([factor.md](factor.md), [model.md](model.md), [backtest.md](backtest.md)) apply unchanged. For a point-in-time universe, apply the membership mask ([constituent.md](constituent.md)).
 
 ## Extending
 
@@ -348,4 +348,4 @@ End `raw_data_dir_path` at the `wrds` folder.
 
 ## See also
 
-[wrds_taq.md](wrds_taq.md) for the tick-level WRDS data that shares the same session, [constituent.md](constituent.md) for membership panels, [universe.md](universe.md) for the price and liquidity filter, [dataset.md](dataset.md) for the panel contract, [chunking.md](chunking.md) for windowed conversion, [registry.md](registry.md) and [acquisition.md](acquisition.md) for the download machinery, and [pageledger.md](pageledger.md) for resume. Class docstrings: `CrspStockDataset`, `CrspDatasetConfig`, `WrdsCrspDailyAcquisition`, `CrspReferenceTables`, `CrspMembership`, `CrspMarketRoster`, `CrspSymbology`, `CrspTickerLookup` and `CrspStoreRebuilder`.
+[wrds_taq.md](wrds_taq.md) for the tick-level WRDS data that shares the same session, [constituent.md](constituent.md) for membership panels, [dataset.md](dataset.md) for the panel contract, [chunking.md](chunking.md) for windowed conversion, [registry.md](registry.md) and [acquisition.md](acquisition.md) for the download machinery, and [pageledger.md](pageledger.md) for resume. Class docstrings: `CrspStockDataset`, `CrspDatasetConfig`, `WrdsCrspDailyAcquisition`, `CrspReferenceTables`, `CrspMembership`, `CrspMarketRoster`, `CrspSymbology`, `CrspTickerLookup` and `CrspStoreRebuilder`.

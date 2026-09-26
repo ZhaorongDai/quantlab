@@ -72,7 +72,6 @@ working on.
 | [WRDS CRSP daily stocks](wrds_crsp.md) | US daily data by PERMNO, total-return adjustment and delisting returns |
 | [WRDS TAQ quotes](wrds_taq.md) | National best bid and offer quotes and their resampling to bars |
 | [Index constituents](constituent.md) | Point-in-time membership panels for the S&P 500 and Nasdaq-100 |
-| [Universe filtering](universe.md) | Price and liquidity filters implemented as a factor wrapper |
 | [Datasets](dataset.md) | From raw files to the `(timestamp, symbol)` panel, and adding a market |
 | [Chunked conversion](chunking.md) | Converting a large date range one window at a time |
 | [Storage backends](backend.md) | Zarr and Parquet storage, appending, and writing a backend |

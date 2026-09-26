@@ -245,7 +245,7 @@ quantlab/
         ...              chunked conversion, download ledgers, progress reporting
     acquisition/     one module per vendor: tiingo.py, alpaca.py, wrds/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
-    factor/          Alpha101, Alpha158, momentum, residual momentum, universe filter
+    factor/          Alpha101, Alpha158, momentum, residual momentum
     label/           forward-return labels (fret.py)
     ml_model/        XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
     dl_model/        torch heads: MLP, GRU/LSTM regressor and classifier

@@ -362,4 +362,4 @@ Raw tick data is written exactly as the vendor sent it, with no resampling and n
 
 ## See also
 
-The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universe](universe.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.base.coverage.CoverageLedger` and `quantlab.base.progress` list every option.
+The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universes](user-guide/universes.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.base.coverage.CoverageLedger` and `quantlab.base.progress` list every option.
