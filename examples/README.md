@@ -20,7 +20,7 @@ uv run python examples/quickstart.py
 
 | Script | What it shows | Guide |
 |--------|---------------|-------|
-| [`wrds_us_equity/`](wrds_us_equity/) | The full pipeline on CRSP daily data, one self-contained script per universe (S&P 500, Nasdaq-100) and model (`xgb`, `xgb_td`, `realmlp`): Alpha101 + Alpha158 factors, a forward-return label, the model, a TopN backtest against an ETF benchmark, Weights & Biases logging; plus one factor-analysis script per universe running `Factor.analyze()` on every alpha column. Needs a WRDS account and a converted CRSP store; settings are a few constants and the quantlab config objects at the top of each script | [README](wrds_us_equity/README.md), [WRDS](../docs/wrds_crsp.md) |
+| [`wrds_us_equity/`](wrds_us_equity/) | The full pipeline on CRSP daily data, one self-contained script per universe (S&P 500, Nasdaq-100, the whole CRSP market) and model (`xgb`, `xgb_td`, `realmlp`): Alpha101 + Alpha158 factors, a forward-return label, the model, a TopN backtest against an ETF benchmark, Weights & Biases logging; plus one factor-analysis script per universe running `Factor.analyze()` on every alpha column. Needs a WRDS account and a converted CRSP store; settings are a few constants and the quantlab config objects at the top of each script | [README](wrds_us_equity/README.md), [WRDS](../docs/wrds_crsp.md) |
 
 The prices are random walks, sometimes with a small planted effect so the model has something
 to find. The numbers the scripts print show what the output looks like; they say nothing about
