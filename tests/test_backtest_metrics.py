@@ -340,12 +340,12 @@ def test_slice_statistics_compare_exact_bar_timestamps_not_days(tmp_path):
     assert stats["Total Return [%]"] == pytest.approx(expected, rel=1e-12)
 
     records = backtester._period_record_stats(simulation, ranges)
-    assert records["open_trade_count"] == 1
-    assert records["closed_trade_count"] == 0
+    assert records["Total Open Trades"] == 1
+    assert records["Total Closed Trades"] == 0
 
 
 def test_whole_order_count_is_zero_for_an_order_less_simulation(tmp_path, monkeypatch):
-    """`whole["order_count"]` must read `.sizes.get("order", 0)`, never `["order"]`.
+    """`whole["Total Orders"]` must read `.sizes.get("order", 0)`, never `["order"]`.
 
     A simulation that never filled carries `orders=xr.Dataset()`, which has no
     `order` dimension at all, so a bare subscript raises KeyError. That raise
@@ -388,9 +388,9 @@ def test_whole_order_count_is_zero_for_an_order_less_simulation(tmp_path, monkey
     metrics = backtester._compute_metrics(simulation, None, split)
 
     whole = metrics["whole"]
-    assert whole["order_count"] == 0
-    assert isinstance(whole["order_count"], int) and not isinstance(
-        whole["order_count"], bool
+    assert whole["Total Orders"] == 0
+    assert isinstance(whole["Total Orders"], int) and not isinstance(
+        whole["Total Orders"], bool
     )
     assert metrics["in_sample"] is None and metrics["out_of_sample"] is None
 
@@ -546,8 +546,8 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
     orders = result.simulation.orders
     inside, outside = metrics["in_sample"], metrics["out_of_sample"]
 
-    assert inside["order_count"] > 0 and outside["order_count"] > 0
-    assert inside["order_count"] + outside["order_count"] == orders.sizes["order"]
+    assert inside["Total Orders"] > 0 and outside["Total Orders"] > 0
+    assert inside["Total Orders"] + outside["Total Orders"] == orders.sizes["order"]
 
     # The whole-window counterpart (phase 03.8, CONTEXT item 3): the block that
     # gave up the lot-level trade set must still answer "how many fills
@@ -557,19 +557,19 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
     # asserted anyway: that construction is exactly what a future refactor of
     # the split could break silently.
     whole = metrics["whole"]
-    assert whole["order_count"] == inside["order_count"] + outside["order_count"]
-    assert whole["order_count"] == orders.sizes["order"]
+    assert whole["Total Orders"] == inside["Total Orders"] + outside["Total Orders"]
+    assert whole["Total Orders"] == orders.sizes["order"]
 
     total_fees = float(orders["fees"].values.sum())
     assert total_fees > 0.0
-    assert inside["fees_paid"] + outside["fees_paid"] == pytest.approx(
+    assert inside["Total Fees Paid"] + outside["Total Fees Paid"] == pytest.approx(
         total_fees, abs=1e-9
     )
     assert metrics["whole"]["Total Fees Paid"] == pytest.approx(total_fees, abs=1e-6)
 
     per_order_notional = np.abs(orders["size"].values) * orders["price"].values
     notional = float(per_order_notional.sum())
-    assert inside["traded_notional"] + outside["traded_notional"] == pytest.approx(
+    assert inside["Traded Notional"] + outside["Traded Notional"] == pytest.approx(
         notional, rel=1e-12
     )
 
@@ -583,10 +583,10 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
     # identically: fix the source, never the assertion.
     assert whole["Total Closed Trades"] > 0 and whole["Total Open Trades"] > 0
     assert (
-        inside["closed_trade_count"] + outside["closed_trade_count"]
+        inside["Total Closed Trades"] + outside["Total Closed Trades"]
         == whole["Total Closed Trades"]
     )
-    assert outside["open_trade_count"] == whole["Total Open Trades"]
+    assert outside["Total Open Trades"] == whole["Total Open Trades"]
 
     # Turnover, recomputed here from the records on random-walk prices: traded
     # notional on a fill bar over the equity value at the PREVIOUS bar (a
@@ -599,9 +599,12 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
         i = int(np.searchsorted(value_ts, bar))
         prior = float(value.values[i - 1]) if i > 0 else backtester_init_cash(result)
         expected.append(float(per_order_notional[order_ts == bar].sum()) / prior)
-    assert whole["turnover"]["sum"] == pytest.approx(sum(expected), rel=1e-12)
-    assert inside["turnover"]["sum"] + outside["turnover"]["sum"] == pytest.approx(
-        sum(expected), rel=1e-12
+    # The rows are in percent: a full buy-in from cash is 100.
+    assert whole["Total Turnover [%]"] == pytest.approx(
+        sum(expected) * 100.0, rel=1e-12
+    )
+    assert inside["Total Turnover [%]"] + outside["Total Turnover [%]"] == pytest.approx(
+        sum(expected) * 100.0, rel=1e-12
     )
 
 
@@ -651,31 +654,40 @@ def test_metrics_blocks_have_the_d22_d34_keys(tmp_path):
         tmp_path, window_start_bar=TRAIN_END_BAR + 1, window_end_bar=OVERLAP_END
     ).run()
     metrics = result.metrics
-    turnover_keys = {"mean_per_rebalance", "sum", "annualized"}
+    turnover_keys = (
+        "Turnover per Rebalance [%]",
+        "Total Turnover [%]",
+        "Annualized Turnover [%]",
+    )
 
     whole = metrics["whole"]
     for key in ("Total Return [%]", "Sharpe Ratio", "Max Drawdown [%]", "Total Fees Paid"):
         assert key in whole, key
-    assert set(whole["turnover"]) == turnover_keys
+    for key in turnover_keys:
+        assert key in whole, key
+    # The turnover rows are flat, vectorbt-style names, never a sub-dict.
+    assert not any(isinstance(value, dict) for value in whole.values())
     assert "benchmark" not in metrics
 
     slice_keys = (
         "Total Return [%]",
         "Sharpe Ratio",
-        "order_count",
-        "fees_paid",
-        "traded_notional",
-        "closed_trade_count",
-        "open_trade_count",
+        "Total Orders",
+        "Total Fees Paid",
+        "Traded Notional",
+        "Total Closed Trades",
+        "Total Open Trades",
+        *turnover_keys,
     )
     blocks = [metrics["in_sample"], metrics["out_of_sample"]]
     assert all(block is not None for block in blocks)
     for block in blocks:
         for key in slice_keys:
             assert key in block, key
-        assert set(block["turnover"]) == turnover_keys
+        assert not any(isinstance(value, dict) for value in block.values())
 
     assert math.isnan(metrics["in_sample"]["Annualized Volatility [%]"])
     persisted = _strict_json(result.run_dir / "metrics.json")
     assert persisted["in_sample"]["Annualized Volatility [%]"] is None
-    assert set(persisted["out_of_sample"]["turnover"]) == turnover_keys
+    for key in turnover_keys:
+        assert key in persisted["out_of_sample"], key

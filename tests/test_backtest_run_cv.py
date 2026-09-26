@@ -593,7 +593,7 @@ def test_the_stitched_block_carries_order_count_and_the_positions_view(
     """The stitched block goes through the same `_compute_metrics` as `run()`.
 
     A WIRING lock, not a second arithmetic proof: the partition identities for
-    `order_count` are proved against a real `run()` in
+    `Total Orders` are proved against a real `run()` in
     tests/test_backtest_metrics.py, and the stitched block is built by the same
     method, so what is worth asserting on this path is that `run_cv` reaches it
     at all and reports one trade vocabulary (D-02).
@@ -601,11 +601,11 @@ def test_the_stitched_block_carries_order_count_and_the_positions_view(
     result = _backtester(tmp_path, cv_project).run_cv()
     whole = result.metrics["stitched"]["whole"]
 
-    assert "order_count" in whole, sorted(whole)
-    assert isinstance(whole["order_count"], int) and not isinstance(
-        whole["order_count"], bool
+    assert "Total Orders" in whole, sorted(whole)
+    assert isinstance(whole["Total Orders"], int) and not isinstance(
+        whole["Total Orders"], bool
     )
-    assert whole["order_count"] >= 0
+    assert whole["Total Orders"] >= 0
     assert "positions" not in whole, sorted(whole)
 
 

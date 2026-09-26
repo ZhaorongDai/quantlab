@@ -232,17 +232,17 @@ All parts come from one continuous simulation, so capital and positions carry ac
 
 ```python
 >>> for part in ("whole", "in_sample", "out_of_sample"):
-...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["order_count"])
+...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["Total Orders"])
 whole -5.85 -2.32 19
 in_sample -1.09 -0.79 6
 out_of_sample -4.82 -3.76 13
 >>> list(m["whole"])[:6]
 ['Start', 'End', 'Period', 'Start Value', 'End Value', 'Total Return [%]']
->>> round(m["whole"]["turnover"]["mean_per_rebalance"], 2)
-1.34
+>>> round(m["whole"]["Turnover per Rebalance [%]"])
+134
 ```
 
-Turnover is the one-sided traded value of a bar divided by the portfolio value before the fills, so a full buy-in from cash is about 1 and replacing the whole book about 2. The scores here are random-walk returns, so the negative results carry no meaning.
+Turnover is the one-sided traded value of a bar divided by the portfolio value before the fills, in percent like every other `[%]` row, so a full buy-in from cash is about 100 and replacing the whole book about 200. The scores here are random-walk returns, so the negative results carry no meaning.
 
 ### The run directory
 
@@ -333,7 +333,7 @@ Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for e
 >>> config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
 >>> result = USEquityCrossectionSelectStockVectorBt(config).run()
 >>> sorted(result.metrics["relative"]["whole"])[:4]
-['bars', 'benchmark_total_return', 'beta', 'capm_alpha']
+['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
 ```
 
 The benchmark is read over the window and put on the strategy's own bars; a bar it lacks carries its previous price forward (one warning), and a benchmark that starts after the window, or a panel with more than one symbol, is refused. It is bought and held with the strategy's conventions: all-in at the second bar's open, from the same `init_cash`, with the same fees and slippage, so the two value curves compare bar for bar. `result.benchmark` is its `SimulationResult`.
@@ -341,7 +341,7 @@ The benchmark is read over the window and put on the strategy's own bars; a bar 
 The run then carries two more metric blocks, each with `whole`, `in_sample` and `out_of_sample` slices:
 
 - `benchmark`: the benchmark's `symbol` and its own return statistics (total and annualized return, volatility, Sharpe, max drawdown, ...);
-- `relative`: the portfolio against the benchmark, as fractions. The *relative NAV* is portfolio value divided by benchmark value. `excess_return` is that NAV minus 1 at the end (the alpha in the everyday sense), `excess_return_annualized` the same over one year, `excess_max_drawdown` the deepest fall of the relative NAV from its running peak (the *excess drawdown*), plus `strategy_total_return`, `benchmark_total_return`, `total_return_difference`, `tracking_error`, `information_ratio`, `beta`, `correlation`, `capm_alpha` (the annualized regression intercept) and `win_rate_vs_benchmark`.
+- `relative`: the portfolio against the benchmark, named like vectorbt's statistics, with every `[%]` row in percent. The *relative NAV* is portfolio value divided by benchmark value. `Excess Return [%]` is that NAV minus 1 at the end (the alpha in the everyday sense), `Annualized Excess Return [%]` the same over one year, `Excess Max Drawdown [%]` the deepest fall of the relative NAV from its running peak (the *excess drawdown*, negative or 0), plus `Strategy Total Return [%]`, `Benchmark Total Return [%]`, `Total Return Difference [%]`, `Tracking Error [%]`, `Information Ratio`, `Beta`, `Correlation`, `CAPM Alpha [%]` (the annualized regression intercept) and `Win Rate vs Benchmark [%]`.
 
 `report.html` draws the benchmark NAV (dashed grey) on the same panel as the portfolio NAV, adds an excess-return row and an excess-drawdown row under it, puts the benchmark's drawdown and monthly returns beside the portfolio's, and adds the tables "Excess over benchmark" and "Benchmark (buy and hold)". `equity.zarr` also stores `benchmark_value` and `benchmark_returns`, `fingerprint.json` records the benchmark data under `benchmark_dataset`, and `config.json` rebuilds it. `run_cv()` compares the stitched curve and every fold the same way.
 
@@ -425,7 +425,7 @@ To keep the top-N rule with another score, `CrossSectionTopNSelector(direction, 
 
 ## Notes
 
-No borrow or short-financing cost is modelled, so short-side returns are optimistic; the metrics `notes` say so. Trade statistics use the position view: one trade is one symbol's round trip from entry to flat, and trimming a holding back to its target weight is not a closed trade. `order_count` is the number of fills.
+No borrow or short-financing cost is modelled, so short-side returns are optimistic; the metrics `notes` say so. Trade statistics use the position view: one trade is one symbol's round trip from entry to flat, and trimming a holding back to its target weight is not a closed trade. `Total Orders` is the number of fills.
 
 `benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected.
 
