@@ -2,24 +2,22 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Four self-contained scripts, one per model plus a factor analysis, all on CRSP daily data for a point-in-time index universe, the S&P 500 (`universe="sp500"`) or the Nasdaq-100 (`universe="nasdaq100"`). Each file imports only quantlab, so it can be copied out and edited on its own.
+One self-contained script per universe and model, plus one factor analysis per universe, all on CRSP daily data for a point-in-time index. Each file imports only quantlab, so it can be copied out and edited on its own.
 
-| File | What it runs |
-| --- | --- |
-| `xgb.py` | `XGBoostRegressor` (`xgb.train`, native early stopping) -> TopN backtest |
-| `xgb_td.py` | `XGBTDRegressor` (pytabkit tuned-default XGBoost) -> TopN backtest |
-| `realmlp.py` | `RealMLPRegressor` (pytabkit tuned-default MLP) -> TopN backtest |
-| `factor_analysis.py` | `Factor.analyze()` on every Alpha101 and Alpha158 column: an alphalens-style report per column |
+| Universe | Model pipelines | Factor analysis |
+| --- | --- | --- |
+| S&P 500 | `sp500_xgb.py`, `sp500_xgb_td.py`, `sp500_realmlp.py` | `sp500_factor_analysis.py` |
+| Nasdaq-100 | `nasdaq100_xgb.py`, `nasdaq100_xgb_td.py`, `nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
 
-Every model pipeline runs the same five steps:
+The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost) and `RealMLPRegressor` (pytabkit tuned-default MLP). Every model pipeline runs the same five steps:
 
 1. **Data**: read the converted CRSP store and its membership panel, then write two derived stores (`prices`, `members`).
 2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, saved as Zarr.
-3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`horizon`, computed on member rows only.
+3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on member rows only.
 4. **Model**: trained once on the training window.
-5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against a buy-and-hold ETF benchmark (SPY for the S&P 500, QQQ for the Nasdaq-100), logged to Weights & Biases.
+5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500) or QQQ (Nasdaq-100), logged to Weights & Biases.
 
-The factor-analysis pipeline runs steps 1 to 3 and then `analyze()` instead of a model. There is no command-line interface: in every file the data root is the `DATA_ROOT` constant and every other setting is a field of the `Settings` dataclass.
+A factor-analysis pipeline runs steps 1 to 3 and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, `WANDB_MODE`) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `MLConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
 
 ## Prerequisites
 
@@ -41,7 +39,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 
 `--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--zarr-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
 
-Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or the `DATA_ROOT` constant at the top of each script).
+Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
 
 KunQuant compiles the factor graphs, so a C++ compiler is required. The model scripts set `OMP_NUM_THREADS=1` on macOS themselves (xgboost and torch in one process).
 
@@ -49,47 +47,30 @@ Weights & Biases logging is on by default (`wandb_mode="online"`): run `wandb lo
 
 ## Run
 
-Open the script you want, set `DATA_ROOT` if the stores are not under quantlab's default data root, edit `Settings` (at least `universe`, the dates and the `hyperparameters`), then run it:
+Open the script for your universe and model, change `DATA_ROOT` if the stores are not under quantlab's default data root, edit the constants and the config objects you want to change (dates, `hyperparameters`, `top_n`, ...), then run it:
 
 ```bash
-uv run python examples/wrds_us_equity/xgb.py
-uv run python examples/wrds_us_equity/factor_analysis.py
+uv run python examples/wrds_us_equity/sp500_xgb.py
+uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 ```
 
-or run the `# %%` cells one at a time in VS Code or Jupyter. Every step is a function (`prepare_stores`, `compute_factors`, `train`, `backtest`, or `analyze`), so a notebook can rerun only the step it changed:
-
-```python
-import realmlp
-s = realmlp.Settings(universe="nasdaq100", start_date="2015-01-01", train_start="2015-01-01")
-realmlp.main(s)
-```
+or run the `# %%` cells one at a time in VS Code or Jupyter. Every step is a function (`prepare_stores`, `compute_factors`, `train`, `backtest`, or `analyze`), so a notebook can rerun only the step it changed.
 
 ## Settings
 
-The three model pipelines share these fields:
+Everything lives at the top of each script, in this order:
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `universe` | `"sp500"` | `"sp500"` or `"nasdaq100"`; picks the input stores, the membership panel, the benchmark ETF and the output directory |
-| `start_date`, `end_date` | 2012-01-01, 2024-12-31 | data window; factor warm-up is read before it |
-| `train_start` ... `test_end` | 2012-2019 / 2020-2024 | training and out-of-sample test windows |
-| `factor_window` | 400 | factor lookback in calendar days |
-| `alpha101_names`, `alpha158_names` | `None` | subsets of each library; `None` means all 82 / 169 columns |
-| `njobs` | 16 | KunQuant executor threads |
-| `horizon` | 5 | label horizon in bars |
-| `hyperparameters` | per head | the head's own keys: `xgb.train` parameters in `xgb.py`, the pytabkit constructor arguments in `xgb_td.py` and `realmlp.py` |
-| `early_stopping`, `early_stopping_patience`, `val_size` | `True`, `50`, `0.2` | early stopping on the trailing `val_size` of the training window; patience is in boosting rounds (xgb, xgb_td) or epochs (realmlp) |
-| `rebalance_periods`, `top_n`, `direction` | 5, `None`, `"long_only"` | rebalance every 5 bars into the top `top_n` scores (`None`: 50 for sp500, 10 for nasdaq100); `"long_short"` also shorts the bottom `top_n` |
-| `fees`, `slippage`, `init_cash` | 0.0005, 0.0005, 1e6 | proportional costs and starting capital |
-| `benchmark` | `True` | compare against the universe's ETF (SPY or QQQ); `False` skips it |
-| `wandb_mode` | `"online"` | `"online"`, `"offline"` or `"disabled"` |
-
-`factor_analysis.py` has the data, factor and label fields above plus:
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `quantiles` | 5 | equal-count factor buckets per day |
-| `recompute` | `True` | `False` reads the stores an earlier run wrote instead of rebuilding them |
+| Where | What |
+| --- | --- |
+| `DATA_ROOT`, `STORES`, `RAW`, `REFERENCE`, `WORK` | the data root (`get_data_root()`: `QUANTLAB_DATA_DIR` or `data/` beside the repository) and the input and output locations under it |
+| `START`, `END` | data window; the factor warm-up is read before `START` |
+| `TRAIN_START` ... `TEST_END` | training and out-of-sample test windows (model pipelines) |
+| `HORIZON` | label horizon in bars |
+| `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
+| `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`window=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
+| `build_model()` | the `MLConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, or the pytabkit constructor arguments) |
+| `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, `top_n` (50 for the S&P 500, 10 for the Nasdaq-100), `direction`, costs, and the ETF `benchmark_dataset` |
+| `analyze()` | `quantiles` and `factor_names` of `Factor.analyze()` (factor-analysis pipelines) |
 
 ## Outputs
 
@@ -120,7 +101,7 @@ With a benchmark (the default), the backtest also buys and holds the ETF from th
 - `benchmark`: the ETF's own return statistics.
 - `relative`: the portfolio against the ETF: `excess_return` (relative NAV − 1), `excess_return_annualized`, `excess_max_drawdown`, `tracking_error`, `information_ratio`, `beta`, `correlation`, `capm_alpha`, `win_rate_vs_benchmark`.
 
-`report.html` draws the benchmark NAV beside the portfolio's and adds excess-return and excess-drawdown rows; The pipeline log line prints the headline numbers. Set `benchmark=False` to skip the comparison.
+`report.html` draws the benchmark NAV beside the portfolio's and adds excess-return and excess-drawdown rows; The pipeline log line prints the headline numbers. Pass `benchmark_dataset=None` in `backtest()` to skip the comparison.
 
 A backtest run directory can be rebuilt and re-run with `quantlab.utils.module.load_backtester_from_config`; see [docs/backtest.md](../../docs/backtest.md).
 

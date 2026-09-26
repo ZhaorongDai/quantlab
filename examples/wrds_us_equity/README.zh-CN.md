@@ -2,24 +2,22 @@
 
 [English](README.md) | 简体中文
 
-四个自成一体的脚本：一个模型一个文件，外加一个因子分析，都跑在 CRSP 日线数据上、针对 point-in-time 的指数成分股，支持 S&P 500（`universe="sp500"`）和 Nasdaq-100（`universe="nasdaq100"`）。每个文件只 import quantlab，可以单独拷走修改。
+每个"股票池 × 模型"一个自成一体的脚本，外加每个股票池一个因子分析脚本，都跑在 CRSP 日线数据上、针对 point-in-time 的指数成分股。每个文件只 import quantlab，可以单独拷走修改。
 
-| 文件 | 内容 |
-| --- | --- |
-| `xgb.py` | `XGBoostRegressor`（`xgb.train`，原生早停）-> TopN 回测 |
-| `xgb_td.py` | `XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）-> TopN 回测 |
-| `realmlp.py` | `RealMLPRegressor`（pytabkit 调优默认参数的 MLP）-> TopN 回测 |
-| `factor_analysis.py` | 对 Alpha101 和 Alpha158 的每一列调用 `Factor.analyze()`：每列一份 alphalens 风格的报告 |
+| 股票池 | 模型 pipeline | 因子分析 |
+| --- | --- | --- |
+| S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py` | `sp500_factor_analysis.py` |
+| Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
 
-每个模型 pipeline 都跑同样的五步：
+三个模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）和 `RealMLPRegressor`（pytabkit 调优默认参数的 MLP）。每个模型 pipeline 都跑同样的五步：
 
 1. **数据读取**：读取已转换的 CRSP 数据仓库及其成分股面板，写出两个派生仓库（`prices`、`members`）。
 2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，存为 Zarr。
-3. **标签**：`Return`，即 t+1 开盘到 t+1+`horizon` 开盘的收益，只在成分股行上计算。
+3. **标签**：`Return`，即 t+1 开盘到 t+1+`HORIZON` 开盘的收益，只在成分股行上计算。
 4. **模型训练**：在训练窗口上训练一次。
-5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 ETF 基准对比（S&P 500 用 SPY，Nasdaq-100 用 QQQ），记录到 Weights & Biases。
+5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
 
-因子分析 pipeline 跑第 1 到 3 步，然后用 `analyze()` 代替模型。不使用命令行参数：每个文件里数据根目录是 `DATA_ROOT` 常量，其余设置都是 `Settings` dataclass 的字段。
+因子分析 pipeline 跑第 1 到 3 步，然后对两个因子库的每一列调用 `Factor.analyze()`，不训练模型。不使用命令行参数，也没有设置对象：每个文件顶部只有几个常量（`DATA_ROOT`、日期、`HORIZON`、`WANDB_MODE`），quantlab 的各个 config 都在用到的地方直接构造（`DatasetConfig`、`FactorConfig`、`MLConfig`、`CrossSectionBacktestConfig`），每一步做什么就是它拿到的 config。
 
 ## 前置条件
 
@@ -41,7 +39,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 
 `--end` 默认为今天，并截到 CRSP 年度发布的最后一天；每个脚本都会转换成 Zarr；`--refresh` 让每个 PERMNO 从各自的水位继续。`--download-dir` 和 `--zarr-dir` 默认为当前目录；上面这组相对仓库根目录的取值会把 store 放到 pipeline 读取的位置。
 
-每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT` 常量）。
+每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
 
 KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。
 
@@ -49,47 +47,30 @@ Weights & Biases 记录默认开启（`wandb_mode="online"`）：先运行一次
 
 ## 运行
 
-打开想跑的脚本，如果仓库不在 quantlab 默认的数据根目录下就改 `DATA_ROOT`，再修改 `Settings`（至少改 `universe`、日期和 `hyperparameters`），然后运行：
+打开对应股票池和模型的脚本，如果仓库不在 quantlab 默认的数据根目录下就改 `DATA_ROOT`，再修改想改的常量和 config（日期、`hyperparameters`、`top_n` 等），然后运行：
 
 ```bash
-uv run python examples/wrds_us_equity/xgb.py
-uv run python examples/wrds_us_equity/factor_analysis.py
+uv run python examples/wrds_us_equity/sp500_xgb.py
+uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 ```
 
-也可以在 VS Code / Jupyter 里逐个运行 `# %%` 单元。每一步都是一个函数（`prepare_stores`、`compute_factors`、`train`、`backtest`，或 `analyze`），在 notebook 里可以只重跑改动的那一步：
-
-```python
-import realmlp
-s = realmlp.Settings(universe="nasdaq100", start_date="2015-01-01", train_start="2015-01-01")
-realmlp.main(s)
-```
+也可以在 VS Code / Jupyter 里逐个运行 `# %%` 单元。每一步都是一个函数（`prepare_stores`、`compute_factors`、`train`、`backtest`，或 `analyze`），在 notebook 里可以只重跑改动的那一步。
 
 ## 设置项
 
-三个模型 pipeline 共用这些字段：
+所有设置都在每个脚本的顶部，顺序如下：
 
-| 字段 | 默认值 | 含义 |
-| --- | --- | --- |
-| `universe` | `"sp500"` | `"sp500"` 或 `"nasdaq100"`；决定读取哪组输入仓库、成分股面板、基准 ETF 和输出目录 |
-| `start_date`、`end_date` | 2012-01-01、2024-12-31 | 数据窗口；因子预热数据从它之前读取 |
-| `train_start` ... `test_end` | 2012-2019 / 2020-2024 | 训练窗口与样本外测试窗口 |
-| `factor_window` | 400 | 因子回看长度（自然日） |
-| `alpha101_names`、`alpha158_names` | `None` | 各因子库的子集；`None` 表示全部 82 / 169 列 |
-| `njobs` | 16 | KunQuant 执行器线程数 |
-| `horizon` | 5 | 标签周期（bar 数） |
-| `hyperparameters` | 各模型不同 | 键名是模型自己的：`xgb.py` 用 `xgb.train` 参数，`xgb_td.py` 和 `realmlp.py` 用 pytabkit 构造参数 |
-| `early_stopping`、`early_stopping_patience`、`val_size` | `True`、`50`、`0.2` | 在训练窗口末尾 `val_size` 比例上早停；patience 对 xgb/xgb_td 是 boosting 轮数，对 realmlp 是 epoch |
-| `rebalance_periods`、`top_n`、`direction` | 5、`None`、`"long_only"` | 每 5 个 bar 调仓一次，买入得分最高的 `top_n` 只（`None`：sp500 为 50，nasdaq100 为 10）；`"long_short"` 同时做空最低的 `top_n` 只 |
-| `fees`、`slippage`、`init_cash` | 0.0005、0.0005、1e6 | 按比例计的成本和初始资金 |
-| `benchmark` | `True` | 与该股票池的 ETF（SPY 或 QQQ）对比；`False` 跳过 |
-| `wandb_mode` | `"online"` | `"online"`、`"offline"` 或 `"disabled"` |
-
-`factor_analysis.py` 有上面的数据、因子和标签字段，另加：
-
-| 字段 | 默认值 | 含义 |
-| --- | --- | --- |
-| `quantiles` | 5 | 每天按因子值等分的分位数个数 |
-| `recompute` | `True` | `False` 时读取上一次运行写出的仓库，不重建派生仓库、不重算因子和标签 |
+| 位置 | 内容 |
+| --- | --- |
+| `DATA_ROOT`、`STORES`、`RAW`、`REFERENCE`、`WORK` | 数据根目录（`get_data_root()`：`QUANTLAB_DATA_DIR` 或仓库旁的 `data/`）及其下的输入输出位置 |
+| `START`、`END` | 数据窗口；因子预热数据从 `START` 之前读取 |
+| `TRAIN_START` ... `TEST_END` | 训练窗口与样本外测试窗口（模型 pipeline） |
+| `HORIZON` | 标签周期（bar 数） |
+| `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
+| `factors_and_label()` | 两个因子库的 `FactorConfig`（`window=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
+| `build_model()` | `MLConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |
+| `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10）、`direction`、成本，以及 ETF `benchmark_dataset` |
+| `analyze()` | `Factor.analyze()` 的 `quantiles` 和 `factor_names`（因子分析 pipeline） |
 
 ## 输出
 
@@ -120,7 +101,7 @@ analysis/alpha101/, analysis/alpha158/
 - `benchmark`：ETF 自身的收益统计。
 - `relative`：组合相对 ETF 的表现：`excess_return`（相对净值 − 1）、`excess_return_annualized`、`excess_max_drawdown`、`tracking_error`、`information_ratio`、`beta`、`correlation`、`capm_alpha`、`win_rate_vs_benchmark`。
 
-`report.html` 会在组合净值旁画出基准净值，并增加超额收益和超额回撤两行。pipeline 的日志行会打印核心数字。设置 `benchmark=False` 可跳过对比。
+`report.html` 会在组合净值旁画出基准净值，并增加超额收益和超额回撤两行。pipeline 的日志行会打印核心数字。在 `backtest()` 里传 `benchmark_dataset=None` 可跳过对比。
 
 回测的运行目录可以用 `quantlab.utils.module.load_backtester_from_config` 重建并重跑，见 [docs/zh-CN/backtest.md](../../docs/zh-CN/backtest.md)。
 
