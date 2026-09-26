@@ -734,7 +734,7 @@ def mock_universe_fetchers(
     # `universe.parquet` with an empty table. This fixture's roster is
     # deliberately six rows -- three of which survive the filter -- because it
     # exists to prove the exchange/assetType/priceCurrency filtering, not the
-    # volume guard. Lowering the threshold here keeps that guard live in
+    # roster-size guard. Lowering the threshold here keeps that guard live in
     # production while letting the filtering tests stay legible; the guard
     # itself is exercised against its real value in
     # `test_nasdaq_roster_guard_rejects_a_drifted_filter`.

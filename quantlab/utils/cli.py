@@ -46,7 +46,7 @@ def add_data_dir_arg(
         default=None,
         help=(
             "Storage root for this run: everything the run reads and writes "
-            "(raw downloads, watermarks, Zarr stores, the universe table) is "
+            "(raw downloads, watermarks, Zarr stores) is "
             "derived from it. Precedence is --data-dir > QUANTLAB_DATA_DIR > "
             "the repo-root data/ directory. The directory does not need to "
             "exist; the run creates what it needs."

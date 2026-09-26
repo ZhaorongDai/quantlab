@@ -471,7 +471,7 @@ def test_the_inspector_answers_without_credentials(
 
     This is the absurdity D-08 exists to remove. `TiingoAcquisition(config)`
     raises `RuntimeError` at construction without `TIINGO_API_KEY`, so
-    `ingest_us_equity.py` USED TO print "coverage report: skipped" on an
+    the old market download script USED TO print "coverage report: skipped" on an
     unconfigured machine -- for a computation that is nothing but `open()` and
     `json.load()`. 03.4-06 deleted that skip branch and routed the shell's
     dry-run report through this class, so the sentence above is now history
@@ -825,7 +825,7 @@ def test_inventory_reports_the_two_tiers_separately(
 
     A single merged footprint would make "the raw tier is 208 MB and the Zarr
     store is 5.3 MB" unanswerable, and `--to-zarr` is optional on
-    `ingest_us_equity.py`, so "no Zarr store" is a NORMAL state that must read
+    a download script, so "no Zarr store" is a NORMAL state that must read
     as "not asked" (`None`) rather than as zero.
 
     The sidecar tree here deliberately contains both artefacts a blind glob

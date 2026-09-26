@@ -5,7 +5,7 @@
 constructing a `BaseDataset` subclass never touches the raw source or the
 Zarr store, and every explicit call to `from_raw_data()` reconverts
 unconditionally. These tests pin exactly that: the ingest idiom
-`Dataset(cfg).from_raw_data().save()` (`ingest_alpaca.py` / `ingest_tiingo.py`)
+`Dataset(cfg).from_raw_data().save()` (the old Alpaca/Tiingo download scripts)
 converts the raw tree once, and calling `from_raw_data()` a second time
 converts it again rather than silently reusing the first result.
 """
@@ -63,7 +63,7 @@ def _ingest_config(
     tmp_path: Path,
 ) -> DatasetConfig:
     """A pinned-symbol config over a raw tree with NO destination store -- the
-    exact shape `ingest_alpaca.py` / `ingest_tiingo.py` construct.
+    exact shape the old Alpaca/Tiingo download scripts constructed.
     """
     hive_raw_tree(
         tmp_path / "raw",

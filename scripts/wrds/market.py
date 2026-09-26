@@ -1,4 +1,4 @@
-"""Download the whole CRSP daily market from WRDS, with its listing panel.
+"""Download the CRSP daily market from WRDS, with its listing panel.
 
 The *market* is every security CRSP covers, with no index restriction. The
 roster is read from CRSP's security-information history in the reference
@@ -65,9 +65,10 @@ MEMBERSHIP_STORE = "wrds_crsp_market_membership.zarr"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build this script's argument parser."""
     parser = argparse.ArgumentParser(
         description=(
-            "Download the whole CRSP daily market from WRDS into Zarr, with "
+            "Download the CRSP daily market from WRDS into Zarr, with "
             "its listing panel. Requires WRDS_USERNAME in the environment and "
             "the password in ~/.pgpass."
         )

@@ -230,7 +230,7 @@ timestamp
 uv run python scripts/wrds/market.py --start 2024-01-01 --end 2024-12-31
 ```
 
-它会写出 `wrds_crsp_market_1d.zarr` 和上市状态掩码 `wrds_crsp_market_membership.zarr`；边车文件里记录的名单 id 是 `crsp_market`。指数成分面板由 `index.py` 写出。这两个 store 在 2026-09-25 之前叫 `wrds_crsp_all_*`：已有的 store 手动改名，或者重新运行 `market.py`，从未改动的原始层重新转换。
+它会写出 `wrds_crsp_market_1d.zarr` 和上市状态掩码 `wrds_crsp_market_membership.zarr`。指数成分面板由 `index.py` 写出。这两个 store 在 2026-09-25 之前叫 `wrds_crsp_all_*`：已有的 store 手动改名，或者重新运行 `market.py`，从未改动的原始层重新转换。
 
 ### 增量更新 store
 

@@ -424,10 +424,10 @@ Traceback (most recent call last):
 ValueError: UniverseMask: the membership panel must carry an 'is_member' variable, got ['close']. Passing the two panels in the wrong order is the usual cause.
 ```
 
-`UniverseCatalog.build()` refuses to use a cached change-log snapshot when the live fetch fails, unless `allow_stale=True`, because a stale table saved to disk looks the same as a fresh one. `save()` refuses to overwrite the table when any known category has no rows. The catalog also hosts the acquisition volume guard that prices a download before any request is made; see the `acquisition` guide.
+`UniverseCatalog.build()` refuses to use a cached change-log snapshot when the live fetch fails, unless `allow_stale=True`, because a stale table saved to disk looks the same as a fresh one. `save()` refuses to overwrite the table when any known category has no rows.
 
 Change-log sources record additions and removals only from a start date onward. A symbol removed in the log with no recorded addition gets the fetcher's coverage start as its `start_date`, which reads as "already a member at the earliest date the source covers", not as its true start.
 
 ## See also
 
-The `universe` guide covers the price and liquidity filter, which answers a different question from index membership and can be combined with it. The `dataset` guide describes the dataset base class the panel extends, `wrds_crsp` describes the CRSP reference tier, and `acquisition` covers the volume guard. Class docstrings: `quantlab.base.constituent.IndexConstituentDataset`, `quantlab.dataset.constituent`, `quantlab.universe.UniverseCatalog`, `quantlab.universe.IndexMembershipFetcher`, `quantlab.dataset._support.masking.UniverseMask`.
+The `universe` guide covers the price and liquidity filter, which answers a different question from index membership and can be combined with it. The `dataset` guide describes the dataset base class the panel extends, `wrds_crsp` describes the CRSP reference tier, and `acquisition` covers downloads. Class docstrings: `quantlab.base.constituent.IndexConstituentDataset`, `quantlab.dataset.constituent`, `quantlab.universe.UniverseCatalog`, `quantlab.universe.IndexMembershipFetcher`, `quantlab.dataset._support.masking.UniverseMask`.

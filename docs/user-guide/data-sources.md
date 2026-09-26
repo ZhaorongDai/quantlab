@@ -24,7 +24,7 @@ and `symbol`. The project calls this a *panel*: one row per date, one column per
 security, one variable per field (close, volume and so on). Factors, models and
 backtests read panels, never raw files.
 
-Keeping the two steps apart is deliberate. A full-market backfill can take
+Keeping the two steps apart is deliberate. A market-wide backfill can take
 hours, and converting it is a separate long job; each step can be interrupted
 and resumed on its own, and you can re-convert with different settings without
 downloading anything again. See [Datasets](datasets.md) for the panel side.
@@ -345,7 +345,7 @@ The batch that hit it waits `rate_limit_backoff_seconds` (default 5) and
 retries, up to `rate_limit_max_retries` times (default 6), before it is
 recorded as failed for the next run. The free plan allows about 200 historical
 requests per minute and the paid plan about 10,000; at 200 per minute a
-full-market daily backfill takes about 8 minutes but a full-market minute-bar
+market-wide daily backfill takes about 8 minutes but a market-wide minute-bar
 backfill takes about 50 hours.
 
 WRDS has no request quota. Its limits are disk space and Duo two-factor

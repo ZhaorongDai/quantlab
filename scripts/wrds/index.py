@@ -68,6 +68,7 @@ INDEXES: dict[str, tuple[str, type]] = {
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """Build this script's argument parser."""
     parser = argparse.ArgumentParser(
         description=(
             "Download an index's CRSP daily bars and membership panel from "
