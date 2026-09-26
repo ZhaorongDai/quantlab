@@ -7,17 +7,18 @@ id that never changes or gets reused. This script resolves the point-in-time
 members of one index (every PERMNO that belonged to it at any time in the
 window, including the ones that later left, which avoids survivorship bias),
 pulls their ``crsp_a_stock.dsf_v2`` daily rows, and writes two Zarr stores
-under the data root:
+into ``--zarr-dir`` (default: the current directory):
 
-- ``data/us_equity/1d/wrds_crsp_{index}_1d.zarr``, the members' daily bars
-  on the PERMNO axis, with the security-filter and ticker sidecars;
-- ``data/us_equity/1d/wrds_crsp_{index}_membership.zarr``, the membership
-  panel that marks the days each security was a member.
+- ``wrds_crsp_{index}_1d.zarr``, the members' daily bars on the PERMNO
+  axis, with the security-filter and ticker sidecars;
+- ``wrds_crsp_{index}_membership.zarr``, the membership panel that marks
+  the days each security was a member.
 
-The raw rows go to ``downloads/us_equity/1d/wrds_crsp/wrds/`` and the CRSP,
-Compustat and CCM reference tables to the sibling ``_reference/``. Reference
-tables already on disk for the same CRSP release are reused, so running this
-script and ``market.py`` back to back downloads them once.
+The raw rows go to ``<download-dir>/wrds/`` and the CRSP, Compustat and CCM
+reference tables to ``<download-dir>/_reference/``; ``--download-dir`` also
+defaults to the current directory. Reference tables already on disk for the
+same CRSP release are reused, so running this script and ``market.py`` back
+to back with the same ``--download-dir`` downloads them once.
 
 ``WRDS_USERNAME`` must be set in the environment. The password is never read
 by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
@@ -30,10 +31,14 @@ Usage::
     uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01
     uv run python scripts/wrds/index.py --index nasdaq100 --start 2015-01-01 \\
         --end 2024-12-31 --refresh
+    uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01 \\
+        --download-dir /data/wrds/raw --zarr-dir /data/wrds/zarr
 
 ``--end`` defaults to today and is clipped to the last day of the annual CRSP
 release. ``--refresh`` continues each PERMNO from its recorded watermark
-instead of downloading the whole window again.
+instead of downloading the whole window again. ``--download-dir`` and
+``--zarr-dir`` choose where the raw files and the Zarr stores go; both
+default to the current directory.
 """
 
 import argparse
@@ -42,7 +47,6 @@ from datetime import date
 
 from quantlab.registry import DataSourceRegistry, convert, run
 from quantlab.base.config import ConstituentDatasetConfig, CrspDatasetConfig
-from quantlab.config import get_data_root
 from quantlab.dataset.constituent import (
     CompustatNasdaq100ConstituentDataset,
     CrspSP500ConstituentDataset,
@@ -51,9 +55,10 @@ from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.cli import (
-    add_data_dir_arg,
-    apply_data_dir,
+    add_output_dir_args,
+    place_downloads,
     print_conversion_result,
+    resolve_output_dirs,
 )
 
 SOURCE = DataSourceRegistry.get("wrds")
@@ -102,7 +107,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue each PERMNO from its watermark instead of re-downloading.",
     )
-    add_data_dir_arg(parser)
+    add_output_dir_args(parser)
     return parser
 
 
@@ -121,7 +126,7 @@ def _schemas_for(universe: str) -> tuple[str, ...]:
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    apply_data_dir(args)  # before any path is derived from the data root
+    download_dir, zarr_dir = resolve_output_dirs(args)
     universe, constituent_cls = INDEXES[args.index]
     requested_end = args.end or date.today().isoformat()
 
@@ -155,6 +160,7 @@ if __name__ == "__main__":
                 symbols=(), start_date=start, end_date=end,
                 kwargs={"clip_to_product_end": True},
             )
+            acq_config = place_downloads(acq_config, download_dir)
             reference_dir = ACQ.reference_dir_for(acq_config)
             manifest = CrspReferenceTables(session, reference_dir).pull(
                 product_end=product_end,
@@ -183,9 +189,8 @@ if __name__ == "__main__":
         print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
         # 6. Convert: the bars, then the membership panel.
-        data_dir = get_data_root() / "data" / "us_equity" / "1d"
         ds_config = CrspDatasetConfig(
-            zarr_file_path=str(data_dir / f"wrds_crsp_{args.index}_1d.zarr"),
+            zarr_file_path=str(zarr_dir / f"wrds_crsp_{args.index}_1d.zarr"),
             raw_data_dir_path=acq_config.raw_data_dir_path,
             reference_dir=str(reference_dir),
             start_date=start,
@@ -205,7 +210,7 @@ if __name__ == "__main__":
 
         membership = constituent_cls(
             ConstituentDatasetConfig(
-                zarr_file_path=str(data_dir / f"wrds_crsp_{args.index}_membership.zarr"),
+                zarr_file_path=str(zarr_dir / f"wrds_crsp_{args.index}_membership.zarr"),
                 cache_dir=str(reference_dir),
                 start_date=start,
                 end_date=end,

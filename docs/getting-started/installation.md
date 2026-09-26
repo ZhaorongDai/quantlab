@@ -199,10 +199,11 @@ tiingo {'TIINGO_API_KEY': False}
 wrds {'WRDS_USERNAME': False}
 ```
 
-Two more variables control where data lives. `QUANTLAB_DATA_DIR` sets the root directory for
-raw downloads and converted Zarr stores; the `--data-dir` flag of the download scripts takes
-precedence over it, and without either the `data/` directory at the repository root is used.
-`QUANTLAB_DATA_ROOT` is read only by the CRSP measurement test mentioned above.
+Two more variables control where data lives. `QUANTLAB_DATA_DIR` sets the root directory the
+library's config factories derive raw-download and Zarr paths from; without it the `data/`
+directory at the repository root is used. The WRDS download scripts do not read it: they write
+raw files under `--download-dir` and Zarr stores under `--zarr-dir`, both defaulting to the
+current directory. `QUANTLAB_DATA_ROOT` is read only by the CRSP measurement test mentioned above.
 
 ## Next steps
 

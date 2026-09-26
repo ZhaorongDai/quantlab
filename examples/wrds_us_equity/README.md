@@ -19,15 +19,18 @@ Download and convert the roster of the index you want once (this needs a WRDS ac
 ```bash
 export WRDS_USERNAME=<your-wrds-username>   # password in ~/.pgpass
 # S&P 500 (CRSP's own membership, from 1925)
-uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-12-31
+uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 # Nasdaq-100 (Compustat membership linked through CCM, from 1995;
 # needs the Compustat and CCM schemas)
-uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
+uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 # The benchmark ETFs, by CRSP PERMNO (SPY 84398, QQQ 86755), one store each
-uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 ```
 
-`--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark; `--data-dir` overrides the data root.
+`--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--zarr-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
 
 Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `Settings.data_root`).
 

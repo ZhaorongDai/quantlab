@@ -302,7 +302,7 @@ uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT --start 2024-01-02 --end 
 
 Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的方式通过 `quantlab.registry.run` 和 `convert` 驱动。
 
-存储根目录取 `--data-dir`，其次是环境变量 `QUANTLAB_DATA_DIR`，最后是仓库下的 `data/` 目录。
+库的存储根目录取环境变量 `QUANTLAB_DATA_DIR`，否则用仓库下的 `data/` 目录。脚本不用它：原始文件的位置由 `--download-dir` 指定，Zarr store 的位置由 `--zarr-dir` 指定，两者都默认为当前目录。
 
 ## 扩展
 

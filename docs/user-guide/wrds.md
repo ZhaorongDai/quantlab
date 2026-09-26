@@ -87,7 +87,8 @@ run checks these before copying anything.
 Three scripts under `scripts/wrds/` download CRSP daily rows, one per kind of
 roster, and every run converts to Zarr. Each takes `--start` and, optionally,
 `--end` (default today, clipped to the last day of the annual CRSP release),
-`--refresh` (continue each PERMNO from its watermark) and `--data-dir`. These
+`--refresh` (continue each PERMNO from its watermark), `--download-dir` and
+`--zarr-dir` (both default to the current directory). These
 commands need a WRDS account, so no output is shown:
 
 ```bash
@@ -132,9 +133,10 @@ questions, which is why they are fetched before the roster is resolved, and
 tables already on disk for the same CRSP release are reused rather than
 downloaded again.
 
-The raw tier lands under `downloads/us_equity/1d/wrds_crsp/wrds/month=YYYY-MM/`,
-one row per PERMNO and day, exactly as CRSP serves it. The Zarr stores go
-under `data/us_equity/1d/`, named as above.
+The raw tier lands under `<download-dir>/wrds/month=YYYY-MM/`, one row per
+PERMNO and day, exactly as CRSP serves it, with the reference tables in
+`<download-dir>/_reference/`. The Zarr stores go into `<zarr-dir>`, named as
+above.
 
 ### The product end and the vintage
 
@@ -347,7 +349,7 @@ download by size (see the ADR
 so scope a pull by symbol list and date range.
 
 Every record is kept in the raw tier, unfiltered, under
-`downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=AAPL/`.
+`<download-dir>/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=AAPL/`.
 The `date=` directory is the US/Eastern session date; timestamps are stored as
 naive UTC. Each record also keeps the order in which the server returned it
 (`wrds_row_ord`), because before 2018 the tables have only microsecond
@@ -358,7 +360,7 @@ timestamps and several records can share one.
 The script, or a call to `quantlab.registry.convert` with an
 `NbboDatasetConfig`, resamples the raw records into a regular bar panel on
 `(timestamp, symbol)`, written to
-`data/us_equity/tick/wrds_nbbo_{interval}_{start}-{end}.zarr` (for example
+`<zarr-dir>/wrds_nbbo_{interval}_{start}-{end}.zarr` (for example
 `wrds_nbbo_1m_0930-1600.zarr`). Resampling reads only local files, so you can
 re-convert with a different bar size or session window without contacting
 WRDS.

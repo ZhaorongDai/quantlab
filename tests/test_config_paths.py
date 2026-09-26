@@ -124,7 +124,7 @@ def test_stock_config_defaults_are_byte_identical_without_the_new_arguments() ->
 
 def test_stock_config_subdir_and_store_name_redirect_under_the_same_root() -> None:
     """D-04: there stays exactly ONE storage root, whichever of the three
-    levels answers it (`--data-dir` > `QUANTLAB_DATA_DIR` > repo-root `data/`,
+    levels answers it (`set_data_root` > `QUANTLAB_DATA_DIR` > repo-root `data/`,
     260907-rjq D-01). These arguments select a subdirectory/filename BENEATH
     the existing `data/{market}/{frequency}/` convention -- they are not a
     second root and they never hardcode a volume.
@@ -180,7 +180,7 @@ def test_env_var_and_repo_default_answer_when_the_override_is_cleared(
 def test_the_override_reaches_every_path_field_the_flag_promises(
     monkeypatch, tmp_path
 ) -> None:
-    """DDIR-01: `--data-dir /X` must move the four path fields a run actually
+    """DDIR-01: `set_data_root("/X")` must move the four path fields a run actually
     writes -- `raw_data_dir_path`, `watermark_path`, `zarr_file_path` and the
     universe table's `output_path` -- across every factory, not just the one
     factory the flag was first wired to.

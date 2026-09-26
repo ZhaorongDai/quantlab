@@ -1,7 +1,7 @@
-"""The `--data-dir` per-run storage root: precedence and the two shared CLI
-helpers.
+"""The library's storage root (`set_data_root` precedence) and the shared CLI
+helpers the WRDS scripts use for their output directories.
 
-The knob is one knob with three levels -- CLI override > `QUANTLAB_DATA_DIR` >
+The root is one knob with three levels -- `set_data_root` > `QUANTLAB_DATA_DIR` >
 repo-root `data/` (260907-rjq D-01). These tests pin every cell of that
 precedence and the reset contract that keeps a process-global override from
 leaking.
@@ -18,7 +18,11 @@ from pathlib import Path
 import pytest
 
 import quantlab.config as config
-from quantlab.utils.cli import add_data_dir_arg, apply_data_dir
+from quantlab.utils.cli import (
+    add_output_dir_args,
+    place_downloads,
+    resolve_output_dirs,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,7 +55,9 @@ def test_override_wins_over_the_env_var(monkeypatch, tmp_path) -> None:
     assert config.get_data_root() == tmp_path / "from_cli"
 
 
-def test_env_var_wins_when_the_override_is_cleared(monkeypatch, tmp_path) -> None:
+def test_env_var_wins_when_the_override_is_cleared(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("QUANTLAB_DATA_DIR", str(tmp_path / "from_env"))
     config.set_data_root(None)
 
@@ -65,7 +71,9 @@ def test_repo_default_when_neither_override_nor_env_is_set(monkeypatch) -> None:
     assert config.get_data_root() == REPO_ROOT / "data"
 
 
-def test_set_data_root_accepts_a_string_and_a_path(monkeypatch, tmp_path) -> None:
+def test_set_data_root_accepts_a_string_and_a_path(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
 
     assert config.set_data_root(str(tmp_path)) == tmp_path
@@ -75,7 +83,7 @@ def test_set_data_root_accepts_a_string_and_a_path(monkeypatch, tmp_path) -> Non
 
 
 def test_set_data_root_expands_a_tilde(monkeypatch) -> None:
-    """D-07: a quoted `--data-dir '~/quantlab-data'` reaches Python with a
+    """D-07: a quoted `'~/quantlab-data'` from a shell reaches Python with a
     literal tilde; without expansion the run creates a directory named `~`.
     """
     monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
@@ -117,7 +125,9 @@ def test_set_data_root_neither_creates_nor_requires_the_directory(
     assert config.get_data_root() == missing
 
 
-def test_set_data_root_none_clears_and_returns_none(monkeypatch, tmp_path) -> None:
+def test_set_data_root_none_clears_and_returns_none(
+    monkeypatch, tmp_path
+) -> None:
     """D-06: a process-global knob needs a reset, or the first test that sets
     it silently redirects every later test in the session.
     """
@@ -131,7 +141,7 @@ def test_set_data_root_none_clears_and_returns_none(monkeypatch, tmp_path) -> No
 @pytest.mark.parametrize("value", ["", "   ", "\t"])
 def test_set_data_root_rejects_an_empty_value(value: str) -> None:
     """D-07: an env var of `""` is already falsy and falls through to the
-    default, but a user who typed `--data-dir ""` meant something, and silently
+    default, but a caller who passed `""` meant something, and silently
     meaning "repo default" is wrong.
     """
     with pytest.raises(ValueError):
@@ -139,50 +149,86 @@ def test_set_data_root_rejects_an_empty_value(value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# utils.cli.add_data_dir_arg() / apply_data_dir() -- D-03, D-04
+# utils.cli.add_output_dir_args() / resolve_output_dirs() / place_downloads()
 # ---------------------------------------------------------------------------
 
 
-def test_add_data_dir_arg_registers_the_flag_and_returns_the_parser() -> None:
+def test_add_output_dir_args_defaults_both_directories_to_the_current_one() -> (
+    None
+):
     parser = argparse.ArgumentParser()
 
-    assert add_data_dir_arg(parser) is parser
-    assert parser.parse_args([]).data_dir is None
-    assert parser.parse_args(["--data-dir", "/X"]).data_dir == "/X"
+    assert add_output_dir_args(parser) is parser
+    args = parser.parse_args([])
+    assert (args.download_dir, args.zarr_dir) == (".", ".")
+    assert resolve_output_dirs(args) == (Path.cwd(), Path.cwd())
 
 
-def test_apply_data_dir_is_a_no_op_when_the_flag_is_absent(
+def test_resolve_output_dirs_anchors_relative_paths_and_expands_tilde(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.delenv("QUANTLAB_DATA_DIR", raising=False)
-    config.set_data_root(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    args = add_output_dir_args(argparse.ArgumentParser()).parse_args(
+        ["--download-dir", "raw", "--zarr-dir", "~/zarr"]
+    )
 
-    assert apply_data_dir(argparse.Namespace(data_dir=None)) is None
-    assert config.get_data_root() == tmp_path
+    download_dir, zarr_dir = resolve_output_dirs(args)
 
-    # An args object that never saw `add_data_dir_arg` must not raise either --
-    # `apply_data_dir` is safe to call from a script that has not (yet) wired
-    # the flag.
-    assert apply_data_dir(argparse.Namespace()) is None
-    assert config.get_data_root() == tmp_path
+    assert download_dir == tmp_path / "raw"
+    assert zarr_dir == tmp_path / "home" / "zarr"
+    assert download_dir.is_absolute() and zarr_dir.is_absolute()
 
 
-def test_apply_data_dir_sets_the_root_and_returns_it(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("QUANTLAB_DATA_DIR", str(tmp_path / "from_env"))
+def test_place_downloads_keeps_the_vendor_directory_and_moves_both_tiers(
+    tmp_path,
+) -> None:
+    """The factory's `.../wrds_crsp/wrds` becomes `<download_dir>/wrds`, and
+    the watermarks sit beside it under `_watermarks/wrds`, so everything an
+    acquisition derives from the raw directory's parent (`_reference/`,
+    `_vintage/`) lands in the chosen directory too."""
+    from quantlab.base.config import AcquisitionConfig
 
-    stored = apply_data_dir(argparse.Namespace(data_dir=str(tmp_path)))
+    original = AcquisitionConfig(
+        raw_data_dir_path="/root/downloads/us_equity/1d/wrds_crsp/wrds",
+        watermark_path="/root/downloads/us_equity/1d/wrds_crsp/_watermarks/wrds",
+        symbols=("14593",),
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        kwargs={"data_type": "crsp_daily"},
+        market="us_equity",
+        frequency="1d",
+        vendor="wrds",
+    )
 
-    assert stored == tmp_path
-    assert config.get_data_root() == tmp_path
+    moved = place_downloads(original, tmp_path / "raw")
+
+    assert moved.raw_data_dir_path == str(tmp_path / "raw" / "wrds")
+    assert moved.watermark_path == str(
+        tmp_path / "raw" / "_watermarks" / "wrds"
+    )
+    assert (
+        Path(moved.raw_data_dir_path).parent
+        == Path(moved.watermark_path).parent.parent
+    )
+    assert (moved.symbols, moved.start_date, moved.end_date, moved.kwargs) == (
+        original.symbols,
+        original.start_date,
+        original.end_date,
+        original.kwargs,
+    )
+    assert (
+        original.raw_data_dir_path
+        == "/root/downloads/us_equity/1d/wrds_crsp/wrds"
+    )
 
 
 def test_utils_cli_does_not_import_config_at_module_scope() -> None:
-    """D-04: `quantlab/utils/cli.py`'s module docstring pins its module-scope
-    project dependency surface at `quantlab.base.chunking` and
-    `quantlab.base.data`. Importing `set_data_root` from the configuration
-    package at module scope would drag `quantlab.backend`,
-    `quantlab.dataset.spot`, `quantlab.dataset.stock` and `quantlab.base.config`
-    into every import of the dependency-light CLI helper module.
+    """D-04: `quantlab/utils/cli.py` imports nothing from the project at
+    module scope. Importing the configuration package there would drag
+    `quantlab.backend`, `quantlab.dataset.spot`, `quantlab.dataset.stock` and
+    `quantlab.base.config` into every import of the dependency-light CLI
+    helper module.
     """
     tree = ast.parse((REPO_ROOT / "quantlab" / "utils" / "cli.py").read_text())
 
@@ -197,7 +243,6 @@ def test_utils_cli_does_not_import_config_at_module_scope() -> None:
         name for name in module_scope_imports if name == CONFIG_MODULE
     }, (
         "quantlab/utils/cli.py imports the configuration package at module "
-        "scope; D-04 requires the "
-        "import inside apply_data_dir() so the dependency-light CLI module "
-        "does not pull in the whole dataset layer."
+        "scope; D-04 keeps the dependency-light CLI module free of the "
+        "dataset layer."
     )

@@ -138,7 +138,7 @@ command line and never written to a configuration file or a log.
 | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | Alpaca bars, quotes and trades |
 | `WRDS_USERNAME` | WRDS (CRSP and TAQ); the password is read from `~/.pgpass` |
 | `WANDB_API_KEY` | Optional Weights & Biases logging during training |
-| `QUANTLAB_DATA_DIR` | Optional root directory for downloaded and converted data |
+| `QUANTLAB_DATA_DIR` | Optional root directory the library's config factories derive data paths from; the WRDS scripts take `--download-dir` and `--zarr-dir` instead |
 
 The download scripts live in `scripts/wrds/` (`index.py`, `market.py`, `etf.py`, `nbbo.py`)
 and each prints its options with `--help`, for example
