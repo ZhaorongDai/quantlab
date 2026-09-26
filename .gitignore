@@ -171,6 +171,8 @@ archive
 models/*
 submission.csv
 analysis
+# ...but not the factor-analysis package.
+!/quantlab/analysis/
 
 # Code
 notebooks/junk.ipynb

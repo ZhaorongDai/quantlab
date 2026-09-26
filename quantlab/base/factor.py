@@ -32,6 +32,7 @@ from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Stage import Function
 
+from quantlab.analysis.factor_report import FactorAnalysis, FactorAnalyzer
 from quantlab.base.config import (
     BaseFactorConfig,
     FactorConfig,
@@ -500,6 +501,86 @@ class Factor(ABC):
                 return self
         """
         ...
+
+    def analyze(
+        self,
+        factor_names: list[str] | None = None,
+        frets: list["Factor"] | None = None,
+        output_dir: str | None = None,
+        quantiles: int = 5,
+    ) -> FactorAnalysis:
+        """Report how well this factor predicts forward returns, alphalens style.
+
+        Every analyzed factor variable is paired with every variable of every
+        forward-return label (*fret*). For each pair the factor and fret
+        panels are joined on their common timestamps and symbols, then
+        ``quantlab.analysis.factor_report.FactorAnalyzer`` computes the
+        information analysis (per-period Spearman IC, its mean, std, IR,
+        t-statistic, p-value, skew, kurtosis and monthly means), the returns
+        analysis (mean forward return per factor quantile, top-minus-bottom
+        spread, cumulative returns) and the turnover analysis (quantile
+        turnover, lag-1 factor rank autocorrelation), and draws one
+        composite matplotlib figure.
+
+        The factor and every fret must already hold their panels (after
+        ``cal()`` or ``read()``); nothing is computed here.
+
+        Parameters
+        ----------
+        factor_names : list of str, optional
+            Variables of this factor to analyze. All of
+            ``get_factor_names()`` when None.
+        frets : list of Factor
+            Forward-return labels, for example ``quantlab.label.fret.Return``;
+            ``get_labels()`` of each gives the forward returns. Required.
+        output_dir : str, optional
+            When given, the directory is created and ``summary.json``,
+            ``summary.csv``, ``ic.csv``, ``monthly_ic.csv``,
+            ``quantile_returns.csv``, ``turnover.csv``, one
+            ``<factor>__<fret>.png`` per pair and ``config.json`` are written
+            there. ``config.json`` holds ``{"factor": ..., "frets": [...]}``,
+            each rebuildable with ``load_factor_from_config``. When None,
+            nothing is written.
+        quantiles : int, default 5
+            Number of equal-count factor buckets per timestamp.
+
+        Returns
+        -------
+        FactorAnalysis
+            ``pairs`` (metrics per ``"<factor>__<fret>"``), ``figures``
+            (matplotlib figures, same keys) and tidy tables through
+            ``summary_table()``, ``ic_table()``, ``quantile_returns_table()``,
+            ``turnover_table()`` and ``monthly_ic_table()``.
+
+        Raises
+        ------
+        ValueError
+            If ``frets`` is empty, a factor name is unknown, a fret's most
+            common bar spacing differs from the factor's, or the panels share
+            no cells.
+
+        Examples
+        --------
+        ``factor`` is a computed ``Momentum`` (``momentum_5``) over eight
+        symbols in February 2024, and ``fwd`` a computed
+        ``quantlab.label.fret.Return`` with ``n_forward_periods=1`` over the
+        same symbols and dates:
+
+        >>> result = factor.analyze(
+        ...     frets=[fwd], quantiles=4, output_dir="data/analysis/momentum"
+        ... )
+        >>> list(result.pairs)
+        ['momentum_5__ret_1']
+        >>> cols = ["factor", "fret", "ic_mean", "ic_t_stat", "mean_spread"]
+        >>> result.summary_table()[cols].round(4)
+               factor   fret  ic_mean  ic_t_stat  mean_spread
+        0  momentum_5  ret_1  -0.0494    -0.7667       -0.002
+        >>> sorted(os.listdir("data/analysis/momentum"))
+        ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
+        """
+        return FactorAnalyzer(quantiles=quantiles).run(
+            self, frets or [], factor_names=factor_names, output_dir=output_dir
+        )
 
 
 class FactorKunQuant(Factor):
