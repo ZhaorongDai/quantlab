@@ -168,8 +168,8 @@ uv run pytest
 
 The KunQuant factor tests compile C++ and take a few minutes.
 `tests/test_crsp_rebuild_measurements.py` measures a real CRSP store and fails with an
-explanatory message unless `QUANTLAB_DATA_ROOT` points at one; add
-`--ignore=tests/test_crsp_rebuild_measurements.py` to leave it out.
+explanatory message unless `QUANTLAB_DATA_ROOT` points at one; a plain `uv run pytest`
+never collects it, and it runs only when named on the command line.
 
 ## Project status
 

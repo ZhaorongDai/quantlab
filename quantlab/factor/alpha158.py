@@ -12,7 +12,7 @@ panel at once.
 Two ``FactorKunQuant`` subclasses expose the library:
 ``Alpha158SpotKline`` works on crypto spot klines and z-scores every output
 along time, while ``Alpha158Stock`` works on adjusted US-equity bars and
-returns raw values.
+z-scores every output across symbols.
 """
 
 from typing import NoReturn
@@ -38,7 +38,7 @@ class Alpha158SpotKline(FactorKunQuant):
     wrapped in ``WindowedZScore`` over ``config.window`` bars, which
     standardizes each symbol against its own recent past. That suits the
     time-series strategies spot data is traded with here; ``Alpha158Stock``
-    returns raw values for cross-sectional strategies instead.
+    z-scores across symbols for cross-sectional strategies instead.
 
     Set ``factor_names`` to a few columns while experimenting: the full set
     has over a hundred columns, and compile time grows with the graph.
@@ -154,7 +154,7 @@ class Alpha158SpotKline(FactorKunQuant):
 
 
 class Alpha158Stock(FactorKunQuant):
-    """Alpha158 factors over adjusted US-equity bars, returned raw.
+    """Alpha158 factors over adjusted US-equity bars, z-scored across symbols.
 
     Reads only the split- and dividend-adjusted series ``adjOpen``,
     ``adjHigh``, ``adjLow``, ``adjClose`` and ``adjVolume``; list exactly
@@ -162,9 +162,9 @@ class Alpha158Stock(FactorKunQuant):
     price ``(adjHigh + adjLow + adjClose) / 3`` instead of the usual
     ``amount / volume``. The stock stores carry no dollar-volume column, and
     dividing a raw amount by a split-adjusted volume would jump at every
-    split. Outputs are not normalized, for the same reason as
-    ``Alpha101Stock``: these features feed cross-sectional strategies, and
-    normalizing across symbols is left to the consumer.
+    split. Every output is wrapped in ``CrossSectionalZScore``, as in
+    ``Alpha101Stock``: these features feed cross-sectional strategies, so
+    each one is standardized across the symbols of the same bar.
 
     Parameters
     ----------

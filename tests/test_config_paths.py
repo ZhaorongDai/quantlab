@@ -1,7 +1,7 @@
 """Regression tests for the `data/{market}/{frequency}/{name}.zarr` storage
 path convention (02-CONTEXT.md D-01/D-02) that every config factory in
-`quantlab/config/__init__.py` must follow, plus the new `stock_kline_config()` /
-`stock_acquisition_config()` factories (D-09).
+`quantlab/config/__init__.py` must follow: `stock_kline_config()`,
+`stock_acquisition_config()` and `universe_config()` (D-09).
 """
 
 import ast
@@ -92,37 +92,6 @@ def test_stock_config_factories_carry_the_alpaca_vendor_through_both_paths() -> 
         == Path(acq.raw_data_dir_path).parent
     )
     assert tiingo.raw_data_dir_path != acq.raw_data_dir_path
-
-
-def test_alpha101_config_still_constructs_successfully() -> None:
-    # Regression: alpha101_config()/alpha158_config()/spot_label_config() call
-    # spot_kline_config(symbols=symbols) with no market/frequency override —
-    # this must keep resolving via the new defaults, not raise a TypeError.
-    fc = alpha101_config()
-
-    assert fc is not None
-
-
-def test_sp500_constituent_config_uses_market_frequency_path_convention() -> None:
-    cfg = sp500_constituent_config()
-
-    assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
-
-
-def test_nasdaq100_constituent_config_uses_market_frequency_path_convention() -> None:
-    cfg = nasdaq100_constituent_config()
-
-    assert "data/us_equity/1d/" in cfg.zarr_file_path.replace("\\", "/")
-    assert cfg.zarr_file_path.replace("\\", "/").endswith(
-        "nasdaq100_constituent.zarr"
-    )
-    # RESEARCH Finding 6 bullet 4: two indices, two stores. Their coverage
-    # starts differ by ~31 years, so a shared store would imply 1976
-    # Nasdaq-100 coverage that does not exist.
-    assert (
-        nasdaq100_constituent_config().zarr_file_path
-        != sp500_constituent_config().zarr_file_path
-    )
 
 
 def test_stock_config_defaults_are_byte_identical_without_the_new_arguments() -> None:
@@ -318,7 +287,10 @@ def test_the_by_construction_root_check_actually_inspects_something() -> None:
         if kw.arg and (kw.arg.endswith("_path") or kw.arg.endswith("_dir"))
     ]
 
-    assert len(considered) >= 7, (
+    # stock_kline_config (raw_data_dir_path, zarr_file_path),
+    # stock_acquisition_config (raw_data_dir_path, watermark_path) and
+    # universe_config (output_path, cache_dir).
+    assert len(considered) >= 6, (
         f"only {len(considered)} path-shaped keyword arguments found in "
         "quantlab/config/__init__.py's factories; the by-construction root check "
         "above "

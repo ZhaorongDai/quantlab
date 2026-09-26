@@ -36,21 +36,13 @@ either of which alone would be sufficient:
    ordinary test loop would re-convert the real store on every `pytest` run,
    which is worse than a red gate.
 
-So the phase-wide command is::
-
-    uv run pytest -q \\
-      --ignore=tests/test_factor_hierarchy.py \\
-      --ignore=tests/test_crsp_rebuild_measurements.py \\
-      -p no:cacheprovider
-
-and this file runs on its own::
+`tests/conftest.py:pytest_ignore_collect` therefore leaves this module out
+of any collection that does not name it: the regression command is the plain
+``uv run pytest tests -p no:cacheprovider``, and this file runs on its own::
 
     QUANTLAB_DATA_ROOT="$(dirname "$(git rev-parse --path-format=absolute \\
       --git-common-dir)")" uv run pytest -q -s \\
       tests/test_crsp_rebuild_measurements.py -p no:cacheprovider
-
-`.planning/config.json`'s `workflow.test_command` carries the same `--ignore`,
-so the gate the tooling runs and the gate the plan describes are one gate.
 
 **Why the root comes from `--git-common-dir`.** `data/` is gitignored, so it
 does not exist inside a git worktree at all; executions are isolated into

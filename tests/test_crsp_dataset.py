@@ -898,9 +898,15 @@ def test_alpha158_computes_over_a_crsp_panel_with_no_consumer_change(
 
 
 def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_path):
-    """The `Return` label over a CRSP panel IS CRSP's own next-day `dlyret`.
+    """The `Return` label over a CRSP panel IS CRSP's own `dlyret`, two bars on.
 
-    Not a tautology: the label is computed by KunQuant from `adjClose`, while
+    `Return` is the open-to-open label: at bar t it is
+    `adjOpen[t + 2] / adjOpen[t + 1] - 1` for `n_forward_periods=1`. The
+    synthetic open is a fixed 0.99 of the raw close on every day, so the
+    adjusted open-to-open chain equals the total-return chain and the label
+    at t must be the vendor's `dlyret` at t + 2.
+
+    Not a tautology: the label is computed by KunQuant from `adjOpen`, while
     `ret` is the vendor's number carried through untouched. They agree only if
     the total-return adjustment reproduces the return chain exactly -- across
     the 2:1 split included, where the RAW price ratio is `(1 + r) / 2`.
@@ -914,7 +920,7 @@ def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_p
         _factor_config(
             dataset_config,
             factor_names=["ret_1"],
-            data_columns=["adjClose"],
+            data_columns=["adjOpen"],
             tmp_path=tmp_path,
             window=0,
             kwargs={"n_forward_periods": 1},
@@ -925,21 +931,23 @@ def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_p
     series = labels["ret_1"].sel(symbol=SYNTHETIC_AXIS).to_numpy()
 
     assert len(series) == SERIES_DAYS
-    for index in range(SERIES_DAYS - 1):
-        assert series[index] == pytest.approx(returns[index + 1], rel=1e-5), (
+    for index in range(SERIES_DAYS - 2):
+        assert series[index] == pytest.approx(returns[index + 2], rel=1e-5), (
             index,
             days[index],
         )
-    # The last bar has no next day, so it has no label.
-    assert np.isnan(series[-1])
+    # The last two bars have no exit open, so they have no label.
+    assert np.isnan(series[-2:]).all()
 
 
 def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
-    """The label on 2008-09-17 is the -60% delisting loss.
+    """The label on 2008-09-16 is the -60% delisting loss.
 
-    This is the survivorship-bias test stated in the vocabulary a model
-    actually trains on. If the delisting row were dropped, or its return
-    double-counted, this cell would hold NaN or -0.84 instead.
+    `Return` is open-to-open: the label at 2008-09-16 enters at the 09-17 open
+    and exits at the 09-18 open, the delisting day. This is the
+    survivorship-bias test stated in the vocabulary a model actually trains
+    on. If the delisting row were dropped, or its return double-counted, this
+    cell would hold NaN or -0.84 instead.
     """
     from quantlab.label.fret import Return
     from tests.crsp_fixtures import LEHMAN_2008_ROWS
@@ -947,6 +955,10 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
     # Lehman's five VERBATIM rows, padded to the eight-symbol KunQuant width
     # by companions trading on the SAME five days. The padding changes no
     # value of `LEH`'s own series -- the panel is a cartesian product.
+    # The verbatim rows carry no `dlyopen`; the open is set equal to the
+    # close (SYNTHETIC) so the adjusted open-to-open chain equals the
+    # total-return chain and the delisting loss lands on one label.
+    lehman_rows = [dict(row, dlyopen=row["dlyprc"]) for row in LEHMAN_2008_ROWS]
     days = [
         "2008-09-12",
         "2008-09-15",
@@ -956,7 +968,7 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
     ]
     dataset_config = _build_store(
         tmp_path,
-        list(LEHMAN_2008_ROWS) + _companion_rows(days),
+        lehman_rows + _companion_rows(days),
         [LEHMAN_PERMNO] + _companion_permnos(),
         start="2008-09-12",
         end="2008-09-30",
@@ -966,7 +978,7 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
         _factor_config(
             dataset_config,
             factor_names=["ret_1"],
-            data_columns=["adjClose"],
+            data_columns=["adjOpen"],
             tmp_path=tmp_path,
             window=0,
             kwargs={"n_forward_periods": 1},
@@ -975,7 +987,7 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
 
     labels = label.cal().get_labels().load()
     value = float(
-        labels["ret_1"].sel(timestamp="2008-09-17", symbol=LEHMAN_AXIS).values
+        labels["ret_1"].sel(timestamp="2008-09-16", symbol=LEHMAN_AXIS).values
     )
     assert value == pytest.approx(-0.6, rel=1e-5)
 

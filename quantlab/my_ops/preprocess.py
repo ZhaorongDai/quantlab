@@ -108,8 +108,9 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
     both the time-major ``TS`` layout used for batch runs and the ``STREAM``
     layout used for bar-by-bar runs.
 
-    No factor class applies this op by default; choosing it over
-    ``WindowedZScore`` is a strategy decision.
+    ``Alpha101Stock`` and ``Alpha158Stock`` apply this op to every output;
+    the spot-kline classes apply ``WindowedZScore`` instead. Choosing between
+    the two is a strategy decision.
 
     Parameters
     ----------

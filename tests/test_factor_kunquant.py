@@ -116,20 +116,17 @@ def test_alpha101_spot_batch_cal_returns_xarray_dataset(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 Plan 03 -- US equities (D-01, D-02, NORM-01/D-09)
+# Phase 3 Plan 03 -- US equities (D-01, NORM-01/D-09)
 #
-# Tiingo supplies no dollar-volume column, so `StockDataset._to_kunquant()`
-# synthesizes `amount = volume * close` (D-02). Without it every KunQuant
-# factor class reading US-equity data dies at graph-construction time:
-# `Alpha101.AllData.__init__` unconditionally builds `Div(self.amount, ...)`
-# for `vwap`, raising `RuntimeError: Bad inputs, given <class 'NoneType'>`.
+# No US-equity store carries a dollar-volume (`amount`) column, and
+# `StockDataset._to_kunquant()` exports the requested columns as they are.
+# `Alpha101Stock` and `Alpha158Stock` therefore build `vwap` inside the graph
+# from the adjusted typical price instead of KunQuant's `amount / volume`.
 #
 # `stock_zarr` defaults to 2 symbols, but KunQuant's compiled TS layout
 # requires the symbol axis to be a multiple of its SIMD block width (8) or
 # `kr.runGraph` raises `RuntimeError: Bad shape at open`. Every test that
-# actually COMPILES a graph therefore passes `_STOCK_SYMBOLS` (8 tickers);
-# the two `to_kunquant()` tests below never reach KunQuant and use the
-# fixture default.
+# COMPILES a graph therefore passes `_STOCK_SYMBOLS` (8 tickers).
 # ---------------------------------------------------------------------------
 
 _STOCK_SYMBOLS = [
@@ -144,53 +141,6 @@ _STOCK_SYMBOLS = [
 ]
 
 
-def test_stock_to_kunquant_synthesizes_amount_as_adjusted_dollar_volume(
-    stock_zarr: Callable[..., DatasetConfig],
-) -> None:
-    """D-02: asking `StockDataset.to_kunquant()` for `amount` on a store that
-    has no such column yields the `volume * close` dollar-volume proxy,
-    computed from the ADJUSTED series (the `adj*` rename runs first), while
-    every other requested array is untouched.
-    """
-    dataset_config = stock_zarr(periods=60, seed=0)
-
-    input_dict, symbols, timestamp = StockDataset(dataset_config).to_kunquant(
-        ("open", "close", "volume", "amount")
-    )
-
-    assert sorted(input_dict) == ["amount", "close", "open", "volume"]
-    np.testing.assert_allclose(
-        input_dict["amount"],
-        input_dict["volume"] * input_dict["close"],
-        rtol=1e-5,
-    )
-    assert input_dict["amount"].shape == (len(timestamp), len(symbols))
-    assert np.isfinite(input_dict["amount"]).all()
-
-
-def test_stock_to_kunquant_without_amount_leaves_arrays_unchanged(
-    stock_zarr: Callable[..., DatasetConfig],
-) -> None:
-    """D-02 / T-03-03-01: the synthesis is inert when `amount` is not
-    requested -- the returned dict carries no `amount` key and every other
-    array is byte-identical to the one produced when `amount` IS requested,
-    so the guard cannot perturb the pre-existing path.
-    """
-    dataset_config = stock_zarr(periods=60, seed=0)
-
-    without = StockDataset(dataset_config).to_kunquant(
-        ("open", "close", "volume")
-    )[0]
-    with_amount = StockDataset(dataset_config).to_kunquant(
-        ("open", "close", "volume", "amount")
-    )[0]
-
-    assert "amount" not in without
-    assert sorted(without) == ["close", "open", "volume"]
-    for col in ("open", "close", "volume"):
-        np.testing.assert_array_equal(without[col], with_amount[col])
-
-
 def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     stock_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
@@ -202,8 +152,9 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     price as `vwap` (as `Alpha158Stock` does), so the US-equity Alpha101 batch
     path computes real values, including the vwap-based `alpha041`.
 
-    Note the absence of any normalization assertion: `Alpha101Stock` emits raw
-    factor values by design (NORM-01 / D-09, locked below).
+    The normalization of the stock classes (a cross-sectional z-score per
+    bar, no time-series z-score) is locked below by the normalization matrix
+    test, not here.
     """
     dataset_config = stock_zarr(symbols=_STOCK_SYMBOLS, periods=60, seed=0)
     factor = Alpha101Stock(
@@ -235,14 +186,23 @@ def test_alpha158_stock_batch_cal_returns_xarray_dataset(
     wiring raised `KeyError: 'amount'` and the class never computed (hidden
     inside the 56-failure baseline). `vwap` is now the adjusted typical price
     `(adjHigh + adjLow + adjClose) / 3`, built inside the graph from the same
-    adjusted series as every other input. The store's `adjHigh` is widened so
-    the typical price differs from close: `VWAP0 = vwap / close` then pins that
-    construction (a `close * volume` dollar-volume proxy would give ~1.0), and
-    the raw columns are rescaled so any leak of unadjusted data would show.
+    adjusted series as every other input, and every output is z-scored across
+    symbols per bar (`CrossSectionalZScore`, ddof=1). The store's `adjHigh`
+    is widened by a different factor per symbol so the typical-price ratio
+    `vwap / close` varies across the cross-section: the expected `VWAP0` is
+    then the per-bar z-score of that ratio, which pins both the typical-price
+    construction (a `close * volume` proxy would z-score the volume instead)
+    and the cross-sectional normalization. The raw columns are rescaled so
+    any leak of unadjusted data would show.
     """
     dataset_config = stock_zarr(symbols=_STOCK_SYMBOLS, periods=60, seed=0)
     store = xr.open_zarr(dataset_config.zarr_file_path).load()
-    store["adjHigh"] = store["adjClose"] * 1.10
+    widen = xr.DataArray(
+        1.05 + 0.02 * np.arange(store.sizes["symbol"]),
+        dims=("symbol",),
+        coords={"symbol": store["symbol"]},
+    )
+    store["adjHigh"] = store["adjClose"] * widen
     for col in ("open", "high", "low", "close"):
         store[col] = store[col] * 4.0
     store["volume"] = store["volume"] / 4.0
@@ -266,14 +226,19 @@ def test_alpha158_stock_batch_cal_returns_xarray_dataset(
     assert np.isfinite(result["KMID"].to_numpy()).sum() > 0
 
     typical = (store["adjHigh"] + store["adjLow"] + store["adjClose"]) / 3.0
-    expected = (typical / store["adjClose"]).sel(
+    ratio = (typical / store["adjClose"]).sel(
         timestamp=result["timestamp"], symbol=result["symbol"]
     )
+    expected = (ratio - ratio.mean("symbol")) / ratio.std("symbol", ddof=1)
     actual = result["VWAP0"].to_numpy()
     finite = np.isfinite(actual)
     assert finite.sum() > 0
-    np.testing.assert_allclose(actual[finite], expected.to_numpy()[finite], rtol=1e-5)
-    assert not np.allclose(actual[finite], 1.0, atol=1e-3)
+    np.testing.assert_allclose(
+        actual[finite], expected.to_numpy()[finite], rtol=1e-4, atol=1e-5
+    )
+    # The z-score of a constant would be NaN everywhere; the widened
+    # cross-section keeps the assertion above from passing vacuously.
+    assert np.abs(actual[finite]).max() > 0.5
 
 
 def test_alpha158_stock_graph_reads_only_adjusted_inputs(
@@ -312,14 +277,14 @@ _EMITTING_METHOD = {
     Alpha158Stock: "_get_func_stream",
 }
 
-# NORM-01 / D-09, verbatim: time-series z-score on both crypto-spot classes,
-# raw output on both US-equity classes. True == the rolling z-score op wraps
-# every `Output(...)` in that class.
+# NORM-01 / D-09: time-series z-score on both crypto-spot classes,
+# cross-sectional z-score on both US-equity classes. The value names the op
+# that wraps every `Output(...)` in that class.
 _EXPECTED_NORMALIZATION_MATRIX = {
-    Alpha101SpotKline: True,
-    Alpha101Stock: False,
-    Alpha158SpotKline: True,
-    Alpha158Stock: False,
+    Alpha101SpotKline: "WindowedZScore",
+    Alpha101Stock: "CrossSectionalZScore",
+    Alpha158SpotKline: "WindowedZScore",
+    Alpha158Stock: "CrossSectionalZScore",
 }
 
 _NORMALIZATION_MISMATCH_MESSAGE = """
@@ -329,38 +294,33 @@ classes no longer matches the locked matrix.
 That matrix is NOT an implementation detail. `WindowedZScore` is a 时序 /
 time-series normalization (each symbol against its own rolling window). Crypto
 spot is traded with time-series strategies and gets it; US equities are traded
-with 截面 / cross-sectional strategies (normalize across symbols at each
-timestamp) and deliberately emit RAW values, with the downstream consumer
-applying its own cross-sectional normalization. The split is per market, not
+with 截面 / cross-sectional strategies and get `CrossSectionalZScore`
+(normalize across symbols at each timestamp). The split is per market, not
 per factor family.
 
 So a mismatch here almost always means someone "aligned" a US-equity class with
-its crypto-spot sibling, silently imposing the wrong normalization on a
-cross-sectional factor set. If the change really is intended, it is a change to
-a LOCKED USER DECISION: update D-09 in
-`.planning/phases/03-factor-computation-kunquant-polars/03-CONTEXT.md` first,
-then the four class docstrings, and only then this literal.
+its crypto-spot sibling (or the reverse), silently imposing the wrong
+normalization on a factor set. If the change really is intended, it is a
+change to a USER DECISION: update the four class docstrings and
+`docs/factor.md` (both languages) first, and only then this literal.
 """.strip()
 
 
 def test_normalization_matrix_matches_recorded_strategy_types() -> None:
     """NORM-01 / D-09: lock the four-class normalization matrix -- rolling
     time-series z-score on `Alpha101SpotKline`/`Alpha158SpotKline` (crypto
-    spot, 时序 strategies), raw un-normalized output on
+    spot, 时序 strategies), cross-sectional z-score on
     `Alpha101Stock`/`Alpha158Stock` (US equities, 截面 strategies).
 
-    An actual cross-sectional Z-score op is NOT built in this phase; it is
-    deferred to the ARCH-01/ARCH-02 work in Phase 6 ("架构同时兼容单标的时序
-    策略与多标的截面多因子策略"). D-09 asks Phase 3 to emit raw US-equity values
-    and leave normalization to the consumer, so this test asserts the ABSENCE
-    of time-series normalization on the stock classes, not the presence of a
-    cross-sectional one.
+    Each emitting method must name exactly one of the two ops: a class that
+    names both, or neither, fails as loudly as one that names the wrong one.
     """
-    actual = {
-        cls: "WindowedZScore"
-        in inspect.getsource(getattr(cls, method_name))
-        for cls, method_name in _EMITTING_METHOD.items()
-    }
+    ops = ("WindowedZScore", "CrossSectionalZScore")
+    actual = {}
+    for cls, method_name in _EMITTING_METHOD.items():
+        source = inspect.getsource(getattr(cls, method_name))
+        found = [op for op in ops if op in source]
+        actual[cls] = found[0] if len(found) == 1 else found
 
     assert actual == _EXPECTED_NORMALIZATION_MATRIX, (
         f"{_NORMALIZATION_MISMATCH_MESSAGE}\n\n"

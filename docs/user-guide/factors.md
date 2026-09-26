@@ -109,9 +109,9 @@ The built-in sets are thin wrappers around KunQuant's predefined libraries:
 | Class | Module | Reads | Output |
 |---|---|---|---|
 | `Alpha101SpotKline` | `quantlab.factor.alpha101` | crypto klines: `open`, `high`, `low`, `close`, `volume`, `amount` | Alpha101 formulas, z-scored along time |
-| `Alpha101Stock` | `quantlab.factor.alpha101` | US equities: `adjOpen` to `adjVolume` | Alpha101 formulas, raw |
+| `Alpha101Stock` | `quantlab.factor.alpha101` | US equities: `adjOpen` to `adjVolume` | Alpha101 formulas, z-scored across symbols |
 | `Alpha158SpotKline` | `quantlab.factor.alpha158` | crypto klines, as above | 169 Alpha158 features, z-scored along time |
-| `Alpha158Stock` | `quantlab.factor.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, raw |
+| `Alpha158Stock` | `quantlab.factor.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, z-scored across symbols |
 | `ResidualMomentumFF3` | `quantlab.factor.residual_momentum` | monthly returns plus Fama-French factors | residual momentum and regression diagnostics |
 
 Alpha101 is the public list of 101 formulaic trading signals from
@@ -120,8 +120,8 @@ project. It has candle-shape features (`KMID`, `KLEN`, ...), prices and
 volumes lagged 0 to 4 bars (`CLOSE1`, `VOLUME3`, ...) and rolling statistics
 over 5 to 60 bars (`ROC5`, `STD20`, `CORR60`, ...). The crypto variants
 z-score every output against its own trailing window, which suits strategies
-that follow one asset over time. The equity variants return raw values and
-leave normalisation across symbols to you (see
+that follow one asset over time. The equity variants z-score every output
+across the symbols of the same bar (see
 [Normalisation operators](#normalisation-operators)).
 
 Compute three Alpha158 features for February onwards:
