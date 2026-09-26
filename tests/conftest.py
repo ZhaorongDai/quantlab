@@ -73,6 +73,28 @@ import zarr
 
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 
+#: Test modules collected only when named on the command line. Each one runs
+#: against real data under `QUANTLAB_DATA_ROOT` and fails, rather than skips,
+#: when that root is absent, so a directory-wide run must not pick it up.
+_EXPLICIT_ONLY_MODULES = frozenset({"test_crsp_rebuild_measurements.py"})
+
+
+def pytest_ignore_collect(collection_path: Path, config) -> bool | None:
+    """Leave the explicit-only modules out of directory-wide collection.
+
+    A module in `_EXPLICIT_ONLY_MODULES` is collected only when one of the
+    command-line arguments names that file itself (with or without a
+    `::test` suffix); `uv run pytest tests` never reaches it.
+    """
+    if collection_path.name not in _EXPLICIT_ONLY_MODULES:
+        return None
+    named = {
+        Path(arg.split("::", 1)[0]).resolve()
+        for arg in config.args
+        if arg and not arg.startswith("-")
+    }
+    return collection_path.resolve() not in named
+
 
 @pytest.fixture(autouse=True)
 def _reset_data_root_override():

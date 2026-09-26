@@ -84,10 +84,10 @@ uv run pytest -k xgb
 
 `tests/test_crsp_rebuild_measurements.py` measures a rebuild of a real CRSP store and fails
 with an explanatory message unless the `QUANTLAB_DATA_ROOT` environment variable points at a
-checkout that holds one. Leave it out on a fresh machine:
+checkout that holds one. A plain `uv run pytest` never collects it; it runs only when named:
 
 ```bash
-uv run pytest --ignore=tests/test_crsp_rebuild_measurements.py
+QUANTLAB_DATA_ROOT=/path/to/checkout uv run pytest tests/test_crsp_rebuild_measurements.py
 ```
 
 ## GPU support

@@ -8,10 +8,10 @@ as a graph of operators, to native code and runs it over a whole
 ``(timestamp, symbol)`` panel at once.
 
 Two ``FactorKunQuant`` subclasses expose the library. They differ in which
-input columns they read and in whether the outputs are normalized:
+input columns they read and in how the outputs are normalized:
 ``Alpha101SpotKline`` works on crypto spot klines (candlestick bars) and
 z-scores every output along time, while ``Alpha101Stock`` works on adjusted
-US-equity bars and returns raw values.
+US-equity bars and z-scores every output across symbols.
 """
 
 from typing import NoReturn
@@ -35,9 +35,9 @@ class Alpha101SpotKline(FactorKunQuant):
     ``config.window`` bars, which standardizes each symbol against its own
     trailing window. That time-series normalization suits the strategies
     spot data is traded with here, which follow one asset over time. The
-    US-equity sibling ``Alpha101Stock`` returns raw values instead, because
-    it serves cross-sectional strategies that compare symbols on the same
-    bar. The two classes are intentionally different.
+    US-equity sibling ``Alpha101Stock`` z-scores across symbols instead,
+    because it serves cross-sectional strategies that compare symbols on the
+    same bar. The two classes are intentionally different.
 
     Parameters
     ----------
@@ -103,13 +103,13 @@ class Alpha101SpotKline(FactorKunQuant):
 
 
 class Alpha101Stock(FactorKunQuant):
-    """Alpha101 factors over adjusted US-equity bars, returned raw.
+    """Alpha101 factors over adjusted US-equity bars, z-scored across symbols.
 
     Reads ``adjOpen``, ``adjHigh``, ``adjLow``, ``adjClose`` and
-    ``adjVolume``, the split- and dividend-adjusted series. Outputs are not
-    normalized. US equities are traded here with cross-sectional strategies,
-    and a per-symbol rolling z-score would change how symbols compare on the
-    same day, so normalizing across symbols is left to the consumer.
+    ``adjVolume``, the split- and dividend-adjusted series. Every output is
+    wrapped in ``CrossSectionalZScore``: US equities are traded here with
+    cross-sectional strategies, so each alpha is standardized across the
+    symbols of the same bar, never along a symbol's own history.
 
     Parameters
     ----------
