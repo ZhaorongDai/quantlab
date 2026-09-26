@@ -19,15 +19,18 @@
 ```bash
 export WRDS_USERNAME=<your-wrds-username>   # 密码放在 ~/.pgpass
 # S&P 500（CRSP 自带的成分股记录，从 1925 年起）
-uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-12-31
+uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 # Nasdaq-100（Compustat 成分股，经 CCM 映射到 PERMNO，从 1995 年起；
 # 需要 Compustat 和 CCM 权限）
-uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
+uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 # 基准 ETF，按 CRSP PERMNO 下载（SPY 84398、QQQ 86755），每个 ETF 一个仓库
-uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31
+uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31 \
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 ```
 
-`--end` 默认为今天，并截到 CRSP 年度发布的最后一天；每个脚本都会转换成 Zarr；`--refresh` 让每个 PERMNO 从各自的水位继续；`--data-dir` 覆盖数据根目录。
+`--end` 默认为今天，并截到 CRSP 年度发布的最后一天；每个脚本都会转换成 Zarr；`--refresh` 让每个 PERMNO 从各自的水位继续。`--download-dir` 和 `--zarr-dir` 默认为当前目录；上面这组相对仓库根目录的取值会把 store 放到 pipeline 读取的位置。
 
 每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或 `Settings.data_root`）。
 

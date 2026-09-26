@@ -30,7 +30,7 @@ The `symbol` axis of a CRSP panel is therefore the integer PERMNO. Tickers are d
 
 ### Download by PERMNO
 
-Three scripts under `scripts/wrds/` drive a download through the vendor registry, one per kind of data: `index.py` takes the point-in-time members of an index, `market.py` takes the whole US equity market, and `etf.py` takes one or more ETFs by PERMNO. Each takes `--start`, an optional `--end` (default today, clipped to the last day of the annual CRSP release), `--refresh` and `--data-dir`, and always converts into Zarr. These commands need a WRDS account, so no output is shown.
+Three scripts under `scripts/wrds/` drive a download through the vendor registry, one per kind of data: `index.py` takes the point-in-time members of an index, `market.py` takes the whole US equity market, and `etf.py` takes one or more ETFs by PERMNO. Each takes `--start`, an optional `--end` (default today, clipped to the last day of the annual CRSP release), `--refresh`, `--download-dir` and `--zarr-dir` (both default to the current directory), and always converts into Zarr. These commands need a WRDS account, so no output is shown.
 
 ```bash
 # CRSP's point-in-time S&P 500: the members' daily bars and the membership panel.
@@ -40,15 +40,15 @@ uv run python scripts/wrds/index.py --index sp500 --start 2000-01-01
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
 ```
 
-Before the first daily row is copied the script checks the account's schema entitlements, clips the end date to the annual product end, pulls the reference tables and resolves the roster. Everything is written under the data root:
+Before the first daily row is copied the script checks the account's schema entitlements, clips the end date to the annual product end, pulls the reference tables and resolves the roster. The raw files are written under `--download-dir` and the stores into `--zarr-dir`:
 
 ```text
-data/downloads/us_equity/1d/wrds_crsp/
+<download-dir>/
     wrds/month=YYYY-MM/     raw parquet shards, one row per (permno, date)
     _reference/             parquet reference tables and manifest.json
     _watermarks/wrds/       per-PERMNO progress, used by --refresh
     _vintage/wrds.json      which annual CRSP release the raw tier came from
-data/data/us_equity/1d/     converted Zarr stores and their JSON sidecars
+<zarr-dir>/                 converted Zarr stores and their JSON sidecars
 ```
 
 The acquisition classes are documented in `quantlab.acquisition.wrds.crsp` and `quantlab.acquisition.wrds.crsp_reference`.

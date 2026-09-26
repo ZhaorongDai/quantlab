@@ -30,7 +30,7 @@ CRSP 日频表（`crsp_a_stock.dsf_v2`）里，每只证券每个交易日一行
 
 ### 按 PERMNO 下载
 
-`scripts/wrds/` 下的三个脚本通过厂商登记表驱动下载，每种数据一个：`index.py` 拉取一个指数的时点成分股，`market.py` 拉取整个美股市场，`etf.py` 按 PERMNO 拉取一只或多只 ETF。每个脚本都接受 `--start`、可选的 `--end`（默认今天，并截到 CRSP 年度版本的最后一天）、`--refresh` 和 `--data-dir`，并且总是转换成 Zarr。这些命令需要 WRDS 账号，因此不展示输出。
+`scripts/wrds/` 下的三个脚本通过厂商登记表驱动下载，每种数据一个：`index.py` 拉取一个指数的时点成分股，`market.py` 拉取整个美股市场，`etf.py` 按 PERMNO 拉取一只或多只 ETF。每个脚本都接受 `--start`、可选的 `--end`（默认今天，并截到 CRSP 年度版本的最后一天）、`--refresh`、`--download-dir` 和 `--zarr-dir`（两者都默认为当前目录），并且总是转换成 Zarr。这些命令需要 WRDS 账号，因此不展示输出。
 
 ```bash
 # CRSP 自己的时点 S&P 500：成分股的日线和成分面板。
@@ -40,15 +40,15 @@ uv run python scripts/wrds/index.py --index sp500 --start 2000-01-01
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
 ```
 
-在复制第一行日频数据之前，脚本会检查账号的 schema 权限，把结束日期截到年度产品的最后一天，拉取参考表并解析名单。所有内容都写在 data root 下：
+在复制第一行日频数据之前，脚本会检查账号的 schema 权限，把结束日期截到年度产品的最后一天，拉取参考表并解析名单。原始文件写在 `--download-dir` 下，store 写进 `--zarr-dir`：
 
 ```text
-data/downloads/us_equity/1d/wrds_crsp/
+<download-dir>/
     wrds/month=YYYY-MM/     原始 parquet 分片，每个 (permno, date) 一行
     _reference/             参考表 parquet 和 manifest.json
     _watermarks/wrds/       每个 PERMNO 的进度，供 --refresh 使用
     _vintage/wrds.json      原始层来自 CRSP 的哪一个年度版本
-data/data/us_equity/1d/     转换后的 Zarr store 及其 JSON 边车文件
+<zarr-dir>/                 转换后的 Zarr store 及其 JSON 边车文件
 ```
 
 采集类的文档见 `quantlab.acquisition.wrds.crsp` 和 `quantlab.acquisition.wrds.crsp_reference`。

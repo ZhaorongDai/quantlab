@@ -6,17 +6,18 @@ trading day. The NBBO (National Best Bid and Offer) is the highest bid and
 lowest ask across all exchanges at each instant. This script pulls the NBBO
 rows of a symbol roster over a window and resamples them into
 ``--interval`` bars inside the ``--session`` window (US Eastern time),
-written to ``data/us_equity/tick/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr``
+written as ``wrds_nbbo_{interval}_{HHMM-HHMM}.zarr`` into ``--zarr-dir``
 with its filter-statistics sidecar. The raw rows go to
-``downloads/us_equity/tick/wrds_taq/wrds/``.
+``<download-dir>/wrds/``; both directories default to the current one.
 
 The roster is exactly one of:
 
 - ``--symbols``, explicit tickers in TAQ's dot notation (``BRK.B``);
 - ``--index sp500|nasdaq100``, the point-in-time members of that index over
-  the window, resolved from the same CRSP reference tables that
-  ``index.py`` uses and mapped to the tickers they traded under. This needs
-  the CRSP subscription beside the TAQ one.
+  the window, resolved from the CRSP reference tables (pulled into
+  ``<download-dir>/_reference/``, where ``index.py`` keeps them for the same
+  ``--download-dir``) and mapped to the tickers they traded under. This
+  needs the CRSP subscription beside the TAQ one.
 
 ``WRDS_USERNAME`` must be set in the environment. The password is never read
 by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
@@ -30,10 +31,14 @@ Usage::
         --start 2024-01-02 --end 2024-01-31
     uv run python scripts/wrds/nbbo.py --index nasdaq100 --start 2024-01-02 \\
         --interval 5m --session 09:30-16:00 --refresh
+    uv run python scripts/wrds/nbbo.py --symbols AAPL --start 2024-01-02 \\
+        --download-dir /data/taq/raw --zarr-dir /data/taq/zarr
 
 ``--end`` defaults to today and is clipped to the last trading day TAQ has
 published. ``--refresh`` continues each symbol from its recorded watermark
-instead of downloading the whole window again.
+instead of downloading the whole window again. ``--download-dir`` and
+``--zarr-dir`` choose where the raw files and the Zarr store go; both
+default to the current directory.
 """
 
 import argparse
@@ -45,7 +50,6 @@ import polars as pl
 
 from quantlab.registry import DataSourceRegistry, convert, run
 from quantlab.base.config import NbboDatasetConfig
-from quantlab.config import get_data_root
 from quantlab.dataset.nbbo import NbboPanelDataset
 from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.crsp.membership import CrspMembership
@@ -53,9 +57,10 @@ from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
 from quantlab.enums.data import BarInterval
 from quantlab.utils.cli import (
-    add_data_dir_arg,
-    apply_data_dir,
+    add_output_dir_args,
+    place_downloads,
     print_conversion_result,
+    resolve_output_dirs,
 )
 
 SOURCE = DataSourceRegistry.get("wrds")
@@ -137,7 +142,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue each symbol from its watermark instead of re-downloading.",
     )
-    add_data_dir_arg(parser)
+    add_output_dir_args(parser)
     return parser
 
 
@@ -175,8 +180,12 @@ def _last_published_day(session, end: date) -> date | None:
     return None
 
 
-def _index_tickers(session, index: str, start: str, end: str) -> list[str]:
-    """Resolve an index's point-in-time members to the tickers they traded under."""
+def _index_tickers(session, index: str, start: str, end: str, download_dir) -> list[str]:
+    """Resolve an index's point-in-time members to the tickers they traded under.
+
+    The CRSP reference tables are pulled into ``<download_dir>/_reference``,
+    the directory ``index.py`` uses for the same ``--download-dir``.
+    """
     from quantlab.acquisition.wrds.crsp import CrspQueries
     from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
 
@@ -190,7 +199,7 @@ def _index_tickers(session, index: str, start: str, end: str) -> list[str]:
 
     crsp_acq = SOURCE.acquisition_cls_for(*CRSP_CAPABILITY)
     reference_dir = crsp_acq.reference_dir_for(
-        SOURCE.config_factory_for(*CRSP_CAPABILITY)(symbols=())
+        place_downloads(SOURCE.config_factory_for(*CRSP_CAPABILITY)(symbols=()), download_dir)
     )
     CrspReferenceTables(session, reference_dir).pull(
         product_end=CrspQueries.product_end(session),
@@ -211,7 +220,7 @@ def _index_tickers(session, index: str, start: str, end: str) -> list[str]:
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    apply_data_dir(args)  # before any path is derived from the data root
+    download_dir, zarr_dir = resolve_output_dirs(args)
     calendar = _parse_session(parser, args.session)
     explicit = _parse_symbols(parser, args.symbols) if args.symbols else None
     requested_end = args.end or date.today().isoformat()
@@ -242,7 +251,7 @@ if __name__ == "__main__":
             session.assert_entitled(range(start_day.year, end_day.year + 1))
 
             # 2. The roster.
-            symbols = explicit if explicit is not None else _index_tickers(session, args.index, start, end)
+            symbols = explicit if explicit is not None else _index_tickers(session, args.index, start, end, download_dir)
         except (RuntimeError, ValueError, FileNotFoundError) as exc:
             parser.exit(1, f"{exc}\n")
         if not symbols:
@@ -250,8 +259,11 @@ if __name__ == "__main__":
         print(f"Roster: {len(symbols)} symbol(s) over {start}..{end}")
 
         # 3. Download.
-        acq_config = SOURCE.config_factory_for(*NBBO_CAPABILITY)(
-            symbols=symbols, start_date=start, end_date=end
+        acq_config = place_downloads(
+            SOURCE.config_factory_for(*NBBO_CAPABILITY)(
+                symbols=symbols, start_date=start, end_date=end
+            ),
+            download_dir,
         )
         print(f"Acquiring from {SOURCE.display_name} (refresh={args.refresh})")
         result = run(SOURCE, acq_config, refresh=args.refresh)
@@ -265,7 +277,7 @@ if __name__ == "__main__":
             session_end=calendar.session_end.strftime("%H%M"),
         )
         ds_config = NbboDatasetConfig(
-            zarr_file_path=str(get_data_root() / "data" / "us_equity" / "tick" / store_name),
+            zarr_file_path=str(zarr_dir / store_name),
             raw_data_dir_path=acq_config.raw_data_dir_path,
             start_date=start,
             end_date=end,

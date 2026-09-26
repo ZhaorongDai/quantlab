@@ -129,8 +129,9 @@ Batch size, chunk granularity and concurrency come from the library defaults.
 
 They share `--start` (required), `--end` (default today, clipped to the
 vendor product's last date), `--refresh` (fetch forward from each symbol's
-last downloaded date instead of backfilling the window) and `--data-dir` (the
-storage root for this run). The rosters are *point-in-time*: an index roster
+last downloaded date instead of backfilling the window), `--download-dir`
+(where the raw files go) and `--zarr-dir` (where the Zarr stores go); the
+last two default to the current directory. The rosters are *point-in-time*: an index roster
 holds every security that belonged to the index at any time in the window,
 including those since delisted, which keeps *survivorship bias* (a history
 made only of companies that survived) out of the data.
@@ -242,11 +243,12 @@ cancelled: True newly completed: ('AMD',)
 
 ## Where files land
 
-All paths derive from one *data root*. It is `--data-dir` if you pass it, else
-the `QUANTLAB_DATA_DIR` environment variable, else a `data/` directory at the
-top of the repository. In Python, call `quantlab.config.set_data_root(path)`
-before building any config, because configs record their paths when they are
-created.
+The scripts write where you point them: raw files under `--download-dir` and
+Zarr stores under `--zarr-dir`, both defaulting to the current directory. In
+the library, paths derive from one *data root*: the `QUANTLAB_DATA_DIR`
+environment variable, else a `data/` directory at the top of the repository.
+In Python, call `quantlab.config.set_data_root(path)` before building any
+config, because configs record their paths when they are created.
 
 Beneath the root, raw downloads live under `downloads/{market}/{frequency}/`
 and panels under `data/{market}/{frequency}/`. After the example's Tiingo-layout
@@ -274,15 +276,17 @@ locations are:
 
 | Download | Raw tier | Panel |
 |---|---|---|
-| `scripts/wrds/index.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_{sp500,nasdaq100}_1d.zarr` and `_membership.zarr` |
-| `scripts/wrds/market.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
-| `scripts/wrds/etf.py` | `downloads/us_equity/1d/wrds_crsp/wrds` | `data/us_equity/1d/wrds_crsp_{name}_1d.zarr` |
-| `scripts/wrds/nbbo.py` | `downloads/us_equity/tick/wrds_taq/wrds` | `data/us_equity/tick/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
+| `scripts/wrds/index.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_{sp500,nasdaq100}_1d.zarr` and `_membership.zarr` |
+| `scripts/wrds/market.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
+| `scripts/wrds/etf.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_{name}_1d.zarr` |
+| `scripts/wrds/nbbo.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
 | Tiingo (library) | `downloads/us_equity/1d/nasdaq_data/tiingo` | `data/us_equity/1d/stock.zarr` |
 | Alpaca (library) | `downloads/us_equity/{1d,1m,tick}/nasdaq_data/alpaca` | `data/us_equity/{1d,1m}/stock_alpaca.zarr` |
 
-The three CRSP scripts share one raw tier, one set of watermarks and one
-reference directory (`downloads/us_equity/1d/wrds_crsp/_reference`).
+Given the same `--download-dir`, the three CRSP scripts share one raw tier,
+one set of watermarks and one reference directory (`<download-dir>/_reference`).
+Point `nbbo.py --index` at that directory too and it reuses the reference
+tables.
 
 ## Resuming an interrupted download
 

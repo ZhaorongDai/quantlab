@@ -88,9 +88,9 @@ as `"2024-1-2"` is refused with a `ValueError` rather than allowed to compare
 wrongly.
 
 You rarely write paths by hand. The factories in `quantlab.config` derive
-every path from one data root, which is `--data-dir` on the command-line
-scripts, else the `QUANTLAB_DATA_DIR` environment variable, else a `data/`
-directory beside the repository:
+every path from one data root, which is the `QUANTLAB_DATA_DIR` environment
+variable, else a `data/` directory beside the repository (the WRDS scripts
+take their own `--download-dir` and `--zarr-dir` instead):
 
 ```python
 from quantlab.config import set_data_root, stock_kline_config

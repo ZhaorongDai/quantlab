@@ -2,16 +2,18 @@
 
 An ETF (exchange-traded fund) is downloaded from CRSP like any security, by
 its PERMNO, and written as its own single-symbol store
-``data/us_equity/1d/wrds_crsp_{name}_1d.zarr``. It is never a column of an
-index or market panel: a backtest picks it by name as a benchmark, and an
-ETF ranked against its own holdings would be the index competing with
-itself.
+``wrds_crsp_{name}_1d.zarr`` into ``--zarr-dir`` (default: the current
+directory). It is never a column of an index or market panel: a backtest
+picks it by name as a benchmark, and an ETF ranked against its own holdings
+would be the index competing with itself.
 
 ``--etf`` takes a comma-separated list of ``spy``, ``qqq`` (built-in PERMNOs)
 or ``name=PERMNO`` for any other fund. The raw rows go to
-``downloads/us_equity/1d/wrds_crsp/wrds/`` and the CRSP reference tables to
-the sibling ``_reference/``, both shared with ``index.py`` and ``market.py``,
-so reference tables already on disk for the same CRSP release are reused.
+``<download-dir>/wrds/`` and the CRSP reference tables to
+``<download-dir>/_reference/``; ``--download-dir`` also defaults to the
+current directory. Given the same ``--download-dir``, both are shared with
+``index.py`` and ``market.py``, so reference tables already on disk for the
+same CRSP release are reused.
 
 ``WRDS_USERNAME`` must be set in the environment. The password is never read
 by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
@@ -24,10 +26,14 @@ Usage::
     uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
     uv run python scripts/wrds/etf.py --etf iwm=89990 --start 2005-01-01 \\
         --end 2024-12-31 --refresh
+    uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01 \\
+        --download-dir /data/wrds/raw --zarr-dir /data/wrds/zarr
 
 ``--end`` defaults to today and is clipped to the last day of the annual CRSP
 release. ``--refresh`` continues each ETF from its recorded watermark
-instead of downloading the whole window again.
+instead of downloading the whole window again. ``--download-dir`` and
+``--zarr-dir`` choose where the raw files and the Zarr stores go; both
+default to the current directory.
 """
 
 import argparse
@@ -36,12 +42,12 @@ from datetime import date
 
 from quantlab.registry import DataSourceRegistry, convert, run
 from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
-from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.utils.cli import (
-    add_data_dir_arg,
-    apply_data_dir,
+    add_output_dir_args,
+    place_downloads,
     print_conversion_result,
+    resolve_output_dirs,
 )
 
 SOURCE = DataSourceRegistry.get("wrds")
@@ -103,14 +109,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue each ETF from its watermark instead of re-downloading.",
     )
-    add_data_dir_arg(parser)
+    add_output_dir_args(parser)
     return parser
 
 
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    apply_data_dir(args)  # before any path is derived from the data root
+    download_dir, zarr_dir = resolve_output_dirs(args)
     etfs = _parse_etfs(parser, args.etf)
     requested_end = args.end or date.today().isoformat()
 
@@ -146,6 +152,7 @@ if __name__ == "__main__":
                 end_date=end,
                 kwargs={"clip_to_product_end": True},
             )
+            acq_config = place_downloads(acq_config, download_dir)
             reference_dir = ACQ.reference_dir_for(acq_config)
             CrspReferenceTables(session, reference_dir).pull(
                 product_end=product_end, include_sp500=False
@@ -161,11 +168,10 @@ if __name__ == "__main__":
         print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
         # 5. Convert each ETF into its own store.
-        data_dir = get_data_root() / "data" / "us_equity" / "1d"
         ds_configs = {
             name: CrspDatasetConfig.etf_benchmark(
                 permno=permno,
-                zarr_file_path=str(data_dir / f"wrds_crsp_{name}_1d.zarr"),
+                zarr_file_path=str(zarr_dir / f"wrds_crsp_{name}_1d.zarr"),
                 raw_data_dir_path=acq_config.raw_data_dir_path,
                 reference_dir=str(reference_dir),
                 start_date=start,

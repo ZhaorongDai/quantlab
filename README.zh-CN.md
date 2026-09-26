@@ -72,7 +72,7 @@ quantlab 只从环境变量中读取凭证。凭证从不通过命令行传入�
 | `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | Alpaca 的 K 线、报价和成交数据 |
 | `WRDS_USERNAME` | WRDS（CRSP 和 TAQ）；密码从 `~/.pgpass` 读取 |
 | `WANDB_API_KEY` | 可选，训练时的 Weights & Biases 日志 |
-| `QUANTLAB_DATA_DIR` | 可选，下载数据和转换后数据的根目录 |
+| `QUANTLAB_DATA_DIR` | 可选，库的配置工厂据此推导数据路径的根目录；WRDS 脚本改用 `--download-dir` 和 `--zarr-dir` |
 
 下载脚本位于 `scripts/wrds/`（`index.py`、`market.py`、`etf.py`、`nbbo.py`），每个脚本都可以用
 `--help` 查看选项，例如 `uv run python scripts/wrds/index.py --help`。Tiingo、Alpaca 和 Binance

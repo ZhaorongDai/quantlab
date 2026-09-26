@@ -2,8 +2,8 @@
 
 Each factory builds one config dataclass from ``quantlab.base.config`` with
 every storage path derived from a single data root. ``get_data_root`` resolves
-that root from, in order, the process-level override that ``--data-dir`` sets
-through ``set_data_root``, the ``QUANTLAB_DATA_DIR`` environment variable, and
+that root from, in order, the process-level override set through
+``set_data_root``, the ``QUANTLAB_DATA_DIR`` environment variable, and
 finally a ``data/`` directory beside the repository, so a fresh clone works
 with no configuration. Beneath the root, raw downloads live under
 ``downloads/{market}/{frequency}/``, Zarr stores under
@@ -42,7 +42,7 @@ def set_data_root(path: "str | os.PathLike | None") -> Path | None:
 
     The value is passed through ``expanduser`` but not ``resolve``: the
     ``QUANTLAB_DATA_DIR`` value is used unresolved too, so the two behave the
-    same on a symlinked root, and a quoted ``--data-dir '~/x'`` reaches Python
+    same on a symlinked root, and a quoted ``'~/x'`` from a shell reaches Python
     with a literal tilde that would otherwise become a directory named ``~``.
     The directory is neither created nor required to exist.
 
@@ -88,8 +88,8 @@ def set_data_root(path: "str | os.PathLike | None") -> Path | None:
 def get_data_root() -> Path:
     """Return the storage root every config factory derives its paths from.
 
-    Resolution order: the override set by ``set_data_root`` (what
-    ``--data-dir`` drives), then the ``QUANTLAB_DATA_DIR`` environment
+    Resolution order: the override set by ``set_data_root``, then the
+    ``QUANTLAB_DATA_DIR`` environment
     variable, then the ``data/`` directory beside the repository root.
 
     Examples

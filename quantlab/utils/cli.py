@@ -1,28 +1,34 @@
 """Shared argparse helpers for the download scripts under ``scripts/``.
 
 A download script pulls raw market data from a vendor and converts it into a
-Zarr store. The scripts share ``--data-dir`` (the per-run storage root) and
-the rendering of the conversion result they print; this module defines both
+Zarr store. The scripts share the two output-directory flags
+(``--download-dir`` for the raw files, ``--zarr-dir`` for the stores) and the
+rendering of the conversion result they print; this module defines both
 once. Each script adds the flags that are its own.
 
 The module is light at import time: it imports nothing from the project at
-module scope, and ``quantlab.config`` is imported inside ``apply_data_dir``
-when the flag is used.
+module scope.
 """
 
 import argparse
+from dataclasses import replace
+from pathlib import Path
 
 #: Bytes in one GiB.
 _GIB = 1024**3
 
+#: Directory beside a vendor's raw directory that holds its watermarks.
+WATERMARKS_DIR_NAME = "_watermarks"
 
-def add_data_dir_arg(
+
+def add_output_dir_args(
     parser: argparse.ArgumentParser,
 ) -> argparse.ArgumentParser:
-    """Add ``--data-dir``, the per-run storage root override, to ``parser``.
+    """Add ``--download-dir`` and ``--zarr-dir`` to ``parser``.
 
-    Defined once here so the flag name, help text and precedence rules are
-    identical on every entry point that offers it. See ``apply_data_dir``.
+    Both default to the current directory. Defined once here so the flag
+    names, help text and defaults are identical on every script that offers
+    them; ``resolve_output_dirs`` reads them back.
 
     Parameters
     ----------
@@ -36,63 +42,107 @@ def add_data_dir_arg(
 
     Examples
     --------
-    >>> parser = add_data_dir_arg(argparse.ArgumentParser())
-    >>> parser.parse_args(["--data-dir", "/mnt/quant"])
-    Namespace(data_dir='/mnt/quant')
+    >>> parser = add_output_dir_args(argparse.ArgumentParser())
+    >>> parser.parse_args(["--download-dir", "/mnt/raw", "--zarr-dir", "/mnt/zarr"])
+    Namespace(download_dir='/mnt/raw', zarr_dir='/mnt/zarr')
+    >>> parser.parse_args([])
+    Namespace(download_dir='.', zarr_dir='.')
     """
     parser.add_argument(
-        "--data-dir",
+        "--download-dir",
         type=str,
-        default=None,
+        default=".",
         help=(
-            "Storage root for this run: everything the run reads and writes "
-            "(raw downloads, watermarks, Zarr stores) is "
-            "derived from it. Precedence is --data-dir > QUANTLAB_DATA_DIR > "
-            "the repo-root data/ directory. The directory does not need to "
-            "exist; the run creates what it needs."
+            "Directory for the raw downloads. The vendor's raw files go to "
+            "<download-dir>/<vendor>/, the watermarks that --refresh reads to "
+            "<download-dir>/_watermarks/<vendor>/ and, for CRSP, the reference "
+            "tables to <download-dir>/_reference/. Default: the current "
+            "directory. It is created as needed."
+        ),
+    )
+    parser.add_argument(
+        "--zarr-dir",
+        type=str,
+        default=".",
+        help=(
+            "Directory the converted Zarr stores and their sidecars are "
+            "written into. Default: the current directory. It is created as "
+            "needed."
         ),
     )
     return parser
 
 
-def apply_data_dir(args: argparse.Namespace) -> "object | None":
-    """Apply ``--data-dir`` to the process-level storage root, if given.
+def resolve_output_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
+    """Return ``(download_dir, zarr_dir)`` from parsed arguments, as absolute paths.
 
-    Each script calls this explicitly from its ``__main__``, directly after
-    ``parse_args()`` and before anything that builds a config: the config
-    factories snapshot their paths as strings at construction time, so an
-    override applied later silently does nothing. It is a plain call rather
-    than an argparse action so the root relocation is visible at the call
-    site. The ``quantlab.config`` import is deferred to call time to keep
-    this module light at import.
+    ``~`` is expanded and a relative path is anchored at the current
+    directory, so the paths recorded in configs and sidecars stay valid when
+    a later process runs from somewhere else. Symlinks are not resolved.
+    Neither directory is created here.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Parsed arguments. An object without a ``data_dir`` attribute is
-        treated as if the flag were absent.
+        Arguments parsed by a parser that went through
+        ``add_output_dir_args``.
 
     Returns
     -------
-    object | None
-        The stored root ``Path``, or ``None`` when the flag was absent, in
-        which case ``QUANTLAB_DATA_DIR`` or the repository default still
-        applies.
+    tuple[pathlib.Path, pathlib.Path]
+        The download directory and the Zarr directory.
 
     Examples
     --------
-    >>> apply_data_dir(parser.parse_args(["--data-dir", "/mnt/quant"]))
-    PosixPath('/mnt/quant')
-    >>> apply_data_dir(parser.parse_args([])) is None
+    >>> parser = add_output_dir_args(argparse.ArgumentParser())
+    >>> download_dir, zarr_dir = resolve_output_dirs(parser.parse_args([]))
+    >>> download_dir == Path.cwd() and zarr_dir == Path.cwd()
     True
     """
-    value = getattr(args, "data_dir", None)
-    if value is None:
-        return None
+    return (
+        Path(args.download_dir).expanduser().absolute(),
+        Path(args.zarr_dir).expanduser().absolute(),
+    )
 
-    from quantlab.config import set_data_root
 
-    return set_data_root(value)
+def place_downloads(config, download_dir):
+    """Return ``config`` with its raw and watermark directories under ``download_dir``.
+
+    A config factory builds ``raw_data_dir_path`` as ``.../<subdir>/<vendor>``
+    under the library's data root. This keeps the vendor directory name and
+    moves it: the result reads and writes ``<download_dir>/<vendor>`` and
+    ``<download_dir>/_watermarks/<vendor>``. Everything an acquisition
+    derives from the raw directory's parent (the CRSP ``_reference/`` and
+    ``_vintage/`` directories) therefore lands in ``download_dir`` too.
+
+    Parameters
+    ----------
+    config : AcquisitionConfig
+        The config a registry ``config_factory`` returned.
+    download_dir : str or os.PathLike
+        The directory chosen for this run's downloads.
+
+    Returns
+    -------
+    AcquisitionConfig
+        A copy of ``config`` with the two paths replaced; ``config`` itself
+        is unchanged.
+
+    Examples
+    --------
+    With ``cfg.raw_data_dir_path`` ending in ``wrds_crsp/wrds``::
+
+        moved = place_downloads(cfg, "/mnt/raw")
+        moved.raw_data_dir_path      # '/mnt/raw/wrds'
+        moved.watermark_path         # '/mnt/raw/_watermarks/wrds'
+    """
+    root = Path(download_dir).expanduser().absolute()
+    vendor = Path(config.raw_data_dir_path).name
+    return replace(
+        config,
+        raw_data_dir_path=str(root / vendor),
+        watermark_path=str(root / WATERMARKS_DIR_NAME / vendor),
+    )
 
 
 def print_conversion_result(result, *, print_fn=print):

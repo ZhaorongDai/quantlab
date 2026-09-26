@@ -105,7 +105,7 @@ best_bid, best_bidsizeshares, best_ask, best_asksizeshares, wrds_row_ord
   同名的原始列会先被覆盖再被丢掉。
 - `time_m_nano` 从 **2018-01-02** 起才有；更早的表里这一列是类型为 Int16 的空值，
   所以 2016 年和 2024 年的分片 schema 完全相同。
-- 目录布局：`<数据根>/downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=XXX/*.pqt`，
+- 目录布局：`<download-dir>/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=XXX/*.pqt`（脚本；库默认为 `<数据根>/downloads/us_equity/tick/wrds_taq/wrds/`），
   `date=` 是美东交易日。水位线在同级的 `_watermarks/wrds/`。
 
 ### `wrds_row_ord` 与全序键（D-19）
@@ -213,13 +213,13 @@ SOURCE.config_factory_for("us_equity", "tick", "nbbo")(...)               │
 registry.run(SOURCE, ...)                                                 │
   │  每个 (交易日, 批次) 一次 COPY；COPY 前 count(*) 一次核对行数               │
   ▼                                                                       │
-原始分片 downloads/us_equity/tick/wrds_taq/wrds/data_type=nbbo/...          │
+原始分片 <download-dir>/wrds/data_type=nbbo/...                             │
   ▼                                                                       │
 registry.convert(SOURCE, NbboDatasetConfig, data_type="nbbo")             │
   ▼                                                                       │
 NbboPanelDataset → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar）             │
   ▼                                                                       │
-data/us_equity/tick/wrds_nbbo_{bar}_{开始}-{结束}.zarr                       │
+<zarr-dir>/wrds_nbbo_{bar}_{开始}-{结束}.zarr                                │
   + .nbbo_filter_stats.json 旁车文件                                        │
                                                         finally: close_shared()
 ```
