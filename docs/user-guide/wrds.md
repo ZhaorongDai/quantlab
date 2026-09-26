@@ -309,7 +309,7 @@ records the decision.
 
 The membership is also written as a panel on the same `(timestamp, PERMNO)`
 axes, whose `is_member` variable is true where a security was a member on
-that date, which the backtester and universe filters use as a mask. See
+that date, which `UniverseMask` applies to a price panel. See
 [Universes](universes.md) for how masks are applied.
 
 `scripts/wrds/nbbo.py --index sp500|nasdaq100` resolves the same membership

@@ -15,8 +15,7 @@ synthetic daily US-equity bars:
    listing) arrives;
 6. restrict the panel to a point-in-time index membership with
    ``UniverseMask``;
-7. compute the price/liquidity universe mask of ``UniverseFilteredFactor``;
-8. query a point-in-time universe catalog.
+7. query a point-in-time universe catalog.
 
 Everything runs in a temporary directory: no network, no credentials, CPU
 only. Run it from the repository root with::
@@ -39,14 +38,11 @@ from quantlab.backend import PlBackend, XrBackend
 from quantlab.base.config import (
     ConstituentDatasetConfig,
     DatasetConfig,
-    FactorConfig,
     UniverseConfig,
 )
 from quantlab.base.constituent import IndexConstituentDataset
 from quantlab.dataset._support.masking import UniverseMask
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.universe_filter import UniverseFilteredFactor
-from quantlab.label.fret import Return
 from quantlab.universe import UniverseCatalog
 
 # quantlab logs through loguru at INFO level. Keep only warnings so the
@@ -266,24 +262,7 @@ def main() -> None:
     print(masked["close"].sel(timestamp=["2024-01-02", "2024-02-01", "2024-03-01"]).to_pandas().round(2))
 
     # ------------------------------------------------------------------
-    # 7. The price/liquidity universe filter used around factors and labels.
-    # ------------------------------------------------------------------
-    label = Return(
-        FactorConfig(
-            window=0,
-            dataset=StockDataset(chunked_config),
-            mode="batch",
-            data_columns=("adjOpen",),
-            kwargs={"n_forward_periods": 5},
-        )
-    )
-    filtered = UniverseFilteredFactor(label, min_price=5.0, min_dollar_volume=2_000_000.0, window=5)
-    liquidity = filtered.compute_universe_mask(store_panel).to_pandas()
-    print("\n7. price/liquidity mask, share of bars in the universe:")
-    print(liquidity.notna().mean().round(2).to_string())
-
-    # ------------------------------------------------------------------
-    # 8. A point-in-time universe catalog, queried two ways.
+    # 7. A point-in-time universe catalog, queried two ways.
     # ------------------------------------------------------------------
     catalog_config = UniverseConfig(
         output_path=str(root / "data" / "reference" / "universe.parquet"),
@@ -299,7 +278,7 @@ def main() -> None:
         }
     ).write_parquet(catalog_config.output_path)
     catalog = UniverseCatalog.load(catalog_config)
-    print("\n8. listed on 2024-03-15:", catalog.get_symbols_as_of("us_all", "2024-03-15"))
+    print("\n7. listed on 2024-03-15:", catalog.get_symbols_as_of("us_all", "2024-03-15"))
     print("   listed at any time in Q1 2024:",
           catalog.get_symbols_in_range("us_all", "2024-01-01", "2024-03-31"))
 

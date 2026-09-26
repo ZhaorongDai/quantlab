@@ -5,9 +5,8 @@ given day. Choosing it carelessly is one of the easiest ways to produce a
 backtest that looks excellent and means nothing. This page explains
 survivorship bias, shows how quantlab records point-in-time index membership
 and exchange listings, how to turn membership into a mask over a price
-panel, how the price and liquidity filter restricts factors and labels to
-tradeable symbols, and what happens in a backtest when a held symbol leaves
-the universe. Read [Datasets](datasets.md) first; the snippets here come from
+panel, and what happens in a backtest when a held symbol leaves the
+universe. Read [Datasets](datasets.md) first; the snippets here come from
 the same runnable example,
 [`examples/build_panel.py`](../../examples/build_panel.py).
 
@@ -243,90 +242,6 @@ both panels saved, `UniverseMask.from_datasets(price_dataset,
 constituent_dataset)` reads both stores and, for a CRSP store, spells the
 report with period-correct tickers.
 
-## The price and liquidity filter
-
-Index membership says whether a symbol belonged to a list. A second question
-is whether it was tradeable at all: a cross-sectional ranking over the whole
-US market is easily dominated by penny stocks, warrants and illiquid names
-whose prices jump by orders of magnitude, and a model will happily buy them.
-`quantlab.factor.universe_filter.UniverseFilteredFactor` answers that
-question with a point-in-time rule. A symbol is in the universe at bar t when
-
-- its raw `close` at t is at least `min_price` (default 5.0), and
-- the mean of raw `close * volume` over the trailing `window` bars (default
-  20) is at least `min_dollar_volume` (default 1,000,000).
-
-Raw prices are used, never adjusted ones: adjusted history is scaled by later
-splits and dividends, so an adjusted price cannot say what a stock cost at
-the time. A window that is not yet full or contains a NaN counts as out of
-the universe, and nothing after t affects the mask at t. Security types
-(common stock against ADRs, funds, units) are not decided here; for CRSP data
-that is the `security_filter` of the dataset config.
-
-The filter is a wrapper around any KunQuant factor or label and is itself a
-factor, so it drops into a model config unchanged. Wrap both the factors and
-the labels: wrapping only the factors leaves training rows for
-out-of-universe symbols, and wrapping only the labels leaves the factors'
-cross-sections polluted by them.
-
-```python
-from quantlab.factor.alpha101 import Alpha101Stock
-from quantlab.factor.universe_filter import UniverseFilteredFactor
-from quantlab.label.fret import Return
-
-factors = [UniverseFilteredFactor(Alpha101Stock(factor_config))]
-labels = [UniverseFilteredFactor(Return(label_config), min_price=5.0,
-                                 min_dollar_volume=1_000_000.0, window=20)]
-```
-
-The wrapper does more than blank its outputs. It rewrites the inner factor's
-graph so that every cross-sectional operator (a rank or a cross-sectional
-z-score across symbols) sees out-of-universe symbols as NaN, which keeps a
-penny stock from shifting the ranks of every other symbol. Time-series
-operators still see full history. Outputs are then set to NaN wherever the
-mask is out. The symbol axis never shrinks: a symbol that is out for the
-whole window stays as an all-NaN column, so a model trained on one window
-can predict on another. The dataset's start date is also pulled earlier so
-the dollar-volume window is warm on the first requested bar.
-
-You can inspect the mask on any panel with raw `close` and `volume`. The
-example uses `min_dollar_volume=2_000_000` and `window=5`:
-
-```python
-filtered = UniverseFilteredFactor(label, min_price=5.0,
-                                  min_dollar_volume=2_000_000.0, window=5)
-mask = filtered.compute_universe_mask(prices)   # 1.0 in, NaN out
-mask.to_pandas().notna().mean()
-```
-
-```text
-7. price/liquidity mask, share of bars in the universe:
-symbol
-AAA    0.94
-BBB    0.92
-DDD    0.28
-EEE    0.27
-PNY    0.00
-```
-
-`PNY` trades around 1.5 and is never in. `DDD` and `EEE` are in only for the
-part of the window in which they traded, after their first five bars.
-
-Three limits apply. The number of symbols must be a multiple of the SIMD
-block width KunQuant compiles for on your machine (16 works on common
-hardware; 13 does not). A time-series operator applied on top of a
-cross-sectional one, such as a 10-bar correlation of two ranks, is NaN for a
-full window after a symbol re-enters the universe, because its input was NaN
-while the symbol was out; this matches what a trader could actually have
-computed. And the model heads treat masked cells differently: tree models
-such as `XGBoostRegressor` drop rows whose label is NaN, while the MLP head
-replaces NaN with 0 before training, so masked cells become zero-valued
-samples. See [Models](models.md).
-
-The filter and index membership are independent and can be stacked: mask the
-price panel to an index with `UniverseMask`, and wrap the factors and labels
-with `UniverseFilteredFactor`.
-
 ## Symbols leaving the universe in a backtest
 
 The backtester needs no universe setting of its own; the universe reaches it
@@ -354,10 +269,8 @@ normally once it lists.
 ## See also
 
 - [Datasets](datasets.md): build the price panels that universes restrict.
-- [Factors](factors.md): the factors and labels the filter wraps.
+- [Factors](factors.md): the factors and labels computed on a masked panel.
 - [WRDS](wrds.md): CRSP reference tables, PERMNOs and `security_filter`.
 - The docstrings of `quantlab.universe.UniverseCatalog`,
-  `quantlab.base.constituent.IndexConstituentDataset`,
-  `quantlab.dataset._support.masking.UniverseMask` and
-  `quantlab.factor.universe_filter.UniverseFilteredFactor` for every
-  parameter.
+  `quantlab.base.constituent.IndexConstituentDataset` and
+  `quantlab.dataset._support.masking.UniverseMask` for every parameter.

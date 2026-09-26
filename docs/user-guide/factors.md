@@ -426,15 +426,6 @@ because KunQuant drops unused inputs from the compiled stream and the lookup
 of a dropped input fails. Streaming is a KunQuant
 feature only; Polars factors have no streaming mode.
 
-## Restrict factors to a tradable universe
-
-`quantlab.factor.universe_filter.UniverseFilteredFactor` wraps any KunQuant
-factor or label and blanks the symbols that are too cheap or too illiquid to
-trade at each bar. It also keeps those symbols out of every cross-sectional
-operator in the wrapped graph. Wrap both the factors and the labels of a
-model. The page on [universes](universes.md) explains the filter and how it
-combines with point-in-time index membership.
-
 ## Things to watch
 
 - The docstrings of `FactorKunQuant` and `CrossSectionalZScore` ask for a
@@ -457,7 +448,6 @@ combines with point-in-time index membership.
 ## See also
 
 - [Models](models.md) for training on these panels.
-- [Universes](universes.md) for point-in-time universes and the universe
-  filter.
+- [Universes](universes.md) for point-in-time universes.
 - The docstrings of `quantlab.base.factor.Factor`, `FactorKunQuant` and
   `FactorPolars` for every method and parameter.
