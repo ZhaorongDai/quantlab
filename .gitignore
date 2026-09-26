@@ -231,6 +231,9 @@ model_ckpt
 
 # agent
 .claude
+CLAUDE.md
+CONTEXT.md
+docs/agents/
 .codex
 
 # personal scratch scripts
