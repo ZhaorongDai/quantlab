@@ -24,7 +24,7 @@ import dataclasses
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import KunQuant.runner.KunRunner as kr
 import numpy as np
@@ -35,7 +35,6 @@ from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Stage import Function
 
-from quantlab.analysis.factor_report import FactorAnalysis, FactorAnalyzer
 from quantlab.base.config import (
     BaseFactorConfig,
     FactorConfig,
@@ -50,6 +49,9 @@ from quantlab.utils.resample import (
     validate_resample_config,
 )
 from quantlab.utils.timer import Timer
+
+if TYPE_CHECKING:
+    from quantlab.analysis.factor_report import FactorAnalysis
 
 
 class Factor(ABC):
@@ -695,7 +697,7 @@ class Factor(ABC):
         frets: list["Factor"] | None = None,
         output_dir: str | None = None,
         quantiles: int = 5,
-    ) -> FactorAnalysis:
+    ) -> "FactorAnalysis":
         """Report how well this factor predicts forward returns, alphalens style.
 
         Every analyzed factor variable is paired with every variable of every
@@ -765,6 +767,10 @@ class Factor(ABC):
         >>> sorted(os.listdir("data/analysis/momentum"))
         ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
         """
+        # Imported here so the base layer does not depend on the analysis
+        # layer at import time; the report is an optional terminal step.
+        from quantlab.analysis.factor_report import FactorAnalyzer
+
         return FactorAnalyzer(quantiles=quantiles).run(
             self, frets or [], factor_names=factor_names, output_dir=output_dir
         )
