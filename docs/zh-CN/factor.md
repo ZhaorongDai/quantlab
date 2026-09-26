@@ -128,6 +128,55 @@ True
 ('Momentum', ('momentum_5',))
 ```
 
+### 把因子重采样到更粗的 bar
+
+`resample(freq, how)` 返回因子的一个副本，其计算出的面板被聚合到更粗的 bar 上。因子仍然在其 dataset 自身的 bar 上计算，只有输出被聚合，因此分钟 bar 上的动量会变成"每日最后一分钟的值"这一日频序列，而它衡量的东西没有变。`freq` 和 `how` 的取值与 `BaseDataset.resample` 相同（见 dataset 指南），`how` 也可以只给一个字符串，表示所有因子变量都用这种方法。bar 的切分方式沿用因子所用 dataset 的切分方式。
+
+下面的会话在 dataset 指南里构造的两天分钟 store 上运行 `Momentum`（`config` 就是那个 store 的 `DatasetConfig`）。
+
+```python
+>>> factor = Momentum(PolarsFactorConfig(
+...     window=1, dataset=SpotKlineDataset(config),
+...     file_path="data/factors/momentum.zarr", kwargs={"n": 1},
+... ))
+>>> minute = factor.cal()
+>>> minute.get_features()["momentum_1"].to_pandas().round(3)
+symbol               AAAUSDT  BBBUSDT
+timestamp                            
+2024-01-02 00:00:00      NaN      NaN
+2024-01-02 00:01:00    1.000    1.000
+2024-01-02 00:02:00    0.500    0.500
+2024-01-02 00:03:00    0.333    0.333
+2024-01-03 00:00:00    0.250    0.250
+2024-01-03 00:01:00    0.200    0.200
+2024-01-03 00:02:00    0.167    0.167
+2024-01-03 00:03:00    0.143    0.143
+>>> daily = minute.resample("1d", "last")
+>>> daily.get_features()["momentum_1"].to_pandas().round(3)
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02    0.333    0.333
+2024-01-03    0.143    0.143
+>>> daily.config.dataset.config.resample_freq, daily.config.resample_freq
+(None, '1d')
+```
+
+副本有自己的 dataset 对象和空的编译状态，所以在它上面调用 `cal()` 会重新计算分钟面板再重采样。`save()` 写到 `store_path`，即源 store 旁边的那个 store；副本上的 `read()` 在该 store 存在时直接打开它，否则读源 store 再重采样。这次请求能经 `get_config()` 和 `load_factor_from_config` 往返重建。
+
+```python
+>>> daily.store_path
+'data/factors/momentum_resample_1d.zarr'
+>>> daily.cal().get_features().sizes
+Frozen({'symbol': 2, 'timestamp': 2})
+>>> cfg = daily.get_config()
+>>> cfg["resample_freq"], cfg["resample_how"], cfg["dataset"]["resample_freq"]
+('1d', 'last', None)
+>>> load_factor_from_config(cfg).cal().get_features().sizes
+Frozen({'symbol': 2, 'timestamp': 2})
+```
+
+如果想在已经重采样的 bar 上计算因子，先对 dataset 做重采样，再把重采样后的 dataset 交给因子。
+
 ### 计算标签
 
 标签是 `get_labels()` 返回前瞻值的 KunQuant 因子。`quantlab.label.fret` 中的 `Return` 是从下一根 bar 的复权开盘价到其后 `n` 根 bar 的复权开盘价的收益，`BinaryReturn` 在该收益为正时取 1.0。计算图算出的是滞后收益（KunQuant 只能向后看），`get_labels()` 再把它向前平移 `n_forward_periods + 1` 根 bar，因此最后 `n_forward_periods + 1` 根 bar 是 NaN。标签读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。
@@ -299,6 +348,8 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 `save()` 默认 `mode="a"`，在 Zarr 里它表示改写已有存储中的变量，不是沿时间追加。保存长度不同的面板会抛出 `ValueError: Momentum.save(mode="a"): cannot write this date range into the existing store at data/f/m.zarr. zarr's "a" means "overwrite variables in an existing store", NOT "append along time", ...`。替换存储用 `save(mode="w")`，扩充存储用 `update()`。
 
 `window` 是数据集回看的日历天数，不是 bar 数。市场在某些日子休市时，同样的天数对应的 bar 更少；嵌套的滚动窗口需要两个窗口长度之和。
+
+重采样后的因子是其源面板的一个视图：`update()`、`init_stream()` 和 `cal_stream()` 会拒绝：`Momentum.update(): a resampled factor (resample_freq='1d') is a view of its source panel and does not support update. Compute or update the source factor, then resample it.` 保存下来的重采样 store 是缓存：重新计算源因子不会刷新它。
 
 `FactorKunQuant.cal()` 每次调用都会重新编译计算图。把 `factor_names` 固定为需要的列可以让计算图保持较小。
 

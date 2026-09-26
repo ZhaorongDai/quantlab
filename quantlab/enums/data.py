@@ -71,6 +71,30 @@ BAR_INTERVAL_SECONDS: dict[str, int] = {
     "30m": 1800,
 }
 
+#: The bar size a panel can be resampled onto: every ``BarInterval`` plus
+#: one hour and one day. A resample always goes to a coarser grid than the
+#: panel it reads, so the source's own token is never a valid target.
+ResampleFrequency = Literal[
+    "1s", "5s", "10s", "15s", "30s", "1m", "5m", "10m", "15m", "30m", "1h", "1d"
+]
+
+#: ``ResampleFrequency`` token to its length in seconds.
+RESAMPLE_FREQUENCY_SECONDS: dict[str, int] = {
+    **BAR_INTERVAL_SECONDS,
+    "1h": 3600,
+    "1d": 86400,
+}
+
+#: How one variable is aggregated into a resampled bar. NaN cells are
+#: skipped: ``first`` and ``last`` take the first and last valid value,
+#: ``count`` counts the valid ones, and ``sum`` of an all-NaN bar is 0.
+ResampleMethod = Literal["first", "last", "max", "min", "sum", "mean", "count"]
+
+#: Every ``ResampleMethod`` token.
+RESAMPLE_METHODS: tuple[str, ...] = (
+    "first", "last", "max", "min", "sum", "mean", "count"
+)
+
 #: The US-equity symbol universes a roster can be built for.
 #:
 #: ``"nasdaq_all"`` is every symbol ever listed on the NASDAQ exchange as

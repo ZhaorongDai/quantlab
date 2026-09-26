@@ -21,6 +21,7 @@ A concrete dataset lives under ``quantlab/dataset/`` and implements
 ``get_xarray_dataset`` or ``get_lazyframe``.
 """
 
+import copy
 import datetime
 import os
 import shutil
@@ -40,6 +41,13 @@ from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data
 from quantlab.enums.constant import Date
+from quantlab.utils.resample import (
+    assert_coarser,
+    clock_labels,
+    resample_store_path,
+    resolve_resample_how,
+    validate_resample_config,
+)
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
@@ -140,6 +148,8 @@ class BaseDataset(ABC):
     subclass whose ``_raw_data_to_xr`` returns six business days of
     synthetic OHLCV bars for ``AAA``, ``BBB`` and ``CCC``, built with a
     ``DatasetConfig`` covering ``2024-01-02`` to ``2024-01-05``.
+    ``minute_config`` is the same kind of config over a store of two days
+    of 390 one-minute bars, used by the ``resample`` examples.
     """
 
     #: Accepted values of ``on_new_listing``: stop (``"refuse"``), rewrite the
@@ -353,6 +363,9 @@ class BaseDataset(ABC):
         self._config.end_date = self._normalize_date(
             self._config.end_date, "end_date"
         )
+        validate_resample_config(
+            self._config.resample_freq, self._config.resample_how, self.class_name
+        )
 
     def _normalize_date(self, value: str, field_name: str) -> str:
         """Return ``value`` as a zero-padded ISO date string.
@@ -380,6 +393,165 @@ class BaseDataset(ABC):
             ["symbol", "timestamp"]
         ).symbol.values.tolist()
 
+    @property
+    def store_path(self) -> str:
+        """Return the Zarr store this dataset reads and writes.
+
+        This is ``config.zarr_file_path`` for a dataset that is not
+        resampled. A resampled dataset uses a store beside it with
+        ``_resample_<freq>`` added to the name, so the resampled panel never
+        overwrites the source bars.
+
+        Examples
+        --------
+        >>> ds.store_path
+        'data/klines.zarr'
+        >>> ds.resample("1d", "last").store_path
+        'data/klines_resample_1d.zarr'
+        """
+        return resample_store_path(
+            self.config.zarr_file_path, self.config.resample_freq
+        )
+
+    def copy(self) -> Self:
+        """Return a copy with its own config and an empty storage backend.
+
+        The config is deep-copied and re-assigned through the ``config``
+        setter, so the copy shares no mutable state with this object. The
+        copy holds no panel until it is read or built.
+
+        Examples
+        --------
+        >>> other = ds.copy()
+        >>> other.config is ds.config, other.data_backend is ds.data_backend
+        (False, False)
+        """
+        other = copy.copy(self)
+        other.data_backend = XrBackend()
+        other.last_chunk_result = None
+        other.config = copy.deepcopy(self.config)
+        return other
+
+    def resample(
+        self, freq: str, how: dict[str, str] | str
+    ) -> Self:
+        """Return a copy of this dataset whose panel is resampled onto ``freq``.
+
+        The copy's config carries ``resample_freq=freq`` and
+        ``resample_how=how``; ``read()`` and every data accessor on it give
+        the resampled panel. If this dataset already holds a panel, the copy
+        holds that panel resampled, in memory of its own; otherwise the copy
+        is empty and resamples on its first ``read()``. This dataset is not
+        changed.
+
+        A resampled dataset cannot be built from raw files: ``from_raw_data``,
+        ``from_raw_data_chunked`` and ``update`` refuse. ``save()`` writes to
+        ``store_path``, the resampled store beside the source.
+
+        Parameters
+        ----------
+        freq : str
+            A ``ResampleFrequency`` token, coarser than the panel's bars.
+        how : dict[str, str] or str
+            One ``ResampleMethod`` for every variable, or a
+            ``{variable: method}`` dict naming every variable.
+
+        Returns
+        -------
+        Self
+            A new dataset of the same class.
+
+        Raises
+        ------
+        ValueError
+            If ``freq`` or a method is not a known token, or, when this
+            dataset holds a panel, if ``freq`` is not coarser than its bars
+            or ``how`` does not name every variable.
+
+        Examples
+        --------
+        >>> minute = DemoDataset(minute_config).read()
+        >>> daily = minute.resample("1d", {"open": "first", "high": "max",
+        ...                               "low": "min", "close": "last",
+        ...                               "volume": "sum"})
+        >>> daily.get_xarray_dataset().sizes["timestamp"]
+        2
+        >>> minute.get_xarray_dataset().sizes["timestamp"]   # unchanged
+        780
+        """
+        other = self.copy()
+        config = other.config
+        config.resample_freq = freq
+        config.resample_how = how
+        other.config = config
+        if self._holds_data():
+            other.data_backend.to_internal(
+                self.data_backend.get_xarray_dataset()
+            )
+            other._apply_resample()
+        return other
+
+    def _holds_data(self) -> bool:
+        """Return whether the storage backend holds a panel."""
+        try:
+            self.data_backend.data
+        except AttributeError:
+            return False
+        return True
+
+    def _refuse_if_resampled(self, method: str) -> None:
+        """Raise if ``method`` is called on a resampled dataset.
+
+        Raises
+        ------
+        ValueError
+            If ``config.resample_freq`` is set.
+        """
+        if self.config.resample_freq is not None:
+            raise ValueError(
+                f"{self.class_name}.{method}(): a resampled dataset "
+                f"(resample_freq={self.config.resample_freq!r}) is a view of "
+                f"its source store and cannot be built from raw files. Build "
+                f"or update the source dataset, then resample it."
+            )
+
+    def _resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
+        """Return the bar each source timestamp belongs to when resampled.
+
+        The default floors each timestamp on the UTC clock, labelling a bar
+        at its start; that suits bars stamped at their open time and daily
+        stores stamped at midnight. A dataset whose bars follow trading
+        sessions, or are labelled at their end, overrides this.
+
+        Parameters
+        ----------
+        timestamps : np.ndarray
+            The panel's timestamps.
+        freq : str
+            A ``ResampleFrequency`` token.
+
+        Returns
+        -------
+        np.ndarray
+            One target timestamp per source timestamp.
+        """
+        return clock_labels(timestamps, freq)
+
+    def _apply_resample(self) -> None:
+        """Replace the held panel with its resample, per the config."""
+        freq = self.config.resample_freq
+        if freq is None:
+            return
+        data = self.data_backend.get_xarray_dataset()
+        timestamps = data["timestamp"].values
+        assert_coarser(timestamps, freq, self.class_name)
+        how = resolve_resample_how(
+            self.config.resample_how, list(data.data_vars), self.class_name
+        )
+        labels = pd.Series(self._resample_labels(timestamps, freq), index=timestamps)
+        with Timer(f"{self.__class__.__name__}: resample to {freq}"):
+            self.data_backend.resample(labels, how)
+
     def read(self, **kwargs):
         """Open the Zarr store and narrow it to the config's window.
 
@@ -400,15 +572,37 @@ class BaseDataset(ABC):
         >>> panel = DemoDataset(config).read().get_xarray_dataset()
         >>> dict(panel.sizes)  # narrowed to the config's four days
         {'timestamp': 4, 'symbol': 3}
+
+        A resampled dataset reads its own store when one has been saved,
+        and otherwise reads the source store and resamples it:
+
+        >>> daily = DemoDataset(minute_config).resample("1d", "last")
+        >>> daily.read().time_interval
+        np.timedelta64(86400000000000,'ns')
         """
+        if self.config.resample_freq is None:
+            self.data_backend.read(self.config.zarr_file_path, **kwargs)
+            self._filter()
+            return self
+
+        if Path(self.store_path).exists():
+            self.data_backend.read(self.store_path, **kwargs)
+            self._filter()
+            return self
+
+        fresh = bool(kwargs.get("overwrite", False)) or not self._holds_data()
         self.data_backend.read(self.config.zarr_file_path, **kwargs)
         self._filter()
+        if fresh:
+            self._apply_resample()
         return self
 
     def save(self, **kwargs):
         """Narrow the loaded panel to the config's window and write it to Zarr.
 
-        The write replaces the whole store directory.
+        The write replaces the whole store directory at ``store_path``: the
+        config's ``zarr_file_path``, or the resampled store beside it when
+        the dataset is resampled.
 
         Parameters
         ----------
@@ -423,7 +617,7 @@ class BaseDataset(ABC):
         """
         with Timer(f"{self.__class__.__name__}: save"):
             self._filter()
-            self.data_backend.write(self.config.zarr_file_path, **kwargs)
+            self.data_backend.write(self.store_path, **kwargs)
 
     def get_config(self) -> dict:
         """Return the config as a plain dictionary.
@@ -465,7 +659,7 @@ class BaseDataset(ABC):
         >>> ds.head(2).collect().shape
         (2, 8)
         """
-        return self.data_backend.head(self.config.zarr_file_path, n)
+        return self.data_backend.head(self.store_path, n)
 
     def get_xarray_dataset(self) -> xr.Dataset:
         """Return the loaded panel indexed by ``(timestamp, symbol)``.
@@ -495,6 +689,7 @@ class BaseDataset(ABC):
         >>> list(ds.get_xarray_dataset().data_vars)  # cleaning adds the flag
         ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
         """
+        self._refuse_if_resampled("from_raw_data")
         data = self._raw_data_to_xr()
         data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
@@ -641,6 +836,7 @@ class BaseDataset(ABC):
         >>> ds.last_chunk_result.windows_written
         1
         """
+        self._refuse_if_resampled("from_raw_data_chunked")
         from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
 
         # The private marker is accepted by identity; the error lists only the

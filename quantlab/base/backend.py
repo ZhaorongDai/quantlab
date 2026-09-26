@@ -14,6 +14,7 @@ be swapped without touching the layers above it. See ``docs/backend.md``.
 from abc import ABC, abstractmethod
 from typing import Literal, Optional, Self
 
+import pandas as pd
 import polars as pl
 import xarray as xr
 
@@ -109,6 +110,34 @@ class DataBackend(ABC):
         --------
         >>> backend.get_lazyframe().collect().columns
         ['timestamp', 'symbol', 'close']
+        """
+        ...
+
+    @abstractmethod
+    def resample(self, labels: pd.Series, how: dict[str, str]) -> Self:
+        """Aggregate ``data`` onto the coarser time grid ``labels`` describes.
+
+        ``labels`` maps every source timestamp (its index) to the timestamp
+        of the bar it belongs to (its value); the caller works those out, so
+        the backend knows nothing about clocks or trading sessions. ``how``
+        names one ``ResampleMethod`` for every variable. Each variable is
+        reduced over the timestamps sharing a label, NaN cells skipped, and
+        the result replaces ``data`` in place, sorted by the new timestamps.
+
+        Parameters
+        ----------
+        labels : pd.Series
+            Source timestamp to target timestamp, covering every timestamp
+            ``data`` holds.
+        how : dict[str, str]
+            Variable name to aggregation method.
+
+        Examples
+        --------
+        >>> labels = pd.Series(minutes.floor("D"), index=minutes)
+        >>> backend.resample(labels, {"close": "last", "volume": "sum"})
+        >>> dict(backend.data.sizes)
+        {'timestamp': 2, 'symbol': 3}
         """
         ...
 

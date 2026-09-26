@@ -200,6 +200,64 @@ For a long history, `from_raw_data_chunked()` converts a month, quarter or year 
 (2, 2, 5)
 ```
 
+### Resample onto coarser bars
+
+`resample(freq, how)` returns a copy of the dataset whose panel is aggregated onto coarser bars: minute bars into daily bars, for example. `freq` is one of `1s`, `5s`, `10s`, `15s`, `30s`, `1m`, `5m`, `10m`, `15m`, `30m`, `1h` and `1d`, and must be coarser than the store's own bars. `how` names one method per variable, from `first`, `last`, `max`, `min`, `sum`, `mean` and `count`, or one method as a string for every variable. NaN cells are skipped. The copy shares no memory with the source, and the source is not changed.
+
+The session below writes a two-day minute store and reads it through `SpotKlineDataset`.
+
+```python
+>>> minutes = pd.DatetimeIndex(np.concatenate([
+...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
+... ]))
+>>> close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
+>>> xr.Dataset(
+...     {"Open": (["timestamp", "symbol"], close - 0.5),
+...      "Close": (["timestamp", "symbol"], close),
+...      "Volume": (["timestamp", "symbol"], np.ones((8, 2)))},
+...     coords={"timestamp": minutes, "symbol": ["AAAUSDT", "BBBUSDT"]},
+... ).to_zarr("data/klines.zarr", mode="w")
+>>> config = DatasetConfig(raw_data_dir_path="downloads/spot", zarr_file_path="data/klines.zarr",
+...                        market="crypto_spot", frequency="1m")
+>>> minute = SpotKlineDataset(config).read()
+>>> daily = minute.resample("1d", {"Open": "first", "Close": "last", "Volume": "sum"})
+>>> daily.get_xarray_dataset()["Close"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0     40.0
+2024-01-03      8.0     80.0
+>>> daily.get_xarray_dataset()["Volume"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0      4.0
+2024-01-03      4.0      4.0
+>>> daily.time_interval, minute.time_interval
+(np.timedelta64(86400000000000,'ns'), np.timedelta64(60000000000,'ns'))
+>>> minute.get_xarray_dataset().sizes["timestamp"], minute.config.resample_freq
+(8, None)
+```
+
+The copy's config records the request in `resample_freq` and `resample_how`, so it round-trips through `get_config()` and `load_dataset_from_config`. A dataset built with those fields set resamples on `read()`. `save()` writes the resampled panel to `store_path`, a store beside the source with `_resample_<freq>` in its name, and a later `read()` with the same fields opens that store instead of resampling again.
+
+```python
+>>> daily.config.resample_freq, daily.config.resample_how
+('1d', {'Open': 'first', 'Close': 'last', 'Volume': 'sum'})
+>>> daily.store_path
+'data/klines_resample_1d.zarr'
+>>> daily.save()
+>>> sorted(p.name for p in Path("data").iterdir())
+['klines.zarr', 'klines_resample_1d.zarr']
+>>> reader = SpotKlineDataset(dataclasses.replace(
+...     config, resample_freq="1d", resample_how={"Open": "first", "Close": "last", "Volume": "sum"}))
+>>> reader.read().get_xarray_dataset()["Close"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0     40.0
+2024-01-03      8.0     80.0
+```
+
+Bars are cut on the UTC clock by default, labelled at their start, which suits bars stamped at their open time. A dataset whose bars follow trading sessions overrides `_resample_labels`; `NbboPanelDataset` cuts by NYSE session, so `"1d"` labels each session with its date at midnight and lines up with daily stores.
+
 ## Extending
 
 ### A new market source
@@ -336,6 +394,8 @@ Cleaning never fills or repairs a value. Chunked conversion cleans one window at
 Reading a store that does not exist raises `FileNotFoundError: File .../missing.zarr does not exist.`
 
 `StockDataset` reads one vendor's directory only. The raw root must end in the vendor name and `DatasetConfig.vendor` must be set; otherwise the scan refuses, for example with `StockDataset: DatasetConfig.vendor is not set, so there is no way to check that ... holds exactly one vendor's data.` or `StockDataset: raw_data_dir_path '...' has basename 'tiingo' but the configured vendor is 'alpaca'.` An empty or missing raw tree raises `StockDataset: no raw data for vendor 'tiingo' at frequency '1d' under '...'.` `SpotKlineDataset` raises `No CSV file matching the configured date range was found under ...` when no monthly file falls in the range.
+
+A resampled dataset is a view of its source store. `from_raw_data()`, `from_raw_data_chunked()` and `update()` refuse with `SpotKlineDataset.from_raw_data(): a resampled dataset (resample_freq='1d') is a view of its source store and cannot be built from raw files. Build or update the source dataset, then resample it.` A `how` dict must name every variable: `SpotKlineDataset: resample_how does not name ['Open', 'Volume']; every variable of the panel needs a method (or pass one method as a str).` A target no coarser than the store's bars is refused: `SpotKlineDataset: resample_freq='1m' (60s) is not coarser than the panel's own bars (60s).` The saved resampled store is a cache like a factor store: rebuilding the source does not refresh it. Delete it, or `save()` again from a freshly resampled copy.
 
 Intraday datasets use `XnysSessionCalendar` (`quantlab.dataset._support.session_calendar`) to turn an Eastern-time window into each date's real exchange open and close, half days included, as naive UTC timestamps.
 

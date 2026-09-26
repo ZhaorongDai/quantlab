@@ -42,6 +42,7 @@ from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 from quantlab.utils.atomic import write_json_atomically
+from quantlab.utils.resample import session_labels
 from quantlab.utils.timer import Timer
 
 #: Appended to the store path to name the filter-stats sidecar, a JSON file
@@ -231,6 +232,38 @@ class NbboPanelDataset(StockDataset):
             Columns ``date``, ``open`` and ``close``.
         """
         return self._calendar.session_bounds(dates)
+
+    def _resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
+        """Return the bar each NBBO bar belongs to, cut by trading session.
+
+        NBBO bars are labelled at their end inside a session window, so a
+        bar belongs to the session whose ``open < t <= close``. ``"1d"``
+        labels a session with its date at midnight, which lines a daily
+        panel up with daily stores; any other frequency cuts the session
+        into right-closed bars from its open, labelled at their end, the
+        last one clipped to the close. The candidate sessions are the UTC
+        dates the bars fall on and the day before each, since an extended
+        close lands on the next UTC calendar day.
+
+        Parameters
+        ----------
+        timestamps : np.ndarray
+            The panel's bar labels, naive UTC.
+        freq : str
+            A ``ResampleFrequency`` token.
+
+        Examples
+        --------
+        >>> bars = pd.to_datetime(["2024-01-24 14:31", "2024-01-24 21:00"])
+        >>> ds._resample_labels(bars.values, "1d").astype("datetime64[D]")
+        array(['2024-01-24', '2024-01-24'], dtype='datetime64[D]')
+        """
+        index = pd.DatetimeIndex(timestamps).normalize()
+        candidates = set(index.date) | set((index - pd.Timedelta(days=1)).date)
+        sessions = self._session_bounds(
+            [day for day in sorted(candidates) if self._calendar.is_session(day)]
+        ).to_pandas()
+        return session_labels(timestamps, freq, sessions, self.class_name)
 
     def _dates_in_config_range(self) -> list[date]:
         """Return the raw session dates inside the configured date range."""

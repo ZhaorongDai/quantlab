@@ -200,6 +200,64 @@ ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 (2, 2, 5)
 ```
 
+### 重采样到更粗的 bar
+
+`resample(freq, how)` 返回 dataset 的一个副本，其面板被聚合到更粗的 bar 上，例如分钟 bar 变日 bar。`freq` 取 `1s`、`5s`、`10s`、`15s`、`30s`、`1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d` 之一，且必须比 store 自身的 bar 更粗。`how` 为每个变量指定一种方法，可选 `first`、`last`、`max`、`min`、`sum`、`mean`、`count`；也可以只给一个字符串，表示所有变量都用这种方法。NaN 单元格会被跳过。副本与源不共享任何内存，源本身不会被改变。
+
+下面的会话写入一个两天的分钟 store，并通过 `SpotKlineDataset` 读取。
+
+```python
+>>> minutes = pd.DatetimeIndex(np.concatenate([
+...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
+... ]))
+>>> close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
+>>> xr.Dataset(
+...     {"Open": (["timestamp", "symbol"], close - 0.5),
+...      "Close": (["timestamp", "symbol"], close),
+...      "Volume": (["timestamp", "symbol"], np.ones((8, 2)))},
+...     coords={"timestamp": minutes, "symbol": ["AAAUSDT", "BBBUSDT"]},
+... ).to_zarr("data/klines.zarr", mode="w")
+>>> config = DatasetConfig(raw_data_dir_path="downloads/spot", zarr_file_path="data/klines.zarr",
+...                        market="crypto_spot", frequency="1m")
+>>> minute = SpotKlineDataset(config).read()
+>>> daily = minute.resample("1d", {"Open": "first", "Close": "last", "Volume": "sum"})
+>>> daily.get_xarray_dataset()["Close"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0     40.0
+2024-01-03      8.0     80.0
+>>> daily.get_xarray_dataset()["Volume"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0      4.0
+2024-01-03      4.0      4.0
+>>> daily.time_interval, minute.time_interval
+(np.timedelta64(86400000000000,'ns'), np.timedelta64(60000000000,'ns'))
+>>> minute.get_xarray_dataset().sizes["timestamp"], minute.config.resample_freq
+(8, None)
+```
+
+副本的 config 把这次请求记录在 `resample_freq` 和 `resample_how` 里，因此能经 `get_config()` 和 `load_dataset_from_config` 往返重建。带着这两个字段构造的 dataset 会在 `read()` 时重采样。`save()` 把重采样后的面板写到 `store_path`：与源 store 同目录、名字里带 `_resample_<freq>` 的一个 store；之后带同样字段的 `read()` 会直接打开这个 store，而不再重采样。
+
+```python
+>>> daily.config.resample_freq, daily.config.resample_how
+('1d', {'Open': 'first', 'Close': 'last', 'Volume': 'sum'})
+>>> daily.store_path
+'data/klines_resample_1d.zarr'
+>>> daily.save()
+>>> sorted(p.name for p in Path("data").iterdir())
+['klines.zarr', 'klines_resample_1d.zarr']
+>>> reader = SpotKlineDataset(dataclasses.replace(
+...     config, resample_freq="1d", resample_how={"Open": "first", "Close": "last", "Volume": "sum"}))
+>>> reader.read().get_xarray_dataset()["Close"].to_pandas()
+symbol      AAAUSDT  BBBUSDT
+timestamp                   
+2024-01-02      4.0     40.0
+2024-01-03      8.0     80.0
+```
+
+默认按 UTC 时钟切 bar，标签取 bar 的起点，适合以开盘时间打标签的 bar。按交易时段切 bar 的 dataset 可覆盖 `_resample_labels`；`NbboPanelDataset` 按 NYSE 交易时段切分，因此 `"1d"` 给每个时段打上该日期零点的标签，能与日线 store 对齐。
+
 ## 扩展
 
 ### 新增一个市场数据源
@@ -336,6 +394,8 @@ timestamp
 读取一个不存在的 store 会抛出 `FileNotFoundError: File .../missing.zarr does not exist.`
 
 `StockDataset` 只读取单个 vendor 的目录。原始数据根目录必须以 vendor 名结尾，并且必须设置 `DatasetConfig.vendor`，否则扫描会被拒绝，例如 `StockDataset: DatasetConfig.vendor is not set, so there is no way to check that ... holds exactly one vendor's data.` 或 `StockDataset: raw_data_dir_path '...' has basename 'tiingo' but the configured vendor is 'alpaca'.` 原始数据树为空或不存在时抛出 `StockDataset: no raw data for vendor 'tiingo' at frequency '1d' under '...'.` 当范围内没有任何月度文件时，`SpotKlineDataset` 抛出 `No CSV file matching the configured date range was found under ...`
+
+重采样后的 dataset 是其源 store 的一个视图。`from_raw_data()`、`from_raw_data_chunked()` 和 `update()` 会拒绝：`SpotKlineDataset.from_raw_data(): a resampled dataset (resample_freq='1d') is a view of its source store and cannot be built from raw files. Build or update the source dataset, then resample it.` `how` 字典必须列出每个变量：`SpotKlineDataset: resample_how does not name ['Open', 'Volume']; every variable of the panel needs a method (or pass one method as a str).` 目标频率不比 store 的 bar 更粗时拒绝：`SpotKlineDataset: resample_freq='1m' (60s) is not coarser than the panel's own bars (60s).` 保存下来的重采样 store 和因子 store 一样是缓存：重建源 store 不会刷新它。删掉它，或从新的重采样副本再 `save()` 一次。
 
 盘中 dataset 用 `XnysSessionCalendar`（`quantlab.dataset._support.session_calendar`）把东部时间窗口转换成每个日期实际的交易所开收盘时间，半日市也考虑在内，结果是不带时区的 UTC 时间戳。
 

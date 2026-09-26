@@ -19,7 +19,10 @@ history is the *warm-up*; a factor asks its dataset for ``config.window``
 extra calendar days and trims them off again afterwards.
 """
 
+import copy
+import dataclasses
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from typing import Literal, Self
 
@@ -39,6 +42,12 @@ from quantlab.base.config import (
 )
 from quantlab.backend import XrBackend
 from quantlab.enums.constant import Date
+from quantlab.utils.resample import (
+    assert_coarser,
+    resample_store_path,
+    resolve_resample_how,
+    validate_resample_config,
+)
 from quantlab.utils.timer import Timer
 
 
@@ -149,6 +158,10 @@ class Factor(ABC):
             self._config.start_date = Date.START_DATE
         if self._config.end_date is None:
             self._config.end_date = Date.END_DATE
+
+        validate_resample_config(
+            self._config.resample_freq, self._config.resample_how, self.class_name
+        )
 
         self._maybe_resolve_factor_names()
 
@@ -284,13 +297,36 @@ class Factor(ABC):
         >>> factor.config.end_date = "2024-02-20"
         >>> factor.read(overwrite=True).get_features().sizes
         Frozen({'timestamp': 20, 'symbol': 8})
+
+        A resampled factor reads its own store when one has been saved, and
+        otherwise reads the source store and resamples it:
+
+        >>> daily = factor.resample("1d", "last")
+        >>> daily.read().get_features().sizes
+        Frozen({'timestamp': 10, 'symbol': 8})
         """
+        if self.config.resample_freq is None:
+            self.data_backend.read(self.config.file_path, overwrite=overwrite)
+            self._auto_filter()
+            return self
+
+        if Path(self.store_path).exists():
+            self.data_backend.read(self.store_path, overwrite=overwrite)
+            self._auto_filter()
+            return self
+
+        fresh = overwrite or not self._holds_data()
         self.data_backend.read(self.config.file_path, overwrite=overwrite)
         self._auto_filter()
+        if fresh:
+            self._apply_resample()
         return self
 
     def save(self, mode: Literal["a", "w"] = "a", **kwargs) -> Self:
-        """Write the held panel to ``config.file_path`` as a Zarr store.
+        """Write the held panel to ``store_path`` as a Zarr store.
+
+        ``store_path`` is ``config.file_path``, or the resampled store beside
+        it when the factor is resampled.
 
         Parameters
         ----------
@@ -324,7 +360,7 @@ class Factor(ABC):
             self._auto_filter()
             try:
                 self.data_backend.write(
-                    self.config.file_path,
+                    self.store_path,
                     mode=mode,
                     **kwargs,
                 )
@@ -336,7 +372,7 @@ class Factor(ABC):
                 raise ValueError(
                     f'{self.class_name}.save(mode="a"): cannot write this '
                     f"date range into the existing store at "
-                    f'{self.config.file_path}. In zarr, mode "a" means '
+                    f'{self.store_path}. In zarr, mode "a" means '
                     f'"overwrite variables in an existing store", not "append '
                     f'along time", so a date range of a different size is '
                     f'rejected. Use save(mode="w") to replace the store, or '
@@ -376,6 +412,7 @@ class Factor(ABC):
         >>> factor.read(overwrite=True).get_features().sizes
         Frozen({'timestamp': 90, 'symbol': 8})
         """
+        self._refuse_if_resampled("update")
         with Timer(f"{self.__class__.__name__}: update"):
             self._auto_filter()
             self.data_backend.widen_and_append(
@@ -384,6 +421,156 @@ class Factor(ABC):
                 **kwargs,
             )
             return self
+
+    @property
+    def store_path(self) -> str | None:
+        """Return the Zarr store this factor reads and writes.
+
+        This is ``config.file_path`` for a factor that is not resampled. A
+        resampled factor uses a store beside it with ``_resample_<freq>``
+        added to the name, so the resampled panel never overwrites the
+        source bars. ``None`` when ``config.file_path`` is ``None``.
+
+        Examples
+        --------
+        >>> factor.store_path
+        'data/factors/momentum.zarr'
+        >>> factor.resample("1d", "last").store_path
+        'data/factors/momentum_resample_1d.zarr'
+        """
+        return resample_store_path(
+            self.config.file_path, self.config.resample_freq
+        )
+
+    def copy(self) -> Self:
+        """Return a copy with its own config, dataset and empty backend.
+
+        The config is deep-copied, its ``dataset`` replaced by
+        ``dataset.copy()``, and re-assigned through the ``config`` setter,
+        so the copy shares no mutable state with this factor. The copy
+        holds no panel until it is read or computed.
+
+        Examples
+        --------
+        >>> other = factor.copy()
+        >>> other.config.dataset is factor.config.dataset
+        False
+        """
+        other = copy.copy(self)
+        other.data_backend = XrBackend()
+        config = copy.deepcopy(dataclasses.replace(self.config, dataset=None))
+        config.dataset = self.config.dataset.copy()
+        other.config = config
+        return other
+
+    def resample(
+        self, freq: str, how: dict[str, str] | str
+    ) -> Self:
+        """Return a copy of this factor whose panel is resampled onto ``freq``.
+
+        The factor is still computed on its dataset's own bars; only the
+        computed panel is aggregated, so a minute-bar factor becomes a
+        daily one without changing what it measures. The copy's config
+        carries ``resample_freq=freq`` and ``resample_how=how``; ``cal()``,
+        ``read()``, ``get_features()`` and ``get_labels()`` on it give the
+        resampled panel. If this factor already holds a panel, the copy
+        holds that panel resampled, in memory of its own; otherwise the copy
+        is empty. This factor and its dataset are not changed.
+
+        A resampled factor cannot ``update()`` its store or stream, and
+        ``save()`` writes to ``store_path``, the resampled store beside the
+        source. The bars are cut the way the dataset cuts them (see
+        ``BaseDataset._resample_labels``).
+
+        Parameters
+        ----------
+        freq : str
+            A ``ResampleFrequency`` token, coarser than the dataset's bars.
+        how : dict[str, str] or str
+            One ``ResampleMethod`` for every factor variable, or a
+            ``{variable: method}`` dict naming every one.
+
+        Returns
+        -------
+        Self
+            A new factor of the same class.
+
+        Raises
+        ------
+        ValueError
+            If ``freq`` or a method is not a known token, or, when this
+            factor holds a panel, if ``freq`` is not coarser than its bars
+            or ``how`` does not name every variable.
+
+        Examples
+        --------
+        >>> minute = factor.cal()                      # minute bars
+        >>> daily = minute.resample("1d", "last")
+        >>> daily.get_features().sizes["timestamp"]
+        2
+        >>> minute.get_features().sizes["timestamp"]   # unchanged
+        780
+        """
+        other = self.copy()
+        config = other.config
+        config.resample_freq = freq
+        config.resample_how = how
+        other.config = config
+        if self._holds_data():
+            other.data_backend.to_internal(
+                self.data_backend.get_xarray_dataset()
+            )
+            other._apply_resample()
+        return other
+
+    def _holds_data(self) -> bool:
+        """Return whether the storage backend holds a panel."""
+        try:
+            self.data_backend.data
+        except AttributeError:
+            return False
+        return True
+
+    def _refuse_if_resampled(self, method: str) -> None:
+        """Raise if ``method`` is called on a resampled factor.
+
+        Raises
+        ------
+        ValueError
+            If ``config.resample_freq`` is set.
+        """
+        if self.config.resample_freq is not None:
+            raise ValueError(
+                f"{self.class_name}.{method}(): a resampled factor "
+                f"(resample_freq={self.config.resample_freq!r}) is a view of "
+                f"its source panel and does not support {method}. Compute "
+                f"or update the source factor, then resample it."
+            )
+
+    def _resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
+        """Return the bar each timestamp belongs to, as the dataset cuts bars."""
+        return self.config.dataset._resample_labels(timestamps, freq)
+
+    def _apply_resample(self) -> None:
+        """Replace the held panel with its resample, per the config."""
+        freq = self.config.resample_freq
+        if freq is None:
+            return
+        data = self.data_backend.get_xarray_dataset()
+        timestamps = data["timestamp"].values
+        assert_coarser(timestamps, freq, self.class_name)
+        how = resolve_resample_how(
+            self.config.resample_how, list(data.data_vars), self.class_name
+        )
+        labels = pd.Series(self._resample_labels(timestamps, freq), index=timestamps)
+        with Timer(f"{self.__class__.__name__}: resample to {freq}"):
+            self.data_backend.resample(labels, how)
+
+    def _hold_panel(self, data: xr.Dataset) -> None:
+        """Hand a computed panel to the backend, narrow it and resample it."""
+        self.data_backend.to_internal(data)
+        self._auto_filter()
+        self._apply_resample()
 
     def _widen_fill_values(self) -> dict:
         """Return per-variable fill values for cells that widening creates.
@@ -555,6 +742,24 @@ class FactorKunQuant(Factor):
         self._lib = None
         self._buffer_name_to_id = dict()
 
+    def copy(self) -> Self:
+        """Return a copy without the compiled library or stream state.
+
+        See ``Factor.copy``. The compiled batch library, the stream context
+        and its buffer handles belong to this object's own graph and are
+        not carried over; the copy compiles again on its first ``cal()``.
+
+        Examples
+        --------
+        >>> factor.copy()._lib is None
+        True
+        """
+        other = super().copy()
+        other._stream_context = None
+        other._lib = None
+        other._buffer_name_to_id = dict()
+        return other
+
     def _auto_filter(self):
         """Narrow the panel in batch mode; a stream holds one bar, so skip."""
         if self.config.mode == "batch":
@@ -632,6 +837,7 @@ class FactorKunQuant(Factor):
         >>> sorted(factor._buffer_name_to_id)  # one input, three outputs
         ['adjClose', 'ma_close', 'ma_rank', 'rank_close']
         """
+        self._refuse_if_resampled("init_stream")
         with Timer(f"{self.__class__.__name__}: init stream"):
             lib = self._make_stream()
             modu = lib.getModule(f"{self.__class__.__name__}_stream")  # type: ignore
@@ -678,8 +884,7 @@ class FactorKunQuant(Factor):
                 "symbol": symbols,
             },
         )
-        self.data_backend.to_internal(ds)
-        self._auto_filter()
+        self._hold_panel(ds)
         return self
 
     @abstractmethod
@@ -766,6 +971,7 @@ class FactorKunQuant(Factor):
         >>> list(row.data_vars)
         ['rank_close', 'ma_close', 'ma_rank']
         """
+        self._refuse_if_resampled("cal_stream")
         if self._stream_context is None:
             self.init_stream()
 
@@ -942,6 +1148,5 @@ class FactorPolars(Factor):
             frame = frame.set_index(list(self._INDEX_COLUMNS))
             data = xr.Dataset.from_dataframe(frame)
 
-        self.data_backend.to_internal(data)
-        self._auto_filter()
+        self._hold_panel(data)
         return self
