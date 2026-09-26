@@ -214,6 +214,59 @@ array([nan, nan, nan], dtype=float32)
 
 对标签调用 `get_features()` 得到的是未平移的滞后收益，不能拿来当预测目标。
 
+### 分析一个因子
+
+`analyze()` 仿照 alphalens 库，报告因子按未来收益给标的排序的能力。把一个或多个前瞻收益标签传给 `frets`；每个因子变量（默认是 `get_factor_names()` 的全部，也可用 `factor_names` 指定）与每个标签变量两两配对。因子和标签都必须已经持有面板（先调用 `cal()` 或 `read()`）。两个面板最常见的 bar 间隔必须相同（与 `BaseDataset.time_interval` 的规则一致），否则 `analyze()` 抛出 `ValueError` 并写明两个间隔；之后两者按共同的时间戳和标的做内连接。
+
+每个配对得到：
+
+| 类别 | 指标 |
+|---|---|
+| 信息系数 | 每期 IC（跨标的的 Spearman 秩相关）、IC 均值、标准差、IR（均值 / 标准差）、t 统计量、p 值、偏度、超额峰度、正值占比、月度平均 IC |
+| 收益 | 每个因子分位组的平均未来收益（第 1 组是因子值最低的一组）、每期最高组减最低组的价差、各分位组和多空组合的累计收益 |
+| 换手 | 每个分位组中上一期不在该组的标的占比，以及因子滞后一期的秩自相关 |
+
+`quantiles`（默认 5）决定等数量分组的组数。标签跨 `n` 根 bar（`kwargs["n_forward_periods"]`）时，累计收益按每根 bar 的收益率 `(1 + r) ** (1 / n) - 1` 复利。下面的例子在与第一节 `factor` 相同的八个标的上构造一个单 bar 的 `Return` 标签，再用它分析 `momentum_5`。数据是随机游走，所以 IC 接近零，这符合预期。
+
+```python
+>>> import os
+>>> from quantlab.base.config import FactorConfig
+>>> opens = xr.Dataset(
+...     {"adjOpen": (["timestamp", "symbol"], close * 0.99)},
+...     coords={"timestamp": pd.date_range("2024-01-01", periods=90), "symbol": symbols},
+... )
+>>> XrBackend().to_internal(opens).write("data/spot_open.zarr")
+XrBackend()
+>>> fwd = Return(FactorConfig(
+...     window=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 1},
+...     dataset=StockDataset(DatasetConfig(
+...         raw_data_dir_path="data/raw", zarr_file_path="data/spot_open.zarr",
+...         market="us_equity", frequency="1d",
+...     )),
+...     start_date="2024-02-01", end_date="2024-02-29",
+...     file_path="data/labels/fwd_ret.zarr", njobs=2,
+... ))
+>>> fwd.cal() is fwd
+True
+>>> result = factor.analyze(frets=[fwd], quantiles=4, output_dir="data/analysis/momentum")
+>>> list(result.pairs)
+['momentum_5__ret_1']
+>>> pair = result.pairs["momentum_5__ret_1"]
+>>> round(pair.summary["ic_mean"], 4), round(pair.summary["ir"], 4), pair.summary["n_periods"]
+(-0.0494, -0.1475, 29)
+>>> pair.mean_quantile_returns.round(4).tolist()
+[0.001, -0.0025, 0.0004, -0.001]
+>>> sorted(os.listdir("data/analysis/momentum"))
+['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
+>>> import json
+>>> from quantlab.utils.module import load_factor_from_config
+>>> cfg = json.load(open("data/analysis/momentum/config.json"))
+>>> list(cfg), type(load_factor_from_config(cfg["frets"][0])).__name__
+(['factor', 'frets'], 'Return')
+```
+
+结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `load_factor_from_config` 重建。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。实现位于 `quantlab.analysis.factor_report`。
+
 ### 沿时间或跨标的做标准化
 
 `quantlab.my_ops.preprocess` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。“扩展”一节中的 KunQuant 因子同时用了两个算子。

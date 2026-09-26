@@ -214,6 +214,59 @@ array([nan, nan, nan], dtype=float32)
 
 `get_features()` on a label returns the unshifted trailing return, which must not be used as a target.
 
+### Analyze a factor
+
+`analyze()` reports how well a factor orders symbols by their forward return, in the manner of the alphalens library. Pass one or more forward-return labels as `frets`; every factor variable (all of `get_factor_names()`, or the ones named in `factor_names`) is paired with every label variable. Both the factor and the labels must already hold their panels, from `cal()` or `read()`. The two panels must have the same most common bar spacing, the rule `BaseDataset.time_interval` uses, or `analyze()` raises `ValueError` naming both spacings; they are then joined on their common timestamps and symbols.
+
+Each pair gets:
+
+| Group | Metrics |
+|---|---|
+| Information | per-period IC (Spearman rank correlation across symbols), IC mean, std, IR (mean / std), t-statistic, p-value, skew, excess kurtosis, share of positive periods, monthly mean IC |
+| Returns | mean forward return per factor quantile (bucket 1 holds the lowest values), top-minus-bottom spread per period, cumulative return per quantile and long-short |
+| Turnover | share of each quantile's symbols that were not in it the period before, lag-1 factor rank autocorrelation |
+
+`quantiles` (default 5) sets the number of equal-count buckets. When a label spans `n` bars (`kwargs["n_forward_periods"]`), cumulative returns compound the per-bar rate `(1 + r) ** (1 / n) - 1`. The example below builds a one-bar `Return` label over the same eight symbols as `factor` from the first section, then analyzes `momentum_5` against it. On this random walk the IC is near zero, as it should be.
+
+```python
+>>> import os
+>>> from quantlab.base.config import FactorConfig
+>>> opens = xr.Dataset(
+...     {"adjOpen": (["timestamp", "symbol"], close * 0.99)},
+...     coords={"timestamp": pd.date_range("2024-01-01", periods=90), "symbol": symbols},
+... )
+>>> XrBackend().to_internal(opens).write("data/spot_open.zarr")
+XrBackend()
+>>> fwd = Return(FactorConfig(
+...     window=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 1},
+...     dataset=StockDataset(DatasetConfig(
+...         raw_data_dir_path="data/raw", zarr_file_path="data/spot_open.zarr",
+...         market="us_equity", frequency="1d",
+...     )),
+...     start_date="2024-02-01", end_date="2024-02-29",
+...     file_path="data/labels/fwd_ret.zarr", njobs=2,
+... ))
+>>> fwd.cal() is fwd
+True
+>>> result = factor.analyze(frets=[fwd], quantiles=4, output_dir="data/analysis/momentum")
+>>> list(result.pairs)
+['momentum_5__ret_1']
+>>> pair = result.pairs["momentum_5__ret_1"]
+>>> round(pair.summary["ic_mean"], 4), round(pair.summary["ir"], 4), pair.summary["n_periods"]
+(-0.0494, -0.1475, 29)
+>>> pair.mean_quantile_returns.round(4).tolist()
+[0.001, -0.0025, 0.0004, -0.001]
+>>> sorted(os.listdir("data/analysis/momentum"))
+['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
+>>> import json
+>>> from quantlab.utils.module import load_factor_from_config
+>>> cfg = json.load(open("data/analysis/momentum/config.json"))
+>>> list(cfg), type(load_factor_from_config(cfg["frets"][0])).__name__
+(['factor', 'frets'], 'Return')
+```
+
+The result carries `pairs` (a `PairAnalysis` per `"<factor>__<fret>"`, with the IC series, quantile returns, turnover and a `summary` dict), `figures` (one matplotlib figure per pair) and tidy tables from `summary_table()`, `ic_table()`, `monthly_ic_table()`, `quantile_returns_table()` and `turnover_table()`. With `output_dir`, those tables are written as CSV, the scalar metrics as `summary.json`, each figure as `<factor>__<fret>.png`, and `config.json` holds the factor's and the labels' configs, each rebuildable with `load_factor_from_config`. Without `output_dir` nothing is written. The figures are built without `pyplot`, so they are never shown and need no closing; `fig.savefig(path)` writes one. The machinery lives in `quantlab.analysis.factor_report`.
+
 ### Normalize over time or across symbols
 
 `quantlab.my_ops.preprocess` has four KunQuant operators. `WindowedZScore` standardizes each symbol against its own trailing window, a time-series normalization. `CrossSectionalZScore` standardizes each timestamp across all symbols. Which one is right depends on the strategy consuming the factor. `Alpha101SpotKline` and `Alpha158SpotKline` apply `WindowedZScore` to every output; `Alpha101Stock` and `Alpha158Stock` apply `CrossSectionalZScore` to every output. The KunQuant factor under Extending applies both operators.
