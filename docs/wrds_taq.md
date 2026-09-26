@@ -270,7 +270,7 @@ NbboPanelDataset → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar
 | BRK | 152,801 |
 | **全市场** | **313,568,856 行，9,703 个 root** |
 
-- 下载前不再估算体量（见 [ADR 0001](adr/0001-no-download-volume-guard.md)）。按这个量级，全市场一天约 10 GiB 原始行；
+- 下载前不再估算体量。按这个量级，全市场一天约 10 GiB 原始行；
   用 `--symbols` 名单和日期窗口来限定一次拉取的规模。
 - 按单个 symbol 过滤的 `count(*)` 在服务器上不到 1 秒；整张表的 `count(*)` 要约 76 秒，所以 COPY 前的核对只按批次计数，
   从不数整张表。

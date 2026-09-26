@@ -153,8 +153,7 @@ runs on every import beneath it, and the credential-free `SourceInspector`
 (`quantlab.acquisition._support.inspector`) must be importable without loading
 a vendor client: `tests/test_source_inspector.py` fails if a client becomes
 reachable from it. Do not add imports to those files. Downloads are not
-estimated or refused by size; see
-[ADR 0001](../adr/0001-no-download-volume-guard.md).
+estimated or refused by size.
 
 ## Atomic writes
 

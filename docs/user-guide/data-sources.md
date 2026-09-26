@@ -356,9 +356,7 @@ backfill takes about 50 hours.
 WRDS has no request quota. Its limits are disk space and the handful of
 connections an account may hold, which is why a WRDS run pools at most six
 connections and stops instead of reconnecting (see [WRDS](wrds.md)). Nothing estimates a download's size before
-it runs (see the ADR
-[Downloads run without a volume guard](../adr/0001-no-download-volume-guard.md)),
-so scope a request by roster and window.
+it runs, so scope a request by roster and window.
 
 ## Inspecting what is on disk
 

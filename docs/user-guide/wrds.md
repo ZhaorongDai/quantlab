@@ -345,9 +345,7 @@ uv run python scripts/wrds/nbbo.py --index sp500 \
 
 Quote data is large. On 2024-01-24, Apple alone had about 1.2 million NBBO
 records and the market about 314 million. Nothing estimates or refuses a
-download by size (see the ADR
-[Downloads run without a volume guard](../adr/0001-no-download-volume-guard.md)),
-so scope a pull by symbol list and date range.
+download by size, so scope a pull by symbol list and date range.
 
 Every record is kept in the raw tier, unfiltered, under
 `<download-dir>/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=AAPL/`.
