@@ -69,13 +69,13 @@ first four fields of each line, never the password. The connection goes to a
 fixed host; if `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` is set the session
 refuses to connect, because those variables could redirect it elsewhere.
 
-WRDS protects logins with *Duo* two-factor authentication, and each new
-connection can send a Duo prompt to the account holder's phone. quantlab
-therefore opens one connection per process, shares it between every step of a
-run, and never reconnects on its own. WRDS downloads run with one worker;
-`kwargs["max_workers"]` set to anything other than 1 is refused. If the
-connection breaks mid-run, the run stops and the next run resumes from the
-pages already on disk.
+WRDS protects logins with *Duo* two-factor authentication; a `.pgpass` login
+sends no prompt in practice. quantlab keeps one session per process, a pool of
+connections opened on demand and capped at six (a WRDS account holds only a
+few at once). Downloads run on `--max-workers` threads (default 4, at most 6),
+each fetching batches on its own connection. The session never reconnects on
+its own: if a connection breaks mid-run, the run stops and the next run
+resumes from the pages already on disk.
 
 Your subscription also matters. TAQ access is granted per year (`taqm_2024`
 and so on), CRSP daily data needs the `crsp_a_stock` schema, and the
@@ -87,8 +87,9 @@ run checks these before copying anything.
 Three scripts under `scripts/wrds/` download CRSP daily rows, one per kind of
 roster, and every run converts to Zarr. Each takes `--start` and, optionally,
 `--end` (default today, clipped to the last day of the annual CRSP release),
-`--refresh` (continue each PERMNO from its watermark), `--download-dir` and
-`--zarr-dir` (both default to the current directory). These
+`--refresh` (continue each PERMNO from its watermark), `--max-workers`
+(parallel download threads, default 4), `--download-dir` and `--zarr-dir`
+(both default to the current directory). These
 commands need a WRDS account, so no output is shown:
 
 ```bash
@@ -489,8 +490,9 @@ or let `index.py` or `market.py` resolve the roster.
 `--symbols ['BRK-B'] use a hyphen; WRDS TAQ uses dot notation`
 Write share classes as `BRK.B`.
 
-`kwargs['max_workers']=4 is refused`
-WRDS downloads use one shared connection. Remove the setting.
+`kwargs['max_workers']=8 is refused; use 1 to 6`
+A WRDS account holds only a few connections at once, so at most six workers
+run in parallel. Lower `--max-workers`.
 
 A Nasdaq-100 run stops and lists *unlinked* membership periods.
 Compustat lists an index member for which the link table has no PERMNO in your
@@ -498,5 +500,5 @@ window. Check the listed periods, then build the panel from Python with
 `allow_unlinked=True` to proceed without them.
 
 A run stops because the connection broke.
-quantlab does not reconnect by itself, to avoid repeated Duo prompts. Run the
-same command again; it resumes from the pages already on disk.
+quantlab does not reconnect by itself. Run the same command again; it resumes
+from the pages already on disk.

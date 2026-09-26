@@ -73,6 +73,43 @@ def add_output_dir_args(
     return parser
 
 
+def add_max_workers_arg(
+    parser: argparse.ArgumentParser, default: int
+) -> argparse.ArgumentParser:
+    """Add ``--max-workers``, the number of concurrent download threads.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+        The parser to extend.
+    default : int
+        The acquisition class's ``DEFAULT_MAX_WORKERS``.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        ``parser``, for chaining.
+
+    Examples
+    --------
+    >>> parser = add_max_workers_arg(argparse.ArgumentParser(), default=4)
+    >>> parser.parse_args([]).max_workers
+    4
+    >>> parser.parse_args(["--max-workers", "2"]).max_workers
+    2
+    """
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=default,
+        help=(
+            f"Concurrent download threads, each fetching one batch at a time "
+            f"on its own vendor connection. Default: {default}."
+        ),
+    )
+    return parser
+
+
 def resolve_output_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
     """Return ``(download_dir, zarr_dir)`` from parsed arguments, as absolute paths.
 

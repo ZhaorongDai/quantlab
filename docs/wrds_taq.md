@@ -59,9 +59,9 @@ WRDS 那份 PROC SQL 说明讲的是 SAS：普通 `SELECT` 会保持物理顺序
 
 ### 4. Duo 推送风暴
 
-每开一条新的 WRDS 连接，账号持有人的手机就可能收到一次 Duo 推送，而且 WRDS 角色最多允许 7 条连接。
-按批次开连接、并发 worker、失败后自动重连，每一种都会变成几十次推送。所以：一次运行只有**一个**
-`WrdsSession`，拉取和转换共用它；`max_workers` 固定为 1（设成别的值会被拒绝）；
+WRDS 角色最多允许约 7 条连接；用 `.pgpass` 登录实测不会触发 Duo 推送。所以：一次运行只有**一个**
+`WrdsSession`，它是一个按需打开、上限 6 条连接的连接池，拉取和转换共用它；`max_workers` 个
+worker 线程各用一条连接并行下载（默认 4，超过 6 会被拒绝）；
 会话一旦断开就不再重连，这次运行停下，下次重跑从已记录的页续上。
 
 ### 5. `wrds.Connection` 会弹交互式密码提示，而且在 pandas 3 下坏掉
@@ -202,7 +202,7 @@ scripts/wrds/nbbo.py
   │  参数校验：--symbols/--index 二选一、--start 必填、点号记法、
   │  会话窗口（XnysSessionCalendar 构造时检查）——全部在建连接之前
   ▼
-WrdsSession.shared()  ── 一次运行一个会话 = 最多一次 Duo 推送 ──────────────┐
+WrdsSession.shared()  ── 一次运行一个会话 = 一个连接池（最多 6 条连接） ─────┐
   │  --end 默认今天，截到 TAQ 已发布的最后一个交易日；                          │
   │  assert_entitled：窗口内每一年的 taqm_YYYY 都要有 USAGE 权限                │
   ▼                                                                       │
@@ -332,6 +332,6 @@ uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B --start 2024-01-24 
 - **想要不含早收后状态的数据，用常规时段内的结束边。** 例如 `--session 09:30-16:00` 在半日市会自动截到 13:00，
   而 `--session 09:30-17:00` 不会。
 - **没订阅的年份整次停下。** 报错点名 `taqm_YYYY`；把窗口改到有订阅的年份再跑。
-- **会话断了不会自动重连。** 这是有意的（每次重连都可能推送 Duo）；重跑即可从断点续上。
+- **会话断了不会自动重连。** 这是有意的；重跑即可从断点续上。
   `wait_for_quota` 对 WRDS 没有意义，命令行也没有提供。
 - **亚分钟 bar 按天分块转换（脚本的固定设置）。** 1 秒 bar 的一整天 S&P 500 约 1170 万个 bar 行。

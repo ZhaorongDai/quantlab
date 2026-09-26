@@ -9,13 +9,16 @@ the lowest ask across all US exchanges; TAQ stores one record each time
 either side changes. WRDS stores one table per trading day, named
 ``taqm_{YYYY}.complete_nbbo_{YYYYMMDD}``.
 
-The module holds three things. ``WrdsSession`` is the single read-only
-database connection that every WRDS product in this package uses. It reads
+The module holds three things. ``WrdsSession`` is the read-only database
+session that every WRDS product in this package uses: a small pool of
+connections to a fixed WRDS host, opened on demand and capped at
+``MAX_CONNECTIONS``, so concurrent download workers each query on their own
+connection while a WRDS account's connection limit is respected. It reads
 the username from the ``WRDS_USERNAME`` environment variable and leaves the
 password to libpq (the PostgreSQL client library), which reads it from the
-``~/.pgpass`` file. It connects to a fixed WRDS host once per process,
-because WRDS protects logins with Duo two-factor authentication and each new
-connection can send a Duo prompt to the account holder's phone.
+``~/.pgpass`` file. WRDS protects logins with Duo two-factor authentication;
+in practice a ``.pgpass`` login sends no prompt, but the session still never
+reconnects after a failure, so a broken run stops and is resumed by hand.
 
 ``WrdsTaqNbboAcquisition`` downloads the day tables. The work is split into
 pages, and one page is one trading day for one batch of symbols, fetched
@@ -37,6 +40,7 @@ import io
 import os
 import stat
 import tempfile
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -67,8 +71,9 @@ class WrdsSessionError(RuntimeError):
     connection), when the database driver reported an error, or when the
     session already broke earlier in the same run. It stops the whole run:
     the acquisitions classify it as ``"quota"``, which ends the run and keeps
-    every symbol out of the per-symbol failure file, because retrying batch
-    by batch would reconnect and each connection can send a Duo prompt.
+    every symbol out of the per-symbol failure file, because a dead session
+    is never one symbol's fault and the next run resumes from the pages on
+    disk.
 
     Examples
     --------
@@ -127,13 +132,18 @@ def _pgpass_fields(line: str) -> list[str]:
 
 
 class WrdsSession:
-    """A read-only PostgreSQL connection to WRDS, opened on first use.
+    """A pool of read-only PostgreSQL connections to WRDS, opened on first use.
 
-    Constructing a session makes no network call. The connection opens on
-    the first query and is reused for the rest of the process. Get the
-    session through ``shared()`` rather than constructing one per batch,
-    because each connection can send a Duo prompt and a WRDS account may hold
-    only a few connections at once.
+    Constructing a session makes no network call. A query takes an idle
+    connection from the pool or opens a new one, up to ``MAX_CONNECTIONS``;
+    when every connection is busy the query waits for one. Sequential use
+    therefore opens exactly one connection, and ``max_workers`` download
+    threads open at most ``max_workers``. Get the session through
+    ``shared()`` rather than constructing one per batch, so the whole run
+    counts against one pool: a WRDS account may hold only a few connections
+    at once. Once the driver reports an error, or a connect fails, the
+    session is broken for the rest of the run and never reconnects; the next
+    run resumes from the pages on disk.
 
     The host, port and database are class constants passed directly to
     ``psycopg2.connect``, never read from a config or the environment, so no
@@ -157,7 +167,7 @@ class WrdsSession:
     Examples
     --------
     Needs ``WRDS_USERNAME`` and a matching ``~/.pgpass`` line; the first
-    query opens the connection and may send a Duo prompt::
+    query opens the first connection::
 
         session = WrdsSession.shared()
         days = session.trading_days(2024)
@@ -174,6 +184,10 @@ class WrdsSession:
     #: Up to this many bytes of one COPY result stay in memory before the
     #: buffer moves to a temporary file.
     COPY_SPOOL_BYTES = 256 * 2**20
+
+    #: Connections one session opens at most. A WRDS account may hold about
+    #: seven connections at once; one is left free for another client.
+    MAX_CONNECTIONS = 6
 
     #: libpq environment variables that could redirect the connection away
     #: from ``HOST``: ``PGHOSTADDR`` overrides the address the host name
@@ -194,11 +208,16 @@ class WrdsSession:
     def __init__(self, username: str) -> None:
         """Initialize the session without connecting; see the class docstring."""
         self.username = username
-        self._conn = None
-        # Set before `psycopg2.connect` is called, so this object never
-        # retries a failed connect (each attempt can send a Duo prompt).
-        self._connect_attempted = False
+        # The pool. `_idle` holds open connections nobody is using, `_open`
+        # counts every connection opened and not yet closed (idle or in use).
+        # `_lock` guards both and wakes waiters when a connection comes back.
+        self._lock = threading.Condition()
+        self._idle: list = []
+        self._open = 0
+        # Set on the first driver error or failed connect and never cleared,
+        # so this object never reconnects within a run.
         self._broken = False
+        self._closed = False
 
     @classmethod
     def shared(cls) -> "WrdsSession":
@@ -253,14 +272,21 @@ class WrdsSession:
             session.close()
 
     def close(self) -> None:
-        """Close the underlying connection if one was opened.
+        """Close every idle connection and refuse further queries.
+
+        A connection still in use by another thread is closed when that
+        thread returns it.
 
         Examples
         --------
         >>> WrdsSession("someone").close()
         """
-        conn, self._conn = self._conn, None
-        if conn is not None:
+        with self._lock:
+            self._closed = True
+            idle, self._idle = self._idle, []
+            self._open -= len(idle)
+            self._lock.notify_all()
+        for conn in idle:
             conn.close()
 
     # -- credential checks before connecting ----------------------------------
@@ -327,32 +353,22 @@ class WrdsSession:
             f"Add `{self.PGPASS_LINE_HINT}` to it (mode 600)."
         )
 
-    def _connection(self):
-        """Open the read-only connection once and return it.
+    #: Message for a query after the session broke; tests match "re-run".
+    _BROKEN_MESSAGE = (
+        "the WRDS session broke earlier in this run and is not reopened; "
+        "re-run to resume from the recorded pages."
+    )
 
-        The environment and ``.pgpass`` checks run first. The attempt flag is
-        set before ``psycopg2.connect`` is called, so after a failed connect
-        or a broken session this object never tries again. No password is
+    def _connect(self):
+        """Open one new read-only connection.
+
+        The environment and ``.pgpass`` checks run first. No password is
         passed; libpq reads it from the ``.pgpass`` file. The call goes
         through ``psycopg2.connect`` looked up at call time, so a test can
         intercept every attempt.
-
-        Raises
-        ------
-        WrdsSessionError
-            If a check fails, or if the session already failed in this run.
         """
-        if self._conn is not None and not self._broken:
-            return self._conn
-        if self._broken or self._connect_attempted:
-            raise WrdsSessionError(
-                "the WRDS session broke earlier in this run and is not reopened "
-                "(every new connection can send a Duo prompt); re-run to resume "
-                "from the recorded pages."
-            )
         self._assert_refused_env_unset()
         self._assert_pgpass_entry()
-        self._connect_attempted = True
         conn = psycopg2.connect(
             host=self.HOST,
             port=self.PORT,
@@ -363,28 +379,98 @@ class WrdsSession:
             connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
         )
         conn.set_session(readonly=True, autocommit=True)
-        self._conn = conn
         return conn
 
-    def _query(self, work):
-        """Run ``work(connection)`` and convert database driver errors.
+    def _acquire(self):
+        """Take an idle connection, or open one, waiting while the pool is full.
 
-        Any ``psycopg2.Error`` marks the session broken and is raised again
-        as a ``WrdsSessionError``. Its message keeps the driver's text but
-        replaces the username with ``$WRDS_USERNAME``. libpq errors never
-        contain the password.
+        Raises
+        ------
+        WrdsSessionError
+            If the session is broken or closed. A failed connect marks the
+            session broken before its error propagates, so no later query
+            tries to connect again.
+        """
+        with self._lock:
+            while True:
+                if self._broken:
+                    raise WrdsSessionError(self._BROKEN_MESSAGE)
+                if self._closed:
+                    raise WrdsSessionError(
+                        "the WRDS session is closed; get a new one with shared()."
+                    )
+                if self._idle:
+                    return self._idle.pop()
+                if self._open < self.MAX_CONNECTIONS:
+                    self._open += 1
+                    break
+                self._lock.wait()
+        # Outside the lock: the checks and the connect may take a while, and
+        # another thread may use an idle connection meanwhile.
+        try:
+            return self._connect()
+        except BaseException:
+            with self._lock:
+                self._open -= 1
+                self._broken = True
+                self._lock.notify_all()
+            raise
+
+    def _release(self, conn) -> None:
+        """Return ``conn`` to the pool, or close it if the session ended."""
+        with self._lock:
+            keep = not (self._closed or self._broken)
+            if keep:
+                self._idle.append(conn)
+            else:
+                self._open -= 1
+            self._lock.notify()
+        if not keep:
+            conn.close()
+
+    def _discard(self, conn) -> None:
+        """Close ``conn`` after a driver error and mark the session broken."""
+        with self._lock:
+            self._broken = True
+            self._open -= 1
+            self._lock.notify_all()
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 - the connection is already unusable
+            pass
+
+    def _query(self, work):
+        """Run ``work(connection)`` on a pooled connection and convert driver errors.
+
+        Any ``psycopg2.Error``, from the connect or from ``work``, marks the
+        session broken and is raised again as a ``WrdsSessionError``. Its
+        message keeps the driver's text but replaces the username with
+        ``$WRDS_USERNAME``. libpq errors never contain the password.
         """
         try:
-            return work(self._connection())
+            conn = self._acquire()
         except psycopg2.Error as exc:
-            self._broken = True
-            detail = f"{type(exc).__name__}: {exc}".strip()
-            if self.username:
-                detail = detail.replace(self.username, "$WRDS_USERNAME")
-            raise WrdsSessionError(
-                f"the WRDS session failed ({detail}); it is not reopened in "
-                f"this run -- re-run to resume from the recorded pages."
-            ) from exc
+            raise self._session_error(exc) from exc
+        try:
+            result = work(conn)
+        except psycopg2.Error as exc:
+            self._discard(conn)
+            raise self._session_error(exc) from exc
+        except BaseException:
+            self._release(conn)
+            raise
+        self._release(conn)
+        return result
+
+    def _session_error(self, exc: BaseException) -> "WrdsSessionError":
+        """Build the ``WrdsSessionError`` for a driver error, username redacted."""
+        detail = f"{type(exc).__name__}: {exc}".strip()
+        if self.username:
+            detail = detail.replace(self.username, "$WRDS_USERNAME")
+        return WrdsSessionError(
+            f"the WRDS session failed ({detail}); it is not reopened in "
+            f"this run -- re-run to resume from the recorded pages."
+        )
 
     # -- pure SQL builders (no connection needed) ----------------------------
 
@@ -549,9 +635,9 @@ class WrdsSession:
     # -- general query helpers -----------------------------------------------
     #
     # Used by every WRDS product, not only TAQ. All three go through
-    # `self._query`, which hides the username in errors and marks the session
-    # broken on a driver error; calling `self._connection()` directly would
-    # skip that and let the next call reconnect (and send a Duo prompt).
+    # `self._query`, which takes a pooled connection, hides the username in
+    # errors and marks the session broken on a driver error; calling
+    # `self._acquire()` directly would skip that.
 
     def schema_usable(self, schema: str) -> bool:
         """Return whether this account may read ``schema``.
@@ -915,8 +1001,9 @@ class WrdsTaqNbboAcquisition(Acquisition):
     trading date.
 
     Symbols use a dot for share classes (``BRK.B``); the hyphenated form
-    (``BRK-B``) is refused. ``max_workers`` other than 1 is refused, because
-    every connection can send a Duo prompt.
+    (``BRK-B``) is refused. Batches are fetched by ``max_workers`` threads,
+    each on its own pooled connection; a value above ``MAX_WORKERS`` (the
+    session's connection cap) is refused.
 
     Parameters
     ----------
@@ -927,7 +1014,7 @@ class WrdsTaqNbboAcquisition(Acquisition):
     Examples
     --------
     Needs ``WRDS_USERNAME`` and a ``~/.pgpass`` entry; the first query
-    opens the connection and may send a Duo prompt::
+    opens the connection::
 
         cfg = WrdsTaqNbboAcquisition.build_config(
             ("AAPL", "MSFT"), start_date="2024-01-24", end_date="2024-01-25"
@@ -952,9 +1039,12 @@ class WrdsTaqNbboAcquisition(Acquisition):
     #: ``kwargs["batch_size"]``.
     DEFAULT_BATCH_SIZE = 25
 
-    #: One shared connection, so one worker. Any other value is refused in
-    #: ``__init__``.
-    DEFAULT_MAX_WORKERS = 1
+    #: Concurrent batch fetches, each on its own pooled connection.
+    #: Overridable through ``kwargs["max_workers"]``, up to ``MAX_WORKERS``.
+    DEFAULT_MAX_WORKERS = 4
+
+    #: The most workers a run may use: the session's connection cap.
+    MAX_WORKERS = WrdsSession.MAX_CONNECTIONS
 
     #: Count every page with the same WHERE before copying it, and fail the
     #: page if the copied row count differs. Overridable through
@@ -1044,12 +1134,11 @@ class WrdsTaqNbboAcquisition(Acquisition):
         # fails at construction rather than in the middle of a run.
         self._data_type  # validates, or raises
         max_workers = self._knob("max_workers", self.DEFAULT_MAX_WORKERS)
-        if max_workers != 1:
+        if not 1 <= int(max_workers) <= self.MAX_WORKERS:
             raise ValueError(
                 f"{self.class_name}: kwargs['max_workers']={max_workers!r} is "
-                f"refused; WRDS acquisition runs on one shared connection, "
-                f"because every extra connection can send a Duo prompt to "
-                f"your phone and the WRDS account allows only 7."
+                f"refused; use 1 to {self.MAX_WORKERS}. Each worker queries "
+                f"on its own connection and a WRDS account holds only a few."
             )
         # Looked up as a module global at call time, so a test that replaces
         # `WrdsSession` takes effect.
@@ -1092,8 +1181,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
         The base class treats ``"quota"`` as "stop the whole run"; here it
         has nothing to do with a usage allowance. A dead session or a missing
         subscription is never one symbol's fault, so it is kept out of the
-        per-symbol failure file, and retrying batch by batch would reconnect
-        and send a Duo prompt each time. Every other error (a malformed page,
+        per-symbol failure file; the next run resumes from the pages on
+        disk. Every other error (a malformed page,
         an unrequested symbol, a count mismatch) fails only its batch, which
         the next run retries.
         """

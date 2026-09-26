@@ -15,10 +15,10 @@ highest bid and lowest ask across all US exchanges at each instant), through
 Both products log in the same way and share one database connection,
 ``taq.WrdsSession``. The session reads the username from the
 ``WRDS_USERNAME`` environment variable and leaves the password to the
-PostgreSQL client library, which reads it from ``~/.pgpass``. WRDS protects
-logins with Duo two-factor authentication, and each new connection can send
-a Duo prompt to the account holder's phone, so the session is opened once
-per process.
+PostgreSQL client library, which reads it from ``~/.pgpass``. One session
+per process pools at most ``WrdsSession.MAX_CONNECTIONS`` connections, so
+parallel download workers each query on their own connection while the
+account's connection limit is respected.
 
 ``WRDS_SOURCE`` registers this vendor with ``quantlab.registry``. It is a
 single descriptor for the whole account, and each of its ``Capability`` rows
