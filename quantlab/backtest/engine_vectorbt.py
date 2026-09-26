@@ -70,7 +70,7 @@ class VectorBtBacktester(BaseBacktester):
     weight is not a closed trade. vectorbt's default exit-trade view counts
     every trim, and because only winners get trimmed under equal weighting it
     inflates the win rate. The number of fills is reported separately as
-    ``order_count`` in the metrics.
+    ``Total Orders`` in the metrics.
 
     Examples
     --------
@@ -481,7 +481,7 @@ class VectorBtBacktester(BaseBacktester):
             "round trip per symbol, so a partial trim of a holding is not "
             "counted as its own closed trade. Counting every trim as a closed "
             "trade is what vectorbt does by default, and it inflates the win "
-            "rate. The row named order_count is the number of fills that "
+            "rate. The row named Total Orders is the number of fills that "
             "actually happened over the window.",
             "The two triangles on the equity curve mark the deepest drawdown: "
             "the up triangle is its deepest bar, that is its valley, and the "

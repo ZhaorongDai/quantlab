@@ -230,8 +230,8 @@ def show(title: str, result) -> None:
     print("run directory:", result.run_dir.name)
     for key in ("Total Return [%]", "Sharpe Ratio", "Max Drawdown [%]"):
         print(f"  {key:<18} {whole[key]:8.3f}")
-    print(f"  {'order_count':<18} {whole['order_count']:8d}")
-    print(f"  {'turnover/rebal.':<18} {whole['turnover']['mean_per_rebalance']:8.3f}")
+    print(f"  {'Total Orders':<18} {whole['Total Orders']:8d}")
+    print(f"  {'turnover/rebal. [%]':<18} {whole['Turnover per Rebalance [%]']:8.1f}")
 
 
 def main() -> None:

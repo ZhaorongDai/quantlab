@@ -2043,21 +2043,26 @@ class BaseBacktester(ABC):
         )
 
     def _turnover_summary(self, turnover: xr.DataArray, bar_interval) -> dict:
-        """Summarize turnover as mean per rebalance, total and annualized.
+        """Summarize turnover as three percent-valued metric rows.
 
-        Annualized is the mean times bars per year (``MARKET.year_freq``
-        divided by ``bar_interval``) divided by ``rebalance_periods``. With
-        no fills the mean and the annualized value are NaN (written as
-        null) and the sum is 0.
+        ``Turnover per Rebalance [%]`` is the mean over the fill bars,
+        ``Total Turnover [%]`` their sum and ``Annualized Turnover [%]`` the
+        mean times bars per year (``MARKET.year_freq`` divided by
+        ``bar_interval``) divided by ``rebalance_periods``. With no fills
+        the mean and the annualized value are NaN (written as null) and the
+        total is 0. The names follow vectorbt's ``Total Return [%]`` style
+        so the report needs no renaming.
         """
         values = np.asarray(turnover.values, dtype=np.float64)
         interval = pd.Timedelta(bar_interval)
         bars_per_year = self.MARKET.year_freq(interval) / interval  # type: ignore[union-attr]
         mean = float(values.mean()) if values.size else float("nan")
         return {
-            "mean_per_rebalance": mean,
-            "sum": float(values.sum()),
-            "annualized": mean * bars_per_year / self.config.rebalance_periods,
+            "Turnover per Rebalance [%]": mean * 100.0,
+            "Total Turnover [%]": float(values.sum()) * 100.0,
+            "Annualized Turnover [%]": (
+                mean * bars_per_year / self.config.rebalance_periods * 100.0
+            ),
         }
 
     def _period_record_stats(
@@ -2065,14 +2070,15 @@ class BaseBacktester(ABC):
     ) -> dict:
         """Return order, trade and turnover statistics restricted to ``ranges``.
 
-        ``order_count``, ``fees_paid`` and ``traded_notional`` count the
-        orders filled inside the ranges; ``closed_trade_count`` the trades
-        with status ``"Closed"`` whose exit falls inside them;
-        ``open_trade_count`` the trades still open at each range's end
+        ``Total Orders``, ``Total Fees Paid`` and ``Traded Notional`` count
+        the orders filled inside the ranges; ``Total Closed Trades`` the
+        trades with status ``"Closed"`` whose exit falls inside them;
+        ``Total Open Trades`` the trades still open at each range's end
         (entered on or before it, and not yet exited or exited after it);
-        ``turnover`` is the ``_turnover_summary`` of the fill bars inside
-        the ranges. Several ranges never overlap, so the counts add up
-        across them.
+        the three turnover rows are the ``_turnover_summary`` of the fill
+        bars inside the ranges. Several ranges never overlap, so the counts
+        add up across them. The names are vectorbt's whole-window names, so
+        a slice column and the whole column share a row.
 
         The trade counts use the same position-level definition as the
         whole-window statistics (one entry-to-flat round trip per symbol),
@@ -2112,12 +2118,12 @@ class BaseBacktester(ABC):
             timestamp=self._in_ranges(turnover.timestamp.values, ranges)
         )
         return {
-            "order_count": order_count,
-            "fees_paid": fees_paid,
-            "traded_notional": traded_notional,
-            "closed_trade_count": closed_trade_count,
-            "open_trade_count": open_trade_count,
-            "turnover": self._turnover_summary(turnover, simulation.bar_interval),
+            "Total Orders": order_count,
+            "Total Fees Paid": fees_paid,
+            "Traded Notional": traded_notional,
+            "Total Closed Trades": closed_trade_count,
+            "Total Open Trades": open_trade_count,
+            **self._turnover_summary(turnover, simulation.bar_interval),
         }
 
     def _compute_metrics(
@@ -2130,7 +2136,7 @@ class BaseBacktester(ABC):
 
         All three come from the same continuous simulation; nothing here
         simulates a second time. ``whole`` is the engine's whole-window
-        statistics plus the ``turnover`` summary and ``order_count``.
+        statistics plus the three turnover rows and ``Total Orders``.
         ``in_sample`` and ``out_of_sample`` merge ``_period_returns_stats``
         and ``_period_record_stats`` over their ranges and are ``None`` when
         there is no such range. ``benchmark`` and ``relative`` appear only
@@ -2145,13 +2151,13 @@ class BaseBacktester(ABC):
         ``split["in_sample_range"]`` otherwise.
         """
         whole = self._engine_stats(simulation)
-        whole["turnover"] = self._turnover_summary(
-            self._turnover(simulation), simulation.bar_interval
+        whole.update(
+            self._turnover_summary(self._turnover(simulation), simulation.bar_interval)
         )
         # The number of fills: position-level trade counts do not say how
         # often we traded. A run with no fills has no `order` dimension, so
         # use `.sizes.get` rather than a subscript that would raise.
-        whole["order_count"] = int(simulation.orders.sizes.get("order", 0))
+        whole["Total Orders"] = int(simulation.orders.sizes.get("order", 0))
         metrics: dict = {"whole": whole}
 
         def _slice(ranges: list[tuple[str, str]]) -> dict | None:
@@ -2241,24 +2247,26 @@ class BaseBacktester(ABC):
         ``(1 + r) / (1 + b)`` bar by bar (``r`` the strategy's return, ``b``
         the benchmark's); over the whole window it equals the strategy's
         value divided by the benchmark's, which is the excess-return curve
-        the report draws. Returned keys, fractions rather than percents:
+        the report draws. Returned keys follow vectorbt's naming, and every
+        key ending in ``[%]`` is in percent:
 
-        - ``strategy_total_return`` / ``benchmark_total_return``: compounded
-          returns of each series;
-        - ``excess_return``: relative NAV at the end minus 1, the geometric
-          excess (alpha in the everyday sense);
-        - ``excess_return_annualized``: the same compounded to one year;
-        - ``total_return_difference``: the arithmetic difference of the two
-          total returns;
-        - ``excess_max_drawdown``: the deepest fall of the relative NAV from
-          its running peak (starting at 1), a negative fraction or 0;
-        - ``tracking_error``: annualized standard deviation of ``r - b``;
-        - ``information_ratio``: annualized mean of ``r - b`` over the
+        - ``Strategy Total Return [%]`` / ``Benchmark Total Return [%]``:
+          compounded returns of each series;
+        - ``Excess Return [%]``: relative NAV at the end minus 1, the
+          geometric excess (alpha in the everyday sense);
+        - ``Annualized Excess Return [%]``: the same compounded to one year;
+        - ``Total Return Difference [%]``: the arithmetic difference of the
+          two total returns;
+        - ``Excess Max Drawdown [%]``: the deepest fall of the relative NAV
+          from its running peak (starting at 1), negative or 0;
+        - ``Tracking Error [%]``: annualized standard deviation of ``r - b``;
+        - ``Information Ratio``: annualized mean of ``r - b`` over the
           tracking error;
-        - ``beta`` and ``correlation`` of ``r`` on ``b``, and ``capm_alpha``,
-          the annualized regression intercept ``mean(r) - beta * mean(b)``;
-        - ``win_rate_vs_benchmark``: share of bars with ``r > b``;
-        - ``bars``: number of bars used.
+        - ``Beta`` and ``Correlation`` of ``r`` on ``b``, and
+          ``CAPM Alpha [%]``, the annualized regression intercept
+          ``mean(r) - beta * mean(b)``;
+        - ``Win Rate vs Benchmark [%]``: share of bars with ``r > b``;
+        - ``Bars``: number of bars used.
 
         A statistic that is undefined (fewer than two bars, a flat
         benchmark, zero tracking error) is NaN, which persists as null.
@@ -2287,19 +2295,19 @@ class BaseBacktester(ABC):
         nan = float("nan")
 
         stats = {
-            "strategy_total_return": nan,
-            "benchmark_total_return": nan,
-            "excess_return": nan,
-            "excess_return_annualized": nan,
-            "total_return_difference": nan,
-            "excess_max_drawdown": nan,
-            "tracking_error": nan,
-            "information_ratio": nan,
-            "beta": nan,
-            "correlation": nan,
-            "capm_alpha": nan,
-            "win_rate_vs_benchmark": nan,
-            "bars": n,
+            "Strategy Total Return [%]": nan,
+            "Benchmark Total Return [%]": nan,
+            "Excess Return [%]": nan,
+            "Annualized Excess Return [%]": nan,
+            "Total Return Difference [%]": nan,
+            "Excess Max Drawdown [%]": nan,
+            "Tracking Error [%]": nan,
+            "Information Ratio": nan,
+            "Beta": nan,
+            "Correlation": nan,
+            "CAPM Alpha [%]": nan,
+            "Win Rate vs Benchmark [%]": nan,
+            "Bars": n,
         }
         if n == 0:
             return stats
@@ -2311,38 +2319,41 @@ class BaseBacktester(ABC):
             peak = np.maximum.accumulate(np.concatenate(([1.0], relative)))[1:]
             relative_drawdown = relative / peak - 1.0
         final = float(relative[-1])
-        stats.update(
-            strategy_total_return=strategy_total,
-            benchmark_total_return=benchmark_total,
-            excess_return=final - 1.0,
-            excess_return_annualized=(
-                float(final ** (bars_per_year / n) - 1.0) if final > 0 else nan
-            ),
-            total_return_difference=strategy_total - benchmark_total,
-            excess_max_drawdown=float(min(np.nanmin(relative_drawdown), 0.0))
+        excess_max_drawdown = (
+            float(min(np.nanmin(relative_drawdown), 0.0))
             if np.isfinite(relative_drawdown).any()
-            else nan,
-            win_rate_vs_benchmark=float(np.mean(r > b)),
+            else nan
         )
+        stats.update({
+            "Strategy Total Return [%]": strategy_total * 100.0,
+            "Benchmark Total Return [%]": benchmark_total * 100.0,
+            "Excess Return [%]": (final - 1.0) * 100.0,
+            "Annualized Excess Return [%]": (
+                float(final ** (bars_per_year / n) - 1.0) * 100.0 if final > 0 else nan
+            ),
+            "Total Return Difference [%]": (strategy_total - benchmark_total) * 100.0,
+            "Excess Max Drawdown [%]": excess_max_drawdown * 100.0,
+            "Win Rate vs Benchmark [%]": float(np.mean(r > b)) * 100.0,
+        })
         if n < 2:
             return stats
 
         active = r - b
         tracking = float(np.std(active, ddof=1) * np.sqrt(bars_per_year))
         variance = float(np.var(b, ddof=1))
-        stats["tracking_error"] = tracking
+        stats["Tracking Error [%]"] = tracking * 100.0
         if tracking > 0:
-            stats["information_ratio"] = float(
+            stats["Information Ratio"] = float(
                 np.mean(active) * bars_per_year / tracking
             )
         if variance > 0:
             beta = float(np.cov(r, b, ddof=1)[0, 1] / variance)
-            stats["beta"] = beta
-            stats["capm_alpha"] = float(
-                (np.mean(r) - beta * np.mean(b)) * bars_per_year
+            stats["Beta"] = beta
+            stats["CAPM Alpha [%]"] = float(
+                (np.mean(r) - beta * np.mean(b)) * bars_per_year * 100.0
             )
             if np.std(r) > 0:
-                stats["correlation"] = float(np.corrcoef(r, b)[0, 1])
+                stats["Correlation"] = float(np.corrcoef(r, b)[0, 1])
         return stats
 
     def _report_notes(self) -> list[str]:
@@ -2494,12 +2505,12 @@ class BaseBacktester(ABC):
             summary["Benchmark"] = f"{_text(benchmark.get('symbol'))}{where}, buy and hold"
             whole = (block.get("relative") or {}).get("whole") or {}
             for label, key in (
-                ("Excess return vs benchmark", "excess_return"),
-                ("Excess max drawdown vs benchmark", "excess_max_drawdown"),
+                ("Excess return vs benchmark", "Excess Return [%]"),
+                ("Excess max drawdown vs benchmark", "Excess Max Drawdown [%]"),
             ):
                 value = whole.get(key)
                 summary[label] = (
-                    format(float(value), ".2%")
+                    f"{float(value):.2f}%"
                     if isinstance(value, (int, float)) and np.isfinite(value)
                     else DASH
                 )

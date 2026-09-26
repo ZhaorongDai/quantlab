@@ -330,9 +330,9 @@ def _excess_curves(equity: pd.Series, reference: pd.Series) -> tuple[pd.Series, 
 
     The relative NAV is portfolio value over benchmark value. Both start from
     the same capital, so it is 1 before the first bar and its final value
-    minus 1 is the ``relative.whole.excess_return`` metric; its drawdown is
-    measured from a running peak that starts at 1, like
-    ``relative.whole.excess_max_drawdown``.
+    minus 1 is the ``Excess Return [%]`` metric of ``relative.whole`` (as a
+    fraction here, a percent there); its drawdown is measured from a running
+    peak that starts at 1, like ``Excess Max Drawdown [%]``.
     """
     relative = equity / reference
     excess = relative - 1.0

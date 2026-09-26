@@ -15,8 +15,9 @@ against it. What is locked here:
   curves are comparable bar for bar.
 - **Metrics.** `metrics["benchmark"]` carries the benchmark's own return
   statistics per slice, and `metrics["relative"]` the excess statistics. The
-  whole-window `excess_return` is exactly `value / benchmark_value - 1` at the
-  last bar, and `excess_max_drawdown` is the deepest fall of that ratio.
+  whole-window `Excess Return [%]` is exactly `value / benchmark_value - 1` at
+  the last bar, in percent, and `Excess Max Drawdown [%]` is the deepest fall
+  of that ratio.
 - **Persistence and report.** `equity.zarr` carries both curves,
   `fingerprint.json` the benchmark's data, `config.json` rebuilds the
   benchmark, and `report.html` draws the benchmark NAV with the portfolio's
@@ -204,21 +205,25 @@ def test_whole_excess_return_and_drawdown_match_the_value_ratio(benchmark_run):
     relative = value / reference
     whole = result.metrics["relative"]["whole"]
 
-    assert whole["excess_return"] == pytest.approx(relative[-1] - 1.0, rel=1e-9)
+    # Every `[%]` row is in percent, like vectorbt's `Total Return [%]`.
+    assert whole["Excess Return [%]"] == pytest.approx(
+        (relative[-1] - 1.0) * 100.0, rel=1e-9
+    )
     peak = np.maximum.accumulate(np.maximum(relative, 1.0))
-    assert whole["excess_max_drawdown"] == pytest.approx(
-        float((relative / peak - 1.0).min()), abs=1e-12
+    assert whole["Excess Max Drawdown [%]"] == pytest.approx(
+        float((relative / peak - 1.0).min()) * 100.0, abs=1e-10
     )
-    assert whole["strategy_total_return"] == pytest.approx(
-        value[-1] / value[0] - 1.0, rel=1e-9
+    assert whole["Strategy Total Return [%]"] == pytest.approx(
+        (value[-1] / value[0] - 1.0) * 100.0, rel=1e-9
     )
-    assert whole["benchmark_total_return"] == pytest.approx(
-        reference[-1] / reference[0] - 1.0, rel=1e-9
+    assert whole["Benchmark Total Return [%]"] == pytest.approx(
+        (reference[-1] / reference[0] - 1.0) * 100.0, rel=1e-9
     )
-    assert whole["total_return_difference"] == pytest.approx(
-        whole["strategy_total_return"] - whole["benchmark_total_return"], rel=1e-9
+    assert whole["Total Return Difference [%]"] == pytest.approx(
+        whole["Strategy Total Return [%]"] - whole["Benchmark Total Return [%]"],
+        rel=1e-9,
     )
-    assert whole["bars"] == value.size
+    assert whole["Bars"] == value.size
 
 
 def test_relative_stats_by_hand(benchmark_run):
@@ -231,16 +236,16 @@ def test_relative_stats_by_hand(benchmark_run):
 
     tracking = np.std(active, ddof=1) * np.sqrt(bars_per_year)
     beta = np.cov(r, b, ddof=1)[0, 1] / np.var(b, ddof=1)
-    assert whole["tracking_error"] == pytest.approx(tracking, rel=1e-9)
-    assert whole["information_ratio"] == pytest.approx(
+    assert whole["Tracking Error [%]"] == pytest.approx(tracking * 100.0, rel=1e-9)
+    assert whole["Information Ratio"] == pytest.approx(
         np.mean(active) * bars_per_year / tracking, rel=1e-9
     )
-    assert whole["beta"] == pytest.approx(beta, rel=1e-9)
-    assert whole["capm_alpha"] == pytest.approx(
-        (np.mean(r) - beta * np.mean(b)) * bars_per_year, rel=1e-9
+    assert whole["Beta"] == pytest.approx(beta, rel=1e-9)
+    assert whole["CAPM Alpha [%]"] == pytest.approx(
+        (np.mean(r) - beta * np.mean(b)) * bars_per_year * 100.0, rel=1e-9
     )
-    assert whole["correlation"] == pytest.approx(np.corrcoef(r, b)[0, 1], rel=1e-9)
-    assert whole["win_rate_vs_benchmark"] == pytest.approx(np.mean(r > b))
+    assert whole["Correlation"] == pytest.approx(np.corrcoef(r, b)[0, 1], rel=1e-9)
+    assert whole["Win Rate vs Benchmark [%]"] == pytest.approx(np.mean(r > b) * 100.0)
 
 
 def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
@@ -271,8 +276,8 @@ def test_run_directory_carries_the_benchmark(benchmark_run):
     )
     assert "benchmark_dataset" in json.loads((run_dir / "fingerprint.json").read_text())
     metrics = json.loads((run_dir / "metrics.json").read_text())
-    assert metrics["relative"]["whole"]["excess_return"] == pytest.approx(
-        result.metrics["relative"]["whole"]["excess_return"]
+    assert metrics["relative"]["whole"]["Excess Return [%]"] == pytest.approx(
+        result.metrics["relative"]["whole"]["Excess Return [%]"]
     )
 
 
@@ -384,8 +389,8 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
     assert cv.benchmark is not None
     stitched = cv.metrics["stitched"]
     relative = cv.simulation.value.values / cv.benchmark.value.values
-    assert stitched["relative"]["whole"]["excess_return"] == pytest.approx(
-        relative[-1] - 1.0, rel=1e-9
+    assert stitched["relative"]["whole"]["Excess Return [%]"] == pytest.approx(
+        (relative[-1] - 1.0) * 100.0, rel=1e-9
     )
     for record in cv.folds:
         assert record["benchmark"] is not None

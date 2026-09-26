@@ -37,7 +37,7 @@ appears. metrics.json carries the same note and no benchmark key.
 Phase 03.8 (D-02): a second note states that the trade metrics are the
 position-level view -- one entry-to-flat round trip per symbol, so a partial
 trim is not counted as its own closed trade -- and that `whole` carries
-`order_count`, the number of fills. This file locks that at the artifact
+`Total Orders`, the number of fills. This file locks that at the artifact
 level: the note verbatim in the page and in metrics.json, the top-level trade
 metrics strict-JSON clean, and no nested `whole.positions` block left behind.
 The proof that the reported view really IS the positions view (rather than a
@@ -833,8 +833,10 @@ def test_report_carries_the_metric_table_and_the_axis_toggle(overlap_run):
         checked += 1
     assert checked >= 5, "the whole block must carry several finite numbers"
 
-    # The nested turnover group is flattened to dotted paths by walking it.
-    assert "turnover.sum" in rendered
+    # The turnover rows are flat, vectorbt-style names: no dotted path, no
+    # underscore, and the unit in the name.
+    assert "Total Turnover [%]" in rendered
+    assert not any("_" in key or "." in key for key in rendered), sorted(rendered)
 
     assert '"yaxis.type":"log"' in html and '"yaxis.type":"linear"' in html
 
@@ -859,14 +861,14 @@ DELTA_CARRYING_ROWS = {
     "Common Sense Ratio",
     "Value at Risk",
     # the per-slice activity counts and sums
-    "order_count",
-    "fees_paid",
-    "traded_notional",
-    "closed_trade_count",
-    "open_trade_count",
-    "turnover.mean_per_rebalance",
-    "turnover.sum",
-    "turnover.annualized",
+    "Total Orders",
+    "Total Fees Paid",
+    "Traded Notional",
+    "Total Closed Trades",
+    "Total Open Trades",
+    "Turnover per Rebalance [%]",
+    "Total Turnover [%]",
+    "Annualized Turnover [%]",
 }
 
 #: The slice rows whose delta is a dash by TYPE: timestamps and durations.
@@ -893,7 +895,7 @@ def test_report_delta_census_pins_which_rows_carry_a_number(overlap_run):
 
     If the carrying set ever shrinks, do not shrink the literal to match. Two
     causes are legitimate and must be stated here rather than absorbed:
-    `turnover.mean_per_rebalance` and `turnover.annualized` are nan for a slice
+    `Turnover per Rebalance [%]` and `Annualized Turnover [%]` are nan for a slice
     with no fill bar (this fixture fills in both slices, so they are finite),
     or the metrics key set itself changed. Anything else is a predicate defect.
 
@@ -1158,7 +1160,7 @@ def test_report_and_metrics_carry_the_one_trade_view_note(overlap_run):
     assert "short" in text and "borrow" in text and "optimistic" in text
     # And the new note says which view the trade metrics are, and names the
     # execution-activity count that replaced the lot-level set.
-    for mark in ("position level", "round trip", "partial trim", "order_count"):
+    for mark in ("position level", "round trip", "partial trim", "total orders"):
         assert mark in text, mark
 
 
@@ -1178,10 +1180,10 @@ def test_metrics_json_carries_one_trade_view_and_no_nested_positions_block(
     assert "positions" not in whole, sorted(whole)
     # The companion change (CONTEXT item 3): dropping the lot-level set would
     # otherwise leave the whole-window block with no execution-activity count.
-    assert isinstance(whole["order_count"], int) and not isinstance(
-        whole["order_count"], bool
+    assert isinstance(whole["Total Orders"], int) and not isinstance(
+        whole["Total Orders"], bool
     )
-    assert whole["order_count"] > 0
+    assert whole["Total Orders"] > 0
 
     for key in TRADE_METRIC_NAMES:
         assert key in whole, key
@@ -1284,7 +1286,7 @@ def test_wandb_logs_metrics_and_report_to_a_separate_backtest_run(tmp_path, monk
         assert np.isfinite(value), key
     assert any(key.startswith("in_sample/") for key in summary)
     assert any(key.startswith("out_of_sample/") for key in summary)
-    assert "whole/turnover/sum" in summary
+    assert "whole/Total Turnover [%]" in summary
     assert summary["whole/Total Return [%]"] == pytest.approx(
         result.metrics["whole"]["Total Return [%]"]
     )

@@ -875,7 +875,7 @@ def test_the_whole_block_carries_the_trade_metrics_with_no_nested_positions_bloc
     # The rest of the top level is untouched: nothing renamed, nothing removed,
     # and D-08's no-benchmark rule still holds.
     assert "Total Return [%]" in whole
-    assert "turnover" in whole
+    assert "Turnover per Rebalance [%]" in whole
     assert [key for key in whole if "Benchmark" in key] == []
 
 

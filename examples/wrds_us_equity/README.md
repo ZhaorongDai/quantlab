@@ -103,7 +103,7 @@ The benchmark is the ETF's own daily rows from CRSP (`crsp_a_stock.dsf_v2`, sele
 With a benchmark (the default), the backtest also buys and holds the ETF from the same `init_cash`, with the same fees, slippage and next-bar-open fills, so the two curves compare bar for bar. Each ETF lives in its own single-symbol store (`wrds_crsp_spy_1d.zarr`, `wrds_crsp_qqq_1d.zarr`), never in the equity panel, where it would be ranked against its own constituents. `metrics.json` gains two blocks, each split whole / in-sample / out-of-sample:
 
 - `benchmark`: the ETF's own return statistics.
-- `relative`: the portfolio against the ETF: `excess_return` (relative NAV − 1), `excess_return_annualized`, `excess_max_drawdown`, `tracking_error`, `information_ratio`, `beta`, `correlation`, `capm_alpha`, `win_rate_vs_benchmark`.
+- `relative`: the portfolio against the ETF, every `[%]` row in percent: `Excess Return [%]` (relative NAV − 1), `Annualized Excess Return [%]`, `Excess Max Drawdown [%]`, `Tracking Error [%]`, `Information Ratio`, `Beta`, `Correlation`, `CAPM Alpha [%]`, `Win Rate vs Benchmark [%]`.
 
 `report.html` draws the benchmark NAV beside the portfolio's and adds excess-return and excess-drawdown rows; The pipeline log line prints the headline numbers. Pass `benchmark_dataset=None` in `backtest()` to skip the comparison.
 

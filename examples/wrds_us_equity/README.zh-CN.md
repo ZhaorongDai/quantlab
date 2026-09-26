@@ -103,7 +103,7 @@ analysis/alpha101/, analysis/alpha158/
 启用基准时（默认启用），回测会用同样的 `init_cash`、手续费、滑点和"下一根 bar 开盘成交"的规则买入并持有 ETF，所以两条净值曲线可以逐 bar 对比。每个 ETF 放在自己的单标的仓库里（`wrds_crsp_spy_1d.zarr`、`wrds_crsp_qqq_1d.zarr`），不会进入股票面板，否则它会和自己的成分股一起参与排序。`metrics.json` 会多出两个指标块，各自按全区间/样本内/样本外拆分：
 
 - `benchmark`：ETF 自身的收益统计。
-- `relative`：组合相对 ETF 的表现：`excess_return`（相对净值 − 1）、`excess_return_annualized`、`excess_max_drawdown`、`tracking_error`、`information_ratio`、`beta`、`correlation`、`capm_alpha`、`win_rate_vs_benchmark`。
+- `relative`：组合相对 ETF 的表现，所有带 `[%]` 的行都是百分数：`Excess Return [%]`（相对净值 − 1）、`Annualized Excess Return [%]`、`Excess Max Drawdown [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`、`Win Rate vs Benchmark [%]`。
 
 `report.html` 会在组合净值旁画出基准净值，并增加超额收益和超额回撤两行。pipeline 的日志行会打印核心数字。在 `backtest()` 里传 `benchmark_dataset=None` 可跳过对比。
 

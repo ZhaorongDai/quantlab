@@ -232,17 +232,17 @@ order
 
 ```python
 >>> for part in ("whole", "in_sample", "out_of_sample"):
-...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["order_count"])
+...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["Total Orders"])
 whole -5.85 -2.32 19
 in_sample -1.09 -0.79 6
 out_of_sample -4.82 -3.76 13
 >>> list(m["whole"])[:6]
 ['Start', 'End', 'Period', 'Start Value', 'End Value', 'Total Return [%]']
->>> round(m["whole"]["turnover"]["mean_per_rebalance"], 2)
-1.34
+>>> round(m["whole"]["Turnover per Rebalance [%]"])
+134
 ```
 
-换手是某根 bar 的单边成交额除以成交前的组合价值，所以从现金一次性建仓约为 1，整本书全部换掉约为 2。这里的分数来自随机游走收益，负收益没有任何含义。
+换手是某根 bar 的单边成交额除以成交前的组合价值，和其他带 `[%]` 的行一样以百分数表示，所以从现金一次性建仓约为 100，整本书全部换掉约为 200。这里的分数来自随机游走收益，负收益没有任何含义。
 
 ### 运行目录
 
@@ -333,7 +333,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 >>> config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
 >>> result = USEquityCrossectionSelectStockVectorBt(config).run()
 >>> sorted(result.metrics["relative"]["whole"])[:4]
-['bars', 'benchmark_total_return', 'beta', 'capm_alpha']
+['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
 ```
 
 基准按回测窗口读取，并对齐到策略自己的 bar 上；基准缺失的 bar 沿用前一个价格（记录一条警告）。基准晚于窗口开始、或面板中不止一个标的时会报错。基准按策略的同一套执行约定买入并持有：在第二根 bar 的开盘价全仓买入，初始资金 `init_cash`、手续费和滑点都与策略相同，因此两条净值曲线可以逐 bar 比较。`result.benchmark` 是它的 `SimulationResult`。
@@ -341,7 +341,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 运行结果多出两个指标块，每块都有 `whole`、`in_sample`、`out_of_sample` 三个切片：
 
 - `benchmark`：基准的 `symbol` 及其自身的收益统计（总收益、年化收益、波动率、Sharpe、最大回撤等）；
-- `relative`：组合相对基准的表现，均为小数。*相对净值* = 组合净值 / 基准净值。`excess_return` 是期末相对净值减 1（即通常所说的超额收益 alpha），`excess_return_annualized` 为其年化值，`excess_max_drawdown` 是相对净值从其历史高点的最大回落（*超额回撤*），另有 `strategy_total_return`、`benchmark_total_return`、`total_return_difference`、`tracking_error`、`information_ratio`、`beta`、`correlation`、`capm_alpha`（年化回归截距）和 `win_rate_vs_benchmark`。
+- `relative`：组合相对基准的表现，命名沿用 vectorbt 的风格，所有带 `[%]` 的行都是百分数。*相对净值* = 组合净值 / 基准净值。`Excess Return [%]` 是期末相对净值减 1（即通常所说的超额收益 alpha），`Annualized Excess Return [%]` 为其年化值，`Excess Max Drawdown [%]` 是相对净值从其历史高点的最大回落（*超额回撤*，为负数或 0），另有 `Strategy Total Return [%]`、`Benchmark Total Return [%]`、`Total Return Difference [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`（年化回归截距）和 `Win Rate vs Benchmark [%]`。
 
 `report.html` 在组合净值的同一面板上画出基准净值（灰色虚线），其下新增超额收益和超额回撤两行，回撤和月度收益面板中也并列显示基准，并新增“Excess over benchmark”和“Benchmark (buy and hold)”两张表。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
 
@@ -425,7 +425,7 @@ timestamp
 
 ## 注意事项
 
-回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`order_count` 是成交笔数。
+回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`Total Orders` 是成交笔数。
 
 `benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
 

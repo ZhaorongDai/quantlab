@@ -90,8 +90,8 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260925_175054_760512
   Total Return [%]      9.170
   Sharpe Ratio          1.888
   Max Drawdown [%]      6.116
-  order_count             126
-  turnover/rebal.       1.399
+  Total Orders            126
+  turnover/rebal. [%]    139.9
   training window     ('2023-01-02', '2023-09-15')
   in-sample range     ('2023-09-04', '2023-09-15')
   out-of-sample       [('2023-09-18', '2024-02-23')]
@@ -211,8 +211,8 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260925_175055_950306
   Total Return [%]      3.257
   Sharpe Ratio          1.382
   Max Drawdown [%]      2.315
-  order_count             175
-  turnover/rebal.       1.441
+  Total Orders            175
+  turnover/rebal. [%]    144.1
   gross exposure 1.0 net exposure 0.0
 ```
 
@@ -328,7 +328,7 @@ never re-simulated, because that would reset the capital and change the path.
 
 | Key | Content |
 |---|---|
-| `whole` | vectorbt's portfolio statistics for the whole window, plus `turnover` and `order_count`. |
+| `whole` | vectorbt's portfolio statistics for the whole window, plus the three turnover rows and `Total Orders`. |
 | `in_sample`, `out_of_sample` | Return statistics and order, trade and turnover counts restricted to those bars, or `null` when there are none. |
 | `training_window`, `in_sample_range`, `out_of_sample_ranges` | The date ranges that define the split. |
 | `trained_checkpoint` | Train mode only: the checkpoint the run produced. |
@@ -337,10 +337,11 @@ never re-simulated, because that would reset the capital and change the path.
 A few metric definitions are worth knowing. Trade statistics use vectorbt's
 position view: one trade is one symbol's round trip from entry back to flat,
 so trimming a holding back to its target weight is not a closed trade.
-`order_count` is the number of fills. *Turnover* is the traded value on a
-fill bar divided by the portfolio value before it; a full switch of a
-long-only book (sell everything, buy something else) is about 2, which is why
-the example's mean turnover per rebalance is around 1.4.
+`Total Orders` is the number of fills. *Turnover* is the traded value on a
+fill bar divided by the portfolio value before it, reported in percent like
+every other `[%]` row; a full switch of a long-only book (sell everything,
+buy something else) is about 200%, which is why the example's
+`Turnover per Rebalance [%]` is around 140.
 
 ## Replaying cross-validation with `run_cv()`
 
@@ -389,8 +390,8 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260925_175118_514435
   Total Return [%]     15.392
   Sharpe Ratio          1.837
   Max Drawdown [%]      6.116
-  order_count             209
-  turnover/rebal.       1.508
+  Total Orders            209
+  turnover/rebal. [%]    150.8
   fold 0: 2023-05-22..2023-06-16 return   3.26%
   fold 1: 2023-06-19..2023-07-14 return  -0.24%
   fold 2: 2023-07-17..2023-08-11 return   1.31%
