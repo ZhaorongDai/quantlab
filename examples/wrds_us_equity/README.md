@@ -93,7 +93,7 @@ analysis/alpha101/, analysis/alpha158/
 
 ## What is logged to Weights & Biases
 
-- **Training**: one run per `train()`, in a project named after the trial directory. The runs hold the full config and resolved hyperparameters, the train/val/test metrics (MSE, RMSE, MAE, R², IC, RankIC) and, per head, the per-round `train-`/`val-` curves and feature importance (`xgb`), the best round (`xgb_td`) or the stopping epoch (`realmlp`).
+- **Training**: one run per `train()`, in a project named after the trial directory. The runs hold the full config and resolved hyperparameters, the train/val/test metrics (MSE, RMSE, MAE, R², IC, RankIC) and, per head, the per-round `train-`/`val-` curves and feature importance (`xgb`), the per-round `val-rmse` curve, best and trained round counts and feature importance (`xgb_td`), or the per-epoch `train-loss`/`val-rmse` curves, best validation error and stopping epoch (`realmlp`).
 - **Backtest**: one run in the `USEquityCrossectionSelectStockVectorBt_backtest` project, named after the run directory: the backtest config with data fingerprints, the whole / in-sample / out-of-sample metrics as summary values (plus `benchmark/...` and `relative/...` when a benchmark ran), and the HTML report.
 
 ## Benchmark comparison

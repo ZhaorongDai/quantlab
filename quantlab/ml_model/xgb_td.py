@@ -16,9 +16,11 @@ per label.
 """
 
 import numpy as np
+from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
-from quantlab.ml_model.tabkit import TabkitRegressor
+from quantlab.ml_model.tabkit import TabkitRegressor, active_callbacks
+from quantlab.ml_model.xgb import _WandbEvalCallback, record_feature_importance
 
 
 class _XGBTDEstimator(XGB_TD_Regressor):
@@ -86,6 +88,14 @@ class XGBTDRegressor(TabkitRegressor):
     ``parallel=True`` the folds run on threads while pytabkit uses every
     physical core by default, so set ``n_threads`` in the hyperparameters to
     roughly ``os.cpu_count() // njobs`` to avoid oversubscribing the CPU.
+
+    Every W&B run gets, per label, the validation curve of each boosting
+    round (``val-rmse``, or ``val-rmse/<label>`` with several labels, at
+    ``step=round``), the selected round (``best_n_estimators``), the rounds
+    trained (``num_boosted_rounds``) and the per-factor importance with its
+    charts, exactly as ``XGBoostRegressor`` records them. The callback is
+    injected into pytabkit's inner ``xgboost.train`` call (see
+    ``quantlab.ml_model.tabkit.active_callbacks``).
 
     Parameters
     ----------
@@ -176,27 +186,78 @@ class XGBTDRegressor(TabkitRegressor):
         """
         x_rows, y_rows = self._training_rows(train_x, train_y)
         val_rows = self._validation_rows(val_x, val_y)
+        names = list(self.get_label_names())
 
         for i, estimator in enumerate(self.model):
-            if val_rows is None:
-                estimator.fit(x_rows, y_rows[:, i])
-                self._pin_all_rounds(estimator)
-            else:
-                estimator.fit(
-                    x_rows, y_rows[:, i], X_val=val_rows[0], y_val=val_rows[1][:, i]
-                )
+            suffix = self._key_suffix(names, i)
+            self._last_log_step = None
+            with active_callbacks(xgb_callbacks=self._round_callbacks(suffix)):
+                if val_rows is None:
+                    estimator.fit(x_rows, y_rows[:, i])
+                    self._pin_all_rounds(estimator)
+                else:
+                    estimator.fit(
+                        x_rows, y_rows[:, i], X_val=val_rows[0], y_val=val_rows[1][:, i]
+                    )
+            if self._wandb_recorder is not None:
+                self._record_booster(estimator, names[i], suffix)
 
         if self._wandb_recorder is not None and val_rows is not None:
             best = self._best_n_estimators()
             summary = {
                 f"best_n_estimators/{name}": rounds
-                for name, rounds in zip(self.get_label_names(), best)
+                for name, rounds in zip(names, best)
                 if rounds is not None
             }
             if best and best[0] is not None:
                 summary["best_n_estimators"] = best[0]
             if summary:
                 self._wandb_recorder.summary.update(summary)
+
+    @staticmethod
+    def _key_suffix(names: list[str], i: int) -> str:
+        """Return the per-label key suffix: empty for one label, ``/<label>`` otherwise."""
+        return "" if len(names) == 1 else f"/{names[i]}"
+
+    def _round_callbacks(self, suffix: str) -> list:
+        """Return the per-round W&B callback to inject, or none without a run.
+
+        pytabkit evaluates the validation set every round (``val-rmse``);
+        the callback logs it at ``step=round`` so the curve of each label
+        sits beside the plain ``XGBoostRegressor``'s.
+        """
+        if self._wandb_recorder is None:
+            return []
+        return [_WandbEvalCallback(self, suffix=suffix)]
+
+    def _record_booster(self, estimator: _XGBTDEstimator, label: str, suffix: str) -> None:
+        """Log the fitted Booster's rounds and feature importance for ``label``.
+
+        The Booster is pytabkit's ``sub_split_interfaces[0].model``. Its
+        trained round count goes to the summary as
+        ``num_boosted_rounds{suffix}``; the importance goes through
+        ``record_feature_importance`` with the same suffix. Reporting only:
+        a missing Booster is a warning, never an error.
+        """
+        try:
+            booster = estimator.alg_interface_.sub_split_interfaces[0].model
+        except (AttributeError, IndexError) as exc:
+            logger.warning(
+                f"{self.class_name}: no fitted Booster found for label {label!r}; "
+                f"rounds and feature importance were not recorded: {exc}"
+            )
+            return
+        self._wandb_recorder.summary.update(
+            {f"num_boosted_rounds{suffix}": int(booster.num_boosted_rounds())}
+        )
+        record_feature_importance(
+            booster,
+            [str(name) for name in self.get_factor_names()],
+            self._wandb_recorder,
+            getattr(self, "_last_log_step", None),
+            self.class_name,
+            suffix=suffix,
+        )
 
     @staticmethod
     def _pin_all_rounds(estimator: _XGBTDEstimator) -> None:

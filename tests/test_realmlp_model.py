@@ -497,3 +497,23 @@ def test_train_cv_sequential(tmp_path, recorders):
     assert summary_run.summary["cv_n_folds"] == 8
     assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r["test_ic"] for r in results])))
     assert summary_run.summary["cv_mean_test_ic"] > 0.3
+
+
+# --------------------------------------------------------------------------
+# Per-epoch W&B curves
+# --------------------------------------------------------------------------
+
+
+def test_logs_train_loss_and_validation_error_every_epoch(tmp_path, recorders):
+    factors, labels = _panels(seed=31)
+    model = RealMLPRegressor(_config(tmp_path, factors, labels, hyperparameters=FAST))
+    model.collect()
+    model.train()
+    rec = recorders[0]
+
+    epochs = [(row, step) for row, step in rec.logs if "val-rmse" in row]
+    assert [step for _, step in epochs] == list(range(1, FAST["n_epochs"] + 1))
+    assert all("train-loss" in row and np.isfinite(row["train-loss"]) for row, _ in epochs)
+    assert all(np.isfinite(row["val-rmse"]) for row, _ in epochs)
+    assert rec.summary["epochs_trained"] == FAST["n_epochs"]
+    assert rec.summary["best_val_rmse"] == pytest.approx(min(row["val-rmse"] for row, _ in epochs))

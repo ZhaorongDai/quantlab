@@ -93,7 +93,7 @@ analysis/alpha101/, analysis/alpha158/
 
 ## Weights & Biases 记录的内容
 
-- **训练**：每次 `train()` 一个 run，项目名取自 trial 目录。内容包括完整配置和最终生效的超参数，train/val/test 指标（MSE、RMSE、MAE、R²、IC、RankIC），以及各模型特有的内容：`xgb` 的逐轮 `train-`/`val-` 曲线和特征重要性，`xgb_td` 的最优轮数，`realmlp` 的停止 epoch。
+- **训练**：每次 `train()` 一个 run，项目名取自 trial 目录。内容包括完整配置和最终生效的超参数，train/val/test 指标（MSE、RMSE、MAE、R²、IC、RankIC），以及各模型特有的内容：`xgb` 的逐轮 `train-`/`val-` 曲线和特征重要性，`xgb_td` 的逐轮 `val-rmse` 曲线、最优轮数与实际轮数和特征重要性，`realmlp` 的逐 epoch `train-loss`/`val-rmse` 曲线、最优验证误差和停止 epoch。
 - **回测**：在 `USEquityCrossectionSelectStockVectorBt_backtest` 项目下一个 run，以运行目录命名：带数据指纹的回测配置、全区间/样本内/样本外指标（写入 summary；有基准时还有 `benchmark/...` 和 `relative/...`），以及 HTML 报告。
 
 ## 基准对比
